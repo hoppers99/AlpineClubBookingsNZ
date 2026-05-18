@@ -58,7 +58,7 @@ function parseXeroCompanyNumberDate(companyNumber?: string | null): Date | null 
 
 /**
  * POST /api/admin/xero/import-member-contact
- * Import one unlinked Xero contact as a TACBookings member.
+ * Import one unlinked Xero contact as a local member.
  */
 export async function POST(request: NextRequest) {
   const session = await auth();
@@ -145,7 +145,7 @@ export async function POST(request: NextRequest) {
     if (existingNameMatch) {
       return NextResponse.json(
         {
-          error: `A TACBookings member named ${existingNameMatch.firstName} ${existingNameMatch.lastName} already exists.`,
+          error: `A local member named ${existingNameMatch.firstName} ${existingNameMatch.lastName} already exists.`,
           existingMemberId: existingNameMatch.id,
           existingMemberEmail: existingNameMatch.email,
           existingMemberXeroContactId: existingNameMatch.xeroContactId,

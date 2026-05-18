@@ -9,9 +9,9 @@ its deployment environment.
 
 - `AlpineClubBookingsNZ` is the public upstream. Use it for generic product fixes,
   reusable feature work, framework upgrades, and adopter documentation.
-- `AlpineClubBookingsNZ-private` is the private deployment fork. Use it for club-specific
-  configuration, private branding, operational data fixes, and production
-  release coordination.
+- `AlpineClubBookingsNZ-tokoroa` is the Tokoroa private deployment fork. Use
+  it for club-specific configuration, private branding, operational data fixes,
+  and production release coordination.
 
 ## Generic Feature Or Fix
 
@@ -20,7 +20,10 @@ its deployment environment.
 3. Merge to public `main`.
 4. In the private deployment fork, fetch the public upstream and merge or pull
    the updated `main`.
-5. Run the private fork validation and deploy from the private fork only.
+5. Preserve the upstream merge commit when syncing public changes. Avoid squash
+   merging public sync PRs because it makes future public-to-private drift
+   harder to reason about.
+6. Run the private fork validation and deploy from the private fork only.
 
 Public CI should use example club configuration, example branding, and test or
 demo service credentials.

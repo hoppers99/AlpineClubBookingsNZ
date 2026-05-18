@@ -3019,7 +3019,7 @@ export default function XeroPage() {
                           }}
                           placeholder={
                             forceSyncType === "CONTACT"
-                              ? "Search TACBookings members and Xero contacts by name or email"
+                              ? "Search local members and Xero contacts by name or email"
                               : "Search by member name, email, or member ID"
                           }
                         />
@@ -3034,7 +3034,7 @@ export default function XeroPage() {
                               <div className={forceSyncXeroContactResults.length > 0 ? "border-b" : ""}>
                                 {forceSyncType === "CONTACT" && forceSyncXeroContactResults.length > 0 ? (
                                   <div className="px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-slate-400">
-                                    TACBookings members
+                                    Local members
                                   </div>
                                 ) : null}
                                 {forceSyncMemberResults.map((member) => (
@@ -3082,7 +3082,7 @@ export default function XeroPage() {
                                       </div>
                                       <div className={contact.canImportAsMember ? "text-xs text-emerald-700" : "text-xs text-amber-700"}>
                                         {contact.canImportAsMember
-                                          ? "Can be imported as a linked TACBookings member."
+                                          ? "Can be imported as a linked local member."
                                           : contact.importBlockReason || "Cannot be imported from here."}
                                       </div>
                                     </div>
@@ -3112,7 +3112,7 @@ export default function XeroPage() {
                         forceSyncXeroContactResults.length === 0 ? (
                           <p className="mt-1 text-xs text-slate-500">
                             {forceSyncType === "CONTACT"
-                              ? "No matching TACBookings members or Xero contacts found yet."
+                              ? "No matching local members or Xero contacts found yet."
                               : "No matching member records found yet."}
                           </p>
                         ) : null}
@@ -3135,7 +3135,7 @@ export default function XeroPage() {
 
                 <p className="mt-3 text-xs text-muted-foreground">
                   {forceSyncType === "CONTACT"
-                    ? "Search by name or email. Select an existing TACBookings member to force-sync, or import an unlinked Xero contact when that member name does not already exist locally."
+                    ? "Search by name or email. Select an existing local member to force-sync, or import an unlinked Xero contact when that member name does not already exist locally."
                     : forceSyncType === "INVOICE"
                       ? "Search for the booking by ID, member name, or email, then queue invoice creation only when that booking is eligible."
                       : "Search for the member by name or email, then refresh that member’s subscription state from Xero invoices."}
@@ -4027,7 +4027,7 @@ export default function XeroPage() {
               <div className="space-y-1">
                 <h3 className="text-sm font-semibold">Xero Link Ledger Repair</h3>
                 <p className="text-sm text-muted-foreground">
-                  Backfill missing canonical links and deactivate stale duplicate links that no longer match TACBookings records.
+                  Backfill missing canonical links and deactivate stale duplicate links that no longer match local records.
                 </p>
               </div>
 

@@ -1255,7 +1255,7 @@ export async function buildXeroReconciliationReport(options?: {
             severity: "critical" as const,
             count: unsupportedPartialOperations,
             whatWentWrong:
-              "Xero accepted part of an operation, but TACBookings does not currently have enough supported repair logic for this partial state.",
+              "Xero accepted part of an operation, but the booking system does not currently have enough supported repair logic for this partial state.",
             howToFix:
               "Open the linked record activity, review the stored request/response payloads, and repair the local/Xero state manually before adding or extending a retry handler.",
             items: unsupportedPartials.map((partial) => ({

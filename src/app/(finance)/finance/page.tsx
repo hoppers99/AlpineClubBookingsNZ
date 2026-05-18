@@ -65,7 +65,7 @@ const financeReportCards = [
   {
     title: "Bookings",
     description:
-      "Review realized stays, forward demand, occupancy, and booked revenue from TACBookings booking activity.",
+      "Review realized stays, forward demand, occupancy, and booked revenue from booking-system activity.",
   },
   {
     title: "Revenue",
@@ -90,7 +90,7 @@ const financeReportCards = [
   {
     title: "Cash",
     description:
-      "Review synced bank balance snapshots without mixing them with TACBookings payment collections.",
+      "Review synced bank balance snapshots without mixing them with local payment collections.",
   },
   {
     title: "Balance sheet",

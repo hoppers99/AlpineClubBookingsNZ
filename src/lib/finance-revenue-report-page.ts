@@ -325,7 +325,7 @@ function buildRevenueSourceNotes() {
     {
       label: "Revenue source",
       description:
-        "Revenue on this page comes from finance profit and loss snapshots synced from Xero. It is separate from TACBookings booking totals.",
+        "Revenue on this page comes from finance profit and loss snapshots synced from Xero. It is separate from local booking totals.",
     },
     {
       label: "When figures update",

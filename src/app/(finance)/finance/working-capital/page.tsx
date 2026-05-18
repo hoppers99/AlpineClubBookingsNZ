@@ -184,7 +184,7 @@ export default async function FinanceWorkingCapitalPage({
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-              Generated {model.generatedOn}. Working capital on this page comes from synced balance sheet snapshots. Booking totals and TACBookings payment collections are shown in separate reports.
+              Generated {model.generatedOn}. Working capital on this page comes from synced balance sheet snapshots. Booking totals and local payment collections are shown in separate reports.
             </div>
 
             <form action="/finance/working-capital" className="space-y-4">

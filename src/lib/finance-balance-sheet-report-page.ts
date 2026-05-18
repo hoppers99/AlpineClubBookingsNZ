@@ -345,7 +345,7 @@ function buildBalanceSheetSourceNotes() {
     {
       label: "Balance sheet source",
       description:
-        "Balance sheet figures on this page come from finance balance sheet snapshots synced from Xero. They are separate from TACBookings booking and payment data.",
+        "Balance sheet figures on this page come from finance balance sheet snapshots synced from Xero. They are separate from local booking and payment data.",
     },
     {
       label: "What the totals represent",

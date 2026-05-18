@@ -671,7 +671,7 @@ describe("Email templates - Phase 6b", () => {
           severity: "critical",
           count: 1,
           whatWentWrong: "The same correlation key keeps failing.",
-          howToFix: "Open TACBookings and retry after checking the record.",
+          howToFix: "Open the booking record and retry after checking the record.",
           items: [
             {
               label: "Payment pay_1",

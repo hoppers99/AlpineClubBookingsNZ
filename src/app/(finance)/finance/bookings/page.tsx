@@ -296,15 +296,15 @@ export default async function FinanceBookingsPage({
               </CardTitle>
               <CardDescription className="max-w-3xl text-sm leading-6 text-slate-600">
                 Review realized stays, forward demand, and payment coverage
-                using booking data from TACBookings.
+                using booking-system data.
               </CardDescription>
             </div>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-              Generated {model.generatedOn} from a live TACBookings query.
-              Booked revenue comes from TACBookings bookings. Net collected cash
-              comes from TACBookings payments. Xero-backed finance snapshots do
+              Generated {model.generatedOn} from a live booking-system query.
+              Booked revenue comes from local bookings. Net collected cash
+              comes from local payment rows. Xero-backed finance snapshots do
               not appear on this page.
             </div>
 
@@ -403,7 +403,7 @@ export default async function FinanceBookingsPage({
               About this report
             </CardTitle>
             <CardDescription className="text-sm text-slate-600">
-              This report uses TACBookings booking and payment data rather than finance snapshots.
+              This report uses local booking and payment data rather than finance snapshots.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">

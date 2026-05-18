@@ -3677,7 +3677,7 @@ function parseXeroError(err: unknown): string {
 }
 
 /**
- * Import members from Xero contact groups into TACBookings.
+ * Import members from Xero contact groups into the local member table.
  * Creates new Member records and optionally sends invite emails.
  */
 export async function importMembersFromXeroGroups(
@@ -4236,7 +4236,7 @@ export interface XeroContactUpdateData {
 }
 
 /**
- * Update a Xero contact's details when a member is edited in TACBookings.
+ * Update a Xero contact's details when a member is edited locally.
  */
 export async function updateXeroContact(
   xeroContactId: string,

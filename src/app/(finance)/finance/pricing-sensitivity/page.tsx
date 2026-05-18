@@ -212,7 +212,7 @@ export default async function FinancePricingSensitivityPage({
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-              Generated {model.generatedOn}. Monthly costs come from synced finance data. Guest nights and booked revenue come from TACBookings activity for the same monthly windows.
+              Generated {model.generatedOn}. Monthly costs come from synced finance data. Guest nights and booked revenue come from booking-system activity for the same monthly windows.
             </div>
 
             <form action="/finance/pricing-sensitivity" className="space-y-4">

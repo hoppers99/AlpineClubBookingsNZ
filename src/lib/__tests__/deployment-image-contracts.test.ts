@@ -25,10 +25,10 @@ describe("deployment image contracts", () => {
     expect(workflow).toContain("publish-ghcr-images:");
     expect(workflow).toContain("packages: write");
     expect(workflow).toContain(
-      "APP_IMAGE: ghcr.io/thatskiff33/alpineclubbookingsnz-app:${{ github.sha }}",
+      "APP_IMAGE: ${{ vars.GHCR_APP_IMAGE_REPOSITORY || format('ghcr.io/{0}/alpineclubbookingsnz-app', github.repository_owner) }}:${{ github.sha }}",
     );
     expect(workflow).toContain(
-      "MIGRATE_IMAGE: ghcr.io/thatskiff33/alpineclubbookingsnz-migrate:${{ github.sha }}",
+      "MIGRATE_IMAGE: ${{ vars.GHCR_MIGRATE_IMAGE_REPOSITORY || format('ghcr.io/{0}/alpineclubbookingsnz-migrate', github.repository_owner) }}:${{ github.sha }}",
     );
     expect(workflow).toContain("uses: docker/build-push-action@v7");
     expect(workflow).toContain("target: builder");

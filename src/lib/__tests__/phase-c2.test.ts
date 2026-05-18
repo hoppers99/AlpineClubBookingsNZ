@@ -304,7 +304,7 @@ describe("Admin Xero contact member import API", () => {
     expect(data.xeroContactId).toBe("xc-1");
   });
 
-  it("does not import when a TACBookings member already has that name", async () => {
+  it("does not import when a local member already has that name", async () => {
     mockAuth.mockResolvedValue({ user: { id: "a1", role: "ADMIN" } });
     mockGetAuthenticatedXeroClient.mockResolvedValue({
       xero: {

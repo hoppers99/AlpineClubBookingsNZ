@@ -30,7 +30,7 @@ describe("finance-booking-metrics", () => {
     vi.clearAllMocks();
   });
 
-  it("derives realized stays, forward pipeline, and payment summaries from TACBookings rows", async () => {
+  it("derives realized stays, forward pipeline, and payment summaries from booking rows", async () => {
     mockPrisma.booking.findMany.mockResolvedValue([
       {
         id: "booking-confirmed-split",

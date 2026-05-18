@@ -141,7 +141,7 @@ export async function GET(request: NextRequest) {
         : linkedMember
           ? `Already linked to ${linkedMember.name}`
           : existingMember
-            ? `A TACBookings member named ${existingMember.name} already exists`
+            ? `A local member named ${existingMember.name} already exists`
             : c.emailAddress
               ? null
               : "Xero contact has no email address";

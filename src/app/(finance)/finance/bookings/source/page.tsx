@@ -46,7 +46,7 @@ export default async function FinanceBookingsSourcePage({
             {model.pipelineLabel} {model.statusLabel} bookings
           </h1>
           <p className="max-w-3xl text-sm leading-6 text-slate-600">
-            Generated {model.generatedOn} from live TACBookings booking rows.
+            Generated {model.generatedOn} from live booking-system rows.
             This finance-scoped list preserves the report filters without
             opening admin-only booking surfaces.
           </p>

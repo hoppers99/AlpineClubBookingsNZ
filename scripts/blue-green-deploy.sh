@@ -2,8 +2,8 @@
 set -Eeuo pipefail
 
 DEFAULT_PROJECT_DIR="$HOME/AlpineClubBookingsNZ"
-if [[ ! -d "$DEFAULT_PROJECT_DIR" && -d "$HOME/TACBookings" ]]; then
-  DEFAULT_PROJECT_DIR="$HOME/TACBookings"
+if [[ ! -d "$DEFAULT_PROJECT_DIR" && -d "$HOME/AlpineClubBookingsNZ" ]]; then
+  DEFAULT_PROJECT_DIR="$HOME/AlpineClubBookingsNZ"
 fi
 PROJECT_DIR="${PROJECT_DIR:-$DEFAULT_PROJECT_DIR}"
 HEALTH_TIMEOUT_SECONDS="${HEALTH_TIMEOUT_SECONDS:-180}"

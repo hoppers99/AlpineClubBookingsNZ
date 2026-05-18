@@ -20,7 +20,7 @@ const importSchema = z.object({
 
 /**
  * POST /api/admin/xero/import-members
- * Import members from cached Xero contact groups into TACBookings.
+ * Import members from cached Xero contact groups into the local member table.
  * Repair mode can fetch only missing cached contact snapshots from Xero.
  */
 export async function POST(req: NextRequest) {

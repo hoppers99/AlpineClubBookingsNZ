@@ -946,7 +946,7 @@ function issueLink(text: string, url: string, sameOrigin = false): string {
 
 function renderIssueItem(item: XeroReconciliationIssueItemEmail): string {
   const recordLink = item.localUrl
-    ? issueLink("Open TACBookings", item.localUrl, true)
+    ? issueLink("Open booking record", item.localUrl, true)
     : null;
   const xeroLabel = formatXeroObjectLabel(item);
   const xeroLink = item.xeroObjectUrl

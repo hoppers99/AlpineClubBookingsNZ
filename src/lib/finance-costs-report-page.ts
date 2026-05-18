@@ -345,7 +345,7 @@ function buildCostsSourceNotes() {
     {
       label: "Cost source",
       description:
-        "Costs on this page come from finance profit and loss snapshots synced from Xero. They do not come from TACBookings bookings or payments.",
+        "Costs on this page come from finance profit and loss snapshots synced from Xero. They do not come from local bookings or payments.",
     },
     {
       label: "When figures update",

@@ -1,4 +1,4 @@
-// TACBookings - club booking system
+// AlpineClubBookingsNZ - club booking system
 // Single source of truth for all database models
 
 generator client {

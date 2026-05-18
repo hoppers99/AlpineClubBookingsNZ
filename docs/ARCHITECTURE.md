@@ -41,6 +41,8 @@ prisma/
 src/
   app/                          Next.js App Router pages and API routes
   components/                   shared UI and feature components
+  config/                       club identity, feature flags, and runtime config
+  data/                         static public-page content
   lib/                          business logic, integrations, cron helpers
   types/                        project type augmentation
 docs/                           public architecture and runbooks
@@ -58,6 +60,35 @@ Important route groups:
   payments, reports, lodge, Xero, audit logs, and policies.
 - `src/app/api` contains route handlers for auth, bookings, payments, admin,
   finance, lodge, webhooks, cron, and health checks.
+
+## Module Boundaries
+
+This application is intentionally still a single Next.js monolith. The
+important boundary is not process separation; it is keeping route handlers thin,
+business rules testable, and integration code behind narrow helpers.
+
+Use these ownership boundaries when adding new code:
+
+| Area | Primary paths | Rule of thumb |
+| --- | --- | --- |
+| Club configuration | `config/`, `src/config/` | Club identity, capacities, rates, and feature switches must come from config or environment, not hard-coded deployment values. |
+| Pages and route handlers | `src/app/` | Validate input and session state near the route boundary, then delegate decisions to `src/lib/`. |
+| Shared UI | `src/components/` | Reusable view pieces live here; route-specific view state can stay beside the page until it is reused. |
+| Business logic | `src/lib/` | Keep money in integer cents, dates as New Zealand date-only lodge nights, and external calls outside long database transactions where practical. |
+| Database | `prisma/schema.prisma`, `prisma/migrations/` | Schema changes must include deployable migrations and respect the blue/green migration policy. |
+| Operations | `scripts/`, `deploy/`, Compose files | Deployment helpers should be reusable by forks through environment overrides. |
+
+The largest current files are historical consolidation points rather than a
+preferred style. When changing them, extract focused helpers only around the
+code being touched:
+
+- Split Xero behavior by concern: OAuth and token storage, contact sync,
+  booking invoices, operation queues, inbound reconciliation, and admin
+  diagnostics.
+- Split large admin pages into route-level pages plus local components for
+  filters, tables, dialogs, and action panels.
+- Keep tests close to the extracted domain helper so public adopters can find
+  the contract without reading the whole application.
 
 ## Core Data Model
 

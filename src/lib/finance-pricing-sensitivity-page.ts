@@ -414,7 +414,7 @@ function buildPricingSensitivitySourceNotes() {
     {
       label: "Booking source",
       description:
-        "Guest nights and booked revenue come from TACBookings booking activity for the same monthly windows. Booked revenue is based on bookings, not payment cash.",
+        "Guest nights and booked revenue come from booking-system activity for the same monthly windows. Booked revenue is based on bookings, not payment cash.",
     },
     {
       label: "Scenario method",

@@ -329,12 +329,12 @@ function buildCashSourceNotes() {
     {
       label: "Cash source",
       description:
-        "Cash balances on this page come from finance bank balance snapshots synced from Xero. They are separate from TACBookings payment collections.",
+        "Cash balances on this page come from finance bank balance snapshots synced from Xero. They are separate from local payment collections.",
     },
     {
       label: "What the total represents",
       description:
-        "The total reflects bank balances captured in each synced snapshot. It is not a live bank feed and it does not equal booking cash collected in TACBookings.",
+        "The total reflects bank balances captured in each synced snapshot. It is not a live bank feed and it does not equal locally collected booking cash.",
     },
     {
       label: "When figures update",

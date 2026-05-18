@@ -2,8 +2,8 @@
 set -Eeuo pipefail
 
 DEFAULT_SOURCE_REPO="$HOME/AlpineClubBookingsNZ"
-if [[ ! -d "$DEFAULT_SOURCE_REPO" && -d "$HOME/TACBookings" ]]; then
-  DEFAULT_SOURCE_REPO="$HOME/TACBookings"
+if [[ ! -d "$DEFAULT_SOURCE_REPO" && -d "$HOME/AlpineClubBookingsNZ" ]]; then
+  DEFAULT_SOURCE_REPO="$HOME/AlpineClubBookingsNZ"
 fi
 SOURCE_REPO="${SOURCE_REPO:-$DEFAULT_SOURCE_REPO}"
 DEPLOY_REF="${DEPLOY_REF:-origin/main}"

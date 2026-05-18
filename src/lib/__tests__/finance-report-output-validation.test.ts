@@ -37,8 +37,10 @@ function occupiedBedsLabel(occupiedBeds: number): string {
 function occupancyLabel(occupiedBedNights: number, dayCount = 1): string {
   const capacityBedNights = LODGE_CAPACITY * dayCount;
   const rate =
-    capacityBedNights > 0 ? (occupiedBedNights / capacityBedNights) * 100 : 0;
-  return `${rate.toFixed(1)}%`;
+    capacityBedNights > 0
+      ? Number((occupiedBedNights / capacityBedNights).toFixed(4))
+      : 0;
+  return `${(rate * 100).toFixed(1)}%`;
 }
 
 function financeViewer() {
@@ -253,7 +255,7 @@ describe("finance report output validation", () => {
     vi.useRealTimers();
   });
 
-  it("keeps the representative bookings report output aligned with TACBookings booking metrics", async () => {
+  it("keeps the representative bookings report output aligned with booking metrics", async () => {
     mockPrisma.booking.findMany.mockResolvedValue(representativeBookings());
 
     const model = await buildFinanceBookingsReportPageModel({

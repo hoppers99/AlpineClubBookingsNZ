@@ -196,6 +196,9 @@ forks or public CI. Configure your own service accounts and secrets.
 
 ## Documentation
 
+- `docs/README.md` - documentation index and recommended reading paths
+- `docs/IMPLEMENTATION_GUIDE.md` - adopter path from clone to local
+  validation and first deployment
 - `docs/ARCHITECTURE.md` - system structure, data model, business logic,
   integrations, cron, and deployment shape
 - `CONFIGURATION.md` - environment variables, feature flags, branding assets,

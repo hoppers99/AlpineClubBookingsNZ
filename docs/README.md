@@ -1,0 +1,38 @@
+# Documentation
+
+Start here when you are evaluating, adapting, or operating
+AlpineClubBookingsNZ.
+
+## New Adopters
+
+1. Read `../README.md` for the product scope, stack, and quick setup.
+2. Follow `IMPLEMENTATION_GUIDE.md` to configure a fork for your own club.
+3. Use `../CONFIGURATION.md` as the environment and `config/club.json`
+   reference.
+4. Read `DEPLOYMENT.md` before putting a shared or production environment
+   online.
+
+## Developers
+
+- `ARCHITECTURE.md` explains the runtime shape, module boundaries, data model,
+  integrations, cron jobs, and deployment approach.
+- `ONGOING-DEVELOPMENT-WORKFLOW.md` explains how generic public changes and
+  private deployment-fork changes should flow.
+- `MAINTENANCE.md` records the public validation and release checklist.
+- `STAGING_ACCESSIBILITY.md` covers non-production browser and Lighthouse
+  checks.
+
+## Operators
+
+- `DEPLOYMENT.md` is the bootstrap and blue/green deployment reference.
+- `BLUE_GREEN_MIGRATION_POLICY.md` defines how migrations must be structured
+  for safe cutover.
+- `AUDIT_RETENTION_ARCHIVE_RUNBOOK.md` covers audit-log retention and optional
+  archival.
+- `HASHED_TOKEN_MIGRATION.md` documents the historical token hashing migration.
+
+## Finance Dashboard
+
+The `finance-dashboard/` directory contains the finance reporting contracts,
+architecture decisions, data-contract notes, and test plan. Start with
+`finance-dashboard/README.md`.

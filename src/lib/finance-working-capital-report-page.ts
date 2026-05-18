@@ -362,7 +362,7 @@ function buildWorkingCapitalSourceNotes() {
     {
       label: "Working capital source",
       description:
-        "Working capital on this page is calculated from finance balance sheet snapshots synced from Xero. It is separate from TACBookings booking and payment data.",
+        "Working capital on this page is calculated from finance balance sheet snapshots synced from Xero. It is separate from local booking and payment data.",
     },
     {
       label: "How working capital is calculated",
@@ -372,7 +372,7 @@ function buildWorkingCapitalSourceNotes() {
     {
       label: "What is not included",
       description:
-        "This report is separate from booking cash collected in TACBookings and from the cash report's bank balances. Opening the page does not call Xero live.",
+        "This report is separate from locally collected booking cash and from the cash report's bank balances. Opening the page does not call Xero live.",
     },
   ];
 }

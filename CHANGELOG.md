@@ -4,7 +4,11 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
-No changes yet.
+- Added adopter-focused implementation and documentation index guides.
+- Made public GHCR image publishing easier to reuse from forks.
+- Removed completed repository-split planning artifacts from the public tree.
+- Replaced remaining public-facing legacy TACBookings wording with generic
+  booking-system language.
 
 ## 0.1.0 - 2026-05-17
 

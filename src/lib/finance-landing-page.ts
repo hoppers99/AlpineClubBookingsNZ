@@ -183,7 +183,7 @@ export async function buildFinanceLandingPageModel(input: {
       {
         label: "Booking cards",
         description:
-          "These figures come from booking, guest, and payment records in TACBookings.",
+          "These figures come from local booking, guest, and payment records.",
       },
       {
         label: "Sync health",

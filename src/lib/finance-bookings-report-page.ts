@@ -332,12 +332,12 @@ function buildSourceNotes() {
     {
       label: "Booked revenue",
       description:
-        "Booked revenue on this page comes from live TACBookings booking totals allocated across stay nights. It is separate from Xero finance snapshots.",
+        "Booked revenue on this page comes from live local booking totals allocated across stay nights. It is separate from Xero finance snapshots.",
     },
     {
       label: "Net collected cash",
       description:
-        "Net collected cash comes from TACBookings payment rows and stays separate from booked revenue so cash and revenue are not mixed together.",
+        "Net collected cash comes from local payment rows and stays separate from booked revenue so cash and revenue are not mixed together.",
     },
     {
       label: "What is not included",
