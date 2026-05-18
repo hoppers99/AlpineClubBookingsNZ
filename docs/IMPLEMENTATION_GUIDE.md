@@ -13,6 +13,7 @@ cp .env.example .env
 cp config/club.example.json config/club.json
 npm ci
 npx prisma generate
+npm run setup:check
 ```
 
 Use Node.js 24 LTS and npm 11 or newer.
@@ -28,6 +29,16 @@ Edit `config/club.json` first. This file controls:
 
 Keep all money values in cents. Keep booking dates as New Zealand date-only
 lodge nights unless you intentionally rework the booking model.
+
+For a guided config pass, run:
+
+```bash
+npm run setup:wizard
+```
+
+The wizard writes `config/club.json` only. Keep provider keys, OAuth secrets,
+SMTP credentials, and deployment secrets in environment variables or your
+deployment secret store.
 
 Replace the deployment branding files in `public/branding/`:
 
@@ -95,6 +106,10 @@ npm run dev
 
 Do not start a development server in a shared, staging, or production checkout
 unless you own that environment and intend to expose it.
+
+After signing in with the seeded administrator, open `/admin/setup` to finish
+the readiness checklist, run explicit provider tests, connect Xero, and review
+booking, rate, and mapping settings.
 
 ## 5. Configure Providers In Test Mode
 

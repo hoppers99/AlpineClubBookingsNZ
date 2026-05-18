@@ -1161,6 +1161,20 @@ model AuditLog {
 }
 
 // ---------------------------------------------------------------------------
+// Setup Progress (tracks first-install readiness acknowledgements)
+// ---------------------------------------------------------------------------
+
+model SetupProgress {
+  id                  String   @id @default("default")
+  completedStepIds    String[] @default([])
+  skippedStepIds      String[] @default([])
+  completedAt         DateTime?
+  completedByMemberId String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
 // Booking Modifications (history of changes to bookings)
 // ---------------------------------------------------------------------------
 

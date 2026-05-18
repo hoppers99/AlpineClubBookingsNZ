@@ -63,6 +63,18 @@ fork for another organisation. See `NOTICE.md`.
 6. Use test/demo credentials for Stripe, Xero, SES, and Sentry until you are
    ready for a controlled deployment of your own environment.
 
+You can use the setup helpers for a guided path:
+
+```bash
+npm run setup:check
+npm run setup:wizard
+```
+
+The CLI only writes `config/club.json`. API keys, OAuth secrets, SMTP secrets,
+and deployment secrets stay in environment variables. After migrations and seed
+data are in place, log in as an admin and finish the in-app checklist at
+`/admin/setup`.
+
 See `CONFIGURATION.md` for the full environment and `config/club.json` schema
 reference.
 
@@ -75,6 +87,7 @@ cp .env.example .env
 cp config/club.example.json config/club.json
 npm ci
 npx prisma generate
+npm run setup:check
 ```
 
 Edit `.env` before running the app. For a local database-backed setup, set at

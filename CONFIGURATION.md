@@ -17,6 +17,15 @@ example and edit it:
 cp config/club.example.json config/club.json
 ```
 
+You can also run:
+
+```bash
+npm run setup:wizard
+```
+
+The wizard writes `config/club.json` only. It does not write `.env` files and
+does not store API keys, OAuth secrets, SMTP secrets, or bearer tokens.
+
 `config/club.json` is validated by `src/config/schema.ts`.
 
 | Field | Required | Description |
@@ -79,6 +88,30 @@ test/demo mode or disabled:
 
 `prisma/seed.ts` fails before seeding if either `SEED_ADMIN_*` value is unset.
 The seeded admin is forced through `/change-password` on first login.
+
+## Setup Readiness
+
+Run this before bootstrapping a new install:
+
+```bash
+npm run setup:check
+```
+
+The check validates `config/club.json`, environment variable presence/format,
+feature flag values, and first-install readiness. Database-backed checks are
+reported inside the admin setup wizard after migrations and seed data run.
+
+After signing in as an administrator, open `/admin/setup` to review:
+
+- club config and feature flags
+- first admin and seeded database settings
+- booking policies, age tiers, seasons, and rates
+- Stripe, SES/email, Sentry, operational Xero, and finance Xero readiness
+- Xero account and item-code mappings
+
+Provider tests on `/admin/setup` run only when an admin clicks the relevant test
+button. They should use test/demo provider credentials until the environment is
+ready for production.
 
 ## App Defaults
 
