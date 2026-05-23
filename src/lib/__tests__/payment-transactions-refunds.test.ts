@@ -13,6 +13,7 @@ vi.mock("@/lib/stripe", () => ({
 }));
 
 import {
+  markPaymentIntentTransactionFailed,
   refundPaymentTransactions,
   syncRefundsFromStripeCharge,
 } from "@/lib/payment-transactions";
@@ -232,5 +233,31 @@ describe("payment refund ledger", () => {
         }),
       })
     );
+  });
+
+  it("preserves zero-dollar succeeded payments when superseded intents fail later", async () => {
+    const { store, payment, transaction } = createRefundStore();
+    payment.amountCents = 0;
+    payment.status = "SUCCEEDED";
+    payment.stripePaymentIntentId = null;
+    payment.stripePaymentMethodId = null;
+    transaction.amountCents = 6000;
+    transaction.status = "PROCESSING";
+    transaction.reason = "zero_dollar_batch_modification_superseded";
+
+    await markPaymentIntentTransactionFailed({
+      paymentIntentId: "pi_1",
+      store: store as any,
+    });
+
+    expect(store.payment.update).toHaveBeenCalledWith({
+      where: { id: payment.id },
+      data: expect.objectContaining({
+        amountCents: 0,
+        status: "SUCCEEDED",
+        stripePaymentIntentId: null,
+        stripePaymentMethodId: null,
+      }),
+    });
   });
 });

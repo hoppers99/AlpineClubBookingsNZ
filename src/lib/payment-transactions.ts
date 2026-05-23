@@ -283,17 +283,25 @@ export async function reconcilePaymentAggregates({
   const refundedAmountCents = payment.transactions.reduce((sum, transaction) => {
     return sum + transaction.refundedAmountCents;
   }, 0);
+  const preserveZeroDollarSucceededPayment =
+    grossCapturedAmountCents === 0 &&
+    payment.amountCents === 0 &&
+    payment.status === PaymentStatus.SUCCEEDED;
   const aggregateAmountCents =
-    grossCapturedAmountCents > 0
+    preserveZeroDollarSucceededPayment
+      ? 0
+      : grossCapturedAmountCents > 0
       ? grossCapturedAmountCents
       : latestPrimary?.amountCents ?? payment.amountCents;
 
-  const status = deriveAggregatePaymentStatus(
-    payment.status,
-    grossCapturedAmountCents,
-    refundedAmountCents,
-    latestPrimary?.status ?? null
-  );
+  const status = preserveZeroDollarSucceededPayment
+    ? PaymentStatus.SUCCEEDED
+    : deriveAggregatePaymentStatus(
+        payment.status,
+        grossCapturedAmountCents,
+        refundedAmountCents,
+        latestPrimary?.status ?? null
+      );
 
   await store.payment.update({
     where: { id: payment.id },
@@ -302,9 +310,13 @@ export async function reconcilePaymentAggregates({
       refundedAmountCents,
       status,
       stripePaymentIntentId:
-        latestPrimary?.stripePaymentIntentId ?? payment.stripePaymentIntentId,
+        preserveZeroDollarSucceededPayment
+          ? payment.stripePaymentIntentId
+          : latestPrimary?.stripePaymentIntentId ?? payment.stripePaymentIntentId,
       stripePaymentMethodId:
-        latestPrimary?.paymentMethodId ?? payment.stripePaymentMethodId,
+        preserveZeroDollarSucceededPayment
+          ? payment.stripePaymentMethodId
+          : latestPrimary?.paymentMethodId ?? payment.stripePaymentMethodId,
       additionalPaymentIntentId:
         latestAdditional?.stripePaymentIntentId ?? null,
       additionalAmountCents: latestAdditional?.amountCents ?? 0,

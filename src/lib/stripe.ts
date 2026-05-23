@@ -206,6 +206,31 @@ export async function getPaymentIntent(
   return stripe.paymentIntents.retrieve(paymentIntentId);
 }
 
+const CANCELLABLE_PAYMENT_INTENT_STATUSES = new Set<Stripe.PaymentIntent.Status>([
+  "requires_payment_method",
+  "requires_confirmation",
+  "requires_action",
+  "requires_capture",
+  "processing",
+]);
+
+export async function cancelPaymentIntentIfCancellableWithResult(
+  paymentIntentId: string
+): Promise<{ paymentIntent: Stripe.PaymentIntent; canceled: boolean }> {
+  const paymentIntent = await getPaymentIntent(paymentIntentId);
+
+  if (!CANCELLABLE_PAYMENT_INTENT_STATUSES.has(paymentIntent.status)) {
+    return { paymentIntent, canceled: false };
+  }
+
+  return {
+    paymentIntent: await stripe.paymentIntents.cancel(paymentIntentId, {
+      cancellation_reason: "requested_by_customer",
+    }),
+    canceled: true,
+  };
+}
+
 /**
  * Best-effort cancellation of an in-flight PaymentIntent when the booking is
  * no longer payable (for example, after the booking is cancelled).
@@ -213,22 +238,8 @@ export async function getPaymentIntent(
 export async function cancelPaymentIntentIfCancellable(
   paymentIntentId: string
 ): Promise<Stripe.PaymentIntent | null> {
-  const paymentIntent = await getPaymentIntent(paymentIntentId);
-  const cancellableStatuses = new Set([
-    "requires_payment_method",
-    "requires_confirmation",
-    "requires_action",
-    "requires_capture",
-    "processing",
-  ]);
-
-  if (!cancellableStatuses.has(paymentIntent.status)) {
-    return null;
-  }
-
-  return stripe.paymentIntents.cancel(paymentIntentId, {
-    cancellation_reason: "requested_by_customer",
-  });
+  const result = await cancelPaymentIntentIfCancellableWithResult(paymentIntentId);
+  return result.canceled ? result.paymentIntent : null;
 }
 
 /**

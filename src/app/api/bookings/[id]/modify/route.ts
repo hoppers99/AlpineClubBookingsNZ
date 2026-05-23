@@ -20,7 +20,11 @@ import {
   validatePromoCodeRules,
   redeemPromoCode,
 } from "@/lib/promo";
-import { createPaymentIntent, findOrCreateCustomer } from "@/lib/stripe";
+import {
+  cancelPaymentIntentIfCancellableWithResult,
+  createPaymentIntent,
+  findOrCreateCustomer,
+} from "@/lib/stripe";
 import { logAudit } from "@/lib/audit";
 import { sendBookingModifiedEmail } from "@/lib/email";
 import { cleanupChoreAssignmentsForDateChange } from "@/lib/chore-cleanup";
@@ -82,6 +86,57 @@ class ApiError extends Error {
     public status: number
   ) {
     super(message);
+  }
+}
+
+type SupersededPrimaryPaymentIntent = {
+  paymentTransactionId: string;
+  paymentIntentId: string;
+};
+
+async function cancelSupersededPrimaryPaymentIntents({
+  bookingId,
+  paymentIntents,
+}: {
+  bookingId: string;
+  paymentIntents: SupersededPrimaryPaymentIntent[];
+}) {
+  for (const paymentIntent of paymentIntents) {
+    try {
+      const result = await cancelPaymentIntentIfCancellableWithResult(
+        paymentIntent.paymentIntentId
+      );
+      const shouldMarkFailed =
+        result.canceled || result.paymentIntent.status === "canceled";
+
+      if (!shouldMarkFailed) {
+        logger.warn(
+          {
+            bookingId,
+            paymentIntentId: paymentIntent.paymentIntentId,
+            status: result.paymentIntent.status,
+          },
+          "Superseded zero-dollar PaymentIntent was already terminal"
+        );
+        continue;
+      }
+
+      await prisma.paymentTransaction.updateMany({
+        where: {
+          id: paymentIntent.paymentTransactionId,
+          status: { in: [PaymentStatus.PENDING, PaymentStatus.PROCESSING] },
+        },
+        data: {
+          status: PaymentStatus.FAILED,
+          reason: "zero_dollar_batch_modification_superseded",
+        },
+      });
+    } catch (err) {
+      logger.error(
+        { err, bookingId, paymentIntentId: paymentIntent.paymentIntentId },
+        "Failed to cancel superseded Stripe PaymentIntent after zero-dollar batch modification"
+      );
+    }
   }
 }
 
@@ -552,6 +607,7 @@ export async function PUT(
       let newNonMemberHoldUntil = booking.nonMemberHoldUntil;
       let newStatus = booking.status;
       let zeroDollarAutoPaid = false;
+      let supersededPrimaryPaymentIntents: SupersededPrimaryPaymentIntent[] = [];
 
       if (!skipBookingLifecycleRules && hasNonMembers) {
         const holdDays = await getNonMemberHoldDays(newCheckIn);
@@ -590,20 +646,31 @@ export async function PUT(
           update: {
             amountCents: 0,
             status: PaymentStatus.SUCCEEDED,
+            stripePaymentIntentId: null,
+            stripePaymentMethodId: null,
+            additionalPaymentIntentId: null,
+            additionalAmountCents: 0,
+            additionalPaymentStatus: null,
           },
         });
-        await tx.paymentTransaction.updateMany({
+        const pendingPrimaryTransactions = await tx.paymentTransaction.findMany({
           where: {
             paymentId: zeroDollarPayment.id,
             kind: PaymentTransactionKind.PRIMARY,
             status: { in: [PaymentStatus.PENDING, PaymentStatus.PROCESSING] },
+            amountCents: { gt: 0 },
           },
-          data: {
-            amountCents: 0,
-            status: PaymentStatus.SUCCEEDED,
-            reason: "zero_dollar_batch_modification",
+          select: {
+            id: true,
+            stripePaymentIntentId: true,
           },
         });
+        supersededPrimaryPaymentIntents = pendingPrimaryTransactions.map(
+          (transaction) => ({
+            paymentTransactionId: transaction.id,
+            paymentIntentId: transaction.stripePaymentIntentId,
+          })
+        );
       }
 
       // --- Update booking ---
@@ -678,6 +745,7 @@ export async function PUT(
         hasSucceededPayment,
         hasIssuedXeroInvoice,
         zeroDollarAutoPaid,
+        supersededPrimaryPaymentIntents,
         xeroRefundAmountCents,
         xeroAdditionalAmountCents,
         paymentId: booking.payment?.id ?? null,
@@ -688,6 +756,13 @@ export async function PUT(
         bookingModificationId: bookingModification.id,
       };
     });
+
+    if (result.supersededPrimaryPaymentIntents.length > 0) {
+      await cancelSupersededPrimaryPaymentIntents({
+        bookingId,
+        paymentIntents: result.supersededPrimaryPaymentIntents,
+      });
+    }
 
     let stripeRefundId: string | undefined;
     if (result.pendingRefundAmountCents > 0 && result.paymentId) {

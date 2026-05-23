@@ -6,6 +6,7 @@ const mockTransaction = vi.fn();
 const mockPaymentUpdate = vi.fn();
 const mockMemberFindUnique = vi.fn();
 const mockCreatePaymentIntent = vi.fn();
+const mockCancelPaymentIntentIfCancellableWithResult = vi.fn();
 const mockFindOrCreateCustomer = vi.fn();
 const mockCheckCapacity = vi.fn();
 const mockCalculateBookingPrice = vi.fn();
@@ -13,6 +14,7 @@ const mockCalculatePromoDiscountForGuestRates = vi.fn();
 const mockAuth = vi.fn();
 const mockRefundPaymentTransactions = vi.fn();
 const mockUpsertPaymentIntentTransaction = vi.fn();
+const mockPaymentTransactionUpdateMany = vi.fn();
 const mockAssertLinkedBookingMembersCanBeBooked = vi.fn().mockResolvedValue(undefined);
 const mockGetBookingGuestValidationErrorResponse = vi.fn((error: { message: string }) => ({
   error: error.message,
@@ -41,6 +43,9 @@ vi.mock("@/lib/prisma", () => ({
     },
     payment: {
       update: mockPaymentUpdate,
+    },
+    paymentTransaction: {
+      updateMany: mockPaymentTransactionUpdateMany,
     },
     member: {
       findUnique: mockMemberFindUnique,
@@ -78,6 +83,8 @@ vi.mock("@/lib/promo", () => ({
 }));
 
 vi.mock("@/lib/stripe", () => ({
+  cancelPaymentIntentIfCancellableWithResult:
+    mockCancelPaymentIntentIfCancellableWithResult,
   processRefund: vi.fn(),
   createPaymentIntent: mockCreatePaymentIntent,
   findOrCreateCustomer: mockFindOrCreateCustomer,
@@ -260,6 +267,7 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
       }),
     },
     paymentTransaction: {
+      findMany: vi.fn().mockResolvedValue([]),
       updateMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
     season: {
@@ -307,6 +315,11 @@ describe("PUT /api/bookings/[id]/modify", () => {
       id: "pi_batch",
       client_secret: "pi_batch_secret",
     });
+    mockCancelPaymentIntentIfCancellableWithResult.mockResolvedValue({
+      paymentIntent: { id: "pi_pending", status: "canceled" },
+      canceled: true,
+    });
+    mockPaymentTransactionUpdateMany.mockResolvedValue({ count: 1 });
     mockRefundPaymentTransactions.mockResolvedValue({
       refunds: [],
       totalRefundedAmountCents: 0,
@@ -502,6 +515,12 @@ describe("PUT /api/bookings/[id]/modify", () => {
       },
     });
     const tx = makeTx(booking);
+    tx.paymentTransaction.findMany.mockResolvedValue([
+      {
+        id: "ptx_pending",
+        stripePaymentIntentId: "pi_pending",
+      },
+    ]);
 
     mockTransaction.mockImplementation((fn: (innerTx: typeof tx) => unknown) =>
       fn(tx)
@@ -564,18 +583,36 @@ describe("PUT /api/bookings/[id]/modify", () => {
       update: {
         amountCents: 0,
         status: "SUCCEEDED",
+        stripePaymentIntentId: null,
+        stripePaymentMethodId: null,
+        additionalPaymentIntentId: null,
+        additionalAmountCents: 0,
+        additionalPaymentStatus: null,
       },
     });
-    expect(tx.paymentTransaction.updateMany).toHaveBeenCalledWith({
+    expect(tx.paymentTransaction.findMany).toHaveBeenCalledWith({
       where: {
         paymentId: "pay_1",
         kind: "PRIMARY",
         status: { in: ["PENDING", "PROCESSING"] },
+        amountCents: { gt: 0 },
+      },
+      select: {
+        id: true,
+        stripePaymentIntentId: true,
+      },
+    });
+    expect(mockCancelPaymentIntentIfCancellableWithResult).toHaveBeenCalledWith(
+      "pi_pending",
+    );
+    expect(mockPaymentTransactionUpdateMany).toHaveBeenCalledWith({
+      where: {
+        id: "ptx_pending",
+        status: { in: ["PENDING", "PROCESSING"] },
       },
       data: {
-        amountCents: 0,
-        status: "SUCCEEDED",
-        reason: "zero_dollar_batch_modification",
+        status: "FAILED",
+        reason: "zero_dollar_batch_modification_superseded",
       },
     });
     expect(tx.booking.update).toHaveBeenCalledWith(
