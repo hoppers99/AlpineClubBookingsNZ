@@ -132,6 +132,10 @@ export async function POST(request: Request) {
           subject,
           html,
           templateName: "bulk-communication",
+          templateData: {
+            adminEnteredSubject: subject,
+            adminEnteredBody: messageBody,
+          },
         });
       } catch (err) {
         logger.error(

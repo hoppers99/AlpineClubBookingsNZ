@@ -56,6 +56,11 @@ const { mockPrisma, mockTransporter } = vi.hoisted(() => {
         marketingEmails: false,
       }),
     },
+    notificationDeliveryPolicy: {
+      findUnique: vi.fn().mockResolvedValue(null),
+      findMany: vi.fn().mockResolvedValue([]),
+      upsert: vi.fn().mockResolvedValue({}),
+    },
   };
   return { mockPrisma, mockTransporter };
 });
@@ -71,6 +76,10 @@ vi.mock("nodemailer", () => ({
 vi.mock("@/lib/logger", () => ({
   default: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
+
+async function flushAsyncEmailSends() {
+  await new Promise((resolve) => setImmediate(resolve));
+}
 
 // ============================================================================
 // N-08: shouldSendEmail helper
@@ -159,6 +168,7 @@ describe("N-03: checkCapacityWarnings", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
+    mockPrisma.notificationDeliveryPolicy.findUnique.mockResolvedValue(null);
     mockPrisma.member.findMany.mockResolvedValue([{ email: "support@example.org" }]);
     mockPrisma.emailLog.create.mockResolvedValue({ id: "log-1" });
     mockPrisma.emailLog.update.mockResolvedValue({});
@@ -185,10 +195,11 @@ describe("N-03: checkCapacityWarnings", () => {
 
     const { checkCapacityWarnings } = await import("../cron-capacity-warnings");
     const result = await checkCapacityWarnings();
+    await flushAsyncEmailSends();
 
     expect(result.alertedDays).toBeGreaterThan(0);
     expect(mockPrisma.emailLog.create).toHaveBeenCalled();
-  });
+  }, 15000);
 
   it("does not alert when all days have > 5 beds remaining", async () => {
     // No bookings = 29 beds available
@@ -223,6 +234,7 @@ describe("N-05: notifyXeroSyncError", () => {
       operation: "createInvoice",
       errorMessage: "Rate limit exceeded",
     });
+    await flushAsyncEmailSends();
 
     expect(mockPrisma.emailLog.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -491,6 +503,7 @@ describe("N-13: sendAdminDigest", () => {
     mockPrisma.member.findMany.mockResolvedValue([{ email: "support@example.org" }]);
     mockPrisma.emailLog.create.mockResolvedValue({ id: "log-1" });
     mockPrisma.emailLog.update.mockResolvedValue({});
+    mockPrisma.notificationDeliveryPolicy.findUnique.mockResolvedValue(null);
   });
 
   it("sends digest with alert counts from past 24h", async () => {
@@ -504,6 +517,7 @@ describe("N-13: sendAdminDigest", () => {
 
     const { sendAdminDigest } = await import("../cron-admin-digest");
     const result = await sendAdminDigest();
+    await flushAsyncEmailSends();
 
     expect(result.totalAlerts).toBe(5);
     expect(result.sent).toBe(true);
@@ -514,14 +528,63 @@ describe("N-13: sendAdminDigest", () => {
     });
   });
 
-  it("sends digest even when no alerts occurred", async () => {
+  it("does not send digest when no alerts occurred by default", async () => {
     mockPrisma.emailLog.findMany.mockResolvedValue([]);
 
     const { sendAdminDigest } = await import("../cron-admin-digest");
     const result = await sendAdminDigest();
+    await flushAsyncEmailSends();
+
+    expect(result.totalAlerts).toBe(0);
+    expect(result.sent).toBe(false);
+    expect(result.skippedReason).toBe("no_content");
+    expect(mockPrisma.emailLog.create).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          templateName: "admin-daily-digest",
+        }),
+      })
+    );
+  });
+
+  it("sends zero-alert digest when policy is always", async () => {
+    mockPrisma.emailLog.findMany.mockResolvedValue([]);
+    mockPrisma.notificationDeliveryPolicy.findUnique.mockResolvedValue({
+      templateName: "admin-daily-digest",
+      mode: "ALWAYS",
+    });
+
+    const { sendAdminDigest } = await import("../cron-admin-digest");
+    const result = await sendAdminDigest();
+    await flushAsyncEmailSends();
 
     expect(result.totalAlerts).toBe(0);
     expect(result.sent).toBe(true);
+  });
+
+  it("does not send digest when policy is disabled", async () => {
+    mockPrisma.emailLog.findMany.mockResolvedValue([
+      { templateName: "admin-new-booking", subject: "New booking: Alice" },
+    ]);
+    mockPrisma.notificationDeliveryPolicy.findUnique.mockResolvedValue({
+      templateName: "admin-daily-digest",
+      mode: "DISABLED",
+    });
+
+    const { sendAdminDigest } = await import("../cron-admin-digest");
+    const result = await sendAdminDigest();
+    await flushAsyncEmailSends();
+
+    expect(result.totalAlerts).toBe(1);
+    expect(result.sent).toBe(false);
+    expect(result.skippedReason).toBe("disabled");
+    expect(mockPrisma.emailLog.create).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          templateName: "admin-daily-digest",
+        }),
+      }),
+    );
   });
 });
 

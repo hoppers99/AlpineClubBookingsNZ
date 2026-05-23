@@ -15,6 +15,8 @@ import logger from "@/lib/logger";
 import { getRemainingRefundableCents } from "@/lib/booking-payment-state";
 import { refundPaymentTransactions } from "@/lib/payment-transactions";
 import { CLUB_BOOKINGS_NAME } from "@/config/club-identity";
+import { formatNZDate } from "@/lib/nzst-date";
+import { formatCents } from "@/lib/utils";
 
 const reviewSchema = z.object({
   status: z.enum(["APPROVED", "REJECTED"]),
@@ -193,6 +195,14 @@ export async function PUT(
           checkOut: booking.checkOut,
         }),
         templateName: "refund-request-resolved",
+        templateData: {
+          firstName: refundRequest.member.firstName,
+          status: "APPROVED",
+          amount: formatCents(approvedAmountCents),
+          adminNotes: adminNotes ?? "",
+          checkIn: formatNZDate(booking.checkIn),
+          checkOut: formatNZDate(booking.checkOut),
+        },
       }).catch((err) =>
         logger.error({ err }, "Failed to send refund appeal resolved email")
       );
@@ -252,6 +262,14 @@ export async function PUT(
           checkOut: booking.checkOut,
         }),
         templateName: "refund-request-resolved",
+        templateData: {
+          firstName: refundRequest.member.firstName,
+          status: "REJECTED",
+          amount: "",
+          adminNotes: adminNotes ?? "",
+          checkIn: formatNZDate(booking.checkIn),
+          checkOut: formatNZDate(booking.checkOut),
+        },
       }).catch((err) =>
         logger.error({ err }, "Failed to send refund appeal resolved email")
       );

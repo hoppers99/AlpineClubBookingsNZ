@@ -119,6 +119,11 @@ export async function retryFailedEmails(): Promise<{ retried: number; succeeded:
               subject: "Email delivery permanently failed",
               html: `<p>Email to ${emailLog.to} (template: ${emailLog.templateName}) has failed after ${newAttempts} attempts and will not be retried.</p>`,
               templateName: RETRY_FAILURE_ALERT_TEMPLATE,
+              templateData: {
+                originalRecipient: emailLog.to,
+                originalTemplateName: emailLog.templateName,
+                attemptCount: newAttempts,
+              },
             }).catch(() => {}); // Don't let alert failure break the cron
           }
         } catch {

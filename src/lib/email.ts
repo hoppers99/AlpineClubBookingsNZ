@@ -58,10 +58,20 @@ import {
   type AdminNotificationPreferenceKey,
   resolveAdminNotificationPreferences,
 } from "./admin-notification-preferences";
-import { EMAIL_FROM, formatEmailFromAddress } from "./email-sender";
+import { EMAIL_FROM } from "./email-sender";
 import { htmlToPlainText } from "./email-text";
+import { formatNZDate, formatNZDateTime } from "./nzst-date";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
+import { formatCents as formatMoneyCents } from "@/lib/utils";
+import {
+  formatEmailFromAddressWithSettings,
+} from "@/lib/email-message-settings";
+import {
+  prepareEmailMessage,
+  type EmailTemplateData,
+} from "@/lib/email-message-renderer";
+import { shouldSendAdminSystemEmail } from "@/lib/notification-delivery-policies";
 import {
   EMAIL_CHANGE_TTL_MS,
   EMAIL_VERIFICATION_TTL_MS,
@@ -136,6 +146,7 @@ export async function sendEmail({
   html,
   text,
   templateName = "unknown",
+  templateData,
   attachments,
 }: {
   to: string;
@@ -143,13 +154,20 @@ export async function sendEmail({
   html: string;
   text?: string;
   templateName?: string;
+  templateData?: EmailTemplateData;
   attachments?: EmailAttachment[];
 }) {
-  const from = formatEmailFromAddress(EMAIL_FROM);
+  const prepared = await prepareEmailMessage({
+    templateName,
+    subject,
+    html,
+    templateData,
+  });
+  const from = formatEmailFromAddressWithSettings(prepared.settings, EMAIL_FROM);
   const persistHtmlBody = shouldPersistEmailHtml(templateName);
-  const plainTextBody = text || htmlToPlainText(html);
+  const plainTextBody = text || htmlToPlainText(prepared.html);
   const normalizedRecipient = normalizeEmailAddress(to);
-  const sanitizedSubject = sanitizeEmailSubject(subject);
+  const sanitizedSubject = sanitizeEmailSubject(prepared.subject);
 
   assertNoCrlf(from, "from");
   assertNoCrlf(to, "to");
@@ -163,7 +181,7 @@ export async function sendEmail({
         to,
         subject: sanitizedSubject,
         templateName,
-        htmlBody: persistHtmlBody ? html : null,
+        htmlBody: persistHtmlBody ? prepared.html : null,
         status: "QUEUED",
         lastAttemptAt: new Date(),
       },
@@ -214,7 +232,7 @@ export async function sendEmail({
   if (process.env.NODE_ENV === "development") {
     logger.info({ to, subject: sanitizedSubject, templateName }, "Email sent (dev mode)");
     if (persistHtmlBody) {
-      logger.debug({ html }, "Email HTML content");
+      logger.debug({ html: prepared.html }, "Email HTML content");
     } else {
       logger.debug({ templateName }, "Email HTML content redacted for sensitive template");
     }
@@ -237,7 +255,7 @@ export async function sendEmail({
       from,
       to,
       subject: sanitizedSubject,
-      html,
+      html: prepared.html,
       text: plainTextBody,
       attachments,
     });
@@ -314,26 +332,46 @@ async function getAdminAlertEmails(
     .map((admin) => admin.email);
 }
 
-/** Send an email to all active admins (fire-and-forget) */
+/** Send an email to all active admins who opted into the alert category. */
 async function sendToAdmins({
   subject,
   html,
   templateName,
   preferenceKey,
+  templateData,
   attachments,
 }: {
   subject: string;
   html: string;
   templateName: string;
   preferenceKey: AdminNotificationPreferenceKey;
+  templateData?: EmailTemplateData;
   attachments?: EmailAttachment[];
 }) {
-  const emails = await getAdminAlertEmails(preferenceKey);
-  for (const email of emails) {
-    sendEmail({ to: email, subject, html, templateName, attachments }).catch((err) =>
-      logger.error({ err, to: email, templateName }, "Failed to send admin alert")
+  const delivery = await shouldSendAdminSystemEmail({ templateName });
+  if (!delivery.send) {
+    logger.info(
+      { templateName, deliveryMode: delivery.mode, reason: delivery.reason },
+      "Skipped admin email by delivery policy"
     );
+    return;
   }
+
+  const emails = await getAdminAlertEmails(preferenceKey);
+  await Promise.all(
+    emails.map((email) =>
+      sendEmail({
+        to: email,
+        subject,
+        html,
+        templateName,
+        templateData,
+        attachments,
+      }).catch((err) =>
+        logger.error({ err, to: email, templateName }, "Failed to send admin alert")
+      ),
+    ),
+  );
 }
 
 export async function sendPasswordResetEmail(
@@ -348,6 +386,7 @@ export async function sendPasswordResetEmail(
     subject: `Reset your ${CLUB_NAME} password`,
     html: passwordResetTemplate(resetUrl),
     templateName: "password-reset",
+    templateData: { token, resetUrl },
   });
 }
 
@@ -364,6 +403,7 @@ export async function sendAdminPasswordResetEmail(
     subject: `Reset your ${CLUB_NAME} password`,
     html: adminPasswordResetTemplate(resetUrl, expiryLabel),
     templateName: "admin-password-reset",
+    templateData: { token, resetUrl, expiryLabel },
   });
 }
 
@@ -380,6 +420,12 @@ export async function sendMemberSetupInviteEmail(
     subject: `Set up your ${CLUB_NAME} account (${MEMBER_SETUP_INVITE_TTL_DAYS}-day link)`,
     html: memberSetupInviteTemplate(firstName, resetUrl),
     templateName: "member-setup-invite",
+    templateData: {
+      firstName,
+      token,
+      resetUrl,
+      expiryLabel: `${MEMBER_SETUP_INVITE_TTL_DAYS} days`,
+    },
   });
 }
 
@@ -397,6 +443,19 @@ export async function sendBookingConfirmedEmail(
     subject: `Booking Confirmed - ${CLUB_LODGE_NAME}`,
     html: bookingConfirmedTemplate(firstName, checkIn, checkOut, guestCount, totalCents, options),
     templateName: "booking-confirmed",
+    templateData: {
+      firstName,
+      checkIn: formatNZDate(checkIn),
+      checkOut: formatNZDate(checkOut),
+      guestCount,
+      subtotal: options?.discountCents
+        ? formatMoneyCents(totalCents + options.discountCents)
+        : "",
+      promoCode: options?.promoCode ?? "",
+      discount: options?.discountCents ? formatMoneyCents(options.discountCents) : "",
+      totalPaid: formatMoneyCents(totalCents),
+      total: formatMoneyCents(totalCents),
+    },
   });
 }
 
@@ -413,6 +472,13 @@ export async function sendBookingPendingEmail(
     subject: `Booking Pending - ${CLUB_LODGE_NAME}`,
     html: bookingPendingTemplate(firstName, checkIn, checkOut, guestCount, holdUntil),
     templateName: "booking-pending",
+    templateData: {
+      firstName,
+      checkIn: formatNZDate(checkIn),
+      checkOut: formatNZDate(checkOut),
+      guestCount,
+      holdUntil: formatNZDateTime(holdUntil),
+    },
   });
 }
 
@@ -428,6 +494,12 @@ export async function sendBookingBumpedEmail(
     subject: `Booking Update - ${CLUB_LODGE_NAME}`,
     html: bookingBumpedTemplate(firstName, checkIn, checkOut, guestCount),
     templateName: "booking-bumped",
+    templateData: {
+      firstName,
+      checkIn: formatNZDate(checkIn),
+      checkOut: formatNZDate(checkOut),
+      guestCount,
+    },
   });
 }
 
@@ -444,6 +516,18 @@ export async function sendBookingCancelledEmail(
     subject: `Booking Cancelled - ${CLUB_LODGE_NAME}`,
     html: bookingCancelledTemplate(firstName, checkIn, checkOut, refundCents, refundMethod),
     templateName: "booking-cancelled",
+    templateData: {
+      firstName,
+      checkIn: formatNZDate(checkIn),
+      checkOut: formatNZDate(checkOut),
+      refundAmount: formatMoneyCents(refundCents),
+      refundMessage:
+        refundCents > 0 && refundMethod === "credit"
+          ? `A credit of ${formatMoneyCents(refundCents)} has been added to your account for future bookings.`
+          : refundCents > 0
+            ? `A refund of ${formatMoneyCents(refundCents)} has been processed to your original payment method.`
+            : "No refund was applicable based on the cancellation policy.",
+    },
   });
 }
 
@@ -466,6 +550,16 @@ export async function sendChoreRosterEmail(
     subject: `Your chore roster for ${formattedDate} - ${CLUB_LODGE_NAME}`,
     html: choreRosterTemplate(guestName, date, chores, choreLink),
     templateName: "chore-roster",
+    templateData: {
+      guestName,
+      formattedDate,
+      choreName: chores.map((chore) => chore.name).join(", "),
+      choreDescription: chores
+        .map((chore) => chore.description ?? "")
+        .filter(Boolean)
+        .join(", "),
+      choreLink: choreLink ?? "",
+    },
   });
 }
 
@@ -481,6 +575,12 @@ export async function sendHutLeaderAssignmentEmail(params: {
     subject: `Your ${CLUB_NAME} hut leader assignment`,
     html: hutLeaderAssignmentTemplate(params),
     templateName: "hut-leader-assignment",
+    templateData: {
+      firstName: params.firstName,
+      startDate: formatNZDate(params.startDate),
+      endDate: formatNZDate(params.endDate),
+      pin: params.pin,
+    },
   });
 }
 
@@ -490,6 +590,7 @@ export async function sendWelcomeEmail(email: string, firstName: string) {
     subject: `Welcome to ${CLUB_BOOKINGS_NAME}`,
     html: welcomeTemplate(firstName),
     templateName: "welcome",
+    templateData: { firstName },
   });
 }
 
@@ -503,6 +604,12 @@ export async function sendVerificationEmail(email: string, firstName: string, to
     subject: `Verify your email — ${CLUB_BOOKINGS_NAME}`,
     html: emailVerificationTemplate(firstName, verifyUrl, expiresAt),
     templateName: "email-verification",
+    templateData: {
+      firstName,
+      token,
+      verifyUrl,
+      expiresAt: formatNZDateTime(expiresAt),
+    },
   });
 }
 
@@ -528,6 +635,14 @@ export async function sendNominationRequestEmail(params: {
       expiresAt: params.expiresAt,
     }),
     templateName: "nomination-request",
+    templateData: {
+      nominatorName: params.nominatorName,
+      applicantName: params.applicantName,
+      token: params.token,
+      reviewUrl,
+      familyMemberCount: params.familyMemberCount,
+      expiresAt: formatNZDateTime(params.expiresAt),
+    },
   });
 }
 
@@ -549,6 +664,12 @@ export async function sendMembershipApplicationApprovedEmail(params: {
       params.adminNotes
     ),
     templateName: "membership-application-approved",
+    templateData: {
+      firstName: params.firstName,
+      token: params.token,
+      resetUrl,
+      adminNotes: params.adminNotes ?? "",
+    },
   });
 }
 
@@ -565,6 +686,10 @@ export async function sendMembershipApplicationRejectedEmail(params: {
       params.adminNotes
     ),
     templateName: "membership-application-rejected",
+    templateData: {
+      firstName: params.firstName,
+      adminNotes: params.adminNotes ?? "",
+    },
   });
 }
 
@@ -586,6 +711,12 @@ export async function sendAdminMembershipApplicationPendingEmail(data: {
       reviewUrl,
     }),
     templateName: "admin-membership-application-pending",
+    templateData: {
+      applicantName: data.applicantName,
+      applicantEmail: data.applicantEmail,
+      familyMemberCount: data.familyMemberCount,
+      reviewUrl,
+    },
     // Shared request-alert category: membership applications + family-group requests.
     preferenceKey: "adminFamilyGroupRequest",
   });
@@ -601,6 +732,12 @@ export async function sendEmailChangeVerification(newEmail: string, token: strin
     subject: `Confirm your new email — ${CLUB_BOOKINGS_NAME}`,
     html: emailChangeVerificationTemplate(newEmail, verifyUrl, expiresAt),
     templateName: "email-change-verification",
+    templateData: {
+      newEmail,
+      token,
+      verifyUrl,
+      expiresAt: formatNZDateTime(expiresAt),
+    },
   });
 }
 
@@ -727,6 +864,7 @@ export async function sendEmailChangeNotification(oldEmail: string, newEmail: st
     subject: `Email change requested — ${CLUB_BOOKINGS_NAME}`,
     html: emailChangeNotificationTemplate(newEmail),
     templateName: "email-change-notification",
+    templateData: { newEmail },
   });
 }
 
@@ -744,6 +882,19 @@ export async function sendCheckinReminderEmail(
     subject: `Check-in Reminder - ${CLUB_LODGE_NAME}`,
     html: checkinReminderTemplate(firstName, checkIn, checkOut, guests, chores),
     templateName: "checkin-reminder",
+    templateData: {
+      firstName,
+      checkIn: formatNZDate(checkIn),
+      checkOut: formatNZDate(checkOut),
+      guestCount: guests.length,
+      guestFirstName: guests.map((guest) => guest.firstName).join(", "),
+      guestLastName: guests.map((guest) => guest.lastName).join(", "),
+      choreName: chores.map((chore) => chore.name).join(", "),
+      choreDescription: chores
+        .map((chore) => chore.description ?? "")
+        .filter(Boolean)
+        .join(", "),
+    },
   });
 }
 
@@ -763,6 +914,13 @@ export async function sendAdminNewBookingAlert(data: {
       : `New Booking: ${data.memberName} (${data.status})`,
     html: adminNewBookingTemplate(data),
     templateName: "admin-new-booking",
+    templateData: {
+      ...data,
+      checkIn: formatNZDate(data.checkIn),
+      checkOut: formatNZDate(data.checkOut),
+      total: formatMoneyCents(data.totalCents),
+      reviewReason: data.reviewReason ?? "",
+    },
     preferenceKey: "adminNewBooking",
   });
 }
@@ -780,6 +938,12 @@ export async function sendAdminPaymentFailureAlert(data: {
     subject: `Payment Failed — ${CLUB_BOOKINGS_NAME}`,
     html: adminPaymentFailureTemplate(data),
     templateName: "admin-payment-failure",
+    templateData: {
+      ...data,
+      checkIn: formatNZDate(data.checkIn),
+      checkOut: formatNZDate(data.checkOut),
+      amount: formatMoneyCents(data.amountCents),
+    },
     preferenceKey: "adminPaymentFailure",
   });
 }
@@ -797,6 +961,16 @@ export async function sendAdminPendingDeadlineAlert(bookings: Array<{
     subject: `${bookings.length} Pending Booking${bookings.length > 1 ? "s" : ""} Approaching Deadline`,
     html: adminPendingDeadlineTemplate(bookings),
     templateName: "admin-pending-deadline",
+    templateData: {
+      count: bookings.length,
+      s: bookings.length === 1 ? "" : "s",
+      memberName: bookings.map((booking) => booking.memberName).join(", "),
+      checkIn: bookings.map((booking) => formatNZDate(booking.checkIn)).join(", "),
+      checkOut: bookings.map((booking) => formatNZDate(booking.checkOut)).join(", "),
+      guestCount: bookings.map((booking) => booking.guestCount).join(", "),
+      deadline: bookings.map((booking) => formatNZDateTime(booking.deadline)).join(", "),
+      hoursRemaining: bookings.map((booking) => Math.round(booking.hoursRemaining)).join(", "),
+    },
     preferenceKey: "adminPendingDeadline",
   });
 }
@@ -813,6 +987,11 @@ export async function sendAdminBookingBumpedAlert(data: {
     subject: `Booking Bumped: ${data.bumpedMemberName}`,
     html: adminBookingBumpedTemplate(data),
     templateName: "admin-booking-bumped",
+    templateData: {
+      ...data,
+      checkIn: formatNZDate(data.checkIn),
+      checkOut: formatNZDate(data.checkOut),
+    },
     preferenceKey: "adminBookingBumped",
   });
 }
@@ -828,6 +1007,10 @@ export async function sendAdminXeroSyncErrorAlert(data: {
     subject: `Xero Sync Error — ${CLUB_BOOKINGS_NAME}`,
     html: adminXeroSyncErrorTemplate(data),
     templateName: "admin-xero-sync-error",
+    templateData: {
+      ...data,
+      timestamp: data.timestamp.toISOString(),
+    },
     preferenceKey: "adminXeroSyncError",
   });
 }
@@ -850,6 +1033,13 @@ export async function sendAdminXeroRepeatedFailureAlert(data: {
     subject: data.subject,
     html: adminXeroRepeatedFailureTemplate(data),
     templateName: "admin-xero-repeated-failure",
+    templateData: {
+      ...data,
+      localModel: data.localModel ?? "",
+      localId: data.localId ?? "",
+      latestErrorMessage: data.latestErrorMessage ?? "",
+      timestamp: data.timestamp.toISOString(),
+    },
     preferenceKey: "adminXeroSyncError",
   });
 }
@@ -864,6 +1054,14 @@ export async function sendAdminCapacityWarningAlert(days: Array<{
     subject: `Capacity Warning: ${days.length} high-occupancy day${days.length > 1 ? "s" : ""} ahead`,
     html: adminCapacityWarningTemplate(days),
     templateName: "admin-capacity-warning",
+    templateData: {
+      count: days.length,
+      s: days.length === 1 ? "" : "s",
+      date: days.map((day) => formatNZDate(day.date)).join(", "),
+      occupiedBeds: days.map((day) => day.occupiedBeds).join(", "),
+      availableBeds: days.map((day) => day.availableBeds).join(", "),
+      percent: days.map((day) => String(day.occupiedBeds)).join(", "),
+    },
     preferenceKey: "adminCapacityWarning",
   });
 }
@@ -882,6 +1080,11 @@ export async function sendAdminDailyDigestAlert(sections: {
     subject: `Admin Daily Digest - ${sections.totalAlerts} alert${sections.totalAlerts !== 1 ? "s" : ""} in past 24h`,
     html: adminDailyDigestTemplate(sections),
     templateName: "admin-daily-digest",
+    templateData: {
+      ...sections,
+      count: sections.totalAlerts,
+      s: sections.totalAlerts === 1 ? "" : "s",
+    },
     preferenceKey: "adminDailyDigest",
   });
 }
@@ -898,6 +1101,14 @@ export async function sendAdminXeroReconciliationReportAlert(
     subject,
     html: adminXeroReconciliationReportTemplate(report),
     templateName: "admin-xero-reconciliation-report",
+    templateData: {
+      generatedAt: report.generatedAt.toISOString(),
+      lookbackHours: report.lookbackHours,
+      stalePendingMinutes: report.stalePendingMinutes,
+      issueCategoryCount: report.summary.issueCategoryCount,
+      issueTotalCount: report.summary.issueTotalCount,
+      count: report.summary.issueTotalCount,
+    },
     preferenceKey: "adminXeroSyncError",
   });
 }
@@ -952,6 +1163,7 @@ export async function sendAccountDeletionApprovedEmail(
     subject: "Your Account Deletion Request Has Been Processed",
     html: accountDeletionApprovedTemplate(firstName),
     templateName: "account-deletion-approved",
+    templateData: { firstName },
   });
 }
 
@@ -966,6 +1178,7 @@ export async function sendAccountDeletionRejectedEmail(
     subject: "Update on Your Account Deletion Request",
     html: accountDeletionRejectedTemplate(firstName, adminNote),
     templateName: "account-deletion-rejected",
+    templateData: { firstName, adminNote },
   });
 }
 
@@ -984,6 +1197,7 @@ export async function sendFamilyGroupInvitationEmail(
     subject: `${inviterName} invited you to join ${groupName} — ${CLUB_BOOKINGS_NAME}`,
     html: familyGroupInvitationTemplate(inviterName, groupName, profileUrl),
     templateName: "family-group-invitation",
+    templateData: { inviterName, groupName, profileUrl },
   });
 }
 
@@ -997,6 +1211,7 @@ export async function sendFamilyGroupInviteAcceptedEmail(
     subject: `${inviteeName} has joined ${groupName} — ${CLUB_BOOKINGS_NAME}`,
     html: familyGroupInviteAcceptedTemplate(inviteeName, groupName),
     templateName: "family-group-invite-accepted",
+    templateData: { inviteeName, groupName },
   });
 }
 
@@ -1011,6 +1226,7 @@ export async function sendChildRequestSubmittedEmail(
     subject: `Infant/Child/Youth request submitted — ${CLUB_BOOKINGS_NAME}`,
     html: childRequestSubmittedTemplate(parentName, childName, groupName),
     templateName: "child-request-submitted",
+    templateData: { parentName, childName, groupName },
   });
 }
 
@@ -1025,6 +1241,7 @@ export async function sendChildRequestApprovedEmail(
     subject: `${childName} has been added to ${groupName} — ${CLUB_BOOKINGS_NAME}`,
     html: childRequestApprovedTemplate(parentName, childName, groupName),
     templateName: "child-request-approved",
+    templateData: { parentName, childName, groupName },
   });
 }
 
@@ -1039,6 +1256,7 @@ export async function sendChildRequestRejectedEmail(
     subject: `Infant/Child/Youth request update — ${CLUB_BOOKINGS_NAME}`,
     html: childRequestRejectedTemplate(parentName, childName, reason),
     templateName: "child-request-rejected",
+    templateData: { parentName, childName, reason: reason ?? "" },
   });
 }
 
@@ -1053,6 +1271,7 @@ export async function sendAdminFamilyGroupRequestAlert(data: {
     subject: `Family Group Request: ${data.requesterName} (${data.requestType})`,
     html: adminFamilyGroupRequestTemplate(data),
     templateName: "admin-family-group-request",
+    templateData: data,
     preferenceKey: "adminFamilyGroupRequest",
   });
 }
@@ -1068,6 +1287,7 @@ export async function sendJoinRequestConfirmationEmail(
     subject: `Join request submitted — ${CLUB_BOOKINGS_NAME}`,
     html: joinRequestConfirmationTemplate(requesterName, groupName),
     templateName: "join-request-confirmation",
+    templateData: { requesterName, groupName },
   });
 }
 
@@ -1085,6 +1305,7 @@ export async function sendAgeUpInvitationEmail(
     subject: `You're 18! Set up your ${CLUB_NAME} account`,
     html: ageUpInvitationTemplate(firstName, resetUrl),
     templateName: "age-up-invitation",
+    templateData: { firstName, token, resetUrl },
   });
 }
 
@@ -1110,6 +1331,27 @@ export async function sendBookingModifiedEmail(params: {
     subject: `Booking Modified - ${CLUB_LODGE_NAME}`,
     html: bookingModifiedTemplate(params),
     templateName: "booking-modified",
+    templateData: {
+      firstName: params.firstName,
+      modificationTypeLabel: params.modificationType,
+      oldCheckIn: formatNZDate(params.oldCheckIn),
+      oldCheckOut: formatNZDate(params.oldCheckOut),
+      newCheckIn: formatNZDate(params.newCheckIn),
+      newCheckOut: formatNZDate(params.newCheckOut),
+      oldGuestCount: params.oldGuestCount,
+      newGuestCount: params.newGuestCount,
+      oldTotal: formatMoneyCents(params.oldFinalPriceCents),
+      newTotal: formatMoneyCents(params.newFinalPriceCents),
+      changeFee: formatMoneyCents(params.changeFeeCents),
+      refundAmount: formatMoneyCents(params.refundAmountCents),
+      additionalAmount: formatMoneyCents(params.additionalAmountCents),
+      paymentNote:
+        params.refundAmountCents > 0
+          ? `A refund of ${formatMoneyCents(params.refundAmountCents)} has been processed to your original payment method.`
+          : params.additionalAmountCents > 0
+            ? `An additional payment of ${formatMoneyCents(params.additionalAmountCents)} is required.`
+            : "",
+    },
   });
 }
 
@@ -1124,6 +1366,11 @@ export async function sendSetupIntentFailedEmail(params: {
     subject: `Card Setup Failed - ${CLUB_LODGE_NAME}`,
     html: setupIntentFailedTemplate(params),
     templateName: "setup-intent-failed",
+    templateData: {
+      firstName: params.firstName,
+      checkIn: formatNZDate(params.checkIn),
+      checkOut: formatNZDate(params.checkOut),
+    },
   });
 }
 
@@ -1142,6 +1389,13 @@ export async function sendWaitlistConfirmationEmail(
     subject: `Waitlist Confirmation - ${CLUB_LODGE_NAME}`,
     html: waitlistConfirmationTemplate(firstName, checkIn, checkOut, guestCount, position),
     templateName: "waitlist-confirmation",
+    templateData: {
+      firstName,
+      checkIn: formatNZDate(checkIn),
+      checkOut: formatNZDate(checkOut),
+      guestCount,
+      position,
+    },
   });
 }
 
@@ -1159,6 +1413,14 @@ export async function sendWaitlistOfferEmail(
     subject: `Spot Available! - ${CLUB_LODGE_NAME}`,
     html: waitlistOfferTemplate(firstName, checkIn, checkOut, guestCount, expiresAt, bookingId),
     templateName: "waitlist-offer",
+    templateData: {
+      firstName,
+      checkIn: formatNZDate(checkIn),
+      checkOut: formatNZDate(checkOut),
+      guestCount,
+      expiresAt: formatNZDateTime(expiresAt),
+      bookingId,
+    },
   });
 }
 
@@ -1174,6 +1436,12 @@ export async function sendWaitlistOfferExpiredEmail(
     subject: `Waitlist Offer Expired - ${CLUB_LODGE_NAME}`,
     html: waitlistOfferExpiredTemplate(firstName, checkIn, checkOut, position),
     templateName: "waitlist-offer-expired",
+    templateData: {
+      firstName,
+      checkIn: formatNZDate(checkIn),
+      checkOut: formatNZDate(checkOut),
+      position,
+    },
   });
 }
 
@@ -1188,6 +1456,11 @@ export async function sendAdminWaitlistOfferAlert(data: {
     subject: `Waitlist Offer: ${data.memberName}`,
     html: adminWaitlistOfferTemplate(data),
     templateName: "admin-waitlist-offer",
+    templateData: {
+      ...data,
+      checkIn: formatNZDate(data.checkIn),
+      checkOut: formatNZDate(data.checkOut),
+    },
     preferenceKey: "adminWaitlistOffer",
   });
 }
@@ -1206,6 +1479,18 @@ export async function sendAdminRefundRequestAlert(data: {
     subject: `Refund Appeal: ${data.memberName}`,
     html: adminRefundRequestTemplate(data),
     templateName: "admin-refund-request",
+    templateData: {
+      ...data,
+      checkIn: formatNZDate(data.checkIn),
+      checkOut: formatNZDate(data.checkOut),
+      paidAmount: formatMoneyCents(data.paidAmountCents),
+      refundedAmount: formatMoneyCents(data.refundedAmountCents),
+      remainingAmount: formatMoneyCents(data.paidAmountCents - data.refundedAmountCents),
+      requestedAmount:
+        data.requestedAmountCents === null
+          ? ""
+          : formatMoneyCents(data.requestedAmountCents),
+    },
     preferenceKey: "adminRefundRequest",
   });
 }
@@ -1231,6 +1516,10 @@ export async function sendAdminIssueReportAlert(data: {
       hasScreenshot: data.hasScreenshot,
     }),
     templateName: "admin-issue-report",
+    templateData: {
+      ...data,
+      pageTitle: data.pageTitle ?? data.pageUrl,
+    },
     preferenceKey: "adminIssueReport",
   });
 }

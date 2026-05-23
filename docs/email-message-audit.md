@@ -10,6 +10,11 @@ This audit covers mail sent by this repository through its Nodemailer/SES path.
 I did not find a repo path that instructs Xero to email invoices; any Xero-side
 invoice email would be outside this repo's sender inventory.
 
+The `/admin/setup` and `/admin/notifications` interfaces expose email message
+settings so administrators can edit shared email variables and template wording
+without changing TypeScript files. Admin/system notification delivery policies
+are managed from `/admin/notifications`.
+
 ## Runtime Placeholders
 
 The public checkout has no `config/club.json`, so the checked-in fallback values
@@ -1341,7 +1346,9 @@ Triggers and frequency:
 
 - Admin digest cron, scheduled daily at 7:30 AM NZST.
 - Counts distinct sent/queued admin alert events from the last 24 hours by `templateName + subject`.
-- Always sends, even when zero alerts.
+- Default delivery policy is content-only, so the cron run is logged but no
+  email is sent when the count is zero. Admins can change the policy to always
+  send or disabled from `/admin/notifications`.
 
 ### admin-xero-sync-error
 
@@ -1472,7 +1479,9 @@ Triggers and frequency:
 
 - Nightly Xero reconciliation cron, scheduled daily at 2:35 AM NZST when the Xero module is enabled.
 - `POST /api/cron/xero` with task `report` or `all`.
-- Sends whether clean or action-needed.
+- Default delivery policy is content-only, so a clean report is logged but not
+  emailed. Admins can change the policy to always send or disabled from
+  `/admin/notifications`.
 
 ### admin-refund-request
 

@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   operationFindMany: vi.fn(),
   operationCreateMany: vi.fn(),
   emailFindFirst: vi.fn(),
+  notificationDeliveryPolicyFindUnique: vi.fn(),
   sendRepeatedFailureAlert: vi.fn(),
   sendReconciliationReportAlert: vi.fn(),
 }));
@@ -39,6 +40,9 @@ vi.mock("@/lib/prisma", () => ({
     emailLog: {
       findFirst: mocks.emailFindFirst,
     },
+    notificationDeliveryPolicy: {
+      findUnique: mocks.notificationDeliveryPolicyFindUnique,
+    },
   },
 }));
 
@@ -61,6 +65,7 @@ import {
   buildXeroReconciliationReport,
   cleanupStaleCanonicalXeroObjectLinks,
   maybeNotifyXeroRepeatedFailure,
+  sendXeroReconciliationReport,
 } from "@/lib/xero-hardening";
 
 describe("maybeNotifyXeroRepeatedFailure", () => {
@@ -364,6 +369,87 @@ describe("buildXeroReconciliationReport", () => {
         count: 4,
       }),
     ]);
+  });
+});
+
+describe("sendXeroReconciliationReport", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.memberFindMany.mockResolvedValue([]);
+    mocks.paymentFindMany.mockResolvedValue([]);
+    mocks.subscriptionFindMany.mockResolvedValue([]);
+    mocks.linkFindMany.mockResolvedValue([]);
+    mocks.operationFindMany.mockResolvedValue([]);
+    mocks.operationCount.mockResolvedValue(0);
+    mocks.notificationDeliveryPolicyFindUnique.mockResolvedValue(null);
+    mocks.sendReconciliationReportAlert.mockResolvedValue(undefined);
+  });
+
+  it("does not email clean reports under the default content-only policy", async () => {
+    const result = await sendXeroReconciliationReport({
+      now: new Date("2026-04-13T12:00:00Z"),
+    });
+
+    expect(result.sent).toBe(false);
+    expect(result.deliveryMode).toBe("content_only");
+    expect(result.skippedReason).toBe("no_content");
+    expect(mocks.sendReconciliationReportAlert).not.toHaveBeenCalled();
+  });
+
+  it("emails reports with issues under the default content-only policy", async () => {
+    mocks.memberFindMany.mockResolvedValue([
+      { id: "mem_1", xeroContactId: "contact_1" },
+    ]);
+
+    const result = await sendXeroReconciliationReport({
+      now: new Date("2026-04-13T12:00:00Z"),
+    });
+
+    expect(result.sent).toBe(true);
+    expect(result.deliveryMode).toBe("content_only");
+    expect(result.report.summary.issueTotalCount).toBeGreaterThan(0);
+    expect(mocks.sendReconciliationReportAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        summary: expect.objectContaining({
+          issueTotalCount: expect.any(Number),
+        }),
+      }),
+    );
+  });
+
+  it("emails clean reports when policy is always", async () => {
+    mocks.notificationDeliveryPolicyFindUnique.mockResolvedValue({
+      templateName: "admin-xero-reconciliation-report",
+      mode: "ALWAYS",
+    });
+
+    const result = await sendXeroReconciliationReport({
+      now: new Date("2026-04-13T12:00:00Z"),
+    });
+
+    expect(result.sent).toBe(true);
+    expect(result.deliveryMode).toBe("always");
+    expect(mocks.sendReconciliationReportAlert).toHaveBeenCalled();
+  });
+
+  it("does not email reports with issues when policy is disabled", async () => {
+    mocks.memberFindMany.mockResolvedValue([
+      { id: "mem_1", xeroContactId: "contact_1" },
+    ]);
+    mocks.notificationDeliveryPolicyFindUnique.mockResolvedValue({
+      templateName: "admin-xero-reconciliation-report",
+      mode: "DISABLED",
+    });
+
+    const result = await sendXeroReconciliationReport({
+      now: new Date("2026-04-13T12:00:00Z"),
+    });
+
+    expect(result.sent).toBe(false);
+    expect(result.deliveryMode).toBe("disabled");
+    expect(result.skippedReason).toBe("disabled");
+    expect(result.report.summary.issueTotalCount).toBeGreaterThan(0);
+    expect(mocks.sendReconciliationReportAlert).not.toHaveBeenCalled();
   });
 });
 

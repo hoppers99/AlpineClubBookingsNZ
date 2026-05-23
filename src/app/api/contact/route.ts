@@ -80,6 +80,13 @@ export async function POST(request: Request) {
           </table>
         </div>
       `,
+      templateName: "website-contact",
+      templateData: {
+        recipientLabel,
+        name,
+        email,
+        message,
+      },
     });
 
     return NextResponse.json({ success: true });

@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { Badge, type BadgeProps } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { EmailMessageSettingsPanel } from "@/components/admin/email-settings/email-message-settings-panel";
 import {
   Card,
   CardContent,
@@ -478,6 +479,18 @@ export default function SetupPage() {
               </section>
             ))}
           </div>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Email Messages</CardTitle>
+              <CardDescription>
+                Configure email variables and audited message templates before the site goes live.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <EmailMessageSettingsPanel />
+            </CardContent>
+          </Card>
         </>
       ) : null}
     </div>

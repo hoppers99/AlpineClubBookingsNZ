@@ -152,6 +152,25 @@ function paragraph(text: string): string {
   return `<p style="margin: 0 0 12px 0; color: ${TEXT_COLOR}; font-size: 15px; line-height: 1.6;">${text}</p>`;
 }
 
+export function plainTextEmailTemplate(bodyText: string): string {
+  const blocks = bodyText
+    .split(/\n{2,}/)
+    .map((block) => block.trim())
+    .filter(Boolean);
+  const [firstBlock, ...rest] = blocks;
+  const headingHtml = firstBlock ? heading(escapeHtml(firstBlock)) : "";
+  const bodyHtml = rest.length > 0
+    ? rest
+        .map((block) => multilineBlock(escapeHtml(block)))
+        .join("")
+    : "";
+
+  return layout(`
+    ${headingHtml}
+    ${bodyHtml}
+  `);
+}
+
 function multilineBlock(text: string): string {
   return `<div style="margin: 0 0 12px 0; color: ${TEXT_COLOR}; font-size: 15px; line-height: 1.6; white-space: pre-wrap;">${text}</div>`;
 }

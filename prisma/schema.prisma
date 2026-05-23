@@ -1193,6 +1193,57 @@ model ClubModuleSettings {
 }
 
 // ---------------------------------------------------------------------------
+// Email Message Configuration
+// ---------------------------------------------------------------------------
+
+model EmailMessageSetting {
+  id                String   @id @default("default")
+  clubName          String?
+  bookingsName      String?
+  lodgeName         String?
+  emailFromName     String?
+  supportEmail      String?
+  contactEmail      String?
+  publicUrl         String?
+  lodgeTravelNote   String?
+  updatedByMemberId String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([updatedByMemberId])
+}
+
+model EmailTemplateOverride {
+  id                String   @id @default(cuid())
+  templateName      String   @unique
+  subject           String?
+  bodyText          String?
+  updatedByMemberId String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([updatedByMemberId])
+}
+
+enum NotificationDeliveryMode {
+  ALWAYS
+  CONTENT_ONLY
+  DISABLED
+}
+
+model NotificationDeliveryPolicy {
+  id                String                   @id @default(cuid())
+  templateName      String                   @unique
+  mode              NotificationDeliveryMode @default(ALWAYS)
+  updatedByMemberId String?
+  createdAt         DateTime                 @default(now())
+  updatedAt         DateTime                 @updatedAt
+
+  @@index([updatedByMemberId])
+  @@index([mode])
+}
+
+// ---------------------------------------------------------------------------
 // Booking Modifications (history of changes to bookings)
 // ---------------------------------------------------------------------------
 

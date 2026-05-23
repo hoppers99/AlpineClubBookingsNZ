@@ -1,6 +1,7 @@
 import { prisma } from "./prisma";
 import { sendAdminDailyDigestAlert } from "./email";
 import logger from "@/lib/logger";
+import { shouldSendAdminSystemEmail } from "@/lib/notification-delivery-policies";
 
 /**
  * N-13: Admin daily digest email.
@@ -30,7 +31,12 @@ const TEMPLATE_TO_SECTION: Record<TemplateName, string> = {
   "admin-xero-repeated-failure": "xeroErrors",
 };
 
-export async function sendAdminDigest(): Promise<{ totalAlerts: number; sent: boolean }> {
+export async function sendAdminDigest(): Promise<{
+  totalAlerts: number;
+  sent: boolean;
+  deliveryMode?: string;
+  skippedReason?: string;
+}> {
   const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
   // Count distinct events per template (dedup per-admin sends by grouping on templateName+subject)
@@ -65,12 +71,40 @@ export async function sendAdminDigest(): Promise<{ totalAlerts: number; sent: bo
     sections.capacityWarnings + sections.bookingsBumped +
     sections.pendingDeadlines + sections.xeroErrors;
 
-  // Always send the digest (even if zero alerts — confirms the system is running)
+  const delivery = await shouldSendAdminSystemEmail({
+    templateName: "admin-daily-digest",
+    hasContent: sections.totalAlerts > 0,
+  });
+  if (!delivery.send) {
+    logger.info(
+      {
+        totalAlerts: sections.totalAlerts,
+        deliveryMode: delivery.mode,
+        reason: delivery.reason,
+      },
+      "Skipped admin daily digest email by delivery policy"
+    );
+    return {
+      totalAlerts: sections.totalAlerts,
+      sent: false,
+      deliveryMode: delivery.mode,
+      skippedReason: delivery.reason,
+    };
+  }
+
   try {
     await sendAdminDailyDigestAlert(sections);
-    return { totalAlerts: sections.totalAlerts, sent: true };
+    return {
+      totalAlerts: sections.totalAlerts,
+      sent: true,
+      deliveryMode: delivery.mode,
+    };
   } catch (err) {
     logger.error({ err }, "Failed to send admin daily digest");
-    return { totalAlerts: sections.totalAlerts, sent: false };
+    return {
+      totalAlerts: sections.totalAlerts,
+      sent: false,
+      deliveryMode: delivery.mode,
+    };
   }
 }

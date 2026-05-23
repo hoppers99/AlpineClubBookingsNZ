@@ -5,6 +5,7 @@ import {
   sendAdminXeroReconciliationReportAlert,
   sendAdminXeroRepeatedFailureAlert,
 } from "@/lib/email";
+import { shouldSendAdminSystemEmail } from "@/lib/notification-delivery-policies";
 import { buildXeroObjectUrl } from "@/lib/xero-links";
 import { buildLocalAdminUrl } from "@/lib/xero-record-links";
 import { getXeroOperationRetryMeta } from "@/lib/xero-operation-retry";
@@ -1411,17 +1412,41 @@ export async function sendXeroReconciliationReport(options?: {
   now?: Date;
 }) {
   const report = await buildXeroReconciliationReport(options);
+  const delivery = await shouldSendAdminSystemEmail({
+    templateName: "admin-xero-reconciliation-report",
+    hasContent: report.summary.issueTotalCount > 0,
+  });
+
+  if (!delivery.send) {
+    logger.info(
+      {
+        deliveryMode: delivery.mode,
+        reason: delivery.reason,
+        issueCategories: report.summary.issueCategoryCount,
+        issueTotal: report.summary.issueTotalCount,
+      },
+      "Skipped Xero reconciliation report email by delivery policy"
+    );
+    return {
+      sent: false,
+      deliveryMode: delivery.mode,
+      skippedReason: delivery.reason,
+      report,
+    };
+  }
 
   try {
     await sendAdminXeroReconciliationReportAlert(report);
     return {
       sent: true,
+      deliveryMode: delivery.mode,
       report,
     };
   } catch (error) {
     logger.error({ err: error }, "Failed to send Xero reconciliation report");
     return {
       sent: false,
+      deliveryMode: delivery.mode,
       report,
     };
   }

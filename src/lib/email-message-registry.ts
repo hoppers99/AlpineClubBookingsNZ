@@ -1,0 +1,371 @@
+import {
+  EMAIL_AUDIT_DEFAULTS,
+  type EmailAuditTemplateName,
+} from "@/lib/email-message-audit-defaults";
+
+export type EmailTemplateAudience = "member" | "admin" | "system";
+export type NotificationDeliveryModeValue = "always" | "content_only" | "disabled";
+
+export interface EmailTemplateDefinition {
+  key: EmailAuditTemplateName;
+  label: string;
+  audience: EmailTemplateAudience;
+  defaultSubject: string;
+  defaultBody: string;
+  allowedTokens: string[];
+  requiredTokens: string[];
+  sampleData: Record<string, string>;
+  triggerSummary: string;
+  frequency: string;
+  deliveryEditable: boolean;
+  defaultDeliveryMode: NotificationDeliveryModeValue;
+}
+
+const ADMIN_SYSTEM_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
+  "admin-membership-application-pending",
+  "admin-new-booking",
+  "admin-payment-failure",
+  "admin-pending-deadline",
+  "admin-booking-bumped",
+  "admin-capacity-warning",
+  "admin-daily-digest",
+  "admin-xero-sync-error",
+  "admin-xero-repeated-failure",
+  "admin-xero-reconciliation-report",
+  "admin-refund-request",
+  "admin-issue-report",
+  "admin-waitlist-offer",
+  "admin-family-group-request",
+  "admin-email-failure",
+  "website-contact",
+]);
+
+const LOCKED_DELIVERY_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
+  "admin-email-failure",
+]);
+
+const CONTENT_ONLY_DEFAULT_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
+  "admin-daily-digest",
+  "admin-xero-reconciliation-report",
+]);
+
+const GLOBAL_EMAIL_TEMPLATE_TOKENS = [
+  "BASE_URL",
+  "CLUB_BOOKINGS_NAME",
+  "CLUB_EMAIL_FROM_NAME",
+  "CLUB_LODGE_NAME",
+  "CLUB_LODGE_TRAVEL_NOTE",
+  "CLUB_NAME",
+  "CONTACT_EMAIL",
+  "LODGE_CAPACITY",
+  "SUPPORT_EMAIL",
+] as const;
+
+const EXTRA_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>> = {
+  "password-reset": ["resetUrl"],
+  "admin-password-reset": ["resetUrl"],
+  "member-setup-invite": ["resetUrl"],
+  "email-verification": ["verifyUrl"],
+  "email-change-verification": ["verifyUrl"],
+  "nomination-request": ["reviewUrl"],
+  "membership-application-approved": ["resetUrl"],
+  "admin-membership-application-pending": ["reviewUrl"],
+  "family-group-invitation": ["profileUrl"],
+  "admin-xero-repeated-failure": ["localUrl", "xeroObjectUrl"],
+  "refund-request-resolved": ["status"],
+  "admin-issue-report": ["hasScreenshot"],
+};
+
+const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>> = {
+  "password-reset": ["token"],
+  "admin-password-reset": ["token"],
+  "member-setup-invite": ["token"],
+  "email-verification": ["token"],
+  "email-change-verification": ["newEmail", "token"],
+  "email-change-notification": ["newEmail"],
+  "nomination-request": ["applicantName", "token"],
+  "membership-application-approved": ["token"],
+  "age-up-invitation": ["token"],
+  "website-contact": ["name", "email", "message"],
+  "admin-email-failure": [
+    "originalRecipient",
+    "originalTemplateName",
+    "attemptCount",
+  ],
+  "bulk-communication": ["adminEnteredBody"],
+};
+
+const TEMPLATE_TRIGGER_METADATA: Partial<
+  Record<EmailAuditTemplateName, { triggerSummary: string; frequency: string }>
+> = {
+  "admin-daily-digest": {
+    triggerSummary: "Scheduled admin alert summary",
+    frequency: "Daily at the configured cron time",
+  },
+  "admin-xero-reconciliation-report": {
+    triggerSummary: "Scheduled Xero reconciliation report",
+    frequency: "When the Xero reconciliation cron runs",
+  },
+  "admin-email-failure": {
+    triggerSummary: "Exhausted retry alert",
+    frequency: "When a retryable email permanently fails",
+  },
+  "bulk-communication": {
+    triggerSummary: "Admin bulk communication send",
+    frequency: "Per admin send action",
+  },
+  "website-contact": {
+    triggerSummary: "Website contact form submission",
+    frequency: "Per contact form submission",
+  },
+};
+
+function titleCaseTemplateKey(key: string): string {
+  return key
+    .split("-")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function audienceForTemplate(key: EmailAuditTemplateName): EmailTemplateAudience {
+  if (key === "admin-email-failure") return "system";
+  if (ADMIN_SYSTEM_TEMPLATE_NAMES.has(key)) return "admin";
+  return "member";
+}
+
+function extractTokensFromDefaults(...values: string[]): string[] {
+  return values.flatMap((value) =>
+    Array.from(value.matchAll(/\{\{([^{}]+)\}\}/g), (match) =>
+      match[1].trim(),
+    ).filter(Boolean),
+  );
+}
+
+function uniqueSortedTokens(values: string[]): string[] {
+  return Array.from(new Set(values)).sort((a, b) => a.localeCompare(b));
+}
+
+function sampleValue(token: string): string {
+  if (token === "BASE_URL") return "https://bookings.example.org";
+  if (token === "CLUB_NAME") return "Example Mountain Club";
+  if (token === "CLUB_BOOKINGS_NAME") return "Example Mountain Club - Bookings";
+  if (token === "CLUB_LODGE_NAME") return "Example Mountain Club Lodge";
+  if (token === "CLUB_EMAIL_FROM_NAME") {
+    return "Example Mountain Club - Online Booking System";
+  }
+  if (token === "CLUB_LODGE_TRAVEL_NOTE") {
+    return "Please allow adequate travel time.";
+  }
+  if (token === "SUPPORT_EMAIL" || token === "CONTACT_EMAIL") {
+    return "support@example.org";
+  }
+  if (token === "LODGE_CAPACITY") return "29";
+  if (token.endsWith("Email") || token === "email") return "member@example.org";
+  if (token.endsWith("Url") || token.endsWith("URL")) {
+    return "https://bookings.example.org/admin";
+  }
+  if (token.toLowerCase().includes("amount") || token.includes("total")) {
+    return "$123.45";
+  }
+  if (token.toLowerCase().includes("count")) return "2";
+  if (token.toLowerCase().includes("date") || token.endsWith("At")) {
+    return "1 July 2026";
+  }
+  if (token === "s") return "s";
+  if (token === "token") return "sample-token";
+  return token.replace(/[|]/g, " ");
+}
+
+export const EMAIL_TEMPLATE_DEFINITIONS: EmailTemplateDefinition[] = (
+  Object.entries(EMAIL_AUDIT_DEFAULTS) as Array<
+    [
+      EmailAuditTemplateName,
+      { defaultSubject: string; defaultBody: string },
+    ]
+  >
+).map(([key, defaults]) => {
+  const allowedTokens = uniqueSortedTokens([
+    ...GLOBAL_EMAIL_TEMPLATE_TOKENS,
+    ...extractTokensFromDefaults(defaults.defaultSubject, defaults.defaultBody),
+    ...(EXTRA_TEMPLATE_TOKENS[key] ?? []),
+  ]);
+  const metadata = TEMPLATE_TRIGGER_METADATA[key] ?? {
+    triggerSummary: "Audited application email",
+    frequency: "Per trigger",
+  };
+
+  return {
+    key,
+    label: titleCaseTemplateKey(key),
+    audience: audienceForTemplate(key),
+    defaultSubject: defaults.defaultSubject,
+    defaultBody: defaults.defaultBody,
+    allowedTokens,
+    requiredTokens: REQUIRED_TEMPLATE_TOKENS[key] ?? [],
+    sampleData: Object.fromEntries(
+      allowedTokens.map((token) => [token, sampleValue(token)]),
+    ),
+    triggerSummary: metadata.triggerSummary,
+    frequency: metadata.frequency,
+    deliveryEditable:
+      ADMIN_SYSTEM_TEMPLATE_NAMES.has(key) &&
+      !LOCKED_DELIVERY_TEMPLATE_NAMES.has(key),
+    defaultDeliveryMode: CONTENT_ONLY_DEFAULT_TEMPLATE_NAMES.has(key)
+      ? "content_only"
+      : "always",
+  };
+});
+
+export const EMAIL_TEMPLATE_KEYS = EMAIL_TEMPLATE_DEFINITIONS.map(
+  (definition) => definition.key,
+);
+
+export const EMAIL_TEMPLATE_KEY_SET = new Set<string>(EMAIL_TEMPLATE_KEYS);
+
+export const APPROVED_EMAIL_TEMPLATE_TOKENS = [
+  "BASE_URL",
+  "CLUB_BOOKINGS_NAME",
+  "CLUB_EMAIL_FROM_NAME",
+  "CLUB_LODGE_NAME",
+  "CLUB_LODGE_TRAVEL_NOTE",
+  "CLUB_NAME",
+  "CONTACT_EMAIL",
+  "LODGE_CAPACITY",
+  "SUPPORT_EMAIL",
+  "additionalAmount",
+  "adminEnteredBody",
+  "adminEnteredSubject",
+  "adminNote",
+  "adminNotes",
+  "amount",
+  "applicantEmail",
+  "applicantName",
+  "attemptCount",
+  "availableBeds",
+  "bookingId",
+  "bumpedMemberName",
+  "changeFee",
+  "checkIn",
+  "checkOut",
+  "childName",
+  "choreDescription",
+  "choreLink",
+  "choreName",
+  "correlationKey",
+  "count",
+  "creditUsed",
+  "date",
+  "deadline",
+  "description",
+  "details",
+  "discount",
+  "email",
+  "endDate",
+  "entityType",
+  "errorMessage",
+  "errorType",
+  "expiresAt",
+  "expiryLabel",
+  "failureCount",
+  "familyMemberCount",
+  "firstName",
+  "formattedDate",
+  "generatedAt",
+  "groupName",
+  "guestCount",
+  "guestFirstName",
+  "guestLastName",
+  "guestName",
+  "holdUntil",
+  "hoursRemaining",
+  "inviteeName",
+  "inviterName",
+  "issueCategoryCount",
+  "issueReportUrl",
+  "issueTotalCount",
+  "latestErrorMessage",
+  "localId",
+  "localModel",
+  "lookbackHours",
+  "memberEmail",
+  "memberName",
+  "message",
+  "modificationTypeLabel",
+  "name",
+  "newCheckIn",
+  "newCheckOut",
+  "newEmail",
+  "newGuestCount",
+  "newTotal",
+  "nominatorName",
+  "occupiedBeds",
+  "oldCheckIn",
+  "oldCheckOut",
+  "oldGuestCount",
+  "oldTotal",
+  "operation",
+  "operationType",
+  "originalRecipient",
+  "originalTemplateName",
+  "pageTitle",
+  "pageUrl",
+  "paidAmount",
+  "parentName",
+  "paymentIntentId",
+  "paymentNote",
+  "percent",
+  "pin",
+  "position",
+  "promoCode",
+  "reason",
+  "recipientLabel",
+  "refundAmount",
+  "refundMessage",
+  "refundedAmount",
+  "remainingAmount",
+  "remainingCredit",
+  "profileUrl",
+  "requestType",
+  "requestedAmount",
+  "requesterName",
+  "resetUrl",
+  "reviewReason",
+  "reviewUrl",
+  "localUrl",
+  "s",
+  "severityLabel",
+  "stalePendingMinutes",
+  "startDate",
+  "status",
+  "subtotal",
+  "timestamp",
+  "token",
+  "total",
+  "totalAlerts",
+  "totalPaid",
+  "triggeringMemberName",
+  "verifyUrl",
+  "windowHours",
+  "xeroObjectUrl",
+  "y|ies",
+] as const;
+
+export const APPROVED_EMAIL_TEMPLATE_TOKEN_SET = new Set<string>(
+  APPROVED_EMAIL_TEMPLATE_TOKENS,
+);
+
+export function getEmailTemplateDefinition(templateName: string) {
+  return EMAIL_TEMPLATE_DEFINITIONS.find(
+    (definition) => definition.key === templateName,
+  );
+}
+
+export function isAdminSystemTemplate(templateName: string): boolean {
+  return ADMIN_SYSTEM_TEMPLATE_NAMES.has(templateName as EmailAuditTemplateName);
+}
+
+export function getDefaultDeliveryMode(
+  templateName: string,
+): NotificationDeliveryModeValue {
+  return getEmailTemplateDefinition(templateName)?.defaultDeliveryMode ?? "always";
+}
