@@ -146,6 +146,12 @@ refund requests, promo codes, communications, health, audit logs, reports,
 Xero, committee data, issue reports, waitlist, lodge operations, hut leaders,
 and roster/chores.
 
+Member records created in error use `MemberLifecycleActionRequest` with the
+`DELETE` action. A delete request requires a reason, approval by a different
+admin, a clean eligibility check with no booking, financial, family, Xero, or
+membership history blockers, and a retained member snapshot before hard
+deletion. Direct `DELETE /api/admin/members/[id]` is intentionally disabled.
+
 The lodge kiosk has its own PIN session model and permission tiers for
 view-only, guest, hut-leader, and admin-style lodge actions. It supports guest
 arrival/departure, expected arrival times, chores, and issue reporting without

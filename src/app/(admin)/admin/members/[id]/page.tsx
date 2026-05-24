@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Textarea } from "@/components/ui/textarea"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
@@ -65,6 +66,33 @@ interface AdminActor {
   lastName: string
 }
 
+interface MemberDeleteEligibilityBlocker {
+  code: string
+  label: string
+  count?: number
+}
+
+interface MemberDeleteEligibility {
+  eligible: boolean
+  blockers: MemberDeleteEligibilityBlocker[]
+  checkedAt: string
+}
+
+interface MemberLifecycleActionRequest {
+  id: string
+  memberId: string
+  action: "DELETE"
+  status: "REQUESTED" | "APPROVED" | "REJECTED"
+  reason: string
+  reviewNote: string | null
+  requestedAt: string
+  reviewedAt: string | null
+  processedAt: string | null
+  requestedBy: { id: string; name: string; email: string } | null
+  reviewedBy: { id: string; name: string; email: string } | null
+  memberSnapshot: unknown
+}
+
 interface EmailInheritanceSearchResult {
   id: string
   firstName: string
@@ -117,6 +145,8 @@ interface MemberDetail {
     statusReason: string
   }>
   auditLogs: AuditLogEntry[]
+  deleteEligibility: MemberDeleteEligibility
+  lifecycleActionRequests: MemberLifecycleActionRequest[]
   stats: { totalBookings: number; totalSpendCents: number; lastStay: string | null }
   dependents: Array<{ id: string; firstName: string; lastName: string; ageTier: string; active: boolean; dateOfBirth: string | null; canLogin: boolean; parentLinkType?: "PRIMARY" | "SECONDARY" }>
   streetAddressLine1: string | null; streetAddressLine2: string | null; streetCity: string | null
@@ -465,6 +495,17 @@ export default function MemberDetailPage({ params }: { params: Promise<{ id: str
   const [xeroCreateDecisionResults, setXeroCreateDecisionResults] = useState<XeroSearchResult[]>([])
   const [xeroDecisionContactId, setXeroDecisionContactId] = useState("")
   const [xeroDecisionError, setXeroDecisionError] = useState("")
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
+  const [deleteReason, setDeleteReason] = useState("")
+  const [deleteError, setDeleteError] = useState("")
+  const [deleteSubmitting, setDeleteSubmitting] = useState(false)
+  const [deleteReviewDialog, setDeleteReviewDialog] = useState<{
+    request: MemberLifecycleActionRequest
+    action: "approve" | "reject"
+  } | null>(null)
+  const [deleteReviewNote, setDeleteReviewNote] = useState("")
+  const [deleteReviewError, setDeleteReviewError] = useState("")
+  const [deleteReviewSubmitting, setDeleteReviewSubmitting] = useState(false)
   const [openMemberSections, setOpenMemberSections] = useState<CollapsibleMemberSection[]>([])
   const isAdultMember = member?.ageTier === "ADULT"
   const memberId = member?.id
@@ -1502,6 +1543,73 @@ export default function MemberDetailPage({ params }: { params: Promise<{ id: str
     }
   }
 
+  const handleCreateDeleteRequest = async () => {
+    if (!member) return
+    setDeleteSubmitting(true)
+    setDeleteError("")
+    try {
+      const res = await fetch(`/api/admin/members/${member.id}/lifecycle/delete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: deleteReason }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to create delete request")
+      }
+
+      setDeleteDialogOpen(false)
+      setDeleteReason("")
+      setSuccess("Delete request submitted for second-admin review")
+      setTimeout(() => setSuccess(""), 3000)
+      setLoading(true)
+      await fetchMember()
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : "Failed to create delete request")
+    } finally {
+      setDeleteSubmitting(false)
+    }
+  }
+
+  const handleReviewDeleteRequest = async () => {
+    if (!deleteReviewDialog) return
+    setDeleteReviewSubmitting(true)
+    setDeleteReviewError("")
+    try {
+      const res = await fetch(`/api/admin/member-lifecycle-action-requests/${deleteReviewDialog.request.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: deleteReviewDialog.action,
+          note: deleteReviewNote || undefined,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to review delete request")
+      }
+
+      setDeleteReviewDialog(null)
+      setDeleteReviewNote("")
+      setSuccess(
+        deleteReviewDialog.action === "approve"
+          ? "Member deleted and snapshot retained"
+          : "Delete request rejected",
+      )
+      setTimeout(() => setSuccess(""), 3000)
+      if (deleteReviewDialog.action === "approve") {
+        router.push(backHref)
+        return
+      }
+      setLoading(true)
+      await fetchMember()
+    } catch (err) {
+      setDeleteReviewError(err instanceof Error ? err.message : "Failed to review delete request")
+    } finally {
+      setDeleteReviewSubmitting(false)
+    }
+  }
+
   const isSelf = session?.user?.id === id
 
   if (loading) return <div className="py-12 text-center"><p className="text-sm text-slate-500">Loading member details...</p></div>
@@ -1515,6 +1623,18 @@ export default function MemberDetailPage({ params }: { params: Promise<{ id: str
   const fmt = formatCents
   const fmtDate = (d: string) => new Date(d).toLocaleDateString("en-NZ", { day: "numeric", month: "short", year: "numeric" })
   const memberExactAge = member.dateOfBirth ? formatAgeYearsMonths(member.dateOfBirth) : null
+  const deleteRequests = member.lifecycleActionRequests.filter((request) => request.action === "DELETE")
+  const pendingDeleteRequest = deleteRequests.find((request) => request.status === "REQUESTED")
+  const deleteBlockers = member.deleteEligibility.blockers
+  const approvalBlockers = deleteBlockers.filter((blocker) => blocker.code !== "pending_delete_request")
+  const canReviewPendingDeleteRequest =
+    Boolean(pendingDeleteRequest) &&
+    pendingDeleteRequest?.requestedBy?.id !== session?.user?.id
+  const deleteStatusLabel: Record<MemberLifecycleActionRequest["status"], string> = {
+    REQUESTED: "Pending review",
+    APPROVED: "Approved",
+    REJECTED: "Rejected",
+  }
 
   return (
     <div className="space-y-6">
@@ -1529,6 +1649,7 @@ export default function MemberDetailPage({ params }: { params: Promise<{ id: str
               <Badge variant="secondary" className={financeAccessBadgeClass[member.financeAccessLevel]}>{financeAccessLabels[member.financeAccessLevel]}</Badge>
               <Badge variant={member.active ? "default" : "destructive"} className={member.active ? "bg-green-100 text-green-800 hover:bg-green-200 border-green-200" : ""}>{member.active ? "Active" : "Inactive"}</Badge>
               {member.forcePasswordChange && <Badge variant="destructive" className="text-xs">PW Reset Required</Badge>}
+              {pendingDeleteRequest && <Badge variant="destructive" className="text-xs">Delete Pending</Badge>}
             </div>
           </div>
           <div className="flex gap-2 shrink-0 flex-wrap">
@@ -1566,6 +1687,108 @@ export default function MemberDetailPage({ params }: { params: Promise<{ id: str
       {xeroError && !xeroSearchOpen && !editOpen && !xeroCreateOpen && !xeroCreateDecisionOpen && (
         <div className="p-3 bg-red-50 border border-red-200 text-red-700 rounded-md text-sm">{xeroError}</div>
       )}
+
+      <Card className="border-red-200">
+        <CardHeader className="flex flex-col gap-3 space-y-0 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <CardTitle className="text-base font-medium">Member Deletion</CardTitle>
+            <p className="mt-1 text-sm text-slate-500">
+              Hard deletion is only available for records added in error with no meaningful history.
+            </p>
+          </div>
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={() => {
+              setDeleteDialogOpen(true)
+              setDeleteReason("")
+              setDeleteError("")
+            }}
+            disabled={!member.deleteEligibility.eligible || Boolean(pendingDeleteRequest)}
+          >
+            <Trash2 className="h-4 w-4 mr-1" />
+            Request Delete
+          </Button>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {pendingDeleteRequest ? (
+            <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+              <div className="font-medium">Delete request pending second-admin review</div>
+              <div className="mt-1">
+                Requested {fmtDate(pendingDeleteRequest.requestedAt)} by {pendingDeleteRequest.requestedBy?.name ?? "Unknown admin"}
+              </div>
+              <div className="mt-2 text-amber-800">{pendingDeleteRequest.reason}</div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  onClick={() => {
+                    setDeleteReviewDialog({ request: pendingDeleteRequest, action: "approve" })
+                    setDeleteReviewNote("")
+                    setDeleteReviewError("")
+                  }}
+                  disabled={!canReviewPendingDeleteRequest || approvalBlockers.length > 0}
+                >
+                  Approve Delete
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    setDeleteReviewDialog({ request: pendingDeleteRequest, action: "reject" })
+                    setDeleteReviewNote("")
+                    setDeleteReviewError("")
+                  }}
+                  disabled={!canReviewPendingDeleteRequest}
+                >
+                  Reject
+                </Button>
+                {!canReviewPendingDeleteRequest && (
+                  <span className="self-center text-xs text-amber-800">
+                    Requester cannot approve or reject their own delete request.
+                  </span>
+                )}
+              </div>
+            </div>
+          ) : member.deleteEligibility.eligible ? (
+            <div className="rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-800">
+              This member has no delete blockers. A reason and second-admin approval are still required.
+            </div>
+          ) : (
+            <div className="rounded-md border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+              <div className="font-medium text-slate-900">Deletion is blocked</div>
+              <ul className="mt-2 list-disc space-y-1 pl-5">
+                {deleteBlockers.map((blocker) => (
+                  <li key={blocker.code}>
+                    {blocker.label}
+                    {typeof blocker.count === "number" ? ` (${blocker.count})` : ""}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {deleteRequests.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Recent delete requests</div>
+              <div className="divide-y divide-slate-200 rounded-md border border-slate-200">
+                {deleteRequests.map((request) => (
+                  <div key={request.id} className="p-3 text-sm">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="font-medium text-slate-900">{deleteStatusLabel[request.status]}</div>
+                      <div className="text-xs text-slate-500">{fmtDate(request.requestedAt)}</div>
+                    </div>
+                    <div className="mt-1 text-slate-600">{request.reason}</div>
+                    {request.reviewNote && (
+                      <div className="mt-1 text-xs text-slate-500">Review note: {request.reviewNote}</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <Card><CardContent className="pt-6"><div className="flex items-center gap-3"><User className="h-8 w-8 text-slate-400" /><div><p className="text-xs text-slate-500 uppercase tracking-wide">Age Tier</p><p className="text-lg font-semibold">{member.ageTier.charAt(0) + member.ageTier.slice(1).toLowerCase()}</p>{member.dateOfBirth && <p className="text-xs text-slate-400">DOB: {fmtDate(member.dateOfBirth)}{memberExactAge ? ` (${memberExactAge})` : ""}</p>}</div></div></CardContent></Card>
@@ -2612,6 +2835,115 @@ export default function MemberDetailPage({ params }: { params: Promise<{ id: str
               {dependentSaving
                 ? dependentMode === "create" ? "Creating..." : "Linking..."
                 : dependentMode === "create" ? "Create Dependent" : "Link Dependent"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Request Member Delete</DialogTitle>
+            <DialogDescription>
+              Submit this member for second-admin approval before hard deletion.
+            </DialogDescription>
+          </DialogHeader>
+          {deleteError && <div className="rounded border border-red-200 bg-red-50 p-2 text-sm text-red-700">{deleteError}</div>}
+          <div className="space-y-2">
+            <Label htmlFor="delete-reason">Reason</Label>
+            <Textarea
+              id="delete-reason"
+              value={deleteReason}
+              onChange={(event) => setDeleteReason(event.target.value)}
+              placeholder="Record was created in error"
+              rows={4}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteDialogOpen(false)} disabled={deleteSubmitting}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleCreateDeleteRequest}
+              disabled={deleteSubmitting || !deleteReason.trim()}
+            >
+              {deleteSubmitting ? "Submitting..." : "Submit Delete Request"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(deleteReviewDialog)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDeleteReviewDialog(null)
+            setDeleteReviewNote("")
+            setDeleteReviewError("")
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {deleteReviewDialog?.action === "approve" ? "Approve Member Delete" : "Reject Member Delete"}
+            </DialogTitle>
+            <DialogDescription>
+              {deleteReviewDialog?.action === "approve"
+                ? "Approval permanently deletes the member record after storing the snapshot on the request."
+                : "Rejecting keeps the member record unchanged."}
+            </DialogDescription>
+          </DialogHeader>
+          {deleteReviewError && <div className="rounded border border-red-200 bg-red-50 p-2 text-sm text-red-700">{deleteReviewError}</div>}
+          {deleteReviewDialog?.action === "approve" && approvalBlockers.length > 0 && (
+            <div className="rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+              Approval is blocked until these dependencies are cleared:
+              <ul className="mt-2 list-disc space-y-1 pl-5">
+                {approvalBlockers.map((blocker) => (
+                  <li key={blocker.code}>
+                    {blocker.label}
+                    {typeof blocker.count === "number" ? ` (${blocker.count})` : ""}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          <div className="space-y-2">
+            <Label htmlFor="delete-review-note">Review note</Label>
+            <Textarea
+              id="delete-review-note"
+              value={deleteReviewNote}
+              onChange={(event) => setDeleteReviewNote(event.target.value)}
+              placeholder={deleteReviewDialog?.action === "approve" ? "Approved after eligibility check" : "Reason for rejection"}
+              rows={4}
+            />
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setDeleteReviewDialog(null)
+                setDeleteReviewNote("")
+                setDeleteReviewError("")
+              }}
+              disabled={deleteReviewSubmitting}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant={deleteReviewDialog?.action === "approve" ? "destructive" : "default"}
+              onClick={handleReviewDeleteRequest}
+              disabled={
+                deleteReviewSubmitting ||
+                (deleteReviewDialog?.action === "approve" && approvalBlockers.length > 0)
+              }
+            >
+              {deleteReviewSubmitting
+                ? "Processing..."
+                : deleteReviewDialog?.action === "approve"
+                  ? "Approve Delete"
+                  : "Reject Request"}
             </Button>
           </DialogFooter>
         </DialogContent>

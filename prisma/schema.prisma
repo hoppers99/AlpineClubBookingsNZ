@@ -134,6 +134,16 @@ enum MembershipCancellationParticipantStatus {
   REJOINED
 }
 
+enum MemberLifecycleAction {
+  DELETE
+}
+
+enum MemberLifecycleActionRequestStatus {
+  REQUESTED
+  APPROVED
+  REJECTED
+}
+
 enum PromoCodeType {
   PERCENTAGE
   FIXED_AMOUNT
@@ -303,6 +313,8 @@ model Member {
   membershipCancellationRequestsReviewed     MembershipCancellationRequest[]            @relation("MembershipCancellationRequestReviewer")
   membershipCancellationParticipants         MembershipCancellationRequestParticipant[] @relation("MembershipCancellationParticipantMember")
   membershipCancellationParticipantsReviewed MembershipCancellationRequestParticipant[] @relation("MembershipCancellationParticipantReviewer")
+  lifecycleActionRequestsRequested           MemberLifecycleActionRequest[]             @relation("MemberLifecycleActionRequester")
+  lifecycleActionRequestsReviewed            MemberLifecycleActionRequest[]             @relation("MemberLifecycleActionReviewer")
 
   @@index([email])
   @@index([xeroContactId])
@@ -488,6 +500,32 @@ model MembershipCancellationRequestParticipant {
   @@index([confirmationTokenHash])
   @@index([confirmationTokenExpiresAt])
   @@index([cancelledAt])
+}
+
+model MemberLifecycleActionRequest {
+  id                  String                             @id @default(cuid())
+  memberId            String
+  action              MemberLifecycleAction
+  status              MemberLifecycleActionRequestStatus @default(REQUESTED)
+  reason              String
+  reviewNote          String?
+  memberSnapshot      Json?
+  requestedByMemberId String?
+  requestedAt         DateTime                           @default(now())
+  reviewedByMemberId  String?
+  reviewedAt          DateTime?
+  processedAt         DateTime?
+  createdAt           DateTime                           @default(now())
+  updatedAt           DateTime                           @updatedAt
+
+  requestedBy Member? @relation("MemberLifecycleActionRequester", fields: [requestedByMemberId], references: [id], onDelete: SetNull)
+  reviewedBy  Member? @relation("MemberLifecycleActionReviewer", fields: [reviewedByMemberId], references: [id], onDelete: SetNull)
+
+  @@index([memberId, action, status])
+  @@index([requestedByMemberId])
+  @@index([reviewedByMemberId])
+  @@index([status, requestedAt])
+  @@index([action, status])
 }
 
 // ---------------------------------------------------------------------------

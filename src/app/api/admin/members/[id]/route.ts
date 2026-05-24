@@ -36,6 +36,10 @@ import {
   getAuditEmailDomain,
   getAuditRequestContext,
 } from "@/lib/audit";
+import {
+  getMemberDeleteEligibility,
+  getMemberDeleteLifecycleRequests,
+} from "@/lib/member-lifecycle-actions";
 import { nameField } from "@/lib/zod-helpers";
 
 const maxStr = (len: number) => z.string().max(len).optional().nullable();
@@ -339,6 +343,14 @@ export async function GET(
     return NextResponse.json({ error: "Member not found" }, { status: 404 });
   }
 
+  const [deleteEligibility, lifecycleActionRequests] = await Promise.all([
+    getMemberDeleteEligibility({
+      memberId: id,
+      currentAdminMemberId: session.user.id,
+    }),
+    getMemberDeleteLifecycleRequests(id),
+  ]);
+
   const actorIds = Array.from(
     new Set(
       auditLogs
@@ -416,6 +428,8 @@ export async function GET(
     auditLogs: auditLogsWithActors,
     xeroContactGroups,
     xeroContactGroupsLoaded,
+    deleteEligibility,
+    lifecycleActionRequests,
     stats: {
       totalBookings: stats._count,
       totalSpendCents: stats._sum.finalPriceCents || 0,
@@ -746,12 +760,9 @@ export async function PUT(
 
 /**
  * DELETE /api/admin/members/[id]
- * Soft-delete a member (set active: false).
+ * Direct member deletion is intentionally disabled.
  */
-export async function DELETE(
-  req: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
+export async function DELETE() {
   const session = await auth();
   if (!session?.user || session.user.role !== "ADMIN") {
     return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
@@ -761,51 +772,11 @@ export async function DELETE(
     return inactiveResponse;
   }
 
-  const { id } = await params;
-
-  const existing = await prisma.member.findUnique({ where: { id } });
-  if (!existing) {
-    return NextResponse.json({ error: "Member not found" }, { status: 404 });
-  }
-
-  // Don't let admin deactivate themselves
-  if (id === session.user.id) {
-    return NextResponse.json(
-      { error: "You cannot deactivate your own account" },
-      { status: 400 }
-    );
-  }
-
-  await prisma.$transaction([
-    prisma.member.update({
-      where: { id },
-      data: { active: false },
-    }),
-    prisma.auditLog.create(
-      buildStructuredAuditLogCreateArgs({
-        action: "admin.member.deactivated",
-        actor: { memberId: session.user.id },
-        subject: { memberId: id },
-        entity: { type: "Member", id },
-        category: "admin",
-        severity: "critical",
-        outcome: "success",
-        summary: "Member deactivated by admin",
-        metadata: {
-          changedFields: existing.active ? ["active"] : [],
-          accessChanges: [
-            {
-              field: "active",
-              before: existing.active,
-              after: false,
-            },
-          ],
-          deleteStyleAction: true,
-        },
-        request: getAuditRequestContext(req),
-      })
-    ),
-  ]);
-
-  return NextResponse.json({ success: true });
+  return NextResponse.json(
+    {
+      error:
+        "Direct member deletion is disabled. Create a member delete lifecycle request and have a different admin approve it.",
+    },
+    { status: 405 }
+  );
 }
