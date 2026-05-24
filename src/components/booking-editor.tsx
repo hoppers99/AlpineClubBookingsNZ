@@ -15,6 +15,8 @@ interface Guest {
   ageTier: string;
   isMember: boolean;
   memberId?: string | null;
+  stayStart?: string | null;
+  stayEnd?: string | null;
   priceCents: number;
 }
 
@@ -26,6 +28,7 @@ interface PromoInfo {
 
 interface EditPolicyInfo {
   mode: "future" | "in-progress" | null;
+  today: string;
   editableFrom: string | null;
   checkInEditable: boolean;
 }
@@ -158,6 +161,13 @@ export function BookingEditor({
                   <p className="text-sm text-gray-500">
                     {guest.ageTier} &middot; {guest.isMember ? "Member" : "Non-member"}
                   </p>
+                  {(guest.stayStart && guest.stayStart !== booking.checkIn) ||
+                  (guest.stayEnd && guest.stayEnd !== booking.checkOut) ? (
+                    <p className="text-xs text-gray-500">
+                      Stay: {guest.stayStart ?? booking.checkIn} to{" "}
+                      {guest.stayEnd ?? booking.checkOut}
+                    </p>
+                  ) : null}
                 </div>
                 <p className="font-medium">{formatCents(guest.priceCents)}</p>
               </div>

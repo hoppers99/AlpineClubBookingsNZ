@@ -112,17 +112,31 @@ The source of truth is `prisma/schema.prisma`. Key domains are:
 ## Booking and Payment Flow
 
 1. A member selects check-in and check-out dates.
-2. Capacity is calculated as lodge beds minus confirmed/paid guests per night.
+2. Capacity is calculated as lodge beds minus capacity-holding guests per
+   night. `PENDING`, `PAID`, and `COMPLETED` bookings hold beds because the
+   daily completion job marks stays completed from check-in day while the
+   guests are still operationally in the lodge.
 3. Minimum-stay, booking-window, age-tier, membership, group-discount, promo,
    and account-credit rules are applied.
 4. If all guests are members, or check-in is within the non-member hold window,
    the booking can proceed to payment immediately.
 5. If non-members are included outside the hold window, a card can be saved and
    the booking remains pending until the hold date.
-6. Capacity-sensitive writes use a PostgreSQL advisory transaction lock so
+6. `BookingGuest.stayStart` and `BookingGuest.stayEnd` record the actual
+   date-only range for each guest inside the parent booking envelope. Capacity,
+   lodge lists, rosters, and booking-derived finance metrics count a guest only
+   on nights in that individual range.
+7. Capacity-sensitive writes use a PostgreSQL advisory transaction lock so
    overlapping booking decisions serialize at the current lodge scale.
-7. Stripe records payment state; Xero operations are queued or performed through
+8. Stripe records payment state; Xero operations are queued or performed through
    durable integration helpers and linked back to local records.
+
+In-progress member self-service edits are limited to future unused nights from
+NZ tomorrow onward. NZ today and earlier are locked for admin review through
+booking change requests. Positive booking-edit deltas use supplementary Xero
+invoices after additional Stripe payment succeeds, while negative deltas use
+modification credit notes instead of unsafe financial mutation of a paid,
+part-paid, credited, or locked original invoice.
 
 Money values are integer cents. Booking dates are New Zealand date-only lodge
 nights rather than timestamps.
@@ -138,6 +152,7 @@ Common booking states include:
 - `BUMPED`, `CANCELLED`, and `COMPLETED` for lifecycle transitions
 
 Waitlisted and offered bookings do not consume capacity until confirmed.
+Completed bookings continue to consume capacity for their remaining stay nights.
 
 ## Admin and Lodge
 

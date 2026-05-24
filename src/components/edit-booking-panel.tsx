@@ -18,6 +18,8 @@ interface Guest {
   ageTier: string;
   isMember: boolean;
   memberId?: string | null;
+  stayStart?: string | null;
+  stayEnd?: string | null;
   priceCents: number;
 }
 
@@ -48,6 +50,7 @@ interface BookingData {
   promo: PromoInfo | null;
   editPolicy: {
     mode: "future" | "in-progress" | null;
+    today: string;
     editableFrom: string | null;
     checkInEditable: boolean;
   };
@@ -134,10 +137,11 @@ export function EditBookingPanel({
   const [requestError, setRequestError] = useState("");
   const [requestSuccess, setRequestSuccess] = useState("");
 
-  const today = new Date().toISOString().split("T")[0];
+  const today = booking.editPolicy.today;
   const minEditableDate = booking.editPolicy.editableFrom ?? today;
   const checkInLocked = !booking.editPolicy.checkInEditable;
-  const promoLocked = booking.editPolicy.mode === "in-progress";
+  const isInProgressEdit = booking.editPolicy.mode === "in-progress";
+  const promoLocked = isInProgressEdit;
 
   useEffect(() => {
     let cancelled = false;
@@ -428,6 +432,13 @@ export function EditBookingPanel({
               Originally: {booking.checkIn} to {booking.checkOut}
             </p>
           ) : null}
+          {isInProgressEdit ? (
+            <p className="mt-2 text-sm text-amber-800">
+              Self-service edits for this in-progress stay can only affect
+              nights from {minEditableDate} onward. NZ today and earlier stay
+              locked for admin review.
+            </p>
+          ) : null}
         </CardContent>
       </Card>
 
@@ -442,11 +453,18 @@ export function EditBookingPanel({
               onClick={() => setShowAddForm(true)}
               disabled={showAddForm}
             >
-              + Add Guest
+              {isInProgressEdit ? "+ Add Future Guest" : "+ Add Guest"}
             </Button>
           </div>
         </CardHeader>
         <CardContent className="space-y-2">
+          {isInProgressEdit ? (
+            <p className="text-sm text-gray-500">
+              Added guests start on {minEditableDate}. Removing an existing
+              guest keeps their past and NZ today occupancy and removes only
+              future nights.
+            </p>
+          ) : null}
           {familyMembers.length > 0 && (
             <div className="space-y-2 rounded-md border border-dashed p-3">
               <p className="text-sm font-medium text-muted-foreground">Quick add family members</p>
@@ -493,6 +511,13 @@ export function EditBookingPanel({
                   <p className="text-sm text-gray-500">
                     {getAgeTierLabel(ageTierOptions, guest.ageTier)} &middot; {guest.isMember ? "Member" : "Non-member"}
                   </p>
+                  {(guest.stayStart && guest.stayStart !== booking.checkIn) ||
+                  (guest.stayEnd && guest.stayEnd !== booking.checkOut) ? (
+                    <p className="text-xs text-gray-500">
+                      Stay: {guest.stayStart ?? booking.checkIn} to{" "}
+                      {guest.stayEnd ?? booking.checkOut}
+                    </p>
+                  ) : null}
                 </div>
                 <div className="flex items-center gap-3">
                   <span className="text-sm">{formatCents(guest.priceCents)}</span>
@@ -512,7 +537,7 @@ export function EditBookingPanel({
                         className="text-red-500 hover:text-red-700"
                         onClick={() => handleRemoveGuest(guest.id)}
                       >
-                        Remove
+                        {isInProgressEdit ? "Remove Future" : "Remove"}
                       </Button>
                     )
                   )}
