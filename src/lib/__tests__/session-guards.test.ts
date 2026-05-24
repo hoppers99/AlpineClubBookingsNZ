@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { mockFindUnique } = vi.hoisted(() => ({
+const { mockFindUnique, mockAuth } = vi.hoisted(() => ({
   mockFindUnique: vi.fn(),
+  mockAuth: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -11,6 +12,8 @@ vi.mock("@/lib/prisma", () => ({
     },
   },
 }));
+
+vi.mock("@/lib/auth", () => ({ auth: mockAuth }));
 
 import { requireActiveSessionUser } from "@/lib/session-guards";
 
