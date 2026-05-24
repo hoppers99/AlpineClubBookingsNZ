@@ -74,6 +74,8 @@ const EXTRA_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>> =
   "admin-xero-repeated-failure": ["localUrl", "xeroObjectUrl"],
   "refund-request-resolved": ["status"],
   "admin-issue-report": ["hasScreenshot"],
+  "age-up-invitation": ["resetUrl", "targetAgeTier", "targetAgeTierMinAge"],
+  "age-up-parent-email-handoff": ["targetAgeTier", "targetAgeTierMinAge"],
 };
 
 const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>> = {
@@ -86,6 +88,7 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
   "nomination-request": ["applicantName", "token"],
   "membership-application-approved": ["token"],
   "age-up-invitation": ["token"],
+  "age-up-parent-email-handoff": ["memberName"],
   "website-contact": ["name", "email", "message"],
   "admin-email-failure": [
     "originalRecipient",
@@ -173,6 +176,10 @@ function sampleValue(token: string): string {
   }
   if (token === "s") return "s";
   if (token === "token") return "sample-token";
+  if (token === "recipientName") return "Sam Parent";
+  if (token === "targetAgeTier") return "ADULT";
+  if (token === "targetAgeTierLabel") return "Adult (18+)";
+  if (token === "targetAgeTierMinAge") return "18";
   return token.replace(/[|]/g, " ");
 }
 
@@ -324,6 +331,7 @@ export const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "refundedAmount",
   "remainingAmount",
   "remainingCredit",
+  "recipientName",
   "profileUrl",
   "requestType",
   "requestedAmount",
@@ -338,6 +346,9 @@ export const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "startDate",
   "status",
   "subtotal",
+  "targetAgeTier",
+  "targetAgeTierLabel",
+  "targetAgeTierMinAge",
   "timestamp",
   "token",
   "total",

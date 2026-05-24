@@ -1060,7 +1060,7 @@ Triggers and frequency:
 Subject:
 
 ```text
-You're 18! Set up your {{CLUB_NAME}} account
+You're now {{targetAgeTierLabel}} — set up your {{CLUB_NAME}} account
 ```
 
 Body:
@@ -1068,7 +1068,7 @@ Body:
 ```text
 Welcome to Your Own Account, {{firstName}}!
 
-Congratulations — you've turned 18! As an adult member of the {{CLUB_NAME}}, you can now log in and book stays at the lodge yourself.
+Congratulations — you've reached the {{targetAgeTierLabel}} age tier. You can now log in and book stays at the lodge yourself.
 
 Click the button below to set up your password and activate your account. This link expires in 7 days.
 
@@ -1082,9 +1082,40 @@ If you have any questions, contact the club at {{SUPPORT_EMAIL}}.
 Triggers and frequency:
 
 - Age-up cron, scheduled daily at 6:30 AM NZST.
-- Candidate criteria: active member, cannot login yet, age tier CHILD or YOUTH, date of birth makes them 18+ at the season start date.
+- Candidate criteria: active member, cannot login yet, age tier is not ADULT, date of birth places them in the configured ADULT age tier at the season start date.
+- Requires the member to have a unique login email and no email-inheritance source.
 - Skips if a sent/queued `age-up-invitation` already exists for the member email.
 - Rolls back the login upgrade/token if email delivery fails so a later cron can retry.
+
+### age-up-parent-email-handoff
+
+Subject:
+
+```text
+Email address needed for {{memberName}}'s {{CLUB_NAME}} login
+```
+
+Body:
+
+```text
+Email Address Needed for {{memberName}}
+
+Hi {{recipientName}},
+
+{{memberName}} has reached the {{targetAgeTierLabel}} age tier. Before we can activate their own booking login, they need a unique email address on their member record.
+
+They are currently using or inheriting another member's login email, so we have not enabled their login yet.
+
+Please contact the club at {{SUPPORT_EMAIL}} with {{memberName}}'s preferred email address. Once it is updated, their booking login can be activated.
+```
+
+Triggers and frequency:
+
+- Age-up cron, scheduled daily at 6:30 AM NZST.
+- Sent to the parent, email-inheritance source, or existing shared-login holder when an ageing-up member still shares or inherits a login email.
+- Does not include a token or login setup link.
+- Leaves the ageing-up member unchanged: no login enablement, no setup token, and no age-tier update.
+- Records an audit event keyed to the ageing-up member so the handoff is not resent every day; separate youths sharing the same recipient email are deduped independently.
 
 ### account-deletion-approved
 

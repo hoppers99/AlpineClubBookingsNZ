@@ -1417,12 +1417,21 @@ export function membershipApplicationRejectedTemplate(
   `);
 }
 
-/** Age-up invitation — sent when a youth/child turns 18 and gets their own login */
-export function ageUpInvitationTemplate(firstName: string, resetUrl: string): string {
+export interface AgeUpInvitationTemplateOptions {
+  targetAgeTierLabel?: string;
+}
+
+/** Age-up invitation — sent when a youth/child reaches the ADULT age tier and gets their own login */
+export function ageUpInvitationTemplate(
+  firstName: string,
+  resetUrl: string,
+  options: AgeUpInvitationTemplateOptions = {}
+): string {
   const name = escapeHtml(firstName);
+  const targetAgeTierLabel = options.targetAgeTierLabel?.trim() || "Adult (18+)";
   return layout(`
     ${heading("Welcome to Your Own Account, " + name + "!")}
-    ${paragraph(`Congratulations — you've turned 18! As an adult member of the ${escapeHtml(CLUB_NAME)}, you can now log in and book stays at the lodge yourself.`)}
+    ${paragraph(`Congratulations — you've reached the ${escapeHtml(targetAgeTierLabel)} age tier. You can now log in and book stays at the lodge yourself.`)}
     ${paragraph(
       "Click the button below to set up your password and activate your account. This link expires in <strong>" +
         String(MEMBER_SETUP_INVITE_TTL_DAYS) +
@@ -1431,6 +1440,39 @@ export function ageUpInvitationTemplate(firstName: string, resetUrl: string): st
     ${button("Set Up My Password", resetUrl)}
     ${alertBox("Once you set your password, you can log in at any time to book stays, view your bookings, and manage your profile.", "info")}
     ${supportContactSentence("If you have any questions, contact the club at ")}
+  `);
+}
+
+export interface AgeUpParentEmailHandoffTemplateOptions {
+  recipientName: string;
+  memberFirstName: string;
+  memberLastName: string;
+  targetAgeTierLabel?: string;
+}
+
+/** Age-up handoff — sent to the parent/source login holder when a member still shares an email */
+export function ageUpParentEmailHandoffTemplate({
+  recipientName,
+  memberFirstName,
+  memberLastName,
+  targetAgeTierLabel,
+}: AgeUpParentEmailHandoffTemplateOptions): string {
+  const safeRecipientName = escapeHtml(recipientName.trim() || "there");
+  const memberName = escapeHtml(
+    [memberFirstName, memberLastName].filter(Boolean).join(" ").trim() ||
+      memberFirstName
+  );
+  const safeTargetAgeTierLabel = escapeHtml(
+    targetAgeTierLabel?.trim() || "Adult (18+)"
+  );
+
+  return layout(`
+    ${heading("Email Address Needed for " + memberName)}
+    ${paragraph(`Hi ${safeRecipientName},`)}
+    ${paragraph(`${memberName} has reached the ${safeTargetAgeTierLabel} age tier. Before we can activate their own booking login, they need a unique email address on their member record.`)}
+    ${paragraph("They are currently using or inheriting another member's login email, so we have not enabled their login yet.")}
+    ${paragraph(`Please contact the club with ${memberName}'s preferred email address. Once it is updated, their booking login can be activated.`)}
+    ${supportContactSentence("Contact the club at ")}
   `);
 }
 

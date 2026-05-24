@@ -52,6 +52,38 @@ describe("email message registry", () => {
     expect(invalidDefinitions).toEqual([]);
   });
 
+  it("allows age-up invitation wording to use configured age-tier data", () => {
+    const ageUpDefinition = EMAIL_TEMPLATE_DEFINITIONS.find(
+      (definition) => definition.key === "age-up-invitation",
+    );
+
+    expect(ageUpDefinition?.allowedTokens).toEqual(
+      expect.arrayContaining([
+        "targetAgeTier",
+        "targetAgeTierLabel",
+        "targetAgeTierMinAge",
+      ]),
+    );
+  });
+
+  it("registers the age-up parent email handoff template as editor-safe", () => {
+    const handoffDefinition = EMAIL_TEMPLATE_DEFINITIONS.find(
+      (definition) => definition.key === "age-up-parent-email-handoff",
+    );
+
+    expect(handoffDefinition).toBeDefined();
+    expect(handoffDefinition?.allowedTokens).toEqual(
+      expect.arrayContaining([
+        "memberName",
+        "recipientName",
+        "targetAgeTier",
+        "targetAgeTierLabel",
+        "targetAgeTierMinAge",
+      ]),
+    );
+    expect(handoffDefinition?.requiredTokens).toContain("memberName");
+  });
+
   it("rejects unapproved template tokens", () => {
     expect(validateApprovedTemplateTokens(["Hi {{firstName}}"])).toEqual([]);
     expect(validateApprovedTemplateTokens(["Hi {{secretTokenValue}}"])).toEqual([

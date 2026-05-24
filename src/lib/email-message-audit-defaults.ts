@@ -127,8 +127,12 @@ export const EMAIL_AUDIT_DEFAULTS = {
     "defaultBody": "Join Request Submitted\n\nHi {{requesterName}},\n\nYour request to join the family group {{groupName}} has been submitted.\n\nAn administrator will review your request. You'll be notified once it's been processed.\n\n{{CLUB_NAME}} — {{SUPPORT_EMAIL}}"
   },
   "age-up-invitation": {
-    "defaultSubject": "You're 18! Set up your {{CLUB_NAME}} account",
-    "defaultBody": "Welcome to Your Own Account, {{firstName}}!\n\nCongratulations — you've turned 18! As an adult member of the {{CLUB_NAME}}, you can now log in and book stays at the lodge yourself.\n\nClick the button below to set up your password and activate your account. This link expires in 7 days.\n\nSet Up My Password: {{BASE_URL}}/reset-password?token={{token}}\n\nOnce you set your password, you can log in at any time to book stays, view your bookings, and manage your profile.\n\nIf you have any questions, contact the club at {{SUPPORT_EMAIL}}."
+    "defaultSubject": "You're now {{targetAgeTierLabel}} — set up your {{CLUB_NAME}} account",
+    "defaultBody": "Welcome to Your Own Account, {{firstName}}!\n\nCongratulations — you've reached the {{targetAgeTierLabel}} age tier. You can now log in and book stays at the lodge yourself.\n\nClick the button below to set up your password and activate your account. This link expires in 7 days.\n\nSet Up My Password: {{BASE_URL}}/reset-password?token={{token}}\n\nOnce you set your password, you can log in at any time to book stays, view your bookings, and manage your profile.\n\nIf you have any questions, contact the club at {{SUPPORT_EMAIL}}."
+  },
+  "age-up-parent-email-handoff": {
+    "defaultSubject": "Email address needed for {{memberName}}'s {{CLUB_NAME}} login",
+    "defaultBody": "Email Address Needed for {{memberName}}\n\nHi {{recipientName}},\n\n{{memberName}} has reached the {{targetAgeTierLabel}} age tier. Before we can activate their own booking login, they need a unique email address on their member record.\n\nThey are currently using or inheriting another member's login email, so we have not enabled their login yet.\n\nPlease contact the club at {{SUPPORT_EMAIL}} with {{memberName}}'s preferred email address. Once it is updated, their booking login can be activated."
   },
   "account-deletion-approved": {
     "defaultSubject": "Your Account Deletion Request Has Been Processed",

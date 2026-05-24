@@ -12,7 +12,11 @@ vi.mock("../prisma", () => ({
     $transaction: (...args: unknown[]) => mockPrismaTransaction(...args),
     member: {
       findMany: vi.fn(),
+      findFirst: vi.fn(),
       update: vi.fn(),
+    },
+    ageTierSetting: {
+      findMany: vi.fn(),
     },
     passwordResetToken: {
       create: vi.fn(),
@@ -20,11 +24,16 @@ vi.mock("../prisma", () => ({
     emailLog: {
       findFirst: vi.fn(),
     },
+    auditLog: {
+      findFirst: vi.fn(),
+      create: vi.fn(),
+    },
   },
 }));
 
 vi.mock("../email", () => ({
   sendAgeUpInvitationEmail: vi.fn(),
+  sendAgeUpParentEmailHandoffEmail: vi.fn(),
 }));
 
 vi.mock("../logger", () => ({
@@ -41,17 +50,33 @@ vi.mock("../utils", () => ({
 }));
 
 import { prisma } from "../prisma";
-import { sendAgeUpInvitationEmail } from "../email";
+import {
+  sendAgeUpInvitationEmail,
+  sendAgeUpParentEmailHandoffEmail,
+} from "../email";
+import { AGE_TIER_DEFAULTS, invalidateAgeTierCache } from "../age-tier";
 import { checkAgeUpMembers } from "../cron-age-up";
 
 const mockedFindMany = vi.mocked(prisma.member.findMany);
+const mockedMemberFindFirst = vi.mocked(prisma.member.findFirst);
 const mockedUpdate = vi.mocked(prisma.member.update);
+const mockedAgeTierSettingsFindMany = vi.mocked(prisma.ageTierSetting.findMany);
 const mockedCreateToken = vi.mocked(prisma.passwordResetToken.create);
 const mockedEmailLogFind = vi.mocked(prisma.emailLog.findFirst);
+const mockedAuditLogFind = vi.mocked(prisma.auditLog.findFirst);
+const mockedAuditLogCreate = vi.mocked(prisma.auditLog.create);
 const mockedSendEmail = vi.mocked(sendAgeUpInvitationEmail);
+const mockedSendHandoffEmail = vi.mocked(sendAgeUpParentEmailHandoffEmail);
 
 beforeEach(() => {
   vi.clearAllMocks();
+  invalidateAgeTierCache();
+  mockedAgeTierSettingsFindMany.mockResolvedValue(
+    AGE_TIER_DEFAULTS.map((setting) => ({
+      ...setting,
+      xeroAcceptedContactGroups: [],
+    })) as any
+  );
   mockPrismaTransaction.mockImplementation(
     async (fn: (tx: unknown) => Promise<unknown>) =>
       fn({
@@ -66,7 +91,16 @@ beforeEach(() => {
         },
       })
   );
-  mockTxMemberFindUnique.mockResolvedValue({ canLogin: false, ageTier: "YOUTH" });
+  mockedMemberFindFirst.mockResolvedValue(null);
+  mockedAuditLogFind.mockResolvedValue(null);
+  mockedAuditLogCreate.mockResolvedValue({} as any);
+  mockTxMemberFindUnique.mockResolvedValue({
+    canLogin: false,
+    ageTier: "YOUTH",
+    inheritEmailFromId: null,
+    inheritParentEmail: false,
+    parentMemberId: null,
+  });
   mockTxMemberUpdateMany.mockResolvedValue({ count: 1 });
   mockTxTokenDeleteMany.mockResolvedValue({ count: 1 });
 });
@@ -106,7 +140,12 @@ describe("checkAgeUpMembers", () => {
     // Check member was updated
     expect(mockedUpdate).toHaveBeenCalledWith({
       where: { id: "m1" },
-      data: { canLogin: true, ageTier: "ADULT" },
+      data: {
+        canLogin: true,
+        ageTier: "ADULT",
+        inheritEmailFromId: null,
+        inheritParentEmail: false,
+      },
     });
 
     // Check password reset token was created
@@ -122,7 +161,70 @@ describe("checkAgeUpMembers", () => {
     expect(mockedSendEmail).toHaveBeenCalledWith(
       "youth@example.com",
       "Alice",
-      expect.any(String)
+      expect.any(String),
+      expect.objectContaining({
+        targetAgeTier: "ADULT",
+        targetAgeTierLabel: "Adult (18+)",
+        targetAgeTierMinAge: 18,
+      })
+    );
+  });
+
+  it("upgrades normally once the member has a unique email and inheritance is cleared", async () => {
+    const member = {
+      id: "m-unique-family-link",
+      email: "unique-youth@example.com",
+      firstName: "Una",
+      lastName: "Unique",
+      dateOfBirth: dobForAge(18),
+      parentMemberId: "parent-keep",
+      inheritParentEmail: false,
+      inheritEmailFromId: null,
+      inheritEmailFrom: null,
+      parent: {
+        id: "parent-keep",
+        email: "parent-keep@example.com",
+        firstName: "Keep",
+        lastName: "Parent",
+      },
+    };
+
+    mockedFindMany.mockResolvedValue([member] as any);
+    mockedEmailLogFind.mockResolvedValue(null);
+    mockedUpdate.mockResolvedValue({} as any);
+    mockedCreateToken.mockResolvedValue({} as any);
+    mockedSendEmail.mockResolvedValue(undefined);
+    mockTxMemberFindUnique.mockResolvedValue({
+      canLogin: false,
+      ageTier: "YOUTH",
+      inheritEmailFromId: null,
+      inheritParentEmail: false,
+      parentMemberId: "parent-keep",
+    });
+
+    const result = await checkAgeUpMembers();
+
+    expect(result.upgraded).toBe(1);
+    expect(result.handoff).toBe(0);
+    expect(mockedUpdate).toHaveBeenCalledWith({
+      where: { id: "m-unique-family-link" },
+      data: {
+        canLogin: true,
+        ageTier: "ADULT",
+        inheritEmailFromId: null,
+        inheritParentEmail: false,
+      },
+    });
+    expect((mockedUpdate.mock.calls[0]![0] as any).data).not.toHaveProperty(
+      "parentMemberId"
+    );
+    expect(mockedSendEmail).toHaveBeenCalledWith(
+      "unique-youth@example.com",
+      "Una",
+      expect.any(String),
+      expect.objectContaining({
+        targetAgeTierLabel: "Adult (18+)",
+      })
     );
   });
 
@@ -149,32 +251,218 @@ describe("checkAgeUpMembers", () => {
     expect(mockedSendEmail).not.toHaveBeenCalled();
   });
 
-  it("should use inherited email when inheritEmailFromId is set", async () => {
+  it("sends parent handoff and does not update or tokenize when inheritEmailFromId is set", async () => {
     const member = {
       id: "m3",
       email: "child@placeholder.com",
       firstName: "Charlie",
       lastName: "Brown",
       dateOfBirth: dobForAge(18),
+      parentMemberId: null,
+      inheritParentEmail: false,
       inheritEmailFromId: "parent1",
-      inheritEmailFrom: { email: "parent@example.com" },
+      inheritEmailFrom: {
+        id: "parent1",
+        email: "parent@example.com",
+        firstName: "Pat",
+        lastName: "Parent",
+      },
+      parent: null,
     };
 
     mockedFindMany.mockResolvedValue([member] as any);
-    mockedEmailLogFind.mockResolvedValue(null);
-    mockedUpdate.mockResolvedValue({} as any);
-    mockedCreateToken.mockResolvedValue({} as any);
-    mockedSendEmail.mockResolvedValue(undefined);
+    mockedSendHandoffEmail.mockResolvedValue(undefined);
 
     const result = await checkAgeUpMembers();
 
-    expect(result.upgraded).toBe(1);
-    // Email should go to parent's email
-    expect(mockedSendEmail).toHaveBeenCalledWith(
+    expect(result.upgraded).toBe(0);
+    expect(result.handoff).toBe(1);
+    expect(mockedUpdate).not.toHaveBeenCalled();
+    expect(mockedCreateToken).not.toHaveBeenCalled();
+    expect(mockedSendEmail).not.toHaveBeenCalled();
+    expect(mockedSendHandoffEmail).toHaveBeenCalledWith(
       "parent@example.com",
-      "Charlie",
-      expect.any(String)
+      expect.objectContaining({
+        recipientName: "Pat Parent",
+        memberFirstName: "Charlie",
+        memberLastName: "Brown",
+        targetAgeTierLabel: "Adult (18+)",
+        targetAgeTierMinAge: 18,
+      })
     );
+    expect(mockedAuditLogCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        action: "member.age_up.parent_email_handoff_sent",
+        subjectMemberId: "m3",
+        entityType: "Member",
+        entityId: "m3",
+        metadata: expect.objectContaining({
+          handoffReason: "inheritEmailFrom",
+          sourceMemberId: "parent1",
+        }),
+      }),
+    });
+  });
+
+  it("sends parent handoff for legacy inheritParentEmail with parentMemberId", async () => {
+    const member = {
+      id: "m-legacy",
+      email: "legacy-child@example.com",
+      firstName: "Lee",
+      lastName: "Legacy",
+      dateOfBirth: dobForAge(18),
+      parentMemberId: "parent-legacy",
+      inheritParentEmail: true,
+      inheritEmailFromId: null,
+      inheritEmailFrom: null,
+      parent: {
+        id: "parent-legacy",
+        email: "legacy-parent@example.com",
+        firstName: "Jordan",
+        lastName: "Parent",
+      },
+    };
+
+    mockedFindMany.mockResolvedValue([member] as any);
+    mockedSendHandoffEmail.mockResolvedValue(undefined);
+
+    const result = await checkAgeUpMembers();
+
+    expect(result.handoff).toBe(1);
+    expect(mockedUpdate).not.toHaveBeenCalled();
+    expect(mockedCreateToken).not.toHaveBeenCalled();
+    expect(mockedSendHandoffEmail).toHaveBeenCalledWith(
+      "legacy-parent@example.com",
+      expect.objectContaining({
+        recipientName: "Jordan Parent",
+        memberFirstName: "Lee",
+        memberLastName: "Legacy",
+      })
+    );
+    expect(mockedAuditLogCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        subjectMemberId: "m-legacy",
+        metadata: expect.objectContaining({
+          handoffReason: "legacyParentEmail",
+          sourceMemberId: "parent-legacy",
+        }),
+      }),
+    });
+  });
+
+  it("sends parent handoff when the youth email matches another login member", async () => {
+    const member = {
+      id: "m-shared",
+      email: "shared@example.com",
+      firstName: "Sam",
+      lastName: "Shared",
+      dateOfBirth: dobForAge(18),
+      parentMemberId: null,
+      inheritParentEmail: false,
+      inheritEmailFromId: null,
+      inheritEmailFrom: null,
+      parent: null,
+    };
+
+    mockedFindMany.mockResolvedValue([member] as any);
+    mockedMemberFindFirst.mockResolvedValue({
+      id: "login-holder",
+      email: "shared@example.com",
+      firstName: "Alex",
+      lastName: "Holder",
+    } as any);
+    mockedSendHandoffEmail.mockResolvedValue(undefined);
+
+    const result = await checkAgeUpMembers();
+
+    expect(result.handoff).toBe(1);
+    expect(mockedUpdate).not.toHaveBeenCalled();
+    expect(mockedCreateToken).not.toHaveBeenCalled();
+    expect(mockedSendHandoffEmail).toHaveBeenCalledWith(
+      "shared@example.com",
+      expect.objectContaining({
+        recipientName: "Alex Holder",
+        memberFirstName: "Sam",
+        memberLastName: "Shared",
+      })
+    );
+    expect(mockedAuditLogCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        subjectMemberId: "m-shared",
+        metadata: expect.objectContaining({
+          handoffReason: "sharedLoginEmail",
+          sourceMemberId: "login-holder",
+        }),
+      }),
+    });
+  });
+
+  it("dedupes handoff per youth member rather than recipient email", async () => {
+    const parent = {
+      id: "parent1",
+      email: "parent@example.com",
+      firstName: "Pat",
+      lastName: "Parent",
+    };
+    const member1 = {
+      id: "handoff-already",
+      email: "one@example.com",
+      firstName: "One",
+      lastName: "Youth",
+      dateOfBirth: dobForAge(18),
+      parentMemberId: null,
+      inheritParentEmail: false,
+      inheritEmailFromId: "parent1",
+      inheritEmailFrom: parent,
+      parent: null,
+    };
+    const member2 = {
+      id: "handoff-new",
+      email: "two@example.com",
+      firstName: "Two",
+      lastName: "Youth",
+      dateOfBirth: dobForAge(18),
+      parentMemberId: null,
+      inheritParentEmail: false,
+      inheritEmailFromId: "parent1",
+      inheritEmailFrom: parent,
+      parent: null,
+    };
+
+    mockedFindMany.mockResolvedValue([member1, member2] as any);
+    mockedAuditLogFind
+      .mockResolvedValueOnce({ id: "existing-audit" } as any)
+      .mockResolvedValueOnce(null);
+    mockedSendHandoffEmail.mockResolvedValue(undefined);
+
+    const result = await checkAgeUpMembers();
+
+    expect(result.handoff).toBe(1);
+    expect(result.skipped).toBe(1);
+    expect(mockedSendHandoffEmail).toHaveBeenCalledTimes(1);
+    expect(mockedSendHandoffEmail).toHaveBeenCalledWith(
+      "parent@example.com",
+      expect.objectContaining({
+        memberFirstName: "Two",
+        memberLastName: "Youth",
+      })
+    );
+    expect(mockedAuditLogFind).toHaveBeenNthCalledWith(1, {
+      where: {
+        action: "member.age_up.parent_email_handoff_sent",
+        subjectMemberId: "handoff-already",
+        outcome: "success",
+      },
+      select: { id: true },
+    });
+    expect(mockedAuditLogFind).toHaveBeenNthCalledWith(2, {
+      where: {
+        action: "member.age_up.parent_email_handoff_sent",
+        subjectMemberId: "handoff-new",
+        outcome: "success",
+      },
+      select: { id: true },
+    });
   });
 
   it("should handle no candidates gracefully", async () => {
@@ -184,6 +472,7 @@ describe("checkAgeUpMembers", () => {
 
     expect(result.processed).toBe(0);
     expect(result.upgraded).toBe(0);
+    expect(result.handoff).toBe(0);
     expect(result.skipped).toBe(0);
     expect(result.failed).toBe(0);
   });
@@ -268,6 +557,8 @@ describe("checkAgeUpMembers", () => {
       data: {
         canLogin: false,
         ageTier: "YOUTH",
+        inheritEmailFromId: null,
+        inheritParentEmail: false,
       },
     });
   });
@@ -343,7 +634,7 @@ describe("checkAgeUpMembers", () => {
       where: {
         active: true,
         canLogin: false,
-        ageTier: { in: ["CHILD", "YOUTH"] },
+        ageTier: { not: "ADULT" },
         dateOfBirth: {
           not: null,
           lte: expect.any(Date),
@@ -354,8 +645,15 @@ describe("checkAgeUpMembers", () => {
         email: true,
         firstName: true,
         dateOfBirth: true,
+        parentMemberId: true,
+        inheritParentEmail: true,
         inheritEmailFromId: true,
-        inheritEmailFrom: { select: { email: true } },
+        inheritEmailFrom: {
+          select: { id: true, email: true, firstName: true, lastName: true },
+        },
+        parent: {
+          select: { id: true, email: true, firstName: true, lastName: true },
+        },
       }),
     });
 
@@ -367,6 +665,73 @@ describe("checkAgeUpMembers", () => {
     expect(cutoffDate.getMonth()).toBe(3); // April
     expect(cutoffDate.getDate()).toBe(1);
   });
+
+  it("should use the configured ADULT age tier for cutoff and email data", async () => {
+    mockedAgeTierSettingsFindMany.mockResolvedValue([
+      {
+        tier: "CHILD",
+        minAge: 0,
+        maxAge: 12,
+        label: "Junior",
+        sortOrder: 1,
+        subscriptionRequiredForBooking: false,
+        xeroAcceptedContactGroups: [],
+      },
+      {
+        tier: "YOUTH",
+        minAge: 13,
+        maxAge: 20,
+        label: "Youth",
+        sortOrder: 2,
+        subscriptionRequiredForBooking: true,
+        xeroAcceptedContactGroups: [],
+      },
+      {
+        tier: "ADULT",
+        minAge: 21,
+        maxAge: null,
+        label: "Senior (21+)",
+        sortOrder: 3,
+        subscriptionRequiredForBooking: true,
+        xeroAcceptedContactGroups: [],
+      },
+    ] as any);
+
+    const member = {
+      id: "m-adult-21",
+      email: "adult21@example.com",
+      firstName: "Alex",
+      lastName: "Boundary",
+      dateOfBirth: dobForAge(21),
+      inheritEmailFromId: null,
+      inheritEmailFrom: null,
+    };
+
+    mockedFindMany.mockResolvedValue([member] as any);
+    mockedEmailLogFind.mockResolvedValue(null);
+    mockedUpdate.mockResolvedValue({} as any);
+    mockedCreateToken.mockResolvedValue({} as any);
+    mockedSendEmail.mockResolvedValue(undefined);
+
+    const result = await checkAgeUpMembers();
+
+    expect(result.upgraded).toBe(1);
+    const cutoff = (mockedFindMany.mock.calls[0]![0] as any).where.dateOfBirth;
+    const cutoffDate = cutoff.lte as Date;
+    expect(cutoffDate.getFullYear()).toBe(2005);
+    expect(cutoffDate.getMonth()).toBe(3);
+    expect(cutoffDate.getDate()).toBe(1);
+    expect(mockedSendEmail).toHaveBeenCalledWith(
+      "adult21@example.com",
+      "Alex",
+      expect.any(String),
+      {
+        targetAgeTier: "ADULT",
+        targetAgeTierLabel: "Senior (21+)",
+        targetAgeTierMinAge: 21,
+      }
+    );
+  });
 });
 
 describe("ageUpInvitationTemplate", () => {
@@ -377,8 +742,21 @@ describe("ageUpInvitationTemplate", () => {
 
     expect(html).toContain("Alice");
     expect(html).toContain("https://example.com/reset?token=abc");
-    expect(html).toContain("turned 18");
+    expect(html).toContain("Adult (18+)");
     expect(html).toContain("Set Up My Password");
+  });
+
+  it("should use the configured target age tier label", async () => {
+    const { ageUpInvitationTemplate } = await import("../email-templates");
+
+    const html = ageUpInvitationTemplate(
+      "Alice",
+      "https://example.com/reset?token=abc",
+      { targetAgeTierLabel: "Senior (21+)" }
+    );
+
+    expect(html).toContain("Senior (21+)");
+    expect(html).not.toContain("turned 18");
   });
 
   it("should escape HTML in firstName", async () => {
@@ -388,6 +766,25 @@ describe("ageUpInvitationTemplate", () => {
 
     expect(html).not.toContain("<script>");
     expect(html).toContain("&lt;script&gt;");
+  });
+});
+
+describe("ageUpParentEmailHandoffTemplate", () => {
+  it("generates a tokenless handoff message and escapes member data", async () => {
+    const { ageUpParentEmailHandoffTemplate } = await import("../email-templates");
+
+    const html = ageUpParentEmailHandoffTemplate({
+      recipientName: "Pat Parent",
+      memberFirstName: "<Charlie>",
+      memberLastName: "Brown",
+      targetAgeTierLabel: "Adult (18+)",
+    });
+
+    expect(html).toContain("Pat Parent");
+    expect(html).toContain("&lt;Charlie&gt; Brown");
+    expect(html).toContain("unique email address");
+    expect(html).not.toContain("token=");
+    expect(html).not.toContain("Set Up My Password");
   });
 });
 
