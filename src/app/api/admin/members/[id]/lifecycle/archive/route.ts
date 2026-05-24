@@ -2,15 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { auth } from "@/lib/auth";
 import {
+  createMemberArchiveRequest,
   MemberLifecycleActionError,
-  reviewMemberLifecycleActionRequest,
 } from "@/lib/member-lifecycle-actions";
 import logger from "@/lib/logger";
 import { requireActiveSessionUser } from "@/lib/session-guards";
 
-const reviewSchema = z.object({
-  action: z.enum(["approve", "reject"]),
-  note: z.string().max(1000).optional(),
+const archiveRequestSchema = z.object({
+  reason: z.string().trim().min(1).max(1000),
 });
 
 function getIpAddress(request: NextRequest) {
@@ -21,9 +20,9 @@ function getIpAddress(request: NextRequest) {
   );
 }
 
-export async function PATCH(
+export async function POST(
   request: NextRequest,
-  { params }: { params: Promise<{ requestId: string }> },
+  { params }: { params: Promise<{ id: string }> },
 ) {
   const session = await auth();
   if (!session?.user?.id) {
@@ -39,21 +38,20 @@ export async function PATCH(
     return inactiveResponse;
   }
 
-  let body: z.infer<typeof reviewSchema>;
+  let body: z.infer<typeof archiveRequestSchema>;
   try {
-    body = reviewSchema.parse(await request.json());
+    body = archiveRequestSchema.parse(await request.json());
   } catch {
     return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
   }
 
-  const { requestId } = await params;
+  const { id } = await params;
 
   try {
-    const result = await reviewMemberLifecycleActionRequest({
-      requestId,
-      reviewedByMemberId: session.user.id,
-      action: body.action,
-      reviewNote: body.note,
+    const result = await createMemberArchiveRequest({
+      memberId: id,
+      requestedByMemberId: session.user.id,
+      reason: body.reason,
       ipAddress: getIpAddress(request),
     });
 
@@ -61,14 +59,14 @@ export async function PATCH(
   } catch (err) {
     if (err instanceof MemberLifecycleActionError) {
       return NextResponse.json(
-        { error: err.message, details: err.details },
+        { error: err.message },
         { status: err.statusCode },
       );
     }
 
-    logger.error({ err, requestId }, "Failed to review member lifecycle action request");
+    logger.error({ err, memberId: id }, "Failed to create member archive request");
     return NextResponse.json(
-      { error: "Failed to review member lifecycle action request" },
+      { error: "Failed to create member archive request" },
       { status: 500 },
     );
   }

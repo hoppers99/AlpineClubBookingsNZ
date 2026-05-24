@@ -9,6 +9,13 @@ import { getAgeTierSettings } from "@/lib/age-tier";
 
 const AGE_TIER_VALUES = Object.values(AgeTier);
 const SUBSCRIPTION_STATUS_FILTERS = ["PAID", "UNPAID", "OVERDUE", "NOT_INVOICED"] as const;
+const MEMBER_LIFECYCLE_STATUS_FILTERS = [
+  "active",
+  "inactive",
+  "cancelled",
+  "archived",
+  "all",
+] as const;
 
 /**
  * Escape a value for RFC 4180 CSV format.
@@ -73,11 +80,36 @@ export async function GET(req: NextRequest) {
     andConditions.push({ role: roleFilter });
   }
 
+  const lifecycleStatusFilter = sp.get("lifecycleStatus");
+  const lifecycleStatus = (
+    lifecycleStatusFilter &&
+    (MEMBER_LIFECYCLE_STATUS_FILTERS as readonly string[]).includes(lifecycleStatusFilter)
+  )
+    ? lifecycleStatusFilter
+    : null;
+  const includeArchived = sp.get("includeArchived") === "true";
+
+  if (lifecycleStatus === "archived") {
+    where.archivedAt = { not: null };
+  } else if (lifecycleStatus !== "all" && !includeArchived) {
+    where.archivedAt = null;
+  }
+
+  if (lifecycleStatus === "active") {
+    andConditions.push({ active: true }, { cancelledAt: null });
+  } else if (lifecycleStatus === "inactive") {
+    andConditions.push({ active: false }, { cancelledAt: null });
+  } else if (lifecycleStatus === "cancelled") {
+    andConditions.push({ cancelledAt: { not: null } });
+  }
+
   const activeFilter = sp.get("active");
-  if (activeFilter === "true") {
-    andConditions.push({ active: true });
-  } else if (activeFilter === "false") {
-    andConditions.push({ active: false });
+  if (!lifecycleStatus) {
+    if (activeFilter === "true") {
+      andConditions.push({ active: true });
+    } else if (activeFilter === "false") {
+      andConditions.push({ active: false });
+    }
   }
 
   const ageTierFilter = sp.get("ageTier");
@@ -186,6 +218,8 @@ export async function GET(req: NextRequest) {
         financeAccessLevel: true,
         ageTier: true,
         active: true,
+        cancelledAt: true,
+        archivedAt: true,
         xeroContactId: true,
         createdAt: true,
         subscriptions: {
@@ -207,6 +241,8 @@ export async function GET(req: NextRequest) {
       "Role",
       "Age Tier",
       "Active",
+      "Cancelled At",
+      "Archived At",
       "Xero Contact ID",
       "Subscription Status",
       "Created At",
@@ -223,6 +259,8 @@ export async function GET(req: NextRequest) {
       m.role,
       m.ageTier,
       m.active ? "Yes" : "No",
+      m.cancelledAt ? new Date(m.cancelledAt).toISOString() : "",
+      m.archivedAt ? new Date(m.archivedAt).toISOString() : "",
       m.xeroContactId || "",
       m.role === "ADMIN" || notRequiredAgeTiers.has(m.ageTier)
         ? "NOT_REQUIRED"

@@ -135,6 +135,7 @@ enum MembershipCancellationParticipantStatus {
 }
 
 enum MemberLifecycleAction {
+  ARCHIVE
   DELETE
 }
 
@@ -235,22 +236,25 @@ model Member {
   postalPostalCode   String?
   postalCountry      String?
 
-  role                       Role               @default(MEMBER)
-  financeAccessLevel         FinanceAccessLevel @default(NONE)
-  ageTier                    AgeTier            @default(ADULT)
-  xeroContactId              String?            @unique
-  active                     Boolean            @default(true)
-  canLogin                   Boolean            @default(false) // true for members allowed to authenticate; the DB enforces one canLogin member per email
-  profileCompletedAt         DateTime?
-  detailsConfirmedAt         DateTime?
-  detailsConfirmedByMemberId String?
-  onboardingConfirmedAt      DateTime?
-  joinedDate                 DateTime? // Membership start date, sourced from Xero first invoice
-  cancelledAt                DateTime?
-  cancelledReason            String?
-  cancelledViaRequestId      String?
-  createdAt                  DateTime           @default(now())
-  updatedAt                  DateTime           @updatedAt
+  role                                Role               @default(MEMBER)
+  financeAccessLevel                  FinanceAccessLevel @default(NONE)
+  ageTier                             AgeTier            @default(ADULT)
+  xeroContactId                       String?            @unique
+  active                              Boolean            @default(true)
+  canLogin                            Boolean            @default(false) // true for members allowed to authenticate; the DB enforces one canLogin member per email
+  profileCompletedAt                  DateTime?
+  detailsConfirmedAt                  DateTime?
+  detailsConfirmedByMemberId          String?
+  onboardingConfirmedAt               DateTime?
+  joinedDate                          DateTime? // Membership start date, sourced from Xero first invoice
+  cancelledAt                         DateTime?
+  cancelledReason                     String?
+  cancelledViaRequestId               String?
+  archivedAt                          DateTime?
+  archivedReason                      String?
+  archivedViaLifecycleActionRequestId String?
+  createdAt                           DateTime           @default(now())
+  updatedAt                           DateTime           @updatedAt
 
   // Family/dependent support: dependents can share parent's email or have their own
   parentMemberId     String?
@@ -270,9 +274,10 @@ model Member {
   inheritEmailFrom    Member?  @relation("EmailInheritance", fields: [inheritEmailFromId], references: [id], onDelete: SetNull)
   emailInheritanceFor Member[] @relation("EmailInheritance")
 
-  detailsConfirmedBy  Member?                        @relation("MemberDetailsConfirmedBy", fields: [detailsConfirmedByMemberId], references: [id], onDelete: SetNull)
-  detailsConfirmedFor Member[]                       @relation("MemberDetailsConfirmedBy")
-  cancelledViaRequest MembershipCancellationRequest? @relation("CancelledViaMembershipCancellationRequest", fields: [cancelledViaRequestId], references: [id], onDelete: SetNull)
+  detailsConfirmedBy                Member?                        @relation("MemberDetailsConfirmedBy", fields: [detailsConfirmedByMemberId], references: [id], onDelete: SetNull)
+  detailsConfirmedFor               Member[]                       @relation("MemberDetailsConfirmedBy")
+  cancelledViaRequest               MembershipCancellationRequest? @relation("CancelledViaMembershipCancellationRequest", fields: [cancelledViaRequestId], references: [id], onDelete: SetNull)
+  archivedViaLifecycleActionRequest MemberLifecycleActionRequest?  @relation("ArchivedViaMemberLifecycleActionRequest", fields: [archivedViaLifecycleActionRequestId], references: [id], onDelete: SetNull)
 
   // Family group: links primary adult members (e.g. spouses) for shared booking quick-add
   // @deprecated — use FamilyGroupMember join table instead
@@ -325,6 +330,8 @@ model Member {
   @@index([detailsConfirmedByMemberId])
   @@index([cancelledViaRequestId])
   @@index([cancelledAt])
+  @@index([archivedViaLifecycleActionRequestId])
+  @@index([archivedAt])
   @@index([canLogin])
   @@index([active])
 }
@@ -518,8 +525,9 @@ model MemberLifecycleActionRequest {
   createdAt           DateTime                           @default(now())
   updatedAt           DateTime                           @updatedAt
 
-  requestedBy Member? @relation("MemberLifecycleActionRequester", fields: [requestedByMemberId], references: [id], onDelete: SetNull)
-  reviewedBy  Member? @relation("MemberLifecycleActionReviewer", fields: [reviewedByMemberId], references: [id], onDelete: SetNull)
+  requestedBy     Member?  @relation("MemberLifecycleActionRequester", fields: [requestedByMemberId], references: [id], onDelete: SetNull)
+  reviewedBy      Member?  @relation("MemberLifecycleActionReviewer", fields: [reviewedByMemberId], references: [id], onDelete: SetNull)
+  archivedMembers Member[] @relation("ArchivedViaMemberLifecycleActionRequest")
 
   @@index([memberId, action, status])
   @@index([requestedByMemberId])

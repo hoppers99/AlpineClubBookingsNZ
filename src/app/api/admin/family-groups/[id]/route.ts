@@ -33,6 +33,7 @@ export async function GET(
     where: { id },
     include: {
       memberships: {
+        where: { member: { archivedAt: null } },
         include: {
           member: {
             select: {
@@ -43,6 +44,7 @@ export async function GET(
               ageTier: true,
               active: true,
               canLogin: true,
+              archivedAt: true,
               inheritEmailFromId: true,
               inheritEmailFrom: {
                 select: { email: true },
@@ -135,14 +137,20 @@ export async function PUT(
   if (memberIds) {
     const uniqueIds = [...new Set(memberIds)];
 
-    // Validate new members exist and are active
+    // Validate new members exist and are not archived.
     const members = await prisma.member.findMany({
       where: { id: { in: uniqueIds } },
-      select: { id: true, firstName: true, lastName: true, active: true },
+      select: { id: true, firstName: true, lastName: true, active: true, archivedAt: true },
     });
 
     if (members.length !== uniqueIds.length) {
       return NextResponse.json({ error: "One or more members not found" }, { status: 404 });
+    }
+    if (members.some((member) => member.archivedAt)) {
+      return NextResponse.json(
+        { error: "Family groups cannot include archived members" },
+        { status: 422 }
+      );
     }
 
     const currentMemberIds = existing.memberships.map((m) => m.memberId);

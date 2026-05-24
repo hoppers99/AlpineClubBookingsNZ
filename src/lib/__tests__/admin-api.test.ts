@@ -217,6 +217,7 @@ describe("Admin Subscriptions API", () => {
           seasonYear: 2026,
           member: {
             ageTier: "YOUTH",
+            archivedAt: null,
             xeroContactId: { in: ["xc-1", "xc-2"] },
           },
         },

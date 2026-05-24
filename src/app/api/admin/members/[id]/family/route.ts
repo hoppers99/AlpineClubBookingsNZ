@@ -31,6 +31,7 @@ export async function GET(
       lastName: true,
       ageTier: true,
       active: true,
+      archivedAt: true,
       familyGroupMemberships: {
         select: {
           familyGroupId: true,
@@ -40,7 +41,7 @@ export async function GET(
     },
   });
 
-  if (!member || !member.active) {
+  if (!member || !member.active || member.archivedAt) {
     return NextResponse.json({ error: "Member not found" }, { status: 404 });
   }
 
@@ -76,7 +77,7 @@ export async function GET(
       where: {
         familyGroupId: { in: groupIds },
         memberId: { not: memberId },
-        member: { active: true },
+        member: { active: true, archivedAt: null },
       },
       include: {
         member: {

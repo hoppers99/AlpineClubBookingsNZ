@@ -24,7 +24,7 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from "@/components/ui/accordion"
-import { ArrowLeft, ExternalLink, User, Calendar, CreditCard, Clock, Pencil, Search, Link2, Plus, Trash2 } from "lucide-react"
+import { Archive, ArrowLeft, ExternalLink, User, Calendar, CreditCard, Clock, Pencil, Search, Link2, Plus, Trash2 } from "lucide-react"
 import {
   NZ_COUNTRY_NAME,
   postalMatchesPhysical,
@@ -78,19 +78,25 @@ interface MemberDeleteEligibility {
   checkedAt: string
 }
 
+interface LifecycleActor {
+  id: string
+  name: string
+  email: string
+}
+
 interface MemberLifecycleActionRequest {
   id: string
   memberId: string
-  action: "DELETE"
+  action: "ARCHIVE" | "DELETE"
   status: "REQUESTED" | "APPROVED" | "REJECTED"
   reason: string
   reviewNote: string | null
   requestedAt: string
   reviewedAt: string | null
   processedAt: string | null
-  requestedBy: { id: string; name: string; email: string } | null
-  reviewedBy: { id: string; name: string; email: string } | null
-  memberSnapshot: unknown
+  requestedBy: LifecycleActor | null
+  reviewedBy: LifecycleActor | null
+  memberSnapshot?: unknown
 }
 
 interface EmailInheritanceSearchResult {
@@ -109,6 +115,11 @@ interface MemberDetail {
   financeAccessLevel: FinanceAccessLevel
   active: boolean; forcePasswordChange: boolean; xeroContactId: string | null; joinedDate: string | null; createdAt: string
   canLogin: boolean
+  cancelledAt: string | null
+  cancelledReason: string | null
+  archivedAt: string | null
+  archivedReason: string | null
+  archivedViaLifecycleActionRequestId: string | null
   parentMemberId: string | null
   secondaryParentId: string | null
   parent: ParentMemberSummary | null
@@ -144,9 +155,9 @@ interface MemberDetail {
     visibleToMember: boolean
     statusReason: string
   }>
+  lifecycleActionRequests: MemberLifecycleActionRequest[]
   auditLogs: AuditLogEntry[]
   deleteEligibility: MemberDeleteEligibility
-  lifecycleActionRequests: MemberLifecycleActionRequest[]
   stats: { totalBookings: number; totalSpendCents: number; lastStay: string | null }
   dependents: Array<{ id: string; firstName: string; lastName: string; ageTier: string; active: boolean; dateOfBirth: string | null; canLogin: boolean; parentLinkType?: "PRIMARY" | "SECONDARY" }>
   streetAddressLine1: string | null; streetAddressLine2: string | null; streetCity: string | null
@@ -475,6 +486,10 @@ export default function MemberDetailPage({ params }: { params: Promise<{ id: str
   const [adjustmentSaving, setAdjustmentSaving] = useState(false)
   const [adjustmentError, setAdjustmentError] = useState("")
   const [reviewingAdjustmentId, setReviewingAdjustmentId] = useState<string | null>(null)
+  const [archiveReason, setArchiveReason] = useState("")
+  const [archiveReviewNotes, setArchiveReviewNotes] = useState<Record<string, string>>({})
+  const [archiveActionLoading, setArchiveActionLoading] = useState<string | null>(null)
+  const [archiveError, setArchiveError] = useState("")
 
   // Xero link/push state
   const [xeroSearchOpen, setXeroSearchOpen] = useState(false)
@@ -508,6 +523,8 @@ export default function MemberDetailPage({ params }: { params: Promise<{ id: str
   const [deleteReviewSubmitting, setDeleteReviewSubmitting] = useState(false)
   const [openMemberSections, setOpenMemberSections] = useState<CollapsibleMemberSection[]>([])
   const isAdultMember = member?.ageTier === "ADULT"
+  const memberIsArchived = Boolean(member?.archivedAt)
+  const memberLifecycleLocked = Boolean(member?.cancelledAt || member?.archivedAt)
   const memberId = member?.id
   const shouldAutoOpenEdit = searchParams.get("edit") === "true"
   const backHref = resolveInternalReturnPath(searchParams.get("returnTo"), "/admin/members")
@@ -664,6 +681,74 @@ export default function MemberDetailPage({ params }: { params: Promise<{ id: str
       )
     } finally {
       setReviewingAdjustmentId(null)
+    }
+  }
+
+  const handleSubmitArchiveRequest = async () => {
+    const reason = archiveReason.trim()
+    if (!reason) {
+      setArchiveError("Archive reason is required")
+      return
+    }
+
+    setArchiveActionLoading("request")
+    setArchiveError("")
+    try {
+      const res = await fetch(`/api/admin/members/${id}/lifecycle/archive`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to request archive")
+      }
+
+      setArchiveReason("")
+      setSuccess("Archive request submitted")
+      setTimeout(() => setSuccess(""), 3000)
+      setLoading(true)
+      await fetchMember()
+    } catch (err) {
+      setArchiveError(err instanceof Error ? err.message : "Failed to request archive")
+    } finally {
+      setArchiveActionLoading(null)
+    }
+  }
+
+  const handleReviewArchiveRequest = async (
+    requestId: string,
+    action: "approve" | "reject"
+  ) => {
+    setArchiveActionLoading(`${action}:${requestId}`)
+    setArchiveError("")
+    try {
+      const res = await fetch(`/api/admin/member-lifecycle-action-requests/${requestId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action,
+          note: archiveReviewNotes[requestId]?.trim() || undefined,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to review archive request")
+      }
+
+      setArchiveReviewNotes((current) => {
+        const next = { ...current }
+        delete next[requestId]
+        return next
+      })
+      setSuccess(action === "approve" ? "Member archived" : "Archive request rejected")
+      setTimeout(() => setSuccess(""), 3000)
+      setLoading(true)
+      await fetchMember()
+    } catch (err) {
+      setArchiveError(err instanceof Error ? err.message : "Failed to review archive request")
+    } finally {
+      setArchiveActionLoading(null)
     }
   }
 
@@ -1623,7 +1708,8 @@ export default function MemberDetailPage({ params }: { params: Promise<{ id: str
   const fmt = formatCents
   const fmtDate = (d: string) => new Date(d).toLocaleDateString("en-NZ", { day: "numeric", month: "short", year: "numeric" })
   const memberExactAge = member.dateOfBirth ? formatAgeYearsMonths(member.dateOfBirth) : null
-  const deleteRequests = member.lifecycleActionRequests.filter((request) => request.action === "DELETE")
+  const lifecycleRequests = member.lifecycleActionRequests ?? []
+  const deleteRequests = lifecycleRequests.filter((request) => request.action === "DELETE")
   const pendingDeleteRequest = deleteRequests.find((request) => request.status === "REQUESTED")
   const deleteBlockers = member.deleteEligibility.blockers
   const approvalBlockers = deleteBlockers.filter((blocker) => blocker.code !== "pending_delete_request")
@@ -1635,6 +1721,11 @@ export default function MemberDetailPage({ params }: { params: Promise<{ id: str
     APPROVED: "Approved",
     REJECTED: "Rejected",
   }
+  const archiveRequests = lifecycleRequests.filter((request) => request.action === "ARCHIVE")
+  const pendingArchiveRequest = archiveRequests.find((request) => request.status === "REQUESTED") ?? null
+  const reviewedArchiveRequests = archiveRequests.filter((request) => request.status !== "REQUESTED").slice(0, 3)
+  const isArchiveRequester = pendingArchiveRequest?.requestedBy?.id === session?.user?.id
+  const canRequestArchive = Boolean(member.cancelledAt && !member.archivedAt && !pendingArchiveRequest)
 
   return (
     <div className="space-y-6">
@@ -1648,12 +1739,14 @@ export default function MemberDetailPage({ params }: { params: Promise<{ id: str
               <Badge variant={member.role === "ADMIN" ? "default" : "secondary"} className={member.role === "ADMIN" ? "bg-blue-600 text-white hover:bg-blue-700" : ""}>{member.role}</Badge>
               <Badge variant="secondary" className={financeAccessBadgeClass[member.financeAccessLevel]}>{financeAccessLabels[member.financeAccessLevel]}</Badge>
               <Badge variant={member.active ? "default" : "destructive"} className={member.active ? "bg-green-100 text-green-800 hover:bg-green-200 border-green-200" : ""}>{member.active ? "Active" : "Inactive"}</Badge>
+              {member.cancelledAt && <Badge variant="secondary" className="bg-amber-100 text-amber-800 border-amber-200">Cancelled</Badge>}
+              {member.archivedAt && <Badge variant="secondary" className="bg-slate-200 text-slate-800 border-slate-300">Archived</Badge>}
               {member.forcePasswordChange && <Badge variant="destructive" className="text-xs">PW Reset Required</Badge>}
               {pendingDeleteRequest && <Badge variant="destructive" className="text-xs">Delete Pending</Badge>}
             </div>
           </div>
           <div className="flex gap-2 shrink-0 flex-wrap">
-            {isAdultMember && (
+            {isAdultMember && !memberIsArchived && (
               <Button variant="outline" size="sm" onClick={openDependentDialog}>
                 <Plus className="h-4 w-4 mr-1" />
                 Add Dependent
@@ -1843,9 +1936,142 @@ export default function MemberDetailPage({ params }: { params: Promise<{ id: str
       </dl></CardContent></Card>
 
       <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base font-medium">
+            <Archive className="h-4 w-4 text-slate-500" />
+            Lifecycle
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {archiveError && <div className="p-2 bg-red-50 border border-red-200 text-red-700 rounded text-sm">{archiveError}</div>}
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="rounded-md border border-slate-200 p-3">
+              <p className="text-xs uppercase tracking-wide text-slate-500">Cancellation</p>
+              {member.cancelledAt ? (
+                <div className="mt-2 space-y-1 text-sm">
+                  <Badge variant="secondary" className="bg-amber-100 text-amber-800 border-amber-200">Cancelled {fmtDate(member.cancelledAt)}</Badge>
+                  {member.cancelledReason && <p className="text-slate-600">{member.cancelledReason}</p>}
+                </div>
+              ) : (
+                <p className="mt-2 text-sm text-slate-600">This member has not been cancelled.</p>
+              )}
+            </div>
+            <div className="rounded-md border border-slate-200 p-3">
+              <p className="text-xs uppercase tracking-wide text-slate-500">Archive</p>
+              {member.archivedAt ? (
+                <div className="mt-2 space-y-1 text-sm">
+                  <Badge variant="secondary" className="bg-slate-200 text-slate-800 border-slate-300">Archived {fmtDate(member.archivedAt)}</Badge>
+                  {member.archivedReason && <p className="text-slate-600">{member.archivedReason}</p>}
+                </div>
+              ) : pendingArchiveRequest ? (
+                <p className="mt-2 text-sm text-amber-700">Archive request pending review.</p>
+              ) : (
+                <p className="mt-2 text-sm text-slate-600">
+                  {member.cancelledAt ? "Ready to request archive." : "Archive is available after cancellation."}
+                </p>
+              )}
+            </div>
+          </div>
+
+          {pendingArchiveRequest && (
+            <div className="rounded-md border border-amber-200 bg-amber-50 p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="space-y-1">
+                  <p className="text-sm font-medium text-amber-950">Pending archive request</p>
+                  <p className="text-sm text-amber-900">{pendingArchiveRequest.reason}</p>
+                  <p className="text-xs text-amber-800">
+                    Requested by {pendingArchiveRequest.requestedBy?.name ?? "Unknown admin"} on {fmtDate(pendingArchiveRequest.requestedAt)}
+                  </p>
+                </div>
+                {isArchiveRequester ? (
+                  <p className="text-xs text-amber-800">Needs another admin to approve or reject.</p>
+                ) : (
+                  <div className="w-full space-y-2 sm:max-w-sm">
+                    <Label htmlFor={`archive-review-note-${pendingArchiveRequest.id}`}>Optional review note</Label>
+                    <textarea
+                      id={`archive-review-note-${pendingArchiveRequest.id}`}
+                      value={archiveReviewNotes[pendingArchiveRequest.id] ?? ""}
+                      onChange={(event) => setArchiveReviewNotes((current) => ({ ...current, [pendingArchiveRequest.id]: event.target.value }))}
+                      rows={2}
+                      maxLength={1000}
+                      className="min-h-20 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
+                    />
+                    <div className="flex justify-end gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={Boolean(archiveActionLoading)}
+                        onClick={() => handleReviewArchiveRequest(pendingArchiveRequest.id, "reject")}
+                      >
+                        {archiveActionLoading === `reject:${pendingArchiveRequest.id}` ? "Rejecting..." : "Reject"}
+                      </Button>
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        disabled={Boolean(archiveActionLoading)}
+                        onClick={() => handleReviewArchiveRequest(pendingArchiveRequest.id, "approve")}
+                      >
+                        {archiveActionLoading === `approve:${pendingArchiveRequest.id}` ? "Archiving..." : "Approve Archive"}
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {canRequestArchive && (
+            <div className="rounded-md border border-slate-200 p-4">
+              <div className="space-y-2">
+                <Label htmlFor="archive-reason">Archive reason *</Label>
+                <textarea
+                  id="archive-reason"
+                  value={archiveReason}
+                  onChange={(event) => setArchiveReason(event.target.value)}
+                  rows={3}
+                  maxLength={1000}
+                  className="min-h-24 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                />
+                <p className="text-xs text-slate-500">A different admin must approve this request before the member is archived.</p>
+              </div>
+              <Button className="mt-3" size="sm" onClick={handleSubmitArchiveRequest} disabled={archiveActionLoading === "request"}>
+                <Archive className="h-4 w-4 mr-1" />
+                {archiveActionLoading === "request" ? "Submitting..." : "Request Archive"}
+              </Button>
+            </div>
+          )}
+
+          {reviewedArchiveRequests.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-sm font-medium text-slate-900">Recent archive decisions</p>
+              <div className="space-y-2">
+                {reviewedArchiveRequests.map((request) => (
+                  <div key={request.id} className="rounded-md border border-slate-200 p-3 text-sm">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant="secondary" className={request.status === "APPROVED" ? "bg-slate-200 text-slate-800 border-slate-300" : "bg-red-50 text-red-700 border-red-200"}>
+                        {request.status === "APPROVED" ? "Approved" : "Rejected"}
+                      </Badge>
+                      <span className="text-slate-600">
+                        {request.reviewedAt ? fmtDate(request.reviewedAt) : "Not dated"} by {request.reviewedBy?.name ?? "Unknown admin"}
+                      </span>
+                    </div>
+                    {request.reviewNote && <p className="mt-1 text-slate-600">{request.reviewNote}</p>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
         <CardHeader className="flex flex-row items-center justify-between space-y-0">
           <CardTitle className="text-base font-medium">Parent Links</CardTitle>
-          {(member.parentLinks?.length ?? 0) < 2 ? (
+          {memberIsArchived ? (
+            <Badge variant="secondary" className="bg-slate-200 text-slate-800 border-slate-300">
+              Archived
+            </Badge>
+          ) : (member.parentLinks?.length ?? 0) < 2 ? (
             <Button
               variant="outline"
               size="sm"
@@ -2010,7 +2236,7 @@ export default function MemberDetailPage({ params }: { params: Promise<{ id: str
       <Card>
         <CardHeader className="flex flex-row items-center justify-between space-y-0">
           <CardTitle className="text-base font-medium">Dependents</CardTitle>
-          {isAdultMember && (
+          {isAdultMember && !memberIsArchived && (
             <Button variant="outline" size="sm" onClick={openDependentDialog}>
               <Plus className="h-4 w-4 mr-1" />
               Add Dependent
@@ -2968,12 +3194,13 @@ export default function MemberDetailPage({ params }: { params: Promise<{ id: str
                   financeAccessLevel: e.target.checked ? f.financeAccessLevel : "NONE",
                 }))}
                 className="h-4 w-4 rounded border-gray-300"
-                disabled={isSelf}
+                disabled={isSelf || memberLifecycleLocked}
               />
               <Label htmlFor="edit-canLogin">Can Login</Label>
               <p className="text-xs text-muted-foreground ml-2">
                 Adults who can sign in and make bookings. Uncheck for infants, children, or youth managed by family group.
                 {isSelf ? " You cannot disable login for your own admin account." : ""}
+                {memberLifecycleLocked ? " Cancelled and archived members stay non-login." : ""}
               </p>
             </div>
             <div className="grid grid-cols-2 gap-4">
@@ -3202,9 +3429,10 @@ export default function MemberDetailPage({ params }: { params: Promise<{ id: str
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <input type="checkbox" id="edit-active" checked={form.active} onChange={e => setForm(f => ({ ...f, active: e.target.checked }))} className="h-4 w-4 rounded border-gray-300" disabled={isSelf} />
+              <input type="checkbox" id="edit-active" checked={form.active} onChange={e => setForm(f => ({ ...f, active: e.target.checked }))} className="h-4 w-4 rounded border-gray-300" disabled={isSelf || memberLifecycleLocked} />
               <Label htmlFor="edit-active">Active</Label>
               {isSelf && <span className="text-xs text-muted-foreground ml-1">(cannot deactivate own account)</span>}
+              {memberLifecycleLocked && <span className="text-xs text-muted-foreground ml-1">(locked by lifecycle state)</span>}
             </div>
             <div className="flex items-center gap-2">
               <input type="checkbox" id="edit-forcePasswordChange" checked={form.forcePasswordChange} onChange={e => setForm(f => ({ ...f, forcePasswordChange: e.target.checked }))} className="h-4 w-4 rounded border-gray-300" />

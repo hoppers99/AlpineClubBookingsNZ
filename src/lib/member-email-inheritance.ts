@@ -21,6 +21,7 @@ export async function validateInheritEmailSource(input: {
       parentMemberId: true,
       secondaryParentId: true,
       inheritEmailFromId: true,
+      archivedAt: true,
     },
   });
 
@@ -61,6 +62,14 @@ export async function validateInheritEmailSource(input: {
       ok: false,
       status: 422,
       error: "Email inheritance cannot chain through another inherited member",
+    };
+  }
+
+  if (inheritEmailFrom.archivedAt) {
+    return {
+      ok: false,
+      status: 422,
+      error: "Email inheritance cannot point to an archived member",
     };
   }
 

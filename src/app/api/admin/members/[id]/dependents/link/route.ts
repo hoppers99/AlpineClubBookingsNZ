@@ -140,6 +140,7 @@ export async function POST(
           id: true,
           ageTier: true,
           active: true,
+          archivedAt: true,
           parentMemberId: true,
           secondaryParentId: true,
           inheritEmailFromId: true,
@@ -152,7 +153,7 @@ export async function POST(
       if (!parent) {
         throw new LinkDependentError("Parent member not found", 404);
       }
-      if (parent.ageTier !== "ADULT" || !parent.active) {
+      if (parent.ageTier !== "ADULT" || !parent.active || parent.archivedAt) {
         throw new LinkDependentError(
           "Dependants can only be linked under active adult members",
           422
@@ -177,6 +178,7 @@ export async function POST(
             select: { id: true, inheritEmailFromId: true },
           },
           canLogin: true,
+          archivedAt: true,
           dependents: {
             select: { id: true },
             take: 1,
@@ -190,6 +192,9 @@ export async function POST(
 
       if (!target) {
         throw new LinkDependentError("Member to link not found", 404);
+      }
+      if (target.archivedAt) {
+        throw new LinkDependentError("Archived members cannot be linked into family groups", 422);
       }
       if (target.id === parent.id) {
         throw new LinkDependentError("A member cannot be their own dependant", 422);

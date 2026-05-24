@@ -168,7 +168,7 @@ export async function GET(request: NextRequest) {
         .filter((setting) => setting.subscriptionRequiredForBooking === false)
         .map((setting) => setting.tier)
     );
-    const memberWhere: Prisma.MemberWhereInput = {};
+    const memberWhere: Prisma.MemberWhereInput = { archivedAt: null };
 
     if (ageTier !== "all") {
       memberWhere.ageTier = ageTier;

@@ -37,6 +37,7 @@ import {
   getAuditRequestContext,
 } from "@/lib/audit";
 import {
+  getMemberArchiveLifecycleRequests,
   getMemberDeleteEligibility,
   getMemberDeleteLifecycleRequests,
 } from "@/lib/member-lifecycle-actions";
@@ -206,7 +207,7 @@ export async function GET(
 
   const { id } = await params;
 
-  const [member, bookings, auditLogs, stats, assignedPromoCodes] = await Promise.all([
+  const [member, bookings, auditLogs, stats, assignedPromoCodes, archiveLifecycleActionRequests] = await Promise.all([
     prisma.member.findUnique({
       where: { id },
       select: {
@@ -262,6 +263,11 @@ export async function GET(
         },
         xeroContactId: true,
         joinedDate: true,
+        cancelledAt: true,
+        cancelledReason: true,
+        archivedAt: true,
+        archivedReason: true,
+        archivedViaLifecycleActionRequestId: true,
         createdAt: true,
         streetAddressLine1: true,
         streetAddressLine2: true,
@@ -337,19 +343,24 @@ export async function GET(
       _max: { checkOut: true },
     }),
     getAssignedPromoCodeSummariesForMember(id),
+    getMemberArchiveLifecycleRequests(id),
   ]);
 
   if (!member) {
     return NextResponse.json({ error: "Member not found" }, { status: 404 });
   }
 
-  const [deleteEligibility, lifecycleActionRequests] = await Promise.all([
+  const [deleteEligibility, deleteLifecycleActionRequests] = await Promise.all([
     getMemberDeleteEligibility({
       memberId: id,
       currentAdminMemberId: session.user.id,
     }),
     getMemberDeleteLifecycleRequests(id),
   ]);
+  const lifecycleActionRequests = [
+    ...deleteLifecycleActionRequests,
+    ...archiveLifecycleActionRequests,
+  ].sort((left, right) => right.requestedAt.localeCompare(left.requestedAt));
 
   const actorIds = Array.from(
     new Set(
@@ -500,6 +511,20 @@ export async function PUT(
         { status: 400 }
       );
     }
+  }
+
+  if (
+    (existing.archivedAt || existing.cancelledAt) &&
+    (data.active === true || data.canLogin === true)
+  ) {
+    return NextResponse.json(
+      {
+        error: existing.archivedAt
+          ? "Archived members cannot be reactivated from member edit"
+          : "Cancelled members cannot be reactivated from member edit",
+      },
+      { status: 409 },
+    );
   }
 
   // Check email uniqueness if changing email for a canLogin member

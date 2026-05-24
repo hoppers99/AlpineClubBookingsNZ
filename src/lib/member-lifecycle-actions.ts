@@ -16,6 +16,19 @@ const memberSummarySelect = {
   email: true,
 } satisfies Prisma.MemberSelect;
 
+const archiveTargetMemberSelect = {
+  id: true,
+  firstName: true,
+  lastName: true,
+  email: true,
+  active: true,
+  canLogin: true,
+  cancelledAt: true,
+  cancelledReason: true,
+  archivedAt: true,
+  archivedReason: true,
+} satisfies Prisma.MemberSelect;
+
 const lifecycleActionRequestInclude = {
   requestedBy: { select: memberSummarySelect },
   reviewedBy: { select: memberSummarySelect },
@@ -43,6 +56,14 @@ export type MemberDeleteEligibility = {
   eligible: boolean;
   blockers: MemberDeleteEligibilityBlocker[];
   checkedAt: string;
+};
+
+type LifecycleReviewInput = {
+  requestId: string;
+  reviewedByMemberId: string;
+  action: "approve" | "reject";
+  reviewNote?: string | null;
+  ipAddress?: string | null;
 };
 
 export type SerializedMemberLifecycleActionRequest = {
@@ -447,6 +468,20 @@ export async function getMemberDeleteLifecycleRequests(memberId: string) {
   return requests.map(serializeMemberLifecycleActionRequest);
 }
 
+export async function getMemberArchiveLifecycleRequests(memberId: string) {
+  const requests = await prisma.memberLifecycleActionRequest.findMany({
+    where: {
+      memberId,
+      action: MemberLifecycleAction.ARCHIVE,
+    },
+    include: lifecycleActionRequestInclude,
+    orderBy: [{ requestedAt: "desc" }, { id: "desc" }],
+    take: 10,
+  });
+
+  return requests.map(serializeMemberLifecycleActionRequest);
+}
+
 function assertEligibleForDelete(eligibility: MemberDeleteEligibility) {
   if (!eligibility.eligible) {
     throw new MemberLifecycleActionError(
@@ -471,6 +506,62 @@ async function loadDeleteRequestById(
   }
 
   return request;
+}
+
+async function loadArchiveRequestById(
+  requestId: string,
+  db: LifecycleActionClient = prisma,
+) {
+  const request = await db.memberLifecycleActionRequest.findUnique({
+    where: { id: requestId },
+    include: lifecycleActionRequestInclude,
+  });
+
+  if (!request || request.action !== MemberLifecycleAction.ARCHIVE) {
+    throw new MemberLifecycleActionError("Archive request not found.", 404);
+  }
+
+  return request;
+}
+
+function assertArchiveEligible(member: {
+  cancelledAt: Date | null;
+  archivedAt: Date | null;
+}) {
+  if (member.archivedAt) {
+    throw new MemberLifecycleActionError(
+      "This member has already been archived.",
+      409,
+    );
+  }
+
+  if (!member.cancelledAt) {
+    throw new MemberLifecycleActionError(
+      "Only cancelled members can be archived.",
+      409,
+    );
+  }
+}
+
+async function cleanupArchivedMemberLinks(
+  tx: Prisma.TransactionClient,
+  memberId: string,
+) {
+  await tx.familyGroupMember.deleteMany({
+    where: { memberId },
+  });
+  await tx.member.updateMany({
+    where: { parentMemberId: memberId },
+    data: { parentMemberId: null },
+  });
+  await tx.member.updateMany({
+    where: { secondaryParentId: memberId },
+    data: { secondaryParentId: null },
+  });
+  await tx.member.updateMany({
+    where: { inheritEmailFromId: memberId },
+    data: { inheritEmailFromId: null },
+  });
 }
 
 export async function createMemberDeleteRequest({
@@ -531,19 +622,91 @@ export async function createMemberDeleteRequest({
   return { request: serializeMemberLifecycleActionRequest(request) };
 }
 
+export async function createMemberArchiveRequest({
+  memberId,
+  requestedByMemberId,
+  reason,
+  ipAddress,
+}: {
+  memberId: string;
+  requestedByMemberId: string;
+  reason: string;
+  ipAddress?: string | null;
+}) {
+  const cleanedReason = requireCleanText(reason, "Archive reason is required.");
+
+  const [member, existingPendingRequest] = await Promise.all([
+    prisma.member.findUnique({
+      where: { id: memberId },
+      select: archiveTargetMemberSelect,
+    }),
+    prisma.memberLifecycleActionRequest.findFirst({
+      where: {
+        memberId,
+        action: MemberLifecycleAction.ARCHIVE,
+        status: MemberLifecycleActionRequestStatus.REQUESTED,
+      },
+      select: { id: true },
+    }),
+  ]);
+
+  if (!member) {
+    throw new MemberLifecycleActionError("Member not found.", 404);
+  }
+
+  assertArchiveEligible(member);
+
+  if (existingPendingRequest) {
+    throw new MemberLifecycleActionError(
+      "This member already has a pending archive request.",
+      409,
+    );
+  }
+
+  const request = await prisma.$transaction(async (tx) => {
+    const created = await tx.memberLifecycleActionRequest.create({
+      data: {
+        memberId,
+        action: MemberLifecycleAction.ARCHIVE,
+        reason: cleanedReason,
+        requestedByMemberId,
+      },
+      include: lifecycleActionRequestInclude,
+    });
+
+    await createAuditLog(
+      {
+        action: "member_lifecycle.archive_requested",
+        memberId: requestedByMemberId,
+        actorMemberId: requestedByMemberId,
+        subjectMemberId: memberId,
+        targetId: created.id,
+        entityType: "MemberLifecycleActionRequest",
+        entityId: created.id,
+        category: "admin",
+        severity: "important",
+        outcome: "success",
+        summary: "Member archive requested",
+        details: cleanedReason,
+        metadata: { action: MemberLifecycleAction.ARCHIVE },
+        ipAddress,
+      },
+      tx,
+    );
+
+    return created;
+  });
+
+  return { request: serializeMemberLifecycleActionRequest(request) };
+}
+
 export async function reviewMemberDeleteRequest({
   requestId,
   reviewedByMemberId,
   action,
   reviewNote,
   ipAddress,
-}: {
-  requestId: string;
-  reviewedByMemberId: string;
-  action: "approve" | "reject";
-  reviewNote?: string | null;
-  ipAddress?: string | null;
-}) {
+}: LifecycleReviewInput) {
   const note = cleanText(reviewNote);
   const request = await loadDeleteRequestById(requestId);
 
@@ -672,4 +835,167 @@ export async function reviewMemberDeleteRequest({
   });
 
   return { request: serializeMemberLifecycleActionRequest(approved) };
+}
+
+export async function reviewMemberArchiveRequest({
+  requestId,
+  reviewedByMemberId,
+  action,
+  reviewNote,
+  ipAddress,
+}: LifecycleReviewInput) {
+  const note = cleanText(reviewNote);
+  const request = await loadArchiveRequestById(requestId);
+
+  if (request.status !== MemberLifecycleActionRequestStatus.REQUESTED) {
+    throw new MemberLifecycleActionError(
+      "This archive request has already been reviewed.",
+      409,
+    );
+  }
+
+  if (request.requestedByMemberId === reviewedByMemberId) {
+    throw new MemberLifecycleActionError(
+      "Archive requests must be approved or rejected by a different admin.",
+      403,
+    );
+  }
+
+  if (action === "reject") {
+    const rejected = await prisma.$transaction(async (tx) => {
+      const reviewed = await tx.memberLifecycleActionRequest.update({
+        where: { id: request.id },
+        data: {
+          status: MemberLifecycleActionRequestStatus.REJECTED,
+          reviewNote: note,
+          reviewedByMemberId,
+          reviewedAt: new Date(),
+        },
+        include: lifecycleActionRequestInclude,
+      });
+
+      await createAuditLog(
+        {
+          action: "member_lifecycle.archive_rejected",
+          memberId: reviewedByMemberId,
+          actorMemberId: reviewedByMemberId,
+          subjectMemberId: request.memberId,
+          targetId: request.id,
+          entityType: "MemberLifecycleActionRequest",
+          entityId: request.id,
+          category: "admin",
+          severity: "important",
+          outcome: "success",
+          summary: "Member archive rejected",
+          details: note,
+          metadata: {
+            action: MemberLifecycleAction.ARCHIVE,
+            requestReason: request.reason,
+          },
+          ipAddress,
+        },
+        tx,
+      );
+
+      return reviewed;
+    });
+
+    return { request: serializeMemberLifecycleActionRequest(rejected) };
+  }
+
+  const approved = await prisma.$transaction(async (tx) => {
+    const member = await tx.member.findUnique({
+      where: { id: request.memberId },
+      select: archiveTargetMemberSelect,
+    });
+
+    if (!member) {
+      throw new MemberLifecycleActionError("Member not found.", 404);
+    }
+
+    assertArchiveEligible(member);
+
+    const now = new Date();
+
+    await cleanupArchivedMemberLinks(tx, request.memberId);
+
+    await tx.member.update({
+      where: { id: request.memberId },
+      data: {
+        archivedAt: now,
+        archivedReason: request.reason,
+        archivedViaLifecycleActionRequestId: request.id,
+        active: false,
+        canLogin: false,
+      },
+    });
+
+    const reviewed = await tx.memberLifecycleActionRequest.update({
+      where: { id: request.id },
+      data: {
+        status: MemberLifecycleActionRequestStatus.APPROVED,
+        reviewNote: note,
+        reviewedByMemberId,
+        reviewedAt: now,
+        processedAt: now,
+      },
+      include: lifecycleActionRequestInclude,
+    });
+
+    await createAuditLog(
+      {
+        action: "member_lifecycle.archive_approved",
+        memberId: reviewedByMemberId,
+        actorMemberId: reviewedByMemberId,
+        subjectMemberId: request.memberId,
+        targetId: request.id,
+        entityType: "MemberLifecycleActionRequest",
+        entityId: request.id,
+        category: "admin",
+        severity: "important",
+        outcome: "success",
+        summary: "Member archive approved",
+        details: note,
+        metadata: {
+          action: MemberLifecycleAction.ARCHIVE,
+          requestReason: request.reason,
+        },
+        ipAddress,
+      },
+      tx,
+    );
+
+    return reviewed;
+  });
+
+  return { request: serializeMemberLifecycleActionRequest(approved) };
+}
+
+export async function reviewMemberLifecycleActionRequest(
+  input: LifecycleReviewInput,
+) {
+  const request = await prisma.memberLifecycleActionRequest.findUnique({
+    where: { id: input.requestId },
+    select: { action: true },
+  });
+
+  if (!request) {
+    throw new MemberLifecycleActionError(
+      "Lifecycle action request not found.",
+      404,
+    );
+  }
+
+  if (request.action === MemberLifecycleAction.DELETE) {
+    return reviewMemberDeleteRequest(input);
+  }
+
+  if (request.action === MemberLifecycleAction.ARCHIVE) {
+    return reviewMemberArchiveRequest(input);
+  }
+
+  throw new MemberLifecycleActionError(
+    "Unsupported lifecycle action request.",
+    400,
+  );
 }

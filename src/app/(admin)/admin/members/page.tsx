@@ -35,6 +35,10 @@ interface Member {
   role: "MEMBER" | "ADMIN"; ageTier: AgeTier
   financeAccessLevel: FinanceAccessLevel
   active: boolean; xeroContactId: string | null
+  cancelledAt: string | null
+  cancelledReason: string | null
+  archivedAt: string | null
+  archivedReason: string | null
   xeroContactGroupsLoaded: boolean
   xeroContactGroups: Array<{ id: string; name: string }>
   subscriptionStatus: "NOT_INVOICED" | "UNPAID" | "PAID" | "OVERDUE" | "NOT_REQUIRED" | null
@@ -95,7 +99,7 @@ interface XeroFeatureFlags {
   liveMemberGroupLookups: boolean
 }
 
-interface Filters { role: string; financeAccess: string; active: string; ageTier: string; familyGroup: string; inviteStatus: string; xeroLinked: string; subscription: string; xeroContactGroup: string }
+interface Filters { role: string; financeAccess: string; lifecycleStatus: string; ageTier: string; familyGroup: string; inviteStatus: string; xeroLinked: string; subscription: string; xeroContactGroup: string }
 interface ImportRow { firstName: string; lastName: string; email: string; phone?: string; dateOfBirth?: string; role?: string }
 interface PasswordActionTarget {
   label: string
@@ -128,11 +132,11 @@ const emptyForm: MemberForm = {
   postalAddressLine1: "", postalAddressLine2: "", postalCity: "",
   postalRegion: "", postalPostalCode: "", postalCountry: "",
 }
-const emptyFilters: Filters = { role: "", financeAccess: "", active: "", ageTier: "", familyGroup: "", inviteStatus: "", xeroLinked: "", subscription: "", xeroContactGroup: "" }
+const emptyFilters: Filters = { role: "", financeAccess: "", lifecycleStatus: "", ageTier: "", familyGroup: "", inviteStatus: "", xeroLinked: "", subscription: "", xeroContactGroup: "" }
 const filterLabelMap: Record<keyof Filters, string> = {
   role: "Role",
   financeAccess: "Finance",
-  active: "Status",
+  lifecycleStatus: "Status",
   ageTier: "Age Tier",
   familyGroup: "Family Group",
   inviteStatus: "Invite Status",
@@ -141,7 +145,13 @@ const filterLabelMap: Record<keyof Filters, string> = {
   xeroContactGroup: "Xero Group",
 }
 const filterValueLabels: Partial<Record<keyof Filters, Record<string, string>>> = {
-  active: { true: "Active", false: "Inactive" },
+  lifecycleStatus: {
+    active: "Active",
+    inactive: "Inactive",
+    cancelled: "Cancelled",
+    archived: "Archived",
+    all: "All Including Archived",
+  },
   familyGroup: { any: "Yes", none: "No" },
   inviteStatus: { invite: "Invite", "resend-invite": "Resend Invite", "reset-password": "Reset Password" },
   xeroLinked: { true: "Linked", false: "Not Linked" },
@@ -153,6 +163,40 @@ const filterValueLabels: Partial<Record<keyof Filters, Record<string, string>>> 
     NONE: "No Record",
     NOT_REQUIRED: "Not Required",
   },
+}
+
+function getInitialLifecycleStatus(searchParams: URLSearchParams) {
+  const lifecycleStatus = searchParams.get("lifecycleStatus")
+  if (lifecycleStatus) return lifecycleStatus
+  const active = searchParams.get("active")
+  if (active === "true") return "active"
+  if (active === "false") return "inactive"
+  return ""
+}
+
+function getLifecycleStatusConfig(member: Pick<Member, "active" | "cancelledAt" | "archivedAt">) {
+  if (member.archivedAt) {
+    return {
+      label: "Archived",
+      className: "bg-slate-200 text-slate-800 border-slate-300 hover:bg-slate-200",
+    }
+  }
+  if (member.cancelledAt) {
+    return {
+      label: "Cancelled",
+      className: "bg-amber-100 text-amber-800 border-amber-200 hover:bg-amber-100",
+    }
+  }
+  if (member.active) {
+    return {
+      label: "Active",
+      className: "bg-green-100 text-green-800 hover:bg-green-200 border-green-200",
+    }
+  }
+  return {
+    label: "Inactive",
+    className: "",
+  }
 }
 
 function getMissingFieldsForXeroCreate(form: MemberForm): string[] {
@@ -203,7 +247,7 @@ export default function MembersPage() {
   const [filters, setFilters] = useState<Filters>({
     role: searchParams.get("role") || "",
     financeAccess: searchParams.get("financeAccess") || "",
-    active: searchParams.get("active") || "",
+    lifecycleStatus: getInitialLifecycleStatus(searchParams),
     ageTier: searchParams.get("ageTier") || "",
     familyGroup: searchParams.get("familyGroup") || "",
     inviteStatus: searchParams.get("inviteStatus") || "",
@@ -1038,7 +1082,7 @@ export default function MembersPage() {
         <div className="flex-1 min-w-[200px] max-w-sm"><Input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search by name or email..." className="bg-white" /></div>
         <Select value={filters.role || "all"} onValueChange={v => setFilter("role", v === "all" ? "" : v)}><SelectTrigger className="w-[130px]"><SelectValue placeholder="Role" /></SelectTrigger><SelectContent><SelectItem value="all">All Roles</SelectItem><SelectItem value="MEMBER">Member</SelectItem><SelectItem value="ADMIN">Admin</SelectItem></SelectContent></Select>
         <Select value={filters.financeAccess || "all"} onValueChange={v => setFilter("financeAccess", v === "all" ? "" : v)}><SelectTrigger className="w-[170px]"><SelectValue placeholder="Finance" /></SelectTrigger><SelectContent><SelectItem value="all">All Finance Access</SelectItem><SelectItem value="NONE">No Finance Access</SelectItem><SelectItem value="VIEWER">Finance Viewer</SelectItem><SelectItem value="MANAGER">Finance Manager</SelectItem></SelectContent></Select>
-        <Select value={filters.active || "all"} onValueChange={v => setFilter("active", v === "all" ? "" : v)}><SelectTrigger className="w-[130px]"><SelectValue placeholder="Status" /></SelectTrigger><SelectContent><SelectItem value="all">All Status</SelectItem><SelectItem value="true">Active</SelectItem><SelectItem value="false">Inactive</SelectItem></SelectContent></Select>
+        <Select value={filters.lifecycleStatus || "nonArchived"} onValueChange={v => setFilter("lifecycleStatus", v === "nonArchived" ? "" : v)}><SelectTrigger className="w-[155px]"><SelectValue placeholder="Status" /></SelectTrigger><SelectContent><SelectItem value="nonArchived">All Non-Archived</SelectItem><SelectItem value="active">Active</SelectItem><SelectItem value="inactive">Inactive</SelectItem><SelectItem value="cancelled">Cancelled</SelectItem><SelectItem value="archived">Archived</SelectItem><SelectItem value="all">All Including Archived</SelectItem></SelectContent></Select>
         <Select value={filters.ageTier || "all"} onValueChange={v => setFilter("ageTier", v === "all" ? "" : v)}><SelectTrigger className="w-[130px]"><SelectValue placeholder="Age Tier" /></SelectTrigger><SelectContent><SelectItem value="all">All Tiers</SelectItem><SelectItem value="INFANT">Infant</SelectItem><SelectItem value="CHILD">Child</SelectItem><SelectItem value="YOUTH">Youth</SelectItem><SelectItem value="ADULT">Adult</SelectItem></SelectContent></Select>
         <Select value={filters.familyGroup || "all"} onValueChange={v => setFilter("familyGroup", v === "all" ? "" : v)}><SelectTrigger className="w-[150px]"><SelectValue placeholder="Family Group" /></SelectTrigger><SelectContent><SelectItem value="all">All Family Groups</SelectItem><SelectItem value="any">Family Group: Yes</SelectItem><SelectItem value="none">Family Group: No</SelectItem></SelectContent></Select>
         <Select value={filters.inviteStatus || "all"} onValueChange={v => setFilter("inviteStatus", v === "all" ? "" : v)}><SelectTrigger className="w-[165px]"><SelectValue placeholder="Invite Status" /></SelectTrigger><SelectContent><SelectItem value="all">All Invite Status</SelectItem><SelectItem value="invite">Invite</SelectItem><SelectItem value="resend-invite">Resend Invite</SelectItem><SelectItem value="reset-password">Reset Password</SelectItem></SelectContent></Select>
@@ -1074,7 +1118,7 @@ export default function MembersPage() {
               <TableCell><Badge variant={member.role === "ADMIN" ? "default" : "secondary"} className={member.role === "ADMIN" ? "bg-blue-600 text-white hover:bg-blue-700" : ""}>{member.role}</Badge></TableCell>
               <TableCell><Badge variant="secondary" className={financeAccessBadgeClass[member.financeAccessLevel]}>{financeAccessLabels[member.financeAccessLevel]}</Badge></TableCell>
               <TableCell><span className="text-sm text-slate-600">{member.ageTier.charAt(0) + member.ageTier.slice(1).toLowerCase()}</span></TableCell>
-              <TableCell><Badge variant={member.active ? "default" : "destructive"} className={member.active ? "bg-green-100 text-green-800 hover:bg-green-200 border-green-200" : ""}>{member.active ? "Active" : "Inactive"}</Badge></TableCell>
+              <TableCell>{(() => { const cfg = getLifecycleStatusConfig(member); return <Badge variant={cfg.label === "Inactive" ? "destructive" : "secondary"} className={cfg.className}>{cfg.label}</Badge> })()}</TableCell>
               <TableCell>{member.canLogin ? <Badge variant="secondary" className="bg-slate-100 text-slate-700 border-slate-200">Can Login</Badge> : <Badge variant="secondary" className="bg-purple-100 text-purple-800 border-purple-200">Non-Login</Badge>}</TableCell>
               <TableCell>{member.familyGroups && member.familyGroups.length > 0 ? <div className="flex flex-wrap gap-1">{member.familyGroups.map(fg => <Link key={fg.id} href={`/admin/family-groups?edit=${fg.id}`}><Badge variant="secondary" className="bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100 cursor-pointer">{fg.name || "Unnamed Group"}</Badge></Link>)}</div> : <span className="text-xs text-slate-400">-</span>}</TableCell>
               <TableCell>{(() => { const cfg = statusConfig[member.subscriptionStatus ?? "NONE"] || statusConfig.NOT_INVOICED; const badge = <Badge variant="secondary" className={`${cfg.className} ${member.subscriptionXeroInvoiceId ? "cursor-pointer inline-flex items-center gap-1" : ""}`}>{cfg.label}{member.subscriptionXeroInvoiceId && <ExternalLink className="h-3 w-3" />}</Badge>; return member.subscriptionXeroInvoiceId ? <a href={`https://go.xero.com/AccountsReceivable/View.aspx?InvoiceID=${member.subscriptionXeroInvoiceId}`} target="_blank" rel="noopener noreferrer">{badge}</a> : badge })()}</TableCell>

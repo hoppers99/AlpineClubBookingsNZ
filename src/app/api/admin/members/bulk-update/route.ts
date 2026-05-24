@@ -66,11 +66,34 @@ export async function POST(req: NextRequest) {
     // Find existing members
     const existingMembers = await prisma.member.findMany({
       where: { id: { in: ids } },
-      select: { id: true, firstName: true, lastName: true, email: true },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        email: true,
+        cancelledAt: true,
+        archivedAt: true,
+      },
     });
 
     const existingIds = new Set(existingMembers.map((m) => m.id));
     const notFound = ids.filter((id) => !existingIds.has(id)).length;
+
+    if (action === "reactivate") {
+      const blockedMember = existingMembers.find(
+        (member) => member.archivedAt || member.cancelledAt,
+      );
+      if (blockedMember) {
+        return NextResponse.json(
+          {
+            error: blockedMember.archivedAt
+              ? "Archived members cannot be reactivated from bulk update"
+              : "Cancelled members cannot be reactivated from bulk update",
+          },
+          { status: 409 },
+        );
+      }
+    }
 
     // Build update data based on action
     let updateData: Record<string, unknown>;

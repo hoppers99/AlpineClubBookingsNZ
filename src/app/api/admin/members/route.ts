@@ -73,6 +73,13 @@ const createMemberSchema = z.object({
 
 const SORT_BY_WHITELIST = ["name", "email", "role", "ageTier", "active", "createdAt"] as const;
 const SUBSCRIPTION_STATUS_FILTERS = ["PAID", "UNPAID", "OVERDUE", "NOT_INVOICED"] as const;
+const MEMBER_LIFECYCLE_STATUS_FILTERS = [
+  "active",
+  "inactive",
+  "cancelled",
+  "archived",
+  "all",
+] as const;
 
 /**
  * GET /api/admin/members
@@ -232,12 +239,37 @@ export async function GET(req: NextRequest) {
     andConditions.push({ financeAccessLevel: financeAccessFilter });
   }
 
-  // Filter: active
+  const lifecycleStatusFilter = sp.get("lifecycleStatus");
+  const lifecycleStatus = (
+    lifecycleStatusFilter &&
+    (MEMBER_LIFECYCLE_STATUS_FILTERS as readonly string[]).includes(lifecycleStatusFilter)
+  )
+    ? lifecycleStatusFilter
+    : null;
+  const includeArchived = sp.get("includeArchived") === "true";
+
+  if (lifecycleStatus === "archived") {
+    where.archivedAt = { not: null };
+  } else if (lifecycleStatus !== "all" && !includeArchived) {
+    where.archivedAt = null;
+  }
+
+  if (lifecycleStatus === "active") {
+    andConditions.push({ active: true }, { cancelledAt: null });
+  } else if (lifecycleStatus === "inactive") {
+    andConditions.push({ active: false }, { cancelledAt: null });
+  } else if (lifecycleStatus === "cancelled") {
+    andConditions.push({ cancelledAt: { not: null } });
+  }
+
+  // Filter: active (legacy query param retained for existing links)
   const activeFilter = sp.get("active");
-  if (activeFilter === "true") {
-    andConditions.push({ active: true });
-  } else if (activeFilter === "false") {
-    andConditions.push({ active: false });
+  if (!lifecycleStatus) {
+    if (activeFilter === "true") {
+      andConditions.push({ active: true });
+    } else if (activeFilter === "false") {
+      andConditions.push({ active: false });
+    }
   }
 
   // Filter: ageTier
@@ -378,6 +410,10 @@ export async function GET(req: NextRequest) {
     ageTier: true,
     active: true,
     canLogin: true,
+    cancelledAt: true,
+    cancelledReason: true,
+    archivedAt: true,
+    archivedReason: true,
     parentMemberId: true,
     secondaryParentId: true,
     parent: {
@@ -553,7 +589,7 @@ export async function POST(req: NextRequest) {
   const email = data.email.toLowerCase().trim();
   const requestedInheritEmailFromId = data.inheritEmailFromId?.trim() || null;
   let parentMember:
-    | { id: string; ageTier: AgeTier; inheritEmailFromId: string | null }
+    | { id: string; ageTier: AgeTier; active: boolean; inheritEmailFromId: string | null; archivedAt: Date | null }
     | null = null;
 
   // Validate family group assignments
@@ -577,16 +613,16 @@ export async function POST(req: NextRequest) {
   if (data.parentMemberId) {
     parentMember = await prisma.member.findUnique({
       where: { id: data.parentMemberId },
-      select: { id: true, ageTier: true, inheritEmailFromId: true },
+      select: { id: true, ageTier: true, active: true, inheritEmailFromId: true, archivedAt: true },
     });
 
     if (!parentMember) {
       return NextResponse.json({ error: "Parent member not found" }, { status: 404 });
     }
 
-    if (parentMember.ageTier !== "ADULT") {
+    if (parentMember.ageTier !== "ADULT" || !parentMember.active || parentMember.archivedAt) {
       return NextResponse.json(
-        { error: "Dependents can only be created under adult members" },
+        { error: "Dependents can only be created under active adult members" },
         { status: 422 }
       );
     }

@@ -338,7 +338,12 @@ describe("Admin: Create dependent member", () => {
   it("creates a dependent with parentMemberId and inheritEmailFromId", async () => {
     vi.mocked(auth).mockResolvedValue(adminSession);
     vi.mocked(prisma.member.findFirst).mockResolvedValue(null);
-    vi.mocked(prisma.member.findUnique).mockResolvedValue({ id: "parent1", ageTier: "ADULT" } as any);
+    vi.mocked(prisma.member.findUnique).mockResolvedValue({
+      id: "parent1",
+      ageTier: "ADULT",
+      active: true,
+      archivedAt: null,
+    } as any);
 
     const txMember = { id: "dep1", firstName: "Child", lastName: "Smith", email: "alice@test.com",
       role: "MEMBER", ageTier: "CHILD", active: true, canLogin: false, parentMemberId: "parent1",
@@ -377,11 +382,15 @@ describe("Admin: Create dependent member", () => {
       .mockResolvedValueOnce({
         id: "parent1",
         ageTier: "ADULT",
+        active: true,
+        archivedAt: null,
         inheritEmailFromId: "lead-adult",
       } as any)
       .mockResolvedValueOnce({
         id: "lead-adult",
         ageTier: "ADULT",
+        active: true,
+        archivedAt: null,
         parentMemberId: null,
         inheritEmailFromId: null,
       } as any);
@@ -599,6 +608,8 @@ describe("Admin: Member update with postalSameAsPhysical", () => {
       .mockResolvedValueOnce({
         id: "parent1",
         ageTier: "ADULT",
+        active: true,
+        archivedAt: null,
         parentMemberId: null,
         inheritEmailFromId: null,
       } as any);  // inherit target
@@ -623,6 +634,8 @@ describe("Admin: Member update with postalSameAsPhysical", () => {
       .mockResolvedValueOnce({
         id: "m1",
         ageTier: "ADULT",
+        active: true,
+        archivedAt: null,
         parentMemberId: null,
         inheritEmailFromId: null,
       } as any);
@@ -648,6 +661,8 @@ describe("Admin: Member update with postalSameAsPhysical", () => {
       .mockResolvedValueOnce({
         id: "parent1",
         ageTier: "ADULT",
+        active: true,
+        archivedAt: null,
         parentMemberId: null,
         inheritEmailFromId: "lead-adult",
       } as any);

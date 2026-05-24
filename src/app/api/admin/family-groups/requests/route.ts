@@ -109,12 +109,17 @@ async function findPotentialMemberMatches(request: {
         { lastName: { contains: lastName.trim(), mode: "insensitive" as const } },
         ...(dateOfBirth ? [{ dateOfBirth: getSameDayRange(dateOfBirth) }] : []),
         ...(request.type === "ADULT_REQUEST"
-          ? [{ ageTier: "ADULT" as AgeTier }]
+          ? [
+              { ageTier: "ADULT" as AgeTier },
+              { active: true },
+              { archivedAt: null },
+            ]
           : []),
         ...(request.type === "CHILD_REQUEST"
           ? [
               { ageTier: { in: CHILD_REQUEST_AGE_TIERS } },
               { active: true },
+              { archivedAt: null },
             ]
           : []),
         ...(request.type === "ADULT_REQUEST" && request.requestedEmail
@@ -212,7 +217,7 @@ export async function GET() {
           id: true,
           name: true,
           memberships: {
-            where: { member: { active: true } },
+            where: { member: { active: true, archivedAt: null } },
             select: {
               member: {
                 select: { id: true, firstName: true, lastName: true, email: true, ageTier: true },
@@ -250,6 +255,7 @@ async function validateLinkedMemberForRequest(params: {
       id: true,
       ageTier: true,
       active: true,
+      archivedAt: true,
       canLogin: true,
       parentMemberId: true,
       secondaryParentId: true,
@@ -265,7 +271,11 @@ async function validateLinkedMemberForRequest(params: {
     return { error: "Selected member record not found", status: 404 as const };
   }
   if (params.requestType === "CHILD_REQUEST") {
-    if (!linkedMember.active || !CHILD_REQUEST_AGE_TIERS.includes(linkedMember.ageTier)) {
+    if (
+      !linkedMember.active ||
+      linkedMember.archivedAt ||
+      !CHILD_REQUEST_AGE_TIERS.includes(linkedMember.ageTier)
+    ) {
       return {
         error: "Selected member must be an active infant, child, or youth",
         status: 422 as const,
@@ -273,7 +283,7 @@ async function validateLinkedMemberForRequest(params: {
     }
   }
   if (params.requestType === "ADULT_REQUEST") {
-    if (!linkedMember.active || linkedMember.ageTier !== "ADULT") {
+    if (!linkedMember.active || linkedMember.archivedAt || linkedMember.ageTier !== "ADULT") {
       return { error: "Selected member must be an active adult", status: 422 as const };
     }
     if (linkedMember.canLogin) {
@@ -331,6 +341,7 @@ export async function PUT(req: NextRequest) {
           email: true,
           ageTier: true,
           active: true,
+          archivedAt: true,
           inheritEmailFromId: true,
         },
       },
@@ -479,6 +490,7 @@ export async function PUT(req: NextRequest) {
       if (request.type === "CHILD_REQUEST" && childMemberForParentLink) {
         if (
           request.requester.active === false ||
+          request.requester.archivedAt ||
           (request.requester.ageTier && request.requester.ageTier !== "ADULT")
         ) {
           throw new ReviewRequestError("Child requests can only be approved for active adult requesters.");

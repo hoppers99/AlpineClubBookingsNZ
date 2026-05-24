@@ -13,6 +13,9 @@ vi.mock("@/lib/prisma", () => ({
       update: vi.fn(),
       updateMany: vi.fn(),
     },
+    memberLifecycleActionRequest: {
+      findMany: vi.fn(),
+    },
     booking: {
       count: vi.fn().mockResolvedValue(0),
       findMany: vi.fn(),
@@ -146,6 +149,7 @@ describe("Phase 3: Admin Member Management", () => {
       active: true,
       forcePasswordChange: false,
     } as any);
+    vi.mocked(prisma.memberLifecycleActionRequest.findMany).mockResolvedValue([] as any);
     vi.mocked(prisma.promoCodeAssignment.findMany).mockResolvedValue([] as any);
     delete process.env.XERO_ENABLE_LIVE_MEMBER_GROUP_LOOKUPS;
   });
@@ -628,7 +632,7 @@ describe("Phase 3: Admin Member Management", () => {
 
       const csv = await res.text();
       const lines = csv.split("\r\n");
-      expect(lines[0]).toBe("First Name,Last Name,Email,Phone Country Code,Phone Area Code,Phone Number,Date of Birth,Role,Age Tier,Active,Xero Contact ID,Subscription Status,Created At");
+      expect(lines[0]).toBe("First Name,Last Name,Email,Phone Country Code,Phone Area Code,Phone Number,Date of Birth,Role,Age Tier,Active,Cancelled At,Archived At,Xero Contact ID,Subscription Status,Created At");
       expect(lines[1]).toContain("Alice");
       expect(lines[1]).toContain("PAID");
     });

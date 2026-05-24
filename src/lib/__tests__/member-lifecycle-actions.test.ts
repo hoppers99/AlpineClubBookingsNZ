@@ -7,11 +7,13 @@ const mockPrisma = vi.hoisted(() => {
       findUnique: vi.fn(),
       count: vi.fn().mockResolvedValue(0),
       update: vi.fn(),
+      updateMany: vi.fn(),
       delete: vi.fn(),
     },
     memberLifecycleActionRequest: {
       count: vi.fn().mockResolvedValue(0),
       findUnique: vi.fn(),
+      findFirst: vi.fn(),
       findMany: vi.fn().mockResolvedValue([]),
       create: vi.fn(),
       update: vi.fn(),
@@ -32,7 +34,10 @@ const mockPrisma = vi.hoisted(() => {
     membershipCancellationRequest: countDelegate(),
     membershipCancellationRequestParticipant: countDelegate(),
     familyGroupJoinRequest: countDelegate(),
-    familyGroupMember: countDelegate(),
+    familyGroupMember: {
+      count: vi.fn().mockResolvedValue(0),
+      deleteMany: vi.fn(),
+    },
     hutLeaderAssignment: countDelegate(),
     issueReport: countDelegate(),
     bookingModification: countDelegate(),
@@ -53,7 +58,7 @@ vi.mock("@prisma/client", async () => {
 
   return {
     ...actual,
-    MemberLifecycleAction: { DELETE: "DELETE" },
+    MemberLifecycleAction: { ARCHIVE: "ARCHIVE", DELETE: "DELETE" },
     MemberLifecycleActionRequestStatus: {
       REQUESTED: "REQUESTED",
       APPROVED: "APPROVED",
@@ -94,9 +99,11 @@ vi.mock("@/lib/logger", () => ({
 }));
 
 import {
+  createMemberArchiveRequest,
   createMemberDeleteRequest,
   getMemberDeleteEligibility,
   MemberLifecycleActionError,
+  reviewMemberArchiveRequest,
   reviewMemberDeleteRequest,
 } from "@/lib/member-lifecycle-actions";
 import { DELETE as directDeleteMember } from "@/app/api/admin/members/[id]/route";
@@ -177,6 +184,44 @@ function deleteRequest(overrides: Record<string, unknown> = {}) {
     action: "DELETE",
     status: "REQUESTED",
     reason: "Created in error",
+    reviewNote: null,
+    memberSnapshot: null,
+    requestedByMemberId: "admin-1",
+    requestedAt: now,
+    reviewedByMemberId: null,
+    reviewedAt: null,
+    processedAt: null,
+    createdAt: now,
+    updatedAt: now,
+    requestedBy: requestedBy(),
+    reviewedBy: null,
+    ...overrides,
+  };
+}
+
+function archiveTarget(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "member-1",
+    firstName: "Former",
+    lastName: "Member",
+    email: "former@example.test",
+    active: false,
+    canLogin: false,
+    cancelledAt: new Date("2026-05-01T00:00:00.000Z"),
+    cancelledReason: "Moved away",
+    archivedAt: null,
+    archivedReason: null,
+    ...overrides,
+  };
+}
+
+function archiveRequest(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "archive-request-1",
+    memberId: "member-1",
+    action: "ARCHIVE",
+    status: "REQUESTED",
+    reason: "Former member confirmed cancellation",
     reviewNote: null,
     memberSnapshot: null,
     requestedByMemberId: "admin-1",
@@ -366,5 +411,131 @@ describe("member delete lifecycle actions", () => {
     });
     expect(mockPrisma.member.update).not.toHaveBeenCalled();
     expect(mockPrisma.member.delete).not.toHaveBeenCalled();
+  });
+});
+
+describe("member archive lifecycle actions", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockPrisma.member.findUnique.mockResolvedValue(archiveTarget());
+    mockPrisma.member.update.mockResolvedValue({
+      ...archiveTarget(),
+      archivedAt: now,
+      archivedReason: "Former member confirmed cancellation",
+    });
+    mockPrisma.member.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.familyGroupMember.deleteMany.mockResolvedValue({ count: 1 });
+    mockPrisma.memberLifecycleActionRequest.findFirst.mockResolvedValue(null);
+    mockPrisma.memberLifecycleActionRequest.findUnique.mockResolvedValue(archiveRequest());
+    mockPrisma.memberLifecycleActionRequest.create.mockImplementation(
+      async (args: { data: Record<string, unknown> }) =>
+        archiveRequest({
+          id: "archive-request-created",
+          ...args.data,
+          requestedBy: requestedBy(),
+        }),
+    );
+    mockPrisma.memberLifecycleActionRequest.update.mockImplementation(
+      async (args: { data: Record<string, unknown> }) =>
+        archiveRequest({
+          ...args.data,
+          requestedBy: requestedBy(),
+          reviewedBy: args.data.reviewedByMemberId ? reviewedBy() : null,
+        }),
+    );
+    mockPrisma.$transaction.mockImplementation(
+      async (callback: (tx: typeof mockPrisma) => Promise<unknown>) =>
+        callback(mockPrisma),
+    );
+  });
+
+  it("requires cancellation before an archive request can be created", async () => {
+    mockPrisma.member.findUnique.mockResolvedValue(
+      archiveTarget({ active: true, canLogin: true, cancelledAt: null }),
+    );
+
+    await expect(
+      createMemberArchiveRequest({
+        memberId: "member-1",
+        requestedByMemberId: "admin-1",
+        reason: "Former member confirmed cancellation",
+      }),
+    ).rejects.toMatchObject({
+      name: "MemberLifecycleActionError",
+      statusCode: 409,
+    } satisfies Partial<MemberLifecycleActionError>);
+
+    expect(mockPrisma.memberLifecycleActionRequest.create).not.toHaveBeenCalled();
+  });
+
+  it("creates an archive request for a cancelled member", async () => {
+    const result = await createMemberArchiveRequest({
+      memberId: "member-1",
+      requestedByMemberId: "admin-1",
+      reason: " Former member confirmed cancellation ",
+    });
+
+    expect(result.request.id).toBe("archive-request-created");
+    expect(mockPrisma.memberLifecycleActionRequest.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          action: "ARCHIVE",
+          memberId: "member-1",
+          reason: "Former member confirmed cancellation",
+          requestedByMemberId: "admin-1",
+        }),
+      }),
+    );
+  });
+
+  it("requires a different admin to review an archive request", async () => {
+    await expect(
+      reviewMemberArchiveRequest({
+        requestId: "archive-request-1",
+        reviewedByMemberId: "admin-1",
+        action: "approve",
+      }),
+    ).rejects.toMatchObject({
+      name: "MemberLifecycleActionError",
+      statusCode: 403,
+    } satisfies Partial<MemberLifecycleActionError>);
+
+    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("approves an archive request and removes operational family and email links", async () => {
+    const result = await reviewMemberArchiveRequest({
+      requestId: "archive-request-1",
+      reviewedByMemberId: "admin-2",
+      action: "approve",
+      reviewNote: "Checked",
+    });
+
+    expect(result.request.status).toBe("APPROVED");
+    expect(mockPrisma.familyGroupMember.deleteMany).toHaveBeenCalledWith({
+      where: { memberId: "member-1" },
+    });
+    expect(mockPrisma.member.updateMany).toHaveBeenCalledWith({
+      where: { parentMemberId: "member-1" },
+      data: { parentMemberId: null },
+    });
+    expect(mockPrisma.member.updateMany).toHaveBeenCalledWith({
+      where: { secondaryParentId: "member-1" },
+      data: { secondaryParentId: null },
+    });
+    expect(mockPrisma.member.updateMany).toHaveBeenCalledWith({
+      where: { inheritEmailFromId: "member-1" },
+      data: { inheritEmailFromId: null },
+    });
+    expect(mockPrisma.member.update).toHaveBeenCalledWith({
+      where: { id: "member-1" },
+      data: expect.objectContaining({
+        archivedAt: expect.any(Date),
+        archivedReason: "Former member confirmed cancellation",
+        archivedViaLifecycleActionRequestId: "archive-request-1",
+        active: false,
+        canLogin: false,
+      }),
+    });
   });
 });

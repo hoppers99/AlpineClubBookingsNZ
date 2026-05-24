@@ -14,6 +14,9 @@ vi.mock("@/lib/prisma", () => ({
       findUnique: vi.fn(),
       count: vi.fn(),
     },
+    memberLifecycleActionRequest: {
+      findMany: vi.fn().mockResolvedValue([]),
+    },
     booking: {
       aggregate: vi.fn(),
       count: vi.fn().mockResolvedValue(0),
