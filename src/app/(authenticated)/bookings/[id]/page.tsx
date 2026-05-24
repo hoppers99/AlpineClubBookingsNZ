@@ -200,6 +200,8 @@ export default async function BookingDetailPage({
       ageTier: g.ageTier,
       isMember: g.isMember,
       memberId: g.memberId,
+      stayStart: g.stayStart.toISOString().slice(0, 10),
+      stayEnd: g.stayEnd.toISOString().slice(0, 10),
       priceCents: g.priceCents,
     })),
     bookingMemberId: booking.memberId,
@@ -218,6 +220,7 @@ export default async function BookingDetailPage({
     nonMemberHoldUntil: booking.nonMemberHoldUntil?.toISOString() ?? null,
     editPolicy: {
       mode: editPolicy.mode,
+      today: editPolicy.today.toISOString().slice(0, 10),
       editableFrom: editPolicy.editableFrom?.toISOString().slice(0, 10) ?? null,
       checkInEditable: editPolicy.checkInEditable,
     },

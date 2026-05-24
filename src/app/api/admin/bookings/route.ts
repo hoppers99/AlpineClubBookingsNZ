@@ -3,8 +3,43 @@ import { auth } from "@/lib/auth";
 import { requireActiveSessionUser } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import { getMonthAvailability, LODGE_CAPACITY } from "@/lib/capacity";
-import { formatDateOnlyForTimeZone, parseDateOnly } from "@/lib/date-only";
+import {
+  eachDateOnlyInRange,
+  formatDateOnlyForTimeZone,
+  normalizeDateOnlyForTimeZone,
+  parseDateOnly,
+} from "@/lib/date-only";
+import { countActiveGuestsForNight } from "@/lib/booking-guest-stay-ranges";
 import logger from "@/lib/logger";
+
+function getMaxActiveGuestsInVisibleMonth(booking: {
+  checkIn: Date;
+  checkOut: Date;
+  guests: Array<{ stayStart?: Date | null; stayEnd?: Date | null }>;
+}, monthStart: Date, nextMonthStart: Date) {
+  const visibleStart =
+    normalizeDateOnlyForTimeZone(booking.checkIn) > monthStart
+      ? normalizeDateOnlyForTimeZone(booking.checkIn)
+      : monthStart;
+  const visibleEnd =
+    normalizeDateOnlyForTimeZone(booking.checkOut) < nextMonthStart
+      ? normalizeDateOnlyForTimeZone(booking.checkOut)
+      : nextMonthStart;
+
+  const nights = eachDateOnlyInRange(visibleStart, visibleEnd);
+  if (nights.length === 0) {
+    return 0;
+  }
+
+  return Math.max(
+    ...nights.map((night) =>
+      countActiveGuestsForNight(booking.guests, night, {
+        checkIn: booking.checkIn,
+        checkOut: booking.checkOut,
+      })
+    )
+  );
+}
 
 /**
  * GET /api/admin/bookings?calendarMonth=YYYY-MM
@@ -61,7 +96,12 @@ export async function GET(request: NextRequest) {
         },
         include: {
           member: { select: { firstName: true, lastName: true } },
-          _count: { select: { guests: true } },
+          guests: {
+            select: {
+              stayStart: true,
+              stayEnd: true,
+            },
+          },
         },
         orderBy: { checkIn: "asc" },
       }),
@@ -74,7 +114,11 @@ export async function GET(request: NextRequest) {
       checkIn: formatDateOnlyForTimeZone(b.checkIn),
       checkOut: formatDateOnlyForTimeZone(b.checkOut),
       status: b.status,
-      guestCount: b._count.guests,
+      guestCount: getMaxActiveGuestsInVisibleMonth(
+        b,
+        monthStart,
+        nextMonthStart
+      ),
     }));
 
     // Convert occupancy map to availability object: { "2026-04-01": 25, ... }

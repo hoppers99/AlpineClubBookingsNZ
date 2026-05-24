@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { bookingStatusLabel } from "@/lib/status-colors";
 import { buildHrefWithReturnTo, buildPathWithSearch } from "@/lib/internal-return-path";
+import { getAdminCalendarBookingDayRange } from "@/lib/admin-booking-calendar-ranges";
 
 interface CalendarBooking {
   id: string;
@@ -50,11 +51,6 @@ function getMonthDays(year: number, month: number) {
 
 function dateToStr(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
-function parseDate(s: string): Date {
-  const [y, m, d] = s.split("-").map(Number);
-  return new Date(y, m - 1, d);
 }
 
 export function AdminBookingCalendar() {
@@ -126,30 +122,18 @@ export function AdminBookingCalendar() {
   const filteredBookings = bookings.filter((b) => enabledStatuses.has(b.status));
 
   const { startDow, daysInMonth } = getMonthDays(year, month);
-  const monthStart = new Date(year, month, 1);
-  const monthEnd = new Date(year, month + 1, 0);
   const todayStr = dateToStr(now);
 
   // Build the day cells grid
   const totalCells = startDow + daysInMonth;
   const rows = Math.ceil(totalCells / 7);
 
-  // For each booking, determine which days it covers in this month
-  function getBookingDayRange(b: CalendarBooking): { start: number; end: number } | null {
-    const ci = parseDate(b.checkIn);
-    const co = parseDate(b.checkOut);
-    if (co < monthStart || ci > monthEnd) return null;
-    const start = Math.max(1, ci < monthStart ? 1 : ci.getDate());
-    const end = Math.min(daysInMonth, co > monthEnd ? daysInMonth : co.getDate());
-    return { start, end };
-  }
-
   // Group bookings into lanes to avoid overlap
   type Lane = Array<{ booking: CalendarBooking; start: number; end: number }>;
   const lanes: Lane[] = [];
 
   for (const b of filteredBookings) {
-    const range = getBookingDayRange(b);
+    const range = getAdminCalendarBookingDayRange(b, year, month);
     if (!range) continue;
     // Find the first lane that doesn't overlap
     let placed = false;

@@ -122,9 +122,13 @@ Waitlist states must not be counted as occupied or committed future nights.
 
 For each booking guest:
 
-- nightly contribution is one occupied bed for each night from `checkIn` inclusive to `checkOut` exclusive
+- nightly contribution is one occupied bed for each night from
+  `BookingGuest.stayStart` inclusive to `BookingGuest.stayEnd` exclusive
 - booking guest nights are the sum across all guests and nights
 - if a booking spans a realized cutoff or forward `asOfDate`, the same booking may contribute realized nights before the boundary and forward nights after it
+- the parent booking `checkIn`/`checkOut` remains the envelope for the stay, but
+  reporting must use guest-level ranges when guests are added or removed for
+  future-only in-progress edits
 
 Do not infer guest counts from external system summaries if AlpineClubBookingsNZ guest rows exist.
 

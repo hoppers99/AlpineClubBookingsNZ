@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
+import { getAdminCalendarBookingDayRange } from "@/lib/admin-booking-calendar-ranges";
 
 // ---------------------------------------------------------------------------
 // Mock Prisma
@@ -92,7 +93,20 @@ describe("#33: Admin Bookings Calendar API", () => {
         status: "CONFIRMED",
         finalPriceCents: 5000,
         member: { firstName: "John", lastName: "Smith" },
-        _count: { guests: 3 },
+        guests: [
+          {
+            stayStart: new Date("2026-04-10T00:00:00.000Z"),
+            stayEnd: new Date("2026-04-15T00:00:00.000Z"),
+          },
+          {
+            stayStart: new Date("2026-04-10T00:00:00.000Z"),
+            stayEnd: new Date("2026-04-15T00:00:00.000Z"),
+          },
+          {
+            stayStart: new Date("2026-04-10T00:00:00.000Z"),
+            stayEnd: new Date("2026-04-15T00:00:00.000Z"),
+          },
+        ],
       },
     ]);
 
@@ -160,7 +174,24 @@ describe("#33: Admin Bookings Calendar API", () => {
         status: "COMPLETED",
         finalPriceCents: 5000,
         member: { firstName: "John", lastName: "Smith" },
-        _count: { guests: 4 },
+        guests: [
+          {
+            stayStart: new Date("2026-04-10T00:00:00.000Z"),
+            stayEnd: new Date("2026-04-12T00:00:00.000Z"),
+          },
+          {
+            stayStart: new Date("2026-04-10T00:00:00.000Z"),
+            stayEnd: new Date("2026-04-12T00:00:00.000Z"),
+          },
+          {
+            stayStart: new Date("2026-04-10T00:00:00.000Z"),
+            stayEnd: new Date("2026-04-12T00:00:00.000Z"),
+          },
+          {
+            stayStart: new Date("2026-04-10T00:00:00.000Z"),
+            stayEnd: new Date("2026-04-12T00:00:00.000Z"),
+          },
+        ],
       },
     ]);
     const { getMonthAvailability } = await import("@/lib/capacity");
@@ -181,6 +212,44 @@ describe("#33: Admin Bookings Calendar API", () => {
     expect(data.availability["2026-04-10"]).toBe(25);
     expect(getMonthAvailability).toHaveBeenCalledWith(2026, 3);
   });
+
+  it("returns the maximum active guest count for the visible month", async () => {
+    mockAuth.mockResolvedValue({ user: { id: "a1", role: "ADMIN" } });
+    mockPrisma.booking.findMany.mockResolvedValue([
+      {
+        id: "b1",
+        checkIn: new Date("2026-03-25T00:00:00.000Z"),
+        checkOut: new Date("2026-04-15T00:00:00.000Z"),
+        status: "PAID",
+        finalPriceCents: 5000,
+        member: { firstName: "John", lastName: "Smith" },
+        guests: [
+          {
+            stayStart: new Date("2026-03-25T00:00:00.000Z"),
+            stayEnd: new Date("2026-04-15T00:00:00.000Z"),
+          },
+          {
+            stayStart: new Date("2026-03-25T00:00:00.000Z"),
+            stayEnd: new Date("2026-04-01T00:00:00.000Z"),
+          },
+          {
+            stayStart: new Date("2026-04-05T00:00:00.000Z"),
+            stayEnd: new Date("2026-04-08T00:00:00.000Z"),
+          },
+        ],
+      },
+    ]);
+
+    const { GET } = await import("@/app/api/admin/bookings/route");
+    const req = new NextRequest(
+      "http://localhost/api/admin/bookings?calendarMonth=2026-04"
+    );
+    const res = await GET(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.bookings[0].guestCount).toBe(2);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -188,61 +257,54 @@ describe("#33: Admin Bookings Calendar API", () => {
 // ---------------------------------------------------------------------------
 
 describe("#33: Calendar component helpers", () => {
-  it("date range bar calculation works for mid-month booking", () => {
-    // Simulate: booking Apr 10-15 in April calendar
-    const monthStart = new Date(2026, 3, 1);
-    const monthEnd = new Date(2026, 3, 30);
-    const checkIn = new Date(2026, 3, 10);
-    const checkOut = new Date(2026, 3, 15);
-    const daysInMonth = monthEnd.getDate();
-
-    const start = Math.max(1, checkIn < monthStart ? 1 : checkIn.getDate());
-    const end = Math.min(daysInMonth, checkOut > monthEnd ? daysInMonth : checkOut.getDate());
-
-    expect(start).toBe(10);
-    expect(end).toBe(15);
+  it("date range bars use check-out as the first unoccupied day", () => {
+    expect(
+      getAdminCalendarBookingDayRange(
+        { checkIn: "2026-04-10", checkOut: "2026-04-15" },
+        2026,
+        3
+      )
+    ).toEqual({ start: 10, end: 14 });
   });
 
   it("clamps booking that starts before month to day 1", () => {
-    const monthStart = new Date(2026, 3, 1);
-    const monthEnd = new Date(2026, 3, 30);
-    const checkIn = new Date(2026, 2, 28); // March 28
-    const checkOut = new Date(2026, 3, 5); // April 5
-    const daysInMonth = monthEnd.getDate();
-
-    const start = Math.max(1, checkIn < monthStart ? 1 : checkIn.getDate());
-    const end = Math.min(daysInMonth, checkOut > monthEnd ? daysInMonth : checkOut.getDate());
-
-    expect(start).toBe(1);
-    expect(end).toBe(5);
+    expect(
+      getAdminCalendarBookingDayRange(
+        { checkIn: "2026-03-28", checkOut: "2026-04-05" },
+        2026,
+        3
+      )
+    ).toEqual({ start: 1, end: 4 });
   });
 
   it("clamps booking that extends past month to last day", () => {
-    const monthStart = new Date(2026, 3, 1);
-    const monthEnd = new Date(2026, 3, 30);
-    const checkIn = new Date(2026, 3, 25); // April 25
-    const checkOut = new Date(2026, 4, 3); // May 3
-    const daysInMonth = monthEnd.getDate();
-
-    const start = Math.max(1, checkIn < monthStart ? 1 : checkIn.getDate());
-    const end = Math.min(daysInMonth, checkOut > monthEnd ? daysInMonth : checkOut.getDate());
-
-    expect(start).toBe(25);
-    expect(end).toBe(30);
+    expect(
+      getAdminCalendarBookingDayRange(
+        { checkIn: "2026-04-25", checkOut: "2026-05-03" },
+        2026,
+        3
+      )
+    ).toEqual({ start: 25, end: 30 });
   });
 
   it("booking spanning entire month clamps to 1-30", () => {
-    const monthStart = new Date(2026, 3, 1);
-    const monthEnd = new Date(2026, 3, 30);
-    const checkIn = new Date(2026, 2, 15); // March
-    const checkOut = new Date(2026, 4, 15); // May
-    const daysInMonth = monthEnd.getDate();
+    expect(
+      getAdminCalendarBookingDayRange(
+        { checkIn: "2026-03-15", checkOut: "2026-05-15" },
+        2026,
+        3
+      )
+    ).toEqual({ start: 1, end: 30 });
+  });
 
-    const start = Math.max(1, checkIn < monthStart ? 1 : checkIn.getDate());
-    const end = Math.min(daysInMonth, checkOut > monthEnd ? daysInMonth : checkOut.getDate());
-
-    expect(start).toBe(1);
-    expect(end).toBe(30);
+  it("does not render a booking that checks out on the first of the month", () => {
+    expect(
+      getAdminCalendarBookingDayRange(
+        { checkIn: "2026-03-28", checkOut: "2026-04-01" },
+        2026,
+        3
+      )
+    ).toBeNull();
   });
 });
 
