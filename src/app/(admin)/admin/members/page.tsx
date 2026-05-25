@@ -27,6 +27,12 @@ import {
   type AdminPasswordResetExpiryWindow,
 } from "@/lib/password-reset"
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path"
+import {
+  financeAccessBadgeClass,
+  financeAccessShortLabels as financeAccessLabels,
+  getLifecycleStatusConfig,
+  getLoginBadge,
+} from "@/lib/admin-member-badges"
 
 interface Member {
   id: string; firstName: string; lastName: string; email: string
@@ -108,18 +114,6 @@ interface PasswordActionTarget {
   resetIds: string[]
 }
 
-const financeAccessLabels: Record<FinanceAccessLevel, string> = {
-  NONE: "None",
-  VIEWER: "Viewer",
-  MANAGER: "Manager",
-}
-
-const financeAccessBadgeClass: Record<FinanceAccessLevel, string> = {
-  NONE: "bg-slate-100 text-slate-700 border-slate-200",
-  VIEWER: "bg-amber-100 text-amber-800 border-amber-200",
-  MANAGER: "bg-emerald-100 text-emerald-800 border-emerald-200",
-}
-
 const emptyForm: MemberForm = {
   firstName: "", lastName: "", email: "",
   phoneCountryCode: "", phoneAreaCode: "", phoneNumber: "",
@@ -172,31 +166,6 @@ function getInitialLifecycleStatus(searchParams: URLSearchParams) {
   if (active === "true") return "active"
   if (active === "false") return "inactive"
   return ""
-}
-
-function getLifecycleStatusConfig(member: Pick<Member, "active" | "cancelledAt" | "archivedAt">) {
-  if (member.archivedAt) {
-    return {
-      label: "Archived",
-      className: "bg-slate-200 text-slate-800 border-slate-300 hover:bg-slate-200",
-    }
-  }
-  if (member.cancelledAt) {
-    return {
-      label: "Cancelled",
-      className: "bg-amber-100 text-amber-800 border-amber-200 hover:bg-amber-100",
-    }
-  }
-  if (member.active) {
-    return {
-      label: "Active",
-      className: "bg-green-100 text-green-800 hover:bg-green-200 border-green-200",
-    }
-  }
-  return {
-    label: "Inactive",
-    className: "",
-  }
 }
 
 function getMissingFieldsForXeroCreate(form: MemberForm): string[] {
@@ -1119,7 +1088,7 @@ export default function MembersPage() {
               <TableCell><Badge variant="secondary" className={financeAccessBadgeClass[member.financeAccessLevel]}>{financeAccessLabels[member.financeAccessLevel]}</Badge></TableCell>
               <TableCell><span className="text-sm text-slate-600">{member.ageTier.charAt(0) + member.ageTier.slice(1).toLowerCase()}</span></TableCell>
               <TableCell>{(() => { const cfg = getLifecycleStatusConfig(member); return <Badge variant={cfg.label === "Inactive" ? "destructive" : "secondary"} className={cfg.className}>{cfg.label}</Badge> })()}</TableCell>
-              <TableCell>{member.canLogin ? <Badge variant="secondary" className="bg-slate-100 text-slate-700 border-slate-200">Can Login</Badge> : <Badge variant="secondary" className="bg-purple-100 text-purple-800 border-purple-200">Non-Login</Badge>}</TableCell>
+              <TableCell>{(() => { const badge = getLoginBadge(member.canLogin); return <Badge variant="secondary" className={badge.className}>{badge.label}</Badge> })()}</TableCell>
               <TableCell>{member.familyGroups && member.familyGroups.length > 0 ? <div className="flex flex-wrap gap-1">{member.familyGroups.map(fg => <Link key={fg.id} href={`/admin/family-groups?edit=${fg.id}`}><Badge variant="secondary" className="bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100 cursor-pointer">{fg.name || "Unnamed Group"}</Badge></Link>)}</div> : <span className="text-xs text-slate-400">-</span>}</TableCell>
               <TableCell>{(() => { const cfg = statusConfig[member.subscriptionStatus ?? "NONE"] || statusConfig.NOT_INVOICED; const badge = <Badge variant="secondary" className={`${cfg.className} ${member.subscriptionXeroInvoiceId ? "cursor-pointer inline-flex items-center gap-1" : ""}`}>{cfg.label}{member.subscriptionXeroInvoiceId && <ExternalLink className="h-3 w-3" />}</Badge>; return member.subscriptionXeroInvoiceId ? <a href={`https://go.xero.com/AccountsReceivable/View.aspx?InvoiceID=${member.subscriptionXeroInvoiceId}`} target="_blank" rel="noopener noreferrer">{badge}</a> : badge })()}</TableCell>
               <TableCell>

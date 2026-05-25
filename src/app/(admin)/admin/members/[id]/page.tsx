@@ -35,8 +35,12 @@ import { formatAgeYearsMonths } from "@/lib/member-age"
 import { formatCents } from "@/lib/utils"
 import { bookingStatusClass, bookingStatusLabel, subscriptionStatusClass, subscriptionStatusLabel } from "@/lib/status-colors"
 import { buildHrefWithReturnTo, resolveInternalReturnPath } from "@/lib/internal-return-path"
-
-type FinanceAccessLevel = "NONE" | "VIEWER" | "MANAGER"
+import {
+  financeAccessBadgeClass,
+  financeAccessLongLabels as financeAccessLabels,
+  getLoginBadge,
+} from "@/lib/admin-member-badges"
+import type { FinanceAccessLevel } from "@prisma/client"
 
 interface XeroSearchResult {
   contactId: string; name: string; email: string | null; isLinked: boolean; linkedMemberName: string | null
@@ -246,18 +250,6 @@ interface EditForm {
   streetRegion: string; streetPostalCode: string; streetCountry: string
   postalAddressLine1: string; postalAddressLine2: string; postalCity: string
   postalRegion: string; postalPostalCode: string; postalCountry: string
-}
-
-const financeAccessLabels: Record<FinanceAccessLevel, string> = {
-  NONE: "No Finance Access",
-  VIEWER: "Finance Viewer",
-  MANAGER: "Finance Manager",
-}
-
-const financeAccessBadgeClass: Record<FinanceAccessLevel, string> = {
-  NONE: "bg-slate-100 text-slate-700 border-slate-200",
-  VIEWER: "bg-amber-100 text-amber-800 border-amber-200",
-  MANAGER: "bg-emerald-100 text-emerald-800 border-emerald-200",
 }
 
 const collapsibleMemberSections = ["subs", "bookings", "xero", "audit"] as const
@@ -1949,7 +1941,7 @@ export default function MemberDetailPage({ params }: { params: Promise<{ id: str
         <div><dt className="text-slate-500">Phone</dt><dd className="font-medium">{member.phoneNumber ? [member.phoneCountryCode ? `+${member.phoneCountryCode}` : null, member.phoneAreaCode, member.phoneNumber].filter(Boolean).join(" ") : "Not provided"}</dd></div>
         <div><dt className="text-slate-500">Member Since</dt><dd className="font-medium">{fmtDate(member.joinedDate || member.createdAt)}{member.joinedDate && <span className="text-xs text-slate-400 ml-1">(from Xero)</span>}</dd></div>
         <div><dt className="text-slate-500">Finance Access</dt><dd className="font-medium"><Badge variant="secondary" className={financeAccessBadgeClass[member.financeAccessLevel]}>{financeAccessLabels[member.financeAccessLevel]}</Badge></dd></div>
-        <div><dt className="text-slate-500">Login</dt><dd className="font-medium">{member.canLogin ? <Badge variant="secondary" className="bg-slate-100 text-slate-700 border-slate-200">Can Login</Badge> : <Badge variant="secondary" className="bg-purple-100 text-purple-800 border-purple-200">Non-Login</Badge>}</dd></div>
+        <div><dt className="text-slate-500">Login</dt><dd className="font-medium">{(() => { const badge = getLoginBadge(member.canLogin); return <Badge variant="secondary" className={badge.className}>{badge.label}</Badge> })()}</dd></div>
         <div><dt className="text-slate-500">Email Inheritance</dt><dd className="font-medium">{member.inheritEmailFrom ? <span className="text-xs">{member.inheritEmailFrom.firstName} {member.inheritEmailFrom.lastName} <span className="text-slate-400">({member.inheritEmailFrom.email})</span></span> : <span className="text-xs text-slate-500">Own email</span>}</dd></div>
         <div><dt className="text-slate-500">Family Groups</dt><dd className="font-medium">{member.familyGroups && member.familyGroups.length > 0 ? <div className="flex flex-wrap gap-1">{member.familyGroups.map(fg => <Button key={fg.id} type="button" variant="outline" size="sm" className="h-7 border-indigo-200 bg-indigo-50 px-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 hover:text-indigo-800" onClick={() => setFamilyGroupEditorId(fg.id)}>{fg.name || "Unnamed"}</Button>)}</div> : <span className="text-xs text-slate-500">None</span>}</dd></div>
         <div>
