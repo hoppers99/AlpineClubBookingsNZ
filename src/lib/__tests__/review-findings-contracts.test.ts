@@ -69,11 +69,13 @@ describe("review finding source/schema contracts", () => {
   });
 
   it("wraps draft booking creation in the advisory-lock transaction", () => {
-    const source = readRepoFile("src/app/api/bookings/route.ts");
+    // Booking creation lives in the booking-create service; the route handler
+    // delegates here. Scan the service for the architectural invariants.
+    const source = readRepoFile("src/lib/booking-create.ts");
     const draftBlock = sliceFrom(
       source,
-      "if (draft) {",
-      "const allMembers = !hasNonMembers;"
+      "export async function createDraftBooking",
+      "export async function createConfirmedBooking"
     );
 
     expect(draftBlock).toContain("prisma.$transaction");
@@ -85,11 +87,10 @@ describe("review finding source/schema contracts", () => {
   });
 
   it("wraps waitlist booking creation in a transaction instead of standalone Prisma writes", () => {
-    const source = readRepoFile("src/app/api/bookings/route.ts");
+    const source = readRepoFile("src/lib/booking-create.ts");
     const createWaitlistedBookingBlock = sliceFrom(
       source,
-      "async function createWaitlistedBooking",
-      "return NextResponse.json(newBooking, { status: 201 });"
+      "export async function createWaitlistedBooking"
     );
 
     expect(createWaitlistedBookingBlock).toContain("prisma.$transaction");

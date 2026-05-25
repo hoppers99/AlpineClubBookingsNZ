@@ -3,45 +3,20 @@ import { auth } from "@/lib/auth";
 import { requireActiveSessionUser } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import { getNonMemberHoldDays } from "@/lib/cancellation";
-import type { GroupDiscountConfig } from "@/lib/pricing";
 import {
-  calculateBookingCreditApplication,
   calculateBookingHoldDecision,
-  priceBookingGuests,
   toGroupDiscountConfig,
-  toGuestPricingInputs,
-  toSeasonRateData,
 } from "@/lib/policies/booking-route-decisions";
-import { checkCapacity, getOccupiedBedsForNight } from "@/lib/capacity";
-import { LODGE_CAPACITY } from "@/lib/lodge-capacity";
 import { AgeTier, BookingStatus } from "@prisma/client";
-import { eachDayOfInterval, subDays } from "date-fns";
 import { z } from "zod";
 import { ageTierEnum } from "@/lib/age-tier-schema";
-import { PromoCodeType } from "@prisma/client";
-import {
-  bumpPendingBookings,
-  sendBumpedNotifications,
-} from "@/lib/bumping";
-import { CAPACITY_HOLDING_BOOKING_STATUSES } from "@/lib/booking-status";
-import {
-  validatePromoCodeRules,
-  redeemPromoCode,
-  calculatePromoDiscountForGuestRates,
-  getMemberFreeNightsUsed,
-} from "@/lib/promo";
+import { LODGE_CAPACITY } from "@/lib/lodge-capacity";
 import { applyRateLimit, rateLimiters } from "@/lib/rate-limit";
-import { sendBookingPendingEmail, sendBookingConfirmedEmail, sendAdminNewBookingAlert, sendWaitlistConfirmationEmail } from "@/lib/email";
-import {
-  enqueueXeroBookingInvoiceOperation,
-  kickQueuedXeroOutboxOperationsIfConnected,
-} from "@/lib/xero-operation-outbox";
-import { getMemberCreditBalance, applyCreditToBooking } from "@/lib/member-credit";
+import { getMemberCreditBalance } from "@/lib/member-credit";
 import { findUnpaidMemberGuests } from "@/lib/booking-member-guest-subscriptions";
 import logger from "@/lib/logger";
 import { getSeasonYear } from "@/lib/utils";
 import { requiresPaidSubscriptionForAgeTierFromSettings } from "@/lib/member-subscription-eligibility";
-import { logAudit } from "@/lib/audit";
 import {
   assertLinkedBookingMembersCanBeBooked,
   BookingGuestValidationError,
@@ -49,12 +24,15 @@ import {
   normalizeBookingGuestInputs,
   resolveLinkedBookingMembers,
 } from "@/lib/booking-guests";
-import {
-  ADULT_SUPERVISION_REVIEW_REASON,
-  requiresAdultSupervisionReview,
-} from "@/lib/booking-review";
 import { nameField } from "@/lib/zod-helpers";
 import { isFeatureEnabled } from "@/config/features";
+import {
+  BookingPromoError,
+  createConfirmedBooking,
+  createDraftBooking,
+  createWaitlistedBooking,
+  type BookingGuestInput,
+} from "@/lib/booking-create";
 
 const createBookingSchema = z.object({
   checkIn: z.string().transform((s) => new Date(s)),
@@ -105,12 +83,11 @@ export async function POST(request: NextRequest) {
 
   const xeroIntegrationEnabled = isFeatureEnabled("xeroIntegration");
 
-  // Resolve effective member: admin booking on behalf of another member
+  // Resolve effective member: admin booking on behalf of another member.
   let effectiveMemberId = session.user.id;
   let isOnBehalf = false;
   let effectiveMemberAgeTier: AgeTier | null = null;
 
-  // Admins must always use forMemberId to book on behalf — they cannot book for themselves
   if (session.user.role === "ADMIN" && !parsed.data.forMemberId) {
     return NextResponse.json(
       { error: "Admins must book on behalf of a member. Use the admin booking page.", code: "ADMIN_MUST_BOOK_ON_BEHALF" },
@@ -136,7 +113,6 @@ export async function POST(request: NextRequest) {
     isOnBehalf = true;
   }
 
-  // Verify the effective member (booking owner) is still active
   if (!isOnBehalf) {
     const member = await prisma.member.findUnique({
       where: { id: session.user.id },
@@ -144,12 +120,10 @@ export async function POST(request: NextRequest) {
     });
     effectiveMemberAgeTier = member?.ageTier ?? null;
 
-    // Gate: email must be verified before booking
     if (!member?.emailVerified) {
       return NextResponse.json({ error: "Email not verified" }, { status: 403 });
     }
 
-    // Gate: member must be linked to a Xero contact when Xero is enabled.
     if (xeroIntegrationEnabled && !member?.xeroContactId && session.user.role !== "ADMIN") {
       return NextResponse.json(
         {
@@ -167,7 +141,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Check-out must be after check-in" }, { status: 400 });
   }
 
-  // Validate and verify guest memberIds and pricing attributes
   try {
     const linkedMembers = await resolveLinkedBookingMembers(
       prisma,
@@ -196,33 +169,22 @@ export async function POST(request: NextRequest) {
     throw error;
   }
 
-  const requiresAdminReview = requiresAdultSupervisionReview(guests);
-  const adminReviewReason = requiresAdminReview
-    ? ADULT_SUPERVISION_REVIEW_REASON
-    : null;
-
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   if (checkIn < today) {
     return NextResponse.json({ error: "Cannot book in the past" }, { status: 400 });
   }
 
-  // Issue 10: Subscription check — non-admins must have a PAID subscription for the check-in season
-  // Admin booking on-behalf skips this (admin is trusted to make this decision)
+  // Subscription gate for the booking owner.
   if (
     session.user.role !== "ADMIN" &&
     await requiresPaidSubscriptionForAgeTierFromSettings(effectiveMemberAgeTier)
   ) {
     const seasonYear = getSeasonYear(checkIn);
     const paidSub = await prisma.memberSubscription.findFirst({
-      where: {
-        memberId: effectiveMemberId,
-        seasonYear,
-        status: "PAID",
-      },
+      where: { memberId: effectiveMemberId, seasonYear, status: "PAID" },
     });
     if (!paidSub) {
-      // Fetch subscription to get invoice URL for member payment
       const subscription = await prisma.memberSubscription.findFirst({
         where: { memberId: effectiveMemberId, seasonYear },
         orderBy: { updatedAt: "desc" },
@@ -240,7 +202,7 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // P2.3: Subscription check for all member guests (non-admin only)
+  // Subscription gate for member guests (skip for admins).
   if (session.user.role !== "ADMIN") {
     const unpaidMemberGuests = await findUnpaidMemberGuests(prisma, {
       bookingMemberId: effectiveMemberId,
@@ -268,7 +230,7 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // Minimum stay policy validation (skip for admins)
+  // Minimum stay policy (skip for admins).
   if (session.user.role !== "ADMIN") {
     const { validateMinimumStay, formatViolationsDetail } = await import("@/lib/booking-policies");
     const stayResult = await validateMinimumStay(checkIn, checkOut);
@@ -285,217 +247,36 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // Load group discount settings once for all paths
   const gds = await prisma.groupDiscountSetting.findUnique({ where: { id: "default" } });
   const groupDiscount = toGroupDiscountConfig(gds);
+  const guestInputs: BookingGuestInput[] = guests as BookingGuestInput[];
 
-  // Issue 7: Draft booking — skip capacity, payment, Xero, emails
   if (draft) {
     try {
-      const newBooking = await prisma.$transaction(async (tx) => {
-        await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
-
-        const draftExpiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000);
-
-        // Fetch seasons for pricing
-        const seasons = await tx.season.findMany({
-          where: {
-            active: true,
-            startDate: { lte: checkOut },
-            endDate: { gte: checkIn },
-          },
-          include: { rates: true },
-        });
-
-        const seasonData = toSeasonRateData(seasons);
-        const guestInputs = toGuestPricingInputs(guests);
-        const price = priceBookingGuests({
-          checkIn,
-          checkOut,
-          guests: guestInputs,
-          seasons: seasonData,
-          groupDiscount,
-        });
-
-        let discountCents = 0;
-        let promoFreeNightsUsed = 0;
-        let promoCodeRecord: { id: string; type: PromoCodeType; valueCents: number | null; percentOff: number | null; freeNights: number | null } | null = null;
-
-        if (promoCodeStr) {
-          const normalizedCode = promoCodeStr.toUpperCase().trim();
-          const lockedRows = await tx.$queryRaw<Array<{ id: string; active: boolean; validFrom: Date | null; validUntil: Date | null; maxRedemptions: number | null; currentRedemptions: number; membersOnly: boolean; singleUse: boolean; type: PromoCodeType; valueCents: number | null; percentOff: number | null; freeNights: number | null; code: string }>>`
-            SELECT * FROM "PromoCode" WHERE "code" = ${normalizedCode} FOR UPDATE
-          `;
-          const promoCode = lockedRows.length > 0 ? lockedRows[0] : null;
-
-          let memberRedemptionCount = 0;
-          if (promoCode?.singleUse) {
-            memberRedemptionCount = await tx.promoRedemption.count({
-              where: { promoCodeId: promoCode.id, memberId: effectiveMemberId },
-            });
-          }
-
-          let memberFreeNightsUsed = 0;
-          if (promoCode?.type === "FREE_NIGHTS" && promoCode.freeNights) {
-            const result = await tx.promoRedemption.aggregate({
-              where: { promoCodeId: promoCode.id, memberId: effectiveMemberId },
-              _sum: { freeNightsUsed: true },
-            });
-            memberFreeNightsUsed = result._sum.freeNightsUsed ?? 0;
-          }
-
-          let assignedMemberIds: string[] | null = null;
-          if (promoCode) {
-            const assignments = await tx.promoCodeAssignment.findMany({
-              where: { promoCodeId: promoCode.id },
-              select: { memberId: true },
-            });
-            if (assignments.length > 0) {
-              assignedMemberIds = assignments.map((a) => a.memberId);
-            }
-          }
-
-          const validationError = validatePromoCodeRules(
-            promoCode,
-            { memberId: effectiveMemberId, bookingCheckIn: checkIn },
-            new Date(),
-            memberRedemptionCount,
-            assignedMemberIds,
-            memberFreeNightsUsed
-          );
-          if (validationError) {
-            throw new Error(validationError);
-          }
-
-          const remainingFreeNights = promoCode?.type === "FREE_NIGHTS" && promoCode.freeNights
-            ? promoCode.freeNights - memberFreeNightsUsed
-            : undefined;
-          const guestNightRates = guests.map((guest, index) => ({
-            memberId: guest.memberId ?? null,
-            perNightRates: price.guests[index].perNightCents,
-          }));
-          const promoResult = calculatePromoDiscountForGuestRates(
-            {
-              type: promoCode!.type,
-              valueCents: promoCode!.valueCents,
-              percentOff: promoCode!.percentOff,
-              freeNights: promoCode!.freeNights,
-            },
-            price.totalPriceCents,
-            effectiveMemberId,
-            guestNightRates,
-            assignedMemberIds,
-            undefined,
-            remainingFreeNights
-          );
-          discountCents = promoResult.discountCents;
-          promoFreeNightsUsed = promoResult.freeNightsUsed;
-          promoCodeRecord = promoCode!;
-        }
-
-        const finalPriceCents = price.totalPriceCents - discountCents;
-        const hasNonMembers = guests.some((g) => !g.isMember);
-
-        const createdBooking = await tx.booking.create({
-          data: {
-            memberId: effectiveMemberId,
-            checkIn,
-            checkOut,
-            status: BookingStatus.DRAFT,
-            totalPriceCents: price.totalPriceCents,
-            discountCents,
-            finalPriceCents,
-            hasNonMembers,
-            nonMemberHoldUntil: null,
-            draftExpiresAt,
-            notes: notes || null,
-            expectedArrivalTime: expectedArrivalTime || null,
-            createdById: isOnBehalf ? session.user.id : null,
-            requiresAdminReview,
-            adminReviewReason,
-            guests: {
-              create: guests.map((g, i) => ({
-                firstName: g.firstName,
-                lastName: g.lastName,
-                ageTier: g.ageTier,
-                isMember: g.isMember,
-                memberId: g.memberId || null,
-                stayStart: checkIn,
-                stayEnd: checkOut,
-                priceCents: price.guests[i].priceCents,
-              })),
-            },
-          },
-          include: { guests: true },
-        });
-
-        if (promoCodeRecord && discountCents > 0) {
-          await redeemPromoCode(
-            tx,
-            promoCodeRecord.id,
-            createdBooking.id,
-            effectiveMemberId,
-            discountCents,
-            promoFreeNightsUsed || undefined
-          );
-        }
-
-        return createdBooking;
+      const newBooking = await createDraftBooking({
+        effectiveMemberId,
+        isOnBehalf,
+        sessionUserId: session.user.id,
+        checkIn,
+        checkOut,
+        guests: guestInputs,
+        notes,
+        promoCodeStr,
+        expectedArrivalTime,
+        groupDiscount,
       });
-
-      logAudit({
-        action: "booking.created",
-        memberId: session.user.id,
-        targetId: newBooking.id,
-        subjectMemberId: effectiveMemberId,
-        entityType: "Booking",
-        entityId: newBooking.id,
-        category: "booking",
-        outcome: "success",
-        summary: "Draft booking created",
-        details: "Draft booking created",
-        metadata: {
-          status: newBooking.status,
-          onBehalf: isOnBehalf,
-          checkIn: checkIn.toISOString(),
-          checkOut: checkOut.toISOString(),
-          guestCount: guests.length,
-          hasNonMembers: guests.some((guest) => !guest.isMember),
-          finalPriceCents: newBooking.finalPriceCents,
-        },
-      });
-
-      if (isOnBehalf) {
-        logAudit({
-          action: "booking.created_on_behalf",
-          memberId: session.user.id,
-          targetId: newBooking.id,
-          subjectMemberId: effectiveMemberId,
-          entityType: "Booking",
-          entityId: newBooking.id,
-          category: "booking",
-          outcome: "success",
-          summary: "Draft booking created on behalf of member",
-          details: `Admin created draft booking on behalf of member ${effectiveMemberId}`,
-          metadata: {
-            status: newBooking.status,
-            checkIn: checkIn.toISOString(),
-            checkOut: checkOut.toISOString(),
-            guestCount: guests.length,
-            hasNonMembers: guests.some((guest) => !guest.isMember),
-          },
-        });
-      }
-
       return NextResponse.json(newBooking, { status: 201 });
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to create draft booking";
+      const message = err instanceof BookingPromoError
+        ? err.message
+        : err instanceof Error
+          ? err.message
+          : "Failed to create draft booking";
       return NextResponse.json({ error: message }, { status: 400 });
     }
   }
 
   const hasNonMembers = guests.some((g) => !g.isMember);
-  const allMembers = !hasNonMembers;
   const holdDays = hasNonMembers ? await getNonMemberHoldDays(checkIn) : 7;
   const { shouldBePending, status } = calculateBookingHoldDecision({
     hasNonMembers,
@@ -503,714 +284,73 @@ export async function POST(request: NextRequest) {
     holdDays,
   });
 
-  let bumpedBookingIds: string[] = [];
-  let isZeroDollarConfirmed = false;
+  // Pre-warm the credit balance only if requested; the service will load
+  // it again inside the transaction. This call is kept here to preserve
+  // the previous behaviour of issuing a credit lookup before the lock.
+  if ((parsed.data.applyCreditCents ?? 0) > 0 && status === BookingStatus.PAYMENT_PENDING) {
+    await getMemberCreditBalance(effectiveMemberId, prisma);
+  }
 
   try {
-    const booking = await prisma.$transaction(async (tx) => {
-      // Global advisory lock (key=1) serializes ALL booking creation within
-      // the transaction. A per-date or per-room lock would not prevent
-      // double-booking because the capacity constraint spans multiple nights
-      // simultaneously — two bookings for different-but-overlapping ranges
-      // must not both "see" the same free beds. The lock is released
-      // automatically when the transaction commits or rolls back.
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+    const outcome = await createConfirmedBooking({
+      effectiveMemberId,
+      isOnBehalf,
+      sessionUserId: session.user.id,
+      checkIn,
+      checkOut,
+      guests: guestInputs,
+      notes,
+      promoCodeStr,
+      expectedArrivalTime,
+      applyCreditCents: parsed.data.applyCreditCents,
+      groupDiscount,
+      status,
+      shouldBePending,
+      holdDays,
+      allMembers: !hasNonMembers,
+    });
 
-      // Preflight capacity. Only PAID and deliberate PENDING non-member holds
-      // reserve beds; PAYMENT_PENDING bookings do not.
-      const nights = eachDayOfInterval({
-        start: checkIn,
-        end: subDays(checkOut, 1),
-      });
+    if (outcome.type === "created") {
+      return NextResponse.json(outcome.booking, { status: 201 });
+    }
 
-      const overlappingBookings = await tx.booking.findMany({
-        where: {
-          checkIn: { lt: checkOut },
-          checkOut: { gt: checkIn },
-          status: { in: [...CAPACITY_HOLDING_BOOKING_STATUSES] },
+    // Capacity exceeded path: 409 unless the caller already opted into
+    // the waitlist, in which case we create the WAITLISTED booking.
+    if (!waitlist) {
+      return NextResponse.json(
+        {
+          error: "The lodge is fully booked on some of your requested dates.",
+          code: "CAPACITY_EXCEEDED",
+          fullNights: outcome.fullNights,
+          canWaitlist: true,
         },
-        include: { guests: true },
-      });
+        { status: 409 }
+      );
+    }
 
-      // Calculate per-night occupancy
-      const nightDetails: Array<{ date: string; occupiedBeds: number; availableBeds: number }> = [];
-      let capacityExceeded = false;
-      for (const night of nights) {
-        const occupiedBeds = getOccupiedBedsForNight(
-          night,
-          overlappingBookings
-        );
-
-        nightDetails.push({
-          date: night.toISOString().split("T")[0],
-          occupiedBeds,
-          availableBeds: LODGE_CAPACITY - occupiedBeds,
-        });
-
-        if (occupiedBeds + guests.length > LODGE_CAPACITY) {
-          capacityExceeded = true;
-        }
-      }
-
-      // Fetch seasons for pricing
-      const seasons = await tx.season.findMany({
-        where: {
-          active: true,
-          startDate: { lte: checkOut },
-          endDate: { gte: checkIn },
-        },
-        include: { rates: true },
-      });
-
-      const seasonData = toSeasonRateData(seasons);
-      const guestInputs = toGuestPricingInputs(guests);
-      const price = priceBookingGuests({
+    try {
+      const waitlisted = await createWaitlistedBooking({
+        effectiveMemberId,
+        isOnBehalf,
+        sessionUserId: session.user.id,
         checkIn,
         checkOut,
         guests: guestInputs,
-        seasons: seasonData,
+        notes,
+        promoCodeStr,
+        expectedArrivalTime,
         groupDiscount,
       });
-
-      // Handle promo code if provided
-      let discountCents = 0;
-      let promoFreeNightsUsed = 0;
-      let promoCodeRecord: { id: string; type: string; valueCents: number | null; percentOff: number | null; freeNights: number | null } | null = null;
-
-      if (promoCodeStr) {
-        const normalizedCode = promoCodeStr.toUpperCase().trim();
-        // Lock the promo code row to prevent concurrent over-redemption
-        const lockedRows = await tx.$queryRaw<Array<{ id: string; active: boolean; validFrom: Date | null; validUntil: Date | null; maxRedemptions: number | null; currentRedemptions: number; membersOnly: boolean; singleUse: boolean; type: PromoCodeType; valueCents: number | null; percentOff: number | null; freeNights: number | null; code: string }>>`
-          SELECT * FROM "PromoCode" WHERE "code" = ${normalizedCode} FOR UPDATE
-        `;
-        const promoCode = lockedRows.length > 0 ? lockedRows[0] : null;
-
-        // Check single-use (against effective member, not admin)
-        let memberRedemptionCount = 0;
-        if (promoCode?.singleUse) {
-          memberRedemptionCount = await tx.promoRedemption.count({
-            where: {
-              promoCodeId: promoCode.id,
-              memberId: effectiveMemberId,
-            },
-          });
-        }
-
-        // Get cumulative free nights used for FREE_NIGHTS promos
-        let memberFreeNightsUsed = 0;
-        if (promoCode?.type === "FREE_NIGHTS" && promoCode.freeNights) {
-          const result = await tx.promoRedemption.aggregate({
-            where: { promoCodeId: promoCode.id, memberId: effectiveMemberId },
-            _sum: { freeNightsUsed: true },
-          });
-          memberFreeNightsUsed = result._sum.freeNightsUsed ?? 0;
-        }
-
-        // Check member assignments
-        let assignedMemberIds: string[] | null = null;
-        if (promoCode) {
-          const assignments = await tx.promoCodeAssignment.findMany({
-            where: { promoCodeId: promoCode.id },
-            select: { memberId: true },
-          });
-          if (assignments.length > 0) {
-            assignedMemberIds = assignments.map((a) => a.memberId);
-          }
-        }
-
-        const validationError = validatePromoCodeRules(
-          promoCode,
-          { memberId: effectiveMemberId, bookingCheckIn: checkIn },
-          new Date(),
-          memberRedemptionCount,
-          assignedMemberIds,
-          memberFreeNightsUsed
-        );
-
-        if (validationError) {
-          throw new Error(validationError);
-        }
-
-        const remainingFreeNights = promoCode?.type === "FREE_NIGHTS" && promoCode.freeNights
-          ? promoCode.freeNights - memberFreeNightsUsed
-          : undefined;
-
-        const guestNightRates = guests.map((guest, index) => ({
-          memberId: guest.memberId ?? null,
-          perNightRates: price.guests[index].perNightCents,
-        }));
-
-        const promoResult = calculatePromoDiscountForGuestRates(
-          {
-            type: promoCode!.type,
-            valueCents: promoCode!.valueCents,
-            percentOff: promoCode!.percentOff,
-            freeNights: promoCode!.freeNights,
-          },
-          price.totalPriceCents,
-          effectiveMemberId,
-          guestNightRates,
-          assignedMemberIds,
-          undefined,
-          remainingFreeNights
-        );
-
-        discountCents = promoResult.discountCents;
-        promoFreeNightsUsed = promoResult.freeNightsUsed;
-        promoCodeRecord = promoCode!;
+      return NextResponse.json(waitlisted.booking, { status: 201 });
+    } catch (waitlistErr) {
+      if (waitlistErr instanceof BookingPromoError) {
+        return NextResponse.json({ error: waitlistErr.message }, { status: 400 });
       }
-
-      const finalPriceCents = price.totalPriceCents - discountCents;
-
-      // Apply account credit if requested
-      const requestedCredit = parsed.data.applyCreditCents || 0;
-      const creditBalance =
-        requestedCredit > 0 && status === BookingStatus.PAYMENT_PENDING
-          ? await getMemberCreditBalance(effectiveMemberId, tx)
-          : 0;
-      const { creditAppliedCents, effectivePriceCents } =
-        calculateBookingCreditApplication({
-          requestedCreditCents: requestedCredit,
-          creditBalanceCents: creditBalance,
-          finalPriceCents,
-          status,
-        });
-
-      if (capacityExceeded && (status === BookingStatus.PENDING || effectivePriceCents > 0)) {
-        const fullNights = nightDetails.filter((n) => n.availableBeds < guests.length);
-        throw Object.assign(new Error("CAPACITY_EXCEEDED"), {
-          code: "CAPACITY_EXCEEDED",
-          fullNights: fullNights.map((n) => n.date),
-          canWaitlist: true,
-        });
-      }
-
-      const nonMemberHoldUntil = shouldBePending
-        ? new Date(checkIn.getTime() - holdDays * 24 * 60 * 60 * 1000)
-        : null;
-
-      const newBooking = await tx.booking.create({
-        data: {
-          memberId: effectiveMemberId,
-          checkIn,
-          checkOut,
-          status,
-          totalPriceCents: price.totalPriceCents,
-          discountCents,
-          finalPriceCents,
-          hasNonMembers,
-          nonMemberHoldUntil,
-          notes: notes || null,
-          expectedArrivalTime: expectedArrivalTime || null,
-          createdById: isOnBehalf ? session.user.id : null,
-          requiresAdminReview,
-          adminReviewReason,
-          guests: {
-            create: guests.map((g, i) => ({
-              firstName: g.firstName,
-              lastName: g.lastName,
-              ageTier: g.ageTier,
-              isMember: g.isMember,
-              memberId: g.memberId || null,
-              stayStart: checkIn,
-              stayEnd: checkOut,
-              priceCents: price.guests[i].priceCents,
-            })),
-          },
-        },
-        include: { guests: true },
-      });
-
-      // Create promo redemption record
-      if (promoCodeRecord && discountCents > 0) {
-        await redeemPromoCode(
-          tx,
-          promoCodeRecord.id,
-          newBooking.id,
-          effectiveMemberId,
-          discountCents,
-          promoFreeNightsUsed || undefined
-        );
-      }
-
-      // Apply credit deduction within the transaction
-      if (creditAppliedCents > 0) {
-        await applyCreditToBooking(
-          effectiveMemberId,
-          creditAppliedCents,
-          newBooking.id,
-          tx
-        );
-      }
-
-      // Zero-dollar or credit-covered PAYMENT_PENDING booking: final-claim capacity
-      // immediately, create a SUCCEEDED Payment, and set status to PAID.
-      // Only applies when the booking would normally be payment pending (all-members or check-in
-      // within hold window). PENDING $0 bookings (non-member, far-future) are handled by the
-      // cron job so the non-member bumping system remains intact.
-      if (effectivePriceCents === 0 && status === BookingStatus.PAYMENT_PENDING) {
-        const capacityCheck = await checkCapacity(
-          checkIn,
-          checkOut,
-          guests.length,
-          newBooking.id,
-          tx
-        );
-
-        if (!capacityCheck.available) {
-          if (!allMembers) {
-            const fullNights = capacityCheck.nightDetails
-              .filter((night) => night.availableBeds < guests.length)
-              .map((night) => night.date.toISOString().split("T")[0]);
-
-            throw Object.assign(new Error("CAPACITY_EXCEEDED"), {
-              code: "CAPACITY_EXCEEDED",
-              fullNights,
-              canWaitlist: true,
-            });
-          }
-
-          const bumpResult = await bumpPendingBookings(
-            checkIn,
-            checkOut,
-            guests.length,
-            tx
-          );
-
-          if (!bumpResult.capacityRestored) {
-            const fullNights = capacityCheck.nightDetails
-              .filter((night) => night.availableBeds < guests.length)
-              .map((night) => night.date.toISOString().split("T")[0]);
-
-            throw Object.assign(new Error("CAPACITY_EXCEEDED"), {
-              code: "CAPACITY_EXCEEDED",
-              fullNights,
-              canWaitlist: true,
-            });
-          }
-
-          bumpedBookingIds = bumpResult.bumpedBookingIds;
-        }
-
-        isZeroDollarConfirmed = true;
-        await tx.payment.create({
-          data: {
-            bookingId: newBooking.id,
-            amountCents: 0,
-            creditAppliedCents,
-            status: "SUCCEEDED",
-          },
-        });
-        await tx.booking.update({
-          where: { id: newBooking.id },
-          data: { status: BookingStatus.PAID },
-        });
-        newBooking.status = BookingStatus.PAID;
-      }
-
-      return newBooking;
-    });
-
-    // Audit log for on-behalf bookings
-    logAudit({
-      action: "booking.created",
-      memberId: session.user.id,
-      targetId: booking.id,
-      subjectMemberId: effectiveMemberId,
-      entityType: "Booking",
-      entityId: booking.id,
-      category: "booking",
-      outcome: "success",
-      summary: "Booking created",
-      details: `Booking created with status ${booking.status}`,
-      metadata: {
-        status: booking.status,
-        onBehalf: isOnBehalf,
-        checkIn: checkIn.toISOString(),
-        checkOut: checkOut.toISOString(),
-        guestCount: guests.length,
-        hasNonMembers,
-        finalPriceCents: booking.finalPriceCents,
-        zeroDollarConfirmed: isZeroDollarConfirmed,
-      },
-    });
-
-    if (isOnBehalf) {
-      logAudit({
-        action: "booking.created_on_behalf",
-        memberId: session.user.id,
-        targetId: booking.id,
-        subjectMemberId: effectiveMemberId,
-        entityType: "Booking",
-        entityId: booking.id,
-        category: "booking",
-        outcome: "success",
-        summary: "Booking created on behalf of member",
-        details: `Admin created booking on behalf of member ${effectiveMemberId}`,
-        metadata: {
-          status: booking.status,
-          checkIn: checkIn.toISOString(),
-          checkOut: checkOut.toISOString(),
-          guestCount: guests.length,
-          hasNonMembers,
-          finalPriceCents: booking.finalPriceCents,
-        },
-      });
+      logger.error({ err: waitlistErr }, "Failed to create waitlisted booking");
+      return NextResponse.json({ error: "Failed to create waitlisted booking" }, { status: 500 });
     }
-
-    // Send bumped notification emails AFTER transaction commits
-    if (bumpedBookingIds.length > 0) {
-      const triggeringMember = await prisma.member.findUnique({ where: { id: effectiveMemberId } });
-      const triggeringName = triggeringMember
-        ? `${triggeringMember.firstName} ${triggeringMember.lastName}`
-        : "Unknown";
-      sendBumpedNotifications(bumpedBookingIds, triggeringName).catch((err) =>
-        logger.error({ err }, "Failed to send bump notifications")
-      );
-    }
-
-    // Send confirmation email + create Xero invoice for zero-dollar CONFIRMED bookings
-    if (isZeroDollarConfirmed) {
-      try {
-        const fullBooking = await prisma.booking.findUnique({
-          where: { id: booking.id },
-          include: { member: true, guests: true, promoRedemption: { include: { promoCode: true } } },
-        });
-        if (fullBooking) {
-          sendBookingConfirmedEmail(
-            fullBooking.member.email,
-            fullBooking.member.firstName,
-            fullBooking.checkIn,
-            fullBooking.checkOut,
-            fullBooking.guests.length,
-            fullBooking.finalPriceCents,
-            fullBooking.discountCents > 0
-              ? { discountCents: fullBooking.discountCents, promoCode: fullBooking.promoRedemption?.promoCode?.code }
-              : undefined
-          ).catch((err) => logger.error({ err, bookingId: booking.id }, "Failed to send confirmation email for $0 booking"));
-
-          if (xeroIntegrationEnabled) {
-            void enqueueXeroBookingInvoiceOperation(booking.id, {
-              createdByMemberId: session.user.id,
-            })
-              .then(async (queuedInvoice) => {
-                if (!queuedInvoice.queueOperationId) {
-                  return;
-                }
-
-                await kickQueuedXeroOutboxOperationsIfConnected({ limit: 1 });
-              })
-              .catch((err) =>
-                logger.error(
-                  { err, bookingId: booking.id },
-                  "Failed to queue Xero invoice for $0 booking"
-                )
-              );
-          }
-        }
-      } catch (err) {
-        logger.error({ err, bookingId: booking.id }, "Error in post-creation handling for $0 booking");
-      }
-    }
-
-    // Send pending booking email if applicable
-    if (booking.status === BookingStatus.PENDING && booking.nonMemberHoldUntil) {
-      const member = await prisma.member.findUnique({ where: { id: effectiveMemberId } });
-      if (member) {
-        sendBookingPendingEmail(
-          member.email,
-          member.firstName,
-          booking.checkIn,
-          booking.checkOut,
-          booking.guests.length,
-          booking.nonMemberHoldUntil
-        ).catch((err) => logger.error({ err }, "Failed to send pending booking email"));
-      }
-    }
-
-    // N-02: Send admin alert for new booking (fire-and-forget)
-    const bookingMember = await prisma.member.findUnique({ where: { id: effectiveMemberId } });
-    if (bookingMember) {
-      sendAdminNewBookingAlert({
-        memberName: `${bookingMember.firstName} ${bookingMember.lastName}`,
-        checkIn: booking.checkIn,
-        checkOut: booking.checkOut,
-        guestCount: booking.guests.length,
-        totalCents: booking.finalPriceCents,
-        status: booking.status,
-        reviewReason: booking.adminReviewReason,
-      }).catch((err) => logger.error({ err }, "Failed to send admin new booking alert"));
-    }
-
-    return NextResponse.json(booking, { status: 201 });
-  } catch (err: unknown) {
-    // Handle capacity exceeded — offer waitlist or create waitlisted booking
-    const capErr = err as { code?: string; fullNights?: string[]; canWaitlist?: boolean };
-    if (capErr.code === "CAPACITY_EXCEEDED" && capErr.canWaitlist) {
-      if (!waitlist) {
-        // Return 409 so the UI can offer the waitlist option
-        return NextResponse.json(
-          {
-            error: "The lodge is fully booked on some of your requested dates.",
-            code: "CAPACITY_EXCEEDED",
-            fullNights: capErr.fullNights,
-            canWaitlist: true,
-          },
-          { status: 409 }
-        );
-      }
-
-      // Create a WAITLISTED booking
-      try {
-        return await createWaitlistedBooking({
-          effectiveMemberId,
-          checkIn,
-          checkOut,
-          guests,
-          notes,
-          promoCodeStr,
-          expectedArrivalTime,
-          groupDiscount,
-          isOnBehalf,
-          sessionUserId: session!.user.id,
-        });
-      } catch (waitlistErr) {
-        logger.error({ err: waitlistErr }, "Failed to create waitlisted booking");
-        return NextResponse.json({ error: "Failed to create waitlisted booking" }, { status: 500 });
-      }
-    }
-
+  } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to create booking";
     return NextResponse.json({ error: message }, { status: 400 });
   }
-}
-
-/**
- * Create a WAITLISTED booking when capacity is full and the user opts in.
- */
-async function createWaitlistedBooking(params: {
-  effectiveMemberId: string;
-  checkIn: Date;
-  checkOut: Date;
-  guests: Array<{ firstName: string; lastName: string; ageTier: string; isMember: boolean; memberId?: string }>;
-  notes?: string;
-  promoCodeStr?: string;
-  expectedArrivalTime?: string;
-  groupDiscount?: GroupDiscountConfig;
-  isOnBehalf: boolean;
-  sessionUserId: string;
-}) {
-  const {
-    effectiveMemberId,
-    checkIn,
-    checkOut,
-    guests,
-    notes,
-    promoCodeStr,
-    expectedArrivalTime,
-    groupDiscount,
-    isOnBehalf,
-    sessionUserId,
-  } = params;
-
-  // Calculate pricing (locked in at waitlist time)
-  const seasons = await prisma.season.findMany({
-    where: { active: true, startDate: { lte: checkOut }, endDate: { gte: checkIn } },
-    include: { rates: true },
-  });
-
-  const seasonData = toSeasonRateData(seasons);
-  const guestInputs = toGuestPricingInputs(
-    guests.map((guest) => ({
-      ageTier: guest.ageTier as AgeTier,
-      isMember: guest.isMember,
-    }))
-  );
-
-  const price = priceBookingGuests({
-    checkIn,
-    checkOut,
-    guests: guestInputs,
-    seasons: seasonData,
-    groupDiscount,
-  });
-
-  let discountCents = 0;
-  let promoFreeNightsUsed = 0;
-  let promoCodeRecord: { id: string; type: string; valueCents: number | null; percentOff: number | null; freeNights: number | null } | null = null;
-
-  if (promoCodeStr) {
-    const normalizedCode = promoCodeStr.toUpperCase().trim();
-    const promoCode = await prisma.promoCode.findUnique({
-      where: { code: normalizedCode },
-      include: { assignments: { select: { memberId: true } } },
-    });
-    let memberRedemptionCount = 0;
-    if (promoCode?.singleUse) {
-      memberRedemptionCount = await prisma.promoRedemption.count({
-        where: { promoCodeId: promoCode.id, memberId: effectiveMemberId },
-      });
-    }
-    // Get cumulative free nights used for FREE_NIGHTS promos
-    let memberFreeNightsUsed = 0;
-    if (promoCode?.type === "FREE_NIGHTS" && promoCode.freeNights) {
-      memberFreeNightsUsed = await getMemberFreeNightsUsed(promoCode.id, effectiveMemberId);
-    }
-    const assignedMemberIds = promoCode?.assignments?.length
-      ? promoCode.assignments.map((a) => a.memberId)
-      : null;
-    const validationError = validatePromoCodeRules(
-      promoCode,
-      { memberId: effectiveMemberId, bookingCheckIn: checkIn },
-      new Date(),
-      memberRedemptionCount,
-      assignedMemberIds,
-      memberFreeNightsUsed
-    );
-    if (validationError) {
-      return NextResponse.json({ error: validationError }, { status: 400 });
-    }
-    const remainingFreeNights = promoCode?.type === "FREE_NIGHTS" && promoCode.freeNights
-      ? promoCode.freeNights - memberFreeNightsUsed
-      : undefined;
-    const guestNightRates = guests.map((guest, index) => ({
-      memberId: guest.memberId ?? null,
-      perNightRates: price.guests[index].perNightCents,
-    }));
-    const promoResult = calculatePromoDiscountForGuestRates(
-      {
-        type: promoCode!.type,
-        valueCents: promoCode!.valueCents,
-        percentOff: promoCode!.percentOff,
-        freeNights: promoCode!.freeNights,
-      },
-      price.totalPriceCents,
-      effectiveMemberId,
-      guestNightRates,
-      assignedMemberIds,
-      undefined,
-      remainingFreeNights
-    );
-    discountCents = promoResult.discountCents;
-    promoFreeNightsUsed = promoResult.freeNightsUsed;
-    promoCodeRecord = promoCode!;
-  }
-
-  const finalPriceCents = price.totalPriceCents - discountCents;
-  const hasNonMembers = guests.some((g) => !g.isMember);
-  const requiresAdminReview = requiresAdultSupervisionReview(guests);
-  const adminReviewReason = requiresAdminReview
-    ? ADULT_SUPERVISION_REVIEW_REASON
-    : null;
-
-  const { newBooking, position } = await prisma.$transaction(async (tx) => {
-    await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(1)`);
-
-    const createdBooking = await tx.booking.create({
-      data: {
-        memberId: effectiveMemberId,
-        checkIn,
-        checkOut,
-        status: BookingStatus.WAITLISTED,
-        totalPriceCents: price.totalPriceCents,
-        discountCents,
-        finalPriceCents,
-        hasNonMembers,
-        nonMemberHoldUntil: null,
-        notes: notes || null,
-        expectedArrivalTime: expectedArrivalTime || null,
-        createdById: isOnBehalf ? sessionUserId : null,
-        requiresAdminReview,
-        adminReviewReason,
-        guests: {
-          create: guests.map((g, i) => ({
-            firstName: g.firstName,
-            lastName: g.lastName,
-            ageTier: g.ageTier as AgeTier,
-            isMember: g.isMember,
-            memberId: g.memberId || null,
-            stayStart: checkIn,
-            stayEnd: checkOut,
-            priceCents: price.guests[i].priceCents,
-          })),
-        },
-      },
-      include: { guests: true },
-    });
-
-    if (promoCodeRecord && discountCents > 0) {
-      await redeemPromoCode(
-        tx,
-        promoCodeRecord.id,
-        createdBooking.id,
-        effectiveMemberId,
-        discountCents,
-        promoFreeNightsUsed || undefined
-      );
-    }
-
-    const waitlistPosition =
-      (await tx.booking.count({
-        where: {
-          status: BookingStatus.WAITLISTED,
-          checkIn: { lt: createdBooking.checkOut },
-          checkOut: { gt: createdBooking.checkIn },
-          createdAt: { lt: createdBooking.createdAt },
-        },
-      })) + 1;
-
-    const updatedBooking = await tx.booking.update({
-      where: { id: createdBooking.id },
-      data: { waitlistPosition },
-      include: { guests: true },
-    });
-
-    return { newBooking: updatedBooking, position: waitlistPosition };
-  });
-
-  // Send emails (fire-and-forget)
-  const member = await prisma.member.findUnique({ where: { id: effectiveMemberId } });
-  if (member) {
-    sendWaitlistConfirmationEmail(
-      member.email,
-      member.firstName,
-      checkIn,
-      checkOut,
-      newBooking.guests.length,
-      position
-    ).catch((err) => logger.error({ err }, "Failed to send waitlist confirmation email"));
-
-    sendAdminNewBookingAlert({
-      memberName: `${member.firstName} ${member.lastName}`,
-      checkIn: newBooking.checkIn,
-      checkOut: newBooking.checkOut,
-      guestCount: newBooking.guests.length,
-      totalCents: newBooking.finalPriceCents,
-      status: newBooking.status,
-      reviewReason: newBooking.adminReviewReason,
-    }).catch((err) => logger.error({ err }, "Failed to send admin alert for waitlisted booking"));
-  }
-
-  logAudit({
-    action: "booking.waitlisted",
-    memberId: effectiveMemberId,
-    targetId: newBooking.id,
-    subjectMemberId: effectiveMemberId,
-    entityType: "Booking",
-    entityId: newBooking.id,
-    category: "booking",
-    outcome: "success",
-    summary: "Booking added to waitlist",
-    details: `Booking added to waitlist at position #${position}`,
-    metadata: {
-      checkIn: checkIn.toISOString(),
-      checkOut: checkOut.toISOString(),
-      guestCount: newBooking.guests.length,
-      position,
-      finalPriceCents: newBooking.finalPriceCents,
-      requiresAdminReview: newBooking.requiresAdminReview,
-    },
-  });
-
-  return NextResponse.json(newBooking, { status: 201 });
 }
