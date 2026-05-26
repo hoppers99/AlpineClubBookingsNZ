@@ -118,7 +118,10 @@ describe("review finding source/schema contracts", () => {
   it("persists executed Stripe refunds as first-class records instead of only cumulative totals", () => {
     const schema = readRepoFile("prisma/schema.prisma");
     const paymentTransactions = readRepoFile("src/lib/payment-transactions.ts");
-    const stripeWebhook = readRepoFile("src/app/api/webhooks/stripe/route.ts");
+    const stripeWebhook = [
+      readRepoFile("src/app/api/webhooks/stripe/route.ts"),
+      readRepoFile("src/lib/stripe-webhook-service.ts"),
+    ].join("\n");
 
     expect(schema).toMatch(/model\s+(?!RefundRequest\b)\w*Refund\w*\s*\{/);
     expect(schema).toContain("stripeRefundId");

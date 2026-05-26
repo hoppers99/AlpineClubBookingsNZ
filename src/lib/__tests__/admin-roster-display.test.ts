@@ -16,6 +16,26 @@ vi.mock("@/lib/auth", () => ({
 const mockRequireActiveSessionUser = vi.fn(async () => null);
 vi.mock("@/lib/session-guards", () => ({
   requireActiveSessionUser: (...args: unknown[]) => mockRequireActiveSessionUser(...args),
+  requireAdmin: async (options?: { forbiddenResponse?: () => Response }) => {
+    const session = await mockAuth();
+    if (!session?.user?.id) {
+      return {
+        ok: false,
+        response: new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 }),
+      };
+    }
+    if (session.user.role !== "ADMIN") {
+      return {
+        ok: false,
+        response:
+          options?.forbiddenResponse?.() ??
+          new Response(JSON.stringify({ error: "Forbidden" }), { status: 403 }),
+      };
+    }
+    const inactiveResponse = await mockRequireActiveSessionUser(session.user.id);
+    if (inactiveResponse) return { ok: false, response: inactiveResponse };
+    return { ok: true, session };
+  },
 }));
 
 vi.mock("@/lib/prisma", () => ({

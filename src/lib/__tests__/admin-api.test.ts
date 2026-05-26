@@ -13,12 +13,14 @@ vi.mock("@/lib/prisma", () => ({
 vi.mock("@/lib/auth", () => ({ auth: vi.fn() }));
 const {
   mockRequireActiveSessionUser,
+  mockRequireAdmin,
   mockGetXeroContactGroupMemberships,
   mockGetXeroContactIdsForGroup,
 } = vi.hoisted(() => ({
   mockRequireActiveSessionUser: vi
     .fn<(memberId: string) => Promise<Response | null>>()
     .mockResolvedValue(null),
+  mockRequireAdmin: vi.fn(),
   mockGetXeroContactGroupMemberships: vi
     .fn<
       (contactIds: string[]) => Promise<Record<string, Array<{ id: string; name: string }>>>
@@ -30,6 +32,7 @@ const {
 }));
 vi.mock("@/lib/session-guards", () => ({
   requireActiveSessionUser: mockRequireActiveSessionUser,
+  requireAdmin: mockRequireAdmin,
 }));
 vi.mock("@/lib/xero", () => ({
   getXeroContactGroupMemberships: mockGetXeroContactGroupMemberships,
@@ -288,10 +291,18 @@ describe("Admin Payments API", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(prisma.member.count).mockResolvedValue(1 as any);
+    mockRequireAdmin.mockResolvedValue({
+      ok: true,
+      session: { user: { id: "a1", role: "ADMIN" } },
+    });
   });
 
   it("returns 401 for unauthenticated requests", async () => {
     mockedAuth.mockResolvedValue(null as any);
+    mockRequireAdmin.mockResolvedValueOnce({
+      ok: false,
+      response: new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 }),
+    });
     const req = new NextRequest("http://localhost/api/admin/payments");
     const res = await getPayments(req);
     expect(res.status).toBe(401);
@@ -301,6 +312,10 @@ describe("Admin Payments API", () => {
 
   it("returns 403 for non-admin users", async () => {
     mockedAuth.mockResolvedValue({ user: { id: "m1", role: "MEMBER" } } as any);
+    mockRequireAdmin.mockResolvedValueOnce({
+      ok: false,
+      response: new Response(JSON.stringify({ error: "Forbidden" }), { status: 403 }),
+    });
     const req = new NextRequest("http://localhost/api/admin/payments");
     const res = await getPayments(req);
     expect(res.status).toBe(403);

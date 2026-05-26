@@ -50,8 +50,10 @@ vi.mock("@/lib/prisma", () => ({
 
 vi.mock("@/lib/auth", () => ({ auth: vi.fn() }));
 const mockRequireActiveSessionUser = vi.fn(async () => null);
+const mockRequireAdmin = vi.fn();
 vi.mock("@/lib/session-guards", () => ({
   requireActiveSessionUser: (...args: unknown[]) => mockRequireActiveSessionUser(...args),
+  requireAdmin: (...args: unknown[]) => mockRequireAdmin(...args),
 }));
 vi.mock("@/lib/logger", () => ({
   default: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -92,18 +94,32 @@ function makePutRequest(id: string, body: Record<string, unknown>) {
 }
 
 describe("Phase 3b: Member Detail Edit — PUT /api/admin/members/[id]", () => {
-  beforeEach(() => { vi.clearAllMocks(); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRequireAdmin.mockResolvedValue({
+      ok: true,
+      session: { user: { id: "admin1", role: "ADMIN" } },
+    });
+  });
 
   // ── Auth ──
 
   it("returns 401 for unauthenticated requests", async () => {
     mockedAuth.mockResolvedValue(null as any);
+    mockRequireAdmin.mockResolvedValueOnce({
+      ok: false,
+      response: new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 }),
+    });
     const res = await updateMember(makePutRequest("m1", { firstName: "Bob" }), { params: Promise.resolve({ id: "m1" }) });
     expect(res.status).toBe(401);
   });
 
   it("returns 401 for non-admin users", async () => {
     mockedAuth.mockResolvedValue(memberSession);
+    mockRequireAdmin.mockResolvedValueOnce({
+      ok: false,
+      response: new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 }),
+    });
     const res = await updateMember(makePutRequest("m1", { firstName: "Bob" }), { params: Promise.resolve({ id: "m1" }) });
     expect(res.status).toBe(401);
   });

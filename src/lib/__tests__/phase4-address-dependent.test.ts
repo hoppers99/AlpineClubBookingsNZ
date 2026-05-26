@@ -123,6 +123,10 @@ vi.mock("bcryptjs", () => ({
 }));
 vi.mock("@/lib/session-guards", () => ({
   requireActiveSessionUser: vi.fn().mockResolvedValue(null),
+  requireAdmin: vi.fn().mockResolvedValue({
+    ok: true,
+    session: { user: { id: "admin-1", role: "ADMIN" } },
+  }),
 }));
 vi.mock("@/lib/prisma-errors", () => ({
   isPrismaUniqueConstraintError: vi.fn().mockImplementation((err: unknown) => {

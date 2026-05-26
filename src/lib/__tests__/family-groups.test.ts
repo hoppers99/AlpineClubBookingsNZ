@@ -41,8 +41,10 @@ vi.mock("@/lib/prisma", () => ({
 
 vi.mock("@/lib/auth", () => ({ auth: vi.fn() }));
 const mockRequireActiveSessionUser = vi.fn(async () => null);
+const mockRequireAdmin = vi.fn();
 vi.mock("@/lib/session-guards", () => ({
   requireActiveSessionUser: (...args: unknown[]) => mockRequireActiveSessionUser(...args),
+  requireAdmin: (...args: unknown[]) => mockRequireAdmin(...args),
 }));
 vi.mock("@/lib/logger", () => ({
   default: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -825,11 +827,21 @@ describe("Family change request endpoints", () => {
 // Admin Join Request Review
 // =========================================================================
 describe("Admin Family Group Join Requests", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRequireAdmin.mockResolvedValue({
+      ok: true,
+      session: { user: { id: "admin-1", role: "ADMIN" } },
+    });
+  });
 
   describe("GET /api/admin/family-groups/requests", () => {
     it("returns 401 for non-admin", async () => {
       mockedAuth.mockResolvedValue(memberSession);
+      mockRequireAdmin.mockResolvedValueOnce({
+        ok: false,
+        response: new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 }),
+      });
       const { GET } = await import("@/app/api/admin/family-groups/requests/route");
       const res = await GET();
       expect(res.status).toBe(401);
@@ -909,6 +921,19 @@ describe("Admin Family Group Join Requests", () => {
   });
 
   describe("PUT /api/admin/family-groups/requests", () => {
+    it("returns 422 for invalid review input", async () => {
+      const { PUT } = await import("@/app/api/admin/family-groups/requests/route");
+      const res = await PUT(
+        makeReq("/api/admin/family-groups/requests", "PUT", {
+          requestId: "",
+          action: "approve",
+        })
+      );
+
+      expect(res.status).toBe(422);
+      expect(mockedPrisma.familyGroupJoinRequest.findUnique).not.toHaveBeenCalled();
+    });
+
     it("approves a request and sets familyGroupId", async () => {
       mockedAuth.mockResolvedValue(adminSession);
       mockedPrisma.familyGroupJoinRequest.findUnique.mockResolvedValue({

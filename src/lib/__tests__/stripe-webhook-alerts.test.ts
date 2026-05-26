@@ -233,6 +233,21 @@ describe("Stripe webhook Xero alerting", () => {
     });
   }
 
+  it("returns 400 when the Stripe signature header is missing", async () => {
+    const response = await POST(
+      new NextRequest("http://localhost/api/webhooks/stripe", {
+        method: "POST",
+        body: JSON.stringify({}),
+      })
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "Missing stripe-signature header",
+    });
+    expect(mockConstructWebhookEvent).not.toHaveBeenCalled();
+  });
+
   it("uses the deduplicated notifier when invoice creation fails after payment success", async () => {
     mockConstructWebhookEvent.mockReturnValue({
       id: "evt_primary",

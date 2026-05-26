@@ -18,6 +18,26 @@ vi.mock("@/lib/auth", () => ({
 const mockRequireActiveSessionUser = vi.fn(async () => null)
 vi.mock("@/lib/session-guards", () => ({
   requireActiveSessionUser: (...args: unknown[]) => mockRequireActiveSessionUser(...args),
+  requireAdmin: async (options?: { forbiddenResponse?: () => Response }) => {
+    const session = await mockAuth()
+    if (!session?.user?.id) {
+      return {
+        ok: false,
+        response: new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 }),
+      }
+    }
+    if (session.user.role !== "ADMIN") {
+      return {
+        ok: false,
+        response:
+          options?.forbiddenResponse?.() ??
+          new Response(JSON.stringify({ error: "Forbidden" }), { status: 403 }),
+      }
+    }
+    const inactiveResponse = await mockRequireActiveSessionUser(session.user.id)
+    if (inactiveResponse) return { ok: false, response: inactiveResponse }
+    return { ok: true, session }
+  },
 }))
 
 vi.mock("@/lib/prisma", () => ({
@@ -72,6 +92,22 @@ describe("PUT /api/admin/roster/[date] regenerate action", () => {
         },
       })
     )
+  })
+
+  it("returns 400 for invalid roster actions before mutating assignments", async () => {
+    const { PUT } = await import("@/app/api/admin/roster/[date]/route")
+    const req = new NextRequest("http://localhost/api/admin/roster/2026-04-10", {
+      method: "PUT",
+      body: JSON.stringify({ action: "unknown" }),
+      headers: { "Content-Type": "application/json" },
+    })
+
+    const res = await PUT(req, { params: Promise.resolve({ date: "2026-04-10" }) })
+    const body = await res.json()
+
+    expect(res.status).toBe(400)
+    expect(body.error).toBe("Invalid input")
+    expect(mockTransaction).not.toHaveBeenCalled()
   })
 
   it("returns 409 when confirmed assignments exist without overwrite acknowledgement", async () => {

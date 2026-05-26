@@ -17,6 +17,33 @@ vi.mock("@/lib/auth", () => ({
 
 vi.mock("@/lib/session-guards", () => ({
   requireActiveSessionUser: mocks.requireActiveSessionUser,
+  requireAdmin: async (options?: {
+    unauthenticatedResponse?: () => Response;
+    forbiddenResponse?: () => Response;
+  }) => {
+    const session = await mocks.auth();
+    if (!session?.user?.id) {
+      return {
+        ok: false,
+        response:
+          options?.unauthenticatedResponse?.() ??
+          new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 }),
+      };
+    }
+    if (session.user.role !== "ADMIN") {
+      return {
+        ok: false,
+        response:
+          options?.forbiddenResponse?.() ??
+          new Response(JSON.stringify({ error: "Forbidden" }), { status: 403 }),
+      };
+    }
+    const inactiveResponse = await mocks.requireActiveSessionUser(session.user.id);
+    if (inactiveResponse) {
+      return { ok: false, response: inactiveResponse };
+    }
+    return { ok: true, session };
+  },
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -67,6 +94,21 @@ describe("POST /api/admin/payments/[id]/generate-invoice", () => {
       failed: 0,
       skipped: 0,
     });
+  });
+
+  it("returns the legacy 403 envelope for unauthenticated requests", async () => {
+    mocks.auth.mockResolvedValueOnce(null);
+
+    const response = await POST(
+      new NextRequest("http://localhost/api/admin/payments/payment_1/generate-invoice", {
+        method: "POST",
+      }),
+      { params: Promise.resolve({ id: "payment_1" }) }
+    );
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({ error: "Forbidden" });
+    expect(mocks.paymentFindUnique).not.toHaveBeenCalled();
   });
 
   it("returns the created invoice when the queued worker completes immediately", async () => {

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { NextResponse } from "next/server";
 
 const { mockFindUnique, mockAuth } = vi.hoisted(() => ({
   mockFindUnique: vi.fn(),
@@ -15,7 +16,7 @@ vi.mock("@/lib/prisma", () => ({
 
 vi.mock("@/lib/auth", () => ({ auth: mockAuth }));
 
-import { requireActiveSessionUser } from "@/lib/session-guards";
+import { requireActiveSessionUser, requireAdmin } from "@/lib/session-guards";
 
 describe("requireActiveSessionUser", () => {
   beforeEach(() => {
@@ -52,5 +53,39 @@ describe("requireActiveSessionUser", () => {
     });
 
     expect(response).toBeNull();
+  });
+});
+
+describe("requireAdmin", () => {
+  beforeEach(() => {
+    mockFindUnique.mockReset();
+    mockAuth.mockReset();
+  });
+
+  it("allows routes to preserve a legacy non-admin envelope", async () => {
+    mockAuth.mockResolvedValue({ user: { id: "member-1", role: "MEMBER" } });
+
+    const result = await requireAdmin({
+      forbiddenResponse: () =>
+        NextResponse.json({ error: "Unauthorized" }, { status: 401 }),
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.response.status).toBe(401);
+      await expect(result.response.json()).resolves.toEqual({ error: "Unauthorized" });
+    }
+  });
+
+  it("returns the admin session after the active-session check passes", async () => {
+    mockAuth.mockResolvedValue({ user: { id: "admin-1", role: "ADMIN" } });
+    mockFindUnique.mockResolvedValue({ active: true, forcePasswordChange: false });
+
+    const result = await requireAdmin();
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.session.user.id).toBe("admin-1");
+    }
   });
 });
