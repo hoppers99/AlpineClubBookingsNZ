@@ -1,0 +1,180 @@
+import { PaymentStatus, PaymentTransactionKind } from "@prisma/client";
+
+import {
+  queueSupersededAdditionalIntentCancellations,
+} from "@/lib/booking-payment-cleanup";
+import logger from "@/lib/logger";
+import {
+  enqueueBookingModificationRefundRecovery,
+  processPaymentRecoveryOperations,
+} from "@/lib/payment-recovery";
+import {
+  refundPaymentTransactions,
+  upsertPaymentIntentTransaction,
+} from "@/lib/payment-transactions";
+import {
+  createPaymentIntent,
+  findOrCreateCustomer,
+} from "@/lib/stripe";
+
+export type BookingModificationPaymentContext = {
+  pendingRefundAmountCents: number;
+  paymentId: string | null;
+  additionalAmountCents: number;
+  hasSucceededPayment: boolean;
+  paymentCustomerId: string | null;
+  memberEmail: string;
+  memberName: string;
+  memberId: string;
+  bookingModificationId: string;
+};
+
+export async function drainSupersededPrimaryIntents({
+  bookingId,
+  supersededPrimaryPaymentIntents,
+}: {
+  bookingId: string;
+  supersededPrimaryPaymentIntents: { length: number };
+}): Promise<void> {
+  if (supersededPrimaryPaymentIntents.length === 0) return;
+  try {
+    await processPaymentRecoveryOperations({
+      limit: supersededPrimaryPaymentIntents.length,
+    });
+  } catch (err) {
+    logger.error(
+      { err, bookingId },
+      "Failed to immediately process queued Stripe payment recovery operations",
+    );
+  }
+}
+
+export async function executeBookingModificationRefund({
+  bookingId,
+  result,
+  metadataReason,
+  idempotencyKeyPrefix,
+  failureMessage,
+  recoveryFailureMessage,
+}: {
+  bookingId: string;
+  result: BookingModificationPaymentContext;
+  metadataReason: string;
+  idempotencyKeyPrefix: string;
+  failureMessage: string;
+  recoveryFailureMessage: string;
+}): Promise<string | undefined> {
+  if (result.pendingRefundAmountCents <= 0 || !result.paymentId) {
+    return undefined;
+  }
+
+  try {
+    const refundResult = await refundPaymentTransactions({
+      paymentId: result.paymentId,
+      amountCents: result.pendingRefundAmountCents,
+      metadata: { bookingId, reason: metadataReason },
+      idempotencyKeyPrefix,
+    });
+    return refundResult.refunds[0]?.refundId;
+  } catch (refundErr) {
+    logger.error(
+      { err: refundErr, bookingId, amount: result.pendingRefundAmountCents },
+      failureMessage,
+    );
+    await enqueueBookingModificationRefundRecovery({
+      bookingId,
+      paymentId: result.paymentId,
+      bookingModificationId: result.bookingModificationId,
+      amountCents: result.pendingRefundAmountCents,
+    }).catch((enqueueErr) =>
+      logger.error(
+        { err: enqueueErr, bookingId },
+        recoveryFailureMessage,
+      ),
+    );
+    return undefined;
+  }
+}
+
+export async function createModificationAdditionalPaymentIntent({
+  bookingId,
+  result,
+  reason,
+  idempotencyKey,
+  failureMessage,
+}: {
+  bookingId: string;
+  result: BookingModificationPaymentContext;
+  reason: string;
+  idempotencyKey: string;
+  failureMessage: string;
+}): Promise<{
+  additionalPaymentClientSecret: string | undefined;
+  additionalPaymentIntentId: string | undefined;
+}> {
+  if (
+    result.additionalAmountCents <= 0 ||
+    !result.hasSucceededPayment ||
+    !result.paymentId
+  ) {
+    return {
+      additionalPaymentClientSecret: undefined,
+      additionalPaymentIntentId: undefined,
+    };
+  }
+
+  try {
+    let customerId = result.paymentCustomerId ?? undefined;
+    if (!customerId) {
+      const customer = await findOrCreateCustomer({
+        email: result.memberEmail,
+        name: result.memberName,
+        memberId: result.memberId,
+      });
+      customerId = customer.id;
+    }
+
+    const pi = await createPaymentIntent({
+      amountCents: result.additionalAmountCents,
+      customerId,
+      metadata: {
+        bookingId,
+        type: "modification_additional",
+        reason,
+      },
+      idempotencyKey,
+    });
+
+    await queueSupersededAdditionalIntentCancellations({
+      bookingId,
+      paymentId: result.paymentId,
+      newPaymentIntentId: pi.id,
+    }).catch((err) =>
+      logger.error(
+        { err, bookingId, paymentIntentId: pi.id },
+        "Failed to queue superseded additional intent cancellations",
+      ),
+    );
+
+    await upsertPaymentIntentTransaction({
+      paymentId: result.paymentId,
+      kind: PaymentTransactionKind.ADDITIONAL,
+      paymentIntentId: pi.id,
+      amountCents: result.additionalAmountCents,
+      status: PaymentStatus.PENDING,
+      reason,
+      stripeCustomerId: customerId,
+    });
+
+    return {
+      additionalPaymentClientSecret: pi.client_secret ?? undefined,
+      additionalPaymentIntentId: pi.id,
+    };
+  } catch (piErr) {
+    logger.error({ err: piErr, bookingId }, failureMessage);
+    return {
+      additionalPaymentClientSecret: undefined,
+      additionalPaymentIntentId: undefined,
+    };
+  }
+}
