@@ -73,22 +73,57 @@ Use these ownership boundaries when adding new code:
 | --- | --- | --- |
 | Club configuration | `config/`, `src/config/` | Club identity, capacities, rates, and feature switches must come from config or environment, not hard-coded deployment values. |
 | Pages and route handlers | `src/app/` | Validate input and session state near the route boundary, then delegate decisions to `src/lib/`. |
+| Route-private admin UI | `src/app/(admin)/admin/xero/_components`, `src/app/(admin)/admin/xero/_hooks`, `src/app/(admin)/admin/members/**/_components`, `src/app/(admin)/admin/members/**/_hooks` | Large admin routes should be route shells plus local components/hooks before moving anything to shared UI. |
 | Shared UI | `src/components/` | Reusable view pieces live here; route-specific view state can stay beside the page until it is reused. |
+| Booking lifecycle | `src/lib/booking-create.ts`, `src/lib/booking-modify.ts`, `src/lib/booking-payment-cleanup.ts`, `src/lib/payment-recovery.ts` | Keep route handlers thin; booking orchestration and durable payment recovery live behind these services. |
+| Policy rules | `src/lib/policies/` | Pricing, age-tier, cancellation, change-fee, minimum-stay, member-credit, and booking-route decisions live as testable policy helpers. |
+| Operational Xero | `src/lib/xero-*.ts`, `src/lib/xero.ts` | `src/lib/xero.ts` is a compatibility facade. New code should import from the focused module that owns the behavior, not from the facade. |
+| Admin/member services | `src/lib/admin-member-xero-actions.ts`, `src/lib/member-serialization.ts`, `src/lib/member-lifecycle-actions.ts`, `src/lib/membership-cancellation-*.ts` | Shared admin/member request wrappers, DTO shape, lifecycle actions, and cancellation workflows live outside page files. |
 | Business logic | `src/lib/` | Keep money in integer cents, dates as New Zealand date-only lodge nights, and external calls outside long database transactions where practical. |
 | Database | `prisma/schema.prisma`, `prisma/migrations/` | Schema changes must include deployable migrations and respect the blue/green migration policy. |
 | Operations | `scripts/`, `deploy/`, Compose files | Deployment helpers should be reusable by forks through environment overrides. |
 
 The largest current files are historical consolidation points rather than a
-preferred style. When changing them, extract focused helpers only around the
-code being touched:
+preferred style. When changing them, extract focused helpers around the code
+being touched and keep tests close to the extracted domain helper so public
+adopters can find the contract without reading the whole application.
 
-- Split Xero behavior by concern: OAuth and token storage, contact sync,
-  booking invoices, operation queues, inbound reconciliation, and admin
-  diagnostics.
-- Split large admin pages into route-level pages plus local components for
-  filters, tables, dialogs, and action panels.
-- Keep tests close to the extracted domain helper so public adopters can find
-  the contract without reading the whole application.
+### Xero integration layers
+
+`src/lib/xero.ts` is a 199-line compatibility facade for older imports. Prefer
+direct imports from the focused modules below for new code.
+
+| Concern | Focused modules | Notes |
+| --- | --- | --- |
+| Infrastructure | `xero-oauth`, `xero-token-store`, `xero-api-client`, `xero-mappings`, `xero-sync-cursors` | OAuth, encrypted tokens, metered/retried API calls, mapping lookup, and sync cursors. |
+| Contacts | `xero-contacts`, `xero-contact-cache`, `xero-contact-groups`, `xero-duplicate-contacts`, `xero-bulk-contact-sync`, `xero-member-import` | Contact CRUD, local caches, managed groups, duplicate suggestions, bulk sync, and member import. |
+| Membership | `xero-membership-sync` | Subscription invoice discovery, status checks, history flushing, and linked-contact sync. |
+| Invoice documents | `xero-invoice-helpers`, `xero-invoice-payments`, `xero-booking-invoices`, `xero-credit-notes`, `xero-supplementary-invoices`, `xero-modification-credit-notes`, `xero-entrance-fee-invoices` | Booking invoices, entrance-fee invoices, supplementary invoices, payments, refunds, credit notes, and allocation helpers. |
+| Operations and admin support | `xero-sync`, `xero-operation-outbox`, `xero-operation-retry`, `xero-operation-queue`, `xero-record-activity`, `xero-record-links`, `xero-hardening`, `xero-inbound-reconciliation`, `xero-booking-repair`, `xero-contact-link-mismatches`, `xero-contact-sync`, `xero-booking-edit-settlement`, `xero-admin-cache`, `xero-admin-failures`, `xero-admin-health`, `xero-api-usage`, `xero-api-errors`, `xero-config`, `xero-error-alert`, `xero-error-shape`, `xero-feature-flags`, `xero-links`, `xero-oauth-state`, `xero-record-types` | Existing boundaries for queues, reconciliation, repair tooling, admin health, diagnostics, config, links, and error handling. |
+
+### Booking lifecycle boundary
+
+`src/lib/booking-create.ts` owns booking creation orchestration after route
+validation: capacity locking, pricing, promo/member-credit decisions,
+persistence, audit, emails, and Xero queueing. `src/lib/booking-modify.ts` owns
+the modification boundary for date/guest/promo changes and delegates reusable
+decisions to helpers and `src/lib/policies/`.
+
+`src/lib/booking-payment-cleanup.ts` queues superseded Stripe PaymentIntents
+when booking edits replace or zero out pending payment work.
+`src/lib/payment-recovery.ts` is the durable recovery queue that cancels open
+intents, treats already-cancelled intents as complete, and refunds late
+captures without re-entering the normal booking-confirmation path.
+
+### Admin/member layer
+
+The `/admin/xero` and `/admin/members` routes are route shells with local
+`_components` and `_hooks` folders. Shared admin/member logic lives in
+`src/lib/`: `admin-member-xero-actions` wraps the Xero contact actions used by
+both the members list and detail page, `member-serialization` centralises DTO
+shape, `member-lifecycle-actions` owns archive/delete request handling, and
+`membership-cancellation-*` owns the cancellation request, confirmation,
+approval, Xero, settings, and status-label flow.
 
 ## Core Data Model
 

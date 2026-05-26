@@ -4,14 +4,14 @@ This document describes the public maintenance baseline for AlpineClubBookingsNZ
 
 ## Required Gates
 
-Run these before merging application changes:
+Run lightweight local gates before opening or merging application changes:
 
 ```bash
-npm audit --audit-level=high
 npm run lint
-DATABASE_URL=postgresql://user:pass@localhost:5432/tacbookings npx prisma validate
+DATABASE_URL=postgresql://user:pass@localhost:5432/tacbookings npx prisma generate
+DATABASE_URL=postgresql://user:pass@localhost:5432/tacbookings npx tsc --noEmit
 npm test
-npm run build
+npm run quality:report
 git diff --check
 ```
 
@@ -20,7 +20,7 @@ CI also runs independent static and container checks:
 - `npm audit --audit-level=high --package-lock-only` on pull requests
 - Semgrep with Next.js, TypeScript, JavaScript, and React rules
 - gitleaks full-history and pull-request diff scans
-- Docker image build
+- TypeScript, test, and Docker image build validation
 - Trivy critical vulnerability gate with high-severity warnings
 
 ## Dependency Policy
@@ -43,7 +43,7 @@ regressions early. Treat these as review prompts, not hard CI gates:
 - App Router page shells (`src/app/.../page.tsx`) should generally stay
   under roughly 500 LOC.
 - New domain modules (`src/lib/...`, `src/components/...`) should
-  generally stay under roughly 900 LOC.
+  generally stay under roughly 700 LOC.
 - No new production `any`, type suppression (`@ts-ignore`,
   `@ts-expect-error`, `@ts-nocheck`), or `eslint-disable` without a
   short inline comment explaining the local justification.
@@ -53,7 +53,9 @@ into a focused module rather than adding more to the existing surface.
 
 ### Quality report
 
-Run the local maintainability report to see current hotspots:
+Run the local maintainability report before opening broad refactor PRs, after
+splitting a large surface, and when reviewing a PR that adds substantial
+production code:
 
 ```bash
 npm run quality:report
@@ -64,16 +66,37 @@ summary of:
 
 - largest production files
 - largest route handlers and App Router pages
+- newly oversized files outside the accepted-hotspot allow-list
 - largest test files
 - production `any` / type-suppression hotspots
 - production `eslint-disable` hotspots
 - test `as any` totals
 
 It uses only existing repo tooling, runs without external service
-credentials or network access, and is advisory: it warns and informs
-rather than failing the build. Use it before opening a refactor PR to
-confirm that the change reduces an oversized surface instead of just
-moving lines around.
+credentials or network access, and is advisory: it warns and informs rather
+than failing the build. The `Over budget` column is a soft review prompt:
+`yes` means the file exceeds the route-handler, page-shell, or new-domain-module
+budget. The `Newly oversized files` section is stricter: it lists oversized
+production files that are not in the accepted hotspot allow-list below, so
+reviewers can spot regressions without making the report a CI gate.
+
+### Known remaining hotspots
+
+These files are intentionally still over budget in the current post-refactor
+baseline. Do not expand this list casually; new entries should be treated as
+review findings unless there is an explicit follow-up plan.
+
+| File | Current LOC | Disposition |
+| --- | ---: | --- |
+| `src/lib/xero-inbound-reconciliation.ts` | 2926 | Queued for future split when reconciliation classification, repair, or reporting changes next land. |
+| `src/lib/xero-booking-repair.ts` | 2682 | Accepted as-is for now: operator repair tool, documented separately, not normal request-path code. |
+| `src/lib/xero-operation-outbox.ts` | 2028 | Queued for future split when queue dispatch, release, or retry policy changes next land. |
+| `src/lib/email-templates.ts` | 2006 | Accepted as-is for now: central template catalogue; split only with a template-registry change. |
+| `src/lib/email.ts` | 1936 | Queued for future split when transport, registry, or recipient-policy work next lands. |
+| `src/lib/xero-hardening.ts` | 1606 | Accepted as-is for now: central Xero hardening policy and diagnostics boundary. |
+| `src/lib/finance-sync-xero-datasets.ts` | 1573 | Queued for future split by finance snapshot family when finance dataset work resumes. |
+| `src/app/(admin)/admin/members/[id]/page.tsx` | 1747 | Queued for future route-shell thinning as member-detail sections continue to move local state out. |
+| `src/app/(admin)/admin/family-groups/page.tsx` | 1312 | Queued for future route-shell thinning when family-group workflows are next touched. |
 
 ## Operational Repair Tools
 

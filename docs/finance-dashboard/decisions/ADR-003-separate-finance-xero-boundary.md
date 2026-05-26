@@ -8,11 +8,11 @@ Accepted
 
 The existing AlpineClubBookingsNZ Xero integration serves operational workflows such as:
 
-- member contacts
-- subscriptions
-- booking invoices
-- refund credit notes
-- operational reconciliation
+- member contacts and imports (`src/lib/xero-contacts.ts`, `src/lib/xero-member-import.ts`)
+- subscriptions (`src/lib/xero-membership-sync.ts`)
+- booking invoices (`src/lib/xero-booking-invoices.ts`)
+- refund credit notes (`src/lib/xero-credit-notes.ts`)
+- operational reconciliation (`src/lib/xero-inbound-reconciliation.ts`)
 
 The finance dashboard has its own API-usage concerns and should not consume the same OAuth app, token pool, or usage budget.
 

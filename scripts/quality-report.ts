@@ -9,7 +9,8 @@
  * Tracked budgets (from docs/MAINTENANCE.md):
  *   - route handlers <= 250 LOC
  *   - App Router page shells <= 500 LOC
- *   - new domain modules <= 900 LOC
+ *   - new domain modules <= 700 LOC
+ *   - pre-existing accepted hotspots are allow-listed inline below
  *
  * Exit status is always 0 today: this is a warn-and-inform report, not a
  * hard gate.
@@ -17,14 +18,27 @@
 import { execSync } from "node:child_process";
 import { readFileSync, statSync } from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 const ROOT = process.cwd();
 
-const PRODUCTION_LIMIT = 900;
+export const PRODUCTION_LIMIT = 700;
 const ROUTE_HANDLER_LIMIT = 250;
 const ROUTE_PAGE_LIMIT = 500;
 
 const TOP_N = 10;
+
+export const KNOWN_OVERSIZED_PRODUCTION_FILES = new Set<string>([
+  "src/lib/xero-inbound-reconciliation.ts",
+  "src/lib/xero-booking-repair.ts",
+  "src/lib/xero-operation-outbox.ts",
+  "src/lib/email-templates.ts",
+  "src/lib/email.ts",
+  "src/lib/xero-hardening.ts",
+  "src/lib/finance-sync-xero-datasets.ts",
+  "src/app/(admin)/admin/members/[id]/page.tsx",
+  "src/app/(admin)/admin/family-groups/page.tsx",
+]);
 
 function listGitFiles(): string[] {
   const out = execSync("git ls-files", { encoding: "utf8", cwd: ROOT });
@@ -60,7 +74,13 @@ function isRoutePage(file: string): boolean {
   return /^src\/app\/.*\/page\.tsx$/.test(file);
 }
 
-type FileStat = { file: string; lines: number };
+export type FileStat = { file: string; lines: number };
+export type BudgetCategory = "domain module" | "route handler" | "route page shell";
+export type Budget = {
+  category: BudgetCategory;
+  limit: number;
+};
+export type OversizedFileStat = FileStat & Budget & { overBy: number };
 
 function countLines(file: string): number {
   try {
@@ -171,7 +191,71 @@ function renderFlaggedTable(
   ].join("\n");
 }
 
-function main() {
+function renderBudgetedProductionTable(stats: FileStat[]): string {
+  const rows = stats.map((s) => {
+    const budget = budgetForFile(s.file);
+    return [
+      s.file,
+      String(s.lines),
+      budget.category,
+      String(budget.limit),
+      s.lines > budget.limit ? "yes" : "no",
+    ];
+  });
+  return [
+    `Budgets: route handlers <= ${ROUTE_HANDLER_LIMIT} LOC; page shells <= ${ROUTE_PAGE_LIMIT} LOC; new domain modules <= ${PRODUCTION_LIMIT} LOC.`,
+    "",
+    renderTable(rows, ["File", "LOC", "Budget", "Limit", "Over budget"]),
+  ].join("\n");
+}
+
+function budgetForFile(file: string): Budget {
+  if (isRouteHandler(file)) {
+    return { category: "route handler", limit: ROUTE_HANDLER_LIMIT };
+  }
+  if (isRoutePage(file)) {
+    return { category: "route page shell", limit: ROUTE_PAGE_LIMIT };
+  }
+  return { category: "domain module", limit: PRODUCTION_LIMIT };
+}
+
+export function findOversizedProductionFiles(stats: FileStat[]): OversizedFileStat[] {
+  return stats
+    .map((stat) => {
+      const budget = budgetForFile(stat.file);
+      return {
+        ...stat,
+        ...budget,
+        overBy: stat.lines - budget.limit,
+      };
+    })
+    .filter((stat) => stat.overBy > 0)
+    .sort((a, b) => b.overBy - a.overBy || b.lines - a.lines);
+}
+
+export function findNewlyOversizedFiles(
+  stats: FileStat[],
+  allowList: ReadonlySet<string> = KNOWN_OVERSIZED_PRODUCTION_FILES,
+): OversizedFileStat[] {
+  return findOversizedProductionFiles(stats).filter(
+    (stat) => !allowList.has(stat.file),
+  );
+}
+
+function renderOversizedTable(stats: OversizedFileStat[]): string {
+  return renderTable(
+    stats.map((s) => [
+      s.file,
+      String(s.lines),
+      s.category,
+      String(s.limit),
+      String(s.overBy),
+    ]),
+    ["File", "LOC", "Budget", "Limit", "Over by"],
+  );
+}
+
+export function main() {
   const files = listGitFiles().filter(safeExists);
 
   const productionStats: FileStat[] = files
@@ -213,6 +297,7 @@ function main() {
   const overBudgetPages = routePageStats.filter(
     (s) => s.lines > ROUTE_PAGE_LIMIT,
   );
+  const newlyOversized = findNewlyOversizedFiles(productionStats);
 
   const lines: string[] = [];
   lines.push("# Quality report");
@@ -238,20 +323,26 @@ function main() {
         [`Modules over ${PRODUCTION_LIMIT} LOC budget`, String(overBudgetModules.length)],
         [`Route handlers over ${ROUTE_HANDLER_LIMIT} LOC budget`, String(overBudgetHandlers.length)],
         [`Pages over ${ROUTE_PAGE_LIMIT} LOC budget`, String(overBudgetPages.length)],
+        ["Newly oversized files", String(newlyOversized.length)],
       ],
       ["Metric", "Value"],
     ),
   );
   lines.push("");
 
+  lines.push("## Newly oversized files");
+  lines.push("");
+  lines.push(
+    "_Oversized production files not in the accepted-hotspot allow-list. Advisory only; this report never fails CI._",
+  );
+  lines.push("");
+  lines.push(renderOversizedTable(newlyOversized));
+  lines.push("");
+
   lines.push("## Largest production files");
   lines.push("");
   lines.push(
-    renderFlaggedTable(
-      topBy(productionStats, (s) => s.lines, TOP_N),
-      PRODUCTION_LIMIT,
-      "domain module",
-    ),
+    renderBudgetedProductionTable(topBy(productionStats, (s) => s.lines, TOP_N)),
   );
   lines.push("");
 
@@ -332,8 +423,16 @@ function main() {
   lines.push(
     "- For oversized files, prefer extracting cohesive helpers into `src/lib` modules before adding new functionality.",
   );
+  lines.push(
+    "- The newly oversized section excludes only the documented accepted hotspots in `docs/MAINTENANCE.md`.",
+  );
 
   process.stdout.write(lines.join("\n") + "\n");
 }
 
-main();
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href
+) {
+  main();
+}

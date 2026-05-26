@@ -85,7 +85,7 @@ If you didn't request this, you can safely ignore this email. Your password will
 Triggers and frequency:
 
 - `POST /api/auth/forgot-password`: when the submitted email belongs to an active login-enabled member. The route always responds success to avoid enumeration. Rate limit: 5 requests per hour.
-- `src/lib/xero.ts` member import path when `sendInvites` is true. It creates a 7-day token, but this template still says "1 hour".
+- `src/lib/xero-member-import.ts` member import path when `sendInvites` is true. It creates a 7-day token, but this template still says "1 hour".
 - One email per matching member/imported member per triggering request.
 
 ### admin-password-reset
