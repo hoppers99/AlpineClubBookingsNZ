@@ -30,6 +30,7 @@ const batchModifySchema = z.object({
   removeGuestIds: z.array(z.string()).optional(),
   promoCode: z.string().optional(),
   removePromoCode: z.boolean().optional(),
+  memberReviewJustification: z.string().trim().min(1).max(1000).optional(),
 });
 
 export async function PUT(

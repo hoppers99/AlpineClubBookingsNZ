@@ -10,6 +10,7 @@ import {
   type PromoCode,
   type PromoRedemption,
   type Role,
+  AdminReviewStatus,
 } from "@prisma/client";
 
 import { ApiError } from "@/lib/api-error";
@@ -78,6 +79,7 @@ export type BatchModifyInput = {
   removeGuestIds?: string[];
   promoCode?: string;
   removePromoCode?: boolean;
+  memberReviewJustification?: string;
 };
 
 export type LoadedPromoRedemption = PromoRedemption & {
@@ -214,6 +216,26 @@ export type GuestPlan = {
   totalGuestCount: number;
   requiresAdminReview: boolean;
   adminReviewReason: string | null;
+  /**
+   * Review-related fields to write to the booking after the modification.
+   * Encapsulates four scenarios: rule clears (fields nulled), rule trips
+   * for the first time on a member modification (justification captured,
+   * adminReviewStatus = PENDING), rule trips on an admin modification
+   * (auto-approved), rule already tripped (existing review state kept).
+   */
+  reviewUpdate: {
+    requiresAdminReview: boolean;
+    adminReviewReason: string | null;
+    memberReviewJustification: string | null;
+    adminReviewStatus: AdminReviewStatus | null;
+    adminReviewNotes: string | null;
+    adminReviewedById: string | null;
+    adminReviewedAt: Date | null;
+    /** When true, status must move to AWAITING_REVIEW unless already there. */
+    parkForReview: boolean;
+    /** When true, AWAITING_REVIEW should be released to PAYMENT_PENDING. */
+    releaseFromReview: boolean;
+  };
 };
 
 export async function prepareGuestPlan(
@@ -288,6 +310,14 @@ export async function prepareGuestPlan(
     ? ADULT_SUPERVISION_REVIEW_REASON
     : null;
 
+  const reviewUpdate = resolveModifyReviewUpdate({
+    booking,
+    role,
+    actorId,
+    nowFlagged: requiresAdminReview,
+    memberReviewJustification: input.memberReviewJustification,
+  });
+
   if (role !== "ADMIN") {
     const unpaidMemberGuests = await findUnpaidMemberGuestNames(tx, {
       bookingMemberId: booking.memberId,
@@ -310,6 +340,105 @@ export async function prepareGuestPlan(
     totalGuestCount,
     requiresAdminReview,
     adminReviewReason,
+    reviewUpdate,
+  };
+}
+
+/**
+ * Thrown by prepareGuestPlan when a member modification causes the no-adult
+ * rule to trip for a booking that was not previously flagged, and the
+ * caller did not supply `memberReviewJustification`.
+ */
+export class BookingModifyReviewJustificationRequiredError extends ApiError {
+  constructor() {
+    super(
+      "Removing the last adult requires a written reason so an admin can review. Please add a justification and try again.",
+      400,
+    );
+    this.name = "BookingModifyReviewJustificationRequiredError";
+  }
+}
+
+function resolveModifyReviewUpdate({
+  booking,
+  role,
+  actorId,
+  nowFlagged,
+  memberReviewJustification,
+}: {
+  booking: LoadedBookingForModify;
+  role: Role;
+  actorId: string;
+  nowFlagged: boolean;
+  memberReviewJustification: string | undefined;
+}): GuestPlan["reviewUpdate"] {
+  const wasFlagged = booking.requiresAdminReview;
+  const existingStatus = booking.adminReviewStatus;
+  const justification = memberReviewJustification?.trim();
+
+  if (!nowFlagged) {
+    // Rule cleared. Wipe review state so the booking returns to the
+    // normal lifecycle; if it was parked in AWAITING_REVIEW, release it.
+    return {
+      requiresAdminReview: false,
+      adminReviewReason: null,
+      memberReviewJustification: null,
+      adminReviewStatus: null,
+      adminReviewNotes: null,
+      adminReviewedById: null,
+      adminReviewedAt: null,
+      parkForReview: false,
+      releaseFromReview: booking.status === "AWAITING_REVIEW",
+    };
+  }
+
+  // Still flagged after modification. If review already happened (or is
+  // pending), preserve it — admins should not be re-prompted for the same
+  // booking just because the guest list shuffled.
+  if (wasFlagged && existingStatus !== null) {
+    return {
+      requiresAdminReview: true,
+      adminReviewReason: ADULT_SUPERVISION_REVIEW_REASON,
+      memberReviewJustification:
+        justification ?? booking.memberReviewJustification ?? null,
+      adminReviewStatus: existingStatus,
+      adminReviewNotes: booking.adminReviewNotes,
+      adminReviewedById: booking.adminReviewedById,
+      adminReviewedAt: booking.adminReviewedAt,
+      parkForReview: existingStatus === AdminReviewStatus.PENDING,
+      releaseFromReview: false,
+    };
+  }
+
+  // First time the rule has tripped on this booking.
+  if (role === "ADMIN") {
+    return {
+      requiresAdminReview: true,
+      adminReviewReason: ADULT_SUPERVISION_REVIEW_REASON,
+      memberReviewJustification: justification ?? null,
+      adminReviewStatus: AdminReviewStatus.APPROVED,
+      adminReviewNotes: "Approved at modification by admin.",
+      adminReviewedById: actorId,
+      adminReviewedAt: new Date(),
+      parkForReview: false,
+      releaseFromReview: false,
+    };
+  }
+
+  if (!justification) {
+    throw new BookingModifyReviewJustificationRequiredError();
+  }
+
+  return {
+    requiresAdminReview: true,
+    adminReviewReason: ADULT_SUPERVISION_REVIEW_REASON,
+    memberReviewJustification: justification,
+    adminReviewStatus: AdminReviewStatus.PENDING,
+    adminReviewNotes: null,
+    adminReviewedById: null,
+    adminReviewedAt: null,
+    parkForReview: true,
+    releaseFromReview: false,
   };
 }
 
@@ -846,6 +975,7 @@ export async function applyLifecycleTransitions(
     newFinalPriceCents,
     guestsForPricing,
     skipBookingLifecycleRules,
+    reviewUpdate,
   }: {
     booking: LoadedBookingForModify;
     bookingId: string;
@@ -853,6 +983,7 @@ export async function applyLifecycleTransitions(
     newFinalPriceCents: number;
     guestsForPricing: Array<{ isMember: boolean }>;
     skipBookingLifecycleRules: boolean;
+    reviewUpdate?: GuestPlan["reviewUpdate"];
   },
 ): Promise<LifecycleTransitionResult> {
   const hasNonMembers = !guestsForPricing.every((g) => g.isMember);
@@ -860,6 +991,12 @@ export async function applyLifecycleTransitions(
   let newStatus = booking.status;
   let zeroDollarAutoPaid = false;
   let supersededPrimaryPaymentIntents: SupersededPrimaryPaymentIntent[] = [];
+
+  if (reviewUpdate?.parkForReview && newStatus !== "AWAITING_REVIEW") {
+    newStatus = "AWAITING_REVIEW";
+  } else if (reviewUpdate?.releaseFromReview && newStatus === "AWAITING_REVIEW") {
+    newStatus = "PAYMENT_PENDING";
+  }
 
   if (!skipBookingLifecycleRules && hasNonMembers) {
     const holdDays = await getNonMemberHoldDays(newCheckIn);

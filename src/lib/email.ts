@@ -6,6 +6,8 @@ import {
   bookingPendingTemplate,
   bookingBumpedTemplate,
   bookingCancelledTemplate,
+  bookingReviewApprovedTemplate,
+  bookingReviewRejectedTemplate,
   choreRosterTemplate,
   hutLeaderAssignmentTemplate,
   emailVerificationTemplate,
@@ -557,6 +559,61 @@ export async function sendBookingCancelledEmail(
   });
 }
 
+export async function sendBookingReviewApprovedEmail(params: {
+  email: string;
+  firstName: string;
+  checkIn: Date;
+  checkOut: Date;
+  adminNotes: string;
+  bookingId: string;
+}) {
+  await sendEmail({
+    to: params.email,
+    subject: `Your booking has been approved - ${CLUB_LODGE_NAME}`,
+    html: bookingReviewApprovedTemplate(
+      params.firstName,
+      params.checkIn,
+      params.checkOut,
+      params.adminNotes,
+      params.bookingId,
+    ),
+    templateName: "booking-review-approved",
+    templateData: {
+      firstName: params.firstName,
+      checkIn: formatNZDate(params.checkIn),
+      checkOut: formatNZDate(params.checkOut),
+      adminNotes: params.adminNotes,
+      bookingId: params.bookingId,
+    },
+  });
+}
+
+export async function sendBookingReviewRejectedEmail(params: {
+  email: string;
+  firstName: string;
+  checkIn: Date;
+  checkOut: Date;
+  adminNotes: string;
+}) {
+  await sendEmail({
+    to: params.email,
+    subject: `Your booking could not be approved - ${CLUB_LODGE_NAME}`,
+    html: bookingReviewRejectedTemplate(
+      params.firstName,
+      params.checkIn,
+      params.checkOut,
+      params.adminNotes,
+    ),
+    templateName: "booking-review-rejected",
+    templateData: {
+      firstName: params.firstName,
+      checkIn: formatNZDate(params.checkIn),
+      checkOut: formatNZDate(params.checkOut),
+      adminNotes: params.adminNotes,
+    },
+  });
+}
+
 export async function sendChoreRosterEmail(
   email: string,
   guestName: string,
@@ -933,6 +990,7 @@ export async function sendAdminNewBookingAlert(data: {
   totalCents: number;
   status: string;
   reviewReason?: string | null;
+  memberJustification?: string | null;
 }) {
   await sendToAdmins({
     subject: data.reviewReason
@@ -946,6 +1004,7 @@ export async function sendAdminNewBookingAlert(data: {
       checkOut: formatNZDate(data.checkOut),
       total: formatMoneyCents(data.totalCents),
       reviewReason: data.reviewReason ?? "",
+      memberJustification: data.memberJustification ?? "",
     },
     preferenceKey: "adminNewBooking",
   });

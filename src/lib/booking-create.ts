@@ -18,6 +18,7 @@
  *     creation transactions to keep capacity checks safe
  */
 import {
+  AdminReviewStatus,
   AgeTier,
   BookingStatus,
   PromoCodeType,
@@ -85,6 +86,7 @@ interface BaseInput {
   promoCodeStr?: string;
   expectedArrivalTime?: string;
   groupDiscount?: GroupDiscountConfig;
+  memberReviewJustification?: string;
 }
 
 export type DraftBookingInput = BaseInput;
@@ -117,6 +119,89 @@ export class BookingPromoError extends Error {
     super(message);
     this.name = "BookingPromoError";
   }
+}
+
+/**
+ * Thrown when the no-adult rule trips for a member-created booking but the
+ * caller did not supply `memberReviewJustification`. Members must explain
+ * why they are booking minors without an adult before the booking can be
+ * persisted for admin review.
+ */
+export class BookingReviewJustificationRequiredError extends Error {
+  constructor() {
+    super(
+      "A reason is required when booking minors without an adult guest. Please explain so an admin can review."
+    );
+    this.name = "BookingReviewJustificationRequiredError";
+  }
+}
+
+/**
+ * Resolve the admin-review fields for a booking based on guest mix and
+ * whether the booking is being created by an admin on behalf of a member.
+ *
+ * Admin-created bookings auto-approve the review (no second pass on their
+ * own work). Member-created bookings that trip the rule require a written
+ * justification and land with adminReviewStatus = PENDING so an admin can
+ * decide via the booking-approvals queue.
+ */
+function resolveAdminReviewFields(args: {
+  guests: BookingGuestInput[];
+  isOnBehalf: boolean;
+  sessionUserId: string;
+  memberReviewJustification: string | undefined;
+}): {
+  requiresAdminReview: boolean;
+  adminReviewReason: string | null;
+  memberReviewJustification: string | null;
+  adminReviewStatus: AdminReviewStatus | null;
+  adminReviewNotes: string | null;
+  adminReviewedById: string | null;
+  adminReviewedAt: Date | null;
+  blockForReview: boolean;
+} {
+  const flagged = requiresAdultSupervisionReview(args.guests);
+  if (!flagged) {
+    return {
+      requiresAdminReview: false,
+      adminReviewReason: null,
+      memberReviewJustification: null,
+      adminReviewStatus: null,
+      adminReviewNotes: null,
+      adminReviewedById: null,
+      adminReviewedAt: null,
+      blockForReview: false,
+    };
+  }
+
+  if (args.isOnBehalf) {
+    return {
+      requiresAdminReview: true,
+      adminReviewReason: ADULT_SUPERVISION_REVIEW_REASON,
+      memberReviewJustification: args.memberReviewJustification?.trim() || null,
+      adminReviewStatus: AdminReviewStatus.APPROVED,
+      adminReviewNotes: "Approved at creation by admin.",
+      adminReviewedById: args.sessionUserId,
+      adminReviewedAt: new Date(),
+      blockForReview: false,
+    };
+  }
+
+  const justification = args.memberReviewJustification?.trim();
+  if (!justification) {
+    throw new BookingReviewJustificationRequiredError();
+  }
+
+  return {
+    requiresAdminReview: true,
+    adminReviewReason: ADULT_SUPERVISION_REVIEW_REASON,
+    memberReviewJustification: justification,
+    adminReviewStatus: AdminReviewStatus.PENDING,
+    adminReviewNotes: null,
+    adminReviewedById: null,
+    adminReviewedAt: null,
+    blockForReview: true,
+  };
 }
 
 interface ResolvedPromo {
@@ -256,14 +341,27 @@ export async function createDraftBooking(input: DraftBookingInput): Promise<Book
     promoCodeStr,
     expectedArrivalTime,
     groupDiscount,
+    memberReviewJustification,
   } = input;
 
-  const requiresAdminReview = requiresAdultSupervisionReview(guests);
-  const adminReviewReason = requiresAdminReview ? ADULT_SUPERVISION_REVIEW_REASON : null;
+  const review = resolveAdminReviewFields({
+    guests,
+    isOnBehalf,
+    sessionUserId,
+    memberReviewJustification,
+  });
+
+  // Member-created drafts that trip the no-adult rule land directly in
+  // AWAITING_REVIEW: they hold capacity while the admin is deciding and
+  // bypass the 72-hour draft expiry (which would otherwise delete them
+  // mid-review). Admin-created drafts (auto-approved) stay as DRAFT.
+  const draftStatus = review.blockForReview ? BookingStatus.AWAITING_REVIEW : BookingStatus.DRAFT;
 
   const newBooking = await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
-    const draftExpiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000);
+    const draftExpiresAt = review.blockForReview
+      ? null
+      : new Date(Date.now() + 72 * 60 * 60 * 1000);
 
     const seasons = await tx.season.findMany({
       where: { active: true, startDate: { lte: checkOut }, endDate: { gte: checkIn } },
@@ -302,7 +400,7 @@ export async function createDraftBooking(input: DraftBookingInput): Promise<Book
         memberId: effectiveMemberId,
         checkIn,
         checkOut,
-        status: BookingStatus.DRAFT,
+        status: draftStatus,
         totalPriceCents: price.totalPriceCents,
         discountCents,
         finalPriceCents,
@@ -312,8 +410,13 @@ export async function createDraftBooking(input: DraftBookingInput): Promise<Book
         notes: notes || null,
         expectedArrivalTime: expectedArrivalTime || null,
         createdById: isOnBehalf ? sessionUserId : null,
-        requiresAdminReview,
-        adminReviewReason,
+        requiresAdminReview: review.requiresAdminReview,
+        adminReviewReason: review.adminReviewReason,
+        memberReviewJustification: review.memberReviewJustification,
+        adminReviewStatus: review.adminReviewStatus,
+        adminReviewNotes: review.adminReviewNotes,
+        adminReviewedById: review.adminReviewedById,
+        adminReviewedAt: review.adminReviewedAt,
         guests: { create: buildGuestCreateData(guests, price, checkIn, checkOut) },
       },
       include: { guests: true },
@@ -379,6 +482,24 @@ export async function createDraftBooking(input: DraftBookingInput): Promise<Book
     });
   }
 
+  // Drafts that land directly in AWAITING_REVIEW skip the usual draft
+  // flow — alert admins immediately so they can decide.
+  if (review.blockForReview) {
+    const draftMember = await prisma.member.findUnique({ where: { id: effectiveMemberId } });
+    if (draftMember) {
+      sendAdminNewBookingAlert({
+        memberName: `${draftMember.firstName} ${draftMember.lastName}`,
+        checkIn: newBooking.checkIn,
+        checkOut: newBooking.checkOut,
+        guestCount: newBooking.guests.length,
+        totalCents: newBooking.finalPriceCents,
+        status: newBooking.status,
+        reviewReason: newBooking.adminReviewReason,
+        memberJustification: newBooking.memberReviewJustification,
+      }).catch((err) => logger.error({ err }, "Failed to send admin alert for awaiting-review draft"));
+    }
+  }
+
   return newBooking;
 }
 
@@ -407,11 +528,20 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
     shouldBePending,
     holdDays,
     allMembers,
+    memberReviewJustification,
   } = input;
 
   const hasNonMembers = guests.some((g) => !g.isMember);
-  const requiresAdminReview = requiresAdultSupervisionReview(guests);
-  const adminReviewReason = requiresAdminReview ? ADULT_SUPERVISION_REVIEW_REASON : null;
+  const review = resolveAdminReviewFields({
+    guests,
+    isOnBehalf,
+    sessionUserId,
+    memberReviewJustification,
+  });
+  // A member-created youth-only booking lands in AWAITING_REVIEW regardless
+  // of the caller's requested status — payment is intentionally blocked
+  // until an admin approves.
+  const effectiveStatus = review.blockForReview ? BookingStatus.AWAITING_REVIEW : status;
 
   let bumpedBookingIds: string[] = [];
   let isZeroDollarConfirmed = false;
@@ -477,18 +607,29 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
       }
 
       const finalPriceCents = price.totalPriceCents - discountCents;
+      // Credit is only applied at payment time. For a booking heading to
+      // AWAITING_REVIEW, defer credit application until the admin approves
+      // and the member completes payment.
       const creditBalance =
-        (applyCreditCents ?? 0) > 0 && status === BookingStatus.PAYMENT_PENDING
+        (applyCreditCents ?? 0) > 0 &&
+        status === BookingStatus.PAYMENT_PENDING &&
+        !review.blockForReview
           ? await getMemberCreditBalance(effectiveMemberId, tx)
           : 0;
       const { creditAppliedCents, effectivePriceCents } = calculateBookingCreditApplication({
-        requestedCreditCents: applyCreditCents ?? 0,
+        requestedCreditCents: review.blockForReview ? 0 : (applyCreditCents ?? 0),
         creditBalanceCents: creditBalance,
         finalPriceCents,
         status,
       });
 
-      if (capacityExceeded && (status === BookingStatus.PENDING || effectivePriceCents > 0)) {
+      // AWAITING_REVIEW holds capacity, so capacity must be verified even
+      // when the booking would otherwise have skipped the check (zero-dollar
+      // member-paid path).
+      if (
+        capacityExceeded &&
+        (status === BookingStatus.PENDING || effectivePriceCents > 0 || review.blockForReview)
+      ) {
         capacityFullNights = nightDetails
           .filter((n) => n.availableBeds < guests.length)
           .map((n) => n.date);
@@ -504,7 +645,7 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
           memberId: effectiveMemberId,
           checkIn,
           checkOut,
-          status,
+          status: effectiveStatus,
           totalPriceCents: price.totalPriceCents,
           discountCents,
           finalPriceCents,
@@ -513,8 +654,13 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
           notes: notes || null,
           expectedArrivalTime: expectedArrivalTime || null,
           createdById: isOnBehalf ? sessionUserId : null,
-          requiresAdminReview,
-          adminReviewReason,
+          requiresAdminReview: review.requiresAdminReview,
+          adminReviewReason: review.adminReviewReason,
+          memberReviewJustification: review.memberReviewJustification,
+          adminReviewStatus: review.adminReviewStatus,
+          adminReviewNotes: review.adminReviewNotes,
+          adminReviewedById: review.adminReviewedById,
+          adminReviewedAt: review.adminReviewedAt,
           guests: { create: buildGuestCreateData(guests, price, checkIn, checkOut) },
         },
         include: { guests: true },
@@ -539,7 +685,13 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
 
       // Zero-dollar (or fully credit-covered) PAYMENT_PENDING booking:
       // final-claim capacity, create $0 SUCCEEDED Payment, set PAID.
-      if (effectivePriceCents === 0 && status === BookingStatus.PAYMENT_PENDING) {
+      // Skipped when the booking is held in AWAITING_REVIEW — payment
+      // (including the zero-dollar auto-PAID path) must wait for admin.
+      if (
+        effectivePriceCents === 0 &&
+        status === BookingStatus.PAYMENT_PENDING &&
+        !review.blockForReview
+      ) {
         const capacityCheck = await checkCapacity(checkIn, checkOut, guests.length, newBooking.id, tx);
         if (!capacityCheck.available) {
           if (!allMembers) {
@@ -700,6 +852,7 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
       totalCents: booking.finalPriceCents,
       status: booking.status,
       reviewReason: booking.adminReviewReason,
+      memberJustification: booking.memberReviewJustification,
     }).catch((err) => logger.error({ err }, "Failed to send admin new booking alert"));
   }
 
@@ -724,7 +877,20 @@ export async function createWaitlistedBooking(input: WaitlistedBookingInput): Pr
     promoCodeStr,
     expectedArrivalTime,
     groupDiscount,
+    memberReviewJustification,
   } = input;
+
+  // Throws BookingReviewJustificationRequiredError if the rule trips on a
+  // member-created booking with no justification supplied. WAITLISTED is
+  // kept as the persisted status (waitlist doesn't hold capacity), but
+  // adminReviewStatus = PENDING so the review queue and force-confirm path
+  // know it needs a decision before it can progress.
+  const review = resolveAdminReviewFields({
+    guests,
+    isOnBehalf,
+    sessionUserId,
+    memberReviewJustification,
+  });
 
   const seasons = await prisma.season.findMany({
     where: { active: true, startDate: { lte: checkOut }, endDate: { gte: checkIn } },
@@ -778,8 +944,6 @@ export async function createWaitlistedBooking(input: WaitlistedBookingInput): Pr
 
   const finalPriceCents = price.totalPriceCents - discountCents;
   const hasNonMembers = guests.some((g) => !g.isMember);
-  const requiresAdminReview = requiresAdultSupervisionReview(guests);
-  const adminReviewReason = requiresAdminReview ? ADULT_SUPERVISION_REVIEW_REASON : null;
 
   const { newBooking, position } = await prisma.$transaction(async (tx) => {
     await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(1)`);
@@ -798,8 +962,13 @@ export async function createWaitlistedBooking(input: WaitlistedBookingInput): Pr
         notes: notes || null,
         expectedArrivalTime: expectedArrivalTime || null,
         createdById: isOnBehalf ? sessionUserId : null,
-        requiresAdminReview,
-        adminReviewReason,
+        requiresAdminReview: review.requiresAdminReview,
+        adminReviewReason: review.adminReviewReason,
+        memberReviewJustification: review.memberReviewJustification,
+        adminReviewStatus: review.adminReviewStatus,
+        adminReviewNotes: review.adminReviewNotes,
+        adminReviewedById: review.adminReviewedById,
+        adminReviewedAt: review.adminReviewedAt,
         guests: { create: buildGuestCreateData(guests, price, checkIn, checkOut) },
       },
       include: { guests: true },
@@ -856,6 +1025,7 @@ export async function createWaitlistedBooking(input: WaitlistedBookingInput): Pr
       totalCents: newBooking.finalPriceCents,
       status: newBooking.status,
       reviewReason: newBooking.adminReviewReason,
+      memberJustification: newBooking.memberReviewJustification,
     }).catch((err) => logger.error({ err }, "Failed to send admin alert for waitlisted booking"));
   }
 

@@ -370,6 +370,44 @@ export function bookingCancelledTemplate(
   `);
 }
 
+export function bookingReviewApprovedTemplate(
+  firstName: string,
+  checkIn: Date,
+  checkOut: Date,
+  adminNotes: string,
+  bookingId: string,
+): string {
+  return layout(`
+    ${heading("Booking Approved")}
+    ${paragraph("Hi " + escapeHtml(firstName) + ", an admin has approved your booking. You can now complete payment to confirm it.")}
+    ${infoTable([
+      { label: "Check-in", value: formatNZDate(checkIn) },
+      { label: "Check-out", value: formatNZDate(checkOut) },
+    ])}
+    ${adminNotes ? alertBox("Note from admin: " + escapeHtml(adminNotes), "info") : ""}
+    ${button("Complete Payment", BASE_URL + "/bookings/" + bookingId)}
+  `);
+}
+
+export function bookingReviewRejectedTemplate(
+  firstName: string,
+  checkIn: Date,
+  checkOut: Date,
+  adminNotes: string,
+): string {
+  return layout(`
+    ${heading("Booking Declined")}
+    ${paragraph("Hi " + escapeHtml(firstName) + ", an admin has reviewed your booking and was not able to approve it. The booking has been cancelled — no payment was taken.")}
+    ${infoTable([
+      { label: "Check-in", value: formatNZDate(checkIn) },
+      { label: "Check-out", value: formatNZDate(checkOut) },
+    ])}
+    ${adminNotes ? alertBox("Reason from admin: " + escapeHtml(adminNotes), "warning") : ""}
+    ${paragraph("You are welcome to make a new booking that includes an adult guest, or contact the club to discuss.")}
+    ${button("Make a New Booking", BASE_URL + "/book")}
+  `);
+}
+
 export function creditAppliedToBookingTemplate(
   firstName: string,
   checkIn: Date,
@@ -552,19 +590,24 @@ export function adminNewBookingTemplate(data: {
   totalCents: number;
   status: string;
   reviewReason?: string | null;
+  memberJustification?: string | null;
 }): string {
+  const rows = [
+    { label: "Member", value: escapeHtml(data.memberName) },
+    { label: "Check-in", value: formatNZDate(data.checkIn) },
+    { label: "Check-out", value: formatNZDate(data.checkOut) },
+    { label: "Guests", value: String(data.guestCount) },
+    { label: "Total", value: formatCents(data.totalCents) },
+    { label: "Status", value: escapeHtml(data.status) },
+  ];
+  if (data.memberJustification) {
+    rows.push({ label: "Member reason", value: escapeHtml(data.memberJustification) });
+  }
   return layout(`
     ${heading("New Booking Created")}
     ${paragraph("A new booking has been created.")}
     ${data.reviewReason ? alertBox(escapeHtml(data.reviewReason), "warning") : ""}
-    ${infoTable([
-      { label: "Member", value: escapeHtml(data.memberName) },
-      { label: "Check-in", value: formatNZDate(data.checkIn) },
-      { label: "Check-out", value: formatNZDate(data.checkOut) },
-      { label: "Guests", value: String(data.guestCount) },
-      { label: "Total", value: formatCents(data.totalCents) },
-      { label: "Status", value: escapeHtml(data.status) },
-    ])}
+    ${infoTable(rows)}
     ${button("View Bookings", BASE_URL + "/admin/bookings")}
   `);
 }

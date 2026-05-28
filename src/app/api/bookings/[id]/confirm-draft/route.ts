@@ -9,7 +9,7 @@ import {
   enqueueXeroBookingInvoiceOperation,
   kickQueuedXeroOutboxOperationsIfConnected,
 } from "@/lib/xero-operation-outbox";
-import { sendAdminNewBookingAlert, sendBookingConfirmedEmail } from "@/lib/email";
+import { sendBookingConfirmedEmail } from "@/lib/email";
 import logger from "@/lib/logger";
 import { requireActiveSessionUser } from "@/lib/session-guards";
 import { CAPACITY_HOLDING_BOOKING_STATUSES } from "@/lib/booking-status";
@@ -137,19 +137,8 @@ export async function POST(
       : undefined
   ).catch((err) => logger.error({ err, bookingId: id }, "Failed to send confirmation email for confirmed draft"));
 
-  if (booking.requiresAdminReview) {
-    sendAdminNewBookingAlert({
-      memberName: `${booking.member.firstName} ${booking.member.lastName}`,
-      checkIn: booking.checkIn,
-      checkOut: booking.checkOut,
-      guestCount: booking.guests.length,
-      totalCents: booking.finalPriceCents,
-      status: BookingStatus.PAID,
-      reviewReason: booking.adminReviewReason,
-    }).catch((err) =>
-      logger.error({ err, bookingId: id }, "Failed to send admin review alert for confirmed draft")
-    );
-  }
+  // The admin alert for review-flagged bookings is sent once at creation
+  // time; no second alert when a flagged draft is confirmed.
 
   void enqueueXeroBookingInvoiceOperation(id, {
     createdByMemberId: session.user.id,

@@ -66,16 +66,23 @@ export async function cancelBooking(
     return { status: 403, error: "Forbidden" };
   }
 
-  if (!["PENDING", "PAYMENT_PENDING", "CONFIRMED", "PAID", "WAITLISTED", "WAITLIST_OFFERED"].includes(booking.status)) {
+  if (!["PENDING", "PAYMENT_PENDING", "CONFIRMED", "PAID", "WAITLISTED", "WAITLIST_OFFERED", "AWAITING_REVIEW"].includes(booking.status)) {
     return {
       status: 400,
-      error: "Only PENDING, PAYMENT_PENDING, CONFIRMED, PAID, WAITLISTED, or WAITLIST_OFFERED bookings can be cancelled",
+      error: "Only PENDING, PAYMENT_PENDING, CONFIRMED, PAID, WAITLISTED, WAITLIST_OFFERED, or AWAITING_REVIEW bookings can be cancelled",
     };
   }
 
-  // Handle WAITLISTED / WAITLIST_OFFERED bookings (no payment taken)
-  if (booking.status === "WAITLISTED" || booking.status === "WAITLIST_OFFERED") {
+  // Bookings awaiting admin review have no payment yet; same no-payment
+  // shape as waitlisted/offered. Reuse that path.
+  if (
+    booking.status === "WAITLISTED" ||
+    booking.status === "WAITLIST_OFFERED" ||
+    booking.status === "AWAITING_REVIEW"
+  ) {
     const wasOffered = booking.status === "WAITLIST_OFFERED";
+    const wasAwaitingReview = booking.status === "AWAITING_REVIEW";
+    const priorStatus = booking.status;
 
     await prisma.booking.update({
       where: { id: bookingId },
@@ -92,9 +99,11 @@ export async function cancelBooking(
       booking,
       bookingId,
       sessionUserId,
-      details: `Waitlisted booking cancelled (was ${wasOffered ? "WAITLIST_OFFERED" : "WAITLISTED"})`,
+      details: wasAwaitingReview
+        ? "Booking awaiting admin review cancelled"
+        : `Waitlisted booking cancelled (was ${wasOffered ? "WAITLIST_OFFERED" : "WAITLISTED"})`,
       ipAddress,
-      metadata: { wasOffered },
+      metadata: { wasOffered, priorStatus },
     });
 
     sendBookingCancelledEmail(
@@ -104,7 +113,7 @@ export async function cancelBooking(
       booking.checkOut,
       0,
       "card"
-    ).catch((err) => logger.error({ err, bookingId }, "Failed to send cancellation email for waitlisted booking"));
+    ).catch((err) => logger.error({ err, bookingId }, "Failed to send cancellation email for no-payment booking"));
 
     // If the booking was WAITLIST_OFFERED, re-process waitlist for these dates
     if (wasOffered) {
@@ -119,7 +128,9 @@ export async function cancelBooking(
         refundAmountCents: 0,
         refundPercentage: 0,
         refundMethod: "card" as const,
-        message: "Waitlisted booking cancelled successfully",
+        message: wasAwaitingReview
+          ? "Booking awaiting review cancelled successfully"
+          : "Waitlisted booking cancelled successfully",
       },
     };
   }
