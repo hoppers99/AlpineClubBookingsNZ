@@ -552,19 +552,24 @@ export function adminNewBookingTemplate(data: {
   totalCents: number;
   status: string;
   reviewReason?: string | null;
+  memberJustification?: string | null;
 }): string {
+  const rows = [
+    { label: "Member", value: escapeHtml(data.memberName) },
+    { label: "Check-in", value: formatNZDate(data.checkIn) },
+    { label: "Check-out", value: formatNZDate(data.checkOut) },
+    { label: "Guests", value: String(data.guestCount) },
+    { label: "Total", value: formatCents(data.totalCents) },
+    { label: "Status", value: escapeHtml(data.status) },
+  ];
+  if (data.memberJustification) {
+    rows.push({ label: "Member reason", value: escapeHtml(data.memberJustification) });
+  }
   return layout(`
     ${heading("New Booking Created")}
     ${paragraph("A new booking has been created.")}
     ${data.reviewReason ? alertBox(escapeHtml(data.reviewReason), "warning") : ""}
-    ${infoTable([
-      { label: "Member", value: escapeHtml(data.memberName) },
-      { label: "Check-in", value: formatNZDate(data.checkIn) },
-      { label: "Check-out", value: formatNZDate(data.checkOut) },
-      { label: "Guests", value: String(data.guestCount) },
-      { label: "Total", value: formatCents(data.totalCents) },
-      { label: "Status", value: escapeHtml(data.status) },
-    ])}
+    ${infoTable(rows)}
     ${button("View Bookings", BASE_URL + "/admin/bookings")}
   `);
 }

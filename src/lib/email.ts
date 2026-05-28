@@ -933,6 +933,7 @@ export async function sendAdminNewBookingAlert(data: {
   totalCents: number;
   status: string;
   reviewReason?: string | null;
+  memberJustification?: string | null;
 }) {
   await sendToAdmins({
     subject: data.reviewReason
@@ -946,6 +947,7 @@ export async function sendAdminNewBookingAlert(data: {
       checkOut: formatNZDate(data.checkOut),
       total: formatMoneyCents(data.totalCents),
       reviewReason: data.reviewReason ?? "",
+      memberJustification: data.memberJustification ?? "",
     },
     preferenceKey: "adminNewBooking",
   });

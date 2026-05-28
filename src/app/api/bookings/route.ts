@@ -28,6 +28,7 @@ import { nameField } from "@/lib/zod-helpers";
 import { isFeatureEnabled } from "@/config/features";
 import {
   BookingPromoError,
+  BookingReviewJustificationRequiredError,
   createConfirmedBooking,
   createDraftBooking,
   createWaitlistedBooking,
@@ -56,6 +57,7 @@ const createBookingSchema = z.object({
   expectedArrivalTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]0$/).optional(),
   applyCreditCents: z.number().int().min(0).optional(),
   forMemberId: z.string().optional(),
+  memberReviewJustification: z.string().trim().min(1).max(1000).optional(),
 });
 
 export async function POST(request: NextRequest) {
@@ -135,7 +137,7 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  const { checkIn, checkOut, guests, notes, promoCode: promoCodeStr, draft, waitlist, expectedArrivalTime } = parsed.data;
+  const { checkIn, checkOut, guests, notes, promoCode: promoCodeStr, draft, waitlist, expectedArrivalTime, memberReviewJustification } = parsed.data;
 
   if (checkOut <= checkIn) {
     return NextResponse.json({ error: "Check-out must be after check-in" }, { status: 400 });
@@ -264,9 +266,16 @@ export async function POST(request: NextRequest) {
         promoCodeStr,
         expectedArrivalTime,
         groupDiscount,
+        memberReviewJustification,
       });
       return NextResponse.json(newBooking, { status: 201 });
     } catch (err) {
+      if (err instanceof BookingReviewJustificationRequiredError) {
+        return NextResponse.json(
+          { error: err.message, code: "REVIEW_JUSTIFICATION_REQUIRED" },
+          { status: 400 }
+        );
+      }
       const message = err instanceof BookingPromoError
         ? err.message
         : err instanceof Error
@@ -308,6 +317,7 @@ export async function POST(request: NextRequest) {
       shouldBePending,
       holdDays,
       allMembers: !hasNonMembers,
+      memberReviewJustification,
     });
 
     if (outcome.type === "created") {
@@ -340,9 +350,16 @@ export async function POST(request: NextRequest) {
         promoCodeStr,
         expectedArrivalTime,
         groupDiscount,
+        memberReviewJustification,
       });
       return NextResponse.json(waitlisted.booking, { status: 201 });
     } catch (waitlistErr) {
+      if (waitlistErr instanceof BookingReviewJustificationRequiredError) {
+        return NextResponse.json(
+          { error: waitlistErr.message, code: "REVIEW_JUSTIFICATION_REQUIRED" },
+          { status: 400 }
+        );
+      }
       if (waitlistErr instanceof BookingPromoError) {
         return NextResponse.json({ error: waitlistErr.message }, { status: 400 });
       }
@@ -350,6 +367,12 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Failed to create waitlisted booking" }, { status: 500 });
     }
   } catch (err) {
+    if (err instanceof BookingReviewJustificationRequiredError) {
+      return NextResponse.json(
+        { error: err.message, code: "REVIEW_JUSTIFICATION_REQUIRED" },
+        { status: 400 }
+      );
+    }
     const message = err instanceof Error ? err.message : "Failed to create booking";
     return NextResponse.json({ error: message }, { status: 400 });
   }

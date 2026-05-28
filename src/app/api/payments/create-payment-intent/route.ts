@@ -5,7 +5,6 @@ import { markBookingPaymentSucceeded } from "@/lib/payment-reconciliation";
 import { CreatePaymentIntentSchema } from "@/types/payments";
 import { auth } from "@/lib/auth";
 import { requireActiveSessionUser } from "@/lib/session-guards";
-import { sendAdminNewBookingAlert } from "@/lib/email";
 import logger from "@/lib/logger";
 import { BookingStatus } from "@prisma/client";
 import { PaymentStatus, PaymentTransactionKind } from "@prisma/client";
@@ -180,19 +179,8 @@ export async function POST(request: NextRequest) {
         });
       });
 
-      if (booking.requiresAdminReview) {
-        sendAdminNewBookingAlert({
-          memberName: `${booking.member.firstName} ${booking.member.lastName}`,
-          checkIn: booking.checkIn,
-          checkOut: booking.checkOut,
-          guestCount: booking.guests?.length ?? 0,
-          totalCents: booking.finalPriceCents,
-          status: BookingStatus.PAYMENT_PENDING,
-          reviewReason: booking.adminReviewReason,
-        }).catch((err) =>
-          logger.error({ err, bookingId }, "Failed to send admin review alert for activated draft booking")
-        );
-      }
+      // The admin alert for review-flagged bookings is sent once at
+      // creation time. Re-alerting here would double up.
     }
 
     // Find or create Stripe customer

@@ -88,6 +88,13 @@ enum BookingStatus {
   COMPLETED
   WAITLISTED
   WAITLIST_OFFERED
+  AWAITING_REVIEW
+}
+
+enum AdminReviewStatus {
+  PENDING
+  APPROVED
+  REJECTED
 }
 
 enum PaymentStatus {
@@ -313,6 +320,7 @@ model Member {
   adminCreditAdjustmentRequestsRequested     AdminCreditAdjustmentRequest[]             @relation("AdminCreditAdjustmentRequestsRequested")
   adminCreditAdjustmentRequestsReviewed      AdminCreditAdjustmentRequest[]             @relation("AdminCreditAdjustmentRequestsReviewed")
   bookingsCreatedOnBehalf                    Booking[]                                  @relation("BookingsCreatedBy")
+  bookingsAdminReviewed                      Booking[]                                  @relation("BookingsAdminReviewed")
   refundRequests                             RefundRequest[]
   issueReports                               IssueReport[]
   adminCreditAdjustmentRequests              AdminCreditAdjustmentRequest[]             @relation("AdminCreditAdjustmentTarget")
@@ -596,6 +604,11 @@ model Booking {
   createdById            String? // Admin who created this booking on behalf of the member
   requiresAdminReview    Boolean       @default(false)
   adminReviewReason      String?       @db.VarChar(300)
+  memberReviewJustification String?    @db.VarChar(1000)
+  adminReviewStatus      AdminReviewStatus?
+  adminReviewNotes       String?       @db.VarChar(2000)
+  adminReviewedById      String?
+  adminReviewedAt        DateTime?
   waitlistPosition       Int?
   waitlistOfferedAt      DateTime?
   waitlistOfferExpiresAt DateTime?
@@ -608,6 +621,7 @@ model Booking {
   member                     Member                      @relation(fields: [memberId], references: [id], onDelete: Restrict)
   createdBy                  Member?                     @relation("BookingsCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
   deletedBy                  Member?                     @relation("BookingsDeletedBy", fields: [deletedById], references: [id], onDelete: SetNull)
+  adminReviewedBy            Member?                     @relation("BookingsAdminReviewed", fields: [adminReviewedById], references: [id], onDelete: SetNull)
   guests                     BookingGuest[]
   payment                    Payment?
   choreAssignments           ChoreAssignment[]
@@ -632,6 +646,8 @@ model Booking {
   @@index([status, deletedAt, updatedAt])
   @@index([status, deletedAt, checkIn, checkOut])
   @@index([status, checkIn, checkOut, createdAt])
+  @@index([adminReviewStatus, createdAt])
+  @@index([adminReviewedById])
 }
 
 model BookingGuest {

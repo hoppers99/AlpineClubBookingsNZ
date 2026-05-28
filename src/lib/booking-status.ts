@@ -6,6 +6,9 @@ export const CAPACITY_HOLDING_BOOKING_STATUSES = [
   // COMPLETED means the stay has started or remains operationally active.
   // It must keep consuming lodge capacity until checkout.
   BookingStatus.COMPLETED,
+  // AWAITING_REVIEW must hold the bed: otherwise another member could book
+  // the same dates while an admin is deciding, and approval would overbook.
+  BookingStatus.AWAITING_REVIEW,
 ] as const;
 
 export const PAYMENT_OWED_BOOKING_STATUSES = [
@@ -25,6 +28,10 @@ export const MEMBER_MODIFIABLE_BOOKING_STATUSES = [
   BookingStatus.PAYMENT_PENDING,
   BookingStatus.CONFIRMED,
   BookingStatus.PAID,
+  // While awaiting review, the member may amend guests (e.g. add an adult
+  // to clear the no-adult flag); this is what releases the booking to
+  // PAYMENT_PENDING without an admin decision.
+  BookingStatus.AWAITING_REVIEW,
 ] as const;
 
 export const OPERATIONAL_STAY_BOOKING_STATUSES = [
@@ -37,6 +44,7 @@ export const ACTIVE_BOOKING_STATUSES = [
   BookingStatus.PAYMENT_PENDING,
   BookingStatus.CONFIRMED,
   BookingStatus.PAID,
+  BookingStatus.AWAITING_REVIEW,
 ] as const;
 
 export function isPaymentOwedBookingStatus(status: string) {
