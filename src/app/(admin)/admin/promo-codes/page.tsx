@@ -55,6 +55,8 @@ interface PromoCode {
   bookingStartUntil: string | null;
   membersOnly: boolean;
   memberGuestsOnly: boolean;
+  xeroItemCode: string | null;
+  xeroAccountCode: string | null;
   active: boolean;
   archivedAt: string | null;
   createdAt: string;
@@ -97,6 +99,8 @@ export default function PromoCodesPage() {
   const [bookingStartUntil, setBookingStartUntil] = useState("");
   const [membersOnly, setMembersOnly] = useState(false);
   const [memberGuestsOnly, setMemberGuestsOnly] = useState(false);
+  const [xeroItemCode, setXeroItemCode] = useState("");
+  const [xeroAccountCode, setXeroAccountCode] = useState("");
   const [active, setActive] = useState(true);
 
   const [assignedMemberIds, setAssignedMemberIds] = useState<string[]>([]);
@@ -200,6 +204,8 @@ export default function PromoCodesPage() {
     setBookingStartUntil("");
     setMembersOnly(false);
     setMemberGuestsOnly(false);
+    setXeroItemCode("");
+    setXeroAccountCode("");
     setActive(true);
     setEditingId(null);
     setShowForm(false);
@@ -245,6 +251,8 @@ export default function PromoCodesPage() {
     setBookingStartUntil(promo.bookingStartUntil ? promo.bookingStartUntil.split("T")[0] : "");
     setMembersOnly(promo.membersOnly);
     setMemberGuestsOnly(promo.memberGuestsOnly);
+    setXeroItemCode(promo.xeroItemCode ?? "");
+    setXeroAccountCode(promo.xeroAccountCode ?? "");
     setActive(promo.active);
     setAssignedMemberIds(promo.assignments?.map((a) => a.member.id) || []);
     setAssignedMembers(promo.assignments?.map((a) => a.member) || []);
@@ -262,6 +270,8 @@ export default function PromoCodesPage() {
       type,
       membersOnly,
       memberGuestsOnly,
+      xeroItemCode: xeroItemCode.trim() || null,
+      xeroAccountCode: xeroAccountCode.trim() || null,
       active,
       validFrom: validFrom || null,
       validUntil: validUntil || null,
@@ -520,6 +530,12 @@ export default function PromoCodesPage() {
             )}
             {promo.memberGuestsOnly && (
               <Badge variant="outline">Member guests only</Badge>
+            )}
+            {promo.xeroItemCode && (
+              <Badge variant="outline">Xero Item: {promo.xeroItemCode}</Badge>
+            )}
+            {promo.xeroAccountCode && (
+              <Badge variant="outline">Xero Account: {promo.xeroAccountCode}</Badge>
             )}
           </div>
           {promo.assignments && promo.assignments.length > 0 && (
@@ -866,6 +882,45 @@ export default function PromoCodesPage() {
                     className="rounded border-input"
                   />
                   <Label htmlFor="active">Active</Label>
+                </div>
+              </div>
+
+              <div className="space-y-3 border rounded-md p-4">
+                <div>
+                  <Label>Xero accounting (optional)</Label>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    Code the discount line on the Xero invoice to a separate item or account so promo usage shows in the P&amp;L. Leave both blank to keep the existing behaviour (discount inherits the hut-fee codes).
+                  </p>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="xeroItemCode">Xero Item Code</Label>
+                    <Input
+                      id="xeroItemCode"
+                      type="text"
+                      value={xeroItemCode}
+                      onChange={(e) => setXeroItemCode(e.target.value)}
+                      placeholder="e.g. PROMO-DISC"
+                      maxLength={30}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      If set, the discount line posts to this Xero item. The item&apos;s mapped account in Xero takes priority over the account code below.
+                    </p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="xeroAccountCode">Xero Account Code</Label>
+                    <Input
+                      id="xeroAccountCode"
+                      type="text"
+                      value={xeroAccountCode}
+                      onChange={(e) => setXeroAccountCode(e.target.value)}
+                      placeholder="e.g. 201"
+                      maxLength={10}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Used when no item code is set, or to override the item&apos;s default account.
+                    </p>
+                  </div>
                 </div>
               </div>
 

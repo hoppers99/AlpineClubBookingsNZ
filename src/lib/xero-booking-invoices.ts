@@ -132,6 +132,7 @@ export async function createXeroInvoiceForBooking(
     include: {
       guests: true,
       payment: true,
+      promoRedemption: { include: { promoCode: true } },
     },
   });
 
@@ -206,14 +207,21 @@ export async function createXeroInvoiceForBooking(
 
   // Add discount line if applicable
   if (booking.discountCents > 0) {
-    // Use the first guest's item code for the discount, or fall back to legacy
+    const promo = booking.promoRedemption?.promoCode ?? null;
     const firstGuest = booking.guests[0];
-    const discountItemCode = (hutFeeItemCodeMap.size > 0 && bookingSeasonType && firstGuest)
+
+    // Fall back to hut-fee item code for legacy / non-promo discounts.
+    const fallbackItemCode = (hutFeeItemCodeMap.size > 0 && bookingSeasonType && firstGuest)
       ? (hutFeeItemCodeMap.get(`${firstGuest.ageTier}_${bookingSeasonType}_${firstGuest.isMember}`) ?? hutFeeMapping.itemCode)
       : hutFeeMapping.itemCode;
 
+    const discountItemCode = promo?.xeroItemCode ?? fallbackItemCode;
+    const discountAccountCode = promo?.xeroAccountCode ?? incomeCode;
+    const accountExplicitlyConfigured =
+      promo?.xeroAccountCode != null || hutFeeMapping.codeExplicitlyConfigured;
+
     const discountLineItem: LineItem = {
-      description: "Discount",
+      description: promo ? `Discount - ${promo.code}` : "Discount",
       quantity: 1,
       unitAmount: -(booking.discountCents / 100),
       taxType: "OUTPUT2",
@@ -221,8 +229,8 @@ export async function createXeroInvoiceForBooking(
     if (discountItemCode) {
       discountLineItem.itemCode = discountItemCode;
     }
-    if (!discountItemCode || hutFeeMapping.codeExplicitlyConfigured || incomeCode !== "200") {
-      discountLineItem.accountCode = incomeCode;
+    if (!discountItemCode || accountExplicitlyConfigured || discountAccountCode !== "200") {
+      discountLineItem.accountCode = discountAccountCode;
     }
     lineItems.push(discountLineItem);
   }
