@@ -804,6 +804,12 @@ model PromoCode {
   bookingStartUntil       DateTime? // Gate by booking CHECK-IN date (separate from validFrom/validUntil)
   membersOnly             Boolean       @default(false) // Booker must be a member
   memberGuestsOnly        Boolean       @default(false) // Promo only applies to guest rows flagged as members
+  // Optional Xero coding for the discount line on the booking invoice. When set, the discount
+  // posts to these codes (separately reportable in the P&L) instead of inheriting hut-fee codes.
+  // If a Xero Item Code is set and that Item has an account mapped in Xero, the item's mapping
+  // wins unless xeroAccountCode is also explicitly supplied (in which case it overrides).
+  xeroItemCode            String?
+  xeroAccountCode         String?
   active                  Boolean       @default(true)
   archivedAt              DateTime?
   createdAt               DateTime      @default(now())

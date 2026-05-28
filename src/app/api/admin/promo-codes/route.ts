@@ -23,6 +23,8 @@ const promoCodeSchema = z.object({
   bookingStartUntil: z.string().optional().nullable(),
   membersOnly: z.boolean().default(false),
   memberGuestsOnly: z.boolean().default(false),
+  xeroItemCode: z.string().trim().min(1).max(30).optional().nullable(),
+  xeroAccountCode: z.string().trim().min(1).max(10).optional().nullable(),
   active: z.boolean().default(true),
   assignedMemberIds: z.array(z.string()).optional(),
 });
@@ -154,6 +156,8 @@ export async function POST(req: NextRequest) {
         bookingStartUntil: data.bookingStartUntil ? new Date(data.bookingStartUntil) : null,
         membersOnly: data.membersOnly,
         memberGuestsOnly: data.memberGuestsOnly,
+        xeroItemCode: data.xeroItemCode ?? null,
+        xeroAccountCode: data.xeroAccountCode ?? null,
         active: data.active,
       },
     });

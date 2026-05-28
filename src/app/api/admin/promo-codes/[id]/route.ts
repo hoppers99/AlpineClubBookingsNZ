@@ -23,6 +23,8 @@ const updatePromoCodeSchema = z.object({
   bookingStartUntil: z.string().optional().nullable(),
   membersOnly: z.boolean().optional(),
   memberGuestsOnly: z.boolean().optional(),
+  xeroItemCode: z.string().trim().min(1).max(30).optional().nullable(),
+  xeroAccountCode: z.string().trim().min(1).max(10).optional().nullable(),
   active: z.boolean().optional(),
   assignedMemberIds: z.array(z.string()).optional(),
 });
@@ -212,6 +214,8 @@ export async function PUT(
         }),
         ...(data.membersOnly !== undefined && { membersOnly: data.membersOnly }),
         ...(data.memberGuestsOnly !== undefined && { memberGuestsOnly: data.memberGuestsOnly }),
+        ...(data.xeroItemCode !== undefined && { xeroItemCode: data.xeroItemCode }),
+        ...(data.xeroAccountCode !== undefined && { xeroAccountCode: data.xeroAccountCode }),
         ...(data.active !== undefined && { active: data.active }),
       },
     });

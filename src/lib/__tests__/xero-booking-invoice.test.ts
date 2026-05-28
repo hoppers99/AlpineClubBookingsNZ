@@ -371,6 +371,118 @@ describe("createXeroInvoiceForBooking", () => {
       })
     );
   });
+
+  describe("promo code discount line coding", () => {
+    function bookingWithPromo(promo: {
+      code: string;
+      xeroItemCode: string | null;
+      xeroAccountCode: string | null;
+    } | null) {
+      return {
+        id: "booking_1",
+        memberId: "mem_1",
+        member: { id: "mem_1" },
+        checkIn: "2026-07-31T00:00:00.000Z",
+        checkOut: "2026-08-02T00:00:00.000Z",
+        createdAt: "2026-05-15T10:30:00.000Z",
+        discountCents: 5000,
+        guests: [
+          {
+            firstName: "Jordan",
+            lastName: "Hartley-Smith",
+            ageTier: "ADULT",
+            isMember: true,
+            priceCents: 10000,
+          },
+        ],
+        payment: {
+          id: "pay_1",
+          status: "SUCCEEDED",
+          amountCents: 5000,
+          stripePaymentIntentId: "pi_1",
+          xeroInvoiceId: null,
+          xeroInvoiceNumber: null,
+        },
+        promoRedemption: promo ? { promoCode: promo } : null,
+      };
+    }
+
+    function getDiscountLine() {
+      const call = mocks.xeroClientInstance.accountingApi.createInvoices.mock.calls[0];
+      const lineItems = call[1].invoices[0].lineItems as Array<{
+        description?: string;
+        itemCode?: string;
+        accountCode?: string;
+        unitAmount?: number;
+      }>;
+      return lineItems.find((l) => l.description?.toLowerCase().startsWith("discount"));
+    }
+
+    it("posts the discount line to the promo's xeroItemCode when set", async () => {
+      mocks.prisma.booking.findUnique.mockResolvedValue(
+        bookingWithPromo({ code: "SUMMER25", xeroItemCode: "PROMO-DISC", xeroAccountCode: null })
+      );
+
+      await createXeroInvoiceForBooking("booking_1");
+
+      const discount = getDiscountLine();
+      expect(discount).toBeDefined();
+      expect(discount?.description).toBe("Discount - SUMMER25");
+      expect(discount?.itemCode).toBe("PROMO-DISC");
+      expect(discount?.accountCode).toBeUndefined();
+      expect(discount?.unitAmount).toBe(-50);
+    });
+
+    it("posts the discount line to the promo's xeroAccountCode when only an account code is set", async () => {
+      mocks.prisma.booking.findUnique.mockResolvedValue(
+        bookingWithPromo({ code: "PROMO10", xeroItemCode: null, xeroAccountCode: "201" })
+      );
+
+      await createXeroInvoiceForBooking("booking_1");
+
+      const discount = getDiscountLine();
+      expect(discount).toBeDefined();
+      expect(discount?.itemCode).toBeUndefined();
+      expect(discount?.accountCode).toBe("201");
+    });
+
+    it("includes both itemCode and accountCode when both are set on the promo", async () => {
+      mocks.prisma.booking.findUnique.mockResolvedValue(
+        bookingWithPromo({ code: "WINTER20", xeroItemCode: "PROMO-DISC", xeroAccountCode: "201" })
+      );
+
+      await createXeroInvoiceForBooking("booking_1");
+
+      const discount = getDiscountLine();
+      expect(discount?.itemCode).toBe("PROMO-DISC");
+      expect(discount?.accountCode).toBe("201");
+    });
+
+    it("falls back to hut-fee item code when the promo has no Xero codes set", async () => {
+      mocks.prisma.xeroAccountMapping.findUnique.mockImplementation(({ where }) => {
+        if (where.key === "hutFeeItem") return Promise.resolve({ code: null, itemCode: "HUT-FEE" });
+        return Promise.resolve(null);
+      });
+      mocks.prisma.booking.findUnique.mockResolvedValue(
+        bookingWithPromo({ code: "LEGACY", xeroItemCode: null, xeroAccountCode: null })
+      );
+
+      await createXeroInvoiceForBooking("booking_1");
+
+      const discount = getDiscountLine();
+      expect(discount?.description).toBe("Discount - LEGACY");
+      expect(discount?.itemCode).toBe("HUT-FEE");
+    });
+
+    it("uses the generic Discount description when no promo redemption is linked", async () => {
+      mocks.prisma.booking.findUnique.mockResolvedValue(bookingWithPromo(null));
+
+      await createXeroInvoiceForBooking("booking_1");
+
+      const discount = getDiscountLine();
+      expect(discount?.description).toBe("Discount");
+    });
+  });
 });
 
 describe("createXeroRefundPaymentForInvoice", () => {
