@@ -358,7 +358,31 @@ export async function POST(
         additionalAmountCents = priceDiffCents;
       }
 
-      // Update booking
+      // This route only adds guests, so the no-adult rule can only
+      // change from flagged → cleared (by adding an adult). When that
+      // happens, wipe the review state and release the booking from
+      // AWAITING_REVIEW. The rule cannot newly trip through this route.
+      const reviewCleared = booking.requiresAdminReview && !requiresAdminReview;
+      const reviewFieldUpdates = reviewCleared
+        ? {
+            requiresAdminReview: false,
+            adminReviewReason: null,
+            memberReviewJustification: null,
+            adminReviewStatus: null,
+            adminReviewNotes: null,
+            adminReviewedById: null,
+            adminReviewedAt: null,
+          }
+        : {
+            requiresAdminReview,
+            adminReviewReason,
+          };
+
+      const newStatus =
+        reviewCleared && booking.status === "AWAITING_REVIEW"
+          ? "PAYMENT_PENDING"
+          : booking.status;
+
       const updatedBooking = await tx.booking.update({
         where: { id: bookingId },
         data: {
@@ -367,8 +391,8 @@ export async function POST(
           finalPriceCents: newFinalPriceCents,
           hasNonMembers,
           nonMemberHoldUntil,
-          requiresAdminReview,
-          adminReviewReason,
+          status: newStatus,
+          ...reviewFieldUpdates,
         },
         include: { guests: true, payment: true },
       });

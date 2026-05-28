@@ -61,7 +61,11 @@ export function buildRevenueSeries(
   const buckets = initializeBuckets(rangeStart, rangeEnd, granularity);
 
   for (const booking of bookings) {
-    if (booking.status === BookingStatus.CANCELLED || booking.status === BookingStatus.BUMPED) {
+    if (
+      booking.status === BookingStatus.CANCELLED ||
+      booking.status === BookingStatus.BUMPED ||
+      booking.status === BookingStatus.AWAITING_REVIEW
+    ) {
       continue;
     }
 

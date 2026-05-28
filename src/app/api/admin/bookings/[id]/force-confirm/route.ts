@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { requireActiveSessionUser } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
-import { BookingStatus } from "@prisma/client";
+import { AdminReviewStatus, BookingStatus } from "@prisma/client";
+import { requiresAdultSupervisionReview } from "@/lib/booking-review";
 import { checkCapacity } from "@/lib/capacity";
 import { logAudit } from "@/lib/audit";
 import { sendBookingConfirmedEmail } from "@/lib/email";
@@ -68,10 +69,33 @@ export async function POST(
         };
       }
 
-      const nextStatus =
-        booking.finalPriceCents === 0
+      // Re-check the no-adult rule before letting a waitlisted booking
+      // bypass review. If it still trips and review hasn't been resolved,
+      // park it in AWAITING_REVIEW instead of advancing to payment.
+      const ruleStillTrips = requiresAdultSupervisionReview(booking.guests);
+      const reviewUnresolved =
+        ruleStillTrips &&
+        booking.adminReviewStatus !== AdminReviewStatus.APPROVED;
+
+      const nextStatus = reviewUnresolved
+        ? BookingStatus.AWAITING_REVIEW
+        : booking.finalPriceCents === 0
           ? BookingStatus.PAID
           : BookingStatus.PAYMENT_PENDING;
+
+      // Backfill the review fields if they weren't set when the booking
+      // was originally created (older waitlisted rows pre-date the new
+      // review workflow).
+      const reviewBackfill =
+        reviewUnresolved && booking.adminReviewStatus === null
+          ? {
+              requiresAdminReview: true,
+              adminReviewStatus: AdminReviewStatus.PENDING,
+              adminReviewReason:
+                booking.adminReviewReason ??
+                "This booking does not include an adult guest, so it should be reviewed by an admin.",
+            }
+          : {};
 
       await tx.booking.update({
         where: { id: bookingId },
@@ -80,10 +104,15 @@ export async function POST(
           waitlistPosition: null,
           waitlistOfferedAt: null,
           waitlistOfferExpiresAt: null,
+          ...reviewBackfill,
         },
       });
 
-      if (nextStatus === BookingStatus.PAID) {
+      // No payment row needed when parking for review.
+      if (nextStatus === BookingStatus.AWAITING_REVIEW) {
+        // Nothing further; admin must approve via the booking-approvals
+        // queue before payment can be taken.
+      } else if (nextStatus === BookingStatus.PAID) {
         await tx.payment.upsert({
           where: { bookingId },
           create: {
@@ -119,9 +148,12 @@ export async function POST(
       action: "waitlist.force_confirmed",
       memberId: session.user.id,
       targetId: bookingId,
-      details: overbooked
-        ? `Admin force-confirmed waitlisted booking (OVERBOOKED)`
-        : `Admin force-confirmed waitlisted booking`,
+      details:
+        status === BookingStatus.AWAITING_REVIEW
+          ? "Admin force-confirmed waitlisted booking but it was parked for admin review (no adult on booking)"
+          : overbooked
+            ? `Admin force-confirmed waitlisted booking (OVERBOOKED)`
+            : `Admin force-confirmed waitlisted booking`,
     });
 
     if (status === BookingStatus.PAID) {

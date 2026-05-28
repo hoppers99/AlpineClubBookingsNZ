@@ -189,6 +189,7 @@ export async function modifyBookingBatch({
       newFinalPriceCents,
       guestsForPricing: guestPlan.guestsForPricing,
       skipBookingLifecycleRules: dates.skipBookingLifecycleRules,
+      reviewUpdate: guestPlan.reviewUpdate,
     });
 
     const updatedBooking = await tx.booking.update({
@@ -202,8 +203,13 @@ export async function modifyBookingBatch({
         hasNonMembers: lifecycle.hasNonMembers,
         nonMemberHoldUntil: lifecycle.newNonMemberHoldUntil,
         status: lifecycle.newStatus,
-        requiresAdminReview: guestPlan.requiresAdminReview,
-        adminReviewReason: guestPlan.adminReviewReason,
+        requiresAdminReview: guestPlan.reviewUpdate.requiresAdminReview,
+        adminReviewReason: guestPlan.reviewUpdate.adminReviewReason,
+        memberReviewJustification: guestPlan.reviewUpdate.memberReviewJustification,
+        adminReviewStatus: guestPlan.reviewUpdate.adminReviewStatus,
+        adminReviewNotes: guestPlan.reviewUpdate.adminReviewNotes,
+        adminReviewedById: guestPlan.reviewUpdate.adminReviewedById,
+        adminReviewedAt: guestPlan.reviewUpdate.adminReviewedAt,
       },
       include: { guests: true, payment: true },
     });
