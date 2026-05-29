@@ -377,6 +377,54 @@ Accepted residual risk:
   deployment checks; responses continue to expose only redacted status, version,
   uptime, and DB/config check state.
 
+## Money, Booking, And Lifecycle Integrity Review - 2026-05-29
+
+Reviewed current money, booking, and lifecycle state-machine paths for #617:
+primary and modification PaymentIntent confirmation, saved-card charging,
+payment recovery, direct refunds and refund webhooks, booking batch
+modification settlement, waitlist force-confirm, cancellation, member
+delete/archive lifecycle actions, membership cancellation approval, family
+group changes, onboarding, and the Prisma models for bookings, payments,
+refunds, recovery operations, and lifecycle requests.
+
+Hardening applied in #617:
+
+- Direct Stripe refund allocation now reconciles `PaymentTransaction`
+  `refundedAmountCents` from the `PaymentRefund` ledger after recording or
+  replaying the refund, and caps the local refunded total at the captured
+  transaction amount. This keeps idempotent retries from double-counting a
+  refund when a previous attempt already updated local transaction state but
+  the caller retries the same Stripe refund.
+- Stripe refund webhook sync and direct refunded-amount sync now use the same
+  captured-amount cap before updating local transaction status.
+
+Verified controls already present and intentionally preserved:
+
+- Booking payment success claims capacity inside the shared payment
+  reconciliation transaction, refunds after capacity failure outside that
+  transaction, and queues external Xero work after local state is durable.
+- Booking modification refund and additional-payment work happens after the
+  booking mutation transaction, with recovery rows for failed refunds and
+  cleanup/recovery for superseded PaymentIntents.
+- Payment recovery operations claim rows before processing, reset stale
+  processing rows, alert on exhausted retries, and use ledger totals for
+  superseded-payment refund recovery.
+- Member hard delete and archive approvals use second-admin review, lifecycle
+  advisory locks, eligibility re-checks, and local link cleanup before
+  approval is recorded.
+- Membership cancellation approval requires a confirmed participant, blocks
+  future owned bookings or guest appearances, disables login locally in the
+  database transaction, and queues Xero cancellation work after commit.
+
+Residual risks to keep visible:
+
+- Cron-driven payment recovery remains an operational dependency for failed
+  post-transaction Stripe cleanup.
+- Money and date invariants are enforced mostly in application/service logic;
+  this pass did not add database check constraints.
+- External-provider side effects remain best-effort after local state commits
+  and rely on outbox/recovery monitoring rather than synchronous rollback.
+
 ## Follow-Up Mapping
 
 - #613 - Standardize route guards: route metadata and shared active-session and
