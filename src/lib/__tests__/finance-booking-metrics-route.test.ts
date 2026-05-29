@@ -66,6 +66,19 @@ function memberWithoutFinanceAccess() {
   };
 }
 
+function adminWithoutFinanceAccess() {
+  return {
+    id: "admin-1",
+    email: "admin@example.com",
+    firstName: "Admin",
+    lastName: "Only",
+    role: "ADMIN",
+    financeAccessLevel: "NONE",
+    active: true,
+    forcePasswordChange: false,
+  };
+}
+
 function lodgeViewerMember() {
   return {
     id: "finance-lodge-1",
@@ -191,6 +204,23 @@ describe("finance booking metrics route", () => {
 
   it("rejects members without finance viewer access", async () => {
     mockFindUnique.mockResolvedValue(memberWithoutFinanceAccess());
+
+    const response = await getFinanceBookingMetricsRoute(
+      new NextRequest(
+        "https://example.org/api/finance/bookings/metrics?realizedFrom=2026-04-01&realizedTo=2026-04-10"
+      )
+    );
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({
+      error: "Finance viewer access required",
+    });
+    expect(mockGetFinanceBookingMetrics).not.toHaveBeenCalled();
+  });
+
+  it("rejects admins without explicit finance viewer access", async () => {
+    mockAuth.mockResolvedValue({ user: { id: "admin-1", role: "ADMIN" } });
+    mockFindUnique.mockResolvedValue(adminWithoutFinanceAccess());
 
     const response = await getFinanceBookingMetricsRoute(
       new NextRequest(

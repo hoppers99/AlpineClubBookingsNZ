@@ -156,7 +156,8 @@ export async function POST(req: NextRequest) {
   const pinSession = createLodgePinSessionWithVersion(
     assignment.id,
     assignment.memberId,
-    assignment.hutLeaderPin
+    assignment.hutLeaderPin,
+    session.user.id
   );
   const response = NextResponse.json({
     success: true,

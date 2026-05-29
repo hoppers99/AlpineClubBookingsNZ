@@ -205,8 +205,6 @@ describe("finance manual sync route", () => {
     const location = new URL(response.headers.get("location")!);
     expect(location.pathname).toBe("/finance");
     expect(location.searchParams.get("sync")).toBe("failed");
-    expect(location.searchParams.get("syncError")).toBe(
-      "Finance Xero token is expired"
-    );
+    expect(location.searchParams.has("syncError")).toBe(false);
   });
 });

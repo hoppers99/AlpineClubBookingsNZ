@@ -67,7 +67,8 @@ export async function checkLodgeAuth(
   ) {
     const pinSession = await getActiveLodgePinSessionForRequest(
       options.request,
-      date
+      date,
+      session.user.id
     );
 
     if (pinSession) {

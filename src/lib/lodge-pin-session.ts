@@ -18,6 +18,7 @@ interface PinSessionPayload {
   memberId: string;
   exp: number;
   pinVersion?: string;
+  sessionUserBinding?: string;
 }
 
 interface PinFailureEntry {
@@ -53,6 +54,22 @@ function derivePinSessionVersion(pinHash: string) {
     .digest("base64url");
 }
 
+function deriveSessionUserBinding(sessionUserId: string) {
+  return createHmac("sha256", getPinSessionSecret())
+    .update(`lodge-pin-session:${sessionUserId}`)
+    .digest("base64url");
+}
+
+function isTimingSafeStringEqual(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left, "utf8");
+  const rightBuffer = Buffer.from(right, "utf8");
+
+  return (
+    leftBuffer.length === rightBuffer.length &&
+    timingSafeEqual(leftBuffer, rightBuffer)
+  );
+}
+
 function decodePayload(rawValue: string): PinSessionPayload | null {
   const [payloadPart, signaturePart] = rawValue.split(".");
   if (!payloadPart || !signaturePart) {
@@ -79,7 +96,9 @@ function decodePayload(rawValue: string): PinSessionPayload | null {
       typeof payload.assignmentId !== "string" ||
       typeof payload.memberId !== "string" ||
       typeof payload.exp !== "number" ||
-      (payload.pinVersion !== undefined && typeof payload.pinVersion !== "string")
+      (payload.pinVersion !== undefined && typeof payload.pinVersion !== "string") ||
+      (payload.sessionUserBinding !== undefined &&
+        typeof payload.sessionUserBinding !== "string")
     ) {
       return null;
     }
@@ -93,6 +112,7 @@ function decodePayload(rawValue: string): PinSessionPayload | null {
       memberId: payload.memberId,
       exp: payload.exp,
       pinVersion: payload.pinVersion,
+      sessionUserBinding: payload.sessionUserBinding,
     };
   } catch {
     return null;
@@ -168,14 +188,24 @@ export async function findActiveHutLeaderAssignmentByPin(
   return null;
 }
 
-export function createLodgePinSession(assignmentId: string, memberId: string) {
-  return createLodgePinSessionWithVersion(assignmentId, memberId);
+export function createLodgePinSession(
+  assignmentId: string,
+  memberId: string,
+  sessionUserId?: string | null
+) {
+  return createLodgePinSessionWithVersion(
+    assignmentId,
+    memberId,
+    undefined,
+    sessionUserId
+  );
 }
 
 export function createLodgePinSessionWithVersion(
   assignmentId: string,
   memberId: string,
-  pinHash?: string | null
+  pinHash?: string | null,
+  sessionUserId?: string | null
 ) {
   const expiresAt = new Date(
     Date.now() + HUT_LEADER_PIN_SESSION_MAX_AGE_SECONDS * 1000
@@ -187,6 +217,9 @@ export function createLodgePinSessionWithVersion(
       memberId,
       exp: Math.floor(expiresAt.getTime() / 1000),
       pinVersion: pinHash ? derivePinSessionVersion(pinHash) : undefined,
+      sessionUserBinding: sessionUserId
+        ? deriveSessionUserBinding(sessionUserId)
+        : undefined,
     }),
     expiresAt,
     maxAge: HUT_LEADER_PIN_SESSION_MAX_AGE_SECONDS,
@@ -195,7 +228,8 @@ export function createLodgePinSessionWithVersion(
 
 export async function getActiveLodgePinSessionForDate(
   date: Date,
-  rawCookieValue: string | null
+  rawCookieValue: string | null,
+  sessionUserId?: string | null
 ) {
   if (!rawCookieValue) {
     return null;
@@ -204,6 +238,16 @@ export async function getActiveLodgePinSessionForDate(
   const payload = decodePayload(rawCookieValue);
   if (!payload) {
     return null;
+  }
+
+  if (sessionUserId) {
+    const expectedBinding = deriveSessionUserBinding(sessionUserId);
+    if (
+      !payload.sessionUserBinding ||
+      !isTimingSafeStringEqual(payload.sessionUserBinding, expectedBinding)
+    ) {
+      return null;
+    }
   }
 
   const assignment = await prisma.hutLeaderAssignment.findUnique({
@@ -252,20 +296,25 @@ export async function getActiveLodgePinSessionForDate(
 
 export async function getActiveLodgePinSessionForRequest(
   request: Request,
-  date: Date
+  date: Date,
+  sessionUserId: string
 ) {
   return getActiveLodgePinSessionForDate(
     date,
-    getCookieValueFromRequest(request)
+    getCookieValueFromRequest(request),
+    sessionUserId
   );
 }
 
-export async function hasAnyActiveLodgePinSession(): Promise<boolean> {
+export async function hasAnyActiveLodgePinSession(
+  sessionUserId?: string | null
+): Promise<boolean> {
   const cookieStore = await cookies();
   const rawCookieValue = cookieStore.get(HUT_LEADER_PIN_SESSION_COOKIE)?.value ?? null;
   const session = await getActiveLodgePinSessionForDate(
     getTodayDateOnly(),
-    rawCookieValue
+    rawCookieValue,
+    sessionUserId
   );
   return Boolean(session);
 }

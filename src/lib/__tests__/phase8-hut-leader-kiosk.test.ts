@@ -206,6 +206,52 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
     expect(data.bookings[0].guests[0].phone).toBeNull();
   });
 
+  it("redacts adult phone numbers from staying-guest lodge list responses", async () => {
+    mockAuth.mockResolvedValue({
+      user: { id: "member-1", role: "MEMBER", email: "member@example.org" },
+    });
+    mockPrisma.hutLeaderAssignment.count.mockResolvedValue(0);
+    mockPrisma.booking.count.mockResolvedValue(1);
+    mockPrisma.booking.findMany.mockResolvedValue([
+      {
+        id: "booking-1",
+        checkIn: new Date("2026-07-10T00:00:00.000Z"),
+        checkOut: new Date("2026-07-11T00:00:00.000Z"),
+        expectedArrivalTime: "15:00",
+        member: { firstName: "Booking", lastName: "Owner" },
+        guests: [
+          {
+            id: "guest-1",
+            firstName: "Alice",
+            lastName: "Guest",
+            ageTier: "ADULT",
+            isMember: true,
+            arrivedAt: null,
+            departedAt: null,
+            member: {
+              ageTier: "ADULT",
+              phoneCountryCode: "64",
+              phoneAreaCode: "27",
+              phoneNumber: "4224115",
+            },
+          },
+        ],
+      },
+    ]);
+
+    const { GET } = await import("@/app/api/lodge/guests/[date]/route");
+    const res = await GET(
+      new Request("http://localhost/api/lodge/guests/2026-07-10") as any,
+      { params: Promise.resolve({ date: "2026-07-10" }) }
+    );
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.tier).toBe("staying-guest");
+    expect(data.bookings[0].guests[0].ageTier).toBe("ADULT");
+    expect(data.bookings[0].guests[0].phone).toBeNull();
+  });
+
   it("includes checkout-day guests only in lodge-list guest scope", async () => {
     mockAuth.mockResolvedValue({
       user: { id: "admin-1", role: "ADMIN", email: "support@example.org" },
@@ -394,7 +440,8 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
     const pinSession = createLodgePinSessionWithVersion(
       "assign-1",
       "member-1",
-      pinHash
+      pinHash,
+      "lodge-1"
     );
     mockAuth.mockResolvedValue(null);
 
@@ -418,7 +465,8 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
     const pinSession = createLodgePinSessionWithVersion(
       "assign-1",
       "member-1",
-      pinHash
+      pinHash,
+      "lodge-1"
     );
     mockAuth.mockResolvedValue({
       user: { id: "lodge-1", role: "LODGE", email: "lodge@example.org" },
@@ -459,6 +507,32 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
       canMarkAttendance: true,
       canCompleteChores: true,
     });
+  });
+
+  it("does not reuse a hut leader PIN cookie from a different lodge account", async () => {
+    const pinHash = await bcrypt.hash("123456", 12);
+    const pinSession = createLodgePinSessionWithVersion(
+      "assign-1",
+      "member-1",
+      pinHash,
+      "lodge-1"
+    );
+    mockAuth.mockResolvedValue({
+      user: { id: "lodge-2", role: "LODGE", email: "other-lodge@example.org" },
+    });
+
+    const { checkLodgeAuth } = await import("@/lib/lodge-auth");
+    const result = await checkLodgeAuth("2026-04-13", {
+      request: new Request("http://localhost/api/lodge/access", {
+        headers: {
+          cookie: `${HUT_LEADER_PIN_SESSION_COOKIE}=${pinSession.value}`,
+        },
+      }),
+    });
+
+    expect(result.error).toBeNull();
+    expect(result.tier).toBe("lodge");
+    expect(mockPrisma.hutLeaderAssignment.findUnique).not.toHaveBeenCalled();
   });
 
   it("creates a signed hut leader PIN session cookie on successful PIN login", async () => {
@@ -647,7 +721,8 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
     const pinSession = createLodgePinSessionWithVersion(
       "assign-1",
       "hut-leader-1",
-      pinHash
+      pinHash,
+      "lodge-1"
     );
 
     mockAuth.mockResolvedValue({

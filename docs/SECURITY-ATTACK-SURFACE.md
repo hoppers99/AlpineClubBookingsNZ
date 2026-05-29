@@ -445,6 +445,58 @@ Residual risks to keep visible:
 - External-provider side effects remain best-effort after local state commits
   and rely on outbox/recovery monitoring rather than synchronous rollback.
 
+## Lodge, Finance, And Legacy Privileged Interface Review - 2026-05-29
+
+Reviewed the current #618 surfaces: lodge/kiosk page gates, lodge guest and
+roster APIs, hut-leader PIN login/session cookies, finance page and API guards,
+finance Xero connect/status/sync/disconnect routes, and the legacy finance
+dashboard bridge.
+
+Hardening applied in #618:
+
+- Hut-leader PIN session cookies created by `/api/lodge/pin-login` are now
+  bound to the authenticated lodge/admin account that entered the PIN. The
+  binding is HMAC-derived from the auth secret rather than stored as a plaintext
+  account id, and lodge API requests reject a copied PIN cookie when it is sent
+  by a different authenticated account.
+- Staying-guest lodge-list responses keep their read-only lodge list view but
+  no longer include adult member phone numbers. Operational tiers
+  (`admin`, `lodge`, and `hut-leader`) still receive adult contact numbers for
+  arrival/departure coordination.
+- Manual finance sync failures no longer reflect raw backend exception text into
+  `/finance` redirect query strings. The route logs the detail and redirects
+  with a generic failed-sync notice.
+- Legacy dashboard export failures no longer return raw backend exception text
+  to callers. The bridge still requires finance viewer API access plus a bearer
+  token, keeps the bearer comparison constant-time, and stores no bearer token in
+  the database.
+
+Verified controls already present and intentionally preserved:
+
+- Finance access remains separate from `ADMIN`: `NONE` cannot access finance
+  pages/APIs, `VIEWER` can read reports and the legacy bridge auth/export
+  surfaces, and `MANAGER` is required for finance Xero connection,
+  disconnection, status, callback handling, and manual sync routes.
+- `LODGE` sessions are rejected by finance API guards even if a member row has a
+  finance access value.
+- Lodge mutation routes continue to reject `staying-guest` access for arrivals,
+  departures, and chore toggles; roster generation and confirmation remain
+  limited to `admin` or `hut-leader` tiers.
+- Kiosk, chores, finance, and Xero routes remain covered by effective module
+  route gates in `src/config/feature-routes.ts` and `src/proxy.ts`.
+- Leaving `LEGACY_DASHBOARD_EXPORT_TOKEN` unset disables the legacy export with
+  a 503 response after finance viewer access succeeds.
+
+Residual risks to keep visible:
+
+- Lodge and admin shared-device sessions still depend on physical device
+  control, sign-out habits, and the existing 12-hour hut-leader PIN session
+  lifetime.
+- Adult phone numbers remain available to operational lodge tiers because the
+  current kiosk workflow uses them for same-day arrival/departure coordination.
+- The legacy dashboard export remains a bearer-token bridge for compatibility;
+  keep it disabled when the legacy dashboard is not actively used.
+
 ## Follow-Up Mapping
 
 - #613 - Standardize route guards: route metadata and shared active-session and
@@ -464,9 +516,9 @@ Residual risks to keep visible:
   handling, payment/refund idempotency, booking ownership/settlement,
   cancellation/deletion/archive state, Xero outbox sequencing, and transaction
   boundaries.
-- #618 - Lodge, finance, and legacy privileged interfaces: review lodge shared
-  device/PIN assumptions, hut-leader scope, finance access assignment, finance
-  sync powers, and legacy dashboard bridge behavior.
+- #618 - Lodge, finance, and legacy privileged interfaces: review completed;
+  account-bound PIN sessions, staying-guest contact redaction, generic finance
+  failure redirects, and generic legacy bridge 500s are now documented above.
 - #619 - CI, dependency, Docker, and deployment hardening: review workflow
   permissions, dependency/update policy, image build/publish provenance, GHCR
   scopes, Compose hardening, deployment environment contracts, and secret

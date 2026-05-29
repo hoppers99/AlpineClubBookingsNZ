@@ -65,17 +65,11 @@ export async function POST(request: NextRequest) {
       303
     );
   } catch (error) {
-    const message =
-      error instanceof Error
-        ? error.message
-        : String(error ?? "Manual finance sync failed");
-
     logger.error({ err: error }, "Manual finance sync failed");
 
     return NextResponse.redirect(
       buildFinanceRedirectUrl(request, {
         sync: "failed",
-        syncError: message,
       }),
       303
     );

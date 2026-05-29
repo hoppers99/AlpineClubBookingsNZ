@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { requireFinanceViewerApiAccess } from "@/lib/finance-api-auth";
 import { getLegacyDashboardBookingExport } from "@/lib/finance-legacy-dashboard-export";
+import logger from "@/lib/logger";
 
 const DEFAULT_HISTORY_START_DATE = "2020-04-01";
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -92,11 +93,10 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json(exportPayload);
   } catch (error) {
-    const message =
-      error instanceof Error
-        ? error.message
-        : "Failed to load legacy dashboard bookings export";
-
-    return NextResponse.json({ error: message }, { status: 500 });
+    logger.error({ err: error }, "Failed to load legacy dashboard bookings export");
+    return NextResponse.json(
+      { error: "Failed to load legacy dashboard bookings export" },
+      { status: 500 }
+    );
   }
 }

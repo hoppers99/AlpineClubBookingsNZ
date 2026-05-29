@@ -48,6 +48,7 @@ export async function GET(
   const nextDay = addDaysDateOnly(date, 1);
   const scope = new URL(req.url).searchParams.get("scope");
   const isLodgeListScope = scope === LODGE_LIST_SCOPE;
+  const canViewGuestContactDetails = tier !== "staying-guest";
 
   // Default scope is stay-night compatible for roster allocation.
   // Lodge-list scope also includes guests on their checkout/departure date.
@@ -113,7 +114,9 @@ export async function GET(
             arrivedAt: g.arrivedAt?.toISOString() ?? null,
             departedAt: g.departedAt?.toISOString() ?? null,
             phone:
-              ageTier === "ADULT" && g.member ? formatXeroPhone(g.member) : null,
+              canViewGuestContactDetails && ageTier === "ADULT" && g.member
+                ? formatXeroPhone(g.member)
+                : null,
           };
         }),
       };

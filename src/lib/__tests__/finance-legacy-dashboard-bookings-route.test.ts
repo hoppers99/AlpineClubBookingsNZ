@@ -4,9 +4,13 @@ import { NextRequest, NextResponse } from "next/server";
 const {
   mockRequireFinanceViewerApiAccess,
   mockGetLegacyDashboardBookingExport,
+  mockLogger,
 } = vi.hoisted(() => ({
   mockRequireFinanceViewerApiAccess: vi.fn(),
   mockGetLegacyDashboardBookingExport: vi.fn(),
+  mockLogger: {
+    error: vi.fn(),
+  },
 }));
 
 vi.mock("@/lib/finance-api-auth", () => ({
@@ -15,6 +19,10 @@ vi.mock("@/lib/finance-api-auth", () => ({
 
 vi.mock("@/lib/finance-legacy-dashboard-export", () => ({
   getLegacyDashboardBookingExport: mockGetLegacyDashboardBookingExport,
+}));
+
+vi.mock("@/lib/logger", () => ({
+  default: mockLogger,
 }));
 
 import { GET as getFinanceLegacyDashboardBookingsRoute } from "@/app/api/finance/legacy-dashboard/bookings/route";
@@ -163,5 +171,31 @@ describe("finance legacy dashboard bookings route", () => {
       error:
         "Invalid legacy dashboard export query. Use YYYY-MM-DD for historyStartDate and asOfDate.",
     });
+  });
+
+  it("logs backend failures without returning raw error details", async () => {
+    mockGetLegacyDashboardBookingExport.mockRejectedValue(
+      new Error("database password leaked in driver detail")
+    );
+
+    const response = await getFinanceLegacyDashboardBookingsRoute(
+      new NextRequest(
+        "https://example.org/api/finance/legacy-dashboard/bookings",
+        {
+          headers: {
+            authorization: "Bearer test-export-token",
+          },
+        }
+      )
+    );
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({
+      error: "Failed to load legacy dashboard bookings export",
+    });
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      { err: expect.any(Error) },
+      "Failed to load legacy dashboard bookings export"
+    );
   });
 });

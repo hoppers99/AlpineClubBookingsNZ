@@ -276,7 +276,7 @@ changes the database-backed settings.
 
 | Variable | Description |
 | --- | --- |
-| `LEGACY_DASHBOARD_EXPORT_TOKEN` | Shared bearer token for the legacy dashboard export bridge. Leave empty unless you still run that bridge. |
+| `LEGACY_DASHBOARD_EXPORT_TOKEN` | Shared bearer token for the legacy dashboard export bridge. Leave empty to disable the export bridge unless you still run it; do not store this token in the database or client-side code. |
 
 ## Deployment And Compose
 

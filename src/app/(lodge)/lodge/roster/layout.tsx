@@ -23,7 +23,7 @@ export default async function LodgeRosterLayout({
     }
   }
 
-  if (await hasAnyActiveLodgePinSession()) {
+  if (await hasAnyActiveLodgePinSession(session?.user?.id ?? null)) {
     return <>{children}</>;
   }
 
