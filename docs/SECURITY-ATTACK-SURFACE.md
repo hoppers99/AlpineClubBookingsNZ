@@ -397,12 +397,27 @@ Hardening applied in #617:
   the caller retries the same Stripe refund.
 - Stripe refund webhook sync and direct refunded-amount sync now use the same
   captured-amount cap before updating local transaction status.
+- Bounded webhook body reads now fail closed on malformed `content-length`
+  headers before provider verification or JSON parsing.
+- Xero webhook events now require non-empty `eventType`, `eventCategory`, and
+  `resourceId` values, and reject invalid `eventDateUtc` values before
+  recording inbound rows. Empty `events` validation deliveries remain accepted.
+- Operational Xero OAuth callbacks now require Xero to return an organisation
+  tenant before encrypted access and refresh tokens are saved, matching the
+  existing finance Xero fail-closed tenant behavior.
+- Operational and finance Xero callback redirects now show only safe local
+  error messages; provider callback exception details are logged through the
+  shared redaction layer and are not reflected into browser redirect URLs.
 
 Verified controls already present and intentionally preserved:
 
 - Booking payment success claims capacity inside the shared payment
   reconciliation transaction, refunds after capacity failure outside that
   transaction, and queues external Xero work after local state is durable.
+- Stripe webhooks use Stripe signature verification and
+  `ProcessedWebhookEvent` idempotency without session auth.
+- Xero webhook reconciliation records signed inbound events first and runs
+  provider reconciliation after the response path.
 - Booking modification refund and additional-payment work happens after the
   booking mutation transaction, with recovery rows for failed refunds and
   cleanup/recovery for superseded PaymentIntents.
@@ -420,6 +435,11 @@ Residual risks to keep visible:
 
 - Cron-driven payment recovery remains an operational dependency for failed
   post-transaction Stripe cleanup.
+- Webhook freshness/replay controls remain provider-event-id and Xero
+  correlation-key based; they do not enforce a separate local delivery timestamp
+  window.
+- Operational Xero still chooses the first tenant returned by Xero during
+  connection; operators must select the intended club organisation at consent.
 - Money and date invariants are enforced mostly in application/service logic;
   this pass did not add database check constraints.
 - External-provider side effects remain best-effort after local state commits
