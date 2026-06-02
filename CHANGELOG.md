@@ -2,6 +2,29 @@
 
 All notable public reference-release changes should be recorded here.
 
+## 0.6.0 - 2026-06-03
+
+- Added booking review and approval workflows, including `AWAITING_REVIEW`
+  booking status handling, member justification capture, admin review APIs,
+  approval queue views, and route coverage for review, modify, cancel,
+  force-confirm, and report paths.
+- Added child family request dependant creation, no-adult booking review
+  handling, unpaid cancelled booking deletion, and clearer admin queue
+  navigation for booking and family-group review work.
+- Added promo-code finance improvements with per-promo-code Xero coding,
+  split per-booking and lifetime free-night caps, partial discount support,
+  and migration coverage for promo and review data changes.
+- Hardened privileged, public, webhook, payment, Xero, runtime-status, cron,
+  route-guard, and external-service boundaries with focused tests and security
+  documentation.
+- Updated CI and deployment hardening, including gitleaks v3, dependency review,
+  static analysis, Docker image scanning, migration-safety documentation, and
+  production image runtime dependency packaging.
+- Refreshed minor and patch dependencies across the application stack, including
+  Next.js, React, Sentry, Stripe, Nodemailer, Vitest, ESLint, and related lockfile
+  entries, while retaining explicit security overrides for vulnerable transitive
+  packages.
+
 ## 0.5.0 - 2026-05-28
 
 - Added safe booking deletion with nullable booking soft-delete fields, admin
