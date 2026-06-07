@@ -65,6 +65,7 @@ vi.mock("@/lib/audit", () => ({
     email?.split("@")[1]?.toLowerCase() ?? null
   ),
   getAuditRequestContext: vi.fn(() => ({ ipAddress: "127.0.0.1" })),
+  createAuditLog: vi.fn(),
   logAudit: vi.fn(),
 }));
 vi.mock("@/lib/rate-limit", () => ({ applyRateLimit: vi.fn().mockReturnValue(null) }));
@@ -122,7 +123,7 @@ vi.mock("bcryptjs", () => ({ hash: vi.fn().mockResolvedValue("hashed") }));
 
 import { prisma } from "@/lib/prisma";
 import { auth } from "@/lib/auth";
-import { logAudit } from "@/lib/audit";
+import { createAuditLog, logAudit } from "@/lib/audit";
 import { sendMemberSetupInviteEmail } from "@/lib/email";
 import { GET as getMembers, POST as createMember } from "@/app/api/admin/members/route";
 import { GET as exportMembers } from "@/app/api/admin/members/export/route";
@@ -798,6 +799,13 @@ describe("Phase 3: Admin Member Management", () => {
       const body = await res.json();
       expect(body.created).toBe(2);
       expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(createAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "member.imported",
+          memberId: "admin1",
+          targetId: "new1",
+        })
+      );
     });
 
     it("creates imported members as login-enabled primary accounts", async () => {

@@ -63,6 +63,7 @@ type PaymentSortBy =
   | "settlement";
 
 type SortDir = "asc" | "desc";
+type PaymentSourceFilter = "all" | "STRIPE" | "INTERNET_BANKING";
 const paymentSortColumns = new Set<PaymentSortBy>([
   "lastUpdated",
   "checkIn",
@@ -90,11 +91,36 @@ function getSortDir(value: string | null): SortDir {
   return value === "asc" ? "asc" : "desc";
 }
 
+function getSourceFilter(value: string | null): PaymentSourceFilter {
+  return value === "STRIPE" || value === "INTERNET_BANKING" ? value : "all";
+}
+
+function formatPendingAge(createdAt: string): string {
+  const created = new Date(createdAt).getTime();
+  if (Number.isNaN(created)) {
+    return "Pending age unavailable";
+  }
+
+  const ageMs = Math.max(0, Date.now() - created);
+  const days = Math.floor(ageMs / (24 * 60 * 60 * 1000));
+  if (days >= 1) {
+    return `Pending ${days}d`;
+  }
+
+  const hours = Math.floor(ageMs / (60 * 60 * 1000));
+  if (hours >= 1) {
+    return `Pending ${hours}h`;
+  }
+
+  return "Pending <1h";
+}
+
 interface PaymentRow {
   id: string;
   bookingId: string;
   amountCents: number;
   source: string;
+  reference: string | null;
   status: string;
   stripePaymentIntentId: string | null;
   xeroInvoiceId: string | null;
@@ -124,6 +150,9 @@ export default function PaymentsPage() {
   const [invoiceNotice, setInvoiceNotice] = useState<string | null>(null);
   const [queuedInvoicePaymentIds, setQueuedInvoicePaymentIds] = useState<Record<string, true>>({});
   const [status, setStatus] = useState(searchParams.get("status") || "all");
+  const [source, setSource] = useState<PaymentSourceFilter>(() =>
+    getSourceFilter(searchParams.get("source"))
+  );
   const [lastUpdatedFrom, setLastUpdatedFrom] = useState(
     searchParams.get("lastUpdatedFrom") || format(subMonths(new Date(), 3), "yyyy-MM-dd")
   );
@@ -148,6 +177,7 @@ export default function PaymentsPage() {
   const buildPaymentsSearchParams = useCallback(() => {
     const params = new URLSearchParams();
     if (status !== "all") params.set("status", status);
+    if (source !== "all") params.set("source", source);
     if (lastUpdatedFrom) params.set("lastUpdatedFrom", lastUpdatedFrom);
     if (lastUpdatedTo) params.set("lastUpdatedTo", lastUpdatedTo);
     if (checkInFrom) params.set("checkInFrom", checkInFrom);
@@ -173,6 +203,7 @@ export default function PaymentsPage() {
     sortBy,
     sortDir,
     page,
+    source,
   ]);
 
   const paymentsQuery = buildPaymentsSearchParams().toString();
@@ -188,6 +219,7 @@ export default function PaymentsPage() {
     try {
       const params = buildPaymentsSearchParams();
       params.set("status", status);
+      params.set("source", source);
       params.set("page", String(page));
       params.set("pageSize", String(pageSize));
       params.set("sortBy", sortBy);
@@ -200,6 +232,7 @@ export default function PaymentsPage() {
     } finally { setLoading(false); }
   }, [
     status,
+    source,
     sortBy,
     sortDir,
     page,
@@ -263,6 +296,7 @@ export default function PaymentsPage() {
 
   function clearFilters() {
     setStatus("all");
+    setSource("all");
     setLastUpdatedFrom("");
     setLastUpdatedTo("");
     setCheckInFrom("");
@@ -344,8 +378,19 @@ export default function PaymentsPage() {
             </SelectContent>
           </Select>
         </div>
+        <div>
+          <Label className="text-xs">Source</Label>
+          <Select value={source} onValueChange={(v) => { setSource(getSourceFilter(v)); resetPage(); }}>
+            <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All sources</SelectItem>
+              <SelectItem value="STRIPE">Stripe</SelectItem>
+              <SelectItem value="INTERNET_BANKING">Internet Banking</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
         <div className="space-y-1">
-          <Label className="text-xs" htmlFor="payment-member-search">Member name</Label>
+          <Label className="text-xs" htmlFor="payment-member-search">Member or reference</Label>
           <Input
             id="payment-member-search"
             value={search}
@@ -353,7 +398,7 @@ export default function PaymentsPage() {
               setSearch(event.target.value);
               resetPage();
             }}
-            placeholder="Name or email..."
+            placeholder="Name, email, or ref..."
             className="w-52"
           />
         </div>
@@ -481,6 +526,12 @@ export default function PaymentsPage() {
                 <TableRow><TableCell colSpan={9} className="text-center py-8 text-slate-500">No payments found</TableCell></TableRow>
               ) : (
                 data.map((p) => {
+                  const isInternetBanking = p.source === "INTERNET_BANKING";
+                  const xeroActivityHref = buildXeroRecordActivityUrl(
+                    "Payment",
+                    p.id,
+                    currentPaymentsPath
+                  );
                   const displayStatus = getPaymentDisplayStatus({
                     bookingStatus: p.booking.status,
                     paymentStatus: p.status,
@@ -515,7 +566,7 @@ export default function PaymentsPage() {
                       <TableCell>{formatCents(p.amountCents)}</TableCell>
                       <TableCell>
                         <div className="space-y-1">
-                          <Link href={buildXeroRecordActivityUrl("Payment", p.id, currentPaymentsPath)} className="inline-flex">
+                          <Link href={xeroActivityHref} className="inline-flex">
                             <Badge className={`${paymentStatusClass(displayStatus.toneStatus)} cursor-pointer`}>
                               {displayStatus.label}
                             </Badge>
@@ -525,10 +576,26 @@ export default function PaymentsPage() {
                               {displayStatus.detail}
                             </p>
                           )}
-                          {p.source === "INTERNET_BANKING" && (
-                            <Badge variant="outline" className="text-xs">
-                              Internet Banking
-                            </Badge>
+                          {isInternetBanking && (
+                            <div className="space-y-1">
+                              <Badge variant="outline" className="text-xs">
+                                Internet Banking
+                              </Badge>
+                              {p.reference && (
+                                <Link
+                                  href={xeroActivityHref}
+                                  className="block max-w-56 truncate text-xs text-slate-600 hover:text-slate-900 hover:underline"
+                                  title={p.reference}
+                                >
+                                  Ref: {p.reference}
+                                </Link>
+                              )}
+                              {p.status === "PENDING" && (
+                                <p className="text-xs text-amber-700">
+                                  {formatPendingAge(p.createdAt)}
+                                </p>
+                              )}
+                            </div>
                           )}
                         </div>
                       </TableCell>
@@ -544,7 +611,7 @@ export default function PaymentsPage() {
                             {p.stripePaymentIntentId.slice(0, 12)}...
                             <ExternalLink className="h-3 w-3" />
                           </a>
-                        ) : p.source === "INTERNET_BANKING" ? (
+                        ) : isInternetBanking ? (
                           <span className="text-xs text-slate-600">
                             Internet Banking
                           </span>
@@ -567,6 +634,13 @@ export default function PaymentsPage() {
                               <FileText className="h-3 w-3" />
                               Queued
                             </span>
+                          ) : isInternetBanking ? (
+                            <Link
+                              href={xeroActivityHref}
+                              className="inline-flex text-xs text-amber-700 hover:text-amber-900 hover:underline"
+                            >
+                              Missing Xero invoice
+                            </Link>
                           ) : p.status === "SUCCEEDED" ? (
                             <button
                               onClick={() => handleGenerateInvoice(p.id)}
@@ -580,7 +654,7 @@ export default function PaymentsPage() {
                             <span>—</span>
                           )}
                           <Link
-                            href={buildXeroRecordActivityUrl("Payment", p.id, currentPaymentsPath)}
+                            href={xeroActivityHref}
                             className="inline-flex text-xs text-slate-600 hover:text-slate-900 hover:underline"
                           >
                             View activity

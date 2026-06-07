@@ -22,6 +22,7 @@ const sortBySchema = z
 
 export const adminPaymentsQuerySchema = z.object({
   status: z.enum(["PENDING", "PROCESSING", "SUCCEEDED", "FAILED", "REFUNDED", "PARTIALLY_REFUNDED", "all"]).optional().default("all"),
+  source: z.enum(["STRIPE", "INTERNET_BANKING", "all"]).optional().default("all"),
   from: dateSchema.optional(),
   to: dateSchema.optional(),
   lastUpdatedFrom: dateSchema.optional(),
@@ -63,6 +64,7 @@ type PaymentCandidate = {
   bookingId: string;
   amountCents: number;
   source: string;
+  reference: string | null;
   status: string;
   stripePaymentIntentId: string | null;
   xeroInvoiceId: string | null;
@@ -103,6 +105,10 @@ function startOfInputDate(date: string) {
 
 function endOfInputDate(date: string) {
   return new Date(`${date}T23:59:59`);
+}
+
+function insensitiveContains(term: string) {
+  return { contains: term, mode: "insensitive" as const };
 }
 
 function latestPaymentActivityAt(payment: PaymentCandidate) {
@@ -175,6 +181,7 @@ function sortValue(payment: PaymentCandidate, sortBy: z.infer<typeof sortBySchem
 export async function listAdminPayments(query: AdminPaymentsQuery): Promise<JsonRouteResult> {
   const {
     status,
+    source,
     from,
     to,
     lastUpdatedFrom,
@@ -197,6 +204,9 @@ export async function listAdminPayments(query: AdminPaymentsQuery): Promise<Json
     const where: Prisma.PaymentWhereInput = {};
     if (status !== "all") {
       where.status = status;
+    }
+    if (source !== "all") {
+      where.source = source;
     }
 
     if (amountExact) {
@@ -224,23 +234,42 @@ export async function listAdminPayments(query: AdminPaymentsQuery): Promise<Json
       bookingWhere.checkIn = checkInFilter;
     }
 
+    const andFilters: Prisma.PaymentWhereInput[] = [];
     if (search) {
       const terms = search.split(/\s+/).filter(Boolean);
-      bookingWhere.member = {
-        is: {
-          AND: terms.map((term) => ({
-            OR: [
-              { firstName: { contains: term, mode: "insensitive" } },
-              { lastName: { contains: term, mode: "insensitive" } },
-              { email: { contains: term, mode: "insensitive" } },
-            ],
-          })),
-        },
-      };
+      andFilters.push(
+        ...terms.map((term) => ({
+          OR: [
+            { reference: insensitiveContains(term) },
+            { bookingId: insensitiveContains(term) },
+            { stripePaymentIntentId: insensitiveContains(term) },
+            { xeroInvoiceId: insensitiveContains(term) },
+            { xeroInvoiceNumber: insensitiveContains(term) },
+            {
+              booking: {
+                is: {
+                  member: {
+                    is: {
+                      OR: [
+                        { firstName: insensitiveContains(term) },
+                        { lastName: insensitiveContains(term) },
+                        { email: insensitiveContains(term) },
+                      ],
+                    },
+                  },
+                },
+              },
+            },
+          ],
+        }))
+      );
     }
 
     if (Object.keys(bookingWhere).length > 0) {
       where.booking = { is: bookingWhere };
+    }
+    if (andFilters.length > 0) {
+      where.AND = andFilters;
     }
 
     const candidates = await prisma.payment.findMany({
@@ -250,6 +279,7 @@ export async function listAdminPayments(query: AdminPaymentsQuery): Promise<Json
         bookingId: true,
         amountCents: true,
         source: true,
+        reference: true,
         status: true,
         stripePaymentIntentId: true,
         xeroInvoiceId: true,

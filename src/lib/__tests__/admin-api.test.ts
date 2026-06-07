@@ -236,6 +236,8 @@ describe("Admin Payments API", () => {
       bookingId: "b1",
       amountCents: 5000,
       refundedAmountCents: 0,
+      source: "STRIPE",
+      reference: null,
       status: "SUCCEEDED",
       stripePaymentIntentId: "pi_123",
       xeroInvoiceId: null,
@@ -265,6 +267,8 @@ describe("Admin Payments API", () => {
       bookingId: "b1",
       amountCents: 5000,
       refundedAmountCents: 0,
+      source: "STRIPE",
+      reference: null,
       status: "SUCCEEDED",
       stripePaymentIntentId: "pi_123",
       xeroInvoiceId: null,
@@ -346,6 +350,7 @@ describe("Admin Payments API", () => {
     expect(body.summary.totalRevenueCents).toBe(5000);
     expect(body.summary.refundedCents).toBe(0);
     expect(body.summary.count).toBe(1);
+    expect(body.data[0].reference).toBeNull();
     expect(body.data[0].lastUpdatedAt).toBe("2026-04-03T11:00:00.000Z");
   });
 
@@ -402,7 +407,37 @@ describe("Admin Payments API", () => {
     expect(callArgs.where.amountCents).toEqual({ gte: 5000, lte: 7500 });
     expect(callArgs.where.booking.is.checkIn.gte).toEqual(new Date("2026-07-01T00:00:00"));
     expect(callArgs.where.booking.is.checkIn.lte).toEqual(new Date("2026-07-31T23:59:59"));
-    expect(callArgs.where.booking.is.member.is.AND).toHaveLength(2);
+    expect(callArgs.where.AND).toHaveLength(2);
+    expect(callArgs.where.AND[0].OR).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          reference: { contains: "Alice", mode: "insensitive" },
+        }),
+      ])
+    );
+  });
+
+  it("filters by source and searches payment references", async () => {
+    mockedAuth.mockResolvedValue({ user: { id: "a1", role: "ADMIN" } } as any);
+    vi.mocked(prisma.payment.findMany).mockResolvedValue([]);
+
+    const req = new NextRequest(
+      "http://localhost/api/admin/payments?source=INTERNET_BANKING&search=BOOKING-IB-1"
+    );
+    await getPayments(req);
+
+    const callArgs = vi.mocked(prisma.payment.findMany).mock.calls[0][0] as any;
+    expect(callArgs.where.source).toBe("INTERNET_BANKING");
+    expect(callArgs.where.AND[0].OR).toEqual(
+      expect.arrayContaining([
+        {
+          reference: {
+            contains: "BOOKING-IB-1",
+            mode: "insensitive",
+          },
+        },
+      ])
+    );
   });
 
   it("lets exact amount take precedence over min and max", async () => {

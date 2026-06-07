@@ -228,12 +228,18 @@ Keep webhook secrets in `.env`. Rotate them if they are exposed.
 The application exposes secured cron endpoints that must be invoked by an
 external scheduler. Auth is the `x-cron-secret` header set to `CRON_SECRET`.
 
-| Endpoint | Required cadence | Purpose |
-| -------- | ---------------- | ------- |
-| `POST /api/cron/payments?task=recovery` | every 5 minutes | Process the durable Stripe payment recovery queue and reap stale WAITING_PAYMENT Xero outbox rows. |
-| `POST /api/cron` | per existing setup | General cron entry point used by other scheduled work. |
-| `POST /api/cron/xero` | per existing setup | Xero retry loop. |
-| `POST /api/cron/issue-reports` | per existing setup | Issue-report digest. |
+| Endpoint | Task | Required cadence | Purpose | `CronJobRun.jobName` |
+| -------- | ---- | ---------------- | ------- | -------------------- |
+| `POST /api/cron/payments?task=recovery` | `recovery` | every 5 minutes | Process the durable Stripe payment recovery queue and reap stale `WAITING_PAYMENT` Xero outbox rows. | `payment-recovery` |
+| `POST /api/cron` | pending booking confirmation | every 3 hours at minute 0 | Confirm or bump pending bookings whose non-member holds have expired. | `confirm-pending` |
+| `POST /api/cron/xero?task=memberships` | `memberships` | daily at 02:00 Pacific/Auckland when `XERO_ENABLE_DAILY_MEMBERSHIP_REFRESH=true` | Refresh Xero-backed membership statuses as an optional safety net. | `xero-membership-refresh` |
+| `POST /api/cron/xero?task=outbox` | `outbox` | every 15 minutes | Process queued outbound Xero operations. | `xero-outbox` |
+| `POST /api/cron/xero?task=retries` | `retries` | every 15 minutes | Replay failed retryable Xero operations. | `xero-operation-replay` |
+| `POST /api/cron/xero?task=inbound` | `inbound` | every 15 minutes | Reconcile inbound Xero invoice, payment, contact, and membership state. | `xero-inbound-reconcile` |
+| `POST /api/cron/xero?task=backfill` | `backfill` | daily at 02:20 Pacific/Auckland | Backfill historical Xero object links; this task also runs stale link cleanup. | `xero-link-backfill`, `xero-link-cleanup` |
+| `POST /api/cron/xero?task=link-cleanup` | `link-cleanup` | daily at 02:25 Pacific/Auckland | Deactivate stale canonical Xero object links. | `xero-link-cleanup` |
+| `POST /api/cron/xero?task=report` | `report` | daily at 02:35 Pacific/Auckland | Send the Xero reconciliation report. | `xero-reconciliation-report` |
+| `POST /api/cron/issue-reports` | issue report retention | daily | Redact expired issue-report sensitive data. | not recorded |
 
 Without `/api/cron/payments?task=recovery` running on a regular schedule,
 abandoned zero-dollar batch edits leave PaymentIntents held in Stripe

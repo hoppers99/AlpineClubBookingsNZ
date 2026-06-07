@@ -1372,6 +1372,33 @@ describe("bookingModifiedTemplate", () => {
     expect(html).toContain("additional payment");
   });
 
+  it("renders Internet Banking additional payment context", async () => {
+    const { bookingModifiedTemplate } = await import("@/lib/email-templates");
+    const html = bookingModifiedTemplate({
+      firstName: "Eve",
+      modificationType: "DATE_CHANGE",
+      oldCheckIn: new Date("2026-06-01"),
+      oldCheckOut: new Date("2026-06-03"),
+      newCheckIn: new Date("2026-06-20"),
+      newCheckOut: new Date("2026-06-22"),
+      oldGuestCount: 2,
+      newGuestCount: 2,
+      oldFinalPriceCents: 10000,
+      newFinalPriceCents: 15000,
+      changeFeeCents: 0,
+      refundAmountCents: 0,
+      additionalAmountCents: 5000,
+      additionalPaymentMethod: "INTERNET_BANKING",
+      paymentReference: "BOOKING-IB-1",
+      xeroInvoiceNumber: "INV-1001",
+    });
+
+    expect(html).toContain("additional Internet Banking payment");
+    expect(html).toContain("INV-1001");
+    expect(html).toContain("BOOKING-IB-1");
+    expect(html).toContain("Xero reconciliation confirms");
+  });
+
   it("escapes HTML in firstName", async () => {
     const { bookingModifiedTemplate } = await import("@/lib/email-templates");
     const html = bookingModifiedTemplate({

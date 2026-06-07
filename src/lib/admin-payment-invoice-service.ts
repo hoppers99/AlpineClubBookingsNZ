@@ -1,4 +1,4 @@
-import { logAudit } from "@/lib/audit";
+import { createAuditLog } from "@/lib/audit";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 import {
@@ -75,11 +75,24 @@ export async function generateAdminPaymentInvoice(params: {
     });
 
     if (updated?.xeroInvoiceId) {
-      logAudit({
+      await createAuditLog({
         action: "XERO_INVOICE_GENERATED",
         memberId: adminMemberId,
         targetId: payment.bookingId,
+        entityType: "Payment",
+        entityId: paymentId,
+        category: "xero",
+        severity: "critical",
+        outcome: "success",
+        summary: "Xero invoice generated for payment",
         details: `Invoice ${updated.xeroInvoiceNumber ?? updated.xeroInvoiceId} created for payment ${paymentId}${queuedInvoice.queueOperationId ? ` via queued operation ${queuedInvoice.queueOperationId}` : ""}`,
+        metadata: {
+          bookingId: payment.bookingId,
+          paymentId,
+          xeroInvoiceId: updated.xeroInvoiceId,
+          xeroInvoiceNumber: updated.xeroInvoiceNumber ?? null,
+          queueOperationId: queuedInvoice.queueOperationId,
+        },
       });
 
       return jsonResult({
@@ -97,11 +110,24 @@ export async function generateAdminPaymentInvoice(params: {
           ? "Xero booking invoice queued for background processing. Refresh shortly if it does not appear immediately."
           : "Xero booking invoice queued, but Xero is currently disconnected. The operation will run automatically once the connection is restored.";
 
-      logAudit({
+      await createAuditLog({
         action: "XERO_INVOICE_GENERATION_QUEUED",
         memberId: adminMemberId,
         targetId: payment.bookingId,
+        entityType: "Payment",
+        entityId: paymentId,
+        category: "xero",
+        severity: "important",
+        outcome: "success",
+        summary: "Xero invoice generation queued for payment",
         details: `Queued booking invoice generation for payment ${paymentId} as operation ${queuedInvoice.queueOperationId}`,
+        metadata: {
+          bookingId: payment.bookingId,
+          paymentId,
+          queueOperationId: queuedInvoice.queueOperationId,
+          immediateKickFailed,
+          kickedImmediately: Boolean(kickResult),
+        },
       });
 
       return jsonResult(

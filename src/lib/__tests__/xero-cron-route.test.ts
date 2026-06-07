@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   cleanupStaleCanonicalXeroObjectLinks: vi.fn(),
   sendXeroReconciliationReport: vi.fn(),
   isEffectiveModuleEnabled: vi.fn(),
+  recordCronJobRunSafe: vi.fn(),
 }));
 
 vi.mock("@/lib/xero", () => ({
@@ -47,6 +48,10 @@ vi.mock("@/lib/logger", () => ({
 
 vi.mock("@/lib/admin-modules", () => ({
   isEffectiveModuleEnabled: mocks.isEffectiveModuleEnabled,
+}));
+
+vi.mock("@/lib/cron-job-run", () => ({
+  recordCronJobRunSafe: mocks.recordCronJobRunSafe,
 }));
 
 import { POST } from "@/app/api/cron/xero/route";
@@ -91,6 +96,13 @@ describe("POST /api/cron/xero", () => {
     });
     expect(mocks.isXeroConnected).not.toHaveBeenCalled();
     expect(mocks.refreshAllMembershipStatuses).not.toHaveBeenCalled();
+    expect(mocks.recordCronJobRunSafe).toHaveBeenCalledTimes(7);
+    expect(mocks.recordCronJobRunSafe).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobName: "xero-outbox",
+        status: "SKIPPED",
+      })
+    );
   });
 
   it("runs the reconciliation report even when Xero is disconnected", async () => {
@@ -123,6 +135,12 @@ describe("POST /api/cron/xero", () => {
       },
     });
     expect(mocks.sendXeroReconciliationReport).toHaveBeenCalled();
+    expect(mocks.recordCronJobRunSafe).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobName: "xero-reconciliation-report",
+        status: "SUCCESS",
+      })
+    );
   });
 
   it("runs all Xero tasks together", async () => {
@@ -282,6 +300,18 @@ describe("POST /api/cron/xero", () => {
         },
       },
     });
+    expect(mocks.recordCronJobRunSafe).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobName: "xero-outbox",
+        status: "SUCCESS",
+      })
+    );
+    expect(mocks.recordCronJobRunSafe).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobName: "xero-link-cleanup",
+        status: "SUCCESS",
+      })
+    );
   });
 
   it("skips membership refresh when the daily refresh flag is disabled", async () => {
@@ -296,6 +326,12 @@ describe("POST /api/cron/xero", () => {
       reason: "Daily membership refresh disabled by XERO_ENABLE_DAILY_MEMBERSHIP_REFRESH",
     });
     expect(mocks.refreshAllMembershipStatuses).not.toHaveBeenCalled();
+    expect(mocks.recordCronJobRunSafe).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobName: "xero-membership-refresh",
+        status: "SKIPPED",
+      })
+    );
   });
 
   it("runs inbound reconciliation on demand", async () => {

@@ -9,6 +9,7 @@ export const ADMIN_CRON_DEFAULT_TIMEZONE = APP_TIME_ZONE;
 
 const DAILY_STALE_AFTER_MINUTES = 36 * 60;
 const THREE_HOURLY_STALE_AFTER_MINUTES = 6 * 60 + 30;
+const FIVE_MINUTE_STALE_AFTER_MINUTES = 20;
 const FIFTEEN_MINUTE_STALE_AFTER_MINUTES = 60;
 const THIRTY_MINUTE_STALE_AFTER_MINUTES = 90;
 
@@ -169,10 +170,10 @@ export function getAdminCronJobDefinitions(
       {
         jobName: "payment-recovery",
         label: "Stripe payment recovery",
-        schedule: "*/15 * * * *",
+        schedule: "*/5 * * * *",
         timezone: nzTimezone,
-        expectedLocalTime: "Every 15 minutes in Pacific/Auckland",
-        staleAfterMinutes: FIFTEEN_MINUTE_STALE_AFTER_MINUTES,
+        expectedLocalTime: "Every 5 minutes in Pacific/Auckland",
+        staleAfterMinutes: FIVE_MINUTE_STALE_AFTER_MINUTES,
       },
       globalDisabledReason
     ),
@@ -203,12 +204,34 @@ export function getAdminCronJobDefinitions(
     ),
     defineCronJob(
       {
+        jobName: "xero-link-cleanup",
+        label: "Xero stale link cleanup",
+        schedule: "25 2 * * *",
+        timezone: nzTimezone,
+        expectedLocalTime: "02:25 NZT/NZDT daily",
+        staleAfterMinutes: DAILY_STALE_AFTER_MINUTES,
+      },
+      globalDisabledReason
+    ),
+    defineCronJob(
+      {
         jobName: "xero-reconciliation-report",
         label: "Xero reconciliation report",
         schedule: "35 2 * * *",
         timezone: nzTimezone,
         expectedLocalTime: "02:35 NZT/NZDT daily",
         staleAfterMinutes: DAILY_STALE_AFTER_MINUTES,
+      },
+      globalDisabledReason
+    ),
+    defineCronJob(
+      {
+        jobName: "xero-outbox",
+        label: "Xero outbox processing",
+        schedule: "*/15 * * * *",
+        timezone: nzTimezone,
+        expectedLocalTime: "Every 15 minutes in Pacific/Auckland",
+        staleAfterMinutes: FIFTEEN_MINUTE_STALE_AFTER_MINUTES,
       },
       globalDisabledReason
     ),

@@ -16,6 +16,7 @@ export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const parsed = adminPaymentsQuerySchema.safeParse({
     status: searchParams.get("status") ?? undefined,
+    source: searchParams.get("source") ?? undefined,
     from: searchParams.get("from") ?? undefined,
     to: searchParams.get("to") ?? undefined,
     lastUpdatedFrom: searchParams.get("lastUpdatedFrom") ?? undefined,

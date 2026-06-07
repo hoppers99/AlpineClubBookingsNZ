@@ -2,6 +2,7 @@ import {
   type Booking,
   type BookingGuest,
   type Payment,
+  PaymentSource,
   type PaymentStatus,
   type Role,
 } from "@prisma/client";
@@ -59,6 +60,9 @@ type BatchModificationTransactionResult =
     oldGuestCount: number;
     hasIssuedXeroInvoice: boolean;
     paymentStatus: PaymentStatus | null;
+    paymentSource: PaymentSource | null;
+    paymentReference: string | null;
+    xeroInvoiceNumber: string | null;
     zeroDollarAutoPaid: boolean;
     supersededPrimaryPaymentIntents: { length: number };
     xeroAdditionalAmountCents: number;
@@ -317,6 +321,9 @@ export async function modifyBookingBatch({
       hasSucceededPayment: payments.hasSucceededPayment,
       hasIssuedXeroInvoice: payments.hasIssuedXeroInvoice,
       paymentStatus: booking.payment?.status ?? null,
+      paymentSource: booking.payment?.source ?? null,
+      paymentReference: booking.payment?.reference ?? null,
+      xeroInvoiceNumber: booking.payment?.xeroInvoiceNumber ?? null,
       zeroDollarAutoPaid: lifecycle.zeroDollarAutoPaid,
       supersededPrimaryPaymentIntents: lifecycle.supersededPrimaryPaymentIntents,
       xeroAdditionalAmountCents: payments.xeroAdditionalAmountCents,
@@ -467,6 +474,15 @@ async function dispatchBatchPostTransactionSideEffects({
     refundAmountCents: result.refundAmountCents,
     accountCreditAmountCents: result.accountCreditAmountCents,
     additionalAmountCents: result.additionalAmountCents,
+    additionalPaymentMethod:
+      result.additionalAmountCents > 0 &&
+      result.paymentSource === PaymentSource.INTERNET_BANKING
+        ? "INTERNET_BANKING"
+        : result.additionalAmountCents > 0 && result.hasSucceededPayment
+          ? "STRIPE"
+          : undefined,
+    paymentReference: result.paymentReference,
+    xeroInvoiceNumber: result.xeroInvoiceNumber,
   }).catch((err) =>
     logger.error(
       { err, bookingId },

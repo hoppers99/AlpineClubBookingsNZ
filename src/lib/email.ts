@@ -1772,15 +1772,26 @@ export async function sendBookingModifiedEmail(params: {
   refundAmountCents: number;
   accountCreditAmountCents?: number;
   additionalAmountCents: number;
+  additionalPaymentMethod?: "STRIPE" | "INTERNET_BANKING";
+  paymentReference?: string | null;
+  xeroInvoiceNumber?: string | null;
 }) {
   const accountCreditAmountCents = params.accountCreditAmountCents ?? 0;
+  const xeroInvoicePaymentContext = params.xeroInvoiceNumber
+    ? ` Xero invoice ${params.xeroInvoiceNumber} will be used for payment.`
+    : " A Xero invoice and payment reference will be used for payment.";
+  const paymentReferenceContext = params.paymentReference
+    ? ` Payment reference: ${params.paymentReference}.`
+    : "";
   const paymentNote =
     params.refundAmountCents > 0
       ? `A refund of ${formatMoneyCents(params.refundAmountCents)} has been processed to your original payment method.`
       : accountCreditAmountCents > 0
         ? `Account credit of ${formatMoneyCents(accountCreditAmountCents)} has been added for future bookings.`
         : params.additionalAmountCents > 0
-          ? `An additional payment of ${formatMoneyCents(params.additionalAmountCents)} is required.`
+          ? params.additionalPaymentMethod === "INTERNET_BANKING"
+            ? `An additional Internet Banking payment of ${formatMoneyCents(params.additionalAmountCents)} is required.${xeroInvoicePaymentContext}${paymentReferenceContext} Xero reconciliation confirms the payment before it is treated as paid.`
+            : `An additional payment of ${formatMoneyCents(params.additionalAmountCents)} is required.`
           : "";
 
   await sendEmail({
@@ -1803,6 +1814,9 @@ export async function sendBookingModifiedEmail(params: {
       refundAmount: formatMoneyCents(params.refundAmountCents),
       accountCreditAmount: formatMoneyCents(accountCreditAmountCents),
       additionalAmount: formatMoneyCents(params.additionalAmountCents),
+      additionalPaymentMethod: params.additionalPaymentMethod ?? "",
+      paymentReference: params.paymentReference ?? "",
+      xeroInvoiceNumber: params.xeroInvoiceNumber ?? "",
       paymentNote,
     },
   });
