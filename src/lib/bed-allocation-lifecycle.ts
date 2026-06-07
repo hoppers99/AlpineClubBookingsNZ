@@ -228,8 +228,15 @@ async function autoAllocateMissingBedNights({
       },
       select: {
         bedId: true,
+        bookingId: true,
         bookingGuestId: true,
+        roomId: true,
         stayDate: true,
+        bookingGuest: {
+          select: {
+            ageTier: true,
+          },
+        },
       },
     }),
   ]);
@@ -302,7 +309,11 @@ async function autoAllocateMissingBedNights({
     bookings: plannerBookings,
     occupiedBedNights: existingAllocations.map((allocation) => ({
       bedId: allocation.bedId,
+      bookingId: allocation.bookingId,
+      bookingGuestId: allocation.bookingGuestId,
+      roomId: allocation.roomId,
       stayDate: allocation.stayDate,
+      ageTier: allocation.bookingGuest.ageTier,
     })),
   });
 

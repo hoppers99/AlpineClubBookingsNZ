@@ -360,6 +360,51 @@ describe("bed allocation planner", () => {
     ]);
   });
 
+  it("uses existing adult allocations when filling a missing minor guest-night", () => {
+    const plan = buildFirstFitBedAllocationPlan({
+      enabled: true,
+      rooms,
+      bookings: [
+        multiGuestBooking("booking-family", "2026-06-01", [
+          {
+            id: "adult-1",
+            ageTier: "ADULT",
+            stayStart: "2026-07-01",
+            stayEnd: "2026-07-02",
+          },
+          {
+            id: "child-1",
+            ageTier: "CHILD",
+            stayStart: "2026-07-01",
+            stayEnd: "2026-07-02",
+          },
+        ]),
+      ],
+      occupiedBedNights: [
+        {
+          bedId: "bed-a1",
+          roomId: "room-a",
+          bookingId: "booking-family",
+          bookingGuestId: "adult-1",
+          ageTier: "ADULT",
+          stayDate: "2026-07-01",
+        },
+      ],
+    });
+
+    expect(plan.unallocatedGuestNights).toEqual([]);
+    expect(plan.allocations).toEqual([
+      {
+        bookingId: "booking-family",
+        bookingGuestId: "child-1",
+        roomId: "room-a",
+        bedId: "bed-a2",
+        stayDate: "2026-07-01",
+        source: "AUTO",
+      },
+    ]);
+  });
+
   it("allocates each booking night independently", () => {
     const plan = buildFirstFitBedAllocationPlan({
       enabled: true,

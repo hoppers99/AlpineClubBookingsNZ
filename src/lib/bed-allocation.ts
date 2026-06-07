@@ -40,6 +40,10 @@ export interface BedAllocationBooking {
 export interface OccupiedBedNight {
   bedId: string;
   stayDate: string | Date;
+  bookingId?: string | null;
+  bookingGuestId?: string | null;
+  roomId?: string | null;
+  ageTier?: BedAllocationAgeTier | null;
 }
 
 export interface BedAllocationCandidate {
@@ -108,6 +112,10 @@ function guestNightKey(bookingGuestId: string, stayDate: string) {
   return `${bookingGuestId}:${stayDate}`;
 }
 
+function bookingNightKey(bookingId: string, stayDate: string) {
+  return `${bookingId}:${stayDate}`;
+}
+
 interface SortedRoomWithBeds extends BedAllocationRoom {
   beds: BedAllocationBed[];
 }
@@ -150,8 +158,12 @@ function bookingStayNights(booking: BedAllocationBooking): Array<{
     .map(([stayDate, guests]) => ({ stayDate, guests }));
 }
 
+function isAdultAgeTier(ageTier?: BedAllocationAgeTier | null): boolean {
+  return !ageTier || ageTier === "ADULT";
+}
+
 function isAdultGuest(guest: BedAllocationGuest): boolean {
-  return !guest.ageTier || guest.ageTier === "ADULT";
+  return isAdultAgeTier(guest.ageTier);
 }
 
 function roomHasAvailableBeds(
@@ -160,6 +172,46 @@ function roomHasAvailableBeds(
   occupied: Set<string>,
 ): BedAllocationBed[] {
   return room.beds.filter((bed) => !occupied.has(occupiedKey(bed.id, stayDate)));
+}
+
+function existingAllocationsByBookingNight(
+  occupiedBedNights: OccupiedBedNight[],
+) {
+  const existing = new Map<string, OccupiedBedNight[]>();
+
+  for (const occupiedBedNight of occupiedBedNights) {
+    if (!occupiedBedNight.bookingId) continue;
+
+    const stayDate = normalizeStayDate(occupiedBedNight.stayDate);
+    const key = bookingNightKey(occupiedBedNight.bookingId, stayDate);
+    const bookingNight = existing.get(key) ?? [];
+    bookingNight.push(occupiedBedNight);
+    existing.set(key, bookingNight);
+  }
+
+  return existing;
+}
+
+function existingAdultRoomIds(
+  existingAllocations: OccupiedBedNight[],
+  guests: BedAllocationGuest[],
+) {
+  const guestById = new Map(guests.map((guest) => [guest.id, guest]));
+  const roomIds = new Set<string>();
+
+  for (const allocation of existingAllocations) {
+    if (!allocation.roomId || !allocation.bookingGuestId) continue;
+
+    const existingGuest = guestById.get(allocation.bookingGuestId);
+    const ageTier = allocation.ageTier ?? existingGuest?.ageTier;
+    if (!isAdultAgeTier(ageTier)) {
+      continue;
+    }
+
+    roomIds.add(allocation.roomId);
+  }
+
+  return roomIds;
 }
 
 function allocationReasonForNoBed(beds: BedAllocationBed[]) {
@@ -235,15 +287,20 @@ function tryAllocateWholeBookingNight(
   occupied: Set<string>,
   allocatedGuestNights: Set<string>,
   allocations: BedAllocationCandidate[],
+  existingAdultRooms: Set<string>,
 ): boolean {
   const hasMinor = guests.some((guest) => !isAdultGuest(guest));
   const hasAdult = guests.some(isAdultGuest);
 
-  if (hasMinor && !hasAdult) {
+  if (hasMinor && !hasAdult && existingAdultRooms.size === 0) {
     return false;
   }
 
   for (const room of rooms) {
+    if (hasMinor && !hasAdult && !existingAdultRooms.has(room.id)) {
+      continue;
+    }
+
     const availableBeds = roomHasAvailableBeds(room, stayDate, occupied);
 
     if (availableBeds.length >= guests.length) {
@@ -305,11 +362,13 @@ function allocateSplitBookingNight(
   allocatedGuestNights: Set<string>,
   allocations: BedAllocationCandidate[],
   unallocatedGuestNights: UnallocatedGuestNight[],
+  existingAdultRooms: Set<string>,
 ) {
   const adults = guests.filter(isAdultGuest);
   const minors = guests.filter((guest) => !isAdultGuest(guest));
   const roomAvailability = rooms
     .map((room, roomIndex) => ({
+      roomId: room.id,
       roomIndex,
       beds: roomHasAvailableBeds(room, stayDate, occupied),
     }))
@@ -330,7 +389,7 @@ function allocateSplitBookingNight(
     return;
   }
 
-  if (adults.length === 0) {
+  if (adults.length === 0 && existingAdultRooms.size === 0) {
     addUnallocatedGuestNights(
       booking.id,
       minors,
@@ -343,6 +402,27 @@ function allocateSplitBookingNight(
 
   const remainingAdults = [...adults];
   const remainingMinors = [...minors];
+  const roomsWithExistingAdults = roomAvailability
+    .filter((room) => existingAdultRooms.has(room.roomId))
+    .sort((a, b) => a.roomIndex - b.roomIndex);
+
+  for (const room of roomsWithExistingAdults) {
+    if (remainingMinors.length === 0) break;
+
+    const roomMinors = remainingMinors.splice(0, room.beds.length);
+    const roomBeds = room.beds.splice(0, roomMinors.length);
+
+    allocateGuestsToBeds(
+      booking,
+      roomMinors,
+      roomBeds,
+      stayDate,
+      occupied,
+      allocatedGuestNights,
+      allocations,
+    );
+  }
+
   const roomsForMinors = roomAvailability
     .filter((room) => room.beds.length >= 2)
     .sort((a, b) => {
@@ -410,7 +490,18 @@ export function buildFirstFitBedAllocationPlan({
       occupiedKey(night.bedId, normalizeStayDate(night.stayDate)),
     ),
   );
-  const allocatedGuestNights = new Set<string>();
+  const existingByBookingNight =
+    existingAllocationsByBookingNight(occupiedBedNights);
+  const allocatedGuestNights = new Set(
+    occupiedBedNights
+      .filter((night) => night.bookingGuestId)
+      .map((night) =>
+        guestNightKey(
+          night.bookingGuestId as string,
+          normalizeStayDate(night.stayDate),
+        ),
+      ),
+  );
   const allocations: BedAllocationCandidate[] = [];
   const unallocatedGuestNights: UnallocatedGuestNight[] = [];
   const sortedBookings = [...bookings].sort((a, b) => {
@@ -420,6 +511,10 @@ export function buildFirstFitBedAllocationPlan({
 
   for (const booking of sortedBookings) {
     for (const { stayDate, guests } of bookingStayNights(booking)) {
+      const existingAdultRooms = existingAdultRoomIds(
+        existingByBookingNight.get(bookingNightKey(booking.id, stayDate)) ?? [],
+        guests,
+      );
       const unallocatedGuests = guests.filter(
         (guest) => !allocatedGuestNights.has(guestNightKey(guest.id, stayDate)),
       );
@@ -434,6 +529,7 @@ export function buildFirstFitBedAllocationPlan({
           occupied,
           allocatedGuestNights,
           allocations,
+          existingAdultRooms,
         )
       ) {
         continue;
@@ -449,6 +545,7 @@ export function buildFirstFitBedAllocationPlan({
         allocatedGuestNights,
         allocations,
         unallocatedGuestNights,
+        existingAdultRooms,
       );
     }
   }

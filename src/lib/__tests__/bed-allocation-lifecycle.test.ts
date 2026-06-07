@@ -210,4 +210,105 @@ describe("bed allocation lifecycle", () => {
       createdCount: 1,
     });
   });
+
+  it("uses existing adult allocations when auto-filling a missing family minor", async () => {
+    const db = makeDb({
+      bedAllocationSettings: {
+        findUnique: vi.fn().mockResolvedValue({ autoAllocationEnabled: true }),
+      },
+      lodgeRoom: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: "room-a",
+            name: "Room A",
+            sortOrder: 1,
+            active: true,
+            beds: [
+              {
+                id: "bed-a1",
+                roomId: "room-a",
+                name: "A1",
+                sortOrder: 1,
+                active: true,
+              },
+              {
+                id: "bed-a2",
+                roomId: "room-a",
+                name: "A2",
+                sortOrder: 2,
+                active: true,
+              },
+            ],
+          },
+        ]),
+      },
+    });
+    const bookingRecord = {
+      id: "booking-family",
+      status: BookingStatus.PAID,
+      deletedAt: null,
+      checkIn: parseDateOnly("2026-07-01"),
+      checkOut: parseDateOnly("2026-07-02"),
+      guests: [
+        {
+          id: "adult-1",
+          bookingId: "booking-family",
+          ageTier: "ADULT",
+          stayStart: parseDateOnly("2026-07-01"),
+          stayEnd: parseDateOnly("2026-07-02"),
+        },
+        {
+          id: "child-1",
+          bookingId: "booking-family",
+          ageTier: "CHILD",
+          stayStart: parseDateOnly("2026-07-01"),
+          stayEnd: parseDateOnly("2026-07-02"),
+        },
+      ],
+    };
+    db.booking.findUnique.mockResolvedValue(bookingRecord);
+    db.booking.findMany.mockResolvedValue([
+      {
+        id: bookingRecord.id,
+        createdAt: new Date("2026-06-01T00:00:00.000Z"),
+        guests: bookingRecord.guests,
+      },
+    ]);
+    db.bedAllocation.findMany.mockResolvedValue([
+      {
+        bedId: "bed-a1",
+        bookingId: "booking-family",
+        bookingGuestId: "adult-1",
+        roomId: "room-a",
+        stayDate: parseDateOnly("2026-07-01"),
+        bookingGuest: { ageTier: "ADULT" },
+      },
+    ]);
+    db.bedAllocation.createMany.mockResolvedValue({ count: 1 });
+
+    const result = await reconcileBedAllocationsForBooking({
+      bookingId: "booking-family",
+      db: db as any,
+      envCapability: enabledBedAllocationFlags,
+    });
+
+    expect(db.bedAllocation.createMany).toHaveBeenCalledWith({
+      data: [
+        {
+          bookingId: "booking-family",
+          bookingGuestId: "child-1",
+          roomId: "room-a",
+          bedId: "bed-a2",
+          stayDate: parseDateOnly("2026-07-01"),
+          source: "AUTO",
+        },
+      ],
+      skipDuplicates: true,
+    });
+    expect(result).toEqual({
+      enabled: true,
+      deletedCount: 0,
+      createdCount: 1,
+    });
+  });
 });

@@ -661,7 +661,11 @@ export async function getBedAllocationDashboard(input: {
         bookings: plannerBookings,
         occupiedBedNights: serializedAllocations.map((allocation) => ({
           bedId: allocation.bedId,
+          bookingId: allocation.bookingId,
+          bookingGuestId: allocation.bookingGuestId,
+          roomId: allocation.roomId,
           stayDate: allocation.stayDate,
+          ageTier: allocation.guestAgeTier,
         })),
       })
     : { allocations: [], unallocatedGuestNights: [] };
