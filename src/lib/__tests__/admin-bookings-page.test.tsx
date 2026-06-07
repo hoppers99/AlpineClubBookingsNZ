@@ -3,6 +3,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     booking: { findMany: vi.fn() },
+    xeroSyncOperation: { findMany: vi.fn() },
+    xeroObjectLink: { findMany: vi.fn() },
   },
 }));
 
@@ -17,13 +19,48 @@ vi.mock("@/components/admin-booking-calendar", () => ({
 import AdminBookingsPage, {
   formatAdminBookingGuestCount,
 } from "@/app/(admin)/admin/bookings/page";
+import {
+  adminBookingsQuerySchema,
+  listAdminBookings,
+} from "@/lib/admin-bookings-service";
 import { prisma } from "@/lib/prisma";
 
 describe("AdminBookingsPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(prisma.booking.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.xeroSyncOperation.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.xeroObjectLink.findMany).mockResolvedValue([]);
   });
+
+  function makeBooking(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "booking-1",
+      status: "PAID",
+      checkIn: new Date("2026-07-01T00:00:00.000Z"),
+      checkOut: new Date("2026-07-03T00:00:00.000Z"),
+      updatedAt: new Date("2026-06-01T00:00:00.000Z"),
+      finalPriceCents: 10000,
+      requiresAdminReview: false,
+      adminReviewStatus: null,
+      adminReviewReason: null,
+      deletedAt: null,
+      member: {
+        id: "member-1",
+        firstName: "Aroha",
+        lastName: "Ngata",
+        email: "aroha@example.test",
+      },
+      guests: [],
+      payment: null,
+      bedAllocations: [],
+      modifications: [],
+      changeRequests: [],
+      creditsFromCancellation: [],
+      refundRequests: [],
+      ...overrides,
+    };
+  }
 
   it("applies separate last-updated and check-in date ranges", async () => {
     await AdminBookingsPage({
@@ -57,18 +94,37 @@ describe("AdminBookingsPage", () => {
   });
 
   it("sorts by member using stable member-name ordering", async () => {
-    await AdminBookingsPage({
-      searchParams: Promise.resolve({
+    vi.mocked(prisma.booking.findMany).mockResolvedValue([
+      makeBooking({
+        id: "booking-z",
+        member: {
+          id: "member-z",
+          firstName: "Zoe",
+          lastName: "Young",
+          email: "zoe@example.test",
+        },
+      }),
+      makeBooking({
+        id: "booking-a",
+        member: {
+          id: "member-a",
+          firstName: "Amy",
+          lastName: "Adams",
+          email: "amy@example.test",
+        },
+      }),
+    ] as any);
+
+    const result = await listAdminBookings(
+      adminBookingsQuerySchema.parse({
         sortBy: "member",
         sortDir: "asc",
-      }),
-    });
+      })
+    );
 
-    const callArgs = vi.mocked(prisma.booking.findMany).mock.calls[0][0] as any;
-    expect(callArgs.orderBy).toEqual([
-      { member: { lastName: "asc" } },
-      { member: { firstName: "asc" } },
-      { updatedAt: "desc" },
+    expect(result.bookings.map((booking) => booking.id)).toEqual([
+      "booking-a",
+      "booking-z",
     ]);
   });
 
@@ -90,6 +146,133 @@ describe("AdminBookingsPage", () => {
 
     const callArgs = vi.mocked(prisma.booking.findMany).mock.calls[0][0] as any;
     expect(callArgs.where.deletedAt).toEqual({ not: null });
+  });
+
+  it("filters bookings by missing Xero invoice state", async () => {
+    vi.mocked(prisma.booking.findMany).mockResolvedValue([
+      makeBooking({
+        id: "booking-missing",
+        payment: {
+          id: "payment-missing",
+          source: "STRIPE",
+          status: "SUCCEEDED",
+          xeroInvoiceId: null,
+          xeroInvoiceNumber: null,
+          refundedAmountCents: 0,
+        },
+      }),
+      makeBooking({
+        id: "booking-linked",
+        payment: {
+          id: "payment-linked",
+          source: "STRIPE",
+          status: "SUCCEEDED",
+          xeroInvoiceId: "inv-1",
+          xeroInvoiceNumber: "INV-1",
+          refundedAmountCents: 0,
+        },
+      }),
+    ] as any);
+
+    const result = await listAdminBookings(
+      adminBookingsQuerySchema.parse({ xeroState: "invoiceMissing" })
+    );
+
+    expect(result.bookings.map((booking) => booking.id)).toEqual(["booking-missing"]);
+    expect(result.bookings[0].operational.xeroState).toBe("invoiceMissing");
+  });
+
+  it("filters bookings by no-payment source", async () => {
+    vi.mocked(prisma.booking.findMany).mockResolvedValue([
+      makeBooking({ id: "booking-none", payment: null }),
+      makeBooking({
+        id: "booking-stripe",
+        payment: {
+          id: "payment-stripe",
+          source: "STRIPE",
+          status: "SUCCEEDED",
+          xeroInvoiceId: "inv-1",
+          xeroInvoiceNumber: "INV-1",
+          refundedAmountCents: 0,
+        },
+      }),
+    ] as any);
+
+    const result = await listAdminBookings(
+      adminBookingsQuerySchema.parse({ paymentSource: "NONE" })
+    );
+
+    expect(result.bookings.map((booking) => booking.id)).toEqual(["booking-none"]);
+  });
+
+  it("filters bookings by bed allocation and change state", async () => {
+    const guest = {
+      id: "guest-1",
+      firstName: "Tama",
+      lastName: "Guest",
+      ageTier: "ADULT",
+      isMember: false,
+      stayStart: new Date("2026-07-01T00:00:00.000Z"),
+      stayEnd: new Date("2026-07-03T00:00:00.000Z"),
+    };
+    vi.mocked(prisma.booking.findMany).mockResolvedValue([
+      makeBooking({
+        id: "booking-unallocated",
+        guests: [guest],
+        changeRequests: [{ id: "request-1", status: "REQUESTED", createdAt: new Date(), linkedModificationId: null }],
+      }),
+      makeBooking({
+        id: "booking-clean",
+        guests: [guest],
+        bedAllocations: [
+          {
+            id: "allocation-1",
+            bookingId: "booking-clean",
+            bookingGuestId: "guest-1",
+            roomId: "room-1",
+            bedId: "bed-1",
+            stayDate: new Date("2026-07-01T00:00:00.000Z"),
+            approvedAt: new Date("2026-06-01T00:00:00.000Z"),
+            bookingGuest: {
+              id: "guest-1",
+              firstName: "Tama",
+              lastName: "Guest",
+              ageTier: "ADULT",
+            },
+            room: { id: "room-1", name: "Room 1" },
+            bed: { id: "bed-1", name: "Bed 1" },
+          },
+          {
+            id: "allocation-2",
+            bookingId: "booking-clean",
+            bookingGuestId: "guest-1",
+            roomId: "room-1",
+            bedId: "bed-1",
+            stayDate: new Date("2026-07-02T00:00:00.000Z"),
+            approvedAt: new Date("2026-06-01T00:00:00.000Z"),
+            bookingGuest: {
+              id: "guest-1",
+              firstName: "Tama",
+              lastName: "Guest",
+              ageTier: "ADULT",
+            },
+            room: { id: "room-1", name: "Room 1" },
+            bed: { id: "bed-1", name: "Bed 1" },
+          },
+        ],
+      }),
+    ] as any);
+
+    const result = await listAdminBookings(
+      adminBookingsQuerySchema.parse({
+        bedState: "unallocated",
+        changeState: "pendingRequest",
+      })
+    );
+
+    expect(result.bookings.map((booking) => booking.id)).toEqual(["booking-unallocated"]);
+    expect(result.bookings[0].operational.bedState).toBe("unallocated");
+    expect(result.bookings[0].operational.pendingChangeRequest).toBe(true);
   });
 
   it("formats total guests with non-member guests in brackets", () => {

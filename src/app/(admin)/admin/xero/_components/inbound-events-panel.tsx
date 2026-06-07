@@ -1,8 +1,11 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
+import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { fetchJson, postJson } from "./api"
 import {
   FilterSelect,
@@ -32,12 +35,94 @@ export function InboundEventsPanel({
   onRefreshDiagnostics: () => void
   refreshToken: number
 }) {
+  const router = useRouter()
+  const pathname = usePathname()
+  const searchParams = useSearchParams()
+  const hasInboundUrlState =
+    searchParams.get("section") === "inbound" ||
+    [
+      "inStatus",
+      "inEventCategory",
+      "inLocalModel",
+      "inLocalId",
+      "inResourceId",
+      "inEventType",
+      "inCreatedFrom",
+      "inCreatedTo",
+      "inPage",
+    ].some((key) => searchParams.has(key))
   const [events, setEvents] = useState<XeroInboundEvent[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
-  const [statusFilter, setStatusFilter] = useState("all")
-  const [categoryFilter, setCategoryFilter] = useState("all")
+  const [statusFilter, setStatusFilter] = useState(searchParams.get("inStatus") || "all")
+  const [categoryFilter, setCategoryFilter] = useState(searchParams.get("inEventCategory") || "all")
+  const [localModelFilter, setLocalModelFilter] = useState(searchParams.get("inLocalModel") || "all")
+  const [localIdFilter, setLocalIdFilter] = useState(searchParams.get("inLocalId") || "")
+  const [resourceIdFilter, setResourceIdFilter] = useState(searchParams.get("inResourceId") || "")
+  const [eventTypeFilter, setEventTypeFilter] = useState(searchParams.get("inEventType") || "all")
+  const [createdFrom, setCreatedFrom] = useState(searchParams.get("inCreatedFrom") || "")
+  const [createdTo, setCreatedTo] = useState(searchParams.get("inCreatedTo") || "")
+  const [page, setPage] = useState(() => {
+    const requested = Number(searchParams.get("inPage") || "1")
+    return Number.isInteger(requested) && requested > 0 ? requested : 1
+  })
+  const [total, setTotal] = useState(0)
+  const pageSize = 25
+  const [urlSyncEnabled, setUrlSyncEnabled] = useState(hasInboundUrlState)
   const [replayingEventId, setReplayingEventId] = useState<string | null>(null)
+
+  const syncUrl = useCallback(() => {
+    if (!urlSyncEnabled) return
+
+    const params = new URLSearchParams(searchParams.toString())
+    params.set("section", "inbound")
+    const setOrDelete = (key: string, value: string, defaultValue = "") => {
+      if (value && value !== defaultValue) params.set(key, value)
+      else params.delete(key)
+    }
+
+    setOrDelete("inStatus", statusFilter, "all")
+    setOrDelete("inEventCategory", categoryFilter, "all")
+    setOrDelete("inLocalModel", localModelFilter, "all")
+    setOrDelete("inLocalId", localIdFilter)
+    setOrDelete("inResourceId", resourceIdFilter)
+    setOrDelete("inEventType", eventTypeFilter, "all")
+    setOrDelete("inCreatedFrom", createdFrom)
+    setOrDelete("inCreatedTo", createdTo)
+    setOrDelete("inPage", page > 1 ? String(page) : "")
+
+    const query = params.toString()
+    const nextPath = query ? `${pathname}?${query}` : pathname
+    const currentPath = searchParams.toString()
+      ? `${pathname}?${searchParams.toString()}`
+      : pathname
+    if (nextPath !== currentPath) {
+      router.replace(nextPath, { scroll: false })
+    }
+  }, [
+    categoryFilter,
+    createdFrom,
+    createdTo,
+    eventTypeFilter,
+    localIdFilter,
+    localModelFilter,
+    page,
+    pathname,
+    resourceIdFilter,
+    router,
+    searchParams,
+    statusFilter,
+    urlSyncEnabled,
+  ])
+
+  useEffect(() => {
+    syncUrl()
+  }, [syncUrl])
+
+  const resetPage = () => {
+    setUrlSyncEnabled(true)
+    setPage(1)
+  }
 
   const fetchEvents = useCallback(async () => {
     setLoading(true)
@@ -47,16 +132,34 @@ export function InboundEventsPanel({
         status: statusFilter,
         eventCategory: categoryFilter,
         source: "all",
-        limit: "25",
+        localModel: localModelFilter,
+        localId: localIdFilter,
+        resourceId: resourceIdFilter,
+        eventType: eventTypeFilter,
+        page: String(page),
+        pageSize: String(pageSize),
       })
-      const data = await fetchJson<{ data?: XeroInboundEvent[] }>(`/api/admin/xero/inbound-events?${params.toString()}`, undefined, "Failed to fetch Xero inbound events")
+      if (createdFrom) params.set("createdFrom", createdFrom)
+      if (createdTo) params.set("createdTo", createdTo)
+      const data = await fetchJson<{ data?: XeroInboundEvent[]; total?: number }>(`/api/admin/xero/inbound-events?${params.toString()}`, undefined, "Failed to fetch Xero inbound events")
       setEvents(data.data ?? [])
+      setTotal(data.total ?? 0)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load Xero inbound events")
     } finally {
       setLoading(false)
     }
-  }, [categoryFilter, statusFilter])
+  }, [
+    categoryFilter,
+    createdFrom,
+    createdTo,
+    eventTypeFilter,
+    localIdFilter,
+    localModelFilter,
+    page,
+    resourceIdFilter,
+    statusFilter,
+  ])
 
   useEffect(() => {
     if (connected && open) void fetchEvents()
@@ -95,8 +198,31 @@ export function InboundEventsPanel({
       <div className="space-y-4">
         {error ? <p className="text-sm text-red-600">{error}</p> : null}
         <div className="flex flex-col gap-3 md:flex-row md:items-center">
-          <FilterSelect label="Status" value={statusFilter} onValueChange={setStatusFilter} values={["all", "FAILED", "RECEIVED", "PROCESSING", "PROCESSED"]} />
-          <FilterSelect label="Category" value={categoryFilter} onValueChange={setCategoryFilter} values={["all", "CONTACT", "INVOICE", "PAYMENT", "CREDIT_NOTE"]} />
+          <FilterSelect label="Status" value={statusFilter} onValueChange={(value) => { setStatusFilter(value); resetPage() }} values={["all", "FAILED", "RECEIVED", "PROCESSING", "PROCESSED"]} />
+          <FilterSelect label="Category" value={categoryFilter} onValueChange={(value) => { setCategoryFilter(value); resetPage() }} values={["all", "CONTACT", "INVOICE", "PAYMENT", "CREDIT_NOTE"]} />
+          <FilterSelect label="Local Model" value={localModelFilter} onValueChange={(value) => { setLocalModelFilter(value); resetPage() }} values={["all", "Member", "Booking", "Payment", "BookingModification", "MemberSubscription"]} />
+        </div>
+        <div className="grid gap-3 md:grid-cols-5">
+          <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground" htmlFor="xero-in-local-id">Local ID</Label>
+            <Input id="xero-in-local-id" value={localIdFilter} onChange={(event) => { setLocalIdFilter(event.target.value); resetPage() }} />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground" htmlFor="xero-in-resource-id">Resource ID</Label>
+            <Input id="xero-in-resource-id" value={resourceIdFilter} onChange={(event) => { setResourceIdFilter(event.target.value); resetPage() }} />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground" htmlFor="xero-in-event-type">Event Type</Label>
+            <Input id="xero-in-event-type" value={eventTypeFilter === "all" ? "" : eventTypeFilter} onChange={(event) => { setEventTypeFilter(event.target.value || "all"); resetPage() }} placeholder="UPDATE" />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground" htmlFor="xero-in-created-from">Created From</Label>
+            <Input id="xero-in-created-from" type="date" value={createdFrom} onChange={(event) => { setCreatedFrom(event.target.value); resetPage() }} />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground" htmlFor="xero-in-created-to">Created To</Label>
+            <Input id="xero-in-created-to" type="date" value={createdTo} onChange={(event) => { setCreatedTo(event.target.value); resetPage() }} />
+          </div>
         </div>
         {loading ? (
           <p className="text-sm text-muted-foreground">Loading stored inbound events...</p>
@@ -139,6 +265,17 @@ export function InboundEventsPanel({
             ))}
           </div>
         )}
+        {total > pageSize ? (
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-muted-foreground">
+              Showing {(page - 1) * pageSize + 1}-{Math.min(page * pageSize, total)} of {total}
+            </p>
+            <div className="flex gap-2">
+              <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => { setUrlSyncEnabled(true); setPage((value) => value - 1) }}>Previous</Button>
+              <Button variant="outline" size="sm" disabled={page * pageSize >= total} onClick={() => { setUrlSyncEnabled(true); setPage((value) => value + 1) }}>Next</Button>
+            </div>
+          </div>
+        ) : null}
       </div>
     </SectionCard>
   )

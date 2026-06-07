@@ -1,0 +1,46 @@
+// @vitest-environment jsdom
+
+import { render, screen } from "@testing-library/react";
+import { describe, expect, it } from "vitest";
+import { XeroRecordActivityPanel } from "@/components/admin/xero-record-activity-panel";
+import type { XeroRecordActivityData } from "@/lib/xero-record-types";
+
+function makeActivityData(): XeroRecordActivityData {
+  return {
+    rootRecord: {
+      localModel: "Payment",
+      localId: "pay_1",
+      label: "Payment $50.00",
+      relation: "Payment",
+      url: "/admin/xero/records/Payment/pay_1",
+    },
+    scopeRecords: [],
+    relatedRecords: [],
+    summary: {
+      totalOperations: 5,
+      failedOperations: 1,
+      pendingOperations: 1,
+      partialOperations: 2,
+      activeLinks: 1,
+    },
+    operations: [],
+    links: [],
+    inboundEvents: [],
+    backLink: null,
+  };
+}
+
+describe("XeroRecordActivityPanel", () => {
+  it("renders partial operation summary counts", () => {
+    render(
+      <XeroRecordActivityPanel
+        localModel="Payment"
+        localId="pay_1"
+        initialData={makeActivityData()}
+      />
+    );
+
+    expect(screen.getByText("Partial")).toBeTruthy();
+    expect(screen.getByText("2")).toBeTruthy();
+  });
+});

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { usePathname, useSearchParams } from "next/navigation"
 import { useClubIdentity } from "@/components/club-identity-provider"
 import { buildPathWithSearch } from "@/lib/internal-return-path"
@@ -16,7 +16,7 @@ import {
   SyncResultsPanel,
   UsagePanel,
 } from "./_components/panels"
-import type { SyncResult } from "./_components/types"
+import { SECTION_DEFAULTS, type SectionKey, type SyncResult } from "./_components/types"
 import { useXeroConnection } from "./_hooks/use-xero-connection"
 
 export default function XeroPage() {
@@ -51,6 +51,13 @@ export default function XeroPage() {
     setOperationMessage(message)
     if (message) setUsageRefreshToken((value) => value + 1)
   }
+
+  useEffect(() => {
+    const section = searchParams.get("section")
+    if (section && section in SECTION_DEFAULTS) {
+      setSectionState(section as SectionKey, true)
+    }
+  }, [searchParams, setSectionState])
 
   if (loading) {
     return (

@@ -1,5 +1,18 @@
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
+import {
+  buildXeroActivityByRecord,
+  deriveSettlementKind,
+  deriveXeroState,
+  matchesSettlementFilter,
+  matchesXeroStateFilter,
+  paymentApiSourceFilters,
+  settlementFilters,
+  xeroStateFilters,
+  type SettlementKind,
+  type XeroActivitySummary,
+  type XeroState,
+} from "@/lib/admin-operational-state";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 
@@ -22,7 +35,9 @@ const sortBySchema = z
 
 export const adminPaymentsQuerySchema = z.object({
   status: z.enum(["PENDING", "PROCESSING", "SUCCEEDED", "FAILED", "REFUNDED", "PARTIALLY_REFUNDED", "all"]).optional().default("all"),
-  source: z.enum(["STRIPE", "INTERNET_BANKING", "all"]).optional().default("all"),
+  source: z.enum(paymentApiSourceFilters).optional().default("all"),
+  xeroState: z.enum(xeroStateFilters).optional().default("all"),
+  settlement: z.enum(settlementFilters).optional().default("all"),
   from: dateSchema.optional(),
   to: dateSchema.optional(),
   lastUpdatedFrom: dateSchema.optional(),
@@ -90,6 +105,13 @@ type PaymentCandidate = {
   };
 };
 
+type EnrichedPaymentCandidate = PaymentCandidate & {
+  latestActivityAt: Date;
+  xeroActivity: XeroActivitySummary;
+  xeroState: XeroState;
+  settlementKind: SettlementKind;
+};
+
 function jsonResult(body: unknown, init?: ResponseInit): JsonRouteResult {
   return { body, init };
 }
@@ -154,7 +176,7 @@ function compareValues(left: string | number | Date | null, right: string | numb
   return String(normalizedLeft).localeCompare(String(normalizedRight));
 }
 
-function sortValue(payment: PaymentCandidate, sortBy: z.infer<typeof sortBySchema>) {
+function sortValue(payment: EnrichedPaymentCandidate, sortBy: z.infer<typeof sortBySchema>) {
   switch (sortBy) {
     case "checkIn":
       return payment.booking.checkIn;
@@ -182,6 +204,8 @@ export async function listAdminPayments(query: AdminPaymentsQuery): Promise<Json
   const {
     status,
     source,
+    xeroState,
+    settlement,
     from,
     to,
     lastUpdatedFrom,
@@ -312,16 +336,82 @@ export async function listAdminPayments(query: AdminPaymentsQuery): Promise<Json
       },
     });
 
+    const candidatePaymentIds = candidates.map((payment) => payment.id);
+    const [activityOperations, primaryInvoiceLinks] = await Promise.all([
+      candidatePaymentIds.length
+        ? prisma.xeroSyncOperation.findMany({
+            where: {
+              localModel: "Payment",
+              localId: { in: candidatePaymentIds },
+            },
+            select: {
+              id: true,
+              status: true,
+              localModel: true,
+              localId: true,
+              createdAt: true,
+            },
+            orderBy: { createdAt: "desc" },
+          })
+        : Promise.resolve([]),
+      candidatePaymentIds.length
+        ? prisma.xeroObjectLink.findMany({
+            where: {
+              localModel: "Payment",
+              localId: { in: candidatePaymentIds },
+              xeroObjectType: "INVOICE",
+              role: "PRIMARY_INVOICE",
+              active: true,
+            },
+            select: {
+              localId: true,
+            },
+          })
+        : Promise.resolve([]),
+    ]);
+    const activityByRecord = buildXeroActivityByRecord(activityOperations);
+    const invoiceLinkedPaymentIds = new Set(primaryInvoiceLinks.map((link) => link.localId));
+
     const filteredCandidates = candidates
-      .map((payment) => ({
-        ...payment,
-        latestActivityAt: latestPaymentActivityAt(payment),
-      }))
+      .map((payment): EnrichedPaymentCandidate => {
+        const xeroActivity =
+          activityByRecord.get(`Payment:${payment.id}`) ?? {
+            failed: 0,
+            partial: 0,
+            pending: 0,
+            latestOperationId: null,
+            latestOperationStatus: null,
+            latestOperationAt: null,
+          };
+        const invoiceLinked =
+          Boolean(payment.xeroInvoiceId) || invoiceLinkedPaymentIds.has(payment.id);
+
+        return {
+          ...payment,
+          latestActivityAt: latestPaymentActivityAt(payment),
+          xeroActivity,
+          xeroState: deriveXeroState({
+            invoiceExpected: ["SUCCEEDED", "REFUNDED", "PARTIALLY_REFUNDED"].includes(payment.status),
+            invoiceLinked,
+            activity: xeroActivity,
+          }),
+          settlementKind: deriveSettlementKind({
+            refundedAmountCents: payment.refundedAmountCents,
+            credits: payment.booking.creditsFromCancellation,
+          }),
+        };
+      })
       .filter((payment) => {
         if (activityFrom && payment.latestActivityAt < startOfInputDate(activityFrom)) {
           return false;
         }
         if (activityTo && payment.latestActivityAt > endOfInputDate(activityTo)) {
+          return false;
+        }
+        if (!matchesXeroStateFilter(payment.xeroState, xeroState)) {
+          return false;
+        }
+        if (!matchesSettlementFilter(payment.settlementKind, settlement)) {
           return false;
         }
         return true;
@@ -341,6 +431,9 @@ export async function listAdminPayments(query: AdminPaymentsQuery): Promise<Json
     const pageIds = pageCandidates.map((payment) => payment.id);
     const activityByPaymentId = new Map(
       pageCandidates.map((payment) => [payment.id, payment.latestActivityAt])
+    );
+    const filteredCandidateById = new Map(
+      filteredCandidates.map((payment) => [payment.id, payment])
     );
 
     const data = pageIds.length
@@ -377,6 +470,22 @@ export async function listAdminPayments(query: AdminPaymentsQuery): Promise<Json
       .map((payment) => ({
         ...payment,
         lastUpdatedAt: activityByPaymentId.get(payment.id) ?? payment.updatedAt,
+        xeroActivity:
+          filteredCandidateById.get(payment.id)?.xeroActivity ??
+          {
+            failed: 0,
+            partial: 0,
+            pending: 0,
+            latestOperationId: null,
+            latestOperationStatus: null,
+            latestOperationAt: null,
+          },
+        xeroState:
+          filteredCandidateById.get(payment.id)?.xeroState ??
+          "none",
+        settlementKind:
+          filteredCandidateById.get(payment.id)?.settlementKind ??
+          "none",
       }));
 
     const summary = filteredCandidates.reduce(

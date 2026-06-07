@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   AlertTriangle,
   BedDouble,
@@ -135,6 +136,10 @@ function todayInputValue() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function isDateInputValue(value: string | null) {
+  return Boolean(value && /^\d{4}-\d{2}-\d{2}$/.test(value));
+}
+
 function addDaysInputValue(date: string, days: number) {
   const value = new Date(`${date}T00:00:00.000Z`);
   value.setUTCDate(value.getUTCDate() + days);
@@ -172,9 +177,15 @@ function bedEditFromBed(bed: DashboardBed): BedDraft {
 }
 
 export default function AdminBedAllocationPage() {
-  const initialFrom = todayInputValue();
+  const searchParams = useSearchParams();
+  const requestedFrom = searchParams.get("from");
+  const requestedTo = searchParams.get("to");
+  const highlightedBookingId = searchParams.get("bookingId") || "";
+  const initialFrom = isDateInputValue(requestedFrom) ? requestedFrom! : todayInputValue();
   const [fromDate, setFromDate] = useState(initialFrom);
-  const [toDate, setToDate] = useState(addDaysInputValue(initialFrom, 7));
+  const [toDate, setToDate] = useState(
+    isDateInputValue(requestedTo) ? requestedTo! : addDaysInputValue(initialFrom, 7),
+  );
   const [payload, setPayload] = useState<DashboardPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);
@@ -497,6 +508,9 @@ export default function AdminBedAllocationPage() {
                 <Badge variant="secondary">
                   {payload.allocations.length} allocations
                 </Badge>
+                {highlightedBookingId ? (
+                  <Badge variant="warning">Focused booking</Badge>
+                ) : null}
               </>
             ) : null}
           </div>
@@ -901,7 +915,14 @@ export default function AdminBedAllocationPage() {
                         );
 
                         return (
-                          <TableRow key={key}>
+                          <TableRow
+                            key={key}
+                            className={
+                              guestNight.bookingId === highlightedBookingId
+                                ? "bg-amber-50"
+                                : undefined
+                            }
+                          >
                             <TableCell>{guestNight.stayDate}</TableCell>
                             <TableCell>
                               <div className="font-medium">
@@ -989,7 +1010,14 @@ export default function AdminBedAllocationPage() {
                         const moveKey = `move-${allocation.id}`;
 
                         return (
-                          <TableRow key={allocation.id}>
+                          <TableRow
+                            key={allocation.id}
+                            className={
+                              allocation.bookingId === highlightedBookingId
+                                ? "bg-amber-50"
+                                : undefined
+                            }
+                          >
                             <TableCell>{allocation.stayDate}</TableCell>
                             <TableCell>
                               <div className="font-medium">

@@ -6,6 +6,8 @@ vi.mock("@/lib/prisma", () => ({
     member: { count: vi.fn(), findMany: vi.fn() },
     memberSubscription: { findMany: vi.fn(), count: vi.fn(), groupBy: vi.fn() },
     payment: { findMany: vi.fn(), count: vi.fn(), aggregate: vi.fn() },
+    xeroSyncOperation: { findMany: vi.fn() },
+    xeroObjectLink: { findMany: vi.fn() },
     auditLog: { findMany: vi.fn(), count: vi.fn() },
   },
 }));
@@ -235,6 +237,7 @@ describe("Admin Payments API", () => {
       id: "pay1",
       bookingId: "b1",
       amountCents: 5000,
+      source: "STRIPE",
       refundedAmountCents: 0,
       source: "STRIPE",
       reference: null,
@@ -266,6 +269,7 @@ describe("Admin Payments API", () => {
       id: "pay1",
       bookingId: "b1",
       amountCents: 5000,
+      source: "STRIPE",
       refundedAmountCents: 0,
       source: "STRIPE",
       reference: null,
@@ -295,6 +299,8 @@ describe("Admin Payments API", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(prisma.member.count).mockResolvedValue(1 as any);
+    vi.mocked(prisma.xeroSyncOperation.findMany).mockResolvedValue([] as any);
+    vi.mocked(prisma.xeroObjectLink.findMany).mockResolvedValue([] as any);
     mockRequireAdmin.mockResolvedValue({
       ok: true,
       session: { user: { id: "a1", role: "ADMIN" } },
@@ -461,6 +467,126 @@ describe("Admin Payments API", () => {
 
     expect(res.status).toBe(400);
     expect(prisma.payment.findMany).not.toHaveBeenCalled();
+  });
+
+  it("filters payments by source and failed Xero activity", async () => {
+    mockedAuth.mockResolvedValue({ user: { id: "a1", role: "ADMIN" } } as any);
+    vi.mocked(prisma.payment.findMany)
+      .mockResolvedValueOnce([
+        makePaymentCandidate({
+          id: "pay_failed",
+          source: "INTERNET_BANKING",
+          stripePaymentIntentId: null,
+        }),
+        makePaymentCandidate({
+          id: "pay_clean",
+          source: "INTERNET_BANKING",
+          stripePaymentIntentId: null,
+        }),
+      ] as any)
+      .mockResolvedValueOnce([
+        makePaymentRow({
+          id: "pay_failed",
+          source: "INTERNET_BANKING",
+          stripePaymentIntentId: null,
+        }),
+      ] as any);
+    vi.mocked(prisma.xeroSyncOperation.findMany).mockResolvedValue([
+      {
+        id: "op_failed",
+        localModel: "Payment",
+        localId: "pay_failed",
+        status: "FAILED",
+        createdAt: new Date("2026-04-03T11:00:00.000Z"),
+      },
+    ] as any);
+
+    const req = new NextRequest(
+      "http://localhost/api/admin/payments?source=INTERNET_BANKING&xeroState=operationFailed"
+    );
+    const res = await getPayments(req);
+
+    const body = await res.json();
+    expect(body.total).toBe(1);
+    expect(body.data[0]).toMatchObject({
+      id: "pay_failed",
+      xeroState: "operationFailed",
+      xeroActivity: {
+        failed: 1,
+      },
+    });
+    expect(vi.mocked(prisma.payment.findMany).mock.calls[0][0]).toEqual(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          source: "INTERNET_BANKING",
+        }),
+      })
+    );
+  });
+
+  it("filters payments by settlement kind", async () => {
+    mockedAuth.mockResolvedValue({ user: { id: "a1", role: "ADMIN" } } as any);
+    vi.mocked(prisma.payment.findMany)
+      .mockResolvedValueOnce([
+        makePaymentCandidate({
+          id: "pay_credit",
+          refundedAmountCents: 5000,
+          booking: {
+            id: "b_credit",
+            status: "CANCELLED",
+            checkIn: new Date("2026-04-10"),
+            creditsFromCancellation: [
+              {
+                amountCents: 5000,
+                description: "Cancellation refund for booking b_credit",
+              },
+            ],
+            member: {
+              id: "m1",
+              firstName: "Bob",
+              lastName: "Jones",
+              email: "bob@test.com",
+            },
+          },
+        }),
+        makePaymentCandidate({
+          id: "pay_none",
+        }),
+      ] as any)
+      .mockResolvedValueOnce([
+        makePaymentRow({
+          id: "pay_credit",
+          refundedAmountCents: 5000,
+          booking: {
+            id: "b_credit",
+            status: "CANCELLED",
+            checkIn: new Date("2026-04-10"),
+            checkOut: new Date("2026-04-12"),
+            creditsFromCancellation: [
+              {
+                amountCents: 5000,
+                description: "Cancellation refund for booking b_credit",
+              },
+            ],
+            member: {
+              id: "m1",
+              firstName: "Bob",
+              lastName: "Jones",
+              email: "bob@test.com",
+            },
+          },
+        }),
+      ] as any);
+
+    const req = new NextRequest("http://localhost/api/admin/payments?settlement=accountCredit");
+    const res = await getPayments(req);
+    const body = await res.json();
+
+    expect(body.total).toBe(1);
+    expect(body.data[0]).toMatchObject({
+      id: "pay_credit",
+      settlementKind: "accountCredit",
+    });
   });
 });
 

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { auth } from "@/lib/auth";
 import { requireActiveSessionUser } from "@/lib/session-guards";
@@ -13,8 +14,25 @@ const querySchema = z.object({
   status: z.string().optional().default("all"),
   entityType: z.string().optional().default("all"),
   direction: z.string().optional().default("all"),
+  localModel: z.string().trim().optional().default("all"),
+  localId: z.string().trim().optional().default(""),
+  operationType: z.string().trim().optional().default("all"),
+  resourceId: z.string().trim().optional().default(""),
+  createdFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  createdTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  failureState: z.enum(["all", "ACTIVE", "REPAIRED", "SUPERSEDED"]).optional().default("all"),
   limit: z.coerce.number().int().min(1).max(100).optional().default(25),
+  page: z.coerce.number().int().min(1).optional().default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).optional(),
 });
+
+function startOfInputDate(date: string) {
+  return new Date(`${date}T00:00:00`);
+}
+
+function endOfInputDate(date: string) {
+  return new Date(`${date}T23:59:59`);
+}
 
 export async function GET(request: NextRequest) {
   const session = await auth();
@@ -31,7 +49,16 @@ export async function GET(request: NextRequest) {
     status: request.nextUrl.searchParams.get("status") ?? undefined,
     entityType: request.nextUrl.searchParams.get("entityType") ?? undefined,
     direction: request.nextUrl.searchParams.get("direction") ?? undefined,
+    localModel: request.nextUrl.searchParams.get("localModel") ?? undefined,
+    localId: request.nextUrl.searchParams.get("localId") ?? undefined,
+    operationType: request.nextUrl.searchParams.get("operationType") ?? undefined,
+    resourceId: request.nextUrl.searchParams.get("resourceId") ?? undefined,
+    createdFrom: request.nextUrl.searchParams.get("createdFrom") ?? undefined,
+    createdTo: request.nextUrl.searchParams.get("createdTo") ?? undefined,
+    failureState: request.nextUrl.searchParams.get("failureState") ?? undefined,
     limit: request.nextUrl.searchParams.get("limit") ?? undefined,
+    page: request.nextUrl.searchParams.get("page") ?? undefined,
+    pageSize: request.nextUrl.searchParams.get("pageSize") ?? undefined,
   });
 
   if (!parsed.success) {
@@ -41,18 +68,66 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const { status, entityType, direction, limit } = parsed.data;
+  const {
+    status,
+    entityType,
+    direction,
+    localModel,
+    localId,
+    operationType,
+    resourceId,
+    createdFrom,
+    createdTo,
+    failureState,
+    limit,
+    page,
+  } = parsed.data;
+  const pageSize = parsed.data.pageSize ?? limit;
 
   try {
-    const operations = await prisma.xeroSyncOperation.findMany({
-      where: {
-        ...(status !== "all" ? { status } : {}),
-        ...(entityType !== "all" ? { entityType } : {}),
-        ...(direction !== "all" ? { direction } : {}),
-      },
-      orderBy: { createdAt: "desc" },
-      take: limit,
-    });
+    const createdAt: Prisma.DateTimeFilter = {};
+    if (createdFrom) createdAt.gte = startOfInputDate(createdFrom);
+    if (createdTo) createdAt.lte = endOfInputDate(createdTo);
+
+    const where: Prisma.XeroSyncOperationWhereInput = {
+      ...(status !== "all" ? { status } : {}),
+      ...(entityType !== "all" ? { entityType } : {}),
+      ...(direction !== "all" ? { direction } : {}),
+      ...(localModel && localModel !== "all" ? { localModel } : {}),
+      ...(localId ? { localId } : {}),
+      ...(operationType !== "all" ? { operationType } : {}),
+      ...(resourceId ? { xeroObjectId: resourceId } : {}),
+      ...(Object.keys(createdAt).length > 0 ? { createdAt } : {}),
+    };
+
+    let operations;
+    let total: number;
+
+    if (failureState !== "all") {
+      const failureCandidates = await prisma.xeroSyncOperation.findMany({
+        where: {
+          ...where,
+          status: "FAILED",
+        },
+        orderBy: { createdAt: "desc" },
+      });
+      const failureResolutions = await resolveFailedXeroOperationStates(failureCandidates);
+      const filteredFailures = failureCandidates.filter(
+        (operation) => failureResolutions.get(operation.id)?.state === failureState
+      );
+      total = filteredFailures.length;
+      operations = filteredFailures.slice((page - 1) * pageSize, page * pageSize);
+    } else {
+      [operations, total] = await Promise.all([
+        prisma.xeroSyncOperation.findMany({
+          where,
+          orderBy: { createdAt: "desc" },
+          skip: (page - 1) * pageSize,
+          take: pageSize,
+        }),
+        prisma.xeroSyncOperation.count({ where }),
+      ]);
+    }
     const failedOperations = operations.filter((operation) => operation.status === "FAILED");
     const failureResolutions = await resolveFailedXeroOperationStates(failedOperations);
 
@@ -70,6 +145,9 @@ export async function GET(request: NextRequest) {
             : null),
         localUrl: buildLocalAdminUrl(operation.localModel, operation.localId),
       })),
+      total,
+      page,
+      pageSize,
     });
   } catch (err) {
     logger.error({ err }, "Failed to load Xero sync operations");

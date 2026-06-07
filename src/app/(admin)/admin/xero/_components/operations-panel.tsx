@@ -1,8 +1,11 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
+import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { redactSensitiveText } from "@/lib/redact-sensitive-json"
 import { fetchJson, postJson } from "./api"
 import {
@@ -32,14 +35,101 @@ export function OperationsPanel({
   onRefreshDiagnostics: () => void
   refreshToken: number
 }) {
+  const router = useRouter()
+  const pathname = usePathname()
+  const searchParams = useSearchParams()
+  const hasOperationsUrlState =
+    searchParams.get("section") === "operations" ||
+    [
+      "opStatus",
+      "opEntityType",
+      "opLocalModel",
+      "opLocalId",
+      "opOperationType",
+      "opFailureState",
+      "opResourceId",
+      "opCreatedFrom",
+      "opCreatedTo",
+      "opPage",
+    ].some((key) => searchParams.has(key))
   const [operations, setOperations] = useState<XeroOperation[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
-  const [statusFilter, setStatusFilter] = useState("all")
-  const [entityFilter, setEntityFilter] = useState("all")
+  const [statusFilter, setStatusFilter] = useState(searchParams.get("opStatus") || "all")
+  const [entityFilter, setEntityFilter] = useState(searchParams.get("opEntityType") || "all")
+  const [localModelFilter, setLocalModelFilter] = useState(searchParams.get("opLocalModel") || "all")
+  const [localIdFilter, setLocalIdFilter] = useState(searchParams.get("opLocalId") || "")
+  const [operationTypeFilter, setOperationTypeFilter] = useState(searchParams.get("opOperationType") || "all")
+  const [failureStateFilter, setFailureStateFilter] = useState(searchParams.get("opFailureState") || "all")
+  const [resourceIdFilter, setResourceIdFilter] = useState(searchParams.get("opResourceId") || "")
+  const [createdFrom, setCreatedFrom] = useState(searchParams.get("opCreatedFrom") || "")
+  const [createdTo, setCreatedTo] = useState(searchParams.get("opCreatedTo") || "")
+  const [page, setPage] = useState(() => {
+    const requested = Number(searchParams.get("opPage") || "1")
+    return Number.isInteger(requested) && requested > 0 ? requested : 1
+  })
+  const [total, setTotal] = useState(0)
+  const pageSize = 25
+  const [urlSyncEnabled, setUrlSyncEnabled] = useState(hasOperationsUrlState)
   const [retryingOperationId, setRetryingOperationId] = useState<string | null>(null)
   const [markingNonReplayableOperationId, setMarkingNonReplayableOperationId] = useState<string | null>(null)
   const [retryingAllFailed, setRetryingAllFailed] = useState(false)
+
+  const syncUrl = useCallback(() => {
+    if (!urlSyncEnabled) return
+
+    const params = new URLSearchParams(searchParams.toString())
+    params.set("section", "operations")
+
+    const setOrDelete = (key: string, value: string, defaultValue = "") => {
+      if (value && value !== defaultValue) params.set(key, value)
+      else params.delete(key)
+    }
+
+    setOrDelete("opStatus", statusFilter, "all")
+    setOrDelete("opEntityType", entityFilter, "all")
+    setOrDelete("opLocalModel", localModelFilter, "all")
+    setOrDelete("opLocalId", localIdFilter)
+    setOrDelete("opOperationType", operationTypeFilter, "all")
+    setOrDelete("opFailureState", failureStateFilter, "all")
+    setOrDelete("opResourceId", resourceIdFilter)
+    setOrDelete("opCreatedFrom", createdFrom)
+    setOrDelete("opCreatedTo", createdTo)
+    setOrDelete("opPage", page > 1 ? String(page) : "")
+
+    const query = params.toString()
+    const nextPath = query ? `${pathname}?${query}` : pathname
+    const currentPath = searchParams.toString()
+      ? `${pathname}?${searchParams.toString()}`
+      : pathname
+    if (nextPath !== currentPath) {
+      router.replace(nextPath, { scroll: false })
+    }
+  }, [
+    createdFrom,
+    createdTo,
+    entityFilter,
+    failureStateFilter,
+    localIdFilter,
+    localModelFilter,
+    operationTypeFilter,
+    page,
+    pathname,
+    resourceIdFilter,
+    router,
+    searchParams,
+    statusFilter,
+    urlSyncEnabled,
+  ])
+
+  useEffect(() => {
+    syncUrl()
+  }, [syncUrl])
+
+  const resetPage = () => {
+    setUrlSyncEnabled(true)
+    setPage(1)
+  }
 
   const fetchOperations = useCallback(async () => {
     setLoading(true)
@@ -49,16 +139,36 @@ export function OperationsPanel({
         status: statusFilter,
         entityType: entityFilter,
         direction: "all",
-        limit: "25",
+        localModel: localModelFilter,
+        localId: localIdFilter,
+        operationType: operationTypeFilter,
+        failureState: failureStateFilter,
+        resourceId: resourceIdFilter,
+        page: String(page),
+        pageSize: String(pageSize),
       })
-      const data = await fetchJson<{ data?: XeroOperation[] }>(`/api/admin/xero/operations?${params.toString()}`, undefined, "Failed to fetch Xero operations")
+      if (createdFrom) params.set("createdFrom", createdFrom)
+      if (createdTo) params.set("createdTo", createdTo)
+      const data = await fetchJson<{ data?: XeroOperation[]; total?: number }>(`/api/admin/xero/operations?${params.toString()}`, undefined, "Failed to fetch Xero operations")
       setOperations(data.data ?? [])
+      setTotal(data.total ?? 0)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load Xero operation history")
     } finally {
       setLoading(false)
     }
-  }, [entityFilter, statusFilter])
+  }, [
+    createdFrom,
+    createdTo,
+    entityFilter,
+    failureStateFilter,
+    localIdFilter,
+    localModelFilter,
+    operationTypeFilter,
+    page,
+    resourceIdFilter,
+    statusFilter,
+  ])
 
   useEffect(() => {
     if (connected && open) void fetchOperations()
@@ -143,8 +253,32 @@ export function OperationsPanel({
       <div className="space-y-4">
         {error ? <p className="text-sm text-red-600">{error}</p> : null}
         <div className="flex flex-col gap-3 md:flex-row md:items-center">
-          <FilterSelect label="Status" value={statusFilter} onValueChange={setStatusFilter} values={["all", "FAILED", "PENDING", "PARTIAL", "RUNNING", "SUCCEEDED"]} />
-          <FilterSelect label="Entity" value={entityFilter} onValueChange={setEntityFilter} values={["all", "CONTACT", "CONTACT_GROUP", "INVOICE", "PAYMENT", "CREDIT_NOTE", "ALLOCATION", "SUBSCRIPTION"]} />
+          <FilterSelect label="Status" value={statusFilter} onValueChange={(value) => { setStatusFilter(value); resetPage() }} values={["all", "FAILED", "PENDING", "PARTIAL", "RUNNING", "WAITING_PAYMENT", "SUCCEEDED"]} />
+          <FilterSelect label="Entity" value={entityFilter} onValueChange={(value) => { setEntityFilter(value); resetPage() }} values={["all", "CONTACT", "CONTACT_GROUP", "INVOICE", "PAYMENT", "CREDIT_NOTE", "ALLOCATION", "SUBSCRIPTION"]} />
+          <FilterSelect label="Local Model" value={localModelFilter} onValueChange={(value) => { setLocalModelFilter(value); resetPage() }} values={["all", "Member", "Booking", "Payment", "BookingModification", "MemberSubscription"]} />
+          <FilterSelect label="Failure" value={failureStateFilter} onValueChange={(value) => { setFailureStateFilter(value); resetPage() }} values={["all", "ACTIVE", "REPAIRED", "SUPERSEDED"]} />
+        </div>
+        <div className="grid gap-3 md:grid-cols-5">
+          <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground" htmlFor="xero-op-local-id">Local ID</Label>
+            <Input id="xero-op-local-id" value={localIdFilter} onChange={(event) => { setLocalIdFilter(event.target.value); resetPage() }} />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground" htmlFor="xero-op-operation-type">Operation</Label>
+            <Input id="xero-op-operation-type" value={operationTypeFilter === "all" ? "" : operationTypeFilter} onChange={(event) => { setOperationTypeFilter(event.target.value || "all"); resetPage() }} placeholder="CREATE" />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground" htmlFor="xero-op-resource-id">Resource ID</Label>
+            <Input id="xero-op-resource-id" value={resourceIdFilter} onChange={(event) => { setResourceIdFilter(event.target.value); resetPage() }} />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground" htmlFor="xero-op-created-from">Created From</Label>
+            <Input id="xero-op-created-from" type="date" value={createdFrom} onChange={(event) => { setCreatedFrom(event.target.value); resetPage() }} />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground" htmlFor="xero-op-created-to">Created To</Label>
+            <Input id="xero-op-created-to" type="date" value={createdTo} onChange={(event) => { setCreatedTo(event.target.value); resetPage() }} />
+          </div>
         </div>
         {loading ? (
           <p className="text-sm text-muted-foreground">Loading recent operations...</p>
@@ -164,6 +298,17 @@ export function OperationsPanel({
             ))}
           </div>
         )}
+        {total > pageSize ? (
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-muted-foreground">
+              Showing {(page - 1) * pageSize + 1}-{Math.min(page * pageSize, total)} of {total}
+            </p>
+            <div className="flex gap-2">
+              <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => { setUrlSyncEnabled(true); setPage((value) => value - 1) }}>Previous</Button>
+              <Button variant="outline" size="sm" disabled={page * pageSize >= total} onClick={() => { setUrlSyncEnabled(true); setPage((value) => value + 1) }}>Next</Button>
+            </div>
+          </div>
+        ) : null}
       </div>
     </SectionCard>
   )

@@ -10,7 +10,10 @@ const mocks = vi.hoisted(() => ({
   logAudit: vi.fn(),
   createAuditLog: vi.fn(),
   xeroOperationFindUnique: vi.fn(),
+  xeroOperationFindMany: vi.fn(),
+  xeroOperationCount: vi.fn(),
   xeroOperationUpdate: vi.fn(),
+  resolveFailedXeroOperationStates: vi.fn(),
   enqueueXeroSyncOperationRetry: vi.fn(),
   processQueuedXeroOperationRetries: vi.fn(),
   getXeroOperationRetryMeta: vi.fn(),
@@ -43,9 +46,15 @@ vi.mock("@/lib/prisma", () => ({
   prisma: {
     xeroSyncOperation: {
       findUnique: mocks.xeroOperationFindUnique,
+      findMany: mocks.xeroOperationFindMany,
+      count: mocks.xeroOperationCount,
       update: mocks.xeroOperationUpdate,
     },
   },
+}));
+
+vi.mock("@/lib/xero-admin-failures", () => ({
+  resolveFailedXeroOperationStates: mocks.resolveFailedXeroOperationStates,
 }));
 
 vi.mock("@/lib/xero-operation-queue", () => ({
@@ -86,6 +95,7 @@ vi.mock("@/lib/logger", () => ({
 import { POST as retryOperation } from "@/app/api/admin/xero/operations/[id]/retry/route";
 import { POST as requeueOperation } from "@/app/api/admin/xero/operations/[id]/requeue/route";
 import { POST as markNonReplayableOperation } from "@/app/api/admin/xero/operations/[id]/mark-non-replayable/route";
+import { GET as listOperations } from "@/app/api/admin/xero/operations/route";
 import { XeroOperationRetryError } from "@/lib/xero-operation-retry";
 
 describe("Xero operation admin retry routes", () => {
@@ -124,7 +134,138 @@ describe("Xero operation admin retry routes", () => {
       replayable: true,
     });
     mocks.xeroOperationUpdate.mockResolvedValue({});
+    mocks.xeroOperationFindMany.mockResolvedValue([]);
+    mocks.xeroOperationCount.mockResolvedValue(0);
+    mocks.resolveFailedXeroOperationStates.mockResolvedValue(new Map());
     mocks.createAuditLog.mockResolvedValue(undefined);
+  });
+
+  it("lists operations with scoped filters and pagination metadata", async () => {
+    const createdAt = new Date("2026-04-14T09:00:00Z");
+    mocks.xeroOperationFindMany.mockResolvedValue([
+      {
+        id: "op_1",
+        direction: "OUTBOUND",
+        entityType: "INVOICE",
+        operationType: "CREATE",
+        localModel: "Payment",
+        localId: "pay_1",
+        status: "PENDING",
+        idempotencyKey: "idem_1",
+        correlationKey: "corr_1",
+        attemptCount: 1,
+        replayable: true,
+        lastErrorCode: null,
+        lastErrorMessage: null,
+        requestPayload: {},
+        responsePayload: null,
+        xeroObjectType: "INVOICE",
+        xeroObjectId: "inv_1",
+        xeroObjectNumber: null,
+        xeroObjectUrl: null,
+        createdByMemberId: "admin-1",
+        startedAt: null,
+        completedAt: null,
+        createdAt,
+        updatedAt: createdAt,
+      },
+    ]);
+    mocks.xeroOperationCount.mockResolvedValue(1);
+
+    const response = await listOperations(
+      new NextRequest(
+        "http://localhost/api/admin/xero/operations?localModel=Payment&localId=pay_1&operationType=CREATE&resourceId=inv_1&page=2&pageSize=10"
+      )
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.xeroOperationFindMany).toHaveBeenCalledWith({
+      where: {
+        localModel: "Payment",
+        localId: "pay_1",
+        operationType: "CREATE",
+        xeroObjectId: "inv_1",
+      },
+      orderBy: { createdAt: "desc" },
+      skip: 10,
+      take: 10,
+    });
+
+    await expect(response.json()).resolves.toMatchObject({
+      total: 1,
+      page: 2,
+      pageSize: 10,
+      data: [
+        {
+          id: "op_1",
+          localUrl: "/admin/xero/records/Payment/pay_1",
+        },
+      ],
+    });
+  });
+
+  it("filters failed operations by resolved failure state before pagination", async () => {
+    const createdAt = new Date("2026-04-14T09:00:00Z");
+    const active = {
+      id: "op_active",
+      direction: "OUTBOUND",
+      entityType: "CONTACT",
+      operationType: "CREATE",
+      localModel: "Member",
+      localId: "member_1",
+      status: "FAILED",
+      replayable: true,
+      requestPayload: {},
+      createdAt,
+      updatedAt: createdAt,
+    };
+    const repaired = {
+      ...active,
+      id: "op_repaired",
+      localId: "member_2",
+    };
+    mocks.xeroOperationFindMany.mockResolvedValue([active, repaired]);
+    mocks.resolveFailedXeroOperationStates.mockResolvedValue(
+      new Map([
+        [
+          "op_active",
+          {
+            state: "ACTIVE",
+            reason: "Still failing",
+            rootKey: "root-active",
+            representativeOperationId: "op_active",
+          },
+        ],
+        [
+          "op_repaired",
+          {
+            state: "REPAIRED",
+            reason: "Fixed later",
+            rootKey: "root-repaired",
+            representativeOperationId: "op_repaired",
+          },
+        ],
+      ])
+    );
+
+    const response = await listOperations(
+      new NextRequest("http://localhost/api/admin/xero/operations?failureState=ACTIVE")
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.xeroOperationFindMany).toHaveBeenCalledWith({
+      where: { status: "FAILED" },
+      orderBy: { createdAt: "desc" },
+    });
+
+    const body = await response.json();
+    expect(body.total).toBe(1);
+    expect(body.data).toHaveLength(1);
+    expect(body.data[0]).toMatchObject({
+      id: "op_active",
+      failureState: "ACTIVE",
+      failureStateReason: "Still failing",
+    });
   });
 
   it("queues retry requests through the background worker route", async () => {

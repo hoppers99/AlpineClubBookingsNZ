@@ -129,6 +129,16 @@ interface PaymentRow {
   createdAt: string;
   updatedAt: string;
   lastUpdatedAt: string;
+  xeroState: string;
+  xeroActivity: {
+    failed: number;
+    partial: number;
+    pending: number;
+    latestOperationId: string | null;
+    latestOperationStatus: string | null;
+    latestOperationAt: string | null;
+  };
+  settlementKind: string;
   booking: {
     id: string;
     status: string;
@@ -142,6 +152,55 @@ interface PaymentRow {
   };
 }
 
+function xeroStateLabel(state: string) {
+  switch (state) {
+    case "invoiceLinked":
+      return "Invoice linked";
+    case "invoiceMissing":
+      return "Invoice missing";
+    case "operationFailed":
+      return "Failed activity";
+    case "operationPartial":
+      return "Partial activity";
+    case "operationPending":
+      return "Pending activity";
+    default:
+      return "No invoice needed";
+  }
+}
+
+function xeroStateClass(state: string) {
+  switch (state) {
+    case "invoiceLinked":
+      return "bg-green-100 text-green-900";
+    case "invoiceMissing":
+      return "bg-orange-100 text-orange-900";
+    case "operationFailed":
+      return "bg-red-100 text-red-900";
+    case "operationPartial":
+    case "operationPending":
+      return "bg-amber-100 text-amber-900";
+    default:
+      return "bg-slate-100 text-slate-700";
+  }
+}
+
+function settlementKindLabel(kind: string) {
+  switch (kind) {
+    case "cardRefund":
+      return "Card refund";
+    case "accountCredit":
+      return "Account credit";
+    case "mixed":
+      return "Mixed";
+    case "restoredCredit":
+      return "Restored credit";
+    case "none":
+    default:
+      return "None";
+  }
+}
+
 export default function PaymentsPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -153,6 +212,8 @@ export default function PaymentsPage() {
   const [source, setSource] = useState<PaymentSourceFilter>(() =>
     getSourceFilter(searchParams.get("source"))
   );
+  const [xeroState, setXeroState] = useState(searchParams.get("xeroState") || "all");
+  const [settlement, setSettlement] = useState(searchParams.get("settlement") || "all");
   const [lastUpdatedFrom, setLastUpdatedFrom] = useState(
     searchParams.get("lastUpdatedFrom") || format(subMonths(new Date(), 3), "yyyy-MM-dd")
   );
@@ -178,6 +239,8 @@ export default function PaymentsPage() {
     const params = new URLSearchParams();
     if (status !== "all") params.set("status", status);
     if (source !== "all") params.set("source", source);
+    if (xeroState !== "all") params.set("xeroState", xeroState);
+    if (settlement !== "all") params.set("settlement", settlement);
     if (lastUpdatedFrom) params.set("lastUpdatedFrom", lastUpdatedFrom);
     if (lastUpdatedTo) params.set("lastUpdatedTo", lastUpdatedTo);
     if (checkInFrom) params.set("checkInFrom", checkInFrom);
@@ -192,6 +255,9 @@ export default function PaymentsPage() {
     return params;
   }, [
     status,
+    source,
+    xeroState,
+    settlement,
     lastUpdatedFrom,
     lastUpdatedTo,
     checkInFrom,
@@ -203,7 +269,6 @@ export default function PaymentsPage() {
     sortBy,
     sortDir,
     page,
-    source,
   ]);
 
   const paymentsQuery = buildPaymentsSearchParams().toString();
@@ -220,6 +285,8 @@ export default function PaymentsPage() {
       const params = buildPaymentsSearchParams();
       params.set("status", status);
       params.set("source", source);
+      params.set("xeroState", xeroState);
+      params.set("settlement", settlement);
       params.set("page", String(page));
       params.set("pageSize", String(pageSize));
       params.set("sortBy", sortBy);
@@ -233,6 +300,8 @@ export default function PaymentsPage() {
   }, [
     status,
     source,
+    xeroState,
+    settlement,
     sortBy,
     sortDir,
     page,
@@ -297,6 +366,8 @@ export default function PaymentsPage() {
   function clearFilters() {
     setStatus("all");
     setSource("all");
+    setXeroState("all");
+    setSettlement("all");
     setLastUpdatedFrom("");
     setLastUpdatedTo("");
     setCheckInFrom("");
@@ -386,6 +457,34 @@ export default function PaymentsPage() {
               <SelectItem value="all">All sources</SelectItem>
               <SelectItem value="STRIPE">Stripe</SelectItem>
               <SelectItem value="INTERNET_BANKING">Internet Banking</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div>
+          <Label className="text-xs">Xero</Label>
+          <Select value={xeroState} onValueChange={(v) => { setXeroState(v); resetPage(); }}>
+            <SelectTrigger className="w-52"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Xero states</SelectItem>
+              <SelectItem value="invoiceLinked">Invoice linked</SelectItem>
+              <SelectItem value="invoiceMissing">Invoice missing</SelectItem>
+              <SelectItem value="operationFailed">Failed activity</SelectItem>
+              <SelectItem value="operationPartial">Partial activity</SelectItem>
+              <SelectItem value="operationPending">Pending activity</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div>
+          <Label className="text-xs">Settlement</Label>
+          <Select value={settlement} onValueChange={(v) => { setSettlement(v); resetPage(); }}>
+            <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All settlements</SelectItem>
+              <SelectItem value="none">None</SelectItem>
+              <SelectItem value="cardRefund">Card refund</SelectItem>
+              <SelectItem value="accountCredit">Account credit</SelectItem>
+              <SelectItem value="mixed">Mixed</SelectItem>
+              <SelectItem value="restoredCredit">Restored credit</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -597,6 +696,11 @@ export default function PaymentsPage() {
                               )}
                             </div>
                           )}
+                          {p.source === "STRIPE" && (
+                            <Badge variant="outline" className="text-xs">
+                              Stripe
+                            </Badge>
+                          )}
                         </div>
                       </TableCell>
                       <TableCell>
@@ -619,6 +723,17 @@ export default function PaymentsPage() {
                       </TableCell>
                       <TableCell>
                         <div className="space-y-1">
+                          <Link
+                            href={buildXeroRecordActivityUrl("Payment", p.id, currentPaymentsPath)}
+                            className="inline-flex"
+                          >
+                            <Badge
+                              variant="secondary"
+                              className={`${xeroStateClass(p.xeroState)} cursor-pointer text-xs`}
+                            >
+                              {xeroStateLabel(p.xeroState)}
+                            </Badge>
+                          </Link>
                           {p.xeroInvoiceId ? (
                             <a
                               href={`https://go.xero.com/AccountsReceivable/View.aspx?InvoiceID=${p.xeroInvoiceId}`}
@@ -659,11 +774,24 @@ export default function PaymentsPage() {
                           >
                             View activity
                           </Link>
+                          {p.xeroActivity.failed > 0 ? (
+                            <p className="text-xs text-red-700">{p.xeroActivity.failed} failed</p>
+                          ) : null}
+                          {p.xeroActivity.partial > 0 ? (
+                            <p className="text-xs text-amber-700">{p.xeroActivity.partial} partial</p>
+                          ) : null}
+                          {p.xeroActivity.pending > 0 ? (
+                            <p className="text-xs text-slate-700">{p.xeroActivity.pending} pending</p>
+                          ) : null}
                         </div>
                       </TableCell>
                       <TableCell>
-                        {p.refundedAmountCents > 0 ? (
-                          <div className="space-y-1 text-xs text-slate-600">
+                        <div className="space-y-1">
+                          <Badge variant="outline" className="text-xs">
+                            {settlementKindLabel(p.settlementKind)}
+                          </Badge>
+                          {p.refundedAmountCents > 0 ? (
+                            <div className="space-y-1 text-xs text-slate-600">
                             {settlement.refundToOriginalMethodCents > 0 && (
                               <p>Card refund: {formatCents(settlement.refundToOriginalMethodCents)}</p>
                             )}
@@ -674,7 +802,8 @@ export default function PaymentsPage() {
                               <p>Restored credit: {formatCents(settlement.restoredAppliedCreditCents)}</p>
                             )}
                           </div>
-                        ) : "—"}
+                          ) : null}
+                        </div>
                       </TableCell>
                     </TableRow>
                   );

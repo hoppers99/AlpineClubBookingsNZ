@@ -11,6 +11,12 @@ const mockPrisma = {
     aggregate: vi.fn(),
     update: vi.fn(),
   },
+  xeroSyncOperation: {
+    findMany: vi.fn(),
+  },
+  xeroObjectLink: {
+    findMany: vi.fn(),
+  },
   memberSubscription: {
     findMany: vi.fn(),
     count: vi.fn(),
@@ -90,6 +96,8 @@ vi.mock("@/lib/session-guards", () => ({
 describe("#26: Admin Payments API includes booking ID and Xero invoice number", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockPrisma.xeroSyncOperation.findMany.mockResolvedValue([]);
+    mockPrisma.xeroObjectLink.findMany.mockResolvedValue([]);
   });
 
   it("GET returns payment data with booking.id field", async () => {
@@ -100,6 +108,7 @@ describe("#26: Admin Payments API includes booking ID and Xero invoice number", 
           id: "pay-1",
           bookingId: "book-1",
           amountCents: 5000,
+          source: "STRIPE",
           status: "SUCCEEDED",
           stripePaymentIntentId: "pi_test_123",
           xeroInvoiceId: "xero-inv-1",
@@ -127,6 +136,7 @@ describe("#26: Admin Payments API includes booking ID and Xero invoice number", 
           id: "pay-1",
           bookingId: "book-1",
           amountCents: 5000,
+          source: "STRIPE",
           status: "SUCCEEDED",
           stripePaymentIntentId: "pi_test_123",
           xeroInvoiceId: "xero-inv-1",

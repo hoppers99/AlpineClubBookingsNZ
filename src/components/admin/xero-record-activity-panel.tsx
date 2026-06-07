@@ -309,7 +309,7 @@ export function XeroRecordActivityPanel({
             <p className="text-sm text-slate-500">No Xero activity recorded for this member yet.</p>
           ) : (
             <>
-              <div className="grid gap-3 sm:grid-cols-4">
+              <div className="grid gap-3 sm:grid-cols-5">
                 <div className="rounded-lg border bg-slate-50 p-3">
                   <p className="text-xs uppercase tracking-wide text-slate-500">Operations</p>
                   <p className="text-lg font-semibold text-slate-900">{data.summary.totalOperations}</p>
@@ -317,6 +317,10 @@ export function XeroRecordActivityPanel({
                 <div className="rounded-lg border bg-slate-50 p-3">
                   <p className="text-xs uppercase tracking-wide text-slate-500">Failed</p>
                   <p className="text-lg font-semibold text-red-700">{data.summary.failedOperations}</p>
+                </div>
+                <div className="rounded-lg border bg-slate-50 p-3">
+                  <p className="text-xs uppercase tracking-wide text-slate-500">Partial</p>
+                  <p className="text-lg font-semibold text-amber-700">{data.summary.partialOperations}</p>
                 </div>
                 <div className="rounded-lg border bg-slate-50 p-3">
                   <p className="text-xs uppercase tracking-wide text-slate-500">Pending</p>
@@ -407,7 +411,7 @@ export function XeroRecordActivityPanel({
             <p className="text-sm text-slate-500">No Xero activity recorded for this record yet.</p>
           ) : (
             <>
-              <div className="grid gap-3 sm:grid-cols-4">
+              <div className="grid gap-3 sm:grid-cols-5">
                 <div className="rounded-lg border bg-slate-50 p-4">
                   <p className="text-xs uppercase tracking-wide text-slate-500">Total Operations</p>
                   <p className="mt-1 text-2xl font-semibold text-slate-900">{data.summary.totalOperations}</p>
@@ -415,6 +419,10 @@ export function XeroRecordActivityPanel({
                 <div className="rounded-lg border bg-slate-50 p-4">
                   <p className="text-xs uppercase tracking-wide text-slate-500">Failed</p>
                   <p className="mt-1 text-2xl font-semibold text-red-700">{data.summary.failedOperations}</p>
+                </div>
+                <div className="rounded-lg border bg-slate-50 p-4">
+                  <p className="text-xs uppercase tracking-wide text-slate-500">Partial</p>
+                  <p className="mt-1 text-2xl font-semibold text-amber-700">{data.summary.partialOperations}</p>
                 </div>
                 <div className="rounded-lg border bg-slate-50 p-4">
                   <p className="text-xs uppercase tracking-wide text-slate-500">Pending / Running</p>

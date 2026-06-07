@@ -20,6 +20,10 @@ export function BookingFilters() {
   const [search, setSearch] = useState(searchParams.get("search") || "");
   const [month, setMonth] = useState(searchParams.get("month") || "");
   const [deleted, setDeleted] = useState(searchParams.get("deleted") || "hide");
+  const [paymentSource, setPaymentSource] = useState(searchParams.get("paymentSource") || "all");
+  const [xeroState, setXeroState] = useState(searchParams.get("xeroState") || "all");
+  const [bedState, setBedState] = useState(searchParams.get("bedState") || "all");
+  const [changeState, setChangeState] = useState(searchParams.get("changeState") || "all");
   const sortBy = searchParams.get("sortBy") || searchParams.get("sort") || "updatedAt";
   const sortDir = searchParams.get("sortDir") || "desc";
   const bookingStatuses = ["PAYMENT_PENDING", "CONFIRMED", "PAID", "PENDING", "WAITLISTED", "WAITLIST_OFFERED", "CANCELLED", "BUMPED", "COMPLETED", "DRAFT"] as const;
@@ -47,6 +51,10 @@ export function BookingFilters() {
     if (sortDir !== "desc") params.set("sortDir", sortDir);
     if (month) params.set("month", month);
     if (deleted !== "hide") params.set("deleted", deleted);
+    if (paymentSource !== "all") params.set("paymentSource", paymentSource);
+    if (xeroState !== "all") params.set("xeroState", xeroState);
+    if (bedState !== "all") params.set("bedState", bedState);
+    if (changeState !== "all") params.set("changeState", changeState);
     router.push(`/admin/bookings?${params.toString()}`);
   }
 
@@ -59,6 +67,10 @@ export function BookingFilters() {
     setSearch("");
     setMonth("");
     setDeleted("hide");
+    setPaymentSource("all");
+    setXeroState("all");
+    setBedState("all");
+    setChangeState("all");
     router.push("/admin/bookings");
   }
 
@@ -102,6 +114,62 @@ export function BookingFilters() {
           <option value="hide">Hide deleted</option>
           <option value="include">Include deleted</option>
           <option value="only">Deleted only</option>
+        </select>
+      </div>
+      <div className="space-y-1">
+        <label className="text-xs font-medium text-gray-500">Payment</label>
+        <select
+          value={paymentSource}
+          onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setPaymentSource(e.target.value)}
+          className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors"
+        >
+          <option value="all">All payments</option>
+          <option value="STRIPE">Stripe</option>
+          <option value="INTERNET_BANKING">Internet Banking</option>
+          <option value="NONE">No payment</option>
+        </select>
+      </div>
+      <div className="space-y-1">
+        <label className="text-xs font-medium text-gray-500">Xero</label>
+        <select
+          value={xeroState}
+          onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setXeroState(e.target.value)}
+          className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors"
+        >
+          <option value="all">All Xero states</option>
+          <option value="invoiceLinked">Invoice linked</option>
+          <option value="invoiceMissing">Invoice missing</option>
+          <option value="operationFailed">Failed activity</option>
+          <option value="operationPartial">Partial activity</option>
+          <option value="operationPending">Pending activity</option>
+        </select>
+      </div>
+      <div className="space-y-1">
+        <label className="text-xs font-medium text-gray-500">Beds</label>
+        <select
+          value={bedState}
+          onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setBedState(e.target.value)}
+          className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors"
+        >
+          <option value="all">All bed states</option>
+          <option value="unallocated">Unallocated</option>
+          <option value="partial">Partial</option>
+          <option value="complete">Complete</option>
+          <option value="warning">Warning</option>
+        </select>
+      </div>
+      <div className="space-y-1">
+        <label className="text-xs font-medium text-gray-500">Changes</label>
+        <select
+          value={changeState}
+          onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setChangeState(e.target.value)}
+          className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors"
+        >
+          <option value="all">All change states</option>
+          <option value="requiresReview">Requires review</option>
+          <option value="pendingRequest">Pending request</option>
+          <option value="hasModification">Has modification</option>
+          <option value="creditGenerated">Credit generated</option>
         </select>
       </div>
       <DateRangeControls

@@ -1,6 +1,3 @@
-import { prisma } from "@/lib/prisma";
-import { BookingStatus } from "@prisma/client";
-import type { Prisma } from "@prisma/client";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import Link from "next/link";
@@ -9,69 +6,18 @@ import { BookingFilters } from "@/components/admin/booking-filters";
 import { bookingStatusClass, bookingStatusLabel } from "@/lib/status-colors";
 import { AdminBookingCalendar } from "@/components/admin-booking-calendar";
 import {
-  buildBookingDeletedWhere,
-  parseBookingDeletedVisibility,
-} from "@/lib/booking-delete-visibility";
+  adminBookingsQuerySchema,
+  getDefaultAdminBookingSortDir,
+  listAdminBookings,
+  type AdminBookingRow,
+  type BookingSortBy,
+  type SortDir,
+} from "@/lib/admin-bookings-service";
+import { formatDateOnly } from "@/lib/date-only";
 import { buildXeroRecordActivityUrl } from "@/lib/xero-record-links";
 import { buildHrefWithReturnTo, buildPathWithSearch } from "@/lib/internal-return-path";
 import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
 import type { ReactNode } from "react";
-
-type BookingSortBy = "member" | "lastUpdated" | "checkIn" | "guests" | "total" | "status";
-type SortDir = "asc" | "desc";
-
-const bookingSortColumns = new Set<BookingSortBy>([
-  "member",
-  "lastUpdated",
-  "checkIn",
-  "guests",
-  "total",
-  "status",
-]);
-const validBookingStatuses = new Set<BookingStatus>(Object.values(BookingStatus));
-
-function parseDateStart(value: string) {
-  return new Date(`${value}T00:00:00`);
-}
-
-function parseDateEnd(value: string) {
-  return new Date(`${value}T23:59:59`);
-}
-
-function getSortBy(params: { sortBy?: string; sort?: string }): BookingSortBy {
-  const requested = params.sortBy ?? params.sort;
-  return bookingSortColumns.has(requested as BookingSortBy)
-    ? (requested as BookingSortBy)
-    : requested === "updatedAt"
-      ? "lastUpdated"
-      : "lastUpdated";
-}
-
-function getDefaultSortDir(sortBy: BookingSortBy): SortDir {
-  return sortBy === "member" || sortBy === "status" ? "asc" : "desc";
-}
-
-function getOrderBy(sortBy: BookingSortBy, sortDir: SortDir): Prisma.BookingOrderByWithRelationInput[] {
-  switch (sortBy) {
-    case "member":
-      return [
-        { member: { lastName: sortDir } },
-        { member: { firstName: sortDir } },
-        { updatedAt: "desc" },
-      ];
-    case "checkIn":
-      return [{ checkIn: sortDir }, { updatedAt: "desc" }];
-    case "guests":
-      return [{ guests: { _count: sortDir } }, { updatedAt: "desc" }];
-    case "total":
-      return [{ finalPriceCents: sortDir }, { updatedAt: "desc" }];
-    case "status":
-      return [{ status: sortDir }, { updatedAt: "desc" }];
-    case "lastUpdated":
-    default:
-      return [{ updatedAt: sortDir }, { id: "asc" }];
-  }
-}
 
 function formatDate(value: Date) {
   return value.toLocaleDateString("en-NZ");
@@ -99,23 +45,16 @@ export default async function AdminBookingsPage({
     sortDir?: string;
     month?: string;
     deleted?: string;
+    paymentSource?: string;
+    xeroState?: string;
+    bedState?: string;
+    changeState?: string;
   }>;
 }) {
   const params = await searchParams;
-  const statusFilter = params.status;
-  const updatedFrom = params.updatedFrom;
-  const updatedTo = params.updatedTo;
-  const checkInFrom = params.checkInFrom ?? params.from;
-  const checkInTo = params.checkInTo;
-  const legacyToDate = params.checkInTo ? undefined : params.to;
-  const search = params.search;
-  const upcomingDays = params.upcoming ? parseInt(params.upcoming, 10) : null;
-  const sortBy = getSortBy(params);
-  const sortDir: SortDir = params.sortDir === "asc" || params.sortDir === "desc"
-    ? params.sortDir
-    : getDefaultSortDir(sortBy);
-  const monthFilter = params.month;
-  const deletedVisibility = parseBookingDeletedVisibility(params.deleted);
+  const parsedQuery = adminBookingsQuerySchema.safeParse(params);
+  const query = parsedQuery.success ? parsedQuery.data : adminBookingsQuerySchema.parse({});
+  const { bookings, total, sortBy, sortDir } = await listAdminBookings(query);
   const currentSearchParams = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
     if (typeof value === "string" && value) {
@@ -123,113 +62,6 @@ export default async function AdminBookingsPage({
     }
   }
   const currentBookingsPath = buildPathWithSearch("/admin/bookings", currentSearchParams);
-
-  const where: Prisma.BookingWhereInput = {};
-  const checkInFilter: Prisma.DateTimeFilter = {};
-  const checkOutFilter: Prisma.DateTimeFilter = {};
-  const updatedAtFilter: Prisma.DateTimeFilter = {};
-
-  if (statusFilter === "DRAFT") {
-    where.status = BookingStatus.DRAFT;
-  } else if (statusFilter && statusFilter !== "all") {
-    // Support comma-separated statuses (e.g. "CONFIRMED,PAID")
-    const statuses = statusFilter
-      .split(",")
-      .map((s) => s.trim())
-      .filter((status): status is BookingStatus =>
-        validBookingStatuses.has(status as BookingStatus)
-      );
-    where.status = statuses.length === 1 ? statuses[0] : { in: statuses };
-  } else {
-    // Exclude DRAFT bookings by default
-    where.status = { not: BookingStatus.DRAFT };
-  }
-  Object.assign(where, buildBookingDeletedWhere(deletedVisibility));
-
-  if (upcomingDays !== null && !isNaN(upcomingDays)) {
-    const now = new Date();
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const futureDate = new Date(today);
-    futureDate.setDate(futureDate.getDate() + upcomingDays);
-    checkInFilter.gte = today;
-    checkInFilter.lte = futureDate;
-    // When filtering upcoming, default to active statuses if no status filter set
-    if (!statusFilter) {
-      where.status = {
-        in: [
-          BookingStatus.PAYMENT_PENDING,
-          BookingStatus.CONFIRMED,
-          BookingStatus.PAID,
-          BookingStatus.PENDING,
-        ],
-      };
-    }
-  }
-
-  if (monthFilter && /^\d{4}-\d{2}$/.test(monthFilter)) {
-    const [y, m] = monthFilter.split("-").map(Number);
-    const monthStart = new Date(y, m - 1, 1);
-    const monthEnd = new Date(y, m, 0); // last day of month
-    checkInFilter.gte = monthStart;
-    checkInFilter.lte = monthEnd;
-  }
-
-  if (checkInFrom) {
-    checkInFilter.gte = parseDateStart(checkInFrom);
-  }
-
-  if (checkInTo) {
-    checkInFilter.lte = parseDateEnd(checkInTo);
-  }
-
-  if (legacyToDate) {
-    checkOutFilter.lte = parseDateEnd(legacyToDate);
-  }
-
-  if (updatedFrom) {
-    updatedAtFilter.gte = parseDateStart(updatedFrom);
-  }
-
-  if (updatedTo) {
-    updatedAtFilter.lte = parseDateEnd(updatedTo);
-  }
-
-  if (search?.trim()) {
-    const queryTerms = search.trim().split(/\s+/).filter(Boolean);
-    where.member = {
-      is: {
-        AND: queryTerms.map((term) => ({
-          OR: [
-            { firstName: { contains: term, mode: "insensitive" } },
-            { lastName: { contains: term, mode: "insensitive" } },
-            { email: { contains: term, mode: "insensitive" } },
-          ],
-        })),
-      },
-    };
-  }
-
-  if (Object.keys(checkInFilter).length > 0) {
-    where.checkIn = checkInFilter;
-  }
-
-  if (Object.keys(checkOutFilter).length > 0) {
-    where.checkOut = checkOutFilter;
-  }
-
-  if (Object.keys(updatedAtFilter).length > 0) {
-    where.updatedAt = updatedAtFilter;
-  }
-
-  const bookings = await prisma.booking.findMany({
-    where,
-    include: {
-      member: { select: { id: true, firstName: true, lastName: true, email: true } },
-      guests: { select: { isMember: true } },
-    },
-    orderBy: getOrderBy(sortBy, sortDir),
-    take: 100,
-  });
 
   function sortHref(column: BookingSortBy) {
     const nextParams = new URLSearchParams();
@@ -241,7 +73,7 @@ export default async function AdminBookingsPage({
 
     const nextDir: SortDir = sortBy === column
       ? sortDir === "asc" ? "desc" : "asc"
-      : getDefaultSortDir(column);
+      : getDefaultAdminBookingSortDir(column);
     nextParams.delete("sort");
     nextParams.set("sortBy", column);
     nextParams.set("sortDir", nextDir);
@@ -272,6 +104,95 @@ export default async function AdminBookingsPage({
     );
   }
 
+  function paymentSourceLabel(source: AdminBookingRow["operational"]["paymentSource"]) {
+    if (source === "INTERNET_BANKING") return "Internet Banking";
+    if (source === "STRIPE") return "Stripe";
+    return "No payment";
+  }
+
+  function xeroStateLabel(state: AdminBookingRow["operational"]["xeroState"]) {
+    switch (state) {
+      case "invoiceLinked":
+        return "Invoice linked";
+      case "invoiceMissing":
+        return "Invoice missing";
+      case "operationFailed":
+        return "Failed activity";
+      case "operationPartial":
+        return "Partial activity";
+      case "operationPending":
+        return "Pending activity";
+      case "none":
+      default:
+        return "No invoice needed";
+    }
+  }
+
+  function xeroStateClass(state: AdminBookingRow["operational"]["xeroState"]) {
+    switch (state) {
+      case "invoiceLinked":
+        return "bg-green-100 text-green-900";
+      case "invoiceMissing":
+        return "bg-orange-100 text-orange-900";
+      case "operationFailed":
+        return "bg-red-100 text-red-900";
+      case "operationPartial":
+      case "operationPending":
+        return "bg-amber-100 text-amber-900";
+      case "none":
+      default:
+        return "bg-slate-100 text-slate-700";
+    }
+  }
+
+  function bedStateLabel(booking: AdminBookingRow) {
+    const { bedState, allocatedGuestNights, expectedGuestNights } = booking.operational;
+    const countLabel = expectedGuestNights > 0
+      ? ` ${allocatedGuestNights}/${expectedGuestNights}`
+      : "";
+
+    switch (bedState) {
+      case "warning":
+        return `Bed warning${countLabel}`;
+      case "unallocated":
+        return `Unallocated${countLabel}`;
+      case "partial":
+        return `Partial${countLabel}`;
+      case "complete":
+      default:
+        return `Allocated${countLabel}`;
+    }
+  }
+
+  function bedStateClass(state: AdminBookingRow["operational"]["bedState"]) {
+    switch (state) {
+      case "warning":
+        return "bg-amber-100 text-amber-900";
+      case "unallocated":
+        return "bg-red-100 text-red-900";
+      case "partial":
+        return "bg-orange-100 text-orange-900";
+      case "complete":
+      default:
+        return "bg-green-100 text-green-900";
+    }
+  }
+
+  function bedAllocationHref(booking: AdminBookingRow) {
+    const params = new URLSearchParams({
+      from: formatDateOnly(booking.checkIn),
+      to: formatDateOnly(booking.checkOut),
+      bookingId: booking.id,
+    });
+    return buildHrefWithReturnTo(`/admin/bed-allocation?${params.toString()}`, currentBookingsPath);
+  }
+
+  function xeroActivityHref(booking: AdminBookingRow) {
+    return booking.payment
+      ? buildXeroRecordActivityUrl("Payment", booking.payment.id, currentBookingsPath)
+      : buildXeroRecordActivityUrl("Booking", booking.id, currentBookingsPath);
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -296,7 +217,9 @@ export default async function AdminBookingsPage({
         </Card>
       ) : (
         <div className="space-y-2">
-          <p className="text-sm text-gray-500">{bookings.length} bookings found</p>
+          <p className="text-sm text-gray-500">
+            Showing {bookings.length} of {total} bookings found
+          </p>
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-gray-200 bg-white rounded-lg shadow">
               <thead className="bg-gray-50">
@@ -307,7 +230,10 @@ export default async function AdminBookingsPage({
                   <SortHeader column="guests">Guests</SortHeader>
                   <SortHeader column="total">Total</SortHeader>
                   <SortHeader column="status">Status</SortHeader>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Payment</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Xero</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Beds</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Changes</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
@@ -364,12 +290,115 @@ export default async function AdminBookingsPage({
                         ) : null}
                       </td>
                       <td className="px-4 py-3 text-sm">
-                        <Link
-                          href={buildXeroRecordActivityUrl("Booking", booking.id, currentBookingsPath)}
-                          className="text-blue-600 hover:underline"
-                        >
-                          Activity
-                        </Link>
+                        <div className="flex flex-wrap gap-1">
+                          <Badge
+                            variant="secondary"
+                            className={
+                              booking.operational.paymentSource === "NONE"
+                                ? "bg-slate-100 text-slate-700"
+                                : "bg-blue-100 text-blue-900"
+                            }
+                          >
+                            {paymentSourceLabel(booking.operational.paymentSource)}
+                          </Badge>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-sm">
+                        <div className="flex flex-col gap-1">
+                          <Link href={xeroActivityHref(booking)} className="inline-flex">
+                            <Badge
+                              variant="secondary"
+                              className={`${xeroStateClass(booking.operational.xeroState)} cursor-pointer`}
+                            >
+                              {xeroStateLabel(booking.operational.xeroState)}
+                            </Badge>
+                          </Link>
+                          {booking.operational.xeroActivity.failed > 0 ? (
+                            <Link
+                              href={buildXeroRecordActivityUrl("Booking", booking.id, currentBookingsPath)}
+                              className="text-xs text-red-700 hover:underline"
+                            >
+                              {booking.operational.xeroActivity.failed} failed
+                            </Link>
+                          ) : null}
+                          {booking.operational.xeroActivity.partial > 0 ? (
+                            <Link
+                              href={buildXeroRecordActivityUrl("Booking", booking.id, currentBookingsPath)}
+                              className="text-xs text-amber-700 hover:underline"
+                            >
+                              {booking.operational.xeroActivity.partial} partial
+                            </Link>
+                          ) : null}
+                          {booking.operational.xeroActivity.pending > 0 ? (
+                            <Link
+                              href={buildXeroRecordActivityUrl("Booking", booking.id, currentBookingsPath)}
+                              className="text-xs text-slate-700 hover:underline"
+                            >
+                              {booking.operational.xeroActivity.pending} pending
+                            </Link>
+                          ) : null}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-sm">
+                        <div className="space-y-1">
+                          <Link href={bedAllocationHref(booking)} className="inline-flex">
+                            <Badge
+                              variant="secondary"
+                              className={`${bedStateClass(booking.operational.bedState)} cursor-pointer`}
+                            >
+                              {bedStateLabel(booking)}
+                            </Badge>
+                          </Link>
+                          {booking.operational.unapprovedBedAllocations > 0 ? (
+                            <p className="text-xs text-amber-700">
+                              {booking.operational.unapprovedBedAllocations} awaiting approval
+                            </p>
+                          ) : null}
+                          {booking.operational.hasPerGuestDates ? (
+                            <div className="space-y-0.5">
+                              <Badge variant="outline" className="text-xs">
+                                Per-guest dates
+                              </Badge>
+                              {booking.operational.guestDateRanges.slice(0, 2).map((guestRange) => (
+                                <p key={guestRange.guestId} className="text-xs text-gray-500">
+                                  {guestRange.guestName}: {guestRange.stayStart} to {guestRange.stayEnd}
+                                </p>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-sm">
+                        <div className="flex flex-wrap gap-1">
+                          {booking.operational.pendingChangeRequest ? (
+                            <Link href={`/admin/booking-change-requests?bookingId=${booking.id}&status=REQUESTED`}>
+                              <Badge variant="secondary" className="bg-amber-100 text-amber-900 cursor-pointer hover:bg-amber-200">
+                                Request
+                              </Badge>
+                            </Link>
+                          ) : null}
+                          {booking.operational.hasModification ? (
+                            <Badge variant="secondary" className="bg-slate-100 text-slate-800">
+                              Modified
+                            </Badge>
+                          ) : null}
+                          {booking.operational.creditGenerated ? (
+                            <Badge variant="secondary" className="bg-green-100 text-green-900">
+                              Credit
+                            </Badge>
+                          ) : null}
+                          {booking.operational.refundGenerated ? (
+                            <Badge variant="secondary" className="bg-blue-100 text-blue-900">
+                              Refund
+                            </Badge>
+                          ) : null}
+                          {!booking.operational.pendingChangeRequest &&
+                          !booking.operational.hasModification &&
+                          !booking.operational.creditGenerated &&
+                          !booking.operational.refundGenerated ? (
+                            <span className="text-xs text-gray-500">-</span>
+                          ) : null}
+                        </div>
                       </td>
                     </tr>
                   );
