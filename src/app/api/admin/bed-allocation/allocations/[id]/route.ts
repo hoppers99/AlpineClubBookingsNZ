@@ -4,7 +4,7 @@ import {
   bedAllocationErrorResponse,
   requireBedAllocationAdmin,
 } from "@/lib/admin-bed-allocation-routes";
-import { logAudit } from "@/lib/audit";
+import { createAuditLog } from "@/lib/audit";
 
 // requireAdmin() is enforced by requireBedAllocationAdmin().
 export async function DELETE(
@@ -17,7 +17,7 @@ export async function DELETE(
   try {
     const { id } = await params;
     const allocation = await deleteBedAllocation({ id });
-    logAudit({
+    await createAuditLog({
       action: "BED_ALLOCATION_DELETED",
       memberId: guard.session.user.id,
       targetId: allocation.bookingId,

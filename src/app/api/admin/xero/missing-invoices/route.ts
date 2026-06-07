@@ -1,6 +1,6 @@
 import { after, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { logAudit } from "@/lib/audit";
+import { createAuditLog } from "@/lib/audit";
 import logger from "@/lib/logger";
 import { requireActiveSessionUser } from "@/lib/session-guards";
 import { getMissingXeroInvoiceBookings } from "@/lib/xero-admin-health";
@@ -109,10 +109,22 @@ export async function POST() {
       });
     }
 
-    logAudit({
+    await createAuditLog({
       action: "XERO_TRIGGER_MISSING_INVOICES",
       memberId: session.user.id,
+      entityType: "XeroSyncOperation",
+      category: "xero",
+      severity: "important",
+      outcome: "success",
+      summary: "Queued missing Xero invoices",
       details: `Queued ${queued} missing booking invoices (${skipped} skipped)`,
+      metadata: {
+        found: snapshot.count,
+        queued,
+        skipped,
+        queuedOperationIds,
+        skippedBookings,
+      },
     });
 
     return NextResponse.json(

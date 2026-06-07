@@ -9,7 +9,7 @@ import {
   requireBedAllocationAdmin,
 } from "@/lib/admin-bed-allocation-routes";
 import { parseJsonRequestBody } from "@/lib/api-json";
-import { logAudit } from "@/lib/audit";
+import { createAuditLog } from "@/lib/audit";
 
 // requireAdmin() is enforced by requireBedAllocationAdmin().
 const approveSchema = z
@@ -49,7 +49,7 @@ export async function POST(request: Request) {
       range,
     });
 
-    logAudit({
+    await createAuditLog({
       action: "BED_ALLOCATION_APPROVED",
       memberId: guard.session.user.id,
       entityType: "BedAllocation",

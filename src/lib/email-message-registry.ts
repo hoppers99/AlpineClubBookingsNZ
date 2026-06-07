@@ -68,6 +68,11 @@ const GLOBAL_EMAIL_TEMPLATE_TOKENS = [
 ] as const;
 
 const EXTRA_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>> = {
+  "booking-modified": [
+    "additionalPaymentMethod",
+    "paymentReference",
+    "xeroInvoiceNumber",
+  ],
   "password-reset": ["resetUrl"],
   "admin-password-reset": ["resetUrl"],
   "member-setup-invite": ["resetUrl"],
@@ -349,6 +354,7 @@ export const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "LODGE_CAPACITY",
   "SUPPORT_EMAIL",
   "additionalAmount",
+  "additionalPaymentMethod",
   "adminEnteredBody",
   "adminEnteredSubject",
   "adminNote",
@@ -429,6 +435,7 @@ export const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "paidAmount",
   "parentName",
   "paymentIntentId",
+  "paymentReference",
   "paymentNote",
   "percent",
   "participantName",
@@ -473,6 +480,7 @@ export const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "verifyUrl",
   "windowHours",
   "xeroObjectUrl",
+  "xeroInvoiceNumber",
   "y|ies",
 ] as const;
 

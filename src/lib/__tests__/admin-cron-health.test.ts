@@ -150,6 +150,42 @@ describe("admin cron health", () => {
     expect(draftCleanup?.note).toBeUndefined();
   });
 
+  it("tracks payment recovery every five minutes with a matching freshness threshold", () => {
+    const definitions = getAdminCronJobDefinitions({
+      CRON_ENABLED: "true",
+    } as NodeJS.ProcessEnv);
+    const paymentRecovery = definitions.find(
+      (definition) => definition.jobName === "payment-recovery"
+    );
+
+    expect(paymentRecovery).toMatchObject({
+      schedule: "*/5 * * * *",
+      expectedLocalTime: "Every 5 minutes in Pacific/Auckland",
+      staleAfterMinutes: 20,
+    });
+  });
+
+  it("tracks Xero outbox and stale link cleanup as CronJobRun-backed jobs", () => {
+    const definitions = getAdminCronJobDefinitions({
+      CRON_ENABLED: "true",
+    } as NodeJS.ProcessEnv);
+
+    expect(
+      definitions.find((definition) => definition.jobName === "xero-outbox")
+    ).toMatchObject({
+      schedule: "*/15 * * * *",
+      staleAfterMinutes: 60,
+    });
+    expect(
+      definitions.find(
+        (definition) => definition.jobName === "xero-link-cleanup"
+      )
+    ).toMatchObject({
+      schedule: "25 2 * * *",
+      staleAfterMinutes: 2160,
+    });
+  });
+
   it("describes the daily Xero membership refresh as an optional disabled safety net", () => {
     const definitions = getAdminCronJobDefinitions({
       CRON_ENABLED: "true",

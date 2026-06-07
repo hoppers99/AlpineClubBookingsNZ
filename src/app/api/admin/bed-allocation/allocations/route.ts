@@ -6,7 +6,7 @@ import {
   requireBedAllocationAdmin,
 } from "@/lib/admin-bed-allocation-routes";
 import { parseJsonRequestBody } from "@/lib/api-json";
-import { logAudit } from "@/lib/audit";
+import { createAuditLog } from "@/lib/audit";
 
 // requireAdmin() is enforced by requireBedAllocationAdmin().
 const manualAllocationSchema = z
@@ -34,7 +34,7 @@ export async function POST(request: Request) {
     }
 
     const allocation = await manuallyAllocateBed(body.data);
-    logAudit({
+    await createAuditLog({
       action: "BED_ALLOCATION_MANUAL_SET",
       memberId: guard.session.user.id,
       targetId: allocation.bookingId,

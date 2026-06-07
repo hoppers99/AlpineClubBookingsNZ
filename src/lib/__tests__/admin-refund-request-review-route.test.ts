@@ -16,7 +16,7 @@ const mocks = vi.hoisted(() => ({
   kickQueuedXeroOutboxOperationsIfConnected: vi.fn(),
   sendEmail: vi.fn(),
   refundRequestResolvedTemplate: vi.fn(),
-  logAudit: vi.fn(),
+  createAuditLog: vi.fn(),
 }));
 
 vi.mock("@/lib/auth", () => ({
@@ -38,7 +38,7 @@ vi.mock("@/lib/prisma", () => ({
 }));
 
 vi.mock("@/lib/audit", () => ({
-  logAudit: mocks.logAudit,
+  createAuditLog: mocks.createAuditLog,
 }));
 
 vi.mock("@/lib/stripe", () => ({

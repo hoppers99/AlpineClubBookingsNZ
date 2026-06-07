@@ -70,6 +70,9 @@ type DateModificationTransactionResult =
     oldCheckOut: Date;
     hasIssuedXeroInvoice: boolean;
     paymentStatus: PaymentStatus | null;
+    paymentSource: PaymentSource | null;
+    paymentReference: string | null;
+    xeroInvoiceNumber: string | null;
     xeroAdditionalAmountCents: number;
   };
 
@@ -483,6 +486,9 @@ export async function modifyBookingDates({
       hasSucceededPayment,
       hasIssuedXeroInvoice,
       paymentStatus: booking.payment?.status ?? null,
+      paymentSource: booking.payment?.source ?? null,
+      paymentReference: booking.payment?.reference ?? null,
+      xeroInvoiceNumber: booking.payment?.xeroInvoiceNumber ?? null,
       xeroAdditionalAmountCents,
       paymentId: booking.payment?.id ?? null,
       paymentCustomerId: booking.payment?.stripeCustomerId ?? null,
@@ -615,6 +621,15 @@ async function dispatchDatePostTransactionSideEffects({
       changeFeeCents: result.changeFeeCents,
       refundAmountCents: result.refundAmountCents,
       additionalAmountCents: result.additionalAmountCents,
+      additionalPaymentMethod:
+        result.additionalAmountCents > 0 &&
+        result.paymentSource === PaymentSource.INTERNET_BANKING
+          ? "INTERNET_BANKING"
+          : result.additionalAmountCents > 0 && result.hasSucceededPayment
+            ? "STRIPE"
+            : undefined,
+      paymentReference: result.paymentReference,
+      xeroInvoiceNumber: result.xeroInvoiceNumber,
     }).catch((err) =>
       logger.error({ err, bookingId }, "Failed to send booking modified email"),
     );

@@ -467,6 +467,9 @@ export async function POST(
         hasSucceededPayment,
         hasIssuedXeroInvoice,
         paymentStatus: booking.payment?.status ?? null,
+        paymentSource: booking.payment?.source ?? null,
+        paymentReference: booking.payment?.reference ?? null,
+        xeroInvoiceNumber: booking.payment?.xeroInvoiceNumber ?? null,
         paymentId: booking.payment?.id ?? null,
         paymentCustomerId: booking.payment?.stripeCustomerId ?? null,
         memberEmail: booking.member.email,
@@ -591,6 +594,15 @@ export async function POST(
         changeFeeCents: 0,
         refundAmountCents: 0,
         additionalAmountCents: result.additionalAmountCents,
+        additionalPaymentMethod:
+          result.additionalAmountCents > 0 &&
+          result.paymentSource === PaymentSource.INTERNET_BANKING
+            ? "INTERNET_BANKING"
+            : result.additionalAmountCents > 0 && result.hasSucceededPayment
+              ? "STRIPE"
+              : undefined,
+        paymentReference: result.paymentReference,
+        xeroInvoiceNumber: result.xeroInvoiceNumber,
       }).catch((err) =>
         logger.error({ err, bookingId }, "Failed to send booking modified email")
       );

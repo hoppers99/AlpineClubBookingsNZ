@@ -3,7 +3,7 @@ import { auth } from "@/lib/auth";
 import { requireActiveSessionUser } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
-import { logAudit } from "@/lib/audit";
+import { createAuditLog } from "@/lib/audit";
 import { isXeroConnected } from "@/lib/xero";
 import {
   enqueueXeroRefundCreditNoteOperation,
@@ -160,7 +160,7 @@ export async function PUT(
       );
     }
 
-    logAudit({
+    await createAuditLog({
       action: "refund-request.approve",
       memberId: session.user.id,
       targetId: id,
@@ -227,7 +227,7 @@ export async function PUT(
       );
     }
 
-    logAudit({
+    await createAuditLog({
       action: "refund-request.reject",
       memberId: session.user.id,
       targetId: id,

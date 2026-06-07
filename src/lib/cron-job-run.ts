@@ -1,6 +1,55 @@
 import { prisma } from "./prisma";
 import logger from "@/lib/logger";
 
+export type CronJobRunStatus = "SUCCESS" | "FAILURE" | "SKIPPED";
+
+export interface RecordCronJobRunInput {
+  jobName: string;
+  startedAt: Date;
+  completedAt?: Date;
+  status: CronJobRunStatus;
+  resultSummary?: unknown;
+  error?: string | null;
+}
+
+function serializeResultSummary(resultSummary: unknown) {
+  return resultSummary === undefined
+    ? undefined
+    : JSON.parse(JSON.stringify(resultSummary));
+}
+
+export async function recordCronJobRun({
+  jobName,
+  startedAt,
+  completedAt = new Date(),
+  status,
+  resultSummary,
+  error,
+}: RecordCronJobRunInput) {
+  await prisma.cronJobRun.create({
+    data: {
+      jobName,
+      startedAt,
+      completedAt,
+      durationMs: completedAt.getTime() - startedAt.getTime(),
+      status,
+      resultSummary: serializeResultSummary(resultSummary),
+      error: error ?? undefined,
+    },
+  });
+}
+
+export async function recordCronJobRunSafe(input: RecordCronJobRunInput) {
+  try {
+    await recordCronJobRun(input);
+  } catch (err) {
+    logger.error(
+      { err, job: input.jobName },
+      "Failed to record cron job run"
+    );
+  }
+}
+
 /**
  * Auto-prune old CronJobRun records (older than 90 days).
  */

@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   auth: vi.fn(),
   requireActiveSessionUser: vi.fn(),
   logAudit: vi.fn(),
+  createAuditLog: vi.fn(),
   getXeroAdminHealthSnapshot: vi.fn(),
   getMissingXeroInvoiceBookings: vi.fn(),
   getFailedXeroOperationOverview: vi.fn(),
@@ -53,6 +54,7 @@ vi.mock("@/lib/session-guards", () => ({
 
 vi.mock("@/lib/audit", () => ({
   logAudit: mocks.logAudit,
+  createAuditLog: mocks.createAuditLog,
 }));
 
 vi.mock("@/lib/logger", () => ({
@@ -256,11 +258,13 @@ describe("Xero admin bulk routes", () => {
       createdByMemberId: "admin-1",
     });
     expect(mocks.processQueuedXeroOutboxOperations).toHaveBeenCalledWith({ limit: 1 });
-    expect(mocks.logAudit).toHaveBeenCalledWith({
-      action: "XERO_TRIGGER_MISSING_INVOICES",
-      memberId: "admin-1",
-      details: "Queued 1 missing booking invoices (1 skipped)",
-    });
+    expect(mocks.createAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "XERO_TRIGGER_MISSING_INVOICES",
+        memberId: "admin-1",
+        details: "Queued 1 missing booking invoices (1 skipped)",
+      })
+    );
 
     await expect(response.json()).resolves.toEqual({
       ok: true,

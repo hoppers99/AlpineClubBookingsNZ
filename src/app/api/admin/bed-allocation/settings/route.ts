@@ -6,7 +6,7 @@ import {
   requireBedAllocationAdmin,
 } from "@/lib/admin-bed-allocation-routes";
 import { parseJsonRequestBody } from "@/lib/api-json";
-import { logAudit } from "@/lib/audit";
+import { createAuditLog } from "@/lib/audit";
 
 // requireAdmin() is enforced by requireBedAllocationAdmin().
 const settingsSchema = z
@@ -36,7 +36,7 @@ export async function PUT(request: Request) {
       updatedByMemberId: guard.session.user.id,
     });
 
-    logAudit({
+    await createAuditLog({
       action: "BED_ALLOCATION_SETTINGS_UPDATED",
       memberId: guard.session.user.id,
       entityType: "BedAllocationSettings",

@@ -7,7 +7,7 @@ const mocks = vi.hoisted(() => ({
   paymentFindUnique: vi.fn(),
   enqueueXeroBookingInvoiceOperation: vi.fn(),
   kickQueuedXeroOutboxOperationsIfConnected: vi.fn(),
-  logAudit: vi.fn(),
+  createAuditLog: vi.fn(),
   loggerError: vi.fn(),
 }));
 
@@ -61,7 +61,7 @@ vi.mock("@/lib/xero-operation-outbox", () => ({
 }));
 
 vi.mock("@/lib/audit", () => ({
-  logAudit: mocks.logAudit,
+  createAuditLog: mocks.createAuditLog,
 }));
 
 vi.mock("@/lib/logger", () => ({
@@ -146,7 +146,7 @@ describe("POST /api/admin/payments/[id]/generate-invoice", () => {
     expect(mocks.kickQueuedXeroOutboxOperationsIfConnected).toHaveBeenCalledWith({
       limit: 1,
     });
-    expect(mocks.logAudit).toHaveBeenCalledWith(
+    expect(mocks.createAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
         action: "XERO_INVOICE_GENERATED",
         memberId: "admin_1",
@@ -187,7 +187,7 @@ describe("POST /api/admin/payments/[id]/generate-invoice", () => {
         "Xero booking invoice queued, but Xero is currently disconnected. The operation will run automatically once the connection is restored.",
     });
 
-    expect(mocks.logAudit).toHaveBeenCalledWith(
+    expect(mocks.createAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
         action: "XERO_INVOICE_GENERATION_QUEUED",
         memberId: "admin_1",

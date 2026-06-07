@@ -1192,6 +1192,9 @@ export function bookingModifiedTemplate(params: {
   refundAmountCents: number;
   accountCreditAmountCents?: number;
   additionalAmountCents: number;
+  additionalPaymentMethod?: "STRIPE" | "INTERNET_BANKING";
+  paymentReference?: string | null;
+  xeroInvoiceNumber?: string | null;
 }): string {
   const {
     firstName,
@@ -1208,6 +1211,9 @@ export function bookingModifiedTemplate(params: {
     refundAmountCents,
     accountCreditAmountCents = 0,
     additionalAmountCents,
+    additionalPaymentMethod,
+    paymentReference,
+    xeroInvoiceNumber,
   } = params;
 
   const typeLabel: Record<string, string> = {
@@ -1268,10 +1274,23 @@ export function bookingModifiedTemplate(params: {
       "success"
     );
   } else if (additionalAmountCents > 0) {
-    paymentNote = alertBox(
-      `An additional payment of ${formatCents(additionalAmountCents)} is required.`,
-      "warning"
-    );
+    if (additionalPaymentMethod === "INTERNET_BANKING") {
+      const invoiceContext = xeroInvoiceNumber
+        ? ` Xero invoice ${escapeHtml(xeroInvoiceNumber)} will be used for payment.`
+        : " A Xero invoice and payment reference will be used for payment.";
+      const referenceContext = paymentReference
+        ? ` Payment reference: ${escapeHtml(paymentReference)}.`
+        : "";
+      paymentNote = alertBox(
+        `An additional Internet Banking payment of ${formatCents(additionalAmountCents)} is required.${invoiceContext}${referenceContext} Xero reconciliation confirms the payment before it is treated as paid.`,
+        "warning"
+      );
+    } else {
+      paymentNote = alertBox(
+        `An additional payment of ${formatCents(additionalAmountCents)} is required.`,
+        "warning"
+      );
+    }
   }
 
   return layout(`

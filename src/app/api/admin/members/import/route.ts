@@ -10,7 +10,7 @@ import { computeAgeTier, getSeasonStartDate } from "@/lib/age-tier";
 import { getSeasonYear } from "@/lib/utils";
 import { sendMemberSetupInviteEmail } from "@/lib/email";
 import { applyRateLimit } from "@/lib/rate-limit";
-import { logAudit } from "@/lib/audit";
+import { createAuditLog } from "@/lib/audit";
 import logger from "@/lib/logger";
 import { isPrismaUniqueConstraintError } from "@/lib/prisma-errors";
 import { issueActionToken } from "@/lib/action-tokens";
@@ -323,13 +323,24 @@ export async function POST(req: NextRequest) {
 
     results.created = createdMembers.length;
 
-    // Audit log and invite emails (outside transaction, fire-and-forget)
+    // Audit log and invite emails (outside transaction)
     for (const member of createdMembers) {
-      logAudit({
+      await createAuditLog({
         action: "member.imported",
         memberId: session.user.id,
         targetId: member.id,
+        entityType: "Member",
+        entityId: member.id,
+        category: "admin",
+        severity: "important",
+        outcome: "success",
+        summary: "Member imported",
         details: `Imported member: ${member.firstName} ${member.lastName} (${member.email})`,
+        metadata: {
+          memberId: member.id,
+          email: member.email,
+          sendInvites,
+        },
       });
 
       if (sendInvites) {
