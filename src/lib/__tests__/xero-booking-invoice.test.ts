@@ -53,6 +53,7 @@ const mocks = vi.hoisted(() => {
       updateInvoice: vi.fn(),
       createPayment: vi.fn(),
       createPayments: vi.fn(),
+      createCreditNoteAllocation: vi.fn(),
       emailInvoice: vi.fn(),
       createCreditNotes: vi.fn(),
       createContacts: vi.fn(),
@@ -155,6 +156,7 @@ vi.mock("@/lib/xero-sync", async (importOriginal) => {
 });
 
 import {
+  createXeroCreditNoteForModification,
   createXeroCreditNote,
   createXeroInvoiceForBooking,
   createXeroRefundPaymentForInvoice,
@@ -341,6 +343,64 @@ describe("createXeroInvoiceForBooking", () => {
         status: "SUCCEEDED",
         responsePayload: expect.objectContaining({
           invoiceEmail: {},
+          invoiceEmailSkipped: false,
+        }),
+      })
+    );
+  });
+
+  it("does not record settled Internet Banking invoices as Stripe Xero payments", async () => {
+    mocks.prisma.booking.findUnique.mockResolvedValue({
+      id: "booking_1",
+      memberId: "mem_1",
+      member: { id: "mem_1" },
+      checkIn: "2026-07-31T00:00:00.000Z",
+      checkOut: "2026-08-02T00:00:00.000Z",
+      createdAt: "2026-05-15T10:30:00.000Z",
+      discountCents: 0,
+      promoAdjustmentCents: 0,
+      guests: [
+        {
+          firstName: "Jordan",
+          lastName: "Hartley-Smith",
+          ageTier: "ADULT",
+          isMember: true,
+          priceCents: 10000,
+        },
+      ],
+      payment: {
+        id: "pay_1",
+        status: "SUCCEEDED",
+        amountCents: 10000,
+        stripePaymentIntentId: null,
+        xeroInvoiceId: null,
+        xeroInvoiceNumber: null,
+        source: "INTERNET_BANKING",
+      },
+    });
+    mocks.xeroClientInstance.accountingApi.emailInvoice.mockResolvedValue({
+      body: {},
+    });
+
+    await expect(createXeroInvoiceForBooking("booking_1")).resolves.toBe("inv_1");
+
+    expect(mocks.xeroClientInstance.accountingApi.createPayment).not.toHaveBeenCalled();
+    expect(mocks.xeroClientInstance.accountingApi.emailInvoice).toHaveBeenCalledWith(
+      "tenant_1",
+      "inv_1",
+      expect.any(Object),
+      "booking:booking_1:invoice-email:inv_1:v1"
+    );
+    expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
+      "op_1",
+      expect.objectContaining({
+        status: "SUCCEEDED",
+        responsePayload: expect.objectContaining({
+          payment: null,
+          paymentError: null,
+          paymentSkipped: true,
+          paymentSkipReason:
+            "Internet Banking invoice payments are reconciled from Xero instead of recorded as Stripe bank payments.",
           invoiceEmailSkipped: false,
         }),
       })
@@ -557,6 +617,90 @@ describe("createXeroInvoiceForBooking", () => {
       const discount = getPromoAdjustmentLine();
       expect(discount?.description).toBe("Promo adjustment");
     });
+  });
+});
+
+describe("createXeroCreditNoteForModification", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetXeroRateLimitStateForTests();
+    vi.stubEnv(
+      "XERO_ENCRYPTION_KEY",
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    );
+    vi.stubEnv("XERO_CLIENT_ID", "client-id");
+    vi.stubEnv("XERO_CLIENT_SECRET", "client-secret");
+
+    mocks.prisma.$transaction.mockImplementation(async (callback) => callback(mocks.tx));
+    mocks.tx.$executeRaw.mockResolvedValue(undefined);
+    mocks.tx.member.findUnique.mockResolvedValue({
+      id: "mem_1",
+      email: "member@example.com",
+      xeroContactId: "contact_1",
+    });
+    mocks.prisma.booking.findUnique.mockResolvedValue({
+      id: "booking_1",
+      memberId: "mem_1",
+      checkIn: "2026-07-31T00:00:00.000Z",
+      checkOut: "2026-08-02T00:00:00.000Z",
+      payment: {
+        id: "pay_1",
+        xeroInvoiceId: "inv_1",
+      },
+    });
+    mocks.prisma.xeroToken.findFirst.mockResolvedValue({
+      id: "token_1",
+      accessToken: encryptToken("access"),
+      refreshToken: encryptToken("refresh"),
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      tenantId: "tenant_1",
+    });
+    mocks.prisma.xeroAccountMapping.findUnique.mockResolvedValue(null);
+    mocks.xeroClientInstance.accountingApi.createCreditNotes.mockResolvedValue({
+      body: {
+        creditNotes: [
+          {
+            creditNoteID: "cn_1",
+            creditNoteNumber: "CN-1",
+          },
+        ],
+      },
+    });
+  });
+
+  it("keeps created modification credit notes partial when allocation fails", async () => {
+    mocks.xeroClientInstance.accountingApi.createCreditNoteAllocation.mockRejectedValue(
+      new Error("allocation failed")
+    );
+
+    await expect(
+      createXeroCreditNoteForModification({
+        bookingId: "booking_1",
+        refundAmountCents: 3200,
+        bookingModificationId: "mod_1",
+        syncOperationId: "op_1",
+      })
+    ).resolves.toBe("cn_1");
+
+    expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
+      "op_1",
+      expect.objectContaining({
+        status: "PARTIAL",
+        xeroObjectType: "CREDIT_NOTE",
+        xeroObjectId: "cn_1",
+        xeroObjectNumber: "CN-1",
+        extraLinks: [
+          expect.objectContaining({
+            localModel: "BookingModification",
+            localId: "mod_1",
+            xeroObjectType: "CREDIT_NOTE",
+            xeroObjectId: "cn_1",
+            role: "MODIFICATION_CREDIT_NOTE",
+          }),
+        ],
+      })
+    );
+    expect(mocks.failXeroSyncOperation).not.toHaveBeenCalled();
   });
 });
 

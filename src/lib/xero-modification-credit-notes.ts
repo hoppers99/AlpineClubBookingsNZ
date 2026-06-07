@@ -284,7 +284,7 @@ export async function createXeroCreditNoteForModification(params: {
           },
         ],
       });
-      throw allocationError;
+      return createdCreditNoteId;
     }
   } catch (error) {
     await failXeroSyncOperation(operationId!, error);

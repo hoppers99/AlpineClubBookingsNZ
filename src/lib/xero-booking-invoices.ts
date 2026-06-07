@@ -319,9 +319,21 @@ export async function createXeroInvoiceForBooking(
     // Xero already marks zero-total invoices as PAID and rejects $0 payments.
     let paymentResponseBody: XeroPayment | null = null;
     let paymentWriteError: unknown = null;
-    const paymentSkipped = booking.payment.status === "SUCCEEDED" && booking.payment.amountCents === 0;
+    const paymentSource = booking.payment.source ?? PaymentSource.STRIPE;
+    const shouldRecordStripeInvoicePayment =
+      paymentSource === PaymentSource.STRIPE &&
+      booking.payment.status === "SUCCEEDED" &&
+      booking.payment.amountCents > 0;
+    const paymentSkipped =
+      booking.payment.status === "SUCCEEDED" && !shouldRecordStripeInvoicePayment;
+    const paymentSkipReason =
+      booking.payment.amountCents === 0
+        ? "Zero-total invoice does not require Xero payment recording."
+        : paymentSource === PaymentSource.INTERNET_BANKING
+          ? "Internet Banking invoice payments are reconciled from Xero instead of recorded as Stripe bank payments."
+          : null;
 
-    if (booking.payment.status === "SUCCEEDED" && booking.payment.amountCents > 0) {
+    if (shouldRecordStripeInvoicePayment) {
       const payment: XeroPayment = {
         invoice: { invoiceID: createdInvoice.invoiceID },
         account: { code: bankCode },
@@ -359,10 +371,10 @@ export async function createXeroInvoiceForBooking(
           "Created Xero invoice but failed to record the corresponding Xero payment"
         );
       }
-    } else if (paymentSkipped) {
+    } else if (paymentSkipped && paymentSkipReason) {
       logger.info(
-        { bookingId, invoiceId: createdInvoice.invoiceID },
-        "Skipping Xero payment recording for zero-total booking invoice"
+        { bookingId, invoiceId: createdInvoice.invoiceID, paymentSource },
+        paymentSkipReason
       );
     }
 
@@ -433,9 +445,7 @@ export async function createXeroInvoiceForBooking(
         payment: paymentResponseBody,
         paymentError: paymentWriteError,
         paymentSkipped,
-        paymentSkipReason: paymentSkipped
-          ? "Zero-total invoice does not require Xero payment recording."
-          : null,
+        paymentSkipReason: paymentSkipped ? paymentSkipReason : null,
         invoiceEmail: invoiceEmailResponseBody,
         invoiceEmailError,
         invoiceEmailSkipped: !shouldEmailInvoice,
