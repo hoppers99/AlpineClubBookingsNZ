@@ -59,11 +59,12 @@ function formatUpdatedAt(value: string | null): string {
   });
 }
 
-type WysiwygEditorHandle = {
+export type WysiwygEditorHandle = {
   getHtml: () => string;
 };
 
-const WysiwygEditor = forwardRef<
+// Exported for reuse by other admin HTML-content editors (lodge instructions).
+export const WysiwygEditor = forwardRef<
   WysiwygEditorHandle,
   {
     value: string;

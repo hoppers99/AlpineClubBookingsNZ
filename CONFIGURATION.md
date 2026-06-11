@@ -96,6 +96,22 @@ menu.
   only. There is no upload from the admin UI; add images by committing
   them to the repository.
 
+## Lodge Instructions
+
+Lodge opening, closing, and day-to-day instructions for hut leaders are
+database-backed (`LodgeInstruction`, one row per document) and edited in
+Admin > Lodge Instructions. They are protected content, deliberately separate
+from `PageContent`: they never appear in the public menu or the dynamic
+public page route.
+
+- Readers: admins, plus members with a current or upcoming hut leader
+  assignment, at `/lodge-instructions` (printable). The lodge kiosk shows
+  the documents to the signed-in hut leader tier.
+- HTML is sanitised on save and again on render with the same allowlist as
+  page content (`src/lib/page-content-html.ts`).
+- The migration backfills the three empty documents, so deploy-only
+  environments get editable rows without running the seed.
+
 ## Required Local Setup Variables
 
 These are enough for a local database-backed app with external services left in
