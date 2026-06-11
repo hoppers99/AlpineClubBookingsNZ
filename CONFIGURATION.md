@@ -147,11 +147,23 @@ test/demo mode or disabled:
 | `CRON_SECRET` | Shared secret for cron and deploy status endpoints. |
 | `SEED_ADMIN_EMAIL` | Email for the first seeded admin account. |
 | `SEED_ADMIN_PASSWORD` | Initial password for the first seeded admin account. |
+| `SEED_ADMIN_FIRST_NAME` | Optional first name for the seeded admin; defaults to `Admin`. |
+| `SEED_ADMIN_LAST_NAME` | Optional last name for the seeded admin; defaults to `User`. |
 | `SEED_LODGE_PASSWORD` | Initial password for the seeded shared lodge kiosk account. |
 
-`prisma/seed.ts` fails before seeding if either `SEED_ADMIN_*` value is unset,
-and fails before creating the lodge kiosk account if `SEED_LODGE_PASSWORD` is
-unset. The seeded admin is forced through `/change-password` on first login.
+`prisma/seed.ts` fails before seeding if `SEED_ADMIN_EMAIL` or
+`SEED_ADMIN_PASSWORD` is unset, and fails before creating the lodge kiosk
+account if `SEED_LODGE_PASSWORD` is unset. The seeded admin is created with
+`role: ADMIN`, `canLogin: true`, `emailVerified: true`, and a `NOT_REQUIRED`
+membership subscription for the current season, and is forced through
+`/change-password` on first login. The seed only creates the admin when no
+`ADMIN` member exists yet, so changing `SEED_ADMIN_*` later has no effect on
+an existing database.
+
+The whole seed is create-if-missing: re-running it against a populated
+database never deletes, overwrites, or duplicates data. Committee entries and
+chore templates are seeded as generic placeholders only when their tables are
+empty; replace them through the admin screens after first login.
 
 ## Setup Readiness
 
