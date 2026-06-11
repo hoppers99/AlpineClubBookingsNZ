@@ -1,4 +1,5 @@
 import { headers } from "next/headers";
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { AppProviders } from "@/components/app-providers";
 import { auth } from "@/lib/auth";
@@ -11,6 +12,7 @@ import { clubIdentity } from "@/config/club-identity";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import { hasFinanceViewerAccess } from "@/lib/finance-auth";
 import { CSP_NONCE_HEADER } from "@/lib/csp";
+import { isClubThemeComplete } from "@/lib/club-theme";
 import { getLodgeCapacity } from "@/lib/lodge-capacity";
 import {
   MEMBER_ONBOARDING_GATE_SELECT,
@@ -55,10 +57,12 @@ export default async function AdminLayout({
     isStayingGuest: false,
   };
   const showOnboardingWizard = shouldShowMemberOnboarding(member);
-  const [effectiveModules, lodgeCapacity] = await Promise.all([
-    loadEffectiveModuleFlags(),
-    getLodgeCapacity(),
-  ]);
+  const [effectiveModules, siteStyleComplete, lodgeCapacity] =
+    await Promise.all([
+      loadEffectiveModuleFlags(),
+      isClubThemeComplete(),
+      getLodgeCapacity(),
+    ]);
   const liveClubIdentity = { ...clubIdentity, lodgeCapacity };
   const nonce = (await headers()).get(CSP_NONCE_HEADER) ?? undefined;
 
@@ -70,6 +74,21 @@ export default async function AdminLayout({
           <AdminSidebar features={effectiveModules} />
           <div className="flex flex-1 flex-col md:overflow-hidden">
             <main className="flex-1 overflow-y-auto p-6 print:overflow-visible print:p-0 md:p-8">
+              {!siteStyleComplete && (
+                <div className="mb-6 rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950 print:hidden">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <p className="font-medium">
+                      Complete your site style before opening the public website.
+                    </p>
+                    <Link
+                      href="/admin/site-style"
+                      className="rounded-md bg-brand-gold px-3 py-2 text-sm font-semibold text-brand-charcoal shadow-sm transition-colors hover:bg-brand-gold/90"
+                    >
+                      Open Site Style
+                    </Link>
+                  </div>
+                </div>
+              )}
               {children}
             </main>
           </div>

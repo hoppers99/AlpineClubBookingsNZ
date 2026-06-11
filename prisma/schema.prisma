@@ -219,6 +219,14 @@ enum ChoreFrequencyMode {
   SPECIFIC_DAYS
 }
 
+enum ClubThemeFont {
+  INTER
+  LEAGUE_SPARTAN
+  LORA
+  SOURCE_SERIF_4
+  NUNITO_SANS
+}
+
 // ---------------------------------------------------------------------------
 // Member & Auth
 // ---------------------------------------------------------------------------
@@ -2171,6 +2179,27 @@ model GroupDiscountSetting {
   enabled      Boolean  @default(false)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Club Theme (public website visual branding)
+// ---------------------------------------------------------------------------
+
+model ClubTheme {
+  id             String        @id @default("default")
+  brandGold      String
+  brandCharcoal  String
+  brandDeep      String
+  brandRidge     String
+  brandMist      String
+  brandSnow      String
+  brandSafety    String
+  headingFontKey ClubThemeFont @default(LEAGUE_SPARTAN)
+  bodyFontKey    ClubThemeFont @default(INTER)
+  logoDataUrl    String?
+  completedAt    DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
 }
 
 // ---------------------------------------------------------------------------
