@@ -59,7 +59,6 @@ function formatUpdatedAt(value: string | null): string {
   });
 }
 
-// Exported for reuse by other admin HTML-content editors (lodge instructions).
 export type WysiwygEditorHandle = {
   getHtml: () => string;
 };

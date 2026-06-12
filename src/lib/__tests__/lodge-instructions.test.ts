@@ -164,10 +164,7 @@ describe("GET /api/lodge-instructions (reader access control)", () => {
   it("allows a member with an upcoming assignment", async () => {
     mocks.auth.mockResolvedValue(memberSession);
     useAssignments([
-      {
-        memberId: "member-1",
-        endDate: addDaysDateOnly(getTodayDateOnly(), 14),
-      },
+      { memberId: "member-1", endDate: addDaysDateOnly(getTodayDateOnly(), 14) },
     ]);
 
     const response = await readerGET();
@@ -177,10 +174,7 @@ describe("GET /api/lodge-instructions (reader access control)", () => {
   it("denies a member whose only assignment has expired", async () => {
     mocks.auth.mockResolvedValue(memberSession);
     useAssignments([
-      {
-        memberId: "member-1",
-        endDate: addDaysDateOnly(getTodayDateOnly(), -1),
-      },
+      { memberId: "member-1", endDate: addDaysDateOnly(getTodayDateOnly(), -1) },
     ]);
 
     const response = await readerGET();
@@ -191,10 +185,7 @@ describe("GET /api/lodge-instructions (reader access control)", () => {
   it("does not grant access from another member's assignment", async () => {
     mocks.auth.mockResolvedValue(memberSession);
     useAssignments([
-      {
-        memberId: "member-2",
-        endDate: addDaysDateOnly(getTodayDateOnly(), 14),
-      },
+      { memberId: "member-2", endDate: addDaysDateOnly(getTodayDateOnly(), 14) },
     ]);
 
     const response = await readerGET();
@@ -225,13 +216,7 @@ describe("admin lodge-instructions route", () => {
       contentHtml: "<p>Old</p>",
     });
     mocks.lodgeInstructionUpsert.mockImplementation(
-      async ({
-        update,
-        where,
-      }: {
-        update: { contentHtml: string };
-        where: { key: string };
-      }) => ({
+      async ({ update, where }: { update: { contentHtml: string }; where: { key: string } }) => ({
         id: `lodge-instruction-${where.key.toLowerCase()}`,
         key: where.key,
         contentHtml: update.contentHtml,
@@ -333,11 +318,7 @@ describe("sanitiser round-trip", () => {
     mocks.lodgeInstructionFindUnique.mockResolvedValue(null);
     let stored = "";
     mocks.lodgeInstructionUpsert.mockImplementation(
-      async ({
-        create,
-      }: {
-        create: { key: string; contentHtml: string };
-      }) => {
+      async ({ create }: { create: { key: string; contentHtml: string } }) => {
         stored = create.contentHtml;
         return {
           id: "lodge-instruction-open",

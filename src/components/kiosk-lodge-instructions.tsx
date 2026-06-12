@@ -96,9 +96,7 @@ export function KioskLodgeInstructions({ date }: { date: string }) {
               <button
                 type="button"
                 onClick={() =>
-                  setOpenKey((current) =>
-                    current === doc.key ? null : doc.key,
-                  )
+                  setOpenKey((current) => (current === doc.key ? null : doc.key))
                 }
                 className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left min-h-[48px]"
               >

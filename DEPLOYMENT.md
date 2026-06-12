@@ -129,11 +129,15 @@ docker compose up -d --build app app_blue app_green caddy
 docker compose ps
 ```
 
-Create or seed accounts only for the intended environment. The demo seed admin
+Create or seed accounts only for the intended environment. The first admin
 from `prisma/seed.ts` is controlled by `SEED_ADMIN_EMAIL` and
-`SEED_ADMIN_PASSWORD`, and the shared lodge kiosk account by
-`SEED_LODGE_PASSWORD`; they are for local and staging use and must be changed
-before any shared environment is exposed.
+`SEED_ADMIN_PASSWORD` (optionally `SEED_ADMIN_FIRST_NAME` and
+`SEED_ADMIN_LAST_NAME`), and the shared lodge kiosk account by
+`SEED_LODGE_PASSWORD`. The seeded admin can log in immediately and is forced
+to change password on first login; change all seed credentials before any
+shared environment is exposed. The seed is create-if-missing throughout, so
+re-running it against an existing database changes nothing; committee and
+chore placeholders are only inserted when those tables are empty.
 
 ## Routine Production Deploy
 

@@ -70,12 +70,15 @@ export function LodgeInstructionsPanel() {
     DAY_TO_DAY: null,
   });
   const [savingKey, setSavingKey] = useState<DocumentKey | null>(null);
-  const editorRefs = useRef<Record<DocumentKey, WysiwygEditorHandle | null>>({
+  const editorRefs = useRef<
+    Record<DocumentKey, WysiwygEditorHandle | null>
+  >({
     OPEN: null,
     CLOSE: null,
     DAY_TO_DAY: null,
   });
 
+  // Load all three documents for editing.
   const loadDocuments = useCallback(async () => {
     setLoading(true);
     setLoadError(null);
@@ -113,6 +116,7 @@ export function LodgeInstructionsPanel() {
     loadDocuments();
   }, [loadDocuments]);
 
+  // Save a single document; content is sanitised again server-side.
   async function saveDocument(key: DocumentKey, title: string) {
     const contentHtml = editorRefs.current[key]?.getHtml() ?? drafts[key];
     setSavingKey(key);
@@ -140,9 +144,7 @@ export function LodgeInstructionsPanel() {
   }
 
   if (loading) {
-    return (
-      <p className="text-sm text-slate-500">Loading lodge instructions...</p>
-    );
+    return <p className="text-sm text-slate-500">Loading lodge instructions...</p>;
   }
 
   if (loadError) {
@@ -163,8 +165,7 @@ export function LodgeInstructionsPanel() {
           <CardHeader>
             <CardTitle>{doc.title}</CardTitle>
             <CardDescription>
-              {doc.description} Last saved:{" "}
-              {formatUpdatedAt(updatedAt[doc.key])}
+              {doc.description} Last saved: {formatUpdatedAt(updatedAt[doc.key])}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">

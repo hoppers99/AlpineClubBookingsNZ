@@ -16,7 +16,7 @@ import { getMemberCreditBalance } from "@/lib/member-credit";
 import { findUnpaidMemberGuests } from "@/lib/booking-member-guest-subscriptions";
 import logger from "@/lib/logger";
 import { getSeasonYear } from "@/lib/utils";
-import { requiresPaidSubscriptionForAgeTierFromSettings } from "@/lib/member-subscription-eligibility";
+import { requiresPaidSubscriptionForBooking } from "@/lib/member-subscription-eligibility";
 import {
   assertLinkedBookingMembersCanBeBooked,
   BookingGuestValidationError,
@@ -73,6 +73,7 @@ const createBookingSchema = z.object({
   draft: z.boolean().optional(),
   waitlist: z.boolean().optional(),
   expectedArrivalTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]0$/).optional(),
+  requestedRoomId: z.string().min(1).optional(),
   applyCreditCents: z.number().int().min(0).optional(),
   forMemberId: z.string().optional(),
   memberReviewJustification: z.string().trim().min(1).max(1000).optional(),
@@ -171,6 +172,7 @@ export async function POST(request: NextRequest) {
     draft,
     waitlist,
     expectedArrivalTime,
+    requestedRoomId,
     memberReviewJustification,
     paymentMethod,
   } = parsed.data;
@@ -178,6 +180,20 @@ export async function POST(request: NextRequest) {
 
   if (checkOut <= checkIn) {
     return NextResponse.json({ error: "Check-out must be after check-in" }, { status: 400 });
+  }
+
+  if (requestedRoomId) {
+    const modules = await loadEffectiveModuleFlags();
+    if (!modules.bedAllocation) {
+      return NextResponse.json({ error: "Room requests are not available." }, { status: 400 });
+    }
+    const requestedRoom = await prisma.lodgeRoom.findUnique({
+      where: { id: requestedRoomId },
+      select: { id: true },
+    });
+    if (!requestedRoom) {
+      return NextResponse.json({ error: "Invalid requested room" }, { status: 400 });
+    }
   }
 
   try {
@@ -224,10 +240,11 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Subscription gate for the booking owner.
+  // Subscription gate for the booking owner. Bypassed when the Xero module
+  // is effectively off, because subscriptions are invoiced through Xero.
   if (
     session.user.role !== "ADMIN" &&
-    await requiresPaidSubscriptionForAgeTierFromSettings(effectiveMemberAgeTier)
+    await requiresPaidSubscriptionForBooking(effectiveMemberAgeTier)
   ) {
     const seasonYear = getSeasonYear(checkIn);
     const paidSub = await prisma.memberSubscription.findFirst({
@@ -312,6 +329,7 @@ export async function POST(request: NextRequest) {
         promoCodeStr,
         promoGuestIndexes,
         expectedArrivalTime,
+        requestedRoomId,
         groupDiscount,
         memberReviewJustification,
       });
@@ -369,6 +387,7 @@ export async function POST(request: NextRequest) {
       promoCodeStr,
       promoGuestIndexes,
       expectedArrivalTime,
+      requestedRoomId,
       applyCreditCents: parsed.data.applyCreditCents,
       groupDiscount,
       status,
@@ -409,6 +428,7 @@ export async function POST(request: NextRequest) {
         promoCodeStr,
         promoGuestIndexes,
         expectedArrivalTime,
+        requestedRoomId,
         groupDiscount,
         memberReviewJustification,
       });

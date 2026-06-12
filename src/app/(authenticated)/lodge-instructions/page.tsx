@@ -78,9 +78,7 @@ export default function LodgeInstructionsPage() {
   }, []);
 
   if (loading) {
-    return (
-      <p className="text-sm text-slate-500">Loading lodge instructions...</p>
-    );
+    return <p className="text-sm text-slate-500">Loading lodge instructions...</p>;
   }
 
   if (notAssigned) {
