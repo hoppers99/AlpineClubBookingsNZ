@@ -1,10 +1,12 @@
 import { prisma } from "./prisma";
 import {
   AdminCreditAdjustmentRequestStatus,
+  BookingEventType,
   CreditType,
   Prisma,
 } from "@prisma/client";
 import { createAuditLog } from "./audit";
+import { recordBookingEvent } from "./booking-events";
 import { isPrismaUniqueConstraintError } from "./prisma-errors";
 import logger from "@/lib/logger";
 import {
@@ -129,6 +131,17 @@ export async function createCancellationCredit(
       sourceBookingId: bookingId,
       xeroCreditNoteId: xeroCreditNoteId ?? null,
     },
+  });
+
+  // Durable CREDITED settlement fact for the cancellation narrative (issue
+  // #740). Written on the base client so it is not tied to the caller's
+  // transaction; the CANCELLED event with the policy snapshot is written by
+  // the cancellation flow.
+  await recordBookingEvent({
+    bookingId,
+    type: BookingEventType.CREDITED,
+    amountCents,
+    reason: "Cancellation refund held as account credit.",
   });
 }
 

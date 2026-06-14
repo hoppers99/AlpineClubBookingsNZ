@@ -20,6 +20,7 @@
 import {
   AdminReviewStatus,
   AgeTier,
+  BookingEventType,
   BookingStatus,
   PaymentSource,
   PaymentStatus,
@@ -61,6 +62,7 @@ import {
 } from "@/lib/booking-payment-methods";
 import { recordInternetBankingPaymentTransaction } from "@/lib/payment-transactions";
 import { logAudit } from "@/lib/audit";
+import { recordBookingEvent } from "@/lib/booking-events";
 import logger from "@/lib/logger";
 import { isFeatureEnabled } from "@/config/features";
 import type { GroupDiscountConfig } from "@/lib/pricing";
@@ -763,6 +765,13 @@ export async function createDraftBooking(input: DraftBookingInput): Promise<Book
     });
   }
 
+  await recordBookingEvent({
+    bookingId: newBooking.id,
+    type: BookingEventType.CREATED,
+    actorMemberId: sessionUserId,
+    amountCents: newBooking.finalPriceCents,
+  });
+
   // Drafts that land directly in AWAITING_REVIEW skip the usual draft
   // flow — alert admins immediately so they can decide.
   if (review.blockForReview) {
@@ -888,6 +897,9 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
 
   let isZeroDollarConfirmed = false;
   let capacityFullNights: string[] | null = null;
+  // Captured inside the transaction so the split child's CREATED event can be
+  // written once, after commit (issue #740).
+  let splitChild: { id: string; finalPriceCents: number } | null = null;
 
   let booking: BookingWithGuests;
   try {
@@ -1148,6 +1160,10 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
           bookingId: childBooking.id,
           db: tx,
         });
+        splitChild = {
+          id: childBooking.id,
+          finalPriceCents: childBooking.finalPriceCents,
+        };
       }
 
       return newBooking;
@@ -1206,6 +1222,37 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
         paymentMethod,
         split: splitBooking,
       },
+    });
+  }
+
+  // Durable lifecycle events (issue #740): the booking was created, and the
+  // split non-member child (if any) was created in the same transaction.
+  await recordBookingEvent({
+    bookingId: booking.id,
+    type: BookingEventType.CREATED,
+    actorMemberId: sessionUserId,
+    amountCents: booking.finalPriceCents,
+  });
+  // `splitChild` is only assigned inside the transaction closure, which TS
+  // control-flow narrows away in this outer scope; cast back to its type.
+  const createdSplitChild = splitChild as
+    | { id: string; finalPriceCents: number }
+    | null;
+  if (createdSplitChild) {
+    await recordBookingEvent({
+      bookingId: createdSplitChild.id,
+      type: BookingEventType.CREATED,
+      actorMemberId: sessionUserId,
+      amountCents: createdSplitChild.finalPriceCents,
+    });
+  }
+  // A fully credit-covered or genuinely free booking is paid up front at $0.
+  if (isZeroDollarConfirmed) {
+    await recordBookingEvent({
+      bookingId: booking.id,
+      type: BookingEventType.MEMBER_PAID,
+      actorMemberId: sessionUserId,
+      amountCents: 0,
     });
   }
 
@@ -1533,6 +1580,13 @@ export async function createWaitlistedBooking(input: WaitlistedBookingInput): Pr
       finalPriceCents: newBooking.finalPriceCents,
       requiresAdminReview: newBooking.requiresAdminReview,
     },
+  });
+
+  await recordBookingEvent({
+    bookingId: newBooking.id,
+    type: BookingEventType.CREATED,
+    actorMemberId: sessionUserId,
+    amountCents: newBooking.finalPriceCents,
   });
 
   return { booking: newBooking, position };

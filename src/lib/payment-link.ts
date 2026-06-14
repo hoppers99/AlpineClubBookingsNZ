@@ -7,9 +7,21 @@
  * leaking whether a token, booking, or request exists.
  */
 import { BookingStatus, PaymentStatus, PaymentTransactionKind, Prisma } from "@prisma/client";
-import { hashActionToken, isActionTokenFormat } from "@/lib/action-tokens";
+import {
+  hashActionToken,
+  isActionTokenFormat,
+  issueActionToken,
+} from "@/lib/action-tokens";
 import { buildInternetBankingPaymentReference } from "@/lib/booking-payment-methods";
+import {
+  resolveBookingNarrative,
+  type BookingNarrative,
+  type BookingNarrativeState,
+  type NarrativeEvent,
+} from "@/lib/booking-narrative";
 import { checkCapacityForGuestRanges } from "@/lib/capacity";
+import { endOfDateOnlyForTimeZone, formatDateOnly } from "@/lib/date-only";
+import { sendBookingRequestApprovedEmail } from "@/lib/email";
 import logger from "@/lib/logger";
 import { markBookingPaymentSucceeded } from "@/lib/payment-reconciliation";
 import { upsertPaymentIntentTransaction } from "@/lib/payment-transactions";
@@ -19,6 +31,16 @@ import {
   findOrCreateCustomer,
   getPaymentIntent,
 } from "@/lib/stripe";
+
+/** A paid booking and a completed stay are both "already paid" for link purposes. */
+const PAID_LIKE_STATUSES: readonly BookingStatus[] = [
+  BookingStatus.PAID,
+  BookingStatus.COMPLETED,
+];
+
+function isPaidLikeStatus(status: BookingStatus): boolean {
+  return PAID_LIKE_STATUSES.includes(status);
+}
 
 /** Booking statuses a payment link can still pay for. */
 export const PAYMENT_LINK_PAYABLE_BOOKING_STATUSES = [
@@ -59,12 +81,14 @@ type ResolvedPaymentLink = Prisma.PaymentLinkGetPayload<{
 }>;
 
 /**
- * Look up and validate a payment link by raw token. Throws PaymentLinkError
- * with a polite message for every failure mode. Returns the link with its
- * booking when the link is structurally valid (the booking may already be
- * paid — callers handle that explicitly).
+ * Structural lookup of a payment link by raw token. Throws only for a token
+ * that cannot map to a live booking (bad format, unknown token, soft-deleted
+ * booking). The link may be revoked/used/expired and the booking may be in any
+ * state — callers decide what to do with it. Used by the narrative context
+ * path, which renders a clear message for every link/booking state rather than
+ * a generic error.
  */
-export async function resolvePaymentLink(token: string): Promise<ResolvedPaymentLink> {
+async function loadPaymentLinkRecord(token: string): Promise<ResolvedPaymentLink> {
   const trimmed = token.trim();
   if (!isActionTokenFormat(trimmed)) {
     throw new PaymentLinkError(INVALID_LINK_MESSAGE, 404);
@@ -86,51 +110,150 @@ export async function resolvePaymentLink(token: string): Promise<ResolvedPayment
   if (!link || link.booking.deletedAt) {
     throw new PaymentLinkError(INVALID_LINK_MESSAGE, 404);
   }
+
+  return link;
+}
+
+/**
+ * Look up and validate a payment link by raw token for the payment path
+ * (intent creation). Throws PaymentLinkError with a polite message for every
+ * failure mode. Returns the link with its booking when the link is still
+ * usable (the booking may already be paid/completed — callers handle that
+ * explicitly). A paid or completed booking is treated alike (issue #740).
+ */
+export async function resolvePaymentLink(token: string): Promise<ResolvedPaymentLink> {
+  const link = await loadPaymentLinkRecord(token);
+
   if (link.revokedAt) {
     throw new PaymentLinkError(REVOKED_LINK_MESSAGE, 410);
   }
-  if (link.usedAt && link.booking.status !== BookingStatus.PAID) {
+  if (link.usedAt && !isPaidLikeStatus(link.booking.status)) {
     throw new PaymentLinkError(USED_LINK_MESSAGE, 410);
   }
-  if (link.expiresAt < new Date() && link.booking.status !== BookingStatus.PAID) {
+  if (link.expiresAt < new Date() && !isPaidLikeStatus(link.booking.status)) {
     throw new PaymentLinkError(EXPIRED_LINK_MESSAGE, 410);
   }
 
   return link;
 }
 
-export interface PaymentLinkContext {
-  state: "payable" | "paid";
-  booking: {
-    checkIn: string;
-    checkOut: string;
-    guestCount: number;
-    status: BookingStatus;
-  };
-  firstName: string;
+/** The data the public page needs to actually take a payment. */
+export interface PaymentLinkPayable {
+  checkIn: string;
+  checkOut: string;
+  guestCount: number;
+  status: BookingStatus;
   amountCents: number;
   internetBankingReference: string;
+  /** NZT end-of-check-in-day expiry, ISO. */
   expiresAt: string;
 }
 
+export interface PaymentLinkContext {
+  state: BookingNarrativeState;
+  /** Rich, plain-language wording shared with the admin booking history. */
+  narrative: BookingNarrative;
+  firstName: string;
+  /** Present only when the booking can still be paid via this link. */
+  payable: PaymentLinkPayable | null;
+  /** True when the page should offer the "email me a fresh link" action. */
+  canRequestFreshLink: boolean;
+}
+
 /**
- * Build the public payment page context for a raw token. Marks the link as
- * used (idempotently) once the booking is paid so it cannot be replayed.
+ * Build the public payment page context for a raw token. Resolves the booking's
+ * narrative from its durable events so guests see the same wording as admins,
+ * for every state — payable, expired-but-payable, paid, bumped, cancelled,
+ * declined — never a generic error. Marks the link used (idempotently) once the
+ * booking is paid/completed so it cannot be replayed.
  */
 export async function getPaymentLinkContext(token: string): Promise<PaymentLinkContext> {
-  const link = await resolvePaymentLink(token);
+  const link = await loadPaymentLinkRecord(token);
   const booking = link.booking;
+  const now = new Date();
 
-  if (booking.status === BookingStatus.PAID || booking.status === BookingStatus.COMPLETED) {
-    if (!link.usedAt) {
-      await prisma.paymentLink
-        .update({ where: { id: link.id }, data: { usedAt: new Date() } })
-        .catch((err) =>
-          logger.error({ err, paymentLinkId: link.id }, "Failed to mark payment link used")
-        );
-    }
-    return buildContext(link, "paid");
+  const events = await prisma.bookingEvent.findMany({
+    where: { bookingId: booking.id },
+    orderBy: { occurredAt: "asc" },
+    select: {
+      type: true,
+      occurredAt: true,
+      amountCents: true,
+      reason: true,
+      snapshot: true,
+    },
+  });
+
+  const narrative = resolveBookingNarrative({
+    booking: {
+      status: booking.status,
+      finalPriceCents: booking.finalPriceCents,
+      checkIn: booking.checkIn,
+      checkOut: booking.checkOut,
+      firstName: booking.member.firstName,
+      adminReviewStatus: booking.adminReviewStatus,
+      adminReviewNotes: booking.adminReviewNotes,
+      adminReviewReason: booking.adminReviewReason,
+    },
+    events: events.map(
+      (event): NarrativeEvent => ({
+        type: event.type,
+        occurredAt: event.occurredAt,
+        amountCents: event.amountCents,
+        reason: event.reason,
+        snapshot: event.snapshot,
+      })
+    ),
+    link: {
+      expiresAt: link.expiresAt,
+      usedAt: link.usedAt,
+      revokedAt: link.revokedAt,
+    },
+    now,
+  });
+
+  // A paid/completed booking burns the link so it cannot be replayed.
+  if (isPaidLikeStatus(booking.status) && !link.usedAt) {
+    await prisma.paymentLink
+      .update({ where: { id: link.id }, data: { usedAt: now } })
+      .catch((err) =>
+        logger.error({ err, paymentLinkId: link.id }, "Failed to mark payment link used")
+      );
   }
+
+  const payable: PaymentLinkPayable | null =
+    narrative.state === "payable"
+      ? {
+          checkIn: booking.checkIn.toISOString(),
+          checkOut: booking.checkOut.toISOString(),
+          guestCount: booking.guests.length,
+          status: booking.status,
+          amountCents: booking.finalPriceCents,
+          internetBankingReference: buildInternetBankingPaymentReference(booking.id),
+          expiresAt: link.expiresAt.toISOString(),
+        }
+      : null;
+
+  return {
+    state: narrative.state,
+    narrative,
+    firstName: booking.member.firstName,
+    payable,
+    canRequestFreshLink: narrative.state === "expired_payable",
+  };
+}
+
+/**
+ * Re-issue a payment link for an expired-but-payable booking and email the
+ * requester a fresh one (the self-service "fresh link" action offered on the
+ * expired-link page). Revokes any prior unused links for the booking. The new
+ * link expires at the end of the check-in day in NZT.
+ */
+export async function reissuePaymentLinkForToken(
+  token: string
+): Promise<{ emailed: boolean }> {
+  const link = await loadPaymentLinkRecord(token);
+  const booking = link.booking;
 
   if (
     !(PAYMENT_LINK_PAYABLE_BOOKING_STATUSES as readonly BookingStatus[]).includes(
@@ -140,27 +263,44 @@ export async function getPaymentLinkContext(token: string): Promise<PaymentLinkC
     throw new PaymentLinkError(NOT_PAYABLE_MESSAGE, 410);
   }
 
-  return buildContext(link, "payable");
-}
+  const expiresAt = endOfDateOnlyForTimeZone(formatDateOnly(booking.checkIn));
+  if (expiresAt.getTime() < Date.now()) {
+    throw new PaymentLinkError(
+      "These dates have already passed, so a new payment link can't be issued.",
+      410
+    );
+  }
 
-function buildContext(
-  link: ResolvedPaymentLink,
-  state: PaymentLinkContext["state"]
-): PaymentLinkContext {
-  const booking = link.booking;
-  return {
-    state,
-    booking: {
-      checkIn: booking.checkIn.toISOString(),
-      checkOut: booking.checkOut.toISOString(),
-      guestCount: booking.guests.length,
-      status: booking.status,
-    },
+  const { token: freshToken, tokenHash } = issueActionToken();
+
+  await prisma.$transaction(async (tx) => {
+    await tx.paymentLink.updateMany({
+      where: { bookingId: booking.id, revokedAt: null, usedAt: null },
+      data: { revokedAt: new Date() },
+    });
+    await tx.paymentLink.create({
+      data: {
+        bookingId: booking.id,
+        bookingRequestId: link.bookingRequestId,
+        tokenHash,
+        expiresAt,
+      },
+    });
+  });
+
+  await sendBookingRequestApprovedEmail({
+    email: booking.member.email,
     firstName: booking.member.firstName,
-    amountCents: booking.finalPriceCents,
-    internetBankingReference: buildInternetBankingPaymentReference(booking.id),
-    expiresAt: link.expiresAt.toISOString(),
-  };
+    token: freshToken,
+    checkIn: booking.checkIn,
+    checkOut: booking.checkOut,
+    guestCount: booking.guests.length,
+    priceCents: booking.finalPriceCents,
+    bookingReference: booking.id,
+    expiresAt,
+  });
+
+  return { emailed: true };
 }
 
 export type PaymentLinkIntentResult =
@@ -183,7 +323,7 @@ export async function createPaymentIntentForPaymentLink(
   const link = await resolvePaymentLink(token);
   const booking = link.booking;
 
-  if (booking.status === BookingStatus.PAID) {
+  if (isPaidLikeStatus(booking.status)) {
     throw new PaymentLinkError(USED_LINK_MESSAGE, 410);
   }
 

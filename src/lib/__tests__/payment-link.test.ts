@@ -7,12 +7,16 @@ vi.mock("@/lib/prisma", () => ({
       findUnique: vi.fn(),
       update: vi.fn(),
       updateMany: vi.fn(),
+      create: vi.fn(),
     },
     payment: {
       upsert: vi.fn(),
     },
     booking: {
       findUnique: vi.fn(),
+    },
+    bookingEvent: {
+      findMany: vi.fn().mockResolvedValue([]),
     },
     $transaction: vi.fn(),
     $executeRaw: vi.fn(),
@@ -23,6 +27,10 @@ vi.mock("@/lib/stripe", () => ({
   createPaymentIntent: vi.fn(),
   findOrCreateCustomer: vi.fn(),
   getPaymentIntent: vi.fn(),
+}));
+
+vi.mock("@/lib/email", () => ({
+  sendBookingRequestApprovedEmail: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("@/lib/payment-reconciliation", () => ({
@@ -46,9 +54,11 @@ import { createPaymentIntent, findOrCreateCustomer, getPaymentIntent } from "@/l
 import { markBookingPaymentSucceeded } from "@/lib/payment-reconciliation";
 import { checkCapacityForGuestRanges } from "@/lib/capacity";
 import { hashActionToken, issueActionToken } from "@/lib/action-tokens";
+import { sendBookingRequestApprovedEmail } from "@/lib/email";
 import {
   createPaymentIntentForPaymentLink,
   getPaymentLinkContext,
+  reissuePaymentLinkForToken,
   resolvePaymentLink,
   revokePaymentLinksForBooking,
 } from "@/lib/payment-link";
@@ -56,6 +66,7 @@ import {
 const mockedFindUnique = vi.mocked(prisma.paymentLink.findUnique);
 const mockedUpdate = vi.mocked(prisma.paymentLink.update);
 const mockedUpdateMany = vi.mocked(prisma.paymentLink.updateMany);
+const mockedBookingEventFindMany = vi.mocked(prisma.bookingEvent.findMany);
 const mockedTransaction = vi.mocked(prisma.$transaction);
 const mockedGetPaymentIntent = vi.mocked(getPaymentIntent);
 const mockedCreatePaymentIntent = vi.mocked(createPaymentIntent);
@@ -161,6 +172,7 @@ describe("resolvePaymentLink", () => {
 describe("getPaymentLinkContext", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockedBookingEventFindMany.mockResolvedValue([] as never);
   });
 
   it("returns a payable context for a PENDING booking without marking the link used", async () => {
@@ -169,8 +181,9 @@ describe("getPaymentLinkContext", () => {
     const context = await getPaymentLinkContext(RAW_TOKEN);
 
     expect(context.state).toBe("payable");
-    expect(context.amountCents).toBe(12000);
-    expect(context.booking.status).toBe(BookingStatus.PENDING);
+    expect(context.payable?.amountCents).toBe(12000);
+    expect(context.payable?.status).toBe(BookingStatus.PENDING);
+    expect(context.narrative.message).toContain("$120.00");
     expect(mockedUpdate).not.toHaveBeenCalled();
   });
 
@@ -183,10 +196,27 @@ describe("getPaymentLinkContext", () => {
     const context = await getPaymentLinkContext(RAW_TOKEN);
 
     expect(context.state).toBe("paid");
+    expect(context.payable).toBeNull();
     expect(mockedUpdate).toHaveBeenCalledWith({
       where: { id: "link-1" },
       data: { usedAt: expect.any(Date) },
     });
+  });
+
+  it("treats a COMPLETED booking like PAID (no 'already used' error) and marks the link used", async () => {
+    mockedFindUnique.mockResolvedValue(
+      baseLink({
+        usedAt: new Date(),
+        expiresAt: new Date("2000-01-01T00:00:00.000Z"),
+        booking: baseBooking({ status: BookingStatus.COMPLETED }),
+      }) as never
+    );
+
+    const context = await getPaymentLinkContext(RAW_TOKEN);
+
+    expect(context.state).toBe("paid");
+    // Link already marked used — not re-marked.
+    expect(mockedUpdate).not.toHaveBeenCalled();
   });
 
   it("does not re-mark a PAID booking's link as used if already marked", async () => {
@@ -203,20 +233,87 @@ describe("getPaymentLinkContext", () => {
     expect(mockedUpdate).not.toHaveBeenCalled();
   });
 
-  it("refuses politely once the booking is no longer payable (e.g. BUMPED)", async () => {
+  it("shows an expired-but-payable narrative (not an error) when the link has expired", async () => {
     mockedFindUnique.mockResolvedValue(
-      baseLink({ booking: baseBooking({ status: BookingStatus.BUMPED }) }) as never
+      baseLink({ expiresAt: new Date("2000-01-01T00:00:00.000Z") }) as never
     );
 
-    await expect(getPaymentLinkContext(RAW_TOKEN)).rejects.toMatchObject({ status: 410 });
+    const context = await getPaymentLinkContext(RAW_TOKEN);
+
+    expect(context.state).toBe("expired_payable");
+    expect(context.canRequestFreshLink).toBe(true);
+    expect(context.payable).toBeNull();
   });
 
-  it("refuses politely once the booking is CANCELLED", async () => {
+  it("shows a bumped narrative (not an error) once the booking was bumped", async () => {
+    mockedFindUnique.mockResolvedValue(
+      baseLink({ booking: baseBooking({ status: BookingStatus.CANCELLED }) }) as never
+    );
+    mockedBookingEventFindMany.mockResolvedValue([
+      {
+        type: "BUMPED",
+        occurredAt: new Date("2026-07-01T00:00:00.000Z"),
+        amountCents: null,
+        reason: null,
+        snapshot: { flagged: false },
+      },
+    ] as never);
+
+    const context = await getPaymentLinkContext(RAW_TOKEN);
+
+    expect(context.state).toBe("bumped");
+    expect(context.narrative.message).toMatch(/filled up/i);
+  });
+
+  it("shows a clear cancelled narrative (not an error) once the booking is CANCELLED", async () => {
     mockedFindUnique.mockResolvedValue(
       baseLink({ booking: baseBooking({ status: BookingStatus.CANCELLED }) }) as never
     );
 
-    await expect(getPaymentLinkContext(RAW_TOKEN)).rejects.toMatchObject({ status: 410 });
+    const context = await getPaymentLinkContext(RAW_TOKEN);
+
+    expect(context.state).toBe("cancelled_pre_payment");
+    expect(context.narrative.message).toMatch(/cancelled/i);
+  });
+});
+
+describe("reissuePaymentLinkForToken", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedTransaction.mockImplementation(
+      async (fn: (tx: typeof prisma) => Promise<unknown>) => fn(prisma)
+    );
+    mockedUpdateMany.mockResolvedValue({ count: 1 } as never);
+    vi.mocked(prisma.paymentLink.create).mockResolvedValue({} as never);
+  });
+
+  it("issues a fresh link and emails it for an expired-but-payable booking", async () => {
+    mockedFindUnique.mockResolvedValue(
+      baseLink({ expiresAt: new Date("2000-01-01T00:00:00.000Z") }) as never
+    );
+
+    const result = await reissuePaymentLinkForToken(RAW_TOKEN);
+
+    expect(result.emailed).toBe(true);
+    expect(vi.mocked(prisma.paymentLink.create)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ bookingId: "booking-1" }),
+      })
+    );
+    expect(sendBookingRequestApprovedEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ email: "tara@example.com" })
+    );
+  });
+
+  it("refuses to re-issue a link for a booking that can no longer be paid", async () => {
+    mockedFindUnique.mockResolvedValue(
+      baseLink({ booking: baseBooking({ status: BookingStatus.CANCELLED }) }) as never
+    );
+
+    await expect(reissuePaymentLinkForToken(RAW_TOKEN)).rejects.toMatchObject({
+      status: 410,
+    });
+    expect(sendBookingRequestApprovedEmail).not.toHaveBeenCalled();
   });
 });
 

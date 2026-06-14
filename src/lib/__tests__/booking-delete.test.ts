@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   bookingUpdate: vi.fn(),
   bookingChangeRequestDeleteMany: vi.fn(),
   bookingModificationDeleteMany: vi.fn(),
+  bookingEventDeleteMany: vi.fn(),
   promoRedemptionDelete: vi.fn(),
   promoRedemptionAllocationCount: vi.fn(),
   promoCodeUpdate: vi.fn(),
@@ -31,6 +32,9 @@ const mockTx = {
   },
   bookingModification: {
     deleteMany: mocks.bookingModificationDeleteMany,
+  },
+  bookingEvent: {
+    deleteMany: mocks.bookingEventDeleteMany,
   },
   promoRedemption: {
     delete: mocks.promoRedemptionDelete,
@@ -159,6 +163,7 @@ describe("deleteBooking", () => {
     mocks.bookingUpdate.mockResolvedValue({});
     mocks.bookingChangeRequestDeleteMany.mockResolvedValue({ count: 0 });
     mocks.bookingModificationDeleteMany.mockResolvedValue({ count: 1 });
+    mocks.bookingEventDeleteMany.mockResolvedValue({ count: 0 });
     mocks.promoRedemptionDelete.mockResolvedValue({});
     mocks.promoRedemptionAllocationCount.mockResolvedValue(1);
     mocks.promoCodeUpdate.mockResolvedValue({});

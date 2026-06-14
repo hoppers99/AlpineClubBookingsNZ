@@ -18,6 +18,7 @@ import { randomBytes } from "crypto";
 import { hash } from "bcryptjs";
 import {
   AgeTier,
+  BookingEventType,
   BookingRequestStatus,
   BookingStatus,
   PaymentStatus,
@@ -27,8 +28,10 @@ import {
 import { z } from "zod";
 import { hashActionToken, issueActionToken } from "@/lib/action-tokens";
 import { logAudit } from "@/lib/audit";
+import { recordBookingEvent } from "@/lib/booking-events";
 import { checkCapacityForGuestRanges } from "@/lib/capacity";
 import { getNonMemberHoldDays } from "@/lib/cancellation";
+import { endOfDateOnlyForTimeZone, formatDateOnly } from "@/lib/date-only";
 import {
   sendAdminBookingRequestPendingEmail,
   sendBookingRequestApprovedEmail,
@@ -570,9 +573,13 @@ export async function approveBookingRequest(input: {
     holdDays,
     reviewedAt
   );
-  // The payment link stays valid while the booking remains payable; the
-  // hard ceiling is check-in. Booking status checks gate actual payment.
-  const paymentLinkExpiresAt = request.checkIn;
+  // The payment link stays valid while the booking remains payable; the hard
+  // ceiling is the end of the check-in day in NZT (not midnight UTC, which
+  // would cut the day short in New Zealand — issue #740). Booking status checks
+  // gate actual payment.
+  const paymentLinkExpiresAt = endOfDateOnlyForTimeZone(
+    formatDateOnly(request.checkIn)
+  );
   const { token: paymentToken, tokenHash: paymentTokenHash } = issueActionToken();
 
   let capacityFullNights: string[] | null = null;
@@ -704,6 +711,13 @@ export async function approveBookingRequest(input: {
     }
     throw err;
   }
+
+  await recordBookingEvent({
+    bookingId: conversion.bookingId,
+    type: BookingEventType.CREATED,
+    actorMemberId: input.adminMemberId,
+    amountCents: priceCents,
+  });
 
   try {
     await sendBookingRequestApprovedEmail({

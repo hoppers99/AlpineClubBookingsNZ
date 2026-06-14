@@ -23,6 +23,9 @@ const mockPrisma = vi.hoisted(() => ({
   bookingModification: {
     deleteMany: vi.fn(),
   },
+  bookingEvent: {
+    deleteMany: vi.fn(),
+  },
   promoCode: {
     update: vi.fn(),
   },
@@ -471,6 +474,9 @@ describe("OBS-03: cron job run recording", () => {
     } as any);
     vi.mocked(prisma.bookingModification.deleteMany).mockResolvedValue({
       count: 1,
+    } as any);
+    vi.mocked(prisma.bookingEvent.deleteMany).mockResolvedValue({
+      count: 0,
     } as any);
     vi.mocked(prisma.booking.deleteMany).mockResolvedValue({ count: 1 } as any);
 

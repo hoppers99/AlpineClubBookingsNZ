@@ -1,4 +1,5 @@
 import {
+  BookingEventType,
   BookingStatus,
   PaymentStatus,
   PaymentTransactionKind,
@@ -6,6 +7,7 @@ import {
 } from "@prisma/client";
 
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
+import { recordBookingEvent } from "@/lib/booking-events";
 import logger from "@/lib/logger";
 import { revokePaymentLinksForBooking } from "@/lib/payment-link";
 import { markBookingPaymentSucceeded } from "@/lib/payment-reconciliation";
@@ -475,6 +477,18 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
 
       if (resolution.type === "bumped") {
         result.bumpedBookingIds.push(resolution.booking.id);
+        // Durable fact (issue #740): these dates filled up before the
+        // provisional guests were confirmed; the booking was released, no
+        // payment taken. This is what lets the narrative tell a bumped booking
+        // apart from a member-initiated cancellation — both end up CANCELLED.
+        await recordBookingEvent({
+          bookingId: resolution.booking.id,
+          type: BookingEventType.BUMPED,
+          reason: resolution.flagged
+            ? "Released because the whole party could not be confirmed (only-if-guests-come)."
+            : "These dates filled up before the provisional guests were confirmed.",
+          snapshot: { flagged: resolution.flagged },
+        });
         await sendBumpedEmail(resolution.booking, resolution.flagged);
         triggerWaitlistProcessing(resolution.booking);
         continue;
@@ -482,6 +496,11 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
 
       if (resolution.type === "confirmed_zero") {
         result.confirmedBookingIds.push(resolution.booking.id);
+        await recordBookingEvent({
+          bookingId: resolution.booking.id,
+          type: BookingEventType.NON_MEMBER_CONFIRMED,
+          amountCents: 0,
+        });
         await queueXeroInvoice(
           resolution.booking.id,
           "Xero invoice queued for $0 booking"

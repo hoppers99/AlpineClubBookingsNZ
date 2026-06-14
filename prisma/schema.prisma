@@ -697,6 +697,9 @@ model Booking {
   // Present when this booking was created from a public BookingRequest.
   originBookingRequest        BookingRequest?              @relation("BookingRequestConvertedBooking")
   paymentLinks                PaymentLink[]
+  // Durable per-transition fact store (issue #740). Unlike AuditLog these rows
+  // are never retention-pruned, so booking/payment-link narratives survive.
+  events                      BookingEvent[]
 
   @@index([memberId])
   @@index([createdById])
@@ -715,6 +718,44 @@ model Booking {
   @@index([adminReviewedById])
   @@index([requestedRoomId])
   @@index([parentBookingId])
+}
+
+// Durable booking-lifecycle event store (issue #740). One row per transition
+// (created, paid, confirmed, bumped, cancelled, refunded, credited). Unlike
+// AuditLog these rows are never retention-pruned: booking and payment-link
+// narratives are rendered from them so the wording survives audit pruning.
+enum BookingEventType {
+  CREATED
+  MEMBER_PAID
+  NON_MEMBER_CONFIRMED
+  BUMPED
+  CANCELLED
+  REFUNDED
+  CREDITED
+}
+
+model BookingEvent {
+  id            String           @id @default(cuid())
+  bookingId     String
+  type          BookingEventType
+  occurredAt    DateTime         @default(now())
+  // Member whose action drove the transition (member, admin, or null for cron).
+  actorMemberId String?
+  // Money moved by this transition, integer cents (paid/refunded/credited).
+  amountCents   Int?
+  reason        String?          @db.VarChar(500)
+  // Frozen facts that must not be recomputed later: cancellation policy summary
+  // + retained amount, bump reason, refund method/percentage, etc.
+  snapshot      Json?
+  createdAt     DateTime         @default(now())
+
+  // Restrict (not Cascade) keeps the no-cascade-off-Booking design used across
+  // this schema; the only hard-delete path (draft cleanup) removes events
+  // explicitly first. Soft-deleted bookings keep their row, so events survive.
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+
+  @@index([bookingId, occurredAt])
+  @@index([type])
 }
 
 model BookingGuest {
