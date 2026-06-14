@@ -138,6 +138,9 @@ export default function PromoCodesPage() {
   const [membersOnly, setMembersOnly] = useState(false);
   const [memberGuestsOnly, setMemberGuestsOnly] = useState(false);
   const [assignedMembersOnlyOwnNights, setAssignedMembersOnlyOwnNights] = useState(true);
+  // Tracks whether the admin has explicitly picked an assignment scope, so the
+  // type-aware default below only seeds an untouched, brand-new code.
+  const [assignmentScopeTouched, setAssignmentScopeTouched] = useState(false);
   const [xeroItemCode, setXeroItemCode] = useState("");
   const [xeroAccountCode, setXeroAccountCode] = useState("");
   const [active, setActive] = useState(true);
@@ -222,6 +225,20 @@ export default function PromoCodesPage() {
     }
   }, [showForm, fetchXeroReferenceData]);
 
+  // A fixed-nightly code that is not member-guests-only can price the whole
+  // booking as a group. Those codes default to group scope (own-nights = false);
+  // every other code defaults to own-night scoping (true).
+  const fixedNightlyGroupCapable =
+    type === "FIXED_NIGHTLY_PRICE" && !memberGuestsOnly;
+
+  // Seed the assignment-scope default for a new code from its type. Skips
+  // editing (keep the saved value) and any code where the admin has already
+  // chosen a scope.
+  useEffect(() => {
+    if (editingId || assignmentScopeTouched) return;
+    setAssignedMembersOnlyOwnNights(!fixedNightlyGroupCapable);
+  }, [fixedNightlyGroupCapable, editingId, assignmentScopeTouched]);
+
   async function searchMembers(query: string) {
     setMemberSearch(query);
     if (query.length < 2) {
@@ -287,6 +304,7 @@ export default function PromoCodesPage() {
     setMembersOnly(false);
     setMemberGuestsOnly(false);
     setAssignedMembersOnlyOwnNights(true);
+    setAssignmentScopeTouched(false);
     setXeroItemCode("");
     setXeroAccountCode("");
     setActive(true);
@@ -344,6 +362,8 @@ export default function PromoCodesPage() {
     setMembersOnly(promo.membersOnly);
     setMemberGuestsOnly(promo.memberGuestsOnly);
     setAssignedMembersOnlyOwnNights(promo.assignedMembersOnlyOwnNights ?? true);
+    // Keep the saved scope; do not let the type-aware default reseed it.
+    setAssignmentScopeTouched(true);
     setXeroItemCode(promo.xeroItemCode ?? "");
     setXeroAccountCode(promo.xeroAccountCode ?? "");
     setActive(promo.active);
@@ -512,6 +532,18 @@ export default function PromoCodesPage() {
     return new Set(redemptions.map((r) => r.memberId)).size;
   }
 
+  // Summarise how an assigned code applies: own-night scoping, group pricing
+  // (fixed-nightly, not member-guests-only), or booker-picks-guests.
+  function assignmentScopeLabel(promo: PromoCode): string {
+    if (promo.assignedMembersOnlyOwnNights ?? true) {
+      return "Assigned members' own nights";
+    }
+    if (promo.type === "FIXED_NIGHTLY_PRICE" && !promo.memberGuestsOnly) {
+      return "Group rate for all guests";
+    }
+    return "Booker chooses guests";
+  }
+
   function renderPromoCard(promo: PromoCode, isArchived: boolean) {
     const uniqueMembers = uniqueMemberCount(promo.redemptions);
     return (
@@ -660,9 +692,7 @@ export default function PromoCodesPage() {
                 ))}
               </div>
               <Badge variant="outline" className="mt-2 text-xs">
-                {promo.assignedMembersOnlyOwnNights ?? true
-                  ? "Assigned guests only"
-                  : "Booker chooses guests"}
+                {assignmentScopeLabel(promo)}
               </Badge>
             </div>
           )}
@@ -852,6 +882,11 @@ export default function PromoCodesPage() {
                           required
                         />
                       </div>
+                      <p className="text-xs text-muted-foreground">
+                        Applied to each eligible guest-night. When assigned to members, the &quot;how
+                        the code applies&quot; choice below decides whether it prices the whole group
+                        or only the assigned members&apos; own nights.
+                      </p>
                     </div>
                     <div className="space-y-2">
                       <Label htmlFor="fixedNightlyMode">Fixed nightly mode</Label>
@@ -1209,20 +1244,26 @@ export default function PromoCodesPage() {
                       ))}
                     </div>
                     <div className="space-y-2 rounded-md border bg-muted/30 p-3">
+                      <span className="block text-sm font-medium">
+                        How the code applies to a booking
+                      </span>
                       <label className="flex items-start gap-2">
                         <input
                           type="radio"
                           name="assignedMembersOnlyOwnNights"
                           checked={assignedMembersOnlyOwnNights}
-                          onChange={() => setAssignedMembersOnlyOwnNights(true)}
+                          onChange={() => {
+                            setAssignedMembersOnlyOwnNights(true);
+                            setAssignmentScopeTouched(true);
+                          }}
                           className="mt-1"
                         />
                         <span className="space-y-1">
                           <span className="block text-sm font-medium">
-                            Assigned guests only
+                            Assigned members&apos; own nights only
                           </span>
                           <span className="block text-xs text-muted-foreground">
-                            Anyone can enter the code, but it discounts only the listed members&apos; own nights.
+                            Anyone can enter the code, but it only applies to the listed members&apos; own guest nights.
                           </span>
                         </span>
                       </label>
@@ -1231,15 +1272,22 @@ export default function PromoCodesPage() {
                           type="radio"
                           name="assignedMembersOnlyOwnNights"
                           checked={!assignedMembersOnlyOwnNights}
-                          onChange={() => setAssignedMembersOnlyOwnNights(false)}
+                          onChange={() => {
+                            setAssignedMembersOnlyOwnNights(false);
+                            setAssignmentScopeTouched(true);
+                          }}
                           className="mt-1"
                         />
                         <span className="space-y-1">
                           <span className="block text-sm font-medium">
-                            Booker chooses guests
+                            {fixedNightlyGroupCapable
+                              ? "Whole booking (group rate)"
+                              : "Booker chooses guests"}
                           </span>
                           <span className="block text-xs text-muted-foreground">
-                            Only a listed member can use the code as booker, then choose which guests receive it.
+                            {fixedNightlyGroupCapable
+                              ? "A listed member must be the booker. The fixed nightly price then applies to every eligible guest on the booking, members and non-members alike."
+                              : "Only a listed member can use the code as booker, then choose which guests receive it."}
                           </span>
                         </span>
                       </label>

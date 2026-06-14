@@ -31,7 +31,9 @@ const promoCodeSchema = z.object({
   bookingStartUntil: dateOnlyString.optional().nullable(),
   membersOnly: z.boolean().default(false),
   memberGuestsOnly: z.boolean().default(false),
-  assignedMembersOnlyOwnNights: z.boolean().default(true),
+  // Omitted: defaults per type below (group fixed-nightly codes default to
+  // false so they price the whole booking; everything else defaults to true).
+  assignedMembersOnlyOwnNights: z.boolean().optional(),
   xeroItemCode: z.string().trim().min(1).max(30).optional().nullable(),
   xeroAccountCode: z.string().trim().min(1).max(10).optional().nullable(),
   active: z.boolean().default(true),
@@ -94,6 +96,14 @@ export async function POST(req: NextRequest) {
   }
 
   const data = parsed.data;
+
+  // Group fixed-nightly codes (not member-guests-only) price the whole booking,
+  // so when assigned to members they should default to group scope rather than
+  // own-night scoping. Any explicit value from the admin form still wins.
+  const isFixedNightlyGroup =
+    data.type === "FIXED_NIGHTLY_PRICE" && !data.memberGuestsOnly;
+  const assignedMembersOnlyOwnNights =
+    data.assignedMembersOnlyOwnNights ?? !isFixedNightlyGroup;
 
   if (data.type === "PERCENTAGE" && (data.percentOff == null || data.percentOff <= 0)) {
     return NextResponse.json(
@@ -177,7 +187,7 @@ export async function POST(req: NextRequest) {
         bookingStartUntil: data.bookingStartUntil ? parseDateOnly(data.bookingStartUntil) : null,
         membersOnly: data.membersOnly,
         memberGuestsOnly: data.memberGuestsOnly,
-        assignedMembersOnlyOwnNights: data.assignedMembersOnlyOwnNights,
+        assignedMembersOnlyOwnNights,
         xeroItemCode: data.xeroItemCode ?? null,
         xeroAccountCode: data.xeroAccountCode ?? null,
         active: data.active,
