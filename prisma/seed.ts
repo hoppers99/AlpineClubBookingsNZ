@@ -24,6 +24,7 @@ import {
   buildSeedChoreTemplates,
   buildSeedCommitteePlaceholders,
   buildSeedLodgeMemberData,
+  shouldSkipTokoroaThemeSeed,
 } from "./seed-data";
 import { starterPageContent } from "./starter-page-content";
 
@@ -92,6 +93,17 @@ function readBrandingLogoDataUrl() {
 
 async function seedClubTheme() {
   if (process.env.SEED_TOKOROA_THEME_COMPLETE === "1") {
+    const existing = await prisma.clubTheme.findUnique({
+      where: { id: CLUB_THEME_ID },
+      select: { completedAt: true },
+    });
+    if (shouldSkipTokoroaThemeSeed(existing)) {
+      console.log(
+        "Club theme setup already completed; skipping Tokoroa site style re-seed",
+      );
+      return;
+    }
+
     const logoDataUrl = readBrandingLogoDataUrl();
     await prisma.clubTheme.upsert({
       where: { id: CLUB_THEME_ID },

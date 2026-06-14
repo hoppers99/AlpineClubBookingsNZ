@@ -40,6 +40,7 @@ import {
   buildSeedCommitteePlaceholders,
   buildSeedLodgeMemberData,
   SEED_PLACEHOLDER_PHONE,
+  shouldSkipTokoroaThemeSeed,
 } from "../../../prisma/seed-data";
 import {
   ensureNotRequiredSubscriptionForRole,
@@ -176,6 +177,22 @@ describe("buildSeedCommitteePlaceholders", () => {
       expect(entry.id).toBe(`seed-committee-${entry.contactKey}`);
       expect(entry.sortOrder).toBe(index);
     });
+  });
+});
+
+// ── Tokoroa theme re-seed guard (issue #715/#716) ───────────────────────────
+
+describe("shouldSkipTokoroaThemeSeed", () => {
+  it("does not skip when no ClubTheme row exists yet", () => {
+    expect(shouldSkipTokoroaThemeSeed(null)).toBe(false);
+  });
+
+  it("does not skip when setup has not been completed", () => {
+    expect(shouldSkipTokoroaThemeSeed({ completedAt: null })).toBe(false);
+  });
+
+  it("skips once an admin has completed site style setup", () => {
+    expect(shouldSkipTokoroaThemeSeed({ completedAt: new Date() })).toBe(true);
   });
 });
 

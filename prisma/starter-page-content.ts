@@ -1,6 +1,7 @@
 // Starter editable page content shared by prisma/seed.ts and the
-// 20260611101500_backfill_starter_page_content migration. The migration
-// duplicates these values as SQL because production deploys run migrations
+// 20260611101500_backfill_starter_page_content and
+// 20260613090000_update_starter_home_page_content migrations. The migrations
+// duplicate these values as SQL because production deploys run migrations
 // without the seed; src/lib/__tests__/page-content-starter-backfill.test.ts
 // keeps the two in sync.
 export type StarterPageContent = {
@@ -21,11 +22,11 @@ export const starterPageContent: StarterPageContent[] = [
   {
     slug: "home",
     path: "/home",
-    caption: "Whakapapa, Mt Ruapehu",
+    caption: "Welcome to the Club Lodge",
     menuTitle: "",
-    title: "Mt Ruapehu Lodge",
+    title: "Club Lodge",
     headerText:
-      "Our club lodge sits in the Whakapapa ski area on Mt Ruapehu. Book a stay, join the club, and explore New Zealand's mountains.",
+      "Our club lodge welcomes members and guests year-round. Book a stay, join the club, and explore New Zealand's mountains.",
     sortOrder: 5,
     contentHtml: `<h2>Welcome</h2>`.trim(),
   },

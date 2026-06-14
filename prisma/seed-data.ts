@@ -440,3 +440,15 @@ export function buildSeedChoreTemplates(): SeedChoreTemplate[] {
     },
   ];
 }
+
+/**
+ * Whether seedClubTheme should skip writing the Tokoroa theme defaults.
+ * SEED_TOKOROA_THEME_COMPLETE=1 is re-applied on every seed run, but once an
+ * admin has completed site style setup (completedAt set), re-running the
+ * seed must not overwrite their edits.
+ */
+export function shouldSkipTokoroaThemeSeed(
+  existing: { completedAt: Date | null } | null,
+): boolean {
+  return existing?.completedAt != null;
+}
