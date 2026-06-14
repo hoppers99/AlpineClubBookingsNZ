@@ -35,8 +35,8 @@ export async function saveClubTheme(input: ClubThemeUpdateInput) {
     select: { completedAt: true },
   });
   const completedAt = input.completeSetup
-    ? existing?.completedAt ?? new Date()
-    : existing?.completedAt ?? null;
+    ? (existing?.completedAt ?? new Date())
+    : (existing?.completedAt ?? null);
 
   const data = {
     brandGold: input.brandGold,

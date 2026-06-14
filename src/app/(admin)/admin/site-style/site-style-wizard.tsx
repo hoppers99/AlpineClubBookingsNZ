@@ -137,7 +137,10 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
     setSavedMessage("");
   }
 
-  function updateFont(key: "headingFontKey" | "bodyFontKey", value: ClubThemeFontKey) {
+  function updateFont(
+    key: "headingFontKey" | "bodyFontKey",
+    value: ClubThemeFontKey,
+  ) {
     setValues((current) => ({ ...current, [key]: value }));
     setSavedMessage("");
   }
@@ -161,7 +164,9 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
       });
       const body = await response.json().catch(() => null);
       if (!response.ok || !body?.theme) {
-        throw new Error(responseErrorMessage(body, "Failed to save site style"));
+        throw new Error(
+          responseErrorMessage(body, "Failed to save site style"),
+        );
       }
 
       const theme = body.theme as SiteStyleThemeResponse;
@@ -179,11 +184,15 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
         rawCss: theme.rawCss ?? "",
       });
       setCompletedAt(theme.completedAt);
-      setSavedMessage(completeSetup ? "Site style is complete." : "Site style saved.");
+      setSavedMessage(
+        completeSetup ? "Site style is complete." : "Site style saved.",
+      );
       return true;
     } catch (saveError) {
       setError(
-        saveError instanceof Error ? saveError.message : "Failed to save site style",
+        saveError instanceof Error
+          ? saveError.message
+          : "Failed to save site style",
       );
       return false;
     } finally {
@@ -424,7 +433,10 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
                       type="button"
                       variant="outline"
                       onClick={() => {
-                        setValues((current) => ({ ...current, logoDataUrl: null }));
+                        setValues((current) => ({
+                          ...current,
+                          logoDataUrl: null,
+                        }));
                         setSavedMessage("");
                       }}
                     >
@@ -456,19 +468,25 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
                   <div className="rounded-md border p-4">
                     <p className="text-sm font-medium text-slate-900">Logo</p>
                     <p className="mt-2 text-sm text-slate-600">
-                      {values.logoDataUrl ? "Custom logo stored" : "Club name fallback"}
+                      {values.logoDataUrl
+                        ? "Custom logo stored"
+                        : "Club name fallback"}
                     </p>
                   </div>
                 </div>
                 <div className="space-y-1">
-                  <p className="text-xs font-medium text-slate-700">Generated CSS</p>
+                  <p className="text-xs font-medium text-slate-700">
+                    Generated CSS
+                  </p>
                   <pre className="max-h-40 overflow-auto rounded-md bg-slate-950 p-3 text-xs text-slate-100">
                     {cssPreview}
                   </pre>
                 </div>
                 {values.rawCss && (
                   <div className="space-y-1">
-                    <p className="text-xs font-medium text-slate-700">Raw CSS</p>
+                    <p className="text-xs font-medium text-slate-700">
+                      Raw CSS
+                    </p>
                     <pre className="max-h-40 overflow-auto rounded-md bg-slate-950 p-3 text-xs text-slate-100">
                       {values.rawCss}
                     </pre>
@@ -558,11 +576,19 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
               Back
             </Button>
             {stepIndex < steps.length - 1 ? (
-              <Button type="button" onClick={goNext} disabled={saving || hasFieldErrors}>
+              <Button
+                type="button"
+                onClick={goNext}
+                disabled={saving || hasFieldErrors}
+              >
                 {saving ? "Saving..." : "Save and next"}
               </Button>
             ) : (
-              <Button type="button" onClick={finish} disabled={saving || hasFieldErrors}>
+              <Button
+                type="button"
+                onClick={finish}
+                disabled={saving || hasFieldErrors}
+              >
                 {saving ? "Saving..." : "Finish setup"}
               </Button>
             )}

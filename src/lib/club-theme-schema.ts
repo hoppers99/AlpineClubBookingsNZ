@@ -13,7 +13,8 @@ export const CLUB_THEME_COLOUR_FIELDS = [
   { key: "brandSafety", label: "Safety" },
 ] as const;
 
-export type ClubThemeColourKey = (typeof CLUB_THEME_COLOUR_FIELDS)[number]["key"];
+export type ClubThemeColourKey =
+  (typeof CLUB_THEME_COLOUR_FIELDS)[number]["key"];
 
 export const CLUB_THEME_FONT_KEYS = [
   "INTER",
@@ -142,7 +143,10 @@ export function isValidLogoDataUrl(value: string): boolean {
 const colourSchema = z
   .string()
   .trim()
-  .refine(isValidThemeColour, "Use a 6-digit hex colour or exact oklch() value.");
+  .refine(
+    isValidThemeColour,
+    "Use a 6-digit hex colour or exact oklch() value.",
+  );
 
 const logoDataUrlSchema = z
   .string()
@@ -206,7 +210,9 @@ export function sanitiseThemeFont(value: unknown, fallback: ClubThemeFontKey) {
 }
 
 export function sanitiseLogoDataUrl(value: unknown): string | null {
-  return typeof value === "string" && isValidLogoDataUrl(value) ? value.trim() : null;
+  return typeof value === "string" && isValidLogoDataUrl(value)
+    ? value.trim()
+    : null;
 }
 
 export function normaliseThemeValues(
@@ -281,7 +287,10 @@ function relativeLuminance(colour: string): number | null {
   );
 }
 
-export function contrastRatio(foreground: string, background: string): number | null {
+export function contrastRatio(
+  foreground: string,
+  background: string,
+): number | null {
   const foregroundLuminance = relativeLuminance(foreground);
   const backgroundLuminance = relativeLuminance(background);
   if (foregroundLuminance === null || backgroundLuminance === null) {
