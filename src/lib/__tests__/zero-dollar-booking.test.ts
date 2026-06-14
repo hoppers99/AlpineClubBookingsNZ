@@ -18,7 +18,7 @@
  * - Xero: $0 payment condition corrected ($0 bookings now get payment recorded)
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
 
 vi.stubEnv("STRIPE_SECRET_KEY", "sk_test_fake");
@@ -40,18 +40,22 @@ const mockBookingUpdate = vi.fn();
 const mockBookingUpdateMany = vi.fn();
 const mockPaymentUpdate = vi.fn();
 const mockPaymentCreate = vi.fn();
+const mockPaymentUpsert = vi.fn();
 const mockExecuteRaw = vi.fn().mockResolvedValue(undefined);
 
 // Shared tx mock used by booking route
 const mockTx = {
   $executeRaw: mockExecuteRaw,
   booking: {
+    findUnique: mockBookingFindUnique,
     findMany: mockTxBookingFindMany,
     create: mockTxBookingCreate,
     update: mockTxBookingUpdate,
+    updateMany: mockBookingUpdateMany,
   },
   season: { findMany: mockTxSeasonFindMany },
-  payment: { create: mockTxPaymentCreate },
+  payment: { create: mockTxPaymentCreate, upsert: mockPaymentUpsert },
+  promoRedemption: { findUnique: vi.fn().mockResolvedValue(null) },
 };
 
 vi.mock("@/lib/prisma", () => ({
@@ -76,6 +80,7 @@ vi.mock("@/lib/prisma", () => ({
     payment: {
       create: (...args: unknown[]) => mockPaymentCreate(...args),
       update: (...args: unknown[]) => mockPaymentUpdate(...args),
+      upsert: (...args: unknown[]) => mockPaymentUpsert(...args),
     },
     groupDiscountSetting: {
       findUnique: vi.fn().mockResolvedValue(null),
@@ -479,11 +484,24 @@ describe("Cron Confirm Pending: zero-dollar handling", () => {
     };
   }
 
+  function mockPendingBookings(
+    bookings: ReturnType<typeof makeZeroDollarPendingBooking>[]
+  ) {
+    mockBookingFindMany.mockResolvedValue(bookings);
+    mockBookingFindUnique.mockImplementation(
+      async ({ where }: { where: { id: string } }) =>
+        bookings.find((booking) => booking.id === where.id) ?? null
+    );
+  }
+
   beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-09T00:00:00.000Z"));
     vi.clearAllMocks();
     mockBookingUpdateMany.mockResolvedValue({ count: 1 });
     mockPaymentCreate.mockResolvedValue({ id: "pay-new", status: "SUCCEEDED" });
     mockPaymentUpdate.mockResolvedValue({ id: "pay-1", status: "SUCCEEDED" });
+    mockPaymentUpsert.mockResolvedValue({ id: "pay-upsert", status: "SUCCEEDED" });
     mockPrismaTransaction.mockImplementation(
       async (fn: (tx: unknown) => Promise<unknown>) => fn(mockTx)
     );
@@ -500,9 +518,13 @@ describe("Cron Confirm Pending: zero-dollar handling", () => {
     });
   });
 
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("confirms $0 PENDING booking without calling Stripe.chargePaymentMethod", async () => {
     const booking = makeZeroDollarPendingBooking("b1");
-    mockBookingFindMany.mockResolvedValue([booking]);
+    mockPendingBookings([booking]);
     mockCheckCapacity.mockResolvedValue({ available: true, minAvailable: 10, nightDetails: [] });
 
     const result = await confirmPendingBookings();
@@ -515,47 +537,52 @@ describe("Cron Confirm Pending: zero-dollar handling", () => {
 
   it("creates new SUCCEEDED Payment for $0 booking with no existing payment record", async () => {
     const booking = makeZeroDollarPendingBooking("b1", false);
-    mockBookingFindMany.mockResolvedValue([booking]);
+    mockPendingBookings([booking]);
     mockCheckCapacity.mockResolvedValue({ available: true, minAvailable: 10, nightDetails: [] });
 
     await confirmPendingBookings();
 
-    expect(mockPaymentCreate).toHaveBeenCalledWith({
-      data: { bookingId: "b1", amountCents: 0, status: "SUCCEEDED" },
+    expect(mockPaymentUpsert).toHaveBeenCalledWith({
+      where: { bookingId: "b1" },
+      create: { bookingId: "b1", amountCents: 0, status: "SUCCEEDED" },
+      update: { amountCents: 0, status: "SUCCEEDED" },
     });
+    expect(mockPaymentCreate).not.toHaveBeenCalled();
     expect(mockPaymentUpdate).not.toHaveBeenCalledWith(expect.objectContaining({ where: { bookingId: "b1" } }));
   });
 
   it("updates existing Payment to SUCCEEDED for $0 booking that has a payment record", async () => {
     const booking = makeZeroDollarPendingBooking("b1", true);
-    mockBookingFindMany.mockResolvedValue([booking]);
+    mockPendingBookings([booking]);
     mockCheckCapacity.mockResolvedValue({ available: true, minAvailable: 10, nightDetails: [] });
 
     await confirmPendingBookings();
 
-    expect(mockPaymentUpdate).toHaveBeenCalledWith({
+    expect(mockPaymentUpsert).toHaveBeenCalledWith({
       where: { bookingId: "b1" },
-      data: { status: "SUCCEEDED", amountCents: 0 },
+      create: { bookingId: "b1", amountCents: 0, status: "SUCCEEDED" },
+      update: { amountCents: 0, status: "SUCCEEDED" },
     });
     expect(mockPaymentCreate).not.toHaveBeenCalled();
+    expect(mockPaymentUpdate).not.toHaveBeenCalledWith(expect.objectContaining({ where: { bookingId: "b1" } }));
   });
 
   it("sets booking status to PAID via updateMany for $0 booking", async () => {
     const booking = makeZeroDollarPendingBooking("b1");
-    mockBookingFindMany.mockResolvedValue([booking]);
+    mockPendingBookings([booking]);
     mockCheckCapacity.mockResolvedValue({ available: true, minAvailable: 10, nightDetails: [] });
 
     await confirmPendingBookings();
 
     expect(mockBookingUpdateMany).toHaveBeenCalledWith({
       where: { id: "b1", status: "PENDING" },
-      data: { status: "PAID" },
+      data: { status: "PAID", nonMemberHoldUntil: null },
     });
   });
 
   it("sends confirmation email with promo code for $0 PENDING booking", async () => {
     const booking = makeZeroDollarPendingBooking("b1");
-    mockBookingFindMany.mockResolvedValue([booking]);
+    mockPendingBookings([booking]);
     mockCheckCapacity.mockResolvedValue({ available: true, minAvailable: 10, nightDetails: [] });
 
     await confirmPendingBookings();
@@ -573,7 +600,7 @@ describe("Cron Confirm Pending: zero-dollar handling", () => {
 
   it("skips $0 booking already claimed by another process (updateMany returns 0)", async () => {
     const booking = makeZeroDollarPendingBooking("b1");
-    mockBookingFindMany.mockResolvedValue([booking]);
+    mockPendingBookings([booking]);
     mockCheckCapacity.mockResolvedValue({ available: true, minAvailable: 10, nightDetails: [] });
     mockBookingUpdateMany.mockResolvedValue({ count: 0 });
 
@@ -586,7 +613,7 @@ describe("Cron Confirm Pending: zero-dollar handling", () => {
 
   it("bumps a $0 PENDING booking when capacity is not available", async () => {
     const booking = makeZeroDollarPendingBooking("b1");
-    mockBookingFindMany.mockResolvedValue([booking]);
+    mockPendingBookings([booking]);
     mockCheckCapacity.mockResolvedValue({ available: false, minAvailable: 0, nightDetails: [] });
     mockBookingUpdate.mockResolvedValue({});
 
@@ -596,6 +623,7 @@ describe("Cron Confirm Pending: zero-dollar handling", () => {
     expect(result.confirmedBookingIds).toHaveLength(0);
     expect(mockedCharge).not.toHaveBeenCalled();
     expect(mockPaymentCreate).not.toHaveBeenCalled();
+    expect(mockPaymentUpsert).not.toHaveBeenCalled();
   });
 });
 

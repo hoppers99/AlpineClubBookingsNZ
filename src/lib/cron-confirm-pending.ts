@@ -1,5 +1,17 @@
+import {
+  BookingStatus,
+  PaymentStatus,
+  PaymentTransactionKind,
+  Prisma,
+} from "@prisma/client";
+
+import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
+import logger from "@/lib/logger";
+import { revokePaymentLinksForBooking } from "@/lib/payment-link";
+import { markBookingPaymentSucceeded } from "@/lib/payment-reconciliation";
+import { upsertPaymentIntentTransaction } from "@/lib/payment-transactions";
+import { deletePromoRedemptionAndAdjustCount } from "@/lib/promo";
 import { prisma } from "./prisma";
-import { BookingStatus } from "@prisma/client";
 import { checkCapacityForGuestRanges } from "./capacity";
 import { chargePaymentMethod } from "./stripe";
 import {
@@ -7,23 +19,63 @@ import {
   kickQueuedXeroOutboxOperationsIfConnected,
 } from "./xero-operation-outbox";
 import {
-  sendBookingConfirmedEmail,
-  sendBookingBumpedEmail,
-  sendBookingGuestsCancelledEmail,
-  sendAdminPaymentFailureAlert,
   sendAdminBookingRequestHoldExpiredEmail,
+  sendAdminPaymentFailureAlert,
+  sendBookingBumpedEmail,
+  sendBookingConfirmedEmail,
+  sendBookingGuestsCancelledEmail,
 } from "./email";
 import { processWaitlistForDates } from "./waitlist";
-import logger from "@/lib/logger";
-import { PaymentStatus, PaymentTransactionKind } from "@prisma/client";
-import { markBookingPaymentSucceeded } from "@/lib/payment-reconciliation";
-import { upsertPaymentIntentTransaction } from "@/lib/payment-transactions";
-import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
-import { deletePromoRedemptionAndAdjustCount } from "@/lib/promo";
-import { revokePaymentLinksForBooking } from "@/lib/payment-link";
 
 /** How long to extend the hold for request-origin bookings (no saved card) at hold expiry. */
 const REQUEST_HOLD_EXTENSION_MS = 2 * 24 * 60 * 60 * 1000;
+
+const pendingBookingInclude = {
+  member: true,
+  guests: true,
+  payment: true,
+  parentBooking: {
+    include: {
+      payment: true,
+    },
+  },
+  originBookingRequest: { select: { id: true } },
+  promoRedemption: {
+    include: {
+      guestTargets: { select: { bookingGuestId: true } },
+      promoCode: {
+        include: { assignments: { select: { memberId: true } } },
+      },
+    },
+  },
+} satisfies Prisma.BookingInclude;
+
+type PendingBooking = Prisma.BookingGetPayload<{
+  include: typeof pendingBookingInclude;
+}>;
+
+type SavedPaymentMethod = {
+  stripeCustomerId: string;
+  stripePaymentMethodId: string;
+};
+
+type HoldResolution =
+  | { type: "already_processed" }
+  | { type: "bumped"; booking: PendingBooking; flagged: boolean }
+  | { type: "confirmed_zero"; booking: PendingBooking }
+  | {
+      type: "extended_request_hold";
+      booking: PendingBooking;
+      extendedHoldUntil: Date;
+    }
+  | { type: "missing_payment_method"; booking: PendingBooking }
+  | {
+      type: "claimed_for_charge";
+      booking: PendingBooking;
+      payment: SavedPaymentMethod;
+      paymentId: string;
+      previousHoldUntil: Date | null;
+    };
 
 export interface CronConfirmResult {
   confirmedBookingIds: string[];
@@ -35,55 +87,366 @@ export interface CronConfirmResult {
   failedBookingIds: string[];
 }
 
+function savedPaymentMethodForBooking(
+  booking: PendingBooking
+): SavedPaymentMethod | null {
+  if (booking.payment?.stripeCustomerId && booking.payment.stripePaymentMethodId) {
+    return {
+      stripeCustomerId: booking.payment.stripeCustomerId,
+      stripePaymentMethodId: booking.payment.stripePaymentMethodId,
+    };
+  }
+
+  const parentPayment = booking.parentBooking?.payment;
+  if (parentPayment?.stripeCustomerId && parentPayment.stripePaymentMethodId) {
+    return {
+      stripeCustomerId: parentPayment.stripeCustomerId,
+      stripePaymentMethodId: parentPayment.stripePaymentMethodId,
+    };
+  }
+
+  return null;
+}
+
+function promoEmailOptions(booking: PendingBooking) {
+  if (!booking.promoRedemption?.promoCode) {
+    return undefined;
+  }
+
+  return {
+    discountCents: booking.discountCents,
+    promoAdjustmentCents: booking.promoAdjustmentCents,
+    promoCode: booking.promoRedemption.promoCode.code,
+  };
+}
+
+async function queueXeroInvoice(bookingId: string, logMessage: string) {
+  try {
+    const queuedInvoice = await enqueueXeroBookingInvoiceOperation(bookingId);
+    if (queuedInvoice.queueOperationId) {
+      await kickQueuedXeroOutboxOperationsIfConnected({ limit: 1 });
+      logger.info(
+        { bookingId, job: "confirmPendingBookings" },
+        logMessage
+      );
+    }
+  } catch (xeroErr) {
+    logger.error(
+      { err: xeroErr, bookingId, job: "confirmPendingBookings" },
+      "Failed to queue Xero invoice"
+    );
+  }
+}
+
+async function sendConfirmationEmail(booking: PendingBooking) {
+  try {
+    await sendBookingConfirmedEmail(
+      booking.member.email,
+      booking.member.firstName,
+      booking.checkIn,
+      booking.checkOut,
+      booking.guests.length,
+      booking.finalPriceCents,
+      promoEmailOptions(booking)
+    );
+  } catch (emailErr) {
+    logger.error(
+      { err: emailErr, bookingId: booking.id, job: "confirmPendingBookings" },
+      "Failed to send confirmation email"
+    );
+  }
+}
+
+async function sendBumpedEmail(booking: PendingBooking, flagged: boolean) {
+  try {
+    if (flagged) {
+      await sendBookingGuestsCancelledEmail(
+        booking.member.email,
+        booking.member.firstName,
+        booking.checkIn,
+        booking.checkOut
+      );
+    } else {
+      await sendBookingBumpedEmail(
+        booking.member.email,
+        booking.member.firstName,
+        booking.checkIn,
+        booking.checkOut,
+        booking.guests.length
+      );
+    }
+  } catch (emailErr) {
+    logger.error(
+      { err: emailErr, bookingId: booking.id, job: "confirmPendingBookings" },
+      "Failed to send bumped email"
+    );
+  }
+}
+
+function triggerWaitlistProcessing(booking: PendingBooking) {
+  processWaitlistForDates({
+    checkIn: booking.checkIn,
+    checkOut: booking.checkOut,
+  }).catch((err) =>
+    logger.error(
+      { err, bookingId: booking.id },
+      "Failed to process waitlist after cron bump"
+    )
+  );
+}
+
+async function resolveHoldWindowUnderLock(
+  bookingId: string,
+  now: Date
+): Promise<HoldResolution> {
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+
+    const booking = await tx.booking.findUnique({
+      where: { id: bookingId },
+      include: pendingBookingInclude,
+    });
+
+    if (
+      !booking ||
+      booking.status !== BookingStatus.PENDING ||
+      !booking.nonMemberHoldUntil ||
+      booking.nonMemberHoldUntil > now
+    ) {
+      logger.info(
+        { bookingId, job: "confirmPendingBookings" },
+        "Booking already processed by another handler"
+      );
+      return { type: "already_processed" };
+    }
+
+    const capacityCheck = await checkCapacityForGuestRanges(
+      booking.checkIn,
+      booking.checkOut,
+      booking.guests,
+      booking.id,
+      tx
+    );
+
+    if (!capacityCheck.available) {
+      const claimed = await tx.booking.updateMany({
+        where: { id: booking.id, status: BookingStatus.PENDING },
+        data: {
+          status: BookingStatus.CANCELLED,
+          nonMemberHoldUntil: null,
+        },
+      });
+      if (claimed.count === 0) {
+        logger.info(
+          { bookingId: booking.id, job: "confirmPendingBookings" },
+          "Booking already processed by another handler"
+        );
+        return { type: "already_processed" };
+      }
+
+      await reconcileBedAllocationsForBooking({
+        bookingId: booking.id,
+        db: tx,
+        previousRange: {
+          checkIn: booking.checkIn,
+          checkOut: booking.checkOut,
+        },
+      });
+
+      const promoRedemption = await tx.promoRedemption.findUnique({
+        where: { bookingId: booking.id },
+      });
+      if (promoRedemption) {
+        await deletePromoRedemptionAndAdjustCount(tx, promoRedemption);
+      }
+
+      await revokePaymentLinksForBooking(booking.id, tx);
+
+      return {
+        type: "bumped",
+        booking,
+        flagged: booking.cancelIfGuestsBumped,
+      };
+    }
+
+    // Zero-dollar booking: skip Stripe, just confirm with a SUCCEEDED Payment.
+    if (booking.finalPriceCents === 0) {
+      const claimed = await tx.booking.updateMany({
+        where: { id: booking.id, status: BookingStatus.PENDING },
+        data: {
+          status: BookingStatus.PAID,
+          nonMemberHoldUntil: null,
+        },
+      });
+      if (claimed.count === 0) {
+        logger.info(
+          { bookingId: booking.id, job: "confirmPendingBookings" },
+          "Booking already processed by another handler"
+        );
+        return { type: "already_processed" };
+      }
+
+      await reconcileBedAllocationsForBooking({
+        bookingId: booking.id,
+        db: tx,
+        previousRange: {
+          checkIn: booking.checkIn,
+          checkOut: booking.checkOut,
+        },
+      });
+
+      await tx.payment.upsert({
+        where: { bookingId: booking.id },
+        create: {
+          bookingId: booking.id,
+          amountCents: 0,
+          status: PaymentStatus.SUCCEEDED,
+        },
+        update: {
+          amountCents: 0,
+          status: PaymentStatus.SUCCEEDED,
+        },
+      });
+
+      return { type: "confirmed_zero", booking };
+    }
+
+    const savedPayment = savedPaymentMethodForBooking(booking);
+    if (!savedPayment) {
+      if (booking.originBookingRequest) {
+        // Request-origin bookings (#707) pay via a tokenised PaymentLink, not
+        // a saved card. Keep the link path alive when capacity is still
+        // available; revoke it in the unavailable branch above.
+        const extendedHoldUntil = new Date(
+          now.getTime() + REQUEST_HOLD_EXTENSION_MS
+        );
+        const claimed = await tx.booking.updateMany({
+          where: {
+            id: booking.id,
+            status: BookingStatus.PENDING,
+            nonMemberHoldUntil: booking.nonMemberHoldUntil,
+          },
+          data: { nonMemberHoldUntil: extendedHoldUntil },
+        });
+
+        return claimed.count > 0
+          ? {
+              type: "extended_request_hold",
+              booking,
+              extendedHoldUntil,
+            }
+          : { type: "already_processed" };
+      }
+
+      return { type: "missing_payment_method", booking };
+    }
+
+    const claimed = await tx.booking.updateMany({
+      where: { id: booking.id, status: BookingStatus.PENDING },
+      data: {
+        // Claim capacity before the external Stripe call. CONFIRMED is a
+        // capacity-holding, payment-owed status; it is released back to PENDING
+        // if the saved-card charge cannot complete.
+        status: BookingStatus.CONFIRMED,
+        nonMemberHoldUntil: null,
+      },
+    });
+    if (claimed.count === 0) {
+      logger.info(
+        { bookingId: booking.id, job: "confirmPendingBookings" },
+        "Booking already processed by another handler"
+      );
+      return { type: "already_processed" };
+    }
+
+    await reconcileBedAllocationsForBooking({
+      bookingId: booking.id,
+      db: tx,
+      previousRange: {
+        checkIn: booking.checkIn,
+        checkOut: booking.checkOut,
+      },
+    });
+
+    const payment = await tx.payment.upsert({
+      where: { bookingId: booking.id },
+      create: {
+        bookingId: booking.id,
+        amountCents: booking.finalPriceCents,
+        status: PaymentStatus.PENDING,
+        stripeCustomerId: savedPayment.stripeCustomerId,
+        stripePaymentMethodId: savedPayment.stripePaymentMethodId,
+      },
+      update: {
+        amountCents: booking.finalPriceCents,
+        status: PaymentStatus.PENDING,
+        stripeCustomerId: savedPayment.stripeCustomerId,
+        stripePaymentMethodId: savedPayment.stripePaymentMethodId,
+      },
+    });
+
+    return {
+      type: "claimed_for_charge",
+      booking,
+      payment: savedPayment,
+      paymentId: payment.id,
+      previousHoldUntil: booking.nonMemberHoldUntil,
+    };
+  });
+}
+
+async function releaseChargeClaim(
+  claim: Extract<HoldResolution, { type: "claimed_for_charge" }>
+) {
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+
+    const released = await tx.booking.updateMany({
+      where: { id: claim.booking.id, status: BookingStatus.CONFIRMED },
+      data: {
+        status: BookingStatus.PENDING,
+        nonMemberHoldUntil: claim.previousHoldUntil,
+      },
+    });
+
+    if (released.count > 0) {
+      await reconcileBedAllocationsForBooking({
+        bookingId: claim.booking.id,
+        db: tx,
+        previousRange: {
+          checkIn: claim.booking.checkIn,
+          checkOut: claim.booking.checkOut,
+        },
+      });
+    }
+  });
+}
+
 /**
- * Process pending bookings that have reached their hold deadline.
+ * Process provisional bookings that have reached their hold deadline.
  *
  * For each PENDING booking where nonMemberHoldUntil <= now():
- * 1. Re-check bed availability for the booking's date range
- * 2. If beds available AND saved payment method exists:
- *    - Charge the saved PaymentMethod via Stripe
- *    - Set status to PAID
- *    - Send confirmation email
- * 3. If beds NOT available:
- *    - Whole-bump the booking (status -> BUMPED) and send the bumped/cancelled
- *      notification email. This is the bump-on-no-capacity safety.
- *
- * Note (issue #737): there is no partial bump or "charge reduced members-only
- * amount" at hold expiry any more. Capacity is held only by PAID/CONFIRMED/
- * AWAITING_REVIEW bookings, and members pay their share up front, so a PENDING
- * booking that no longer fits is bumped whole rather than repriced and charged.
+ * 1. Re-check bed availability under the booking advisory lock.
+ * 2. If beds are unavailable, cancel the provisional booking, revoke payment
+ *    links, and send the appropriate no-charge bump/cancellation email.
+ * 3. If beds are available and a saved payment method exists, claim capacity,
+ *    charge off-session, then move to PAID and queue the booking's Xero invoice.
+ * 4. If the booking is request-origin and has no saved card, keep the #707
+ *    payment-link path alive by extending the follow-up hold and alerting admins.
  */
 export async function confirmPendingBookings(): Promise<CronConfirmResult> {
   const now = new Date();
 
-  // Find all PENDING bookings past their hold deadline.
-  //
-  // Split-booking children (#738, parentBookingId set) are deliberately
-  // excluded: they are the provisional non-member half of a mixed party that is
-  // confirmed/charged or bumped at the window in R3, not auto-charged here (they
-  // carry no saved payment method, so this cron would only mark them failed).
-  // R3 owns their window resolution.
+  // Find all PENDING bookings past their hold deadline, including split
+  // non-member child bookings (#738). Process oldest first so older provisional
+  // non-member windows resolve before newer competing holds.
   const pendingBookings = await prisma.booking.findMany({
     where: {
       status: BookingStatus.PENDING,
       nonMemberHoldUntil: { lte: now },
-      parentBookingId: null,
     },
-    include: {
-      member: true,
-      guests: true,
-      payment: true,
-      originBookingRequest: { select: { id: true } },
-      promoRedemption: {
-        include: {
-          guestTargets: { select: { bookingGuestId: true } },
-          promoCode: {
-            include: { assignments: { select: { memberId: true } } },
-          },
-        },
-      },
-    },
-    orderBy: { createdAt: "asc" }, // Process oldest first
+    include: pendingBookingInclude,
+    orderBy: { createdAt: "asc" },
   });
 
   const result: CronConfirmResult = {
@@ -93,264 +456,109 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
     failedBookingIds: [],
   };
 
-  type PendingBooking = (typeof pendingBookings)[number];
-
-  // Whole-booking bump at hold expiry. `flagged` distinguishes the member's
-  // explicit "only book if my guests can come" cancellation (distinct email)
-  // from a regular bump. Uses the status-claim pattern for idempotency and
-  // never charges/refunds — the booking is still PENDING (uncharged).
-  const bumpWholeBookingAtHoldExpiry = async (
-    booking: PendingBooking,
-    { flagged }: { flagged: boolean }
-  ): Promise<boolean> => {
-    const claimed = await prisma.booking.updateMany({
-      where: { id: booking.id, status: BookingStatus.PENDING },
-      data: { status: BookingStatus.BUMPED },
-    });
-    if (claimed.count === 0) {
-      logger.info(
-        { bookingId: booking.id, job: "confirmPendingBookings" },
-        "Booking already processed by another handler"
-      );
-      return false;
-    }
-
-    await reconcileBedAllocationsForBooking({
-      bookingId: booking.id,
-      previousRange: {
-        checkIn: booking.checkIn,
-        checkOut: booking.checkOut,
-      },
-    });
-
-    // Clean up the promo redemption (re-read so a partial bump's recalculated
-    // redemption is also handled). No redemption count is restored to a charge
-    // because nothing was ever charged.
-    const promoRedemption = await prisma.promoRedemption.findUnique({
-      where: { bookingId: booking.id },
-    });
-    if (promoRedemption) {
-      await prisma.$transaction((tx) =>
-        deletePromoRedemptionAndAdjustCount(tx, promoRedemption)
-      );
-    }
-
-    result.bumpedBookingIds.push(booking.id);
-
-    try {
-      if (flagged) {
-        await sendBookingGuestsCancelledEmail(
-          booking.member.email,
-          booking.member.firstName,
-          booking.checkIn,
-          booking.checkOut
-        );
-      } else {
-        await sendBookingBumpedEmail(
-          booking.member.email,
-          booking.member.firstName,
-          booking.checkIn,
-          booking.checkOut,
-          booking.guests.length
-        );
-      }
-    } catch (emailErr) {
-      logger.error(
-        { err: emailErr, bookingId: booking.id, job: "confirmPendingBookings" },
-        "Failed to send bumped email"
-      );
-    }
-
-    // Trigger waitlist processing for dates freed by bumping
-    processWaitlistForDates({ checkIn: booking.checkIn, checkOut: booking.checkOut }).catch(
-      (err) =>
-        logger.error(
-          { err, bookingId: booking.id },
-          "Failed to process waitlist after cron bump"
-        )
-    );
-
-    return true;
-  };
-
-  for (const booking of pendingBookings) {
+  for (const candidate of pendingBookings) {
     let chargeAttempted = false;
     let paymentSucceeded = false;
+    let claimForCharge: Extract<
+      HoldResolution,
+      { type: "claimed_for_charge" }
+    > | null = null;
+    let paymentIntentId = candidate.payment?.stripePaymentIntentId || "N/A";
 
     try {
-      // Check capacity (excluding this booking; PENDING no longer holds
-      // capacity, but excludeBookingId keeps the check robust to any future
-      // re-counting and matches the synchronous claim semantics).
-      const capacityCheck = await checkCapacityForGuestRanges(
-        booking.checkIn,
-        booking.checkOut,
-        booking.guests,
-        booking.id
-      );
+      const resolution = await resolveHoldWindowUnderLock(candidate.id, now);
 
-      if (!capacityCheck.available) {
-        // Bump-on-no-capacity safety (issue #737): a PENDING booking that no
-        // longer fits is bumped whole. There is no partial bump or reduced
-        // members-only charge at hold expiry — members pay their share up
-        // front, so there is nothing left to settle here.
-        //
-        // Request-origin bookings (#707) additionally have a tokenised
-        // PaymentLink revoked so the bumped booking can't be paid for.
-        // `cancelIfGuestsBumped` only changes which email the member receives
-        // (it never applies to request-origin bookings, which have no member
-        // guest to keep).
-        if (booking.originBookingRequest) {
-          const bumped = await bumpWholeBookingAtHoldExpiry(booking, {
-            flagged: false,
-          });
-          if (bumped) {
-            await revokePaymentLinksForBooking(booking.id);
-          }
-          continue;
-        }
-
-        await bumpWholeBookingAtHoldExpiry(booking, {
-          flagged: booking.cancelIfGuestsBumped,
-        });
+      if (resolution.type === "already_processed") {
         continue;
       }
 
-      // Zero-dollar booking: skip Stripe, just confirm with a SUCCEEDED Payment
-      if (booking.finalPriceCents === 0) {
-        const claimed = await prisma.booking.updateMany({
-          where: { id: booking.id, status: BookingStatus.PENDING },
-          data: { status: BookingStatus.PAID },
-        });
-        if (claimed.count === 0) {
-          logger.info({ bookingId: booking.id, job: "confirmPendingBookings" }, "Booking already processed by another handler");
-          continue;
-        }
-        await reconcileBedAllocationsForBooking({
-          bookingId: booking.id,
-          previousRange: {
-            checkIn: booking.checkIn,
-            checkOut: booking.checkOut,
-          },
-        });
+      if (resolution.type === "bumped") {
+        result.bumpedBookingIds.push(resolution.booking.id);
+        await sendBumpedEmail(resolution.booking, resolution.flagged);
+        triggerWaitlistProcessing(resolution.booking);
+        continue;
+      }
 
-        if (booking.payment) {
-          await prisma.payment.update({
-            where: { bookingId: booking.id },
-            data: { status: "SUCCEEDED", amountCents: 0 },
-          });
-        } else {
-          await prisma.payment.create({
-            data: { bookingId: booking.id, amountCents: 0, status: "SUCCEEDED" },
-          });
-        }
+      if (resolution.type === "confirmed_zero") {
+        result.confirmedBookingIds.push(resolution.booking.id);
+        await queueXeroInvoice(
+          resolution.booking.id,
+          "Xero invoice queued for $0 booking"
+        );
+        await sendConfirmationEmail(resolution.booking);
+        continue;
+      }
 
-        result.confirmedBookingIds.push(booking.id);
-
+      if (resolution.type === "extended_request_hold") {
         try {
-          const queuedInvoice = await enqueueXeroBookingInvoiceOperation(booking.id);
-          if (queuedInvoice.queueOperationId) {
-            await kickQueuedXeroOutboxOperationsIfConnected({ limit: 1 });
-            logger.info(
-              { bookingId: booking.id, job: "confirmPendingBookings" },
-              "Xero invoice queued for $0 booking"
-            );
-          }
-        } catch (xeroErr) {
-          logger.error({ err: xeroErr, bookingId: booking.id, job: "confirmPendingBookings" }, "Failed to queue Xero invoice for $0 booking");
-        }
-
-        try {
-          await sendBookingConfirmedEmail(
-            booking.member.email,
-            booking.member.firstName,
-            booking.checkIn,
-            booking.checkOut,
-            booking.guests.length,
-            booking.finalPriceCents,
-            booking.promoRedemption?.promoCode
-              ? {
-                  discountCents: booking.discountCents,
-                  promoAdjustmentCents: booking.promoAdjustmentCents,
-                  promoCode: booking.promoRedemption.promoCode.code,
-                }
-              : undefined
-          );
+          await sendAdminBookingRequestHoldExpiredEmail({
+            requesterName: `${resolution.booking.member.firstName} ${resolution.booking.member.lastName}`,
+            checkIn: resolution.booking.checkIn,
+            checkOut: resolution.booking.checkOut,
+            guestCount: resolution.booking.guests.length,
+            totalCents: resolution.booking.finalPriceCents,
+            holdUntil: resolution.extendedHoldUntil,
+          });
         } catch (emailErr) {
-          logger.error({ err: emailErr, bookingId: booking.id, job: "confirmPendingBookings" }, "Failed to send confirmation email for $0 booking");
-        }
-
-        continue;
-      }
-
-      // Beds available - try to charge saved payment method
-      if (!booking.payment?.stripePaymentMethodId || !booking.payment?.stripeCustomerId) {
-        if (booking.originBookingRequest) {
-          // Request-origin bookings (#707) pay via a tokenised PaymentLink, not
-          // a saved card - never auto-charge them. Extend the hold and alert
-          // admins to follow up with the requester. (PENDING no longer holds
-          // capacity per #737, so this is a follow-up window, not a bed
-          // reservation; the booking only secures beds once it is paid.)
-          const extendedHoldUntil = new Date(
-            now.getTime() + REQUEST_HOLD_EXTENSION_MS
-          );
-          const claimed = await prisma.booking.updateMany({
-            where: {
-              id: booking.id,
-              status: BookingStatus.PENDING,
-              nonMemberHoldUntil: booking.nonMemberHoldUntil,
+          logger.error(
+            {
+              err: emailErr,
+              bookingId: resolution.booking.id,
+              job: "confirmPendingBookings",
             },
-            data: { nonMemberHoldUntil: extendedHoldUntil },
-          });
-
-          if (claimed.count > 0) {
-            try {
-              await sendAdminBookingRequestHoldExpiredEmail({
-                requesterName: `${booking.member.firstName} ${booking.member.lastName}`,
-                checkIn: booking.checkIn,
-                checkOut: booking.checkOut,
-                guestCount: booking.guests.length,
-                totalCents: booking.finalPriceCents,
-                holdUntil: extendedHoldUntil,
-              });
-            } catch (emailErr) {
-              logger.error(
-                { err: emailErr, bookingId: booking.id, job: "confirmPendingBookings" },
-                "Failed to send admin hold-expired alert"
-              );
-            }
-          }
-
-          continue;
+            "Failed to send admin hold-expired alert"
+          );
         }
-
-        logger.error({ bookingId: booking.id, job: "confirmPendingBookings" }, "Booking has no saved payment method - cannot auto-confirm");
-        result.failedBookingIds.push(booking.id);
         continue;
       }
 
-      // Charge the saved card
+      if (resolution.type === "missing_payment_method") {
+        logger.error(
+          { bookingId: resolution.booking.id, job: "confirmPendingBookings" },
+          "Booking has no saved payment method - cannot auto-confirm"
+        );
+        result.failedBookingIds.push(resolution.booking.id);
+        continue;
+      }
+
+      claimForCharge = resolution;
       chargeAttempted = true;
+
       const paymentIntent = await chargePaymentMethod({
-        amountCents: booking.finalPriceCents,
-        customerId: booking.payment.stripeCustomerId,
-        paymentMethodId: booking.payment.stripePaymentMethodId,
+        amountCents: resolution.booking.finalPriceCents,
+        customerId: resolution.payment.stripeCustomerId,
+        paymentMethodId: resolution.payment.stripePaymentMethodId,
         metadata: {
-          bookingId: booking.id,
-          memberId: booking.memberId,
+          bookingId: resolution.booking.id,
+          memberId: resolution.booking.memberId,
         },
-        idempotencyKey: `pending_charge_${booking.id}`,
+        idempotencyKey: `pending_charge_${resolution.booking.id}`,
       });
+      paymentIntentId = paymentIntent.id;
+
+      const paymentMethodId =
+        typeof paymentIntent.payment_method === "string"
+          ? paymentIntent.payment_method
+          : paymentIntent.payment_method?.id ?? null;
 
       if (paymentIntent.status === "succeeded") {
         paymentSucceeded = true;
-        const reconciliation = await markBookingPaymentSucceeded({
-          bookingId: booking.id,
+
+        await upsertPaymentIntentTransaction({
+          paymentId: resolution.paymentId,
+          kind: PaymentTransactionKind.PRIMARY,
           paymentIntentId: paymentIntent.id,
           amountCents: paymentIntent.amount,
-          paymentMethodId:
-            typeof paymentIntent.payment_method === "string"
-              ? paymentIntent.payment_method
-              : paymentIntent.payment_method?.id ?? null,
+          status: PaymentStatus.SUCCEEDED,
+          paymentMethodId,
+          reason: "pending_hold_auto_charge",
+        });
+
+        const reconciliation = await markBookingPaymentSucceeded({
+          bookingId: resolution.booking.id,
+          paymentIntentId: paymentIntent.id,
+          amountCents: paymentIntent.amount,
+          paymentMethodId,
         });
 
         if (
@@ -359,115 +567,109 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
         ) {
           logger.warn(
             {
-              bookingId: booking.id,
+              bookingId: resolution.booking.id,
               paymentIntentId: paymentIntent.id,
               outcome: reconciliation.outcome,
               job: "confirmPendingBookings",
             },
             "Pending booking payment succeeded but final capacity claim failed"
           );
-          result.failedBookingIds.push(booking.id);
+          result.failedBookingIds.push(resolution.booking.id);
           continue;
         }
 
-        result.confirmedBookingIds.push(booking.id);
-
-        // Queue the invoice durably and let the worker handle the actual Xero write.
-        try {
-          const queuedInvoice = await enqueueXeroBookingInvoiceOperation(booking.id);
-          if (queuedInvoice.queueOperationId) {
-            await kickQueuedXeroOutboxOperationsIfConnected({ limit: 1 });
-            logger.info(
-              { bookingId: booking.id, job: "confirmPendingBookings" },
-              "Xero invoice queued"
-            );
-          }
-        } catch (xeroErr) {
-          logger.error({ err: xeroErr, bookingId: booking.id, job: "confirmPendingBookings" }, "Failed to queue Xero invoice");
-        }
-
-        try {
-          await sendBookingConfirmedEmail(
-            booking.member.email,
-            booking.member.firstName,
-            booking.checkIn,
-            booking.checkOut,
-            booking.guests.length,
-            booking.finalPriceCents,
-            booking.promoRedemption?.promoCode
-              ? {
-                  discountCents: booking.discountCents,
-                  promoAdjustmentCents: booking.promoAdjustmentCents,
-                  promoCode: booking.promoRedemption.promoCode.code,
-                }
-              : undefined
-          );
-        } catch (emailErr) {
-          logger.error({ err: emailErr, bookingId: booking.id, job: "confirmPendingBookings" }, "Failed to send confirmation email");
-        }
+        result.confirmedBookingIds.push(resolution.booking.id);
+        await queueXeroInvoice(resolution.booking.id, "Xero invoice queued");
+        await sendConfirmationEmail(resolution.booking);
       } else {
-        // Payment is processing (requires_action, etc.) - revert to PENDING for webhook to handle
         await prisma.$transaction(async (tx) => {
           await upsertPaymentIntentTransaction({
-            paymentId: booking.payment!.id,
+            paymentId: resolution.paymentId,
             kind: PaymentTransactionKind.PRIMARY,
             paymentIntentId: paymentIntent.id,
             amountCents: paymentIntent.amount,
             status: PaymentStatus.PROCESSING,
-            paymentMethodId:
-              typeof paymentIntent.payment_method === "string"
-                ? paymentIntent.payment_method
-                : paymentIntent.payment_method?.id ?? null,
+            paymentMethodId,
             reason: "pending_hold_auto_charge",
             store: tx,
           });
 
-          await tx.booking.update({
-            where: { id: booking.id },
-            data: { status: BookingStatus.PENDING },
+          await tx.booking.updateMany({
+            where: {
+              id: resolution.booking.id,
+              status: BookingStatus.CONFIRMED,
+            },
+            data: {
+              status: BookingStatus.PENDING,
+              nonMemberHoldUntil: resolution.previousHoldUntil,
+            },
           });
           await reconcileBedAllocationsForBooking({
-            bookingId: booking.id,
+            bookingId: resolution.booking.id,
             db: tx,
             previousRange: {
-              checkIn: booking.checkIn,
-              checkOut: booking.checkOut,
+              checkIn: resolution.booking.checkIn,
+              checkOut: resolution.booking.checkOut,
             },
           });
         });
 
-        // Will be resolved by Stripe webhook
-        logger.info({ bookingId: booking.id, paymentStatus: paymentIntent.status, job: "confirmPendingBookings" }, "Booking payment processing");
+        logger.info(
+          {
+            bookingId: resolution.booking.id,
+            paymentStatus: paymentIntent.status,
+            job: "confirmPendingBookings",
+          },
+          "Booking payment processing"
+        );
       }
     } catch (err) {
-      logger.error({ err, bookingId: booking.id, job: "confirmPendingBookings" }, "Error processing pending booking");
+      logger.error(
+        {
+          err,
+          bookingId: candidate.id,
+          job: "confirmPendingBookings",
+        },
+        "Error processing pending booking"
+      );
 
-      // Only roll back the booking when Stripe never confirmed a successful charge.
-      if (!paymentSucceeded) {
-        await prisma.booking.updateMany({
-          where: { id: booking.id, status: BookingStatus.PAID },
-          data: { status: BookingStatus.PENDING },
-        }).catch((revertErr) => logger.error({ err: revertErr, bookingId: booking.id, job: "confirmPendingBookings" }, "Failed to revert booking status"));
-      } else {
+      // Only roll back the capacity claim when Stripe never confirmed a
+      // successful charge. If Stripe succeeded, leave the booking in its
+      // claimed state for webhook/admin recovery.
+      if (claimForCharge && !paymentSucceeded) {
+        await releaseChargeClaim(claimForCharge).catch((revertErr) =>
+          logger.error(
+            {
+              err: revertErr,
+              bookingId: claimForCharge?.booking.id,
+              job: "confirmPendingBookings",
+            },
+            "Failed to release pending booking charge claim"
+          )
+        );
+      } else if (paymentSucceeded) {
         logger.error(
-          { bookingId: booking.id, job: "confirmPendingBookings" },
+          { bookingId: candidate.id, job: "confirmPendingBookings" },
           "Stripe charge succeeded but local booking reconciliation failed; leaving booking claimed for webhook recovery"
         );
       }
 
-      result.failedBookingIds.push(booking.id);
+      result.failedBookingIds.push(candidate.id);
 
       // Only emit a payment-failure alert when the Stripe charge attempt itself failed.
       if (chargeAttempted && !paymentSucceeded) {
         sendAdminPaymentFailureAlert({
-          memberName: `${booking.member.firstName} ${booking.member.lastName}`,
-          checkIn: booking.checkIn,
-          checkOut: booking.checkOut,
-          amountCents: booking.finalPriceCents,
+          memberName: `${candidate.member.firstName} ${candidate.member.lastName}`,
+          checkIn: candidate.checkIn,
+          checkOut: candidate.checkOut,
+          amountCents: candidate.finalPriceCents,
           errorMessage: err instanceof Error ? err.message : String(err),
-          paymentIntentId: booking.payment?.stripePaymentIntentId || "N/A",
+          paymentIntentId,
         }).catch((alertErr) =>
-          logger.error({ err: alertErr, bookingId: booking.id }, "Failed to send admin payment failure alert")
+          logger.error(
+            { err: alertErr, bookingId: candidate.id },
+            "Failed to send admin payment failure alert"
+          )
         );
       }
     }
