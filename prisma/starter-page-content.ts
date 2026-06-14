@@ -101,10 +101,10 @@ export const starterPageContent: StarterPageContent[] = [
     slug: "404",
     path: "/404",
     caption: "Page not found",
-    menuTitle: "404",
+    menuTitle: "",
     title: "Page Not Found",
     headerText: "The page you are looking for does not exist.",
-    sortOrder: 30,
+    sortOrder: 100,
     contentHtml: "<h2>Page Not Found</h2>",
   },
 ];

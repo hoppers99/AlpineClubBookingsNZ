@@ -12,6 +12,19 @@ export type EditablePageRecord = {
   updatedByMemberId: string | null;
 };
 
+/**
+ * Slugs for built-in system pages that must always exist.
+ * Their slugs and sort orders are fixed and cannot be changed by admins.
+ */
+export const SYSTEM_PAGE_SLUGS: ReadonlyMap<string, number> = new Map([
+  ["home", 1],
+  ["404", 100],
+]);
+
+export function isSystemPageSlug(slug: string): boolean {
+  return SYSTEM_PAGE_SLUGS.has(slug);
+}
+
 export const PAGE_SLUG_PATTERN =
   /^[a-z0-9]+(?:-[a-z0-9]+)*(?:\/[a-z0-9]+(?:-[a-z0-9]+)*)*$/;
 
@@ -49,9 +62,7 @@ export function isValidPageSlug(value: string): boolean {
 }
 
 export function isReservedPageSlug(value: string): boolean {
-  return value
-    .split("/")
-    .some((segment) => RESERVED_PAGE_SLUGS.has(segment));
+  return value.split("/").some((segment) => RESERVED_PAGE_SLUGS.has(segment));
 }
 
 export function toPagePath(slug: string): string {

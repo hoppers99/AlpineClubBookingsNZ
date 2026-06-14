@@ -8,8 +8,10 @@ import {
 } from "@/lib/audit";
 import {
   isReservedPageSlug,
+  isSystemPageSlug,
   isValidPageSlug,
   normalizePageSlug,
+  SYSTEM_PAGE_SLUGS,
   toPagePath,
 } from "@/lib/page-content";
 import {
@@ -227,6 +229,25 @@ export async function PUT(request: NextRequest) {
 
   if (!existing) {
     return NextResponse.json({ error: "Page not found" }, { status: 404 });
+  }
+
+  // System pages have fixed slugs and fixed sort orders.
+  if (isSystemPageSlug(existing.slug)) {
+    if (slug !== existing.slug) {
+      return NextResponse.json(
+        { error: `The slug for this system page cannot be changed` },
+        { status: 422 },
+      );
+    }
+    const fixedOrder = SYSTEM_PAGE_SLUGS.get(existing.slug)!;
+    if (parsed.data.sortOrder !== fixedOrder) {
+      return NextResponse.json(
+        {
+          error: `Menu order for "${existing.slug}" is fixed at ${fixedOrder} and cannot be changed`,
+        },
+        { status: 422 },
+      );
+    }
   }
 
   const duplicate = await prisma.pageContent.findFirst({

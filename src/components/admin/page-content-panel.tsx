@@ -53,6 +53,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import type { EditablePageRecord } from "@/lib/page-content";
+import { isSystemPageSlug, SYSTEM_PAGE_SLUGS } from "@/lib/page-content";
 
 function stripHtml(html: string): string {
   return html
@@ -1309,7 +1310,8 @@ export function PageContentPanel() {
     setDraftTitle(page.title);
     setDraftHeaderText(page.headerText ?? "");
     setDraftSlug(page.slug);
-    setDraftSortOrder(page.sortOrder);
+    // Always use the canonical sort order for system pages regardless of DB value.
+    setDraftSortOrder(SYSTEM_PAGE_SLUGS.get(page.slug) ?? page.sortOrder);
     setDraftContent(page.contentHtml ?? "");
     setDialogOpen(true);
   }
@@ -1458,6 +1460,7 @@ export function PageContentPanel() {
         {pages.map((page) => {
           const textPreview = stripHtml(page.contentHtml);
           const hasContent = textPreview.length > 0;
+          const isSystem = isSystemPageSlug(page.slug);
 
           return (
             <Card key={page.slug}>
@@ -1467,9 +1470,19 @@ export function PageContentPanel() {
                     <CardTitle>{page.title}</CardTitle>
                     <CardDescription>{page.path}</CardDescription>
                   </div>
-                  <Badge variant={hasContent ? "default" : "secondary"}>
-                    {hasContent ? "Has content" : "Empty"}
-                  </Badge>
+                  <div className="flex shrink-0 flex-col items-end gap-1">
+                    {isSystem && (
+                      <Badge
+                        variant="outline"
+                        className="text-[10px] uppercase text-slate-500"
+                      >
+                        System
+                      </Badge>
+                    )}
+                    <Badge variant={hasContent ? "default" : "secondary"}>
+                      {hasContent ? "Has content" : "Empty"}
+                    </Badge>
+                  </div>
                 </div>
               </CardHeader>
               <CardContent className="space-y-3">
@@ -1599,6 +1612,11 @@ export function PageContentPanel() {
                 <label className="space-y-1">
                   <span className="text-xs font-medium text-slate-700">
                     Slug
+                    {isSystemPageSlug(selectedPage.slug) && (
+                      <span className="ml-2 rounded bg-slate-200 px-1 py-0.5 text-[10px] font-normal text-slate-500">
+                        fixed
+                      </span>
+                    )}
                   </span>
                   <Input
                     value={draftSlug}
@@ -1606,11 +1624,22 @@ export function PageContentPanel() {
                       setDraftSlug(event.target.value.trim().toLowerCase())
                     }
                     placeholder="page-slug"
+                    readOnly={isSystemPageSlug(selectedPage.slug)}
+                    className={
+                      isSystemPageSlug(selectedPage.slug)
+                        ? "cursor-not-allowed bg-slate-100 opacity-70"
+                        : ""
+                    }
                   />
                 </label>
                 <label className="space-y-1">
                   <span className="text-xs font-medium text-slate-700">
                     Menu order
+                    {isSystemPageSlug(selectedPage.slug) && (
+                      <span className="ml-2 rounded bg-slate-200 px-1 py-0.5 text-[10px] font-normal text-slate-500">
+                        fixed at {SYSTEM_PAGE_SLUGS.get(selectedPage.slug)}
+                      </span>
+                    )}
                   </span>
                   <Input
                     type="number"
@@ -1621,6 +1650,12 @@ export function PageContentPanel() {
                       )
                     }
                     min={0}
+                    readOnly={isSystemPageSlug(selectedPage.slug)}
+                    className={
+                      isSystemPageSlug(selectedPage.slug)
+                        ? "cursor-not-allowed bg-slate-100 opacity-70"
+                        : ""
+                    }
                   />
                 </label>
                 <div className="md:col-span-2 text-xs text-slate-600">
