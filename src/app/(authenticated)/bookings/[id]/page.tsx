@@ -31,6 +31,11 @@ import {
   type BookingHistoryTone,
 } from "@/lib/booking-history";
 import {
+  resolveBookingNarrative,
+  type BookingNarrativeState,
+  type NarrativeEvent,
+} from "@/lib/booking-narrative";
+import {
   getRemainingRefundableCents,
   hasCapturedPayment,
 } from "@/lib/booking-payment-state";
@@ -45,6 +50,24 @@ const historyToneClasses: Record<BookingHistoryTone, string> = {
   success: "border-emerald-200 bg-emerald-100 text-emerald-800",
   warning: "border-amber-200 bg-amber-100 text-amber-800",
   danger: "border-rose-200 bg-rose-100 text-rose-800",
+};
+
+// States with a self-contained outcome worth surfacing as a banner. Active
+// states (payable / under_review) already have their own dedicated UI below.
+const NARRATIVE_BANNER_STATES = new Set<BookingNarrativeState>([
+  "paid",
+  "bumped",
+  "cancelled_pre_payment",
+  "cancelled_post_payment",
+  "declined",
+]);
+
+const narrativeBannerClasses: Record<string, string> = {
+  paid: "border-emerald-200 bg-emerald-50 text-emerald-900",
+  bumped: "border-sky-200 bg-sky-50 text-sky-900",
+  cancelled_pre_payment: "border-amber-200 bg-amber-50 text-amber-900",
+  cancelled_post_payment: "border-amber-200 bg-amber-50 text-amber-900",
+  declined: "border-rose-200 bg-rose-50 text-rose-900",
 };
 
 export default async function BookingDetailPage({
@@ -62,8 +85,9 @@ export default async function BookingDetailPage({
   const booking = await prisma.booking.findUnique({
     where: { id },
     include: {
-      guests: true,
+      guests: { include: { nights: { select: { stayDate: true } } } },
       payment: true,
+      member: { select: { firstName: true } },
       requestedRoom: {
         select: { id: true, name: true, active: true },
       },
@@ -170,6 +194,42 @@ export default async function BookingDetailPage({
     },
   });
 
+  // Durable lifecycle events (issue #740) drive the same plain-language
+  // narrative shown on the public payment-link page, so guests and admins read
+  // identical wording for every booking state.
+  const bookingEvents = await prisma.bookingEvent.findMany({
+    where: { bookingId: booking.id },
+    orderBy: { occurredAt: "asc" },
+    select: {
+      type: true,
+      occurredAt: true,
+      amountCents: true,
+      reason: true,
+      snapshot: true,
+    },
+  });
+  const bookingNarrative = resolveBookingNarrative({
+    booking: {
+      status: booking.status,
+      finalPriceCents: booking.finalPriceCents,
+      checkIn: booking.checkIn,
+      checkOut: booking.checkOut,
+      firstName: booking.member.firstName,
+      adminReviewStatus: booking.adminReviewStatus,
+      adminReviewNotes: booking.adminReviewNotes,
+      adminReviewReason: booking.adminReviewReason,
+    },
+    events: bookingEvents.map(
+      (event): NarrativeEvent => ({
+        type: event.type,
+        occurredAt: event.occurredAt,
+        amountCents: event.amountCents,
+        reason: event.reason,
+        snapshot: event.snapshot,
+      })
+    ),
+  });
+
   const nights = Math.ceil(
     (new Date(booking.checkOut).getTime() - new Date(booking.checkIn).getTime()) /
       (1000 * 60 * 60 * 24)
@@ -252,6 +312,7 @@ export default async function BookingDetailPage({
       stayStart: g.stayStart.toISOString().slice(0, 10),
       stayEnd: g.stayEnd.toISOString().slice(0, 10),
       priceCents: g.priceCents,
+      nights: g.nights.map((n) => n.stayDate.toISOString().slice(0, 10)),
     })),
     bookingMemberId: booking.memberId,
     viewerRole: session.user.role,
@@ -346,6 +407,19 @@ export default async function BookingDetailPage({
           {booking.deletedReason ? (
             <p className="mt-1">Reason: {booking.deletedReason}</p>
           ) : null}
+        </div>
+      ) : null}
+
+      {NARRATIVE_BANNER_STATES.has(bookingNarrative.state) ? (
+        <div
+          className={`space-y-1 rounded-md border px-4 py-3 text-sm ${
+            narrativeBannerClasses[bookingNarrative.state] ??
+            "border-slate-200 bg-slate-50 text-slate-900"
+          }`}
+        >
+          <p className="font-medium">{bookingNarrative.headline}</p>
+          <p>{bookingNarrative.message}</p>
+          <p className="opacity-80">{bookingNarrative.nextStep}</p>
         </div>
       ) : null}
 

@@ -8,6 +8,8 @@ import {
 } from "./cancellation";
 import { sendBookingCancelledEmail } from "./email";
 import { logAudit } from "./audit";
+import { recordBookingEvent } from "./booking-events";
+import { BookingEventType } from "@prisma/client";
 import { createCancellationCredit, restoreCreditFromBooking } from "./member-credit";
 import { processWaitlistForDates } from "./waitlist";
 import {
@@ -129,6 +131,13 @@ async function cancelLinkedProvisionalChildBookings(
       metadata: { linkedParentBookingId: parentBookingId, paymentTaken: false },
     });
 
+    await recordBookingEvent({
+      bookingId: child.id,
+      type: BookingEventType.CANCELLED,
+      actorMemberId: sessionUserId,
+      reason: "Cancelled with the linked member booking. No payment was taken.",
+    });
+
     sendBookingCancelledEmail(
       child.member.email,
       child.member.firstName,
@@ -213,6 +222,15 @@ async function performBookingCancellation(
       metadata: { wasOffered, priorStatus },
     });
 
+    await recordBookingEvent({
+      bookingId,
+      type: BookingEventType.CANCELLED,
+      actorMemberId: sessionUserId,
+      reason: wasAwaitingReview
+        ? "Cancelled while awaiting admin review. No payment was taken."
+        : "Cancelled before payment. No payment was taken.",
+    });
+
     sendBookingCancelledEmail(
       booking.member.email,
       booking.member.firstName,
@@ -282,6 +300,13 @@ async function performBookingCancellation(
         paymentTaken: false,
         setupIntentCancelled: Boolean(booking.payment?.stripeSetupIntentId),
       },
+    });
+
+    await recordBookingEvent({
+      bookingId,
+      type: BookingEventType.CANCELLED,
+      actorMemberId: sessionUserId,
+      reason: "Cancelled before payment. No payment was taken.",
     });
 
     sendBookingCancelledEmail(
@@ -405,6 +430,13 @@ async function performBookingCancellation(
         xeroClearingAmountCents,
         queuedXeroClearingCreditNote: xeroClearingAmountCents > 0,
       },
+    });
+
+    await recordBookingEvent({
+      bookingId,
+      type: BookingEventType.CANCELLED,
+      actorMemberId: sessionUserId,
+      reason: "Cancelled before payment was captured. Nothing was charged.",
     });
 
     sendBookingCancelledEmail(
@@ -544,6 +576,19 @@ async function performBookingCancellation(
       },
     });
 
+    // CANCELLED (post-payment) — the CREDITED settlement event is written by
+    // createCancellationCredit (member-credit.ts) above.
+    await recordCancellationEvent({
+      bookingId,
+      actorMemberId: sessionUserId,
+      policySummary: `Cancelled ${days} day(s) before check-in: ${refundPercentage}% credit refund under the policy in effect at the time.`,
+      refundMethod: "credit",
+      refundPercentage,
+      paidAmountCents,
+      settledAmountCents: refundAmountCents,
+      changeFeeCents: booking.payment.changeFeeCents,
+    });
+
     sendBookingCancelledEmail(
       booking.member.email,
       booking.member.firstName,
@@ -636,6 +681,24 @@ async function performBookingCancellation(
       },
     });
 
+    await recordCancellationEvent({
+      bookingId,
+      actorMemberId: sessionUserId,
+      policySummary: `Cancelled ${days} day(s) before check-in: ${refundPercentage}% card refund under the policy in effect at the time.`,
+      refundMethod: "card",
+      refundPercentage,
+      paidAmountCents,
+      settledAmountCents: refundAmountCents,
+      changeFeeCents: booking.payment.changeFeeCents,
+    });
+    await recordBookingEvent({
+      bookingId,
+      type: BookingEventType.REFUNDED,
+      actorMemberId: sessionUserId,
+      amountCents: refundAmountCents,
+      reason: `${refundPercentage}% refunded to the original payment method.`,
+    });
+
     sendBookingCancelledEmail(
       booking.member.email,
       booking.member.firstName,
@@ -698,6 +761,17 @@ async function performBookingCancellation(
       creditRestoredCents,
       failedOutstandingAdditionalPayment: shouldFailAdditionalPayment,
     },
+  });
+
+  await recordCancellationEvent({
+    bookingId,
+    actorMemberId: sessionUserId,
+    policySummary: `Cancelled ${days} day(s) before check-in: no refund was due under the policy in effect at the time.`,
+    refundMethod: "card",
+    refundPercentage,
+    paidAmountCents,
+    settledAmountCents: 0,
+    changeFeeCents: booking.payment.changeFeeCents,
   });
 
   sendBookingCancelledEmail(
@@ -781,6 +855,44 @@ function logBookingCancellationAudit({
       ...metadata,
     },
     ipAddress,
+  });
+}
+
+/**
+ * Write the durable CANCELLED BookingEvent (issue #740). For a cancellation
+ * after a captured payment, the policy snapshot + settled/retained amounts are
+ * frozen here so the narrative can be rebuilt exactly later, even after the
+ * AuditLog has been retention-pruned. Pre-payment cancellations carry no
+ * snapshot. Call after the cancellation has committed.
+ */
+async function recordCancellationEvent(params: {
+  bookingId: string;
+  actorMemberId: string;
+  policySummary: string;
+  refundMethod: "card" | "credit";
+  refundPercentage: number;
+  paidAmountCents: number;
+  settledAmountCents: number;
+  changeFeeCents: number;
+}): Promise<void> {
+  const retainedAmountCents = Math.max(
+    params.paidAmountCents - params.settledAmountCents,
+    0
+  );
+  await recordBookingEvent({
+    bookingId: params.bookingId,
+    type: BookingEventType.CANCELLED,
+    actorMemberId: params.actorMemberId,
+    amountCents: params.paidAmountCents,
+    snapshot: {
+      policySummary: params.policySummary,
+      refundMethod: params.refundMethod,
+      refundPercentage: params.refundPercentage,
+      paidAmountCents: params.paidAmountCents,
+      settledAmountCents: params.settledAmountCents,
+      retainedAmountCents,
+      changeFeeCents: params.changeFeeCents,
+    },
   });
 }
 

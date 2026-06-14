@@ -1,11 +1,18 @@
 import { prisma } from "@/lib/prisma";
-import { BookingStatus, PaymentStatus, PaymentTransactionKind, Prisma } from "@prisma/client";
+import {
+  BookingEventType,
+  BookingStatus,
+  PaymentStatus,
+  PaymentTransactionKind,
+  Prisma,
+} from "@prisma/client";
 import {
   refundPaymentTransactions,
   upsertPaymentIntentTransaction,
 } from "@/lib/payment-transactions";
 import { checkCapacityForGuestRanges } from "@/lib/capacity";
 import { restoreCreditFromBooking } from "@/lib/member-credit";
+import { recordBookingEvent } from "@/lib/booking-events";
 import { sendAdminPaymentFailureAlert } from "@/lib/email";
 import logger from "@/lib/logger";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
@@ -80,7 +87,7 @@ export async function markBookingPaymentSucceeded({
     const booking = await tx.booking.findUnique({
       where: { id: bookingId },
       include: {
-        guests: true,
+        guests: { include: { nights: true } }, // per-night sets (issue #713)
         member: true,
       },
     });
@@ -198,7 +205,42 @@ export async function markBookingPaymentSucceeded({
     };
   });
 
+  if (reconciliation.outcome === "paid") {
+    // Single durable "paid" fact for every payment path (session, webhook,
+    // payment link, cron auto-charge). A provisional non-member child booking
+    // (parentBookingId set) is recorded as confirmed/charged; everything else
+    // is the member paying up front (issue #740).
+    await recordBookingEvent({
+      bookingId,
+      type: reconciliation.booking.parentBookingId
+        ? BookingEventType.NON_MEMBER_CONFIRMED
+        : BookingEventType.MEMBER_PAID,
+      actorMemberId: reconciliation.booking.memberId,
+      amountCents,
+    });
+  }
+
   if (reconciliation.outcome === "capacity_failed") {
+    // Payment succeeded but the final capacity claim failed: the booking was
+    // cancelled inside the transaction and is auto-refunded here (issue #740).
+    await recordBookingEvent({
+      bookingId,
+      type: BookingEventType.CANCELLED,
+      actorMemberId: reconciliation.booking.memberId,
+      amountCents,
+      reason:
+        "These dates filled up before payment could be secured, so the booking was cancelled and refunded.",
+      snapshot: {
+        policySummary:
+          "These dates were no longer available when payment completed, so the full amount was refunded.",
+        refundMethod: "card",
+        refundPercentage: 100,
+        paidAmountCents: amountCents,
+        settledAmountCents: amountCents,
+        retainedAmountCents: 0,
+      },
+    });
+
     try {
       await refundPaymentTransactions({
         paymentId: reconciliation.paymentId,
@@ -210,6 +252,14 @@ export async function markBookingPaymentSucceeded({
           reason: "capacity_claim_failed",
         },
         idempotencyKeyPrefix: `capacity_claim_failed_${bookingId}_${paymentIntentId}`,
+      });
+
+      await recordBookingEvent({
+        bookingId,
+        type: BookingEventType.REFUNDED,
+        actorMemberId: reconciliation.booking.memberId,
+        amountCents,
+        reason: "Automatic refund after lodge capacity was no longer available.",
       });
 
       return {

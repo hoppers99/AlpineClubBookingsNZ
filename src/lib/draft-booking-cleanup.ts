@@ -12,6 +12,7 @@ export type DraftBookingDependentCleanupSummary = {
   promoRedemptions: number;
   changeRequests: number;
   modifications: number;
+  events: number;
 };
 
 export async function deleteDraftBookingDependents(
@@ -25,6 +26,7 @@ export async function deleteDraftBookingDependents(
       promoRedemptions: 0,
       changeRequests: 0,
       modifications: 0,
+      events: 0,
     };
   }
 
@@ -42,11 +44,17 @@ export async function deleteDraftBookingDependents(
   const modificationResult = await tx.bookingModification.deleteMany({
     where: { bookingId: { in: bookingIds } },
   });
+  // BookingEvent uses onDelete: Restrict (issue #740), so its rows must be
+  // removed before the draft booking can be hard-deleted.
+  const eventResult = await tx.bookingEvent.deleteMany({
+    where: { bookingId: { in: bookingIds } },
+  });
 
   return {
     bookingIds,
     promoRedemptions,
     changeRequests: changeRequestResult.count,
     modifications: modificationResult.count,
+    events: eventResult.count,
   };
 }

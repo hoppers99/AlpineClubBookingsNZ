@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Mock Stripe
 vi.stubEnv("STRIPE_SECRET_KEY", "sk_test_fake");
@@ -60,8 +60,10 @@ vi.mock("../email", () => ({
 
 // The confirm-pending cron revokes payment links for bumped bookings
 // (issue #707); the behaviour itself is covered in payment-link.test.ts.
+const mockRevokePaymentLinksForBooking = vi.fn().mockResolvedValue(0);
 vi.mock("@/lib/payment-link", () => ({
-  revokePaymentLinksForBooking: vi.fn().mockResolvedValue(0),
+  revokePaymentLinksForBooking: (...args: unknown[]) =>
+    mockRevokePaymentLinksForBooking(...args),
 }));
 
 // Mock the partial-bump helper (its internals are unit-tested separately).
@@ -87,21 +89,26 @@ vi.mock("../capacity", () => ({
 
 // Mock Prisma
 const mockBookingFindMany = vi.fn();
+const mockBookingFindUnique = vi.fn();
 const mockBookingUpdate = vi.fn();
 const mockBookingUpdateMany = vi.fn();
 const mockPaymentUpdate = vi.fn();
+const mockPaymentUpsert = vi.fn();
 const mockPromoRedemptionFindUnique = vi.fn();
 const mockPrismaTransaction = vi.fn();
+const mockExecuteRaw = vi.fn();
 
 vi.mock("../prisma", () => ({
   prisma: {
     booking: {
       findMany: (...args: unknown[]) => mockBookingFindMany(...args),
+      findUnique: (...args: unknown[]) => mockBookingFindUnique(...args),
       update: (...args: unknown[]) => mockBookingUpdate(...args),
       updateMany: (...args: unknown[]) => mockBookingUpdateMany(...args),
     },
     payment: {
       update: (...args: unknown[]) => mockPaymentUpdate(...args),
+      upsert: (...args: unknown[]) => mockPaymentUpsert(...args),
     },
     promoRedemption: {
       findUnique: (...args: unknown[]) => mockPromoRedemptionFindUnique(...args),
@@ -121,6 +128,13 @@ function makePendingBooking(
     holdUntil?: string;
     hasPaymentMethod?: boolean;
     finalPriceCents?: number;
+    parentBookingId?: string | null;
+    parentPayment?: {
+      id: string;
+      stripePaymentMethodId: string;
+      stripeCustomerId: string;
+    } | null;
+    originBookingRequest?: { id: string } | null;
   } = {}
 ) {
   const {
@@ -130,6 +144,9 @@ function makePendingBooking(
     holdUntil = "2026-07-08",
     hasPaymentMethod = true,
     finalPriceCents = 10000,
+    parentBookingId = null,
+    parentPayment = null,
+    originBookingRequest = null,
   } = opts;
   const stayStart = new Date(checkIn);
   const stayEnd = new Date(checkOut);
@@ -142,8 +159,18 @@ function makePendingBooking(
     status: "PENDING",
     finalPriceCents,
     discountCents: 0,
+    promoAdjustmentCents: 0,
     nonMemberHoldUntil: new Date(holdUntil),
     hasNonMembers: true,
+    cancelIfGuestsBumped: false,
+    parentBookingId,
+    parentBooking: parentPayment
+      ? {
+          id: parentBookingId ?? `parent_${id}`,
+          payment: parentPayment,
+        }
+      : null,
+    originBookingRequest,
     promoRedemption: null,
     createdAt: new Date("2026-03-01"),
     member: {
@@ -177,8 +204,18 @@ function makePendingBooking(
   };
 }
 
+function mockPendingBookings(bookings: ReturnType<typeof makePendingBooking>[]) {
+  mockBookingFindMany.mockResolvedValue(bookings);
+  mockBookingFindUnique.mockImplementation(
+    async ({ where }: { where: { id: string } }) =>
+      bookings.find((booking) => booking.id === where.id) ?? null
+  );
+}
+
 describe("Cron: Confirm Pending Bookings", () => {
   beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-09T00:00:00.000Z"));
     vi.clearAllMocks();
     mockEnqueueXeroBookingInvoiceOperation.mockResolvedValue({
       queueOperationId: "op_1",
@@ -192,13 +229,35 @@ describe("Cron: Confirm Pending Bookings", () => {
       skipped: 0,
     });
     mockBookingUpdateMany.mockResolvedValue({ count: 1 });
+    mockPaymentUpsert.mockImplementation(
+      async ({
+        where,
+        create,
+      }: {
+        where: { bookingId: string };
+        create?: { id?: string };
+      }) => ({
+        id: create?.id ?? `pay_${where.bookingId}`,
+      })
+    );
     mockPromoRedemptionFindUnique.mockResolvedValue(null);
     mockDeletePromoRedemption.mockResolvedValue(undefined);
+    mockRevokePaymentLinksForBooking.mockResolvedValue(0);
     mockPrismaTransaction.mockImplementation(async (arg: unknown) => {
       if (typeof arg === "function") {
         return arg({
+          $executeRaw: (...args: unknown[]) => mockExecuteRaw(...args),
           booking: {
+            findUnique: (...args: unknown[]) => mockBookingFindUnique(...args),
             update: (...args: unknown[]) => mockBookingUpdate(...args),
+            updateMany: (...args: unknown[]) => mockBookingUpdateMany(...args),
+          },
+          payment: {
+            upsert: (...args: unknown[]) => mockPaymentUpsert(...args),
+          },
+          promoRedemption: {
+            findUnique: (...args: unknown[]) =>
+              mockPromoRedemptionFindUnique(...args),
           },
         });
       }
@@ -213,16 +272,21 @@ describe("Cron: Confirm Pending Bookings", () => {
     mockUpsertPaymentIntentTransaction.mockResolvedValue(undefined);
   });
 
-  it("excludes split-booking children (parentBookingId set) from the pending query", async () => {
-    // Split children (#738) are the provisional non-member half of a mixed
-    // party; their window is resolved in R3, not by this cron.
-    mockBookingFindMany.mockResolvedValue([]);
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("queries all expired provisional bookings in oldest-first order, including split children", async () => {
+    mockPendingBookings([]);
 
     await confirmPendingBookings();
 
     expect(mockBookingFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ parentBookingId: null }),
+        where: expect.not.objectContaining({
+          parentBookingId: expect.anything(),
+        }),
+        orderBy: { createdAt: "asc" },
       })
     );
   });
@@ -230,7 +294,7 @@ describe("Cron: Confirm Pending Bookings", () => {
   it("confirms a booking when capacity is available and payment succeeds", async () => {
     const booking = makePendingBooking("b1");
     const expectedIdempotencyKey = ["pending", "charge", "b1"].join("_");
-    mockBookingFindMany.mockResolvedValue([booking]);
+    mockPendingBookings([booking]);
     mockCheckCapacityForGuestRanges.mockResolvedValue({
       available: true,
       minAvailable: 10,
@@ -269,9 +333,108 @@ describe("Cron: Confirm Pending Bookings", () => {
     );
   });
 
+  it("charges a split non-member child using the parent booking's saved card", async () => {
+    const booking = makePendingBooking("child_1", {
+      hasPaymentMethod: false,
+      parentBookingId: "parent_1",
+      parentPayment: {
+        id: "pay_parent_1",
+        stripeCustomerId: "cus_parent_1",
+        stripePaymentMethodId: "pm_parent_1",
+      },
+      finalPriceCents: 12000,
+      guestCount: 1,
+    });
+    mockPendingBookings([booking]);
+    mockCheckCapacityForGuestRanges.mockResolvedValue({
+      available: true,
+      minAvailable: 3,
+      nightDetails: [],
+    });
+    mockChargePaymentMethod.mockResolvedValue({
+      id: "pi_child_1",
+      status: "succeeded",
+      amount: 12000,
+      payment_method: "pm_parent_1",
+    });
+
+    const result = await confirmPendingBookings();
+
+    expect(result.confirmedBookingIds).toEqual(["child_1"]);
+    expect(mockPaymentUpsert).toHaveBeenCalledWith({
+      where: { bookingId: "child_1" },
+      create: expect.objectContaining({
+        bookingId: "child_1",
+        amountCents: 12000,
+        stripeCustomerId: "cus_parent_1",
+        stripePaymentMethodId: "pm_parent_1",
+      }),
+      update: expect.objectContaining({
+        amountCents: 12000,
+        stripeCustomerId: "cus_parent_1",
+        stripePaymentMethodId: "pm_parent_1",
+      }),
+    });
+    expect(mockChargePaymentMethod).toHaveBeenCalledWith(
+      expect.objectContaining({
+        amountCents: 12000,
+        customerId: "cus_parent_1",
+        paymentMethodId: "pm_parent_1",
+        metadata: { bookingId: "child_1", memberId: "member_child_1" },
+      })
+    );
+    expect(mockEnqueueXeroBookingInvoiceOperation).toHaveBeenCalledWith("child_1");
+  });
+
+  it("cancels a split non-member child without charge or invoice when capacity is gone", async () => {
+    const booking = makePendingBooking("child_1", {
+      hasPaymentMethod: false,
+      parentBookingId: "parent_1",
+      parentPayment: {
+        id: "pay_parent_1",
+        stripeCustomerId: "cus_parent_1",
+        stripePaymentMethodId: "pm_parent_1",
+      },
+    });
+    mockPendingBookings([booking]);
+    mockCheckCapacityForGuestRanges.mockResolvedValue({
+      available: false,
+      minAvailable: -1,
+      nightDetails: [],
+    });
+
+    const result = await confirmPendingBookings();
+
+    expect(result.bumpedBookingIds).toEqual(["child_1"]);
+    expect(mockBookingUpdateMany).toHaveBeenCalledWith({
+      where: { id: "child_1", status: "PENDING" },
+      data: { status: "CANCELLED", nonMemberHoldUntil: null },
+    });
+    expect(mockChargePaymentMethod).not.toHaveBeenCalled();
+    expect(mockEnqueueXeroBookingInvoiceOperation).not.toHaveBeenCalled();
+  });
+
+  it("does not charge when another worker already claimed the expired booking", async () => {
+    const booking = makePendingBooking("b1");
+    mockPendingBookings([booking]);
+    mockCheckCapacityForGuestRanges.mockResolvedValue({
+      available: true,
+      minAvailable: 10,
+      nightDetails: [],
+    });
+    mockBookingUpdateMany.mockResolvedValueOnce({ count: 0 });
+
+    const result = await confirmPendingBookings();
+
+    expect(result.confirmedBookingIds).toEqual([]);
+    expect(result.failedBookingIds).toEqual([]);
+    expect(mockChargePaymentMethod).not.toHaveBeenCalled();
+    expect(mockEnqueueXeroBookingInvoiceOperation).not.toHaveBeenCalled();
+  });
+
   it("bumps a booking when capacity is not available", async () => {
     const booking = makePendingBooking("b1");
-    mockBookingFindMany.mockResolvedValue([booking]);
+    mockPendingBookings([booking]);
     mockCheckCapacityForGuestRanges.mockResolvedValue({
       available: false,
       minAvailable: 0,
@@ -284,19 +447,20 @@ describe("Cron: Confirm Pending Bookings", () => {
     expect(result.bumpedBookingIds).toEqual(["b1"]);
     expect(result.confirmedBookingIds).toHaveLength(0);
 
-    // Whole bump now uses the status-claim pattern for idempotency.
+    // R3 cancels the unresolved provisional booking without charging it.
     expect(mockBookingUpdateMany).toHaveBeenCalledWith({
       where: { id: "b1", status: "PENDING" },
-      data: { status: "BUMPED" },
+      data: { status: "CANCELLED", nonMemberHoldUntil: null },
     });
 
     expect(mockChargePaymentMethod).not.toHaveBeenCalled();
+    expect(mockEnqueueXeroBookingInvoiceOperation).not.toHaveBeenCalled();
     expect(mockSendBumpedEmail).toHaveBeenCalled();
   });
 
   it("fails gracefully when no payment method is saved", async () => {
     const booking = makePendingBooking("b1", { hasPaymentMethod: false });
-    mockBookingFindMany.mockResolvedValue([booking]);
+    mockPendingBookings([booking]);
     mockCheckCapacityForGuestRanges.mockResolvedValue({
       available: true,
       minAvailable: 10,
@@ -313,7 +477,7 @@ describe("Cron: Confirm Pending Bookings", () => {
   it("processes multiple bookings independently", async () => {
     const booking1 = makePendingBooking("b1");
     const booking2 = makePendingBooking("b2");
-    mockBookingFindMany.mockResolvedValue([booking1, booking2]);
+    mockPendingBookings([booking1, booking2]);
 
     // b1: available, payment succeeds
     // b2: not available, bump
@@ -337,7 +501,7 @@ describe("Cron: Confirm Pending Bookings", () => {
 
   it("handles Stripe charge failure gracefully", async () => {
     const booking = makePendingBooking("b1");
-    mockBookingFindMany.mockResolvedValue([booking]);
+    mockPendingBookings([booking]);
     mockCheckCapacityForGuestRanges.mockResolvedValue({
       available: true,
       minAvailable: 10,
@@ -353,7 +517,7 @@ describe("Cron: Confirm Pending Bookings", () => {
 
   it("handles payment in processing state (requires_action)", async () => {
     const booking = makePendingBooking("b1");
-    mockBookingFindMany.mockResolvedValue([booking]);
+    mockPendingBookings([booking]);
     mockCheckCapacityForGuestRanges.mockResolvedValue({
       available: true,
       minAvailable: 10,
@@ -380,14 +544,17 @@ describe("Cron: Confirm Pending Bookings", () => {
         status: "PROCESSING",
       })
     );
-    expect(mockBookingUpdate).toHaveBeenCalledWith({
-      where: { id: "b1" },
-      data: { status: "PENDING" },
+    expect(mockBookingUpdateMany).toHaveBeenCalledWith({
+      where: { id: "b1", status: "CONFIRMED" },
+      data: {
+        status: "PENDING",
+        nonMemberHoldUntil: booking.nonMemberHoldUntil,
+      },
     });
   });
 
   it("does nothing when no pending bookings are past hold deadline", async () => {
-    mockBookingFindMany.mockResolvedValue([]);
+    mockPendingBookings([]);
 
     const result = await confirmPendingBookings();
 
@@ -400,7 +567,7 @@ describe("Cron: Confirm Pending Bookings", () => {
   it("continues processing remaining bookings when one fails", async () => {
     const booking1 = makePendingBooking("b1");
     const booking2 = makePendingBooking("b2");
-    mockBookingFindMany.mockResolvedValue([booking1, booking2]);
+    mockPendingBookings([booking1, booking2]);
 
     mockCheckCapacityForGuestRanges
       .mockRejectedValueOnce(new Error("DB error")) // b1 fails
@@ -423,7 +590,7 @@ describe("Cron: Confirm Pending Bookings", () => {
 
   it("passes guest stay ranges and booking ID to range capacity as excludeBookingId", async () => {
     const booking = makePendingBooking("b1", { guestCount: 3 });
-    mockBookingFindMany.mockResolvedValue([booking]);
+    mockPendingBookings([booking]);
     mockCheckCapacityForGuestRanges.mockResolvedValue({
       available: true,
       minAvailable: 10,
@@ -443,13 +610,14 @@ describe("Cron: Confirm Pending Bookings", () => {
       booking.checkIn,
       booking.checkOut,
       booking.guests,
-      "b1"
+      "b1",
+      expect.objectContaining({})
     );
   });
 
   it("continues when Xero invoice queueing fails during pending confirmation", async () => {
     const booking = makePendingBooking("b1");
-    mockBookingFindMany.mockResolvedValue([booking]);
+    mockPendingBookings([booking]);
     mockCheckCapacityForGuestRanges.mockResolvedValue({
       available: true,
       minAvailable: 10,
@@ -471,7 +639,7 @@ describe("Cron: Confirm Pending Bookings", () => {
 
   it("does not revert or alert when local persistence fails after Stripe already succeeded", async () => {
     const booking = makePendingBooking("b1");
-    mockBookingFindMany.mockResolvedValue([booking]);
+    mockPendingBookings([booking]);
     mockCheckCapacityForGuestRanges.mockResolvedValue({
       available: true,
       minAvailable: 10,
@@ -489,7 +657,17 @@ describe("Cron: Confirm Pending Bookings", () => {
     const result = await confirmPendingBookings();
 
     expect(result.failedBookingIds).toEqual(["b1"]);
-    expect(mockBookingUpdateMany).not.toHaveBeenCalled();
+    expect(mockBookingUpdateMany).toHaveBeenCalledWith({
+      where: { id: "b1", status: "PENDING" },
+      data: { status: "CONFIRMED", nonMemberHoldUntil: null },
+    });
+    expect(mockBookingUpdateMany).not.toHaveBeenCalledWith({
+      where: { id: "b1", status: "CONFIRMED" },
+      data: {
+        status: "PENDING",
+        nonMemberHoldUntil: booking.nonMemberHoldUntil,
+      },
+    });
     expect(mockSendAdminPaymentFailureAlert).not.toHaveBeenCalled();
   });
 
@@ -545,7 +723,7 @@ describe("Cron: Confirm Pending Bookings", () => {
 
   it("cancels the whole booking when the cancel-if-guests-bumped flag is set", async () => {
     const booking = makeMixedPendingBooking({ cancelIfGuestsBumped: true });
-    mockBookingFindMany.mockResolvedValue([booking]);
+    mockPendingBookings([booking]);
     mockCheckCapacityForGuestRanges.mockResolvedValue({
       available: false,
       minAvailable: 0,
@@ -557,7 +735,7 @@ describe("Cron: Confirm Pending Bookings", () => {
     expect(result.bumpedBookingIds).toEqual(["b1"]);
     expect(mockBookingUpdateMany).toHaveBeenCalledWith({
       where: { id: "b1", status: "PENDING" },
-      data: { status: "BUMPED" },
+      data: { status: "CANCELLED", nonMemberHoldUntil: null },
     });
     expect(mockSendGuestsCancelledEmail).toHaveBeenCalled();
     expect(mockSendBumpedEmail).not.toHaveBeenCalled();
@@ -567,7 +745,7 @@ describe("Cron: Confirm Pending Bookings", () => {
 
   it("whole-bumps a mixed booking at hold expiry without charging a reduced members-only amount", async () => {
     const booking = makeMixedPendingBooking({ finalPriceCents: 18000 });
-    mockBookingFindMany.mockResolvedValue([booking]);
+    mockPendingBookings([booking]);
     mockCheckCapacityForGuestRanges.mockResolvedValue({
       available: false,
       minAvailable: 0,
@@ -584,7 +762,7 @@ describe("Cron: Confirm Pending Bookings", () => {
     expect(result.bumpedBookingIds).toEqual(["b1"]);
     expect(mockBookingUpdateMany).toHaveBeenCalledWith({
       where: { id: "b1", status: "PENDING" },
-      data: { status: "BUMPED" },
+      data: { status: "CANCELLED", nonMemberHoldUntil: null },
     });
     // A regular (unflagged) bump sends the bumped email, not guests-cancelled.
     expect(mockSendBumpedEmail).toHaveBeenCalled();
@@ -593,7 +771,7 @@ describe("Cron: Confirm Pending Bookings", () => {
 
   it("whole-bumps a no-card mixed booking at hold expiry instead of repricing it", async () => {
     const booking = makeMixedPendingBooking({ hasPaymentMethod: false, finalPriceCents: 18000 });
-    mockBookingFindMany.mockResolvedValue([booking]);
+    mockPendingBookings([booking]);
     mockCheckCapacityForGuestRanges.mockResolvedValue({
       available: false,
       minAvailable: 0,
@@ -612,16 +790,16 @@ describe("Cron: Confirm Pending Bookings", () => {
     });
     expect(mockBookingUpdateMany).toHaveBeenCalledWith({
       where: { id: "b1", status: "PENDING" },
-      data: { status: "BUMPED" },
+      data: { status: "CANCELLED", nonMemberHoldUntil: null },
     });
   });
 
   it("extends the hold and alerts admins for a request-origin booking, never charging it (#707)", async () => {
-    const booking = {
-      ...makePendingBooking("b1", { hasPaymentMethod: false }),
+    const booking = makePendingBooking("b1", {
+      hasPaymentMethod: false,
       originBookingRequest: { id: "req_1" },
-    };
-    mockBookingFindMany.mockResolvedValue([booking]);
+    });
+    mockPendingBookings([booking]);
     mockCheckCapacityForGuestRanges.mockResolvedValue({
       available: true,
       minAvailable: 5,
@@ -642,5 +820,32 @@ describe("Cron: Confirm Pending Bookings", () => {
     expect(result.failedBookingIds).toEqual([]);
     expect(result.confirmedBookingIds).toEqual([]);
     expect(mockSendAdminHoldExpiredAlert).toHaveBeenCalled();
+  });
+
+  it("cancels and revokes the payment link for a request-origin booking when capacity is gone (#707/#708)", async () => {
+    const booking = makePendingBooking("b1", {
+      hasPaymentMethod: false,
+      originBookingRequest: { id: "req_1" },
+    });
+    mockPendingBookings([booking]);
+    mockCheckCapacityForGuestRanges.mockResolvedValue({
+      available: false,
+      minAvailable: -1,
+      nightDetails: [],
+    });
+
+    const result = await confirmPendingBookings();
+
+    expect(result.bumpedBookingIds).toEqual(["b1"]);
+    expect(mockBookingUpdateMany).toHaveBeenCalledWith({
+      where: { id: "b1", status: "PENDING" },
+      data: { status: "CANCELLED", nonMemberHoldUntil: null },
+    });
+    expect(mockRevokePaymentLinksForBooking).toHaveBeenCalledWith(
+      "b1",
+      expect.objectContaining({})
+    );
+    expect(mockChargePaymentMethod).not.toHaveBeenCalled();
+    expect(mockEnqueueXeroBookingInvoiceOperation).not.toHaveBeenCalled();
   });
 });

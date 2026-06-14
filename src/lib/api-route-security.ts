@@ -101,6 +101,10 @@ export const explicitPublicApiRoutes = {
     boundary: "public",
     reason: "Token-authenticated Stripe payment intent for a tokenised booking payment link; revalidates status/capacity like the session path and is rate limited.",
   },
+  "src/app/api/pay/[token]/refresh/route.ts": {
+    boundary: "public",
+    reason: "Token-authenticated self-service re-issue of an expired booking payment link; only the matching token resolves a booking and it is rate limited.",
+  },
   "src/app/api/pay/[token]/route.ts": {
     boundary: "public",
     reason: "Token-authenticated public payment link page data; only the matching token resolves a booking and it is rate limited.",
