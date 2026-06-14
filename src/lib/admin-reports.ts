@@ -92,8 +92,22 @@ function initializeBuckets(
 ): Map<string, RevenueDataPoint> {
   const buckets = new Map<string, RevenueDataPoint>();
 
+  // Terminate on the calendar-date key, not the raw instant. rangeStart/rangeEnd
+  // are date-only values carried as UTC-midnight Dates, but the cursor advances
+  // with date-fns (host-local) arithmetic. When the host observes DST and the
+  // range straddles a transition (e.g. Pacific/Auckland in early April), the
+  // cursor's wall-clock drifts an hour relative to rangeEnd and an instant
+  // `isAfter` check silently drops the final bucket. Comparing ISO yyyy-MM-dd
+  // keys (lexicographically ordered) is DST/timezone-robust and identical under
+  // UTC, where CI runs.
+  const endKey = toDateKey(rangeEnd);
+
   if (granularity === "daily") {
-    for (let cursor = new Date(rangeStart); !isAfter(cursor, rangeEnd); cursor = addDays(cursor, 1)) {
+    for (
+      let cursor = new Date(rangeStart);
+      toDateKey(cursor) <= endKey;
+      cursor = addDays(cursor, 1)
+    ) {
       buckets.set(toDateKey(cursor), createBucket(cursor, cursor, granularity));
     }
     return buckets;
@@ -102,7 +116,7 @@ function initializeBuckets(
   if (granularity === "weekly") {
     for (
       let cursor = startOfWeek(rangeStart, MONDAY_WEEK);
-      !isAfter(cursor, rangeEnd);
+      toDateKey(cursor) <= endKey;
       cursor = addWeeks(cursor, 1)
     ) {
       const periodEnd = clampToRangeEnd(endOfWeek(cursor, MONDAY_WEEK), rangeEnd);
@@ -113,7 +127,7 @@ function initializeBuckets(
 
   for (
     let cursor = startOfMonth(rangeStart);
-    !isAfter(cursor, rangeEnd);
+    toDateKey(cursor) <= endKey;
     cursor = addMonths(cursor, 1)
   ) {
     const periodEnd = clampToRangeEnd(endOfMonth(cursor), rangeEnd);
