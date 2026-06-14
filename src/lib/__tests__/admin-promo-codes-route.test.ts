@@ -114,6 +114,61 @@ describe("admin promo code routes - fixed nightly price", () => {
         fixedNightlyPriceCents: 3000,
         fixedNightlyMode: "SET_PRICE",
         maxNightlyValueCents: null,
+        // Group fixed-nightly codes (not member-guests-only) default to group
+        // scope so they price the whole booking (issue #756).
+        assignedMembersOnlyOwnNights: false,
+      }),
+    });
+  });
+
+  it("defaults a member-guests-only fixed nightly promo to own-night scoping", async () => {
+    mocks.prisma.promoCode.findUnique.mockResolvedValueOnce(null);
+    mocks.tx.promoCode.create.mockResolvedValue({ id: "pc-1" });
+    mocks.tx.promoCode.findUnique.mockResolvedValue({
+      id: "pc-1",
+      code: "MEMBER30",
+      type: "FIXED_NIGHTLY_PRICE",
+      assignments: [],
+    });
+
+    const response = await POST(request("http://localhost/api/admin/promo-codes", {
+      code: "member30",
+      type: "FIXED_NIGHTLY_PRICE",
+      fixedNightlyPriceCents: 3000,
+      fixedNightlyMode: "SET_PRICE",
+      memberGuestsOnly: true,
+    }));
+
+    expect(response.status).toBe(201);
+    expect(mocks.tx.promoCode.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        memberGuestsOnly: true,
+        // member-guests-only fixed-nightly codes are not group-capable, so they
+        // keep the standard own-night default.
+        assignedMembersOnlyOwnNights: true,
+      }),
+    });
+  });
+
+  it("defaults a non-fixed-nightly promo to own-night scoping", async () => {
+    mocks.prisma.promoCode.findUnique.mockResolvedValueOnce(null);
+    mocks.tx.promoCode.create.mockResolvedValue({ id: "pc-1" });
+    mocks.tx.promoCode.findUnique.mockResolvedValue({
+      id: "pc-1",
+      code: "PCT25",
+      type: "PERCENTAGE",
+      assignments: [],
+    });
+
+    const response = await POST(request("http://localhost/api/admin/promo-codes", {
+      code: "pct25",
+      type: "PERCENTAGE",
+      percentOff: 25,
+    }));
+
+    expect(response.status).toBe(201);
+    expect(mocks.tx.promoCode.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
         assignedMembersOnlyOwnNights: true,
       }),
     });

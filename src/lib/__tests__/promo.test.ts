@@ -1200,6 +1200,183 @@ describe("validateAndCalculatePromoDiscount", () => {
     expect(result.requiresGuestSelection).toBe(true);
     expect(result.selectableGuestIndexes).toEqual([0, 1]);
   });
+
+  it("applies assigned fixed-nightly group pricing to every eligible guest-night", async () => {
+    const { prisma } = await import("@/lib/prisma");
+    vi.mocked(prisma.promoRedemptionAllocation.count).mockResolvedValue(0);
+    vi.mocked(prisma.promoRedemptionAllocation.aggregate).mockResolvedValue({
+      _sum: { freeNightsUsed: 0 },
+    } as any);
+    vi.mocked(prisma.promoRedemptionAllocation.findMany).mockResolvedValue([]);
+
+    const result = await validateAndCalculatePromoDiscount(
+      {
+        ...makePromoCode({
+          type: "FIXED_NIGHTLY_PRICE",
+          assignedMembersOnlyOwnNights: false,
+        }),
+        type: "FIXED_NIGHTLY_PRICE",
+        valueCents: null,
+        percentOff: null,
+        freeNightsPerIndividual: null,
+        lifetimeFreeNightsCap: null,
+        fixedNightlyPriceCents: 3000,
+        fixedNightlyMode: "SET_PRICE",
+        maxGuestsPerBooking: null,
+        maxNightlyValueCents: null,
+        memberGuestsOnly: false,
+        assignedMembersOnlyOwnNights: false,
+      },
+      {
+        memberId: "member-1",
+        totalPriceCents: 9000,
+        guests: [
+          { memberId: "member-2", isMember: true, perNightRates: [5000] },
+          { memberId: null, isMember: false, perNightRates: [4000] },
+        ],
+      },
+      ["member-1"]
+    );
+
+    // Both the member guest and the non-member guest are repriced to the
+    // configured nightly rate, attributed to the booking contact.
+    expect(result.error).toBeUndefined();
+    expect(result.requiresGuestSelection).toBeFalsy();
+    expect(result.discount?.discountCents).toBe(3000);
+    expect(result.discount?.priceAdjustmentCents).toBe(-3000);
+    expect(result.discount?.eligibleGuestCount).toBe(2);
+    expect(result.beneficiaryMemberIds).toEqual(["member-1"]);
+    expect(result.discount?.allocations).toEqual([
+      {
+        memberId: "member-1",
+        discountCents: 3000,
+        priceAdjustmentCents: -3000,
+        freeNightsUsed: 0,
+      },
+    ]);
+  });
+
+  it("rejects assigned fixed-nightly group pricing for an unassigned booking contact", async () => {
+    const { prisma } = await import("@/lib/prisma");
+    vi.mocked(prisma.promoRedemptionAllocation.count).mockResolvedValue(0);
+    vi.mocked(prisma.promoRedemptionAllocation.aggregate).mockResolvedValue({
+      _sum: { freeNightsUsed: 0 },
+    } as any);
+    vi.mocked(prisma.promoRedemptionAllocation.findMany).mockResolvedValue([]);
+
+    const result = await validateAndCalculatePromoDiscount(
+      {
+        ...makePromoCode({
+          type: "FIXED_NIGHTLY_PRICE",
+          assignedMembersOnlyOwnNights: false,
+        }),
+        type: "FIXED_NIGHTLY_PRICE",
+        valueCents: null,
+        percentOff: null,
+        freeNightsPerIndividual: null,
+        lifetimeFreeNightsCap: null,
+        fixedNightlyPriceCents: 3000,
+        fixedNightlyMode: "SET_PRICE",
+        maxGuestsPerBooking: null,
+        maxNightlyValueCents: null,
+        memberGuestsOnly: false,
+        assignedMembersOnlyOwnNights: false,
+      },
+      {
+        memberId: "booker-9",
+        totalPriceCents: 5000,
+        guests: [
+          { memberId: "member-2", isMember: true, perNightRates: [5000] },
+        ],
+      },
+      ["member-1"]
+    );
+
+    expect(result.error).toBe("This promo code is not assigned to you");
+    expect(result.discount).toBeUndefined();
+  });
+
+  it("scopes a fixed-nightly group code to the assigned member when own-night scoping stays on", async () => {
+    const { prisma } = await import("@/lib/prisma");
+    vi.mocked(prisma.promoRedemptionAllocation.count).mockResolvedValue(0);
+    vi.mocked(prisma.promoRedemptionAllocation.aggregate).mockResolvedValue({
+      _sum: { freeNightsUsed: 0 },
+    } as any);
+    vi.mocked(prisma.promoRedemptionAllocation.findMany).mockResolvedValue([]);
+
+    const result = await validateAndCalculatePromoDiscount(
+      {
+        ...makePromoCode({
+          type: "FIXED_NIGHTLY_PRICE",
+          assignedMembersOnlyOwnNights: true,
+        }),
+        type: "FIXED_NIGHTLY_PRICE",
+        valueCents: null,
+        percentOff: null,
+        freeNightsPerIndividual: null,
+        lifetimeFreeNightsCap: null,
+        fixedNightlyPriceCents: 3000,
+        fixedNightlyMode: "SET_PRICE",
+        maxGuestsPerBooking: null,
+        maxNightlyValueCents: null,
+        memberGuestsOnly: false,
+        assignedMembersOnlyOwnNights: true,
+      },
+      {
+        memberId: "booker-1",
+        totalPriceCents: 9000,
+        guests: [
+          { memberId: "member-1", isMember: true, perNightRates: [5000] },
+          { memberId: null, isMember: false, perNightRates: [4000] },
+        ],
+      },
+      ["member-1"]
+    );
+
+    // Only the assigned member's own night is repriced; the non-member guest
+    // is untouched, and any booker may use the code.
+    expect(result.error).toBeUndefined();
+    expect(result.requiresGuestSelection).toBeFalsy();
+    expect(result.discount?.eligibleGuestCount).toBe(1);
+    expect(result.discount?.discountCents).toBe(2000);
+    expect(result.beneficiaryMemberIds).toEqual(["member-1"]);
+  });
+
+  it("treats a member-guests-only fixed-nightly code as booker-chooses, not group", async () => {
+    const result = await validateAndCalculatePromoDiscount(
+      {
+        ...makePromoCode({
+          type: "FIXED_NIGHTLY_PRICE",
+          assignedMembersOnlyOwnNights: false,
+        }),
+        type: "FIXED_NIGHTLY_PRICE",
+        valueCents: null,
+        percentOff: null,
+        freeNightsPerIndividual: null,
+        lifetimeFreeNightsCap: null,
+        fixedNightlyPriceCents: 3000,
+        fixedNightlyMode: "SET_PRICE",
+        maxGuestsPerBooking: null,
+        maxNightlyValueCents: null,
+        memberGuestsOnly: true,
+        assignedMembersOnlyOwnNights: false,
+      },
+      {
+        memberId: "member-1",
+        totalPriceCents: 9000,
+        guests: [
+          { memberId: "member-1", isMember: true, perNightRates: [5000] },
+          { memberId: "member-2", isMember: true, perNightRates: [4000] },
+        ],
+      },
+      ["member-1"]
+    );
+
+    // member-guests-only excludes the group treatment, so the booker is still
+    // asked to pick which member guests receive the code.
+    expect(result.requiresGuestSelection).toBe(true);
+    expect(result.error).toBe("Choose which guests should receive this promo code");
+  });
 });
 
 // --- Edge cases ---

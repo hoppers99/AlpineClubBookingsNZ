@@ -146,6 +146,30 @@ function assignedMembersOnlyOwnNights(
   return promoCode.assignedMembersOnlyOwnNights ?? true;
 }
 
+/**
+ * A fixed-nightly "group" promo prices the whole booking at the configured
+ * nightly rate. When assigned to members it stays group-scoped: every eligible
+ * guest-night is repriced (members and non-members), the booker is the
+ * beneficiary of record, and the booker must be one of the assigned members.
+ * It does not scope the discount to the assigned members' own nights, nor ask
+ * the booker to pick guests.
+ *
+ * Gated on assignedMembersOnlyOwnNights === false so an admin can still choose
+ * own-night scoping for a fixed-nightly code. member-guests-only fixed-nightly
+ * codes are excluded (they always scope to assigned member guests).
+ */
+function isFixedNightlyGroupPromo(promoCode: {
+  type?: PromoCodeType | string | null;
+  memberGuestsOnly?: boolean | null;
+  assignedMembersOnlyOwnNights?: boolean | null;
+}) {
+  return (
+    promoCode.type === "FIXED_NIGHTLY_PRICE" &&
+    !promoCode.memberGuestsOnly &&
+    !assignedMembersOnlyOwnNights(promoCode)
+  );
+}
+
 function scopedAssignmentMemberIds(
   promoCode: { assignedMembersOnlyOwnNights?: boolean | null },
   assignedMemberIds: string[] | null | undefined
@@ -154,10 +178,38 @@ function scopedAssignmentMemberIds(
 }
 
 function assignmentRequiresGuestSelection(
-  promoCode: { assignedMembersOnlyOwnNights?: boolean | null },
+  promoCode: {
+    type?: PromoCodeType | string | null;
+    memberGuestsOnly?: boolean | null;
+    assignedMembersOnlyOwnNights?: boolean | null;
+  },
   assignedMemberIds: string[] | null | undefined
 ) {
+  // Group fixed-nightly codes price every eligible guest automatically, so the
+  // booker never picks guests even though own-night scoping is off.
+  if (isFixedNightlyGroupPromo(promoCode)) return false;
   return hasAssignedMembers(assignedMemberIds) && !assignedMembersOnlyOwnNights(promoCode);
+}
+
+/**
+ * Whether the booker must be one of the assigned members. True for the two
+ * non-own-night assignment modes: "booker picks guests" (per-guest selection)
+ * and "group" fixed-nightly pricing. Own-night scoping leaves this false so any
+ * booker can use the code as long as an assigned member is staying.
+ */
+function assignmentRequiresAssignedBooker(
+  promoCode: {
+    type?: PromoCodeType | string | null;
+    memberGuestsOnly?: boolean | null;
+    assignedMembersOnlyOwnNights?: boolean | null;
+  },
+  assignedMemberIds: string[] | null | undefined
+) {
+  if (!hasAssignedMembers(assignedMemberIds)) return false;
+  return (
+    assignmentRequiresGuestSelection(promoCode, assignedMemberIds) ||
+    isFixedNightlyGroupPromo(promoCode)
+  );
 }
 
 function storedPromoDateKey(value: Date | null | undefined) {
@@ -792,6 +844,7 @@ export async function validateAndCalculatePromoDiscount(
   }
 
   const requiresGuestSelection = assignmentRequiresGuestSelection(promoCode, assignedMemberIds);
+  const requiresAssignedBooker = assignmentRequiresAssignedBooker(promoCode, assignedMemberIds);
   const selectableGuestIndexes = requiresGuestSelection
     ? selectablePromoGuestIndexes(promoCode, detailGuests)
     : undefined;
@@ -948,7 +1001,7 @@ export async function validateAndCalculatePromoDiscount(
       requestedNewUniqueMemberCount,
       allBeneficiariesExhausted,
     },
-    requiresGuestSelection ? assignedMemberIds : null
+    requiresAssignedBooker ? assignedMemberIds : null
   );
 
   if (validationError) {
