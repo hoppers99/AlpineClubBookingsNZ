@@ -1010,9 +1010,11 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
           hasNonMembers: primaryHasNonMembers,
           nonMemberHoldUntil,
           // Group join: link this joiner's booking to the organiser's booking.
-          // A split member/non-member party never sets this (parentBookingId is
-          // only supplied by the group-join path, which forbids mixed guests).
-          parentBookingId: parentBookingId ?? null,
+          // Included only when supplied (the group-join path forbids mixed
+          // guests). A normal or split party omits the key entirely so the
+          // column defaults to null, matching the create-payload assertions in
+          // booking-split.test.ts.
+          ...(parentBookingId != null ? { parentBookingId } : {}),
           notes: notes || null,
           expectedArrivalTime: expectedArrivalTime || null,
           requestedRoomId: requestedRoomId || null,
