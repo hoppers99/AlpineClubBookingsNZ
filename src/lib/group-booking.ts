@@ -184,14 +184,17 @@ export async function createGroupBooking(
   );
 }
 
-async function requireOwnedGroupBooking(
-  groupBookingId: string,
+async function requireOwnedGroupBookingByCode(
+  rawCode: string,
   sessionUserId: string
 ) {
-  const group = await prisma.groupBooking.findUnique({
-    where: { id: groupBookingId },
-    select: { id: true, organiserMemberId: true, status: true },
-  });
+  const code = normaliseJoinCode(rawCode);
+  const group = code
+    ? await prisma.groupBooking.findUnique({
+        where: { joinCode: code },
+        select: { id: true, organiserMemberId: true, status: true },
+      })
+    : null;
   if (!group) {
     throw new GroupBookingError("Group booking not found", 404);
   }
@@ -202,11 +205,8 @@ async function requireOwnedGroupBooking(
 }
 
 /** Close a group to new joins. Existing child bookings are untouched. */
-export async function closeGroupBooking(
-  groupBookingId: string,
-  sessionUserId: string
-) {
-  const group = await requireOwnedGroupBooking(groupBookingId, sessionUserId);
+export async function closeGroupBooking(rawCode: string, sessionUserId: string) {
+  const group = await requireOwnedGroupBookingByCode(rawCode, sessionUserId);
   if (group.status === GroupBookingStatus.CANCELLED) {
     throw new GroupBookingError("This group booking has been cancelled", 409);
   }
@@ -217,11 +217,8 @@ export async function closeGroupBooking(
 }
 
 /** Reopen a closed group to new joins. */
-export async function reopenGroupBooking(
-  groupBookingId: string,
-  sessionUserId: string
-) {
-  const group = await requireOwnedGroupBooking(groupBookingId, sessionUserId);
+export async function reopenGroupBooking(rawCode: string, sessionUserId: string) {
+  const group = await requireOwnedGroupBookingByCode(rawCode, sessionUserId);
   if (group.status === GroupBookingStatus.CANCELLED) {
     throw new GroupBookingError("This group booking has been cancelled", 409);
   }
