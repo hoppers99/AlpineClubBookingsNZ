@@ -183,6 +183,24 @@ describe("redact-sensitive-json", () => {
         "GET /nominations/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
       )
     ).toBe("GET /nominations/[REDACTED]");
+
+    expect(
+      redactSensitiveText(
+        "GET /pay/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      )
+    ).toBe("GET /pay/[REDACTED]");
+
+    expect(
+      redactSensitiveText(
+        "POST /api/pay/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef/payment-intent"
+      )
+    ).toBe("POST /api/pay/[REDACTED]/payment-intent");
+
+    expect(
+      redactSensitiveText(
+        "GET /booking-requests/verify/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      )
+    ).toBe("GET /booking-requests/verify/[REDACTED]");
   });
 
   it("redacts token-bearing callback URLs after URL encoding", () => {
@@ -197,6 +215,20 @@ describe("redact-sensitive-json", () => {
         "GET /login?callbackUrl=%2Fnominations%2F0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef 302"
       )
     ).toBe("GET /login?callbackUrl=%2Fnominations%2F[REDACTED] 302");
+
+    expect(
+      redactSensitiveText(
+        "GET /login?callbackUrl=%2Fpay%2F0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef 302"
+      )
+    ).toBe("GET /login?callbackUrl=%2Fpay%2F[REDACTED] 302");
+
+    expect(
+      redactSensitiveText(
+        "GET /login?callbackUrl=%2Fbooking-requests%2Fverify%2F0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef 302"
+      )
+    ).toBe(
+      "GET /login?callbackUrl=%2Fbooking-requests%2Fverify%2F[REDACTED] 302"
+    );
   });
 
   it("redacts token query parameters and Stripe client secrets in plain text", () => {
