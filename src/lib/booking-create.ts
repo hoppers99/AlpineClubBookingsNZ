@@ -114,6 +114,11 @@ interface BaseInput {
   cancelIfGuestsBumped?: boolean;
   groupDiscount?: GroupDiscountConfig;
   memberReviewJustification?: string;
+  // Group booking (shareable join code): when set, the created (primary)
+  // booking is linked to the organiser's booking via parentBookingId, so a
+  // joiner's stay is grouped with the event. Existing callers leave this
+  // undefined, which persists null exactly as before.
+  parentBookingId?: string;
 }
 
 export type DraftBookingInput = BaseInput;
@@ -823,6 +828,7 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
     holdDays,
     paymentMethod = DEFAULT_BOOKING_PAYMENT_METHOD,
     memberReviewJustification,
+    parentBookingId,
   } = input;
   // Auto-expand (issue #713): cover every guest night (members + non-members)
   // so the member booking and any linked non-member child share one range.
@@ -1003,6 +1009,12 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
           finalPriceCents,
           hasNonMembers: primaryHasNonMembers,
           nonMemberHoldUntil,
+          // Group join: link this joiner's booking to the organiser's booking.
+          // Included only when supplied (the group-join path forbids mixed
+          // guests). A normal or split party omits the key entirely so the
+          // column defaults to null, matching the create-payload assertions in
+          // booking-split.test.ts.
+          ...(parentBookingId != null ? { parentBookingId } : {}),
           notes: notes || null,
           expectedArrivalTime: expectedArrivalTime || null,
           requestedRoomId: requestedRoomId || null,

@@ -89,6 +89,10 @@ export const explicitPublicApiRoutes = {
     boundary: "public",
     reason: "Anonymous contact form with validation and rate limiting.",
   },
+  "src/app/api/group-bookings/[code]/join-request/route.ts": {
+    boundary: "public",
+    reason: "Anonymous non-member group join request submission; mirrors /api/booking-requests with strict validation, controlled JSON parsing, a neutral anti-enumeration response and rate limiting. Creates only an unverified GroupBookingJoin staging row, never a booking or payment.",
+  },
   "src/app/api/health/ready/route.ts": {
     boundary: "public",
     reason: "Readiness endpoint for load balancers and deploy checks.",
