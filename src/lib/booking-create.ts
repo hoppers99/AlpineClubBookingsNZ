@@ -442,7 +442,7 @@ type PricedGuest = {
  * no priced nights falls back to the booking range. Every guest — contiguous or
  * not — gets per-night rows so the data model is uniform.
  */
-function buildGuestCreateData(
+export function buildGuestCreateData(
   guests: BookingGuestInput[],
   price: { guests: PricedGuest[] },
   checkIn: Date,

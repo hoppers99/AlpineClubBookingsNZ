@@ -24,19 +24,29 @@
  * lookup. The join orchestration (member join, non-member verify, child booking
  * creation) builds on these in the route layer.
  */
-import { randomInt } from "crypto";
+import { randomBytes, randomInt } from "crypto";
+import { hash } from "bcryptjs";
 import {
   AgeTier,
+  BookingEventType,
   BookingStatus,
   GroupBookingPaymentMode,
   GroupBookingStatus,
+  PaymentStatus,
   Prisma,
 } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { issueActionToken } from "@/lib/action-tokens";
-import { sendGroupBookingJoinVerificationEmail } from "@/lib/email";
+import { hashActionToken, issueActionToken } from "@/lib/action-tokens";
+import {
+  sendBookingRequestApprovedEmail,
+  sendGroupBookingJoinVerificationEmail,
+} from "@/lib/email";
 import logger from "@/lib/logger";
-import { createConfirmedBooking } from "@/lib/booking-create";
+import {
+  buildGuestCreateData,
+  createConfirmedBooking,
+  type BookingGuestInput as PricedGuestInput,
+} from "@/lib/booking-create";
 import {
   assertLinkedBookingMembersCanBeBooked,
   normalizeBookingGuestInputs,
@@ -45,7 +55,18 @@ import {
 } from "@/lib/booking-guests";
 import { requiresPaidSubscriptionForBooking } from "@/lib/member-subscription-eligibility";
 import { findUnpaidMemberGuests } from "@/lib/booking-member-guest-subscriptions";
-import { calculateBookingHoldDecision, toGroupDiscountConfig } from "@/lib/policies/booking-route-decisions";
+import {
+  calculateBookingHoldDecision,
+  priceBookingGuests,
+  toGroupDiscountConfig,
+  toGuestPricingInputs,
+  toSeasonRateData,
+} from "@/lib/policies/booking-route-decisions";
+import { checkCapacityForGuestRanges } from "@/lib/capacity";
+import { getNonMemberHoldDays } from "@/lib/cancellation";
+import { resolveRequestBookingHoldUntil } from "@/lib/booking-request";
+import { endOfDateOnlyForTimeZone, formatDateOnly } from "@/lib/date-only";
+import { recordBookingEvent } from "@/lib/booking-events";
 import { getLodgeCapacity } from "@/lib/lodge-capacity";
 import { getSeasonYear } from "@/lib/utils";
 import { ACTIVE_BOOKING_STATUSES } from "@/lib/booking-status";
@@ -749,4 +770,335 @@ export async function createNonMemberJoinRequest(
   }
 
   return join;
+}
+
+// ---------------------------------------------------------------------------
+// Non-member verify-and-create (the money path)
+// ---------------------------------------------------------------------------
+
+export type VerifyNonMemberJoinResult =
+  | { outcome: "invalid" }
+  | { outcome: "expired" }
+  | { outcome: "not_joinable"; message: string }
+  | { outcome: "capacity_full"; fullNights: string[] }
+  | { outcome: "already_done"; bookingId: string }
+  | {
+      outcome: "created";
+      bookingId: string;
+      payToken: string;
+      priceCents: number;
+      checkIn: Date;
+      checkOut: Date;
+      guestCount: number;
+    };
+
+/** Internal sentinel: the join row was claimed by a concurrent verify. */
+const JOIN_ALREADY_CLAIMED = "GROUP_JOIN_ALREADY_CLAIMED_SENTINEL";
+const CAPACITY_EXCEEDED = "GROUP_JOIN_CAPACITY_EXCEEDED_SENTINEL";
+
+/** Full nights (date-only strings) where the capacity check went negative. */
+function getCapacityFullNights(
+  nightDetails: Array<{ date: Date; availableBeds: number }>
+): string[] {
+  return nightDetails
+    .filter((night) => night.availableBeds < 0)
+    .map((night) => night.date.toISOString().split("T")[0]);
+}
+
+/**
+ * Validate the stored guest snapshot. Returns [] (treated as invalid) if the
+ * JSON is not the expected array of {firstName, lastName, ageTier}.
+ */
+export function parseNonMemberJoinGuests(
+  snapshot: Prisma.JsonValue | null | undefined
+): NonMemberJoinGuest[] {
+  if (!Array.isArray(snapshot)) return [];
+  const validTiers = new Set<string>(Object.values(AgeTier));
+  const guests: NonMemberJoinGuest[] = [];
+  for (const raw of snapshot) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
+    const obj = raw as Record<string, unknown>;
+    const firstName = typeof obj.firstName === "string" ? obj.firstName.trim() : "";
+    const lastName = typeof obj.lastName === "string" ? obj.lastName.trim() : "";
+    const ageTier = typeof obj.ageTier === "string" ? obj.ageTier : "";
+    if (!firstName || !lastName || !validTiers.has(ageTier)) return [];
+    guests.push({ firstName, lastName, ageTier: ageTier as AgeTier });
+  }
+  return guests;
+}
+
+/**
+ * Confirm a non-member's emailed token and create their child booking.
+ *
+ * Mirrors approveBookingRequest (booking-request.ts): under the shared booking
+ * advisory lock it status-claims the join row, re-checks capacity, then creates
+ * a non-login Member, a PENDING child Booking linked to the organiser booking,
+ * a PENDING Payment, and a tokenised PaymentLink. Guests are priced from the
+ * live season rates (not an admin price). The pay-link email is sent after the
+ * transaction commits.
+ *
+ * Idempotent: a second call once the row is consumed returns `already_done`
+ * with the existing bookingId rather than creating a duplicate.
+ */
+export async function verifyAndCreateNonMemberJoin(
+  token: string
+): Promise<VerifyNonMemberJoinResult> {
+  const tokenHash = hashActionToken(token);
+  const join = await prisma.groupBookingJoin.findUnique({
+    where: { verificationTokenHash: tokenHash },
+    select: {
+      id: true,
+      isMember: true,
+      bookingId: true,
+      verifiedAt: true,
+      verificationTokenExpiresAt: true,
+      contactFirstName: true,
+      contactLastName: true,
+      contactEmail: true,
+      contactPhone: true,
+      guestsSnapshot: true,
+      groupBooking: {
+        select: {
+          status: true,
+          joinDeadline: true,
+          paymentMode: true,
+          organiserBooking: {
+            select: {
+              id: true,
+              checkIn: true,
+              checkOut: true,
+              status: true,
+              deletedAt: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  // Unknown token, or a member roster row (members never carry a token).
+  if (!join || join.isMember) {
+    return { outcome: "invalid" };
+  }
+  // Already consumed → idempotent success (the joiner already got the pay link).
+  if (join.bookingId) {
+    return { outcome: "already_done", bookingId: join.bookingId };
+  }
+  if (
+    !join.verificationTokenExpiresAt ||
+    join.verificationTokenExpiresAt.getTime() < Date.now()
+  ) {
+    return { outcome: "expired" };
+  }
+  if (!join.contactEmail || !join.contactFirstName || !join.contactLastName) {
+    return { outcome: "invalid" };
+  }
+
+  const group = join.groupBooking;
+  const organiserBooking = group.organiserBooking;
+  if (!isGroupJoinable(group)) {
+    return { outcome: "not_joinable", message: "This group is no longer accepting joins" };
+  }
+  if (group.paymentMode !== GroupBookingPaymentMode.EACH_PAYS_OWN) {
+    return { outcome: "not_joinable", message: "This group is not accepting individual sign-ups" };
+  }
+  if (
+    organiserBooking.deletedAt ||
+    !(ACTIVE_BOOKING_STATUSES as readonly BookingStatus[]).includes(
+      organiserBooking.status
+    )
+  ) {
+    return { outcome: "not_joinable", message: "This group's booking is no longer active" };
+  }
+
+  const snapshotGuests = parseNonMemberJoinGuests(join.guestsSnapshot);
+  if (snapshotGuests.length === 0) {
+    return { outcome: "invalid" };
+  }
+
+  const { id: organiserBookingId, checkIn, checkOut } = organiserBooking;
+
+  // All joiner guests are non-members; price them from the live season rates.
+  const guests: PricedGuestInput[] = snapshotGuests.map((g) => ({
+    firstName: g.firstName,
+    lastName: g.lastName,
+    ageTier: g.ageTier,
+    isMember: false,
+  }));
+
+  const seasons = await prisma.season.findMany({
+    where: { active: true, startDate: { lte: checkOut }, endDate: { gte: checkIn } },
+    include: { rates: true },
+  });
+  const gds = await prisma.groupDiscountSetting.findUnique({ where: { id: "default" } });
+  const price = priceBookingGuests({
+    checkIn,
+    checkOut,
+    guests: toGuestPricingInputs(guests),
+    seasons: toSeasonRateData(seasons),
+    groupDiscount: toGroupDiscountConfig(gds),
+  });
+  const priceCents = price.totalPriceCents;
+
+  // Non-login member: store a random bcrypt hash so the row satisfies the
+  // schema without any usable credential (mirrors approveBookingRequest).
+  const placeholderPasswordHash = await hash(randomBytes(32).toString("hex"), 13);
+  const reviewedAt = new Date();
+  const holdDays = await getNonMemberHoldDays(checkIn);
+  const nonMemberHoldUntil = resolveRequestBookingHoldUntil(
+    checkIn,
+    holdDays,
+    reviewedAt
+  );
+  // The pay link stays valid to the end of the check-in day in NZT; booking
+  // status gates actual payment.
+  const paymentLinkExpiresAt = endOfDateOnlyForTimeZone(formatDateOnly(checkIn));
+  const { token: payToken, tokenHash: payTokenHash } = issueActionToken();
+
+  let capacityFullNights: string[] | null = null;
+  let created: { bookingId: string; memberId: string };
+
+  try {
+    created = await prisma.$transaction(async (tx) => {
+      // Shared advisory lock serialises every booking-creation path.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+
+      // Status-claim so a concurrent verify (or a double-submit) cannot create
+      // two bookings from one token. Only the row that is still unconsumed wins.
+      const claimed = await tx.groupBookingJoin.updateMany({
+        where: { id: join.id, bookingId: null, verifiedAt: null },
+        data: { verifiedAt: reviewedAt },
+      });
+      if (claimed.count === 0) {
+        throw new Error(JOIN_ALREADY_CLAIMED);
+      }
+
+      const ranges = guests.map(() => ({ stayStart: checkIn, stayEnd: checkOut }));
+      const capacity = await checkCapacityForGuestRanges(
+        checkIn,
+        checkOut,
+        ranges,
+        undefined,
+        tx
+      );
+      if (!capacity.available) {
+        capacityFullNights = getCapacityFullNights(capacity.nightDetails);
+        throw new Error(CAPACITY_EXCEEDED);
+      }
+
+      // Mirror approveBookingRequest: a non-login member owns the booking.
+      // emailVerified is true because this token proved control of the address.
+      const member = await tx.member.create({
+        data: {
+          email: join.contactEmail!,
+          passwordHash: placeholderPasswordHash,
+          emailVerified: true,
+          firstName: join.contactFirstName!,
+          lastName: join.contactLastName!,
+          role: "MEMBER",
+          ageTier: AgeTier.ADULT,
+          active: true,
+          canLogin: false,
+          phoneNumber: join.contactPhone,
+        },
+        select: { id: true },
+      });
+
+      const booking = await tx.booking.create({
+        data: {
+          memberId: member.id,
+          checkIn,
+          checkOut,
+          status: BookingStatus.PENDING,
+          totalPriceCents: priceCents,
+          finalPriceCents: priceCents,
+          hasNonMembers: true,
+          nonMemberHoldUntil,
+          parentBookingId: organiserBookingId,
+          guests: { create: buildGuestCreateData(guests, price, checkIn, checkOut) },
+        },
+        select: { id: true },
+      });
+
+      await tx.payment.create({
+        data: {
+          bookingId: booking.id,
+          amountCents: priceCents,
+          status: PaymentStatus.PENDING,
+        },
+      });
+
+      await tx.paymentLink.create({
+        data: {
+          bookingId: booking.id,
+          tokenHash: payTokenHash,
+          expiresAt: paymentLinkExpiresAt,
+        },
+      });
+
+      await tx.groupBookingJoin.update({
+        where: { id: join.id },
+        data: { bookingId: booking.id, joinerMemberId: member.id },
+      });
+
+      return { bookingId: booking.id, memberId: member.id };
+    });
+  } catch (err) {
+    if (err instanceof Error && err.message === CAPACITY_EXCEEDED && capacityFullNights) {
+      // The claim was rolled back with the rest of the transaction, so the
+      // joiner can retry once capacity frees up.
+      return { outcome: "capacity_full", fullNights: capacityFullNights };
+    }
+    if (err instanceof Error && err.message === JOIN_ALREADY_CLAIMED) {
+      const latest = await prisma.groupBookingJoin.findUnique({
+        where: { id: join.id },
+        select: { bookingId: true },
+      });
+      if (latest?.bookingId) {
+        return { outcome: "already_done", bookingId: latest.bookingId };
+      }
+      return { outcome: "invalid" };
+    }
+    throw err;
+  }
+
+  // Narrative event and pay-link email run after commit (a failed insert inside
+  // the transaction would abort the booking creation).
+  await recordBookingEvent({
+    bookingId: created.bookingId,
+    type: BookingEventType.CREATED,
+    actorMemberId: created.memberId,
+    amountCents: priceCents,
+  });
+
+  try {
+    // Reuses the booking-request pay-link email (same /pay/[token] flow); a
+    // group-specific template is a follow-up.
+    await sendBookingRequestApprovedEmail({
+      email: join.contactEmail,
+      firstName: join.contactFirstName,
+      token: payToken,
+      checkIn,
+      checkOut,
+      guestCount: guests.length,
+      priceCents,
+      bookingReference: created.bookingId,
+      expiresAt: paymentLinkExpiresAt,
+    });
+  } catch (err) {
+    logger.error(
+      { err, bookingId: created.bookingId },
+      "Failed to send group join pay link email"
+    );
+  }
+
+  return {
+    outcome: "created",
+    bookingId: created.bookingId,
+    payToken,
+    priceCents,
+    checkIn,
+    checkOut,
+    guestCount: guests.length,
+  };
 }

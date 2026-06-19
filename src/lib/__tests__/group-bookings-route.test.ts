@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   reopenGroupBooking: vi.fn(),
   joinGroupBookingAsMember: vi.fn(),
   createNonMemberJoinRequest: vi.fn(),
+  verifyAndCreateNonMemberJoin: vi.fn(),
 }));
 
 vi.mock("@/lib/auth", () => ({ auth: mocks.auth }));
@@ -25,6 +26,7 @@ vi.mock("@/lib/rate-limit", () => ({
     groupBookingLookup: {},
     groupBookingJoin: {},
     groupBookingJoinRequest: {},
+    groupBookingToken: {},
   },
 }));
 vi.mock("@/lib/logger", () => ({
@@ -44,6 +46,7 @@ vi.mock("@/lib/group-booking", async () => {
     reopenGroupBooking: mocks.reopenGroupBooking,
     joinGroupBookingAsMember: mocks.joinGroupBookingAsMember,
     createNonMemberJoinRequest: mocks.createNonMemberJoinRequest,
+    verifyAndCreateNonMemberJoin: mocks.verifyAndCreateNonMemberJoin,
   };
 });
 
@@ -51,7 +54,21 @@ import { POST } from "@/app/api/group-bookings/route";
 import { GET, PATCH } from "@/app/api/group-bookings/[code]/route";
 import { POST as joinPOST } from "@/app/api/group-bookings/[code]/join/route";
 import { POST as joinRequestPOST } from "@/app/api/group-bookings/[code]/join-request/route";
+import { POST as verifyPOST } from "@/app/api/group-bookings/join/verify/[token]/route";
 import { GroupBookingError } from "@/lib/group-booking";
+
+/** A correctly-formatted (64 hex char) action token. */
+const VALID_TOKEN = "a".repeat(64);
+
+function verifyRequest() {
+  return new NextRequest("http://localhost/api/group-bookings/join/verify/x", {
+    method: "POST",
+  });
+}
+
+function callVerify(token: string) {
+  return verifyPOST(verifyRequest(), { params: Promise.resolve({ token }) });
+}
 
 function postRequest(body: unknown) {
   return new NextRequest("http://localhost/api/group-bookings", {
@@ -351,5 +368,84 @@ describe("POST /api/group-bookings/[code]/join-request (non-member)", () => {
     });
     expect(res.status).toBe(409);
     await expect(res.json()).resolves.toMatchObject({ code: "USE_MEMBER_LOGIN" });
+  });
+});
+
+describe("POST /api/group-bookings/join/verify/[token] (non-member confirm)", () => {
+  it("rejects a malformed token with 404 without calling the service", async () => {
+    const res = await callVerify("not-a-valid-token");
+    expect(res.status).toBe(404);
+    await expect(res.json()).resolves.toEqual({ outcome: "invalid" });
+    expect(mocks.verifyAndCreateNonMemberJoin).not.toHaveBeenCalled();
+  });
+
+  it("returns 201 and the pay token when the booking is created", async () => {
+    const checkIn = new Date("2026-07-01T00:00:00Z");
+    const checkOut = new Date("2026-07-03T00:00:00Z");
+    mocks.verifyAndCreateNonMemberJoin.mockResolvedValueOnce({
+      outcome: "created",
+      bookingId: "booking-9",
+      payToken: "pay-token-9",
+      priceCents: 9000,
+      checkIn,
+      checkOut,
+      guestCount: 1,
+    });
+    const res = await callVerify(VALID_TOKEN);
+    expect(res.status).toBe(201);
+    await expect(res.json()).resolves.toEqual({
+      outcome: "created",
+      bookingId: "booking-9",
+      payToken: "pay-token-9",
+      priceCents: 9000,
+      checkIn: checkIn.toISOString(),
+      checkOut: checkOut.toISOString(),
+      guestCount: 1,
+    });
+    expect(mocks.verifyAndCreateNonMemberJoin).toHaveBeenCalledWith(VALID_TOKEN);
+  });
+
+  it("returns 200 already_done for a consumed token (idempotent)", async () => {
+    mocks.verifyAndCreateNonMemberJoin.mockResolvedValueOnce({
+      outcome: "already_done",
+      bookingId: "booking-9",
+    });
+    const res = await callVerify(VALID_TOKEN);
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({
+      outcome: "already_done",
+      bookingId: "booking-9",
+    });
+  });
+
+  it("maps invalid/expired/not_joinable/capacity outcomes to their status codes", async () => {
+    mocks.verifyAndCreateNonMemberJoin.mockResolvedValueOnce({ outcome: "invalid" });
+    expect((await callVerify(VALID_TOKEN)).status).toBe(404);
+
+    mocks.verifyAndCreateNonMemberJoin.mockResolvedValueOnce({ outcome: "expired" });
+    expect((await callVerify(VALID_TOKEN)).status).toBe(410);
+
+    mocks.verifyAndCreateNonMemberJoin.mockResolvedValueOnce({
+      outcome: "not_joinable",
+      message: "This group is no longer accepting joins",
+    });
+    expect((await callVerify(VALID_TOKEN)).status).toBe(409);
+
+    mocks.verifyAndCreateNonMemberJoin.mockResolvedValueOnce({
+      outcome: "capacity_full",
+      fullNights: ["2026-07-01"],
+    });
+    const capacityRes = await callVerify(VALID_TOKEN);
+    expect(capacityRes.status).toBe(409);
+    await expect(capacityRes.json()).resolves.toMatchObject({
+      outcome: "capacity_full",
+      fullNights: ["2026-07-01"],
+    });
+  });
+
+  it("returns 500 if the service throws unexpectedly", async () => {
+    mocks.verifyAndCreateNonMemberJoin.mockRejectedValueOnce(new Error("boom"));
+    const res = await callVerify(VALID_TOKEN);
+    expect(res.status).toBe(500);
   });
 });

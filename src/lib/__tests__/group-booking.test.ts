@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { GroupBookingPaymentMode, GroupBookingStatus } from "@prisma/client";
+import { AgeTier, GroupBookingPaymentMode, GroupBookingStatus } from "@prisma/client";
 import {
   generateGroupBookingCode,
   isGroupJoinable,
   normaliseJoinCode,
+  parseNonMemberJoinGuests,
   toGroupBookingSummary,
   type GroupBookingRecordForSummary,
 } from "@/lib/group-booking";
@@ -123,5 +124,47 @@ describe("toGroupBookingSummary", () => {
       status: GroupBookingStatus.CLOSED,
     });
     expect(summary.isJoinable).toBe(false);
+  });
+});
+
+describe("parseNonMemberJoinGuests", () => {
+  it("parses a valid guest snapshot and trims names", () => {
+    const guests = parseNonMemberJoinGuests([
+      { firstName: " Sam ", lastName: " Tane ", ageTier: AgeTier.ADULT },
+      { firstName: "Kit", lastName: "Rua", ageTier: AgeTier.CHILD },
+    ]);
+    expect(guests).toEqual([
+      { firstName: "Sam", lastName: "Tane", ageTier: AgeTier.ADULT },
+      { firstName: "Kit", lastName: "Rua", ageTier: AgeTier.CHILD },
+    ]);
+  });
+
+  it("rejects the whole snapshot if any entry is malformed", () => {
+    // Unknown age tier.
+    expect(
+      parseNonMemberJoinGuests([
+        { firstName: "Sam", lastName: "Tane", ageTier: "SENIOR_WIZARD" },
+      ])
+    ).toEqual([]);
+    // Missing required name.
+    expect(
+      parseNonMemberJoinGuests([
+        { firstName: "Sam", lastName: "", ageTier: AgeTier.ADULT },
+      ])
+    ).toEqual([]);
+    // A non-object entry poisons the batch.
+    expect(
+      parseNonMemberJoinGuests([
+        { firstName: "Sam", lastName: "Tane", ageTier: AgeTier.ADULT },
+        "not-an-object",
+      ])
+    ).toEqual([]);
+  });
+
+  it("returns an empty array for non-array or null input", () => {
+    expect(parseNonMemberJoinGuests(null)).toEqual([]);
+    expect(parseNonMemberJoinGuests(undefined)).toEqual([]);
+    expect(parseNonMemberJoinGuests({ firstName: "Sam" })).toEqual([]);
+    expect(parseNonMemberJoinGuests([])).toEqual([]);
   });
 });
