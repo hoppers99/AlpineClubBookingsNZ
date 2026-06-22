@@ -1,18 +1,18 @@
 import { NextResponse } from "next/server";
 import type { Prisma } from "@prisma/client";
-import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { requireActiveSessionUser } from "@/lib/session-guards";
 import {
   coerceWhakapapaCurlData,
   emptyWhakapapaCurlData,
 } from "@/lib/whakapapa-report";
 import { fetchWhakapapaCurlData } from "@/lib/whakapapa-report.server";
+import { applyRateLimit, rateLimiters } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 
 const WHAKAPAPA_SOURCE = "whakapapa-report";
 const CACHE_TTL_MS = 60 * 60 * 1000;
+const PUBLIC_CACHE_CONTROL = "public, max-age=300, stale-while-revalidate=1800";
 
 type WhakapapaReportCacheRecord = {
   source: string;
@@ -53,16 +53,9 @@ function isFrozenUntil(frozenUntil: Date | null): boolean {
   return frozenUntil != null && frozenUntil.getTime() > Date.now();
 }
 
-export async function GET() {
-  const session = await auth();
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
-  }
-
-  const inactiveResponse = await requireActiveSessionUser(session.user.id);
-  if (inactiveResponse) {
-    return inactiveResponse;
-  }
+export async function GET(request: Request) {
+  const rateLimited = applyRateLimit(rateLimiters.skifieldConditions, request);
+  if (rateLimited) return rateLimited;
 
   const existing = await whakapapaReportCache.findUnique({
     where: { source: WHAKAPAPA_SOURCE },
@@ -77,7 +70,7 @@ export async function GET() {
     return NextResponse.json(cachedData, {
       status: 200,
       headers: {
-        "Cache-Control": "no-store",
+        "Cache-Control": PUBLIC_CACHE_CONTROL,
       },
     });
   }
@@ -103,7 +96,7 @@ export async function GET() {
     return NextResponse.json(curlData, {
       status: 200,
       headers: {
-        "Cache-Control": "no-store",
+        "Cache-Control": PUBLIC_CACHE_CONTROL,
       },
     });
   } catch (error) {
@@ -120,7 +113,7 @@ export async function GET() {
         {
           status: 200,
           headers: {
-            "Cache-Control": "no-store",
+            "Cache-Control": PUBLIC_CACHE_CONTROL,
           },
         },
       );

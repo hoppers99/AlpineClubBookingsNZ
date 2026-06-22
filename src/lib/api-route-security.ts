@@ -138,6 +138,16 @@ export const explicitPublicApiRoutes = {
     reason:
       "Serves Image Manager uploads from the shared images volume at runtime.",
   },
+  "src/app/api/skifield-conditions/route.ts": {
+    boundary: "public",
+    reason:
+      "Public server-side proxy for non-sensitive SnowHQ widget data embedded on public website pages; validates the fixed hash shape, rate limits requests, and returns only upstream JSON.",
+  },
+  "src/app/api/skifield-whakapapa/route.ts": {
+    boundary: "public",
+    reason:
+      "Public cached Whakapapa mountain-condition payload used by public website embed tokens; fixed upstream source, rate limited, no member data.",
+  },
   "src/app/api/webhooks/ses-sns/route.ts": {
     boundary: "webhook",
     reason: "AWS SNS signed SES feedback webhook.",

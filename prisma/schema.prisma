@@ -1046,7 +1046,7 @@ model LodgeRoom {
 
 model Locker {
   id                  String   @id @default(cuid())
-  name                String
+  name                String   @unique @db.VarChar(200)
   allocatedToMemberId String?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
@@ -1054,7 +1054,6 @@ model Locker {
   allocatedTo Member? @relation("LockerAllocatedMember", fields: [allocatedToMemberId], references: [id], onDelete: SetNull)
 
   @@index([allocatedToMemberId])
-  @@index([name])
 }
 
 model LodgeBed {
