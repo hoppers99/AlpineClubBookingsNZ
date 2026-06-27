@@ -42,7 +42,7 @@ This report page does not implement:
 - cashflow forecasting or runway calculations
 - charts or stakeholder-facing visualisations
 - manual sync actions
-- finance Xero connection work
+- operational Xero connection work
 - undocumented legacy-dashboard formulas beyond the explicit assumptions above
 
 ## Validation Contract

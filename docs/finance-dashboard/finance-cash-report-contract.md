@@ -61,4 +61,4 @@ This report page does not implement:
 - AlpineClubBookingsNZ payment-derived cash summaries
 - charts
 - manual sync actions
-- finance Xero connection work
+- operational Xero connection work

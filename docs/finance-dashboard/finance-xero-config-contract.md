@@ -1,70 +1,31 @@
-# Finance Xero Config Contract
+# Finance Xero Connection Contract
 
-This document defines the finance-only Xero boundary.
+This document defines how the finance dashboard connects to Xero.
 
-## Goal
+## Single Operational Connection
 
-Maintain a finance-only Xero OAuth and persistence surface that remains separate from operational Xero.
+Finance reporting uses the single operational Xero connection that bookings, payments, and subscriptions already use. There is no separate finance Xero OAuth app, connection, or persistence boundary.
 
-## Finance Env Names
+- The finance sync authenticates with `getAuthenticatedXeroClient` from `src/lib/xero-api-client.ts`, bound for finance use through `createFinanceXeroSyncConnection` in `src/lib/finance-sync-service.ts`.
+- Operational tokens persist through the existing `XeroToken` table. There is no `FinanceXeroToken` table.
+- The Xero connection is managed from `/admin/xero`. There is no finance-specific connect, callback, status, or disconnect flow.
 
-Use these env vars for finance Xero work only:
+## Config Changes
 
-- `FINANCE_XERO_CLIENT_ID`
-- `FINANCE_XERO_CLIENT_SECRET`
-- `FINANCE_XERO_REDIRECT_URI`
-- `FINANCE_XERO_ENCRYPTION_KEY`
-- `FINANCE_XERO_ENCRYPTION_KEY_VERSION`
-- `FINANCE_XERO_ENCRYPTION_KEY_PREVIOUS`
+The only finance-relevant config change is an added OAuth scope.
 
-Finance Xero also requires its own OAuth app configuration:
+- `accounting.reports.read` was added to `OPERATIONAL_XERO_OAUTH_SCOPES` in `src/lib/xero-config.ts`. This scope is required by the profit-and-loss, balance-sheet, and bank-summary report fetchers.
+- After deploy, Xero must be reconnected once from `/admin/xero` so existing tokens gain this scope, and the Xero developer-portal app must allow it.
+- Until reconnected, the report datasets return a clear "reconnect Xero" message (see `withFinanceReportScopeError` in `src/lib/finance-sync-xero-datasets.ts`).
+- The chart-of-accounts dataset only needs `accounting.settings.read`, which the operational connection already had, so it works without re-consent.
 
-- Redirect URI: `https://yourdomain.co.nz/api/finance/xero/callback` in production
-- Scopes: `openid profile email accounting.contacts accounting.invoices accounting.payments accounting.settings.read accounting.reports.read offline_access`
+## No Finance-specific Config
 
-These names are intentionally separate from the operational Xero env vars:
+There are no finance-specific:
 
-- `XERO_CLIENT_ID`
-- `XERO_CLIENT_SECRET`
-- `XERO_REDIRECT_URI`
+- environment variables (no `FINANCE_XERO_*` env vars)
+- OAuth client, redirect URIs, or callback routes
+- token encryption keys or key rotation
+- token tables or API-usage metering tables
 
-## Boundary Rules
-
-- Finance config loading must not fall back to operational `XERO_*` credentials.
-- Finance token encryption must not fall back to operational `XERO_ENCRYPTION_KEY`.
-- Operational Xero code keeps using the existing `XERO_*` env names.
-- The default local finance redirect target is `http://localhost:3000/api/finance/xero/callback`.
-- Defining the finance redirect URI here does not mean the finance callback route exists yet.
-- Finance stored tokens persist through `FinanceXeroToken`, not operational `XeroToken`.
-- Finance API usage persists through `FinanceXeroApiUsageDaily` and `FinanceXeroApiUsageEvent`, not the operational metering tables.
-
-## Finance Token Encryption Rotation
-
-`FINANCE_XERO_ENCRYPTION_KEY` must be a 64-character hex string (32 bytes) and
-is used only for finance Xero tokens. `FinanceXeroToken.encryptionKeyVersion`
-records the key version used when tokens are written.
-
-Planned rotation procedure:
-
-1. Generate a new 32-byte hex key.
-2. Set `FINANCE_XERO_ENCRYPTION_KEY_PREVIOUS` to the current key.
-3. Set `FINANCE_XERO_ENCRYPTION_KEY` to the new key.
-4. Increment `FINANCE_XERO_ENCRYPTION_KEY_VERSION`.
-5. Deploy and run a finance Xero token refresh or reconnect. The token store can
-   read existing tokens with the previous key and writes refreshed tokens with
-   the current key version.
-6. After confirming the stored row has the new `encryptionKeyVersion`, remove
-   `FINANCE_XERO_ENCRYPTION_KEY_PREVIOUS`.
-
-Recovery rule: if both the current and previous keys fail to decrypt the stored
-row, the finance Xero connection is unrecoverable from the token row and a
-finance manager must reconnect Xero to create fresh tokens.
-
-## Not In Scope Yet
-
-This contract does not add:
-
-- finance connect, callback, status, or disconnect routes
-- finance sync jobs
-
-Those belong in separate route, sync, and reporting contracts.
+Operational Xero code keeps using the existing `XERO_*` env names and the operational `XeroToken` store.

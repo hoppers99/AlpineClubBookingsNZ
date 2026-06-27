@@ -70,4 +70,4 @@ This report page does not implement:
 - finance snapshot-backed revenue pages
 - costs, cash, or balance-sheet report pages
 - booking type schema changes
-- manual sync or finance Xero mutation flows
+- manual sync or operational Xero mutation flows

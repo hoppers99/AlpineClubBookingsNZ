@@ -9,22 +9,21 @@ If any metric definition changes, update this file in the same PR.
 ### Finance Viewer
 
 - Can access `/finance/*`
-- Can view finance snapshots and reports
-- Cannot connect/disconnect finance Xero
+- Can view finance snapshots and reports, including profit and loss and revenue reconciliation
 - Cannot trigger privileged sync or config changes
 
 ### Finance Manager
 
 - Includes all viewer permissions
-- Can connect/disconnect finance Xero
 - Can trigger manual finance syncs and diagnostics
+- Manages the operational Xero connection from `/admin/xero`
 - Intended for selected admins only unless explicitly broadened
 
-## Xero Boundary Contract
+## Xero Connection Contract
 
-- Finance Xero uses a separate OAuth app/client from operational AlpineClubBookingsNZ Xero.
-- Finance tokens, refresh state, usage metering, and sync history are stored separately.
-- Finance usage budget must be observable independently from operational Xero usage.
+- The finance sync uses the single operational Xero connection that bookings, payments, and subscriptions use.
+- There is no separate finance Xero OAuth app, token store, or usage metering.
+- The finance sync needs the `accounting.reports.read` scope; after deploy, reconnect Xero once from `/admin/xero` so existing tokens gain it. See `finance-xero-config-contract.md`.
 
 ## Snapshot Contract
 
@@ -136,7 +135,7 @@ Do not infer guest counts from external system summaries if AlpineClubBookingsNZ
 
 - Booking revenue uses AlpineClubBookingsNZ stored amounts for operational booking-facing totals.
 - When booking revenue is exposed at nightly granularity, allocate `Booking.finalPriceCents` evenly across stay nights from `checkIn` inclusive to `checkOut` exclusive.
-- Financial statement revenue uses finance Xero snapshots.
+- Financial statement revenue uses snapshots synced from the operational Xero connection.
 - Payment-derived cash summaries come from AlpineClubBookingsNZ `Payment` rows and must remain distinct from booking-derived revenue metrics.
 - Any page combining booking-derived and Xero-derived metrics must state which source owns each number.
 

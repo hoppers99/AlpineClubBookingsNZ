@@ -2,7 +2,12 @@
 
 ## Status
 
-Accepted
+Superseded by ADR-005 (2026-06-26).
+
+The separate finance Xero OAuth client, token store, usage metering, and
+`/api/finance/xero/*` routes described below were removed. The finance dashboard
+now runs off the single operational Xero connection. This ADR is retained for
+historical context; see ADR-005 for the current decision.
 
 ## Context
 

@@ -22,7 +22,7 @@ Preferred direction:
 
 `VIEWER` grants read-only finance access.
 
-`MANAGER` grants privileged finance actions such as connecting finance Xero or triggering sync operations.
+`MANAGER` grants privileged finance actions such as triggering a manual finance sync or managing the operational Xero connection from `/admin/xero`.
 
 ## Consequences
 

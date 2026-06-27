@@ -90,4 +90,4 @@ This booking metrics boundary does not implement:
 - reporting-page components or charts
 - booking type schema changes
 - Checkfront compatibility layers
-- finance Xero or snapshot pipeline changes
+- operational Xero connection or snapshot pipeline changes

@@ -65,7 +65,7 @@ Those handlers still return `FinanceSyncSnapshotInput` objects and do not bypass
 
 - If all datasets succeed, the run is completed as `SUCCEEDED`.
 - If at least one dataset succeeds and at least one dataset fails, the run is completed as `PARTIAL`.
-- If the finance Xero connection cannot be established, or every dataset fails, the run is marked `FAILED`.
+- If the operational Xero connection cannot be established (not connected, token expired, or rate-limited), or every dataset fails, the run is marked `FAILED`.
 
 ## Explicit Non-goals
 

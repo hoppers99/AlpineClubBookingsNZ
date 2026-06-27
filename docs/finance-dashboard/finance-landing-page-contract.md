@@ -2,7 +2,7 @@
 
 This document defines the native `/finance` landing page shell.
 
-It is intentionally small. The landing page surfaces live finance sync health and AlpineClubBookingsNZ booking summaries for finance viewers and managers, and it may expose finance-manager Xero connection controls, a manual sync trigger, and diagnostics deep links, but it does not implement charts or report-specific data loaders.
+It is intentionally small. The landing page surfaces live finance sync health and AlpineClubBookingsNZ booking summaries for finance viewers and managers, and it may expose a finance-manager manual sync trigger, diagnostics deep links, and a link to `/admin/xero`, but it does not implement charts or report-specific data loaders.
 
 ## Boundary
 
@@ -14,7 +14,6 @@ It is intentionally small. The landing page surfaces live finance sync health an
 
 - Sync health comes from `src/lib/finance-sync-diagnostics.ts`.
 - Booking summary cards come from `src/lib/finance-booking-metrics.ts`.
-- Finance-manager connection status comes from `src/lib/finance-xero.ts`.
 - Finance access stays gated by `src/lib/finance-auth.ts`.
 
 The landing page must keep those source boundaries explicit in the UI:
@@ -38,8 +37,8 @@ The landing page uses New Zealand local dates (`Pacific/Auckland`) for its booki
 
 - finance viewers and finance managers can load `/finance`
 - viewers see the landing page summaries and section links
-- managers may see finance Xero connection state plus connect, disconnect, and manual sync controls for the finance-only Xero boundary
-- manager-only diagnostics links and finance Xero controls must stay hidden from viewers
+- managers may additionally see a manual sync trigger and a link to `/admin/xero` for managing the operational Xero connection
+- manager-only diagnostics links, the manual sync trigger, and the `/admin/xero` link must stay hidden from viewers
 
 ## Failure Handling
 

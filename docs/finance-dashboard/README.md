@@ -2,23 +2,27 @@
 
 The finance dashboard is the native AlpineClubBookingsNZ reporting workspace under
 `/finance`. It uses AlpineClubBookingsNZ credentials, explicit finance access levels,
-first-party booking data, and a separate finance Xero integration.
+first-party booking data, and the single operational Xero connection.
 
 ## Access Model
 
 - `Member.financeAccessLevel = NONE` cannot access finance pages or finance
   APIs.
 - `VIEWER` can read the finance workspace and reports.
-- `MANAGER` can connect or disconnect finance Xero and run manual finance sync
-  actions.
+- `MANAGER` can trigger a manual finance sync and manages the operational Xero
+  connection from `/admin/xero`.
 - `ADMIN` alone does not grant finance access.
 
-## Xero Boundary
+## Xero Connection
 
-Finance reporting does not reuse the operational booking/member Xero OAuth
-client or token store. It has separate environment variables, token storage,
-tenant linkage, encryption key/versioning, usage metering, callback route, and
-sync services.
+Finance reporting uses the single operational Xero connection that bookings,
+payments, and subscriptions already use. There are no finance-specific Xero env
+vars, token storage, callback routes, or usage metering. The connection is
+managed from `/admin/xero`.
+
+The finance sync needs the `accounting.reports.read` scope. After deploy, Xero
+must be reconnected once from `/admin/xero` so existing tokens gain this scope.
+See `finance-xero-config-contract.md`.
 
 Normal finance report navigation reads stored snapshots or first-party
 AlpineClubBookingsNZ booking/payment data. It should not make live Xero calls on page
@@ -37,6 +41,7 @@ render.
 
 - [data-contracts.md](data-contracts.md)
 - [finance-xero-config-contract.md](finance-xero-config-contract.md)
+- [finance-revenue-reconciliation-contract.md](finance-revenue-reconciliation-contract.md)
 - [finance-snapshot-storage-contract.md](finance-snapshot-storage-contract.md)
 - [finance-sync-service-contract.md](finance-sync-service-contract.md)
 - [finance-sync-cron-contract.md](finance-sync-cron-contract.md)
@@ -57,15 +62,16 @@ render.
 
 - [ADR-001: Native finance dashboard in AlpineClubBookingsNZ](decisions/ADR-001-native-finance-dashboard-in-tacbookings.md)
 - [ADR-002: Finance access control](decisions/ADR-002-finance-access-control.md)
-- [ADR-003: Separate finance Xero boundary](decisions/ADR-003-separate-finance-xero-boundary.md)
+- [ADR-003: Separate finance Xero boundary (superseded by ADR-005)](decisions/ADR-003-separate-finance-xero-boundary.md)
 - [ADR-004: PostgreSQL snapshots over CSV](decisions/ADR-004-postgres-snapshots-over-csv.md)
+- [ADR-005: Single operational Xero connection](decisions/ADR-005-single-operational-xero-connection.md)
 
 ## Maintenance Rules
 
 - Update `data-contracts.md` before changing metric definitions.
 - Do not grant finance access by broadening `ADMIN`; update ADR-002 first if
   the access model changes.
-- Do not reuse operational Xero token storage, OAuth clients, or API budget for
-  finance reporting.
+- The finance sync uses the single operational Xero connection; update ADR-005
+  first if that changes.
 - Keep report pages backed by snapshots or first-party AlpineClubBookingsNZ data unless a
   contract explicitly allows a live integration call.

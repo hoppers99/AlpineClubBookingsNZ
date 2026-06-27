@@ -48,7 +48,7 @@ This report page does not implement:
 - working-capital, cashflow, or liquidity rollups
 - charts or stakeholder-facing visualisations
 - manual sync actions
-- finance Xero connection work
+- operational Xero connection work
 - booking-type segmentation or new pricing schema
 - undocumented legacy-dashboard formulas beyond the explicit assumptions above
 

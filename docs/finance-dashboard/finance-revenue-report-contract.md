@@ -60,4 +60,4 @@ This report page does not implement:
 - booking-derived revenue or occupancy figures
 - costs, cash, or balance-sheet report pages
 - manual sync actions
-- finance Xero connection work
+- operational Xero connection work
