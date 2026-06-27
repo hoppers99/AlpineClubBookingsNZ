@@ -25,9 +25,8 @@ export async function requiresPaidSubscriptionForAgeTierFromSettings(
 /**
  * Membership subscriptions are invoiced and reconciled through Xero. The
  * booking lockout is enforced only when BOTH:
- *  - the Xero module is effectively enabled (deploy capability AND admin
- *    setting, via loadEffectiveModuleFlags) — otherwise members can never
- *    reach PAID; and
+ *  - the Xero module is enabled in Admin Modules (via
+ *    loadEffectiveModuleFlags) — otherwise members can never reach PAID; and
  *  - the admin has the lockout toggle on (MembershipLockoutSettings.enabled).
  *
  * This call also reseeds the financial-year cache for the current instance, so
