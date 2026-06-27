@@ -27,8 +27,8 @@ fork for another organisation. See `NOTICE.md`.
   tokens for interactive sections, and a menu generated from page settings
   (see `CONFIGURATION.md`, "Website Page Content")
 - Lodge kiosk with PIN access, arrivals/departures, chores, and issue reporting
-- Xero integrations for operational accounting plus a separate finance Xero
-  boundary and finance reports
+- Xero integrations for operational accounting, Internet Banking settlement,
+  and finance reports backed by the same operational Xero connection
 - AWS SES email, SES SNS suppression feedback, Sentry/pino observability, cron
   jobs, PostgreSQL backups, and blue/green Docker deployment
 
@@ -62,11 +62,15 @@ fork for another organisation. See `NOTICE.md`.
    `public/branding/` with your own favicon, Open Graph image, and public
    website photos. Keep the `*.example.*` files as reusable placeholders for
    forks.
-4. Set deploy capability flags in `.env`: `FEATURE_KIOSK`,
-   `FEATURE_CHORES`, `FEATURE_FINANCE_DASHBOARD`, `FEATURE_WAITLIST`,
-   `FEATURE_XERO_INTEGRATION`, `FEATURE_BED_ALLOCATION`, and
-   `FEATURE_INTERNET_BANKING_PAYMENTS`. Only the literal value `true` makes a
-   module available to the deployment.
+4. Set deploy capability flags in `.env`. Core capability gates
+   (`FEATURE_KIOSK`, `FEATURE_CHORES`, `FEATURE_FINANCE_DASHBOARD`,
+   `FEATURE_WAITLIST`, `FEATURE_XERO_INTEGRATION`, `FEATURE_BED_ALLOCATION`,
+   and `FEATURE_INTERNET_BANKING_PAYMENTS`) default off and require the literal
+   value `true`. Newer general-purpose modules (`FEATURE_GROUP_BOOKINGS`,
+   `FEATURE_LOCKERS`, `FEATURE_INDUCTION`, `FEATURE_WORK_PARTIES`,
+   `FEATURE_PROMO_CODES`, `FEATURE_HUT_LEADERS`, `FEATURE_COMMUNICATIONS`,
+   and `FEATURE_SKIFIELD_CONDITIONS`) default on and can be hard-disabled with
+   the literal value `false`.
 5. Set `SEED_ADMIN_EMAIL`, `SEED_ADMIN_PASSWORD`, and `SEED_LODGE_PASSWORD`,
    run the seed command, then change the seeded admin password on first login.
 6. After sign-in, use **Admin > Modules** to set club-level activation for

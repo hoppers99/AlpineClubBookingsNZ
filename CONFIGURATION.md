@@ -183,7 +183,7 @@ After signing in as an administrator, open `/admin/setup` to review:
 - club config and module controls
 - first admin and seeded database settings
 - booking policies, membership cancellation settings, age tiers, seasons, and rates
-- Stripe, SES/email, Sentry, operational Xero, and finance Xero readiness
+- Stripe, SES/email, Sentry, operational Xero, and finance-dashboard readiness
 - Xero account and item-code mappings
 
 Provider tests on `/admin/setup` run only when an admin clicks the relevant test
@@ -220,27 +220,36 @@ approval processing must keep Xero writes outside long database transactions.
 
 Optional modules use a layered control model:
 
-- `.env` feature flags are deploy/operator capability gates. Only the literal
-  string `true` makes a module available to this deployment; any other value
-  disables that capability.
+- `.env` feature flags are deploy/operator capability gates. The original core
+  capability gates default off and require the literal string `true`. Newer
+  general-purpose modules default on, but the literal string `false` hard
+  disables them for a deployment.
 - Admin Modules activation is stored in the database and is the club-level
   activation layer.
 - The effective module state is `.env capability enabled && Admin Modules
 activation enabled`.
 
-Startup/deploy validation still requires the `.env` capability flags to be
+Startup/deploy validation still requires the core `.env` capability flags to be
 explicit. Admin Modules do not store secrets and do not replace deployment-time
 checks for Stripe, Xero, cron, or other operator-owned credentials.
 
-| Variable                            | Description                                                                                                                                                                                                                         |
-| ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `FEATURE_KIOSK`                     | Makes lodge kiosk routes/navigation available when Admin Modules activation also allows it.                                                                                                                                         |
-| `FEATURE_CHORES`                    | Makes chores and roster surfaces available when Admin Modules activation also allows them.                                                                                                                                          |
-| `FEATURE_FINANCE_DASHBOARD`         | Makes finance dashboard routes/navigation and finance sync cron available when Admin Modules activation also allows them.                                                                                                           |
-| `FEATURE_WAITLIST`                  | Makes waitlist routes and waitlist cron available when Admin Modules activation also allows them.                                                                                                                                   |
-| `FEATURE_XERO_INTEGRATION`          | Makes operational Xero routes/navigation and Xero cron available when Admin Modules activation also allows them.                                                                                                                    |
-| `FEATURE_BED_ALLOCATION`            | Makes room/bed inventory, guest-to-bed allocation, auto-allocation, and allocation approval controls available when Admin Modules activation also allows them.                                                                      |
-| `FEATURE_INTERNET_BANKING_PAYMENTS` | Makes the Internet Banking payment option available when Admin Modules activation also allows it. Operational Xero still needs its own capability, credentials, and tenant connection before invoices can be issued and reconciled. |
+| Variable                            | Default | Description                                                                                                                                                                                                                         |
+| ----------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FEATURE_KIOSK`                     | off     | Makes lodge kiosk routes/navigation available when Admin Modules activation also allows it.                                                                                                                                         |
+| `FEATURE_CHORES`                    | off     | Makes chores and roster surfaces available when Admin Modules activation also allows them.                                                                                                                                          |
+| `FEATURE_FINANCE_DASHBOARD`         | off     | Makes finance dashboard routes/navigation and finance sync cron available when Admin Modules activation also allows them.                                                                                                           |
+| `FEATURE_WAITLIST`                  | off     | Makes waitlist routes and waitlist cron available when Admin Modules activation also allows them.                                                                                                                                   |
+| `FEATURE_XERO_INTEGRATION`          | off     | Makes operational Xero routes/navigation and Xero cron available when Admin Modules activation also allows them.                                                                                                                    |
+| `FEATURE_BED_ALLOCATION`            | off     | Makes room/bed inventory, guest-to-bed allocation, auto-allocation, and allocation approval controls available when Admin Modules activation also allows them.                                                                      |
+| `FEATURE_INTERNET_BANKING_PAYMENTS` | off     | Makes the Internet Banking payment option available when Admin Modules activation also allows it. Operational Xero still needs its own capability, credentials, and tenant connection before invoices can be issued and reconciled. |
+| `FEATURE_GROUP_BOOKINGS`            | on      | Makes group-booking organiser, join, and settlement surfaces available when Admin Modules activation also allows them.                                                                                                              |
+| `FEATURE_LOCKERS`                   | on      | Makes member locker allocation surfaces available when Admin Modules activation also allows them.                                                                                                                                   |
+| `FEATURE_INDUCTION`                 | on      | Makes lodge induction template, self-assessment, and sign-off surfaces available when Admin Modules activation also allows them.                                                                                                     |
+| `FEATURE_WORK_PARTIES`              | on      | Makes work party event and associated internal promo-code surfaces available when Admin Modules activation also allows them.                                                                                                         |
+| `FEATURE_PROMO_CODES`               | on      | Makes promo-code administration and promo-aware booking flows available when Admin Modules activation also allows them.                                                                                                             |
+| `FEATURE_HUT_LEADERS`               | on      | Makes hut-leader assignment and lodge leader surfaces available when Admin Modules activation also allows them.                                                                                                                     |
+| `FEATURE_COMMUNICATIONS`            | on      | Makes admin communications surfaces available when Admin Modules activation also allows them.                                                                                                                                       |
+| `FEATURE_SKIFIELD_CONDITIONS`       | on      | Makes skifield-condition widgets, public API routes, and admin cache controls available when Admin Modules activation also allows them.                                                                                             |
 
 Cron-backed optional modules check effective module state before doing module
 work. If an Admin Modules setting is disabled while the `.env` capability is
@@ -258,10 +267,10 @@ secrets, tokens, tenant ids, bank account details, or external provider
 credentials.
 
 The `.env` feature flags remain deploy/operator capability gates. A module is
-ready only when its feature flag is `true` and its Admin Modules activation is
-enabled. New installations seed the activation row with all module activations
-enabled so existing deployments keep their current behaviour until an admin
-changes the database-backed settings.
+ready only when its feature flag resolves enabled and its Admin Modules
+activation is enabled. New installations seed the activation row with all
+module activations enabled so existing deployments keep their current behaviour
+until an admin changes the database-backed settings.
 
 ## Stripe
 

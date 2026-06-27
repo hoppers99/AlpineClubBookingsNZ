@@ -150,8 +150,9 @@ The source of truth is `prisma/schema.prisma`. Key domains are:
   approval metadata.
 - Operational Xero tokens, object links, cache tables, inbound events,
   operation queues, account/item mappings, and API usage metering.
-- Finance Xero tokens, finance sync runs, finance snapshots, finance usage
-  metering, and finance access levels.
+- Finance sync runs, finance snapshots, chart-of-accounts snapshots, finance
+  report diagnostics, and finance access levels, all using the operational Xero
+  connection rather than a separate finance token store.
 - Cron run records, email logs, webhook logs, processed webhook events, and
   backup/audit-retention support records.
 
@@ -269,12 +270,14 @@ token row so multiple app workers cannot use the same rotating refresh token.
 Internet Banking bookings use this boundary to issue invoice-backed payment
 instructions and reconcile settlement from inbound Xero invoice/payment state.
 
-### Finance Xero
+### Finance reporting
 
-Finance Xero is a separate OAuth boundary with separate token storage,
-encryption keys, tenant linkage, callback route, usage metering, and sync
-service. Finance pages normally read stored snapshots or first-party booking
-data rather than calling Xero during page render.
+Finance reporting uses the same operational Xero connection that booking,
+payment, and membership flows use. The finance sync service reads reports,
+invoice datasets, bank balances, and chart-of-accounts snapshots through that
+connection, then stores `FinanceSnapshot` and `FinanceSyncRun` rows for page
+rendering. There is no separate finance Xero OAuth app, token store, callback
+route, or usage-metering table.
 
 ### Email
 

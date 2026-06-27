@@ -2,6 +2,105 @@
 
 All notable public reference-release changes should be recorded here.
 
+## 0.9.0 - 2026-06-27
+
+- Release classification: minor public reference release. The change set since
+  `0.8.0` adds public join flows, module controls, induction, locker,
+  finance-dashboard, provider-recovery, and security hardening while preserving
+  the existing public deployment shape.
+- Added group-booking join flows and APIs, including organiser-owned join
+  codes, member self-add, non-member email verification, organiser management,
+  organiser cancellation cleanup, public join pages, member dashboard context,
+  and protected route/API coverage for group joinability.
+- Added group-booking settlement options for both each-pays-own and
+  organiser-pays modes. Organisers can collect one combined Stripe payment or
+  one Internet Banking/Xero invoice for joined bookings, while joiners remain
+  linked to their own child bookings for capacity, status, and audit purposes.
+- Added lodge induction and sign-off workflows with induction templates,
+  section/item results, assigned signers, self-assessment capture, member
+  sign-off records, route access hardening, and nomination settings support for
+  deployments that require induction before membership completion.
+- Added member locker administration and allocation, including API validation,
+  unique locker names, dashboard/member context, and admin controls that can be
+  disabled through Admin Modules.
+- Added database-backed Admin Modules toggles for group bookings, lockers,
+  induction, work parties, promo codes, hut leaders, communications, and
+  skifield conditions, keeping deploy-time `.env` capabilities as the outer
+  operator gate.
+- Added member category and profile metadata support, including Life and
+  Associate member categories, title, gender, occupation, life-member date,
+  comments, configurable member-field visibility, CSV import/export hardening,
+  and refreshed member edit/detail screens.
+- Added subscription booking lockout controls so clubs can block bookings for
+  members with unpaid annual subscriptions, configure the lockout behavior in
+  admin, and align the subscription year with either Xero's financial year or
+  an explicit local override.
+- Reworked the finance dashboard to use the single operational Xero connection
+  already used by bookings, payments, and subscriptions. Finance-specific Xero
+  OAuth routes, token storage, and finance Xero usage metering were removed,
+  while finance reports gained revenue reconciliation, chart-of-accounts
+  snapshots, KPI cards, trend/mix charts, balance-sheet, cash, costs, working
+  capital, pricing-sensitivity, and booking metric views.
+- Added Whakapapa/skifield condition widgets and admin cache controls with
+  cached report payloads, freeze windows, public endpoint handling, and module
+  gating for deployments that do not expose mountain-condition content.
+- Fixed image upload/runtime storage and visual-editor behavior, including
+  read-only root filesystem upload handling, image resizing, admin toolbar and
+  alignment tests, photo-gallery token rendering, and safer upload trace
+  redaction.
+- Improved email/provider recovery visibility with token-email recovery
+  actions, undeliverable admin-alert escalation, waitlist-offer email failure
+  surfacing, Xero amount-mismatch repair alerts, missing Xero refund credit-note
+  reporting, stale Xero operation/inbound-event recovery, exhausted payment
+  recovery health signals, and the consolidated operator queue.
+- Hardened security and idempotency boundaries, including source-scoped
+  processed webhook event claims, SES SNS SignatureVersion 2 enforcement,
+  Xero token refresh leases, payment-link/client-secret ownership tests,
+  group-join response neutralisation, mixed-method route boundary coverage,
+  public rate-limit proxy assumptions, and high-severity dependency refreshes.
+- Migration/deployment notes:
+  - `20260615110000_add_lodge_induction_signoff` creates induction template,
+    result, signer, and settings tables plus `Member.requiresInduction`; run
+    during low membership-admin traffic before enabling induction-gated flows.
+  - `20260616120000_induction_assigned_signers_and_self_assessment` adds
+    induction self-assessment fields and assigned-signer records; avoid active
+    induction edits during cutover.
+  - `20260618120000_add_group_booking` adds group-booking and join staging
+    tables for shareable join codes; open new group joins only after the new
+    runtime is live.
+  - `20260619120000_add_booking_organiser_settled` adds
+    `Booking.organiserSettled` for organiser-pays child bookings; run during
+    low booking traffic and do not create organiser-pays joins until old app
+    colors have drained.
+  - `20260619130000_add_group_booking_settlement` and
+    `20260620120000_add_group_settlement_internet_banking` add combined group
+    settlement records for Stripe and Internet Banking/Xero settlement.
+  - `20260620121500_add_whakapapa_report_cache` and
+    `20260620133000_add_whakapapa_cache_frozen_until` add cached skifield
+    report payloads and freeze-window controls.
+  - `20260620145000_add_lockers` and `20260622100000_harden_locker_names` add
+    member locker allocation and then enforce unique, bounded locker names;
+    resolve duplicate locker names before the hardening migration.
+  - `20260621150000_scope_processed_webhook_event_idempotency` replaces the
+    global webhook-event idempotency key with a `(source, eventId)` key so
+    Stripe, Xero, and SES events cannot collide across providers.
+  - `20260621160000_add_xero_token_refresh_lease` adds the operational Xero
+    token refresh lease used to prevent parallel refresh-token rotation.
+  - `20260622120000_add_module_toggles` adds Admin Modules activation booleans
+    for the newly modularised features, all defaulting on for upgraded installs.
+  - `20260623120000_add_member_status_fields`,
+    `20260623130000_add_member_gender_title`, and
+    `20260626120000_member_field_visibility_and_categories` add the new member
+    metadata/category fields and settings; avoid assigning new enum categories
+    until the new runtime is serving traffic.
+  - `20260626120000_add_membership_lockout_settings` adds the singleton
+    subscription booking-lockout settings row used by admin controls.
+  - `20260626120000_add_chart_of_accounts_finance_snapshot_type` adds the
+    finance chart-of-accounts snapshot type used by revenue reconciliation.
+  - `20260626121000_drop_finance_xero_storage_and_usage` drops the retired
+    finance-specific Xero token and usage tables after the runtime has moved to
+    the single operational Xero connection.
+
 ## 0.8.0 - 2026-06-15
 
 - Release classification: minor public reference release. The change set since
