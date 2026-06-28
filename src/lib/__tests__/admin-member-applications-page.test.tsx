@@ -21,10 +21,21 @@ function baseApplication(
     familyMemberCount: 0,
     nominator1Email: "nom1@example.com",
     nominator2Email: "nom2@example.com",
+    nominator1Id: "nom-1",
+    nominator2Id: "nom-2",
     nominator1Name: "Nom One",
     nominator2Name: "Nom Two",
     nominator1ConfirmedAt: null,
     nominator2ConfirmedAt: null,
+    nominator1TokenExpiresAt: "2026-06-08T00:00:00.000Z",
+    nominator2TokenExpiresAt: "2026-06-08T00:00:00.000Z",
+    nominator1TokenLastSentAt: "2026-06-01T00:00:00.000Z",
+    nominator2TokenLastSentAt: "2026-06-01T00:00:00.000Z",
+    nominator1ReminderCount: 1,
+    nominator2ReminderCount: 4,
+    nominatorReminderLimit: 4,
+    nominator1ReminderExhausted: false,
+    nominator2ReminderExhausted: true,
     status: "PENDING_NOMINATORS",
     adminNotes: null,
     reviewerName: null,
@@ -60,31 +71,55 @@ describe("MemberApplicationsPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     global.fetch = fetchMock as typeof fetch;
-    fetchMock.mockImplementation((_url: string, init?: RequestInit) => {
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
       if (init?.method === "PUT") {
         return Promise.resolve({
           ok: true,
           json: async () => ({ success: true, status: "REJECTED" }),
         });
       }
+      if (init?.method === "POST") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ success: true, warnings: [] }),
+        });
+      }
+      if (url.startsWith("/api/admin/members?")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            members: [
+              {
+                id: "nom-3",
+                firstName: "Nom",
+                lastName: "Three",
+                email: "nom3@example.com",
+              },
+            ],
+          }),
+        });
+      }
       return Promise.resolve({ ok: true, json: async () => listResponse() });
     });
   });
 
-  it("offers a reject control for stuck PENDING_NOMINATORS applications", async () => {
+  it("offers recovery controls for PENDING_NOMINATORS applications", async () => {
     render(<MemberApplicationsPage />);
 
     await waitFor(() =>
       expect(screen.queryByText("Stuck Nominators")).not.toBeNull()
     );
 
-    // The waiting-on-nominators card explains why and offers a reject control.
     expect(
-      screen.queryByText(/unblocks a fresh application for the same email/i)
+      screen.queryByText(/Refresh the workflow to send fresh links/i)
     ).not.toBeNull();
     expect(
-      screen.queryByRole("button", { name: /Reject stuck application/i })
+      screen.queryByRole("button", { name: /Refresh nomination workflow/i })
     ).not.toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /Reject application/i })
+    ).not.toBeNull();
+    expect(screen.queryByText(/Automatic reminders: 4\/4 exhausted/i)).not.toBeNull();
   });
 
   it("does not offer approval for PENDING_NOMINATORS applications", async () => {
@@ -99,6 +134,58 @@ describe("MemberApplicationsPage", () => {
     expect(screen.getAllByRole("button", { name: /^Approve$/ })).toHaveLength(1);
   });
 
+  it("refreshes a stuck nominator application via the recovery endpoint", async () => {
+    render(<MemberApplicationsPage />);
+
+    await waitFor(() =>
+      expect(screen.queryByText("Stuck Nominators")).not.toBeNull()
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Refresh nomination workflow/i })
+    );
+
+    await waitFor(() => {
+      const postCall = fetchMock.mock.calls.find(
+        ([url, init]) =>
+          url === "/api/admin/member-applications/stuck-1/nominations/refresh" &&
+          (init as RequestInit | undefined)?.method === "POST"
+      );
+      expect(postCall).toBeDefined();
+    });
+  });
+
+  it("replaces an unconfirmed nominator via the replacement endpoint", async () => {
+    render(<MemberApplicationsPage />);
+
+    await waitFor(() =>
+      expect(screen.queryByText("Stuck Nominators")).not.toBeNull()
+    );
+
+    fireEvent.change(screen.getAllByPlaceholderText(/Search name or email/i)[0], {
+      target: { value: "Nom Three" },
+    });
+    fireEvent.click(screen.getAllByRole("button", { name: /Search members/i })[0]);
+
+    await waitFor(() =>
+      expect(screen.queryByText("Nom Three")).not.toBeNull()
+    );
+
+    fireEvent.click(screen.getAllByRole("button", { name: /^Use$/ })[0]);
+
+    await waitFor(() => {
+      const postCall = fetchMock.mock.calls.find(
+        ([url, init]) =>
+          url === "/api/admin/member-applications/stuck-1/nominators/nominator1/replace" &&
+          (init as RequestInit | undefined)?.method === "POST"
+      );
+      expect(postCall).toBeDefined();
+      expect(JSON.parse((postCall?.[1] as RequestInit).body as string)).toEqual({
+        memberId: "nom-3",
+      });
+    });
+  });
+
   it("rejects a stuck nominator application via the review endpoint", async () => {
     render(<MemberApplicationsPage />);
 
@@ -107,7 +194,7 @@ describe("MemberApplicationsPage", () => {
     );
 
     fireEvent.click(
-      screen.getByRole("button", { name: /Reject stuck application/i })
+      screen.getByRole("button", { name: /Reject application/i })
     );
 
     await waitFor(() => {

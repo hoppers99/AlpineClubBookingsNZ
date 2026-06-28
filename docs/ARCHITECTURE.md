@@ -294,6 +294,10 @@ invites, and membership cancellation confirmations are not auto-retried because
 their HTML is redacted; Admin Email Deliverability exposes a reissue action that
 creates a fresh token and resends the lifecycle email after any active
 suppression has been cleared.
+Nomination request links also have workflow-level recovery: expired unconfirmed
+links are renewed by the `nomination-reminders` cron weekly for four automatic
+reminders, and admins can refresh or replace unconfirmed nominators from the
+member-applications queue.
 Membership cancellation, archive, and hard-delete lifecycle messages use that
 registry so operators can preview and override copy without bypassing the
 shared `sendEmail` path.
@@ -320,6 +324,7 @@ disable cron with `CRON_ENABLED=false`.
 | `age-up` | Daily | Process age-tier/member transitions |
 | `capacity-warnings` | Daily | Alert when lodge occupancy approaches limits |
 | `admin-digest` | Daily | Send admin summary email |
+| `nomination-reminders` | Daily | Renew expired unconfirmed nomination links weekly, up to four automatic reminders |
 | `pre-arrival-reminders` | Every 3 hours | Send current directions and door-code reminders before check-in |
 | `checkin-reminders` | Daily | Send next-day check-in reminders |
 | `feedback-requests` | Daily | Send post-stay feedback requests |

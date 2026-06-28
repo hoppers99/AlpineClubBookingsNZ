@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   bookingCount: vi.fn(),
   memberApplicationFindMany: vi.fn(),
   memberApplicationCount: vi.fn(),
+  nominationTokenFindMany: vi.fn(),
   memberFindMany: vi.fn(),
   deletionRequestFindMany: vi.fn(),
   deletionRequestCount: vi.fn(),
@@ -43,6 +44,9 @@ vi.mock("@/lib/prisma", () => ({
     memberApplication: {
       findMany: mocks.memberApplicationFindMany,
       count: mocks.memberApplicationCount,
+    },
+    nominationToken: {
+      findMany: mocks.nominationTokenFindMany,
     },
     member: {
       findMany: mocks.memberFindMany,
@@ -213,6 +217,7 @@ describe("admin query validation and pagination", () => {
     mocks.bookingCount.mockResolvedValue(0);
     mocks.memberApplicationFindMany.mockResolvedValue([]);
     mocks.memberApplicationCount.mockResolvedValue(0);
+    mocks.nominationTokenFindMany.mockResolvedValue([]);
     mocks.memberFindMany.mockResolvedValue([]);
     mocks.deletionRequestFindMany.mockResolvedValue([]);
     mocks.deletionRequestCount.mockResolvedValue(0);

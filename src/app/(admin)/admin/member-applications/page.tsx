@@ -33,15 +33,35 @@ type ApplicationRecord = {
   familyMemberCount: number;
   nominator1Email: string;
   nominator2Email: string;
+  nominator1Id: string | null;
+  nominator2Id: string | null;
   nominator1Name: string | null;
   nominator2Name: string | null;
   nominator1ConfirmedAt: string | null;
   nominator2ConfirmedAt: string | null;
+  nominator1TokenExpiresAt: string | null;
+  nominator2TokenExpiresAt: string | null;
+  nominator1TokenLastSentAt: string | null;
+  nominator2TokenLastSentAt: string | null;
+  nominator1ReminderCount: number;
+  nominator2ReminderCount: number;
+  nominatorReminderLimit: number;
+  nominator1ReminderExhausted: boolean;
+  nominator2ReminderExhausted: boolean;
   status: ApplicationStatus;
   adminNotes: string | null;
   reviewerName: string | null;
   reviewedAt: string | null;
   createdAt: string;
+};
+
+type NominatorSlot = "nominator1" | "nominator2";
+
+type MemberSearchResult = {
+  id: string;
+  firstName: string;
+  lastName: string;
+  email: string;
 };
 
 type EntranceFeeDecisionForm = {
@@ -87,14 +107,21 @@ function statusLabel(status: ApplicationStatus) {
   }
 }
 
+function replacementKey(applicationId: string, slot: NominatorSlot) {
+  return `${applicationId}:${slot}`;
+}
+
 export default function MemberApplicationsPage() {
   const [filter, setFilter] = useState("PENDING_ADMIN");
   const [applications, setApplications] = useState<ApplicationRecord[]>([]);
   const [pendingCount, setPendingCount] = useState(0);
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [entranceFeeDecisions, setEntranceFeeDecisions] = useState<Record<string, EntranceFeeDecisionForm>>({});
+  const [replacementQueries, setReplacementQueries] = useState<Record<string, string>>({});
+  const [replacementResults, setReplacementResults] = useState<Record<string, MemberSearchResult[]>>({});
   const [loading, setLoading] = useState(true);
   const [submittingId, setSubmittingId] = useState<string | null>(null);
+  const [searchingReplacementKey, setSearchingReplacementKey] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
 
@@ -231,6 +258,224 @@ export default function MemberApplicationsPage() {
     }
   }
 
+  async function refreshNominations(applicationId: string) {
+    setSubmittingId(applicationId);
+    setError("");
+    setMessage("");
+
+    try {
+      const response = await fetch(
+        `/api/admin/member-applications/${applicationId}/nominations/refresh`,
+        { method: "POST" }
+      );
+      const data = await response.json();
+
+      if (!response.ok) {
+        setError(data.error || "Could not refresh the nomination workflow.");
+        return;
+      }
+
+      const warnings =
+        Array.isArray(data.warnings) && data.warnings.length > 0
+          ? ` Warnings: ${data.warnings.join(". ")}`
+          : "";
+      setMessage(`Nomination workflow refreshed.${warnings}`);
+      await loadApplications(filter);
+    } catch {
+      setError("Could not refresh the nomination workflow.");
+    } finally {
+      setSubmittingId(null);
+    }
+  }
+
+  async function searchReplacement(applicationId: string, slot: NominatorSlot) {
+    const key = replacementKey(applicationId, slot);
+    const query = (replacementQueries[key] || "").trim();
+
+    if (query.length < 2) {
+      setError("Enter at least two characters to search for a replacement nominator.");
+      return;
+    }
+
+    setSearchingReplacementKey(key);
+    setError("");
+
+    try {
+      const response = await fetch(
+        `/api/admin/members?q=${encodeURIComponent(query)}&active=true&pageSize=5`
+      );
+      const data = await response.json();
+
+      if (!response.ok) {
+        setError(data.error || "Could not search members.");
+        return;
+      }
+
+      setReplacementResults((prev) => ({
+        ...prev,
+        [key]: data.members || [],
+      }));
+    } catch {
+      setError("Could not search members.");
+    } finally {
+      setSearchingReplacementKey(null);
+    }
+  }
+
+  async function replaceNominator(
+    applicationId: string,
+    slot: NominatorSlot,
+    member: MemberSearchResult
+  ) {
+    setSubmittingId(applicationId);
+    setError("");
+    setMessage("");
+
+    try {
+      const response = await fetch(
+        `/api/admin/member-applications/${applicationId}/nominators/${slot}/replace`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ memberId: member.id }),
+        }
+      );
+      const data = await response.json();
+
+      if (!response.ok) {
+        setError(data.error || "Could not replace the nominator.");
+        return;
+      }
+
+      const warnings =
+        Array.isArray(data.warnings) && data.warnings.length > 0
+          ? ` Warnings: ${data.warnings.join(". ")}`
+          : "";
+      setMessage(
+        `Nominator replaced with ${member.firstName} ${member.lastName}.${warnings}`
+      );
+      setReplacementQueries((prev) => ({
+        ...prev,
+        [replacementKey(applicationId, slot)]: "",
+      }));
+      setReplacementResults((prev) => ({
+        ...prev,
+        [replacementKey(applicationId, slot)]: [],
+      }));
+      await loadApplications(filter);
+    } catch {
+      setError("Could not replace the nominator.");
+    } finally {
+      setSubmittingId(null);
+    }
+  }
+
+  function renderNominatorCard(application: ApplicationRecord, slot: NominatorSlot) {
+    const isFirst = slot === "nominator1";
+    const label = isFirst ? "Nominator 1" : "Nominator 2";
+    const name = isFirst ? application.nominator1Name : application.nominator2Name;
+    const email = isFirst ? application.nominator1Email : application.nominator2Email;
+    const confirmedAt = isFirst
+      ? application.nominator1ConfirmedAt
+      : application.nominator2ConfirmedAt;
+    const tokenExpiresAt = isFirst
+      ? application.nominator1TokenExpiresAt
+      : application.nominator2TokenExpiresAt;
+    const tokenLastSentAt = isFirst
+      ? application.nominator1TokenLastSentAt
+      : application.nominator2TokenLastSentAt;
+    const reminderCount = isFirst
+      ? application.nominator1ReminderCount
+      : application.nominator2ReminderCount;
+    const reminderExhausted = isFirst
+      ? application.nominator1ReminderExhausted
+      : application.nominator2ReminderExhausted;
+    const key = replacementKey(application.id, slot);
+    const canReplace =
+      application.status === "PENDING_NOMINATORS" && confirmedAt === null;
+
+    return (
+      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+          {label}
+        </p>
+        <p className="mt-1 font-medium text-slate-900">
+          {name || email}
+        </p>
+        <p className="text-slate-600">{email}</p>
+        <p className="mt-2 text-slate-600">
+          Confirmed: {formatDate(confirmedAt)}
+        </p>
+
+        {!confirmedAt && application.status === "PENDING_NOMINATORS" && (
+          <div className="mt-3 space-y-2 rounded-md border border-white bg-white p-3 text-xs text-slate-600">
+            <p>Link expires: {formatDate(tokenExpiresAt)}</p>
+            <p>Last sent: {formatDate(tokenLastSentAt)}</p>
+            <p>
+              Automatic reminders: {reminderCount}/{application.nominatorReminderLimit}
+              {reminderExhausted ? " exhausted" : ""}
+            </p>
+          </div>
+        )}
+
+        {canReplace && (
+          <div className="mt-3 space-y-2">
+            <label className="block space-y-1">
+              <span className="text-xs font-medium text-slate-700">
+                Replacement member
+              </span>
+              <input
+                className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
+                value={replacementQueries[key] || ""}
+                onChange={(event) =>
+                  setReplacementQueries((prev) => ({
+                    ...prev,
+                    [key]: event.target.value,
+                  }))
+                }
+                placeholder="Search name or email"
+              />
+            </label>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={searchingReplacementKey === key}
+              onClick={() => searchReplacement(application.id, slot)}
+            >
+              {searchingReplacementKey === key ? "Searching..." : "Search members"}
+            </Button>
+
+            {(replacementResults[key] || []).length > 0 && (
+              <div className="space-y-2">
+                {(replacementResults[key] || []).map((member) => (
+                  <div
+                    key={member.id}
+                    className="flex flex-col gap-2 rounded-md border border-slate-200 bg-white p-2 sm:flex-row sm:items-center sm:justify-between"
+                  >
+                    <div>
+                      <p className="text-sm font-medium text-slate-900">
+                        {member.firstName} {member.lastName}
+                      </p>
+                      <p className="text-xs text-slate-600">{member.email}</p>
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={submittingId === application.id}
+                      onClick={() => replaceNominator(application.id, slot, member)}
+                    >
+                      Use
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
@@ -341,31 +586,8 @@ export default function MemberApplicationsPage() {
                   </div>
 
                   <div className="space-y-3 text-sm">
-                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
-                        Nominator 1
-                      </p>
-                      <p className="mt-1 font-medium text-slate-900">
-                        {application.nominator1Name || application.nominator1Email}
-                      </p>
-                      <p className="text-slate-600">{application.nominator1Email}</p>
-                      <p className="mt-2 text-slate-600">
-                        Confirmed: {formatDate(application.nominator1ConfirmedAt)}
-                      </p>
-                    </div>
-
-                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
-                        Nominator 2
-                      </p>
-                      <p className="mt-1 font-medium text-slate-900">
-                        {application.nominator2Name || application.nominator2Email}
-                      </p>
-                      <p className="text-slate-600">{application.nominator2Email}</p>
-                      <p className="mt-2 text-slate-600">
-                        Confirmed: {formatDate(application.nominator2ConfirmedAt)}
-                      </p>
-                    </div>
+                    {renderNominatorCard(application, "nominator1")}
+                    {renderNominatorCard(application, "nominator2")}
                   </div>
                 </div>
 
@@ -553,21 +775,29 @@ export default function MemberApplicationsPage() {
                   <div className="space-y-3 rounded-md border border-slate-200 bg-slate-50 p-4 text-sm">
                     <p className="text-slate-700">
                       This application is still waiting on its nominators and cannot
-                      be approved until both have confirmed. If the nomination links
-                      have expired or the applicant has asked to withdraw, you can
-                      reject it to clear the stuck application — this also unblocks a
-                      fresh application for the same email address.
+                      be approved until both have confirmed. Refresh the workflow to
+                      send fresh links to pending nominators, or replace an unconfirmed
+                      nominator above.
                     </p>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      disabled={submittingId === application.id}
-                      onClick={() => reviewApplication(application.id, "REJECT")}
-                    >
-                      {submittingId === application.id
-                        ? "Working..."
-                        : "Reject stuck application"}
-                    </Button>
+                    <div className="flex flex-wrap gap-3">
+                      <Button
+                        type="button"
+                        disabled={submittingId === application.id}
+                        onClick={() => refreshNominations(application.id)}
+                      >
+                        {submittingId === application.id
+                          ? "Working..."
+                          : "Refresh nomination workflow"}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={submittingId === application.id}
+                        onClick={() => reviewApplication(application.id, "REJECT")}
+                      >
+                        Reject application
+                      </Button>
+                    </div>
                   </div>
                 )}
               </CardContent>

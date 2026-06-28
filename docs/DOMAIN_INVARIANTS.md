@@ -58,6 +58,10 @@ dependent changes must preserve financial history, booking and guest history,
 audit history, required family/dependent history, privacy preferences, and Xero
 contact/link history where required.
 
+Pending nomination states must have an expiry, reminder, admin refresh,
+replacement, rejection, or other documented recovery path so applications do
+not remain permanently blocked by stale action links.
+
 Hard delete must remain limited to records that pass the eligibility checks for
 no durable booking, financial, family, Xero, or membership-history blockers.
 

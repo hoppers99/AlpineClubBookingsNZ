@@ -764,6 +764,41 @@ export async function register() {
 
     logger.info({ job: "pending-deadline-alerts" }, "Scheduled pending deadline alerts (daily at 8:00 AM NZST)");
 
+    // Membership nomination reminders (daily at 8:15 AM NZST)
+    let isNominationReminderRunning = false;
+    cron.default.schedule("15 8 * * *", async () => {
+      if (isNominationReminderRunning) {
+        logger.info({ job: "nomination-reminders" }, "Already running, skipping");
+        return;
+      }
+      isNominationReminderRunning = true;
+      const startedAt = new Date();
+      logger.info({ job: "nomination-reminders" }, "Checking expired nomination links for weekly reminders");
+
+      const checkInId = Sentry.captureCheckIn(
+        { monitorSlug: "nomination-reminders", status: "in_progress" },
+        sentryCronMonitorConfig("15 8 * * *", { checkinMargin: 10, maxRuntime: 10 })
+      );
+
+      try {
+        const { sendDueNominationReminders } = await import("./lib/nomination");
+        const result = await sendDueNominationReminders();
+        logger.info({ job: "nomination-reminders", ...result }, "Nomination reminders complete");
+        await recordCronRun("nomination-reminders", startedAt, "SUCCESS", { ...result });
+        Sentry.captureCheckIn({ checkInId, monitorSlug: "nomination-reminders", status: "ok" });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        logger.error({ err, job: "nomination-reminders" }, "Error in nomination reminders");
+        Sentry.captureException(err);
+        await recordCronRun("nomination-reminders", startedAt, "FAILURE", undefined, message);
+        Sentry.captureCheckIn({ checkInId, monitorSlug: "nomination-reminders", status: "error" });
+      } finally {
+        isNominationReminderRunning = false;
+      }
+    }, { timezone: CRON_TIMEZONE });
+
+    logger.info({ job: "nomination-reminders" }, "Scheduled nomination reminders (daily at 8:15 AM NZST)");
+
     // N-01: Cron job - Check-in reminders (daily at 9:00 AM NZST)
     let isCheckinReminderRunning = false;
     cron.default.schedule("0 9 * * *", async () => {

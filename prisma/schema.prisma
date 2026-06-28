@@ -543,6 +543,8 @@ model NominationToken {
   nominatorMemberId String
   expiresAt         DateTime
   confirmedAt       DateTime?
+  reminderCount     Int       @default(0)
+  lastSentAt        DateTime?
   createdAt         DateTime  @default(now())
 
   application MemberApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
@@ -551,6 +553,7 @@ model NominationToken {
   @@index([nominatorMemberId])
   @@index([tokenHash])
   @@index([expiresAt])
+  @@index([confirmedAt, expiresAt])
 }
 
 // ---------------------------------------------------------------------------

@@ -31,6 +31,16 @@ import {
 } from "@/lib/xero-operation-outbox";
 import { nameField } from "@/lib/zod-helpers";
 import { CLUB_NAME } from "@/config/club-identity";
+import {
+  NOMINATION_AUTOMATIC_REMINDER_LIMIT,
+  getNominationTokenExpiryDate,
+} from "@/lib/nomination-token-policy";
+
+export {
+  NOMINATION_AUTOMATIC_REMINDER_LIMIT,
+  NOMINATION_TOKEN_TTL_DAYS,
+  getNominationTokenExpiryDate,
+} from "@/lib/nomination-token-policy";
 
 const maxStr = (len: number) => z.string().max(len).optional().nullable();
 const isoDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be YYYY-MM-DD format");
@@ -110,6 +120,8 @@ export type EntranceFeeInvoiceApprovalDecision =
       action: "SKIP";
       reason: string;
     };
+
+export type NominatorSlot = "nominator1" | "nominator2";
 
 function cleanString(value?: string | null) {
   return value?.replace(/[\r\n]/g, " ").trim() || "";
@@ -389,6 +401,86 @@ function getApplicationDisplayName(
   return `${application.applicantFirstName} ${application.applicantLastName}`.trim();
 }
 
+function getNominatorSlot(
+  application: Pick<MemberApplication, "nominator1Id" | "nominator2Id">,
+  nominatorMemberId: string
+): NominatorSlot | null {
+  if (application.nominator1Id === nominatorMemberId) {
+    return "nominator1";
+  }
+
+  if (application.nominator2Id === nominatorMemberId) {
+    return "nominator2";
+  }
+
+  return null;
+}
+
+function isSlotConfirmed(
+  application: Pick<MemberApplication, "nominator1ConfirmedAt" | "nominator2ConfirmedAt">,
+  slot: NominatorSlot
+) {
+  return slot === "nominator1"
+    ? Boolean(application.nominator1ConfirmedAt)
+    : Boolean(application.nominator2ConfirmedAt);
+}
+
+function getSlotMemberId(
+  application: Pick<MemberApplication, "nominator1Id" | "nominator2Id">,
+  slot: NominatorSlot
+) {
+  return slot === "nominator1"
+    ? application.nominator1Id
+    : application.nominator2Id;
+}
+
+function getOtherSlotMemberId(
+  application: Pick<MemberApplication, "nominator1Id" | "nominator2Id">,
+  slot: NominatorSlot
+) {
+  return slot === "nominator1"
+    ? application.nominator2Id
+    : application.nominator1Id;
+}
+
+function getSlotEmailField(slot: NominatorSlot) {
+  return slot === "nominator1" ? "nominator1Email" : "nominator2Email";
+}
+
+function getSlotIdField(slot: NominatorSlot) {
+  return slot === "nominator1" ? "nominator1Id" : "nominator2Id";
+}
+
+function getSlotConfirmedAtField(slot: NominatorSlot) {
+  return slot === "nominator1"
+    ? "nominator1ConfirmedAt"
+    : "nominator2ConfirmedAt";
+}
+
+async function sendNominationRequestForApplication({
+  application,
+  nominator,
+  token,
+  expiresAt,
+}: {
+  application: Pick<
+    MemberApplication,
+    "applicantFirstName" | "applicantLastName" | "familyMembers"
+  >;
+  nominator: Pick<VerifiedNominator, "email" | "firstName">;
+  token: string;
+  expiresAt: Date;
+}) {
+  await sendNominationRequestEmail({
+    email: nominator.email,
+    nominatorName: nominator.firstName,
+    applicantName: getApplicationDisplayName(application),
+    token,
+    familyMemberCount: parseApplicationFamilyMembers(application.familyMembers).length,
+    expiresAt,
+  });
+}
+
 function membershipApplicationLockKey(applicationId: string) {
   return `member-application:${applicationId}`;
 }
@@ -449,9 +541,10 @@ export async function createMemberApplication(input: CreateMemberApplicationInpu
     verifyNominator(nominator2Email),
   ]);
 
+  const issuedAt = new Date();
   const token1 = issueActionToken();
   const token2 = issueActionToken();
-  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  const expiresAt = getNominationTokenExpiryDate(issuedAt);
 
   const application = await prisma.$transaction(async (tx) => {
     await lockMembershipApplicationApplicant(tx, applicantEmail);
@@ -480,12 +573,16 @@ export async function createMemberApplication(input: CreateMemberApplicationInpu
           applicationId: created.id,
           nominatorMemberId: nominator1.id,
           expiresAt,
+          reminderCount: 0,
+          lastSentAt: issuedAt,
         },
         {
           tokenHash: token2.tokenHash,
           applicationId: created.id,
           nominatorMemberId: nominator2.id,
           expiresAt,
+          reminderCount: 0,
+          lastSentAt: issuedAt,
         },
       ],
     });
@@ -493,27 +590,22 @@ export async function createMemberApplication(input: CreateMemberApplicationInpu
     return created;
   });
 
-  const applicantName = getApplicationDisplayName(application);
   const emailWarnings: string[] = [];
 
   await Promise.all([
-    sendNominationRequestEmail({
-      email: nominator1.email,
-      nominatorName: nominator1.firstName,
-      applicantName,
+    sendNominationRequestForApplication({
+      application,
+      nominator: nominator1,
       token: token1.token,
-      familyMemberCount: familyMembers.length,
       expiresAt,
     }).catch((err) => {
       logger.error({ err, applicationId: application.id, nominatorId: nominator1.id }, "Failed to send nomination email");
       emailWarnings.push(`Could not email ${nominator1.email}`);
     }),
-    sendNominationRequestEmail({
-      email: nominator2.email,
-      nominatorName: nominator2.firstName,
-      applicantName,
+    sendNominationRequestForApplication({
+      application,
+      nominator: nominator2,
       token: token2.token,
-      familyMemberCount: familyMembers.length,
       expiresAt,
     }).catch((err) => {
       logger.error({ err, applicationId: application.id, nominatorId: nominator2.id }, "Failed to send nomination email");
@@ -570,6 +662,15 @@ export async function confirmNomination(token: string, nominatorMemberId: string
     return { application: current.application, movedToAdmin: false, alreadyConfirmed: true };
   }
 
+  const currentSlot = getNominatorSlot(current.application, current.nominatorMemberId);
+  if (!currentSlot) {
+    throw new MembershipApplicationError("This nomination link has been replaced", 409);
+  }
+
+  if (isSlotConfirmed(current.application, currentSlot)) {
+    return { application: current.application, movedToAdmin: false, alreadyConfirmed: true };
+  }
+
   if (current.confirmedAt) {
     return { application: current.application, movedToAdmin: false, alreadyConfirmed: true };
   }
@@ -608,6 +709,25 @@ export async function confirmNomination(token: string, nominatorMemberId: string
       };
     }
 
+    const latestSlot = getNominatorSlot(
+      latestToken.application,
+      latestToken.nominatorMemberId
+    );
+    if (!latestSlot) {
+      throw new MembershipApplicationError(
+        "This nomination link has been replaced",
+        409
+      );
+    }
+
+    if (isSlotConfirmed(latestToken.application, latestSlot)) {
+      return {
+        application: latestToken.application,
+        movedToAdmin: false,
+        alreadyConfirmed: true,
+      };
+    }
+
     if (latestToken.confirmedAt) {
       return {
         application: latestToken.application,
@@ -621,7 +741,7 @@ export async function confirmNomination(token: string, nominatorMemberId: string
       data: { confirmedAt },
     });
 
-    const isFirstNominator = latestToken.application.nominator1Id === latestToken.nominatorMemberId;
+    const isFirstNominator = latestSlot === "nominator1";
     const nextNominator1ConfirmedAt = isFirstNominator
       ? confirmedAt
       : latestToken.application.nominator1ConfirmedAt;
@@ -667,6 +787,435 @@ export async function confirmNomination(token: string, nominatorMemberId: string
   }
 
   return result;
+}
+
+export interface NominationReminderRunResult {
+  scanned: number;
+  sent: number;
+  skipped: number;
+  failed: number;
+}
+
+export async function sendDueNominationReminders({
+  now = new Date(),
+  limit = 100,
+}: {
+  now?: Date;
+  limit?: number;
+} = {}): Promise<NominationReminderRunResult> {
+  const take = Math.min(Math.max(limit, 1), 200);
+  const candidates = await prisma.nominationToken.findMany({
+    where: {
+      confirmedAt: null,
+      expiresAt: { lte: now },
+      reminderCount: { lt: NOMINATION_AUTOMATIC_REMINDER_LIMIT },
+      application: { status: ApplicationStatus.PENDING_NOMINATORS },
+    },
+    orderBy: [{ expiresAt: "asc" }, { createdAt: "asc" }],
+    take,
+    include: { application: true },
+  });
+
+  const nominatorIds = Array.from(
+    new Set(candidates.map((candidate) => candidate.nominatorMemberId))
+  );
+  const nominators = nominatorIds.length
+    ? await prisma.member.findMany({
+        where: {
+          id: { in: nominatorIds },
+          active: true,
+        },
+        select: { id: true, email: true, firstName: true, lastName: true },
+      })
+    : [];
+  const nominatorById = new Map(nominators.map((nominator) => [nominator.id, nominator]));
+
+  const result: NominationReminderRunResult = {
+    scanned: candidates.length,
+    sent: 0,
+    skipped: 0,
+    failed: 0,
+  };
+
+  for (const candidate of candidates) {
+    const slot = getNominatorSlot(candidate.application, candidate.nominatorMemberId);
+    const nominator = nominatorById.get(candidate.nominatorMemberId);
+
+    if (!slot || isSlotConfirmed(candidate.application, slot) || !nominator) {
+      result.skipped += 1;
+      continue;
+    }
+
+    const issued = issueActionToken();
+    const expiresAt = getNominationTokenExpiryDate(now);
+    const update = await prisma.nominationToken.updateMany({
+      where: {
+        id: candidate.id,
+        confirmedAt: null,
+        expiresAt: candidate.expiresAt,
+        reminderCount: candidate.reminderCount,
+        application: { status: ApplicationStatus.PENDING_NOMINATORS },
+      },
+      data: {
+        tokenHash: issued.tokenHash,
+        expiresAt,
+        reminderCount: { increment: 1 },
+        lastSentAt: now,
+      },
+    });
+
+    if (update.count !== 1) {
+      result.skipped += 1;
+      continue;
+    }
+
+    try {
+      await sendNominationRequestForApplication({
+        application: candidate.application,
+        nominator,
+        token: issued.token,
+        expiresAt,
+      });
+      result.sent += 1;
+      await logAudit({
+        action: "membership_application.nomination_reminder_sent",
+        memberId: candidate.nominatorMemberId,
+        subjectMemberId: candidate.nominatorMemberId,
+        targetId: candidate.applicationId,
+        entityType: "NominationToken",
+        entityId: candidate.id,
+        category: "communication",
+        severity: "info",
+        outcome: "success",
+        summary: "Membership nomination reminder sent",
+        metadata: {
+          applicationId: candidate.applicationId,
+          nominatorMemberId: candidate.nominatorMemberId,
+          reminderCount: candidate.reminderCount + 1,
+          reminderLimit: NOMINATION_AUTOMATIC_REMINDER_LIMIT,
+        },
+      });
+    } catch (err) {
+      result.failed += 1;
+      logger.error(
+        {
+          err,
+          applicationId: candidate.applicationId,
+          nominatorId: candidate.nominatorMemberId,
+        },
+        "Failed to send membership nomination reminder"
+      );
+    }
+  }
+
+  return result;
+}
+
+function getPendingNominatorSlots(application: MemberApplication): NominatorSlot[] {
+  return (["nominator1", "nominator2"] as const).filter(
+    (slot) => !isSlotConfirmed(application, slot)
+  );
+}
+
+export async function refreshMemberApplicationNominations(
+  applicationId: string,
+  adminMemberId: string
+) {
+  const issuedAt = new Date();
+  const prepared = await prisma.$transaction(async (tx) => {
+    await lockMembershipApplication(tx, applicationId);
+
+    const application = await tx.memberApplication.findUnique({
+      where: { id: applicationId },
+    });
+
+    if (!application) {
+      throw new MembershipApplicationError("Application not found", 404);
+    }
+
+    if (application.status !== ApplicationStatus.PENDING_NOMINATORS) {
+      throw new MembershipApplicationError(
+        "Only applications waiting on nominators can be refreshed",
+        409
+      );
+    }
+
+    const pendingSlots = getPendingNominatorSlots(application);
+    if (pendingSlots.length === 0) {
+      throw new MembershipApplicationError(
+        "This application has no pending nominators to refresh",
+        409
+      );
+    }
+
+    const nominatorIds = pendingSlots
+      .map((slot) => getSlotMemberId(application, slot))
+      .filter((value): value is string => Boolean(value));
+    const nominators = await tx.member.findMany({
+      where: { id: { in: nominatorIds }, active: true },
+      select: { id: true, email: true, firstName: true, lastName: true },
+    });
+    const nominatorById = new Map(nominators.map((nominator) => [nominator.id, nominator]));
+    const emails: Array<{
+      slot: NominatorSlot;
+      nominator: VerifiedNominator;
+      token: string;
+      expiresAt: Date;
+      tokenId: string;
+    }> = [];
+
+    for (const slot of pendingSlots) {
+      const nominatorMemberId = getSlotMemberId(application, slot);
+      if (!nominatorMemberId) {
+        throw new MembershipApplicationError(
+          "This application is missing a pending nominator member",
+          409
+        );
+      }
+
+      const nominator = nominatorById.get(nominatorMemberId);
+      if (!nominator) {
+        throw new MembershipApplicationError(
+          "A pending nominator is no longer active",
+          409
+        );
+      }
+
+      const issued = issueActionToken();
+      const expiresAt = getNominationTokenExpiryDate(issuedAt);
+
+      await tx.nominationToken.deleteMany({
+        where: {
+          applicationId,
+          nominatorMemberId,
+          confirmedAt: null,
+        },
+      });
+      const createdToken = await tx.nominationToken.create({
+        data: {
+          tokenHash: issued.tokenHash,
+          applicationId,
+          nominatorMemberId,
+          expiresAt,
+          reminderCount: 0,
+          lastSentAt: issuedAt,
+        },
+        select: { id: true },
+      });
+
+      emails.push({
+        slot,
+        nominator,
+        token: issued.token,
+        expiresAt,
+        tokenId: createdToken.id,
+      });
+    }
+
+    return { application, emails };
+  });
+
+  const emailWarnings: string[] = [];
+  await Promise.all(
+    prepared.emails.map((email) =>
+      sendNominationRequestForApplication({
+        application: prepared.application,
+        nominator: email.nominator,
+        token: email.token,
+        expiresAt: email.expiresAt,
+      }).catch((err) => {
+        logger.error(
+          {
+            err,
+            applicationId,
+            nominatorId: email.nominator.id,
+          },
+          "Failed to send refreshed nomination request"
+        );
+        emailWarnings.push(`Could not email ${email.nominator.email}`);
+      })
+    )
+  );
+
+  await logAudit({
+    action: "membership_application.nomination_workflow_refreshed",
+    memberId: adminMemberId,
+    actorMemberId: adminMemberId,
+    targetId: applicationId,
+    entityType: "MemberApplication",
+    entityId: applicationId,
+    category: "membership",
+    severity: "important",
+    outcome: "success",
+    summary: "Membership nomination workflow refreshed",
+    metadata: {
+      applicationId,
+      refreshedSlots: prepared.emails.map((email) => email.slot),
+      tokenIds: prepared.emails.map((email) => email.tokenId),
+      emailWarnings,
+    },
+  });
+
+  return {
+    application: prepared.application,
+    refreshedCount: prepared.emails.length,
+    emailWarnings,
+  };
+}
+
+export async function replaceMemberApplicationNominator({
+  applicationId,
+  slot,
+  replacementMemberId,
+  adminMemberId,
+}: {
+  applicationId: string;
+  slot: NominatorSlot;
+  replacementMemberId: string;
+  adminMemberId: string;
+}) {
+  const replacement = await prisma.member.findFirst({
+    where: { id: replacementMemberId },
+    select: { id: true, email: true },
+  });
+
+  if (!replacement) {
+    throw new MembershipApplicationError("Replacement nominator not found", 404);
+  }
+
+  const verifiedReplacement = await verifyNominator(replacement.email);
+  if (verifiedReplacement.id !== replacementMemberId) {
+    throw new MembershipApplicationError(
+      "Replacement nominator must be the selected active member",
+      409
+    );
+  }
+
+  const issuedAt = new Date();
+  const issued = issueActionToken();
+  const expiresAt = getNominationTokenExpiryDate(issuedAt);
+
+  const updated = await prisma.$transaction(async (tx) => {
+    await lockMembershipApplication(tx, applicationId);
+
+    const application = await tx.memberApplication.findUnique({
+      where: { id: applicationId },
+    });
+
+    if (!application) {
+      throw new MembershipApplicationError("Application not found", 404);
+    }
+
+    if (application.status !== ApplicationStatus.PENDING_NOMINATORS) {
+      throw new MembershipApplicationError(
+        "Only applications waiting on nominators can have nominators replaced",
+        409
+      );
+    }
+
+    if (isSlotConfirmed(application, slot)) {
+      throw new MembershipApplicationError(
+        "Confirmed nominators cannot be replaced",
+        409
+      );
+    }
+
+    if (getOtherSlotMemberId(application, slot) === verifiedReplacement.id) {
+      throw new MembershipApplicationError(
+        "Please choose a different member from the other nominator",
+        422
+      );
+    }
+
+    if (
+      cleanString(application.applicantEmail).toLowerCase() ===
+      cleanString(verifiedReplacement.email).toLowerCase()
+    ) {
+      throw new MembershipApplicationError("Applicants cannot nominate themselves", 422);
+    }
+
+    const previousNominatorId = getSlotMemberId(application, slot);
+    if (previousNominatorId) {
+      await tx.nominationToken.deleteMany({
+        where: {
+          applicationId,
+          nominatorMemberId: previousNominatorId,
+          confirmedAt: null,
+        },
+      });
+    }
+
+    const createdToken = await tx.nominationToken.create({
+      data: {
+        tokenHash: issued.tokenHash,
+        applicationId,
+        nominatorMemberId: verifiedReplacement.id,
+        expiresAt,
+        reminderCount: 0,
+        lastSentAt: issuedAt,
+      },
+      select: { id: true },
+    });
+
+    const updatedApplication = await tx.memberApplication.update({
+      where: { id: applicationId },
+      data: {
+        [getSlotIdField(slot)]: verifiedReplacement.id,
+        [getSlotEmailField(slot)]: verifiedReplacement.email,
+        [getSlotConfirmedAtField(slot)]: null,
+      },
+    });
+
+    return {
+      application: updatedApplication,
+      previousNominatorId,
+      tokenId: createdToken.id,
+    };
+  });
+
+  const emailWarnings: string[] = [];
+  try {
+    await sendNominationRequestForApplication({
+      application: updated.application,
+      nominator: verifiedReplacement,
+      token: issued.token,
+      expiresAt,
+    });
+  } catch (err) {
+    logger.error(
+      { err, applicationId, nominatorId: verifiedReplacement.id },
+      "Failed to send replacement nomination request"
+    );
+    emailWarnings.push(`Could not email ${verifiedReplacement.email}`);
+  }
+
+  await logAudit({
+    action: "membership_application.nominator_replaced",
+    memberId: adminMemberId,
+    actorMemberId: adminMemberId,
+    subjectMemberId: verifiedReplacement.id,
+    targetId: applicationId,
+    entityType: "MemberApplication",
+    entityId: applicationId,
+    category: "membership",
+    severity: "important",
+    outcome: "success",
+    summary: "Membership application nominator replaced",
+    metadata: {
+      applicationId,
+      slot,
+      previousNominatorId: updated.previousNominatorId,
+      replacementNominatorId: verifiedReplacement.id,
+      tokenId: updated.tokenId,
+      emailWarnings,
+    },
+  });
+
+  return {
+    application: updated.application,
+    replacementNominatorId: verifiedReplacement.id,
+    emailWarnings,
+  };
 }
 
 async function syncApprovedMembersToXero(memberIds: string[]) {

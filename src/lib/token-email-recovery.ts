@@ -15,6 +15,7 @@ import {
   MembershipCancellationRequestError,
   reissueParticipantConfirmationToken,
 } from "@/lib/membership-cancellation-requests";
+import { getNominationTokenExpiryDate } from "@/lib/nomination-token-policy";
 import { prisma } from "@/lib/prisma";
 
 export const TOKEN_EMAIL_RECOVERY_ACTION = "email.token_lifecycle.reissued";
@@ -271,13 +272,15 @@ async function reissueNominationRequest({
   }
 
   const issued = issueActionToken();
-  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  const issuedAt = new Date();
+  const expiresAt = getNominationTokenExpiryDate(issuedAt);
 
   await prisma.nominationToken.update({
     where: { id: nominationToken.id },
     data: {
       tokenHash: issued.tokenHash,
       expiresAt,
+      lastSentAt: issuedAt,
     },
   });
 

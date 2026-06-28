@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   requireActiveSessionUser: vi.fn(),
   memberApplicationFindMany: vi.fn(),
   memberApplicationCount: vi.fn(),
+  nominationTokenFindMany: vi.fn(),
   memberFindMany: vi.fn(),
   parseApplicationAddress: vi.fn(),
   parseApplicationFamilyMembers: vi.fn(),
@@ -26,6 +27,9 @@ vi.mock("@/lib/prisma", () => ({
     memberApplication: {
       findMany: mocks.memberApplicationFindMany,
       count: mocks.memberApplicationCount,
+    },
+    nominationToken: {
+      findMany: mocks.nominationTokenFindMany,
     },
     member: {
       findMany: mocks.memberFindMany,
@@ -49,6 +53,7 @@ describe("GET /api/admin/member-applications", () => {
     mocks.requireActiveSessionUser.mockResolvedValue(null);
     mocks.memberApplicationFindMany.mockResolvedValue([]);
     mocks.memberApplicationCount.mockResolvedValue(0);
+    mocks.nominationTokenFindMany.mockResolvedValue([]);
     mocks.memberFindMany.mockResolvedValue([]);
     mocks.parseApplicationAddress.mockImplementation((value) => value);
     mocks.parseApplicationFamilyMembers.mockImplementation((value) => value);
@@ -96,5 +101,73 @@ describe("GET /api/admin/member-applications", () => {
       where: { status: "PENDING_ADMIN" },
     });
     expect(mocks.memberFindMany).not.toHaveBeenCalled();
+  });
+
+  it("decorates waiting applications with pending nomination token status", async () => {
+    mocks.memberApplicationFindMany.mockResolvedValue([
+      {
+        id: "app-1",
+        applicantFirstName: "Pat",
+        applicantLastName: "Applicant",
+        applicantEmail: "pat@example.com",
+        applicantDateOfBirth: null,
+        applicantPhone: null,
+        applicantAddress: null,
+        familyMembers: [],
+        nominator1Email: "nom1@example.com",
+        nominator2Email: "nom2@example.com",
+        nominator1Id: "nom-1",
+        nominator2Id: "nom-2",
+        nominator1ConfirmedAt: null,
+        nominator2ConfirmedAt: null,
+        status: "PENDING_NOMINATORS",
+        adminNotes: null,
+        reviewedBy: null,
+        reviewedAt: null,
+        createdAt: new Date("2026-06-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-06-01T00:00:00.000Z"),
+      },
+    ]);
+    mocks.memberApplicationCount.mockResolvedValueOnce(1).mockResolvedValueOnce(0);
+    mocks.memberFindMany.mockResolvedValue([
+      { id: "nom-1", firstName: "Nom", lastName: "One" },
+      { id: "nom-2", firstName: "Nom", lastName: "Two" },
+    ]);
+    mocks.nominationTokenFindMany.mockResolvedValue([
+      {
+        id: "token-1",
+        applicationId: "app-1",
+        nominatorMemberId: "nom-1",
+        expiresAt: new Date("2026-06-08T00:00:00.000Z"),
+        reminderCount: 4,
+        lastSentAt: new Date("2026-06-01T00:00:00.000Z"),
+        createdAt: new Date("2026-06-01T00:00:00.000Z"),
+      },
+    ]);
+
+    const response = await GET(
+      new NextRequest("http://localhost/api/admin/member-applications?status=PENDING_NOMINATORS")
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.applications[0]).toMatchObject({
+      id: "app-1",
+      nominator1Name: "Nom One",
+      nominator1TokenExpiresAt: "2026-06-08T00:00:00.000Z",
+      nominator1TokenLastSentAt: "2026-06-01T00:00:00.000Z",
+      nominator1ReminderCount: 4,
+      nominatorReminderLimit: 4,
+      nominator1ReminderExhausted: true,
+      nominator2ReminderExhausted: false,
+    });
+    expect(mocks.nominationTokenFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          applicationId: { in: ["app-1"] },
+          confirmedAt: null,
+        },
+      })
+    );
   });
 });

@@ -150,31 +150,38 @@ Known statuses: `PENDING_NOMINATORS`, `PENDING_ADMIN`, `APPROVED`, `REJECTED`.
 application submitted -> PENDING_NOMINATORS
 nominations complete -> PENDING_ADMIN
 admin approves -> APPROVED -> member/setup/invoice path
-admin rejects (from PENDING_NOMINATORS or PENDING_ADMIN) -> REJECTED
+admin refreshes pending nomination workflow -> PENDING_NOMINATORS with fresh links
+admin replaces an unconfirmed nominator -> PENDING_NOMINATORS with a fresh link
+admin rejects (fallback from PENDING_NOMINATORS or PENDING_ADMIN) -> REJECTED
 ```
 
-An admin may reject from either pending state. Rejecting a PENDING_NOMINATORS
-application is the recovery path for one whose nomination tokens have expired:
-REJECTED is excluded from the duplicate-application check, so the applicant can
-submit a fresh application (issue #817). The admin member-applications screen
-exposes a "Reject stuck application" control on the "Waiting on nominators"
-queue so operators can clear these without an API call; approval stays
-restricted to PENDING_ADMIN.
+An admin may reject from either pending state, but `PENDING_NOMINATORS`
+applications have non-destructive recovery first. The reminder cron renews each
+unconfirmed nominator link weekly for up to four automatic reminders. The admin
+member-applications screen can refresh all pending nominator links immediately,
+resetting that four-reminder cycle, or replace an unconfirmed nominator with
+another eligible member. Rejecting a `PENDING_NOMINATORS` application remains
+the fallback withdrawal/clearance path; `REJECTED` is excluded from the
+duplicate-application check, so the applicant can submit a fresh application
+when needed. Approval stays restricted to `PENDING_ADMIN`.
 
 To verify: duplicate applicant behavior, nomination expiry, setup invite
-creation, Xero entrance-fee invoice path, and email retry behavior.
+creation, Xero entrance-fee invoice path, reminder renewal, admin refresh,
+nominator replacement, and email retry behavior.
 
 ## Nomination Lifecycle
 
 ```text
 nomination token created -> nominator opens token while signed in
+token expires before confirmation -> weekly reminder issues a fresh token
+four automatic reminders exhausted -> admin refresh or replacement path
 token accepted -> nomination recorded
 all required nominations complete -> application moves to admin review
-token expired/invalid/wrong user -> safe error and retry/admin path
+token expired/invalid/wrong user/replaced -> safe error and retry/admin path
 ```
 
-To verify: token fields, expiry, ownership checks, and duplicate nomination
-prevention.
+To verify: token fields, expiry, reminder counters, ownership checks, replaced
+token rejection, and duplicate nomination prevention.
 
 ## Membership Cancellation, Archive, And Delete Lifecycle
 

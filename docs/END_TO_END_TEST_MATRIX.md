@@ -15,7 +15,7 @@ that does not exist yet.
 | Payment/refund/credit | Member/admin | Internet Banking/Xero invoice settlement distinct from Stripe | Critical | Service tests with Xero mocked | Targeted Xero booking invoice/reconciliation tests |
 | Webhook replay/idempotency | Stripe/Xero/SES | Valid, duplicate, malformed, oversized, and wrong-signature payloads | Critical | Route tests with fake signed payloads | Targeted webhook route tests, no live provider calls |
 | Cron rerun/recovery | Scheduler | Payment recovery, pending confirmation, waitlist, Xero retry, email retry | High | Unit/route tests with local DB or mocks | Targeted cron tests; never use production `CRON_SECRET` |
-| Membership lifecycle | Applicant/member/admin | Application, nomination, approval, cancellation, archive, delete | High | Service tests and admin route tests | Targeted membership/lifecycle suites |
+| Membership lifecycle | Applicant/member/admin | Application, nomination reminders, admin refresh/replacement, approval, cancellation, archive, delete | High | Service tests, cron tests, and admin route tests | Targeted membership/lifecycle suites |
 | Family/dependents | Member/admin | Adult invitations, dependents, inherited email, age-up | High | Service tests and UI route tests | Targeted family/dependent tests |
 | Xero/SES failure | Admin/operator | Xero outbox failure/retry, SES suppression/failure visibility | High | Service tests with provider mocks | Targeted Xero outbox/email retry tests |
 | UI/UX journey | Visitor/member/admin | Happy path and empty/failure/pending states | Medium | Component tests plus manual staging checks | `npm run lint`, targeted component tests, staging route checklist |

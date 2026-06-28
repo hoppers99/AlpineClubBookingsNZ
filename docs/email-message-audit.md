@@ -877,6 +877,10 @@ Triggers and frequency:
 
 - Membership application creation after the applicant lists two valid nominators.
 - Sends to both nominators, so normally two emails per application.
+- If a nominator has not confirmed, `nomination-reminders` renews the link and
+  resends this message weekly for up to four automatic reminders. Admins can
+  refresh the pending nomination workflow, which sends fresh links immediately
+  and resets the four-reminder cycle, or replace an unconfirmed nominator.
 
 ### admin-membership-application-pending
 

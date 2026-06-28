@@ -15,7 +15,7 @@ fork for another organisation. See `NOTICE.md`.
 ## What It Does
 
 - Member registration, profile management, family/dependent relationships, and
-  membership nomination workflows
+  membership nomination workflows with reminder and admin recovery paths
 - Bed-capacity booking flow with date-only New Zealand lodge nights, per-guest
   stay ranges, waitlist, non-member holds, booking changes, cancellation rules,
   refunds, credits, promo codes, Stripe payments, and Xero-backed Internet

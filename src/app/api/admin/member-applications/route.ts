@@ -3,6 +3,7 @@ import {
   parseApplicationAddress,
   parseApplicationFamilyMembers,
 } from "@/lib/nomination";
+import { NOMINATION_AUTOMATIC_REMINDER_LIMIT } from "@/lib/nomination-token-policy";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/session-guards";
 import { z } from "zod";
@@ -65,9 +66,66 @@ export async function GET(req: NextRequest) {
   const memberNameMap = new Map(
     members.map((member) => [member.id, `${member.firstName} ${member.lastName}`.trim()])
   );
+  const applicationIds = applications.map((application) => application.id);
+  const pendingTokens = applicationIds.length
+    ? await prisma.nominationToken.findMany({
+        where: {
+          applicationId: { in: applicationIds },
+          confirmedAt: null,
+        },
+        orderBy: [{ createdAt: "desc" }],
+        select: {
+          id: true,
+          applicationId: true,
+          nominatorMemberId: true,
+          expiresAt: true,
+          reminderCount: true,
+          lastSentAt: true,
+          createdAt: true,
+        },
+      })
+    : [];
+  const latestPendingTokenByApplicationAndNominator = new Map<
+    string,
+    (typeof pendingTokens)[number]
+  >();
+
+  for (const token of pendingTokens) {
+    const key = `${token.applicationId}:${token.nominatorMemberId}`;
+    if (!latestPendingTokenByApplicationAndNominator.has(key)) {
+      latestPendingTokenByApplicationAndNominator.set(key, token);
+    }
+  }
+
+  function tokenSummary(applicationId: string, nominatorMemberId: string | null) {
+    if (!nominatorMemberId) {
+      return {
+        tokenExpiresAt: null,
+        tokenLastSentAt: null,
+        reminderCount: 0,
+        reminderLimit: NOMINATION_AUTOMATIC_REMINDER_LIMIT,
+        reminderExhausted: false,
+      };
+    }
+
+    const token = latestPendingTokenByApplicationAndNominator.get(
+      `${applicationId}:${nominatorMemberId}`
+    );
+
+    return {
+      tokenExpiresAt: token?.expiresAt.toISOString() ?? null,
+      tokenLastSentAt: (token?.lastSentAt ?? token?.createdAt)?.toISOString() ?? null,
+      reminderCount: token?.reminderCount ?? 0,
+      reminderLimit: NOMINATION_AUTOMATIC_REMINDER_LIMIT,
+      reminderExhausted:
+        (token?.reminderCount ?? 0) >= NOMINATION_AUTOMATIC_REMINDER_LIMIT,
+    };
+  }
 
   const data = applications.map((application) => {
     const familyMembers = parseApplicationFamilyMembers(application.familyMembers);
+    const nominator1Token = tokenSummary(application.id, application.nominator1Id);
+    const nominator2Token = tokenSummary(application.id, application.nominator2Id);
     return {
       id: application.id,
       applicantFirstName: application.applicantFirstName,
@@ -90,6 +148,15 @@ export async function GET(req: NextRequest) {
         : null,
       nominator1ConfirmedAt: application.nominator1ConfirmedAt?.toISOString() ?? null,
       nominator2ConfirmedAt: application.nominator2ConfirmedAt?.toISOString() ?? null,
+      nominator1TokenExpiresAt: nominator1Token.tokenExpiresAt,
+      nominator2TokenExpiresAt: nominator2Token.tokenExpiresAt,
+      nominator1TokenLastSentAt: nominator1Token.tokenLastSentAt,
+      nominator2TokenLastSentAt: nominator2Token.tokenLastSentAt,
+      nominator1ReminderCount: nominator1Token.reminderCount,
+      nominator2ReminderCount: nominator2Token.reminderCount,
+      nominatorReminderLimit: NOMINATION_AUTOMATIC_REMINDER_LIMIT,
+      nominator1ReminderExhausted: nominator1Token.reminderExhausted,
+      nominator2ReminderExhausted: nominator2Token.reminderExhausted,
       status: application.status,
       adminNotes: application.adminNotes,
       reviewedBy: application.reviewedBy,

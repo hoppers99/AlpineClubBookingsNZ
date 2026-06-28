@@ -330,6 +330,17 @@ export function getAdminCronJobDefinitions(
     ),
     defineCronJob(
       {
+        jobName: "nomination-reminders",
+        label: "Membership nomination reminders",
+        schedule: "15 8 * * *",
+        timezone: nzTimezone,
+        expectedLocalTime: "08:15 NZT/NZDT daily",
+        staleAfterMinutes: DAILY_STALE_AFTER_MINUTES,
+      },
+      globalDisabledReason
+    ),
+    defineCronJob(
+      {
         jobName: "checkin-reminders",
         label: "Check-in reminders",
         schedule: "0 9 * * *",

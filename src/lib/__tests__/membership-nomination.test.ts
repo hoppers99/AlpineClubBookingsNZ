@@ -13,9 +13,13 @@ const { prismaMock, emailMock, xeroMock, xeroOutboxMock } = vi.hoisted(() => ({
       update: vi.fn(),
     },
     nominationToken: {
+      create: vi.fn(),
       createMany: vi.fn(),
+      deleteMany: vi.fn(),
+      findMany: vi.fn(),
       findUnique: vi.fn(),
       update: vi.fn(),
+      updateMany: vi.fn(),
     },
     familyGroup: {
       create: vi.fn(),
@@ -104,7 +108,10 @@ import {
   approveMemberApplication,
   confirmNomination,
   createMemberApplication,
+  refreshMemberApplicationNominations,
   rejectMemberApplication,
+  replaceMemberApplicationNominator,
+  sendDueNominationReminders,
 } from "@/lib/nomination";
 import {
   assertLinkedBookingMembersCanBeBooked,
@@ -129,6 +136,10 @@ describe("membership nomination workflow", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(prisma.memberApplication.update).mockResolvedValue({} as never);
+    vi.mocked(prisma.nominationToken.findMany).mockResolvedValue([] as never);
+    vi.mocked(prisma.nominationToken.updateMany).mockResolvedValue({
+      count: 0,
+    } as never);
   });
 
   it("creates an application and sends nomination emails to two verified nominators", async () => {
@@ -243,6 +254,18 @@ describe("membership nomination workflow", () => {
     expect(createdTokens[1]).not.toHaveProperty("token");
     expect(createdTokens[0].tokenHash).toMatch(/^[a-f0-9]{64}$/);
     expect(createdTokens[1].tokenHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(createdTokens[0]).toEqual(
+      expect.objectContaining({
+        reminderCount: 0,
+        lastSentAt: expect.any(Date),
+      })
+    );
+    expect(createdTokens[1]).toEqual(
+      expect.objectContaining({
+        reminderCount: 0,
+        lastSentAt: expect.any(Date),
+      })
+    );
     expect(sendNominationRequestEmail).toHaveBeenCalledTimes(2);
     const sentTokens = vi
       .mocked(sendNominationRequestEmail)
@@ -500,6 +523,32 @@ describe("membership nomination workflow", () => {
         where: { tokenHash: hashActionToken("token-2") },
       })
     );
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("rejects a nomination link for a nominator who has been replaced", async () => {
+    vi.mocked(prisma.nominationToken.findUnique).mockResolvedValueOnce({
+      id: "token-row",
+      tokenHash: hashActionToken("old-token"),
+      applicationId: "app-1",
+      nominatorMemberId: "old-nom",
+      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      confirmedAt: null,
+      createdAt: new Date("2026-04-12T00:00:00.000Z"),
+      application: {
+        id: "app-1",
+        nominator1Id: "nom-1",
+        nominator2Id: "nom-2",
+        nominator1ConfirmedAt: null,
+        nominator2ConfirmedAt: null,
+        status: "PENDING_NOMINATORS",
+      },
+    } as never);
+
+    await expect(confirmNomination("old-token", "old-nom")).rejects.toMatchObject({
+      message: "This nomination link has been replaced",
+      status: 409,
+    });
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
@@ -877,6 +926,287 @@ describe("membership nomination workflow", () => {
     });
 
     expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("sends weekly nomination reminders with a fresh one-week link", async () => {
+    const now = new Date("2026-06-08T08:15:00.000Z");
+    const application = {
+      id: "app-reminder",
+      applicantFirstName: "Rae",
+      applicantLastName: "Applicant",
+      applicantEmail: "rae@test.com",
+      familyMembers: [],
+      nominator1Id: "nom-1",
+      nominator2Id: "nom-2",
+      nominator1ConfirmedAt: null,
+      nominator2ConfirmedAt: null,
+      status: "PENDING_NOMINATORS",
+    };
+    vi.mocked(prisma.nominationToken.findMany).mockResolvedValue([
+      {
+        id: "token-1",
+        tokenHash: "old-hash",
+        applicationId: "app-reminder",
+        nominatorMemberId: "nom-1",
+        expiresAt: new Date("2026-06-08T00:00:00.000Z"),
+        confirmedAt: null,
+        reminderCount: 2,
+        lastSentAt: new Date("2026-06-01T00:00:00.000Z"),
+        createdAt: new Date("2026-06-01T00:00:00.000Z"),
+        application,
+      },
+    ] as never);
+    vi.mocked(prisma.member.findMany).mockResolvedValue([
+      {
+        id: "nom-1",
+        email: "nom1@test.com",
+        firstName: "Nora",
+        lastName: "One",
+      },
+    ] as never);
+    vi.mocked(prisma.nominationToken.updateMany).mockResolvedValue({
+      count: 1,
+    } as never);
+
+    const result = await sendDueNominationReminders({ now });
+
+    expect(result).toEqual({ scanned: 1, sent: 1, skipped: 0, failed: 0 });
+    expect(prisma.nominationToken.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: "token-1",
+          reminderCount: 2,
+        }),
+        data: expect.objectContaining({
+          expiresAt: new Date("2026-06-15T08:15:00.000Z"),
+          reminderCount: { increment: 1 },
+          lastSentAt: now,
+        }),
+      })
+    );
+    expect(sendNominationRequestEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        email: "nom1@test.com",
+        applicantName: "Rae Applicant",
+        expiresAt: new Date("2026-06-15T08:15:00.000Z"),
+      })
+    );
+  });
+
+  it("does not send automatic reminders after the fourth reminder", async () => {
+    await sendDueNominationReminders({
+      now: new Date("2026-06-08T08:15:00.000Z"),
+    });
+
+    expect(prisma.nominationToken.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          reminderCount: { lt: 4 },
+        }),
+      })
+    );
+    expect(sendNominationRequestEmail).not.toHaveBeenCalled();
+  });
+
+  it("lets an admin refresh pending nomination workflow links and reset reminder counts", async () => {
+    const application = {
+      id: "app-refresh",
+      applicantFirstName: "Refresh",
+      applicantLastName: "Applicant",
+      applicantEmail: "refresh@test.com",
+      familyMembers: [],
+      nominator1Email: "nom1@test.com",
+      nominator2Email: "nom2@test.com",
+      nominator1Id: "nom-1",
+      nominator2Id: "nom-2",
+      nominator1ConfirmedAt: new Date("2026-06-01T00:00:00.000Z"),
+      nominator2ConfirmedAt: null,
+      status: "PENDING_NOMINATORS",
+    };
+    const tx = {
+      $executeRaw: vi.fn().mockResolvedValue(undefined),
+      memberApplication: {
+        findUnique: vi.fn().mockResolvedValue(application),
+      },
+      member: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: "nom-2",
+            email: "nom2@test.com",
+            firstName: "Noel",
+            lastName: "Two",
+          },
+        ]),
+      },
+      nominationToken: {
+        deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+        create: vi.fn().mockResolvedValue({ id: "new-token" }),
+      },
+    };
+    vi.mocked(prisma.$transaction).mockImplementation(async (callback: any) =>
+      callback(tx)
+    );
+
+    const result = await refreshMemberApplicationNominations(
+      "app-refresh",
+      "admin-1"
+    );
+
+    expect(result.refreshedCount).toBe(1);
+    expect(tx.nominationToken.deleteMany).toHaveBeenCalledWith({
+      where: {
+        applicationId: "app-refresh",
+        nominatorMemberId: "nom-2",
+        confirmedAt: null,
+      },
+    });
+    expect(tx.nominationToken.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          applicationId: "app-refresh",
+          nominatorMemberId: "nom-2",
+          reminderCount: 0,
+          lastSentAt: expect.any(Date),
+        }),
+      })
+    );
+    expect(sendNominationRequestEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        email: "nom2@test.com",
+        applicantName: "Refresh Applicant",
+      })
+    );
+  });
+
+  it("lets an admin replace an unconfirmed nominator and sends the replacement a fresh link", async () => {
+    vi.mocked(prisma.member.findFirst)
+      .mockResolvedValueOnce({
+        id: "nom-3",
+        email: "nom3@test.com",
+      } as never)
+      .mockResolvedValueOnce({
+        id: "nom-3",
+        email: "nom3@test.com",
+        firstName: "Nina",
+        lastName: "Three",
+        joinedDate: null,
+        createdAt: new Date("2025-01-01T00:00:00.000Z"),
+        subscriptions: [{ id: "sub-3" }],
+      } as never);
+    const application = {
+      id: "app-replace",
+      applicantFirstName: "Replace",
+      applicantLastName: "Applicant",
+      applicantEmail: "replace@test.com",
+      familyMembers: [],
+      nominator1Email: "old@test.com",
+      nominator2Email: "nom2@test.com",
+      nominator1Id: "old-nom",
+      nominator2Id: "nom-2",
+      nominator1ConfirmedAt: null,
+      nominator2ConfirmedAt: new Date("2026-06-01T00:00:00.000Z"),
+      status: "PENDING_NOMINATORS",
+    };
+    const updatedApplication = {
+      ...application,
+      nominator1Email: "nom3@test.com",
+      nominator1Id: "nom-3",
+    };
+    const tx = {
+      $executeRaw: vi.fn().mockResolvedValue(undefined),
+      memberApplication: {
+        findUnique: vi.fn().mockResolvedValue(application),
+        update: vi.fn().mockResolvedValue(updatedApplication),
+      },
+      nominationToken: {
+        deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+        create: vi.fn().mockResolvedValue({ id: "new-token" }),
+      },
+    };
+    vi.mocked(prisma.$transaction).mockImplementation(async (callback: any) =>
+      callback(tx)
+    );
+
+    const result = await replaceMemberApplicationNominator({
+      applicationId: "app-replace",
+      slot: "nominator1",
+      replacementMemberId: "nom-3",
+      adminMemberId: "admin-1",
+    });
+
+    expect(result.replacementNominatorId).toBe("nom-3");
+    expect(tx.nominationToken.deleteMany).toHaveBeenCalledWith({
+      where: {
+        applicationId: "app-replace",
+        nominatorMemberId: "old-nom",
+        confirmedAt: null,
+      },
+    });
+    expect(tx.memberApplication.update).toHaveBeenCalledWith({
+      where: { id: "app-replace" },
+      data: {
+        nominator1Id: "nom-3",
+        nominator1Email: "nom3@test.com",
+        nominator1ConfirmedAt: null,
+      },
+    });
+    expect(sendNominationRequestEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        email: "nom3@test.com",
+        applicantName: "Replace Applicant",
+      })
+    );
+  });
+
+  it("does not let an admin replace a confirmed nominator", async () => {
+    vi.mocked(prisma.member.findFirst)
+      .mockResolvedValueOnce({
+        id: "nom-3",
+        email: "nom3@test.com",
+      } as never)
+      .mockResolvedValueOnce({
+        id: "nom-3",
+        email: "nom3@test.com",
+        firstName: "Nina",
+        lastName: "Three",
+        joinedDate: null,
+        createdAt: new Date("2025-01-01T00:00:00.000Z"),
+        subscriptions: [{ id: "sub-3" }],
+      } as never);
+    const tx = {
+      $executeRaw: vi.fn().mockResolvedValue(undefined),
+      memberApplication: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: "app-replace",
+          applicantEmail: "replace@test.com",
+          nominator1Id: "nom-1",
+          nominator2Id: "nom-2",
+          nominator1ConfirmedAt: new Date("2026-06-01T00:00:00.000Z"),
+          nominator2ConfirmedAt: null,
+          status: "PENDING_NOMINATORS",
+        }),
+      },
+      nominationToken: {
+        deleteMany: vi.fn(),
+        create: vi.fn(),
+      },
+    };
+    vi.mocked(prisma.$transaction).mockImplementation(async (callback: any) =>
+      callback(tx)
+    );
+
+    await expect(
+      replaceMemberApplicationNominator({
+        applicationId: "app-replace",
+        slot: "nominator1",
+        replacementMemberId: "nom-3",
+        adminMemberId: "admin-1",
+      })
+    ).rejects.toMatchObject({
+      message: "Confirmed nominators cannot be replaced",
+      status: 409,
+    });
+    expect(tx.nominationToken.deleteMany).not.toHaveBeenCalled();
   });
 
   // Issue #817: a PENDING_NOMINATORS application whose nomination tokens have
