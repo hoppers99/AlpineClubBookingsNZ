@@ -61,4 +61,34 @@ describe("buildEmbeddedBody", () => {
       },
     ]);
   });
+
+  it("does not activate single-brace photo gallery tokens", async () => {
+    const contentHtml =
+      '<p>Before</p><img src="/api/images/uploaded/gallery.jpg" alt="Gallery image" width="640" height="480" />{photo-gallery}<p>After</p>';
+
+    const parts = await buildEmbeddedBody(contentHtml);
+
+    expect(parts).toEqual([{ type: "html", value: contentHtml }]);
+  });
+
+  it("does not activate single-brace photo slideshow tokens", async () => {
+    const contentHtml =
+      '<p>Before</p><img src="/api/images/uploaded/slideshow.jpg" alt="Slideshow image" width="800" height="600" />{photo-slideshow}<p>After</p>';
+
+    const parts = await buildEmbeddedBody(contentHtml);
+
+    expect(parts).toEqual([{ type: "html", value: contentHtml }]);
+  });
+
+  it("keeps legacy single-brace non-photo tokens working", async () => {
+    const parts = await buildEmbeddedBody(
+      "<p>Before</p>{contact-form}<p>After</p>",
+    );
+
+    expect(parts).toEqual([
+      { type: "html", value: "<p>Before</p>" },
+      { type: "contact-form" },
+      { type: "html", value: "<p>After</p>" },
+    ]);
+  });
 });

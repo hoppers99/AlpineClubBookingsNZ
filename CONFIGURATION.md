@@ -112,9 +112,16 @@ menu.
   route names (`admin`, `api`, `book`, `dashboard`, `login`, and similar)
   are reserved and rejected in every segment position.
 - Page HTML supports embed tokens that render interactive sections across
-  PageContent-backed public routes, including code-backed starter routes:
-  `{{committee-members-cards}}`, `{{member-application-form}}`,
-  `{{contact-form}}`, `{{photo-gallery}}`, and `{{photo-slideshow}}`.
+  PageContent-backed public routes, including code-backed starter routes.
+  Supported tokens are `{{committee-members-cards}}`,
+  `{{member-application-form}}`, `{{join-apply-form}}`, `{{contact-form}}`,
+  `{{skifield-whakapapa}}`, `{{skifield-conditions:dataHash}}`,
+  `{{photo-gallery}}`, `{{photo-gallery:path}}`, `{{photo-slideshow}}`, and
+  `{{photo-slideshow:path}}`. The `dataHash` parameter is the Snow.nz widget
+  hash. Photo token `path` parameters load images from a committed
+  `public/images/` directory; without a path, photo tokens use inline images
+  already inserted in the page body. Photo tokens require double braces.
+  Legacy single-brace syntax remains accepted only for non-photo tokens.
 - Content and header HTML are sanitised on save and again on render. The
   allowlist lives in `src/lib/page-content-html.ts`.
 - The editor's image picker lists images deployed under `public/branding/`

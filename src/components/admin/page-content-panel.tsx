@@ -1676,6 +1676,11 @@ export function PageContentPanel() {
               <code>{"{{contact-form}}"}</code>
             </p>
             <p>
+              Photo tokens must use double braces, for example{" "}
+              <code>{"{{photo-gallery}}"}</code>. Single-brace photo tokens are
+              not supported.
+            </p>
+            <p>
               <i>
                 <b>committee-members-cards</b>
               </i>
@@ -2072,9 +2077,13 @@ export function PageContentPanel() {
               <div className="rounded-md border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
                 <p className="font-medium text-slate-700">Embed Tokens</p>
                 <p className="mt-1">
-                  Insert these in page body content using either {"{"}token{"}"}{" "}
-                  or
-                  {" {{token}}"}:
+                  Insert these in page body content using {"{{token}}"}. Legacy
+                  single-brace {"{"}token{"}"} syntax remains accepted only for
+                  non-photo tokens.
+                </p>
+                <p className="mt-1">
+                  Photo tokens require double braces such as{" "}
+                  {"{{photo-gallery}}"} or {"{{photo-slideshow}}"}.
                 </p>
                 <div className="mt-2 flex flex-wrap gap-2">
                   <span className="rounded bg-slate-200 px-2 py-1 font-mono text-[11px] text-slate-800">

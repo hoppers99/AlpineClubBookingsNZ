@@ -32,7 +32,7 @@ type ParsedEmbedToken = {
 };
 
 const EMBED_TOKEN_REGEX =
-  /\{\{\s*(committee-members-cards|member-application-form|contact-form|join-apply-form|skifield-conditions|skifield-whakapapa|photo-gallery|photo-slideshow)(?:\s*:\s*([^{}]+?))?\s*\}\}|\{\s*(committee-members-cards|member-application-form|contact-form|join-apply-form|skifield-conditions|skifield-whakapapa|photo-gallery|photo-slideshow)(?:\s*:\s*([^{}]+?))?\s*\}/gi;
+  /\{\{\s*(committee-members-cards|member-application-form|contact-form|join-apply-form|skifield-conditions|skifield-whakapapa|photo-gallery|photo-slideshow)(?:\s*:\s*([^{}]+?))?\s*\}\}|\{\s*(committee-members-cards|member-application-form|contact-form|join-apply-form|skifield-conditions|skifield-whakapapa)(?:\s*:\s*([^{}]+?))?\s*\}/gi;
 
 function parseTokenMatch(match: RegExpMatchArray): ParsedEmbedToken {
   return {
