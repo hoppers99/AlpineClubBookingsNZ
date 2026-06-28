@@ -105,6 +105,7 @@ const navSections: NavSection[] = [
         label: "Applications",
         icon: ClipboardList,
       },
+      { href: "/admin/family-groups", label: "Family Groups", icon: Users },
       {
         href: "/admin/refund-requests",
         label: "Refunds & Credits",
