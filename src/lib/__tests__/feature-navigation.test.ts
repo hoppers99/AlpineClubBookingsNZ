@@ -1,5 +1,10 @@
+import fs from "node:fs";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { getVisibleAdminNavSections } from "@/components/admin-sidebar";
+import {
+  getRenderedAdminNavSections,
+  getVisibleAdminNavSections,
+} from "@/components/admin-sidebar";
 import { getNavBarLinks } from "@/components/nav-bar";
 import { buildBookingRequestsHref } from "@/lib/admin-booking-requests-path";
 import { MODULE_KEYS } from "@/config/modules";
@@ -9,6 +14,25 @@ import type { FeatureFlags } from "@/config/schema";
 const allOn: FeatureFlags = Object.fromEntries(
   MODULE_KEYS.map((key) => [key, true]),
 ) as FeatureFlags;
+
+function collectAdminPageRoutes() {
+  const root = path.join(process.cwd(), "src/app/(admin)/admin");
+  const routes = new Set<string>();
+
+  function walk(dir: string, segments: string[]) {
+    if (fs.existsSync(path.join(dir, "page.tsx"))) {
+      routes.add(`/admin/${segments.join("/")}`);
+    }
+
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name.startsWith("_")) continue;
+      walk(path.join(dir, entry.name), [...segments, entry.name]);
+    }
+  }
+
+  walk(root, []);
+  return routes;
+}
 
 describe("feature-aware navigation", () => {
   it("hides finance and kiosk links from the member nav when effective modules are off", () => {
@@ -74,6 +98,38 @@ describe("feature-aware navigation", () => {
       .find((navItem) => navItem.label === "Booking Requests");
 
     expect(item?.href).toBe("/admin/booking-requests");
+  });
+
+  it("only renders Needs Attention links for queues with pending counts", () => {
+    const noPending = getRenderedAdminNavSections(allOn, {});
+
+    expect(noPending.map((section) => section.label)).not.toContain(
+      "Needs Attention",
+    );
+
+    const withPending = getRenderedAdminNavSections(allOn, {
+      "/admin/booking-requests": 2,
+      "/admin/issue-reports": 1,
+    });
+    const needsAttention = withPending.find(
+      (section) => section.label === "Needs Attention",
+    );
+
+    expect(needsAttention?.items.map((item) => item.href)).toEqual([
+      "/admin/booking-requests",
+      "/admin/issue-reports",
+    ]);
+  });
+
+  it("links only to public admin routes that exist", () => {
+    const routeSet = collectAdminPageRoutes();
+    const navHrefs = getVisibleAdminNavSections(allOn).flatMap((section) =>
+      section.items.map((item) => item.href),
+    );
+
+    for (const href of navHrefs) {
+      expect(routeSet.has(href), `${href} should have an admin page`).toBe(true);
+    }
   });
 
   it("preserves old booking request deep-link params on the combined page", () => {

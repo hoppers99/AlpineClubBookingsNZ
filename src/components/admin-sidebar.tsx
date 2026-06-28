@@ -43,6 +43,7 @@ import {
   Images,
   UserPlus,
   Plug,
+  ChevronRight,
   Lock,
   Landmark,
   MessageSquareText,
@@ -64,6 +65,9 @@ interface NavSection {
   items: Array<{ href: string; label: string; icon: typeof LayoutDashboard }>;
 }
 
+const NEEDS_ATTENTION_LABEL = "Needs Attention";
+const SIDEBAR_COLLAPSE_STORAGE_KEY = "admin-sidebar:expanded-sections";
+
 const navSections: NavSection[] = [
   {
     items: [
@@ -75,7 +79,7 @@ const navSections: NavSection[] = [
     ],
   },
   {
-    label: "Needs Attention",
+    label: NEEDS_ATTENTION_LABEL,
     items: [
       {
         href: "/admin/booking-requests",
@@ -104,6 +108,11 @@ const navSections: NavSection[] = [
     label: "Bookings & Beds",
     items: [
       { href: "/admin/bookings", label: "Bookings", icon: BookOpen },
+      {
+        href: "/admin/booking-requests",
+        label: "Booking Requests",
+        icon: ClipboardList,
+      },
       { href: "/admin/book", label: "Book on Behalf", icon: UserPlus },
       {
         href: "/admin/bed-allocation",
@@ -111,6 +120,23 @@ const navSections: NavSection[] = [
         icon: BedDouble,
       },
       { href: "/admin/waitlist", label: "Waitlist", icon: Clock },
+    ],
+  },
+  {
+    label: "Rates & Policies",
+    items: [
+      {
+        href: "/admin/seasons",
+        label: "Hut Fees & Seasons",
+        icon: CalendarRange,
+      },
+      { href: "/admin/age-tier-settings", label: "Age Groups", icon: Sliders },
+      { href: "/admin/promo-codes", label: "Promo Codes", icon: Tag },
+      {
+        href: "/admin/booking-policies",
+        label: "Booking Policies",
+        icon: XCircle,
+      },
     ],
   },
   {
@@ -122,6 +148,11 @@ const navSections: NavSection[] = [
         label: "Internet Banking",
         icon: Landmark,
       },
+      {
+        href: "/admin/refund-requests",
+        label: "Refunds & Credits",
+        icon: RotateCcw,
+      },
       { href: "/admin/reports", label: "Reports", icon: BarChart2 },
       { href: "/admin/xero", label: "Xero Sync", icon: RefreshCw },
     ],
@@ -130,36 +161,47 @@ const navSections: NavSection[] = [
     label: "Members",
     items: [
       { href: "/admin/members", label: "Members", icon: Users },
+      { href: "/admin/subscriptions", label: "Subscriptions", icon: FileText },
+      {
+        href: "/admin/member-applications",
+        label: "Applications",
+        icon: ClipboardList,
+      },
+      {
+        href: "/admin/membership-cancellations",
+        label: "Cancellations",
+        icon: UserX,
+      },
+      { href: "/admin/induction", label: "Induction", icon: ClipboardCheck },
+      { href: "/admin/communications", label: "Communications", icon: Mail },
+      { href: "/admin/lockers", label: "Lockers", icon: House },
       { href: "/admin/family-groups", label: "Family Groups", icon: Users },
       {
         href: "/admin/family-suggestions",
         label: "Family Suggestions",
         icon: Users,
       },
-      { href: "/admin/induction", label: "Induction", icon: ClipboardCheck },
-      { href: "/admin/subscriptions", label: "Subscriptions", icon: FileText },
-      { href: "/admin/communications", label: "Communications", icon: Mail },
-      { href: "/admin/lockers", label: "Lockers", icon: House },
     ],
   },
   {
     label: "Lodge Operations",
     items: [
+      { href: "/admin/hut-leaders", label: "Hut Leaders", icon: UserCheck },
       { href: "/admin/roster", label: "Roster", icon: ClipboardList },
       { href: "/admin/chores", label: "Chores", icon: CheckSquare },
-      { href: "/admin/hut-leaders", label: "Hut Leaders", icon: UserCheck },
+      { href: "/admin/lodge", label: "Lodge Kiosk", icon: Tablet },
       { href: "/admin/work-parties", label: "Work Parties", icon: Hammer },
       {
         href: "/admin/lodge-instructions",
         label: "Lodge Instructions",
         icon: BookOpen,
       },
-      { href: "/admin/lodge", label: "Lodge Kiosk", icon: Tablet },
     ],
   },
   {
     label: "Monitoring & Support",
     items: [
+      { href: "/admin/issue-reports", label: "Issue Reports", icon: Bug },
       { href: "/admin/stuck-states", label: "Stuck States", icon: AlertTriangle },
       { href: "/admin/health", label: "System Health", icon: Activity },
       {
@@ -195,19 +237,7 @@ const navSections: NavSection[] = [
       },
       { href: "/admin/image-manager", label: "Image Manager", icon: Images },
       { href: "/admin/rooms-beds", label: "Rooms & Beds", icon: BedDouble },
-      {
-        href: "/admin/seasons",
-        label: "Hut Fees & Seasons",
-        icon: CalendarRange,
-      },
-      { href: "/admin/age-tier-settings", label: "Age Groups", icon: Sliders },
       { href: "/admin/member-fields", label: "Member Fields", icon: Sliders },
-      { href: "/admin/promo-codes", label: "Promo Codes", icon: Tag },
-      {
-        href: "/admin/booking-policies",
-        label: "Booking Policies",
-        icon: XCircle,
-      },
       {
         href: "/admin/notifications",
         label: "Notifications & Email",
@@ -234,6 +264,24 @@ export function getVisibleAdminNavSections(
         isFeatureHrefVisible(item.href, features),
       ),
     }))
+    .filter((section) => section.items.length > 0);
+}
+
+type AdminNavBadgeMap = Record<string, number>;
+
+export function getRenderedAdminNavSections(
+  features: FeatureFlags,
+  badges: AdminNavBadgeMap,
+): NavSection[] {
+  return getVisibleAdminNavSections(features)
+    .map((section) =>
+      section.label === NEEDS_ATTENTION_LABEL
+        ? {
+            ...section,
+            items: section.items.filter((item) => (badges[item.href] ?? 0) > 0),
+          }
+        : section,
+    )
     .filter((section) => section.items.length > 0);
 }
 
@@ -394,6 +442,29 @@ function usePendingMembershipCancellations(): number {
   return count;
 }
 
+function usePendingIssueReports(): number {
+  const [count, setCount] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    fetch("/api/admin/issue-reports?status=OPEN&pageSize=1")
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => {
+        if (!cancelled && typeof data?.total === "number") {
+          setCount(data.total);
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return count;
+}
+
 function SidebarLinks({
   features,
   onNavigate,
@@ -408,7 +479,41 @@ function SidebarLinks({
   const pendingBookingRequests = usePendingBookingRequests();
   const pendingCreditApprovals = usePendingCreditApprovals();
   const pendingMembershipCancellations = usePendingMembershipCancellations();
-  const visibleNavSections = getVisibleAdminNavSections(features);
+  const pendingIssueReports = usePendingIssueReports();
+  const [expandedSections, setExpandedSections] = useState<
+    Record<string, boolean>
+  >({});
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(SIDEBAR_COLLAPSE_STORAGE_KEY);
+      if (!raw) return;
+
+      const parsed = JSON.parse(raw) as unknown;
+      if (parsed && typeof parsed === "object") {
+        setExpandedSections(parsed as Record<string, boolean>);
+      }
+    } catch {
+      // Storage can be unavailable or malformed; the sidebar still works.
+    }
+  }, []);
+
+  const toggleSection = (label: string) => {
+    setExpandedSections((current) => {
+      const next = { ...current, [label]: !current[label] };
+
+      try {
+        window.localStorage.setItem(
+          SIDEBAR_COLLAPSE_STORAGE_KEY,
+          JSON.stringify(next),
+        );
+      } catch {
+        // Storage unavailable; keep the in-memory state for this session.
+      }
+
+      return next;
+    });
+  };
 
   // Map href -> badge count
   const badges: Record<string, number> = {};
@@ -428,6 +533,12 @@ function SidebarLinks({
   if (pendingMembershipCancellations > 0) {
     badges["/admin/membership-cancellations"] = pendingMembershipCancellations;
   }
+  if (pendingIssueReports > 0) {
+    badges["/admin/issue-reports"] = pendingIssueReports;
+  }
+
+  const renderedNavSections = getRenderedAdminNavSections(features, badges);
+  const visibleNavSections = getVisibleAdminNavSections(features);
 
   // Highlight the most specific nav item whose href is a prefix of the current
   // path, so nested routes (e.g. /admin/xero/setup) activate the deepest match
@@ -448,55 +559,79 @@ function SidebarLinks({
         Member Dashboard
       </Link>
       <div className="my-1.5 border-t border-border" />
-      {visibleNavSections.map((section, sIdx) => (
-        <div key={sIdx}>
-          {section.label && (
-            <p className="px-3 pt-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-              {section.label}
-            </p>
-          )}
-          {section.items.map(({ href, label, icon: Icon }) => {
-            const active = href === activeHref;
-            const badgeCount = badges[href];
-            const badgeClasses =
-              href === "/admin/refund-requests"
-                ? "bg-red-600 text-white"
-                : "bg-orange-500 text-white";
+      {renderedNavSections.map((section, sIdx) => {
+        const collapsible =
+          Boolean(section.label) && section.label !== NEEDS_ATTENTION_LABEL;
+        const open =
+          !collapsible || (expandedSections[section.label as string] ?? false);
 
-            return (
-              <Link
-                key={href}
-                href={href}
-                onClick={onNavigate}
-                className={cn(
-                  "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
-                  active
-                    ? "app-nav-link-active"
-                    : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-                )}
-              >
-                <Icon
-                  className={cn(
-                    "h-4 w-4 shrink-0",
-                    active ? "text-current" : "text-muted-foreground",
-                  )}
-                />
-                <span className="flex-1">{label}</span>
-                {badgeCount != null && badgeCount > 0 && (
-                  <span
+        return (
+          <div key={sIdx}>
+            {section.label &&
+              (collapsible ? (
+                <button
+                  type="button"
+                  onClick={() => toggleSection(section.label as string)}
+                  aria-expanded={open}
+                  className="flex w-full items-center gap-1 rounded-md px-3 pt-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  <ChevronRight
                     className={cn(
-                      "ml-auto inline-flex h-5 min-w-[20px] items-center justify-center rounded-full px-1.5 text-[11px] font-semibold",
-                      badgeClasses,
+                      "h-3 w-3 shrink-0 transition-transform",
+                      open && "rotate-90",
+                    )}
+                  />
+                  <span>{section.label}</span>
+                </button>
+              ) : (
+                <p className="px-3 pt-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  {section.label}
+                </p>
+              ))}
+            {open &&
+              section.items.map(({ href, label, icon: Icon }) => {
+                const active = href === activeHref;
+                const badgeCount = badges[href];
+                const badgeClasses =
+                  href === "/admin/refund-requests"
+                    ? "bg-red-600 text-white"
+                    : "bg-orange-500 text-white";
+
+                return (
+                  <Link
+                    key={href}
+                    href={href}
+                    onClick={onNavigate}
+                    className={cn(
+                      "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+                      active
+                        ? "app-nav-link-active"
+                        : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
                     )}
                   >
-                    {badgeCount > 99 ? "99+" : badgeCount}
-                  </span>
-                )}
-              </Link>
-            );
-          })}
-        </div>
-      ))}
+                    <Icon
+                      className={cn(
+                        "h-4 w-4 shrink-0",
+                        active ? "text-current" : "text-muted-foreground",
+                      )}
+                    />
+                    <span className="flex-1">{label}</span>
+                    {badgeCount != null && badgeCount > 0 && (
+                      <span
+                        className={cn(
+                          "ml-auto inline-flex h-5 min-w-[20px] items-center justify-center rounded-full px-1.5 text-[11px] font-semibold",
+                          badgeClasses,
+                        )}
+                      >
+                        {badgeCount > 99 ? "99+" : badgeCount}
+                      </span>
+                    )}
+                  </Link>
+                );
+              })}
+          </div>
+        );
+      })}
     </nav>
   );
 }
@@ -507,14 +642,14 @@ export function AdminSidebar({ features }: { features: FeatureFlags }) {
   return (
     <>
       {/* Desktop sidebar */}
-      <aside className="hidden w-60 shrink-0 flex-col border-r bg-background print:hidden md:flex">
-        <div className="flex h-16 items-center gap-2 border-b px-4 font-bold text-foreground">
+      <aside className="hidden w-60 shrink-0 flex-col border-r bg-background print:hidden md:sticky md:top-16 md:flex md:h-[calc(100vh-4rem)]">
+        <div className="flex h-16 shrink-0 items-center gap-2 border-b px-4 font-bold text-foreground">
           <span className="app-brand-mark h-9 w-9">
             <Mountain className="h-5 w-5" />
           </span>
           <span>Admin Panel</span>
         </div>
-        <div className="flex-1 overflow-y-auto p-3">
+        <div className="flex-1 overflow-y-auto p-3 pb-8">
           <SidebarLinks features={features} />
         </div>
       </aside>
@@ -527,14 +662,14 @@ export function AdminSidebar({ features }: { features: FeatureFlags }) {
               <Menu className="h-5 w-5" />
             </Button>
           </SheetTrigger>
-          <SheetContent side="left" className="w-64 p-0">
-            <SheetHeader className="flex h-16 flex-row items-center gap-2 border-b px-4">
+          <SheetContent side="left" className="flex w-64 flex-col p-0">
+            <SheetHeader className="flex h-16 shrink-0 flex-row items-center gap-2 border-b px-4">
               <span className="app-brand-mark h-9 w-9">
                 <Mountain className="h-5 w-5" />
               </span>
               <SheetTitle>Admin Panel</SheetTitle>
             </SheetHeader>
-            <div className="p-3">
+            <div className="flex-1 overflow-y-auto p-3 pb-8">
               <SidebarLinks
                 features={features}
                 onNavigate={() => setMobileOpen(false)}

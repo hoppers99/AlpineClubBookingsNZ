@@ -1,0 +1,104 @@
+// @vitest-environment jsdom
+
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { MODULE_KEYS } from "@/config/modules";
+import type { FeatureFlags } from "@/config/schema";
+
+const SIDEBAR_COLLAPSE_STORAGE_KEY = "admin-sidebar:expanded-sections";
+
+const allOn: FeatureFlags = Object.fromEntries(
+  MODULE_KEYS.map((key) => [key, true]),
+) as FeatureFlags;
+
+vi.mock("next/navigation", () => ({
+  usePathname: () => "/admin/dashboard",
+}));
+
+import { AdminSidebar } from "@/components/admin-sidebar";
+
+function mockJsonResponse(body: unknown) {
+  return {
+    ok: true,
+    json: async () => body,
+  };
+}
+
+function buildFetchMock() {
+  return vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+
+    if (url.includes("/api/admin/family-groups/requests")) {
+      return mockJsonResponse({ requests: [] });
+    }
+    if (url.includes("/api/admin/member-applications")) {
+      return mockJsonResponse({ pendingCount: 0 });
+    }
+    if (url.includes("/api/admin/refund-requests")) {
+      return mockJsonResponse({ total: 0 });
+    }
+    if (url.includes("/api/admin/booking-reviews")) {
+      return mockJsonResponse({ pagination: { total: 0 } });
+    }
+    if (url.includes("/api/admin/booking-change-requests")) {
+      return mockJsonResponse({ total: 0 });
+    }
+    if (url.includes("/api/admin/credit-approvals")) {
+      return mockJsonResponse([]);
+    }
+    if (url.includes("/api/admin/membership-cancellation-requests")) {
+      return mockJsonResponse({ pendingCount: 0 });
+    }
+    if (url.includes("/api/admin/member-lifecycle-action-requests")) {
+      return mockJsonResponse({ pendingCount: 0 });
+    }
+    if (url.includes("/api/admin/issue-reports")) {
+      return mockJsonResponse({ total: 0 });
+    }
+
+    return mockJsonResponse({});
+  });
+}
+
+describe("AdminSidebar", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    vi.restoreAllMocks();
+    vi.stubGlobal("fetch", buildFetchMock());
+  });
+
+  it("collapses sections by default and persists expanded state", () => {
+    render(<AdminSidebar features={allOn} />);
+
+    const sectionToggle = screen.getByRole("button", {
+      name: "Bookings & Beds",
+    });
+    expect(sectionToggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByRole("link", { name: "Bookings" })).toBeNull();
+
+    fireEvent.click(sectionToggle);
+
+    expect(sectionToggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByRole("link", { name: "Bookings" })).not.toBeNull();
+    expect(
+      JSON.parse(
+        window.localStorage.getItem(SIDEBAR_COLLAPSE_STORAGE_KEY) ?? "{}",
+      ),
+    ).toMatchObject({ "Bookings & Beds": true });
+  });
+
+  it("restores persisted expanded sections after mount", async () => {
+    window.localStorage.setItem(
+      SIDEBAR_COLLAPSE_STORAGE_KEY,
+      JSON.stringify({ Finance: true }),
+    );
+
+    render(<AdminSidebar features={allOn} />);
+
+    const financeToggle = screen.getByRole("button", { name: "Finance" });
+    await waitFor(() =>
+      expect(financeToggle.getAttribute("aria-expanded")).toBe("true"),
+    );
+    expect(screen.getByRole("link", { name: "Payments" })).not.toBeNull();
+  });
+});
