@@ -108,6 +108,7 @@ export const config = {
     "/api/admin/waitlist/:path*",
     "/api/admin/work-parties/:path*",
     "/api/admin/xero/:path*",
+    "/api/address-autocomplete/:path*",
     "/api/bookings/:id/waitlist-confirm",
     "/api/admin/bookings/:id/force-confirm",
     "/api/chores/:path*",

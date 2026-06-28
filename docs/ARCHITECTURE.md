@@ -234,6 +234,9 @@ name, and setup invites are sent only to imported members that can log in.
 Member, dependent, profile, onboarding, and application address forms submit a
 `postalSameAsPhysical` flag; route handlers copy physical address fields into
 postal fields before persistence when that flag is true.
+Address autocomplete is an optional Addy-backed public proxy module. It defaults
+off, is gated by Admin Modules and `src/proxy.ts` before route handlers run, and
+never replaces manual address entry.
 
 Membership cancellation is a member-initiated account lifecycle workflow.
 Requests can include the requester, dependants, non-login adults, and related
@@ -300,6 +303,15 @@ invoice datasets, bank balances, and chart-of-accounts snapshots through that
 connection, then stores `FinanceSnapshot` and `FinanceSyncRun` rows for page
 rendering. There is no separate finance Xero OAuth app, token store, callback
 route, or usage-metering table.
+
+### Address autocomplete
+
+Address autocomplete uses server-side Addy credentials only in
+`src/lib/addy-api.ts`. Browser code talks to `/api/address-autocomplete/**`,
+which is feature-gated by the `addressAutocomplete` Admin Module and rate
+limited. Missing credentials and upstream failures return small error payloads;
+address forms keep manual inputs editable so saving an address does not depend
+on Addy availability.
 
 ### Email
 

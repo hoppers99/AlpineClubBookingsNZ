@@ -35,6 +35,8 @@ const baseEnv = {
   XERO_REDIRECT_URI: "https://club.example.org/api/admin/xero/callback",
   XERO_ENCRYPTION_KEY: "a".repeat(64),
   XERO_WEBHOOK_KEY: "webhook-key",
+  ADDY_API_KEY: "addy-key",
+  ADDY_API_SECRET: "addy-secret",
 };
 
 const completeDatabase: SetupDatabaseSnapshot = {
@@ -47,6 +49,7 @@ const completeDatabase: SetupDatabaseSnapshot = {
     xeroIntegration: true,
     bedAllocation: true,
     internetBankingPayments: true,
+    addressAutocomplete: true,
     groupBookings: true,
     lockers: true,
     induction: true,
@@ -160,6 +163,7 @@ describe("setup-readiness", () => {
     expect(JSON.stringify(readiness)).not.toContain("sk_test_123");
     expect(JSON.stringify(readiness)).not.toContain("smtp-secret");
     expect(JSON.stringify(readiness)).not.toContain("xero-secret");
+    expect(JSON.stringify(readiness)).not.toContain("addy-secret");
 
     const report = renderSetupCheckReport(readiness);
     expect(report).toContain("accounting.reports.profitandloss.read");
@@ -205,7 +209,68 @@ describe("setup-readiness", () => {
     expect(report).toContain("Operational Xero is disabled in Admin Modules.");
     expect(report).toContain("Finance dashboard Admin Modules activation: disabled");
     expect(report).toContain("Finance dashboard is disabled in Admin Modules.");
+    expect(report).toContain("Address autocomplete Admin Modules activation: enabled");
     expect(report).not.toContain("env capability");
+  });
+
+  it("distinguishes address autocomplete disabled, missing credentials, and ready states", () => {
+    const disabled = buildSetupReadiness({
+      env: {},
+      configDir: makeConfigDir(),
+      database: {
+        ...completeDatabase,
+        adminModuleSettings: {
+          ...completeDatabase.adminModuleSettings!,
+          addressAutocomplete: false,
+        },
+      },
+    });
+    const disabledReport = renderSetupCheckReport(disabled);
+    expect(disabledReport).toContain(
+      "Address Autocomplete: warning - Address autocomplete is disabled in Admin Modules; manual address entry remains available.",
+    );
+    expect(disabledReport).toContain(
+      "ADDY_API_KEY and ADDY_API_SECRET are not required while the module is disabled.",
+    );
+
+    const missingCredentials = buildSetupReadiness({
+      env: {
+        ...baseEnv,
+        ADDY_API_KEY: undefined,
+        ADDY_API_SECRET: undefined,
+      },
+      configDir: makeConfigDir(),
+      database: {
+        ...completeDatabase,
+        adminModuleSettings: {
+          ...completeDatabase.adminModuleSettings!,
+          addressAutocomplete: true,
+        },
+      },
+    });
+    const missingReport = renderSetupCheckReport(missingCredentials);
+    expect(missingReport).toContain(
+      "Address Autocomplete: blocked - Address autocomplete is enabled but Addy credentials are missing.",
+    );
+    expect(missingReport).toContain("ADDY_API_KEY is missing");
+    expect(missingReport).toContain("ADDY_API_SECRET is missing");
+
+    const ready = buildSetupReadiness({
+      env: baseEnv,
+      configDir: makeConfigDir(),
+      database: {
+        ...completeDatabase,
+        adminModuleSettings: {
+          ...completeDatabase.adminModuleSettings!,
+          addressAutocomplete: true,
+        },
+      },
+    });
+    const readyReport = renderSetupCheckReport(ready);
+    expect(readyReport).toContain(
+      "Address Autocomplete: complete - Address autocomplete is enabled and Addy credentials are configured.",
+    );
+    expect(readyReport).not.toContain("addy-secret");
   });
 
   it("treats acknowledged not-started checks as resolved for overall readiness", () => {

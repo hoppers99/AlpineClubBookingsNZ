@@ -69,6 +69,10 @@ export const FEATURE_ROUTE_RULES: FeatureRouteRule[] = [
     ],
   },
   {
+    flag: "addressAutocomplete",
+    prefixes: ["/api/address-autocomplete"],
+  },
+  {
     flag: "groupBookings",
     prefixes: ["/api/group-bookings"],
   },

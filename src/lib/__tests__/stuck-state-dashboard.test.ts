@@ -13,6 +13,15 @@ const modulesOn: FeatureFlags = {
   xeroIntegration: true,
   bedAllocation: true,
   internetBankingPayments: true,
+  addressAutocomplete: true,
+  groupBookings: true,
+  lockers: true,
+  induction: true,
+  workParties: true,
+  promoCodes: true,
+  hutLeaders: true,
+  communications: true,
+  skifieldConditions: true,
 };
 
 function emptyEmailResponses() {

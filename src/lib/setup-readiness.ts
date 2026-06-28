@@ -22,6 +22,7 @@ export const SETUP_STEP_IDS = [
   "stripe",
   "email-ses",
   "sentry",
+  "address-autocomplete",
   "xero-operational",
   "finance-dashboard",
   "xero-mappings",
@@ -153,6 +154,7 @@ const MODULE_CONTROLS = [
   { key: "xeroIntegration", label: "Operational Xero" },
   { key: "bedAllocation", label: "Bed allocation" },
   { key: "internetBankingPayments", label: "Internet Banking payments" },
+  { key: "addressAutocomplete", label: "Address autocomplete" },
 ] as const satisfies readonly {
   key: AdminModuleKey;
   label: string;
@@ -879,6 +881,51 @@ function buildOperationalXeroCheck(
   );
 }
 
+function buildAddressAutocompleteCheck(
+  env: Env,
+  db: SetupDatabaseSnapshot | undefined,
+  progress: SetupProgressState,
+): SetupStepCheck {
+  const moduleState = buildModuleLayerState(db, "addressAutocomplete");
+  const enabled = moduleState.effectiveEnabled;
+  const missing = [
+    !hasEnv(env, "ADDY_API_KEY") ? "ADDY_API_KEY is missing" : null,
+    !hasEnv(env, "ADDY_API_SECRET") ? "ADDY_API_SECRET is missing" : null,
+  ].filter((issue): issue is string => Boolean(issue));
+
+  return applyProgress(
+    {
+      id: "address-autocomplete",
+      title: "Address Autocomplete",
+      description:
+        "Optional Addy suggestions for address fields; manual entry remains available.",
+      status: !enabled
+        ? "warning"
+        : missing.length > 0
+          ? "blocked"
+          : "complete",
+      required: enabled,
+      message: !enabled
+        ? "Address autocomplete is disabled in Admin Modules; manual address entry remains available."
+        : missing.length > 0
+          ? "Address autocomplete is enabled but Addy credentials are missing."
+          : "Address autocomplete is enabled and Addy credentials are configured.",
+      details: [
+        formatModuleActivationDetail(db, moduleState.adminEnabled),
+        `Effective state: ${enabled ? "enabled" : "disabled"}`,
+        ...(enabled ? missing : []),
+        !enabled
+          ? "ADDY_API_KEY and ADDY_API_SECRET are not required while the module is disabled."
+          : missing.length === 0
+            ? "Addy credentials are set; values are not displayed."
+            : "Address forms can still be completed manually.",
+      ],
+      href: "/admin/modules",
+    },
+    progress,
+  );
+}
+
 function buildFinanceDashboardCheck(
   env: Env,
   db: SetupDatabaseSnapshot | undefined,
@@ -1005,6 +1052,7 @@ export function buildSetupReadiness(
       buildStripeCheck(env, progress),
       buildEmailCheck(env, progress),
       buildSentryCheck(env, progress),
+      buildAddressAutocompleteCheck(env, input.database, progress),
       buildOperationalXeroCheck(env, input.database, progress),
     ],
     finance: [

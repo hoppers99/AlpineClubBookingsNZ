@@ -46,7 +46,7 @@ under `Data touched` instead.
 | `src/proxy.ts` global proxy and module gates | No session auth. Applies CSP/security headers to page requests and selected API matcher paths; returns 404 for disabled module routes. | Anonymous and authenticated browser traffic. | Module settings via `loadEffectiveModuleFlags()`. | None. | CSP nonce, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`, module route blocking. | No per-request audit. | API matcher is selective, not global for every API path. Keep route-level auth as the enforcement boundary. |
 | `/api/health`, `/api/health/ready` | Public. | Load balancers, operators, anonymous callers. | DB reachability, runtime version/uptime, config readiness. Public responses omit provider error detail. | DB query only. | No rate limit. No secrets in response. | Logger debug/error only. | Anonymous callers can observe availability. #615 can decide whether to add light rate limiting or cache headers. |
 | `/api/age-tier-settings`, `/api/committee` | Public read endpoints. | Anonymous website users. | Public age-tier/rate settings and active committee contact records. | None. | No rate limit. Committee query selects explicit public fields. | None beyond DB errors if thrown. | Public PII is intentional for committee contacts, but #615 should re-check whether phone/email exposure is acceptable for each club. |
-| `/api/address-autocomplete/search`, `/api/address-autocomplete/details/[id]` | Public server-side proxy to Addy. | Anonymous website users. | Search terms, address suggestion ids, Addy result payloads. | Addy API via `src/lib/addy-api.ts`. | Zod query validation, `rateLimiters.addressAutocomplete` at 90/min/IP. Secrets stay server-side. | Minimal error responses, no audit. | Upstream-cost and enumeration surface remains public. #615 should review result bounds and failure logging. |
+| `/api/address-autocomplete/search`, `/api/address-autocomplete/details/[id]` | Public server-side proxy to Addy, gated by the `addressAutocomplete` Admin Module. | Anonymous website users. | Search terms, address suggestion ids, Addy result payloads. | Addy API via `src/lib/addy-api.ts`. | Module-route/proxy gate returns 404 while disabled, Zod query validation, `rateLimiters.addressAutocomplete` at 90/min/IP. Secrets stay server-side. | Minimal error responses, no audit. | Upstream-cost and enumeration surface remains public only when the module is enabled; manual address entry remains the fallback. |
 | `/api/contact` | Public contact form. | Anonymous website users. | Name, email, message, optional committee recipient key. | SMTP/SES through `sendEmail()`. | Zod validation, CRLF checks, HTML escaping, `rateLimiters.contact` at 10/hour/IP. | Email delivery logs through email layer; no audit log. | Spam and mailbox flooding are bounded but not CAPTCHA-backed. #615 should re-check current spam tolerance. |
 | `/api/applications` | Public membership application submission. | Anonymous applicant. | Applicant PII, DOB, family member PII, nominator emails, application rows. | Email notifications through nomination/application service. | Zod validation, max family member count of 10, `rateLimiters.membershipApplication` at 3/hour/IP. | Logger on unexpected errors; application workflow records status in DB. | Public PII collection endpoint. #615 should review enumeration, attachment absence, response detail, and email storm controls. |
 | `/api/auth/register` | Public but disabled. | Anonymous caller. | None. | None. | Always returns `410 Gone`; self-service registration replaced by applications. | None. | Low risk. Keep in explicit public allowlist so a future implementation cannot appear silently. |
@@ -366,9 +366,9 @@ Hardening applied in #615:
   or lookup on password reset, email verification, email-change confirmation,
   guest chore links, nomination confirmation, and membership-cancellation
   confirmation.
-- Addy autocomplete keeps session validation explicit and caps returned search
-  suggestions to the requested top 10. Malformed detail-session parameters fail
-  locally before calling Addy.
+- Addy autocomplete is module-gated, keeps session validation explicit, and caps
+  returned search suggestions to the requested top 10. Malformed detail-session
+  parameters fail locally before calling Addy.
 - Public committee reads are capped to 50 active records.
 - Log redaction covers token-bearing `/membership-cancellation/`, `/chores/`,
   `/nominations/`, `/pay/`, `/booking-requests/verify/`, and
@@ -495,8 +495,9 @@ Verified controls already present and intentionally preserved:
 - Lodge mutation routes continue to reject `staying-guest` access for arrivals,
   departures, and chore toggles; roster generation and confirmation remain
   limited to `admin` or `hut-leader` tiers.
-- Kiosk, chores, finance, and Xero routes remain covered by effective module
-  route gates in `src/config/feature-routes.ts` and `src/proxy.ts`.
+- Kiosk, chores, finance, Xero, and address autocomplete routes remain covered
+  by effective module route gates in `src/config/feature-routes.ts` and
+  `src/proxy.ts`.
 - Leaving `LEGACY_DASHBOARD_EXPORT_TOKEN` unset disables the legacy export with
   a 503 response after finance viewer access succeeds.
 

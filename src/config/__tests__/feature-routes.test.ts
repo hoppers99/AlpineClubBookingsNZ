@@ -32,6 +32,12 @@ describe("feature route map", () => {
     expect(
       getRequiredFeaturesForPath("/api/admin/internet-banking-settings")
     ).toEqual(["xeroIntegration", "internetBankingPayments"]);
+    expect(getRequiredFeaturesForPath("/api/address-autocomplete/search")).toEqual([
+      "addressAutocomplete",
+    ]);
+    expect(
+      getRequiredFeaturesForPath("/api/address-autocomplete/details/123")
+    ).toEqual(["addressAutocomplete"]);
   });
 
   it("requires both kiosk and chores for lodge roster routes", () => {
@@ -91,6 +97,12 @@ describe("feature route map", () => {
         promoCodes: false,
       })
     ).toBe("promoCodes");
+    expect(
+      getDisabledFeatureForPath("/api/address-autocomplete/search", {
+        ...allOn,
+        addressAutocomplete: false,
+      })
+    ).toBe("addressAutocomplete");
   });
 
   it("detects the disabled feature for protected route and API paths", () => {

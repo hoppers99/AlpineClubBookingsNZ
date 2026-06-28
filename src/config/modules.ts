@@ -8,6 +8,7 @@ export const MODULE_KEYS = [
   "xeroIntegration",
   "bedAllocation",
   "internetBankingPayments",
+  "addressAutocomplete",
   "groupBookings",
   "lockers",
   "induction",
@@ -35,6 +36,7 @@ export const DEFAULT_MODULE_SETTINGS: ModuleSettingsValues = {
   xeroIntegration: false,
   bedAllocation: false,
   internetBankingPayments: false,
+  addressAutocomplete: false,
   groupBookings: true,
   lockers: true,
   induction: true,
@@ -101,6 +103,15 @@ export const MODULE_DEFINITIONS: Record<ModuleKey, ModuleDefinition> = {
     description: "Member Internet Banking payment option backed by Xero invoices.",
     dependencies: [
       "Operational Xero must be active before invoices can be issued.",
+    ],
+  },
+  addressAutocomplete: {
+    key: "addressAutocomplete",
+    label: "Address autocomplete",
+    description:
+      "Optional Addy-powered suggestions for address fields. Manual address entry remains available.",
+    dependencies: [
+      "ADDY_API_KEY and ADDY_API_SECRET must be configured server-side before suggestions can load.",
     ],
   },
   groupBookings: {

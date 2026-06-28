@@ -2089,6 +2089,7 @@ model ClubModuleSettings {
   xeroIntegration         Boolean  @default(false)
   bedAllocation           Boolean  @default(false)
   internetBankingPayments Boolean  @default(false)
+  addressAutocomplete     Boolean  @default(false)
   groupBookings           Boolean  @default(true)
   lockers                 Boolean  @default(true)
   induction               Boolean  @default(true)

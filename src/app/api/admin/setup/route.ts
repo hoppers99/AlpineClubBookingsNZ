@@ -34,6 +34,7 @@ async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot> {
         xeroIntegration: true,
         bedAllocation: true,
         internetBankingPayments: true,
+        addressAutocomplete: true,
         groupBookings: true,
         lockers: true,
         induction: true,

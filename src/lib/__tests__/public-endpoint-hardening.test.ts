@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { searchAddyAddresses } from "@/lib/addy-api";
+import { MODULE_KEYS } from "@/config/modules";
+import type { FeatureFlags } from "@/config/schema";
+import { getFeatureFlagBlockResponse } from "../../proxy";
 
 const mocks = vi.hoisted(() => ({
   emailVerificationFindUnique: vi.fn(),
@@ -85,6 +88,23 @@ describe("public endpoint abuse hardening", () => {
     await expect(response.json()).resolves.toEqual({
       error: "Invalid address query",
     });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("blocks disabled address autocomplete routes before Addy lookup", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const flags = Object.fromEntries(
+      MODULE_KEYS.map((key) => [key, true]),
+    ) as FeatureFlags;
+
+    const response = getFeatureFlagBlockResponse(
+      "/api/address-autocomplete/search",
+      { ...flags, addressAutocomplete: false },
+    );
+
+    expect(response?.status).toBe(404);
+    await expect(response!.json()).resolves.toEqual({ error: "Not found" });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

@@ -125,6 +125,7 @@ export const featureFlagsSchema = z
     xeroIntegration: z.boolean(),
     bedAllocation: z.boolean(),
     internetBankingPayments: z.boolean(),
+    addressAutocomplete: z.boolean(),
     groupBookings: z.boolean(),
     lockers: z.boolean(),
     induction: z.boolean(),

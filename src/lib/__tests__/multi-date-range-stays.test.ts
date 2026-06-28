@@ -258,6 +258,15 @@ describe("bed-allocation pruning by night set", () => {
     xeroIntegration: false,
     bedAllocation: true,
     internetBankingPayments: false,
+    addressAutocomplete: false,
+    groupBookings: true,
+    lockers: true,
+    induction: true,
+    workParties: true,
+    promoCodes: true,
+    hutLeaders: true,
+    communications: true,
+    skifieldConditions: true,
   };
 
   it("prunes allocations on nights a guest is not staying (gaps included)", async () => {

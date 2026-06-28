@@ -15,11 +15,13 @@ export type ApiRouteSecurityMetadata = {
 export const explicitPublicApiRoutes = {
   "src/app/api/address-autocomplete/details/[id]/route.ts": {
     boundary: "public",
-    reason: "Anonymous Addy address detail proxy with rate limiting.",
+    reason:
+      "Anonymous Addy address detail proxy with module gating and rate limiting.",
   },
   "src/app/api/address-autocomplete/search/route.ts": {
     boundary: "public",
-    reason: "Anonymous Addy address search proxy with rate limiting.",
+    reason:
+      "Anonymous Addy address search proxy with module gating and rate limiting.",
   },
   "src/app/api/age-tier-settings/route.ts": {
     boundary: "public",

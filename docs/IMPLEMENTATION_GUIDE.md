@@ -85,8 +85,9 @@ bring up the core app.
 
 After migrations and seed data run, admins activate or deactivate optional
 modules at `/admin/modules`. Kiosk, chores, finance dashboard, waitlist, Xero,
-bed allocation, and Internet Banking payments default off until an admin
-enables them. General-purpose modules default on and can be disabled there.
+bed allocation, Internet Banking payments, and address autocomplete default off
+until an admin enables them. General-purpose modules default on and can be
+disabled there.
 Internet Banking payments also require operational Xero to be enabled,
 configured, and connected because invoice issuing and settlement reconciliation
 run through that integration.

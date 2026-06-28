@@ -15,6 +15,8 @@ const allCapabilitiesOn = Object.fromEntries(
 describe("Admin Modules effective state", () => {
   it("defaults missing module settings to the hardened first-install defaults", () => {
     expect(normalizeAdminModuleSettings(null)).toEqual(DEFAULT_MODULE_SETTINGS);
+    expect(ADMIN_MODULE_KEYS).toContain("addressAutocomplete");
+    expect(DEFAULT_MODULE_SETTINGS.addressAutocomplete).toBe(false);
   });
 
   it("reflects admin activation as the effective state", () => {

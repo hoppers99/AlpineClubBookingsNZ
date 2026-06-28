@@ -13,7 +13,10 @@ import { prisma } from "@/lib/prisma";
 
 export const CLUB_MODULE_SETTINGS_ID = "default";
 
-export type ModuleReadinessStatus = "ready" | "admin_disabled";
+export type ModuleReadinessStatus =
+  | "ready"
+  | "admin_disabled"
+  | "credentials_missing";
 
 export interface ModuleStatus {
   key: ModuleKey;
@@ -49,6 +52,7 @@ export function normalizeClubModuleSettings(
 }
 
 function readinessMessage(params: {
+  key: ModuleKey;
   label: string;
   adminEnabled: boolean;
 }): { status: ModuleReadinessStatus; message: string } {
@@ -56,6 +60,17 @@ function readinessMessage(params: {
     return {
       status: "admin_disabled",
       message: `${params.label} is turned off in the admin Modules settings.`,
+    };
+  }
+
+  if (
+    params.key === "addressAutocomplete" &&
+    (!process.env.ADDY_API_KEY?.trim() || !process.env.ADDY_API_SECRET?.trim())
+  ) {
+    return {
+      status: "credentials_missing",
+      message:
+        "Address autocomplete is enabled, but ADDY_API_KEY and ADDY_API_SECRET are not both configured.",
     };
   }
 
@@ -72,6 +87,7 @@ export function buildModuleStatusList(
     const definition = MODULE_DEFINITIONS[key];
     const adminEnabled = settings[key];
     const readiness = readinessMessage({
+      key,
       label: definition.label,
       adminEnabled,
     });

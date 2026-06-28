@@ -173,10 +173,18 @@ describe("CSP proxy", () => {
       "/api/group-bookings/abc/join",
       { ...allFeaturesOn, groupBookings: false },
     );
+    const addyApiResponse = getFeatureFlagBlockResponse(
+      "/api/address-autocomplete/search",
+      { ...allFeaturesOn, addressAutocomplete: false },
+    );
 
     expect(pageResponse?.status).toBe(404);
     expect(apiResponse?.status).toBe(404);
     expect(groupApiResponse?.status).toBe(404);
+    expect(addyApiResponse?.status).toBe(404);
+    await expect(addyApiResponse!.json()).resolves.toEqual({
+      error: "Not found",
+    });
   });
 
   // Regression guard: every feature-gated route must actually be covered by the
@@ -217,6 +225,8 @@ describe("CSP proxy", () => {
       "/api/admin/mountain-conditions",
       "/api/skifield-whakapapa",
       "/api/skifield-conditions",
+      "/api/address-autocomplete/search",
+      "/api/address-autocomplete/details/123",
     ];
 
     for (const url of childApiPaths) {

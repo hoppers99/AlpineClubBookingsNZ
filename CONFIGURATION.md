@@ -272,6 +272,7 @@ cannot be read, optional modules fail closed.
 | Xero integration | off | Operational Xero linking, sync actions, reconciliation tools, Xero cron, and Xero webhooks. |
 | Bed allocation | off | Room and bed inventory, guest-to-bed allocation, auto-allocation, and allocation approvals. |
 | Internet Banking payments | off | Member Internet Banking payment option backed by Xero invoices. Operational Xero still needs credentials and a tenant connection before invoices can be issued and reconciled. |
+| Address autocomplete | off | Addy-powered suggestions on address fields. Manual address entry remains available whenever the module is off, credentials are missing, Addy fails, or rate limiting applies. |
 | Group bookings | on | Group-booking organiser, join, and settlement surfaces. |
 | Lockers | on | Physical locker records and member allocations. |
 | Lodge induction | on | Lodge induction templates, self-assessment, and sign-off. |
@@ -359,6 +360,15 @@ tokens carry the current scope set. Access is controlled per member by
 | ----------------- | ----------------------------------------------- |
 | `ADDY_API_KEY`    | Addy API key for server-side address search.    |
 | `ADDY_API_SECRET` | Addy API secret for server-side address search. |
+
+Address autocomplete is also controlled by Admin > Modules and defaults off.
+The server-side `/api/address-autocomplete/**` proxy is unavailable while the
+module is disabled, before any Addy call can run. If the module is enabled but
+either Addy credential is missing, Admin Setup reports the module as blocked.
+The credentials stay server-side and are never returned in setup/module JSON
+payloads. Address fields remain normal editable inputs in every state, so users
+can save a full manual address when autocomplete is disabled, unconfigured,
+rate-limited, or temporarily unavailable.
 
 ## Sentry
 

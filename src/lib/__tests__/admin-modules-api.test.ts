@@ -111,6 +111,7 @@ describe("Admin modules schema contract", () => {
     expect(model).toContain("xeroIntegration         Boolean  @default(false)");
     expect(model).toContain("bedAllocation           Boolean  @default(false)");
     expect(model).toContain("internetBankingPayments Boolean  @default(false)");
+    expect(model).toContain("addressAutocomplete     Boolean  @default(false)");
     expect(model).toContain("groupBookings           Boolean  @default(true)");
     expect(model).not.toMatch(/secret|token|credential|tenant/i);
     expect(migration).toContain('CREATE TABLE IF NOT EXISTS "ClubModuleSettings"');
@@ -127,6 +128,11 @@ describe("Admin modules schema contract", () => {
       'ALTER COLUMN "financeDashboard" SET DEFAULT false',
     );
     expect(defaultRepairMigration).toContain('"updatedByMemberId" IS NULL');
+    expect(
+      readRepoFile(
+        "prisma/migrations/20260628160000_add_address_autocomplete_module/migration.sql",
+      ),
+    ).toContain('"addressAutocomplete" BOOLEAN NOT NULL DEFAULT false');
   });
 });
 
@@ -140,6 +146,7 @@ describe("Admin modules API", () => {
     mocks.transaction.mockReset();
     mocks.buildStructuredAuditLogCreateArgs.mockClear();
     mocks.getAuditRequestContext.mockClear();
+    vi.unstubAllEnvs();
 
     mocks.requireActiveSessionUser.mockResolvedValue(null);
     mocks.clubModuleSettingsFindUnique.mockResolvedValue(null);
@@ -190,6 +197,27 @@ describe("Admin modules API", () => {
       }),
     );
     expect(body.modules[0]).not.toHaveProperty("envVar");
+  });
+
+  it("reports address autocomplete setup without exposing Addy credential values", async () => {
+    mocks.auth.mockResolvedValue(adminSession);
+    mocks.clubModuleSettingsFindUnique.mockResolvedValue({
+      id: "default",
+      ...allEnabled,
+      updatedAt: new Date("2026-05-18T11:00:00.000Z"),
+      updatedByMemberId: "admin-1",
+    });
+    vi.stubEnv("ADDY_API_KEY", "secret-addy-key");
+    vi.stubEnv("ADDY_API_SECRET", "");
+
+    const response = await GET();
+    const body = await response.json();
+    const addy = body.modules.find(
+      (module: { key: string }) => module.key === "addressAutocomplete",
+    );
+
+    expect(addy.readiness.status).toBe("credentials_missing");
+    expect(JSON.stringify(addy)).not.toContain("secret-addy-key");
   });
 
   it("rejects invalid update payloads before writing", async () => {

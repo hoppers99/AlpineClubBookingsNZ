@@ -66,8 +66,9 @@ fork for another organisation. See `NOTICE.md`.
    run the seed command, then change the seeded admin password on first login.
 5. After sign-in, use **Admin > Modules** to set club-level activation for
    optional modules. Kiosk, chores, finance dashboard, waitlist, Xero, bed
-   allocation, and Internet Banking payments default off until an admin enables
-   them. General-purpose modules default on and can be disabled there.
+   allocation, Internet Banking payments, and address autocomplete default off
+   until an admin enables them. General-purpose modules default on and can be
+   disabled there.
 6. Use test/demo credentials for Stripe, Xero, SES, and Sentry until you are
    ready for a controlled deployment of your own environment.
 

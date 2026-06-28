@@ -21,7 +21,10 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { MODULE_KEYS, type ModuleKey, type ModuleSettingsValues } from "@/config/modules";
 
-type ModuleReadinessStatus = "ready" | "admin_disabled";
+type ModuleReadinessStatus =
+  | "ready"
+  | "admin_disabled"
+  | "credentials_missing";
 
 interface ModuleStatus {
   key: ModuleKey;
@@ -59,11 +62,13 @@ function readinessVariant(
   status: ModuleReadinessStatus,
 ): BadgeProps["variant"] {
   if (status === "ready") return "success";
+  if (status === "credentials_missing") return "warning";
   return "secondary";
 }
 
 function readinessLabel(status: ModuleReadinessStatus) {
   if (status === "ready") return "Enabled";
+  if (status === "credentials_missing") return "Needs setup";
   return "Disabled";
 }
 
@@ -77,6 +82,10 @@ function getReadiness(
       status: "admin_disabled",
       message: `${module.label} is turned off in the admin Modules settings.`,
     };
+  }
+
+  if (module.readiness.status === "credentials_missing") {
+    return module.readiness;
   }
 
   return {
