@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   logAudit: vi.fn(),
   upsertPaymentIntentTransaction: vi.fn(),
   sendBookingConfirmedEmail: vi.fn(),
+  queueXeroInvoiceForPaidBooking: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -52,6 +53,10 @@ vi.mock("@/lib/audit", () => ({
 
 vi.mock("@/lib/email", () => ({
   sendBookingConfirmedEmail: mocks.sendBookingConfirmedEmail,
+}));
+
+vi.mock("@/lib/xero-booking-invoice-queue", () => ({
+  queueXeroInvoiceForPaidBooking: mocks.queueXeroInvoiceForPaidBooking,
 }));
 
 vi.mock("@/lib/logger", () => ({
@@ -101,6 +106,10 @@ beforeEach(() => {
     bumpedBookingIds: [],
   });
   mocks.sendBookingConfirmedEmail.mockResolvedValue(undefined);
+  mocks.queueXeroInvoiceForPaidBooking.mockResolvedValue({
+    queueOperationId: "xero-op-1",
+    message: "queued",
+  });
 });
 
 describe("payment intent routes", () => {
@@ -214,6 +223,10 @@ describe("payment intent routes", () => {
       paymentIntentId: "pi_existing",
       amountCents: 12500,
       paymentMethodId: "pm_123",
+    });
+    expect(mocks.queueXeroInvoiceForPaidBooking).toHaveBeenCalledWith({
+      bookingId: "booking-1",
+      createdByMemberId: "member-1",
     });
     expect(mockStripeCreatePaymentIntent).not.toHaveBeenCalled();
   });
@@ -357,6 +370,10 @@ describe("payment intent routes", () => {
       paymentIntentId: "pi_success",
       amountCents: 12500,
       paymentMethodId: "pm_123",
+    });
+    expect(mocks.queueXeroInvoiceForPaidBooking).toHaveBeenCalledWith({
+      bookingId: "booking-1",
+      createdByMemberId: "member-1",
     });
     expect(mocks.logAudit).toHaveBeenCalled();
   });

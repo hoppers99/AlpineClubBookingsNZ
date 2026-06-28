@@ -45,8 +45,9 @@ vi.mock("@/lib/capacity", () => ({
   checkCapacityForGuestRanges: vi.fn(),
 }));
 
-const { loadEffectiveModuleFlagsMock } = vi.hoisted(() => ({
+const { loadEffectiveModuleFlagsMock, queueXeroInvoiceForPaidBookingMock } = vi.hoisted(() => ({
   loadEffectiveModuleFlagsMock: vi.fn(),
+  queueXeroInvoiceForPaidBookingMock: vi.fn(),
 }));
 // Partial-mock so the module's other exports stay intact for transitive imports.
 vi.mock("@/lib/module-settings", async () => {
@@ -55,6 +56,10 @@ vi.mock("@/lib/module-settings", async () => {
   );
   return { ...actual, loadEffectiveModuleFlags: loadEffectiveModuleFlagsMock };
 });
+
+vi.mock("@/lib/xero-booking-invoice-queue", () => ({
+  queueXeroInvoiceForPaidBooking: queueXeroInvoiceForPaidBookingMock,
+}));
 
 vi.mock("@/lib/logger", () => ({
   default: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
@@ -369,6 +374,10 @@ describe("revokePaymentLinksForBooking", () => {
 describe("createPaymentIntentForPaymentLink", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    queueXeroInvoiceForPaidBookingMock.mockResolvedValue({
+      queueOperationId: "xero-op-1",
+      message: "queued",
+    });
     mockedTransaction.mockImplementation(async (fn: (tx: typeof prisma) => Promise<unknown>) =>
       fn(prisma)
     );
@@ -438,6 +447,9 @@ describe("createPaymentIntentForPaymentLink", () => {
     expect(mockedMarkSucceeded).toHaveBeenCalledWith(
       expect.objectContaining({ bookingId: "booking-1", paymentIntentId: "pi_existing" })
     );
+    expect(queueXeroInvoiceForPaidBookingMock).toHaveBeenCalledWith({
+      bookingId: "booking-1",
+    });
   });
 
   it("revalidates capacity under the advisory lock and refuses when beds are gone", async () => {

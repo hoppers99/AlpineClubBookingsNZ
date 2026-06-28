@@ -3,7 +3,6 @@ import { listRefundsForCharge } from "@/lib/stripe";
 import { markBookingPaymentSucceeded, markBookingSetupIntentSucceeded } from "@/lib/payment-reconciliation";
 import { isXeroConnected } from "@/lib/xero";
 import {
-  enqueueXeroBookingInvoiceOperation,
   enqueueXeroRefundCreditNoteOperation,
   kickQueuedXeroOutboxOperationsIfConnected,
   releaseXeroSupplementaryInvoiceOperationsForPaymentIntent,
@@ -11,6 +10,7 @@ import {
 import { sendBookingConfirmedEmail, sendAdminPaymentFailureAlert, sendSetupIntentFailedEmail } from "@/lib/email";
 import { recordWebhookLog } from "@/lib/webhook-log";
 import { notifyXeroSyncError } from "@/lib/xero-error-alert";
+import { queueXeroInvoiceForPaidBooking } from "@/lib/xero-booking-invoice-queue";
 import Stripe from "stripe";
 import logger from "@/lib/logger";
 import { logAudit } from "@/lib/audit";
@@ -332,23 +332,7 @@ async function handlePaymentIntentSucceeded(
     }
   }
 
-  // Queue the booking invoice durably, then opportunistically kick the worker.
-  try {
-    const queuedInvoice = await enqueueXeroBookingInvoiceOperation(bookingId);
-    if (queuedInvoice.queueOperationId) {
-      await kickQueuedXeroOutboxOperationsIfConnected({ limit: 1 });
-      logger.info({ bookingId }, "Xero invoice queued for booking");
-    }
-  } catch (xeroErr) {
-    logger.error({ err: xeroErr, bookingId }, "Failed to queue Xero invoice for booking");
-    // Alert admins through the deduplicated Xero notifier so repeated
-    // webhook retries or repeated failures do not spam operators.
-    notifyXeroSyncError({
-      errorType: "INVOICE_CREATION",
-      operation: `Queue invoice for booking ${bookingId}`,
-      errorMessage: xeroErr instanceof Error ? xeroErr.message : String(xeroErr),
-    }).catch(() => {});
-  }
+  await queueXeroInvoiceForPaidBooking({ bookingId });
 }
 
 /**

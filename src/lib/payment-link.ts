@@ -32,6 +32,7 @@ import {
   findOrCreateCustomer,
   getPaymentIntent,
 } from "@/lib/stripe";
+import { queueXeroInvoiceForPaidBooking } from "@/lib/xero-booking-invoice-queue";
 
 /** A paid booking and a completed stay are both "already paid" for link purposes. */
 const PAID_LIKE_STATUSES: readonly BookingStatus[] = [
@@ -382,6 +383,8 @@ export async function createPaymentIntentForPaymentLink(
           );
         }
       }
+
+      await queueXeroInvoiceForPaidBooking({ bookingId: booking.id });
 
       return { type: "alreadyPaid", paymentIntentId: existingIntent.id };
     }

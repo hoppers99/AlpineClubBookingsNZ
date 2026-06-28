@@ -13,6 +13,7 @@ import { upsertPaymentIntentTransaction } from "@/lib/payment-transactions";
 import { checkCapacityForGuestRanges } from "@/lib/capacity";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 import { parseJsonRequestBody } from "@/lib/api-json";
+import { queueXeroInvoiceForPaidBooking } from "@/lib/xero-booking-invoice-queue";
 
 export async function POST(request: NextRequest) {
   try {
@@ -141,6 +142,11 @@ export async function POST(request: NextRequest) {
             );
           }
         }
+
+        await queueXeroInvoiceForPaidBooking({
+          bookingId: booking.id,
+          createdByMemberId: session.user.id,
+        });
 
         return NextResponse.json({
           alreadyPaid: true,

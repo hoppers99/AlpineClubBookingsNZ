@@ -9,6 +9,7 @@ import logger from "@/lib/logger";
 import { requireActiveSessionUser } from "@/lib/session-guards";
 import { z } from "zod";
 import { canCreateImmediatePaymentIntent } from "@/lib/booking-payment-flow";
+import { queueXeroInvoiceForPaidBooking } from "@/lib/xero-booking-invoice-queue";
 
 const schema = z.object({
   paymentIntentId: z.string().min(1),
@@ -91,6 +92,10 @@ export async function POST(
     }
 
     if (payment.status === "SUCCEEDED" && payment.booking.status === "PAID") {
+      await queueXeroInvoiceForPaidBooking({
+        bookingId,
+        createdByMemberId: session.user.id,
+      });
       return NextResponse.json({ success: true });
     }
 
@@ -172,6 +177,11 @@ export async function POST(
         );
       }
     }
+
+    await queueXeroInvoiceForPaidBooking({
+      bookingId,
+      createdByMemberId: session.user.id,
+    });
 
     logAudit({
       action: "booking.payment.confirmed",
