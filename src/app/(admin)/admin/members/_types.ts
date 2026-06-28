@@ -131,8 +131,11 @@ export interface ImportRow {
 
 export interface ImportResult {
   created: number;
+  createdLoginEnabled?: number;
+  createdNonLogin?: number;
   skipped: number;
   skippedRows?: Array<{ row: number; email: string; reason: string }>;
+  rowNotes?: Array<{ row: number; email: string; note: string }>;
   errors: Array<{ row: number; errors: string[] }>;
   total?: number;
 }

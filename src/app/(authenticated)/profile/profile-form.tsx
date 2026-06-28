@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
-  postalMatchesPhysical,
+  shouldDefaultPostalSameAsPhysical,
   withDefaultNzCountry,
 } from "@/lib/member-address";
 import { getSafeInternalReturnPath } from "@/lib/internal-return-path";
@@ -86,8 +86,8 @@ export function ProfileForm({
     postalCountry: withDefaultNzCountry(member.postalCountry),
     occupation: member.occupation ?? "",
   });
-  const [sameAsPhysical, setSameAsPhysical] = useState(
-    postalMatchesPhysical({
+  const [sameAsPhysical, setSameAsPhysical] = useState(() =>
+    shouldDefaultPostalSameAsPhysical({
       streetAddressLine1: member.streetAddressLine1,
       streetAddressLine2: member.streetAddressLine2,
       streetCity: member.streetCity,
@@ -100,7 +100,7 @@ export function ProfileForm({
       postalRegion: member.postalRegion,
       postalPostalCode: member.postalPostalCode,
       postalCountry: withDefaultNzCountry(member.postalCountry),
-    })
+    }),
   );
   const [saving, setSaving] = useState(false);
   const readOnly = !editable;

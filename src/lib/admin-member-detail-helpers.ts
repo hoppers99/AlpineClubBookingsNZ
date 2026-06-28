@@ -1,6 +1,5 @@
 import {
-  postalMatchesPhysical,
-  withDefaultNzCountry,
+  shouldDefaultPostalSameAsPhysical,
   type MemberAddressValues,
 } from "@/lib/member-address"
 import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational"
@@ -211,37 +210,7 @@ export function formatPromoBenefit(promo: PromoCodeBenefitSource) {
 export type NullableMemberAddress = Record<keyof MemberAddressValues, string | null>
 
 export function memberUsesSamePostalAddress(member: NullableMemberAddress) {
-  const postalHasValues = [
-    member.postalAddressLine1,
-    member.postalAddressLine2,
-    member.postalCity,
-    member.postalRegion,
-    member.postalPostalCode,
-    member.postalCountry,
-  ].some((value) => value?.trim())
-
-  if (!postalHasValues) {
-    return Boolean(
-      member.streetAddressLine1?.trim() ||
-        member.streetCity?.trim() ||
-        member.streetPostalCode?.trim()
-    )
-  }
-
-  return postalMatchesPhysical({
-    streetAddressLine1: member.streetAddressLine1,
-    streetAddressLine2: member.streetAddressLine2,
-    streetCity: member.streetCity,
-    streetRegion: member.streetRegion,
-    streetPostalCode: member.streetPostalCode,
-    streetCountry: withDefaultNzCountry(member.streetCountry),
-    postalAddressLine1: member.postalAddressLine1,
-    postalAddressLine2: member.postalAddressLine2,
-    postalCity: member.postalCity,
-    postalRegion: member.postalRegion,
-    postalPostalCode: member.postalPostalCode,
-    postalCountry: withDefaultNzCountry(member.postalCountry),
-  })
+  return shouldDefaultPostalSameAsPhysical(member)
 }
 
 export function getMissingFieldsForXeroCreate(

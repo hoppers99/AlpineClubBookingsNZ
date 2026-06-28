@@ -226,6 +226,14 @@ promo codes, communications, health, audit logs, reports, Xero operations and
 inbound-event drilldowns, committee data, issue reports, waitlist, lodge
 operations, hut leaders, and roster/chores.
 
+Member CSV import allows distinct identities to share an email address while
+preserving the database invariant that only one member per email can have
+`canLogin: true`. Duplicate detection uses normalized email plus first and last
+name, and setup invites are sent only to imported members that can log in.
+Member, dependent, profile, onboarding, and application address forms submit a
+`postalSameAsPhysical` flag; route handlers copy physical address fields into
+postal fields before persistence when that flag is true.
+
 Membership cancellation is a member-initiated account lifecycle workflow.
 Requests can include the requester, dependants, non-login adults, and related
 family adults. Login-capable adults receive their own confirmation link before

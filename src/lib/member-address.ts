@@ -18,6 +18,14 @@ export const POSTAL_ADDRESS_FIELDS = [
   "postalCountry",
 ] as const;
 
+const POSTAL_ADDRESS_MATERIAL_FIELDS = [
+  "postalAddressLine1",
+  "postalAddressLine2",
+  "postalCity",
+  "postalRegion",
+  "postalPostalCode",
+] as const;
+
 export const MEMBER_ADDRESS_FIELDS = [
   ...STREET_ADDRESS_FIELDS,
   ...POSTAL_ADDRESS_FIELDS,
@@ -87,6 +95,28 @@ export function postalMatchesPhysical(
       normalizeAddressValue(values[streetField]) ===
       normalizeAddressValue(values[postalField])
     );
+  });
+}
+
+export function hasMaterialPostalAddressValues(
+  values: Partial<Record<PostalAddressField, AddressValue>>
+) {
+  return POSTAL_ADDRESS_MATERIAL_FIELDS.some((postalField) =>
+    Boolean(normalizeAddressValue(values[postalField])),
+  );
+}
+
+export function shouldDefaultPostalSameAsPhysical(
+  values: Partial<Record<MemberAddressField, AddressValue>>
+) {
+  if (!hasMaterialPostalAddressValues(values)) {
+    return true;
+  }
+
+  return postalMatchesPhysical({
+    ...values,
+    streetCountry: normalizeCountryName(values.streetCountry),
+    postalCountry: normalizeCountryName(values.postalCountry),
   });
 }
 

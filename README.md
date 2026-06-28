@@ -20,9 +20,9 @@ fork for another organisation. See `NOTICE.md`.
   stay ranges, waitlist, non-member holds, booking changes, cancellation rules,
   refunds, credits, promo codes, Stripe payments, and Xero-backed Internet
   Banking invoice payments
-- Admin tools for members, CSV import, bookings, bed allocation, payments,
-  seasons, policies, reports, email, audit logs, issue reports, waitlist,
-  lodge, Xero operations, and hut leaders
+- Admin tools for members, shared-email-aware CSV import, bookings, bed
+  allocation, payments, seasons, policies, reports, email, audit logs, issue
+  reports, waitlist, lodge, Xero operations, and hut leaders
 - Admin-editable public website pages with sanitised HTML content, embed
   tokens for interactive sections, and a menu generated from page settings
   (see `CONFIGURATION.md`, "Website Page Content")

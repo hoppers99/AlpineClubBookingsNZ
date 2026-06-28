@@ -215,6 +215,24 @@ describe("admin-member-detail-helpers", () => {
       expect(result).toBe(true)
     })
 
+    it("returns true for a fully blank new address", () => {
+      const result = memberUsesSamePostalAddress({
+        streetAddressLine1: null,
+        streetAddressLine2: null,
+        streetCity: null,
+        streetRegion: null,
+        streetPostalCode: null,
+        streetCountry: null,
+        postalAddressLine1: null,
+        postalAddressLine2: null,
+        postalCity: null,
+        postalRegion: null,
+        postalPostalCode: null,
+        postalCountry: null,
+      })
+      expect(result).toBe(true)
+    })
+
     it("returns false when postal differs from physical", () => {
       const result = memberUsesSamePostalAddress({
         streetAddressLine1: "1 Main Rd",

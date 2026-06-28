@@ -795,16 +795,30 @@ describe("Phase 3: Admin Member Management", () => {
       expect(res.status).toBe(422);
     });
 
-    it("detects duplicate emails within file", async () => {
+    it("imports different-name shared-email rows and gives only the first row login", async () => {
       mockedAuth.mockResolvedValue(adminSession);
       vi.mocked(prisma.member.findMany).mockResolvedValue([]);
+      const createMember = vi.fn(async ({ data }: any) => ({
+        id: `new-${data.firstName}`,
+        email: data.email,
+        firstName: data.firstName,
+        lastName: data.lastName,
+        canLogin: data.canLogin,
+      }));
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
+        const tx = {
+          member: { create: createMember },
+        };
+        return fn(tx);
+      });
 
       const req = new NextRequest("http://localhost/api/admin/members/import", {
         method: "POST",
         body: JSON.stringify({
           rows: [
-            { firstName: "Alice", lastName: "A", email: "dup@test.com" },
-            { firstName: "Bob", lastName: "B", email: "dup@test.com" },
+            { firstName: "Alice", lastName: "A", email: "dup@test.com", dateOfBirth: "1990-01-01" },
+            { firstName: "Bob", lastName: "B", email: "dup@test.com", dateOfBirth: "1990-01-01" },
+            { firstName: "Charlie", lastName: "C", email: "dup@test.com" },
           ],
           sendInvites: false,
         }),
@@ -813,9 +827,70 @@ describe("Phase 3: Admin Member Management", () => {
       const res = await importMembers(req);
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body.errors.length).toBeGreaterThan(0);
-      // All-or-nothing: no members created when errors exist
-      expect(body.created).toBe(0);
+      expect(body.errors).toEqual([]);
+      expect(body.created).toBe(3);
+      expect(body.createdLoginEnabled).toBe(1);
+      expect(body.createdNonLogin).toBe(2);
+      expect(createMember.mock.calls.map((call) => call[0].data.canLogin)).toEqual([
+        true,
+        false,
+        false,
+      ]);
+      expect(body.rowNotes).toEqual([
+        {
+          row: 2,
+          email: "dup@test.com",
+          note: "Imported as Can't Login because an earlier row in this import uses this email for login",
+        },
+        {
+          row: 3,
+          email: "dup@test.com",
+          note: "Imported as Can't Login because an earlier row in this import uses this email for login",
+        },
+      ]);
+    });
+
+    it("skips same-email same-name duplicates within the file even with blank DOB", async () => {
+      mockedAuth.mockResolvedValue(adminSession);
+      vi.mocked(prisma.member.findMany).mockResolvedValue([]);
+      const createMember = vi.fn(async ({ data }: any) => ({
+        id: "new-alice",
+        email: data.email,
+        firstName: data.firstName,
+        lastName: data.lastName,
+        canLogin: data.canLogin,
+      }));
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
+        const tx = {
+          member: { create: createMember },
+        };
+        return fn(tx);
+      });
+
+      const req = new NextRequest("http://localhost/api/admin/members/import", {
+        method: "POST",
+        body: JSON.stringify({
+          rows: [
+            { firstName: "Alice", lastName: "A", email: "dup@test.com" },
+            { firstName: " Alice ", lastName: "A", email: "dup@test.com", dateOfBirth: "" },
+          ],
+          sendInvites: false,
+        }),
+        headers: { "Content-Type": "application/json" },
+      });
+      const res = await importMembers(req);
+      const body = await res.json();
+      expect(res.status).toBe(200);
+      expect(body.created).toBe(1);
+      expect(body.skipped).toBe(1);
+      expect(body.skippedRows).toEqual([
+        {
+          row: 2,
+          email: "dup@test.com",
+          reason: "Duplicate member identity already appears earlier in this import",
+        },
+      ]);
+      expect(createMember).toHaveBeenCalledTimes(1);
     });
 
     it("creates members in a transaction (all-or-nothing)", async () => {
@@ -1030,7 +1105,13 @@ describe("Phase 3: Admin Member Management", () => {
     it("skips members that already exist in DB", async () => {
       mockedAuth.mockResolvedValue(adminSession);
       vi.mocked(prisma.member.findMany).mockResolvedValue([
-        { email: "existing@test.com" },
+        {
+          email: "existing@test.com",
+          firstName: "Existing",
+          lastName: "User",
+          dateOfBirth: null,
+          canLogin: true,
+        },
       ] as any);
       vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
         const tx = { member: { create: vi.fn().mockResolvedValue({ id: "new1", email: "new@test.com", firstName: "New", lastName: "User" }) } };
@@ -1055,7 +1136,7 @@ describe("Phase 3: Admin Member Management", () => {
         {
           row: 1,
           email: "existing@test.com",
-          reason: "Login email already exists",
+          reason: "Matching member already exists for this email and name",
         },
       ]);
       expect(body.created).toBe(1);
@@ -1064,8 +1145,20 @@ describe("Phase 3: Admin Member Management", () => {
     it("returns an explicit no-op result when all rows already exist", async () => {
       mockedAuth.mockResolvedValue(adminSession);
       vi.mocked(prisma.member.findMany).mockResolvedValue([
-        { email: "existing-a@test.com" },
-        { email: "existing-b@test.com" },
+        {
+          email: "existing-a@test.com",
+          firstName: "Existing",
+          lastName: "A",
+          dateOfBirth: null,
+          canLogin: true,
+        },
+        {
+          email: "existing-b@test.com",
+          firstName: "Existing",
+          lastName: "B",
+          dateOfBirth: new Date("1990-01-01"),
+          canLogin: false,
+        },
       ] as any);
 
       const req = new NextRequest("http://localhost/api/admin/members/import", {
@@ -1090,15 +1183,75 @@ describe("Phase 3: Admin Member Management", () => {
         {
           row: 1,
           email: "existing-a@test.com",
-          reason: "Login email already exists",
+          reason: "Matching member already exists for this email and name",
         },
         {
           row: 2,
           email: "existing-b@test.com",
-          reason: "Login email already exists",
+          reason: "Matching member already exists for this email and name",
         },
       ]);
       expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it("imports different-name rows as non-login when an existing login owns the email and suppresses invites", async () => {
+      mockedAuth.mockResolvedValue(adminSession);
+      vi.mocked(prisma.member.findMany).mockResolvedValue([
+        {
+          email: "family@test.com",
+          firstName: "Parent",
+          lastName: "Smith",
+          dateOfBirth: new Date("1970-01-01"),
+          canLogin: true,
+        },
+      ] as any);
+      const createMember = vi.fn(async ({ data }: any) => ({
+        id: "new-child",
+        email: data.email,
+        firstName: data.firstName,
+        lastName: data.lastName,
+        canLogin: data.canLogin,
+      }));
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
+        const tx = {
+          member: { create: createMember },
+        };
+        return fn(tx);
+      });
+
+      const req = new NextRequest("http://localhost/api/admin/members/import", {
+        method: "POST",
+        body: JSON.stringify({
+          rows: [
+            {
+              firstName: "Child",
+              lastName: "Smith",
+              email: "family@test.com",
+              dateOfBirth: "2010-05-05",
+            },
+          ],
+          sendInvites: true,
+        }),
+        headers: { "Content-Type": "application/json" },
+      });
+
+      const res = await importMembers(req);
+      const body = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(body.created).toBe(1);
+      expect(body.createdLoginEnabled).toBe(0);
+      expect(body.createdNonLogin).toBe(1);
+      expect(createMember.mock.calls[0][0].data.canLogin).toBe(false);
+      expect(body.rowNotes).toEqual([
+        {
+          row: 1,
+          email: "family@test.com",
+          note: "Imported as Can't Login because this email already has a login-enabled member",
+        },
+      ]);
+      expect(prisma.passwordResetToken.create).not.toHaveBeenCalled();
+      expect(mockedSendMemberSetupInviteEmail).not.toHaveBeenCalled();
     });
 
     it("returns 500 if transaction fails (no partial import)", async () => {

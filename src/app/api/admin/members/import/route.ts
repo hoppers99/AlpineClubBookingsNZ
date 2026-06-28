@@ -129,6 +129,17 @@ const importBodySchema = z.object({
 
 type ImportRow = z.infer<typeof importRowSchema>;
 
+type ImportIdentity = {
+  email: string;
+  firstName: string;
+  lastName: string;
+};
+
+type ExistingImportMember = ImportIdentity & {
+  dateOfBirth: Date | null;
+  canLogin: boolean;
+};
+
 function getImportFieldLabel(fieldKey: MemberImportDateFieldKey) {
   return (
     MEMBER_IMPORT_FIELD_DEFINITIONS.find(
@@ -144,6 +155,18 @@ function getImportRowNumber(row: ImportRow, rowIndex: number) {
 function getImportColumnContext(row: ImportRow, fieldKey: string) {
   const label = row.sourceColumnLabels?.[fieldKey];
   return label ? ` (column ${label})` : "";
+}
+
+function normalizeImportIdentityName(value: string) {
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function getImportIdentityKey(identity: ImportIdentity) {
+  return [
+    identity.email,
+    normalizeImportIdentityName(identity.firstName),
+    normalizeImportIdentityName(identity.lastName),
+  ].join("\u0000");
 }
 
 function normalizeImportDateField(
@@ -223,40 +246,50 @@ export async function POST(req: NextRequest) {
   };
   const results = {
     created: 0,
+    createdLoginEnabled: 0,
+    createdNonLogin: 0,
     skipped: 0,
     skippedRows: [] as Array<{ row: number; email: string; reason: string }>,
+    rowNotes: [] as Array<{ row: number; email: string; note: string }>,
     errors: [] as Array<{ row: number; errors: string[] }>,
     total: rows.length,
   };
 
-  // Check for duplicate emails within the file
-  const emailsInFile = new Map<string, number>();
-  const duplicateRowIndexes = new Set<number>();
-  for (let i = 0; i < rows.length; i++) {
-    const email = rows[i].email.toLowerCase().trim();
-    if (emailsInFile.has(email)) {
-      const firstRowIndex = emailsInFile.get(email)!;
-      duplicateRowIndexes.add(i);
-      results.errors.push({
-        row: getImportRowNumber(rows[i], i),
-        errors: [
-          `Duplicate email in file (same as row ${getImportRowNumber(rows[firstRowIndex], firstRowIndex)})`,
-        ],
-      });
-    } else {
-      emailsInFile.set(email, i);
-    }
-  }
-
-  // Check for existing emails in DB (primary accounts only)
+  // Load existing members for duplicate identity checks and login ownership.
   const allEmails = [...new Set(rows.map((r) => r.email.toLowerCase().trim()))];
   const existingMembers = await prisma.member.findMany({
-    where: { email: { in: allEmails }, canLogin: true },
-    select: { email: true },
+    where: { email: { in: allEmails } },
+    select: {
+      email: true,
+      firstName: true,
+      lastName: true,
+      dateOfBirth: true,
+      canLogin: true,
+    },
   });
-  const existingEmailSet = new Set(
-    existingMembers.map((m) => m.email.toLowerCase().trim()),
+  const existingMembersByEmail = new Map<string, ExistingImportMember[]>();
+  const loginEmailClaimed = new Set<string>();
+  const existingIdentityKeys = new Set(
+    existingMembers.map((member) => {
+      const email = member.email.toLowerCase().trim();
+      if (member.canLogin) {
+        loginEmailClaimed.add(email);
+      }
+      const normalizedMember = {
+        email,
+        firstName: member.firstName,
+        lastName: member.lastName,
+        dateOfBirth: member.dateOfBirth,
+        canLogin: member.canLogin,
+      };
+      existingMembersByEmail.set(email, [
+        ...(existingMembersByEmail.get(email) ?? []),
+        normalizedMember,
+      ]);
+      return getImportIdentityKey(normalizedMember);
+    }),
   );
+  const acceptedIdentityKeys = new Set<string>();
 
   // Pre-validate all rows before committing (all-or-nothing)
   interface ValidatedRow {
@@ -282,26 +315,40 @@ export async function POST(req: NextRequest) {
     comments: string | null;
     ageTier: AgeTier;
     role: "MEMBER" | "ADMIN";
+    canLogin: boolean;
+    rowNote: string | null;
   }
   const validatedRows: ValidatedRow[] = [];
 
   for (let i = 0; i < rows.length; i++) {
     const rowNum = getImportRowNumber(rows[i], i);
 
-    // Skip rows that already had duplicate-in-file errors
-    if (duplicateRowIndexes.has(i)) continue;
-
     const row = rows[i];
     const email = row.email.toLowerCase().trim();
     const names = deriveMemberImportNameFields(row);
+    const identity = {
+      email,
+      firstName: names.firstName,
+      lastName: names.lastName,
+    };
+    const identityKey = getImportIdentityKey(identity);
 
-    // Skip if already exists in DB
-    if (existingEmailSet.has(email)) {
+    if (existingIdentityKeys.has(identityKey)) {
       results.skipped++;
       results.skippedRows.push({
         row: rowNum,
         email,
-        reason: "Login email already exists",
+        reason: "Matching member already exists for this email and name",
+      });
+      continue;
+    }
+
+    if (acceptedIdentityKeys.has(identityKey)) {
+      results.skipped++;
+      results.skippedRows.push({
+        row: rowNum,
+        email,
+        reason: "Duplicate member identity already appears earlier in this import",
       });
       continue;
     }
@@ -370,6 +417,18 @@ export async function POST(req: NextRequest) {
         ? row.occupation?.trim() || null
         : null;
 
+    const canLogin = !loginEmailClaimed.has(email);
+    const rowNote = canLogin
+      ? null
+      : existingMembersByEmail.get(email)?.some((member) => member.canLogin)
+        ? "Imported as Can't Login because this email already has a login-enabled member"
+        : "Imported as Can't Login because an earlier row in this import uses this email for login";
+
+    acceptedIdentityKeys.add(identityKey);
+    if (canLogin) {
+      loginEmailClaimed.add(email);
+    }
+
     validatedRows.push({
       rowNum,
       email,
@@ -393,6 +452,8 @@ export async function POST(req: NextRequest) {
       comments: row.comments?.trim() || null,
       ageTier,
       role: (row.role || "MEMBER") as "MEMBER" | "ADMIN",
+      canLogin,
+      rowNote,
     });
   }
 
@@ -425,6 +486,9 @@ export async function POST(req: NextRequest) {
           email: string;
           firstName: string;
           lastName: string;
+          canLogin: boolean;
+          rowNum: number;
+          rowNote: string | null;
         }> = [];
         for (const row of membersToCreate) {
           const member = await tx.member.create({
@@ -451,13 +515,24 @@ export async function POST(req: NextRequest) {
               role: row.role,
               ageTier: row.ageTier,
               active: true,
-              canLogin: true,
+              canLogin: row.canLogin,
               emailVerified: true, // Admin-imported members don't need email verification
               passwordHash: row.passwordHash,
             },
-            select: { id: true, email: true, firstName: true, lastName: true },
+            select: {
+              id: true,
+              email: true,
+              firstName: true,
+              lastName: true,
+              canLogin: true,
+            },
           });
-          created.push(member);
+          created.push({
+            ...member,
+            canLogin: row.canLogin,
+            rowNum: row.rowNum,
+            rowNote: row.rowNote,
+          });
         }
         return created;
       },
@@ -465,6 +540,21 @@ export async function POST(req: NextRequest) {
     );
 
     results.created = createdMembers.length;
+    results.createdLoginEnabled = createdMembers.filter(
+      (member) => member.canLogin,
+    ).length;
+    results.createdNonLogin = createdMembers.length - results.createdLoginEnabled;
+    results.rowNotes = createdMembers.flatMap((member) =>
+      member.rowNote
+        ? [
+            {
+              row: member.rowNum,
+              email: member.email,
+              note: member.rowNote,
+            },
+          ]
+        : [],
+    );
 
     // Audit log and invite emails (outside transaction)
     for (const member of createdMembers) {
@@ -483,10 +573,11 @@ export async function POST(req: NextRequest) {
           memberId: member.id,
           email: member.email,
           sendInvites,
+          canLogin: member.canLogin,
         },
       });
 
-      if (sendInvites) {
+      if (sendInvites && member.canLogin) {
         try {
           const { token, tokenHash } = issueActionToken();
           const expiresAt = getMemberSetupInviteExpiryDate();

@@ -700,17 +700,37 @@ export function MemberImportDialog({
                   {importResult.errors.length === 0 &&
                     importResult.created > 0 && (
                       <div className="rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-700">
-                        Imported {importResult.created} member(s), skipped{" "}
-                        {importResult.skipped}.
+                        Imported {importResult.created} member(s):{" "}
+                        {importResult.createdLoginEnabled ??
+                          importResult.created}{" "}
+                        can log in, {importResult.createdNonLogin ?? 0} Can&apos;t
+                        Login. Skipped {importResult.skipped}.
                       </div>
                     )}
-                  <div className="grid gap-3 md:grid-cols-3">
+                  <div className="grid gap-3 md:grid-cols-5">
                     <div className="rounded-md border p-3">
                       <p className="text-xs uppercase text-slate-500">
                         Created
                       </p>
                       <p className="text-sm font-medium text-green-700">
                         {importResult.created}
+                      </p>
+                    </div>
+                    <div className="rounded-md border p-3">
+                      <p className="text-xs uppercase text-slate-500">
+                        Can Login
+                      </p>
+                      <p className="text-sm font-medium text-green-700">
+                        {importResult.createdLoginEnabled ??
+                          importResult.created}
+                      </p>
+                    </div>
+                    <div className="rounded-md border p-3">
+                      <p className="text-xs uppercase text-slate-500">
+                        Can&apos;t Login
+                      </p>
+                      <p className="text-sm font-medium text-slate-700">
+                        {importResult.createdNonLogin ?? 0}
                       </p>
                     </div>
                     <div className="rounded-md border p-3">
@@ -748,6 +768,15 @@ export function MemberImportDialog({
                         ))}
                       </div>
                     )}
+                  {importResult.rowNotes && importResult.rowNotes.length > 0 && (
+                    <div className="max-h-40 overflow-y-auto rounded-md border border-sky-200 p-3 text-xs text-sky-800">
+                      {importResult.rowNotes.map((note, index) => (
+                        <p key={`${note.row}-${index}`}>
+                          Row {note.row}: {note.note} ({note.email})
+                        </p>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
             </div>

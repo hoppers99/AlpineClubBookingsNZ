@@ -143,6 +143,7 @@ import { GET as getMemberDetail, PUT as updateMember } from "@/app/api/admin/mem
 import {
   copyStreetAddressToPostal,
   postalMatchesPhysical,
+  shouldDefaultPostalSameAsPhysical,
   withDefaultNzCountry,
   normalizeAddressValue,
   NZ_COUNTRY_NAME,
@@ -240,6 +241,57 @@ describe("member-address utilities", () => {
       streetPostalCode: "3420", postalPostalCode: "3420",
       streetCountry: "NZ", postalCountry: "NZ",
     })).toBe(true);
+  });
+
+  it("shouldDefaultPostalSameAsPhysical defaults on when postal fields are blank", () => {
+    expect(shouldDefaultPostalSameAsPhysical({
+      streetAddressLine1: "123 Main",
+      streetAddressLine2: null,
+      streetCity: "Example",
+      streetRegion: "Waikato",
+      streetPostalCode: "3420",
+      streetCountry: "NZ",
+      postalAddressLine1: null,
+      postalAddressLine2: null,
+      postalCity: null,
+      postalRegion: null,
+      postalPostalCode: null,
+      postalCountry: null,
+    })).toBe(true);
+  });
+
+  it("shouldDefaultPostalSameAsPhysical ignores a country-only postal placeholder", () => {
+    expect(shouldDefaultPostalSameAsPhysical({
+      streetAddressLine1: "",
+      streetAddressLine2: "",
+      streetCity: "",
+      streetRegion: "",
+      streetPostalCode: "",
+      streetCountry: "New Zealand",
+      postalAddressLine1: "",
+      postalAddressLine2: "",
+      postalCity: "",
+      postalRegion: "",
+      postalPostalCode: "",
+      postalCountry: "New Zealand",
+    })).toBe(true);
+  });
+
+  it("shouldDefaultPostalSameAsPhysical stays off for a materially different saved postal address", () => {
+    expect(shouldDefaultPostalSameAsPhysical({
+      streetAddressLine1: "123 Main",
+      streetAddressLine2: null,
+      streetCity: "Example",
+      streetRegion: "Waikato",
+      streetPostalCode: "3420",
+      streetCountry: "NZ",
+      postalAddressLine1: "PO Box 42",
+      postalAddressLine2: null,
+      postalCity: "Example",
+      postalRegion: "Waikato",
+      postalPostalCode: "3420",
+      postalCountry: "NZ",
+    })).toBe(false);
   });
 
   it("withDefaultNzCountry returns New Zealand for null/empty", () => {

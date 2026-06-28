@@ -169,6 +169,32 @@ describe("ProfileForm return flow", () => {
     expect(replaceMock).not.toHaveBeenCalled();
   });
 
+  it("defaults blank saved postal addresses to same as physical on submit", async () => {
+    mockSuccessfulSave();
+
+    render(
+      <ProfileForm
+        member={{
+          ...member,
+          postalAddressLine1: "",
+          postalAddressLine2: "",
+          postalCity: "",
+          postalRegion: "",
+          postalPostalCode: "",
+          postalCountry: "",
+        }}
+      />,
+    );
+
+    await submitProfileForm();
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toEqual(
+      expect.objectContaining({
+        postalSameAsPhysical: true,
+      }),
+    );
+  });
+
   it("does not navigate when returnTo is unsafe", async () => {
     const onSaved = vi.fn();
     mockSuccessfulSave();

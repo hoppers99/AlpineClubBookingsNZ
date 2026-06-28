@@ -127,8 +127,16 @@ describe("MemberImportDialog", () => {
       created: 0,
       skipped: 2,
       skippedRows: [
-        { row: 2, email: "existing@test.com", reason: "Login email already exists" },
-        { row: 3, email: "new@test.com", reason: "Login email already exists" },
+        {
+          row: 2,
+          email: "existing@test.com",
+          reason: "Matching member already exists for this email and name",
+        },
+        {
+          row: 3,
+          email: "new@test.com",
+          reason: "Duplicate member identity already appears earlier in this import",
+        },
       ],
       errors: [],
       total: 2,
@@ -141,9 +149,9 @@ describe("MemberImportDialog", () => {
 
     expect(await screen.findByText("No members were imported. Review the skipped rows below."))
       .toBeTruthy();
-    expect(screen.getByText(/Row 2: Login email already exists \(existing@test.com\)/))
+    expect(screen.getByText(/Row 2: Matching member already exists for this email and name \(existing@test.com\)/))
       .toBeTruthy();
-    expect(screen.getByText(/Row 3: Login email already exists \(new@test.com\)/))
+    expect(screen.getByText(/Row 3: Duplicate member identity already appears earlier in this import \(new@test.com\)/))
       .toBeTruthy();
     expect(onImported).not.toHaveBeenCalled();
     expect(onError).not.toHaveBeenCalled();
@@ -152,9 +160,22 @@ describe("MemberImportDialog", () => {
   it("reports created and skipped counts and passes successful results to the parent", async () => {
     const result: ImportResult = {
       created: 2,
+      createdLoginEnabled: 1,
+      createdNonLogin: 1,
       skipped: 1,
       skippedRows: [
-        { row: 4, email: "skipped@test.com", reason: "Login email already exists" },
+        {
+          row: 4,
+          email: "skipped@test.com",
+          reason: "Matching member already exists for this email and name",
+        },
+      ],
+      rowNotes: [
+        {
+          row: 3,
+          email: "shared@test.com",
+          note: "Imported as Can't Login because an earlier row in this import uses this email for login",
+        },
       ],
       errors: [],
       total: 3,
@@ -165,7 +186,16 @@ describe("MemberImportDialog", () => {
     await uploadValidCsv();
     fireEvent.click(screen.getByRole("button", { name: /Import 2 Members/ }));
 
-    expect(await screen.findByText("Imported 2 member(s), skipped 1.")).toBeTruthy();
+    expect(
+      await screen.findByText(
+        "Imported 2 member(s): 1 can log in, 1 Can't Login. Skipped 1.",
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(
+        /Row 3: Imported as Can't Login because an earlier row in this import uses this email for login \(shared@test.com\)/,
+      ),
+    ).toBeTruthy();
     await waitFor(() => expect(onImported).toHaveBeenCalledWith(result));
   });
 });

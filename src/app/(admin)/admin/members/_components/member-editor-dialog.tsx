@@ -14,6 +14,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { MemberAddressFields } from "@/components/member-address-fields";
 import {
   Select,
   SelectContent,
@@ -25,6 +26,11 @@ import { useMemberFieldsSettings } from "@/lib/use-member-fields-settings";
 import { GENDER_OPTIONS, TITLE_OPTIONS } from "@/lib/member-enums";
 import { MEMBER_SETUP_INVITE_TTL_DAYS } from "@/lib/member-setup-invite";
 import { useXeroEntranceFeeDecision } from "@/lib/admin-xero-entrance-fee";
+import {
+  shouldDefaultPostalSameAsPhysical,
+  withDefaultNzCountry,
+  type MemberAddressValues,
+} from "@/lib/member-address";
 import {
   linkMemberXeroContact,
   pushMemberToXero,
@@ -88,13 +94,13 @@ function memberToForm(member: Member | null): MemberForm {
     streetCity: member.streetCity || "",
     streetRegion: member.streetRegion || "",
     streetPostalCode: member.streetPostalCode || "",
-    streetCountry: member.streetCountry || "",
+    streetCountry: withDefaultNzCountry(member.streetCountry),
     postalAddressLine1: member.postalAddressLine1 || "",
     postalAddressLine2: member.postalAddressLine2 || "",
     postalCity: member.postalCity || "",
     postalRegion: member.postalRegion || "",
     postalPostalCode: member.postalPostalCode || "",
-    postalCountry: member.postalCountry || "",
+    postalCountry: withDefaultNzCountry(member.postalCountry),
   };
 }
 
@@ -110,6 +116,9 @@ export function MemberEditorDialog({
   const [currentEditingMember, setCurrentEditingMember] =
     useState<Member | null>(editingMember);
   const [form, setForm] = useState<MemberForm>(memberToForm(editingMember));
+  const [sameAsPhysical, setSameAsPhysical] = useState(() =>
+    shouldDefaultPostalSameAsPhysical(memberToForm(editingMember)),
+  );
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
   const [xeroChoice, setXeroChoice] = useState<XeroChoice>("");
@@ -133,8 +142,10 @@ export function MemberEditorDialog({
 
   useEffect(() => {
     if (!open) return;
+    const nextForm = memberToForm(editingMember);
     setCurrentEditingMember(editingMember);
-    setForm(memberToForm(editingMember));
+    setForm(nextForm);
+    setSameAsPhysical(shouldDefaultPostalSameAsPhysical(nextForm));
     setXeroChoice("");
     setXeroSearchQuery("");
     setXeroSearchResults([]);
@@ -444,6 +455,7 @@ export function MemberEditorDialog({
         postalRegion: form.postalRegion || null,
         postalPostalCode: form.postalPostalCode || null,
         postalCountry: form.postalCountry || null,
+        postalSameAsPhysical: sameAsPhysical,
       };
       if (currentEditingMember)
         body.forcePasswordChange = form.forcePasswordChange;
@@ -545,6 +557,10 @@ export function MemberEditorDialog({
       sendInvite: canLogin ? current.sendInvite : false,
       financeAccessLevel: canLogin ? current.financeAccessLevel : "NONE",
     }));
+  };
+
+  const updateAddressFields = (patch: Partial<MemberAddressValues>) => {
+    setForm((current) => ({ ...current, ...patch }));
   };
 
   return (
@@ -875,39 +891,12 @@ export function MemberEditorDialog({
               </div>
             </div>
 
-            <AddressFields
-              title="Physical Address"
-              values={{
-                line1: form.streetAddressLine1,
-                line2: form.streetAddressLine2,
-                city: form.streetCity,
-                region: form.streetRegion,
-                postalCode: form.streetPostalCode,
-                country: form.streetCountry,
-              }}
-              onChange={(field, value) =>
-                setForm((current) => ({
-                  ...current,
-                  [`street${field}`]: value,
-                }))
-              }
-            />
-            <AddressFields
-              title="Postal Address"
-              values={{
-                line1: form.postalAddressLine1,
-                line2: form.postalAddressLine2,
-                city: form.postalCity,
-                region: form.postalRegion,
-                postalCode: form.postalPostalCode,
-                country: form.postalCountry,
-              }}
-              onChange={(field, value) =>
-                setForm((current) => ({
-                  ...current,
-                  [`postal${field}`]: value,
-                }))
-              }
+            <MemberAddressFields
+              idPrefix="admin-member"
+              onSameAsPhysicalChange={setSameAsPhysical}
+              onValuesChange={updateAddressFields}
+              sameAsPhysical={sameAsPhysical}
+              values={form}
             />
 
             {form.role === "LIFE" && (
@@ -1057,77 +1046,5 @@ export function MemberEditorDialog({
         onForceCreate={handlePendingXeroDecisionForceCreate}
       />
     </>
-  );
-}
-
-function AddressFields({
-  title,
-  values,
-  onChange,
-}: {
-  title: string;
-  values: {
-    line1: string;
-    line2: string;
-    city: string;
-    region: string;
-    postalCode: string;
-    country: string;
-  };
-  onChange: (
-    field:
-      | "AddressLine1"
-      | "AddressLine2"
-      | "City"
-      | "Region"
-      | "PostalCode"
-      | "Country",
-    value: string,
-  ) => void;
-}) {
-  return (
-    <fieldset className="space-y-3 pt-2 border-t">
-      <legend className="text-sm font-medium">{title}</legend>
-      <Input
-        placeholder="Address line 1"
-        value={values.line1}
-        onChange={(event) => onChange("AddressLine1", event.target.value)}
-        maxLength={200}
-      />
-      <Input
-        placeholder="Address line 2"
-        value={values.line2}
-        onChange={(event) => onChange("AddressLine2", event.target.value)}
-        maxLength={200}
-      />
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-        <Input
-          placeholder="City"
-          value={values.city}
-          onChange={(event) => onChange("City", event.target.value)}
-          maxLength={200}
-        />
-        <Input
-          placeholder="Region"
-          value={values.region}
-          onChange={(event) => onChange("Region", event.target.value)}
-          maxLength={200}
-        />
-      </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-        <Input
-          placeholder="Postal code"
-          value={values.postalCode}
-          onChange={(event) => onChange("PostalCode", event.target.value)}
-          maxLength={20}
-        />
-        <Input
-          placeholder="Country"
-          value={values.country}
-          onChange={(event) => onChange("Country", event.target.value)}
-          maxLength={100}
-        />
-      </div>
-    </fieldset>
   );
 }

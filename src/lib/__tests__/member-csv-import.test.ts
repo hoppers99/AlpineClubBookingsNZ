@@ -361,4 +361,49 @@ describe("member CSV import parser", () => {
       preview.rows[0].errors.some((error) => error.includes("Gender")),
     ).toBe(true);
   });
+
+  it("allows different-name rows to share an email in preview", () => {
+    const parsed = parseMemberImportCsv(
+      [
+        "First Name,Last Name,Email,DOB",
+        "Alice,Smith,shared@example.com,1990-01-01",
+        "Bob,Smith,shared@example.com,1990-01-01",
+        "Charlie,Smith,shared@example.com,",
+      ].join("\n"),
+    );
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const preview = buildMemberImportPreview(
+      parsed.data,
+      inferMemberImportColumnMapping(parsed.data.headers),
+    );
+
+    expect(preview.hasErrors).toBe(false);
+    expect(preview.importRows).toHaveLength(3);
+  });
+
+  it("flags duplicate same-email same-name identities in preview", () => {
+    const parsed = parseMemberImportCsv(
+      [
+        "First Name,Last Name,Email,DOB",
+        "Alice,Smith,shared@example.com,1990-01-01",
+        " Alice ,Smith,shared@example.com,",
+      ].join("\n"),
+    );
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const preview = buildMemberImportPreview(
+      parsed.data,
+      inferMemberImportColumnMapping(parsed.data.headers),
+    );
+
+    expect(preview.hasErrors).toBe(true);
+    expect(preview.rows[1].errors).toEqual([
+      "Duplicate member identity in file (same email and name as line 2)",
+    ]);
+  });
 });
