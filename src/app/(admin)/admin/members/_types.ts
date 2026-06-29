@@ -6,6 +6,7 @@ import type {
 } from "@prisma/client";
 import type { XeroSearchResult } from "@/components/admin/xero-suggested-contact-card";
 import type { XeroEntranceFeeInvoiceOptions } from "@/lib/admin-xero-entrance-fee";
+import type { AppAccessRole } from "@/lib/access-roles";
 import type { AppRole } from "@/lib/member-roles";
 
 export type MemberRole = AppRole;
@@ -23,6 +24,7 @@ export interface Member {
   phoneNumber: string | null;
   dateOfBirth: string | null;
   role: MemberRole;
+  accessRoles: AppAccessRole[];
   ageTier: AgeTier;
   financeAccessLevel: FinanceAccessLevel;
   active: boolean;
@@ -76,6 +78,7 @@ export interface MemberForm {
   phoneNumber: string;
   dateOfBirth: string;
   role: MemberRole;
+  accessRoles: AppAccessRole[];
   ageTier: AgeTier;
   financeAccessLevel: FinanceAccessLevel;
   active: boolean;

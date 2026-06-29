@@ -37,6 +37,15 @@ import {
   ROLE_VALUES,
   isRole,
 } from "@/lib/member-roles";
+import {
+  ACCESS_ROLE_VALUES,
+  financeAccessLevelFromAccessRoles,
+  legacyRoleFromAccessRoles,
+  normalizeAssignableAccessRoles,
+  resolveAccessRoles,
+  isAccessRole,
+  type AppAccessRole,
+} from "@/lib/access-roles";
 
 const maxStr = (len: number) => z.string().max(len).optional().nullable();
 
@@ -80,6 +89,7 @@ export const createMemberSchema = z.object({
     .enum(ROLE_VALUES)
     .default("MEMBER"),
   financeAccessLevel: z.enum(["NONE", "VIEWER", "MANAGER"]).default("NONE"),
+  accessRoles: z.array(z.enum(ACCESS_ROLE_VALUES)).optional(),
   ageTier: ageTierEnum.optional(),
   active: z.boolean().default(true),
   sendInvite: z.boolean().default(false),
@@ -183,6 +193,25 @@ export const adminMembersQuerySchema = z
 export type AdminMembersQuery = z.infer<typeof adminMembersQuerySchema>;
 
 export type CreateMemberInput = z.infer<typeof createMemberSchema>;
+
+function resolveWriteAccessRoles(input: {
+  accessRoles?: AppAccessRole[] | null;
+  role?: string | null;
+  financeAccessLevel?: string | null;
+  canLogin?: boolean | null;
+}) {
+  if (input.accessRoles) {
+    return normalizeAssignableAccessRoles(input.accessRoles, {
+      canLogin: input.canLogin,
+    });
+  }
+
+  return resolveAccessRoles({
+    role: input.role,
+    financeAccessLevel: input.financeAccessLevel,
+    canLogin: input.canLogin,
+  });
+}
 
 export async function listAdminMembers(
   query: AdminMembersQuery,
@@ -330,8 +359,28 @@ export async function listAdminMembers(
     );
   }
 
-  // Filter: role
-  if (isRole(roleFilter)) {
+  // Filter: access role, with legacy Role values still accepted for old links.
+  if (isAccessRole(roleFilter)) {
+    const legacyFallbackConditions: Record<string, unknown>[] = [];
+    if (roleFilter === "USER") {
+      legacyFallbackConditions.push({ role: { in: ["MEMBER", "ASSOCIATE", "LIFE"] } });
+    } else if (roleFilter === "ADMIN" || roleFilter === "LODGE") {
+      legacyFallbackConditions.push({ role: roleFilter });
+    } else if (roleFilter === "FINANCE_USER") {
+      legacyFallbackConditions.push({ financeAccessLevel: "VIEWER" });
+    } else if (roleFilter === "FINANCE_ADMIN") {
+      legacyFallbackConditions.push({ financeAccessLevel: "MANAGER" });
+    } else if (roleFilter === "ORG") {
+      legacyFallbackConditions.push({ role: "SCHOOL", canLogin: true });
+    }
+
+    andConditions.push({
+      OR: [
+        { accessRoles: { some: { role: roleFilter } } },
+        ...legacyFallbackConditions,
+      ],
+    });
+  } else if (isRole(roleFilter)) {
     andConditions.push({ role: roleFilter });
   }
 
@@ -512,6 +561,7 @@ export async function listAdminMembers(
     dateOfBirth: true,
     role: true,
     financeAccessLevel: true,
+    accessRoles: { select: { role: true } },
     ageTier: true,
     active: true,
     canLogin: true,
@@ -654,6 +704,7 @@ export async function listAdminMembers(
 
     return {
       ...m,
+      accessRoles: resolveAccessRoles(m),
       subscriptionStatus:
         subscriptionNotRequired
           ? "NOT_REQUIRED"
@@ -803,6 +854,22 @@ export async function createAdminMember(
       : data.parentMemberId
         ? false
         : ageTier === "ADULT";
+  const accessRoles = resolveWriteAccessRoles({
+    accessRoles: data.accessRoles,
+    role: data.role,
+    financeAccessLevel: data.financeAccessLevel,
+    canLogin,
+  });
+  const legacyRole =
+    data.accessRoles !== undefined
+      ? legacyRoleFromAccessRoles(accessRoles)
+      : data.role;
+  const financeAccessLevel =
+    data.accessRoles !== undefined
+      ? financeAccessLevelFromAccessRoles(accessRoles)
+      : legacyRole === "LODGE"
+        ? "NONE"
+        : data.financeAccessLevel;
 
   if (data.sendInvite && !canLogin) {
     return jsonResult(
@@ -859,8 +926,8 @@ export async function createAdminMember(
           phoneAreaCode: data.phoneAreaCode?.trim() || null,
           phoneNumber: data.phoneNumber?.trim() || null,
           dateOfBirth,
-          role: data.role,
-          financeAccessLevel: data.financeAccessLevel,
+          role: legacyRole,
+          financeAccessLevel,
           ageTier: ageTier as AgeTier,
           active: data.active,
           canLogin,
@@ -912,8 +979,19 @@ export async function createAdminMember(
           cancelledAt: true,
           comments: true,
           createdAt: true,
+          accessRoles: { select: { role: true } },
         },
       });
+
+      if (accessRoles.length > 0) {
+        await tx.memberAccessRole.createMany({
+          data: accessRoles.map((role) => ({
+            memberId: created.id,
+            role,
+          })),
+          skipDuplicates: true,
+        });
+      }
 
       // Admin accounts never owe a membership subscription, so they default
       // to NOT_REQUIRED for the current season at creation time.
@@ -959,6 +1037,7 @@ export async function createAdminMember(
     return jsonResult(
       {
         ...member,
+        accessRoles,
         ...(warnings.length > 0 ? { warning: warnings.join("; ") } : {}),
       },
       { status: 201 },

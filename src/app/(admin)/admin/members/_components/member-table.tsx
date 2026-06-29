@@ -17,13 +17,11 @@ import {
 } from "@/components/admin/member-password-action-button"
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path"
 import {
-  financeAccessBadgeClass,
-  financeAccessShortLabels as financeAccessLabels,
   getLifecycleStatusConfig,
   getLoginBadge,
 } from "@/lib/admin-member-badges"
 import { memberName } from "@/lib/member-serialization"
-import { ROLE_LABELS } from "@/lib/member-roles"
+import { ACCESS_ROLE_LABELS } from "@/lib/access-roles"
 import type { Member } from "../_types"
 import { subscriptionStatusConfig } from "../_utils"
 
@@ -108,7 +106,7 @@ export function MemberTable({
             {[
               ["name", "Name"],
               ["email", "Email"],
-              ["role", "Role"],
+              ["role", "Access"],
             ].map(([column, label]) => (
               <TableHead
                 key={column}
@@ -121,7 +119,6 @@ export function MemberTable({
                 </span>
               </TableHead>
             ))}
-            <TableHead>Finance</TableHead>
             <TableHead className="cursor-pointer select-none" onClick={() => onToggleSort("ageTier")}>
               <span className="inline-flex items-center">
                 Age Tier
@@ -197,20 +194,25 @@ export function MemberTable({
                 </TableCell>
                 <TableCell className="text-slate-600">{member.email}</TableCell>
                 <TableCell>
-                  <Badge
-                    variant={member.role === "ADMIN" ? "default" : "secondary"}
-                    className={member.role === "ADMIN" ? "bg-blue-600 text-white hover:bg-blue-700" : ""}
-                  >
-                    {ROLE_LABELS[member.role]}
-                  </Badge>
-                </TableCell>
-                <TableCell>
-                  <Badge
-                    variant="secondary"
-                    className={financeAccessBadgeClass[member.financeAccessLevel]}
-                  >
-                    {financeAccessLabels[member.financeAccessLevel]}
-                  </Badge>
+                  <div className="flex max-w-[220px] flex-wrap gap-1">
+                    {member.accessRoles.length > 0 ? (
+                      member.accessRoles.map((role) => (
+                        <Badge
+                          key={role}
+                          variant={role === "ADMIN" ? "default" : "secondary"}
+                          className={
+                            role === "ADMIN"
+                              ? "bg-blue-600 text-white hover:bg-blue-700"
+                              : ""
+                          }
+                        >
+                          {ACCESS_ROLE_LABELS[role]}
+                        </Badge>
+                      ))
+                    ) : (
+                      <Badge variant="secondary">No Login</Badge>
+                    )}
+                  </div>
                 </TableCell>
                 <TableCell>
                   <span className="text-sm text-slate-600">

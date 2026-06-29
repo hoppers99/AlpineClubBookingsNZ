@@ -55,9 +55,9 @@ const associateType: PolicyType = {
   subscriptionBehavior: "REQUIRED",
 };
 
-const reserveType: PolicyType = {
-  id: "type-reserve",
-  key: "RESERVE",
+const renamedAssociateBlockType: PolicyType = {
+  id: "type-associate",
+  key: "ASSOCIATE",
   name: "Reserve",
   isActive: true,
   isBuiltIn: true,
@@ -178,8 +178,16 @@ describe("membership type booking and subscription policy", () => {
         makeMember({ id: "guest-1", firstName: "Blocked", lastName: "Guest" }),
       ],
       assignments: [
-        { memberId: "owner-1", seasonYear: 2026, membershipType: reserveType },
-        { memberId: "guest-1", seasonYear: 2026, membershipType: reserveType },
+        {
+          memberId: "owner-1",
+          seasonYear: 2026,
+          membershipType: renamedAssociateBlockType,
+        },
+        {
+          memberId: "guest-1",
+          seasonYear: 2026,
+          membershipType: renamedAssociateBlockType,
+        },
       ],
     });
 

@@ -1,4 +1,5 @@
 import type { Filters, MemberForm } from "./_types";
+import { ACCESS_ROLE_LABELS } from "@/lib/access-roles";
 
 export const emptyForm: MemberForm = {
   title: "",
@@ -11,6 +12,7 @@ export const emptyForm: MemberForm = {
   phoneNumber: "",
   dateOfBirth: "",
   role: "MEMBER",
+  accessRoles: ["USER"],
   ageTier: "ADULT",
   financeAccessLevel: "NONE",
   active: true,
@@ -48,7 +50,7 @@ export const emptyFilters: Filters = {
 };
 
 export const filterLabelMap: Record<keyof Filters, string> = {
-  role: "Role",
+  role: "Access Role",
   financeAccess: "Finance",
   lifecycleStatus: "Status",
   ageTier: "Age Tier",
@@ -69,6 +71,7 @@ export const filterValueLabels: Partial<
     archived: "Archived",
     all: "All Including Archived",
   },
+  role: ACCESS_ROLE_LABELS,
   familyGroup: { any: "Yes", none: "No" },
   inviteStatus: {
     invite: "Invite",

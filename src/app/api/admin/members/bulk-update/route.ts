@@ -5,13 +5,24 @@ import { prisma } from "@/lib/prisma";
 import { logAudit } from "@/lib/audit";
 import logger from "@/lib/logger";
 import { ROLE_VALUES } from "@/lib/member-roles";
+import {
+  ACCESS_ROLE_VALUES,
+  financeAccessLevelFromAccessRoles,
+  legacyRoleFromAccessRoles,
+  normalizeAssignableAccessRoles,
+  resolveAccessRoles,
+} from "@/lib/access-roles";
 
 const bulkUpdateSchema = z.object({
   ids: z.array(z.string()).min(1, "At least one member ID is required").max(100),
   action: z.enum(["deactivate", "reactivate", "set-role"]),
   role: z.enum(ROLE_VALUES).optional(),
+  accessRoles: z.array(z.enum(ACCESS_ROLE_VALUES)).optional(),
 }).refine(
-  (data) => data.action !== "set-role" || data.role !== undefined,
+  (data) =>
+    data.action !== "set-role" ||
+    data.role !== undefined ||
+    data.accessRoles !== undefined,
   { message: "Role is required for set-role action", path: ["role"] }
 );
 
@@ -38,8 +49,14 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const { ids, action, role } = parsed.data;
+  const { ids, action, role, accessRoles } = parsed.data;
   const currentUserId = session.user.id;
+  const selfAdminAccessPreserved =
+    accessRoles !== undefined
+      ? normalizeAssignableAccessRoles(accessRoles, { canLogin: true }).includes(
+          "ADMIN",
+        )
+      : role === "ADMIN";
 
   // Self-protection checks
   if (action === "deactivate" && ids.includes(currentUserId)) {
@@ -49,7 +66,11 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  if (action === "set-role" && role !== "ADMIN" && ids.includes(currentUserId)) {
+  if (
+    action === "set-role" &&
+    !selfAdminAccessPreserved &&
+    ids.includes(currentUserId)
+  ) {
     return NextResponse.json(
       { error: "You cannot demote your own admin account" },
       { status: 400 }
@@ -65,6 +86,9 @@ export async function POST(req: NextRequest) {
         firstName: true,
         lastName: true,
         email: true,
+        role: true,
+        financeAccessLevel: true,
+        canLogin: true,
         cancelledAt: true,
         archivedAt: true,
       },
@@ -99,7 +123,7 @@ export async function POST(req: NextRequest) {
         updateData = { active: true };
         break;
       case "set-role":
-        updateData = { role: role! };
+        updateData = {};
         break;
       default:
         return NextResponse.json({ error: "Invalid action" }, { status: 400 });
@@ -108,16 +132,65 @@ export async function POST(req: NextRequest) {
     // Filter out current user for self-protection
     const idsToUpdate = [...existingIds].filter((id) => {
       if (action === "deactivate" && id === currentUserId) return false;
-      if (action === "set-role" && role !== "ADMIN" && id === currentUserId) return false;
+      if (action === "set-role" && !selfAdminAccessPreserved && id === currentUserId) return false;
       return true;
     });
 
     // Perform update in transaction
     const result = await prisma.$transaction(async (tx) => {
-      const updateResult = await tx.member.updateMany({
-        where: { id: { in: idsToUpdate } },
-        data: updateData,
-      });
+      const updateResult =
+        action === "set-role"
+          ? { count: idsToUpdate.length }
+          : await tx.member.updateMany({
+              where: { id: { in: idsToUpdate } },
+              data: updateData,
+            });
+      if (action === "set-role") {
+        for (const member of existingMembers.filter((candidate) =>
+          idsToUpdate.includes(candidate.id),
+        )) {
+          const nextAccessRoles =
+            accessRoles !== undefined
+              ? normalizeAssignableAccessRoles(accessRoles, {
+                  canLogin: member.canLogin,
+                })
+              : resolveAccessRoles({
+                  role,
+                  financeAccessLevel:
+                    role === "LODGE" ? "NONE" : member.financeAccessLevel,
+                  canLogin: member.canLogin,
+                });
+
+          await tx.member.update({
+            where: { id: member.id },
+            data: {
+              role:
+                accessRoles !== undefined
+                  ? legacyRoleFromAccessRoles(nextAccessRoles)
+                  : role!,
+              financeAccessLevel:
+                accessRoles !== undefined
+                  ? financeAccessLevelFromAccessRoles(nextAccessRoles)
+                  : role === "LODGE"
+                    ? "NONE"
+                    : member.financeAccessLevel,
+            },
+          });
+          await tx.memberAccessRole.deleteMany({
+            where: { memberId: member.id },
+          });
+          if (nextAccessRoles.length > 0) {
+            await tx.memberAccessRole.createMany({
+              data: nextAccessRoles.map((nextRole) => ({
+                memberId: member.id,
+                role: nextRole,
+                assignedByMemberId: currentUserId,
+              })),
+              skipDuplicates: true,
+            });
+          }
+        }
+      }
       // Remove family group memberships for deactivated members
       if (action === "deactivate") {
         await tx.familyGroupMember.deleteMany({
@@ -134,7 +207,7 @@ export async function POST(req: NextRequest) {
           action: `member.bulk-${action}`,
           memberId: currentUserId,
           targetId: member.id,
-          details: `Bulk ${action}: ${member.firstName} ${member.lastName} (${member.email})${action === "set-role" ? ` -> ${role}` : ""}`,
+          details: `Bulk ${action}: ${member.firstName} ${member.lastName} (${member.email})${action === "set-role" ? ` -> ${accessRoles?.join(", ") ?? role}` : ""}`,
         });
       }
     }

@@ -11,6 +11,7 @@ import { ReportIssueWidget } from "@/components/report-issue-widget";
 import { clubIdentity } from "@/config/club-identity";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import { hasFinanceViewerAccess } from "@/lib/finance-auth";
+import { hasAdminAccess } from "@/lib/access-roles";
 import { CSP_NONCE_HEADER } from "@/lib/csp";
 import { isClubThemeComplete } from "@/lib/club-theme";
 import { getLodgeCapacity } from "@/lib/lodge-capacity";
@@ -30,10 +31,6 @@ export default async function AdminLayout({
     redirect("/login");
   }
 
-  if (session.user.role !== "ADMIN") {
-    redirect("/dashboard");
-  }
-
   // Check DB directly for force password change and active status (JWT may be stale)
   const member = await prisma.member.findUnique({
     where: { id: session.user.id },
@@ -48,11 +45,15 @@ export default async function AdminLayout({
     redirect("/change-password");
   }
 
+  if (!hasAdminAccess(member)) {
+    redirect("/dashboard");
+  }
+
   const user = {
     name: session.user.name ?? "Admin",
     email: session.user.email ?? "",
     role: (session.user as { role?: string }).role ?? "ADMIN",
-    canAccessFinance: hasFinanceViewerAccess(member.financeAccessLevel),
+    canAccessFinance: hasFinanceViewerAccess(member),
     isHutLeader: false,
     isStayingGuest: false,
   };

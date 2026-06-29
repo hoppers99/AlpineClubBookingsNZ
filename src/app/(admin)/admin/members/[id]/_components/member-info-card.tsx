@@ -4,11 +4,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ExternalLink } from "lucide-react";
-import {
-  financeAccessBadgeClass,
-  financeAccessLongLabels as financeAccessLabels,
-  getLoginBadge,
-} from "@/lib/admin-member-badges";
+import { getLoginBadge } from "@/lib/admin-member-badges";
+import { ACCESS_ROLE_LABELS } from "@/lib/access-roles";
 import { formatMemberDateNz } from "@/lib/admin-member-detail-helpers";
 import { formatGenderLabel, formatTitleLabel } from "@/lib/member-enums";
 import { useMemberFieldsSettings } from "@/lib/use-member-fields-settings";
@@ -96,14 +93,20 @@ export function MemberInfoCard({
             </dd>
           </div>
           <div>
-            <dt className="text-slate-500">Finance Access</dt>
-            <dd className="font-medium">
-              <Badge
-                variant="secondary"
-                className={financeAccessBadgeClass[member.financeAccessLevel]}
-              >
-                {financeAccessLabels[member.financeAccessLevel]}
-              </Badge>
+            <dt className="text-slate-500">Access Roles</dt>
+            <dd className="flex flex-wrap gap-1 font-medium">
+              {member.accessRoles.length > 0 ? (
+                member.accessRoles.map((role) => (
+                  <Badge
+                    key={role}
+                    variant={role === "ADMIN" ? "default" : "secondary"}
+                  >
+                    {ACCESS_ROLE_LABELS[role]}
+                  </Badge>
+                ))
+              ) : (
+                <Badge variant="secondary">No Login</Badge>
+              )}
             </dd>
           </div>
           <div>

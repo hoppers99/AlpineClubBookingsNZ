@@ -139,7 +139,7 @@ export async function buildFinanceLandingPageModel(input: {
   today?: Date;
 }): Promise<FinanceLandingPageModel> {
   const { member } = input;
-  const isManager = hasFinanceManagerAccess(member.financeAccessLevel);
+  const isManager = hasFinanceManagerAccess(member);
   const { query, windows } = buildFinanceLandingMetricsQuery(input.today);
   const [syncResult, bookingResult] = await Promise.allSettled([
     getFinanceSyncDiagnosticsStatus(),

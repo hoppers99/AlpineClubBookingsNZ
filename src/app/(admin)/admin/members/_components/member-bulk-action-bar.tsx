@@ -33,7 +33,7 @@ export function MemberBulkActionBar({
         Reactivate
       </Button>
       <Button size="sm" variant="outline" onClick={() => onOpenBulkDialog("set-role")}>
-        Change Role
+        Change Access
       </Button>
       <Button
         size="sm"

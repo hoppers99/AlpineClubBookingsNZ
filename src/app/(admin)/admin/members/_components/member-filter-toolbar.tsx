@@ -11,6 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { ACCESS_ROLE_LABELS, ACCESS_ROLE_VALUES } from "@/lib/access-roles"
 import type { Filters, XeroContactGroup, XeroFeatureFlags } from "../_types"
 import { filterLabelMap, filterValueLabels } from "../_utils"
 
@@ -55,32 +56,16 @@ export function MemberFilterToolbar({
           value={filters.role || "all"}
           onValueChange={(value) => onSetFilter("role", value === "all" ? "" : value)}
         >
-          <SelectTrigger className="w-[130px]">
-            <SelectValue placeholder="Role" />
+          <SelectTrigger className="w-[160px]">
+            <SelectValue placeholder="Access Role" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All Roles</SelectItem>
-            <SelectItem value="MEMBER">Member</SelectItem>
-            <SelectItem value="ADMIN">Admin</SelectItem>
-            <SelectItem value="LODGE">Lodge</SelectItem>
-            <SelectItem value="ASSOCIATE">Associate Member</SelectItem>
-            <SelectItem value="LIFE">Life Member</SelectItem>
-            <SelectItem value="NON_MEMBER">Non-Member</SelectItem>
-            <SelectItem value="SCHOOL">School</SelectItem>
-          </SelectContent>
-        </Select>
-        <Select
-          value={filters.financeAccess || "all"}
-          onValueChange={(value) => onSetFilter("financeAccess", value === "all" ? "" : value)}
-        >
-          <SelectTrigger className="w-[170px]">
-            <SelectValue placeholder="Finance" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Finance Access</SelectItem>
-            <SelectItem value="NONE">No Finance Access</SelectItem>
-            <SelectItem value="VIEWER">Finance Viewer</SelectItem>
-            <SelectItem value="MANAGER">Finance Manager</SelectItem>
+            <SelectItem value="all">All Access Roles</SelectItem>
+            {ACCESS_ROLE_VALUES.map((role) => (
+              <SelectItem key={role} value={role}>
+                {ACCESS_ROLE_LABELS[role]}
+              </SelectItem>
+            ))}
           </SelectContent>
         </Select>
         <Select

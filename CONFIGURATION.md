@@ -202,10 +202,13 @@ chore templates are seeded as generic placeholders only when their tables are
 empty; replace them through the admin screens after first login.
 
 The seed also creates built-in seasonal membership types: Full, Associate,
-Reserve, and Life. It backfills the current membership season from existing
-roles (`MEMBER`, `ADMIN`, and `LODGE` to Full, `ASSOCIATE` to Associate, and
-`LIFE` to Life) using create-if-missing assignments. Re-running the seed does
-not overwrite existing seasonal assignments.
+Life, School, Non-Member, and Family. Associate is the built-in
+Associate/Reserve-style type and can be renamed by the club. It backfills the
+current membership season from existing legacy roles (`MEMBER`, `ADMIN`, and
+`LODGE` to Full, `ASSOCIATE` and legacy `RESERVE` to Associate, `LIFE` to Life,
+`SCHOOL` to School, and `NON_MEMBER` to Non-Member) using create-if-missing
+assignments. Re-running the seed does not overwrite existing seasonal
+assignments.
 
 `npm run db:seed:demo` is separate from the first-run seed. It is intended only
 for disposable local demo databases, refuses to run unless `DATABASE_URL`
@@ -255,17 +258,26 @@ approval processing must keep Xero writes outside long database transactions.
 ## Membership Type Settings
 
 Seasonal membership type settings are database-backed and managed from
-`/admin/membership-types`. Access role, seasonal membership type, and committee
-assignment are separate axes:
+`/admin/membership-types`. Access roles, seasonal membership type, age tier,
+Xero contact-group rules, and committee assignment are separate axes:
 
-- `Member.role` remains the access role (`MEMBER`, `ADMIN`, `LODGE`,
-  `ASSOCIATE`, `LIFE`) until a later contract removes legacy category values.
-- `MembershipType` stores admin-configurable seasonal booking behavior
-  (`MEMBER_RATE`, `NON_MEMBER_RATE`, `BLOCK_BOOKING`) and subscription behavior
-  (`REQUIRED`, `NOT_REQUIRED`).
+- `MemberAccessRole` is the normalized access source for login permissions:
+  `USER`, `ADMIN`, `LODGE`, `FINANCE_USER`, `FINANCE_ADMIN`, and `ORG`.
+  `Member.role` and `financeAccessLevel` remain compatibility fields while old
+  routes and tokens are drained.
+- `MembershipType` stores admin-configurable seasonal categories and policy:
+  Full, Associate (renameable, including Reserve naming), Life, School,
+  Non-Member, Family, or club-created types. Each type carries booking behavior
+  (`MEMBER_RATE`, `NON_MEMBER_RATE`, `BLOCK_BOOKING`), subscription behavior
+  (`REQUIRED`, `NOT_REQUIRED`), allowed age tiers, and optional Xero
+  contact-group rules.
+- `AgeTierSetting` remains separate because a member can be Adult Full, Adult
+  Life, Adult Associate, Child Family, Youth School, and so on. Age tiers still
+  drive age-based rates and age-based default Xero grouping.
 - `SeasonalMembershipAssignment` records one membership type per member per
-  membership `seasonYear`.
-- Admin member detail pages show access role separately from seasonal
+  membership `seasonYear`, including the assignment source (`ADMIN`, `IMPORT`,
+  `FAMILY_SUBSCRIPTION`, `ROLL_FORWARD`, or `SYSTEM`).
+- Admin member detail pages show access roles separately from seasonal
   membership type. Changing the seasonal type requires a preview and admin
   reason; the preview counts future confirmed bookings, drafts, waitlist
   records, and subscription history before the save is audited. Production
@@ -441,8 +453,9 @@ OAuth scopes:
 Before reconnecting, update the Xero developer app allowed scopes to include the
 exact app request, and verify that `XERO_REDIRECT_URI` matches the deployed
 `/api/admin/xero/callback` URL. Then reconnect Xero from `/admin/xero` so fresh
-tokens carry the current scope set. Access is controlled per member by
-`financeAccessLevel` (`NONE`/`VIEWER`/`MANAGER`).
+tokens carry the current scope set. Access is controlled per member by the
+`FINANCE_USER` and `FINANCE_ADMIN` access roles; the legacy
+`financeAccessLevel` field is kept synchronized for compatibility.
 
 ## Email Delivery
 

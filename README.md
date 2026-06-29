@@ -70,13 +70,14 @@ fork for another organisation. See `NOTICE.md`.
    until an admin enables them. General-purpose modules default on and can be
    disabled there.
 6. Use **Admin > Membership Types** to review the seeded seasonal membership
-   types: Full, Associate, Reserve, and Life. These records drive
-   season-aware booking policy (`MEMBER_RATE`, `NON_MEMBER_RATE`,
-   `BLOCK_BOOKING`) and subscription policy (`REQUIRED`, `NOT_REQUIRED`)
-   without changing access roles. Admins assign a member's seasonal type from
-   that member's admin detail page after previewing affected future bookings,
-   drafts, waitlist records, and subscription history; existing future bookings
-   are not automatically repriced by this change.
+   types: Full, Associate, Life, School, Non-Member, and Family. Associate is
+   the built-in Associate/Reserve-style type and can be renamed by the club.
+   These records drive season-aware booking policy (`MEMBER_RATE`,
+   `NON_MEMBER_RATE`, `BLOCK_BOOKING`) and subscription policy (`REQUIRED`,
+   `NOT_REQUIRED`) without granting app access. Admins assign a member's
+   seasonal type from that member's admin detail page after previewing affected
+   future bookings, drafts, waitlist records, and subscription history;
+   existing future bookings are not automatically repriced by this change.
 7. Use **Admin > Committee** to review seeded committee master roles and
    member-linked committee assignments. Assignments remain hidden/unpublished
    until an admin explicitly enables their presentation flags; public contact

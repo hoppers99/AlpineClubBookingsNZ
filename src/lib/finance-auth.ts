@@ -1,6 +1,12 @@
 import type { FinanceAccessLevel, Role } from "@prisma/client";
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
+import {
+  hasFinanceManagerAccess as hasFinanceManagerRoleAccess,
+  hasFinanceViewerAccess as hasFinanceViewerRoleAccess,
+  type AccessRoleInput,
+  type AppAccessRole,
+} from "@/lib/access-roles";
 import { buildLoginPath } from "@/lib/auth-redirect";
 import { prisma } from "@/lib/prisma";
 
@@ -11,16 +17,25 @@ export type FinanceAccessMember = {
   lastName: string;
   role: Role;
   financeAccessLevel: FinanceAccessLevel;
+  accessRoles: Array<{ role: AppAccessRole }>;
   active: boolean;
   forcePasswordChange: boolean;
 };
 
-export function hasFinanceViewerAccess(level: FinanceAccessLevel) {
-  return level === "VIEWER" || level === "MANAGER";
+export function hasFinanceViewerAccess(
+  input: FinanceAccessLevel | AccessRoleInput,
+) {
+  return typeof input === "string"
+    ? hasFinanceViewerRoleAccess({ financeAccessLevel: input })
+    : hasFinanceViewerRoleAccess(input);
 }
 
-export function hasFinanceManagerAccess(level: FinanceAccessLevel) {
-  return level === "MANAGER";
+export function hasFinanceManagerAccess(
+  input: FinanceAccessLevel | AccessRoleInput,
+) {
+  return typeof input === "string"
+    ? hasFinanceManagerRoleAccess({ financeAccessLevel: input })
+    : hasFinanceManagerRoleAccess(input);
 }
 
 export async function loadFinanceAccessMember(
@@ -35,6 +50,7 @@ export async function loadFinanceAccessMember(
       lastName: true,
       role: true,
       financeAccessLevel: true,
+      accessRoles: { select: { role: true } },
       active: true,
       forcePasswordChange: true,
     },
@@ -50,10 +66,6 @@ export async function requireFinanceViewer(
     redirect(buildLoginPath(callbackPath));
   }
 
-  if (session.user.role === "LODGE") {
-    redirect("/lodge/kiosk");
-  }
-
   const member = await loadFinanceAccessMember(session.user.id);
 
   if (!member || !member.active) {
@@ -64,7 +76,10 @@ export async function requireFinanceViewer(
     redirect("/change-password");
   }
 
-  if (!hasFinanceViewerAccess(member.financeAccessLevel)) {
+  if (!hasFinanceViewerAccess(member)) {
+    if (session.user.role === "LODGE") {
+      redirect("/lodge/kiosk");
+    }
     redirect("/dashboard");
   }
 
@@ -76,7 +91,7 @@ export async function requireFinanceManager(
 ): Promise<FinanceAccessMember> {
   const member = await requireFinanceViewer(callbackPath);
 
-  if (!hasFinanceManagerAccess(member.financeAccessLevel)) {
+  if (!hasFinanceManagerAccess(member)) {
     redirect("/finance");
   }
 

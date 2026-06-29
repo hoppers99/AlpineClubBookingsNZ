@@ -4,11 +4,7 @@ import { useRouter } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft, ExternalLink, Link2, Pencil, Plus } from "lucide-react";
-import {
-  financeAccessBadgeClass,
-  financeAccessLongLabels as financeAccessLabels,
-} from "@/lib/admin-member-badges";
-import { ROLE_LABELS } from "@/lib/member-roles";
+import { ACCESS_ROLE_LABELS } from "@/lib/access-roles";
 import type { MemberDetail, MemberLifecycleActionRequest } from "../_types";
 
 interface MemberDetailHeaderProps {
@@ -60,22 +56,23 @@ export function MemberDetailHeader({
           </h1>
           <p className="mt-1 text-sm text-slate-500">{member.email}</p>
           <div className="flex flex-wrap gap-2 mt-2">
-            <Badge
-              variant={member.role === "ADMIN" ? "default" : "secondary"}
-              className={
-                member.role === "ADMIN"
-                  ? "bg-blue-600 text-white hover:bg-blue-700"
-                  : ""
-              }
-            >
-              {ROLE_LABELS[member.role]}
-            </Badge>
-            <Badge
-              variant="secondary"
-              className={financeAccessBadgeClass[member.financeAccessLevel]}
-            >
-              {financeAccessLabels[member.financeAccessLevel]}
-            </Badge>
+            {member.accessRoles.length > 0 ? (
+              member.accessRoles.map((role) => (
+                <Badge
+                  key={role}
+                  variant={role === "ADMIN" ? "default" : "secondary"}
+                  className={
+                    role === "ADMIN"
+                      ? "bg-blue-600 text-white hover:bg-blue-700"
+                      : ""
+                  }
+                >
+                  {ACCESS_ROLE_LABELS[role]}
+                </Badge>
+              ))
+            ) : (
+              <Badge variant="secondary">No Login</Badge>
+            )}
             <Badge
               variant={member.active ? "default" : "destructive"}
               className={

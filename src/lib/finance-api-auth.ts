@@ -34,16 +34,6 @@ async function requireFinanceApiAccess(input: {
     };
   }
 
-  if (session.user.role === "LODGE") {
-    return {
-      ok: false,
-      response: NextResponse.json(
-        { error: input.missingAccessMessage },
-        { status: 403 }
-      ),
-    };
-  }
-
   const member = await loadFinanceAccessMember(session.user.id);
 
   if (!member) {
@@ -92,7 +82,7 @@ async function requireFinanceApiAccess(input: {
 export async function requireFinanceViewerApiAccess(): Promise<FinanceApiAuthResult> {
   return requireFinanceApiAccess({
     hasRequiredAccess: (member) =>
-      hasFinanceViewerAccess(member.financeAccessLevel),
+      hasFinanceViewerAccess(member),
     missingAccessMessage: "Finance viewer access required",
   });
 }
@@ -100,7 +90,7 @@ export async function requireFinanceViewerApiAccess(): Promise<FinanceApiAuthRes
 export async function requireFinanceManagerApiAccess(): Promise<FinanceApiAuthResult> {
   return requireFinanceApiAccess({
     hasRequiredAccess: (member) =>
-      hasFinanceManagerAccess(member.financeAccessLevel),
+      hasFinanceManagerAccess(member),
     missingAccessMessage: "Finance manager access required",
   });
 }

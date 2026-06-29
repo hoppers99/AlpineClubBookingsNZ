@@ -17,23 +17,31 @@ enum Role {
   MEMBER
   ADMIN
   LODGE
-  // Membership categories. These carry the SAME access as MEMBER; only ADMIN and
-  // LODGE grant elevated access. Treat ASSOCIATE and LIFE as ordinary members in
-  // every permission check.
+  // Legacy membership categories retained for compatibility. New category
+  // semantics belong to MembershipType; new permission semantics belong to
+  // MemberAccessRole.
   ASSOCIATE
   LIFE
-  // Non-member categories created by booking-request flows (school groups and
-  // general public requests). These carry NO access — they are NOT member-level
-  // and NOT operational — and are excluded from member rosters, nomination pools,
-  // and subscription obligations. The owning records are always canLogin: false.
+  // Legacy non-member categories created by booking-request flows. These carry
+  // no access; login-capable organisation records use MemberAccessRole.ORG.
   NON_MEMBER
   SCHOOL
 }
 
 enum FinanceAccessLevel {
+  // Compatibility field synchronized from MemberAccessRole finance roles.
   NONE
   VIEWER
   MANAGER
+}
+
+enum AccessRole {
+  USER
+  ADMIN
+  LODGE
+  FINANCE_USER
+  FINANCE_ADMIN
+  ORG
 }
 
 enum FinanceSnapshotType {
@@ -114,6 +122,19 @@ enum MembershipTypeBookingBehavior {
 enum MembershipTypeSubscriptionBehavior {
   REQUIRED
   NOT_REQUIRED
+}
+
+enum MembershipAssignmentSource {
+  ADMIN
+  IMPORT
+  FAMILY_SUBSCRIPTION
+  ROLL_FORWARD
+  SYSTEM
+}
+
+enum XeroContactGroupRuleMode {
+  MANAGED
+  ACCEPTED
 }
 
 enum SeasonType {
@@ -427,6 +448,8 @@ model Member {
   subscriptions                              MemberSubscription[]
   seasonalMembershipAssignments              SeasonalMembershipAssignment[]             @relation("SeasonalMembershipAssignmentMember")
   seasonalMembershipAssignmentsAssigned      SeasonalMembershipAssignment[]             @relation("SeasonalMembershipAssignmentAssignedBy")
+  accessRoles                                MemberAccessRole[]                         @relation("MemberAccessRoleMember")
+  accessRolesAssigned                        MemberAccessRole[]                         @relation("MemberAccessRoleAssignedBy")
   bookings                                   Booking[]
   guestAppearances                           BookingGuest[]
   bookingChangeRequestsRequested             BookingChangeRequest[]                     @relation("BookingChangeRequestsRequested")
@@ -481,6 +504,22 @@ model Member {
   @@index([archivedAt])
   @@index([canLogin])
   @@index([active])
+}
+
+model MemberAccessRole {
+  id                 String     @id @default(cuid())
+  memberId           String
+  role               AccessRole
+  assignedByMemberId String?
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+
+  member     Member  @relation("MemberAccessRoleMember", fields: [memberId], references: [id], onDelete: Cascade)
+  assignedBy Member? @relation("MemberAccessRoleAssignedBy", fields: [assignedByMemberId], references: [id], onDelete: SetNull)
+
+  @@unique([memberId, role])
+  @@index([role])
+  @@index([assignedByMemberId])
 }
 
 model PasswordResetToken {
@@ -621,10 +660,45 @@ model MembershipType {
   createdAt            DateTime                           @default(now())
   updatedAt            DateTime                           @updatedAt
 
-  assignments SeasonalMembershipAssignment[]
+  assignments           SeasonalMembershipAssignment[]
+  allowedAgeTiers       MembershipTypeAgeTier[]
+  xeroContactGroupRules XeroContactGroupRule[]
 
   @@index([isActive, sortOrder])
   @@index([sortOrder])
+}
+
+model MembershipTypeAgeTier {
+  id               String   @id @default(cuid())
+  membershipTypeId String
+  ageTier          AgeTier
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  membershipType MembershipType @relation(fields: [membershipTypeId], references: [id], onDelete: Cascade)
+
+  @@unique([membershipTypeId, ageTier])
+  @@index([ageTier])
+}
+
+model XeroContactGroupRule {
+  id               String                   @id @default(cuid())
+  membershipTypeId String?
+  ageTier          AgeTier?
+  mode             XeroContactGroupRuleMode
+  groupId          String
+  groupName        String?
+  isActive         Boolean                  @default(true)
+  sortOrder        Int                      @default(0)
+  createdAt        DateTime                 @default(now())
+  updatedAt        DateTime                 @updatedAt
+
+  membershipType MembershipType? @relation(fields: [membershipTypeId], references: [id], onDelete: Cascade)
+
+  @@index([membershipTypeId])
+  @@index([ageTier])
+  @@index([mode, isActive, sortOrder])
+  @@index([groupId])
 }
 
 model SeasonalMembershipAssignment {
@@ -633,6 +707,8 @@ model SeasonalMembershipAssignment {
   seasonYear         Int
   membershipTypeId   String
   assignedByMemberId String?
+  source             MembershipAssignmentSource @default(ADMIN)
+  sourceDetail       String?
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
 

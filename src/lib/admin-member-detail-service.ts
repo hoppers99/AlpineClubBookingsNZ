@@ -46,6 +46,14 @@ import {
 import { nameField } from "@/lib/zod-helpers";
 import { genderEnum, titleEnum } from "@/lib/member-enums";
 import { ROLE_VALUES } from "@/lib/member-roles";
+import {
+  ACCESS_ROLE_VALUES,
+  financeAccessLevelFromAccessRoles,
+  legacyRoleFromAccessRoles,
+  normalizeAssignableAccessRoles,
+  resolveAccessRoles,
+  type AppAccessRole,
+} from "@/lib/access-roles";
 import { serializeSeasonalMembershipAssignment } from "@/lib/seasonal-membership-assignments";
 
 const maxStr = (len: number) => z.string().max(len).optional().nullable();
@@ -77,6 +85,7 @@ export const updateMemberSchema = z.object({
     .or(z.literal("")),
   role: z.enum(ROLE_VALUES).optional(),
   financeAccessLevel: z.enum(["NONE", "VIEWER", "MANAGER"]).optional(),
+  accessRoles: z.array(z.enum(ACCESS_ROLE_VALUES)).optional(),
   ageTier: z.enum(["ADULT", "YOUTH", "CHILD", "INFANT"]).optional(),
   active: z.boolean().optional(),
   canLogin: z.boolean().optional(),
@@ -148,6 +157,7 @@ const ADMIN_MEMBER_AUDIT_FIELDS = [
   "lifeMemberDate",
   "role",
   "financeAccessLevel",
+  "accessRoles",
   "active",
   "canLogin",
   "forcePasswordChange",
@@ -158,6 +168,7 @@ const ADMIN_MEMBER_AUDIT_FIELDS = [
 const ADMIN_MEMBER_ACCESS_FIELDS = [
   "role",
   "financeAccessLevel",
+  "accessRoles",
   "active",
   "canLogin",
   "forcePasswordChange",
@@ -208,6 +219,25 @@ function buildAccessChanges(
     before: before[field],
     after: updateData[field],
   }));
+}
+
+function resolveWriteAccessRoles(input: {
+  accessRoles?: AppAccessRole[] | null;
+  role?: string | null;
+  financeAccessLevel?: string | null;
+  canLogin?: boolean | null;
+}) {
+  if (input.accessRoles) {
+    return normalizeAssignableAccessRoles(input.accessRoles, {
+      canLogin: input.canLogin,
+    });
+  }
+
+  return resolveAccessRoles({
+    role: input.role,
+    financeAccessLevel: input.financeAccessLevel,
+    canLogin: input.canLogin,
+  });
 }
 
 function getAdminMemberAuditAction(
@@ -268,6 +298,7 @@ export async function getAdminMemberDetail(params: {
         dateOfBirth: true,
         role: true,
         financeAccessLevel: true,
+        accessRoles: { select: { role: true } },
         ageTier: true,
         active: true,
         canLogin: true,
@@ -518,6 +549,7 @@ export async function getAdminMemberDetail(params: {
 
   return jsonResult({
     ...member,
+    accessRoles: resolveAccessRoles(member),
     parentLinks: buildParentLinks(member),
     dependents: [
       ...(member.dependents ?? []).map((dependent) => ({
@@ -594,13 +626,28 @@ export async function updateAdminMember(params: {
   data: UpdateMemberInput;
 }): Promise<JsonRouteResult> {
   const { id, currentAdminMemberId, request: req, data } = params;
-  const existing = await prisma.member.findUnique({ where: { id } });
+  const existing = await prisma.member.findUnique({
+    where: { id },
+    include: { accessRoles: { select: { role: true } } },
+  });
   if (!existing) {
     return jsonResult({ error: "Member not found" }, { status: 404 });
   }
 
   if (id === currentAdminMemberId) {
     if (data.role !== undefined && data.role !== "ADMIN") {
+      return jsonResult(
+        { error: "You cannot demote your own admin account" },
+        { status: 400 },
+      );
+    }
+
+    if (
+      data.accessRoles !== undefined &&
+      !normalizeAssignableAccessRoles(data.accessRoles, {
+        canLogin: data.canLogin ?? existing.canLogin,
+      }).includes("ADMIN")
+    ) {
       return jsonResult(
         { error: "You cannot demote your own admin account" },
         { status: 400 },
@@ -690,15 +737,36 @@ export async function updateAdminMember(params: {
   for (const f of ADDRESS_FIELDS) {
     if (data[f] !== undefined) updateData[f] = data[f]?.trim() || null;
   }
-  if (data.role !== undefined) updateData.role = data.role;
-  const effectiveRole = data.role ?? existing.role;
-  if (effectiveRole === "LODGE") {
-    updateData.financeAccessLevel = "NONE";
-  } else if (data.financeAccessLevel !== undefined) {
-    updateData.financeAccessLevel = data.financeAccessLevel;
-  }
   if (data.active !== undefined) updateData.active = data.active;
   if (data.canLogin !== undefined) updateData.canLogin = data.canLogin;
+  const shouldSyncAccessRoles =
+    data.accessRoles !== undefined ||
+    data.role !== undefined ||
+    data.financeAccessLevel !== undefined ||
+    data.canLogin !== undefined;
+  const nextAccessRoles = shouldSyncAccessRoles
+    ? resolveWriteAccessRoles({
+        accessRoles: data.accessRoles,
+        role: data.role ?? existing.role,
+        financeAccessLevel:
+          data.financeAccessLevel ?? existing.financeAccessLevel,
+        canLogin: effectiveCanLogin,
+      })
+    : null;
+  if (data.accessRoles !== undefined) {
+    updateData.role = legacyRoleFromAccessRoles(nextAccessRoles ?? []);
+    updateData.financeAccessLevel = financeAccessLevelFromAccessRoles(
+      nextAccessRoles ?? [],
+    );
+  } else {
+    if (data.role !== undefined) updateData.role = data.role;
+    const effectiveRole = data.role ?? existing.role;
+    if (effectiveRole === "LODGE") {
+      updateData.financeAccessLevel = "NONE";
+    } else if (data.financeAccessLevel !== undefined) {
+      updateData.financeAccessLevel = data.financeAccessLevel;
+    }
+  }
   if (data.forcePasswordChange !== undefined)
     updateData.forcePasswordChange = data.forcePasswordChange;
   if (data.requiresInduction !== undefined)
@@ -781,23 +849,30 @@ export async function updateAdminMember(params: {
   }
 
   try {
-    const existingAuditRecord = existing as unknown as Record<string, unknown>;
+    const existingAuditRecord = {
+      ...(existing as unknown as Record<string, unknown>),
+      accessRoles: resolveAccessRoles(existing),
+    };
+    const auditUpdateData = {
+      ...updateData,
+      ...(nextAccessRoles ? { accessRoles: nextAccessRoles } : {}),
+    };
     const changedFields = getChangedFields(
       existingAuditRecord,
-      updateData,
+      auditUpdateData,
       ADMIN_MEMBER_AUDIT_FIELDS,
     );
     const accessChanges = buildAccessChanges(
       existingAuditRecord,
-      updateData,
+      auditUpdateData,
       changedFields,
     );
     const auditAction = getAdminMemberAuditAction(
       existingAuditRecord,
-      updateData,
+      auditUpdateData,
     );
-    const [updated] = await prisma.$transaction([
-      prisma.member.update({
+    const updated = await prisma.$transaction(async (tx) => {
+      const updatedMember = await tx.member.update({
         where: { id },
         data: updateData,
         select: {
@@ -840,9 +915,25 @@ export async function updateAdminMember(params: {
           postalRegion: true,
           postalPostalCode: true,
           postalCountry: true,
+          accessRoles: { select: { role: true } },
         },
-      }),
-      prisma.auditLog.create(
+      });
+
+      if (nextAccessRoles) {
+        await tx.memberAccessRole.deleteMany({ where: { memberId: id } });
+        if (nextAccessRoles.length > 0) {
+          await tx.memberAccessRole.createMany({
+            data: nextAccessRoles.map((role) => ({
+              memberId: id,
+              role,
+              assignedByMemberId: currentAdminMemberId,
+            })),
+            skipDuplicates: true,
+          });
+        }
+      }
+
+      await tx.auditLog.create(
         buildStructuredAuditLogCreateArgs({
           action: auditAction.action,
           actor: { memberId: currentAdminMemberId },
@@ -886,8 +977,13 @@ export async function updateAdminMember(params: {
           },
           request: getAuditRequestContext(req),
         }),
-      ),
-    ]);
+      );
+
+      return {
+        ...updatedMember,
+        accessRoles: nextAccessRoles ?? resolveAccessRoles(updatedMember),
+      };
+    });
 
     const hasMappedContactUpdate = updated.xeroContactId
       ? hasMemberXeroContactChanges(existing, updated)

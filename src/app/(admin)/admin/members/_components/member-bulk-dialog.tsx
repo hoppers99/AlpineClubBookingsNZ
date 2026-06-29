@@ -18,8 +18,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { getAccessRoleOptions } from "@/lib/member-roles"
-import type { BulkAction, MemberRole } from "../_types"
+import { ACCESS_ROLE_LABELS, ACCESS_ROLE_VALUES, type AppAccessRole } from "@/lib/access-roles"
+import type { BulkAction } from "../_types"
 
 interface MemberBulkDialogProps {
   open: boolean
@@ -38,18 +38,18 @@ export function MemberBulkDialog({
   onUpdated,
   onError,
 }: MemberBulkDialogProps) {
-  const [bulkRole, setBulkRole] = useState<MemberRole>("MEMBER")
+  const [bulkRole, setBulkRole] = useState<AppAccessRole>("USER")
   const [bulkLoading, setBulkLoading] = useState(false)
 
   useEffect(() => {
-    if (open) setBulkRole("MEMBER")
+    if (open) setBulkRole("USER")
   }, [open])
 
   const handleBulkAction = async () => {
     setBulkLoading(true)
     try {
       const body: Record<string, unknown> = { ids: [...selectedIds], action }
-      if (action === "set-role") body.role = bulkRole
+      if (action === "set-role") body.accessRoles = [bulkRole]
       const res = await fetch("/api/admin/members/bulk-update", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -67,7 +67,7 @@ export function MemberBulkDialog({
   }
 
   const titleAction =
-    action === "set-role" ? "Change Role" : action === "deactivate" ? "Deactivate" : "Reactivate"
+    action === "set-role" ? "Change Access" : action === "deactivate" ? "Deactivate" : "Reactivate"
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -80,15 +80,15 @@ export function MemberBulkDialog({
         </DialogHeader>
         {action === "set-role" && (
           <div className="space-y-2">
-            <Label>New Role</Label>
-            <Select value={bulkRole} onValueChange={(value) => setBulkRole(value as MemberRole)}>
+            <Label>New Access Role</Label>
+            <Select value={bulkRole} onValueChange={(value) => setBulkRole(value as AppAccessRole)}>
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {getAccessRoleOptions().map((option) => (
-                  <SelectItem key={option.value} value={option.value}>
-                    {option.label}
+                {ACCESS_ROLE_VALUES.map((role) => (
+                  <SelectItem key={role} value={role}>
+                    {ACCESS_ROLE_LABELS[role]}
                   </SelectItem>
                 ))}
               </SelectContent>

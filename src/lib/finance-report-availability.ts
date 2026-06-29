@@ -12,7 +12,7 @@ interface FinanceReportAvailabilityInput {
 }
 
 function isManager(member: FinanceAccessMember): boolean {
-  return hasFinanceManagerAccess(member.financeAccessLevel);
+  return hasFinanceManagerAccess(member);
 }
 
 function buildMissingMessageFromStatus(

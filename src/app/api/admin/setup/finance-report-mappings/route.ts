@@ -43,7 +43,7 @@ async function requireFinanceSetupWriteAccess() {
   }
 
   const member = await loadFinanceAccessMember(guard.session.user.id);
-  if (!member || !hasFinanceManagerAccess(member.financeAccessLevel)) {
+  if (!member || !hasFinanceManagerAccess(member)) {
     return {
       ok: false as const,
       response: NextResponse.json(

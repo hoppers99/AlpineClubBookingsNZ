@@ -37,6 +37,8 @@ import { getSeasonYear } from "@/lib/utils";
 
 type BookingBehavior = "MEMBER_RATE" | "NON_MEMBER_RATE" | "BLOCK_BOOKING";
 type SubscriptionBehavior = "REQUIRED" | "NOT_REQUIRED";
+type AgeTier = "INFANT" | "CHILD" | "YOUTH" | "ADULT";
+type XeroContactGroupRuleMode = "MANAGED" | "ACCEPTED";
 
 interface MembershipType {
   id: string;
@@ -49,6 +51,16 @@ interface MembershipType {
   subscriptionBehavior: SubscriptionBehavior;
   sortOrder: number;
   assignmentCount: number;
+  allowedAgeTiers: AgeTier[];
+  xeroContactGroupRules: Array<{
+    id: string;
+    ageTier: AgeTier | null;
+    mode: XeroContactGroupRuleMode;
+    groupId: string;
+    groupName: string | null;
+    isActive: boolean;
+    sortOrder: number;
+  }>;
 }
 
 interface MembershipTypesResponse {

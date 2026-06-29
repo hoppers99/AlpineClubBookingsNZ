@@ -52,6 +52,23 @@ describe("finance auth helpers", () => {
     expect(hasFinanceManagerAccess("NONE")).toBe(false);
   });
 
+  it("allows finance access from access role rows", () => {
+    expect(
+      hasFinanceViewerAccess({
+        role: "MEMBER",
+        financeAccessLevel: "NONE",
+        accessRoles: [{ role: "FINANCE_USER" }],
+      }),
+    ).toBe(true);
+    expect(
+      hasFinanceManagerAccess({
+        role: "MEMBER",
+        financeAccessLevel: "VIEWER",
+        accessRoles: [{ role: "FINANCE_ADMIN" }],
+      }),
+    ).toBe(true);
+  });
+
   it("loads finance access state from Member", async () => {
     mockFindUnique.mockResolvedValue({
       id: "member-1",
@@ -60,6 +77,7 @@ describe("finance auth helpers", () => {
       lastName: "User",
       role: "ADMIN",
       financeAccessLevel: "MANAGER",
+      accessRoles: [{ role: "FINANCE_ADMIN" }],
       active: true,
       forcePasswordChange: false,
     });
@@ -75,6 +93,7 @@ describe("finance auth helpers", () => {
         lastName: true,
         role: true,
         financeAccessLevel: true,
+        accessRoles: { select: { role: true } },
         active: true,
         forcePasswordChange: true,
       },
@@ -92,6 +111,7 @@ describe("finance auth helpers", () => {
       lastName: "Only",
       role: "MEMBER",
       financeAccessLevel: "VIEWER",
+      accessRoles: [{ role: "FINANCE_USER" }],
       active: true,
       forcePasswordChange: false,
     });
@@ -112,6 +132,7 @@ describe("finance auth helpers", () => {
       lastName: "Only",
       role: "MEMBER",
       financeAccessLevel: "VIEWER",
+      accessRoles: [{ role: "FINANCE_USER" }],
       active: true,
       forcePasswordChange: false,
     });
@@ -130,6 +151,7 @@ describe("finance auth helpers", () => {
       lastName: "Finance",
       role: "MEMBER",
       financeAccessLevel: "NONE",
+      accessRoles: [],
       active: true,
       forcePasswordChange: false,
     });

@@ -15,6 +15,7 @@ import { REQUEST_PATH_HEADER } from "@/lib/internal-return-path";
 import { CSP_NONCE_HEADER } from "@/lib/csp";
 import { getLodgeCapacity } from "@/lib/lodge-capacity";
 import { isMemberLevelRole } from "@/lib/member-roles";
+import { hasAccessRole } from "@/lib/access-roles";
 import {
   MEMBER_ONBOARDING_GATE_SELECT,
   shouldShowMemberOnboarding,
@@ -34,11 +35,6 @@ export default async function AuthenticatedLayout({
     redirect(buildLoginPath(requestedPath));
   }
 
-  // LODGE accounts can only access /lodge/* routes
-  if (session.user.role === "LODGE") {
-    redirect("/lodge/kiosk");
-  }
-
   // Check DB directly for force password change and active status (JWT may be stale)
   const member = await prisma.member.findUnique({
     where: { id: session.user.id },
@@ -54,8 +50,18 @@ export default async function AuthenticatedLayout({
     redirect("/change-password");
   }
 
+  // Lodge-only accounts can only access /lodge/* routes. Combined access-role
+  // accounts continue to their requested member or finance workspace.
+  if (
+    hasAccessRole(member, "LODGE") &&
+    !hasAccessRole(member, "USER") &&
+    !hasFinanceViewerAccess(member)
+  ) {
+    redirect("/lodge/kiosk");
+  }
+
   const isHutLeaderActive =
-    isMemberLevelRole(session.user.role)
+    isMemberLevelRole(session.user.role) || hasAccessRole(member, "USER")
       ? await hasActiveHutLeaderAssignment(session.user.id)
       : false;
 
@@ -66,7 +72,10 @@ export default async function AuthenticatedLayout({
   tomorrow.setDate(tomorrow.getDate() + 1);
 
   let isStayingGuest = false;
-  if (isMemberLevelRole(session.user.role) && !isHutLeaderActive) {
+  if (
+    (isMemberLevelRole(session.user.role) || hasAccessRole(member, "USER")) &&
+    !isHutLeaderActive
+  ) {
     const stayingBooking = await prisma.booking.findFirst({
       where: {
         memberId: session.user.id,
@@ -84,7 +93,7 @@ export default async function AuthenticatedLayout({
     name: session.user.name ?? "Member",
     email: session.user.email ?? "",
     role: (session.user as { role?: string }).role ?? "MEMBER",
-    canAccessFinance: hasFinanceViewerAccess(member.financeAccessLevel),
+    canAccessFinance: hasFinanceViewerAccess(member),
     isHutLeader: isHutLeaderActive,
     isStayingGuest,
   };

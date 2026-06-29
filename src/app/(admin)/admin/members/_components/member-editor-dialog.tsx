@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { FinanceAccessLevel } from "@prisma/client";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -27,11 +27,20 @@ import { GENDER_OPTIONS, TITLE_OPTIONS } from "@/lib/member-enums";
 import { MEMBER_SETUP_INVITE_TTL_DAYS } from "@/lib/member-setup-invite";
 import { useXeroEntranceFeeDecision } from "@/lib/admin-xero-entrance-fee";
 import {
+  ACCESS_ROLE_DESCRIPTIONS,
+  ACCESS_ROLE_LABELS,
+  ACCESS_ROLE_VALUES,
+  financeAccessLevelFromAccessRoles,
+  legacyRoleFromAccessRoles,
+  normalizeAssignableAccessRoles,
+  resolveAccessRoles,
+  type AppAccessRole,
+} from "@/lib/access-roles";
+import {
   shouldDefaultPostalSameAsPhysical,
   withDefaultNzCountry,
   type MemberAddressValues,
 } from "@/lib/member-address";
-import { getAccessRoleOptions } from "@/lib/member-roles";
 import {
   linkMemberXeroContact,
   pushMemberToXero,
@@ -68,6 +77,9 @@ interface MemberSaveResponse {
 
 function memberToForm(member: Member | null): MemberForm {
   if (!member) return emptyForm;
+  const accessRoles = member.accessRoles?.length
+    ? member.accessRoles
+    : resolveAccessRoles(member);
 
   return {
     title: member.title || "",
@@ -80,6 +92,7 @@ function memberToForm(member: Member | null): MemberForm {
     phoneNumber: member.phoneNumber || "",
     dateOfBirth: member.dateOfBirth || "",
     role: member.role,
+    accessRoles,
     ageTier: member.ageTier,
     financeAccessLevel: member.financeAccessLevel,
     active: member.active,
@@ -102,6 +115,14 @@ function memberToForm(member: Member | null): MemberForm {
     postalRegion: member.postalRegion || "",
     postalPostalCode: member.postalPostalCode || "",
     postalCountry: withDefaultNzCountry(member.postalCountry),
+  };
+}
+
+function buildAccessRolePatch(accessRoles: AppAccessRole[]) {
+  return {
+    accessRoles,
+    role: legacyRoleFromAccessRoles(accessRoles),
+    financeAccessLevel: financeAccessLevelFromAccessRoles(accessRoles),
   };
 }
 
@@ -436,6 +457,7 @@ export function MemberEditorDialog({
         phoneNumber: form.phoneNumber || null,
         dateOfBirth: form.dateOfBirth || null,
         role: form.role,
+        accessRoles: form.accessRoles,
         ageTier: form.ageTier,
         financeAccessLevel: form.financeAccessLevel,
         active: form.active,
@@ -556,8 +578,33 @@ export function MemberEditorDialog({
       ...current,
       canLogin,
       sendInvite: canLogin ? current.sendInvite : false,
-      financeAccessLevel: canLogin ? current.financeAccessLevel : "NONE",
+      ...buildAccessRolePatch(
+        normalizeAssignableAccessRoles(
+          canLogin
+            ? current.accessRoles.length > 0
+              ? current.accessRoles
+              : ["USER"]
+            : [],
+          { canLogin },
+        ),
+      ),
     }));
+  };
+
+  const toggleAccessRole = (role: AppAccessRole, checked: boolean) => {
+    setForm((current) => {
+      const nextRoles = normalizeAssignableAccessRoles(
+        checked
+          ? [...current.accessRoles, role]
+          : current.accessRoles.filter((value) => value !== role),
+        { canLogin: current.canLogin },
+      );
+
+      return {
+        ...current,
+        ...buildAccessRolePatch(nextRoles),
+      };
+    });
   };
 
   const updateAddressFields = (patch: Partial<MemberAddressValues>) => {
@@ -812,64 +859,41 @@ export function MemberEditorDialog({
               </div>
             )}
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div className="space-y-2">
-                <Label>Role</Label>
-                <Select
-                  value={form.role}
-                  onValueChange={(value) =>
-                    setForm((current) => ({
-                      ...current,
-                      role: value as
-                        | "MEMBER"
-                        | "ADMIN"
-                        | "LODGE"
-                        | "ASSOCIATE"
-                        | "LIFE",
-                    }))
-                  }
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {getAccessRoleOptions(
-                      currentEditingMember?.role ?? form.role,
-                    ).map((option) => (
-                      <SelectItem key={option.value} value={option.value}>
-                        {option.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label>Finance Access</Label>
-                <Select
-                  value={form.financeAccessLevel}
-                  onValueChange={(value) =>
-                    setForm((current) => ({
-                      ...current,
-                      financeAccessLevel: value as FinanceAccessLevel,
-                    }))
-                  }
-                  disabled={!form.canLogin}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="NONE">No Finance Access</SelectItem>
-                    <SelectItem value="VIEWER">Finance Viewer</SelectItem>
-                    <SelectItem value="MANAGER">Finance Manager</SelectItem>
-                  </SelectContent>
-                </Select>
+            <div className="grid grid-cols-1 sm:grid-cols-[2fr_1fr] gap-4">
+              <fieldset className="space-y-3 rounded-md border border-slate-200 p-4">
+                <legend className="px-1 text-sm font-medium">
+                  Access Roles
+                </legend>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {ACCESS_ROLE_VALUES.map((role) => (
+                    <label
+                      key={role}
+                      className="flex items-start gap-3 rounded-md border border-slate-200 p-3"
+                    >
+                      <Checkbox
+                        checked={form.accessRoles.includes(role)}
+                        disabled={!form.canLogin}
+                        onCheckedChange={(checked) =>
+                          toggleAccessRole(role, checked === true)
+                        }
+                      />
+                      <span className="space-y-1">
+                        <span className="block text-sm font-medium">
+                          {ACCESS_ROLE_LABELS[role]}
+                        </span>
+                        <span className="block text-xs text-muted-foreground">
+                          {ACCESS_ROLE_DESCRIPTIONS[role]}
+                        </span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
                 {!form.canLogin && (
                   <p className="text-xs text-muted-foreground">
-                    Finance access only applies to login-enabled members.
+                    Access roles only apply to login-enabled records.
                   </p>
                 )}
-              </div>
+              </fieldset>
               <div className="space-y-2">
                 <Label>Age Tier</Label>
                 <Select

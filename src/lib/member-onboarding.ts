@@ -65,6 +65,7 @@ export const MEMBER_ONBOARDING_GATE_SELECT = {
   ...MEMBER_ONBOARDING_PROFILE_SELECT,
   forcePasswordChange: true,
   financeAccessLevel: true,
+  accessRoles: { select: { role: true } },
 } as const;
 
 export type MemberOnboardingProfile = MemberProfileCompletenessInput & {
@@ -82,6 +83,7 @@ export type MemberOnboardingProfile = MemberProfileCompletenessInput & {
   secondaryParent?: Parameters<typeof buildParentLinks>[0]["secondaryParent"];
   forcePasswordChange?: boolean | null;
   financeAccessLevel?: string | null;
+  accessRoles?: Array<{ role: string }> | null;
 };
 
 function toDateInputValue(value: Date | string | null | undefined) {

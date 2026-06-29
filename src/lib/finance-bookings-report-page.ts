@@ -276,7 +276,7 @@ export async function buildFinanceBookingsReportPageModel(input: {
   });
 
   const queryString = buildFinanceBookingsReportQueryString(filters);
-  const isManager = hasFinanceManagerAccess(input.member.financeAccessLevel);
+  const isManager = hasFinanceManagerAccess(input.member);
 
   try {
     const metrics = await getFinanceBookingMetrics({

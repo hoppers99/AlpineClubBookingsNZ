@@ -238,36 +238,39 @@ Address autocomplete is an optional Addy-backed public proxy module. It defaults
 off, is gated by Admin Modules and `src/proxy.ts` before route handlers run, and
 never replaces manual address entry.
 
-Member roles (`Member.role`) split into three groups. `MEMBER`, `ASSOCIATE`, and
-`LIFE` are member-level roles with ordinary member access; `ADMIN` and `LODGE` are
-operational roles with elevated access. `NON_MEMBER` and `SCHOOL` are non-member
-categories created by the booking-request flows for non-login records (school
-contacts and teachers become `SCHOOL`; general public booking-request contacts
-become `NON_MEMBER`). The non-member roles grant no access, are excluded from
-member rosters and roster filters, and are exempt from membership subscriptions
-(`roleNeverRequiresSubscription` in `src/lib/member-subscription-defaults.ts`).
-The canonical role constants and helpers live in `src/lib/member-roles.ts`.
+Access roles live in `MemberAccessRole` and are the normalized login/permission
+axis: `USER`, `ADMIN`, `LODGE`, `FINANCE_USER`, `FINANCE_ADMIN`, and `ORG`.
+`Member.role` and `Member.financeAccessLevel` remain synchronized
+compatibility fields for older route guards and sessions while the app drains
+legacy assumptions. Non-login records simply have no access-role rows. The
+canonical access-role constants and compatibility helpers live in
+`src/lib/access-roles.ts`; legacy role constants stay in `src/lib/member-roles.ts`
+for old imports and provider-created non-member records.
 
 Seasonal membership types are policy records, not access roles. `MembershipType`
 stores the stable identifier, display text, active/archive state, sort order,
-booking behavior, and subscription behavior for built-in and admin-defined
-types. `SeasonalMembershipAssignment` records a member's type for a membership
-`seasonYear`. The initial backfill maps existing roles to current-season
-assignments. Admin changes to an individual member's seasonal type go through a
-preview that reports affected future confirmed bookings, draft bookings,
-waitlist records, current subscription state, and recent subscription history,
-then require an admin reason before the audited save. The membership-type
-settings page can roll assignments forward from one season to another
-idempotently, skipping existing target-season assignments and reporting missing
-or inactive-type exceptions. Booking pricing and booking gates resolve the
-member's effective seasonal type for the booking season: `MEMBER_RATE` uses
-normal member rates, `NON_MEMBER_RATE` uses non-member nightly rates while
-preserving member identity, and `BLOCK_BOOKING` returns a structured policy
-error before the booking is created or repriced. Subscription displays and
-booking lockout also resolve the seasonal type: `NOT_REQUIRED` is an effective
-status layered over the raw `MemberSubscription`/Xero history, which remains
-stored and visible for audit. Seasonal type changes do not automatically
-reprice existing future bookings. Committee assignments remain separate
+booking behavior, subscription behavior, allowed age tiers, and optional Xero
+contact-group rules for built-in and admin-defined types. The built-ins are
+Full, Associate, Life, School, Non-Member, and Family; Associate is the single
+Associate/Reserve-style built-in and can be renamed by the club. Age tiers stay
+separate because the same tier can appear under several membership types.
+`SeasonalMembershipAssignment` records a member's type for a membership
+`seasonYear` plus assignment source. The initial backfill maps existing legacy
+roles to current-season assignments. Admin changes to an individual member's
+seasonal type go through a preview that reports affected future confirmed
+bookings, draft bookings, waitlist records, current subscription state, and
+recent subscription history, then require an admin reason before the audited
+save. The membership-type settings page can roll assignments forward from one
+season to another idempotently, skipping existing target-season assignments and
+reporting missing or inactive-type exceptions. Booking pricing and booking
+gates resolve the member's effective seasonal type for the booking season:
+`MEMBER_RATE` uses normal member rates, `NON_MEMBER_RATE` uses non-member
+nightly rates while preserving member identity, and `BLOCK_BOOKING` returns a
+structured policy error before the booking is created or repriced. Subscription
+displays and booking lockout also resolve the seasonal type: `NOT_REQUIRED` is
+an effective status layered over the raw `MemberSubscription`/Xero history,
+which remains stored and visible for audit. Seasonal type changes do not
+automatically reprice existing future bookings. Committee assignments remain separate
 public/contact metadata. `CommitteeRole` stores reusable master positions and
 `CommitteeAssignment` links members to those positions with blurb, sort order,
 published, show-phone, contactable, and active flags. The public committee API

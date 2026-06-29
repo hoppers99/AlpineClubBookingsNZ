@@ -61,18 +61,21 @@ dependent changes must preserve financial history, booking and guest history,
 audit history, required family/dependent history, privacy preferences, and Xero
 contact/link history where required.
 
-Access role, seasonal membership type, and committee assignment are separate
-axes. `Member.role` controls application access, `SeasonalMembershipAssignment`
-stores per-season membership policy, and committee assignment controls public
-committee/contact presentation only. The `Member.role` axis also carries two
-non-member classification values, `NON_MEMBER` and `SCHOOL`, used by the
-booking-request flows for non-login records; these grant no access, stay out of
-member rosters, and never owe a subscription. Do not add committee positions to
-`Member.role`. `CommitteeRole` master records and `CommitteeAssignment`
-member links can be active/inactive independently of access role and seasonal
-membership type, and newly linked assignments are hidden until explicitly
-published by an admin. Booking pricing, booking block checks, and effective
-subscription lockout may depend on the member's seasonal membership type for the
+Access role, seasonal membership type, age tier, Xero contact-group rule, and
+committee assignment are separate axes. `MemberAccessRole` controls application
+access (`USER`, `ADMIN`, `LODGE`, `FINANCE_USER`, `FINANCE_ADMIN`, `ORG`);
+`Member.role` and `financeAccessLevel` are compatibility fields and must not be
+used for new category semantics. `SeasonalMembershipAssignment` stores
+per-season membership policy, including the source of the assignment. Age tiers
+remain separate because the same tier can be Full, Life, Associate, Family,
+School, or another configured type. Committee assignment controls public
+committee/contact presentation only. Do not add committee positions to access
+roles or `Member.role`. `CommitteeRole` master records and
+`CommitteeAssignment` member links can be active/inactive independently of
+access role and seasonal membership type, and newly linked assignments are
+hidden until explicitly published by an admin. Booking pricing, booking block
+checks, and effective subscription lockout may depend on the member's seasonal
+membership type for the
 booking season; application access and committee presentation must not.
 Seasonal membership type changes require a guarded admin preview and reasoned
 audit record. Existing future bookings are not automatically repriced by a type

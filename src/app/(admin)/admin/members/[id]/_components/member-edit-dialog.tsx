@@ -2,6 +2,7 @@
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -27,13 +28,28 @@ import { MemberAddressFields } from "@/components/member-address-fields";
 import type { XeroSearchResult } from "@/components/admin/xero-suggested-contact-card";
 import { getMissingFieldsForXeroCreate } from "@/lib/admin-member-detail-helpers";
 import type { MemberAddressValues } from "@/lib/member-address";
-import { getAccessRoleOptions } from "@/lib/member-roles";
-import type { FinanceAccessLevel } from "@prisma/client";
+import {
+  ACCESS_ROLE_DESCRIPTIONS,
+  ACCESS_ROLE_LABELS,
+  ACCESS_ROLE_VALUES,
+  financeAccessLevelFromAccessRoles,
+  legacyRoleFromAccessRoles,
+  normalizeAssignableAccessRoles,
+  type AppAccessRole,
+} from "@/lib/access-roles";
 import type {
   EditForm,
   EmailInheritanceSearchResult,
   MemberDetail,
 } from "../_types";
+
+function buildAccessRolePatch(accessRoles: AppAccessRole[]) {
+  return {
+    accessRoles,
+    role: legacyRoleFromAccessRoles(accessRoles),
+    financeAccessLevel: financeAccessLevelFromAccessRoles(accessRoles),
+  };
+}
 
 interface MemberEditDialogProps {
   open: boolean;
@@ -121,6 +137,22 @@ export function MemberEditDialog({
   onSubmit,
 }: MemberEditDialogProps) {
   const { showTitle, showGender, showOccupation } = useMemberFieldsSettings();
+  const toggleAccessRole = (role: AppAccessRole, checked: boolean) => {
+    onChangeForm((current) => {
+      const nextRoles = normalizeAssignableAccessRoles(
+        checked
+          ? [...current.accessRoles, role]
+          : current.accessRoles.filter((value) => value !== role),
+        { canLogin: current.canLogin },
+      );
+
+      return {
+        ...current,
+        ...buildAccessRolePatch(nextRoles),
+      };
+    });
+  };
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
@@ -149,9 +181,16 @@ export function MemberEditDialog({
                 onChangeForm((f) => ({
                   ...f,
                   canLogin: e.target.checked,
-                  financeAccessLevel: e.target.checked
-                    ? f.financeAccessLevel
-                    : "NONE",
+                  ...buildAccessRolePatch(
+                    normalizeAssignableAccessRoles(
+                      e.target.checked
+                        ? f.accessRoles.length > 0
+                          ? f.accessRoles
+                          : ["USER"]
+                        : [],
+                      { canLogin: e.target.checked },
+                    ),
+                  ),
                 }))
               }
               className="h-4 w-4 rounded border-gray-300"
@@ -528,63 +567,46 @@ export function MemberEditDialog({
             )}
           </fieldset>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="space-y-2">
-              <Label>Role</Label>
-              <Select
-                value={form.role}
-                onValueChange={(v) =>
-                  onChangeForm((f) => ({
-                    ...f,
-                    role: v as EditForm["role"],
-                  }))
-                }
-                disabled={isSelf}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {getAccessRoleOptions(form.role).map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+          <div className="grid grid-cols-1 sm:grid-cols-[2fr_1fr] gap-4">
+            <fieldset className="space-y-3 rounded-md border border-slate-200 p-4">
+              <legend className="px-1 text-sm font-medium">
+                Access Roles
+              </legend>
+              <div className="grid gap-3 sm:grid-cols-2">
+                {ACCESS_ROLE_VALUES.map((role) => (
+                  <label
+                    key={role}
+                    className="flex items-start gap-3 rounded-md border border-slate-200 p-3"
+                  >
+                    <Checkbox
+                      checked={form.accessRoles.includes(role)}
+                      disabled={isSelf || !form.canLogin}
+                      onCheckedChange={(checked) =>
+                        toggleAccessRole(role, checked === true)
+                      }
+                    />
+                    <span className="space-y-1">
+                      <span className="block text-sm font-medium">
+                        {ACCESS_ROLE_LABELS[role]}
+                      </span>
+                      <span className="block text-xs text-muted-foreground">
+                        {ACCESS_ROLE_DESCRIPTIONS[role]}
+                      </span>
+                    </span>
+                  </label>
+                ))}
+              </div>
               {isSelf && (
                 <p className="text-xs text-muted-foreground">
-                  You cannot change your own role.
+                  You cannot change your own access roles.
                 </p>
               )}
-            </div>
-            <div className="space-y-2">
-              <Label>Finance Access</Label>
-              <Select
-                value={form.financeAccessLevel}
-                onValueChange={(v) =>
-                  onChangeForm((f) => ({
-                    ...f,
-                    financeAccessLevel: v as FinanceAccessLevel,
-                  }))
-                }
-                disabled={!form.canLogin}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="NONE">No Finance Access</SelectItem>
-                  <SelectItem value="VIEWER">Finance Viewer</SelectItem>
-                  <SelectItem value="MANAGER">Finance Manager</SelectItem>
-                </SelectContent>
-              </Select>
               {!form.canLogin && (
                 <p className="text-xs text-muted-foreground">
-                  Finance access only applies to login-enabled members.
+                  Access roles only apply to login-enabled records.
                 </p>
               )}
-            </div>
+            </fieldset>
             <div className="space-y-2">
               <Label>Age Tier</Label>
               <Select

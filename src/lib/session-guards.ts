@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
+import { hasAdminAccess } from "@/lib/access-roles";
 import { prisma } from "@/lib/prisma";
 
 type SessionUser = {
@@ -56,16 +57,45 @@ export async function requireAdmin(
       response: options.unauthenticatedResponse?.() ?? unauthorizedResponse(),
     };
   }
-  if (session.user.role !== "ADMIN") {
+
+  const member = await prisma.member.findUnique({
+    where: { id: session.user.id },
+    select: {
+      role: true,
+      financeAccessLevel: true,
+      active: true,
+      forcePasswordChange: true,
+      accessRoles: { select: { role: true } },
+    },
+  });
+
+  if (!member?.active) {
+    return {
+      ok: false,
+      response: NextResponse.json(
+        { error: "Account is deactivated" },
+        { status: 403 }
+      ),
+    };
+  }
+
+  if (!hasAdminAccess(member)) {
     return {
       ok: false,
       response: options.forbiddenResponse?.() ?? forbiddenResponse(),
     };
   }
-  const inactive = await requireActiveSessionUser(session.user.id);
-  if (inactive) {
-    return { ok: false, response: inactive };
+
+  if (member.forcePasswordChange) {
+    return {
+      ok: false,
+      response: NextResponse.json(
+        { error: "Password change required" },
+        { status: 403 }
+      ),
+    };
   }
+
   return { ok: true, session: { user: session.user as SessionUser } };
 }
 

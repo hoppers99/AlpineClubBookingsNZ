@@ -43,7 +43,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(buildAbsoluteUrl(request, "/change-password"));
   }
 
-  if (!hasFinanceViewerAccess(member.financeAccessLevel)) {
+  if (!hasFinanceViewerAccess(member)) {
     return NextResponse.redirect(buildAbsoluteUrl(request, "/dashboard"));
   }
 

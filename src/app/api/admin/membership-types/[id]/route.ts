@@ -26,6 +26,22 @@ const membershipTypeSelect = {
   sortOrder: true,
   createdAt: true,
   updatedAt: true,
+  allowedAgeTiers: {
+    select: { ageTier: true },
+    orderBy: { ageTier: "asc" },
+  },
+  xeroContactGroupRules: {
+    select: {
+      id: true,
+      ageTier: true,
+      mode: true,
+      groupId: true,
+      groupName: true,
+      isActive: true,
+      sortOrder: true,
+    },
+    orderBy: [{ sortOrder: "asc" }, { groupName: "asc" }, { groupId: "asc" }],
+  },
   _count: { select: { assignments: true } },
 } satisfies Prisma.MembershipTypeSelect;
 

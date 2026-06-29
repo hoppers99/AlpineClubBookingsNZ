@@ -203,7 +203,7 @@ export async function buildFinanceBalanceSheetReportPageModel(input: {
     searchParams: input.searchParams,
   });
   const reportHref = buildFinanceBalanceSheetReportHref(filters);
-  const isManager = hasFinanceManagerAccess(input.member.financeAccessLevel);
+  const isManager = hasFinanceManagerAccess(input.member);
 
   try {
     const snapshots = await listFinanceSnapshots({

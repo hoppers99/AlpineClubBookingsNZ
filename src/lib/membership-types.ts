@@ -1,8 +1,10 @@
 import type {
+  AgeTier,
   MembershipTypeBookingBehavior,
   MembershipTypeSubscriptionBehavior,
   Prisma,
   Role,
+  XeroContactGroupRuleMode,
 } from "@prisma/client";
 import { getSeasonYear } from "@/lib/utils";
 
@@ -32,19 +34,10 @@ export const BUILT_IN_MEMBERSHIP_TYPES = [
     key: "ASSOCIATE",
     name: "Associate",
     description:
-      "Associate membership starts with non-member booking-rate policy until enforcement is enabled.",
+      "Associate or reserve-style membership. Clubs can rename this label without changing policy.",
     bookingBehavior: "NON_MEMBER_RATE",
     subscriptionBehavior: "REQUIRED",
     sortOrder: 1,
-  },
-  {
-    key: "RESERVE",
-    name: "Reserve",
-    description:
-      "Reserve membership starts with booking blocked until enforcement is enabled.",
-    bookingBehavior: "BLOCK_BOOKING",
-    subscriptionBehavior: "REQUIRED",
-    sortOrder: 2,
   },
   {
     key: "LIFE",
@@ -53,7 +46,34 @@ export const BUILT_IN_MEMBERSHIP_TYPES = [
       "Life membership starts with member booking-rate policy and no annual subscription requirement.",
     bookingBehavior: "MEMBER_RATE",
     subscriptionBehavior: "NOT_REQUIRED",
+    sortOrder: 2,
+  },
+  {
+    key: "SCHOOL",
+    name: "School",
+    description:
+      "School or education-organisation booking contact. Does not grant member access or annual subscription obligations.",
+    bookingBehavior: "NON_MEMBER_RATE",
+    subscriptionBehavior: "NOT_REQUIRED",
     sortOrder: 3,
+  },
+  {
+    key: "NON_MEMBER",
+    name: "Non-Member",
+    description:
+      "General public or guest contact. Does not grant member access or annual subscription obligations.",
+    bookingBehavior: "NON_MEMBER_RATE",
+    subscriptionBehavior: "NOT_REQUIRED",
+    sortOrder: 4,
+  },
+  {
+    key: "FAMILY",
+    name: "Family",
+    description:
+      "Membership granted through a family subscription or explicit family assignment.",
+    bookingBehavior: "MEMBER_RATE",
+    subscriptionBehavior: "REQUIRED",
+    sortOrder: 5,
   },
 ] as const satisfies ReadonlyArray<{
   key: string;
@@ -71,6 +91,23 @@ export const BUILT_IN_MEMBERSHIP_TYPE_KEYS = BUILT_IN_MEMBERSHIP_TYPES.map(
 export type BuiltInMembershipTypeKey =
   (typeof BUILT_IN_MEMBERSHIP_TYPES)[number]["key"];
 
+export const LEGACY_MEMBERSHIP_TYPE_KEY_ALIASES = {
+  RESERVE: "ASSOCIATE",
+} as const satisfies Record<string, BuiltInMembershipTypeKey>;
+const LEGACY_MEMBERSHIP_TYPE_KEY_ALIAS_MAP: Record<
+  string,
+  BuiltInMembershipTypeKey
+> = LEGACY_MEMBERSHIP_TYPE_KEY_ALIASES;
+
+export const BUILT_IN_MEMBERSHIP_TYPE_ALLOWED_AGE_TIERS = {
+  FULL: ["INFANT", "CHILD", "YOUTH", "ADULT"],
+  ASSOCIATE: ["ADULT"],
+  LIFE: ["ADULT"],
+  SCHOOL: ["CHILD", "YOUTH", "ADULT"],
+  NON_MEMBER: ["INFANT", "CHILD", "YOUTH", "ADULT"],
+  FAMILY: ["INFANT", "CHILD", "YOUTH", "ADULT"],
+} as const satisfies Record<BuiltInMembershipTypeKey, readonly AgeTier[]>;
+
 type MembershipTypeWithAssignmentCount = {
   id: string;
   key: string;
@@ -83,6 +120,16 @@ type MembershipTypeWithAssignmentCount = {
   sortOrder: number;
   createdAt: Date;
   updatedAt: Date;
+  allowedAgeTiers?: Array<{ ageTier: AgeTier }>;
+  xeroContactGroupRules?: Array<{
+    id: string;
+    ageTier: AgeTier | null;
+    mode: XeroContactGroupRuleMode;
+    groupId: string;
+    groupName: string | null;
+    isActive: boolean;
+    sortOrder: number;
+  }>;
   _count?: {
     assignments: number;
   };
@@ -128,6 +175,15 @@ interface MembershipTypeSeedClient {
       skipDuplicates: true;
     }): Promise<{ count: number }>;
   };
+  membershipTypeAgeTier?: {
+    createMany(args: {
+      data: Array<{
+        membershipTypeId: string;
+        ageTier: AgeTier;
+      }>;
+      skipDuplicates: true;
+    }): Promise<{ count: number }>;
+  };
 }
 
 export function serializeMembershipType(type: MembershipTypeWithAssignmentCount) {
@@ -144,6 +200,16 @@ export function serializeMembershipType(type: MembershipTypeWithAssignmentCount)
     createdAt: type.createdAt.toISOString(),
     updatedAt: type.updatedAt.toISOString(),
     assignmentCount: type._count?.assignments ?? 0,
+    allowedAgeTiers: (type.allowedAgeTiers ?? []).map((item) => item.ageTier),
+    xeroContactGroupRules: (type.xeroContactGroupRules ?? []).map((rule) => ({
+      id: rule.id,
+      ageTier: rule.ageTier,
+      mode: rule.mode,
+      groupId: rule.groupId,
+      groupName: rule.groupName,
+      isActive: rule.isActive,
+      sortOrder: rule.sortOrder,
+    })),
   };
 }
 
@@ -199,13 +265,26 @@ export async function buildUniqueMembershipTypeKey(
 export function defaultMembershipTypeKeyForRole(
   role: Role | string,
 ): BuiltInMembershipTypeKey {
-  if (role === "ASSOCIATE") {
+  if (role === "ASSOCIATE" || role === "RESERVE") {
     return "ASSOCIATE";
   }
   if (role === "LIFE") {
     return "LIFE";
   }
+  if (role === "SCHOOL") {
+    return "SCHOOL";
+  }
+  if (role === "NON_MEMBER") {
+    return "NON_MEMBER";
+  }
   return "FULL";
+}
+
+export function canonicalMembershipTypeKey(
+  key: string | null | undefined,
+): string | null {
+  if (!key) return null;
+  return LEGACY_MEMBERSHIP_TYPE_KEY_ALIAS_MAP[key] ?? key;
 }
 
 export async function ensureBuiltInMembershipTypes(
@@ -225,6 +304,28 @@ export async function ensureBuiltInMembershipTypes(
         subscriptionBehavior: type.subscriptionBehavior,
         sortOrder: type.sortOrder,
       },
+    });
+  }
+
+  if (!db.membershipTypeAgeTier) return;
+
+  const seededTypes = await db.membershipType.findMany({
+    where: { key: { in: [...BUILT_IN_MEMBERSHIP_TYPE_KEYS] } },
+    select: { id: true, key: true },
+  });
+  const allowedAgeTierRows = seededTypes.flatMap((type) =>
+    BUILT_IN_MEMBERSHIP_TYPE_ALLOWED_AGE_TIERS[
+      type.key as BuiltInMembershipTypeKey
+    ].map((ageTier) => ({
+      membershipTypeId: type.id,
+      ageTier,
+    })),
+  );
+
+  if (allowedAgeTierRows.length > 0) {
+    await db.membershipTypeAgeTier.createMany({
+      data: allowedAgeTierRows,
+      skipDuplicates: true,
     });
   }
 }

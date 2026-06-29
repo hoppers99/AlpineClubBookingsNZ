@@ -11,6 +11,7 @@ import type {
   ParentLinkSummary,
 } from "@/lib/admin-member-detail-helpers";
 import type { MemberAddressValues } from "@/lib/member-address";
+import type { AppAccessRole } from "@/lib/access-roles";
 import type { AppRole } from "@/lib/member-roles";
 
 export interface MemberDeleteEligibilityBlocker {
@@ -181,6 +182,7 @@ export interface MemberDetail {
   phoneNumber: string | null;
   dateOfBirth: string | null;
   role: AppRole;
+  accessRoles: AppAccessRole[];
   ageTier: string;
   financeAccessLevel: FinanceAccessLevel;
   active: boolean;
@@ -280,6 +282,7 @@ export interface EditForm {
   occupation: string;
   comments: string;
   role: AppRole;
+  accessRoles: AppAccessRole[];
   ageTier: string;
   financeAccessLevel: FinanceAccessLevel;
   active: boolean;

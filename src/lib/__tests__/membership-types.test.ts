@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BUILT_IN_MEMBERSHIP_TYPES,
   backfillCurrentSeasonMembershipAssignments,
+  canonicalMembershipTypeKey,
   defaultMembershipTypeKeyForRole,
   ensureBuiltInMembershipTypes,
   normalizeMembershipTypeKey,
@@ -22,8 +23,13 @@ function makeDb() {
         { id: "type-full", key: "FULL" },
         { id: "type-associate", key: "ASSOCIATE" },
         { id: "type-life", key: "LIFE" },
-        { id: "type-reserve", key: "RESERVE" },
+        { id: "type-school", key: "SCHOOL" },
+        { id: "type-non-member", key: "NON_MEMBER" },
+        { id: "type-family", key: "FAMILY" },
       ]),
+    },
+    membershipTypeAgeTier: {
+      createMany: vi.fn().mockResolvedValue({ count: 17 }),
     },
     member: {
       findMany: vi.fn().mockResolvedValue([
@@ -32,10 +38,12 @@ function makeDb() {
         { id: "lodge-1", role: "LODGE" },
         { id: "associate-1", role: "ASSOCIATE" },
         { id: "life-1", role: "LIFE" },
+        { id: "school-1", role: "SCHOOL" },
+        { id: "non-member-1", role: "NON_MEMBER" },
       ]),
     },
     seasonalMembershipAssignment: {
-      createMany: vi.fn().mockResolvedValue({ count: 5 }),
+      createMany: vi.fn().mockResolvedValue({ count: 7 }),
     },
   };
 }
@@ -112,6 +120,18 @@ describe("built-in membership type seed helpers", () => {
         }),
       });
     }
+    expect(BUILT_IN_MEMBERSHIP_TYPES.map((type) => type.key)).toEqual([
+      "FULL",
+      "ASSOCIATE",
+      "LIFE",
+      "SCHOOL",
+      "NON_MEMBER",
+      "FAMILY",
+    ]);
+    expect(BUILT_IN_MEMBERSHIP_TYPES.map((type) => type.key)).not.toContain(
+      "RESERVE",
+    );
+    expect(db.membershipTypeAgeTier.createMany).toHaveBeenCalledTimes(2);
   });
 
   it("maps existing roles to current-season membership assignments without overwriting", async () => {
@@ -119,7 +139,7 @@ describe("built-in membership type seed helpers", () => {
 
     const result = await backfillCurrentSeasonMembershipAssignments(db, 2026);
 
-    expect(result).toEqual({ createdCount: 5, seasonYear: 2026 });
+    expect(result).toEqual({ createdCount: 7, seasonYear: 2026 });
     expect(db.seasonalMembershipAssignment.createMany).toHaveBeenCalledWith({
       data: [
         { memberId: "member-1", seasonYear: 2026, membershipTypeId: "type-full" },
@@ -131,6 +151,16 @@ describe("built-in membership type seed helpers", () => {
           membershipTypeId: "type-associate",
         },
         { memberId: "life-1", seasonYear: 2026, membershipTypeId: "type-life" },
+        {
+          memberId: "school-1",
+          seasonYear: 2026,
+          membershipTypeId: "type-school",
+        },
+        {
+          memberId: "non-member-1",
+          seasonYear: 2026,
+          membershipTypeId: "type-non-member",
+        },
       ],
       skipDuplicates: true,
     });
@@ -141,7 +171,11 @@ describe("built-in membership type seed helpers", () => {
     expect(defaultMembershipTypeKeyForRole("ADMIN")).toBe("FULL");
     expect(defaultMembershipTypeKeyForRole("LODGE")).toBe("FULL");
     expect(defaultMembershipTypeKeyForRole("ASSOCIATE")).toBe("ASSOCIATE");
+    expect(defaultMembershipTypeKeyForRole("RESERVE")).toBe("ASSOCIATE");
     expect(defaultMembershipTypeKeyForRole("LIFE")).toBe("LIFE");
+    expect(defaultMembershipTypeKeyForRole("SCHOOL")).toBe("SCHOOL");
+    expect(defaultMembershipTypeKeyForRole("NON_MEMBER")).toBe("NON_MEMBER");
+    expect(canonicalMembershipTypeKey("RESERVE")).toBe("ASSOCIATE");
   });
 
   it("derives stable custom keys without relying on display words for policy", () => {

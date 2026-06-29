@@ -19,7 +19,7 @@ export default async function FinanceLayout({
 }) {
   const member = await requireFinanceViewer("/finance");
   const fullName = `${member.firstName} ${member.lastName}`.trim() || "Member";
-  const isManager = hasFinanceManagerAccess(member.financeAccessLevel);
+  const isManager = hasFinanceManagerAccess(member);
   const [effectiveModules, lodgeCapacity] = await Promise.all([
     loadEffectiveModuleFlags(),
     getLodgeCapacity(),

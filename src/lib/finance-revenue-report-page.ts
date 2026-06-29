@@ -185,7 +185,7 @@ export async function buildFinanceRevenueReportPageModel(input: {
     searchParams: input.searchParams,
   });
   const reportHref = buildFinanceRevenueReportHref(filters);
-  const isManager = hasFinanceManagerAccess(input.member.financeAccessLevel);
+  const isManager = hasFinanceManagerAccess(input.member);
 
   try {
     const snapshots = await listFinanceSnapshots({
