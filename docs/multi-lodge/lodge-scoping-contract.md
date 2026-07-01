@@ -28,13 +28,27 @@ sequencing):
 | `BookingRequestSettings` | per-lodge row | converted from singleton |
 | Lodge identity fields (`lodgeName`, `doorCode`, `lodgeTravelNote`) | move to `Lodge` / per-lodge settings | currently on the `EmailMessageSetting` singleton |
 
-Pending ADR-001 open question 3 (owner decision), these may be lodge-scoped
-or stay club-wide: `CancellationPolicy`, `MinimumStayPolicy`,
-`BookingPeriod`.
+## Club-Wide Defaults With Per-Lodge Overrides
 
-Optional lodge scope (nullable `lodgeId`, null = club-wide), added in later
-phases: `PromoCode` (phase 6), member booking eligibility and staff lodge
-access via a new junction table (phase 4).
+`CancellationPolicy`, `MinimumStayPolicy`, and `BookingPeriod` gain a
+nullable `lodgeId` (ADR-001 resolved question 3). Resolution rule: rows
+with null `lodgeId` are the club-wide defaults; if any rows exist for a
+lodge, that lodge uses its rows instead of — never merged with — the
+club-wide set for that policy type. Service code resolves a lodge's
+policy through one shared helper so the replace-not-merge rule cannot
+drift between the three policy types.
+
+## Optional Lodge Restrictions
+
+- `PromoCode`: restricted via a `PromoCodeLodge` junction table (phase 6),
+  because a promo may apply at several lodges but not all. No junction
+  rows = redeemable at every lodge.
+- Member booking eligibility and lodge-operational staff access share a
+  junction table (working name `MemberLodgeAccess`, phase 4). Eligibility
+  is default-open: no restriction rows means a member can book every
+  active lodge. Staff scoping binds hut-leader assignments, kiosk
+  devices, and PIN sessions to one lodge. `ADMIN` access is club-wide and
+  never lodge-filtered.
 
 ## Club-Wide Models (No Lodge Dimension)
 

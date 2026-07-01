@@ -17,10 +17,16 @@ lifted.
   requested room all match the booking's lodge; mismatches rejected
 - single-lodge default resolution: APIs called without `lodgeId` while
   one lodge exists resolve to that lodge
+- policy override resolution (phase 2): a lodge with override rows uses
+  them instead of the club-wide set; a lodge without overrides falls
+  back to club-wide; overrides never merge with defaults
 - lodge access/eligibility helpers (phase 4): staff scoped to a lodge,
-  member eligibility default-open and restricted cases
+  member eligibility default-open and restricted cases, `ADMIN` never
+  lodge-filtered
 - chore/roster generation filtered per lodge (phase 5)
-- promo validation against booking lodge (phase 6)
+- promo lodge restriction (phase 6): no junction rows redeemable
+  everywhere; restricted promo accepted at each listed lodge and
+  rejected at unlisted lodges
 
 ### Integration Tests
 

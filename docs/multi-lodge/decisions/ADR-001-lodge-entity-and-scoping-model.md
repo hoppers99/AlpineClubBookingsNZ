@@ -2,8 +2,7 @@
 
 ## Status
 
-Proposed. Open questions below need an owner decision before phase 2
-(schema and migration) starts.
+Accepted (owner decisions recorded 2026-07-02; see Resolved Questions).
 
 ## Context
 
@@ -66,9 +65,17 @@ phase 2, not invented fresh here.
 
 ### Scoping changes
 
-- Add `lodgeId` (FK to `Lodge`) to: `LodgeRoom`, `Locker`, `Season`,
-  `Booking`, `CancellationPolicy`, `BookingPeriod`, `MinimumStayPolicy`,
-  `ChoreTemplate`.
+- Add required `lodgeId` (FK to `Lodge`) to: `LodgeRoom`, `Locker`,
+  `Season`, `Booking`, `ChoreTemplate`.
+- Add optional `lodgeId` to the policy tables (`CancellationPolicy`,
+  `BookingPeriod`, `MinimumStayPolicy`) implementing the club-wide-with-
+  override pattern from Resolved Question 3: rows with null `lodgeId` are
+  the club-wide defaults; if any rows exist for a lodge, that lodge uses
+  its rows *instead of* (not merged with) the club-wide set for that
+  policy type. Uniqueness becomes `[lodgeId, ...]`; note PostgreSQL
+  treats nulls as distinct in unique indexes, so the club-wide partition
+  needs a partial unique index (`WHERE "lodgeId" IS NULL`) to keep
+  today's guarantee.
   - `Booking.lodgeId` is added directly rather than derived only through
     `requestedRoomId`, since capacity and availability queries need to
     filter by lodge without a join on every call.
@@ -81,10 +88,10 @@ phase 2, not invented fresh here.
 - Move the lodge-identity fields (`lodgeName`, `doorCode`,
   `lodgeTravelNote`) off `EmailMessageSetting` and onto `Lodge` or a
   per-lodge settings table.
-- Re-scope global uniqueness to `[lodgeId, ...]`: `LodgeRoom.name`,
-  `Locker.name`, `CancellationPolicy.daysBeforeStay`. `SeasonRate` keeps its
-  existing `[seasonId, ageTier, isMember]` uniqueness, since `seasonId`
-  already carries the lodge scope transitively.
+- Re-scope global uniqueness to `[lodgeId, ...]`: `LodgeRoom.name` and
+  `Locker.name`. `SeasonRate` keeps its existing
+  `[seasonId, ageTier, isMember]` uniqueness, since `seasonId` already
+  carries the lodge scope transitively.
 - Xero/finance mappings (`XeroAccountMapping`, `XeroItemCodeMapping`) stay
   club-wide. They key off age tier, season type, and membership status, not
   property, and splitting them is additive later (Xero tracking categories)
@@ -142,33 +149,33 @@ its own review pass given the money- and capacity-critical invariants in
   verification that no cross-lodge name collisions exist before the
   constraint is added.
 
-## Open Questions
+## Resolved Questions
 
-These need an owner decision before phase 2 starts. Recommendations are
-included but not assumed.
+Owner decisions, 2026-07-02:
 
-1. **Can one booking span more than one lodge?** Recommendation: no — pin
-   `Booking.lodgeId` to exactly one lodge. Model any case where a family or
-   group needs both lodges as linked bookings through the existing
-   `GroupBooking` parent/child mechanism, not as a single multi-lodge
-   booking.
-2. **Member booking eligibility.** Should every active member be able to
-   book every lodge by default, with an optional admin-configured
-   restriction, or should eligibility default-deny until explicitly
-   granted? Recommendation: default-open, matching today's zero-friction
-   booking, with an optional per-member or per-membership-type allowlist
-   for the case of a lodge reserved for part of the club.
-3. **Do cancellation policy, minimum-stay policy, and booking periods
-   actually need to vary per lodge**, or can they stay club-wide (no
-   `lodgeId`) to reduce scope? Recommendation: confirm with the treasurer/
-   committee whether real policy differences across lodges are anticipated;
-   if not, drop `lodgeId` from these three tables and keep them club-wide.
-4. **Promo code scope.** Should promo codes default to club-wide
-   (redeemable at any lodge) with an optional lodge restriction? Recommendation: yes, same
-   pattern as member eligibility (#2), added in phase 6.
-5. **Staff (`LODGE` role) access scoping.** Should staff access move to a
-   per-lodge junction (e.g. "hut leader at lodge A only") in the same phase
-   as member eligibility, or can it stay a flat club-wide role for now and
-   be scoped later if it becomes an operational problem? Recommendation:
-   scope it in phase 4 alongside member eligibility, since the same
-   `MemberLodgeRole`-shaped junction table likely serves both.
+1. **One booking = one lodge.** `Booking.lodgeId` is required and
+   singular. A family or group wanting both lodges makes linked bookings
+   through the existing `GroupBooking` parent/child mechanism, never a
+   single multi-lodge booking.
+2. **Member booking eligibility is default-open with optional
+   restriction.** Every active member can book every active lodge unless
+   an admin configures a restriction (per member or per membership type).
+   Restriction machinery lands in phase 4; nothing needs configuring for
+   the default behaviour.
+3. **Booking policies are club-wide by default with per-lodge overrides.**
+   `CancellationPolicy`, `MinimumStayPolicy`, and `BookingPeriod` gain a
+   nullable `lodgeId`. Null rows are the club defaults and are all most
+   clubs ever need; a lodge that needs different rules gets its own rows,
+   which replace (not merge with) the club-wide set for that policy type.
+   Flexibility exists only when needed and costs nothing otherwise.
+4. **Promo codes are club-wide by default with an optional multi-lodge
+   restriction.** Because a promo may apply at two lodges but not a third,
+   the restriction is a junction table (`PromoCodeLodge`), not a single
+   nullable column. No junction rows = redeemable at every lodge.
+5. **Lodge-operational staff access is scoped per lodge; admin stays
+   club-wide.** Hut-leader assignments, kiosk devices, PIN sessions, and
+   `LODGE`-role operational access bind to a lodge — a hut leader, their
+   roster, and their chores belong to one lodge. `ADMIN` access remains
+   club-wide and sees all lodges' data; the scoping applies to lodge
+   operations, not back-end administration. Built in phase 4 on the same
+   junction shape as member eligibility (#2).

@@ -32,7 +32,7 @@ transactions) gets isolated review rather than being bundled with lower-risk
 work. The full phase breakdown, risk labels, and standing rules live in
 [implementation-plan.md](implementation-plan.md); the short version:
 
-0. **Decisions** — resolve ADR-001 open questions with the owner.
+0. **Decisions** — complete; owner decisions recorded in ADR-001.
 1. **Lodge entity** and the `multiLodge` Admin Module flag (default OFF)
    gating lodge management (ADR-002).
 2. **Scoping migrations** — `lodgeId` FKs and singleton-to-per-lodge

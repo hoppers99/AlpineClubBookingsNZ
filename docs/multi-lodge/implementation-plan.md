@@ -8,22 +8,16 @@ needs owner approval before merge regardless of CI state.
 Phases 0–1 are prerequisites for everything else. Phases 4, 5, and 6 are
 independent of each other once phase 3 lands and can proceed in any order.
 
-## Phase 0 — Decisions (this directory)
+## Phase 0 — Decisions (complete, 2026-07-02)
 
-Resolve ADR-001 open questions with the owner:
+All five ADR-001 open questions are resolved and recorded in ADR-001
+"Resolved Questions": one booking = one lodge; eligibility default-open
+with optional restriction; policies club-wide with per-lodge overrides
+(replace, not merge); promos club-wide with a multi-lodge restriction
+junction; lodge-operational staff scoped per lodge while `ADMIN` stays
+club-wide.
 
-1. one booking = one lodge (recommended: yes)
-2. member booking eligibility model (recommended: default-open with
-   optional restriction)
-3. whether cancellation/minimum-stay/booking-period policies vary per
-   lodge (needs committee input)
-4. promo code lodge scope (recommended: club-wide default, optional
-   restriction)
-5. staff `LODGE`-role scoping (recommended: per-lodge junction in phase 4)
-
-Accept or amend ADR-001 and ADR-002. No code.
-
-**Risk: Low (docs only).**
+**Risk: Low (docs only). Done.**
 
 ## Phase 1 — Lodge entity and admin management
 
@@ -51,8 +45,12 @@ behaviour preserved).**
 Per ADR-001 sequencing, across several PRs:
 
 - Nullable `lodgeId` columns on `LodgeRoom`, `Locker`, `Season`,
-  `Booking`, `ChoreTemplate` (+ policy tables if phase 0 decides they
-  vary per lodge); backfill to the seeded lodge.
+  `Booking`, `ChoreTemplate`; backfill to the seeded lodge, then enforce
+  NOT NULL per the ADR-001 sequencing.
+- Nullable `lodgeId` on `CancellationPolicy`, `MinimumStayPolicy`, and
+  `BookingPeriod` (permanently nullable — the club-wide-with-override
+  pattern), with a partial unique index preserving today's uniqueness on
+  the club-wide (null) partition.
 - Convert singleton settings tables (`LodgeSettings`,
   `BedAllocationSettings`, `BookingDefaults`, `BookingRequestSettings`)
   to per-lodge rows.
@@ -99,9 +97,12 @@ soak required before the phase-1 "second lodge" guard is lifted.**
   eligibility per the phase 0 decisions.
 - Lodge-scoped staff access: kiosk/roster tools and hut-leader PIN
   sessions bind to a lodge (`HutLeaderAssignment` gains `lodgeId`; the
-  kiosk device declares its lodge).
+  kiosk device declares its lodge). `ADMIN` access stays club-wide and is
+  never lodge-filtered — the scoping applies to lodge operations, not
+  back-end administration.
 - Member booking eligibility enforcement in the booking service (not
-  UI-only), default-open per the expected phase 0 decision.
+  UI-only), default-open: no restriction rows means every active member
+  can book every active lodge.
 
 **Risk: High (auth boundaries). Owner approval required.**
 
@@ -115,9 +116,11 @@ soak required before the phase-1 "second lodge" guard is lifted.**
 
 ## Phase 6 — Promo codes
 
-- Nullable `PromoCode.lodgeId` (null = club-wide); validation and
-  redemption checks compare against the booking's lodge; admin promo UI
-  gains the optional lodge restriction.
+- `PromoCodeLodge` junction table (no rows = redeemable at every lodge;
+  rows = redeemable only at those lodges, supporting "two of three"
+  restrictions); validation and redemption checks compare against the
+  booking's lodge; admin promo UI gains the optional multi-select lodge
+  restriction.
 
 **Risk: Medium-High (touches redemption/allocation money paths).**
 
