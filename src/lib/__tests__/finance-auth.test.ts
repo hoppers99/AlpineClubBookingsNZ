@@ -174,7 +174,7 @@ describe("finance auth helpers", () => {
     );
   });
 
-  it("redirects non-finance members away from finance booking source drill-downs", async () => {
+  it("redirects non-finance members away from finance dashboard views", async () => {
     mockAuth.mockResolvedValue({ user: { id: "member-1", role: "USER", accessRoles: [{ role: "USER" }] } });
     mockFindUnique.mockResolvedValue({
       id: "member-1",
@@ -188,7 +188,7 @@ describe("finance auth helpers", () => {
       forcePasswordChange: false,
     });
 
-    await expect(requireFinanceViewer("/finance/bookings/source")).rejects.toThrow(
+    await expect(requireFinanceViewer("/finance?view=bookings")).rejects.toThrow(
       "redirect:/dashboard"
     );
   });

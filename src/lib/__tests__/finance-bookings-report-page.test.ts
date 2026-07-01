@@ -311,19 +311,6 @@ describe("finance bookings report page model", () => {
         bookedRevenue: "$520.00",
       },
     ]);
-    const paidCommittedRow = model.forward.statusRows.find(
-      (row) => row.pipelineKey === "committed" && row.statusCode === "PAID"
-    );
-    expect(paidCommittedRow).toBeTruthy();
-    const paidCommittedUrl = new URL(
-      paidCommittedRow!.drilldownHref,
-      "https://tacbookings.local"
-    );
-    expect(paidCommittedUrl.pathname).toBe("/finance/bookings/source");
-    expect(paidCommittedUrl.searchParams.get("section")).toBe("forward");
-    expect(paidCommittedUrl.searchParams.get("pipeline")).toBe("committed");
-    expect(paidCommittedUrl.searchParams.get("status")).toBe("PAID");
-    expect(paidCommittedUrl.searchParams.get("returnTo")).toBe(model.reportHref);
     expect(mockGetFinanceBookingMetrics).toHaveBeenCalledWith({
       realized: {
         from: "2026-04-01",

@@ -69,7 +69,6 @@ export interface FinanceBookingsReportStatusRow {
   bookingNights: string;
   guestNights: string;
   bookedRevenue: string;
-  drilldownHref: string;
 }
 
 export interface FinanceBookingsReportChartPoint {
@@ -130,24 +129,6 @@ export function buildFinanceBookingsReportHref(
   filters: FinanceBookingsReportFilters
 ) {
   return `/finance/bookings?${buildFinanceBookingsReportQueryString(filters)}`;
-}
-
-export function buildFinanceBookingsSourceHref(input: {
-  filters: FinanceBookingsReportFilters;
-  section: "realized" | "forward";
-  pipeline: "realized" | "committed" | "at-risk";
-  status: string;
-  returnTo?: string;
-}) {
-  const params = new URLSearchParams(
-    Object.entries(input.filters)
-  );
-  params.set("section", input.section);
-  params.set("pipeline", input.pipeline);
-  params.set("status", input.status);
-  params.set("returnTo", input.returnTo ?? buildFinanceBookingsReportHref(input.filters));
-
-  return `/finance/bookings/source?${params.toString()}`;
 }
 
 export function resolveFinanceBookingsReportFilters(input: {
@@ -300,8 +281,8 @@ export async function buildFinanceBookingsReportPageModel(input: {
       rawMetricsHref: `/api/finance/bookings/metrics?${queryString}`,
       filterWarnings: warnings,
       sourceNotes: buildSourceNotes(),
-      realized: mapRealizedSection(metrics, filters),
-      forward: mapForwardSection(metrics, filters),
+      realized: mapRealizedSection(metrics),
+      forward: mapForwardSection(metrics),
     };
   } catch (error) {
     console.error("Failed to load finance bookings report metrics", error);
@@ -356,8 +337,7 @@ function buildSourceNotes() {
 }
 
 function mapRealizedSection(
-  metrics: FinanceBookingMetricsResult,
-  filters: FinanceBookingsReportFilters
+  metrics: FinanceBookingMetricsResult
 ): FinanceBookingsReportSection {
   const realized = metrics.realized;
 
@@ -431,12 +411,6 @@ function mapRealizedSection(
         bookingNights: formatWholeNumber(summary.bookingNights),
         guestNights: formatWholeNumber(summary.guestNights),
         bookedRevenue: formatCents(summary.bookedRevenueCents),
-        drilldownHref: buildFinanceBookingsSourceHref({
-          filters,
-          section: "realized",
-          pipeline: "realized",
-          status,
-        }),
       })
     ),
     chart: {
@@ -455,8 +429,7 @@ function mapRealizedSection(
 }
 
 function mapForwardSection(
-  metrics: FinanceBookingMetricsResult,
-  filters: FinanceBookingsReportFilters
+  metrics: FinanceBookingMetricsResult
 ): FinanceBookingsReportSection {
   const forward = metrics.forward;
 
@@ -479,12 +452,6 @@ function mapForwardSection(
         bookingNights: formatWholeNumber(summary.bookingNights),
         guestNights: formatWholeNumber(summary.guestNights),
         bookedRevenue: formatCents(summary.bookedRevenueCents),
-        drilldownHref: buildFinanceBookingsSourceHref({
-          filters,
-          section: "forward",
-          pipeline: "committed",
-          status,
-        }),
       })
     ),
     ...Object.entries(forward.totals.atRisk.statusBreakdown).map(
@@ -497,12 +464,6 @@ function mapForwardSection(
         bookingNights: formatWholeNumber(summary.bookingNights),
         guestNights: formatWholeNumber(summary.guestNights),
         bookedRevenue: formatCents(summary.bookedRevenueCents),
-        drilldownHref: buildFinanceBookingsSourceHref({
-          filters,
-          section: "forward",
-          pipeline: "at-risk",
-          status,
-        }),
       })
     ),
   ];

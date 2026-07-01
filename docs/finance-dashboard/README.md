@@ -85,11 +85,9 @@ or route users to the removed `/finance/*` report pages.
 - [finance-booking-metrics-contract.md](finance-booking-metrics-contract.md)
 - [test-plan.md](test-plan.md)
 
-Historical per-report contracts remain in this directory for calculation
-background, but their old `/finance/bookings`, `/finance/revenue`,
-`/finance/costs`, `/finance/pricing-sensitivity`, `/finance/working-capital`,
-`/finance/cash`, and `/finance/balance-sheet` page routes are superseded by the
-single `/finance` dashboard.
+Per-report contracts remain in this directory where they still document active
+dashboard calculations, but their old `/finance/*` page routes are superseded by
+the single `/finance` dashboard.
 
 ## ADRs
 
