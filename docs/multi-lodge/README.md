@@ -29,39 +29,43 @@ are out of scope for lodge-scoping unless a specific need is identified.
 Work is sequenced so schema/service-layer changes land and prove out before
 UI is retrofitted, and so the highest-risk piece (capacity and booking
 transactions) gets isolated review rather than being bundled with lower-risk
-work.
+work. The full phase breakdown, risk labels, and standing rules live in
+[implementation-plan.md](implementation-plan.md); the short version:
 
-1. **Design** (this directory). Resolve the open questions in ADR-001. No
-   app logic changes.
-2. **Schema and migration.** Add `Lodge`, add `lodgeId` FKs, convert the
-   singleton settings tables to per-lodge rows, re-scope unique constraints.
-   Staged as additive-nullable -> backfill -> enforce-NOT-NULL migrations per
-   `docs/BLUE_GREEN_MIGRATION_SAFETY.tsv`.
-3. **Capacity, pricing, and booking-transaction core.** Thread `lodgeId`
-   through `getLodgeCapacity`/`checkCapacity`/`getAvailability` and
-   `findRateForNight`/`calculateBookingPrice`; move the booking-creation
-   advisory lock from club-wide to per-lodge. Highest risk; needs its own
-   focused review and staging soak before merge.
-4. **Staff access and member booking eligibility.** Lodge-scoped staff
-   access (who can use which lodge's kiosk/roster tools) and member booking
-   eligibility (which members can book which lodges).
-5. **Chores and roster**, scoped per lodge.
-6. **Promo codes**, optional per-lodge scope.
-7. **Admin UI retrofit**: rooms/beds, seasons, lockers, cancellation/
-   minimum-stay/period policy, bed allocation, module settings — add a lodge
-   selector pattern once and apply it across these pages.
-8. **Member UI**: lodge selection step in the booking flow, navigation,
+0. **Decisions** — resolve ADR-001 open questions with the owner.
+1. **Lodge entity** and admin management, second lodge creation guarded.
+2. **Scoping migrations** — `lodgeId` FKs and singleton-to-per-lodge
+   conversions, staged per `BLUE_GREEN_MIGRATION_POLICY.md`.
+3. **Capacity, pricing, and booking-transaction core** — the critical
+   phase; per-lodge capacity and locks, lodge-filtered pricing.
+4. **Access scoping and booking eligibility** — staff and member grants
+   per lodge.
+5. **Chores and roster** per lodge.
+6. **Promo codes** with optional lodge scope.
+7. **Admin UI retrofit** — one lodge-picker pattern applied across pages.
+8. **Member UI and communications** — booking-flow lodge step, emails,
    copy.
-9. **Regression and staging validation** throughout, with a dedicated final
-   pass seeding two (and a third) lodges and confirming cross-lodge
-   isolation end to end.
+9. **Validation and soak** — staged multi-lodge enablement per
+   [test-plan.md](test-plan.md).
 
-Each numbered phase is expected to be one or more separate PRs, not one
-large change.
+Each numbered phase is one or more separate PRs, not one large change.
+Single-lodge behaviour is preserved at every merge point until phase 9
+deliberately enables a second lodge (see ADR-002's presentation rule).
+
+## Documents
+
+- [implementation-plan.md](implementation-plan.md) — phased delivery plan
+  with risk labels and standing rules.
+- [lodge-scoping-contract.md](lodge-scoping-contract.md) — which models are
+  lodge-scoped, which stay club-wide, and the service rules. Update it
+  before changing any model's scoping.
+- [test-plan.md](test-plan.md) — required automated coverage and manual
+  staging verification.
 
 ## ADRs
 
 - [ADR-001: Lodge entity and foreign-key scoping model](decisions/ADR-001-lodge-entity-and-scoping-model.md)
+- [ADR-002: Core data model, not a module](decisions/ADR-002-core-data-model-not-a-module.md)
 
 ## Maintenance Rules
 
