@@ -52,7 +52,15 @@ export async function GET(req: NextRequest) {
       stayStart: true,
       stayEnd: true,
       member: {
-        select: { id: true, firstName: true, lastName: true, email: true, active: true },
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          email: true,
+          active: true,
+          hutLeaderEligible: true,
+          hutLeaderEligibleAt: true,
+        },
       },
       booking: {
         select: { checkIn: true, checkOut: true },
@@ -66,6 +74,8 @@ export async function GET(req: NextRequest) {
     firstName: string;
     lastName: string;
     email: string;
+    hutLeaderEligible: boolean;
+    hutLeaderEligibleAt: Date | null;
     bookings: { checkIn: Date; checkOut: Date }[];
   }>();
 
@@ -85,6 +95,8 @@ export async function GET(req: NextRequest) {
         firstName: g.member.firstName,
         lastName: g.member.lastName,
         email: g.member.email,
+        hutLeaderEligible: Boolean(g.member.hutLeaderEligible),
+        hutLeaderEligibleAt: g.member.hutLeaderEligibleAt ?? null,
         bookings: [{ checkIn: guestStayStart, checkOut: guestStayEnd }],
       });
     }
@@ -106,7 +118,16 @@ export async function GET(req: NextRequest) {
       checkIn: true,
       checkOut: true,
       member: {
-        select: { id: true, firstName: true, lastName: true, email: true, active: true, ageTier: true },
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          email: true,
+          active: true,
+          ageTier: true,
+          hutLeaderEligible: true,
+          hutLeaderEligibleAt: true,
+        },
       },
     },
   });
@@ -124,6 +145,8 @@ export async function GET(req: NextRequest) {
         firstName: b.member.firstName,
         lastName: b.member.lastName,
         email: b.member.email,
+        hutLeaderEligible: Boolean(b.member.hutLeaderEligible),
+        hutLeaderEligibleAt: b.member.hutLeaderEligibleAt ?? null,
         bookings: [{ checkIn: b.checkIn, checkOut: b.checkOut }],
       });
     }
@@ -140,13 +163,21 @@ export async function GET(req: NextRequest) {
         firstName: m.firstName,
         lastName: m.lastName,
         email: m.email,
+        hutLeaderEligible: m.hutLeaderEligible,
+        hutLeaderEligibleAt: m.hutLeaderEligibleAt
+          ? m.hutLeaderEligibleAt.toISOString()
+          : null,
         bookingCheckIn: formatDateOnly(earliestCheckIn),
         bookingCheckOut: formatDateOnly(latestCheckOut),
         suggestedStartDate: formatDateOnly(earliestCheckIn),
         suggestedEndDate: formatDateOnly(latestCheckOut),
       };
     })
-    .sort((a, b) => `${a.lastName} ${a.firstName}`.localeCompare(`${b.lastName} ${b.firstName}`));
+    .sort(
+      (a, b) =>
+        Number(b.hutLeaderEligible) - Number(a.hutLeaderEligible) ||
+        `${a.lastName} ${a.firstName}`.localeCompare(`${b.lastName} ${b.firstName}`),
+    );
 
   return NextResponse.json({ members });
 }
