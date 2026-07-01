@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma"
 import { z } from "zod"
+import { getDefaultLodgeId } from "@/lib/lodges"
 
 const choreSchema = z
   .object({
@@ -69,6 +70,7 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  const chore = await prisma.choreTemplate.create({ data })
+  const lodgeId = await getDefaultLodgeId(prisma)
+  const chore = await prisma.choreTemplate.create({ data: { ...data, lodgeId } })
   return NextResponse.json(chore, { status: 201 })
 }

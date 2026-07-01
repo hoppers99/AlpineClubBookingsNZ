@@ -29,6 +29,9 @@ vi.mock("@/lib/prisma", () => ({
     season: {
       findMany: vi.fn(),
     },
+    lodge: {
+      findFirst: vi.fn(),
+    },
     $transaction: vi.fn(),
     $executeRaw: vi.fn(),
   },
@@ -464,6 +467,7 @@ describe("approveBookingRequest", () => {
     mockedTransaction.mockImplementation(async (fn: (tx: typeof prisma) => Promise<unknown>) =>
       fn(prisma)
     );
+    vi.mocked(prisma.lodge.findFirst).mockResolvedValue({ id: "lodge-1" } as never);
   });
 
   it("throws 404 when the request does not exist", async () => {

@@ -6,6 +6,7 @@ vi.mock("@/lib/prisma", () => ({
   prisma: {
     member: { count: vi.fn(), findUnique: vi.fn(), findMany: vi.fn() },
     booking: { create: vi.fn(), update: vi.fn(), findMany: vi.fn(), count: vi.fn() },
+    lodge: { findFirst: vi.fn() },
     season: { findMany: vi.fn() },
     promoCode: { findUnique: vi.fn() },
     promoCodeAssignment: { findMany: vi.fn() },
@@ -183,6 +184,7 @@ describe("Admin Book on Behalf", () => {
       _sum: { freeNightsUsed: 0 },
     });
     (mockedPrisma.promoCodeAssignment.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    (mockedPrisma.lodge.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "lodge-1" });
   });
 
   it("rejects admin booking without forMemberId (must book on behalf)", async () => {
@@ -437,6 +439,7 @@ describe("Create booking guest normalization", () => {
       _sum: { freeNightsUsed: 0 },
     });
     (mockedPrisma.promoCodeAssignment.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    (mockedPrisma.lodge.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "lodge-1" });
   });
 
   it("forces manually typed guests to non-member pricing on create", async () => {

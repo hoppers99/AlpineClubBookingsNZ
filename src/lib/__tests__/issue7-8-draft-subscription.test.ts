@@ -28,6 +28,7 @@ const mockTx = {
   promoCodeAssignment: { findMany: vi.fn() },
   member: { findUnique: vi.fn() },
   memberSubscription: { findFirst: vi.fn() },
+  lodge: { findFirst: vi.fn() },
 };
 
 vi.mock("@/lib/prisma", () => ({
@@ -274,6 +275,7 @@ beforeEach(() => {
   mockTx.season.findMany.mockResolvedValue([]);
   mockTx.promoRedemption.aggregate.mockResolvedValue({ _sum: { freeNightsUsed: 0 } });
   mockTx.promoCodeAssignment.findMany.mockResolvedValue([]);
+  mockTx.lodge.findFirst.mockResolvedValue({ id: "lodge-1" });
   mockPrisma.payment.upsert.mockResolvedValue({ id: "payment-1" });
   mockUpsertPaymentIntentTransaction.mockResolvedValue(undefined);
   mockRecordInternetBankingPaymentTransaction.mockResolvedValue(undefined);

@@ -42,6 +42,7 @@ const mockPaymentUpdate = vi.fn();
 const mockPaymentCreate = vi.fn();
 const mockPaymentUpsert = vi.fn();
 const mockExecuteRaw = vi.fn().mockResolvedValue(undefined);
+const mockTxLodgeFindFirst = vi.fn().mockResolvedValue({ id: "lodge-1" });
 
 // Shared tx mock used by booking route
 const mockTx = {
@@ -56,6 +57,7 @@ const mockTx = {
   season: { findMany: mockTxSeasonFindMany },
   payment: { create: mockTxPaymentCreate, upsert: mockPaymentUpsert },
   promoRedemption: { findUnique: vi.fn().mockResolvedValue(null) },
+  lodge: { findFirst: mockTxLodgeFindFirst },
 };
 
 vi.mock("@/lib/prisma", () => ({

@@ -63,6 +63,7 @@ import {
   toSeasonRateData,
 } from "@/lib/policies/booking-route-decisions";
 import type { PriceBreakdown } from "@/lib/policies/pricing";
+import { getDefaultLodgeId } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 import {
   enqueueXeroBookingInvoiceOperation,
@@ -623,6 +624,7 @@ export async function approveSchoolBookingRequest(input: {
         booking = await tx.booking.create({
           data: {
             memberId: schoolMember.id,
+            lodgeId: await getDefaultLodgeId(tx),
             checkIn: request.checkIn,
             checkOut: request.checkOut,
             status: BookingStatus.CONFIRMED,

@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   lockerDelete: vi.fn(),
   memberFindMany: vi.fn(),
   memberFindFirst: vi.fn(),
+  lodgeFindFirst: vi.fn(),
   createAuditLog: vi.fn(),
   transaction: vi.fn(),
 }));
@@ -41,6 +42,9 @@ vi.mock("@/lib/prisma", () => ({
       findMany: mocks.memberFindMany,
       findFirst: mocks.memberFindFirst,
     },
+    lodge: {
+      findFirst: mocks.lodgeFindFirst,
+    },
     $transaction: mocks.transaction,
   },
 }));
@@ -69,6 +73,9 @@ function installTransactionMock() {
         update: mocks.lockerUpdate,
         delete: mocks.lockerDelete,
       },
+      lodge: {
+        findFirst: mocks.lodgeFindFirst,
+      },
     }),
   );
 }
@@ -80,6 +87,7 @@ describe("admin locker routes", () => {
     mocks.requireActiveSessionUser.mockResolvedValue(null);
     mocks.memberFindFirst.mockResolvedValue({ id: "member-1" });
     mocks.lockerFindFirst.mockResolvedValue(null);
+    mocks.lodgeFindFirst.mockResolvedValue({ id: "lodge-1" });
     mocks.createAuditLog.mockResolvedValue(undefined);
     installTransactionMock();
   });
@@ -116,6 +124,7 @@ describe("admin locker routes", () => {
         data: {
           name: "Locker A1",
           allocatedToMemberId: "member-1",
+          lodgeId: "lodge-1",
         },
       }),
     );

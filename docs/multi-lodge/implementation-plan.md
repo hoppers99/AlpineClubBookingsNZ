@@ -49,6 +49,13 @@ behaviour preserved).**
 
 ## Phase 2 — lodgeId scoping migrations
 
+**Progress:** the expand release (nullable `lodgeId` columns, Booking FK
+added NOT VALID then validated, backfill to the sole lodge, ledger
+entries, and all runtime writers stamping `lodgeId` via
+`getDefaultLodgeId`) is delivered on `feature/multi-lodge-support`
+(2026-07-02). Outstanding: the contract release below (NOT NULL +
+re-scoped uniqueness) after the expand release deploys.
+
 Per ADR-001 sequencing, across several PRs:
 
 - Nullable `lodgeId` columns on `LodgeRoom`, `Locker`, `Season`,

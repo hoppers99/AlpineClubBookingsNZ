@@ -34,6 +34,9 @@ const mocks = vi.hoisted(() => ({
     bookingGuest: {
       deleteMany: vi.fn(),
     },
+    lodge: {
+      findFirst: vi.fn(),
+    },
     $transaction: vi.fn(),
     $executeRaw: vi.fn(),
   },
@@ -152,6 +155,7 @@ beforeEach(() => {
   vi.mocked(prisma.$transaction).mockImplementation(async (callback: never) =>
     (callback as (tx: typeof prisma) => Promise<unknown>)(prisma)
   );
+  vi.mocked(prisma.lodge.findFirst).mockResolvedValue({ id: "lodge-1" } as never);
 });
 
 describe("createBookingRequestQuote", () => {

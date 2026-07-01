@@ -26,6 +26,7 @@ import {
 import { checkCapacityForGuestRanges } from "@/lib/capacity";
 import { sendBookingRequestQuoteEmail } from "@/lib/email";
 import logger from "@/lib/logger";
+import { getDefaultLodgeId } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 import { approveSchoolBookingRequest } from "@/lib/school-booking-request";
 
@@ -966,6 +967,7 @@ export async function holdBookingRequestSlots(input: {
       const held = await tx.booking.create({
         data: {
           memberId: member.id,
+          lodgeId: await getDefaultLodgeId(tx),
           checkIn: request.checkIn,
           checkOut: request.checkOut,
           status: BookingStatus.AWAITING_REVIEW,

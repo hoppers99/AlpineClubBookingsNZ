@@ -5,6 +5,7 @@ import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import { parseJsonRequestBody } from "@/lib/api-json";
 import { createAuditLog } from "@/lib/audit";
+import { getDefaultLodgeId } from "@/lib/lodges";
 import { isPrismaUniqueConstraintError } from "@/lib/prisma-errors";
 
 const createLockerSchema = z.object({
@@ -101,10 +102,12 @@ export async function POST(request: Request) {
 
   try {
     const locker = await prisma.$transaction(async (tx) => {
+      const lodgeId = await getDefaultLodgeId(tx);
       const created = await tx.locker.create({
         data: {
           name: parsed.data.name,
           allocatedToMemberId,
+          lodgeId,
         },
         include: {
           allocatedTo: {

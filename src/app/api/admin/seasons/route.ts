@@ -5,6 +5,7 @@ import { z } from "zod"
 import { ageTierEnum } from "@/lib/age-tier-schema"
 import { logAudit } from "@/lib/audit"
 import { isDateOnlyString, parseDateOnly } from "@/lib/date-only"
+import { getDefaultLodgeId } from "@/lib/lodges"
 
 const dateOnlyString = z.string().refine(isDateOnlyString, {
   message: "Date must be YYYY-MM-DD",
@@ -79,6 +80,8 @@ export async function POST(req: NextRequest) {
     )
   }
 
+  const lodgeId = await getDefaultLodgeId(prisma)
+
   const season = await prisma.season.create({
     data: {
       name,
@@ -86,6 +89,7 @@ export async function POST(req: NextRequest) {
       startDate: parsedStartDate,
       endDate: parsedEndDate,
       active,
+      lodgeId,
       rates: {
         create: rates.map((rate) => ({
           ageTier: rate.ageTier,

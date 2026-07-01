@@ -6,6 +6,7 @@ import { z } from "zod";
 import { ageTierEnum } from "@/lib/age-tier-schema";
 import logger from "@/lib/logger";
 import { hasAdminAccess } from "@/lib/access-roles";
+import { getDefaultLodgeId } from "@/lib/lodges";
 
 const createSeasonSchema = z.object({
   name: z.string().min(1),
@@ -72,12 +73,15 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "End date must be after start date" }, { status: 400 });
   }
 
+  const lodgeId = await getDefaultLodgeId(prisma);
+
   const season = await prisma.season.create({
     data: {
       name,
       type,
       startDate,
       endDate,
+      lodgeId,
       rates: {
         create: rates.map((r) => ({
           ageTier: r.ageTier,

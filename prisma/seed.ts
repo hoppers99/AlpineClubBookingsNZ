@@ -295,27 +295,32 @@ async function main() {
     select: { id: true, name: true },
     take: 2,
   });
+  let seedLodgeId: string;
   if (existingLodges.length === 0) {
-    await prisma.lodge.create({
+    const createdLodge = await prisma.lodge.create({
       data: {
         name: CLUB_LODGE_NAME,
         slug: slugifyLodgeName(CLUB_LODGE_NAME),
         active: true,
       },
     });
+    seedLodgeId = createdLodge.id;
     console.log(`Lodge seeded: ${CLUB_LODGE_NAME}`);
   } else if (
     existingLodges.length === 1 &&
     existingLodges[0].name === "Lodge"
   ) {
-    await prisma.lodge.update({
+    const updatedLodge = await prisma.lodge.update({
       where: { id: existingLodges[0].id },
       data: {
         name: CLUB_LODGE_NAME,
         slug: slugifyLodgeName(CLUB_LODGE_NAME),
       },
     });
+    seedLodgeId = updatedLodge.id;
     console.log(`Lodge placeholder renamed to: ${CLUB_LODGE_NAME}`);
+  } else {
+    seedLodgeId = existingLodges[0].id;
   }
 
   // Seed default cancellation policy tiers (create-if-missing).
@@ -341,7 +346,9 @@ async function main() {
   if (choreTemplateCount === 0) {
     const choreTemplates = buildSeedChoreTemplates();
     for (const chore of choreTemplates) {
-      await prisma.choreTemplate.create({ data: chore });
+      await prisma.choreTemplate.create({
+        data: { ...chore, lodgeId: seedLodgeId },
+      });
     }
     console.log(
       `Chore templates seeded: ${choreTemplates.length} example templates`,
@@ -438,6 +445,7 @@ async function main() {
       startDate: new Date("2026-06-01"),
       endDate: new Date("2026-09-30"),
       active: true,
+      lodgeId: seedLodgeId,
     },
   });
   await createMissingSeasonRates(winter2026.id, "winter");
@@ -454,6 +462,7 @@ async function main() {
       startDate: new Date("2026-11-01"),
       endDate: new Date("2027-03-31"),
       active: true,
+      lodgeId: seedLodgeId,
     },
   });
   await createMissingSeasonRates(summer2026.id, "summer");

@@ -90,6 +90,31 @@ export async function countActiveLodges(db: LodgeDb): Promise<number> {
   return db.lodge.count({ where: { active: true } });
 }
 
+// Phase-2 bridging resolver: writers that do not yet receive an explicit
+// lodge from their caller stamp new rows with the club's default lodge (the
+// oldest active one — the phase-1 seeded lodge in every current deployment).
+// Phases 3+ replace call sites with real lodge context threaded from the
+// request; do not add new callers once a surface carries its own lodgeId.
+export async function getDefaultLodgeId(db: LodgeDb): Promise<string> {
+  const lodge =
+    (await db.lodge.findFirst({
+      where: { active: true },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      select: { id: true },
+    })) ??
+    (await db.lodge.findFirst({
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      select: { id: true },
+    }));
+
+  if (!lodge) {
+    throw new Error(
+      "No Lodge row exists; run migrations/seed before creating lodge-scoped records",
+    );
+  }
+  return lodge.id;
+}
+
 // Compatibility path (implementation-plan.md phase 1): email rendering still
 // reads lodge identity from the EmailMessageSetting singleton until phase 8
 // switches templates to per-booking lodge context. While the club has exactly

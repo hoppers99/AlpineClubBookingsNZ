@@ -19,6 +19,7 @@ const h = vi.hoisted(() => ({
   bookingUpdate: vi.fn(),
   paymentCreate: vi.fn(),
   memberFindUnique: vi.fn(),
+  lodgeFindFirst: vi.fn(),
   checkCapacityForGuestRanges: vi.fn(),
   reconcileBedAllocationsForBooking: vi.fn(),
   logAudit: vi.fn(),
@@ -127,6 +128,7 @@ const tx = {
     update: (...a: unknown[]) => h.bookingUpdate(...a),
   },
   payment: { create: (...a: unknown[]) => h.paymentCreate(...a) },
+  lodge: { findFirst: (...a: unknown[]) => h.lodgeFindFirst(...a) },
 };
 
 function guest(isMember: boolean, firstName: string): BookingGuestInput {
@@ -175,6 +177,7 @@ describe("createConfirmedBooking split bookings (#738)", () => {
     h.reconcileBedAllocationsForBooking.mockResolvedValue(undefined);
     h.bookingUpdate.mockResolvedValue({});
     h.memberFindUnique.mockResolvedValue({ id: "member-1", firstName: "Mem", lastName: "Ber", email: "m@example.com" });
+    h.lodgeFindFirst.mockResolvedValue({ id: "lodge-1" });
     h.bookingCreate.mockImplementation((args: { data: Record<string, unknown> }) => {
       createdCount += 1;
       const id = `booking-${createdCount}`;

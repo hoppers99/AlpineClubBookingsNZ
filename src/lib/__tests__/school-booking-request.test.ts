@@ -21,6 +21,7 @@ vi.mock("@/lib/prisma", () => ({
     hutLeaderAssignment: { create: vi.fn() },
     season: { findMany: vi.fn() },
     groupDiscountSetting: { findUnique: vi.fn() },
+    lodge: { findFirst: vi.fn() },
     $transaction: vi.fn(),
     $executeRaw: vi.fn(),
   },
@@ -272,6 +273,7 @@ describe("approveSchoolBookingRequest", () => {
     mockedModuleEnabled.mockResolvedValue(true);
     mockedSeasonFindMany.mockResolvedValue(seasonWithRates() as never);
     mockedGroupDiscount.mockResolvedValue(null as never);
+    vi.mocked(prisma.lodge.findFirst).mockResolvedValue({ id: "lodge-1" } as never);
 
     let memberCalls = 0;
     vi.mocked(prisma.member.create).mockImplementation(async () => {

@@ -18,6 +18,7 @@ import {
   type UnallocatedGuestNight,
 } from "@/lib/bed-allocation";
 import { BED_ALLOCATABLE_BOOKING_STATUSES } from "@/lib/bed-allocation-lifecycle";
+import { getDefaultLodgeId } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 
 export const BED_ALLOCATION_SETTINGS_ID = "default";
@@ -315,6 +316,7 @@ export async function importRoomsAndBedsFromClubConfig(input: {
   const db = input.db ?? prisma;
   await assertRoomBedTablesEmpty(db);
 
+  const lodgeId = await getDefaultLodgeId(db);
   const seenNames = new Set<string>();
   let createdRoomCount = 0;
   let createdBedCount = 0;
@@ -326,6 +328,7 @@ export async function importRoomsAndBedsFromClubConfig(input: {
         sortOrder: roomIndex + 1,
         active: true,
         notes: `${configBed.type} room imported from club config.`,
+        lodgeId,
       },
     });
     createdRoomCount += 1;
@@ -359,12 +362,15 @@ export async function createBedAllocationRoom(input: {
   notes?: string | null;
   db?: BedAllocationDb;
 }) {
-  return (input.db ?? prisma).lodgeRoom.create({
+  const db = input.db ?? prisma;
+  const lodgeId = await getDefaultLodgeId(db);
+  return db.lodgeRoom.create({
     data: {
       name: input.name.trim(),
       sortOrder: input.sortOrder ?? 0,
       active: input.active ?? true,
       notes: input.notes?.trim() || null,
+      lodgeId,
     },
   });
 }

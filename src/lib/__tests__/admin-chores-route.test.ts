@@ -4,6 +4,7 @@ import { NextRequest } from "next/server";
 const mockAuth = vi.fn();
 const mockChoreCreate = vi.fn();
 const mockChoreFindMany = vi.fn();
+const mockLodgeFindFirst = vi.fn();
 
 vi.mock("@/lib/auth", () => ({
   auth: mockAuth,
@@ -22,6 +23,9 @@ vi.mock("@/lib/prisma", () => ({
       create: mockChoreCreate,
       findMany: mockChoreFindMany,
     },
+    lodge: {
+      findFirst: mockLodgeFindFirst,
+    },
   },
 }));
 
@@ -32,6 +36,7 @@ describe("POST /api/admin/chores", () => {
     vi.clearAllMocks();
     mockAuth.mockResolvedValue({ user: { id: "admin1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] } });
     mockChoreCreate.mockResolvedValue({ id: "ct1" });
+    mockLodgeFindFirst.mockResolvedValue({ id: "lodge-1" });
     const mod = await import("@/app/api/admin/chores/route");
     POST = mod.POST;
   });
@@ -75,6 +80,7 @@ describe("POST /api/admin/chores", () => {
         name: "Deep Clean",
         frequencyMode: "SPECIFIC_DAYS",
         frequencyDaysOfWeek: [1, 4],
+        lodgeId: "lodge-1",
       }),
     });
   });

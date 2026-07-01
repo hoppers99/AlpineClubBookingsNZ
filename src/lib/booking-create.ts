@@ -29,6 +29,7 @@ import {
   type Booking,
   type BookingGuest,
 } from "@prisma/client";
+import { getDefaultLodgeId } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 import {
   calculateBookingCreditApplication,
@@ -706,6 +707,7 @@ export async function createDraftBooking(input: DraftBookingInput): Promise<Book
     const createdBooking = await tx.booking.create({
       data: {
         memberId: effectiveMemberId,
+        lodgeId: await getDefaultLodgeId(tx),
         checkIn,
         checkOut,
         status: draftStatus,
@@ -1049,6 +1051,7 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
       const newBooking = await tx.booking.create({
         data: {
           memberId: effectiveMemberId,
+          lodgeId: await getDefaultLodgeId(tx),
           checkIn,
           checkOut,
           status: effectiveStatus,
@@ -1199,6 +1202,9 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
         const childBooking = await tx.booking.create({
           data: {
             memberId: effectiveMemberId,
+            // The child of a split booking always stays at the same lodge as
+            // its parent (one booking = one lodge, ADR-001).
+            lodgeId: newBooking.lodgeId,
             checkIn,
             checkOut,
             status: BookingStatus.PENDING,
@@ -1555,6 +1561,7 @@ export async function createWaitlistedBooking(input: WaitlistedBookingInput): Pr
     const createdBooking = await tx.booking.create({
       data: {
         memberId: effectiveMemberId,
+        lodgeId: await getDefaultLodgeId(tx),
         checkIn,
         checkOut,
         status: BookingStatus.WAITLISTED,

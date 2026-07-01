@@ -35,6 +35,7 @@ import {
   PaymentStatus,
   Prisma,
 } from "@prisma/client";
+import { getDefaultLodgeId } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 import { hashActionToken, issueActionToken } from "@/lib/action-tokens";
 import {
@@ -1119,6 +1120,7 @@ export async function verifyAndCreateNonMemberJoin(
       const booking = await tx.booking.create({
         data: {
           memberId: member.id,
+          lodgeId: await getDefaultLodgeId(tx),
           checkIn,
           checkOut,
           status: BookingStatus.PENDING,

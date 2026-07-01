@@ -817,13 +817,16 @@ model Season {
   startDate DateTime   @db.Date
   endDate   DateTime   @db.Date
   active    Boolean    @default(true)
+  lodgeId   String?
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
 
   // Relations
   rates SeasonRate[]
+  lodge Lodge?       @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
 
   @@index([startDate, endDate])
+  @@index([lodgeId])
 }
 
 model SeasonRate {
@@ -892,10 +895,15 @@ model Booking {
   deletedAt                 DateTime?
   deletedById               String?
   deletedReason             String?            @db.VarChar(500)
+  // Nullable during the phase-2 expand release; every writer sets it and the
+  // contract release enforces NOT NULL. One booking belongs to exactly one
+  // lodge (ADR-001 resolved question 1).
+  lodgeId                   String?
   createdAt                 DateTime           @default(now())
   updatedAt                 DateTime           @updatedAt
 
   member                      Member                       @relation(fields: [memberId], references: [id], onDelete: Restrict)
+  lodge                       Lodge?                       @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
   createdBy                   Member?                      @relation("BookingsCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
   deletedBy                   Member?                      @relation("BookingsDeletedBy", fields: [deletedById], references: [id], onDelete: SetNull)
   adminReviewedBy             Member?                      @relation("BookingsAdminReviewed", fields: [adminReviewedById], references: [id], onDelete: SetNull)
@@ -947,6 +955,7 @@ model Booking {
   @@index([adminReviewedById])
   @@index([requestedRoomId])
   @@index([parentBookingId])
+  @@index([lodgeId])
 }
 
 // Durable booking-lifecycle event store (issue #740). One row per transition
@@ -1277,6 +1286,9 @@ model BookingRequestSettings {
   showPricingToNonMembers Boolean  @default(false)
   quoteResponseTtlDays    Int      @default(14)
   quoteReminderLeadDays   Int      @default(3)
+  // Soft link for the phase-7 singleton-to-per-lodge conversion
+  // (docs/multi-lodge/implementation-plan.md); unused by runtime reads today.
+  lodgeId                 String?
   updatedByMemberId       String?
   createdAt               DateTime @default(now())
   updatedAt               DateTime @updatedAt
@@ -1294,27 +1306,35 @@ model LodgeRoom {
   sortOrder Int      @default(0)
   active    Boolean  @default(true)
   notes     String?  @db.VarChar(500)
+  lodgeId   String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   beds                LodgeBed[]
   allocations         BedAllocation[]
   requestedByBookings Booking[]       @relation("BookingRequestedRoom")
+  lodge               Lodge?          @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
 
+  // The global name uniqueness moves to [lodgeId, name] in the phase-2
+  // contract release once lodgeId is NOT NULL.
   @@unique([name])
   @@index([active, sortOrder])
+  @@index([lodgeId])
 }
 
 model Locker {
   id                  String   @id @default(cuid())
   name                String   @unique @db.VarChar(200)
   allocatedToMemberId String?
+  lodgeId             String?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
   allocatedTo Member? @relation("LockerAllocatedMember", fields: [allocatedToMemberId], references: [id], onDelete: SetNull)
+  lodge       Lodge?  @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
 
   @@index([allocatedToMemberId])
+  @@index([lodgeId])
 }
 
 model LodgeBed {
@@ -1364,6 +1384,9 @@ model BedAllocation {
 model BedAllocationSettings {
   id                    String   @id @default("default")
   autoAllocationEnabled Boolean  @default(true)
+  // Soft link for the phase-7 singleton-to-per-lodge conversion
+  // (docs/multi-lodge/implementation-plan.md); unused by runtime reads today.
+  lodgeId               String?
   updatedByMemberId     String?
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
@@ -1697,11 +1720,15 @@ model ChoreTemplate {
   frequencyDays        Int?
   frequencyDaysOfWeek  Int[]
   active               Boolean            @default(true)
+  lodgeId              String?
   createdAt            DateTime           @default(now())
   updatedAt            DateTime           @updatedAt
 
   // Relations
   assignments ChoreAssignment[]
+  lodge       Lodge?            @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
+
+  @@index([lodgeId])
 }
 
 model ChoreAssignment {
@@ -1738,10 +1765,20 @@ model CancellationPolicy {
   creditRefundPercentage Int? // Credit refund percentage (null = same as refundPercentage)
   fixedFeeCents          Int      @default(0) // Fixed fee deducted from card refunds per tier
   creditFixedFeeCents    Int? // Fixed fee deducted from credit refunds per tier (null = same as fixedFeeCents)
+  // Null = club-wide default tier. Rows with a lodgeId are that lodge's
+  // override set and replace (never merge with) the club-wide tiers
+  // (ADR-001 resolved question 3). Permanently nullable.
+  lodgeId                String?
   createdAt              DateTime @default(now())
   updatedAt              DateTime @updatedAt
 
+  lodge Lodge? @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
+
+  // The global daysBeforeStay uniqueness moves to [lodgeId, daysBeforeStay]
+  // (plus a partial unique index over the null partition) in the phase-2
+  // contract release; until then per-lodge override rows cannot exist.
   @@unique([daysBeforeStay])
+  @@index([lodgeId])
 }
 
 // ---------------------------------------------------------------------------
@@ -1756,10 +1793,16 @@ model BookingPeriod {
   nonMemberHoldDays Int      @default(7)
   cancellationRules Json // Array of {daysBeforeStay: number, refundPercentage: number}
   active            Boolean  @default(true)
+  // Null = applies club-wide; a lodgeId scopes the period to that lodge
+  // (ADR-001 resolved question 3). Permanently nullable.
+  lodgeId           String?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
+  lodge Lodge? @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
+
   @@index([startDate, endDate])
+  @@index([lodgeId])
 }
 
 // ---------------------------------------------------------------------------
@@ -1767,8 +1810,11 @@ model BookingPeriod {
 // ---------------------------------------------------------------------------
 
 model BookingDefaults {
-  id                String @id @default("default")
-  nonMemberHoldDays Int    @default(7)
+  id                String  @id @default("default")
+  nonMemberHoldDays Int     @default(7)
+  // Soft link for the phase-7 singleton-to-per-lodge conversion
+  // (docs/multi-lodge/implementation-plan.md); unused by runtime reads today.
+  lodgeId           String?
 }
 
 // ---------------------------------------------------------------------------
@@ -1783,11 +1829,17 @@ model MinimumStayPolicy {
   triggerDays   Int[] // Days of week: 0=Sunday, 1=Monday, ..., 6=Saturday
   minimumNights Int
   active        Boolean  @default(true)
+  // Null = applies club-wide; a lodgeId scopes the policy to that lodge
+  // (ADR-001 resolved question 3). Permanently nullable.
+  lodgeId       String?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
+  lodge Lodge? @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
+
   @@index([startDate, endDate])
   @@index([active])
+  @@index([lodgeId])
 }
 
 // ---------------------------------------------------------------------------
@@ -2264,11 +2316,29 @@ model Lodge {
   travelNote String?
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
+
+  // lodgeId is nullable on these tables during the expand release
+  // (docs/multi-lodge/implementation-plan.md phase 2); a contract release
+  // enforces NOT NULL and per-lodge uniqueness once every writer sets it. The
+  // policy tables (CancellationPolicy, BookingPeriod, MinimumStayPolicy) stay
+  // permanently nullable: null rows are the club-wide defaults (ADR-001).
+  rooms                LodgeRoom[]
+  lockers              Locker[]
+  seasons              Season[]
+  bookings             Booking[]
+  choreTemplates       ChoreTemplate[]
+  cancellationPolicies CancellationPolicy[]
+  bookingPeriods       BookingPeriod[]
+  minimumStayPolicies  MinimumStayPolicy[]
 }
 
 model LodgeSettings {
   id                String   @id @default("default")
   capacity          Int?
+  // Soft link to the lodge this settings row belongs to. Becomes the row key
+  // when singleton settings convert to per-lodge rows (phase 7); until then
+  // the "default" row keeps serving the sole lodge.
+  lodgeId           String?
   updatedByMemberId String?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @default(now()) @updatedAt

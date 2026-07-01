@@ -44,6 +44,7 @@ import {
   priceBookingGuests,
   toSeasonRateData,
 } from "@/lib/policies/booking-route-decisions";
+import { getDefaultLodgeId } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 import { ageTierEnum } from "@/lib/age-tier-schema";
 import { nameField } from "@/lib/zod-helpers";
@@ -749,6 +750,7 @@ export async function approveBookingRequest(input: {
         booking = await tx.booking.create({
           data: {
             memberId: member.id,
+            lodgeId: await getDefaultLodgeId(tx),
             checkIn: request.checkIn,
             checkOut: request.checkOut,
             status: BookingStatus.PENDING,

@@ -21,6 +21,7 @@ import { type AgeTier, PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import { ensureMemberAccessRolesFromCompatibilityFields } from "../src/lib/member-access-role-writes";
 import { backfillCurrentSeasonMembershipAssignments } from "../src/lib/membership-types";
+import { getDefaultLodgeId } from "../src/lib/lodges";
 import { createPrismaPgAdapter } from "../src/lib/prisma-adapter";
 
 const prisma = new PrismaClient({ adapter: createPrismaPgAdapter() });
@@ -209,6 +210,8 @@ async function main() {
   await cleanup();
   console.log("Building demo data...");
 
+  const lodgeId = await getDefaultLodgeId(prisma);
+
   // Need an admin to act as reviewer/approver on requests.
   const admin =
     (await prisma.member.findFirst({ where: { role: "ADMIN" } })) ??
@@ -373,9 +376,9 @@ async function main() {
   // -------------------------------------------------------------------------
   // Lodge rooms + beds.
   // -------------------------------------------------------------------------
-  const roomA = await prisma.lodgeRoom.create({ data: { name: "Bunk Room A", sortOrder: 1 } });
-  const roomB = await prisma.lodgeRoom.create({ data: { name: "Bunk Room B", sortOrder: 2 } });
-  const roomFamily = await prisma.lodgeRoom.create({ data: { name: "Family Room", sortOrder: 3 } });
+  const roomA = await prisma.lodgeRoom.create({ data: { name: "Bunk Room A", sortOrder: 1, lodgeId } });
+  const roomB = await prisma.lodgeRoom.create({ data: { name: "Bunk Room B", sortOrder: 2, lodgeId } });
+  const roomFamily = await prisma.lodgeRoom.create({ data: { name: "Family Room", sortOrder: 3, lodgeId } });
   const bedsA = [];
   for (let i = 1; i <= 6; i++) {
     bedsA.push(await prisma.lodgeBed.create({ data: { roomId: roomA.id, name: `A${i}`, sortOrder: i } }));
@@ -437,6 +440,7 @@ async function main() {
         status: status as never,
         totalPriceCents: total,
         finalPriceCents: total,
+        lodgeId,
         ...over,
       },
     });
@@ -505,6 +509,7 @@ async function main() {
       totalPriceCents: NIGHTLY * 3,
       promoAdjustmentCents: NIGHTLY,
       finalPriceCents: NIGHTLY * 2,
+      lodgeId,
     },
   });
   const erinGuest = await addGuest(bPaid.id, { firstName: "Erin", lastName: "Evans", ageTier: "ADULT", isMember: true, memberId: erin.id }, "2026-07-03", "2026-07-06", NIGHTLY);
@@ -581,6 +586,7 @@ async function main() {
       nonMemberHoldUntil: d("2026-06-27"),
       totalPriceCents: NIGHTLY * 2 * 2,
       finalPriceCents: NIGHTLY * 2 * 2,
+      lodgeId,
     },
   });
   await addGuest(splitChild.id, { firstName: "Gerry", lastName: "Guest", ageTier: "ADULT", isMember: false }, "2026-07-04", "2026-07-06", NIGHTLY * 2);
