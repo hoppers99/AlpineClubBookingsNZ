@@ -274,6 +274,57 @@ describe("#25: Eligible Members API", () => {
     expect(body.members[0]).toHaveProperty("bookingCheckOut");
     expect(body.members[0]).toHaveProperty("suggestedStartDate");
     expect(body.members[0]).toHaveProperty("suggestedEndDate");
+    expect(body.members[0].hutLeaderEligible).toBe(false);
+    expect(body.members[0].hutLeaderEligibleAt).toBeNull();
+  });
+
+  it("sorts hut-leader-qualified members first without excluding others", async () => {
+    mockAuth.mockResolvedValue({ user: { id: "admin-1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] } });
+    mockPrisma.bookingGuest.findMany.mockResolvedValue([
+      {
+        memberId: "m-alpha",
+        member: {
+          id: "m-alpha",
+          firstName: "Amy",
+          lastName: "Alpha",
+          email: "amy@test.com",
+          active: true,
+          hutLeaderEligible: false,
+          hutLeaderEligibleAt: null,
+        },
+        booking: { checkIn: d("2026-04-06"), checkOut: d("2026-04-08") },
+      },
+      {
+        memberId: "m-zulu",
+        member: {
+          id: "m-zulu",
+          firstName: "Zed",
+          lastName: "Zulu",
+          email: "zed@test.com",
+          active: true,
+          hutLeaderEligible: true,
+          hutLeaderEligibleAt: d("2026-04-01"),
+        },
+        booking: { checkIn: d("2026-04-06"), checkOut: d("2026-04-08") },
+      },
+    ]);
+    mockPrisma.booking.findMany.mockResolvedValue([]);
+
+    const { GET } = await import("@/app/api/admin/hut-leaders/eligible-members/route");
+    const { NextRequest } = await import("next/server");
+    const req = new NextRequest(
+      "http://localhost/api/admin/hut-leaders/eligible-members?startDate=2026-04-06&endDate=2026-04-08"
+    );
+
+    const res = await GET(req);
+    const body = await res.json();
+    expect(body.members.map((m: { id: string }) => m.id)).toEqual([
+      "m-zulu",
+      "m-alpha",
+    ]);
+    expect(body.members[0].hutLeaderEligible).toBe(true);
+    expect(body.members[0].hutLeaderEligibleAt).toBe("2026-04-01T00:00:00.000Z");
+    expect(body.members[1].hutLeaderEligible).toBe(false);
   });
 
   it("uses earliest checkIn and latest checkOut for multiple bookings", async () => {
