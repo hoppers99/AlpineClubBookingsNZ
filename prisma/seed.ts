@@ -22,6 +22,7 @@ import { DEFAULT_FINANCE_REPORT_CATEGORIES } from "../src/lib/finance-report-map
 import {
   backfillCurrentSeasonMembershipAssignments,
 } from "../src/lib/membership-types";
+import { ensureMemberAccessRolesFromCompatibilityFields } from "../src/lib/member-access-role-writes";
 import { ensureNotRequiredSubscriptionForRole } from "../src/lib/member-subscription-defaults";
 import { createPrismaPgAdapter } from "../src/lib/prisma-adapter";
 import {
@@ -334,9 +335,22 @@ async function main() {
     });
     // Admin accounts never owe a membership subscription.
     await ensureNotRequiredSubscriptionForRole(prisma, admin);
+    await ensureMemberAccessRolesFromCompatibilityFields(prisma, {
+      memberId: admin.id,
+      role: admin.role,
+      financeAccessLevel: admin.financeAccessLevel,
+      canLogin: admin.canLogin,
+    });
     console.log(
       `Admin user seeded: ${seedAdminEmail} (password change required on first login)`,
     );
+  } else {
+    await ensureMemberAccessRolesFromCompatibilityFields(prisma, {
+      memberId: existingAdmin.id,
+      role: existingAdmin.role,
+      financeAccessLevel: existingAdmin.financeAccessLevel,
+      canLogin: existingAdmin.canLogin,
+    });
   }
 
   // Seed the shared lodge kiosk account (create-if-missing).
@@ -357,7 +371,20 @@ async function main() {
       }),
     });
     await ensureNotRequiredSubscriptionForRole(prisma, lodge);
+    await ensureMemberAccessRolesFromCompatibilityFields(prisma, {
+      memberId: lodge.id,
+      role: lodge.role,
+      financeAccessLevel: lodge.financeAccessLevel,
+      canLogin: lodge.canLogin,
+    });
     console.log(`Lodge account seeded: ${lodgeAccountEmail}`);
+  } else {
+    await ensureMemberAccessRolesFromCompatibilityFields(prisma, {
+      memberId: existingLodge.id,
+      role: existingLodge.role,
+      financeAccessLevel: existingLodge.financeAccessLevel,
+      canLogin: existingLodge.canLogin,
+    });
   }
 
   const membershipAssignmentBackfill =
@@ -479,7 +506,10 @@ async function main() {
     console.log("Committee members already present; skipping");
   }
 
-  const committeeRoles = buildSeedCommitteeRoles();
+  const committeeRoles = buildSeedCommitteeRoles({
+    domainEmail: clubDomainEmail,
+    contactEmail: CLUB_CONTACT_EMAIL,
+  });
   for (const role of committeeRoles) {
     await prisma.committeeRole.upsert({
       where: { key: role.key },
@@ -489,6 +519,7 @@ async function main() {
         key: role.key,
         name: role.name,
         description: role.description,
+        contactEmail: role.contactEmail,
         sortOrder: role.sortOrder,
       },
     });

@@ -7,6 +7,7 @@ import {
 } from "@/lib/audit";
 import {
   committeeRoleSelect,
+  normalizeCommitteeEmail,
   normalizeCommitteeText,
   serializeCommitteeRole,
 } from "@/lib/committee";
@@ -21,6 +22,7 @@ const patchSchema = z
   .object({
     name: z.string().trim().min(1).max(120).optional(),
     description: z.string().trim().max(1000).nullable().optional(),
+    contactEmail: z.string().trim().email().max(320).nullable().optional(),
     isActive: z.boolean().optional(),
     sortOrder: z.number().int().min(0).max(100000).optional(),
   })
@@ -109,6 +111,9 @@ export async function PATCH(
   }
   if (parsed.data.description !== undefined) {
     data.description = normalizeCommitteeText(parsed.data.description);
+  }
+  if (parsed.data.contactEmail !== undefined) {
+    data.contactEmail = normalizeCommitteeEmail(parsed.data.contactEmail);
   }
   if (parsed.data.isActive !== undefined) {
     data.isActive = parsed.data.isActive;

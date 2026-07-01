@@ -14,6 +14,9 @@ findUnique: vi.fn(),
     update: vi.fn(),
     create: vi.fn(),
   },
+  memberAccessRole: {
+    createMany: vi.fn(),
+  },
 };
 
 vi.mock("@/lib/prisma", () => ({ prisma: mockPrisma }));
@@ -268,6 +271,7 @@ describe("Admin Xero contact member import API", () => {
       active: true,
       xeroContactId: "xc-1",
     });
+    mockPrisma.memberAccessRole.createMany.mockResolvedValue({ count: 1 });
 
     const { POST } = await import("@/app/api/admin/xero/import-member-contact/route");
     const req = makeRequest("/api/admin/xero/import-member-contact", {
@@ -293,6 +297,16 @@ describe("Admin Xero contact member import API", () => {
         }),
       })
     );
+    expect(mockPrisma.memberAccessRole.createMany).toHaveBeenCalledWith({
+      data: [
+        {
+          memberId: "member-1",
+          role: "USER",
+          assignedByMemberId: "a1",
+        },
+      ],
+      skipDuplicates: true,
+    });
     expect(mockUpsertXeroObjectLink).toHaveBeenCalledWith(
       expect.objectContaining({
         localModel: "Member",

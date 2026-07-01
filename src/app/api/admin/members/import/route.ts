@@ -15,6 +15,7 @@ import { isPrismaUniqueConstraintError } from "@/lib/prisma-errors";
 import { issueActionToken } from "@/lib/action-tokens";
 import { getMemberSetupInviteExpiryDate } from "@/lib/member-setup-invite";
 import { parseDateOnly } from "@/lib/date-only";
+import { ensureMemberAccessRolesFromCompatibilityFields } from "@/lib/member-access-role-writes";
 import {
   DEFAULT_MEMBER_IMPORT_DATE_FORMAT,
   deriveMemberImportNameFields,
@@ -533,6 +534,12 @@ export async function POST(req: NextRequest) {
             canLogin: row.canLogin,
             rowNum: row.rowNum,
             rowNote: row.rowNote,
+          });
+          await ensureMemberAccessRolesFromCompatibilityFields(tx, {
+            memberId: member.id,
+            role: row.role,
+            canLogin: row.canLogin,
+            assignedByMemberId: session.user.id,
           });
 
           await createAuditLog(

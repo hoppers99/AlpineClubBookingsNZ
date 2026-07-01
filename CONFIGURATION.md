@@ -192,9 +192,13 @@ test/demo mode or disabled:
 account if `SEED_LODGE_PASSWORD` is unset. The seeded admin is created with
 `role: ADMIN`, `canLogin: true`, `emailVerified: true`, and a `NOT_REQUIRED`
 membership subscription for the current season, and is forced through
-`/change-password` on first login. The seed only creates the admin when no
-`ADMIN` member exists yet, so changing `SEED_ADMIN_*` later has no effect on
-an existing database.
+`/change-password` on first login. The seed also writes the normalized
+`MemberAccessRole.ADMIN` row for the seeded admin and
+`MemberAccessRole.LODGE` row for the seeded lodge kiosk account. Re-running
+the seed repairs those missing normalized access-role rows without overwriting
+the existing accounts. The seed only creates the admin when no `ADMIN` member
+exists yet, so changing `SEED_ADMIN_*` later has no effect on an existing
+database.
 
 The whole seed is create-if-missing: re-running it against a populated
 database never deletes, overwrites, or duplicates data. Committee entries and
@@ -305,10 +309,10 @@ Xero contact-group rules, and committee assignment are separate axes:
 
 Committee settings are database-backed and managed from `/admin/committee`.
 `CommitteeRole` stores reusable master roles such as President, Secretary, or
-Booking Officer. `CommitteeAssignment` links a member to one of those roles and
-stores presentation controls: blurb, sort order, published, show-phone,
-contactable, and active/deactivated state. Multiple members can hold the same
-master role.
+Booking Officer, including the role email alias used for committee contact
+delivery. `CommitteeAssignment` links a member to one of those roles and stores
+presentation controls: blurb, sort order, published, show-phone, contactable,
+and active/deactivated state. Multiple members can hold the same master role.
 
 Committee assignment is separate from `Member.role` and
 `SeasonalMembershipAssignment`; it never grants admin, lodge, booking, finance,
@@ -321,11 +325,13 @@ API returns the linked member's display name, the role name, the assignment
 blurb or role description, and an opaque assignment contact key only when the
 assignment is contactable. Member email addresses are never returned to the
 browser; `/api/contact` resolves contactable assignment keys server-side and
-falls back to the configured club contact address when no published,
-contactable assignment matches. Committee-routed contact emails use an opaque
-committee-contact marker in EmailLog rows instead of persisting the private
-member recipient address. Phone numbers come from the linked member profile and
-display only when the assignment's show-phone flag is enabled.
+delivers to the role email alias configured on `CommitteeRole`, falling back to
+the configured club contact address when no published, contactable assignment
+matches or the role has no alias. Committee-routed contact emails use an opaque
+committee-contact marker in EmailLog rows instead of persisting the recipient
+address. Linked member email addresses are not used for committee contact
+delivery. Phone numbers come from the linked member profile and display only
+when the assignment's show-phone flag is enabled.
 
 The legacy `CommitteeMember` table remains editable for historical/public
 migration reference, but it no longer powers `/api/committee` or committee

@@ -8,6 +8,7 @@ import {
   buildUniqueCommitteeRoleKey,
   committeeRoleOrderBy,
   committeeRoleSelect,
+  normalizeCommitteeEmail,
   normalizeCommitteeText,
   serializeCommitteeRole,
 } from "@/lib/committee";
@@ -18,6 +19,7 @@ const createSchema = z
   .object({
     name: z.string().trim().min(1).max(120),
     description: z.string().trim().max(1000).nullable().optional(),
+    contactEmail: z.string().trim().email().max(320).nullable().optional(),
     isActive: z.boolean().optional().default(true),
     sortOrder: z.number().int().min(0).max(100000).optional(),
   })
@@ -70,6 +72,7 @@ export async function POST(request: Request) {
         key,
         name: parsed.data.name.trim(),
         description: normalizeCommitteeText(parsed.data.description),
+        contactEmail: normalizeCommitteeEmail(parsed.data.contactEmail),
         isActive: parsed.data.isActive,
         sortOrder,
       },

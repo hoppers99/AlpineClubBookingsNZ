@@ -4,7 +4,14 @@ vi.mock("@/lib/prisma", () => ({
   prisma: {
     member: {
       findFirst: vi.fn(),
+      create: vi.fn(),
       update: vi.fn(),
+    },
+    memberAccessRole: {
+      createMany: vi.fn(),
+    },
+    memberSubscription: {
+      upsert: vi.fn(),
     },
   },
 }));
@@ -26,7 +33,7 @@ vi.mock("@/lib/audit", () => ({
 import { prisma } from "@/lib/prisma";
 import { auth } from "@/lib/auth";
 import { logAudit } from "@/lib/audit";
-import { PUT } from "@/app/api/admin/lodge/route";
+import { GET, PUT } from "@/app/api/admin/lodge/route";
 import {
   adminSession,
   jsonRequest,
@@ -42,6 +49,41 @@ function makePutRequest(body: Record<string, unknown>) {
 describe("admin lodge route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("creates a missing lodge account with a normalized LODGE access role", async () => {
+    mockedAuth.mockResolvedValue(adminSession({ id: "admin-1" }));
+    vi.mocked(prisma.member.findFirst).mockResolvedValue(null);
+    vi.mocked(prisma.member.create).mockResolvedValue(
+      memberFactory({
+        id: "lodge-1",
+        email: "lodge@example.org",
+        firstName: "Lodge",
+        lastName: "Kiosk",
+        role: "LODGE",
+        financeAccessLevel: "NONE",
+        canLogin: true,
+        createdAt: new Date("2026-04-11"),
+        updatedAt: new Date("2026-04-11"),
+      }),
+    );
+    vi.mocked(prisma.memberAccessRole.createMany).mockResolvedValue({ count: 1 } as never);
+    vi.mocked(prisma.memberSubscription.upsert).mockResolvedValue({} as never);
+
+    const res = await GET();
+
+    expect(res.status).toBe(200);
+    expect(prisma.memberAccessRole.createMany).toHaveBeenCalledWith({
+      data: [{ memberId: "lodge-1", role: "LODGE" }],
+      skipDuplicates: true,
+    });
+    expect(logAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "LODGE_ACCOUNT_CREATED",
+        memberId: "admin-1",
+        targetId: "lodge-1",
+      }),
+    );
   });
 
   it("normalizes finance access to NONE when updating the lodge account", async () => {

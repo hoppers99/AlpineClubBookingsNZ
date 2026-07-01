@@ -13,6 +13,10 @@ vi.mock("@/lib/prisma", () => ({
       update: vi.fn(),
       updateMany: vi.fn(),
     },
+    memberAccessRole: {
+      createMany: vi.fn().mockResolvedValue({ count: 1 }),
+      deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+    },
     memberLifecycleActionRequest: {
       findMany: vi.fn(),
     },
@@ -859,6 +863,9 @@ describe("Phase 3: Admin Member Management", () => {
       vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
         const tx = {
           member: { create: createMember },
+          memberAccessRole: {
+            createMany: vi.fn().mockResolvedValue({ count: 1 }),
+          },
         };
         return fn(tx);
       });
@@ -914,6 +921,9 @@ describe("Phase 3: Admin Member Management", () => {
       vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
         const tx = {
           member: { create: createMember },
+          memberAccessRole: {
+            createMany: vi.fn().mockResolvedValue({ count: 1 }),
+          },
         };
         return fn(tx);
       });
@@ -965,12 +975,27 @@ describe("Phase 3: Admin Member Management", () => {
       vi.mocked(prisma.member.findMany).mockResolvedValue([]); // no existing
 
       const mockCreated = [
-        { id: "new1", email: "a@test.com", firstName: "Alice", lastName: "A" },
-        { id: "new2", email: "b@test.com", firstName: "Bob", lastName: "B" },
+        {
+          id: "new1",
+          email: "a@test.com",
+          firstName: "Alice",
+          lastName: "A",
+          canLogin: true,
+        },
+        {
+          id: "new2",
+          email: "b@test.com",
+          firstName: "Bob",
+          lastName: "B",
+          canLogin: true,
+        },
       ];
       vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
         const tx = {
           member: { create: vi.fn() },
+          memberAccessRole: {
+            createMany: vi.fn().mockResolvedValue({ count: 1 }),
+          },
         };
         tx.member.create.mockResolvedValueOnce(mockCreated[0]);
         tx.member.create.mockResolvedValueOnce(mockCreated[1]);
@@ -1018,6 +1043,9 @@ describe("Phase 3: Admin Member Management", () => {
       }));
       const tx = {
         member: { create: createMember },
+        memberAccessRole: {
+          createMany: vi.fn().mockResolvedValue({ count: 1 }),
+        },
       };
       vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) =>
         fn(tx),
@@ -1068,9 +1096,13 @@ describe("Phase 3: Admin Member Management", () => {
         firstName: data.firstName,
         lastName: data.lastName,
       }));
+      const createAccessRoles = vi.fn().mockResolvedValue({ count: 1 });
       vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
         const tx = {
           member: { create: createMember },
+          memberAccessRole: {
+            createMany: createAccessRoles,
+          },
         };
         return fn(tx);
       });
@@ -1095,6 +1127,16 @@ describe("Phase 3: Admin Member Management", () => {
         canLogin: true,
         emailVerified: true,
       });
+      expect(createAccessRoles).toHaveBeenCalledWith({
+        data: [
+          {
+            memberId: "new-login",
+            role: "USER",
+            assignedByMemberId: "admin1",
+          },
+        ],
+        skipDuplicates: true,
+      });
     });
 
     it("imports more than nine members in one request", async () => {
@@ -1110,6 +1152,9 @@ describe("Phase 3: Admin Member Management", () => {
       vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
         const tx = {
           member: { create: createMember },
+          memberAccessRole: {
+            createMany: vi.fn().mockResolvedValue({ count: 1 }),
+          },
         };
         return fn(tx);
       });
@@ -1148,6 +1193,9 @@ describe("Phase 3: Admin Member Management", () => {
       vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
         const tx = {
           member: { create: createMember },
+          memberAccessRole: {
+            createMany: vi.fn().mockResolvedValue({ count: 1 }),
+          },
         };
         return fn(tx);
       });
@@ -1237,7 +1285,20 @@ describe("Phase 3: Admin Member Management", () => {
         },
       ] as any);
       vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
-        const tx = { member: { create: vi.fn().mockResolvedValue({ id: "new1", email: "new@test.com", firstName: "New", lastName: "User" }) } };
+        const tx = {
+          member: {
+            create: vi.fn().mockResolvedValue({
+              id: "new1",
+              email: "new@test.com",
+              firstName: "New",
+              lastName: "User",
+              canLogin: true,
+            }),
+          },
+          memberAccessRole: {
+            createMany: vi.fn().mockResolvedValue({ count: 1 }),
+          },
+        };
         return fn(tx);
       });
 
@@ -1338,6 +1399,9 @@ describe("Phase 3: Admin Member Management", () => {
       vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
         const tx = {
           member: { create: createMember },
+          memberAccessRole: {
+            createMany: vi.fn().mockResolvedValue({ count: 1 }),
+          },
         };
         return fn(tx);
       });
@@ -1424,7 +1488,11 @@ describe("Phase 3: Admin Member Management", () => {
               email: "new@test.com",
               firstName: "New",
               lastName: "User",
+              canLogin: true,
             }),
+          },
+          memberAccessRole: {
+            createMany: vi.fn().mockResolvedValue({ count: 1 }),
           },
         };
         return fn(tx);

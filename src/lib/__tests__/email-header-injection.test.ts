@@ -143,8 +143,10 @@ describe("email header CRLF injection protections", () => {
   it("redacts committee recipient emails from contact EmailLog rows", async () => {
     vi.stubEnv("NODE_ENV", "production");
     mockPrisma.committeeAssignment.findFirst.mockResolvedValueOnce({
-      committeeRole: { name: "Secretary" },
-      member: { email: "secretary.private@example.com" },
+      committeeRole: {
+        name: "Secretary",
+        contactEmail: "secretary@example.org",
+      },
     });
 
     const response = await POST(
@@ -163,7 +165,7 @@ describe("email header CRLF injection protections", () => {
     expect(response.status).toBe(200);
     expect(mockTransporter.sendMail).toHaveBeenCalledWith(
       expect.objectContaining({
-        to: "secretary.private@example.com",
+        to: "secretary@example.org",
       })
     );
     expect(mockPrisma.emailLog.create).toHaveBeenCalledWith({
@@ -177,6 +179,13 @@ describe("email header CRLF injection protections", () => {
       expect.objectContaining({
         data: expect.objectContaining({
           to: "secretary.private@example.com",
+        }),
+      })
+    );
+    expect(mockPrisma.emailLog.create).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          to: "secretary@example.org",
         }),
       })
     );

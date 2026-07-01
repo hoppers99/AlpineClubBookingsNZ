@@ -28,6 +28,7 @@ import {
   ensureNotRequiredSubscriptionForRole,
   roleNeverRequiresSubscription,
 } from "@/lib/member-subscription-defaults";
+import { ensureMemberAccessRoles } from "@/lib/member-access-role-writes";
 import { issueActionToken } from "@/lib/action-tokens";
 import { hasMemberCompletedAccountSetup } from "@/lib/password-reset";
 import { nameField } from "@/lib/zod-helpers";
@@ -998,15 +999,11 @@ export async function createAdminMember(
         },
       });
 
-      if (accessRoles.length > 0) {
-        await tx.memberAccessRole.createMany({
-          data: accessRoles.map((role) => ({
-            memberId: created.id,
-            role,
-          })),
-          skipDuplicates: true,
-        });
-      }
+      await ensureMemberAccessRoles(tx, {
+        memberId: created.id,
+        roles: accessRoles,
+        canLogin,
+      });
 
       // Admin accounts never owe a membership subscription, so they default
       // to NOT_REQUIRED for the current season at creation time.

@@ -95,6 +95,7 @@ const sampleRole = {
   key: "president",
   name: "President",
   description: "Chairs meetings.",
+  contactEmail: "president@example.org",
   isActive: true,
   sortOrder: 0,
   createdAt: new Date("2026-01-01"),
@@ -420,6 +421,7 @@ describe("Committee Master Role API", () => {
       id: "role1",
       key: "president",
       name: "President",
+      contactEmail: "president@example.org",
       assignmentCount: 2,
     });
   });
@@ -433,13 +435,18 @@ describe("Committee Master Role API", () => {
       id: "role2",
       key: "trip-leader",
       name: "Trip Leader",
+      contactEmail: "trips@example.org",
       sortOrder: 5,
       _count: { assignments: 0 },
     } as any);
 
     const req = new NextRequest("http://localhost/api/admin/committee/roles", {
       method: "POST",
-      body: JSON.stringify({ name: "Trip Leader", description: "Trips" }),
+      body: JSON.stringify({
+        name: "Trip Leader",
+        description: "Trips",
+        contactEmail: " Trips@Example.Org ",
+      }),
     });
 
     const res = await createRole(req);
@@ -449,6 +456,7 @@ describe("Committee Master Role API", () => {
         data: expect.objectContaining({
           key: "trip-leader",
           name: "Trip Leader",
+          contactEmail: "trips@example.org",
           sortOrder: 5,
         }),
       }),
@@ -765,11 +773,10 @@ describe("Committee Public API - GET /api/committee", () => {
 describe("Contact API - recipient lookup from database", () => {
   beforeEach(() => { vi.clearAllMocks(); });
 
-  it("sends to member email when recipient matches a published contactable assignment", async () => {
+  it("sends to the committee role email when recipient matches a published contactable assignment", async () => {
     const { POST } = await import("@/app/api/contact/route");
     vi.mocked(prisma.committeeAssignment.findFirst).mockResolvedValue({
-      committeeRole: { name: "President" },
-      member: { email: "president@example.org" },
+      committeeRole: { name: "President", contactEmail: "president@example.org" },
     } as any);
 
     const req = new Request("http://localhost/api/contact", {
@@ -796,8 +803,7 @@ describe("Contact API - recipient lookup from database", () => {
         member: { active: true },
       },
       select: {
-        committeeRole: { select: { name: true } },
-        member: { select: { email: true } },
+        committeeRole: { select: { name: true, contactEmail: true } },
       },
     });
 
@@ -841,11 +847,41 @@ describe("Contact API - recipient lookup from database", () => {
     );
   });
 
+  it("falls back to CONTACT_EMAIL when a contactable role has no alias email", async () => {
+    const { POST } = await import("@/app/api/contact/route");
+    vi.mocked(prisma.committeeAssignment.findFirst).mockResolvedValue({
+      committeeRole: { name: "President", contactEmail: null },
+    } as any);
+
+    const req = new Request("http://localhost/api/contact", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "Test User",
+        email: "test@example.com",
+        message: "Hello",
+        recipient: "assign1",
+      }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+
+    expect(sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: CLUB_CONTACT_EMAIL,
+        subject: "Website Contact (to President): Test User",
+      })
+    );
+  });
+
   it("sanitizes committee role labels before adding them to the email subject", async () => {
     const { POST } = await import("@/app/api/contact/route");
     vi.mocked(prisma.committeeAssignment.findFirst).mockResolvedValue({
-      committeeRole: { name: "President\r\nBcc: attacker@example.org" },
-      member: { email: "president@example.org" },
+      committeeRole: {
+        name: "President\r\nBcc: attacker@example.org",
+        contactEmail: "president@example.org",
+      },
     } as any);
 
     const req = new Request("http://localhost/api/contact", {

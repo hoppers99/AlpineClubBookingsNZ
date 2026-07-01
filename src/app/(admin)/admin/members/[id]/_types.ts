@@ -133,6 +133,7 @@ export interface CommitteeRoleSummary {
   key: string;
   name: string;
   description: string | null;
+  contactEmail: string | null;
   isActive: boolean;
   sortOrder: number;
   assignmentCount: number;

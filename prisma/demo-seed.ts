@@ -19,6 +19,7 @@
 // ---------------------------------------------------------------------------
 import { type AgeTier, PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
+import { ensureMemberAccessRolesFromCompatibilityFields } from "../src/lib/member-access-role-writes";
 import { backfillCurrentSeasonMembershipAssignments } from "../src/lib/membership-types";
 import { createPrismaPgAdapter } from "../src/lib/prisma-adapter";
 
@@ -139,7 +140,7 @@ async function makeMember(
   lastName: string,
   extra: Record<string, unknown> = {},
 ): Promise<MemberRec> {
-  return prisma.member.create({
+  const member = await prisma.member.create({
     data: {
       email: `${local}@${DEMO_DOMAIN}`,
       passwordHash: PWHASH,
@@ -155,6 +156,13 @@ async function makeMember(
       ...extra,
     },
   });
+  await ensureMemberAccessRolesFromCompatibilityFields(prisma, {
+    memberId: member.id,
+    role: member.role,
+    financeAccessLevel: member.financeAccessLevel,
+    canLogin: member.canLogin,
+  });
+  return member;
 }
 
 async function addGuest(
@@ -205,6 +213,12 @@ async function main() {
   const admin =
     (await prisma.member.findFirst({ where: { role: "ADMIN" } })) ??
     (await makeMember("demo-admin", "Demo", "Admin", { role: "ADMIN" }));
+  await ensureMemberAccessRolesFromCompatibilityFields(prisma, {
+    memberId: admin.id,
+    role: admin.role,
+    financeAccessLevel: admin.financeAccessLevel,
+    canLogin: admin.canLogin,
+  });
 
   // -------------------------------------------------------------------------
   // Members — every role, age tier, and lifecycle state.

@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { logAudit } from "@/lib/audit";
 import logger from "@/lib/logger";
+import { ensureMemberAccessRolesFromCompatibilityFields } from "@/lib/member-access-role-writes";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/session-guards";
 import { buildXeroContactUrl } from "@/lib/xero-links";
@@ -190,6 +191,12 @@ export async function POST(request: NextRequest) {
         active: true,
         xeroContactId: true,
       },
+    });
+    await ensureMemberAccessRolesFromCompatibilityFields(prisma, {
+      memberId: member.id,
+      role: "USER",
+      canLogin,
+      assignedByMemberId: session.user.id,
     });
 
     const xeroLink = buildXeroContactUrl(cachedContact.contactId);

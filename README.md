@@ -84,9 +84,10 @@ fork for another organisation. See `NOTICE.md`.
 7. Use **Admin > Committee** to review seeded committee master roles and
    member-linked committee assignments. Assignments remain hidden/unpublished
    until an admin explicitly enables their presentation flags; public contact
-   options use only published, contactable assignments. Member email addresses
-   stay server-side, and phone numbers display only when **show phone** is
-   enabled.
+   options use only published, contactable assignments and deliver to the
+   role email alias configured on the master role. Linked member email
+   addresses are not used for committee contact delivery, and phone numbers
+   display only when **show phone** is enabled.
 8. Use test/demo credentials for Stripe, Xero, SES, and Sentry until you are
    ready for a controlled deployment of your own environment.
 
@@ -141,8 +142,10 @@ docker compose --env-file .env.staging -p tacbookings-staging \
 
 The seed data creates the first admin account from those `SEED_ADMIN_*`
 variables and marks it for password change on first login, and the shared
-lodge kiosk account from `SEED_LODGE_PASSWORD`. Change those passwords
-immediately in any shared or persistent environment.
+lodge kiosk account from `SEED_LODGE_PASSWORD`. It also creates or repairs
+the matching normalized `MemberAccessRole.ADMIN` and `MemberAccessRole.LODGE`
+rows for those seeded accounts. Change those passwords immediately in any
+shared or persistent environment.
 
 The Docker-only app listens on `http://localhost:3001` by default.
 

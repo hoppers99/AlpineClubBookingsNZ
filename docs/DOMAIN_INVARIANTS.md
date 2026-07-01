@@ -83,10 +83,11 @@ configured type. Age-tier Xero groups and membership-type Xero groups may both
 exist; duplicate exact rules and multiple managed rules for the same scope are
 not valid. Committee assignment controls public committee/contact presentation
 only. Do not add committee positions to access roles or `Member.role`.
-`CommitteeRole` master records and
-`CommitteeAssignment` member links can be active/inactive independently of
-access role and seasonal membership type, and newly linked assignments are
-hidden until explicitly published by an admin. Booking pricing, booking block
+`CommitteeRole` master records and `CommitteeAssignment` member links can be
+active/inactive independently of access role and seasonal membership type, and
+newly linked assignments are hidden until explicitly published by an admin.
+Committee contact routing uses the role email alias stored on `CommitteeRole`,
+not the linked member's private email address. Booking pricing, booking block
 checks, and effective subscription lockout may depend on the member's seasonal
 membership type for the
 booking season; application access and committee presentation must not.

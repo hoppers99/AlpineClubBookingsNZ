@@ -5,6 +5,7 @@ export const committeeRoleSelect = {
   key: true,
   name: true,
   description: true,
+  contactEmail: true,
   isActive: true,
   sortOrder: true,
   createdAt: true,
@@ -100,6 +101,11 @@ export function committeeAssignmentOrderBy(): Prisma.CommitteeAssignmentOrderByW
 
 export function normalizeCommitteeText(value?: string | null): string | null {
   const normalized = value?.trim();
+  return normalized ? normalized : null;
+}
+
+export function normalizeCommitteeEmail(value?: string | null): string | null {
+  const normalized = value?.trim().toLowerCase();
   return normalized ? normalized : null;
 }
 

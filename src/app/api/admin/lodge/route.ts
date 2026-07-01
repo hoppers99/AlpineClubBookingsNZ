@@ -7,9 +7,28 @@ import crypto from "crypto";
 import { z } from "zod";
 import { nameField } from "@/lib/zod-helpers";
 import { clubDomainEmail } from "@/config/club-identity";
+import { ensureMemberAccessRolesFromCompatibilityFields } from "@/lib/member-access-role-writes";
 import { ensureNotRequiredSubscriptionForRole } from "@/lib/member-subscription-defaults";
 
 const LODGE_ACCOUNT_EMAIL = clubDomainEmail("lodge");
+
+function serializeLodge(lodge: {
+  id: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  createdAt?: Date;
+  updatedAt: Date;
+}) {
+  return {
+    id: lodge.id,
+    email: lodge.email,
+    firstName: lodge.firstName,
+    lastName: lodge.lastName,
+    ...(lodge.createdAt ? { createdAt: lodge.createdAt } : {}),
+    updatedAt: lodge.updatedAt,
+  };
+}
 
 /**
  * GET /api/admin/lodge
@@ -26,6 +45,9 @@ export async function GET() {
       email: true,
       firstName: true,
       lastName: true,
+      role: true,
+      financeAccessLevel: true,
+      canLogin: true,
       createdAt: true,
       updatedAt: true,
     },
@@ -55,6 +77,9 @@ export async function GET() {
         email: true,
         firstName: true,
         lastName: true,
+        role: true,
+        financeAccessLevel: true,
+        canLogin: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -72,7 +97,14 @@ export async function GET() {
     });
   }
 
-  return NextResponse.json({ lodge });
+  await ensureMemberAccessRolesFromCompatibilityFields(prisma, {
+    memberId: lodge.id,
+    role: lodge.role,
+    financeAccessLevel: lodge.financeAccessLevel,
+    canLogin: lodge.canLogin,
+  });
+
+  return NextResponse.json({ lodge: serializeLodge(lodge) });
 }
 
 const updateSchema = z.object({

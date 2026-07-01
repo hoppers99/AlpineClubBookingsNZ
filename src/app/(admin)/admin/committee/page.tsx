@@ -40,6 +40,7 @@ interface CommitteeRole {
   key: string;
   name: string;
   description: string | null;
+  contactEmail: string | null;
   isActive: boolean;
   sortOrder: number;
   assignmentCount: number;
@@ -80,6 +81,7 @@ const emptyLegacyForm = {
 const emptyRoleForm = {
   name: "",
   description: "",
+  contactEmail: "",
   sortOrder: 0,
   isActive: true,
 };
@@ -250,6 +252,7 @@ export default function CommitteePage() {
     setRoleForm({
       name: role.name,
       description: role.description ?? "",
+      contactEmail: role.contactEmail ?? "",
       sortOrder: role.sortOrder,
       isActive: role.isActive,
     });
@@ -332,6 +335,7 @@ export default function CommitteePage() {
     const payload = {
       name: roleForm.name,
       description: roleForm.description || null,
+      contactEmail: roleForm.contactEmail || null,
       sortOrder: roleForm.sortOrder,
       isActive: roleForm.isActive,
     };
@@ -506,7 +510,8 @@ export default function CommitteePage() {
             <CardTitle className="text-lg">Committee Settings</CardTitle>
             <p className="mt-1 text-sm text-slate-500">
               Master roles are reusable positions for member-linked committee
-              assignments.
+              assignments. Role email aliases route contact-form messages;
+              linked members supply the public name and optional phone only.
             </p>
           </div>
           <Button onClick={openAddRoleForm}>
@@ -562,6 +567,21 @@ export default function CommitteePage() {
                 </div>
               </div>
               <div className="mt-4">
+                <Label htmlFor="roleContactEmail">Role Email</Label>
+                <Input
+                  id="roleContactEmail"
+                  type="email"
+                  value={roleForm.contactEmail}
+                  onChange={(event) =>
+                    setRoleForm({
+                      ...roleForm,
+                      contactEmail: event.target.value,
+                    })
+                  }
+                  placeholder="president@example.org"
+                />
+              </div>
+              <div className="mt-4">
                 <Label htmlFor="roleDescription">Description</Label>
                 <Textarea
                   id="roleDescription"
@@ -613,6 +633,9 @@ export default function CommitteePage() {
                     Key
                   </th>
                   <th className="px-4 py-3 text-left font-medium text-slate-600">
+                    Role Email
+                  </th>
+                  <th className="px-4 py-3 text-left font-medium text-slate-600">
                     Assignments
                   </th>
                   <th className="px-4 py-3 text-left font-medium text-slate-600">
@@ -640,6 +663,9 @@ export default function CommitteePage() {
                       ) : null}
                     </td>
                     <td className="px-4 py-3 text-slate-500">{role.key}</td>
+                    <td className="px-4 py-3 text-slate-600">
+                      {role.contactEmail ?? "-"}
+                    </td>
                     <td className="px-4 py-3 text-slate-600">
                       {role.assignmentCount}
                     </td>
@@ -679,7 +705,8 @@ export default function CommitteePage() {
           <CardTitle className="text-lg">Member-Linked Assignments</CardTitle>
           <p className="mt-1 text-sm text-slate-500">
             Assign members from their member detail page. Published assignments
-            now power the public committee and contact-form recipient lists.
+            now power the public committee and contact-form recipient lists;
+            contact-form messages use the role email alias.
           </p>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -724,6 +751,11 @@ export default function CommitteePage() {
                       <div className="font-medium text-blue-600">
                         {assignment.committeeRole.name}
                       </div>
+                      {assignment.committeeRole.contactEmail ? (
+                        <div className="mt-1 text-xs text-slate-500">
+                          Contact: {assignment.committeeRole.contactEmail}
+                        </div>
+                      ) : null}
                       {assignment.blurb ? (
                         <div className="mt-1 max-w-md text-xs text-slate-500">
                           {assignment.blurb}
@@ -878,8 +910,9 @@ export default function CommitteePage() {
           <div>
             <CardTitle className="text-lg">Legacy Public Committee</CardTitle>
             <p className="mt-1 text-sm text-slate-500">
-              These records still power the public committee page and contact
-              recipient list.
+              These historical records are retained for migration reference.
+              Public committee cards and contact recipients now come from
+              member-linked assignments.
             </p>
           </div>
           <Button onClick={openAddLegacyForm}>

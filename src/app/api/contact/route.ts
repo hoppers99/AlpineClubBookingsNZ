@@ -35,8 +35,7 @@ async function resolveCommitteeRecipient(recipient: string) {
       member: { active: true },
     },
     select: {
-      committeeRole: { select: { name: true } },
-      member: { select: { email: true } },
+      committeeRole: { select: { name: true, contactEmail: true } },
     },
   });
 }
@@ -76,12 +75,14 @@ export async function POST(request: Request) {
     if (recipient) {
       const committeeAssignment = await resolveCommitteeRecipient(recipient);
 
-      if (committeeAssignment?.member.email) {
-        toEmail = committeeAssignment.member.email;
-        logRecipient = `committee-contact:${recipient}`;
+      if (committeeAssignment) {
         recipientLabel = buildRecipientLabel(
           committeeAssignment.committeeRole.name,
         );
+        if (committeeAssignment.committeeRole.contactEmail) {
+          toEmail = committeeAssignment.committeeRole.contactEmail;
+          logRecipient = `committee-contact:${recipient}`;
+        }
       }
     }
 

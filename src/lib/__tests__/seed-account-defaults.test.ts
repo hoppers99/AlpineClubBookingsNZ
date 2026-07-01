@@ -47,6 +47,7 @@ import {
   ensureNotRequiredSubscriptionForRole,
   roleNeverRequiresSubscription,
 } from "@/lib/member-subscription-defaults";
+import { ensureMemberAccessRolesFromCompatibilityFields } from "@/lib/member-access-role-writes";
 import {
   isSubscriptionEnforcementActive,
   requiresPaidSubscriptionForBooking,
@@ -196,8 +197,61 @@ describe("buildSeedCommitteeRoles", () => {
     ]);
     roles.forEach((role, index) => {
       expect(role.id).toBe(`seed-committee-role-${role.key}`);
+      expect(role.contactEmail).toBe("committee@example.invalid");
       expect(role.sortOrder).toBe(index);
     });
+  });
+
+  it("derives master role contact emails from club aliases when configured", () => {
+    const configuredRoles = buildSeedCommitteeRoles({
+      domainEmail: (localPart) => `${localPart}@club.example`,
+      contactEmail: "bookings@club.example",
+    });
+
+    expect(
+      configuredRoles.find((role) => role.key === "president")?.contactEmail,
+    ).toBe("president@club.example");
+    expect(
+      configuredRoles.find((role) => role.key === "bookings")?.contactEmail,
+    ).toBe("bookings@club.example");
+  });
+});
+
+describe("ensureMemberAccessRolesFromCompatibilityFields", () => {
+  function makeDb() {
+    return {
+      memberAccessRole: {
+        createMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+  }
+
+  it("writes the seeded ADMIN access role create-if-missing", async () => {
+    const db = makeDb();
+
+    await ensureMemberAccessRolesFromCompatibilityFields(db, {
+      memberId: "admin-1",
+      role: "ADMIN",
+      financeAccessLevel: "NONE",
+      canLogin: true,
+    });
+
+    expect(db.memberAccessRole.createMany).toHaveBeenCalledWith({
+      data: [{ memberId: "admin-1", role: "ADMIN" }],
+      skipDuplicates: true,
+    });
+  });
+
+  it("does not grant access roles to non-login records", async () => {
+    const db = makeDb();
+
+    await ensureMemberAccessRolesFromCompatibilityFields(db, {
+      memberId: "child-1",
+      role: "USER",
+      canLogin: false,
+    });
+
+    expect(db.memberAccessRole.createMany).not.toHaveBeenCalled();
   });
 });
 

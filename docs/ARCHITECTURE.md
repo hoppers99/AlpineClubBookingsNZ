@@ -286,16 +286,16 @@ displays and booking lockout also resolve the seasonal type: `NOT_REQUIRED` is
 an effective status layered over the raw `MemberSubscription`/Xero history,
 which remains stored and visible for audit. Seasonal type changes do not
 automatically reprice existing future bookings. Committee assignments remain
-separate public/contact metadata. `CommitteeRole` stores reusable master positions and
-`CommitteeAssignment` links members to those positions with blurb, sort order,
-published, show-phone, contactable, and active flags. The public committee API
-reads only active, published assignments with active roles, never selects member
-email, returns phone only when show-phone is enabled, and exposes contact keys
-only for contactable assignments. The contact form resolves those assignment
-keys server-side to the linked member email or falls back to the club contact
-address. When routed to a committee member, contact email delivery stores an
-opaque committee-contact marker in EmailLog instead of the private member
-recipient address.
+separate public/contact metadata. `CommitteeRole` stores reusable master positions
+and their role email aliases, and `CommitteeAssignment` links members to those
+positions with blurb, sort order, published, show-phone, contactable, and active
+flags. The public committee API reads only active, published assignments with
+active roles, never selects member email, returns phone only when show-phone is
+enabled, and exposes contact keys only for contactable assignments. The contact
+form resolves those assignment keys server-side to the role email alias or falls
+back to the club contact address; it does not deliver committee mail to the
+linked member's private email address. Committee contact email delivery stores
+an opaque committee-contact marker in EmailLog instead of the recipient address.
 
 Membership cancellation is a member-initiated account lifecycle workflow.
 Requests can include the requester, dependants, non-login adults, and related

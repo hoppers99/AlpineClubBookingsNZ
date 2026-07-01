@@ -77,6 +77,7 @@ export interface SeedCommitteeRole {
   key: string;
   name: string;
   description: string;
+  contactEmail: string | null;
   sortOrder: number;
 }
 
@@ -154,15 +155,21 @@ export function buildSeedCommitteePlaceholders(params: {
   }));
 }
 
-export function buildSeedCommitteeRoles(): SeedCommitteeRole[] {
-  return buildSeedCommitteePlaceholders({
+export function buildSeedCommitteeRoles(
+  params: {
+    domainEmail: (localPart: string) => string;
+    contactEmail: string;
+  } = {
     domainEmail: () => "committee@example.invalid",
     contactEmail: "committee@example.invalid",
-  }).map((entry) => ({
+  },
+): SeedCommitteeRole[] {
+  return buildSeedCommitteePlaceholders(params).map((entry) => ({
     id: `seed-committee-role-${entry.contactKey}`,
     key: entry.contactKey,
     name: entry.role,
     description: entry.description,
+    contactEmail: entry.email,
     sortOrder: entry.sortOrder,
   }));
 }

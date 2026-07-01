@@ -437,6 +437,11 @@ export function MemberCommitteeAssignmentsCard({
                       <span>
                         {assignment.contactable ? "Contactable" : "Not contactable"}
                       </span>
+                      {assignment.committeeRole.contactEmail ? (
+                        <span>
+                          Role email {assignment.committeeRole.contactEmail}
+                        </span>
+                      ) : null}
                     </div>
                   </div>
                   <div className="flex gap-1">
