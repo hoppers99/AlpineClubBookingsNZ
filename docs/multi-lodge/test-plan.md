@@ -43,6 +43,10 @@ lifted.
   modification, group bookings, roster, kiosk
 - single-lodge presentation rule: no lodge selector/column renders with
   one active lodge; renders with two
+- `multiLodge` module gating: lodge-management routes 404 while the
+  module is off; disabling the module is rejected while more than one
+  active lodge exists; booking at existing lodges is unaffected by the
+  flag in either state
 - Xero invoice generation unchanged: club-wide item/account mappings
   produce identical output for bookings at either lodge
 

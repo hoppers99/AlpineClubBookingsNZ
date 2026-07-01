@@ -29,10 +29,16 @@ Accept or amend ADR-001 and ADR-002. No code.
 
 - Add the `Lodge` model, seeded with one row (migration 1 of the ADR-001
   sequence).
-- Admin setup page to view/rename the lodge and, later, add a second one.
-  Creating a second active lodge should be blocked (feature-flag style
-  guard, "coming soon") until phase 3 is complete and soaked, so no real
-  deployment can enter multi-lodge state early.
+- Add the `multiLodge` Admin Module flag (default OFF) per ADR-002:
+  `ClubModuleSettings.multiLodge`, a `MODULE_DEFINITIONS` entry, and
+  `feature-routes.ts` rules gating the lodge-management route family.
+  The flag gates configuration only; runtime booking logic never reads
+  it.
+- Lodge-management admin page (module-gated) to view/rename the lodge
+  and, later, add a second one. The module flag is the rollout gate: it
+  stays off in real deployments until phase 3 is complete and soaked, so
+  no deployment enters multi-lodge state early. Disabling the module is
+  rejected while more than one active lodge exists.
 - Move lodge identity fields (`lodgeName`, `doorCode`, `lodgeTravelNote`)
   from `EmailMessageSetting` onto the lodge, with a compatibility read
   path until phase 8 finishes the email-template updates.
@@ -142,7 +148,8 @@ soak required before the phase-1 "second lodge" guard is lifted.**
   `test-plan.md` (booking, payment, modification, cancellation, waitlist,
   group booking, roster, kiosk at each lodge; cross-lodge isolation
   checks).
-- Lift the phase-1 guard on creating a second active lodge.
+- Enable the `multiLodge` module in the real deployment and create the
+  second lodge.
 - Update `docs/ARCHITECTURE.md`, `docs/DOMAIN_INVARIANTS.md`,
   `docs/END_TO_END_TEST_MATRIX.md`, `docs/UX_FLOW_MAP.md`,
   `CONFIGURATION.md`, and `README.md` to describe the lodge dimension

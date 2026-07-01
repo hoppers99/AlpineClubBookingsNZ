@@ -75,3 +75,8 @@ When exactly one active lodge exists, member and admin UI must not show
 lodge selectors, lodge columns, or lodge names in flows where they would
 be redundant (ADR-002). APIs still require and return `lodgeId`; the rule
 is presentation-only.
+
+The `multiLodge` Admin Module flag gates only the lodge-management
+configuration routes (ADR-002). Runtime booking, capacity, and pricing
+logic must never branch on the flag — lodge count and `lodgeId` are the
+only lodge signals service code reads.
