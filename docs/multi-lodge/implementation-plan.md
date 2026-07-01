@@ -161,6 +161,23 @@ soak required before the phase-1 "second lodge" guard is lifted.**
 
 **Risk: High gate review; the change itself is mostly test/docs.**
 
+## Future Enhancements (post phase 9)
+
+Recorded so they are not lost; each needs its own scoping when picked
+up.
+
+- **Cross-lodge waitlist offers.** When a member hits a full lodge, the
+  booking flow (and later the waitlist offer email) can surface
+  availability at another lodge for the same dates — "Lodge A is full,
+  but Lodge B has 4 beds that night." The waitlist entry itself stays
+  bound to the requested lodge; this is an offer/suggestion layer on
+  top, respecting member eligibility and each lodge's own pricing.
+  Depends on phases 3 (per-lodge availability), 4 (eligibility), and 8
+  (booking-flow lodge context) all being stable.
+- **Per-lodge revenue reporting** via Xero tracking categories or a
+  lodge dimension on finance snapshots (kept club-wide by ADR-001; a
+  future ADR would record any change).
+
 ## Standing Rules for Every Phase
 
 - Follow `agents/CODEX_WORKFLOW.md`: one branch per issue-scoped change,

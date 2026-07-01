@@ -129,8 +129,10 @@ a transition state.
 - No per-lodge admin accounts or per-lodge module settings.
 - No single booking spanning multiple lodges.
 - No per-lodge Xero connections or ledgers.
-- No cross-lodge waitlist (a waitlist entry is for the lodge that was
-  full; offering an alternative lodge is a possible future enhancement,
-  not part of this work).
+- No cross-lodge waitlist in the initial delivery (a waitlist entry is
+  for the lodge that was full). Offering an alternative lodge when one
+  is full is a planned future enhancement — see the implementation
+  plan's Future Enhancements section — but it builds on multi-lodge
+  rather than shipping with it.
 - Lodge count is unbounded in the data model, but the UI is designed
   for the realistic case of two to a handful of lodges, not dozens.
