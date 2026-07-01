@@ -57,6 +57,9 @@ lodge actually exists (ADR-002).
 
 ## Documents
 
+- [feature-overview.md](feature-overview.md) — what the feature does and
+  how it behaves for members, admins, hut leaders, and finance. Start
+  here for intent; the ADRs record why.
 - [implementation-plan.md](implementation-plan.md) — phased delivery plan
   with risk labels and standing rules.
 - [lodge-scoping-contract.md](lodge-scoping-contract.md) — which models are
