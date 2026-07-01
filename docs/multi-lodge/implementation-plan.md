@@ -19,7 +19,14 @@ club-wide.
 
 **Risk: Low (docs only). Done.**
 
-## Phase 1 — Lodge entity and admin management
+## Phase 1 — Lodge entity and admin management (delivered 2026-07-02)
+
+Delivered on `feature/multi-lodge-support`. The lodge identity fields were
+copied (not moved) from `EmailMessageSetting`: lodge edits write-through to
+the singleton while exactly one active lodge exists
+(`syncSoleActiveLodgeIdentity` in `src/lib/lodges.ts`), and the
+`EmailMessageSetting` columns are removed in phase 8 once email templates
+read per-booking lodge context.
 
 - Add the `Lodge` model, seeded with one row (migration 1 of the ADR-001
   sequence).

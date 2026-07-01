@@ -2242,11 +2242,28 @@ model ClubModuleSettings {
   hutLeaders              Boolean  @default(true)
   communications          Boolean  @default(true)
   skifieldConditions      Boolean  @default(true)
+  multiLodge              Boolean  @default(false)
   updatedByMemberId       String?
   createdAt               DateTime @default(now())
   updatedAt               DateTime @default(now()) @updatedAt
 
   @@index([updatedByMemberId])
+}
+
+// A physical lodge property. Every deployment has at least one row (seeded by
+// migration/seed). Lodge management UI is gated by the multiLodge Admin Module,
+// but this table is core: booking data will scope to it from phase 2 of
+// docs/multi-lodge/implementation-plan.md onward. While exactly one active
+// lodge exists the UI shows no lodge concept (ADR-002 presentation rule).
+model Lodge {
+  id         String   @id @default(cuid())
+  name       String
+  slug       String   @unique
+  active     Boolean  @default(true)
+  doorCode   String?  @db.VarChar(80)
+  travelNote String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 }
 
 model LodgeSettings {

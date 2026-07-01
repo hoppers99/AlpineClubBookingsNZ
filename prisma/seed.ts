@@ -8,8 +8,10 @@ import bcrypt from "bcryptjs";
 import { clubConfig } from "../src/config/club";
 import {
   CLUB_CONTACT_EMAIL,
+  CLUB_LODGE_NAME,
   clubDomainEmail,
 } from "../src/config/club-identity";
+import { slugifyLodgeName } from "../src/lib/lodges";
 import {
   CLUB_THEME_ID,
   DEFAULT_CLUB_THEME_VALUES,
@@ -283,6 +285,38 @@ async function main() {
 
   const seedAdminEmail = requireSeedEnv("SEED_ADMIN_EMAIL").toLowerCase();
   const seedAdminPassword = requireSeedEnv("SEED_ADMIN_PASSWORD");
+
+  // Ensure the club's lodge exists (create-if-missing). The migration that
+  // introduced the Lodge table seeds a 'Lodge' placeholder row when
+  // EmailMessageSetting has no configured lodge name; on a first-run seed,
+  // upgrade that placeholder to the club-config lodge name. Rows with any
+  // other name are club data and are never touched.
+  const existingLodges = await prisma.lodge.findMany({
+    select: { id: true, name: true },
+    take: 2,
+  });
+  if (existingLodges.length === 0) {
+    await prisma.lodge.create({
+      data: {
+        name: CLUB_LODGE_NAME,
+        slug: slugifyLodgeName(CLUB_LODGE_NAME),
+        active: true,
+      },
+    });
+    console.log(`Lodge seeded: ${CLUB_LODGE_NAME}`);
+  } else if (
+    existingLodges.length === 1 &&
+    existingLodges[0].name === "Lodge"
+  ) {
+    await prisma.lodge.update({
+      where: { id: existingLodges[0].id },
+      data: {
+        name: CLUB_LODGE_NAME,
+        slug: slugifyLodgeName(CLUB_LODGE_NAME),
+      },
+    });
+    console.log(`Lodge placeholder renamed to: ${CLUB_LODGE_NAME}`);
+  }
 
   // Seed default cancellation policy tiers (create-if-missing).
   const policies = [

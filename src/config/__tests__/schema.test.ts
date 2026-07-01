@@ -194,6 +194,7 @@ describe("featureFlagsSchema", () => {
         hutLeaders: true,
         communications: false,
         skifieldConditions: true,
+        multiLodge: false,
       }),
     ).toBeDefined();
   });
@@ -216,6 +217,7 @@ describe("featureFlagsSchema", () => {
       hutLeaders: true,
       communications: true,
       skifieldConditions: true,
+      multiLodge: false,
       mystery: true,
     });
     expect(result.success).toBe(false);
@@ -239,6 +241,7 @@ describe("featureFlagsSchema", () => {
       hutLeaders: true,
       communications: true,
       skifieldConditions: true,
+      multiLodge: false,
     });
     expect(result.success).toBe(false);
   });
