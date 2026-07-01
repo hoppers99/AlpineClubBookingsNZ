@@ -29,6 +29,32 @@ function LoginForm() {
   const emailChanged = searchParams.get("emailChanged") === "true";
   const redirectTo = resolvePostLoginPath(searchParams.get("callbackUrl"));
 
+  async function resolveTwoFactorPath() {
+    const response = await fetch("/api/auth/2fa/status", {
+      credentials: "same-origin",
+    });
+    if (!response.ok) return null;
+    const status = (await response.json()) as {
+      required?: boolean;
+      verified?: boolean;
+      enrolled?: boolean;
+      forcePasswordChange?: boolean;
+    };
+
+    if (status.forcePasswordChange) {
+      return "/change-password";
+    }
+
+    if (!status.required || status.verified) {
+      return null;
+    }
+
+    const params = new URLSearchParams({ callbackUrl: redirectTo });
+    return status.enrolled
+      ? `/login/verify?${params.toString()}`
+      : `/login/enroll?${params.toString()}`;
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError("");
@@ -52,7 +78,7 @@ function LoginForm() {
           setError("Invalid email or password. Please try again.");
         }
       } else {
-        router.push(redirectTo);
+        router.push((await resolveTwoFactorPath()) ?? redirectTo);
       }
     } catch {
       setError("Something went wrong. Please try again.");

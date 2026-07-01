@@ -17,6 +17,7 @@ export const MODULE_KEYS = [
   "hutLeaders",
   "communications",
   "skifieldConditions",
+  "twoFactor",
 ] as const;
 
 export type ModuleKey = (typeof MODULE_KEYS)[number];
@@ -45,6 +46,7 @@ export const DEFAULT_MODULE_SETTINGS: ModuleSettingsValues = {
   hutLeaders: true,
   communications: true,
   skifieldConditions: true,
+  twoFactor: false,
 };
 
 export interface ModuleDefinition {
@@ -173,6 +175,15 @@ export const MODULE_DEFINITIONS: Record<ModuleKey, ModuleDefinition> = {
     description:
       "Live mountain/road status panel and widgets, plus the admin conditions cache.",
     dependencies: [],
+  },
+  twoFactor: {
+    key: "twoFactor",
+    label: "Two-factor authentication",
+    description:
+      "Require members and admins to verify an authenticator app, email code, or recovery code after password login.",
+    dependencies: [
+      "Transactional email delivery should be configured before enabling email one-time codes.",
+    ],
   },
 };
 

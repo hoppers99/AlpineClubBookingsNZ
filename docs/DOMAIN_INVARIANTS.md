@@ -96,6 +96,13 @@ audit record. Existing future bookings are not automatically repriced by a type
 change, and raw subscription, payment, and Xero history must remain intact even
 when the effective subscription status is `NOT_REQUIRED`.
 
+When the global two-factor module is enabled, password login is not sufficient
+for protected app access. The Auth.js JWT must carry `twoFactorVerified=false`
+until a server-side two-factor verification or enrollment endpoint flips it.
+Route-group layouts and API guards must enforce that claim; login form code
+must not be the only 2FA gate. TOTP secrets, email OTP codes, and recovery
+codes must never be stored in plaintext.
+
 Pending nomination states must have an expiry, reminder, admin refresh,
 replacement, rejection, or other documented recovery path so applications do
 not remain permanently blocked by stale action links.

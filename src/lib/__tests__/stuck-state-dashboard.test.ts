@@ -22,6 +22,7 @@ const modulesOn: FeatureFlags = {
   hutLeaders: true,
   communications: true,
   skifieldConditions: true,
+  twoFactor: false,
 };
 
 function emptyEmailResponses() {

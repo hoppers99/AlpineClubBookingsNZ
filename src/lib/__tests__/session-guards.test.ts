@@ -58,6 +58,27 @@ describe("requireActiveSessionUser", () => {
 
     expect(response).toBeNull();
   });
+
+  it("rejects unverified sessions when two-factor is required", async () => {
+    mockFindUnique.mockResolvedValue({
+      active: true,
+      forcePasswordChange: false,
+      twoFactorEnabled: true,
+    });
+
+    const response = await requireActiveSessionUser("member-1", {
+      sessionUser: {
+        id: "member-1",
+        twoFactorRequired: true,
+        twoFactorVerified: false,
+      },
+    });
+
+    expect(response?.status).toBe(403);
+    await expect(response?.json()).resolves.toEqual({
+      error: "Two-factor verification required",
+    });
+  });
 });
 
 describe("requireAdmin", () => {
@@ -144,6 +165,36 @@ describe("requireAdmin", () => {
       expect(result.response.status).toBe(403);
       await expect(result.response.json()).resolves.toEqual({
         error: "Password change required",
+      });
+    }
+  });
+
+  it("rejects admins who have not completed required two-factor verification", async () => {
+    mockAuth.mockResolvedValue({
+      user: {
+        id: "admin-1",
+        role: "ADMIN",
+        accessRoles: [{ role: "ADMIN" }],
+        twoFactorRequired: true,
+        twoFactorVerified: false,
+      },
+    });
+    mockFindUnique.mockResolvedValue({
+      active: true,
+      forcePasswordChange: false,
+      role: "ADMIN",
+      financeAccessLevel: "NONE",
+      twoFactorEnabled: true,
+      accessRoles: [{ role: "ADMIN" }],
+    });
+
+    const result = await requireAdmin();
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.response.status).toBe(403);
+      await expect(result.response.json()).resolves.toEqual({
+        error: "Two-factor verification required",
       });
     }
   });

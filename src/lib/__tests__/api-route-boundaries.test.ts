@@ -52,7 +52,8 @@ function hasAdminGuard(contents: string) {
 function hasMemberGuard(contents: string) {
   return (
     /\brequireActiveSession\s*\(/.test(contents) ||
-    /\brequireActiveSessionUser\s*\(/.test(contents)
+    /\brequireActiveSessionUser\s*\(/.test(contents) ||
+    /\brequireTwoFactorApiSession\s*\(/.test(contents)
   );
 }
 

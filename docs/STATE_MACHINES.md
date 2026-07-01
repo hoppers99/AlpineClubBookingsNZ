@@ -351,3 +351,18 @@ failure -> run/failure visible and retryable where business-critical
 
 To verify: which cron jobs record `CronJobRun`, exact statuses, stale queue
 health thresholds, and skipped-module reporting.
+
+## Two-Factor Login Lifecycle
+
+```text
+password accepted -> JWT session issued with twoFactorVerified=false
+module off -> session treated verified for normal routing
+module on + unenrolled -> protected layout redirects to /login/enroll
+module on + enrolled -> protected layout redirects to /login/verify
+valid TOTP/email/recovery code -> session update flips twoFactorVerified=true
+invalid attempts -> per-member counter increments -> 15 minute lockout after 5 failures
+```
+
+To verify: Auth.js JWT callback claim handling, protected route-group layout
+redirects, API guard rejection, email-code expiry, TOTP skew window, recovery
+code single-use consumption, and lockout reset after successful verification.

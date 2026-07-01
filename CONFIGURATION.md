@@ -440,6 +440,7 @@ cannot be read, optional modules fail closed.
 | Hut leaders | on | Hut-leader assignments, kiosk access, and auto-assignment. |
 | Communications | on | Admin bulk email to members. Transactional notifications are unaffected. |
 | Ski-field conditions | on | Live mountain/road status panel, public API routes, and admin cache controls. |
+| Two-factor authentication | off | Requires users to complete authenticator-app, email-code, or recovery-code verification after password login. |
 
 Cron-backed optional module schedules are still registered when
 `CRON_ENABLED=true`; each run checks the effective module state before doing
@@ -451,6 +452,28 @@ clean skipped result rather than running the module task.
 The Admin dashboard includes `/admin/modules` for club-level activation of the
 optional modules above. These settings are stored in the `ClubModuleSettings`
 database table as booleans only.
+
+## Two-Factor Authentication
+
+The Two-factor authentication Admin Modules toggle is a global enforcement
+switch. It defaults off. When enabled, password sign-in creates a limited JWT
+session with `twoFactorVerified=false`; protected route-group layouts and API
+guards redirect or reject that session until the user completes `/login/enroll`
+or `/login/verify`.
+
+Users enroll either an authenticator app (TOTP) or an email one-time code. TOTP
+secrets are encrypted at rest using key material derived from `AUTH_SECRET` (or
+`NEXTAUTH_SECRET` fallback), so rotating that secret invalidates stored TOTP
+secrets and recovery-code hashes. Email codes are short-lived, hashed at rest,
+and the `two-factor-code` email template is marked sensitive so rendered code
+content is not retained in email logs. Recovery codes are generated on
+enrollment and profile regeneration, shown once, hashed at rest, and consumed
+once.
+
+Invalid two-factor attempts are rate-limited and tracked per member. Five
+invalid app, email, or recovery-code attempts lock the two-factor challenge for
+15 minutes. Accounts that still have `forcePasswordChange=true` must finish
+`/change-password` before enrolling or verifying two-factor authentication.
 
 ## Stripe
 

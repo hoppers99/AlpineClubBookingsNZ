@@ -114,6 +114,7 @@ describe("finance auth helpers", () => {
       accessRoles: [{ role: "FINANCE_ADMIN" }],
       active: true,
       forcePasswordChange: false,
+      twoFactorEnabled: false,
     });
 
     const member = await loadFinanceAccessMember("member-1");
@@ -129,6 +130,7 @@ describe("finance auth helpers", () => {
         accessRoles: { select: { role: true } },
         active: true,
         forcePasswordChange: true,
+        twoFactorEnabled: true,
       },
     });
     expect(member?.email).toBe("finance@example.com");
@@ -146,6 +148,7 @@ describe("finance auth helpers", () => {
       accessRoles: [{ role: "FINANCE_USER" }],
       active: true,
       forcePasswordChange: false,
+      twoFactorEnabled: false,
     });
 
     await expect(requireFinanceViewer("/finance")).resolves.toMatchObject({
@@ -167,6 +170,7 @@ describe("finance auth helpers", () => {
       accessRoles: [{ role: "FINANCE_USER" }],
       active: true,
       forcePasswordChange: false,
+      twoFactorEnabled: false,
     });
 
     await expect(requireFinanceManager("/finance")).rejects.toThrow(
@@ -186,10 +190,39 @@ describe("finance auth helpers", () => {
       accessRoles: [{ role: "USER" }],
       active: true,
       forcePasswordChange: false,
+      twoFactorEnabled: false,
     });
 
     await expect(requireFinanceViewer("/finance?view=bookings")).rejects.toThrow(
       "redirect:/dashboard"
+    );
+  });
+
+  it("redirects unverified two-factor sessions to the two-factor gate", async () => {
+    mockAuth.mockResolvedValue({
+      user: {
+        id: "viewer-1",
+        role: "USER",
+        accessRoles: [{ role: "USER" }],
+        twoFactorRequired: true,
+        twoFactorVerified: false,
+        twoFactorEnrolled: true,
+      },
+    });
+    mockFindUnique.mockResolvedValue({
+      id: "viewer-1",
+      email: "viewer@example.com",
+      firstName: "View",
+      lastName: "Only",
+      role: "USER",
+      accessRoles: [{ role: "FINANCE_USER" }],
+      active: true,
+      forcePasswordChange: false,
+      twoFactorEnabled: true,
+    });
+
+    await expect(requireFinanceViewer("/finance/reports")).rejects.toThrow(
+      "redirect:/login/verify?callbackUrl=%2Ffinance%2Freports",
     );
   });
 });

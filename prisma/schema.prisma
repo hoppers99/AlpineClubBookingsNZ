@@ -39,6 +39,11 @@ enum AccessRole {
   ORG
 }
 
+enum TwoFactorMethod {
+  TOTP
+  EMAIL
+}
+
 enum FinanceSnapshotType {
   PROFIT_AND_LOSS_MONTHLY
   ACCOUNTS_RECEIVABLE_INVOICES
@@ -347,6 +352,12 @@ model Member {
   forcePasswordChange Boolean   @default(false)
   passwordChangedAt   DateTime?
   lastLoginAt         DateTime?
+  twoFactorEnabled    Boolean   @default(false)
+  twoFactorMethod     TwoFactorMethod?
+  totpSecret          String?
+  twoFactorEnrolledAt DateTime?
+  twoFactorFailedAttempts Int   @default(0)
+  twoFactorLockedUntil    DateTime?
   // Email verification: new registrations start as false.
   // Existing members should be bulk-updated: UPDATE "Member" SET "emailVerified" = true;
   emailVerified       Boolean   @default(false)
@@ -442,6 +453,8 @@ model Member {
   passwordResetTokens                        PasswordResetToken[]
   emailVerificationTokens                    EmailVerificationToken[]
   emailChangeTokens                          EmailChangeToken[]
+  twoFactorEmailCodes                        TwoFactorEmailCode[]
+  twoFactorRecoveryCodes                     TwoFactorRecoveryCode[]
   subscriptions                              MemberSubscription[]
   seasonalMembershipAssignments              SeasonalMembershipAssignment[]             @relation("SeasonalMembershipAssignmentMember")
   seasonalMembershipAssignmentsAssigned      SeasonalMembershipAssignment[]             @relation("SeasonalMembershipAssignmentAssignedBy")
@@ -501,6 +514,8 @@ model Member {
   @@index([archivedAt])
   @@index([canLogin])
   @@index([active])
+  @@index([twoFactorEnabled])
+  @@index([twoFactorLockedUntil])
   @@index([hutLeaderEligible])
 }
 
@@ -559,6 +574,34 @@ model EmailChangeToken {
 
   @@index([tokenHash])
   @@index([memberId])
+}
+
+model TwoFactorEmailCode {
+  id        String   @id @default(cuid())
+  memberId  String
+  codeHash  String   @unique
+  expiresAt DateTime
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  member Member @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  @@index([memberId])
+  @@index([codeHash])
+}
+
+model TwoFactorRecoveryCode {
+  id        String    @id @default(cuid())
+  memberId  String
+  codeHash  String    @unique
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  member Member @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  @@index([memberId])
+  @@index([codeHash])
+  @@index([usedAt])
 }
 
 model MemberApplication {
@@ -2245,6 +2288,7 @@ model ClubModuleSettings {
   hutLeaders              Boolean  @default(true)
   communications          Boolean  @default(true)
   skifieldConditions      Boolean  @default(true)
+  twoFactor               Boolean  @default(false)
   updatedByMemberId       String?
   createdAt               DateTime @default(now())
   updatedAt               DateTime @default(now()) @updatedAt

@@ -66,9 +66,9 @@ fork for another organisation. See `NOTICE.md`.
    run the seed command, then change the seeded admin password on first login.
 5. After sign-in, use **Admin > Modules** to set club-level activation for
    optional modules. Kiosk, chores, finance dashboard, waitlist, Xero, bed
-   allocation, Internet Banking payments, and address autocomplete default off
-   until an admin enables them. General-purpose modules default on and can be
-   disabled there.
+   allocation, Internet Banking payments, address autocomplete, and two-factor
+   authentication default off until an admin enables them. General-purpose
+   modules default on and can be disabled there.
 6. Use **Admin > Membership Types** to review the seeded seasonal membership
    types: Full, Associate, Life, School, Non-Member, and Family. Associate is
    the built-in Associate/Reserve-style type and can be renamed by the club.

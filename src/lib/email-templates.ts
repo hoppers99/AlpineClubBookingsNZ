@@ -283,6 +283,22 @@ export function memberSetupInviteTemplate(
   `);
 }
 
+export function twoFactorCodeTemplate(params: {
+  firstName: string;
+  code: string;
+  expiresAt: Date;
+}): string {
+  return layout(`
+    ${heading("Two-factor code")}
+    ${paragraph("Hi " + escapeHtml(params.firstName) + ",")}
+    ${paragraph(`Use this code to finish signing in to your ${escapeHtml(CLUB_NAME)} booking account:`)}
+    ${paragraph(
+      `<strong style="display: inline-block; font-size: 28px; letter-spacing: 0.16em; padding: 8px 0;">${escapeHtml(params.code)}</strong>`,
+    )}
+    ${muted("This code expires on " + escapeHtml(formatNZDateTime(params.expiresAt)) + ". If you did not try to sign in, change your password and contact the club.")}
+  `);
+}
+
 export function bookingConfirmedTemplate(
   firstName: string,
   checkIn: Date,

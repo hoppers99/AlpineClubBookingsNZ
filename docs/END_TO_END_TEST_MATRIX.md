@@ -7,6 +7,7 @@ that does not exist yet.
 | Area | Persona or actor | Journey or behavior | Risk | Test type | Suggested validation |
 | --- | --- | --- | --- | --- | --- |
 | Auth/access control | Anonymous | Public pages, login, token routes, public API exceptions | High | Route/static tests plus manual public smoke | Locate and run targeted route/security suites |
+| Auth/access control | Member/admin/finance/lodge | Global two-factor enforcement: enrollment, authenticator app, email code, recovery code, lockout, and protected-route/API gating | Critical | Auth service, route, guard, and manual login-flow tests | Targeted two-factor, session-guard, module, and auth-flow tests; manual browser check for both enrollment methods |
 | Auth/access control | Anonymous | Optional public Addy address-autocomplete proxy is unavailable when its module is off and manual entry still works | High | Feature-route/proxy tests plus address component fallback tests | Targeted feature-route, proxy, public endpoint, and address component tests; no live Addy calls |
 | Auth/access control | Member | Member cannot access other member booking/family/payment data | High | API route tests and service ownership tests | Targeted Vitest route/service suites |
 | Auth/access control | Admin/finance/lodge | Role boundaries for admin, finance viewer/manager, lodge kiosk | High | API route tests and page guard tests | Targeted guard tests; manual role checks on staging |

@@ -58,6 +58,7 @@ const completeDatabase: SetupDatabaseSnapshot = {
     hutLeaders: true,
     communications: true,
     skifieldConditions: true,
+    twoFactor: false,
   },
   ageTierSettingCount: 4,
   seasonCount: 2,

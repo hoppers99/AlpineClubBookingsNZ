@@ -21,6 +21,11 @@ import {
   MEMBER_ONBOARDING_GATE_SELECT,
   shouldShowMemberOnboarding,
 } from "@/lib/member-onboarding";
+import { REQUEST_PATH_HEADER } from "@/lib/internal-return-path";
+import {
+  buildTwoFactorGatePath,
+  isTwoFactorSessionBlocked,
+} from "@/lib/two-factor-gate";
 
 export default async function AdminLayout({
   children,
@@ -28,6 +33,7 @@ export default async function AdminLayout({
   children: React.ReactNode;
 }) {
   const session = await auth();
+  const requestHeaders = await headers();
 
   if (!session?.user) {
     redirect("/login");
@@ -45,6 +51,22 @@ export default async function AdminLayout({
 
   if (member.forcePasswordChange) {
     redirect("/change-password");
+  }
+
+  const requestedPath = requestHeaders.get(REQUEST_PATH_HEADER);
+  if (
+    isTwoFactorSessionBlocked({
+      sessionUser: session.user,
+      member,
+    })
+  ) {
+    redirect(
+      buildTwoFactorGatePath({
+        sessionUser: session.user,
+        member,
+        callbackPath: requestedPath,
+      }),
+    );
   }
 
   if (!hasAdminAccess(member)) {
@@ -67,7 +89,7 @@ export default async function AdminLayout({
       getLodgeCapacity(),
     ]);
   const liveClubIdentity = { ...clubIdentity, lodgeCapacity };
-  const nonce = (await headers()).get(CSP_NONCE_HEADER) ?? undefined;
+  const nonce = requestHeaders.get(CSP_NONCE_HEADER) ?? undefined;
 
   return (
     <AppProviders clubIdentity={liveClubIdentity} nonce={nonce}>
