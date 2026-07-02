@@ -78,6 +78,20 @@ export function LodgeSelect({
 }
 
 /**
+ * Initial lodge context from a `?lodgeId=` URL parameter (ADR-003 hub
+ * links), for a page's `useState` initialiser. Read synchronously on the
+ * client so the page's very first data fetch is already lodge-filtered —
+ * applying it in an effect creates an unfiltered-then-filtered request pair
+ * whose responses can land out of order and show the wrong lodge's data.
+ * During SSR there is no window and the value starts null, which is safe:
+ * nothing lodge-dependent renders before the options load.
+ */
+export function initialLodgeIdFromLocation(): string | null {
+  if (typeof window === "undefined") return null;
+  return new URLSearchParams(window.location.search).get("lodgeId");
+}
+
+/**
  * Fetch active lodges for the current user. `scope: "member"` returns only
  * lodges the member may book; `scope: "admin"` returns every lodge (admin
  * pages pass their own endpoint data instead where they already load it).

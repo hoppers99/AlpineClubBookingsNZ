@@ -25,7 +25,11 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
-import { LodgeSelect, useLodgeOptions } from "@/components/lodge-select";
+import {
+  LodgeSelect,
+  initialLodgeIdFromLocation,
+  useLodgeOptions,
+} from "@/components/lodge-select";
 
 interface DashboardBed {
   id: string;
@@ -117,23 +121,19 @@ export function RoomsBedsManager() {
   // Lodge context for the page; LodgeSelect renders nothing (and reports the
   // sole lodge) while fewer than two lodges exist (ADR-002).
   const { lodges, loading: lodgesLoading } = useLodgeOptions("admin");
-  const [lodgeId, setLodgeId] = useState<string | null>(null);
+  // Hub links (ADR-003) land pre-filtered; read synchronously so the first
+  // fetch is already lodge-filtered.
+  const [lodgeId, setLodgeId] = useState<string | null>(initialLodgeIdFromLocation);
   const [bulkRoomCount, setBulkRoomCount] = useState("");
   const [bulkBedsPerRoom, setBulkBedsPerRoom] = useState("4");
   const [bulkNamePrefix, setBulkNamePrefix] = useState("Room");
-
-  // Hub links (ADR-003) land pre-filtered to a lodge.
-  useEffect(() => {
-    const fromUrl = new URLSearchParams(window.location.search).get("lodgeId");
-    if (fromUrl) setLodgeId(fromUrl);
-  }, []);
 
   const totalBeds = useMemo(
     () => payload?.rooms.reduce((total, room) => total + room.beds.length, 0) ?? 0,
     [payload],
   );
 
-  const loadRooms = useCallback(async () => {
+  const loadRooms = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
     try {
       const response = await fetch(
@@ -142,6 +142,7 @@ export function RoomsBedsManager() {
           : "/api/admin/bed-allocation/rooms",
         {
           cache: "no-store",
+          signal,
         },
       );
       if (!response.ok) {
@@ -161,6 +162,11 @@ export function RoomsBedsManager() {
         ),
       );
     } catch (error) {
+      // An aborted request means the lodge changed (or the page unmounted);
+      // a newer request owns the list now.
+      if (error instanceof DOMException && error.name === "AbortError") {
+        return;
+      }
       toast.error(error instanceof Error ? error.message : "Failed to load rooms and beds");
     } finally {
       setLoading(false);
@@ -168,7 +174,9 @@ export function RoomsBedsManager() {
   }, [lodgeId]);
 
   useEffect(() => {
-    void loadRooms();
+    const controller = new AbortController();
+    void loadRooms(controller.signal);
+    return () => controller.abort();
   }, [loadRooms]);
 
   async function mutate(

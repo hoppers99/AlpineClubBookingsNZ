@@ -19,7 +19,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { LodgeSelect, useLodgeOptions } from "@/components/lodge-select";
+import {
+  LodgeSelect,
+  initialLodgeIdFromLocation,
+  useLodgeOptions,
+} from "@/components/lodge-select";
 
 type MemberSummary = {
   id: string;
@@ -67,18 +71,14 @@ export default function LockersPage() {
   // Lodge context for the page; LodgeSelect renders nothing (and reports the
   // sole lodge) while fewer than two lodges exist (ADR-002).
   const { lodges, loading: lodgesLoading } = useLodgeOptions("admin");
-  const [lodgeId, setLodgeId] = useState<string | null>(null);
+  // Hub links (ADR-003) land pre-filtered; read synchronously so the first
+  // fetch is already lodge-filtered.
+  const [lodgeId, setLodgeId] = useState<string | null>(initialLodgeIdFromLocation);
   const [bulkCount, setBulkCount] = useState("");
   const [bulkNamePrefix, setBulkNamePrefix] = useState("Locker");
   const [bulkSaving, setBulkSaving] = useState(false);
 
-  // Hub links (ADR-003) land pre-filtered to a lodge.
-  useEffect(() => {
-    const fromUrl = new URLSearchParams(window.location.search).get("lodgeId");
-    if (fromUrl) setLodgeId(fromUrl);
-  }, []);
-
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
     setError("");
     try {
@@ -86,6 +86,7 @@ export default function LockersPage() {
         lodgeId
           ? `/api/admin/lockers?lodgeId=${encodeURIComponent(lodgeId)}`
           : "/api/admin/lockers",
+        { signal },
       );
       const body = await response.json();
       if (!response.ok) {
@@ -95,6 +96,11 @@ export default function LockersPage() {
       setMembers(body.members ?? []);
       setLockers(body.lockers ?? []);
     } catch (loadError) {
+      // An aborted request means the lodge changed (or the page unmounted);
+      // a newer request owns the list now.
+      if (loadError instanceof DOMException && loadError.name === "AbortError") {
+        return;
+      }
       setError(
         loadError instanceof Error
           ? loadError.message
@@ -106,7 +112,9 @@ export default function LockersPage() {
   }, [lodgeId]);
 
   useEffect(() => {
-    loadData();
+    const controller = new AbortController();
+    loadData(controller.signal);
+    return () => controller.abort();
   }, [loadData]);
 
   async function handleFormSubmit(event: React.FormEvent) {

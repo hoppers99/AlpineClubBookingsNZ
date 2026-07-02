@@ -10,7 +10,11 @@ import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { APP_CURRENCY } from "@/config/operational"
 import { formatCents } from "@/lib/pricing"
-import { LodgeSelect, useLodgeOptions } from "@/components/lodge-select"
+import {
+  LodgeSelect,
+  initialLodgeIdFromLocation,
+  useLodgeOptions,
+} from "@/components/lodge-select"
 
 interface SeasonRate {
   id: string
@@ -71,13 +75,9 @@ export default function SeasonsPage() {
   // Lodge context for the page; LodgeSelect renders nothing (and reports the
   // sole lodge) while fewer than two lodges exist (ADR-002).
   const { lodges, loading: lodgesLoading } = useLodgeOptions("admin")
-  const [lodgeId, setLodgeId] = useState<string | null>(null)
-
-  // Hub links (ADR-003) land pre-filtered to a lodge.
-  useEffect(() => {
-    const fromUrl = new URLSearchParams(window.location.search).get("lodgeId")
-    if (fromUrl) setLodgeId(fromUrl)
-  }, [])
+  // Hub links (ADR-003) land pre-filtered; read synchronously so the first
+  // fetch is already lodge-filtered.
+  const [lodgeId, setLodgeId] = useState<string | null>(initialLodgeIdFromLocation)
 
   // Form state
   const [name, setName] = useState("")
@@ -101,17 +101,21 @@ export default function SeasonsPage() {
     }
   }, [])
 
-  const fetchSeasons = useCallback(async () => {
+  const fetchSeasons = useCallback(async (signal?: AbortSignal) => {
     try {
       const res = await fetch(
         lodgeId
           ? `/api/admin/seasons?lodgeId=${encodeURIComponent(lodgeId)}`
-          : "/api/admin/seasons"
+          : "/api/admin/seasons",
+        { signal }
       )
       if (!res.ok) throw new Error("Failed to fetch seasons")
       const data = await res.json()
       setSeasons(data)
     } catch (err) {
+      // An aborted request means the lodge changed (or the page unmounted);
+      // a newer request owns the list now.
+      if (err instanceof DOMException && err.name === "AbortError") return
       setError(err instanceof Error ? err.message : "Unknown error")
     } finally {
       setLoading(false)
@@ -120,8 +124,13 @@ export default function SeasonsPage() {
 
   useEffect(() => {
     fetchAgeTiers()
-    fetchSeasons()
-  }, [fetchAgeTiers, fetchSeasons])
+  }, [fetchAgeTiers])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    fetchSeasons(controller.signal)
+    return () => controller.abort()
+  }, [fetchSeasons])
 
   function resetForm() {
     setName("")
