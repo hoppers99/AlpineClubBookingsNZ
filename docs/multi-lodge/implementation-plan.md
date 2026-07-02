@@ -199,11 +199,18 @@ card on the admin member detail page (booking restriction + staff grants
 over the phase-4 API). Season overlap validation also became per-lodge
 (lodges may run different season windows). Every control honours the
 ADR-002 presentation rule via `LodgeSelect`, which renders nothing with
-fewer than two lodges. Deliberately deferred: the admin booking
-list lodge filter and column (delivered with phase 8), the
-bed-allocation board's lodge context, and a booking-policy per-lodge
-override editor — the latter two remain open and are tracked by the plan
-bullets below. Room/locker names stay globally unique until the
+fewer than two lodges. The two items deferred from the first
+phase-7 PR landed in follow-ups: the admin booking list lodge filter and
+column (with phase 8), the bed-allocation board's lodge context (board,
+auto-allocation, and range approval all follow one lodge scope, and
+manual allocation now enforces that a bed belongs to the booking's
+lodge), and the booking-policy per-lodge override editors (cancellation,
+minimum stay, and booking periods each gained a scope selector editing
+exactly one partition — club-wide null rows or one lodge's override set —
+with create/remove-override flows on the cancellation editor). Policy
+admin routes accept a validated `lodgeId` and never cross partitions;
+the runtime replace-not-merge resolution was already in place from
+phase 3. Room/locker names stay globally unique until the
 phase-2 contract release re-scopes the constraints.
 
 - Build the lodge-picker pattern once (a context selector honouring the
@@ -266,11 +273,12 @@ keep the generic phrase because ADR-002 forbids lodge names for
 single-lodge clubs, and the CLUB_LODGE_NAME/travel-note/door-code tokens
 now carry the booking lodge's values in multi-lodge deployments. Kiosk
 screens needed no change (phase 5 already scopes them per lodge and they
-never display door codes). Remaining before phase 9 sign-off: the other
-booking emails (pending, cancelled, modified, waitlist, chore roster,
-check-in reminder) still use the singleton lodge name in their subjects —
-never door codes — and each needs the same one-line `lodgeId` threading
-through `sendEmail` now that the mechanism exists. Deliberately deferred:
+never display door codes). The remaining booking email senders (pending,
+bumped/guests-cancelled, cancelled, review approved/declined, chore
+roster, check-in reminder, modified, card-setup-failed, and the three
+waitlist emails — fifteen senders, twenty-seven call sites) now thread
+the booking's `lodgeId` through `sendEmail` as well, completing the
+sweep. Deliberately deferred:
 dropping the `EmailMessageSetting` lodge-identity columns (phase 1 note)
 moves to the phase-2 contract release — a column drop is only blue/green-safe once no
 running colour reads it, and `syncSoleActiveLodgeIdentity` keeps the

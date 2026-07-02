@@ -9,9 +9,40 @@ import { Label } from "@/components/ui/label"
 import { CancellationRulesEditor } from "./cancellation-rules-editor"
 import { PolicyPreview } from "./policy-preview"
 import { PolicyFeedback } from "./policy-feedback"
+import { PolicyScopeSelect, usePolicyScopeLodgeName } from "./policy-scope-select"
 import type { PolicyRule } from "./types"
 
+const FALLBACK_RULES: PolicyRule[] = [
+  { daysBeforeStay: 14, refundPercentage: 100, creditRefundPercentage: 100, fixedFeeCents: 0, creditFixedFeeCents: 0 },
+  { daysBeforeStay: 7, refundPercentage: 50, creditRefundPercentage: 50, fixedFeeCents: 0, creditFixedFeeCents: 0 },
+  { daysBeforeStay: 0, refundPercentage: 0, creditRefundPercentage: 0, fixedFeeCents: 0, creditFixedFeeCents: 0 },
+]
+
+async function fetchPartition(lodgeId: string | null): Promise<{
+  rules: PolicyRule[]
+  nonMemberHoldDays: number
+}> {
+  const res = await fetch(
+    lodgeId
+      ? `/api/admin/booking-policies/cancellation?lodgeId=${encodeURIComponent(lodgeId)}`
+      : "/api/admin/booking-policies/cancellation",
+  )
+  if (!res.ok) throw new Error("Failed to fetch policy")
+  const data = await res.json()
+  return {
+    rules: (data.rules ?? []).map((r: PolicyRule) => normalizeCancellationRule(r)),
+    nonMemberHoldDays: data.nonMemberHoldDays ?? 7,
+  }
+}
+
 export function DefaultCancellationPolicySection() {
+  // Per-lodge override scope (ADR-001 resolved question 3): null edits the
+  // club-wide rules; a lodge edits that lodge's override set, which replaces
+  // the club-wide set entirely at runtime. The scope control renders nothing
+  // while fewer than two lodges exist.
+  const [scopeLodgeId, setScopeLodgeId] = useState<string | null>(null)
+  const scopeLodgeName = usePolicyScopeLodgeName(scopeLodgeId)
+  const [hasOverride, setHasOverride] = useState(false)
   const [defaultRules, setDefaultRules] = useState<PolicyRule[]>([])
   const [defaultHoldDays, setDefaultHoldDays] = useState(7)
   const [loadingDefaults, setLoadingDefaults] = useState(true)
@@ -22,41 +53,58 @@ export function DefaultCancellationPolicySection() {
   const [error, setError] = useState("")
   const [success, setSuccess] = useState("")
 
-  const fetchDefaults = useCallback(async () => {
+  const fetchDefaults = useCallback(async (signal?: AbortSignal) => {
+    setLoadingDefaults(true)
     try {
-      const res = await fetch("/api/admin/booking-policies/cancellation")
+      const res = await fetch(
+        scopeLodgeId
+          ? `/api/admin/booking-policies/cancellation?lodgeId=${encodeURIComponent(scopeLodgeId)}`
+          : "/api/admin/booking-policies/cancellation",
+        { signal },
+      )
       if (!res.ok) throw new Error("Failed to fetch policy")
       const data = await res.json()
-      const rules = data.rules && data.rules.length > 0
-        ? data.rules.map((r: PolicyRule) => normalizeCancellationRule(r))
-        : [
-            { daysBeforeStay: 14, refundPercentage: 100, creditRefundPercentage: 100, fixedFeeCents: 0, creditFixedFeeCents: 0 },
-            { daysBeforeStay: 7, refundPercentage: 50, creditRefundPercentage: 50, fixedFeeCents: 0, creditFixedFeeCents: 0 },
-            { daysBeforeStay: 0, refundPercentage: 0, creditRefundPercentage: 0, fixedFeeCents: 0, creditFixedFeeCents: 0 },
-          ]
+      const fetchedRules: PolicyRule[] = (data.rules ?? []).map(
+        (r: PolicyRule) => normalizeCancellationRule(r),
+      )
+      // Club-wide with no rows yet gets a sensible editable starting point.
+      // A lodge with no rows has NO override — seeding defaults here would
+      // invite accidentally creating one, so keep the list empty instead.
+      const rules =
+        fetchedRules.length > 0 || scopeLodgeId ? fetchedRules : FALLBACK_RULES
       const holdDays = data.nonMemberHoldDays ?? 7
+      setHasOverride(Boolean(scopeLodgeId) && fetchedRules.length > 0)
       setDefaultRules(rules)
       setDefaultHoldDays(holdDays)
       setSavedDefaultRules(rules)
       setSavedDefaultHoldDays(holdDays)
+      setEditingDefaults(false)
     } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return
       setError(err instanceof Error ? err.message : "Unknown error")
     } finally {
       setLoadingDefaults(false)
     }
-  }, [])
+  }, [scopeLodgeId])
 
   useEffect(() => {
-    fetchDefaults()
+    const controller = new AbortController()
+    fetchDefaults(controller.signal)
+    return () => controller.abort()
   }, [fetchDefaults])
 
   function handleCancelDefaults() {
     setDefaultRules(savedDefaultRules)
     setDefaultHoldDays(savedDefaultHoldDays)
     setEditingDefaults(false)
+    // Cancelling an unsaved "create override" must also drop the optimistic
+    // override state; a refetch restores whatever the server actually holds.
+    if (scopeLodgeId && savedDefaultRules.length === 0) {
+      void fetchDefaults()
+    }
   }
 
-  async function handleSaveDefaults() {
+  async function saveRules(rules: PolicyRule[], successMessage: string) {
     setSavingDefaults(true)
     setError("")
     setSuccess("")
@@ -65,22 +113,19 @@ export function DefaultCancellationPolicySection() {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          rules: defaultRules,
-          nonMemberHoldDays: defaultHoldDays,
+          rules,
+          // Hold days are club-wide; only the club-wide scope edits them.
+          ...(scopeLodgeId
+            ? { lodgeId: scopeLodgeId }
+            : { nonMemberHoldDays: defaultHoldDays }),
         }),
       })
       if (!res.ok) {
         const data = await res.json()
         throw new Error(data.error || "Failed to save")
       }
-      const data = await res.json()
-      const rules = data.rules.map((rule: PolicyRule) => normalizeCancellationRule(rule))
-      setDefaultRules(rules)
-      setDefaultHoldDays(data.nonMemberHoldDays)
-      setSavedDefaultRules(rules)
-      setSavedDefaultHoldDays(data.nonMemberHoldDays)
-      setEditingDefaults(false)
-      setSuccess("Default policy saved")
+      await fetchDefaults()
+      setSuccess(successMessage)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error")
     } finally {
@@ -88,9 +133,45 @@ export function DefaultCancellationPolicySection() {
     }
   }
 
+  async function handleSaveDefaults() {
+    await saveRules(
+      defaultRules,
+      scopeLodgeId ? `Override saved for ${scopeLodgeName ?? "lodge"}` : "Default policy saved",
+    )
+  }
+
+  async function handleCreateOverride() {
+    setError("")
+    setSuccess("")
+    try {
+      // Seed the editor from the club-wide rules so the override starts as
+      // a copy the admin adjusts, not a blank slate.
+      const clubWide = await fetchPartition(null)
+      setDefaultRules(clubWide.rules.length > 0 ? clubWide.rules : FALLBACK_RULES)
+      setHasOverride(true)
+      setEditingDefaults(true)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unknown error")
+    }
+  }
+
+  async function handleRemoveOverride() {
+    if (
+      !window.confirm(
+        `Remove ${scopeLodgeName ?? "this lodge"}'s cancellation rules? Bookings there will use the club-wide rules again.`,
+      )
+    ) {
+      return
+    }
+    await saveRules([], "Override removed — this lodge uses the club-wide rules")
+  }
+
   if (loadingDefaults) {
     return <div className="text-center py-8">Loading...</div>
   }
+
+  const scopeIsLodge = scopeLodgeId !== null
+  const showEditor = !scopeIsLodge || hasOverride
 
   return (
     <div className="space-y-6">
@@ -101,66 +182,109 @@ export function DefaultCancellationPolicySection() {
         onClearSuccess={() => setSuccess("")}
       />
 
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between">
-          <div>
-            <CardTitle>Default Policy</CardTitle>
+      <PolicyScopeSelect value={scopeLodgeId} onChange={setScopeLodgeId} />
+
+      {scopeIsLodge && !hasOverride ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>{scopeLodgeName ?? "Lodge"} uses the club-wide rules</CardTitle>
             <CardDescription>
-              These rules apply to all bookings unless a date-specific period overrides them.
+              No override exists for this lodge, so cancellations here follow
+              the club-wide policy. An override replaces the club-wide rules
+              entirely for this lodge.
             </CardDescription>
-          </div>
-          {!editingDefaults && (
-            <Button variant="outline" size="sm" onClick={() => setEditingDefaults(true)}>
-              Edit
+          </CardHeader>
+          <CardContent>
+            <Button onClick={() => void handleCreateOverride()}>
+              Create override for this lodge
             </Button>
-          )}
-        </CardHeader>
-        <CardContent className="space-y-6">
-          <div className="space-y-2 max-w-xs">
-            <Label htmlFor="holdDays">Non-member confirmation threshold</Label>
-            <div className="flex items-center space-x-2">
-              <Input
-                id="holdDays"
-                type="number"
-                min="1"
-                max="365"
-                value={defaultHoldDays}
-                onChange={(e) => setDefaultHoldDays(parseInt(e.target.value) || 7)}
-                className={`w-20 ${!editingDefaults ? "bg-slate-50 text-slate-700" : ""}`}
-                disabled={!editingDefaults}
-              />
-              <span className="text-sm text-muted-foreground">days before check-in</span>
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {showEditor ? (
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <div>
+              <CardTitle>
+                {scopeIsLodge
+                  ? `${scopeLodgeName ?? "Lodge"} Override`
+                  : "Default Policy"}
+              </CardTitle>
+              <CardDescription>
+                {scopeIsLodge
+                  ? "These rules replace the club-wide rules for bookings at this lodge."
+                  : "These rules apply to all bookings unless a date-specific period overrides them."}
+              </CardDescription>
             </div>
-            <p className="text-xs text-muted-foreground">
-              Non-member bookings are held as pending until this many days before check-in, then confirmed automatically.
-            </p>
-          </div>
-
-          <div>
-            <Label className="text-base font-semibold">Cancellation Refund Rules</Label>
-            <p className="text-sm text-muted-foreground mb-3">
-              The first matching rule (highest days threshold) applies.
-            </p>
-            <CancellationRulesEditor rules={defaultRules} onChange={setDefaultRules} disabled={!editingDefaults} />
-          </div>
-
-          <div>
-            <Label className="text-sm font-semibold">Preview</Label>
-            <PolicyPreview rules={defaultRules} />
-          </div>
-
-          {editingDefaults && (
-            <div className="flex space-x-3">
-              <Button onClick={handleSaveDefaults} disabled={savingDefaults}>
-                {savingDefaults ? "Saving..." : "Save Default Policy"}
+            {!editingDefaults && (
+              <Button variant="outline" size="sm" onClick={() => setEditingDefaults(true)}>
+                Edit
               </Button>
-              <Button variant="outline" onClick={handleCancelDefaults} disabled={savingDefaults}>
-                Cancel
-              </Button>
+            )}
+          </CardHeader>
+          <CardContent className="space-y-6">
+            {!scopeIsLodge ? (
+              <div className="space-y-2 max-w-xs">
+                <Label htmlFor="holdDays">Non-member confirmation threshold</Label>
+                <div className="flex items-center space-x-2">
+                  <Input
+                    id="holdDays"
+                    type="number"
+                    min="1"
+                    max="365"
+                    value={defaultHoldDays}
+                    onChange={(e) => setDefaultHoldDays(parseInt(e.target.value) || 7)}
+                    className={`w-20 ${!editingDefaults ? "bg-slate-50 text-slate-700" : ""}`}
+                    disabled={!editingDefaults}
+                  />
+                  <span className="text-sm text-muted-foreground">days before check-in</span>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Non-member bookings are held as pending until this many days before check-in, then confirmed automatically.
+                </p>
+              </div>
+            ) : null}
+
+            <div>
+              <Label className="text-base font-semibold">Cancellation Refund Rules</Label>
+              <p className="text-sm text-muted-foreground mb-3">
+                The first matching rule (highest days threshold) applies.
+              </p>
+              <CancellationRulesEditor rules={defaultRules} onChange={setDefaultRules} disabled={!editingDefaults} />
             </div>
-          )}
-        </CardContent>
-      </Card>
+
+            <div>
+              <Label className="text-sm font-semibold">Preview</Label>
+              <PolicyPreview rules={defaultRules} />
+            </div>
+
+            {editingDefaults && (
+              <div className="flex flex-wrap gap-3">
+                <Button onClick={handleSaveDefaults} disabled={savingDefaults}>
+                  {savingDefaults
+                    ? "Saving..."
+                    : scopeIsLodge
+                      ? "Save Lodge Override"
+                      : "Save Default Policy"}
+                </Button>
+                <Button variant="outline" onClick={handleCancelDefaults} disabled={savingDefaults}>
+                  Cancel
+                </Button>
+              </div>
+            )}
+            {scopeIsLodge && hasOverride && !editingDefaults ? (
+              <Button
+                variant="outline"
+                onClick={() => void handleRemoveOverride()}
+                disabled={savingDefaults}
+              >
+                Remove override (use club-wide rules)
+              </Button>
+            ) : null}
+          </CardContent>
+        </Card>
+      ) : null}
     </div>
   )
 }

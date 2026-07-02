@@ -333,11 +333,16 @@ async function main() {
   ];
 
   for (const policy of policies) {
-    await prisma.cancellationPolicy.upsert({
-      where: { daysBeforeStay: policy.daysBeforeStay },
-      update: {},
-      create: policy,
+    // Tier uniqueness is per partition ([lodgeId, daysBeforeStay]) and the
+    // club-wide partition is the null lodgeId, which a compound-unique
+    // upsert cannot address — so create-if-missing by lookup instead.
+    const existing = await prisma.cancellationPolicy.findFirst({
+      where: { daysBeforeStay: policy.daysBeforeStay, lodgeId: null },
+      select: { id: true },
     });
+    if (!existing) {
+      await prisma.cancellationPolicy.create({ data: policy });
+    }
   }
 
   console.log("Cancellation policies seeded");

@@ -10,9 +10,15 @@ import { Badge } from "@/components/ui/badge"
 import { CancellationRulesEditor } from "./cancellation-rules-editor"
 import { PolicyPreview } from "./policy-preview"
 import { PolicyFeedback } from "./policy-feedback"
+import { PolicyScopeSelect, usePolicyScopeLodgeName } from "./policy-scope-select"
 import type { BookingPeriod, PolicyRule } from "./types"
 
 export function BookingPeriodsSection() {
+  // Per-lodge override scope (ADR-001 resolved question 3): null lists the
+  // club-wide periods; a lodge lists its override set, which replaces the
+  // club-wide set entirely at runtime. Hidden with fewer than two lodges.
+  const [scopeLodgeId, setScopeLodgeId] = useState<string | null>(null)
+  const scopeLodgeName = usePolicyScopeLodgeName(scopeLodgeId)
   const [periods, setPeriods] = useState<BookingPeriod[]>([])
   const [loadingPeriods, setLoadingPeriods] = useState(true)
   const [showPeriodForm, setShowPeriodForm] = useState(false)
@@ -30,9 +36,14 @@ export function BookingPeriodsSection() {
   const [error, setError] = useState("")
   const [success, setSuccess] = useState("")
 
-  const fetchPeriods = useCallback(async () => {
+  const fetchPeriods = useCallback(async (signal?: AbortSignal) => {
     try {
-      const res = await fetch("/api/admin/booking-policies/periods")
+      const res = await fetch(
+        scopeLodgeId
+          ? `/api/admin/booking-policies/periods?lodgeId=${encodeURIComponent(scopeLodgeId)}`
+          : "/api/admin/booking-policies/periods",
+        { signal }
+      )
       if (!res.ok) throw new Error("Failed to fetch periods")
       const data = await res.json()
       setPeriods(
@@ -42,14 +53,17 @@ export function BookingPeriodsSection() {
         }))
       )
     } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return
       setError(err instanceof Error ? err.message : "Unknown error")
     } finally {
       setLoadingPeriods(false)
     }
-  }, [])
+  }, [scopeLodgeId])
 
   useEffect(() => {
-    fetchPeriods()
+    const controller = new AbortController()
+    fetchPeriods(controller.signal)
+    return () => controller.abort()
   }, [fetchPeriods])
 
   function resetPeriodForm() {
@@ -95,6 +109,8 @@ export function BookingPeriodsSection() {
           endDate: periodEnd,
           nonMemberHoldDays: periodHoldDays,
           cancellationRules: periodRules,
+          // Partition is set at creation; edits keep the row's partition.
+          ...(editingPeriodId ? {} : scopeLodgeId ? { lodgeId: scopeLodgeId } : {}),
         }),
       })
       if (!res.ok) {
@@ -150,14 +166,32 @@ export function BookingPeriodsSection() {
         onClearSuccess={() => setSuccess("")}
       />
 
+      <PolicyScopeSelect
+        value={scopeLodgeId}
+        onChange={setScopeLodgeId}
+        id="periods-scope"
+      />
+
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
             <div>
-              <CardTitle>Date-Specific Periods</CardTitle>
+              <CardTitle>
+                {scopeLodgeName
+                  ? `Date-Specific Periods — ${scopeLodgeName}`
+                  : "Date-Specific Periods"}
+              </CardTitle>
               <CardDescription>
                 Override the default policy for specific date ranges (e.g. school holidays).
                 If a booking&apos;s check-in falls within a period, that period&apos;s rules apply.
+                {scopeLodgeName ? (
+                  <>
+                    {" "}
+                    Periods listed here belong to {scopeLodgeName} and replace
+                    the club-wide set for that lodge; if the list is empty the
+                    lodge uses the club-wide periods.
+                  </>
+                ) : null}
               </CardDescription>
             </div>
             {!showPeriodForm && (
