@@ -313,14 +313,16 @@ compat path correct until then.
 Recorded so they are not lost; each needs its own scoping when picked
 up.
 
-- **Cross-lodge waitlist offers.** When a member hits a full lodge, the
-  booking flow (and later the waitlist offer email) can surface
-  availability at another lodge for the same dates — "Lodge A is full,
-  but Lodge B has 4 beds that night." The waitlist entry itself stays
-  bound to the requested lodge; this is an offer/suggestion layer on
-  top, respecting member eligibility and each lodge's own pricing.
-  Depends on phases 3 (per-lodge availability), 4 (eligibility), and 8
-  (booking-flow lodge context) all being stable.
+- **Cross-lodge waitlist opt-in.** Promoted out of this list on
+  2026-07-03: design accepted as
+  [ADR-004](decisions/ADR-004-cross-lodge-waitlist.md) (owner decisions:
+  configurable queue order defaulting to own-lodge-first; explicit
+  confirmation of the repriced offer). Members joining a waitlist may
+  opt into alternate lodges; the processor offers a freed bed
+  cross-lodge per the configured order, and acceptance creates a fresh
+  booking at the offered lodge and cancels the waitlist entry — never a
+  lodgeId mutation. Risk: High (waitlist/money paths); owner review
+  before merge.
 - **Per-lodge revenue reporting** via Xero tracking categories or a
   lodge dimension on finance snapshots (kept club-wide by ADR-001; a
   future ADR would record any change).
