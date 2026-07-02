@@ -165,6 +165,64 @@ export function hasAdminAccess(input: AccessRoleInput) {
   return hasAccessRole(input, "ADMIN");
 }
 
+/**
+ * Separation-of-duties check for access-role writes (issue #1012): only a
+ * Full Admin (the `ADMIN` access role) may grant or revoke privileged access.
+ */
+export function isFullAdmin(input: AccessRoleInput) {
+  return hasAdminAccess(input);
+}
+
+// USER and ORG carry no admin, finance, or lodge access; every other access
+// role is privileged. Scoped admins (e.g. a Membership Officer with
+// membership:edit) may still manage USER/ORG classification and login flags,
+// but must not be able to grant or revoke privileged roles.
+function isPrivilegedAccessRole(role: string) {
+  return role !== "USER" && role !== "ORG";
+}
+
+/**
+ * True when moving a member from `before` to `after` grants or revokes any
+ * privileged access role, which only a Full Admin may do (issue #1012).
+ * Submitting an unchanged role set never trips this.
+ */
+export function accessRoleChangeRequiresFullAdmin(
+  before: ReadonlyArray<string>,
+  after: ReadonlyArray<string>,
+): boolean {
+  const beforeSet = new Set(before);
+  const afterSet = new Set(after);
+  for (const role of new Set([...before, ...after])) {
+    if (
+      isPrivilegedAccessRole(role) &&
+      beforeSet.has(role) !== afterSet.has(role)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Every access role a member's stored role fields can confer, ignoring
+ * `canLogin`. Used by the Full Admin gate so a scoped admin can neither
+ * change live access nor park a dormant elevated `role`/`financeAccessLevel`
+ * on a non-login member for later activation.
+ */
+export function storedAccessRolesForFullAdminGate(member: {
+  accessRoles?: ReadonlyArray<{ role: AccessRole | string } | string> | null;
+  role?: Role | string | null;
+  financeAccessLevel?: FinanceAccessLevel | string | null;
+}): AppAccessRole[] {
+  return dedupeAccessRoles([
+    ...(member.accessRoles ?? []).map((item) =>
+      typeof item === "string" ? item : item.role,
+    ),
+    ...legacyRoleToAccessRoles(member.role, true),
+    ...financeAccessLevelToAccessRoles(member.financeAccessLevel),
+  ]);
+}
+
 export function hasLodgeAccess(input: AccessRoleInput) {
   const roles = resolveAccessRoles(input);
   return roles.includes("LODGE") || roles.includes("ADMIN");

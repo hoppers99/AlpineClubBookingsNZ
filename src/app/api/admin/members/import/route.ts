@@ -37,6 +37,7 @@ import {
   parseTitleValue,
 } from "@/lib/member-enums";
 import { MEMBER_IMPORT_ROLE_VALUES } from "@/lib/member-roles";
+import { isFullAdmin } from "@/lib/access-roles";
 
 const nullableImportString = (max: number) =>
   z.string().max(max).optional().nullable();
@@ -234,6 +235,19 @@ export async function POST(req: NextRequest) {
   }
 
   const { rows, sendInvites } = parsed.data;
+
+  // Full Admin gate (issue #1012): a CSV row with role=ADMIN mints a
+  // login-capable Full Admin, so only a Full Admin may import such rows.
+  if (
+    rows.some((row) => row.role === "ADMIN") &&
+    !isFullAdmin(session.user)
+  ) {
+    return NextResponse.json(
+      { error: "Only a Full Admin can import members with the Admin role" },
+      { status: 403 },
+    );
+  }
+
   // Optional-field visibility settings. When a field is switched off club-wide
   // we ignore any value present in the CSV rather than importing it.
   const flags = await loadMemberFieldsFlags();

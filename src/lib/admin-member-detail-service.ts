@@ -48,11 +48,15 @@ import { genderEnum, titleEnum } from "@/lib/member-enums";
 import { ROLE_VALUES } from "@/lib/member-roles";
 import {
   ACCESS_ROLE_VALUES,
+  accessRoleChangeRequiresFullAdmin,
   accessRolesFromCompatibilityFields,
   financeAccessLevelFromAccessRoles,
+  isFullAdmin,
   legacyRoleFromAccessRoles,
   normalizeAssignableAccessRoles,
   resolveAccessRoles,
+  storedAccessRolesForFullAdminGate,
+  type AccessRoleInput,
   type AppAccessRole,
 } from "@/lib/access-roles";
 import { serializeSeasonalMembershipAssignment } from "@/lib/seasonal-membership-assignments";
@@ -623,10 +627,17 @@ export async function getAdminMemberDetail(params: {
 export async function updateAdminMember(params: {
   id: string;
   currentAdminMemberId: string;
+  currentAdminAccessRoles: AccessRoleInput["accessRoles"];
   request: NextRequest;
   data: UpdateMemberInput;
 }): Promise<JsonRouteResult> {
-  const { id, currentAdminMemberId, request: req, data } = params;
+  const {
+    id,
+    currentAdminMemberId,
+    currentAdminAccessRoles,
+    request: req,
+    data,
+  } = params;
   const existing = await prisma.member.findUnique({
     where: { id },
     include: { accessRoles: { select: { role: true } } },
@@ -754,6 +765,43 @@ export async function updateAdminMember(params: {
         canLogin: effectiveCanLogin,
       })
     : null;
+  if (shouldSyncAccessRoles) {
+    // Full Admin gate (issue #1012): compare both the effective roles
+    // (canLogin-aware) and the stored role fields (canLogin-blind) so a
+    // scoped admin can neither change live privileged access nor park a
+    // dormant elevated role/financeAccessLevel for later activation.
+    // Unchanged submissions pass, so scoped admins can still edit
+    // name/contact details and toggle login for ordinary members.
+    const storedAfter =
+      data.accessRoles !== undefined
+        ? normalizeAssignableAccessRoles(data.accessRoles, { canLogin: true })
+        : accessRolesFromCompatibilityFields({
+            role: data.role ?? existing.role,
+            financeAccessLevel:
+              (data.role ?? existing.role) === "LODGE"
+                ? "NONE"
+                : (data.financeAccessLevel ?? existing.financeAccessLevel),
+            canLogin: true,
+          });
+    const requiresFullAdmin =
+      accessRoleChangeRequiresFullAdmin(
+        resolveAccessRoles(existing),
+        nextAccessRoles ?? [],
+      ) ||
+      accessRoleChangeRequiresFullAdmin(
+        storedAccessRolesForFullAdminGate(existing),
+        storedAfter,
+      );
+    if (
+      requiresFullAdmin &&
+      !isFullAdmin({ accessRoles: currentAdminAccessRoles })
+    ) {
+      return jsonResult(
+        { error: "Only a Full Admin can change member access roles" },
+        { status: 403 },
+      );
+    }
+  }
   if (data.accessRoles !== undefined) {
     updateData.role = legacyRoleFromAccessRoles(nextAccessRoles ?? []);
     updateData.financeAccessLevel = financeAccessLevelFromAccessRoles(

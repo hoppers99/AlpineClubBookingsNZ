@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { auth } from "@/lib/auth";
-import { hasAdminAccess, type AppAccessRole } from "@/lib/access-roles";
+import {
+  dedupeAccessRoles,
+  hasAdminAccess,
+  type AppAccessRole,
+} from "@/lib/access-roles";
 import {
   getAdminRouteRequirement,
   hasAdminAreaAccess,
@@ -157,7 +161,19 @@ export async function requireAdmin(
     return { ok: false, response: twoFactorRequiredResponse() };
   }
 
-  return { ok: true, session: { user: session.user as SessionUser } };
+  return {
+    ok: true,
+    session: {
+      user: {
+        ...(session.user as SessionUser),
+        // DB-verified roles so downstream separation-of-duties checks
+        // (issue #1012) never trust a stale JWT claim.
+        accessRoles: dedupeAccessRoles(
+          member.accessRoles.map(({ role }) => role),
+        ),
+      },
+    },
+  };
 }
 
 type RequireActiveSessionUserOptions = {

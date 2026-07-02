@@ -297,6 +297,16 @@ requested admin path and HTTP method from proxy headers and enforces view/edit
 requirements centrally, while admin layout/sidebar rendering uses the same
 matrix for page access and navigation visibility.
 
+Access-role writes carry an additional separation-of-duties gate, independent
+of the path-inferred area: only a Full Admin (`ADMIN`) may grant or revoke
+privileged access roles (every role other than `USER` and `ORG`), including via
+the legacy `Member.role` and `financeAccessLevel` compatibility fields and the
+member-import `role` column. The shared helpers are `isFullAdmin` and
+`accessRoleChangeRequiresFullAdmin` in `src/lib/access-roles.ts`; the member
+editor, create, bulk-update, and import paths all apply them and return 403
+for a non-Full-Admin actor. `requireAdmin()` returns DB-verified access roles
+on the session user so these checks never trust a stale JWT claim.
+
 Seasonal membership types are policy records, not access roles. `MembershipType`
 stores the stable identifier, display text, active/archive state, sort order,
 booking behavior, subscription behavior, allowed age tiers, and optional Xero
