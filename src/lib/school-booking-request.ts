@@ -47,13 +47,13 @@ import {
   type BookingRequestGuest,
 } from "@/lib/booking-request";
 import { buildInternetBankingPaymentReference } from "@/lib/booking-payment-methods";
-import { checkCapacityForGuestRanges } from "@/lib/capacity";
+import { acquireLodgeCapacityLock, checkCapacityForGuestRanges } from "@/lib/capacity";
 import {
   sendAdminSchoolManualInvoiceEmail,
   sendBookingRequestVerificationEmail,
   sendHutLeaderAssignmentEmail,
 } from "@/lib/email";
-import { getLodgeCapacity } from "@/lib/lodge-capacity";
+import { getDefaultLodgeCapacity } from "@/lib/lodge-capacity";
 import { generateHutLeaderPin, hashHutLeaderPin } from "@/lib/lodge-pin-session";
 import logger from "@/lib/logger";
 import { assertMembershipTypeBookingAllowed } from "@/lib/membership-type-policy";
@@ -63,7 +63,7 @@ import {
   toSeasonRateData,
 } from "@/lib/policies/booking-route-decisions";
 import type { PriceBreakdown } from "@/lib/policies/pricing";
-import { getDefaultLodgeId } from "@/lib/lodges";
+import { getDefaultLodgeId, lodgeNullTolerantScope } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 import {
   enqueueXeroBookingInvoiceOperation,
@@ -201,11 +201,13 @@ async function priceSchoolGuests(input: {
   checkOut: Date;
   guests: Array<{ ageTier: AgeTier }>;
 }): Promise<PriceBreakdown | null> {
+  const requestLodgeId = await getDefaultLodgeId(prisma);
   const seasons = await prisma.season.findMany({
     where: {
       active: true,
       startDate: { lte: input.checkOut },
       endDate: { gte: input.checkIn },
+      ...lodgeNullTolerantScope(requestLodgeId),
     },
     include: { rates: true },
   });
@@ -283,7 +285,7 @@ export async function createSchoolBookingRequest(
     throw new BookingRequestError("At least one guest is required", 422);
   }
 
-  const lodgeCapacity = await getLodgeCapacity();
+  const lodgeCapacity = await getDefaultLodgeCapacity();
   if (guests.length > lodgeCapacity) {
     throw new BookingRequestError(
       `A school booking cannot exceed the lodge capacity of ${lodgeCapacity} guests`,
@@ -437,7 +439,7 @@ export async function approveSchoolBookingRequest(input: {
     throw new BookingRequestError("At least one guest is required", 422);
   }
   if (input.guestOverride) {
-    const lodgeCapacity = await getLodgeCapacity();
+    const lodgeCapacity = await getDefaultLodgeCapacity();
     if (guests.length > lodgeCapacity) {
       throw new BookingRequestError(
         `A school booking cannot exceed the lodge capacity of ${lodgeCapacity} guests`,
@@ -509,9 +511,10 @@ export async function approveSchoolBookingRequest(input: {
 
   try {
     conversion = await prisma.$transaction(async (tx) => {
-      // Single advisory lock serialises all booking creation paths so the
-      // capacity check below stays safe (same key as booking-create.ts).
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+      // Per-lodge advisory lock serialises booking creation at this lodge so
+      // the capacity check below stays safe (same key as booking-create.ts).
+      const bookingLodgeId = await getDefaultLodgeId(tx);
+      await acquireLodgeCapacityLock(tx, bookingLodgeId);
 
       // Status-claim so two admins cannot approve concurrently.
       const claimed = await tx.bookingRequest.updateMany({
@@ -590,6 +593,7 @@ export async function approveSchoolBookingRequest(input: {
           stayEnd: request.checkOut,
         }));
         const capacity = await checkCapacityForGuestRanges(
+          bookingLodgeId,
           request.checkIn,
           request.checkOut,
           capacityRanges,
@@ -624,7 +628,7 @@ export async function approveSchoolBookingRequest(input: {
         booking = await tx.booking.create({
           data: {
             memberId: schoolMember.id,
-            lodgeId: await getDefaultLodgeId(tx),
+            lodgeId: bookingLodgeId,
             checkIn: request.checkIn,
             checkOut: request.checkOut,
             status: BookingStatus.CONFIRMED,

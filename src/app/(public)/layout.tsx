@@ -7,7 +7,7 @@ import { WebsiteHeader } from "@/components/website-header";
 import { WebsiteFooter } from "@/components/website-footer";
 import { clubIdentity } from "@/config/club-identity";
 import { CSP_NONCE_HEADER } from "@/lib/csp";
-import { getLodgeCapacity } from "@/lib/lodge-capacity";
+import { getDefaultLodgeCapacity } from "@/lib/lodge-capacity";
 
 const websiteBodyFont = Inter({
   subsets: ["latin"],
@@ -28,7 +28,7 @@ export default async function PublicLayout({
 }) {
   const [session, lodgeCapacity] = await Promise.all([
     auth(),
-    getLodgeCapacity(),
+    getDefaultLodgeCapacity(),
   ]);
   const liveClubIdentity = { ...clubIdentity, lodgeCapacity };
   const requestHeaders = await headers();

@@ -5,7 +5,7 @@ import {
   calculateIndicativeNonMemberPriceCents,
   getBookingRequestSettings,
 } from "@/lib/booking-request";
-import { getLodgeCapacity } from "@/lib/lodge-capacity";
+import { getDefaultLodgeCapacity } from "@/lib/lodge-capacity";
 import { applyRateLimit, rateLimiters } from "@/lib/rate-limit";
 import { isDateOnlyString, parseDateOnly } from "@/lib/date-only";
 
@@ -54,7 +54,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Check-out must be after check-in" }, { status: 400 });
   }
 
-  const lodgeCapacity = await getLodgeCapacity();
+  const lodgeCapacity = await getDefaultLodgeCapacity();
   if (guests.length > lodgeCapacity) {
     return NextResponse.json(
       { error: `A booking request cannot exceed ${lodgeCapacity} guests` },

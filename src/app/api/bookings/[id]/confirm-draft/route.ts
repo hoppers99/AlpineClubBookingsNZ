@@ -1,8 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
+import { getDefaultLodgeId } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 import { BookingStatus } from "@prisma/client";
-import { checkCapacityForGuestRanges } from "@/lib/capacity";
+import {
+  acquireLodgeCapacityLock,
+  checkCapacityForGuestRanges,
+} from "@/lib/capacity";
 import { getSeasonYear } from "@/lib/utils";
 import {
   enqueueXeroBookingInvoiceOperation,
@@ -104,7 +108,15 @@ export async function POST(
 
   // Check capacity + transition to PAID in transaction
   await prisma.$transaction(async (tx) => {
-    await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(1)`);
+    // Lock the booking's lodge before re-reading it: the draft's lodge cannot
+    // change, so the pre-read outside the lock is safe for key selection.
+    const lockTarget = await tx.booking.findUnique({
+      where: { id },
+      select: { lodgeId: true },
+    });
+    const bookingLodgeId =
+      lockTarget?.lodgeId ?? (await getDefaultLodgeId(tx));
+    await acquireLodgeCapacityLock(tx, bookingLodgeId);
 
     const freshBooking = await tx.booking.findUnique({
       where: { id },
@@ -116,6 +128,7 @@ export async function POST(
     }
 
     const capacity = await checkCapacityForGuestRanges(
+      bookingLodgeId,
       freshBooking.checkIn,
       freshBooking.checkOut,
       freshBooking.guests,

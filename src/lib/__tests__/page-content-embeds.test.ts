@@ -4,7 +4,7 @@ vi.mock("server-only", () => ({}));
 vi.mock("@/config/club-identity", () => ({ CLUB_NAME: "Club <Name>" }));
 vi.mock("@/config/operational", () => ({ APP_CURRENCY: "NZD & GST" }));
 vi.mock("@/lib/lodge-capacity", () => ({
-  getLodgeCapacity: vi.fn(async () => 42),
+  getDefaultLodgeCapacity: vi.fn(async () => 42),
 }));
 
 import { buildEmbeddedBody } from "../page-content-embeds";

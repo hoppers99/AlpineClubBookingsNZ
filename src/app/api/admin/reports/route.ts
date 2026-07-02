@@ -3,7 +3,8 @@ import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
 import { BookingStatus, SubscriptionStatus } from "@prisma/client";
-import { getLodgeCapacity, getOccupiedBedsForNight } from "@/lib/capacity";
+import { getOccupiedBedsForNight } from "@/lib/capacity";
+import { getDefaultLodgeCapacity } from "@/lib/lodge-capacity";
 import { eachDayOfInterval, format } from "date-fns";
 import logger from "@/lib/logger";
 import { buildRevenueSeries } from "@/lib/admin-reports";
@@ -127,7 +128,7 @@ export async function GET(request: NextRequest) {
           ],
         },
       }),
-      getLodgeCapacity(),
+      getDefaultLodgeCapacity(),
     ]);
 
     // 1. Occupancy by date

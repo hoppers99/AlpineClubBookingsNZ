@@ -28,6 +28,8 @@ import {
   type LoadedBookingForModify,
   type ResolvedGuestNameUpdate,
 } from "@/lib/booking-modify";
+import { acquireLodgeCapacityLock } from "@/lib/capacity";
+import { getDefaultLodgeId } from "@/lib/lodges";
 import {
   createModificationAdditionalPaymentIntent,
   drainSupersededPrimaryIntents,
@@ -103,8 +105,6 @@ export async function modifyBookingBatch({
   ipAddress: string;
 }): Promise<BatchModificationResponse> {
   const result = await prisma.$transaction(async (tx) => {
-    await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(1)`);
-
     const booking = (await tx.booking.findUnique({
       where: { id: bookingId },
       include: {
@@ -128,6 +128,9 @@ export async function modifyBookingBatch({
       role: actor.role,
       actorId: actor.id,
     });
+
+    const bookingLodgeId = booking.lodgeId ?? (await getDefaultLodgeId(tx));
+    await acquireLodgeCapacityLock(tx, bookingLodgeId);
 
     const dates = resolveTargetDates({
       booking,
@@ -158,7 +161,7 @@ export async function modifyBookingBatch({
     const identityOnlyModification =
       guestNameUpdates.length > 0 && !requestedStructuralChange;
 
-    const seasonRateData = await loadActiveSeasonRates(tx);
+    const seasonRateData = await loadActiveSeasonRates(tx, bookingLodgeId);
 
     const pricing = await calculateModifiedPricing(tx, {
       booking,

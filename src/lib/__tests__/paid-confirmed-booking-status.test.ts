@@ -144,6 +144,7 @@ describe("paid legacy CONFIRMED booking repair", () => {
 
     const requestedGuests = LODGE_CAPACITY - 2;
     const result = await checkCapacity(
+      "lodge-1",
       dateOnly(2026, 6, 10),
       dateOnly(2026, 6, 12),
       requestedGuests
@@ -172,6 +173,7 @@ describe("paid legacy CONFIRMED booking repair", () => {
     ]);
 
     const result = await checkCapacity(
+      "lodge-1",
       dateOnly(2026, 6, 10),
       dateOnly(2026, 6, 12),
       LODGE_CAPACITY - 4
@@ -197,7 +199,7 @@ describe("paid legacy CONFIRMED booking repair", () => {
   it("excludes PENDING bookings from the capacity-holding query (issue #737)", async () => {
     prismaMocks.bookingFindMany.mockResolvedValueOnce([]);
 
-    await checkCapacity(dateOnly(2026, 6, 10), dateOnly(2026, 6, 12), 1);
+    await checkCapacity("lodge-1", dateOnly(2026, 6, 10), dateOnly(2026, 6, 12), 1);
 
     const call = prismaMocks.bookingFindMany.mock.calls[0][0] as {
       where: { status: { in: BookingStatus[] } };

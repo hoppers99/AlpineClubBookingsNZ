@@ -79,7 +79,9 @@ describe("review finding source/schema contracts", () => {
     );
 
     expect(draftBlock).toContain("prisma.$transaction");
-    expect(draftBlock).toContain("pg_advisory_xact_lock(1)");
+    // The capacity lock is per-lodge since multi-lodge phase 3; the contract
+    // is that draft creation stays serialized under the capacity lock.
+    expect(draftBlock).toContain("acquireLodgeCapacityLock(tx,");
     expect(draftBlock).toContain("tx.booking.create");
     expect(draftBlock).toMatch(/redeemPromoCode\(\s*tx,/);
     expect(draftBlock).not.toContain("prisma.booking.create");
@@ -94,7 +96,7 @@ describe("review finding source/schema contracts", () => {
     );
 
     expect(createWaitlistedBookingBlock).toContain("prisma.$transaction");
-    expect(createWaitlistedBookingBlock).toContain("pg_advisory_xact_lock(1)");
+    expect(createWaitlistedBookingBlock).toContain("acquireLodgeCapacityLock(tx,");
   });
 
   it("wraps age-up membership upgrades and token issuance in a transaction", () => {
@@ -262,7 +264,7 @@ describe("review finding source/schema contracts", () => {
     );
 
     expect(expireStaleOffersBlock).toContain("prisma.$transaction");
-    expect(expireStaleOffersBlock).toContain("pg_advisory_xact_lock");
+    expect(expireStaleOffersBlock).toContain("acquireLodgeCapacityLock");
   });
 
   it("adds SES bounce and complaint ingestion instead of retry-only email recovery", () => {

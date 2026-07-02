@@ -23,7 +23,10 @@ import {
   splitPriceAcrossGuests,
   type BookingRequestLinkedGuestMember,
 } from "@/lib/booking-request";
-import { checkCapacityForGuestRanges } from "@/lib/capacity";
+import {
+  acquireLodgeCapacityLock,
+  checkCapacityForGuestRanges,
+} from "@/lib/capacity";
 import { sendBookingRequestQuoteEmail } from "@/lib/email";
 import logger from "@/lib/logger";
 import { getDefaultLodgeId } from "@/lib/lodges";
@@ -900,7 +903,8 @@ export async function holdBookingRequestSlots(input: {
 
   try {
     const booking = await prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+      const bookingLodgeId = await getDefaultLodgeId(tx);
+      await acquireLodgeCapacityLock(tx, bookingLodgeId);
 
       const claimed = await tx.bookingRequest.updateMany({
         where: {
@@ -926,6 +930,7 @@ export async function holdBookingRequestSlots(input: {
         stayEnd: request.checkOut,
       }));
       const capacity = await checkCapacityForGuestRanges(
+        bookingLodgeId,
         request.checkIn,
         request.checkOut,
         capacityRanges,
@@ -967,7 +972,7 @@ export async function holdBookingRequestSlots(input: {
       const held = await tx.booking.create({
         data: {
           memberId: member.id,
-          lodgeId: await getDefaultLodgeId(tx),
+          lodgeId: bookingLodgeId,
           checkIn: request.checkIn,
           checkOut: request.checkOut,
           status: BookingStatus.AWAITING_REVIEW,

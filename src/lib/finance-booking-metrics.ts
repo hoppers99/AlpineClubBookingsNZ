@@ -1,5 +1,5 @@
 import { BookingStatus, PaymentStatus, Prisma } from "@prisma/client";
-import { getLodgeCapacity } from "@/lib/capacity";
+import { getDefaultLodgeCapacity } from "@/lib/lodge-capacity";
 import { prisma } from "@/lib/prisma";
 import { countActiveGuestsForNight } from "@/lib/booking-guest-stay-ranges";
 import {
@@ -1037,7 +1037,7 @@ export async function getFinanceBookingMetrics(
           select: bookingMetricsSelect,
         })
       : Promise.resolve([]),
-    getLodgeCapacity(),
+    getDefaultLodgeCapacity(),
   ]);
   const contributingBookingIds = new Set<string>();
   const realized = realizedWindow

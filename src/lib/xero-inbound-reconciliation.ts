@@ -25,7 +25,8 @@ import {
 } from "@/lib/email";
 import { applyGroupSettlementSucceededFromInvoice } from "@/lib/group-settlement";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
-import { checkCapacityForGuestRanges } from "@/lib/capacity";
+import { acquireLodgeCapacityLock, checkCapacityForGuestRanges } from "@/lib/capacity";
+import { getDefaultLodgeId } from "@/lib/lodges";
 import { recordBookingEvent } from "@/lib/booking-events";
 import { processWaitlistForDates } from "@/lib/waitlist";
 import { getSeasonYear } from "@/lib/utils";
@@ -1110,8 +1111,6 @@ async function syncInternetBankingPaymentsForPaidInvoice(
 
   for (const payment of payments) {
     const outcome = await prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
-
       const fresh = await tx.payment.findUnique({
         where: { id: payment.id },
         include: {
@@ -1128,6 +1127,9 @@ async function syncInternetBankingPaymentsForPaidInvoice(
       if (!fresh || fresh.source !== PaymentSource.INTERNET_BANKING) {
         return { type: "missing" as const };
       }
+
+      const bookingLodgeId = fresh.booking.lodgeId ?? (await getDefaultLodgeId(tx));
+      await acquireLodgeCapacityLock(tx, bookingLodgeId);
 
       const transactionUpdate = await tx.paymentTransaction.updateMany({
         where: {
@@ -1192,6 +1194,7 @@ async function syncInternetBankingPaymentsForPaidInvoice(
         !fresh.internetBankingHoldSlots
       ) {
         const capacity = await checkCapacityForGuestRanges(
+          bookingLodgeId,
           fresh.booking.checkIn,
           fresh.booking.checkOut,
           fresh.booking.guests,

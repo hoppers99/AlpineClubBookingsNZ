@@ -21,7 +21,7 @@ vi.mock("@/lib/prisma", () => ({
     hutLeaderAssignment: { create: vi.fn() },
     season: { findMany: vi.fn() },
     groupDiscountSetting: { findUnique: vi.fn() },
-    lodge: { findFirst: vi.fn() },
+    lodge: { findFirst: vi.fn().mockResolvedValue({ id: "lodge-1" }) },
     $transaction: vi.fn(),
     $executeRaw: vi.fn(),
   },
@@ -36,11 +36,13 @@ vi.mock("@/lib/email", () => ({
 vi.mock("@/lib/audit", () => ({ logAudit: vi.fn() }));
 
 vi.mock("@/lib/capacity", () => ({
+  acquireLodgeCapacityLock: vi.fn().mockResolvedValue(undefined),
   checkCapacityForGuestRanges: vi.fn(),
 }));
 
 vi.mock("@/lib/lodge-capacity", () => ({
   getLodgeCapacity: vi.fn().mockResolvedValue(40),
+  getDefaultLodgeCapacity: vi.fn().mockResolvedValue(40),
 }));
 
 vi.mock("@/lib/lodge-pin-session", () => ({

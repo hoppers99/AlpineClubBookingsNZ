@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { requireActiveSessionUser } from "@/lib/session-guards";
+import { getDefaultLodgeId, lodgeNullTolerantScope } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 import {
   type GroupDiscountConfig,
@@ -155,11 +156,13 @@ export async function POST(req: NextRequest) {
     : null;
 
   // Calculate the booking price to determine discount
+  const quoteLodgeId = await getDefaultLodgeId(prisma);
   const seasons = await prisma.season.findMany({
     where: {
       active: true,
       startDate: { lte: checkOut },
       endDate: { gte: checkIn },
+      ...lodgeNullTolerantScope(quoteLodgeId),
     },
     include: { rates: true },
   });

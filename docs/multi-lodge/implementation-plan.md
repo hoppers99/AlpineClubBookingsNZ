@@ -79,6 +79,24 @@ approval required.**
 
 ## Phase 3 — Capacity, pricing, and booking-transaction core
 
+**Progress:** delivered on `feature/multi-lodge-support` (2026-07-02).
+Notable implementation decisions beyond the plan text:
+
+- Capacity fallback: the club-config bed total and the `LodgeSettings`
+  capacity override apply to the default lodge only; an additional lodge
+  with no configured beds resolves to capacity 0 (`unconfigured_lodge`)
+  so it can never be overbooked before setup.
+- Overlap queries tolerate null `lodgeId` rows (written by a draining old
+  colour during the expand deploy) by counting them against every lodge —
+  exact while one lodge exists, conservative afterwards, dead once the
+  contract release enforces NOT NULL.
+- The advisory lock is `pg_advisory_xact_lock(hashtextextended(lodgeId, 0))`
+  via the shared `acquireLodgeCapacityLock` helper; the draft-cleanup cron
+  locks every affected lodge in sorted order and re-scans under the locks.
+- Policy resolution (`CancellationPolicy`, `MinimumStayPolicy`,
+  `BookingPeriod`) goes through `resolvePolicyRowsForLodge` implementing
+  the replace-not-merge override rule over the whole policy type.
+
 The critical phase. Thread `lodgeId` through:
 
 - `src/lib/lodge-capacity.ts` (`getLodgeCapacity` becomes per-lodge bed

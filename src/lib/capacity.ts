@@ -24,6 +24,30 @@ export interface NightAvailability {
   availableBeds: number;
 }
 
+// Overlap filter for one lodge's capacity-holding bookings. Bookings with a
+// null lodgeId (written before the phase-2 backfill or by a draining old
+// colour during the expand deploy) still hold capacity: they are counted
+// against every lodge, which is exact while one lodge exists and conservative
+// afterwards. The null branch goes dead once the phase-2 contract release
+// enforces NOT NULL — before a second lodge can be created.
+function lodgeScopeFilter(lodgeId: string) {
+  return { OR: [{ lodgeId }, { lodgeId: null }] };
+}
+
+/**
+ * Serialize capacity-mutating booking transactions for one lodge. Replaces
+ * the historical club-wide pg_advisory_xact_lock(1): bookings at different
+ * lodges no longer contend. hashtextextended gives a stable per-lodge bigint
+ * key; a cross-lodge hash collision only causes unnecessary serialization,
+ * never a correctness problem. The lock releases at transaction end.
+ */
+export async function acquireLodgeCapacityLock(
+  tx: Pick<TransactionClient, "$queryRaw">,
+  lodgeId: string,
+): Promise<void> {
+  await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${lodgeId}, 0))`;
+}
+
 function getMonthStartDateOnly(year: number, month: number): Date {
   const date = parseDateOnly(
     `${year}-${String(month + 1).padStart(2, "0")}-01`
@@ -73,15 +97,16 @@ export function getOccupiedBedsForNight(
 }
 
 /**
- * Get the number of occupied beds for each night in a date range.
+ * Get the number of occupied beds for each night in a date range at one lodge.
  * A booking occupies beds from checkIn to checkOut-1 (nights).
  * Only counts bookings that intentionally reserve capacity.
  */
 export async function getAvailability(
+  lodgeId: string,
   checkIn: Date,
   checkOut: Date
 ): Promise<NightAvailability[]> {
-  const lodgeCapacity = await getLodgeCapacity(prisma);
+  const lodgeCapacity = await getLodgeCapacity(lodgeId, prisma);
   const start = normalizeDateOnlyForTimeZone(checkIn);
   const exclusiveEnd = normalizeDateOnlyForTimeZone(checkOut);
   const nights = eachDateOnlyInRange(start, exclusiveEnd);
@@ -91,6 +116,7 @@ export async function getAvailability(
       checkIn: { lt: exclusiveEnd },
       checkOut: { gt: start },
       status: { in: [...CAPACITY_HOLDING_BOOKING_STATUSES] },
+      ...lodgeScopeFilter(lodgeId),
     },
     include: {
       // Load each guest's explicit night set (issue #713) so non-contiguous
@@ -112,9 +138,11 @@ export async function getAvailability(
 }
 
 /**
- * Check if there's enough capacity for a given number of guests across all nights.
+ * Check if there's enough capacity at one lodge for a given number of guests
+ * across all nights.
  */
 export async function checkCapacity(
+  lodgeId: string,
   checkIn: Date,
   checkOut: Date,
   guestCount: number,
@@ -122,7 +150,7 @@ export async function checkCapacity(
   tx?: TransactionClient
 ): Promise<{ available: boolean; minAvailable: number; nightDetails: NightAvailability[] }> {
   const db = tx ?? prisma;
-  const lodgeCapacity = await getLodgeCapacity(db);
+  const lodgeCapacity = await getLodgeCapacity(lodgeId, db);
   const start = normalizeDateOnlyForTimeZone(checkIn);
   const exclusiveEnd = normalizeDateOnlyForTimeZone(checkOut);
   const nights = eachDateOnlyInRange(start, exclusiveEnd);
@@ -133,6 +161,7 @@ export async function checkCapacity(
       checkOut: { gt: start },
       status: { in: [...CAPACITY_HOLDING_BOOKING_STATUSES] },
       ...(excludeBookingId ? { id: { not: excludeBookingId } } : {}),
+      ...lodgeScopeFilter(lodgeId),
     },
     include: {
       // Load each guest's explicit night set (issue #713) so non-contiguous
@@ -162,6 +191,7 @@ export async function checkCapacity(
 }
 
 export async function checkCapacityForGuestRanges(
+  lodgeId: string,
   checkIn: Date,
   checkOut: Date,
   guests: GuestStayRange[],
@@ -169,7 +199,7 @@ export async function checkCapacityForGuestRanges(
   tx?: TransactionClient
 ): Promise<{ available: boolean; minAvailable: number; nightDetails: NightAvailability[] }> {
   const db = tx ?? prisma;
-  const lodgeCapacity = await getLodgeCapacity(db);
+  const lodgeCapacity = await getLodgeCapacity(lodgeId, db);
   const start = normalizeDateOnlyForTimeZone(checkIn);
   const exclusiveEnd = normalizeDateOnlyForTimeZone(checkOut);
   const nights = eachDateOnlyInRange(start, exclusiveEnd);
@@ -184,6 +214,7 @@ export async function checkCapacityForGuestRanges(
       checkOut: { gt: start },
       status: { in: [...CAPACITY_HOLDING_BOOKING_STATUSES] },
       ...(excludeBookingId ? { id: { not: excludeBookingId } } : {}),
+      ...lodgeScopeFilter(lodgeId),
     },
     include: {
       // Load each guest's explicit night set (issue #713) so non-contiguous
@@ -217,9 +248,10 @@ export async function checkCapacityForGuestRanges(
 }
 
 /**
- * Get a monthly availability summary for calendar display.
+ * Get a monthly availability summary for calendar display at one lodge.
  */
 export async function getMonthAvailability(
+  lodgeId: string,
   year: number,
   month: number
 ): Promise<Map<string, number>> {
@@ -231,6 +263,7 @@ export async function getMonthAvailability(
       checkIn: { lt: endDate },
       checkOut: { gt: startDate },
       status: { in: [...CAPACITY_HOLDING_BOOKING_STATUSES] },
+      ...lodgeScopeFilter(lodgeId),
     },
     include: {
       // Load each guest's explicit night set (issue #713) so non-contiguous

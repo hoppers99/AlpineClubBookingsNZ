@@ -46,6 +46,7 @@ const mocks = vi.hoisted(() => ({
   withXeroRetry: vi.fn(),
   checkMembershipStatus: vi.fn(),
   getAccountMapping: vi.fn(),
+  lodgeFindFirst: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -206,6 +207,7 @@ describe("processStoredXeroInboundEvents", () => {
     mocks.inboundUpdateMany.mockResolvedValue({ count: 1 });
     mocks.xeroSyncOperationFindMany.mockResolvedValue([]);
     mocks.xeroSyncCursorFindUnique.mockResolvedValue(null);
+    mocks.lodgeFindFirst.mockResolvedValue({ id: "lodge-1" });
     mocks.refreshXeroContactCachesFromContact.mockResolvedValue({
       cachedContact: {
         contactId: "contact_1",
@@ -243,6 +245,10 @@ describe("processStoredXeroInboundEvents", () => {
     mocks.transaction.mockImplementation(async (callback: (tx: unknown) => Promise<unknown>) =>
       callback({
         $executeRaw: mocks.txExecuteRaw,
+        $queryRaw: mocks.txExecuteRaw,
+        lodge: {
+          findFirst: mocks.lodgeFindFirst,
+        },
         processedWebhookEvent: {
           deleteMany: mocks.processedDeleteMany,
         },
@@ -2247,6 +2253,10 @@ describe("replayStoredXeroInboundEvent", () => {
     mocks.transaction.mockImplementation(async (callback: (tx: unknown) => Promise<unknown>) =>
       callback({
         $executeRaw: mocks.txExecuteRaw,
+        $queryRaw: mocks.txExecuteRaw,
+        lodge: {
+          findFirst: mocks.lodgeFindFirst,
+        },
         processedWebhookEvent: {
           deleteMany: mocks.processedDeleteMany,
         },

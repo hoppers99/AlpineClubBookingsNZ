@@ -6,17 +6,26 @@ type LodgeCapacityReader = {
   lodgeSettings?: {
     findUnique: (args: {
       where: { id: string };
-    }) => Promise<{ capacity: number | null } | null>;
+    }) => Promise<{ capacity: number | null; lodgeId?: string | null } | null>;
   };
 };
 
 /**
- * Admin-set lodge capacity override, or null to fall back to the club config
- * bed total. Reads are resilient: a missing delegate or a query failure resolves
- * to null so capacity always falls back rather than throwing.
+ * Admin-set lodge capacity override, or null to fall back. Reads are
+ * resilient: a missing delegate or a query failure resolves to null so
+ * capacity always falls back rather than throwing.
+ *
+ * The settings row is still the "default" singleton (phase-7 of
+ * docs/multi-lodge/implementation-plan.md converts it to per-lodge rows), but
+ * it was soft-linked to the club's lodge in the phase-2 backfill. When a
+ * lodgeId is supplied, the override only applies to that lodge: a row linked
+ * to a different lodge resolves null. An unlinked row (null lodgeId — old
+ * data written before the backfill or by a draining old colour) keeps legacy
+ * behaviour and applies.
  */
 export async function loadLodgeCapacityOverride(
   db: LodgeCapacityReader = prisma,
+  lodgeId?: string,
 ): Promise<number | null> {
   if (!db.lodgeSettings?.findUnique) return null;
 
@@ -24,7 +33,16 @@ export async function loadLodgeCapacityOverride(
     const record = await db.lodgeSettings.findUnique({
       where: { id: LODGE_SETTINGS_ID },
     });
-    return record?.capacity ?? null;
+    if (!record) return null;
+    if (
+      lodgeId &&
+      record.lodgeId !== undefined &&
+      record.lodgeId !== null &&
+      record.lodgeId !== lodgeId
+    ) {
+      return null;
+    }
+    return record.capacity ?? null;
   } catch {
     return null;
   }

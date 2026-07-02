@@ -5,7 +5,7 @@ import {
   BookingRequestError,
   createBookingRequest,
 } from "@/lib/booking-request";
-import { getLodgeCapacity } from "@/lib/lodge-capacity";
+import { getDefaultLodgeCapacity } from "@/lib/lodge-capacity";
 import { applyRateLimit, rateLimiters } from "@/lib/rate-limit";
 import { getTodayDateOnly, isDateOnlyString, parseDateOnly } from "@/lib/date-only";
 import { nameField } from "@/lib/zod-helpers";
@@ -68,7 +68,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Cannot request a booking in the past" }, { status: 400 });
   }
 
-  const lodgeCapacity = await getLodgeCapacity();
+  const lodgeCapacity = await getDefaultLodgeCapacity();
   if (guests.length > lodgeCapacity) {
     return NextResponse.json(
       { error: `A booking request cannot exceed ${lodgeCapacity} guests` },

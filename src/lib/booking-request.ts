@@ -29,7 +29,7 @@ import { z } from "zod";
 import { hashActionToken, issueActionToken } from "@/lib/action-tokens";
 import { logAudit } from "@/lib/audit";
 import { recordBookingEvent } from "@/lib/booking-events";
-import { checkCapacityForGuestRanges } from "@/lib/capacity";
+import { acquireLodgeCapacityLock, checkCapacityForGuestRanges } from "@/lib/capacity";
 import { getNonMemberHoldDays } from "@/lib/cancellation";
 import { endOfDateOnlyForTimeZone, formatDateOnly } from "@/lib/date-only";
 import {
@@ -639,9 +639,11 @@ export async function approveBookingRequest(input: {
 
   try {
     conversion = await prisma.$transaction(async (tx) => {
-      // Single advisory lock serialises ALL booking creation paths so the
-      // capacity check below stays safe (same key as booking-create.ts).
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+      // Per-lodge advisory lock serialises booking creation paths for the
+      // request's lodge so the capacity check below stays safe (same helper
+      // as booking-create.ts).
+      const requestLodgeId = await getDefaultLodgeId(tx);
+      await acquireLodgeCapacityLock(tx, requestLodgeId);
 
       // Status-claim so two admins cannot approve concurrently.
       const claimed = await tx.bookingRequest.updateMany({
@@ -717,6 +719,7 @@ export async function approveBookingRequest(input: {
           stayEnd: request.checkOut,
         }));
         const capacity = await checkCapacityForGuestRanges(
+          requestLodgeId,
           request.checkIn,
           request.checkOut,
           capacityRanges,
@@ -750,7 +753,7 @@ export async function approveBookingRequest(input: {
         booking = await tx.booking.create({
           data: {
             memberId: member.id,
-            lodgeId: await getDefaultLodgeId(tx),
+            lodgeId: requestLodgeId,
             checkIn: request.checkIn,
             checkOut: request.checkOut,
             status: BookingStatus.PENDING,

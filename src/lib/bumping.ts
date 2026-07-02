@@ -131,12 +131,13 @@ function wouldExceedCapacityForGuestRanges(
  * booking, resolved at the hold window in R3.
  */
 export async function bumpPendingBookings(
+  lodgeId: string,
   checkIn: Date,
   checkOut: Date,
   newGuests: number | GuestStayRange[],
   tx: Prisma.TransactionClient
 ): Promise<BumpResult> {
-  const lodgeCapacity = await getLodgeCapacity(tx);
+  const lodgeCapacity = await getLodgeCapacity(lodgeId, tx);
   const occupiedMap = await getOccupiedBedsPerNight(checkIn, checkOut, [], tx);
 
   return {

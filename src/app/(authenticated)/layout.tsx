@@ -16,7 +16,7 @@ import {
 import { buildLoginPath } from "@/lib/auth-redirect";
 import { REQUEST_PATH_HEADER } from "@/lib/internal-return-path";
 import { CSP_NONCE_HEADER } from "@/lib/csp";
-import { getLodgeCapacity } from "@/lib/lodge-capacity";
+import { getDefaultLodgeCapacity } from "@/lib/lodge-capacity";
 import {
   MEMBER_ONBOARDING_GATE_SELECT,
   shouldShowMemberOnboarding,
@@ -101,7 +101,7 @@ export default async function AuthenticatedLayout({
   const showOnboardingWizard = shouldShowMemberOnboarding(member);
   const [effectiveModules, lodgeCapacity] = await Promise.all([
     loadEffectiveModuleFlags(),
-    getLodgeCapacity(),
+    getDefaultLodgeCapacity(),
   ]);
   const liveClubIdentity = { ...clubIdentity, lodgeCapacity };
   const nonce = (await headers()).get(CSP_NONCE_HEADER) ?? undefined;

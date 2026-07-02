@@ -19,6 +19,8 @@ import { getBookingEditPolicy } from "@/lib/booking-edit-policy";
 import { calculateGuestRemovalPaymentImpact } from "@/lib/booking-guest-removal-payment";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 import { getSeasonYear } from "@/lib/utils";
+import { acquireLodgeCapacityLock } from "@/lib/capacity";
+import { getDefaultLodgeId, lodgeNullTolerantScope } from "@/lib/lodges";
 
 export class BookingGuestRemovalError extends Error {
   constructor(
@@ -100,8 +102,6 @@ export async function removeBookingGuestInTransaction({
   actorMemberId: string;
   actorRole: string;
 }): Promise<RemoveBookingGuestResult> {
-  await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(1)`);
-
   const booking = await tx.booking.findUnique({
     where: { id: bookingId },
     include: {
@@ -122,6 +122,9 @@ export async function removeBookingGuestInTransaction({
   if (!booking) {
     throw new BookingGuestRemovalError("Booking not found", 404);
   }
+
+  const bookingLodgeId = booking.lodgeId ?? (await getDefaultLodgeId(tx));
+  await acquireLodgeCapacityLock(tx, bookingLodgeId);
 
   if (booking.memberId !== actorMemberId && actorRole !== "ADMIN") {
     throw new BookingGuestRemovalError("Forbidden", 403);
@@ -170,7 +173,7 @@ export async function removeBookingGuestInTransaction({
   await tx.bookingGuest.delete({ where: { id: guestId } });
 
   const remainingGuests = booking.guests.filter((guest) => guest.id !== guestId);
-  const seasonRateData = await loadSeasonRateData(tx);
+  const seasonRateData = await loadSeasonRateData(tx, bookingLodgeId);
 
   const guestsForPricing = remainingGuests.map((guest) => ({
     bookingGuestId: guest.id,
@@ -312,9 +315,12 @@ export async function removeBookingGuestInTransaction({
   };
 }
 
-export async function loadSeasonRateData(tx: Prisma.TransactionClient): Promise<SeasonRateData[]> {
+export async function loadSeasonRateData(
+  tx: Prisma.TransactionClient,
+  lodgeId?: string,
+): Promise<SeasonRateData[]> {
   const seasons = await tx.season.findMany({
-    where: { active: true },
+    where: { active: true, ...(lodgeId ? lodgeNullTolerantScope(lodgeId) : {}) },
     include: { rates: true },
   });
 

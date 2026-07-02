@@ -90,6 +90,34 @@ export async function countActiveLodges(db: LodgeDb): Promise<number> {
   return db.lodge.count({ where: { active: true } });
 }
 
+// Prisma where-fragment scoping a query to one lodge while tolerating rows
+// with a null lodgeId (written before the phase-2 backfill or by a draining
+// old colour during the expand deploy). Null rows behave as belonging to
+// every lodge, which is exact while one lodge exists and conservative
+// afterwards; the branch goes dead once the phase-2 contract release
+// enforces NOT NULL. Policy tables deliberately keep null rows as club-wide
+// defaults and must NOT use this fragment for override resolution.
+export function lodgeNullTolerantScope(lodgeId: string) {
+  return { OR: [{ lodgeId }, { lodgeId: null }] };
+}
+
+// Resolve the club-wide-with-override policy pattern (ADR-001 resolved
+// question 3) for one lodge: rows with a matching lodgeId are that lodge's
+// override set and REPLACE the club-wide (null lodgeId) rows entirely — never
+// merged. Rows belonging to other lodges are always excluded. All three
+// policy types (CancellationPolicy, MinimumStayPolicy, BookingPeriod) must
+// resolve through this helper so the replace-not-merge rule cannot drift
+// (docs/multi-lodge/lodge-scoping-contract.md).
+export function resolvePolicyRowsForLodge<
+  T extends { lodgeId?: string | null },
+>(rows: readonly T[], lodgeId: string): T[] {
+  const lodgeRows = rows.filter((row) => row.lodgeId === lodgeId);
+  if (lodgeRows.length > 0) return lodgeRows;
+  // Loose null check: rows from narrow selects (or fixtures) may omit the
+  // column entirely; a missing lodgeId means club-wide, same as null.
+  return rows.filter((row) => row.lodgeId == null);
+}
+
 // Phase-2 bridging resolver: writers that do not yet receive an explicit
 // lodge from their caller stamp new rows with the club's default lodge (the
 // oldest active one — the phase-1 seeded lodge in every current deployment).

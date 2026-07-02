@@ -256,10 +256,11 @@ export async function listBedAllocationRooms(db: BedAllocationDb = prisma) {
 export async function getRoomsAndBedsConfiguration(
   db: BedAllocationDb = prisma,
 ): Promise<RoomsAndBedsConfigurationPayload> {
-  const [rooms, capacity] = await Promise.all([
+  const [rooms, defaultLodgeId] = await Promise.all([
     listBedAllocationRooms(db),
-    getLodgeCapacityStatus(db),
+    getDefaultLodgeId(db),
   ]);
+  const capacity = await getLodgeCapacityStatus(defaultLodgeId, db);
   const bedCount = rooms.reduce((total, room) => total + room.beds.length, 0);
 
   return {

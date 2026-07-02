@@ -49,6 +49,7 @@ vi.mock("@/lib/audit", () => ({
 }));
 
 vi.mock("@/lib/capacity", () => ({
+  acquireLodgeCapacityLock: vi.fn().mockResolvedValue(undefined),
   checkCapacityForGuestRanges: vi.fn(),
 }));
 

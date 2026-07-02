@@ -4,7 +4,7 @@ import { AppProviders } from "@/components/app-providers";
 import { auth } from "@/lib/auth";
 import { clubIdentity } from "@/config/club-identity";
 import { CSP_NONCE_HEADER } from "@/lib/csp";
-import { getLodgeCapacity } from "@/lib/lodge-capacity";
+import { getDefaultLodgeCapacity } from "@/lib/lodge-capacity";
 import { prisma } from "@/lib/prisma";
 
 export default async function LodgeLayout({
@@ -34,7 +34,7 @@ export default async function LodgeLayout({
     redirect("/change-password");
   }
 
-  const lodgeCapacity = await getLodgeCapacity();
+  const lodgeCapacity = await getDefaultLodgeCapacity();
   const liveClubIdentity = { ...clubIdentity, lodgeCapacity };
   const nonce = (await headers()).get(CSP_NONCE_HEADER) ?? undefined;
 

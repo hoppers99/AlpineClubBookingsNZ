@@ -84,6 +84,7 @@ import {
   parseDateOnly,
 } from "@/lib/date-only";
 import { getLodgeCapacity } from "@/lib/lodge-capacity";
+import { getDefaultLodgeId, lodgeNullTolerantScope } from "@/lib/lodges";
 import { getSeasonYear } from "@/lib/utils";
 
 export type BatchModifyInput = {
@@ -671,7 +672,8 @@ export async function prepareGuestPlan(
   ];
 
   const totalGuestCount = guestsForPricing.length;
-  const lodgeCapacity = await getLodgeCapacity(tx);
+  const bookingLodgeId = booking.lodgeId ?? (await getDefaultLodgeId(tx));
+  const lodgeCapacity = await getLodgeCapacity(bookingLodgeId, tx);
   if (totalGuestCount > lodgeCapacity) {
     throw new ApiError(
       `A booking cannot exceed ${lodgeCapacity} guests`,
@@ -819,9 +821,10 @@ function resolveModifyReviewUpdate({
 
 export async function loadActiveSeasonRates(
   tx: Prisma.TransactionClient,
+  lodgeId: string,
 ): Promise<SeasonRateData[]> {
   const seasons = await tx.season.findMany({
-    where: { active: true },
+    where: { active: true, ...lodgeNullTolerantScope(lodgeId) },
     include: { rates: true },
   });
   return seasons.map((s) => ({
@@ -960,10 +963,12 @@ export async function calculateModifiedPricing(
     });
   }
 
+  const pricingLodgeId = booking.lodgeId ?? (await getDefaultLodgeId(tx));
   const capacity = skipBookingLifecycleRules
     ? { available: true, minAvailable: Number.POSITIVE_INFINITY, nightDetails: [] }
     : inProgressPlan && editableFrom
       ? await checkCapacityForGuestRanges(
+          pricingLodgeId,
           editableFrom,
           newCheckOut,
           inProgressPlan.capacityGuestRanges,
@@ -971,6 +976,7 @@ export async function calculateModifiedPricing(
           tx,
         )
       : await checkCapacityForGuestRanges(
+          pricingLodgeId,
           newCheckIn,
           newCheckOut,
           policyAdjustedGuestsForPricing,

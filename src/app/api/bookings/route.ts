@@ -10,7 +10,7 @@ import {
 import { AgeTier, BookingStatus } from "@prisma/client";
 import { z } from "zod";
 import { ageTierEnum } from "@/lib/age-tier-schema";
-import { getLodgeCapacity } from "@/lib/lodge-capacity";
+import { getDefaultLodgeCapacity } from "@/lib/lodge-capacity";
 import { applyRateLimit, rateLimiters } from "@/lib/rate-limit";
 import { getMemberCreditBalance } from "@/lib/member-credit";
 import { findUnpaidMemberGuests } from "@/lib/booking-member-guest-subscriptions";
@@ -255,7 +255,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Cannot book in the past" }, { status: 400 });
   }
 
-  const lodgeCapacity = await getLodgeCapacity();
+  const lodgeCapacity = await getDefaultLodgeCapacity();
   if (guestInputs.length > lodgeCapacity) {
     return NextResponse.json(
       { error: `A booking cannot exceed ${lodgeCapacity} guests` },

@@ -1,6 +1,7 @@
 import { prisma } from "./prisma";
 import { sendAdminCapacityWarningAlert } from "./email";
-import { getLodgeCapacity, getOccupiedBedsForNight } from "./capacity";
+import { getOccupiedBedsForNight } from "./capacity";
+import { getDefaultLodgeCapacity } from "./lodge-capacity";
 import { getNZSTToday } from "./nzst-date";
 import { eachDayOfInterval, addDays } from "date-fns";
 import logger from "@/lib/logger";
@@ -16,7 +17,7 @@ const WARN_THRESHOLD_BEDS = 5; // Alert when <= 5 beds remaining
 export async function checkCapacityWarnings(): Promise<{ alertedDays: number }> {
   const todayNZ = getNZSTToday();
   const endDate = addDays(todayNZ, 14);
-  const lodgeCapacity = await getLodgeCapacity();
+  const lodgeCapacity = await getDefaultLodgeCapacity();
 
   const nights = eachDayOfInterval({
     start: todayNZ,

@@ -9,7 +9,7 @@ import {
 } from "@/lib/image-storage";
 import { CLUB_NAME } from "@/config/club-identity";
 import { APP_CURRENCY } from "@/config/operational";
-import { getLodgeCapacity } from "@/lib/lodge-capacity";
+import { getDefaultLodgeCapacity } from "@/lib/lodge-capacity";
 import { extractImageDimensions } from "@/lib/media-image";
 
 export type PhotoGalleryImage = {
@@ -55,7 +55,7 @@ async function resolveTextTokens(contentHtml: string): Promise<string> {
 
   TEXT_TOKEN_REGEX.lastIndex = 0;
   const lodgeCapacity = contentHtml.match(/\{\{\s*lodge-capacity\s*\}\}/i)
-    ? await getLodgeCapacity()
+    ? await getDefaultLodgeCapacity()
     : null;
 
   return contentHtml.replace(TEXT_TOKEN_REGEX, (_match, token: string) => {

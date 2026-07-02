@@ -19,7 +19,8 @@ import {
   executeBookingModificationRefund,
   type BookingModificationPaymentContext,
 } from "@/lib/booking-modification-settlement";
-import { checkCapacity } from "@/lib/capacity";
+import { acquireLodgeCapacityLock, checkCapacity } from "@/lib/capacity";
+import { getDefaultLodgeId, lodgeNullTolerantScope } from "@/lib/lodges";
 import {
   daysUntilDate,
   getNonMemberHoldDays,
@@ -150,8 +151,6 @@ export async function modifyBookingDates({
   const { checkIn: newCheckInStr, checkOut: newCheckOutStr } = input;
 
   const result = await prisma.$transaction(async (tx) => {
-    await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(1)`);
-
     const booking = await tx.booking.findUnique({
       where: { id: bookingId },
       include: {
@@ -172,6 +171,9 @@ export async function modifyBookingDates({
     if (!booking) {
       throw new ApiError("Booking not found", 404);
     }
+
+    const bookingLodgeId = booking.lodgeId ?? (await getDefaultLodgeId(tx));
+    await acquireLodgeCapacityLock(tx, bookingLodgeId);
 
     if (booking.memberId !== actor.id && actor.role !== "ADMIN") {
       throw new ApiError("Forbidden", 403);
@@ -243,6 +245,7 @@ export async function modifyBookingDates({
     }
 
     const capacity = await checkCapacity(
+      bookingLodgeId,
       newCheckIn,
       newCheckOut,
       booking.guests.length,
@@ -258,7 +261,7 @@ export async function modifyBookingDates({
     }
 
     const seasons = await tx.season.findMany({
-      where: { active: true },
+      where: { active: true, ...lodgeNullTolerantScope(bookingLodgeId) },
       include: { rates: true },
     });
 

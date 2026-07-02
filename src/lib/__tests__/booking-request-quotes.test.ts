@@ -101,6 +101,7 @@ vi.mock("@/lib/email", () => ({
 
 vi.mock("@/lib/audit", () => ({ logAudit: vi.fn() }));
 vi.mock("@/lib/capacity", () => ({
+  acquireLodgeCapacityLock: vi.fn().mockResolvedValue(undefined),
   checkCapacityForGuestRanges: vi.fn().mockResolvedValue({ available: true, nightDetails: [] }),
 }));
 vi.mock("@/lib/logger", () => ({

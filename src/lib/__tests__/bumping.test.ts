@@ -209,6 +209,7 @@ describe("Bumping Algorithm", () => {
       };
 
       const result = await bumpPendingBookings(
+        "lodge-1",
         new Date("2026-07-10"),
         new Date("2026-07-12"),
         4,
@@ -241,6 +242,7 @@ describe("Bumping Algorithm", () => {
       };
 
       const result = await bumpPendingBookings(
+        "lodge-1",
         new Date("2026-07-10"),
         new Date("2026-07-12"),
         2,

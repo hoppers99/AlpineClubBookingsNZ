@@ -20,6 +20,9 @@ const mockExecuteRaw = vi.fn().mockResolvedValue(undefined);
 
 const mockTx = {
   $executeRaw: mockExecuteRaw,
+  lodge: {
+    findFirst: vi.fn().mockResolvedValue({ id: "lodge-1" }),
+  },
   booking: {
     findMany: vi.fn(),
     findUnique: vi.fn(),
@@ -47,6 +50,7 @@ vi.mock("@/lib/prisma", () => ({
 
 vi.mock("@/lib/capacity", () => ({
   checkCapacityForGuestRanges: vi.fn(),
+  acquireLodgeCapacityLock: vi.fn().mockResolvedValue(undefined),
   LODGE_CAPACITY: 29,
 }));
 
@@ -89,6 +93,8 @@ beforeEach(() => {
   mockTx.booking.findUnique.mockReset();
   mockTx.booking.update.mockReset();
   mockTx.booking.count.mockReset();
+  mockTx.lodge.findFirst.mockReset();
+  mockTx.lodge.findFirst.mockResolvedValue({ id: "lodge-1" });
   mockExecuteRaw.mockResolvedValue(undefined);
   // Default: transaction runs the callback with mockTx
   mockPrismaTransaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) => fn(mockTx));
@@ -258,6 +264,7 @@ describe("processWaitlistForDates", () => {
 
     expect(result.offeredBookingId).toBe("booking1");
     expect(mockCheckCapacity).toHaveBeenCalledWith(
+      "lodge-1",
       candidate.checkIn,
       candidate.checkOut,
       candidate.guests,

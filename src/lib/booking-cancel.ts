@@ -500,7 +500,7 @@ async function performBookingCancellation(
     booking.payment.amountCents - booking.payment.refundedAmountCents;
   const refundableBaseCents = paidAmountCents - booking.payment.changeFeeCents;
   const days = daysUntilDate(booking.checkIn);
-  const policy = await loadCancellationPolicy(booking.checkIn);
+  const policy = await loadCancellationPolicy(booking.checkIn, booking.lodgeId);
   const { refundAmountCents, refundPercentage } = calculateRefundAmount(
     refundableBaseCents,
     days,

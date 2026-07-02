@@ -1,6 +1,7 @@
 import { prisma } from "./prisma";
 import { BookingStatus } from "@prisma/client";
-import { checkCapacityForGuestRanges } from "./capacity";
+import { acquireLodgeCapacityLock, checkCapacityForGuestRanges } from "./capacity";
+import { getDefaultLodgeId } from "@/lib/lodges";
 import { getNonMemberHoldDays } from "./cancellation";
 import {
   sendWaitlistOfferEmail,
@@ -82,7 +83,8 @@ export async function processWaitlistForDates(freedDates: {
 
   try {
     await prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+      const defaultLodgeId = await getDefaultLodgeId(tx);
+      await acquireLodgeCapacityLock(tx, defaultLodgeId);
 
       const candidates = await tx.booking.findMany({
         where: {
@@ -98,8 +100,10 @@ export async function processWaitlistForDates(freedDates: {
       });
 
       for (const candidate of candidates) {
+        const candidateLodgeId = candidate.lodgeId ?? defaultLodgeId;
         // Check if ALL nights in the candidate's range have capacity
         const { available } = await checkCapacityForGuestRanges(
+          candidateLodgeId,
           candidate.checkIn,
           candidate.checkOut,
           candidate.guests,
@@ -221,8 +225,6 @@ export async function confirmWaitlistOffer(
 
   try {
     result = await prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
-
       const booking = await tx.booking.findUnique({
         where: { id: bookingId },
         include: { guests: { include: { nights: true } } }, // per-night sets (issue #713)
@@ -244,8 +246,12 @@ export async function confirmWaitlistOffer(
         return { success: false, error: "Waitlist offer has expired" };
       }
 
+      const bookingLodgeId = booking.lodgeId ?? (await getDefaultLodgeId(tx));
+      await acquireLodgeCapacityLock(tx, bookingLodgeId);
+
       // Re-check capacity
       const { available } = await checkCapacityForGuestRanges(
+        bookingLodgeId,
         booking.checkIn,
         booking.checkOut,
         booking.guests,
@@ -346,7 +352,8 @@ export async function expireStaleOffers(): Promise<{
   reofferedCount: number;
 }> {
   const { staleOffers, affectedRanges } = await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+    const defaultLodgeId = await getDefaultLodgeId(tx);
+    await acquireLodgeCapacityLock(tx, defaultLodgeId);
 
     const offers = await tx.booking.findMany({
       where: {

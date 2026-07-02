@@ -14,8 +14,9 @@
  *   - booking dates stay NZ date-only (Date with time set to 00:00)
  *   - external network calls (email, Xero) stay outside long DB
  *     transactions (fired-and-forget after commit)
- *   - the single advisory lock key=1 still serialises ALL booking
- *     creation transactions to keep capacity checks safe
+ *   - booking creation transactions serialise per lodge via
+ *     acquireLodgeCapacityLock so capacity checks stay safe without
+ *     cross-lodge contention
  */
 import {
   AdminReviewStatus,
@@ -29,7 +30,7 @@ import {
   type Booking,
   type BookingGuest,
 } from "@prisma/client";
-import { getDefaultLodgeId } from "@/lib/lodges";
+import { getDefaultLodgeId, lodgeNullTolerantScope } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 import {
   calculateBookingCreditApplication,
@@ -37,7 +38,7 @@ import {
   toSeasonRateData,
 } from "@/lib/policies/booking-route-decisions";
 import { priceBookingGuestsWithMembershipTypePolicy } from "@/lib/membership-type-policy";
-import { checkCapacityForGuestRanges } from "@/lib/capacity";
+import { acquireLodgeCapacityLock, checkCapacityForGuestRanges } from "@/lib/capacity";
 import {
   redeemPromoCode,
   shouldPersistPromoRedemption,
@@ -645,13 +646,19 @@ export async function createDraftBooking(input: DraftBookingInput): Promise<Book
   const draftStatus = review.blockForReview ? BookingStatus.AWAITING_REVIEW : BookingStatus.DRAFT;
 
   const newBooking = await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+    const bookingLodgeId = await getDefaultLodgeId(tx);
+    await acquireLodgeCapacityLock(tx, bookingLodgeId);
     const draftExpiresAt = review.blockForReview
       ? null
       : new Date(Date.now() + 72 * 60 * 60 * 1000);
 
     const seasons = await tx.season.findMany({
-      where: { active: true, startDate: { lte: checkOut }, endDate: { gte: checkIn } },
+      where: {
+        active: true,
+        startDate: { lte: checkOut },
+        endDate: { gte: checkIn },
+        ...lodgeNullTolerantScope(bookingLodgeId),
+      },
       include: { rates: true },
     });
     const seasonData = toSeasonRateData(seasons);
@@ -707,7 +714,7 @@ export async function createDraftBooking(input: DraftBookingInput): Promise<Book
     const createdBooking = await tx.booking.create({
       data: {
         memberId: effectiveMemberId,
-        lodgeId: await getDefaultLodgeId(tx),
+        lodgeId: bookingLodgeId,
         checkIn,
         checkOut,
         status: draftStatus,
@@ -954,10 +961,12 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
   let booking: BookingWithGuests;
   try {
     booking = await prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+      const bookingLodgeId = await getDefaultLodgeId(tx);
+      await acquireLodgeCapacityLock(tx, bookingLodgeId);
 
       const capacityGuestRanges = getCapacityGuestRanges(primaryGuests, checkIn, checkOut);
       const capacityCheck = await checkCapacityForGuestRanges(
+        bookingLodgeId,
         checkIn,
         checkOut,
         capacityGuestRanges,
@@ -966,7 +975,12 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
       );
 
       const seasons = await tx.season.findMany({
-        where: { active: true, startDate: { lte: checkOut }, endDate: { gte: checkIn } },
+        where: {
+          active: true,
+          startDate: { lte: checkOut },
+          endDate: { gte: checkIn },
+          ...lodgeNullTolerantScope(bookingLodgeId),
+        },
         include: { rates: true },
       });
       const seasonData = toSeasonRateData(seasons);
@@ -1051,7 +1065,7 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
       const newBooking = await tx.booking.create({
         data: {
           memberId: effectiveMemberId,
-          lodgeId: await getDefaultLodgeId(tx),
+          lodgeId: bookingLodgeId,
           checkIn,
           checkOut,
           status: effectiveStatus,
@@ -1118,6 +1132,7 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
         !review.blockForReview
       ) {
         const finalCapacityCheck = await checkCapacityForGuestRanges(
+          bookingLodgeId,
           checkIn,
           checkOut,
           capacityGuestRanges,
@@ -1478,8 +1493,14 @@ export async function createWaitlistedBooking(input: WaitlistedBookingInput): Pr
     memberReviewJustification,
   });
 
+  const waitlistLodgeId = await getDefaultLodgeId(prisma);
   const seasons = await prisma.season.findMany({
-    where: { active: true, startDate: { lte: checkOut }, endDate: { gte: checkIn } },
+    where: {
+      active: true,
+      startDate: { lte: checkOut },
+      endDate: { gte: checkIn },
+      ...lodgeNullTolerantScope(waitlistLodgeId),
+    },
     include: { rates: true },
   });
   const seasonData = toSeasonRateData(seasons);
@@ -1556,12 +1577,12 @@ export async function createWaitlistedBooking(input: WaitlistedBookingInput): Pr
   const hasNonMembers = guests.some((g) => !g.isMember);
 
   const { newBooking, position } = await prisma.$transaction(async (tx) => {
-    await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(1)`);
+    await acquireLodgeCapacityLock(tx, waitlistLodgeId);
 
     const createdBooking = await tx.booking.create({
       data: {
         memberId: effectiveMemberId,
-        lodgeId: await getDefaultLodgeId(tx),
+        lodgeId: waitlistLodgeId,
         checkIn,
         checkOut,
         status: BookingStatus.WAITLISTED,

@@ -19,7 +19,8 @@ import {
   type BookingNarrativeState,
   type NarrativeEvent,
 } from "@/lib/booking-narrative";
-import { checkCapacityForGuestRanges } from "@/lib/capacity";
+import { acquireLodgeCapacityLock, checkCapacityForGuestRanges } from "@/lib/capacity";
+import { getDefaultLodgeId } from "@/lib/lodges";
 import { endOfDateOnlyForTimeZone, formatDateOnly } from "@/lib/date-only";
 import { sendBookingRequestApprovedEmail } from "@/lib/email";
 import logger from "@/lib/logger";
@@ -401,8 +402,6 @@ export async function createPaymentIntentForPaymentLink(
   // Capacity/status revalidation under the shared booking advisory lock,
   // mirroring the session path's preflight before charging.
   await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
-
     const freshBooking = await tx.booking.findUnique({
       where: { id: booking.id },
       // Load per-night sets (issue #713) so a non-contiguous booking is
@@ -419,7 +418,11 @@ export async function createPaymentIntentForPaymentLink(
       throw new PaymentLinkError(NOT_PAYABLE_MESSAGE, 410);
     }
 
+    const bookingLodgeId = freshBooking.lodgeId ?? (await getDefaultLodgeId(tx));
+    await acquireLodgeCapacityLock(tx, bookingLodgeId);
+
     const capacity = await checkCapacityForGuestRanges(
+      bookingLodgeId,
       freshBooking.checkIn,
       freshBooking.checkOut,
       freshBooking.guests,

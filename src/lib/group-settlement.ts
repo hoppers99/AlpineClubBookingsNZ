@@ -37,7 +37,8 @@ import {
   findOrCreateCustomer,
   getPaymentIntent,
 } from "@/lib/stripe";
-import { checkCapacityForGuestRanges } from "@/lib/capacity";
+import { acquireLodgeCapacityLock, checkCapacityForGuestRanges } from "@/lib/capacity";
+import { getDefaultLodgeId } from "@/lib/lodges";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 import { recordBookingEvent } from "@/lib/booking-events";
 import {
@@ -365,7 +366,8 @@ async function commitChildrenToConfirmed(children: SettleableChild[]) {
   if (pending.length === 0) return;
 
   await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+    const defaultLodgeId = await getDefaultLodgeId(tx);
+    await acquireLodgeCapacityLock(tx, defaultLodgeId);
 
     for (const child of pending) {
       // Re-read inside the lock; another path may have already moved it.
@@ -377,7 +379,9 @@ async function commitChildrenToConfirmed(children: SettleableChild[]) {
         continue;
       }
 
+      const childLodgeId = fresh.lodgeId ?? defaultLodgeId;
       const capacity = await checkCapacityForGuestRanges(
+        childLodgeId,
         fresh.checkIn,
         fresh.checkOut,
         fresh.guests,
@@ -458,7 +462,8 @@ async function settleConfirmedChildrenAndNotify(
   }
 ): Promise<GroupSettlementAppliedResult> {
   const settled = await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+    const defaultLodgeId = await getDefaultLodgeId(tx);
+    await acquireLodgeCapacityLock(tx, defaultLodgeId);
 
     // Re-confirm the settlement is still unpaid inside the lock (idempotency).
     const current = await tx.groupBookingSettlement.findUnique({

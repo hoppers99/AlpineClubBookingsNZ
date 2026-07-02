@@ -122,6 +122,7 @@ vi.mock("@/lib/booking-policies", () => ({
 }));
 
 vi.mock("@/lib/capacity", () => ({
+  acquireLodgeCapacityLock: vi.fn().mockResolvedValue(undefined),
   getOccupiedBedsForNight: vi.fn().mockReturnValue(0),
   checkCapacityForGuestRanges: vi.fn().mockResolvedValue({
     available: true,
@@ -337,7 +338,9 @@ describe("Issue 7: Draft Booking Creation", () => {
     expect(res.status).toBe(201);
 
     expect(mockPrisma.$transaction).toHaveBeenCalled();
-    expect(mockTx.$executeRaw).toHaveBeenCalled();
+    // The capacity lock now goes through the mocked acquireLodgeCapacityLock.
+    const { acquireLodgeCapacityLock } = await import("@/lib/capacity");
+    expect(acquireLodgeCapacityLock).toHaveBeenCalledWith(mockTx, "lodge-1");
     expect(mockTx.booking.create).toHaveBeenCalled();
     expect(mockPrisma.booking.create).not.toHaveBeenCalled();
   });
@@ -576,6 +579,7 @@ describe("Issue 7: create-payment-intent with DRAFT booking", () => {
       })
     );
     expect(checkCapacityForGuestRanges).toHaveBeenCalledWith(
+      "lodge-1",
       draftBooking.checkIn,
       draftBooking.checkOut,
       guestRanges,

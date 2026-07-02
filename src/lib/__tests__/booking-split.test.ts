@@ -33,6 +33,7 @@ vi.mock("@/lib/prisma", () => ({
 }));
 
 vi.mock("@/lib/capacity", () => ({
+  acquireLodgeCapacityLock: vi.fn().mockResolvedValue(undefined),
   checkCapacityForGuestRanges: (...a: unknown[]) => h.checkCapacityForGuestRanges(...a),
 }));
 

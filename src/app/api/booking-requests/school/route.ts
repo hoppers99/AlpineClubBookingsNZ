@@ -8,7 +8,7 @@ import {
   schoolChildCountsSchema,
   schoolTeacherSchema,
 } from "@/lib/school-booking-request";
-import { getLodgeCapacity } from "@/lib/lodge-capacity";
+import { getDefaultLodgeCapacity } from "@/lib/lodge-capacity";
 import { applyRateLimit, rateLimiters } from "@/lib/rate-limit";
 import { getTodayDateOnly, isDateOnlyString, parseDateOnly } from "@/lib/date-only";
 import { nameField } from "@/lib/zod-helpers";
@@ -88,7 +88,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const lodgeCapacity = await getLodgeCapacity();
+  const lodgeCapacity = await getDefaultLodgeCapacity();
   if (guests.length > lodgeCapacity) {
     return NextResponse.json(
       { error: `A school booking cannot exceed the lodge capacity of ${lodgeCapacity} guests` },

@@ -46,6 +46,7 @@ vi.mock("@/lib/payment-link", () => ({
 
 vi.mock("@/lib/lodge-capacity", () => ({
   getLodgeCapacity: vi.fn().mockResolvedValue(20),
+  getDefaultLodgeCapacity: vi.fn().mockResolvedValue(20),
 }));
 
 vi.mock("@/lib/logger", () => ({

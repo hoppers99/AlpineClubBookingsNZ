@@ -112,6 +112,7 @@ vi.mock("@/lib/booking-policies", () => ({
 
 const mockCheckCapacity = vi.fn();
 vi.mock("@/lib/capacity", () => ({
+  acquireLodgeCapacityLock: vi.fn().mockResolvedValue(undefined),
   checkCapacity: (...args: unknown[]) => mockCheckCapacity(...args),
   checkCapacityForGuestRanges: (...args: unknown[]) => mockCheckCapacity(...args),
   getOccupiedBedsForNight: vi.fn().mockReturnValue(0),
