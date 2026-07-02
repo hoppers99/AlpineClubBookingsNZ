@@ -10,6 +10,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { BookingStatus, AgeTier } from "@prisma/client";
+import { LodgeBookingEligibilityError } from "@/lib/lodge-access";
 
 const h = vi.hoisted(() => ({
   transaction: vi.fn(),
@@ -20,6 +21,7 @@ const h = vi.hoisted(() => ({
   paymentCreate: vi.fn(),
   memberFindUnique: vi.fn(),
   lodgeFindFirst: vi.fn(),
+  memberLodgeAccessFindMany: vi.fn(),
   checkCapacityForGuestRanges: vi.fn(),
   reconcileBedAllocationsForBooking: vi.fn(),
   logAudit: vi.fn(),
@@ -130,6 +132,9 @@ const tx = {
   },
   payment: { create: (...a: unknown[]) => h.paymentCreate(...a) },
   lodge: { findFirst: (...a: unknown[]) => h.lodgeFindFirst(...a) },
+  memberLodgeAccess: {
+    findMany: (...a: unknown[]) => h.memberLodgeAccessFindMany(...a),
+  },
 };
 
 function guest(isMember: boolean, firstName: string): BookingGuestInput {
@@ -179,6 +184,7 @@ describe("createConfirmedBooking split bookings (#738)", () => {
     h.bookingUpdate.mockResolvedValue({});
     h.memberFindUnique.mockResolvedValue({ id: "member-1", firstName: "Mem", lastName: "Ber", email: "m@example.com" });
     h.lodgeFindFirst.mockResolvedValue({ id: "lodge-1" });
+    h.memberLodgeAccessFindMany.mockResolvedValue([]);
     h.bookingCreate.mockImplementation((args: { data: Record<string, unknown> }) => {
       createdCount += 1;
       const id = `booking-${createdCount}`;
@@ -256,5 +262,27 @@ describe("createConfirmedBooking split bookings (#738)", () => {
     expect((payloads[0].guests as { create: unknown[] }).create).toHaveLength(2);
     // No up-front payment is taken for the flagged provisional booking.
     expect(h.paymentCreate).not.toHaveBeenCalled();
+  });
+
+  it("rejects the booking when the member is restricted to a different lodge", async () => {
+    h.memberLodgeAccessFindMany.mockResolvedValue([{ lodgeId: "other-lodge" }]);
+    const guests = [guest(true, "Alice"), guest(true, "Carol")];
+
+    await expect(createConfirmedBooking(baseInput(guests))).rejects.toBeInstanceOf(
+      LodgeBookingEligibilityError
+    );
+    expect(h.bookingCreate).not.toHaveBeenCalled();
+  });
+
+  it("allows an on-behalf booking despite a lodge restriction for a different lodge", async () => {
+    h.memberLodgeAccessFindMany.mockResolvedValue([{ lodgeId: "other-lodge" }]);
+    const guests = [guest(true, "Alice"), guest(true, "Carol")];
+
+    const outcome = await createConfirmedBooking(
+      baseInput(guests, { isOnBehalf: true })
+    );
+
+    expect(outcome.type).toBe("created");
+    expect(h.bookingCreate).toHaveBeenCalledTimes(1);
   });
 });

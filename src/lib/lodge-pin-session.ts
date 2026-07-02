@@ -153,7 +153,8 @@ export async function hashHutLeaderPin(pin: string): Promise<string> {
 
 export async function findActiveHutLeaderAssignmentByPin(
   pin: string,
-  date = getTodayDateOnly()
+  date = getTodayDateOnly(),
+  kioskLodgeId?: string
 ) {
   const nextDay = addDaysDateOnly(date, 1);
   const assignments = await prisma.hutLeaderAssignment.findMany({
@@ -161,6 +162,13 @@ export async function findActiveHutLeaderAssignmentByPin(
       hutLeaderPin: { not: null },
       startDate: { lte: nextDay },
       endDate: { gte: date },
+      // A hut leader serves one lodge (ADR-001 resolved question 5): a PIN
+      // only works on that lodge's kiosk. Assignments with a null lodgeId
+      // (pre-backfill or draining-old-colour writes) keep working anywhere
+      // until the contract release enforces NOT NULL.
+      ...(kioskLodgeId
+        ? { OR: [{ lodgeId: kioskLodgeId }, { lodgeId: null }] }
+        : {}),
     },
     include: {
       member: {

@@ -34,6 +34,9 @@ findUnique: vi.fn(),
     findMany: vi.fn(),
     count: vi.fn(),
   },
+  lodge: {
+    findFirst: vi.fn(),
+  },
 };
 
 vi.mock("@/lib/prisma", () => ({ prisma: mockPrisma }));
@@ -104,6 +107,7 @@ describe("F8: Hut Leader Role Assignment", () => {
       forcePasswordChange: false,
       accessRoles: [{ role: "ADMIN" }],
     });
+    mockPrisma.lodge.findFirst.mockResolvedValue({ id: "lodge-1" });
   });
 
   describe("isHutLeader helper", () => {

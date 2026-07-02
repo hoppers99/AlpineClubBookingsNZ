@@ -9,6 +9,7 @@ import { calculateOverlapDays } from "@/lib/hut-leader-overlap";
 const updateSchema = z.object({
   startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  lodgeId: z.string().min(1).optional(),
 });
 
 /**
@@ -43,7 +44,7 @@ export async function PUT(
     return NextResponse.json({ error: "Assignment not found" }, { status: 404 });
   }
 
-  const updateData: Record<string, Date> = {};
+  const updateData: { startDate?: Date; endDate?: Date; lodgeId?: string } = {};
   if (parsed.data.startDate) {
     if (!isDateOnlyString(parsed.data.startDate)) {
       return NextResponse.json({ error: "Invalid startDate" }, { status: 400 });
@@ -55,6 +56,19 @@ export async function PUT(
       return NextResponse.json({ error: "Invalid endDate" }, { status: 400 });
     }
     updateData.endDate = parseDateOnly(parsed.data.endDate);
+  }
+  if (parsed.data.lodgeId) {
+    const lodge = await prisma.lodge.findUnique({
+      where: { id: parsed.data.lodgeId },
+      select: { id: true, active: true },
+    });
+    if (!lodge || !lodge.active) {
+      return NextResponse.json(
+        { error: "Lodge not found or not active" },
+        { status: 400 }
+      );
+    }
+    updateData.lodgeId = lodge.id;
   }
 
   // Validate start <= end

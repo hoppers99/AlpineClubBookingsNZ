@@ -43,12 +43,15 @@ drift between the three policy types.
 - `PromoCode`: restricted via a `PromoCodeLodge` junction table (phase 6),
   because a promo may apply at several lodges but not all. No junction
   rows = redeemable at every lodge.
-- Member booking eligibility and lodge-operational staff access share a
-  junction table (working name `MemberLodgeAccess`, phase 4). Eligibility
-  is default-open: no restriction rows means a member can book every
-  active lodge. Staff scoping binds hut-leader assignments, kiosk
-  devices, and PIN sessions to one lodge. `ADMIN` access is club-wide and
-  never lodge-filtered.
+- Member booking eligibility and lodge-operational staff access share the
+  `MemberLodgeAccess` junction table (delivered in phase 4) with a `kind`
+  enum. `BOOKING_RESTRICTION` rows mean the member may book only the
+  listed lodges; no rows is default-open. Enforcement lives in the
+  booking service (`assertMemberMayBookLodge`), and admin on-behalf
+  bookings bypass it as the audited override path. `STAFF` rows bind a
+  kiosk account to its lodge; hut-leader assignments carry their own
+  `lodgeId` and PINs match only at the bound lodge's kiosk. `ADMIN`
+  access is club-wide and never lodge-filtered.
 
 ## Club-Wide Models (No Lodge Dimension)
 

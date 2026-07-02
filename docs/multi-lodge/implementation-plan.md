@@ -124,6 +124,22 @@ soak required before the phase-1 "second lodge" guard is lifted.**
 
 ## Phase 4 — Access scoping and booking eligibility
 
+**Progress:** delivered on `feature/multi-lodge-support` (2026-07-02).
+Implementation decisions beyond the plan text:
+
+- `MemberLodgeAccess` carries a `kind` enum: `BOOKING_RESTRICTION` rows
+  mean the member may book only the listed lodges (no rows =
+  default-open); `STAFF` rows bind a kiosk account to its lodge.
+- Admin bookings on behalf of a member bypass the booking restriction
+  deliberately — the restriction is admin-configured policy and the
+  on-behalf flow is the audited override path.
+- Group-join bookings need no eligibility check: the joiner is a
+  freshly created non-login member, default-open by construction.
+- Hut-leader PINs match only assignments at the kiosk's bound lodge
+  (or legacy null-lodge assignments until the contract release).
+- `ADMIN` access remains club-wide; nothing admin-facing reads the
+  grant table for authorization.
+
 - New junction table (working name `MemberLodgeAccess`) expressing
   per-lodge grants, used for both staff access and member booking
   eligibility per the phase 0 decisions.

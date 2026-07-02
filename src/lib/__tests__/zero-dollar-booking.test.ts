@@ -43,6 +43,7 @@ const mockPaymentCreate = vi.fn();
 const mockPaymentUpsert = vi.fn();
 const mockExecuteRaw = vi.fn().mockResolvedValue(undefined);
 const mockTxLodgeFindFirst = vi.fn().mockResolvedValue({ id: "lodge-1" });
+const mockTxMemberLodgeAccessFindMany = vi.fn().mockResolvedValue([]);
 
 // Shared tx mock used by booking route
 const mockTx = {
@@ -58,6 +59,7 @@ const mockTx = {
   payment: { create: mockTxPaymentCreate, upsert: mockPaymentUpsert },
   promoRedemption: { findUnique: vi.fn().mockResolvedValue(null) },
   lodge: { findFirst: mockTxLodgeFindFirst },
+  memberLodgeAccess: { findMany: mockTxMemberLodgeAccessFindMany },
 };
 
 vi.mock("@/lib/prisma", () => ({
@@ -274,6 +276,8 @@ describe("Booking Creation Route: zero-dollar handling", () => {
     mockMemberCount.mockResolvedValue(1);
     mockTxBookingFindMany.mockResolvedValue([]);
     mockTxSeasonFindMany.mockResolvedValue([]);
+    mockTxLodgeFindFirst.mockResolvedValue({ id: "lodge-1" });
+    mockTxMemberLodgeAccessFindMany.mockResolvedValue([]);
     mockCheckCapacity.mockResolvedValue({
       available: true,
       minAvailable: 29,

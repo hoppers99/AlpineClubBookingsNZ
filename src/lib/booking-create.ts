@@ -30,6 +30,7 @@ import {
   type Booking,
   type BookingGuest,
 } from "@prisma/client";
+import { assertMemberMayBookLodge } from "@/lib/lodge-access";
 import { getDefaultLodgeId, lodgeNullTolerantScope } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 import {
@@ -647,6 +648,11 @@ export async function createDraftBooking(input: DraftBookingInput): Promise<Book
 
   const newBooking = await prisma.$transaction(async (tx) => {
     const bookingLodgeId = await getDefaultLodgeId(tx);
+    await assertMemberMayBookLodge(tx, {
+      memberId: effectiveMemberId,
+      lodgeId: bookingLodgeId,
+      isOnBehalf,
+    });
     await acquireLodgeCapacityLock(tx, bookingLodgeId);
     const draftExpiresAt = review.blockForReview
       ? null
@@ -962,6 +968,11 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
   try {
     booking = await prisma.$transaction(async (tx) => {
       const bookingLodgeId = await getDefaultLodgeId(tx);
+      await assertMemberMayBookLodge(tx, {
+        memberId: effectiveMemberId,
+        lodgeId: bookingLodgeId,
+        isOnBehalf,
+      });
       await acquireLodgeCapacityLock(tx, bookingLodgeId);
 
       const capacityGuestRanges = getCapacityGuestRanges(primaryGuests, checkIn, checkOut);
@@ -1494,6 +1505,11 @@ export async function createWaitlistedBooking(input: WaitlistedBookingInput): Pr
   });
 
   const waitlistLodgeId = await getDefaultLodgeId(prisma);
+  await assertMemberMayBookLodge(prisma, {
+    memberId: effectiveMemberId,
+    lodgeId: waitlistLodgeId,
+    isOnBehalf,
+  });
   const seasons = await prisma.season.findMany({
     where: {
       active: true,

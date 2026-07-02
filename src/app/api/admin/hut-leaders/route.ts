@@ -11,11 +11,13 @@ import {
   hashHutLeaderPin,
 } from "@/lib/lodge-pin-session";
 import { hasAccessRole } from "@/lib/access-roles";
+import { getDefaultLodgeId } from "@/lib/lodges";
 
 const createSchema = z.object({
   memberId: z.string().min(1),
   startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  lodgeId: z.string().min(1).optional(),
 }).refine((data) => data.startDate <= data.endDate, {
   message: "startDate must be before or equal to endDate",
 });
@@ -119,6 +121,23 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  let lodgeId: string;
+  if (parsed.data.lodgeId) {
+    const lodge = await prisma.lodge.findUnique({
+      where: { id: parsed.data.lodgeId },
+      select: { id: true, active: true },
+    });
+    if (!lodge || !lodge.active) {
+      return NextResponse.json(
+        { error: "Lodge not found or not active" },
+        { status: 400 }
+      );
+    }
+    lodgeId = lodge.id;
+  } else {
+    lodgeId = await getDefaultLodgeId(prisma);
+  }
+
   try {
     const pin = generateHutLeaderPin();
     const hutLeaderPin = await hashHutLeaderPin(pin);
@@ -129,6 +148,7 @@ export async function POST(req: NextRequest) {
         startDate: newStart,
         endDate: newEnd,
         hutLeaderPin,
+        lodgeId,
       },
     });
 

@@ -469,6 +469,8 @@ model Member {
   promoCodeAssignments                       PromoCodeAssignment[]
   notificationPreference                     NotificationPreference?
   hutLeaderAssignments                       HutLeaderAssignment[]
+  lodgeAccess                                MemberLodgeAccess[]
+  lodgeAccessCreated                         MemberLodgeAccess[]          @relation("MemberLodgeAccessCreatedBy")
   familyGroupRequests                        FamilyGroupJoinRequest[]                   @relation("FamilyGroupRequester")
   familyGroupInvitations                     FamilyGroupJoinRequest[]                   @relation("FamilyGroupInvitedMember")
   familyGroupLinkedRequests                  FamilyGroupJoinRequest[]                   @relation("FamilyGroupLinkedMember")
@@ -2377,6 +2379,8 @@ model Lodge {
   cancellationPolicies CancellationPolicy[]
   bookingPeriods       BookingPeriod[]
   minimumStayPolicies  MinimumStayPolicy[]
+  hutLeaderAssignments HutLeaderAssignment[]
+  memberAccess         MemberLodgeAccess[]
 }
 
 model LodgeSettings {
@@ -2711,13 +2715,52 @@ model HutLeaderAssignment {
   startDate    DateTime @db.Date
   endDate      DateTime @db.Date
   hutLeaderPin String?
+  // A hut leader serves one lodge (ADR-001 resolved question 5). Nullable
+  // during the phase-4 expand release (null = the club's default lodge); a
+  // later contract release enforces NOT NULL.
+  lodgeId      String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
   member Member @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  lodge  Lodge? @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
 
   @@index([memberId])
   @@index([startDate, endDate])
+  @@index([lodgeId])
+}
+
+// Per-lodge access grants (docs/multi-lodge/lodge-scoping-contract.md,
+// ADR-001 resolved questions 2 and 5).
+//
+// BOOKING_RESTRICTION: a member with any rows of this kind may book ONLY the
+// listed lodges. No rows = default-open (every active member books every
+// active lodge) — the club-wide default that most members keep forever.
+//
+// STAFF: binds a lodge-operational account (shared kiosk login) to a lodge so
+// its kiosk screens and PIN logins scope to that property. ADMIN access is
+// club-wide and never expressed through this table.
+enum LodgeAccessKind {
+  BOOKING_RESTRICTION
+  STAFF
+}
+
+model MemberLodgeAccess {
+  id          String          @id @default(cuid())
+  memberId    String
+  lodgeId     String
+  kind        LodgeAccessKind
+  createdById String?
+  createdAt   DateTime        @default(now())
+
+  member    Member  @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  lodge     Lodge   @relation(fields: [lodgeId], references: [id], onDelete: Cascade)
+  createdBy Member? @relation("MemberLodgeAccessCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@unique([memberId, lodgeId, kind])
+  @@index([lodgeId])
+  @@index([memberId, kind])
+  @@index([createdById])
 }
 
 // ---------------------------------------------------------------------------
