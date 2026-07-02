@@ -124,8 +124,8 @@ function mockUpdateTransaction() {
     operation({
       member: { update: prisma.member.update, updateMany: prisma.member.updateMany },
       memberAccessRole: {
-        createMany: vi.fn().mockResolvedValue({ count: 1 }),
-        deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+        createMany: prisma.memberAccessRole.createMany,
+        deleteMany: prisma.memberAccessRole.deleteMany,
       },
       familyGroupMember: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
       auditLog: { create: prisma.auditLog.create },
@@ -214,6 +214,93 @@ describe("issue #1012 — Full Admin gate on access-role writes", () => {
       } as any);
       const res = await putMember("m1", { accessRoles: ["ADMIN"] });
       expect(res.status).toBe(200);
+    });
+
+    // Regression tests for the false 403 flagged on PR #1025: the edit
+    // dialog echoes role/accessRoles/financeAccessLevel/canLogin back even
+    // for contact-only edits, and archive/cancellation clear canLogin but
+    // not role/financeAccessLevel — so a non-login member can carry a stale
+    // privileged legacy role the scoped admin never touched.
+    describe("dormant privileged legacy roles on non-login members", () => {
+      const dormantAdminMember = {
+        ...targetMember,
+        role: "ADMIN",
+        financeAccessLevel: "NONE",
+        canLogin: false,
+        accessRoles: [],
+      };
+      // What the edit dialog sends for this member when only a contact
+      // field changes: raw legacy fields echoed as-is, accessRoles echoed
+      // as the (empty) effective set.
+      const dialogEcho = {
+        role: "ADMIN",
+        accessRoles: [],
+        financeAccessLevel: "NONE",
+        canLogin: false,
+        active: true,
+      };
+
+      beforeEach(() => {
+        vi.mocked(prisma.member.findUnique).mockResolvedValue(
+          dormantAdminMember as any,
+        );
+      });
+
+      it("allows a scoped admin to edit contact details and preserves the dormant role", async () => {
+        mockRequireAdmin.mockResolvedValue(scopedAdminGuard);
+        vi.mocked(prisma.member.update).mockResolvedValue({
+          ...dormantAdminMember,
+          firstName: "Robin",
+        } as any);
+        const res = await putMember("m1", { ...dialogEcho, firstName: "Robin" });
+        expect(res.status).toBe(200);
+        const updateArgs = vi.mocked(prisma.member.update).mock.calls[0][0];
+        expect(updateArgs.data).not.toHaveProperty("role");
+        expect(updateArgs.data).not.toHaveProperty("financeAccessLevel");
+        expect(prisma.memberAccessRole.deleteMany).not.toHaveBeenCalled();
+        expect(prisma.memberAccessRole.createMany).not.toHaveBeenCalled();
+      });
+
+      it("allows a scoped admin to edit contact details of a member with dormant finance access", async () => {
+        mockRequireAdmin.mockResolvedValue(scopedAdminGuard);
+        const dormantTreasurer = {
+          ...dormantAdminMember,
+          role: "USER",
+          financeAccessLevel: "MANAGER",
+        };
+        vi.mocked(prisma.member.findUnique).mockResolvedValue(
+          dormantTreasurer as any,
+        );
+        vi.mocked(prisma.member.update).mockResolvedValue(
+          dormantTreasurer as any,
+        );
+        const res = await putMember("m1", {
+          ...dialogEcho,
+          role: "USER",
+          financeAccessLevel: "MANAGER",
+          phoneNumber: "0215551234",
+        });
+        expect(res.status).toBe(200);
+        const updateArgs = vi.mocked(prisma.member.update).mock.calls[0][0];
+        expect(updateArgs.data).not.toHaveProperty("role");
+        expect(updateArgs.data).not.toHaveProperty("financeAccessLevel");
+        expect(prisma.memberAccessRole.deleteMany).not.toHaveBeenCalled();
+      });
+
+      it("still returns 403 when a scoped admin enables login even with an unchanged role echo", async () => {
+        mockRequireAdmin.mockResolvedValue(scopedAdminGuard);
+        const res = await putMember("m1", { ...dialogEcho, canLogin: true });
+        expect(res.status).toBe(403);
+        expect((await res.json()).error).toMatch(/Full Admin/);
+        expect(prisma.$transaction).not.toHaveBeenCalled();
+      });
+
+      it("still returns 403 when a scoped admin clears the dormant legacy role", async () => {
+        mockRequireAdmin.mockResolvedValue(scopedAdminGuard);
+        const res = await putMember("m1", { role: "USER" });
+        expect(res.status).toBe(403);
+        expect(prisma.$transaction).not.toHaveBeenCalled();
+      });
     });
   });
 

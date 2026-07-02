@@ -245,6 +245,13 @@ function resolveWriteAccessRoles(input: {
   });
 }
 
+function sameAccessRoleSet(
+  a: ReadonlyArray<string>,
+  b: ReadonlyArray<string>,
+) {
+  return a.length === b.length && a.every((role) => b.includes(role));
+}
+
 function getAdminMemberAuditAction(
   before: Record<string, unknown>,
   updateData: Record<string, unknown>,
@@ -756,7 +763,7 @@ export async function updateAdminMember(params: {
     data.role !== undefined ||
     data.financeAccessLevel !== undefined ||
     data.canLogin !== undefined;
-  const nextAccessRoles = shouldSyncAccessRoles
+  const requestedAccessRoles = shouldSyncAccessRoles
     ? resolveWriteAccessRoles({
         accessRoles: data.accessRoles,
         role: data.role ?? existing.role,
@@ -765,7 +772,30 @@ export async function updateAdminMember(params: {
         canLogin: effectiveCanLogin,
       })
     : null;
-  if (shouldSyncAccessRoles) {
+  // The member edit dialog echoes back role/accessRoles/financeAccessLevel/
+  // canLogin even for contact-only edits, and for a canLogin=false member the
+  // echoed accessRoles are always [] while a stale privileged legacy
+  // role/financeAccessLevel may still be stored (archive and cancellation
+  // clear canLogin but not the role fields). Treat an echo with no
+  // role-field delta and an unchanged effective role set as carrying no role
+  // intent: skip the Full Admin gate (a scoped admin's contact edit is not a
+  // role write) and leave the stored role fields and access-role rows
+  // untouched (deriving them from the echo would silently demote the dormant
+  // role to USER). Any canLogin/role/financeAccessLevel delta — including
+  // activating a dormant ADMIN by enabling login — still runs the gate.
+  const roleSubmissionIsNoOp =
+    shouldSyncAccessRoles &&
+    (data.role === undefined || data.role === existing.role) &&
+    (data.financeAccessLevel === undefined ||
+      data.financeAccessLevel === existing.financeAccessLevel) &&
+    (data.canLogin === undefined || data.canLogin === existing.canLogin) &&
+    (data.accessRoles === undefined ||
+      sameAccessRoleSet(
+        requestedAccessRoles ?? [],
+        resolveAccessRoles(existing),
+      ));
+  const nextAccessRoles = roleSubmissionIsNoOp ? null : requestedAccessRoles;
+  if (shouldSyncAccessRoles && !roleSubmissionIsNoOp) {
     // Full Admin gate (issue #1012): compare both the effective roles
     // (canLogin-aware) and the stored role fields (canLogin-blind) so a
     // scoped admin can neither change live privileged access nor park a
@@ -802,7 +832,10 @@ export async function updateAdminMember(params: {
       );
     }
   }
-  if (data.accessRoles !== undefined) {
+  if (roleSubmissionIsNoOp) {
+    // No role intent: keep the stored role/financeAccessLevel and
+    // access-role rows exactly as they are.
+  } else if (data.accessRoles !== undefined) {
     updateData.role = legacyRoleFromAccessRoles(nextAccessRoles ?? []);
     updateData.financeAccessLevel = financeAccessLevelFromAccessRoles(
       nextAccessRoles ?? [],
