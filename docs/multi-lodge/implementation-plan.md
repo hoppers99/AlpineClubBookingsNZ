@@ -156,6 +156,14 @@ Implementation decisions beyond the plan text:
 
 ## Phase 5 — Chores and roster
 
+**Progress:** delivered on `feature/multi-lodge-support` (2026-07-02).
+Kiosk requests resolve their lodge via `resolveKioskLodgeId` (PIN
+assignment's lodge; STAFF grant for lodge/admin accounts; the member's
+active booking for staying guests; session-login hut leaders resolve
+via their own assignment). Roster generation, chore templates,
+guest lists, and arrival/departure mutations are scoped to that lodge
+with null-tolerant filters; cross-lodge mutations are rejected.
+
 - `ChoreTemplate.lodgeId` filtering in roster generation and the chore
   allocator; roster pages and print views take lodge context from the
   kiosk/staff session's lodge.
@@ -163,6 +171,11 @@ Implementation decisions beyond the plan text:
 **Risk: Medium.**
 
 ## Phase 6 — Promo codes
+
+**Progress:** delivered on `feature/multi-lodge-support` (2026-07-02).
+`PromoCodeLodge` junction added (no rows = every lodge); validation and
+redemption check the booking's lodge; admin promo routes accept
+`lodgeIds` replace-set style and serialize them.
 
 - `PromoCodeLodge` junction table (no rows = redeemable at every lodge;
   rows = redeemable only at those lodges, supporting "two of three"

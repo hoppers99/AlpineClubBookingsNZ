@@ -50,6 +50,7 @@ type PromoRedemptionWithTargets = {
   promoCode: {
     assignedMembersOnlyOwnNights?: boolean | null;
     assignments: Array<{ memberId: string }>;
+    lodges?: Array<{ lodgeId: string }>;
   };
   guestTargets?: Array<{ bookingGuestId: string }>;
 };
@@ -112,7 +113,10 @@ export async function removeBookingGuestInTransaction({
           include: {
             guestTargets: { select: { bookingGuestId: true } },
             promoCode: {
-              include: { assignments: { select: { memberId: true } } },
+              include: {
+                assignments: { select: { memberId: true } },
+                lodges: { select: { lodgeId: true } },
+              },
             },
           },
         },
@@ -379,7 +383,10 @@ export async function recalculateBookingPromo({
             include: {
               guestTargets: { select: { bookingGuestId: true } };
               promoCode: {
-                include: { assignments: { select: { memberId: true } } };
+                include: {
+                  assignments: { select: { memberId: true } };
+                  lodges: { select: { lodgeId: true } };
+                };
               };
             };
           };
@@ -404,6 +411,7 @@ export async function recalculateBookingPromo({
       booking.promoRedemption,
       guestNightRates
     );
+    const bookingLodgeId = booking.lodgeId ?? (await getDefaultLodgeId(tx));
     const application = await validateAndCalculatePromoDiscount(
       promo,
       {
@@ -415,7 +423,7 @@ export async function recalculateBookingPromo({
       promo.assignments.length > 0
         ? promo.assignments.map((assignment) => assignment.memberId)
         : null,
-      { excludeBookingId: bookingId, db: tx, selectedGuestIndexes },
+      { excludeBookingId: bookingId, db: tx, selectedGuestIndexes, lodgeId: bookingLodgeId },
     );
 
     if (application.error || !application.discount) {

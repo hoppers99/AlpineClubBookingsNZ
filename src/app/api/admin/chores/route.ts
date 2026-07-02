@@ -27,6 +27,7 @@ const choreSchema = z
       .optional()
       .default([]),
     active: z.boolean().default(true),
+    lodgeId: z.string().min(1).optional(),
   })
   .superRefine((data, ctx) => {
     if (
@@ -41,10 +42,12 @@ const choreSchema = z
     }
   });
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   const guard = await requireAdmin();
   if (!guard.ok) return guard.response;
+  const lodgeId = req.nextUrl.searchParams.get("lodgeId")
   const chores = await prisma.choreTemplate.findMany({
+    where: lodgeId ? { lodgeId } : undefined,
     orderBy: { sortOrder: "asc" },
   })
   return NextResponse.json(chores)
@@ -62,7 +65,7 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  const data = parsed.data
+  const { lodgeId: requestedLodgeId, ...data } = parsed.data
   if (data.recommendedPeopleMax < data.recommendedPeopleMin) {
     return NextResponse.json(
       { error: "Max people must be >= min people" },
@@ -70,7 +73,23 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  const lodgeId = await getDefaultLodgeId(prisma)
+  let lodgeId: string;
+  if (requestedLodgeId) {
+    const lodge = await prisma.lodge.findUnique({
+      where: { id: requestedLodgeId },
+      select: { id: true, active: true },
+    });
+    if (!lodge || !lodge.active) {
+      return NextResponse.json(
+        { error: "Lodge not found or not active" },
+        { status: 400 }
+      );
+    }
+    lodgeId = lodge.id;
+  } else {
+    lodgeId = await getDefaultLodgeId(prisma)
+  }
+
   const chore = await prisma.choreTemplate.create({ data: { ...data, lodgeId } })
   return NextResponse.json(chore, { status: 201 })
 }

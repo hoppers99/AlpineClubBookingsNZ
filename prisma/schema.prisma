@@ -1635,6 +1635,7 @@ model PromoCode {
 
   // Relations
   redemptions    PromoRedemption[]
+  lodges         PromoCodeLodge[]
   allocations    PromoRedemptionAllocation[]
   assignments    PromoCodeAssignment[]
   workPartyEvent WorkPartyEvent?
@@ -1704,6 +1705,23 @@ model PromoRedemptionGuestTarget {
   @@unique([promoRedemptionId, bookingGuestId])
   @@index([bookingId])
   @@index([bookingGuestId])
+}
+
+// Optional per-lodge promo restriction (ADR-001 resolved question 4). No rows
+// = the promo is redeemable at every lodge (the club-wide default). Rows =
+// redeemable only at the listed lodges, supporting "two of three lodges"
+// restrictions. Redemption validation compares against the booking's lodge.
+model PromoCodeLodge {
+  id          String   @id @default(cuid())
+  promoCodeId String
+  lodgeId     String
+  createdAt   DateTime @default(now())
+
+  promoCode PromoCode @relation(fields: [promoCodeId], references: [id], onDelete: Cascade)
+  lodge     Lodge     @relation(fields: [lodgeId], references: [id], onDelete: Cascade)
+
+  @@unique([promoCodeId, lodgeId])
+  @@index([lodgeId])
 }
 
 model PromoCodeAssignment {
@@ -2381,6 +2399,7 @@ model Lodge {
   minimumStayPolicies  MinimumStayPolicy[]
   hutLeaderAssignments HutLeaderAssignment[]
   memberAccess         MemberLodgeAccess[]
+  promoCodes           PromoCodeLodge[]
 }
 
 model LodgeSettings {

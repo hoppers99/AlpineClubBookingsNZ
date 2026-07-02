@@ -225,6 +225,7 @@ function maxDate(values: Date[]): Date {
 export type LoadedPromoRedemption = PromoRedemption & {
   promoCode: PromoCode & {
     assignments: Array<{ memberId: string }>;
+    lodges?: Array<{ lodgeId: string }>;
   };
   guestTargets?: Array<{ bookingGuestId: string }>;
 };
@@ -1123,6 +1124,8 @@ export async function applyPromoCodeChanges(
     promoRemoved = true;
   }
 
+  const bookingLodgeId = booking.lodgeId ?? (await getDefaultLodgeId(tx));
+
   if (input.promoCode && !input.removePromoCode) {
     if (booking.promoRedemption && !promoRemoved) {
       await deletePromoRedemptionAndAdjustCount(tx, booking.promoRedemption);
@@ -1131,7 +1134,10 @@ export async function applyPromoCodeChanges(
 
     const promoCode = await tx.promoCode.findUnique({
       where: { code: input.promoCode.toUpperCase().trim() },
-      include: { assignments: { select: { memberId: true } } },
+      include: {
+        assignments: { select: { memberId: true } },
+        lodges: { select: { lodgeId: true } },
+      },
     });
 
     // Internal promos (work party events) cannot be entered as codes.
@@ -1155,6 +1161,7 @@ export async function applyPromoCodeChanges(
         excludeBookingId: bookingId,
         db: tx,
         selectedGuestIndexes: input.promoGuestIndexes,
+        lodgeId: bookingLodgeId,
       },
     );
     if (application.error || !application.discount) {
@@ -1180,6 +1187,7 @@ export async function applyPromoCodeChanges(
           guestNightRates,
           application.selectedGuestIndexes
         ),
+        bookingLodgeId,
       );
     }
     promoChanged = true;
@@ -1204,7 +1212,7 @@ export async function applyPromoCodeChanges(
       promo.assignments.length > 0
         ? promo.assignments.map((assignment) => assignment.memberId)
         : null,
-      { excludeBookingId: bookingId, db: tx, selectedGuestIndexes },
+      { excludeBookingId: bookingId, db: tx, selectedGuestIndexes, lodgeId: bookingLodgeId },
     );
 
     if (application.error || !application.discount) {

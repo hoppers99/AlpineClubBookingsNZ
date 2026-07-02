@@ -7,6 +7,7 @@ const mockGuestTokenDeleteMany = vi.fn();
 const mockSendChoreRosterEmail = vi.fn();
 const mockCreateGuestChoreToken = vi.fn();
 const mockMemberCount = vi.fn();
+const mockLodgeFindFirst = vi.fn();
 
 vi.mock("@/lib/auth", () => ({
   auth: () => mockAuth(),
@@ -47,6 +48,9 @@ vi.mock("@/lib/prisma", () => ({
     guestChoreToken: {
       deleteMany: mockGuestTokenDeleteMany,
     },
+    lodge: {
+      findFirst: mockLodgeFindFirst,
+    },
   },
 }));
 
@@ -68,6 +72,7 @@ describe("PUT /api/admin/roster/[date] email action", () => {
     mockAuth.mockResolvedValue({ user: { id: "admin1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] } });
     mockCreateGuestChoreToken.mockResolvedValue("token-1");
     mockMemberCount.mockResolvedValue(1);
+    mockLodgeFindFirst.mockResolvedValue({ id: "default-lodge" });
   });
 
   it("returns partial-failure details instead of failing the whole request", async () => {

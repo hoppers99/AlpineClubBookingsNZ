@@ -6,6 +6,8 @@ import {
   updateAdminRosterForDate,
 } from "@/lib/admin-roster-service"
 import { isDateOnlyString, parseDateOnly } from "@/lib/date-only"
+import { getDefaultLodgeId } from "@/lib/lodges"
+import { prisma } from "@/lib/prisma"
 import { requireAdmin } from "@/lib/session-guards"
 
 const paramsSchema = z.object({
@@ -79,11 +81,14 @@ export async function GET(
     )
   }
 
+  const lodgeId = await getDefaultLodgeId(prisma)
+
   const result = await getAdminRosterForDate({
     date: parsedDate.date,
     dateString: parsedParams.data.date,
     regenerate: parsedQuery.data.regenerate,
     includeNonEssential: parsedQuery.data.includeNonEssential,
+    lodgeId,
   })
   return NextResponse.json(result.body, result.init)
 }
@@ -125,10 +130,13 @@ export async function PUT(
     )
   }
 
+  const lodgeId = await getDefaultLodgeId(prisma)
+
   const result = await updateAdminRosterForDate({
     date: parsedDate.date,
     dateString: parsedParams.data.date,
     data: parsedBody.data,
+    lodgeId,
   })
   return NextResponse.json(result.body, result.init)
 }

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { checkLodgeAuth, getLodgeAuthActorMemberId } from "@/lib/lodge-auth";
+import { checkLodgeAuth, getLodgeAuthActorMemberId, resolveKioskLodgeId } from "@/lib/lodge-auth";
 import { findLodgeGuestForDate } from "@/lib/lodge-date-scoping";
 import { parseDateOnly } from "@/lib/date-only";
 import { prisma } from "@/lib/prisma";
@@ -56,7 +56,8 @@ export async function PUT(
   }
 
   try {
-    const guest = await findLodgeGuestForDate(parsed.data.bookingGuestId, date);
+    const lodgeId = await resolveKioskLodgeId(authResult, prisma);
+    const guest = await findLodgeGuestForDate(parsed.data.bookingGuestId, date, lodgeId);
 
     if (!guest) {
       return NextResponse.json(

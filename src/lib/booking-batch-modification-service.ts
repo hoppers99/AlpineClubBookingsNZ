@@ -116,7 +116,10 @@ export async function modifyBookingBatch({
         promoRedemption: {
           include: {
             promoCode: {
-              include: { assignments: { select: { memberId: true } } },
+              include: {
+                assignments: { select: { memberId: true } },
+                lodges: { select: { lodgeId: true } },
+              },
             },
             guestTargets: { select: { bookingGuestId: true } },
           },

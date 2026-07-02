@@ -102,6 +102,7 @@ export async function POST(req: NextRequest) {
   let promoCode:
     | (Awaited<ReturnType<typeof prisma.promoCode.findUnique>> & {
         assignments: { memberId: string }[];
+        lodges: { lodgeId: string }[];
       })
     | null = null;
   let workPartyEvent: { id: string; name: string; discountPercent: number } | null = null;
@@ -110,7 +111,12 @@ export async function POST(req: NextRequest) {
     const event = await prisma.workPartyEvent.findUnique({
       where: { id: parsed.data.workPartyEventId },
       include: {
-        promoCode: { include: { assignments: { select: { memberId: true } } } },
+        promoCode: {
+          include: {
+            assignments: { select: { memberId: true } },
+            lodges: { select: { lodgeId: true } },
+          },
+        },
       },
     });
     if (!event) {
@@ -144,7 +150,10 @@ export async function POST(req: NextRequest) {
     const normalizedCode = code.toUpperCase().trim();
     const found = await prisma.promoCode.findUnique({
       where: { code: normalizedCode },
-      include: { assignments: { select: { memberId: true } } },
+      include: {
+        assignments: { select: { memberId: true } },
+        lodges: { select: { lodgeId: true } },
+      },
     });
     // Internal promos (work party events) are system-applied only; a
     // manually entered internal code behaves like a nonexistent one.
@@ -220,7 +229,7 @@ export async function POST(req: NextRequest) {
         guests: promoGuests,
       },
       assignedMemberIds,
-      { db: prisma, selectedGuestIndexes: parsed.data.promoGuestIndexes }
+      { db: prisma, selectedGuestIndexes: parsed.data.promoGuestIndexes, lodgeId: quoteLodgeId }
     );
     if (application.requiresGuestSelection) {
       return NextResponse.json({

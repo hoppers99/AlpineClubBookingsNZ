@@ -31,6 +31,7 @@ const {
     booking: {
       count: vi.fn(),
       findMany: vi.fn(),
+      findFirst: vi.fn(),
     },
     bookingGuest: {
       findFirst: vi.fn(),
@@ -381,6 +382,7 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
     });
     mockPrisma.hutLeaderAssignment.count.mockResolvedValue(0);
     mockPrisma.booking.count.mockResolvedValue(1);
+    mockPrisma.booking.findFirst.mockResolvedValue({ lodgeId: "default-lodge" });
     mockPrisma.booking.findMany.mockResolvedValue([
       {
         id: "booking-1",

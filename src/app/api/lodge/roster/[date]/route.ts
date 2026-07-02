@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { checkLodgeAuth, getLodgeAuthActorMemberId } from "@/lib/lodge-auth";
+import { checkLodgeAuth, getLodgeAuthActorMemberId, resolveKioskLodgeId } from "@/lib/lodge-auth";
 import { getBookingGuestDisplayAgeTier } from "@/lib/booking-guests";
 import { parseDateOnly } from "@/lib/date-only";
+import { lodgeNullTolerantScope } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 import { logAudit } from "@/lib/audit";
 import { z } from "zod";
@@ -47,8 +48,10 @@ export async function GET(
     return NextResponse.json({ error: "Invalid date" }, { status: 400 });
   }
 
+  const lodgeId = await resolveKioskLodgeId(authResult, prisma);
+
   const assignments = await prisma.choreAssignment.findMany({
-    where: { date },
+    where: { date, booking: lodgeNullTolerantScope(lodgeId) },
     include: {
       choreTemplate: true,
       bookingGuest: {
@@ -134,8 +137,14 @@ export async function PUT(
   const data = parsed.data;
 
   try {
+    const lodgeId = await resolveKioskLodgeId(authResult, prisma);
+
     const assignment = await prisma.choreAssignment.findFirst({
-      where: { id: data.assignmentId, date },
+      where: {
+        id: data.assignmentId,
+        date,
+        booking: lodgeNullTolerantScope(lodgeId),
+      },
       select: {
         id: true,
         choreTemplateId: true,

@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { checkLodgeAuth } from "@/lib/lodge-auth";
+import { checkLodgeAuth, resolveKioskLodgeId } from "@/lib/lodge-auth";
 import { addDaysDateOnly, parseDateOnly } from "@/lib/date-only";
 import { getBookingGuestDisplayAgeTier } from "@/lib/booking-guests";
+import { lodgeNullTolerantScope } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
 import {
@@ -35,7 +36,8 @@ export async function POST(
 ) {
   const { date: dateStr } = await params;
 
-  const { error, status, tier } = await checkLodgeAuth(dateStr, { request: req });
+  const authResult = await checkLodgeAuth(dateStr, { request: req });
+  const { error, status, tier } = authResult;
   if (error) {
     return NextResponse.json({ error }, { status: status! });
   }
@@ -70,6 +72,7 @@ export async function POST(
 
   try {
     const nextDay = addDaysDateOnly(date, 1);
+    const lodgeId = await resolveKioskLodgeId(authResult, prisma);
 
     // Get guests staying on this date
     const bookings = await prisma.booking.findMany({
@@ -77,6 +80,7 @@ export async function POST(
         status: { in: [...OPERATIONAL_STAY_BOOKING_STATUSES] },
         checkIn: { lte: date },
         checkOut: { gt: date },
+        ...lodgeNullTolerantScope(lodgeId),
         guests: {
           some: {
             stayStart: { lte: date },
@@ -116,6 +120,7 @@ export async function POST(
       where: {
         id: { in: parsed.data.choreTemplateIds },
         active: true,
+        ...lodgeNullTolerantScope(lodgeId),
       },
       orderBy: { sortOrder: "asc" },
     });

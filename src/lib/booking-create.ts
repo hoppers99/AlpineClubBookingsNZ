@@ -333,6 +333,7 @@ async function resolvePromoInTransaction(
     nightDatesByGuest?: Date[][];
     promoGuestIndexes?: number[];
     allowInternal?: boolean;
+    lodgeId: string;
   },
 ): Promise<ResolvedPromo> {
   const {
@@ -345,6 +346,7 @@ async function resolvePromoInTransaction(
     nightDatesByGuest,
     promoGuestIndexes,
     allowInternal,
+    lodgeId,
   } = options;
   const normalizedCode = promoCodeStr.toUpperCase().trim();
   const lockedRows = await tx.$queryRaw<LockedPromoRow[]>`
@@ -357,14 +359,22 @@ async function resolvePromoInTransaction(
   }
 
   let assignedMemberIds: string[] | null = null;
+  let promoLodges: { lodgeId: string }[] = [];
   if (promoCode) {
-    const assignments = await tx.promoCodeAssignment.findMany({
-      where: { promoCodeId: promoCode.id },
-      select: { memberId: true },
-    });
+    const [assignments, lodgeRows] = await Promise.all([
+      tx.promoCodeAssignment.findMany({
+        where: { promoCodeId: promoCode.id },
+        select: { memberId: true },
+      }),
+      tx.promoCodeLodge.findMany({
+        where: { promoCodeId: promoCode.id },
+        select: { lodgeId: true },
+      }),
+    ]);
     if (assignments.length > 0) {
       assignedMemberIds = assignments.map((a) => a.memberId);
     }
+    promoLodges = lodgeRows;
   }
 
   const guestNightRates = guests.map((guest, index) => ({
@@ -375,7 +385,7 @@ async function resolvePromoInTransaction(
     nightDates: nightDatesByGuest?.[index],
   }));
   const application = await validateAndCalculatePromoDiscount(
-    promoCode,
+    promoCode ? { ...promoCode, lodges: promoLodges } : null,
     {
       memberId: effectiveMemberId,
       bookingCheckIn: checkIn,
@@ -383,7 +393,7 @@ async function resolvePromoInTransaction(
       guests: guestNightRates,
     },
     assignedMemberIds,
-    { db: tx, selectedGuestIndexes: promoGuestIndexes }
+    { db: tx, selectedGuestIndexes: promoGuestIndexes, lodgeId }
   );
   if (application.error || !application.discount) {
     throw new BookingPromoError(application.error ?? "Promo code could not be applied");
@@ -703,6 +713,7 @@ export async function createDraftBooking(input: DraftBookingInput): Promise<Book
         perNightCentsByGuest: price.guests.map((g) => g.perNightCents),
         nightDatesByGuest: price.guests.map((g) => g.nightDates),
         promoGuestIndexes,
+        lodgeId: bookingLodgeId,
       });
       discountCents = resolved.discountCents;
       promoAdjustmentCents = resolved.promoAdjustmentCents;
@@ -760,6 +771,7 @@ export async function createDraftBooking(input: DraftBookingInput): Promise<Book
         promoEligibleGuestCount || undefined,
         promoAllocations,
         getPromoTargetBookingGuestIds(createdBooking.guests, promoSelectedGuestIndexes),
+        bookingLodgeId,
       );
     }
 
@@ -1030,6 +1042,7 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
           perNightCentsByGuest: price.guests.map((g) => g.perNightCents),
           nightDatesByGuest: price.guests.map((g) => g.nightDates),
           promoGuestIndexes: primaryPromoGuestIndexes,
+          lodgeId: bookingLodgeId,
         });
         discountCents = resolved.discountCents;
         promoAdjustmentCents = resolved.promoAdjustmentCents;
@@ -1126,6 +1139,7 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
           promoEligibleGuestCount || undefined,
           promoAllocations,
           getPromoTargetBookingGuestIds(newBooking.guests, promoSelectedGuestIndexes),
+          bookingLodgeId,
         );
       }
 
@@ -1549,7 +1563,10 @@ export async function createWaitlistedBooking(input: WaitlistedBookingInput): Pr
     const normalizedCode = promoSource.promoCodeStr.toUpperCase().trim();
     const promoCode = await prisma.promoCode.findUnique({
       where: { code: normalizedCode },
-      include: { assignments: { select: { memberId: true } } },
+      include: {
+        assignments: { select: { memberId: true } },
+        lodges: { select: { lodgeId: true } },
+      },
     });
     if (promoCode?.internal && !promoSource.allowInternal) {
       throw new BookingPromoError("Promo code not found");
@@ -1573,7 +1590,7 @@ export async function createWaitlistedBooking(input: WaitlistedBookingInput): Pr
         guests: guestNightRates,
       },
       assignedMemberIds,
-      { db: prisma, selectedGuestIndexes: promoGuestIndexes }
+      { db: prisma, selectedGuestIndexes: promoGuestIndexes, lodgeId: waitlistLodgeId }
     );
     if (application.error || !application.discount) {
       throw new BookingPromoError(application.error ?? "Promo code could not be applied");
@@ -1637,6 +1654,7 @@ export async function createWaitlistedBooking(input: WaitlistedBookingInput): Pr
         promoEligibleGuestCount || undefined,
         promoAllocations,
         getPromoTargetBookingGuestIds(createdBooking.guests, promoSelectedGuestIndexes),
+        waitlistLodgeId,
       );
     }
 
