@@ -66,6 +66,7 @@ export const MEMBER_ONBOARDING_GATE_SELECT = {
   ...MEMBER_ONBOARDING_PROFILE_SELECT,
   forcePasswordChange: true,
   financeAccessLevel: true,
+  twoFactorEnabled: true,
   accessRoles: { select: { role: true } },
 } as const;
 

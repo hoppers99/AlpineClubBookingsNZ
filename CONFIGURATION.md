@@ -171,6 +171,18 @@ public page route.
 - The migration backfills the three empty documents, so deploy-only
   environments get editable rows without running the seed.
 
+## Lodge Settings
+
+Admin > Setup includes lodge-wide settings stored in the singleton
+`LodgeSettings` row:
+
+- Capacity override: optional. Leave blank to use the bed total from club
+  configuration, unless the Bed Allocation module is enabled with active beds.
+- Hut-leader lookahead: defaults to 14 days and controls how far ahead
+  unassigned hut-leader dates are reported on the admin dashboard, stuck-state
+  dashboard, the hut-leader assignment API, and the queue-driven Needs
+  Attention sidebar item.
+
 ## Required Local Setup Variables
 
 These are enough for a local database-backed app with external services left in
@@ -331,12 +343,12 @@ blurb or role description, and an opaque assignment contact key only when the
 assignment is contactable. Member email addresses are never returned to the
 browser; `/api/contact` resolves contactable assignment keys server-side and
 delivers to the role email alias configured on `CommitteeRole`, falling back to
-the configured club contact address when no published, contactable assignment
-matches or the role has no alias. Committee-routed contact emails use an opaque
+the linked member's email when the role has no alias, then to the configured
+club contact address when no published, contactable assignment or recipient
+email is available. Committee-routed contact emails use an opaque
 committee-contact marker in EmailLog rows instead of persisting the recipient
-address. Linked member email addresses are not used for committee contact
-delivery. Phone numbers come from the linked member profile and display only
-when the assignment's show-phone flag is enabled.
+address. Phone numbers come from the linked member profile and display only when
+the assignment's show-phone flag is enabled.
 
 The legacy `CommitteeMember` table remains editable for historical/public
 migration reference, but it no longer powers `/api/committee` or committee
@@ -422,13 +434,14 @@ cannot be read, optional modules fail closed.
 | Address autocomplete | off | Addy-powered suggestions on address fields. Manual address entry remains available whenever the module is off, credentials are missing, Addy fails, or rate limiting applies. |
 | Group bookings | on | Group-booking organiser, join, and settlement surfaces. |
 | Lockers | on | Physical locker records and member allocations. |
-| Lodge induction | on | Lodge induction templates, self-assessment, and sign-off. |
+| Lodge induction | on | Lodge induction templates, assigned signers, and single-Pass sign-off. |
 | Work parties | on | Volunteer work-party events and the internal booking discounts they grant. |
 | Promo codes | on | Promo-code administration and promo-aware booking flows. |
 | Hut leaders | on | Hut-leader assignments, kiosk access, and auto-assignment. |
 | Communications | on | Admin bulk email to members. Transactional notifications are unaffected. |
 | Ski-field conditions | on | Live mountain/road status panel, public API routes, and admin cache controls. |
 | Multiple lodges | off | Lodge-management admin surface for clubs with more than one lodge property. The lodge data model is core and always present; member-facing screens only change once a second active lodge exists. Cannot be turned off while more than one active lodge exists. See `docs/multi-lodge/README.md`. |
+| Two-factor authentication | off | Requires users to complete authenticator-app, email-code, or recovery-code verification after password login. |
 
 Cron-backed optional module schedules are still registered when
 `CRON_ENABLED=true`; each run checks the effective module state before doing
@@ -440,6 +453,28 @@ clean skipped result rather than running the module task.
 The Admin dashboard includes `/admin/modules` for club-level activation of the
 optional modules above. These settings are stored in the `ClubModuleSettings`
 database table as booleans only.
+
+## Two-Factor Authentication
+
+The Two-factor authentication Admin Modules toggle is a global enforcement
+switch. It defaults off. When enabled, password sign-in creates a limited JWT
+session with `twoFactorVerified=false`; protected route-group layouts and API
+guards redirect or reject that session until the user completes `/login/enroll`
+or `/login/verify`.
+
+Users enroll either an authenticator app (TOTP) or an email one-time code. TOTP
+secrets are encrypted at rest using key material derived from `AUTH_SECRET` (or
+`NEXTAUTH_SECRET` fallback), so rotating that secret invalidates stored TOTP
+secrets and recovery-code hashes. Email codes are short-lived, hashed at rest,
+and the `two-factor-code` email template is marked sensitive so rendered code
+content is not retained in email logs. Recovery codes are generated on
+enrollment and profile regeneration, shown once, hashed at rest, and consumed
+once.
+
+Invalid two-factor attempts are rate-limited and tracked per member. Five
+invalid app, email, or recovery-code attempts lock the two-factor challenge for
+15 minutes. Accounts that still have `forcePasswordChange=true` must finish
+`/change-password` before enrolling or verifying two-factor authentication.
 
 ## Stripe
 

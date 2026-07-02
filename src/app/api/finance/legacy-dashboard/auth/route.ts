@@ -6,6 +6,10 @@ import {
   loadFinanceAccessMember,
 } from "@/lib/finance-auth";
 import { hasLodgeAccess } from "@/lib/access-roles";
+import {
+  buildTwoFactorGatePath,
+  isTwoFactorSessionBlocked,
+} from "@/lib/two-factor-gate";
 
 const LEGACY_DASHBOARD_CALLBACK_PATH = "/finance-legacy/";
 
@@ -38,6 +42,24 @@ export async function GET(request: NextRequest) {
 
   if (member.forcePasswordChange) {
     return NextResponse.redirect(buildAbsoluteUrl(request, "/change-password"));
+  }
+
+  if (
+    isTwoFactorSessionBlocked({
+      sessionUser: session.user,
+      member,
+    })
+  ) {
+    return NextResponse.redirect(
+      buildAbsoluteUrl(
+        request,
+        buildTwoFactorGatePath({
+          sessionUser: session.user,
+          member,
+          callbackPath: LEGACY_DASHBOARD_CALLBACK_PATH,
+        }),
+      ),
+    );
   }
 
   if (!hasFinanceViewerAccess(member)) {

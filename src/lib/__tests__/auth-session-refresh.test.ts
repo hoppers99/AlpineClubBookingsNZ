@@ -6,16 +6,19 @@ const {
   mockUpdate,
   mockNextAuth,
   mockRawAuth,
+  mockLoadEffectiveModuleFlags,
 } = vi.hoisted(() => ({
   mockFindUnique: vi.fn(),
   mockFindFirst: vi.fn(),
   mockUpdate: vi.fn(),
   mockRawAuth: vi.fn(),
+  mockLoadEffectiveModuleFlags: vi.fn(),
   mockNextAuth: vi.fn(() => ({
     handlers: {},
     signIn: vi.fn(),
     signOut: vi.fn(),
     auth: mockRawAuth,
+    unstable_update: vi.fn(),
   })),
 }));
 
@@ -59,6 +62,10 @@ vi.mock("@/lib/logger", () => ({
   default: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
 
+vi.mock("@/lib/module-settings", () => ({
+  loadEffectiveModuleFlags: mockLoadEffectiveModuleFlags,
+}));
+
 import { auth, authConfig } from "@/lib/auth";
 
 describe("auth session refresh", () => {
@@ -67,6 +74,8 @@ describe("auth session refresh", () => {
     mockFindFirst.mockReset();
     mockUpdate.mockReset();
     mockRawAuth.mockReset();
+    mockLoadEffectiveModuleFlags.mockReset();
+    mockLoadEffectiveModuleFlags.mockResolvedValue({ twoFactor: false });
   });
 
   it("refreshes a stale admin JWT role from the database", async () => {
@@ -76,6 +85,8 @@ describe("auth session refresh", () => {
       forcePasswordChange: false,
       emailVerified: true,
       passwordChangedAt: null,
+      twoFactorEnabled: false,
+      twoFactorMethod: null,
     });
 
     const refreshedToken = await authConfig.callbacks.jwt?.({
@@ -96,6 +107,8 @@ describe("auth session refresh", () => {
         forcePasswordChange: true,
         emailVerified: true,
         passwordChangedAt: true,
+        twoFactorEnabled: true,
+        twoFactorMethod: true,
       },
     });
     expect(refreshedToken).toEqual(
@@ -117,6 +130,8 @@ describe("auth session refresh", () => {
       forcePasswordChange: false,
       emailVerified: true,
       passwordChangedAt: new Date("2026-04-26T10:00:00.000Z"),
+      twoFactorEnabled: false,
+      twoFactorMethod: null,
     });
 
     const refreshedToken = await authConfig.callbacks.jwt?.({
@@ -136,6 +151,75 @@ describe("auth session refresh", () => {
     );
   });
 
+  it("does not trust a password-only JWT when two-factor is later enabled", async () => {
+    mockLoadEffectiveModuleFlags.mockResolvedValue({ twoFactor: true });
+    mockFindUnique.mockResolvedValue({
+      role: "MEMBER",
+      accessRoles: [{ role: "USER" }],
+      forcePasswordChange: false,
+      emailVerified: true,
+      passwordChangedAt: null,
+      twoFactorEnabled: true,
+      twoFactorMethod: "TOTP",
+    });
+
+    const refreshedToken = await authConfig.callbacks.jwt?.({
+      token: {
+        id: "member-1",
+        role: "MEMBER",
+        forcePasswordChange: false,
+        isEmailVerified: true,
+        sessionIssuedAt: Date.now(),
+        twoFactorVerified: true,
+      },
+    } as never);
+
+    expect(refreshedToken).toEqual(
+      expect.objectContaining({
+        twoFactorRequired: true,
+        twoFactorEnrolled: true,
+        twoFactorMethod: "TOTP",
+        twoFactorVerified: false,
+        twoFactorVerifiedByChallenge: false,
+      }),
+    );
+  });
+
+  it("keeps a session verified after the server two-factor challenge update", async () => {
+    mockLoadEffectiveModuleFlags.mockResolvedValue({ twoFactor: true });
+    mockFindUnique.mockResolvedValue({
+      role: "MEMBER",
+      accessRoles: [{ role: "USER" }],
+      forcePasswordChange: false,
+      emailVerified: true,
+      passwordChangedAt: null,
+      twoFactorEnabled: true,
+      twoFactorMethod: "EMAIL",
+    });
+
+    const refreshedToken = await authConfig.callbacks.jwt?.({
+      token: {
+        id: "member-1",
+        role: "MEMBER",
+        forcePasswordChange: false,
+        isEmailVerified: true,
+        sessionIssuedAt: Date.now(),
+      },
+      trigger: "update",
+      session: { user: { twoFactorVerified: true } },
+    } as never);
+
+    expect(refreshedToken).toEqual(
+      expect.objectContaining({
+        twoFactorRequired: true,
+        twoFactorEnrolled: true,
+        twoFactorMethod: "EMAIL",
+        twoFactorVerified: true,
+        twoFactorVerifiedByChallenge: true,
+      }),
+    );
+  });
+
   it("projects the refreshed token role into the session", async () => {
     const session = await authConfig.callbacks.session?.({
       session: {
@@ -143,9 +227,9 @@ describe("auth session refresh", () => {
           id: "member-1",
           email: "admin@example.com",
           name: "Admin User",
-        role: "ADMIN",
-        accessRoles: ["ADMIN"],
-        forcePasswordChange: false,
+          role: "ADMIN",
+          accessRoles: ["ADMIN"],
+          forcePasswordChange: false,
           isEmailVerified: true,
           sessionInvalidated: false,
         },
@@ -169,6 +253,10 @@ describe("auth session refresh", () => {
       forcePasswordChange: true,
       isEmailVerified: true,
       sessionInvalidated: true,
+      twoFactorRequired: false,
+      twoFactorVerified: false,
+      twoFactorEnrolled: false,
+      twoFactorMethod: null,
     });
   });
 
@@ -200,6 +288,8 @@ describe("auth session refresh", () => {
       passwordHash: "$2b$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy",
       forcePasswordChange: false,
       emailVerified: true,
+      twoFactorEnabled: false,
+      twoFactorMethod: null,
     });
     mockUpdate.mockResolvedValue({ id: "member-1" });
 

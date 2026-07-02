@@ -149,7 +149,7 @@ new assignment starts hidden/unpublished
 admin edits blurb/sort/published/show-phone/contactable flags
 audited assignment update or deactivate
 published assignment appears on public committee surfaces
-contactable published assignment can receive server-routed contact form mail through the role email alias
+contactable published assignment can receive server-routed contact form mail through the role email alias, or the linked member email when the role email is blank
 ```
 
 ## Refund And Credit Lifecycle
@@ -264,6 +264,26 @@ token expired/invalid/wrong user/replaced -> safe error and retry/admin path
 To verify: token fields, expiry, reminder counters, ownership checks, replaced
 token rejection, and duplicate nomination prevention.
 
+## Lodge Induction Lifecycle
+
+Known induction statuses: `DRAFT`, `IN_PROGRESS`, `COMPLETED`, `VOIDED`.
+Known workflow kinds: `NEW_MEMBER`, `HUT_LEADER`, `YOUTH_TO_FULL`,
+`RE_INDUCTION`.
+
+```text
+admin/application creates induction -> assigned signers review checklist
+signer records overall Pass -> sign-off count increments
+required sign-offs reached -> COMPLETED
+admin override -> COMPLETED
+admin void -> VOIDED
+```
+
+Checklist templates are versioned and active per workflow kind, so a Hut Leader
+Induction can use different checklist wording from a New Member Induction.
+Completing a `HUT_LEADER` induction sets the member's hut-leader eligibility
+flag. Actual `HutLeaderAssignment` rows remain separate dated roster/coverage
+records and are not created by induction completion.
+
 ## Membership Cancellation, Archive, And Delete Lifecycle
 
 Known request statuses: `REQUESTED`, `APPROVED`, `REJECTED`, `WITHDRAWN`,
@@ -331,3 +351,18 @@ failure -> run/failure visible and retryable where business-critical
 
 To verify: which cron jobs record `CronJobRun`, exact statuses, stale queue
 health thresholds, and skipped-module reporting.
+
+## Two-Factor Login Lifecycle
+
+```text
+password accepted -> JWT session issued with twoFactorVerified=false
+module off -> session treated verified for normal routing
+module on + unenrolled -> protected layout redirects to /login/enroll
+module on + enrolled -> protected layout redirects to /login/verify
+valid TOTP/email/recovery code -> session update flips twoFactorVerified=true
+invalid attempts -> per-member counter increments -> 15 minute lockout after 5 failures
+```
+
+To verify: Auth.js JWT callback claim handling, protected route-group layout
+redirects, API guard rejection, email-code expiry, TOTP skew window, recovery
+code single-use consumption, and lockout reset after successful verification.

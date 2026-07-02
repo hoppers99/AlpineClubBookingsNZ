@@ -18,6 +18,7 @@ export const MODULE_KEYS = [
   "communications",
   "skifieldConditions",
   "multiLodge",
+  "twoFactor",
 ] as const;
 
 export type ModuleKey = (typeof MODULE_KEYS)[number];
@@ -47,6 +48,7 @@ export const DEFAULT_MODULE_SETTINGS: ModuleSettingsValues = {
   communications: true,
   skifieldConditions: true,
   multiLodge: false,
+  twoFactor: false,
 };
 
 export interface ModuleDefinition {
@@ -136,7 +138,7 @@ export const MODULE_DEFINITIONS: Record<ModuleKey, ModuleDefinition> = {
     key: "induction",
     label: "Lodge induction",
     description:
-      "New-member lodge induction checklists, self-assessment, and sponsor sign-off.",
+      "New-member and hut-leader induction checklists, assigned signers, and single-Pass sign-off.",
     dependencies: [
       "When off, inductions are no longer auto-created for newly approved members.",
     ],
@@ -183,6 +185,15 @@ export const MODULE_DEFINITIONS: Record<ModuleKey, ModuleDefinition> = {
       "Manage more than one lodge property. Enables the Lodges admin page; member-facing screens only change once a second active lodge exists.",
     dependencies: [
       "Cannot be turned off while more than one active lodge exists.",
+    ],
+  },
+  twoFactor: {
+    key: "twoFactor",
+    label: "Two-factor authentication",
+    description:
+      "Require members and admins to verify an authenticator app, email code, or recovery code after password login.",
+    dependencies: [
+      "Transactional email delivery should be configured before enabling email one-time codes.",
     ],
   },
 };

@@ -139,7 +139,8 @@ approval, Xero, settings, and status-label flow.
 The source of truth is `prisma/schema.prisma`. Key domains are:
 
 - Members, family groups, dependent relationships, nominations, membership
-  cancellation requests, setup invites, password/email tokens, notification
+  cancellation requests, setup invites, password/email tokens, two-factor
+  enrollment state, hashed email OTP/recovery-code rows, notification
   preferences, deletion requests, and audit logs.
 - Seasons, season rates, booking periods, minimum-stay policies, group
   discounts, age-tier settings, promo codes, fixed-nightly promo adjustments,
@@ -231,7 +232,9 @@ Admin pages cover member management, member CSV import, bookings, operational
 booking filters, bed allocation, payments, seasons, policies, refund requests,
 promo codes, communications, health, audit logs, reports, Xero operations and
 inbound-event drilldowns, committee data, issue reports, waitlist, lodge
-operations, hut leaders, and roster/chores.
+operations, hut leaders, and roster/chores. Lodge settings are a singleton
+record for lodge-wide operational defaults such as fallback capacity and the
+hut-leader lookahead window used by dashboard and Needs Attention warnings.
 
 Member CSV import allows distinct identities to share an email address while
 preserving the database invariant that only one member per email can have
@@ -292,10 +295,11 @@ positions with blurb, sort order, published, show-phone, contactable, and active
 flags. The public committee API reads only active, published assignments with
 active roles, never selects member email, returns phone only when show-phone is
 enabled, and exposes contact keys only for contactable assignments. The contact
-form resolves those assignment keys server-side to the role email alias or falls
-back to the club contact address; it does not deliver committee mail to the
-linked member's private email address. Committee contact email delivery stores
-an opaque committee-contact marker in EmailLog instead of the recipient address.
+form resolves those assignment keys server-side to the role email alias, then to
+the linked member's email when the role email is blank, and finally to the club
+contact address when no recipient email is available. Committee contact email
+delivery stores an opaque committee-contact marker in EmailLog instead of the
+recipient address.
 
 Membership cancellation is a member-initiated account lifecycle workflow.
 Requests can include the requester, dependants, non-login adults, and related

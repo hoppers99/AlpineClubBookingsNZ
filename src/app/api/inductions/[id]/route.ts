@@ -33,29 +33,30 @@ export async function GET(
   }
 
   const isInductee = induction.memberId === memberId;
-  const role = resolveSignerRole(ctx, induction.application);
+  const assignedIds = induction.assignedSigners.map((signer) => signer.memberId);
+  const role = resolveSignerRole(ctx, induction.application, assignedIds);
   if (!isInductee && !role) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   const eligibility = canSignOff(induction, ctx);
-
-  // Parse self-assessment JSON so the client receives a typed object
-  const selfAssessment = induction.selfAssessmentJson
-    ? (() => {
-        try {
-          return JSON.parse(induction.selfAssessmentJson) as Record<string, string>;
-        } catch {
-          return null;
-        }
-      })()
-    : null;
+  const safeInduction = {
+    ...induction,
+    member: {
+      id: induction.member.id,
+      firstName: induction.member.firstName,
+      lastName: induction.member.lastName,
+    },
+    assignedSigners: induction.assignedSigners.map((signer) => ({
+      memberId: signer.memberId,
+      firstName: signer.member.firstName,
+      lastName: signer.member.lastName,
+      emailSentAt: signer.emailSentAt,
+    })),
+  };
 
   return NextResponse.json({
-    induction: {
-      ...induction,
-      selfAssessment,
-    },
+    induction: safeInduction,
     declaration: INDUCTION_SIGN_OFF_DECLARATION,
     viewer: {
       isInductee,

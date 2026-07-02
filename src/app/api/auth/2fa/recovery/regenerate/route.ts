@@ -1,0 +1,39 @@
+import { NextRequest, NextResponse } from "next/server";
+import { applyRateLimit, rateLimiters } from "@/lib/rate-limit";
+import { replaceRecoveryCodes } from "@/lib/two-factor";
+import {
+  passwordChangeRequiredResponse,
+  requireTwoFactorApiSession,
+} from "@/lib/two-factor-api";
+
+export async function POST(request: NextRequest) {
+  const rateLimited = applyRateLimit(rateLimiters.twoFactorVerify, request);
+  if (rateLimited) return rateLimited;
+
+  const guard = await requireTwoFactorApiSession();
+  if (!guard.ok) return guard.response;
+
+  if (guard.member.forcePasswordChange) {
+    return passwordChangeRequiredResponse();
+  }
+
+  if (
+    guard.session.user.twoFactorRequired &&
+    !guard.session.user.twoFactorVerified
+  ) {
+    return NextResponse.json(
+      { error: "Two-factor verification required" },
+      { status: 403 },
+    );
+  }
+
+  if (!guard.member.twoFactorEnabled) {
+    return NextResponse.json(
+      { error: "Two-factor authentication is not enrolled" },
+      { status: 409 },
+    );
+  }
+
+  const recoveryCodes = await replaceRecoveryCodes(guard.member.id);
+  return NextResponse.json({ ok: true, recoveryCodes });
+}

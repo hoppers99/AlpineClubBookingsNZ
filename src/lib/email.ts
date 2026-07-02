@@ -32,6 +32,7 @@ import {
   adminXeroReconciliationReportTemplate,
   adminPasswordResetTemplate,
   memberSetupInviteTemplate,
+  twoFactorCodeTemplate,
   bookingModifiedTemplate,
   accountDeletionApprovedTemplate,
   accountDeletionRejectedTemplate,
@@ -165,6 +166,7 @@ const SENSITIVE_EMAIL_LOG_TEMPLATES = new Set([
   "member-setup-invite",
   "email-verification",
   "email-change-verification",
+  "two-factor-code",
   "age-up-invitation",
   "nomination-request",
   "membership-application-approved",
@@ -562,6 +564,25 @@ export async function sendMemberSetupInviteEmail(
       token,
       resetUrl,
       expiryLabel: `${MEMBER_SETUP_INVITE_TTL_DAYS} days`,
+    },
+  });
+}
+
+export async function sendTwoFactorCodeEmail(params: {
+  email: string;
+  firstName: string;
+  code: string;
+  expiresAt: Date;
+}) {
+  await sendEmail({
+    to: params.email,
+    subject: `Your ${CLUB_NAME} two-factor code`,
+    html: twoFactorCodeTemplate(params),
+    templateName: "two-factor-code",
+    templateData: {
+      firstName: params.firstName,
+      code: params.code,
+      expiresAt: formatNZDateTime(params.expiresAt),
     },
   });
 }

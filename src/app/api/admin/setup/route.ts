@@ -44,6 +44,7 @@ async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot> {
         communications: true,
         skifieldConditions: true,
         multiLodge: true,
+        twoFactor: true,
       },
     }),
     prisma.ageTierSetting.count(),

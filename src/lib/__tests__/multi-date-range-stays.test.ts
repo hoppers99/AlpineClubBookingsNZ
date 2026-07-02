@@ -267,6 +267,7 @@ describe("bed-allocation pruning by night set", () => {
     hutLeaders: true,
     communications: true,
     skifieldConditions: true,
+    twoFactor: false,
   };
 
   it("prunes allocations on nights a guest is not staying (gaps included)", async () => {

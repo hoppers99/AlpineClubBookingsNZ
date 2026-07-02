@@ -6,6 +6,7 @@ import {
   loadFinanceAccessMember,
   type FinanceAccessMember,
 } from "@/lib/finance-auth";
+import { isTwoFactorSessionBlocked } from "@/lib/two-factor-gate";
 
 type FinanceApiAuthSuccess = {
   ok: true;
@@ -59,6 +60,21 @@ async function requireFinanceApiAccess(input: {
       response: NextResponse.json(
         { error: "Password change required" },
         { status: 403 }
+      ),
+    };
+  }
+
+  if (
+    isTwoFactorSessionBlocked({
+      sessionUser: session.user,
+      member,
+    })
+  ) {
+    return {
+      ok: false,
+      response: NextResponse.json(
+        { error: "Two-factor verification required" },
+        { status: 403 },
       ),
     };
   }

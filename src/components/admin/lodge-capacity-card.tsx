@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Loader2, Save } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -12,9 +12,11 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useScrollToFeedback } from "@/hooks/use-scroll-to-feedback";
 
 interface LodgeSettingsResponse {
   capacity: number | null;
+  hutLeaderLookaheadDays: number;
   clubConfigCapacity: number;
 }
 
@@ -22,11 +24,15 @@ export function LodgeCapacityCard() {
   const [clubConfigCapacity, setClubConfigCapacity] = useState<number | null>(
     null,
   );
-  const [value, setValue] = useState("");
+  const [capacityValue, setCapacityValue] = useState("");
+  const [hutLeaderLookaheadValue, setHutLeaderLookaheadValue] = useState("14");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [savedMessage, setSavedMessage] = useState("");
+  const cardRef = useRef<HTMLDivElement>(null);
+  const feedbackRef = useRef<HTMLDivElement>(null);
+  const { scrollToError, scrollToTop } = useScrollToFeedback();
 
   async function load() {
     setLoading(true);
@@ -35,12 +41,13 @@ export function LodgeCapacityCard() {
       const response = await fetch("/api/admin/lodge-settings", {
         credentials: "same-origin",
       });
-      if (!response.ok) throw new Error("Failed to load lodge capacity");
+      if (!response.ok) throw new Error("Failed to load lodge settings");
       const body = (await response.json()) as LodgeSettingsResponse;
       setClubConfigCapacity(body.clubConfigCapacity);
-      setValue(body.capacity === null ? "" : String(body.capacity));
+      setCapacityValue(body.capacity === null ? "" : String(body.capacity));
+      setHutLeaderLookaheadValue(String(body.hutLeaderLookaheadDays));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load lodge capacity");
+      setError(err instanceof Error ? err.message : "Failed to load lodge settings");
     } finally {
       setLoading(false);
     }
@@ -50,12 +57,20 @@ export function LodgeCapacityCard() {
     void load();
   }, []);
 
+  useEffect(() => {
+    if (error) scrollToError(feedbackRef);
+  }, [error, scrollToError]);
+
+  useEffect(() => {
+    if (savedMessage) scrollToTop(cardRef);
+  }, [savedMessage, scrollToTop]);
+
   async function save() {
     setSaving(true);
     setError("");
     setSavedMessage("");
 
-    const trimmed = value.trim();
+    const trimmed = capacityValue.trim();
     let capacity: number | null = null;
     if (trimmed !== "") {
       const parsed = Number(trimmed);
@@ -67,45 +82,55 @@ export function LodgeCapacityCard() {
       capacity = parsed;
     }
 
+    const hutLeaderLookaheadDays = Number(hutLeaderLookaheadValue.trim());
+    if (
+      !Number.isInteger(hutLeaderLookaheadDays) ||
+      hutLeaderLookaheadDays < 1 ||
+      hutLeaderLookaheadDays > 365
+    ) {
+      setError("Enter a hut-leader lookahead between 1 and 365 days.");
+      setSaving(false);
+      return;
+    }
+
     try {
       const response = await fetch("/api/admin/lodge-settings", {
         method: "PUT",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ capacity }),
+        body: JSON.stringify({ capacity, hutLeaderLookaheadDays }),
       });
-      if (!response.ok) throw new Error("Failed to save lodge capacity");
+      if (!response.ok) throw new Error("Failed to save lodge settings");
       const body = (await response.json()) as LodgeSettingsResponse;
       setClubConfigCapacity(body.clubConfigCapacity);
-      setValue(body.capacity === null ? "" : String(body.capacity));
-      setSavedMessage(
-        capacity === null
-          ? "Lodge capacity reset to the club default."
-          : "Lodge capacity saved.",
-      );
+      setCapacityValue(body.capacity === null ? "" : String(body.capacity));
+      setHutLeaderLookaheadValue(String(body.hutLeaderLookaheadDays));
+      setSavedMessage("Lodge settings saved.");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save lodge capacity");
+      setError(err instanceof Error ? err.message : "Failed to save lodge settings");
     } finally {
       setSaving(false);
     }
   }
 
   return (
-    <Card>
+    <Card ref={cardRef}>
       <CardHeader>
-        <CardTitle className="text-lg">Lodge capacity</CardTitle>
+        <CardTitle className="text-lg">Lodge settings</CardTitle>
         <CardDescription>
-          The total number of guests the lodge can hold. This is used as the
-          fallback capacity for bookings. When the Bed Allocation module is on
-          and beds are configured, the live bed count is used instead.
+          Set the fallback lodge capacity and how far ahead hut-leader coverage
+          is checked for dashboard and Needs Attention warnings.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         {(error || savedMessage) && (
           <div
+            ref={feedbackRef}
+            role={error ? "alert" : "status"}
+            tabIndex={error ? -1 : undefined}
             className={
               error
-                ? "rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800"
+                ? "scroll-mt-20 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800 focus:outline-none"
                 : "rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-800"
             }
           >
@@ -127,9 +152,28 @@ export function LodgeCapacityCard() {
                   ? "Default"
                   : `Default: ${clubConfigCapacity}`
               }
-              value={value}
+              value={capacityValue}
               onChange={(event) => {
-                setValue(event.target.value);
+                setCapacityValue(event.target.value);
+                setSavedMessage("");
+              }}
+              disabled={loading || saving}
+            />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="hut-leader-lookahead">
+              Hut-leader lookahead (days)
+            </Label>
+            <Input
+              id="hut-leader-lookahead"
+              type="number"
+              min={1}
+              max={365}
+              inputMode="numeric"
+              className="w-44"
+              value={hutLeaderLookaheadValue}
+              onChange={(event) => {
+                setHutLeaderLookaheadValue(event.target.value);
                 setSavedMessage("");
               }}
               disabled={loading || saving}
@@ -146,8 +190,10 @@ export function LodgeCapacityCard() {
         </div>
 
         <p className="text-xs text-slate-500">
-          Leave blank to use the club default
-          {clubConfigCapacity === null ? "" : ` (${clubConfigCapacity})`}.
+          Leave capacity blank to use the club default
+          {clubConfigCapacity === null ? "" : ` (${clubConfigCapacity})`}. Hut
+          leader warnings include unassigned dates from today through the
+          configured lookahead.
         </p>
       </CardContent>
     </Card>

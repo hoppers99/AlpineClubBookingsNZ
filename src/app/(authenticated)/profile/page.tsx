@@ -16,6 +16,7 @@ import { AccountCreditSection } from "./account-credit-section";
 import { DataExportButton } from "./data-export-button";
 import { DeleteAccountButton } from "./delete-account-button";
 import { MembershipCancellationPanel } from "./membership-cancellation-panel";
+import { TwoFactorSecurityCard } from "./two-factor-security-card";
 import { AuditTimeline } from "@/components/audit-timeline";
 import {
   Card,
@@ -132,6 +133,8 @@ export default async function ProfilePage({
       active: true,
       createdAt: true,
       passwordChangedAt: true,
+      twoFactorEnabled: true,
+      twoFactorMethod: true,
       canLogin: true,
       familyGroupMemberships: {
         select: {
@@ -313,6 +316,10 @@ export default async function ProfilePage({
               <Link href="/change-password">Change Password</Link>
             </Button>
           </div>
+          <TwoFactorSecurityCard
+            enabled={member.twoFactorEnabled}
+            method={member.twoFactorMethod}
+          />
         </CardContent>
       </Card>
 

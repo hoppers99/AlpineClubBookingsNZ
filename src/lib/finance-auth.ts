@@ -10,6 +10,10 @@ import {
 } from "@/lib/access-roles";
 import { buildLoginPath } from "@/lib/auth-redirect";
 import { prisma } from "@/lib/prisma";
+import {
+  buildTwoFactorGatePath,
+  isTwoFactorSessionBlocked,
+} from "@/lib/two-factor-gate";
 
 export type FinanceAccessMember = {
   id: string;
@@ -20,6 +24,7 @@ export type FinanceAccessMember = {
   accessRoles: Array<{ role: AppAccessRole }>;
   active: boolean;
   forcePasswordChange: boolean;
+  twoFactorEnabled: boolean;
 };
 
 export function hasFinanceViewerAccess(input: AccessRoleInput) {
@@ -44,6 +49,7 @@ export async function loadFinanceAccessMember(
       accessRoles: { select: { role: true } },
       active: true,
       forcePasswordChange: true,
+      twoFactorEnabled: true,
     },
   });
 }
@@ -65,6 +71,21 @@ export async function requireFinanceViewer(
 
   if (member.forcePasswordChange) {
     redirect("/change-password");
+  }
+
+  if (
+    isTwoFactorSessionBlocked({
+      sessionUser: session.user,
+      member,
+    })
+  ) {
+    redirect(
+      buildTwoFactorGatePath({
+        sessionUser: session.user,
+        member,
+        callbackPath,
+      }),
+    );
   }
 
   if (!hasFinanceViewerAccess(member)) {

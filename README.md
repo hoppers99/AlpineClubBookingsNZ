@@ -22,7 +22,7 @@ fork for another organisation. See `NOTICE.md`.
   Banking invoice payments
 - Admin tools for members, shared-email-aware CSV import, bookings, bed
   allocation, payments, seasons, policies, reports, email, audit logs, issue
-  reports, waitlist, lodge, Xero operations, and hut leaders
+  reports, waitlist, lodge settings, Xero operations, and hut leaders
 - Admin-editable public website pages with sanitised HTML content, embed
   tokens for interactive sections, and a menu generated from page settings
   (see `CONFIGURATION.md`, "Website Page Content")
@@ -66,9 +66,9 @@ fork for another organisation. See `NOTICE.md`.
    run the seed command, then change the seeded admin password on first login.
 5. After sign-in, use **Admin > Modules** to set club-level activation for
    optional modules. Kiosk, chores, finance dashboard, waitlist, Xero, bed
-   allocation, Internet Banking payments, and address autocomplete default off
-   until an admin enables them. General-purpose modules default on and can be
-   disabled there.
+   allocation, Internet Banking payments, address autocomplete, and two-factor
+   authentication default off until an admin enables them. General-purpose
+   modules default on and can be disabled there.
 6. Use **Admin > Membership Types** to review the seeded seasonal membership
    types: Full, Associate, Life, School, Non-Member, and Family. Associate is
    the built-in Associate/Reserve-style type and can be renamed by the club.
@@ -85,9 +85,9 @@ fork for another organisation. See `NOTICE.md`.
    member-linked committee assignments. Assignments remain hidden/unpublished
    until an admin explicitly enables their presentation flags; public contact
    options use only published, contactable assignments and deliver to the
-   role email alias configured on the master role. Linked member email
-   addresses are not used for committee contact delivery, and phone numbers
-   display only when **show phone** is enabled.
+   role email alias configured on the master role, or to the linked member's
+   personal email when the role email is blank. Phone numbers display only when
+   **show phone** is enabled.
 8. Use test/demo credentials for Stripe, Xero, SES, and Sentry until you are
    ready for a controlled deployment of your own environment.
 

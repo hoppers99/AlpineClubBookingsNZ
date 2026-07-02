@@ -6,6 +6,11 @@ import { clubIdentity } from "@/config/club-identity";
 import { CSP_NONCE_HEADER } from "@/lib/csp";
 import { getDefaultLodgeCapacity } from "@/lib/lodge-capacity";
 import { prisma } from "@/lib/prisma";
+import { REQUEST_PATH_HEADER } from "@/lib/internal-return-path";
+import {
+  buildTwoFactorGatePath,
+  isTwoFactorSessionBlocked,
+} from "@/lib/two-factor-gate";
 
 export default async function LodgeLayout({
   children,
@@ -13,6 +18,7 @@ export default async function LodgeLayout({
   children: React.ReactNode;
 }) {
   const session = await auth();
+  const requestHeaders = await headers();
 
   if (!session?.user) {
     redirect(`/login?callbackUrl=${encodeURIComponent("/lodge/kiosk")}`);
@@ -23,6 +29,7 @@ export default async function LodgeLayout({
     select: {
       active: true,
       forcePasswordChange: true,
+      twoFactorEnabled: true,
     },
   });
 
@@ -34,9 +41,26 @@ export default async function LodgeLayout({
     redirect("/change-password");
   }
 
+  const requestedPath =
+    requestHeaders.get(REQUEST_PATH_HEADER) ?? "/lodge/kiosk";
+  if (
+    isTwoFactorSessionBlocked({
+      sessionUser: session.user,
+      member,
+    })
+  ) {
+    redirect(
+      buildTwoFactorGatePath({
+        sessionUser: session.user,
+        member,
+        callbackPath: requestedPath,
+      }),
+    );
+  }
+
   const lodgeCapacity = await getDefaultLodgeCapacity();
   const liveClubIdentity = { ...clubIdentity, lodgeCapacity };
-  const nonce = (await headers()).get(CSP_NONCE_HEADER) ?? undefined;
+  const nonce = requestHeaders.get(CSP_NONCE_HEADER) ?? undefined;
 
   return (
     <AppProviders clubIdentity={liveClubIdentity} nonce={nonce}>

@@ -10,6 +10,7 @@ import {
   isAccessRole,
   type AppAccessRole,
 } from "./access-roles";
+import { loadEffectiveModuleFlags } from "./module-settings";
 
 class EmailNotVerifiedError extends CredentialsSignin {
   code = "EMAIL_NOT_VERIFIED";
@@ -26,6 +27,8 @@ const SESSION_MEMBER_SECURITY_SELECT = {
   forcePasswordChange: true,
   emailVerified: true,
   passwordChangedAt: true,
+  twoFactorEnabled: true,
+  twoFactorMethod: true,
   accessRoles: { select: { role: true } },
 } as const;
 
@@ -47,12 +50,18 @@ declare module "next-auth" {
       forcePasswordChange: boolean;
       isEmailVerified: boolean;
       sessionInvalidated?: boolean;
+      twoFactorRequired: boolean;
+      twoFactorVerified: boolean;
+      twoFactorEnrolled: boolean;
+      twoFactorMethod: "TOTP" | "EMAIL" | null;
     };
   }
   interface User {
     role: AppRole;
     forcePasswordChange: boolean;
     isEmailVerified: boolean;
+    twoFactorEnabled: boolean;
+    twoFactorMethod: "TOTP" | "EMAIL" | null;
   }
 }
 
@@ -131,12 +140,14 @@ export const authConfig = {
           role: member.role,
           forcePasswordChange: member.forcePasswordChange,
           isEmailVerified: member.emailVerified,
+          twoFactorEnabled: member.twoFactorEnabled,
+          twoFactorMethod: member.twoFactorMethod,
         };
       },
     }),
   ],
   callbacks: {
-    async jwt({ token, user }) {
+    async jwt({ token, user, trigger, session }) {
       if (user) {
         token.role = user.role;
         token.accessRoles = [];
@@ -145,6 +156,24 @@ export const authConfig = {
         token.isEmailVerified = user.isEmailVerified;
         token.sessionIssuedAt = Date.now();
         token.sessionInvalidated = false;
+        token.twoFactorVerified = false;
+        token.twoFactorVerifiedByChallenge = false;
+        token.twoFactorEnrolled = user.twoFactorEnabled;
+        token.twoFactorMethod = user.twoFactorMethod;
+      }
+
+      if (
+        trigger === "update" &&
+        typeof session === "object" &&
+        session !== null &&
+        "user" in session &&
+        typeof session.user === "object" &&
+        session.user !== null &&
+        "twoFactorVerified" in session.user &&
+        session.user.twoFactorVerified === true
+      ) {
+        token.twoFactorVerified = true;
+        token.twoFactorVerifiedByChallenge = true;
       }
 
       const sessionIssuedAt = getTokenSessionIssuedAtMs(token);
@@ -156,6 +185,9 @@ export const authConfig = {
         const member = await loadSessionMemberSecurity(token.id);
 
         if (member) {
+          const modules = await loadEffectiveModuleFlags();
+          const twoFactorRequired = modules.twoFactor === true;
+
           token.role = member.role;
           token.accessRoles = member.accessRoles.map(({ role }) => role);
           token.forcePasswordChange = member.forcePasswordChange;
@@ -163,6 +195,23 @@ export const authConfig = {
           token.sessionInvalidated =
             member.passwordChangedAt instanceof Date &&
             member.passwordChangedAt.getTime() > sessionIssuedAt;
+          token.twoFactorRequired = twoFactorRequired;
+          token.twoFactorEnrolled = member.twoFactorEnabled;
+          token.twoFactorMethod = member.twoFactorMethod ?? null;
+          if (!twoFactorRequired) {
+            token.twoFactorVerified = true;
+          } else if (!member.twoFactorEnabled) {
+            token.twoFactorVerified = false;
+            token.twoFactorVerifiedByChallenge = false;
+          } else if (user) {
+            token.twoFactorVerified = false;
+            token.twoFactorVerifiedByChallenge = false;
+          } else {
+            const verifiedByChallenge =
+              token.twoFactorVerifiedByChallenge === true;
+            token.twoFactorVerified = verifiedByChallenge;
+            token.twoFactorVerifiedByChallenge = verifiedByChallenge;
+          }
           // Lodge access accounts get 30-day sessions for shared iPad kiosk.
           if (user && hasAccessRole(member, "LODGE")) {
             token.exp = Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60;
@@ -184,6 +233,13 @@ export const authConfig = {
       session.user.forcePasswordChange = token.forcePasswordChange as boolean;
       session.user.isEmailVerified = token.isEmailVerified as boolean;
       session.user.sessionInvalidated = Boolean(token.sessionInvalidated);
+      session.user.twoFactorRequired = Boolean(token.twoFactorRequired);
+      session.user.twoFactorVerified = Boolean(token.twoFactorVerified);
+      session.user.twoFactorEnrolled = Boolean(token.twoFactorEnrolled);
+      session.user.twoFactorMethod =
+        token.twoFactorMethod === "TOTP" || token.twoFactorMethod === "EMAIL"
+          ? token.twoFactorMethod
+          : null;
       return session;
     },
   },
@@ -198,7 +254,8 @@ export const authConfig = {
 
 const nextAuth = NextAuth(authConfig);
 
-export const { handlers, signIn, signOut } = nextAuth;
+export const { handlers, signIn, signOut, unstable_update: updateSession } =
+  nextAuth;
 
 export async function auth() {
   const session = await nextAuth.auth();

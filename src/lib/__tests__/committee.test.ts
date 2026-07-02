@@ -777,6 +777,7 @@ describe("Contact API - recipient lookup from database", () => {
     const { POST } = await import("@/app/api/contact/route");
     vi.mocked(prisma.committeeAssignment.findFirst).mockResolvedValue({
       committeeRole: { name: "President", contactEmail: "president@example.org" },
+      member: { email: "member@example.org" },
     } as any);
 
     const req = new Request("http://localhost/api/contact", {
@@ -804,6 +805,7 @@ describe("Contact API - recipient lookup from database", () => {
       },
       select: {
         committeeRole: { select: { name: true, contactEmail: true } },
+        member: { select: { email: true } },
       },
     });
 
@@ -847,10 +849,41 @@ describe("Contact API - recipient lookup from database", () => {
     );
   });
 
-  it("falls back to CONTACT_EMAIL when a contactable role has no alias email", async () => {
+  it("falls back to the assigned member email when a contactable role has no alias email", async () => {
     const { POST } = await import("@/app/api/contact/route");
     vi.mocked(prisma.committeeAssignment.findFirst).mockResolvedValue({
       committeeRole: { name: "President", contactEmail: null },
+      member: { email: "member@example.org" },
+    } as any);
+
+    const req = new Request("http://localhost/api/contact", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "Test User",
+        email: "test@example.com",
+        message: "Hello",
+        recipient: "assign1",
+      }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+
+    expect(sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "member@example.org",
+        subject: "Website Contact (to President): Test User",
+        logRecipient: "committee-contact:assign1",
+      })
+    );
+  });
+
+  it("falls back to CONTACT_EMAIL when a contactable assignment has no role or member email", async () => {
+    const { POST } = await import("@/app/api/contact/route");
+    vi.mocked(prisma.committeeAssignment.findFirst).mockResolvedValue({
+      committeeRole: { name: "President", contactEmail: null },
+      member: { email: null },
     } as any);
 
     const req = new Request("http://localhost/api/contact", {
@@ -882,6 +915,7 @@ describe("Contact API - recipient lookup from database", () => {
         name: "President\r\nBcc: attacker@example.org",
         contactEmail: "president@example.org",
       },
+      member: { email: "member@example.org" },
     } as any);
 
     const req = new Request("http://localhost/api/contact", {

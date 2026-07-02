@@ -2,12 +2,20 @@ import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { hasAdminAccess, type AppAccessRole } from "@/lib/access-roles";
 import { prisma } from "@/lib/prisma";
+import {
+  isTwoFactorSessionBlocked,
+  type TwoFactorSessionUser,
+} from "@/lib/two-factor-gate";
 
 type SessionUser = {
   id: string;
   role: string;
   accessRoles: AppAccessRole[];
   email?: string | null;
+  twoFactorRequired?: boolean;
+  twoFactorVerified?: boolean;
+  twoFactorEnrolled?: boolean;
+  twoFactorMethod?: "TOTP" | "EMAIL" | null;
 };
 
 type RequireAdminResult =
@@ -39,6 +47,13 @@ function forbiddenResponse() {
   return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 }
 
+function twoFactorRequiredResponse() {
+  return NextResponse.json(
+    { error: "Two-factor verification required" },
+    { status: 403 },
+  );
+}
+
 /**
  * Shared admin auth helper. Returns the session on success; otherwise
  * a NextResponse with the correct 401 vs 403 split and the active
@@ -64,6 +79,7 @@ export async function requireAdmin(
     select: {
       active: true,
       forcePasswordChange: true,
+      twoFactorEnabled: true,
       accessRoles: { select: { role: true } },
     },
   });
@@ -95,11 +111,21 @@ export async function requireAdmin(
     };
   }
 
+  if (
+    isTwoFactorSessionBlocked({
+      sessionUser: session.user,
+      member,
+    })
+  ) {
+    return { ok: false, response: twoFactorRequiredResponse() };
+  }
+
   return { ok: true, session: { user: session.user as SessionUser } };
 }
 
 type RequireActiveSessionUserOptions = {
   allowForcePasswordChange?: boolean;
+  sessionUser?: TwoFactorSessionUser | null;
 };
 
 /**
@@ -120,6 +146,7 @@ export async function requireActiveSession(
 
   const inactive = await requireActiveSessionUser(session.user.id, {
     allowForcePasswordChange: options.allowForcePasswordChange,
+    sessionUser: session.user,
   });
   if (inactive) {
     return { ok: false, response: inactive };
@@ -137,6 +164,7 @@ export async function requireActiveSessionUser(
     select: {
       active: true,
       forcePasswordChange: true,
+      twoFactorEnabled: true,
     },
   });
 
@@ -152,6 +180,18 @@ export async function requireActiveSessionUser(
       { error: "Password change required" },
       { status: 403 }
     );
+  }
+
+  const sessionUser = options.sessionUser ?? (await auth())?.user;
+  if (
+    sessionUser?.id === userId &&
+    isTwoFactorSessionBlocked({
+      sessionUser,
+      member,
+      allowForcePasswordChange: options.allowForcePasswordChange,
+    })
+  ) {
+    return twoFactorRequiredResponse();
   }
 
   return null;

@@ -135,6 +135,7 @@ export const featureFlagsSchema = z
     communications: z.boolean(),
     skifieldConditions: z.boolean(),
     multiLodge: z.boolean(),
+    twoFactor: z.boolean(),
   })
   .strict();
 

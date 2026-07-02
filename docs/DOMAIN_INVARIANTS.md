@@ -87,18 +87,34 @@ only. Do not add committee positions to access roles or `Member.role`.
 active/inactive independently of access role and seasonal membership type, and
 newly linked assignments are hidden until explicitly published by an admin.
 Committee contact routing uses the role email alias stored on `CommitteeRole`,
-not the linked member's private email address. Booking pricing, booking block
-checks, and effective subscription lockout may depend on the member's seasonal
-membership type for the
+falling back to the linked member's email only when the role email is blank.
+Booking pricing, booking block checks, and effective subscription lockout may
+depend on the member's seasonal membership type for the
 booking season; application access and committee presentation must not.
 Seasonal membership type changes require a guarded admin preview and reasoned
 audit record. Existing future bookings are not automatically repriced by a type
 change, and raw subscription, payment, and Xero history must remain intact even
 when the effective subscription status is `NOT_REQUIRED`.
 
+When the global two-factor module is enabled, password login is not sufficient
+for protected app access. The Auth.js JWT must carry `twoFactorVerified=false`
+until a server-side two-factor verification or enrollment endpoint flips it.
+Route-group layouts and API guards must enforce that claim; login form code
+must not be the only 2FA gate. TOTP secrets, email OTP codes, and recovery
+codes must never be stored in plaintext.
+
 Pending nomination states must have an expiry, reminder, admin refresh,
 replacement, rejection, or other documented recovery path so applications do
 not remain permanently blocked by stale action links.
+
+Lodge induction sign-off is a single overall Pass per signer. Checklist items
+remain the reference material for the induction, but runtime sign-off does not
+store per-item Yes/No/N/A results or member self-assessment levels. New-member
+inductions created from approved applications should explicitly assign the
+application nominators as signers while preserving the application nominator
+fallback for historical records. Completing a Hut Leader Induction sets
+`Member.hutLeaderEligible`; it does not create or date a `HutLeaderAssignment`,
+which remains an admin-controlled roster/coverage record.
 
 Hard delete must remain limited to records that pass the eligibility checks for
 no durable booking, financial, family, Xero, or membership-history blockers.

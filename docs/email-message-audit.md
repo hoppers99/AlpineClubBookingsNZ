@@ -371,7 +371,6 @@ We apologise for the inconvenience.
 
 Triggers and frequency:
 
-- `sendBumpedNotifications()` after a member booking bumps one or more pending bookings to restore capacity.
 - Pending-booking cron every 3 hours when a pending booking reaches its hold deadline and capacity is no longer available.
 - One email per bumped booking.
 
@@ -1767,7 +1766,7 @@ View Bookings: {{BASE_URL}}/admin/bookings
 
 Triggers and frequency:
 
-- Sent to opted-in admins from `sendBumpedNotifications()` after a pending booking is bumped by a member booking.
+- Sent to opted-in admins by the pending-booking cron after a pending booking is bumped.
 - One alert event per bumped booking.
 
 ### admin-capacity-warning
@@ -2178,8 +2177,9 @@ Triggers and frequency:
 
 - `POST /api/contact`.
 - Sends to `CONTACT_EMAIL` or a published, active, contactable committee
-  assignment matching `recipient`; committee-routed app logs use an opaque
-  recipient marker instead of the private member email.
+  assignment matching `recipient`; committee delivery uses the role email first
+  and the linked member email when the role email is blank. Committee-routed app
+  logs use an opaque recipient marker instead of the private member email.
 - Actual rate limiter is 10 requests per hour. The route comment says 5 per hour, but the configured limiter is 10 per hour.
 - This message does not use the common branded layout.
 

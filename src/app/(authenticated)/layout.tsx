@@ -21,6 +21,10 @@ import {
   MEMBER_ONBOARDING_GATE_SELECT,
   shouldShowMemberOnboarding,
 } from "@/lib/member-onboarding";
+import {
+  buildTwoFactorGatePath,
+  isTwoFactorSessionBlocked,
+} from "@/lib/two-factor-gate";
 
 export default async function AuthenticatedLayout({
   children,
@@ -28,11 +32,12 @@ export default async function AuthenticatedLayout({
   children: React.ReactNode;
 }) {
   const session = await auth();
+  const requestHeaders = await headers();
 
   if (!session?.user) {
     // Send the visitor to login, preserving where they were headed so they
     // return there after signing in.
-    const requestedPath = (await headers()).get(REQUEST_PATH_HEADER);
+    const requestedPath = requestHeaders.get(REQUEST_PATH_HEADER);
     redirect(buildLoginPath(requestedPath));
   }
 
@@ -49,6 +54,22 @@ export default async function AuthenticatedLayout({
 
   if (member.forcePasswordChange) {
     redirect("/change-password");
+  }
+
+  const requestedPath = requestHeaders.get(REQUEST_PATH_HEADER);
+  if (
+    isTwoFactorSessionBlocked({
+      sessionUser: session.user,
+      member,
+    })
+  ) {
+    redirect(
+      buildTwoFactorGatePath({
+        sessionUser: session.user,
+        member,
+        callbackPath: requestedPath,
+      }),
+    );
   }
 
   // Lodge-only accounts can only access /lodge/* routes. Combined access-role
@@ -104,7 +125,7 @@ export default async function AuthenticatedLayout({
     getDefaultLodgeCapacity(),
   ]);
   const liveClubIdentity = { ...clubIdentity, lodgeCapacity };
-  const nonce = (await headers()).get(CSP_NONCE_HEADER) ?? undefined;
+  const nonce = requestHeaders.get(CSP_NONCE_HEADER) ?? undefined;
 
   return (
     <AppProviders clubIdentity={liveClubIdentity} nonce={nonce}>

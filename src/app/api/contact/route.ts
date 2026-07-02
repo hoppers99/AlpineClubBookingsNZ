@@ -36,6 +36,7 @@ async function resolveCommitteeRecipient(recipient: string) {
     },
     select: {
       committeeRole: { select: { name: true, contactEmail: true } },
+      member: { select: { email: true } },
     },
   });
 }
@@ -79,8 +80,11 @@ export async function POST(request: Request) {
         recipientLabel = buildRecipientLabel(
           committeeAssignment.committeeRole.name,
         );
-        if (committeeAssignment.committeeRole.contactEmail) {
-          toEmail = committeeAssignment.committeeRole.contactEmail;
+        const committeeRecipientEmail =
+          committeeAssignment.committeeRole.contactEmail?.trim() ||
+          committeeAssignment.member.email?.trim();
+        if (committeeRecipientEmail) {
+          toEmail = committeeRecipientEmail;
           logRecipient = `committee-contact:${recipient}`;
         }
       }

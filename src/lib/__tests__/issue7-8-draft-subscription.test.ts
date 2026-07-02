@@ -132,11 +132,6 @@ vi.mock("@/lib/capacity", () => ({
   LODGE_CAPACITY: 29,
 }));
 
-vi.mock("@/lib/bumping", () => ({
-  bumpPendingBookings: vi.fn(),
-  sendBumpedNotifications: vi.fn(),
-}));
-
 vi.mock("@/lib/promo", () => ({
   validatePromoCodeRules: vi.fn().mockReturnValue(null),
   validateAndCalculatePromoDiscount: vi.fn().mockResolvedValue({

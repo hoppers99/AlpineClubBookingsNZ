@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -20,6 +20,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { useScrollToFeedback } from "@/hooks/use-scroll-to-feedback";
 
 interface LegacyCommitteeMember {
   id: string;
@@ -111,6 +112,10 @@ function responseErrorMessage(body: unknown, fallback: string) {
   return fallback;
 }
 
+function assignmentEffectiveEmail(assignment: CommitteeAssignment) {
+  return assignment.committeeRole.contactEmail || assignment.member.email;
+}
+
 function VisibilityBadge({ visible }: { visible: boolean }) {
   return visible ? (
     <Badge className="border-green-200 bg-green-100 text-green-800">
@@ -134,6 +139,9 @@ export default function CommitteePage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const pageRef = useRef<HTMLDivElement>(null);
+  const errorRef = useRef<HTMLDivElement>(null);
+  const { scrollToError, scrollToTop } = useScrollToFeedback();
 
   const [showLegacyForm, setShowLegacyForm] = useState(false);
   const [editingLegacyId, setEditingLegacyId] = useState<string | null>(null);
@@ -202,6 +210,10 @@ export default function CommitteePage() {
   useEffect(() => {
     void fetchCommitteeData();
   }, [fetchCommitteeData]);
+
+  useEffect(() => {
+    if (error) scrollToError(errorRef);
+  }, [error, scrollToError]);
 
   function openAddLegacyForm() {
     setEditingLegacyId(null);
@@ -316,6 +328,7 @@ export default function CommitteePage() {
       }
       closeLegacyForm();
       await fetchCommitteeData();
+      scrollToTop(pageRef);
     } catch (saveError) {
       setError(
         saveError instanceof Error
@@ -356,6 +369,7 @@ export default function CommitteePage() {
       }
       closeRoleForm();
       await fetchCommitteeData();
+      scrollToTop(pageRef);
     } catch (saveError) {
       setError(
         saveError instanceof Error ? saveError.message : "Failed to save role",
@@ -396,6 +410,7 @@ export default function CommitteePage() {
       }
       closeAssignmentForm();
       await fetchCommitteeData();
+      scrollToTop(pageRef);
     } catch (saveError) {
       setError(
         saveError instanceof Error
@@ -480,7 +495,7 @@ export default function CommitteePage() {
   ).length;
 
   return (
-    <div className="space-y-6">
+    <div ref={pageRef} className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Committee</h1>
@@ -499,7 +514,12 @@ export default function CommitteePage() {
       </div>
 
       {error ? (
-        <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+        <div
+          ref={errorRef}
+          role="alert"
+          tabIndex={-1}
+          className="scroll-mt-20 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700 focus:outline-none"
+        >
           {error}
         </div>
       ) : null}
@@ -511,7 +531,7 @@ export default function CommitteePage() {
             <p className="mt-1 text-sm text-slate-500">
               Master roles are reusable positions for member-linked committee
               assignments. Role email aliases route contact-form messages;
-              linked members supply the public name and optional phone only.
+              linked member emails are used only when a role email is blank.
             </p>
           </div>
           <Button onClick={openAddRoleForm}>
@@ -706,7 +726,8 @@ export default function CommitteePage() {
           <p className="mt-1 text-sm text-slate-500">
             Assign members from their member detail page. Published assignments
             now power the public committee and contact-form recipient lists;
-            contact-form messages use the role email alias.
+            contact-form messages use the role email alias or the linked
+            member email when the role email is blank.
           </p>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -732,77 +753,81 @@ export default function CommitteePage() {
                 </tr>
               </thead>
               <tbody>
-                {assignments.map((assignment) => (
-                  <tr
-                    key={assignment.id}
-                    className={`border-b ${
-                      assignment.isActive ? "" : "opacity-60"
-                    }`}
-                  >
-                    <td className="px-4 py-3">
-                      <div className="font-medium text-slate-900">
-                        {assignment.member.displayName}
-                      </div>
-                      <div className="text-xs text-slate-500">
-                        {assignment.member.email}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="font-medium text-blue-600">
-                        {assignment.committeeRole.name}
-                      </div>
-                      {assignment.committeeRole.contactEmail ? (
-                        <div className="mt-1 text-xs text-slate-500">
-                          Contact: {assignment.committeeRole.contactEmail}
+                {assignments.map((assignment) => {
+                  const effectiveEmail = assignmentEffectiveEmail(assignment);
+                  const usesPersonalEmail =
+                    !assignment.committeeRole.contactEmail;
+
+                  return (
+                    <tr
+                      key={assignment.id}
+                      className={`border-b ${
+                        assignment.isActive ? "" : "opacity-60"
+                      }`}
+                    >
+                      <td className="px-4 py-3">
+                        <div className="font-medium text-slate-900">
+                          {assignment.member.displayName}
                         </div>
-                      ) : null}
-                      {assignment.blurb ? (
-                        <div className="mt-1 max-w-md text-xs text-slate-500">
-                          {assignment.blurb}
+                        <div className="text-xs text-slate-500">
+                          {effectiveEmail}
+                          {usesPersonalEmail ? (
+                            <span className="ml-1">(personal)</span>
+                          ) : null}
                         </div>
-                      ) : null}
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="flex flex-wrap gap-1">
-                        <VisibilityBadge visible={assignment.published} />
-                        {assignment.showPhone ? (
-                          <Badge variant="secondary">Phone allowed</Badge>
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="font-medium text-blue-600">
+                          {assignment.committeeRole.name}
+                        </div>
+                        {assignment.blurb ? (
+                          <div className="mt-1 max-w-md text-xs text-slate-500">
+                            {assignment.blurb}
+                          </div>
                         ) : null}
-                        {assignment.contactable ? (
-                          <Badge variant="secondary">Contactable</Badge>
-                        ) : null}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      {assignment.isActive ? (
-                        <Badge className="border-green-200 bg-green-100 text-green-800">
-                          Active
-                        </Badge>
-                      ) : (
-                        <Badge variant="secondary">Inactive</Badge>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <div className="flex justify-end gap-1">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => openAssignmentForm(assignment)}
-                        >
-                          <Pencil className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="text-red-600 hover:bg-red-50 hover:text-red-700"
-                          onClick={() => handleDeactivateAssignment(assignment)}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex flex-wrap gap-1">
+                          <VisibilityBadge visible={assignment.published} />
+                          {assignment.showPhone ? (
+                            <Badge variant="secondary">Phone allowed</Badge>
+                          ) : null}
+                          {assignment.contactable ? (
+                            <Badge variant="secondary">Contactable</Badge>
+                          ) : null}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        {assignment.isActive ? (
+                          <Badge className="border-green-200 bg-green-100 text-green-800">
+                            Active
+                          </Badge>
+                        ) : (
+                          <Badge variant="secondary">Inactive</Badge>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <div className="flex justify-end gap-1">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => openAssignmentForm(assignment)}
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-red-600 hover:bg-red-50 hover:text-red-700"
+                            onClick={() => handleDeactivateAssignment(assignment)}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
             {assignments.length === 0 && !loading ? (
