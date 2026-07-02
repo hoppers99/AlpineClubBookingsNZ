@@ -11,6 +11,7 @@ import {
   formatDateOnly,
 } from "@/lib/date-only";
 import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
+import { lodgeNullTolerantScope } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 
 type BedAllocationLifecycleDb = Prisma.TransactionClient | typeof prisma;
@@ -54,6 +55,11 @@ interface ReconcileBedAllocationsForBookingInput {
 interface AutoAllocateMissingBedNightsInput {
   db: BedAllocationLifecycleDb;
   range: BedAllocationLifecycleRange;
+  // Lodge of the booking being reconciled. Auto-fill must never place a
+  // guest into another lodge's bed (lodge-scoping contract); null (booking
+  // missing/pre-backfill) keeps the club-wide behaviour, which is exact
+  // while one lodge exists.
+  lodgeId?: string | null;
 }
 
 type BookingForBedAllocation = Awaited<
@@ -116,6 +122,7 @@ async function loadBookingForBedAllocation(
       deletedAt: true,
       checkIn: true,
       checkOut: true,
+      lodgeId: true,
       guests: {
         select: {
           id: true,
@@ -218,6 +225,7 @@ async function pruneAllocationsForBooking(
 async function autoAllocateMissingBedNights({
   db,
   range,
+  lodgeId,
 }: AutoAllocateMissingBedNightsInput): Promise<number> {
   const settings = await db.bedAllocationSettings.findUnique({
     where: { id: "default" },
@@ -229,6 +237,7 @@ async function autoAllocateMissingBedNights({
 
   const [rooms, bookings, existingAllocations] = await Promise.all([
     db.lodgeRoom.findMany({
+      where: lodgeId ? lodgeNullTolerantScope(lodgeId) : undefined,
       include: { beds: true },
       orderBy: [{ sortOrder: "asc" }, { name: "asc" }, { id: "asc" }],
     }),
@@ -244,6 +253,7 @@ async function autoAllocateMissingBedNights({
             stayEnd: { gt: range.checkIn },
           },
         },
+        ...(lodgeId ? lodgeNullTolerantScope(lodgeId) : {}),
       },
       select: {
         id: true,
@@ -273,6 +283,7 @@ async function autoAllocateMissingBedNights({
           gte: range.checkIn,
           lt: range.checkOut,
         },
+        ...(lodgeId ? { room: lodgeNullTolerantScope(lodgeId) } : {}),
       },
       select: {
         bedId: true,
@@ -403,6 +414,7 @@ export async function reconcileBedAllocationsForBooking({
     ? await autoAllocateMissingBedNights({
         db,
         range: autoAllocationRange,
+        lodgeId: booking?.lodgeId ?? null,
       })
     : 0;
 

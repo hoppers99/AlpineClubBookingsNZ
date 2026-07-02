@@ -459,3 +459,95 @@ describe("bed allocation lifecycle", () => {
     });
   });
 });
+
+describe("lifecycle auto-allocation lodge scope", () => {
+  it("scopes the reconcile auto-fill to the booking's lodge, tolerating null rows", async () => {
+    const db = makeDb({
+      bedAllocationSettings: {
+        findUnique: vi.fn().mockResolvedValue({ autoAllocationEnabled: true }),
+      },
+    });
+    db.booking.findUnique.mockResolvedValue({
+      id: "booking-1",
+      status: BookingStatus.PAID,
+      deletedAt: null,
+      lodgeId: "lodge-2",
+      checkIn: parseDateOnly("2026-07-01"),
+      checkOut: parseDateOnly("2026-07-03"),
+      guests: [
+        {
+          id: "guest-1",
+          bookingId: "booking-1",
+          ageTier: "ADULT",
+          stayStart: parseDateOnly("2026-07-01"),
+          stayEnd: parseDateOnly("2026-07-03"),
+          nights: [],
+        },
+      ],
+    });
+
+    await reconcileBedAllocationsForBooking({
+      bookingId: "booking-1",
+      db: db as any,
+    });
+
+    // The auto-fill planner must only see the booking's lodge: its rooms,
+    // its bookings, and its beds' existing allocations. A cross-lodge fill
+    // would violate the lodge-scoping contract.
+    expect(db.lodgeRoom.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { OR: [{ lodgeId: "lodge-2" }, { lodgeId: null }] },
+      }),
+    );
+    expect(db.booking.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: [{ lodgeId: "lodge-2" }, { lodgeId: null }],
+        }),
+      }),
+    );
+    expect(db.bedAllocation.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          room: { OR: [{ lodgeId: "lodge-2" }, { lodgeId: null }] },
+        }),
+      }),
+    );
+  });
+
+  it("stays club-wide when the booking has no lodge (expand tolerance)", async () => {
+    const db = makeDb({
+      bedAllocationSettings: {
+        findUnique: vi.fn().mockResolvedValue({ autoAllocationEnabled: true }),
+      },
+    });
+    db.booking.findUnique.mockResolvedValue({
+      id: "booking-1",
+      status: BookingStatus.PAID,
+      deletedAt: null,
+      lodgeId: null,
+      checkIn: parseDateOnly("2026-07-01"),
+      checkOut: parseDateOnly("2026-07-03"),
+      guests: [
+        {
+          id: "guest-1",
+          bookingId: "booking-1",
+          ageTier: "ADULT",
+          stayStart: parseDateOnly("2026-07-01"),
+          stayEnd: parseDateOnly("2026-07-03"),
+          nights: [],
+        },
+      ],
+    });
+
+    await reconcileBedAllocationsForBooking({
+      bookingId: "booking-1",
+      db: db as any,
+    });
+
+    expect(db.lodgeRoom.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: undefined }),
+    );
+    expect(db.booking.findMany.mock.calls[0][0].where.OR).toBeUndefined();
+  });
+});
