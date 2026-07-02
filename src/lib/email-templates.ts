@@ -2057,16 +2057,44 @@ export function waitlistOfferTemplate(
   checkOut: Date,
   guestCount: number,
   expiresAt: Date,
-  bookingId: string
+  bookingId: string,
+  // Cross-lodge offer (ADR-004): the alternate lodge and its quoted price.
+  // The member confirms both explicitly; null renders the same-lodge offer
+  // exactly as before.
+  crossLodgeOffer?: { lodgeName: string | null; priceCents: number } | null
 ): string {
+  const lodgeLabel = crossLodgeOffer?.lodgeName ?? "another of our lodges";
   return layout(`
     ${heading("A Spot Has Opened Up!")}
-    ${paragraph("Hi " + escapeHtml(firstName) + ", great news — a spot has become available for your waitlisted booking.")}
+    ${
+      crossLodgeOffer
+        ? paragraph(
+            "Hi " +
+              escapeHtml(firstName) +
+              ", great news — a spot has become available at " +
+              escapeHtml(lodgeLabel) +
+              ", one of the alternate lodges you said you'd accept for your waitlisted booking."
+          )
+        : paragraph("Hi " + escapeHtml(firstName) + ", great news — a spot has become available for your waitlisted booking.")
+    }
     ${infoTable([
+      ...(crossLodgeOffer && crossLodgeOffer.lodgeName
+        ? [{ label: "Lodge", value: escapeHtml(crossLodgeOffer.lodgeName) }]
+        : []),
       { label: "Check-in", value: formatNZDate(checkIn) },
       { label: "Check-out", value: formatNZDate(checkOut) },
       { label: "Guests", value: String(guestCount) },
+      ...(crossLodgeOffer
+        ? [{ label: "Price at this lodge", value: formatCents(crossLodgeOffer.priceCents) }]
+        : []),
     ])}
+    ${
+      crossLodgeOffer
+        ? paragraph(
+            "This lodge's price differs from the one you originally waitlisted for, so nothing is booked until you review and confirm this price on your booking page."
+          )
+        : ""
+    }
     ${alertBox("This offer expires on " + formatNZDateTime(expiresAt) + ". If you don't confirm in time, the spot will be offered to the next person in line.", "warning")}
     ${button("Confirm Booking", BASE_URL + "/bookings/" + bookingId)}
     ${muted("If you no longer need this booking, you can decline from your booking page.")}

@@ -238,21 +238,33 @@ describe("review finding source/schema contracts", () => {
   it("keeps financial-history relations from cascading deletes off Member and Booking", () => {
     const schema = readRepoFile("prisma/schema.prisma");
 
-    expect(schema).not.toContain(
-      'booking      Booking              @relation(fields: [bookingId], references: [id], onDelete: Cascade)'
-    );
-    expect(schema).not.toContain(
-      'member           Member                        @relation(fields: [memberId], references: [id], onDelete: Cascade)'
-    );
-    expect(schema).not.toContain(
-      'member         Member        @relation("AdminCreditAdjustmentTarget", fields: [memberId], references: [id], onDelete: Cascade)'
-    );
-    expect(schema).not.toContain(
-      'booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)'
-    );
-    expect(schema).not.toContain(
-      'member  Member  @relation(fields: [memberId], references: [id], onDelete: Cascade)'
-    );
+    // The original finding banned exact relation lines, which broke on any
+    // unrelated model whose formatting coincided (e.g. the ADR-004 waitlist
+    // opt-in junction, which legitimately cascades with its booking). Assert
+    // the actual invariant instead: within each financial-history model, no
+    // relation to Booking or Member may cascade, regardless of formatting.
+    const FINANCIAL_HISTORY_MODELS = [
+      "BookingEvent",
+      "Payment",
+      "PaymentTransaction",
+      "PaymentRefund",
+      "RefundRequest",
+      "MemberCredit",
+      "AdminCreditAdjustmentRequest",
+      "PaymentRecoveryOperation",
+    ];
+    for (const model of FINANCIAL_HISTORY_MODELS) {
+      const block = schema.match(
+        new RegExp(`^model ${model} \\{[\\s\\S]*?^\\}`, "m")
+      );
+      expect(block, `model ${model} missing from schema`).not.toBeNull();
+      const offending = (block![0].match(/^.*@relation.*$/gm) ?? []).filter(
+        (line) =>
+          /\b(Booking|Member)\b\s+@relation/.test(line) &&
+          line.includes("onDelete: Cascade")
+      );
+      expect(offending, `${model} cascades off Booking/Member`).toEqual([]);
+    }
   });
 
   it("serializes stale waitlist-offer expiry and re-offer selection behind a transaction", () => {

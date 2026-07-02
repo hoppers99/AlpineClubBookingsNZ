@@ -325,6 +325,7 @@ export async function settleGroupBookingOnOrganiserCancel(
     processWaitlistForDates({
       checkIn: child.checkIn,
       checkOut: child.checkOut,
+      lodgeId: child.lodgeId,
     }).catch((err) =>
       logger.error(
         { err, bookingId: child.id },

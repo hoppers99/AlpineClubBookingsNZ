@@ -2239,7 +2239,13 @@ export async function sendWaitlistOfferEmail(
   expiresAt: Date,
   bookingId: string,
   // Booking's lodge (multi-lodge phase 8): see sendBookingConfirmedEmail.
+  // A cross-lodge offer passes the OFFERED lodge here so the message
+  // carries that lodge's identity.
   lodgeId?: string | null,
+  // Cross-lodge offer (ADR-004): names the alternate lodge and its quoted
+  // price so the member confirms both explicitly. Null for same-lodge
+  // offers, which render exactly as before.
+  crossLodgeOffer?: { lodgeName: string | null; priceCents: number } | null,
 ) {
   await sendEmail({
     to: email,
@@ -2251,6 +2257,7 @@ export async function sendWaitlistOfferEmail(
       guestCount,
       expiresAt,
       bookingId,
+      crossLodgeOffer,
     ),
     templateName: "waitlist-offer",
     templateData: {
@@ -2260,6 +2267,12 @@ export async function sendWaitlistOfferEmail(
       guestCount,
       expiresAt: formatNZDateTime(expiresAt),
       bookingId,
+      ...(crossLodgeOffer
+        ? {
+            offeredLodgeName: crossLodgeOffer.lodgeName,
+            offeredPriceCents: crossLodgeOffer.priceCents,
+          }
+        : {}),
     },
     lodgeId,
   });

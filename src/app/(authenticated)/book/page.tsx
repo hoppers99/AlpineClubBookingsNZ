@@ -179,6 +179,9 @@ export default function BookPage() {
   const [showWaitlistPrompt, setShowWaitlistPrompt] = useState(false);
   const [waitlistFullNights, setWaitlistFullNights] = useState<string[]>([]);
   const [joiningWaitlist, setJoiningWaitlist] = useState(false);
+  // Cross-lodge waitlist opt-in (ADR-004): other eligible lodges the member
+  // would also accept. Only offered when a second eligible lodge exists.
+  const [waitlistAlternateLodgeIds, setWaitlistAlternateLodgeIds] = useState<string[]>([]);
   const [availableBeds, setAvailableBeds] = useState(lodgeCapacity);
   const [availabilityNightDetails, setAvailabilityNightDetails] = useState<AvailabilityNightDetail[]>([]);
   const [perGuestDatesEnabled, setPerGuestDatesEnabled] = useState(false);
@@ -729,6 +732,7 @@ export default function BookPage() {
       if (data.code === "CAPACITY_EXCEEDED" && data.canWaitlist) {
         setShowWaitlistPrompt(true);
         setWaitlistFullNights(data.fullNights || []);
+        setWaitlistAlternateLodgeIds([]);
         setError("");
       } else {
         handleBookingApiError(data, "Failed to create booking");
@@ -774,6 +778,10 @@ export default function BookPage() {
             : undefined,
         lodgeId: lodgeId ?? undefined,
         waitlist: true,
+        alternateLodgeIds:
+          waitlistAlternateLodgeIds.length > 0
+            ? waitlistAlternateLodgeIds
+            : undefined,
         memberReviewJustification: requiresAdminReviewLocal
           ? memberReviewJustification.trim()
           : undefined,
@@ -1117,6 +1125,41 @@ export default function BookPage() {
                 </p>
               </div>
             </div>
+            {lodges.length > 1 && lodges.some((lodge) => lodge.id !== lodgeId) && (
+              <div className="rounded-md border border-purple-200 bg-white p-4 space-y-2">
+                <p className="text-sm font-medium text-purple-900">
+                  Happy to stay at another lodge if a spot opens there first?
+                </p>
+                {lodges
+                  .filter((lodge) => lodge.id !== lodgeId)
+                  .map((lodge) => (
+                    <label
+                      key={lodge.id}
+                      className="flex items-center gap-2 text-sm text-purple-800 cursor-pointer"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={waitlistAlternateLodgeIds.includes(lodge.id)}
+                        onChange={(e) =>
+                          setWaitlistAlternateLodgeIds((current) =>
+                            e.target.checked
+                              ? [...current, lodge.id]
+                              : current.filter((id) => id !== lodge.id)
+                          )
+                        }
+                        className="rounded border-purple-300"
+                        disabled={joiningWaitlist}
+                      />
+                      Also waitlist me for {lodge.name}
+                    </label>
+                  ))}
+                <p className="text-xs text-purple-700">
+                  Prices can differ between lodges. If a spot opens at one of
+                  these, we&apos;ll email you that lodge&apos;s price for your
+                  stay — nothing is booked until you confirm it.
+                </p>
+              </div>
+            )}
             <div className="flex gap-3 justify-end">
               <Button
                 variant="outline"

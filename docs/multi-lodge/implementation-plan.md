@@ -323,6 +323,29 @@ up.
   booking at the offered lodge and cancels the waitlist entry — never a
   lodgeId mutation. Risk: High (waitlist/money paths); owner review
   before merge.
+
+  *Progress note (2026-07-03):* implemented end to end on this branch.
+  Expand migration `20260703093000_add_cross_lodge_waitlist` adds the
+  `BookingWaitlistAlternateLodge` junction, nullable
+  `Booking.waitlistOfferedLodgeId`/`waitlistOfferedPriceCents`, and
+  `BookingDefaults.waitlistCrossLodgeOrder` (default `OWN_LODGE_FIRST`).
+  The `/book` waitlist prompt offers eligible alternate-lodge checkboxes
+  (ADR-002 presentation rule); the create API validates alternates
+  (active, distinct, member-eligible) in `createWaitlistedBooking`.
+  `processWaitlistForDates` takes the freed lodge from every caller,
+  locks all active lodges in sorted order, and runs the cross-lodge pass
+  per the configured order with eligibility and priceability gates; the
+  offer email and the booking-page offer card state the offered lodge
+  and quoted price. Confirm dispatches cross-lodge offers to
+  `confirmCrossLodgeWaitlistOffer` (create-and-cancel through
+  `createConfirmedBooking`, price re-checked against the stored quote —
+  drift refreshes the quote and asks the member to re-confirm). The
+  queue order is edited on the booking-policies page (club-wide, shown
+  only with a second lodge). Deliberate narrowing, recorded in ADR-004:
+  waitlist entries carrying a promo redemption are never offered
+  cross-lodge — promo revalidation at another lodge collides with
+  usage-limit counting of the entry's own redemption; their same-lodge
+  flow is unchanged.
 - **Per-lodge revenue reporting** via Xero tracking categories or a
   lodge dimension on finance snapshots (kept club-wide by ADR-001; a
   future ADR would record any change).

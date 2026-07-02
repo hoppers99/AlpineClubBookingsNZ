@@ -194,6 +194,7 @@ function triggerWaitlistProcessing(booking: PendingBooking) {
   processWaitlistForDates({
     checkIn: booking.checkIn,
     checkOut: booking.checkOut,
+    lodgeId: booking.lodgeId,
   }).catch((err) =>
     logger.error(
       { err, bookingId: booking.id },

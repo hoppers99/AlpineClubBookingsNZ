@@ -10,7 +10,10 @@ import { CancellationRulesEditor } from "./cancellation-rules-editor"
 import { PolicyPreview } from "./policy-preview"
 import { PolicyFeedback } from "./policy-feedback"
 import { PolicyScopeSelect, usePolicyScopeLodgeName } from "./policy-scope-select"
+import { useLodgeOptions } from "@/components/lodge-select"
 import type { PolicyRule } from "./types"
+
+type WaitlistCrossLodgeOrder = "OWN_LODGE_FIRST" | "MERGED"
 
 const FALLBACK_RULES: PolicyRule[] = [
   { daysBeforeStay: 14, refundPercentage: 100, creditRefundPercentage: 100, fixedFeeCents: 0, creditFixedFeeCents: 0 },
@@ -45,11 +48,18 @@ export function DefaultCancellationPolicySection() {
   const [hasOverride, setHasOverride] = useState(false)
   const [defaultRules, setDefaultRules] = useState<PolicyRule[]>([])
   const [defaultHoldDays, setDefaultHoldDays] = useState(7)
+  // Cross-lodge waitlist queue order (ADR-004): club-wide, only rendered
+  // when a second lodge exists.
+  const [defaultWaitlistOrder, setDefaultWaitlistOrder] =
+    useState<WaitlistCrossLodgeOrder>("OWN_LODGE_FIRST")
+  const { lodges } = useLodgeOptions("admin")
   const [loadingDefaults, setLoadingDefaults] = useState(true)
   const [savingDefaults, setSavingDefaults] = useState(false)
   const [editingDefaults, setEditingDefaults] = useState(false)
   const [savedDefaultRules, setSavedDefaultRules] = useState<PolicyRule[]>([])
   const [savedDefaultHoldDays, setSavedDefaultHoldDays] = useState(7)
+  const [savedDefaultWaitlistOrder, setSavedDefaultWaitlistOrder] =
+    useState<WaitlistCrossLodgeOrder>("OWN_LODGE_FIRST")
   const [error, setError] = useState("")
   const [success, setSuccess] = useState("")
 
@@ -73,11 +83,15 @@ export function DefaultCancellationPolicySection() {
       const rules =
         fetchedRules.length > 0 || scopeLodgeId ? fetchedRules : FALLBACK_RULES
       const holdDays = data.nonMemberHoldDays ?? 7
+      const waitlistOrder: WaitlistCrossLodgeOrder =
+        data.waitlistCrossLodgeOrder === "MERGED" ? "MERGED" : "OWN_LODGE_FIRST"
       setHasOverride(Boolean(scopeLodgeId) && fetchedRules.length > 0)
       setDefaultRules(rules)
       setDefaultHoldDays(holdDays)
+      setDefaultWaitlistOrder(waitlistOrder)
       setSavedDefaultRules(rules)
       setSavedDefaultHoldDays(holdDays)
+      setSavedDefaultWaitlistOrder(waitlistOrder)
       setEditingDefaults(false)
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return
@@ -96,6 +110,7 @@ export function DefaultCancellationPolicySection() {
   function handleCancelDefaults() {
     setDefaultRules(savedDefaultRules)
     setDefaultHoldDays(savedDefaultHoldDays)
+    setDefaultWaitlistOrder(savedDefaultWaitlistOrder)
     setEditingDefaults(false)
     // Cancelling an unsaved "create override" must also drop the optimistic
     // override state; a refetch restores whatever the server actually holds.
@@ -114,10 +129,14 @@ export function DefaultCancellationPolicySection() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           rules,
-          // Hold days are club-wide; only the club-wide scope edits them.
+          // Hold days and waitlist queue order are club-wide; only the
+          // club-wide scope edits them.
           ...(scopeLodgeId
             ? { lodgeId: scopeLodgeId }
-            : { nonMemberHoldDays: defaultHoldDays }),
+            : {
+                nonMemberHoldDays: defaultHoldDays,
+                waitlistCrossLodgeOrder: defaultWaitlistOrder,
+              }),
         }),
       })
       if (!res.ok) {
@@ -242,6 +261,33 @@ export function DefaultCancellationPolicySection() {
                 </div>
                 <p className="text-xs text-muted-foreground">
                   Non-member bookings are held as pending until this many days before check-in, then confirmed automatically.
+                </p>
+              </div>
+            ) : null}
+
+            {!scopeIsLodge && lodges.length > 1 ? (
+              <div className="space-y-2 max-w-md">
+                <Label htmlFor="waitlistOrder">Cross-lodge waitlist queue order</Label>
+                <select
+                  id="waitlistOrder"
+                  value={defaultWaitlistOrder}
+                  onChange={(e) =>
+                    setDefaultWaitlistOrder(e.target.value as WaitlistCrossLodgeOrder)
+                  }
+                  disabled={!editingDefaults}
+                  className={`w-full rounded-md border border-input px-3 py-2 text-sm ${!editingDefaults ? "bg-slate-50 text-slate-700" : "bg-background"}`}
+                >
+                  <option value="OWN_LODGE_FIRST">
+                    Own lodge first — a lodge&apos;s own waitlist is served before cross-lodge opt-ins
+                  </option>
+                  <option value="MERGED">
+                    Merged — everyone eligible is ranked purely by when they joined
+                  </option>
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  When a spot frees up at a lodge, this decides whether members
+                  waitlisted at that lodge are always served before members from
+                  another lodge&apos;s waitlist who opted in to accept it.
                 </p>
               </div>
             ) : null}

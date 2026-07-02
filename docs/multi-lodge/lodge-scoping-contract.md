@@ -18,7 +18,8 @@ sequencing):
 | `Locker` | direct `lodgeId` | `name` unique per lodge; lockers gain a lodge link for the first time |
 | `Season` | direct `lodgeId` | lodges may have different season windows |
 | `SeasonRate` | via `Season` | keeps `[seasonId, ageTier, isMember]` uniqueness |
-| `Booking` | direct `lodgeId` | denormalised for capacity/availability query performance; always matches the room's lodge when a room is assigned |
+| `Booking` | direct `lodgeId` | denormalised for capacity/availability query performance; always matches the room's lodge when a room is assigned. `waitlistOfferedLodgeId` (nullable) names the alternate lodge of a live cross-lodge waitlist offer (ADR-004) and never changes the entry's own lodge |
+| `BookingWaitlistAlternateLodge` | direct `lodgeId` junction | ADR-004 cross-lodge waitlist opt-in: lodges a waitlisted member would also accept; rows only widen what the processor may offer |
 | `BookingGuest` / `BookingGuestNight` | via `Booking` | no direct FK |
 | `GroupBooking` | via organiser `Booking` | one group = one lodge (ADR-001 open question 1) |
 | `ChoreTemplate` | direct `lodgeId` | roster generation filters by lodge |

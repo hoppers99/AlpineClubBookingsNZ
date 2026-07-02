@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted (owner decisions recorded 2026-07-03).
+Accepted (owner decisions recorded 2026-07-03). Implemented 2026-07-03
+with the implementation notes below.
 
 ## Context
 
@@ -84,6 +85,25 @@ member sees the updated figure rather than being charged it silently.
 
 The waitlist-offer screen shows the offered lodge's name and price and
 requires the explicit confirm per owner decision 2.
+
+### Implementation notes (2026-07-03)
+
+Two behaviours were pinned down during implementation:
+
+- **Promo-bearing entries are excluded from cross-lodge offers.** The
+  Context section said promo revalidation would happen at confirm; in
+  practice validating the promo at the alternate lodge collides with
+  usage-limit counting of the entry's *own* existing redemption, and
+  silently dropping the promo would quote a higher price than the member
+  signed up for. A waitlist entry with a promo redemption is therefore
+  simply never offered cross-lodge — its same-lodge flow is unchanged.
+  Lifting this needs an exclude-own-redemption mode in promo validation
+  and is left for a follow-up if members actually hit it.
+- **Price drift refreshes the stored quote.** When the re-check at
+  confirm finds a different price, the rejection also updates
+  `waitlistOfferedPriceCents` to the fresh figure, so the offer screen
+  shows the price the member can actually accept on retry rather than
+  failing forever against a stale quote.
 
 ### Configuration
 

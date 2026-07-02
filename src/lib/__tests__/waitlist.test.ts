@@ -22,6 +22,9 @@ const mockTx = {
   $executeRaw: mockExecuteRaw,
   lodge: {
     findFirst: vi.fn().mockResolvedValue({ id: "lodge-1" }),
+    // Cross-lodge pass (ADR-004): lock-list and offered-lodge-name reads.
+    findMany: vi.fn().mockResolvedValue([{ id: "lodge-1" }]),
+    findUnique: vi.fn().mockResolvedValue({ name: "Lodge One" }),
   },
   booking: {
     findMany: vi.fn(),
@@ -95,6 +98,10 @@ beforeEach(() => {
   mockTx.booking.count.mockReset();
   mockTx.lodge.findFirst.mockReset();
   mockTx.lodge.findFirst.mockResolvedValue({ id: "lodge-1" });
+  mockTx.lodge.findMany.mockReset();
+  mockTx.lodge.findMany.mockResolvedValue([{ id: "lodge-1" }]);
+  mockTx.lodge.findUnique.mockReset();
+  mockTx.lodge.findUnique.mockResolvedValue({ name: "Lodge One" });
   mockExecuteRaw.mockResolvedValue(undefined);
   // Default: transaction runs the callback with mockTx
   mockPrismaTransaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) => fn(mockTx));
@@ -179,6 +186,10 @@ describe("processWaitlistForDates", () => {
       createdAt: new Date("2026-04-01"),
       guests: [{ id: "g1" }, { id: "g2" }],
       member: { id: "m1", email: "test@test.com", firstName: "John", lastName: "Doe" },
+      memberId: "m1",
+      lodgeId: "lodge-1",
+      waitlistAlternateLodges: [],
+      promoRedemption: null,
     };
 
     mockTx.booking.findMany.mockResolvedValue([candidate]);
@@ -211,6 +222,10 @@ describe("processWaitlistForDates", () => {
       createdAt: new Date("2026-04-01"),
       guests: [{ id: "g1" }],
       member: { id: "m1", email: "test@test.com", firstName: "John", lastName: "Doe" },
+      memberId: "m1",
+      lodgeId: "lodge-1",
+      waitlistAlternateLodges: [],
+      promoRedemption: null,
     };
 
     mockTx.booking.findMany.mockResolvedValue([candidate]);
@@ -246,6 +261,10 @@ describe("processWaitlistForDates", () => {
         },
       ],
       member: { id: "m1", email: "test@test.com", firstName: "John", lastName: "Doe" },
+      memberId: "m1",
+      lodgeId: "lodge-1",
+      waitlistAlternateLodges: [],
+      promoRedemption: null,
     };
 
     mockTx.booking.findMany.mockResolvedValue([candidate]);

@@ -1339,6 +1339,7 @@ async function syncInternetBankingPaymentsForPaidInvoice(
       processWaitlistForDates({
         checkIn: outcome.payment.booking.checkIn,
         checkOut: outcome.payment.booking.checkOut,
+        lodgeId: outcome.payment.booking.lodgeId,
       }).catch((err) =>
         logger.error(
           { err, bookingId: outcome.payment.bookingId },

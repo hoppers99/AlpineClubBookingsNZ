@@ -17,6 +17,9 @@ const policySchema = z
       })
     ),
     nonMemberHoldDays: z.number().int().min(1).max(365).optional(),
+    // Cross-lodge waitlist queue order (ADR-004 owner decision 1).
+    // Club-wide, like hold days: queue fairness is a club policy.
+    waitlistCrossLodgeOrder: z.enum(["OWN_LODGE_FIRST", "MERGED"]).optional(),
     // Per-lodge override partition (ADR-001 resolved question 3). Omitted =
     // the club-wide (null lodgeId) rules. A lodge's rows REPLACE the
     // club-wide set at runtime; an empty rules array for a lodge removes the
@@ -36,6 +39,13 @@ const policySchema = z
         code: z.ZodIssueCode.custom,
         path: ["nonMemberHoldDays"],
         message: "Hold days are club-wide and cannot be set per lodge",
+      })
+    }
+    if (data.lodgeId && data.waitlistCrossLodgeOrder !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["waitlistCrossLodgeOrder"],
+        message: "Waitlist queue order is club-wide and cannot be set per lodge",
       })
     }
   })
@@ -58,6 +68,7 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     rules: policies.map(normalizeCancellationRule),
     nonMemberHoldDays: defaults?.nonMemberHoldDays ?? 7,
+    waitlistCrossLodgeOrder: defaults?.waitlistCrossLodgeOrder ?? "OWN_LODGE_FIRST",
     lodgeId: lodgeId ?? null,
   })
 }
@@ -76,7 +87,7 @@ export async function PUT(req: NextRequest) {
     )
   }
 
-  const { rules, nonMemberHoldDays, lodgeId } = parsed.data
+  const { rules, nonMemberHoldDays, waitlistCrossLodgeOrder, lodgeId } = parsed.data
 
   if (lodgeId) {
     const lodge = await prisma.lodge.findUnique({
@@ -124,11 +135,18 @@ export async function PUT(req: NextRequest) {
       })),
     })
 
-    if (nonMemberHoldDays !== undefined) {
+    if (nonMemberHoldDays !== undefined || waitlistCrossLodgeOrder !== undefined) {
       await tx.bookingDefaults.upsert({
         where: { id: "default" },
-        update: { nonMemberHoldDays },
-        create: { id: "default", nonMemberHoldDays },
+        update: {
+          ...(nonMemberHoldDays !== undefined ? { nonMemberHoldDays } : {}),
+          ...(waitlistCrossLodgeOrder !== undefined ? { waitlistCrossLodgeOrder } : {}),
+        },
+        create: {
+          id: "default",
+          nonMemberHoldDays: nonMemberHoldDays ?? 7,
+          ...(waitlistCrossLodgeOrder !== undefined ? { waitlistCrossLodgeOrder } : {}),
+        },
       })
     }
 
@@ -144,13 +162,14 @@ export async function PUT(req: NextRequest) {
     return {
       rules: policies.map(normalizeCancellationRule),
       nonMemberHoldDays: defaults?.nonMemberHoldDays ?? 7,
+      waitlistCrossLodgeOrder: defaults?.waitlistCrossLodgeOrder ?? "OWN_LODGE_FIRST",
     }
   }, { isolationLevel: "Serializable" })
 
   logAudit({
     action: "cancellation-policy.update",
     memberId: session.user.id,
-    details: `Updated to ${sortedRules.length} rules, holdDays=${nonMemberHoldDays ?? "unchanged"}, lodge=${lodgeId ?? "club-wide"}`,
+    details: `Updated to ${sortedRules.length} rules, holdDays=${nonMemberHoldDays ?? "unchanged"}, waitlistOrder=${waitlistCrossLodgeOrder ?? "unchanged"}, lodge=${lodgeId ?? "club-wide"}`,
   })
 
   return NextResponse.json(result)

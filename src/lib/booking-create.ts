@@ -29,6 +29,7 @@ import {
   PromoCodeType,
   type Booking,
   type BookingGuest,
+  type PrismaClient,
 } from "@prisma/client";
 import { assertMemberMayBookLodge } from "@/lib/lodge-access";
 import {
@@ -155,7 +156,12 @@ export type ConfirmedBookingOutcome =
   | { type: "created"; booking: BookingWithGuests; bumpedBookingIds: string[]; isZeroDollarConfirmed: boolean }
   | { type: "capacityExceeded"; fullNights: string[] };
 
-export type WaitlistedBookingInput = BaseInput;
+export type WaitlistedBookingInput = BaseInput & {
+  // Cross-lodge waitlist opt-in (ADR-004): other lodges the member would
+  // also accept a bed at. Each must name an active lodge the member is
+  // eligible to book; the primary lodge and duplicates are dropped.
+  alternateLodgeIds?: string[];
+};
 
 export interface WaitlistedBookingResult {
   booking: BookingWithGuests;
@@ -665,6 +671,43 @@ async function resolveBookingLodgeId(
     }
   }
   return lodgeId;
+}
+
+/**
+ * Validate the cross-lodge waitlist opt-in list (ADR-004): every alternate
+ * must be an active lodge distinct from the primary, and the member must be
+ * eligible to book it (same rule as the primary lodge; admin on-behalf
+ * bypasses eligibility exactly as assertMemberMayBookLodge does). Throws
+ * BookingLodgeError / LodgeBookingEligibilityError; routes map them to
+ * 400 / 403. Exported for unit tests.
+ */
+export async function resolveWaitlistAlternateLodgeIds(
+  db: Pick<PrismaClient, "lodge" | "memberLodgeAccess">,
+  input: {
+    requestedAlternateLodgeIds: string[] | undefined;
+    primaryLodgeId: string;
+    memberId: string;
+    isOnBehalf: boolean;
+  },
+): Promise<string[]> {
+  const distinct = Array.from(new Set(input.requestedAlternateLodgeIds ?? []))
+    .filter((id) => id && id !== input.primaryLodgeId);
+  if (distinct.length === 0) return [];
+
+  const activeCount = await db.lodge.count({
+    where: { id: { in: distinct }, active: true },
+  });
+  if (activeCount !== distinct.length) {
+    throw new BookingLodgeError("Unknown or inactive alternate lodgeId");
+  }
+  for (const alternateLodgeId of distinct) {
+    await assertMemberMayBookLodge(db, {
+      memberId: input.memberId,
+      lodgeId: alternateLodgeId,
+      isOnBehalf: input.isOnBehalf,
+    });
+  }
+  return distinct;
 }
 
 /**
@@ -1599,6 +1642,12 @@ export async function createWaitlistedBooking(input: WaitlistedBookingInput): Pr
     lodgeId: waitlistLodgeId,
     isOnBehalf,
   });
+  const alternateLodgeIds = await resolveWaitlistAlternateLodgeIds(prisma, {
+    requestedAlternateLodgeIds: input.alternateLodgeIds,
+    primaryLodgeId: waitlistLodgeId,
+    memberId: effectiveMemberId,
+    isOnBehalf,
+  });
   const seasons = await prisma.season.findMany({
     where: {
       active: true,
@@ -1733,6 +1782,15 @@ export async function createWaitlistedBooking(input: WaitlistedBookingInput): Pr
       );
     }
 
+    if (alternateLodgeIds.length > 0) {
+      await tx.bookingWaitlistAlternateLodge.createMany({
+        data: alternateLodgeIds.map((alternateLodgeId) => ({
+          bookingId: createdBooking.id,
+          lodgeId: alternateLodgeId,
+        })),
+      });
+    }
+
     const waitlistPosition =
       (await tx.booking.count({
         where: {
@@ -1794,6 +1852,7 @@ export async function createWaitlistedBooking(input: WaitlistedBookingInput): Pr
       position,
       finalPriceCents: newBooking.finalPriceCents,
       requiresAdminReview: newBooking.requiresAdminReview,
+      ...(alternateLodgeIds.length > 0 ? { alternateLodgeIds } : {}),
     },
   });
 

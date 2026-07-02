@@ -940,6 +940,12 @@ model Booking {
   waitlistPosition          Int?
   waitlistOfferedAt         DateTime?
   waitlistOfferExpiresAt    DateTime?
+  // Cross-lodge waitlist offers (ADR-004): set only when the current offer
+  // is for an alternate lodge the member opted into — the offered lodge and
+  // the price quoted for it. Null for same-lodge offers, which behave
+  // exactly as before ADR-004. Money in integer cents.
+  waitlistOfferedLodgeId    String?
+  waitlistOfferedPriceCents Int?
   deletedAt                 DateTime?
   deletedById               String?
   deletedReason             String?            @db.VarChar(500)
@@ -952,6 +958,8 @@ model Booking {
 
   member                      Member                       @relation(fields: [memberId], references: [id], onDelete: Restrict)
   lodge                       Lodge?                       @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
+  waitlistOfferedLodge        Lodge?                       @relation("BookingWaitlistOfferedLodge", fields: [waitlistOfferedLodgeId], references: [id], onDelete: SetNull)
+  waitlistAlternateLodges     BookingWaitlistAlternateLodge[]
   createdBy                   Member?                      @relation("BookingsCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
   deletedBy                   Member?                      @relation("BookingsDeletedBy", fields: [deletedById], references: [id], onDelete: SetNull)
   adminReviewedBy             Member?                      @relation("BookingsAdminReviewed", fields: [adminReviewedById], references: [id], onDelete: SetNull)
@@ -1880,12 +1888,38 @@ model BookingPeriod {
 // Booking Defaults (global settings, single row)
 // ---------------------------------------------------------------------------
 
+// Cross-lodge waitlist queue order (ADR-004, owner decision 1): when
+// capacity frees at a lodge, OWN_LODGE_FIRST serves that lodge's own
+// waitlist before cross-lodge opt-ins (each in join order); MERGED ranks
+// everyone eligible purely by when they joined. Club-wide policy.
+enum WaitlistCrossLodgeOrder {
+  OWN_LODGE_FIRST
+  MERGED
+}
+
 model BookingDefaults {
-  id                String  @id @default("default")
-  nonMemberHoldDays Int     @default(7)
+  id                      String                  @id @default("default")
+  nonMemberHoldDays       Int                     @default(7)
+  waitlistCrossLodgeOrder WaitlistCrossLodgeOrder @default(OWN_LODGE_FIRST)
   // Soft link for the phase-7 singleton-to-per-lodge conversion
   // (docs/multi-lodge/implementation-plan.md); unused by runtime reads today.
-  lodgeId           String?
+  lodgeId                 String?
+}
+
+// Alternate lodges a waitlisted member would also accept (ADR-004). The
+// entry itself stays bound to Booking.lodgeId — these rows only widen what
+// the waitlist processor may offer. Rows are deleted with their booking.
+model BookingWaitlistAlternateLodge {
+  id        String   @id @default(cuid())
+  bookingId String
+  lodgeId   String
+  createdAt DateTime @default(now())
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  lodge   Lodge   @relation("WaitlistAlternateLodge", fields: [lodgeId], references: [id], onDelete: Cascade)
+
+  @@unique([bookingId, lodgeId])
+  @@index([lodgeId])
 }
 
 // ---------------------------------------------------------------------------
@@ -2405,6 +2439,8 @@ model Lodge {
   hutLeaderAssignments HutLeaderAssignment[]
   memberAccess         MemberLodgeAccess[]
   promoCodes           PromoCodeLodge[]
+  waitlistOfferedBookings  Booking[]                       @relation("BookingWaitlistOfferedLodge")
+  waitlistAlternateEntries BookingWaitlistAlternateLodge[] @relation("WaitlistAlternateLodge")
 }
 
 model LodgeSettings {

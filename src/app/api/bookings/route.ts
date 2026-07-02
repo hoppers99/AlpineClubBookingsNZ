@@ -41,6 +41,7 @@ import {
   DEFAULT_BOOKING_PAYMENT_METHOD,
 } from "@/lib/booking-payment-methods";
 import {
+  BookingLodgeError,
   BookingPromoError,
   BookingReviewJustificationRequiredError,
   createConfirmedBooking,
@@ -48,6 +49,7 @@ import {
   createWaitlistedBooking,
   type BookingGuestInput,
 } from "@/lib/booking-create";
+import { LodgeBookingEligibilityError } from "@/lib/lodge-access";
 import {
   BookingGuestStayRangeValidationError,
   normalizeGuestStayRanges,
@@ -96,6 +98,9 @@ const createBookingSchema = z.object({
   // Lodge the booking is for (multi-lodge phase 8). Optional so existing
   // single-lodge clients keep working; omitted resolves to the default lodge.
   lodgeId: z.string().min(1).optional(),
+  // Cross-lodge waitlist opt-in (ADR-004): other lodges the member would
+  // also accept. Only meaningful with waitlist: true; ignored otherwise.
+  alternateLodgeIds: z.array(z.string().min(1)).max(20).optional(),
   cancelIfGuestsBumped: z.boolean().optional(),
   applyCreditCents: z.number().int().min(0).optional(),
   forMemberId: z.string().optional(),
@@ -521,6 +526,7 @@ export async function POST(request: NextRequest) {
         groupDiscount,
         memberReviewJustification,
         lodgeId: parsed.data.lodgeId,
+        alternateLodgeIds: parsed.data.alternateLodgeIds,
       });
       return NextResponse.json(waitlisted.booking, { status: 201 });
     } catch (waitlistErr) {
@@ -538,6 +544,15 @@ export async function POST(request: NextRequest) {
       }
       if (waitlistErr instanceof BookingPromoError) {
         return NextResponse.json({ error: waitlistErr.message }, { status: 400 });
+      }
+      if (waitlistErr instanceof BookingLodgeError) {
+        return NextResponse.json({ error: waitlistErr.message }, { status: 400 });
+      }
+      if (waitlistErr instanceof LodgeBookingEligibilityError) {
+        return NextResponse.json(
+          { error: waitlistErr.message },
+          { status: waitlistErr.status },
+        );
       }
       logger.error({ err: waitlistErr }, "Failed to create waitlisted booking");
       return NextResponse.json({ error: "Failed to create waitlisted booking" }, { status: 500 });

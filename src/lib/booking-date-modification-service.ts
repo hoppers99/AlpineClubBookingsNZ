@@ -725,6 +725,7 @@ async function dispatchDatePostTransactionSideEffects({
     processWaitlistForDates({
       checkIn: result.oldCheckIn,
       checkOut: result.oldCheckOut,
+      lodgeId: result.booking.lodgeId,
     }).catch((err) =>
       logger.error({ err, bookingId }, "Failed to process waitlist after date modification"),
     );

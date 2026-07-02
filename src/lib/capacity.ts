@@ -40,12 +40,17 @@ function lodgeScopeFilter(lodgeId: string) {
  * lodges no longer contend. hashtextextended gives a stable per-lodge bigint
  * key; a cross-lodge hash collision only causes unnecessary serialization,
  * never a correctness problem. The lock releases at transaction end.
+ *
+ * $executeRaw, not $queryRaw: pg_advisory_xact_lock returns void, which the
+ * driver adapter cannot deserialize as a result row — $queryRaw here fails
+ * at runtime on every booking transaction (found in browser verification;
+ * every other advisory lock in the codebase already uses $executeRaw).
  */
 export async function acquireLodgeCapacityLock(
-  tx: Pick<TransactionClient, "$queryRaw">,
+  tx: Pick<TransactionClient, "$executeRaw">,
   lodgeId: string,
 ): Promise<void> {
-  await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${lodgeId}, 0))`;
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${lodgeId}, 0))`;
 }
 
 function getMonthStartDateOnly(year: number, month: number): Date {

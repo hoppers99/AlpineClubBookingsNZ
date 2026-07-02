@@ -13,6 +13,8 @@ const mockPrisma = vi.hoisted(() => ({
   $transaction: vi.fn(),
   $executeRawUnsafe: vi.fn(),
   $queryRaw: vi.fn().mockResolvedValue([]),
+  // Advisory locks (acquireLodgeCapacityLock) go through $executeRaw.
+  $executeRaw: vi.fn().mockResolvedValue(0),
   lodge: { findFirst: vi.fn().mockResolvedValue({ id: "lodge-1" }) },
   member: { count: vi.fn() },
   booking: {

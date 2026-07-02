@@ -168,7 +168,11 @@ async function cancelLinkedProvisionalChildBookings(
       )
     );
 
-    processWaitlistForDates({ checkIn: child.checkIn, checkOut: child.checkOut }).catch(
+    processWaitlistForDates({
+      checkIn: child.checkIn,
+      checkOut: child.checkOut,
+      lodgeId: child.lodgeId,
+    }).catch(
       (err) =>
         logger.error(
           { err, bookingId: child.id },
@@ -260,7 +264,7 @@ async function performBookingCancellation(
 
     // If the booking was WAITLIST_OFFERED, re-process waitlist for these dates
     if (wasOffered) {
-      processWaitlistForDates({ checkIn: booking.checkIn, checkOut: booking.checkOut })
+      processWaitlistForDates({ checkIn: booking.checkIn, checkOut: booking.checkOut, lodgeId: booking.lodgeId })
         .catch((err) => logger.error({ err, bookingId }, "Failed to process waitlist after offer cancellation"));
     }
 
@@ -338,7 +342,7 @@ async function performBookingCancellation(
     ).catch((err) => logger.error({ err, bookingId }, "Failed to send cancellation email"));
 
     // Trigger waitlist processing for freed dates
-    processWaitlistForDates({ checkIn: booking.checkIn, checkOut: booking.checkOut })
+    processWaitlistForDates({ checkIn: booking.checkIn, checkOut: booking.checkOut, lodgeId: booking.lodgeId })
       .catch((err) => logger.error({ err, bookingId }, "Failed to process waitlist after pending cancellation"));
 
     return {
@@ -470,7 +474,7 @@ async function performBookingCancellation(
     ).catch((err) => logger.error({ err, bookingId }, "Failed to send cancellation email"));
 
     // Trigger waitlist processing for freed dates
-    processWaitlistForDates({ checkIn: booking.checkIn, checkOut: booking.checkOut })
+    processWaitlistForDates({ checkIn: booking.checkIn, checkOut: booking.checkOut, lodgeId: booking.lodgeId })
       .catch((err) => logger.error({ err, bookingId }, "Failed to process waitlist after confirmed cancellation"));
 
     return {
@@ -622,7 +626,7 @@ async function performBookingCancellation(
     ).catch((err) => logger.error({ err, bookingId }, "Failed to send cancellation email"));
 
     // Trigger waitlist processing for freed dates
-    processWaitlistForDates({ checkIn: booking.checkIn, checkOut: booking.checkOut })
+    processWaitlistForDates({ checkIn: booking.checkIn, checkOut: booking.checkOut, lodgeId: booking.lodgeId })
       .catch((err) => logger.error({ err, bookingId }, "Failed to process waitlist after credit cancellation"));
 
     return {
@@ -733,7 +737,7 @@ async function performBookingCancellation(
     ).catch((err) => logger.error({ err, bookingId }, "Failed to send cancellation email"));
 
     // Trigger waitlist processing for freed dates
-    processWaitlistForDates({ checkIn: booking.checkIn, checkOut: booking.checkOut })
+    processWaitlistForDates({ checkIn: booking.checkIn, checkOut: booking.checkOut, lodgeId: booking.lodgeId })
       .catch((err) => logger.error({ err, bookingId }, "Failed to process waitlist after card refund cancellation"));
 
     return {
@@ -809,7 +813,7 @@ async function performBookingCancellation(
   ).catch((err) => logger.error({ err, bookingId }, "Failed to send cancellation email"));
 
   // Trigger waitlist processing for freed dates
-  processWaitlistForDates({ checkIn: booking.checkIn, checkOut: booking.checkOut })
+  processWaitlistForDates({ checkIn: booking.checkIn, checkOut: booking.checkOut, lodgeId: booking.lodgeId })
     .catch((err) => logger.error({ err, bookingId }, "Failed to process waitlist after no-refund cancellation"));
 
   return {

@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "fs";
+import path from "path";
 import { BookingStatus } from "@prisma/client";
 import { parseDateOnly } from "@/lib/date-only";
 
@@ -455,13 +457,31 @@ describe("multi-lodge capacity scoping", () => {
   });
 
   it("acquires a per-lodge advisory lock keyed by the lodge id", async () => {
-    const queryRaw = vi.fn().mockResolvedValue([]);
+    // $executeRaw, never $queryRaw: pg_advisory_xact_lock returns void and
+    // the driver adapter fails to deserialize it as a result row.
+    const executeRaw = vi.fn().mockResolvedValue(0);
 
-    await acquireLodgeCapacityLock({ $queryRaw: queryRaw } as never, LODGE_A);
+    await acquireLodgeCapacityLock({ $executeRaw: executeRaw } as never, LODGE_A);
 
-    expect(queryRaw).toHaveBeenCalledTimes(1);
-    const [strings, ...values] = queryRaw.mock.calls[0];
+    expect(executeRaw).toHaveBeenCalledTimes(1);
+    const [strings, ...values] = executeRaw.mock.calls[0];
     expect(strings.join("?")).toContain("pg_advisory_xact_lock(hashtextextended(");
     expect(values).toEqual([LODGE_A]);
+  });
+
+  it("never acquires the capacity lock through $queryRaw", () => {
+    // Regression pin for the runtime failure this caused: every booking
+    // transaction died with a void-deserialization error under the pg
+    // driver adapter.
+    const source = readFileSync(
+      path.join(process.cwd(), "src/lib/capacity.ts"),
+      "utf8",
+    );
+    const lockFn = source.slice(
+      source.indexOf("export async function acquireLodgeCapacityLock"),
+      source.indexOf("}", source.indexOf("export async function acquireLodgeCapacityLock")) + 1,
+    );
+    expect(lockFn).toContain("$executeRaw");
+    expect(lockFn).not.toContain("$queryRaw");
   });
 });
