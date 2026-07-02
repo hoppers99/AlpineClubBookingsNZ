@@ -78,6 +78,7 @@ export async function processWaitlistForDates(freedDates: {
     memberId: string;
     memberName: string;
     position: number;
+    lodgeId: string | null;
   };
   let offerDetails = null as OfferDetails | null;
 
@@ -154,6 +155,7 @@ export async function processWaitlistForDates(freedDates: {
             memberId: candidate.memberId,
             memberName: `${candidate.member.firstName} ${candidate.member.lastName}`,
             position: position + 1,
+            lodgeId: candidate.lodgeId,
           };
 
           break; // Only offer to the top candidate
@@ -174,7 +176,8 @@ export async function processWaitlistForDates(freedDates: {
       offerDetails.checkOut,
       offerDetails.guestCount,
       offerDetails.expiresAt,
-      offerDetails.bookingId
+      offerDetails.bookingId,
+      offerDetails.lodgeId
     ).catch((err) => logger.error({ err }, "Failed to send waitlist offer email"));
 
     sendAdminWaitlistOfferAlert({
@@ -417,7 +420,8 @@ export async function expireStaleOffers(): Promise<{
       offer.member.firstName,
       offer.checkIn,
       offer.checkOut,
-      offer.newPosition
+      offer.newPosition,
+      offer.lodgeId
     ).catch((err) => logger.error({ err }, "Failed to send waitlist offer expired email"));
 
     logAudit({

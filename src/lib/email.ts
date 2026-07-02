@@ -664,6 +664,8 @@ export async function sendBookingPendingEmail(
   checkOut: Date,
   guestCount: number,
   holdUntil: Date,
+  // Booking's lodge (multi-lodge phase 8): see sendBookingConfirmedEmail.
+  lodgeId?: string | null,
 ) {
   await sendEmail({
     to: email,
@@ -683,6 +685,7 @@ export async function sendBookingPendingEmail(
       guestCount,
       holdUntil: formatNZDateTime(holdUntil),
     },
+    lodgeId,
   });
 }
 
@@ -692,6 +695,8 @@ export async function sendBookingBumpedEmail(
   checkIn: Date,
   checkOut: Date,
   guestCount: number,
+  // Booking's lodge (multi-lodge phase 8): see sendBookingConfirmedEmail.
+  lodgeId?: string | null,
 ) {
   await sendEmail({
     to: email,
@@ -704,6 +709,7 @@ export async function sendBookingBumpedEmail(
       checkOut: formatNZDate(checkOut),
       guestCount,
     },
+    lodgeId,
   });
 }
 
@@ -714,6 +720,8 @@ export async function sendBookingGuestsRemovedEmail(
   checkOut: Date,
   guestCount: number,
   newTotalCents: number,
+  // Booking's lodge (multi-lodge phase 8): see sendBookingConfirmedEmail.
+  lodgeId?: string | null,
 ) {
   await sendEmail({
     to: email,
@@ -733,6 +741,7 @@ export async function sendBookingGuestsRemovedEmail(
       guestCount,
       newTotal: formatMoneyCents(newTotalCents),
     },
+    lodgeId,
   });
 }
 
@@ -741,6 +750,8 @@ export async function sendBookingGuestsCancelledEmail(
   firstName: string,
   checkIn: Date,
   checkOut: Date,
+  // Booking's lodge (multi-lodge phase 8): see sendBookingConfirmedEmail.
+  lodgeId?: string | null,
 ) {
   await sendEmail({
     to: email,
@@ -752,6 +763,7 @@ export async function sendBookingGuestsCancelledEmail(
       checkIn: formatNZDate(checkIn),
       checkOut: formatNZDate(checkOut),
     },
+    lodgeId,
   });
 }
 
@@ -762,6 +774,8 @@ export async function sendBookingCancelledEmail(
   checkOut: Date,
   refundCents: number,
   refundMethod: "card" | "credit" = "card",
+  // Booking's lodge (multi-lodge phase 8): see sendBookingConfirmedEmail.
+  lodgeId?: string | null,
 ) {
   await sendEmail({
     to: email,
@@ -786,6 +800,7 @@ export async function sendBookingCancelledEmail(
             ? `A refund of ${formatMoneyCents(refundCents)} has been processed to your original payment method.`
             : "No refund was applicable based on the cancellation policy.",
     },
+    lodgeId,
   });
 }
 
@@ -796,6 +811,8 @@ export async function sendBookingReviewApprovedEmail(params: {
   checkOut: Date;
   adminNotes: string;
   bookingId: string;
+  // Booking's lodge (multi-lodge phase 8); omitted/null = singleton values.
+  lodgeId?: string | null;
 }) {
   await sendEmail({
     to: params.email,
@@ -808,6 +825,7 @@ export async function sendBookingReviewApprovedEmail(params: {
       params.bookingId,
     ),
     templateName: "booking-review-approved",
+    lodgeId: params.lodgeId,
     templateData: {
       firstName: params.firstName,
       checkIn: formatNZDate(params.checkIn),
@@ -824,6 +842,8 @@ export async function sendBookingReviewRejectedEmail(params: {
   checkIn: Date;
   checkOut: Date;
   adminNotes: string;
+  // Booking's lodge (multi-lodge phase 8); omitted/null = singleton values.
+  lodgeId?: string | null;
 }) {
   await sendEmail({
     to: params.email,
@@ -835,6 +855,7 @@ export async function sendBookingReviewRejectedEmail(params: {
       params.adminNotes,
     ),
     templateName: "booking-review-rejected",
+    lodgeId: params.lodgeId,
     templateData: {
       firstName: params.firstName,
       checkIn: formatNZDate(params.checkIn),
@@ -850,6 +871,8 @@ export async function sendChoreRosterEmail(
   date: string,
   chores: Array<{ name: string; description: string | null }>,
   choreLink?: string,
+  // Booking's lodge (multi-lodge phase 8): see sendBookingConfirmedEmail.
+  lodgeId?: string | null,
 ) {
   const formattedDate = new Date(date + "T00:00:00").toLocaleDateString(
     "en-NZ",
@@ -876,6 +899,7 @@ export async function sendChoreRosterEmail(
         .join(", "),
       choreLink: choreLink ?? "",
     },
+    lodgeId,
   });
 }
 
@@ -1232,6 +1256,8 @@ export async function sendCheckinReminderEmail(
   checkOut: Date,
   guests: Array<{ firstName: string; lastName: string }>,
   chores: Array<{ name: string; description: string | null }>,
+  // Booking's lodge (multi-lodge phase 8): see sendBookingConfirmedEmail.
+  lodgeId?: string | null,
 ) {
   await sendEmail({
     to: email,
@@ -1251,6 +1277,7 @@ export async function sendCheckinReminderEmail(
         .filter(Boolean)
         .join(", "),
     },
+    lodgeId,
   });
 }
 
@@ -2097,6 +2124,8 @@ export async function sendBookingModifiedEmail(params: {
   additionalPaymentMethod?: "STRIPE" | "INTERNET_BANKING";
   paymentReference?: string | null;
   xeroInvoiceNumber?: string | null;
+  // Booking's lodge (multi-lodge phase 8): see sendBookingConfirmedEmail.
+  lodgeId?: string | null;
 }) {
   const accountCreditAmountCents = params.accountCreditAmountCents ?? 0;
   const xeroInvoicePaymentContext = params.xeroInvoiceNumber
@@ -2141,6 +2170,7 @@ export async function sendBookingModifiedEmail(params: {
       xeroInvoiceNumber: params.xeroInvoiceNumber ?? "",
       paymentNote,
     },
+    lodgeId: params.lodgeId,
   });
 }
 
@@ -2149,6 +2179,8 @@ export async function sendSetupIntentFailedEmail(params: {
   firstName: string;
   checkIn: Date;
   checkOut: Date;
+  // Booking's lodge (multi-lodge phase 8): see sendBookingConfirmedEmail.
+  lodgeId?: string | null;
 }) {
   await sendEmail({
     to: params.email,
@@ -2160,6 +2192,7 @@ export async function sendSetupIntentFailedEmail(params: {
       checkIn: formatNZDate(params.checkIn),
       checkOut: formatNZDate(params.checkOut),
     },
+    lodgeId: params.lodgeId,
   });
 }
 
@@ -2172,6 +2205,8 @@ export async function sendWaitlistConfirmationEmail(
   checkOut: Date,
   guestCount: number,
   position: number,
+  // Booking's lodge (multi-lodge phase 8): see sendBookingConfirmedEmail.
+  lodgeId?: string | null,
 ) {
   await sendEmail({
     to: email,
@@ -2191,6 +2226,7 @@ export async function sendWaitlistConfirmationEmail(
       guestCount,
       position,
     },
+    lodgeId,
   });
 }
 
@@ -2202,6 +2238,8 @@ export async function sendWaitlistOfferEmail(
   guestCount: number,
   expiresAt: Date,
   bookingId: string,
+  // Booking's lodge (multi-lodge phase 8): see sendBookingConfirmedEmail.
+  lodgeId?: string | null,
 ) {
   await sendEmail({
     to: email,
@@ -2223,6 +2261,7 @@ export async function sendWaitlistOfferEmail(
       expiresAt: formatNZDateTime(expiresAt),
       bookingId,
     },
+    lodgeId,
   });
 }
 
@@ -2232,6 +2271,8 @@ export async function sendWaitlistOfferExpiredEmail(
   checkIn: Date,
   checkOut: Date,
   position: number,
+  // Booking's lodge (multi-lodge phase 8): see sendBookingConfirmedEmail.
+  lodgeId?: string | null,
 ) {
   await sendEmail({
     to: email,
@@ -2244,6 +2285,7 @@ export async function sendWaitlistOfferExpiredEmail(
       checkOut: formatNZDate(checkOut),
       position,
     },
+    lodgeId,
   });
 }
 

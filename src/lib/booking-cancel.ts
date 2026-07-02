@@ -158,7 +158,9 @@ async function cancelLinkedProvisionalChildBookings(
       child.member.firstName,
       child.checkIn,
       child.checkOut,
-      0
+      0,
+      "card",
+      child.lodgeId
     ).catch((err) =>
       logger.error(
         { err, bookingId: child.id },
@@ -252,7 +254,8 @@ async function performBookingCancellation(
       booking.checkIn,
       booking.checkOut,
       0,
-      "card"
+      "card",
+      booking.lodgeId
     ).catch((err) => logger.error({ err, bookingId }, "Failed to send cancellation email for no-payment booking"));
 
     // If the booking was WAITLIST_OFFERED, re-process waitlist for these dates
@@ -329,7 +332,9 @@ async function performBookingCancellation(
       booking.member.firstName,
       booking.checkIn,
       booking.checkOut,
-      0
+      0,
+      "card",
+      booking.lodgeId
     ).catch((err) => logger.error({ err, bookingId }, "Failed to send cancellation email"));
 
     // Trigger waitlist processing for freed dates
@@ -459,7 +464,9 @@ async function performBookingCancellation(
       booking.member.firstName,
       booking.checkIn,
       booking.checkOut,
-      0
+      0,
+      "card",
+      booking.lodgeId
     ).catch((err) => logger.error({ err, bookingId }, "Failed to send cancellation email"));
 
     // Trigger waitlist processing for freed dates
@@ -610,7 +617,8 @@ async function performBookingCancellation(
       booking.checkIn,
       booking.checkOut,
       refundAmountCents,
-      "credit"
+      "credit",
+      booking.lodgeId
     ).catch((err) => logger.error({ err, bookingId }, "Failed to send cancellation email"));
 
     // Trigger waitlist processing for freed dates
@@ -720,7 +728,8 @@ async function performBookingCancellation(
       booking.checkIn,
       booking.checkOut,
       refundAmountCents,
-      "card"
+      "card",
+      booking.lodgeId
     ).catch((err) => logger.error({ err, bookingId }, "Failed to send cancellation email"));
 
     // Trigger waitlist processing for freed dates
@@ -795,7 +804,8 @@ async function performBookingCancellation(
     booking.checkIn,
     booking.checkOut,
     0,
-    "card"
+    "card",
+    booking.lodgeId
   ).catch((err) => logger.error({ err, bookingId }, "Failed to send cancellation email"));
 
   // Trigger waitlist processing for freed dates

@@ -142,6 +142,7 @@ export async function DELETE(
         changeFeeCents: 0,
         refundAmountCents: result.refundAmountCents,
         additionalAmountCents: 0,
+        lodgeId: result.booking.lodgeId,
       }).catch((err) =>
         logger.error({ err, bookingId }, "Failed to send booking modified email")
       );

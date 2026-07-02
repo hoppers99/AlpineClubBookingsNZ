@@ -1522,6 +1522,7 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
         booking.checkOut,
         booking.guests.length,
         booking.nonMemberHoldUntil,
+        booking.lodgeId,
       ).catch((err) => logger.error({ err }, "Failed to send pending booking email"));
     }
   }
@@ -1760,6 +1761,7 @@ export async function createWaitlistedBooking(input: WaitlistedBookingInput): Pr
       checkOut,
       newBooking.guests.length,
       position,
+      newBooking.lodgeId,
     ).catch((err) => logger.error({ err }, "Failed to send waitlist confirmation email"));
 
     sendAdminNewBookingAlert({

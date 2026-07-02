@@ -117,10 +117,12 @@ export function MemberPicker({ onSelect, selected, onClear }: MemberPickerProps)
                 setQuery("");
               }}
             >
-              <p className="text-sm font-medium">
+              {/* Badge renders a div, which HTML forbids inside <p> (React
+                  hydration error), so the row wrapper must be a div too. */}
+              <div className="text-sm font-medium">
                 {m.firstName} {m.lastName}
                 <Badge variant="outline" className="ml-2 text-[10px]">{m.ageTier}</Badge>
-              </p>
+              </div>
               <p className="text-xs text-slate-500">{m.email}</p>
             </button>
           ))}

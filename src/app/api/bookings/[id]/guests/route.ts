@@ -742,6 +742,7 @@ export async function POST(
               : undefined,
         paymentReference: result.paymentReference,
         xeroInvoiceNumber: result.xeroInvoiceNumber,
+        lodgeId: result.booking.lodgeId,
       }).catch((err) =>
         logger.error({ err, bookingId }, "Failed to send booking modified email")
       );

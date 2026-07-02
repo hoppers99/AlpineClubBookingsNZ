@@ -313,7 +313,8 @@ export async function settleGroupBookingOnOrganiserCancel(
       child.checkIn,
       child.checkOut,
       refundForChild,
-      "card"
+      "card",
+      child.lodgeId
     ).catch((err) =>
       logger.error(
         { err, bookingId: child.id },

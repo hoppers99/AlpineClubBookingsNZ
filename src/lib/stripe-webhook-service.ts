@@ -648,6 +648,7 @@ async function handleSetupIntentFailed(
       firstName: booking.member.firstName,
       checkIn: booking.checkIn,
       checkOut: booking.checkOut,
+      lodgeId: booking.lodgeId,
     }).catch((err) =>
       logger.error({ err, bookingId }, "Failed to send setup intent failed email")
     );

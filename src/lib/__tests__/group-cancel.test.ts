@@ -183,7 +183,8 @@ describe("settleGroupBookingOnOrganiserCancel", () => {
       CHECK_IN,
       CHECK_OUT,
       0,
-      "card"
+      "card",
+      undefined
     );
     expect(mocks.groupBookingUpdate).toHaveBeenCalledWith({
       where: { id: GROUP_ID },
@@ -253,7 +254,8 @@ describe("settleGroupBookingOnOrganiserCancel", () => {
       CHECK_IN,
       CHECK_OUT,
       4500,
-      "card"
+      "card",
+      undefined
     );
     expect(mocks.groupBookingUpdate).toHaveBeenCalledWith({
       where: { id: GROUP_ID },
@@ -294,7 +296,8 @@ describe("settleGroupBookingOnOrganiserCancel", () => {
       CHECK_IN,
       CHECK_OUT,
       0,
-      "card"
+      "card",
+      undefined
     );
   });
 

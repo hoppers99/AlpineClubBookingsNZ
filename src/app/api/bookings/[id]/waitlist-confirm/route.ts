@@ -122,7 +122,8 @@ export async function POST(
       booking.checkIn,
       booking.checkOut,
       booking.guests.length,
-      booking.nonMemberHoldUntil
+      booking.nonMemberHoldUntil,
+      booking.lodgeId
     ).catch((err) => logger.error({ err }, "Failed to send pending email after waitlist confirm"));
   }
 

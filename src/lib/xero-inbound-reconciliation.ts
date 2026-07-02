@@ -1329,6 +1329,7 @@ async function syncInternetBankingPaymentsForPaidInvoice(
         outcome.payment.booking.checkOut,
         outcome.payment.amountCents,
         "credit",
+        outcome.payment.booking.lodgeId,
       ).catch((err) =>
         logger.error(
           { err, bookingId: outcome.payment.bookingId, paymentId: outcome.payment.id },

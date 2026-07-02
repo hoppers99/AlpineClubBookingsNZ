@@ -169,7 +169,8 @@ async function sendBumpedEmail(booking: PendingBooking, flagged: boolean) {
         booking.member.email,
         booking.member.firstName,
         booking.checkIn,
-        booking.checkOut
+        booking.checkOut,
+        booking.lodgeId
       );
     } else {
       await sendBookingBumpedEmail(
@@ -177,7 +178,8 @@ async function sendBumpedEmail(booking: PendingBooking, flagged: boolean) {
         booking.member.firstName,
         booking.checkIn,
         booking.checkOut,
-        booking.guests.length
+        booking.guests.length,
+        booking.lodgeId
       );
     }
   } catch (emailErr) {

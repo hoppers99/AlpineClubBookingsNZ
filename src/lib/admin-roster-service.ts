@@ -494,7 +494,8 @@ export async function updateAdminRosterForDate(params: {
                 guest.name,
                 dateStr,
                 guest.chores,
-                choreLink
+                choreLink,
+                lodgeId
               )
               return {
                 guestId,
