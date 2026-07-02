@@ -5,6 +5,7 @@ const mockAuth = vi.fn();
 const mockChoreCreate = vi.fn();
 const mockChoreFindMany = vi.fn();
 const mockLodgeFindFirst = vi.fn();
+const mockLodgeFindUnique = vi.fn();
 
 vi.mock("@/lib/auth", () => ({
   auth: mockAuth,
@@ -25,6 +26,7 @@ vi.mock("@/lib/prisma", () => ({
     },
     lodge: {
       findFirst: mockLodgeFindFirst,
+      findUnique: mockLodgeFindUnique,
     },
   },
 }));
@@ -83,5 +85,69 @@ describe("POST /api/admin/chores", () => {
         lodgeId: "lodge-1",
       }),
     });
+  });
+
+  it("creates a chore at an explicitly requested active lodge", async () => {
+    mockLodgeFindUnique.mockResolvedValue({ id: "lodge-2", active: true });
+
+    const req = new NextRequest("http://localhost/api/admin/chores", {
+      method: "POST",
+      body: JSON.stringify({ name: "Sweep Deck", lodgeId: "lodge-2" }),
+    });
+
+    const res = await POST(req);
+
+    expect(res.status).toBe(201);
+    expect(mockChoreCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({ name: "Sweep Deck", lodgeId: "lodge-2" }),
+    });
+  });
+
+  it("rejects creating a chore at an unknown or inactive lodge", async () => {
+    mockLodgeFindUnique.mockResolvedValue({ id: "lodge-2", active: false });
+
+    const req = new NextRequest("http://localhost/api/admin/chores", {
+      method: "POST",
+      body: JSON.stringify({ name: "Sweep Deck", lodgeId: "lodge-2" }),
+    });
+
+    const res = await POST(req);
+
+    expect(res.status).toBe(400);
+    expect(mockChoreCreate).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET /api/admin/chores", () => {
+  let GET: typeof import("@/app/api/admin/chores/route").GET;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockAuth.mockResolvedValue({ user: { id: "admin1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] } });
+    mockChoreFindMany.mockResolvedValue([]);
+    const mod = await import("@/app/api/admin/chores/route");
+    GET = mod.GET;
+  });
+
+  it("lists every template when no lodge filter is given", async () => {
+    const res = await GET(new NextRequest("http://localhost/api/admin/chores"));
+
+    expect(res.status).toBe(200);
+    expect(mockChoreFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: undefined })
+    );
+  });
+
+  it("filters templates to a lodge while tolerating null lodgeId rows", async () => {
+    const res = await GET(
+      new NextRequest("http://localhost/api/admin/chores?lodgeId=lodge-2")
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockChoreFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { OR: [{ lodgeId: "lodge-2" }, { lodgeId: null }] },
+      })
+    );
   });
 });

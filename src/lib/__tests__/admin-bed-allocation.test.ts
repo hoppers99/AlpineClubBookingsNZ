@@ -21,10 +21,14 @@ import {
   BedAllocationAdminError,
   MAX_BED_ALLOCATION_RANGE_NIGHTS,
   buildBedAllocationWarnings,
+  createBedAllocationRoom,
+  getRoomsAndBedsConfiguration,
+  listBedAllocationRooms,
   manuallyAllocateBedForNights,
   parseBedAllocationDateRange,
   updateBedAllocationBed,
 } from "@/lib/admin-bed-allocation";
+import { getLodgeCapacityStatus } from "@/lib/lodge-capacity";
 import { parseDateOnly } from "@/lib/date-only";
 
 function readRepoFile(relativePath: string) {
@@ -353,5 +357,81 @@ describe("manuallyAllocateBedForNights", () => {
         db: db as never,
       }),
     ).rejects.toThrow("Booking status is not allocatable");
+  });
+});
+
+describe("multi-lodge room scoping (phase 7)", () => {
+  it("filters rooms to a lodge while tolerating null lodgeId rows", async () => {
+    const findMany = vi.fn().mockResolvedValue([]);
+    const db = { lodgeRoom: { findMany } };
+
+    await listBedAllocationRooms(db as never, "lodge-2");
+
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { OR: [{ lodgeId: "lodge-2" }, { lodgeId: null }] },
+      }),
+    );
+  });
+
+  it("lists every room when no lodge filter is given", async () => {
+    const findMany = vi.fn().mockResolvedValue([]);
+    const db = { lodgeRoom: { findMany } };
+
+    await listBedAllocationRooms(db as never);
+
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: undefined }),
+    );
+  });
+
+  it("creates rooms at the requested lodge without consulting the default", async () => {
+    const create = vi.fn().mockResolvedValue({ id: "room-1" });
+    const findFirst = vi.fn();
+    const db = { lodgeRoom: { create }, lodge: { findFirst } };
+
+    await createBedAllocationRoom({
+      name: "Bunkroom 1",
+      lodgeId: "lodge-2",
+      db: db as never,
+    });
+
+    expect(create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ lodgeId: "lodge-2" }),
+    });
+    expect(findFirst).not.toHaveBeenCalled();
+  });
+
+  it("stamps the default lodge when no lodge is requested", async () => {
+    const create = vi.fn().mockResolvedValue({ id: "room-1" });
+    const findFirst = vi.fn().mockResolvedValue({ id: "lodge-default" });
+    const db = { lodgeRoom: { create }, lodge: { findFirst } };
+
+    await createBedAllocationRoom({ name: "Bunkroom 1", db: db as never });
+
+    expect(create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ lodgeId: "lodge-default" }),
+    });
+  });
+
+  it("reports capacity for the requested lodge and keeps the import offer global", async () => {
+    const db = {
+      lodgeRoom: {
+        findMany: vi.fn().mockResolvedValue([]),
+        count: vi.fn().mockResolvedValue(3),
+      },
+      lodgeBed: {
+        count: vi.fn().mockResolvedValue(12),
+      },
+      lodge: { findFirst: vi.fn() },
+    };
+
+    const payload = await getRoomsAndBedsConfiguration(db as never, "lodge-2");
+
+    expect(getLodgeCapacityStatus).toHaveBeenCalledWith("lodge-2", db);
+    // Rooms exist elsewhere in the club, so the empty selected lodge must
+    // not offer the config import (it only seeds the first lodge).
+    expect(payload.canImportFromConfig).toBe(false);
+    expect(db.lodge.findFirst).not.toHaveBeenCalled();
   });
 });

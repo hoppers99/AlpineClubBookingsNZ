@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   BedDouble,
@@ -25,6 +25,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
+import { LodgeSelect, useLodgeOptions } from "@/components/lodge-select";
 
 interface DashboardBed {
   id: string;
@@ -113,18 +114,27 @@ export function RoomsBedsManager() {
   const [roomEdits, setRoomEdits] = useState<Record<string, RoomDraft>>({});
   const [bedDrafts, setBedDrafts] = useState<Record<string, BedDraft>>({});
   const [bedEdits, setBedEdits] = useState<Record<string, BedDraft>>({});
+  // Lodge context for the page; LodgeSelect renders nothing (and reports the
+  // sole lodge) while fewer than two lodges exist (ADR-002).
+  const { lodges } = useLodgeOptions("admin");
+  const [lodgeId, setLodgeId] = useState<string | null>(null);
 
   const totalBeds = useMemo(
     () => payload?.rooms.reduce((total, room) => total + room.beds.length, 0) ?? 0,
     [payload],
   );
 
-  async function loadRooms() {
+  const loadRooms = useCallback(async () => {
     setLoading(true);
     try {
-      const response = await fetch("/api/admin/bed-allocation/rooms", {
-        cache: "no-store",
-      });
+      const response = await fetch(
+        lodgeId
+          ? `/api/admin/bed-allocation/rooms?lodgeId=${encodeURIComponent(lodgeId)}`
+          : "/api/admin/bed-allocation/rooms",
+        {
+          cache: "no-store",
+        },
+      );
       if (!response.ok) {
         throw new Error(await readApiError(response, "Failed to load rooms and beds"));
       }
@@ -146,11 +156,11 @@ export function RoomsBedsManager() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [lodgeId]);
 
   useEffect(() => {
     void loadRooms();
-  }, []);
+  }, [loadRooms]);
 
   async function mutate(
     label: string,
@@ -219,6 +229,8 @@ export function RoomsBedsManager() {
             sortOrder: Number(roomDraft.sortOrder || 0),
             active: roomDraft.active,
             notes: roomDraft.notes || null,
+            // Lodge is set at creation from the page's lodge context.
+            ...(lodgeId ? { lodgeId } : {}),
           }),
         }),
       "Room created",
@@ -335,15 +347,20 @@ export function RoomsBedsManager() {
             ) : null}
           </div>
         </div>
-        <Button
-          variant="outline"
-          onClick={() => void loadRooms()}
-          disabled={loading}
-          className="gap-2 md:w-auto"
-        >
-          <LoaderCircle className={loading ? "h-4 w-4 animate-spin" : "hidden"} />
-          Refresh
-        </Button>
+        <div className="flex flex-col gap-3 md:flex-row md:items-end">
+          <div className="w-full md:w-56">
+            <LodgeSelect lodges={lodges} value={lodgeId} onChange={setLodgeId} />
+          </div>
+          <Button
+            variant="outline"
+            onClick={() => void loadRooms()}
+            disabled={loading}
+            className="gap-2 md:w-auto"
+          >
+            <LoaderCircle className={loading ? "h-4 w-4 animate-spin" : "hidden"} />
+            Refresh
+          </Button>
+        </div>
       </div>
 
       {loading ? (

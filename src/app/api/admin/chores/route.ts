@@ -2,7 +2,10 @@ import { NextRequest, NextResponse } from "next/server"
 import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma"
 import { z } from "zod"
-import { getDefaultLodgeId } from "@/lib/lodges"
+import {
+  lodgeNullTolerantScope,
+  resolveOptionalActiveLodgeId,
+} from "@/lib/lodges"
 
 const choreSchema = z
   .object({
@@ -45,9 +48,11 @@ const choreSchema = z
 export async function GET(req: NextRequest) {
   const guard = await requireAdmin();
   if (!guard.ok) return guard.response;
+  // Null-tolerant filter: rows without a lodgeId (pre-backfill or written by
+  // a draining old colour during the expand deploy) show under every lodge.
   const lodgeId = req.nextUrl.searchParams.get("lodgeId")
   const chores = await prisma.choreTemplate.findMany({
-    where: lodgeId ? { lodgeId } : undefined,
+    where: lodgeId ? lodgeNullTolerantScope(lodgeId) : undefined,
     orderBy: { sortOrder: "asc" },
   })
   return NextResponse.json(chores)
@@ -73,21 +78,12 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  let lodgeId: string;
-  if (requestedLodgeId) {
-    const lodge = await prisma.lodge.findUnique({
-      where: { id: requestedLodgeId },
-      select: { id: true, active: true },
-    });
-    if (!lodge || !lodge.active) {
-      return NextResponse.json(
-        { error: "Lodge not found or not active" },
-        { status: 400 }
-      );
-    }
-    lodgeId = lodge.id;
-  } else {
-    lodgeId = await getDefaultLodgeId(prisma)
+  const lodgeId = await resolveOptionalActiveLodgeId(prisma, requestedLodgeId);
+  if (!lodgeId) {
+    return NextResponse.json(
+      { error: "Lodge not found or not active" },
+      { status: 400 }
+    );
   }
 
   const chore = await prisma.choreTemplate.create({ data: { ...data, lodgeId } })

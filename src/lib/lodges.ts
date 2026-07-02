@@ -143,6 +143,24 @@ export async function getDefaultLodgeId(db: LodgeDb): Promise<string> {
   return lodge.id;
 }
 
+// Resolve an admin-supplied optional lodgeId: a provided id must name an
+// active lodge (returns null when it does not, so callers can 400), and an
+// omitted id falls back to the club's default lodge. One helper so the
+// admin create/update routes cannot drift on how they validate lodge input.
+export async function resolveOptionalActiveLodgeId(
+  db: LodgeDb,
+  requestedLodgeId: string | null | undefined,
+): Promise<string | null> {
+  if (requestedLodgeId) {
+    const lodge = await db.lodge.findUnique({
+      where: { id: requestedLodgeId },
+      select: { id: true, active: true },
+    });
+    return lodge?.active ? lodge.id : null;
+  }
+  return getDefaultLodgeId(db);
+}
+
 // Compatibility path (implementation-plan.md phase 1): email rendering still
 // reads lodge identity from the EmailMessageSetting singleton until phase 8
 // switches templates to per-booking lodge context. While the club has exactly

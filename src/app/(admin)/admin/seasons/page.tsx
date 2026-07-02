@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { APP_CURRENCY } from "@/config/operational"
 import { formatCents } from "@/lib/pricing"
+import { LodgeSelect, useLodgeOptions } from "@/components/lodge-select"
 
 interface SeasonRate {
   id: string
@@ -67,6 +68,10 @@ export default function SeasonsPage() {
   const [error, setError] = useState("")
   const [showForm, setShowForm] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
+  // Lodge context for the page; LodgeSelect renders nothing (and reports the
+  // sole lodge) while fewer than two lodges exist (ADR-002).
+  const { lodges } = useLodgeOptions("admin")
+  const [lodgeId, setLodgeId] = useState<string | null>(null)
 
   // Form state
   const [name, setName] = useState("")
@@ -92,7 +97,11 @@ export default function SeasonsPage() {
 
   const fetchSeasons = useCallback(async () => {
     try {
-      const res = await fetch("/api/admin/seasons")
+      const res = await fetch(
+        lodgeId
+          ? `/api/admin/seasons?lodgeId=${encodeURIComponent(lodgeId)}`
+          : "/api/admin/seasons"
+      )
       if (!res.ok) throw new Error("Failed to fetch seasons")
       const data = await res.json()
       setSeasons(data)
@@ -101,7 +110,7 @@ export default function SeasonsPage() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [lodgeId])
 
   useEffect(() => {
     fetchAgeTiers()
@@ -145,7 +154,17 @@ export default function SeasonsPage() {
       }
     })
 
-    const payload = { name, type, startDate, endDate, active, rates: ratesArray }
+    const payload = {
+      name,
+      type,
+      startDate,
+      endDate,
+      active,
+      rates: ratesArray,
+      // Lodge is set at creation from the page's lodge context and cannot be
+      // changed by an update.
+      ...(editingId ? {} : { lodgeId: lodgeId ?? undefined }),
+    }
 
     try {
       const url = editingId
@@ -231,6 +250,10 @@ export default function SeasonsPage() {
         {!showForm && (
           <Button onClick={() => setShowForm(true)}>Add Season</Button>
         )}
+      </div>
+
+      <div className="max-w-xs">
+        <LodgeSelect lodges={lodges} value={lodgeId} onChange={setLodgeId} />
       </div>
 
       {error && (

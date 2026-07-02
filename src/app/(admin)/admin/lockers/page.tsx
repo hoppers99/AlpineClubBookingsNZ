@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowDown, ArrowUp, Pencil, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -19,6 +19,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { LodgeSelect, useLodgeOptions } from "@/components/lodge-select";
 
 type MemberSummary = {
   id: string;
@@ -63,12 +64,20 @@ export default function LockersPage() {
   const [lockers, setLockers] = useState<LockerRecord[]>([]);
   const [sortField, setSortField] = useState<SortField>("name");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
+  // Lodge context for the page; LodgeSelect renders nothing (and reports the
+  // sole lodge) while fewer than two lodges exist (ADR-002).
+  const { lodges } = useLodgeOptions("admin");
+  const [lodgeId, setLodgeId] = useState<string | null>(null);
 
-  async function loadData() {
+  const loadData = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      const response = await fetch("/api/admin/lockers");
+      const response = await fetch(
+        lodgeId
+          ? `/api/admin/lockers?lodgeId=${encodeURIComponent(lodgeId)}`
+          : "/api/admin/lockers",
+      );
       const body = await response.json();
       if (!response.ok) {
         throw new Error(body.error || "Failed to load lockers");
@@ -85,11 +94,11 @@ export default function LockersPage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [lodgeId]);
 
   useEffect(() => {
     loadData();
-  }, []);
+  }, [loadData]);
 
   async function handleFormSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -101,6 +110,9 @@ export default function LockersPage() {
         name,
         allocatedToMemberId:
           allocatedToMemberId === "UNALLOCATED" ? null : allocatedToMemberId,
+        // Lodge is set at creation from the page's lodge context and cannot
+        // be changed by an update.
+        ...(editingLockerId ? {} : { lodgeId: lodgeId ?? undefined }),
       };
       const response = editingLockerId
         ? await fetch(`/api/admin/lockers/${editingLockerId}`, {
@@ -246,6 +258,10 @@ export default function LockersPage() {
         <p className="mt-1 text-sm text-slate-500">
           Create lockers and optionally allocate them to members.
         </p>
+      </div>
+
+      <div className="max-w-xs">
+        <LodgeSelect lodges={lodges} value={lodgeId} onChange={setLodgeId} />
       </div>
 
       <Card>

@@ -18,7 +18,7 @@ import {
   type UnallocatedGuestNight,
 } from "@/lib/bed-allocation";
 import { BED_ALLOCATABLE_BOOKING_STATUSES } from "@/lib/bed-allocation-lifecycle";
-import { getDefaultLodgeId } from "@/lib/lodges";
+import { getDefaultLodgeId, lodgeNullTolerantScope } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 
 export const BED_ALLOCATION_SETTINGS_ID = "default";
@@ -242,8 +242,15 @@ export async function updateBedAllocationSettings(input: {
   };
 }
 
-export async function listBedAllocationRooms(db: BedAllocationDb = prisma) {
+export async function listBedAllocationRooms(
+  db: BedAllocationDb = prisma,
+  lodgeId?: string,
+) {
   return db.lodgeRoom.findMany({
+    // Null-tolerant filter: rooms without a lodgeId (pre-backfill or written
+    // by a draining old colour during the expand deploy) show under every
+    // lodge.
+    where: lodgeId ? lodgeNullTolerantScope(lodgeId) : undefined,
     include: {
       beds: {
         orderBy: [{ sortOrder: "asc" }, { name: "asc" }, { id: "asc" }],
@@ -255,18 +262,22 @@ export async function listBedAllocationRooms(db: BedAllocationDb = prisma) {
 
 export async function getRoomsAndBedsConfiguration(
   db: BedAllocationDb = prisma,
+  requestedLodgeId?: string,
 ): Promise<RoomsAndBedsConfigurationPayload> {
-  const [rooms, defaultLodgeId] = await Promise.all([
-    listBedAllocationRooms(db),
-    getDefaultLodgeId(db),
+  const lodgeId = requestedLodgeId ?? (await getDefaultLodgeId(db));
+  const rooms = await listBedAllocationRooms(db, lodgeId);
+  const capacity = await getLodgeCapacityStatus(lodgeId, db);
+  // Import seeds the club's first lodge only, so the offer keys off the
+  // whole tables being empty, not just the selected lodge's slice.
+  const [totalRoomCount, totalBedCount] = await Promise.all([
+    db.lodgeRoom.count(),
+    db.lodgeBed.count(),
   ]);
-  const capacity = await getLodgeCapacityStatus(defaultLodgeId, db);
-  const bedCount = rooms.reduce((total, room) => total + room.beds.length, 0);
 
   return {
     rooms: serializeRooms(rooms),
     capacity,
-    canImportFromConfig: rooms.length === 0 && bedCount === 0,
+    canImportFromConfig: totalRoomCount === 0 && totalBedCount === 0,
     configBeds: clubConfig.beds.map((bed) => ({
       id: bed.id,
       name: bed.name,
@@ -361,10 +372,11 @@ export async function createBedAllocationRoom(input: {
   sortOrder?: number;
   active?: boolean;
   notes?: string | null;
+  lodgeId?: string;
   db?: BedAllocationDb;
 }) {
   const db = input.db ?? prisma;
-  const lodgeId = await getDefaultLodgeId(db);
+  const lodgeId = input.lodgeId ?? (await getDefaultLodgeId(db));
   return db.lodgeRoom.create({
     data: {
       name: input.name.trim(),

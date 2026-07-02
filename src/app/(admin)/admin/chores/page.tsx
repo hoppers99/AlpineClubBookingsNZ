@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Textarea } from "@/components/ui/textarea"
+import { LodgeSelect, useLodgeOptions } from "@/components/lodge-select"
 
 interface ChoreTemplate {
   id: string
@@ -55,6 +56,10 @@ export default function ChoresPage() {
   const [showForm, setShowForm] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  // Lodge context for the page; LodgeSelect renders nothing (and reports the
+  // sole lodge) while fewer than two lodges exist (ADR-002).
+  const { lodges } = useLodgeOptions("admin")
+  const [lodgeId, setLodgeId] = useState<string | null>(null)
 
   // Form state
   const [name, setName] = useState("")
@@ -74,7 +79,11 @@ export default function ChoresPage() {
 
   const fetchChores = useCallback(async () => {
     try {
-      const res = await fetch("/api/admin/chores")
+      const res = await fetch(
+        lodgeId
+          ? `/api/admin/chores?lodgeId=${encodeURIComponent(lodgeId)}`
+          : "/api/admin/chores"
+      )
       if (!res.ok) throw new Error("Failed to fetch chores")
       const data = await res.json()
       setChores(data)
@@ -83,7 +92,7 @@ export default function ChoresPage() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [lodgeId])
 
   useEffect(() => {
     fetchChores()
@@ -148,6 +157,9 @@ export default function ChoresPage() {
       frequencyDays: frequencyMode === "EVERY_X_DAYS" ? frequencyDays : null,
       frequencyDaysOfWeek: frequencyMode === "SPECIFIC_DAYS" ? frequencyDaysOfWeek : [],
       active,
+      // Lodge is set at creation from the page's lodge context and cannot be
+      // changed by an update.
+      ...(editingId ? {} : { lodgeId: lodgeId ?? undefined }),
     }
 
     try {
@@ -220,6 +232,10 @@ export default function ChoresPage() {
             Add Chore
           </Button>
         )}
+      </div>
+
+      <div className="max-w-xs">
+        <LodgeSelect lodges={lodges} value={lodgeId} onChange={setLodgeId} />
       </div>
 
       {error && (

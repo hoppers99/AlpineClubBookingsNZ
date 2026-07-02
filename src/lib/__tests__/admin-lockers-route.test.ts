@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   memberFindMany: vi.fn(),
   memberFindFirst: vi.fn(),
   lodgeFindFirst: vi.fn(),
+  lodgeFindUnique: vi.fn(),
   createAuditLog: vi.fn(),
   transaction: vi.fn(),
 }));
@@ -44,12 +45,13 @@ vi.mock("@/lib/prisma", () => ({
     },
     lodge: {
       findFirst: mocks.lodgeFindFirst,
+      findUnique: mocks.lodgeFindUnique,
     },
     $transaction: mocks.transaction,
   },
 }));
 
-import { POST } from "@/app/api/admin/lockers/route";
+import { GET, POST } from "@/app/api/admin/lockers/route";
 import {
   DELETE,
   PUT,
@@ -90,6 +92,79 @@ describe("admin locker routes", () => {
     mocks.lodgeFindFirst.mockResolvedValue({ id: "lodge-1" });
     mocks.createAuditLog.mockResolvedValue(undefined);
     installTransactionMock();
+  });
+
+  it("lists all lockers when no lodge filter is given", async () => {
+    mocks.lockerFindMany.mockResolvedValue([]);
+    mocks.memberFindMany.mockResolvedValue([]);
+
+    const response = await GET(
+      new NextRequest("http://localhost/api/admin/lockers"),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.lockerFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: undefined }),
+    );
+  });
+
+  it("filters lockers to a lodge while tolerating null lodgeId rows", async () => {
+    mocks.lockerFindMany.mockResolvedValue([]);
+    mocks.memberFindMany.mockResolvedValue([]);
+
+    const response = await GET(
+      new NextRequest("http://localhost/api/admin/lockers?lodgeId=lodge-2"),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.lockerFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { OR: [{ lodgeId: "lodge-2" }, { lodgeId: null }] },
+      }),
+    );
+  });
+
+  it("creates a locker at an explicitly requested active lodge", async () => {
+    mocks.lodgeFindUnique.mockResolvedValue({ id: "lodge-2", active: true });
+    mocks.lockerCreate.mockResolvedValue({
+      id: "locker-2",
+      name: "Locker B1",
+      allocatedToMemberId: null,
+      allocatedTo: null,
+    });
+
+    const response = await POST(
+      jsonRequest("POST", {
+        name: "Locker B1",
+        allocatedToMemberId: null,
+        lodgeId: "lodge-2",
+      }),
+    );
+
+    expect(response.status).toBe(201);
+    expect(mocks.lodgeFindUnique).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "lodge-2" } }),
+    );
+    expect(mocks.lockerCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ lodgeId: "lodge-2" }),
+      }),
+    );
+  });
+
+  it("rejects creating a locker at an unknown or inactive lodge", async () => {
+    mocks.lodgeFindUnique.mockResolvedValue(null);
+
+    const response = await POST(
+      jsonRequest("POST", {
+        name: "Locker B1",
+        allocatedToMemberId: null,
+        lodgeId: "lodge-missing",
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(mocks.lockerCreate).not.toHaveBeenCalled();
   });
 
   it("rejects duplicate locker names before create", async () => {

@@ -187,6 +187,24 @@ redemption check the booking's lodge; admin promo routes accept
 
 ## Phase 7 — Admin UI retrofit
 
+**Progress:** delivered on `feature/multi-lodge-support` (2026-07-02) for
+the configuration pages: rooms/beds, seasons, lockers, chores (shared
+`LodgeSelect` context selector; lists filter per lodge with null-tolerant
+scoping and creates stamp the selected lodge), the hut-leader assignment
+form (lodge picker plus a lodge column, with the assignment-overlap check
+now scoped per lodge so each lodge can have its own leader), the promo
+editor (`lodgeIds` multi-select restriction), and a member Lodge Access
+card on the admin member detail page (booking restriction + staff grants
+over the phase-4 API). Season overlap validation also became per-lodge
+(lodges may run different season windows). Every control honours the
+ADR-002 presentation rule via `LodgeSelect`, which renders nothing with
+fewer than two lodges. Deliberately deferred: the admin booking
+list/search/detail lodge filters and columns, the bed-allocation board's
+lodge context, and a booking-policy per-lodge override editor — these
+land with the phase-8 booking-flow threading, and the plan bullets below
+stay open until they do. Room/locker names stay globally unique until the
+phase-2 contract release re-scopes the constraints.
+
 - Build the lodge-picker pattern once (a context selector honouring the
   ADR-002 single-lodge presentation rule) and apply it to: rooms/beds,
   lockers, seasons, bed allocation, chores, booking policies (if

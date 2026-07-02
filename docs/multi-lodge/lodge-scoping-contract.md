@@ -83,6 +83,11 @@ new ADR:
   Two bookings at different lodges must not contend.
 - Roster/chore generation for a date runs per lodge and only sees that
   lodge's templates and staying guests.
+- Uniqueness-style date checks are per lodge: season overlap validation
+  and the hut-leader assignment overlap check compare only rows of the
+  same lodge (each lodge runs its own season windows and its own hut
+  leader). Rows still missing a lodgeId during the expand release
+  conservatively conflict at every lodge.
 - Money stays in integer cents and booking dates stay NZ date-only,
   unchanged by lodge scoping.
 

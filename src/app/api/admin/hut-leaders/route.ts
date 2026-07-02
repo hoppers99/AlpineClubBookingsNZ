@@ -11,7 +11,10 @@ import {
   hashHutLeaderPin,
 } from "@/lib/lodge-pin-session";
 import { hasAccessRole } from "@/lib/access-roles";
-import { getDefaultLodgeId } from "@/lib/lodges";
+import {
+  lodgeNullTolerantScope,
+  resolveOptionalActiveLodgeId,
+} from "@/lib/lodges";
 
 const createSchema = z.object({
   memberId: z.string().min(1),
@@ -34,6 +37,9 @@ export async function GET() {
       member: {
         select: { id: true, firstName: true, lastName: true, email: true },
       },
+      lodge: {
+        select: { id: true, name: true },
+      },
     },
     orderBy: { startDate: "desc" },
   });
@@ -47,6 +53,8 @@ export async function GET() {
       startDate: formatDateOnly(a.startDate),
       endDate: formatDateOnly(a.endDate),
       createdAt: a.createdAt.toISOString(),
+      lodgeId: a.lodgeId,
+      lodgeName: a.lodge?.name ?? null,
     })),
   });
 }
@@ -98,10 +106,25 @@ export async function POST(req: NextRequest) {
   const newStart = parseDateOnly(parsed.data.startDate);
   const newEnd = parseDateOnly(parsed.data.endDate);
 
+  const lodgeId = await resolveOptionalActiveLodgeId(
+    prisma,
+    parsed.data.lodgeId,
+  );
+  if (!lodgeId) {
+    return NextResponse.json(
+      { error: "Lodge not found or not active" },
+      { status: 400 }
+    );
+  }
+
+  // Each lodge has its own hut leader, so the overlap check is per lodge;
+  // assignments still missing a lodgeId (expand-release tolerance)
+  // conservatively conflict at every lodge.
   const potentialOverlaps = await prisma.hutLeaderAssignment.findMany({
     where: {
       startDate: { lte: newEnd },
       endDate: { gte: newStart },
+      ...lodgeNullTolerantScope(lodgeId),
     },
     include: {
       member: { select: { firstName: true, lastName: true } },
@@ -119,23 +142,6 @@ export async function POST(req: NextRequest) {
         { status: 409 }
       );
     }
-  }
-
-  let lodgeId: string;
-  if (parsed.data.lodgeId) {
-    const lodge = await prisma.lodge.findUnique({
-      where: { id: parsed.data.lodgeId },
-      select: { id: true, active: true },
-    });
-    if (!lodge || !lodge.active) {
-      return NextResponse.json(
-        { error: "Lodge not found or not active" },
-        { status: 400 }
-      );
-    }
-    lodgeId = lodge.id;
-  } else {
-    lodgeId = await getDefaultLodgeId(prisma);
   }
 
   try {

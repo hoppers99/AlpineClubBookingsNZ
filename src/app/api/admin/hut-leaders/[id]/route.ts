@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { z } from "zod";
 import logger from "@/lib/logger";
 import { calculateOverlapDays } from "@/lib/hut-leader-overlap";
+import { lodgeNullTolerantScope } from "@/lib/lodges";
 
 const updateSchema = z.object({
   startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
@@ -81,12 +82,17 @@ export async function PUT(
     );
   }
 
-  // Check for overlapping assignments (excluding self) — 1 day overlap allowed, 2+ rejected
+  // Check for overlapping assignments (excluding self) — 1 day overlap
+  // allowed, 2+ rejected. Each lodge has its own hut leader, so the check is
+  // per lodge; an assignment still missing a lodgeId (expand-release
+  // tolerance) conservatively conflicts at every lodge.
+  const finalLodgeId = updateData.lodgeId ?? existing.lodgeId;
   const potentialOverlaps = await prisma.hutLeaderAssignment.findMany({
     where: {
       id: { not: id },
       startDate: { lte: finalEnd },
       endDate: { gte: finalStart },
+      ...(finalLodgeId ? lodgeNullTolerantScope(finalLodgeId) : {}),
     },
     include: {
       member: { select: { firstName: true, lastName: true } },

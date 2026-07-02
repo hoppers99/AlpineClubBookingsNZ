@@ -1,11 +1,14 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import { parseJsonRequestBody } from "@/lib/api-json";
 import { createAuditLog } from "@/lib/audit";
-import { getDefaultLodgeId } from "@/lib/lodges";
+import {
+  lodgeNullTolerantScope,
+  resolveOptionalActiveLodgeId,
+} from "@/lib/lodges";
 import { isPrismaUniqueConstraintError } from "@/lib/prisma-errors";
 
 const createLockerSchema = z.object({
@@ -15,6 +18,7 @@ const createLockerSchema = z.object({
     .transform((value) => value.replace(/\s+/g, " "))
     .pipe(z.string().min(1).max(200)),
   allocatedToMemberId: z.string().trim().min(1).max(191).nullable().optional(),
+  lodgeId: z.string().min(1).optional(),
 });
 
 async function findDuplicateLockerName(name: string) {
@@ -33,14 +37,18 @@ async function findDuplicateLockerName(name: string) {
  * GET /api/admin/lockers
  * Returns lockers and active members for allocation dropdown.
  */
-export async function GET() {
+export async function GET(request: NextRequest) {
   const guard = await requireAdmin();
   if (!guard.ok) {
     return guard.response;
   }
 
+  // Null-tolerant filter: rows without a lodgeId (pre-backfill or written by
+  // a draining old colour during the expand deploy) show under every lodge.
+  const lodgeId = request.nextUrl.searchParams.get("lodgeId");
   const [lockers, members] = await Promise.all([
     prisma.locker.findMany({
+      where: lodgeId ? lodgeNullTolerantScope(lodgeId) : undefined,
       include: {
         allocatedTo: {
           select: { id: true, firstName: true, lastName: true },
@@ -93,6 +101,9 @@ export async function POST(request: Request) {
     }
   }
 
+  // Locker names stay globally unique until the phase-2 contract release
+  // re-scopes the DB constraint to [lodgeId, name]; keep the check global so
+  // the app rejects duplicates before the DB does.
   if (await findDuplicateLockerName(parsed.data.name)) {
     return NextResponse.json(
       { error: "A locker with that name already exists" },
@@ -100,9 +111,16 @@ export async function POST(request: Request) {
     );
   }
 
+  const lodgeId = await resolveOptionalActiveLodgeId(prisma, parsed.data.lodgeId);
+  if (!lodgeId) {
+    return NextResponse.json(
+      { error: "Lodge not found or not active" },
+      { status: 400 },
+    );
+  }
+
   try {
     const locker = await prisma.$transaction(async (tx) => {
-      const lodgeId = await getDefaultLodgeId(tx);
       const created = await tx.locker.create({
         data: {
           name: parsed.data.name,
