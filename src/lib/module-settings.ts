@@ -74,6 +74,17 @@ function readinessMessage(params: {
     };
   }
 
+  if (
+    params.key === "analytics" &&
+    !process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID?.trim()
+  ) {
+    return {
+      status: "credentials_missing",
+      message:
+        "Google Analytics is enabled, but NEXT_PUBLIC_GA_MEASUREMENT_ID is not configured.",
+    };
+  }
+
   return {
     status: "ready",
     message: `${params.label} is enabled.`,

@@ -1,11 +1,14 @@
 import { auth } from "@/lib/auth";
 import { headers } from "next/headers";
+import { AnalyticsConsent } from "@/components/analytics-consent";
 import { SiteBanners } from "@/components/site-banners";
 import { WebsiteHeader } from "@/components/website-header";
 import { WebsiteFooter } from "@/components/website-footer";
 import { CLUB_CONTACT_EMAIL, CLUB_NAME } from "@/config/club-identity";
 import { getWebsiteThemeRenderState } from "@/lib/club-theme";
 import { clubThemeFontVariableClassName } from "@/lib/club-theme-fonts";
+import { CSP_NONCE_HEADER } from "@/lib/csp";
+import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import { getCurrentSiteBanners } from "@/lib/site-banners";
 
 function resolvePageSlug(requestHeaders: Headers) {
@@ -17,13 +20,15 @@ export default async function WebsiteLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const [session, theme, requestHeaders, siteBanners] = await Promise.all([
+  const [session, theme, requestHeaders, siteBanners, modules] = await Promise.all([
     auth(),
     getWebsiteThemeRenderState(),
     headers(),
     getCurrentSiteBanners(),
+    loadEffectiveModuleFlags(),
   ]);
   const pageSlug = resolvePageSlug(requestHeaders);
+  const nonce = requestHeaders.get(CSP_NONCE_HEADER) ?? undefined;
   const themeStyle = (
     <style
       dangerouslySetInnerHTML={{ __html: theme.css }}
@@ -74,6 +79,11 @@ export default async function WebsiteLayout({
       />
       <main className="flex-1">{children}</main>
       <WebsiteFooter logoDataUrl={theme.logoDataUrl} pageSlug={pageSlug} />
+      <AnalyticsConsent
+        enabled={modules.analytics}
+        measurementId={process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID}
+        nonce={nonce}
+      />
     </div>
   );
 }

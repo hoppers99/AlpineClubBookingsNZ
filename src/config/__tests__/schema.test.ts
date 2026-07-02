@@ -195,6 +195,7 @@ describe("featureFlagsSchema", () => {
         communications: false,
         skifieldConditions: true,
         twoFactor: false,
+        analytics: false,
       }),
     ).toBeDefined();
   });
@@ -218,6 +219,7 @@ describe("featureFlagsSchema", () => {
       communications: true,
       skifieldConditions: true,
       twoFactor: false,
+      analytics: false,
       mystery: true,
     });
     expect(result.success).toBe(false);
@@ -242,6 +244,7 @@ describe("featureFlagsSchema", () => {
       communications: true,
       skifieldConditions: true,
       twoFactor: false,
+      analytics: "false",
     });
     expect(result.success).toBe(false);
   });

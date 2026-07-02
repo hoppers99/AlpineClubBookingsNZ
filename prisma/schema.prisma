@@ -2289,6 +2289,7 @@ model ClubModuleSettings {
   communications          Boolean  @default(true)
   skifieldConditions      Boolean  @default(true)
   twoFactor               Boolean  @default(false)
+  analytics               Boolean  @default(false)
   updatedByMemberId       String?
   createdAt               DateTime @default(now())
   updatedAt               DateTime @default(now()) @updatedAt

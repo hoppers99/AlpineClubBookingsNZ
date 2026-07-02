@@ -474,6 +474,9 @@ disable cron with `CRON_ENABLED=false`.
   role/session checks close to the route boundary.
 - External service callbacks and webhooks must verify signatures, state, or
   expected origin data before mutating local state.
+- Google Analytics is optional and privacy-gated: the Analytics module,
+  `NEXT_PUBLIC_GA_MEASUREMENT_ID`, and a visitor opt-in are all required before
+  GA4 loads on public website or public account pages.
 
 ## Deployment and Migrations
 

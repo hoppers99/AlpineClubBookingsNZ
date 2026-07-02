@@ -18,6 +18,7 @@ export const MODULE_KEYS = [
   "communications",
   "skifieldConditions",
   "twoFactor",
+  "analytics",
 ] as const;
 
 export type ModuleKey = (typeof MODULE_KEYS)[number];
@@ -47,6 +48,7 @@ export const DEFAULT_MODULE_SETTINGS: ModuleSettingsValues = {
   communications: true,
   skifieldConditions: true,
   twoFactor: false,
+  analytics: false,
 };
 
 export interface ModuleDefinition {
@@ -183,6 +185,15 @@ export const MODULE_DEFINITIONS: Record<ModuleKey, ModuleDefinition> = {
       "Require members and admins to verify an authenticator app, email code, or recovery code after password login.",
     dependencies: [
       "Transactional email delivery should be configured before enabling email one-time codes.",
+    ],
+  },
+  analytics: {
+    key: "analytics",
+    label: "Google Analytics",
+    description:
+      "Consent-gated GA4 tracking on public website and public account pages.",
+    dependencies: [
+      "NEXT_PUBLIC_GA_MEASUREMENT_ID must be configured before visitors can opt in.",
     ],
   },
 };

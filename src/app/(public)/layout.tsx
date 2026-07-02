@@ -2,6 +2,7 @@ import { auth } from "@/lib/auth";
 import { Inter, League_Spartan } from "next/font/google";
 import { headers } from "next/headers";
 import { AppProviders } from "@/components/app-providers";
+import { AnalyticsConsent } from "@/components/analytics-consent";
 import { SiteBanners } from "@/components/site-banners";
 import { ThemeSwitcher } from "@/components/theme-switcher";
 import { WebsiteHeader } from "@/components/website-header";
@@ -9,6 +10,7 @@ import { WebsiteFooter } from "@/components/website-footer";
 import { clubIdentity } from "@/config/club-identity";
 import { CSP_NONCE_HEADER } from "@/lib/csp";
 import { getLodgeCapacity } from "@/lib/lodge-capacity";
+import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import { getCurrentSiteBanners } from "@/lib/site-banners";
 
 const websiteBodyFont = Inter({
@@ -28,10 +30,11 @@ export default async function PublicLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const [session, lodgeCapacity, siteBanners] = await Promise.all([
+  const [session, lodgeCapacity, siteBanners, modules] = await Promise.all([
     auth(),
     getLodgeCapacity(),
     getCurrentSiteBanners(),
+    loadEffectiveModuleFlags(),
   ]);
   const liveClubIdentity = { ...clubIdentity, lodgeCapacity };
   const requestHeaders = await headers();
@@ -54,6 +57,11 @@ export default async function PublicLayout({
           </div>
         </main>
         <WebsiteFooter pageSlug={pageSlug} />
+        <AnalyticsConsent
+          enabled={modules.analytics}
+          measurementId={process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID}
+          nonce={nonce}
+        />
       </div>
     </AppProviders>
   );

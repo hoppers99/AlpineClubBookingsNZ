@@ -48,6 +48,14 @@ const FAQ_UPDATE_MIGRATION_PATH = join(
   "migration.sql",
 );
 
+const PRIVACY_UPDATE_MIGRATION_PATH = join(
+  process.cwd(),
+  "prisma",
+  "migrations",
+  "20260702144000_update_privacy_for_analytics_consent",
+  "migration.sql",
+);
+
 // Previous starter FAQ contentHtml (flat <h3>/<p> pairs), replaced by the
 // accordion update migration. Extracted verbatim from the policy-pages
 // backfill so the update migration's WHERE guard provably matches what that
@@ -60,6 +68,16 @@ function previousFaqContentHtml(policyPagesSql: string) {
     throw new Error("FAQ contentHtml not found in policy pages backfill SQL");
   }
   return faqBlock;
+}
+
+function previousPrivacyContentHtml(policyPagesSql: string) {
+  const privacyBlock = policyPagesSql
+    .split("'starter-page-privacy'")[1]
+    ?.match(/\$cms\$([\s\S]*?)\$cms\$/)?.[1];
+  if (!privacyBlock) {
+    throw new Error("Privacy contentHtml not found in policy pages backfill SQL");
+  }
+  return privacyBlock;
 }
 
 // Previous default "home" copy, replaced by the update migration above. The
@@ -89,8 +107,9 @@ describe("starter page content backfill migration", () => {
   const policyPagesSql = readFileSync(POLICY_PAGES_MIGRATION_PATH, "utf8");
   const updateSql = readFileSync(HOME_UPDATE_MIGRATION_PATH, "utf8");
   const faqUpdateSql = readFileSync(FAQ_UPDATE_MIGRATION_PATH, "utf8");
+  const privacyUpdateSql = readFileSync(PRIVACY_UPDATE_MIGRATION_PATH, "utf8");
   const allInsertSql = `${insertSql}\n${backfill404Sql}\n${policyPagesSql}`;
-  const combinedSql = `${allInsertSql}\n${updateSql}\n${faqUpdateSql}`;
+  const combinedSql = `${allInsertSql}\n${updateSql}\n${faqUpdateSql}\n${privacyUpdateSql}`;
 
   it("inserts exactly the starter pages defined for the seed", () => {
     const insertedIds = [
@@ -134,6 +153,30 @@ describe("starter page content backfill migration", () => {
     expect(policyPagesSql).toContain("'/privacy'");
     expect(policyPagesSql).toContain("'/terms'");
     expect(policyPagesSql).toContain("'/faq'");
+  });
+});
+
+describe("starter privacy analytics update migration (#975)", () => {
+  const sql = readFileSync(PRIVACY_UPDATE_MIGRATION_PATH, "utf8");
+  const policyPagesSql = readFileSync(POLICY_PAGES_MIGRATION_PATH, "utf8");
+
+  it("only updates the privacy row, and never inserts or deletes", () => {
+    expect(sql).toMatch(/UPDATE\s+"PageContent"/);
+    expect(sql).not.toMatch(/\bDELETE\b/i);
+    expect(sql).not.toMatch(/\bINSERT\b/i);
+  });
+
+  it("guards the update on the row still holding the backfilled privacy html", () => {
+    expect(sql).toContain(`"slug" = ${sqlQuote("privacy")}`);
+    expect(sql).toContain(previousPrivacyContentHtml(policyPagesSql));
+  });
+
+  it("writes the current consent-gated analytics copy from starterPageContent", () => {
+    const privacy = starterPageContent.find((page) => page.slug === "privacy");
+    expect(privacy).toBeDefined();
+    expect(sql).toContain(privacy!.contentHtml);
+    expect(sql).toContain("Google Analytics 4");
+    expect(sql).toContain("updatedAt");
   });
 });
 

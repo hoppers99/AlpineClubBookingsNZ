@@ -155,6 +155,7 @@ const MODULE_CONTROLS = [
   { key: "bedAllocation", label: "Bed allocation" },
   { key: "internetBankingPayments", label: "Internet Banking payments" },
   { key: "addressAutocomplete", label: "Address autocomplete" },
+  { key: "analytics", label: "Google Analytics" },
 ] as const satisfies readonly {
   key: AdminModuleKey;
   label: string;

@@ -96,6 +96,8 @@ describe("compliance pages (F-COMP-01, F-COMP-02)", () => {
     expect(page?.path).toBe("/privacy");
     expect(page?.title.toLowerCase()).toContain("privacy");
     expect(page?.contentHtml).toContain("Privacy Act 2020");
+    expect(page?.contentHtml).toContain("Google Analytics 4");
+    expect(page?.contentHtml).toContain("Consent Mode starts with analytics storage denied");
   });
 
   it("terms page is seeded as editable PageContent", () => {
