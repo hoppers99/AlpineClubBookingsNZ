@@ -75,7 +75,9 @@ new ADR:
   path may sum beds across lodges into one number.
 - A booking's guests, nights, bed allocations, and requested room must all
   belong to `booking.lodgeId`. Enforce in service logic; add DB constraints
-  where practical.
+  where practical. Manual bed allocation rejects a bed whose room belongs
+  to a different lodge than the booking, and the bed-allocation board,
+  auto-allocator, and range approval all operate within one lodge scope.
 - Pricing lookups (`findRateForNight`, `calculateBookingPrice`) operate on
   the seasons of exactly one lodge. Callers pass lodge-filtered season
   data; the pure calculation functions stay lodge-agnostic.

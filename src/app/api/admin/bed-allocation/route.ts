@@ -18,7 +18,10 @@ export async function GET(request: NextRequest) {
       from: request.nextUrl.searchParams.get("from"),
       to: request.nextUrl.searchParams.get("to"),
     });
-    return NextResponse.json(await getBedAllocationDashboard({ range }));
+    // Scope the board to one lodge (ADR-003); omitted = club-wide, which
+    // preserves single-lodge behaviour.
+    const lodgeId = request.nextUrl.searchParams.get("lodgeId") ?? undefined;
+    return NextResponse.json(await getBedAllocationDashboard({ range, lodgeId }));
   } catch (error) {
     return bedAllocationErrorResponse(error);
   }

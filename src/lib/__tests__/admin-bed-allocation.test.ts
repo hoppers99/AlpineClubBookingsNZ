@@ -23,6 +23,8 @@ import {
   buildBedAllocationWarnings,
   createBedAllocationRoom,
   createBedAllocationRoomsBulk,
+  approveBedAllocations,
+  getBedAllocationDashboard,
   getRoomsAndBedsConfiguration,
   listBedAllocationRooms,
   manuallyAllocateBedForNights,
@@ -542,5 +544,134 @@ describe("createBedAllocationRoomsBulk (ADR-003 bulk seeding)", () => {
         db: db as never,
       }),
     ).rejects.toThrow("Beds per room must be between");
+  });
+});
+
+describe("bed allocation board lodge scope (ADR-003)", () => {
+  function buildDashboardDb() {
+    const bookingFindMany = vi.fn().mockResolvedValue([]);
+    const allocationFindMany = vi.fn().mockResolvedValue([]);
+    const roomFindMany = vi.fn().mockResolvedValue([]);
+    return {
+      db: {
+        bedAllocationSettings: {
+          findUnique: vi.fn().mockResolvedValue({
+            autoAllocationEnabled: false,
+            updatedByMemberId: null,
+            updatedAt: parseDateOnly("2026-07-01"),
+          }),
+        },
+        lodgeRoom: { findMany: roomFindMany },
+        booking: { findMany: bookingFindMany },
+        bedAllocation: { findMany: allocationFindMany },
+      },
+      bookingFindMany,
+      allocationFindMany,
+      roomFindMany,
+    };
+  }
+
+  const range = parseBedAllocationDateRange({
+    from: "2026-07-01",
+    to: "2026-07-08",
+  });
+
+  it("scopes rooms, bookings, and allocations to the lodge, tolerating null rows", async () => {
+    const { db, bookingFindMany, allocationFindMany, roomFindMany } =
+      buildDashboardDb();
+
+    await getBedAllocationDashboard({ range, lodgeId: "lodge-2", db: db as never });
+
+    expect(roomFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { OR: [{ lodgeId: "lodge-2" }, { lodgeId: null }] },
+      }),
+    );
+    expect(bookingFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: [{ lodgeId: "lodge-2" }, { lodgeId: null }],
+        }),
+      }),
+    );
+    expect(allocationFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          room: { OR: [{ lodgeId: "lodge-2" }, { lodgeId: null }] },
+        }),
+      }),
+    );
+  });
+
+  it("stays club-wide when no lodge is given", async () => {
+    const { db, bookingFindMany, allocationFindMany, roomFindMany } =
+      buildDashboardDb();
+
+    await getBedAllocationDashboard({ range, db: db as never });
+
+    expect(roomFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: undefined }),
+    );
+    expect(bookingFindMany.mock.calls[0][0].where.OR).toBeUndefined();
+    expect(allocationFindMany.mock.calls[0][0].where.room).toBeUndefined();
+  });
+
+  it("scopes range approval to the lodge's rooms", async () => {
+    const updateMany = vi.fn().mockResolvedValue({ count: 2 });
+    const db = { bedAllocation: { updateMany } };
+
+    await approveBedAllocations({
+      approvedByMemberId: "admin-1",
+      range,
+      lodgeId: "lodge-2",
+      db: db as never,
+    });
+
+    expect(updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          room: { OR: [{ lodgeId: "lodge-2" }, { lodgeId: null }] },
+        }),
+      }),
+    );
+  });
+
+  it("rejects allocating a guest to another lodge's bed", async () => {
+    const upsert = vi.fn();
+    const db = {
+      bookingGuest: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: "guest-1",
+          bookingId: "booking-1",
+          stayStart: parseDateOnly("2026-07-01"),
+          stayEnd: parseDateOnly("2026-07-04"),
+          booking: {
+            id: "booking-1",
+            status: "CONFIRMED",
+            deletedAt: null,
+            lodgeId: "lodge-1",
+          },
+        }),
+      },
+      lodgeBed: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: "bed-1",
+          roomId: "room-1",
+          active: true,
+          room: { id: "room-1", active: true, lodgeId: "lodge-2" },
+        }),
+      },
+      bedAllocation: { upsert },
+    };
+
+    await expect(
+      manuallyAllocateBedForNights({
+        bookingGuestId: "guest-1",
+        bedId: "bed-1",
+        stayDates: ["2026-07-01"],
+        db: db as never,
+      }),
+    ).rejects.toThrow("Bed belongs to a different lodge than the booking");
+    expect(upsert).not.toHaveBeenCalled();
   });
 });

@@ -621,6 +621,7 @@ function clampGuestToRange(
 async function loadBookingRecords(
   range: BedAllocationDateRange,
   db: BedAllocationDb,
+  lodgeId?: string,
 ) {
   return db.booking.findMany({
     where: {
@@ -634,6 +635,9 @@ async function loadBookingRecords(
           stayEnd: { gt: range.from },
         },
       },
+      // Null-tolerant: bookings still missing a lodgeId (expand-release
+      // tolerance) show on every lodge's board.
+      ...(lodgeId ? lodgeNullTolerantScope(lodgeId) : {}),
     },
     select: {
       id: true,
@@ -681,6 +685,7 @@ async function loadBookingRecords(
 async function loadAllocationRecords(
   range: BedAllocationDateRange,
   db: BedAllocationDb,
+  lodgeId?: string,
 ) {
   return db.bedAllocation.findMany({
     where: {
@@ -688,6 +693,9 @@ async function loadAllocationRecords(
         gte: range.from,
         lt: range.to,
       },
+      // Allocations follow their bed's room; rooms without a lodgeId
+      // (expand-release tolerance) show on every lodge's board.
+      ...(lodgeId ? { room: lodgeNullTolerantScope(lodgeId) } : {}),
     },
     include: {
       bookingGuest: {
@@ -934,14 +942,18 @@ export function buildBedAllocationWarnings(input: {
 
 export async function getBedAllocationDashboard(input: {
   range: BedAllocationDateRange;
+  // Scope the whole board — rooms, bookings, allocations, and therefore the
+  // first-fit suggestions — to one lodge (ADR-003). Omitted = club-wide,
+  // preserving single-lodge behaviour.
+  lodgeId?: string;
   db?: BedAllocationDb;
 }): Promise<BedAllocationDashboardPayload> {
   const db = input.db ?? prisma;
   const [settings, rooms, bookings, allocationRecords] = await Promise.all([
     getBedAllocationSettings(db),
-    listBedAllocationRooms(db),
-    loadBookingRecords(input.range, db),
-    loadAllocationRecords(input.range, db),
+    listBedAllocationRooms(db, input.lodgeId),
+    loadBookingRecords(input.range, db, input.lodgeId),
+    loadAllocationRecords(input.range, db, input.lodgeId),
   ]);
   const serializedAllocations = serializeAllocations(allocationRecords);
   const allGuestNights = buildGuestNightRows(bookings, input.range);
@@ -992,10 +1004,17 @@ export async function getBedAllocationDashboard(input: {
 
 export async function runAutoBedAllocation(input: {
   range: BedAllocationDateRange;
+  // Auto-allocation follows the board's lodge scope, so a suggestion can
+  // never place a guest into another lodge's bed.
+  lodgeId?: string;
   db?: BedAllocationDb;
 }) {
   const db = input.db ?? prisma;
-  const dashboard = await getBedAllocationDashboard({ range: input.range, db });
+  const dashboard = await getBedAllocationDashboard({
+    range: input.range,
+    lodgeId: input.lodgeId,
+    db,
+  });
 
   if (!dashboard.settings.autoAllocationEnabled) {
     throw new BedAllocationAdminError(
@@ -1035,6 +1054,7 @@ async function assertGuestAndBedForAllocation(input: {
             id: true,
             status: true,
             deletedAt: true,
+            lodgeId: true,
           },
         },
       },
@@ -1061,6 +1081,19 @@ async function assertGuestAndBedForAllocation(input: {
   ) {
     throw new BedAllocationAdminError(
       "Booking status is not allocatable",
+      409,
+    );
+  }
+  // Lodge-scoping contract: a booking's bed allocations must belong to the
+  // booking's lodge. Rows still missing a lodgeId (expand-release tolerance)
+  // pass on either side.
+  if (
+    guest.booking.lodgeId &&
+    bed.room.lodgeId &&
+    guest.booking.lodgeId !== bed.room.lodgeId
+  ) {
+    throw new BedAllocationAdminError(
+      "Bed belongs to a different lodge than the booking",
       409,
     );
   }
@@ -1292,6 +1325,9 @@ export async function approveBedAllocations(input: {
   approvedByMemberId: string;
   allocationIds?: string[];
   range?: BedAllocationDateRange;
+  // Range approval follows the board's lodge scope so approving one lodge's
+  // board never approves another lodge's pending allocations.
+  lodgeId?: string;
   db?: BedAllocationDb;
 }) {
   const db = input.db ?? prisma;
@@ -1306,6 +1342,9 @@ export async function approveBedAllocations(input: {
       gte: input.range.from,
       lt: input.range.to,
     };
+    if (input.lodgeId) {
+      where.room = lodgeNullTolerantScope(input.lodgeId);
+    }
   } else {
     throw new BedAllocationAdminError(
       "Select allocations or provide a date range to approve.",

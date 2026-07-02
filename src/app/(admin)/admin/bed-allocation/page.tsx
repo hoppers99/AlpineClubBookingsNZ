@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { LodgeSelect, useLodgeOptions } from "@/components/lodge-select";
 import { useSearchParams } from "next/navigation";
 import {
   DndContext,
@@ -243,6 +244,15 @@ export default function AdminBedAllocationPage() {
       : clampRange(initialFrom, formatDateOnly(addDaysDateOnly(parseDateOnly(initialFrom), 7))),
   );
 
+  // Board lodge scope (ADR-003); LodgeSelect renders nothing (and reports
+  // the sole lodge) while fewer than two lodges exist (ADR-002). Initialised
+  // from the URL synchronously so the first dashboard fetch is already
+  // lodge-filtered.
+  const { lodges, loading: lodgesLoading } = useLodgeOptions("admin");
+  const [lodgeId, setLodgeId] = useState<string | null>(
+    searchParams.get("lodgeId"),
+  );
+
   const [payload, setPayload] = useState<DashboardPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);
@@ -332,6 +342,7 @@ export default function AdminBedAllocationPage() {
     setLoading(true);
     try {
       const params = new URLSearchParams({ from: fromDate, to: toDate });
+      if (lodgeId) params.set("lodgeId", lodgeId);
       const response = await fetch(`/api/admin/bed-allocation?${params}`, {
         cache: "no-store",
       });
@@ -358,7 +369,7 @@ export default function AdminBedAllocationPage() {
   useEffect(() => {
     void loadDashboard();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fromDate, toDate]);
+  }, [fromDate, toDate, lodgeId]);
 
   async function withPending<T>(
     keys: string | string[],
@@ -425,7 +436,11 @@ export default function AdminBedAllocationPage() {
         fetch("/api/admin/bed-allocation/auto-allocate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ from: fromDate, to: toDate }),
+          body: JSON.stringify({
+            from: fromDate,
+            to: toDate,
+            ...(lodgeId ? { lodgeId } : {}),
+          }),
         }),
       "Auto allocation applied",
     );
@@ -438,7 +453,11 @@ export default function AdminBedAllocationPage() {
         fetch("/api/admin/bed-allocation/approve", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ from: fromDate, to: toDate }),
+          body: JSON.stringify({
+            from: fromDate,
+            to: toDate,
+            ...(lodgeId ? { lodgeId } : {}),
+          }),
         }),
       "Allocations approved",
     );
@@ -818,7 +837,13 @@ export default function AdminBedAllocationPage() {
             ) : null}
           </div>
         </div>
-        <div className="grid gap-3 sm:grid-cols-[minmax(0,150px)_minmax(0,150px)_auto]">
+        <div className="grid gap-3 sm:grid-cols-[minmax(0,200px)_minmax(0,150px)_minmax(0,150px)_auto]">
+          <LodgeSelect
+            lodges={lodges}
+            value={lodgeId}
+            onChange={setLodgeId}
+            loading={lodgesLoading}
+          />
           <div className="space-y-1">
             <Label htmlFor="bed-from">Date In</Label>
             <Input
