@@ -30,6 +30,9 @@ export async function GET() {
     );
   }
 
-  const documents = await getSanitizedLodgeInstructions();
+  // Reader surface: resolve text tokens ({{club-name}} etc.) for display.
+  const documents = await getSanitizedLodgeInstructions({
+    resolveTokens: true,
+  });
   return NextResponse.json({ documents });
 }

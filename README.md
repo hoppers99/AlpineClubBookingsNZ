@@ -25,7 +25,8 @@ fork for another organisation. See `NOTICE.md`.
   reports, waitlist, lodge settings, Xero operations, and hut leaders
 - Admin-editable public website pages with sanitised HTML content, embed
   tokens for interactive sections, and a menu generated from page settings
-  (see `CONFIGURATION.md`, "Website Page Content")
+  (see `CONFIGURATION.md`, "Website Page Content"); every admin rich-text
+  editor includes a token help button listing the tokens it supports
 - Lodge kiosk with PIN access, arrivals/departures, chores, and issue reporting
 - Xero integrations for operational accounting, Internet Banking settlement,
   and finance reports backed by the same operational Xero connection

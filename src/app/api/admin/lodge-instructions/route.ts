@@ -29,6 +29,8 @@ export async function GET() {
     return guard.response;
   }
 
+  // Editor surface: keep tokens unresolved so admins see and can edit the
+  // literal {{club-name}} placeholders (round-trip safety).
   const documents = await getSanitizedLodgeInstructions();
   return NextResponse.json({ documents });
 }

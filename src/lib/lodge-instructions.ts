@@ -3,6 +3,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { getTodayDateOnly } from "@/lib/date-only";
 import { sanitizePageContentHtml } from "@/lib/page-content-html";
+import { resolveTextTokens } from "@/lib/page-content-embeds";
 import { hasAdminAccess, type AccessRoleInput } from "@/lib/access-roles";
 
 // Canonical display order for the three keyed documents.
@@ -80,10 +81,16 @@ export async function canReadLodgeInstructions(
  * sanitised on write, but every render path injects contentHtml with
  * dangerouslySetInnerHTML, so sanitise again on read (defence in depth,
  * matching getSanitizedPageContentByPath).
+ *
+ * When `resolveTokens` is set, text tokens such as {{club-name}} are
+ * replaced after sanitising; resolveTextTokens HTML-escapes every
+ * replacement value, so resolution cannot reintroduce unsafe markup.
+ * Reader/kiosk routes resolve tokens; the admin editor route must not,
+ * so editors round-trip the literal {{token}} text.
  */
-export async function getSanitizedLodgeInstructions(): Promise<
-  LodgeInstructionDocument[]
-> {
+export async function getSanitizedLodgeInstructions(options?: {
+  resolveTokens?: boolean;
+}): Promise<LodgeInstructionDocument[]> {
   const records = await prisma.lodgeInstruction.findMany({
     select: {
       key: true,
@@ -94,14 +101,22 @@ export async function getSanitizedLodgeInstructions(): Promise<
 
   const byKey = new Map(records.map((record) => [record.key, record]));
 
-  return LODGE_INSTRUCTION_KEYS.map((key) => {
-    const record = byKey.get(key);
-    return {
-      key,
-      title: LODGE_INSTRUCTION_LABELS[key].title,
-      description: LODGE_INSTRUCTION_LABELS[key].description,
-      contentHtml: record ? sanitizePageContentHtml(record.contentHtml) : "",
-      updatedAt: record ? record.updatedAt.toISOString() : null,
-    };
-  });
+  return Promise.all(
+    LODGE_INSTRUCTION_KEYS.map(async (key) => {
+      const record = byKey.get(key);
+      let contentHtml = record
+        ? sanitizePageContentHtml(record.contentHtml)
+        : "";
+      if (options?.resolveTokens && contentHtml) {
+        contentHtml = await resolveTextTokens(contentHtml);
+      }
+      return {
+        key,
+        title: LODGE_INSTRUCTION_LABELS[key].title,
+        description: LODGE_INSTRUCTION_LABELS[key].description,
+        contentHtml,
+        updatedAt: record ? record.updatedAt.toISOString() : null,
+      };
+    }),
+  );
 }

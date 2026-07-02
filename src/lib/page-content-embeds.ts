@@ -11,6 +11,11 @@ import { CLUB_NAME } from "@/config/club-identity";
 import { APP_CURRENCY } from "@/config/operational";
 import { getLodgeCapacity } from "@/lib/lodge-capacity";
 import { extractImageDimensions } from "@/lib/media-image";
+import {
+  embedTokenNames,
+  legacySingleBraceTokenNames,
+  textTokenNames,
+} from "@/lib/token-catalogue";
 
 export type PhotoGalleryImage = {
   src: string;
@@ -34,9 +39,30 @@ type ParsedEmbedToken = {
   parameter: string | undefined;
 };
 
-const EMBED_TOKEN_REGEX =
-  /\{\{\s*(committee-members-cards|member-application-form|contact-form|join-apply-form|skifield-conditions|skifield-whakapapa|photo-gallery|photo-slideshow)(?:\s*:\s*([^{}]+?))?\s*\}\}|\{\s*(committee-members-cards|member-application-form|contact-form|join-apply-form|skifield-conditions|skifield-whakapapa)(?:\s*:\s*([^{}]+?))?\s*\}/gi;
-const TEXT_TOKEN_REGEX = /\{\{\s*(lodge-capacity|club-name|currency)\s*\}\}/gi;
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Both matchers are derived from src/lib/token-catalogue.ts (single source of
+// truth) and built once at module load. Matching behaviour is unchanged from
+// the previous hardcoded regexes: case-insensitive, whitespace tolerant,
+// double braces with an optional `:parameter`, and the legacy single-brace
+// form only for legacy-enabled embed tokens (photo tokens excluded).
+const EMBED_TOKEN_ALTERNATION = embedTokenNames().map(escapeRegExp).join("|");
+const LEGACY_TOKEN_ALTERNATION = legacySingleBraceTokenNames()
+  .map(escapeRegExp)
+  .join("|");
+const TEXT_TOKEN_ALTERNATION = textTokenNames().map(escapeRegExp).join("|");
+
+export const EMBED_TOKEN_REGEX = new RegExp(
+  `\\{\\{\\s*(${EMBED_TOKEN_ALTERNATION})(?:\\s*:\\s*([^{}]+?))?\\s*\\}\\}` +
+    `|\\{\\s*(${LEGACY_TOKEN_ALTERNATION})(?:\\s*:\\s*([^{}]+?))?\\s*\\}`,
+  "gi",
+);
+export const TEXT_TOKEN_REGEX = new RegExp(
+  `\\{\\{\\s*(${TEXT_TOKEN_ALTERNATION})\\s*\\}\\}`,
+  "gi",
+);
 
 function escapeHtmlText(value: string): string {
   return value
@@ -47,7 +73,10 @@ function escapeHtmlText(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
-async function resolveTextTokens(contentHtml: string): Promise<string> {
+// Exported for reuse by other sanitised HTML surfaces (lodge instructions).
+// Replacement values are HTML-escaped via escapeHtmlText, so this stays safe
+// to run after sanitisation.
+export async function resolveTextTokens(contentHtml: string): Promise<string> {
   TEXT_TOKEN_REGEX.lastIndex = 0;
   if (!TEXT_TOKEN_REGEX.test(contentHtml)) {
     return contentHtml;

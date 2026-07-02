@@ -169,6 +169,8 @@ export function LodgeInstructionsPanel() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
+            {/* Text tokens ({{club-name}} etc.) resolve on the reader and
+                kiosk surfaces; the token help button lists what's available. */}
             <WysiwygEditor
               ref={(handle) => {
                 editorRefs.current[doc.key] = handle;
@@ -178,6 +180,7 @@ export function LodgeInstructionsPanel() {
                 setDrafts((prev) => ({ ...prev, [doc.key]: html }))
               }
               placeholder={`Write the ${doc.title.toLowerCase()} instructions...`}
+              tokenHelpContext="lodge-instructions"
             />
             <div className="flex justify-end">
               <Button

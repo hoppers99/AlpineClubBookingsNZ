@@ -61,6 +61,15 @@ import {
   isSystemPageSlug,
   SYSTEM_PAGE_SLUGS,
 } from "@/lib/page-content";
+import {
+  TokenCatalogueSections,
+  TokenChips,
+  TokenHelpDialog,
+} from "@/components/admin/token-help-dialog";
+import {
+  tokensForContext,
+  type TokenContextId,
+} from "@/lib/token-catalogue";
 
 function stripHtml(html: string): string {
   return html
@@ -183,6 +192,11 @@ export const WysiwygEditor = forwardRef<
     placeholder?: string;
     editorClassName?: string;
     wrapperClassName?: string;
+    /**
+     * When set, the toolbar shows a token help button listing the tokens
+     * available in this editor context (from the shared token catalogue).
+     */
+    tokenHelpContext?: TokenContextId;
   }
 >(function WysiwygEditor(
   {
@@ -191,10 +205,12 @@ export const WysiwygEditor = forwardRef<
     placeholder,
     editorClassName = "min-h-48",
     wrapperClassName,
+    tokenHelpContext,
   },
   ref,
 ) {
   const [showHtmlFallback, setShowHtmlFallback] = useState(false);
+  const [tokenHelpOpen, setTokenHelpOpen] = useState(false);
   const [imagePickerOpen, setImagePickerOpen] = useState(false);
   const [loadingSiteImages, setLoadingSiteImages] = useState(false);
   const [siteImages, setSiteImages] = useState<string[]>([]);
@@ -969,8 +985,32 @@ export const WysiwygEditor = forwardRef<
           >
             {showHtmlFallback ? "Use Visual Editor" : "HTML Editor"}
           </Button>
+          {tokenHelpContext ? (
+            <Button
+              size="sm"
+              className="h-7 px-2 text-xs"
+              type="button"
+              variant="outline"
+              aria-label="Token help"
+              title="Token help"
+              // Same mouse-down pattern as the other toolbar buttons so the
+              // editor selection is not lost when opening the dialog.
+              onMouseDown={(event) =>
+                onToolbarMouseDown(event, () => setTokenHelpOpen(true))
+              }
+            >
+              <CircleHelp className="h-4 w-4" />
+            </Button>
+          ) : null}
         </div>
       </div>
+      {tokenHelpContext ? (
+        <TokenHelpDialog
+          context={tokenHelpContext}
+          open={tokenHelpOpen}
+          onOpenChange={setTokenHelpOpen}
+        />
+      ) : null}
       {showHtmlFallback ? (
         <Textarea
           value={value}
@@ -1670,111 +1710,9 @@ export function PageContentPanel() {
 }`}
             </pre>
 
-            <p>
-              In the content editor you can add any of the following tokens by
-              having the token name in {"{{}}"}. E.G.{" "}
-              <code>{"{{contact-form}}"}</code>
-            </p>
-            <p>
-              Photo tokens must use double braces, for example{" "}
-              <code>{"{{photo-gallery}}"}</code>. Single-brace photo tokens are
-              not supported.
-            </p>
-            <p>
-              <i>
-                <b>committee-members-cards</b>
-              </i>
-              <br />
-              This will display cards in a grid with a committee member in each
-              one.
-            </p>
-            <p>
-              <i>
-                <b>member-application-form</b>
-              </i>
-              <br />
-              This will display the Membership application form.
-            </p>
-            <p>
-              <i>
-                <b>join-apply-form</b>
-              </i>
-              <br />
-              This will display the Membership application form.
-            </p>
-            <p>
-              <i>
-                <b>contact-form</b>
-              </i>
-              <br />
-              This will display a contact us form where a user can send a
-              message to the club or to a published contactable committee
-              assignment.
-            </p>
-            <p>
-              <i>
-                <b>skifield-conditions</b>
-              </i>
-              <br />
-              This will display the Ski resort status, weather, chairlift
-              status, road status.
-              <br />
-              You will need to go to https://www.snow.nz/snow-report-widget and
-              select the skifield you want information on.
-              <br />
-              On submit you will be shown a script. On the first line, copy the
-              hash code within the quotes. e.g. data-hash=&quot;zzz&quot;.
-              <br />
-              On this editor page do the following, while replacing zzz with
-              your hashcode. <code>{"{{skifield-conditions:zzz}}"}</code>
-            </p>
-            <p>
-              <i>
-                <b>skifield-whakapapa</b>
-              </i>
-              <br />
-              This will fetch the Whakapapa report and render a parsed curlData
-              JSON object.
-              <br />
-              On this editor page do the following:{" "}
-              <code>{"{{skifield-whakapapa}}"}</code>
-            </p>
-            <p>
-              <i>
-                <b>photo-gallery</b>
-              </i>
-              <br />
-              This will display a PhotoSwipe gallery using the images already
-              inserted into the page body.
-              <br />
-              Add your images to the page body, then place the token where the
-              gallery should appear.
-              <br />
-              You can also pass a folder path, for example:
-              <code>{"{{photo-gallery:/public/images/photos/One}}"}</code>
-            </p>
-            <p>
-              <i>
-                <b>photo-slideshow</b>
-              </i>
-              <br />
-              This will display the same images in a slideshow-oriented
-              PhotoSwipe layout.
-              <br />
-              Use the same folder-path format when you want to load all photos
-              from a directory.
-              <br />
-              For example:{" "}
-              <code>{"{{photo-slideshow:/public/images/photos/One}}"}</code>
-            </p>
-            <p>
-              <i>
-                <b>club-name</b>, <b>currency</b>, <b>lodge-capacity</b>
-              </i>
-              <br />
-              These text tokens are replaced with the current club name,
-              currency code, and lodge capacity when the public page renders.
-            </p>
+            {/* Token documentation is rendered from the shared catalogue so
+                this dialog stays in lockstep with the editor token help. */}
+            <TokenCatalogueSections context="page-content-body" />
           </div>
         </DialogContent>
       </Dialog>
@@ -2074,6 +2012,8 @@ export function PageContentPanel() {
                 </div>
               </div>
 
+              {/* Header text renders raw (no token resolution), so only the
+                  body editor gets token help. */}
               <WysiwygEditor
                 ref={bodyEditorRef}
                 key={selectedPageId ?? "none"}
@@ -2081,6 +2021,7 @@ export function PageContentPanel() {
                 onChange={setDraftContent}
                 placeholder="Enter page HTML here"
                 editorClassName="min-h-[320px]"
+                tokenHelpContext="page-content-body"
               />
 
               <div className="rounded-md border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
@@ -2094,40 +2035,12 @@ export function PageContentPanel() {
                   Photo tokens require double braces such as{" "}
                   {"{{photo-gallery}}"} or {"{{photo-slideshow}}"}.
                 </p>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  <span className="rounded bg-slate-200 px-2 py-1 font-mono text-[11px] text-slate-800">
-                    skifield-whakapapa
-                  </span>
-                  <span className="rounded bg-slate-200 px-2 py-1 font-mono text-[11px] text-slate-800">
-                    skifield-conditions
-                  </span>
-                  <span className="rounded bg-slate-200 px-2 py-1 font-mono text-[11px] text-slate-800">
-                    committee-members-cards
-                  </span>
-                  <span className="rounded bg-slate-200 px-2 py-1 font-mono text-[11px] text-slate-800">
-                    member-application-form
-                  </span>
-                  <span className="rounded bg-slate-200 px-2 py-1 font-mono text-[11px] text-slate-800">
-                    join-apply-form
-                  </span>
-                  <span className="rounded bg-slate-200 px-2 py-1 font-mono text-[11px] text-slate-800">
-                    contact-form
-                  </span>
-                  <span className="rounded bg-slate-200 px-2 py-1 font-mono text-[11px] text-slate-800">
-                    photo-gallery
-                  </span>
-                  <span className="rounded bg-slate-200 px-2 py-1 font-mono text-[11px] text-slate-800">
-                    photo-slideshow
-                  </span>
-                  <span className="rounded bg-slate-200 px-2 py-1 font-mono text-[11px] text-slate-800">
-                    club-name
-                  </span>
-                  <span className="rounded bg-slate-200 px-2 py-1 font-mono text-[11px] text-slate-800">
-                    currency
-                  </span>
-                  <span className="rounded bg-slate-200 px-2 py-1 font-mono text-[11px] text-slate-800">
-                    lodge-capacity
-                  </span>
+                <div className="mt-2">
+                  <TokenChips
+                    tokens={tokensForContext("page-content-body").map(
+                      (definition) => ({ token: definition.token }),
+                    )}
+                  />
                 </div>
                 <p className="mt-2 text-[11px] text-slate-500">
                   Optional hash override:

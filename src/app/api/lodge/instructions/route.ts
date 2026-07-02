@@ -36,6 +36,9 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  const documents = await getSanitizedLodgeInstructions();
+  // Kiosk display surface: resolve text tokens ({{club-name}} etc.).
+  const documents = await getSanitizedLodgeInstructions({
+    resolveTokens: true,
+  });
   return NextResponse.json({ documents });
 }

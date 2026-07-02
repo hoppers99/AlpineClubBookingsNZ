@@ -168,6 +168,10 @@ public page route.
   the documents to the signed-in hut leader tier.
 - HTML is sanitised on save and again on render with the same allowlist as
   page content (`src/lib/page-content-html.ts`).
+- Text tokens `{{club-name}}`, `{{currency}}`, and `{{lodge-capacity}}` are
+  resolved on the reader and kiosk surfaces (embed tokens are not supported
+  here). The admin editor shows the literal tokens; the editor's token help
+  button lists what is available.
 - The migration backfills the three empty documents, so deploy-only
   environments get editable rows without running the seed.
 

@@ -238,6 +238,13 @@ hut-leader lookahead window used by dashboard and Needs Attention warnings.
 The sidebar's Needs Attention Booking Requests badge sums pending internal
 booking reviews, requested change requests, and queued public booking requests.
 
+`src/lib/token-catalogue.ts` is the client-safe single source of truth for the
+`{{token}}` placeholders supported in admin HTML content (page bodies and lodge
+instructions); the embed/text matching regexes in `src/lib/page-content-embeds.ts`
+and the WysiwygEditor token help dialog are both derived from it. Lodge
+instruction reader/kiosk routes resolve text tokens on read; the admin editor
+route returns them unresolved so edits round-trip.
+
 Member CSV import allows distinct identities to share an email address while
 preserving the database invariant that only one member per email can have
 `canLogin: true`. Duplicate detection uses normalized email plus first and last
