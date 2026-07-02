@@ -10,9 +10,15 @@ import { bookingStatusLabel } from "@/lib/status-colors";
 
 interface BookingFiltersProps {
   showBedAllocation?: boolean;
+  // Active lodges for the lodge filter (multi-lodge phase 8). The control
+  // only renders once a second lodge exists (ADR-002 presentation rule).
+  lodgeOptions?: Array<{ id: string; name: string }>;
 }
 
-export function BookingFilters({ showBedAllocation = true }: BookingFiltersProps) {
+export function BookingFilters({
+  showBedAllocation = true,
+  lodgeOptions = [],
+}: BookingFiltersProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -30,6 +36,8 @@ export function BookingFilters({ showBedAllocation = true }: BookingFiltersProps
     showBedAllocation ? searchParams.get("bedState") || "all" : "all"
   );
   const [changeState, setChangeState] = useState(searchParams.get("changeState") || "all");
+  const [lodgeId, setLodgeId] = useState(searchParams.get("lodgeId") || "all");
+  const showLodgeFilter = lodgeOptions.length > 1;
   const sortBy = searchParams.get("sortBy") || searchParams.get("sort") || "updatedAt";
   const sortDir = searchParams.get("sortDir") || "desc";
   const bookingStatuses = ["PAYMENT_PENDING", "CONFIRMED", "PAID", "PENDING", "WAITLISTED", "WAITLIST_OFFERED", "CANCELLED", "BUMPED", "COMPLETED", "DRAFT"] as const;
@@ -61,6 +69,7 @@ export function BookingFilters({ showBedAllocation = true }: BookingFiltersProps
     if (xeroState !== "all") params.set("xeroState", xeroState);
     if (showBedAllocation && bedState !== "all") params.set("bedState", bedState);
     if (changeState !== "all") params.set("changeState", changeState);
+    if (showLodgeFilter && lodgeId !== "all") params.set("lodgeId", lodgeId);
     router.push(`/admin/bookings?${params.toString()}`);
   }
 
@@ -77,6 +86,7 @@ export function BookingFilters({ showBedAllocation = true }: BookingFiltersProps
     setXeroState("all");
     setBedState("all");
     setChangeState("all");
+    setLodgeId("all");
     router.push("/admin/bookings");
   }
 
@@ -97,6 +107,21 @@ export function BookingFilters({ showBedAllocation = true }: BookingFiltersProps
           ))}
         </select>
       </div>
+      {showLodgeFilter && (
+        <div className="space-y-1">
+          <label className="text-xs font-medium text-gray-500">Lodge</label>
+          <select
+            value={lodgeId}
+            onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setLodgeId(e.target.value)}
+            className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors"
+          >
+            <option value="all">All lodges</option>
+            {lodgeOptions.map((lodge) => (
+              <option key={lodge.id} value={lodge.id}>{lodge.name}</option>
+            ))}
+          </select>
+        </div>
+      )}
       <div className="space-y-1">
         <label className="text-xs font-medium text-gray-500">Month</label>
         <select

@@ -334,7 +334,10 @@ describe("Cron: Confirm Pending Bookings", () => {
       booking.checkOut,
       2,
       10000,
-      undefined
+      // Multi-lodge phase 8: the options now carry the booking's lodge so
+      // the email renders that lodge's identity (undefined here because the
+      // fixture booking has no lodgeId).
+      { lodgeId: undefined }
     );
   });
 

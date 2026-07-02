@@ -6,6 +6,11 @@ vi.mock("@/lib/prisma", () => ({
     booking: { findMany: vi.fn() },
     xeroSyncOperation: { findMany: vi.fn() },
     xeroObjectLink: { findMany: vi.fn() },
+    // Multi-lodge phase 8: the page loads active lodges for the lodge
+    // filter/column (hidden while only one comes back).
+    lodge: {
+      findMany: vi.fn().mockResolvedValue([{ id: "lodge-1", name: "Lodge" }]),
+    },
   },
 }));
 

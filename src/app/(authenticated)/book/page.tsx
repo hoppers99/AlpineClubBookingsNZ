@@ -19,6 +19,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useClubIdentity } from "@/components/club-identity-provider";
+import { LodgeSelect, useLodgeOptions } from "@/components/lodge-select";
 import { PromoCodeInput, type PromoResult } from "@/components/promo-code-input";
 import { TimePicker } from "@/components/time-picker";
 import { CreditCard, Landmark } from "lucide-react";
@@ -155,6 +156,12 @@ export default function BookPage() {
   const { data: session } = useSession();
   const { lodgeCapacity } = useClubIdentity();
   const [step, setStep] = useState<"dates" | "guests" | "review">("dates");
+  // Lodge being booked (multi-lodge phase 8). /api/lodges only returns
+  // lodges this member may book; LodgeSelect renders nothing (and reports
+  // the sole lodge) while fewer than two come back (ADR-002), so
+  // single-lodge clubs see no change.
+  const { lodges } = useLodgeOptions("member");
+  const [lodgeId, setLodgeId] = useState<string | null>(null);
   const [checkIn, setCheckIn] = useState<Date | null>(null);
   const [checkOut, setCheckOut] = useState<Date | null>(null);
   const [guests, setGuests] = useState<GuestData[]>([]);
@@ -214,6 +221,32 @@ export default function BookPage() {
     );
     return hasMinor && !hasAdult;
   })();
+
+  // Display label for capacity copy: the lodge's name once a second lodge
+  // exists, the generic phrase otherwise (ADR-002 presentation rule).
+  const selectedLodge = lodges.find((lodge) => lodge.id === lodgeId) ?? null;
+  const lodgeLabel =
+    lodges.length > 1 && selectedLodge ? selectedLodge.name : "The lodge";
+
+  function handleLodgeChange(nextLodgeId: string | null) {
+    if (nextLodgeId === lodgeId) return;
+    const hadLodge = lodgeId !== null;
+    setLodgeId(nextLodgeId);
+    if (!hadLodge) return;
+    // Availability, pricing, policies, promos, and rooms are all per lodge:
+    // switching lodges restarts the flow from date selection.
+    setStep("dates");
+    setCheckIn(null);
+    setCheckOut(null);
+    setError("");
+    setGuestProfileBlocks([]);
+    setAppliedPromo(null);
+    setPriceQuote(null);
+    setUseCredit(false);
+    setRequestedRoomId(null);
+    setAvailabilityNightDetails([]);
+    setShowWaitlistPrompt(false);
+  }
 
   function getBookingDateStrings() {
     if (!checkIn || !checkOut) {
@@ -333,10 +366,10 @@ export default function BookPage() {
 
   function formatCapacityExceededMessage(fullNights: string[]) {
     if (fullNights.length === 1) {
-      return `The lodge does not have enough beds on ${fullNights[0]}`;
+      return `${lodgeLabel} does not have enough beds on ${fullNights[0]}`;
     }
 
-    return `The lodge does not have enough beds on ${fullNights.length} nights`;
+    return `${lodgeLabel} does not have enough beds on ${fullNights.length} nights`;
   }
 
   useEffect(() => {
@@ -399,7 +432,11 @@ export default function BookPage() {
   }, []);
 
   useEffect(() => {
-    fetch("/api/bookings/rooms")
+    fetch(
+      lodgeId
+        ? `/api/bookings/rooms?lodgeId=${encodeURIComponent(lodgeId)}`
+        : "/api/bookings/rooms"
+    )
       .then((res) => res.ok ? res.json() : null)
       .then((data) => {
         setRoomRequestEnabled(Boolean(data?.enabled));
@@ -409,7 +446,7 @@ export default function BookPage() {
         setRoomRequestEnabled(false);
         setRoomOptions([]);
       });
-  }, []);
+  }, [lodgeId]);
 
   // Fetch subscription status for the current season
   useEffect(() => {
@@ -514,10 +551,11 @@ export default function BookPage() {
     setWorkPartyClearedNotice(null);
     const ciStr = formatLocalDateOnly(ci);
     const coStr = formatLocalDateOnly(co);
+    const lodgeParam = lodgeId ? `&lodgeId=${encodeURIComponent(lodgeId)}` : "";
 
     // Fetch availability for selected range
     const res = await fetch(
-      `/api/availability/check?checkIn=${ciStr}&checkOut=${coStr}`
+      `/api/availability/check?checkIn=${ciStr}&checkOut=${coStr}${lodgeParam}`
     );
     if (res.ok) {
       const data = await res.json();
@@ -528,7 +566,7 @@ export default function BookPage() {
     }
 
     // Check minimum stay policies
-    const policyRes = await fetch(`/api/booking-policies/check?checkIn=${ciStr}&checkOut=${coStr}`);
+    const policyRes = await fetch(`/api/booking-policies/check?checkIn=${ciStr}&checkOut=${coStr}${lodgeParam}`);
     if (policyRes.ok) {
       const policyData = await policyRes.json();
       if (!policyData.valid) {
@@ -580,6 +618,7 @@ export default function BookPage() {
       body: JSON.stringify({
         checkIn: checkInStr,
         checkOut: checkOutStr,
+        lodgeId: lodgeId ?? undefined,
         guests: guestPayload.map((g) => ({
           ageTier: g.ageTier,
           isMember: g.isMember,
@@ -661,6 +700,7 @@ export default function BookPage() {
       body: JSON.stringify({
         checkIn: checkInStr,
         checkOut: checkOutStr,
+        lodgeId: lodgeId ?? undefined,
         guests: guestPayload,
         notes: notes || undefined,
         promoCode: appliedPromo?.code || undefined,
@@ -732,6 +772,7 @@ export default function BookPage() {
           guests.some((g) => !g.isMember) && cancelIfGuestsBumped
             ? true
             : undefined,
+        lodgeId: lodgeId ?? undefined,
         waitlist: true,
         memberReviewJustification: requiresAdminReviewLocal
           ? memberReviewJustification.trim()
@@ -781,6 +822,7 @@ export default function BookPage() {
             ? true
             : undefined,
         applyCreditCents: appliedCreditCents > 0 ? appliedCreditCents : undefined,
+        lodgeId: lodgeId ?? undefined,
         draft: true,
         memberReviewJustification: requiresAdminReviewLocal
           ? memberReviewJustification.trim() || undefined
@@ -1061,9 +1103,13 @@ export default function BookPage() {
                 </svg>
               </div>
               <div>
-                <h3 className="font-semibold text-purple-900">Lodge is fully booked</h3>
+                <h3 className="font-semibold text-purple-900">
+                  {lodges.length > 1 && selectedLodge
+                    ? `${selectedLodge.name} is fully booked`
+                    : "Lodge is fully booked"}
+                </h3>
                 <p className="text-sm text-purple-700 mt-1">
-                  The lodge is at capacity on{" "}
+                  {lodgeLabel} is at capacity on{" "}
                   {waitlistFullNights.length === 1
                     ? waitlistFullNights[0]
                     : `${waitlistFullNights.length} nights`}
@@ -1112,17 +1158,32 @@ export default function BookPage() {
           <CardHeader>
             <CardTitle>Select Your Dates</CardTitle>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-4">
             {subscriptionUnpaid ? (
               <p className="text-sm text-amber-700 py-8 text-center">
                 Booking is disabled until your subscription is paid.
               </p>
             ) : (
-              <BookingCalendar
-                onDateSelect={handleDateSelect}
-                selectedCheckIn={checkIn}
-                selectedCheckOut={checkOut}
-              />
+              <>
+                <div className="max-w-xs">
+                  <LodgeSelect
+                    lodges={lodges}
+                    value={lodgeId}
+                    onChange={handleLodgeChange}
+                  />
+                </div>
+                {lodges.length > 1 && selectedLodge?.travelNote ? (
+                  <p className="text-sm text-muted-foreground">
+                    {selectedLodge.travelNote}
+                  </p>
+                ) : null}
+                <BookingCalendar
+                  onDateSelect={handleDateSelect}
+                  selectedCheckIn={checkIn}
+                  selectedCheckOut={checkOut}
+                  lodgeId={lodgeId}
+                />
+              </>
             )}
           </CardContent>
         </Card>
@@ -1251,6 +1312,12 @@ export default function BookPage() {
               <CardTitle>Booking Summary</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
+              {lodges.length > 1 && selectedLodge ? (
+                <div className="text-sm">
+                  <span className="text-gray-500">Lodge:</span>{" "}
+                  <span className="font-medium">{selectedLodge.name}</span>
+                </div>
+              ) : null}
               <div className="grid grid-cols-2 gap-4 text-sm">
                 <div>
                   <span className="text-gray-500">Check-in:</span>{" "}
@@ -1602,6 +1669,7 @@ export default function BookPage() {
                   guests={reviewGuestPayload}
                   onPromoApplied={setAppliedPromo}
                   appliedPromo={appliedPromo}
+                  lodgeId={lodgeId}
                   prefillCode={prefillPromoCode}
                   disabled={attendingWorkParty}
                   disabledReason="A promo code cannot be combined with a working bee discount. Untick 'I am attending a working bee' to enter a code instead."

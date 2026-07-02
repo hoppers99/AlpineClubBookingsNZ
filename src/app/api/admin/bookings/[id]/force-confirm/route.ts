@@ -224,13 +224,16 @@ export async function POST(
         booking.checkOut,
         booking.guests.length,
         booking.finalPriceCents,
-        booking.promoRedemption?.promoCode
-          ? {
-              discountCents: booking.discountCents,
-              promoAdjustmentCents: booking.promoAdjustmentCents,
-              promoCode: booking.promoRedemption.promoCode.code,
-            }
-          : undefined,
+        {
+          lodgeId: booking.lodgeId,
+          ...(booking.promoRedemption?.promoCode
+            ? {
+                discountCents: booking.discountCents,
+                promoAdjustmentCents: booking.promoAdjustmentCents,
+                promoCode: booking.promoRedemption.promoCode.code,
+              }
+            : {}),
+        },
       ).catch((err) => logger.error({ err, bookingId }, "Failed to send confirmation after force-confirm"));
     }
 

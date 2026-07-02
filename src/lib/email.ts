@@ -96,7 +96,7 @@ import { formatCents as formatMoneyCents } from "@/lib/utils";
 import { buildBookingRequestsHref } from "@/lib/admin-booking-requests-path";
 import {
   formatEmailFromAddressWithSettings,
-  loadEmailMessageSettings,
+  loadEmailMessageSettingsForLodge,
 } from "@/lib/email-message-settings";
 import {
   prepareEmailMessage,
@@ -214,6 +214,7 @@ export async function sendEmail({
   templateData,
   attachments,
   logRecipient,
+  lodgeId,
 }: {
   to: string;
   subject: string;
@@ -223,12 +224,16 @@ export async function sendEmail({
   templateData?: EmailTemplateData;
   attachments?: EmailAttachment[];
   logRecipient?: string;
+  // Lodge whose identity this message carries (multi-lodge phase 8);
+  // omitted/null keeps the club-wide singleton values.
+  lodgeId?: string | null;
 }): Promise<EmailSendOutcome> {
   const prepared = await prepareEmailMessage({
     templateName,
     subject,
     html,
     templateData,
+    lodgeId,
   });
   const from = formatEmailFromAddressWithSettings(
     prepared.settings,
@@ -598,9 +603,12 @@ export async function sendBookingConfirmedEmail(
     discountCents?: number;
     promoAdjustmentCents?: number;
     promoCode?: string;
+    // Booking's lodge (multi-lodge phase 8): the email carries this lodge's
+    // name, travel note, and door code. Omitted/null = singleton values.
+    lodgeId?: string | null;
   },
 ) {
-  const settings = await loadEmailMessageSettings();
+  const settings = await loadEmailMessageSettingsForLodge(options?.lodgeId);
   const promoAdjustmentCents =
     options?.promoAdjustmentCents ??
     (options?.discountCents && options.discountCents > 0
@@ -645,6 +653,7 @@ export async function sendBookingConfirmedEmail(
       total: formatMoneyCents(totalCents),
       doorCode: settings.doorCode ?? "",
     },
+    lodgeId: options?.lodgeId,
   });
 }
 
@@ -1252,8 +1261,11 @@ export async function sendPreArrivalReminderEmail(params: {
   checkOut: Date;
   guestCount: number;
   expectedArrivalTime?: string | null;
+  // Booking's lodge (multi-lodge phase 8): the email carries this lodge's
+  // name, travel note, and door code. Omitted/null = singleton values.
+  lodgeId?: string | null;
 }) {
-  const settings = await loadEmailMessageSettings();
+  const settings = await loadEmailMessageSettingsForLodge(params.lodgeId);
   await sendEmail({
     to: params.email,
     subject: `Pre-arrival Information - ${CLUB_LODGE_NAME}`,
@@ -1271,6 +1283,7 @@ export async function sendPreArrivalReminderEmail(params: {
       expectedArrivalTime: params.expectedArrivalTime ?? "",
       doorCode: settings.doorCode ?? "",
     },
+    lodgeId: params.lodgeId,
   });
 }
 

@@ -1402,13 +1402,16 @@ async function syncInternetBankingPaymentsForPaidInvoice(
       outcome.payment.booking.checkOut,
       outcome.payment.booking.guests.length,
       outcome.payment.booking.finalPriceCents,
-      outcome.payment.booking.promoRedemption?.promoCode
-        ? {
-            discountCents: outcome.payment.booking.discountCents,
-            promoAdjustmentCents: outcome.payment.booking.promoAdjustmentCents,
-            promoCode: outcome.payment.booking.promoRedemption.promoCode.code,
-          }
-        : undefined
+      {
+        lodgeId: outcome.payment.booking.lodgeId,
+        ...(outcome.payment.booking.promoRedemption?.promoCode
+          ? {
+              discountCents: outcome.payment.booking.discountCents,
+              promoAdjustmentCents: outcome.payment.booking.promoAdjustmentCents,
+              promoCode: outcome.payment.booking.promoRedemption.promoCode.code,
+            }
+          : {}),
+      }
     ).catch((err) =>
       logger.error(
         { err, bookingId: outcome.payment.bookingId, paymentId: outcome.payment.id },

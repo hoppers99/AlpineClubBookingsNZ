@@ -63,13 +63,16 @@ export async function POST(
     checkIn: booking.checkIn,
     checkOut: booking.checkOut,
   };
-  const promoEmailOptions = booking.promoRedemption?.promoCode
-    ? {
-        discountCents: booking.discountCents,
-        promoAdjustmentCents: booking.promoAdjustmentCents,
-        promoCode: booking.promoRedemption.promoCode.code,
-      }
-    : undefined;
+  const promoEmailOptions = {
+    lodgeId: booking.lodgeId,
+    ...(booking.promoRedemption?.promoCode
+      ? {
+          discountCents: booking.discountCents,
+          promoAdjustmentCents: booking.promoAdjustmentCents,
+          promoCode: booking.promoRedemption.promoCode.code,
+        }
+      : {}),
+  };
   const hasSavedPaymentMethod = Boolean(
     booking.payment?.stripePaymentMethodId && booking.payment?.stripeCustomerId
   );

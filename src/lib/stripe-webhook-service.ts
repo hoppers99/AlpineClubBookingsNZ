@@ -318,13 +318,16 @@ async function handlePaymentIntentSucceeded(
           booking.checkOut,
           booking.guests.length,
           booking.finalPriceCents,
-          booking.promoRedemption?.promoCode
-            ? {
-                discountCents: booking.discountCents,
-                promoAdjustmentCents: booking.promoAdjustmentCents,
-                promoCode: booking.promoRedemption.promoCode.code,
-              }
-            : undefined
+          {
+            lodgeId: booking.lodgeId,
+            ...(booking.promoRedemption?.promoCode
+              ? {
+                  discountCents: booking.discountCents,
+                  promoAdjustmentCents: booking.promoAdjustmentCents,
+                  promoCode: booking.promoRedemption.promoCode.code,
+                }
+              : {}),
+          }
         );
       }
     } catch (emailErr) {

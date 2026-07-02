@@ -78,6 +78,11 @@ vi.mock("@/lib/prisma", () => ({
     internetBankingPaymentSettings: {
       findUnique: vi.fn().mockResolvedValue(null),
     },
+    // Multi-lodge phase 8: the booking route resolves the (default) lodge
+    // before the per-lodge capacity check.
+    lodge: {
+      findFirst: vi.fn().mockResolvedValue({ id: "lodge-1" }),
+    },
     $transaction: vi.fn(),
   },
 }));

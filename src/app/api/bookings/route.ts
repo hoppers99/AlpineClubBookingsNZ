@@ -10,7 +10,7 @@ import {
 import { AgeTier, BookingStatus } from "@prisma/client";
 import { z } from "zod";
 import { ageTierEnum } from "@/lib/age-tier-schema";
-import { getDefaultLodgeCapacity } from "@/lib/lodge-capacity";
+import { getLodgeCapacity } from "@/lib/lodge-capacity";
 import { applyRateLimit, rateLimiters } from "@/lib/rate-limit";
 import { getMemberCreditBalance } from "@/lib/member-credit";
 import { findUnpaidMemberGuests } from "@/lib/booking-member-guest-subscriptions";
@@ -54,6 +54,7 @@ import {
 } from "@/lib/booking-guest-stay-range-input";
 import { parseJsonRequestBody } from "@/lib/api-json";
 import { getTodayDateOnly, isDateOnlyString, parseDateOnly } from "@/lib/date-only";
+import { resolveOptionalActiveLodgeId } from "@/lib/lodges";
 import {
   authorizationRoleFromAccessRoles,
   hasAdminAccess,
@@ -92,6 +93,9 @@ const createBookingSchema = z.object({
   waitlist: z.boolean().optional(),
   expectedArrivalTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]0$/).optional(),
   requestedRoomId: z.string().min(1).optional(),
+  // Lodge the booking is for (multi-lodge phase 8). Optional so existing
+  // single-lodge clients keep working; omitted resolves to the default lodge.
+  lodgeId: z.string().min(1).optional(),
   cancelIfGuestsBumped: z.boolean().optional(),
   applyCreditCents: z.number().int().min(0).optional(),
   forMemberId: z.string().optional(),
@@ -255,7 +259,18 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Cannot book in the past" }, { status: 400 });
   }
 
-  const lodgeCapacity = await getDefaultLodgeCapacity();
+  const bookingLodgeId = await resolveOptionalActiveLodgeId(
+    prisma,
+    parsed.data.lodgeId,
+  );
+  if (!bookingLodgeId) {
+    return NextResponse.json(
+      { error: "Unknown or inactive lodgeId" },
+      { status: 400 },
+    );
+  }
+
+  const lodgeCapacity = await getLodgeCapacity(bookingLodgeId);
   if (guestInputs.length > lodgeCapacity) {
     return NextResponse.json(
       { error: `A booking cannot exceed ${lodgeCapacity} guests` },
@@ -342,7 +357,7 @@ export async function POST(request: NextRequest) {
   // Minimum stay policy (skip for admins).
   if (!isAdmin) {
     const { validateMinimumStay, formatViolationsDetail } = await import("@/lib/booking-policies");
-    const stayResult = await validateMinimumStay(checkIn, checkOut);
+    const stayResult = await validateMinimumStay(checkIn, checkOut, bookingLodgeId);
     if (!stayResult.valid) {
       return NextResponse.json(
         {
@@ -377,6 +392,7 @@ export async function POST(request: NextRequest) {
         cancelIfGuestsBumped,
         groupDiscount,
         memberReviewJustification,
+        lodgeId: parsed.data.lodgeId,
       });
       return NextResponse.json(newBooking, { status: 201 });
     } catch (err) {
@@ -467,6 +483,7 @@ export async function POST(request: NextRequest) {
       paymentMethod,
       internetBankingSettings,
       memberReviewJustification,
+      lodgeId: parsed.data.lodgeId,
     });
 
     if (outcome.type === "created") {
@@ -503,6 +520,7 @@ export async function POST(request: NextRequest) {
         requestedRoomId,
         groupDiscount,
         memberReviewJustification,
+        lodgeId: parsed.data.lodgeId,
       });
       return NextResponse.json(waitlisted.booking, { status: 201 });
     } catch (waitlistErr) {

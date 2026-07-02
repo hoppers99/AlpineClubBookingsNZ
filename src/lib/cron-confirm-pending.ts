@@ -113,14 +113,15 @@ function savedPaymentMethodForBooking(
 }
 
 function promoEmailOptions(booking: PendingBooking) {
-  if (!booking.promoRedemption?.promoCode) {
-    return undefined;
-  }
-
   return {
-    discountCents: booking.discountCents,
-    promoAdjustmentCents: booking.promoAdjustmentCents,
-    promoCode: booking.promoRedemption.promoCode.code,
+    lodgeId: booking.lodgeId,
+    ...(booking.promoRedemption?.promoCode
+      ? {
+          discountCents: booking.discountCents,
+          promoAdjustmentCents: booking.promoAdjustmentCents,
+          promoCode: booking.promoRedemption.promoCode.code,
+        }
+      : {}),
   };
 }
 

@@ -65,6 +65,7 @@ const mockTx = {
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     $transaction: (fn: (tx: unknown) => Promise<unknown>) => mockPrismaTransaction(fn),
+    lodge: { findFirst: mockTxLodgeFindFirst },
     member: {
       count: (...args: unknown[]) => mockMemberCount(...args),
       findUnique: (...args: unknown[]) => mockMemberFindUnique(...args),

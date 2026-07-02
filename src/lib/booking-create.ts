@@ -31,7 +31,10 @@ import {
   type BookingGuest,
 } from "@prisma/client";
 import { assertMemberMayBookLodge } from "@/lib/lodge-access";
-import { getDefaultLodgeId, lodgeNullTolerantScope } from "@/lib/lodges";
+import {
+  lodgeNullTolerantScope,
+  resolveOptionalActiveLodgeId,
+} from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 import {
   calculateBookingCreditApplication,
@@ -131,6 +134,10 @@ interface BaseInput {
   // pay it themselves; the organiser settles the group total. Only the
   // group-join path sets this; everyone else leaves it undefined (false).
   organiserSettled?: boolean;
+  // Lodge the booking is for (multi-lodge phase 8). Must name an active
+  // lodge when set; omitted resolves to the club's default lodge, so
+  // single-lodge callers keep working unchanged.
+  lodgeId?: string;
 }
 
 export type DraftBookingInput = BaseInput;
@@ -163,6 +170,17 @@ export class BookingPromoError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "BookingPromoError";
+  }
+}
+
+/**
+ * Thrown when the requested lodge is unknown/inactive or the requested room
+ * belongs to a different lodge. The route handler turns this into a 400.
+ */
+export class BookingLodgeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "BookingLodgeError";
   }
 }
 
@@ -611,6 +629,44 @@ function getCapacityFullNights(
     .map((night) => night.date.toISOString().split("T")[0]);
 }
 
+type LodgeResolutionDb = Parameters<typeof resolveOptionalActiveLodgeId>[0] & {
+  lodgeRoom: {
+    findUnique: (args: {
+      where: { id: string };
+      select: { lodgeId: true };
+    }) => Promise<{ lodgeId: string | null } | null>;
+  };
+};
+
+/**
+ * Resolve the lodge a new booking belongs to and enforce the lodge-scoping
+ * contract: an explicit lodgeId must name an active lodge, and a requested
+ * room must belong to that lodge (rooms without a lodgeId — expand-release
+ * tolerance — pass). Throws BookingLodgeError; the routes turn it into 400.
+ */
+async function resolveBookingLodgeId(
+  db: LodgeResolutionDb,
+  requestedLodgeId: string | undefined,
+  requestedRoomId: string | undefined,
+): Promise<string> {
+  const lodgeId = await resolveOptionalActiveLodgeId(db, requestedLodgeId);
+  if (!lodgeId) {
+    throw new BookingLodgeError("Unknown or inactive lodgeId");
+  }
+  if (requestedRoomId) {
+    const room = await db.lodgeRoom.findUnique({
+      where: { id: requestedRoomId },
+      select: { lodgeId: true },
+    });
+    if (room?.lodgeId && room.lodgeId !== lodgeId) {
+      throw new BookingLodgeError(
+        "Requested room belongs to a different lodge",
+      );
+    }
+  }
+  return lodgeId;
+}
+
 /**
  * Create a DRAFT booking. Skips capacity locking, payment, Xero, and
  * email side effects — drafts only persist the booking + pricing + an
@@ -634,6 +690,7 @@ export async function createDraftBooking(input: DraftBookingInput): Promise<Book
     cancelIfGuestsBumped,
     groupDiscount,
     memberReviewJustification,
+    lodgeId,
   } = input;
   // Auto-expand (issue #713): the persisted range covers every guest night,
   // never shrinking below the member's stated range.
@@ -657,7 +714,11 @@ export async function createDraftBooking(input: DraftBookingInput): Promise<Book
   const draftStatus = review.blockForReview ? BookingStatus.AWAITING_REVIEW : BookingStatus.DRAFT;
 
   const newBooking = await prisma.$transaction(async (tx) => {
-    const bookingLodgeId = await getDefaultLodgeId(tx);
+    const bookingLodgeId = await resolveBookingLodgeId(
+      tx,
+      lodgeId,
+      requestedRoomId,
+    );
     await assertMemberMayBookLodge(tx, {
       memberId: effectiveMemberId,
       lodgeId: bookingLodgeId,
@@ -888,6 +949,7 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
     memberReviewJustification,
     parentBookingId,
     organiserSettled,
+    lodgeId,
   } = input;
   // Auto-expand (issue #713): cover every guest night (members + non-members)
   // so the member booking and any linked non-member child share one range.
@@ -979,7 +1041,11 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
   let booking: BookingWithGuests;
   try {
     booking = await prisma.$transaction(async (tx) => {
-      const bookingLodgeId = await getDefaultLodgeId(tx);
+      const bookingLodgeId = await resolveBookingLodgeId(
+        tx,
+        lodgeId,
+        requestedRoomId,
+      );
       await assertMemberMayBookLodge(tx, {
         memberId: effectiveMemberId,
         lodgeId: bookingLodgeId,
@@ -1393,17 +1459,20 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
           fullBooking.checkOut,
           fullBooking.guests.length,
           fullBooking.finalPriceCents,
-          fullBooking.promoRedemption?.promoCode
-            ? {
-                discountCents: fullBooking.discountCents,
-                promoAdjustmentCents: fullBooking.promoAdjustmentCents,
-                // Internal work-party promo codes are meaningless to
-                // members; label the discount with the event name instead.
-                promoCode:
-                  fullBooking.promoRedemption.promoCode.workPartyEvent?.name ??
-                  fullBooking.promoRedemption.promoCode.code,
-              }
-            : undefined,
+          {
+            lodgeId: fullBooking.lodgeId,
+            ...(fullBooking.promoRedemption?.promoCode
+              ? {
+                  discountCents: fullBooking.discountCents,
+                  promoAdjustmentCents: fullBooking.promoAdjustmentCents,
+                  // Internal work-party promo codes are meaningless to
+                  // members; label the discount with the event name instead.
+                  promoCode:
+                    fullBooking.promoRedemption.promoCode.workPartyEvent?.name ??
+                    fullBooking.promoRedemption.promoCode.code,
+                }
+              : {}),
+          },
         ).catch((err) => logger.error({ err, bookingId: booking.id }, "Failed to send confirmation email for $0 booking"));
 
         const effectiveModules = await loadEffectiveModuleFlags();
@@ -1497,6 +1566,7 @@ export async function createWaitlistedBooking(input: WaitlistedBookingInput): Pr
     cancelIfGuestsBumped,
     groupDiscount,
     memberReviewJustification,
+    lodgeId,
   } = input;
   // Auto-expand (issue #713): the persisted range covers every guest night,
   // never shrinking below the member's stated range.
@@ -1518,7 +1588,11 @@ export async function createWaitlistedBooking(input: WaitlistedBookingInput): Pr
     memberReviewJustification,
   });
 
-  const waitlistLodgeId = await getDefaultLodgeId(prisma);
+  const waitlistLodgeId = await resolveBookingLodgeId(
+    prisma,
+    lodgeId,
+    requestedRoomId,
+  );
   await assertMemberMayBookLodge(prisma, {
     memberId: effectiveMemberId,
     lodgeId: waitlistLodgeId,

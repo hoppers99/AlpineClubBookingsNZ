@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useClubIdentity } from "@/components/club-identity-provider";
+import { LodgeSelect, useLodgeOptions } from "@/components/lodge-select";
 import { PromoCodeInput, type PromoResult } from "@/components/promo-code-input";
 import { TimePicker } from "@/components/time-picker";
 import { MemberPicker } from "@/components/admin/member-picker";
@@ -51,6 +52,11 @@ export default function AdminBookPage() {
   const { lodgeCapacity } = useClubIdentity();
   const [selectedMember, setSelectedMember] = useState<SelectedMember | null>(null);
   const [step, setStep] = useState<"member" | "dates" | "guests" | "review">("member");
+  // Lodge being booked (multi-lodge phase 8). Admin scope lists every active
+  // lodge — booking on behalf is the audited path that bypasses member
+  // booking restrictions. Hidden with fewer than two lodges (ADR-002).
+  const { lodges } = useLodgeOptions("admin");
+  const [lodgeId, setLodgeId] = useState<string | null>(null);
   const [checkIn, setCheckIn] = useState<Date | null>(null);
   const [checkOut, setCheckOut] = useState<Date | null>(null);
   const [guests, setGuests] = useState<GuestData[]>([]);
@@ -141,6 +147,22 @@ export default function AdminBookPage() {
     ]);
   }
 
+  function handleLodgeChange(nextLodgeId: string | null) {
+    if (nextLodgeId === lodgeId) return;
+    const hadLodge = lodgeId !== null;
+    setLodgeId(nextLodgeId);
+    if (!hadLodge) return;
+    // Availability, pricing, and promos are all per lodge: switching lodges
+    // restarts from date selection.
+    if (step === "guests" || step === "review") setStep("dates");
+    setCheckIn(null);
+    setCheckOut(null);
+    setPriceQuote(null);
+    setAppliedPromo(null);
+    setUseCredit(false);
+    setError("");
+  }
+
   async function handleDateSelect(ci: Date, co: Date) {
     setCheckIn(ci);
     setCheckOut(co);
@@ -149,7 +171,9 @@ export default function AdminBookPage() {
     const coStr = formatLocalDateOnly(co);
 
     const res = await fetch(
-      `/api/availability/check?checkIn=${ciStr}&checkOut=${coStr}`
+      `/api/availability/check?checkIn=${ciStr}&checkOut=${coStr}${
+        lodgeId ? `&lodgeId=${encodeURIComponent(lodgeId)}` : ""
+      }`
     );
     if (res.ok) {
       const data = await res.json();
@@ -189,6 +213,7 @@ export default function AdminBookPage() {
       body: JSON.stringify({
         checkIn: checkInStr,
         checkOut: checkOutStr,
+        lodgeId: lodgeId ?? undefined,
         guests: guests.map((g) => ({
           ageTier: g.ageTier,
           isMember: g.isMember,
@@ -248,6 +273,7 @@ export default function AdminBookPage() {
         promoGuestIndexes: appliedPromo?.selectedGuestIndexes,
         expectedArrivalTime: expectedArrivalTime || undefined,
         applyCreditCents: appliedCreditCents > 0 ? appliedCreditCents : undefined,
+        lodgeId: lodgeId ?? undefined,
         forMemberId: selectedMember!.id,
         paymentMethod:
           showPaymentMethodChoice && paymentMethod === "internet_banking"
@@ -287,6 +313,7 @@ export default function AdminBookPage() {
         promoGuestIndexes: appliedPromo?.selectedGuestIndexes,
         expectedArrivalTime: expectedArrivalTime || undefined,
         applyCreditCents: appliedCreditCents > 0 ? appliedCreditCents : undefined,
+        lodgeId: lodgeId ?? undefined,
         draft: true,
         forMemberId: selectedMember!.id,
         memberReviewJustification: requiresAdminReviewLocal
@@ -369,11 +396,19 @@ export default function AdminBookPage() {
           <CardHeader>
             <CardTitle>Select Dates</CardTitle>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-4">
+            <div className="max-w-xs">
+              <LodgeSelect
+                lodges={lodges}
+                value={lodgeId}
+                onChange={handleLodgeChange}
+              />
+            </div>
             <BookingCalendar
               onDateSelect={handleDateSelect}
               selectedCheckIn={checkIn}
               selectedCheckOut={checkOut}
+              lodgeId={lodgeId}
             />
           </CardContent>
         </Card>
@@ -618,6 +653,7 @@ export default function AdminBookPage() {
                 onPromoApplied={setAppliedPromo}
                 appliedPromo={appliedPromo}
                 forMemberId={selectedMember.id}
+                lodgeId={lodgeId}
               />
             </CardContent>
           </Card>

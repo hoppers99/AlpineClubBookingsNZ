@@ -24,9 +24,10 @@ club-wide.
 Delivered on `feature/multi-lodge-support`. The lodge identity fields were
 copied (not moved) from `EmailMessageSetting`: lodge edits write-through to
 the singleton while exactly one active lodge exists
-(`syncSoleActiveLodgeIdentity` in `src/lib/lodges.ts`), and the
-`EmailMessageSetting` columns are removed in phase 8 once email templates
-read per-booking lodge context.
+(`syncSoleActiveLodgeIdentity` in `src/lib/lodges.ts`). Email templates
+read per-booking lodge context since phase 8; the `EmailMessageSetting`
+columns are dropped in the phase-2 contract release (a column drop is only
+blue/green-safe once no running colour reads it).
 
 - Add the `Lodge` model, seeded with one row (migration 1 of the ADR-001
   sequence).
@@ -199,10 +200,10 @@ over the phase-4 API). Season overlap validation also became per-lodge
 (lodges may run different season windows). Every control honours the
 ADR-002 presentation rule via `LodgeSelect`, which renders nothing with
 fewer than two lodges. Deliberately deferred: the admin booking
-list/search/detail lodge filters and columns, the bed-allocation board's
-lodge context, and a booking-policy per-lodge override editor — these
-land with the phase-8 booking-flow threading, and the plan bullets below
-stay open until they do. Room/locker names stay globally unique until the
+list lodge filter and column (delivered with phase 8), the
+bed-allocation board's lodge context, and a booking-policy per-lodge
+override editor — the latter two remain open and are tracked by the plan
+bullets below. Room/locker names stay globally unique until the
 phase-2 contract release re-scopes the constraints.
 
 - Build the lodge-picker pattern once (a context selector honouring the
@@ -215,6 +216,43 @@ phase-2 contract release re-scopes the constraints.
 **Risk: Medium (UI over already-guarded APIs).**
 
 ## Phase 8 — Member UI and communications
+
+**Progress:** delivered on `feature/multi-lodge-support` (2026-07-02).
+The member `/book` flow (and the admin book-on-behalf flow) starts with a
+`LodgeSelect` step — member scope via `/api/lodges`, so a restricted
+member never sees lodges they cannot book — and threads the chosen
+`lodgeId` through the calendar (`/api/availability`), range check
+(`/api/availability/check`), minimum-stay check
+(`/api/booking-policies/check`), room preferences (`/api/bookings/rooms`),
+quote, promo validation (`/api/promo-codes/validate`), and booking
+create/draft/waitlist calls. `POST /api/bookings` accepts a validated
+optional `lodgeId`; the create services (`createDraftBooking`,
+`createConfirmedBooking`, `createWaitlistedBooking`) take `lodgeId` in
+their shared input, and `resolveBookingLodgeId` enforces the scoping
+contract (active lodge; a requested room must belong to the booking's
+lodge — `BookingLodgeError` → 400). The per-booking max-guests check uses
+the chosen lodge's capacity. Emails: `prepareEmailMessage`/`sendEmail`
+accept the booking's `lodgeId` and `loadEmailMessageSettingsForLodge`
+overlays the lodge's name, travel note, and door code onto the settings —
+strictly the lodge's own door code, never another lodge's from the
+singleton — for booking-confirmed and pre-arrival sends (all ten
+confirmation call sites and the pre-arrival cron pass the booking's
+lodge). The admin bookings list gained a lodge filter (null-tolerant) and
+column, hidden with one lodge. Copy: capacity/waitlist messages in the
+booking flows name the lodge once a second lodge exists; template strings
+keep the generic phrase because ADR-002 forbids lodge names for
+single-lodge clubs, and the CLUB_LODGE_NAME/travel-note/door-code tokens
+now carry the booking lodge's values in multi-lodge deployments. Kiosk
+screens needed no change (phase 5 already scopes them per lodge and they
+never display door codes). Remaining before phase 9 sign-off: the other
+booking emails (pending, cancelled, modified, waitlist, chore roster,
+check-in reminder) still use the singleton lodge name in their subjects —
+never door codes — and each needs the same one-line `lodgeId` threading
+through `sendEmail` now that the mechanism exists. Deliberately deferred:
+dropping the `EmailMessageSetting` lodge-identity columns (phase 1 note)
+moves to the phase-2 contract release — a column drop is only blue/green-safe once no
+running colour reads it, and `syncSoleActiveLodgeIdentity` keeps the
+compat path correct until then.
 
 - Booking flow lodge selection step (shown only with >1 active lodge),
   carried through availability, quote, and creation calls.

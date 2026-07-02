@@ -850,7 +850,10 @@ describe("processStoredXeroInboundEvents", () => {
       new Date("2026-07-12"),
       1,
       12345,
-      undefined
+      // Multi-lodge phase 8: the options now carry the booking's lodge so
+      // the email renders that lodge's identity (undefined here because the
+      // fixture booking has no lodgeId).
+      { lodgeId: undefined }
     );
   });
 
