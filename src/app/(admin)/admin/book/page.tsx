@@ -55,7 +55,7 @@ export default function AdminBookPage() {
   // Lodge being booked (multi-lodge phase 8). Admin scope lists every active
   // lodge — booking on behalf is the audited path that bypasses member
   // booking restrictions. Hidden with fewer than two lodges (ADR-002).
-  const { lodges } = useLodgeOptions("admin");
+  const { lodges, loading: lodgesLoading } = useLodgeOptions("admin");
   const [lodgeId, setLodgeId] = useState<string | null>(null);
   const [checkIn, setCheckIn] = useState<Date | null>(null);
   const [checkOut, setCheckOut] = useState<Date | null>(null);
@@ -402,6 +402,7 @@ export default function AdminBookPage() {
                 lodges={lodges}
                 value={lodgeId}
                 onChange={handleLodgeChange}
+                loading={lodgesLoading}
               />
             </div>
             <BookingCalendar

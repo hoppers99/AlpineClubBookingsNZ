@@ -69,4 +69,21 @@ describe("LodgeSelect", () => {
 
     expect(onChange).toHaveBeenCalledWith("lodge-1");
   });
+
+  it("holds off normalising the selection while options are loading", () => {
+    const onChange = vi.fn();
+    const { container } = render(
+      <LodgeSelect
+        lodges={[]}
+        value="lodge-from-url"
+        onChange={onChange}
+        loading
+      />,
+    );
+
+    // A caller-provided initial selection (e.g. an ADR-003 hub link) must
+    // survive until the options arrive.
+    expect(container).toBeEmptyDOMElement();
+    expect(onChange).not.toHaveBeenCalled();
+  });
 });

@@ -58,8 +58,14 @@ export default function ChoresPage() {
   const [saving, setSaving] = useState(false)
   // Lodge context for the page; LodgeSelect renders nothing (and reports the
   // sole lodge) while fewer than two lodges exist (ADR-002).
-  const { lodges } = useLodgeOptions("admin")
+  const { lodges, loading: lodgesLoading } = useLodgeOptions("admin")
   const [lodgeId, setLodgeId] = useState<string | null>(null)
+
+  // Hub links (ADR-003) land pre-filtered to a lodge.
+  useEffect(() => {
+    const fromUrl = new URLSearchParams(window.location.search).get("lodgeId")
+    if (fromUrl) setLodgeId(fromUrl)
+  }, [])
 
   // Form state
   const [name, setName] = useState("")
@@ -235,7 +241,7 @@ export default function ChoresPage() {
       </div>
 
       <div className="max-w-xs">
-        <LodgeSelect lodges={lodges} value={lodgeId} onChange={setLodgeId} />
+        <LodgeSelect lodges={lodges} value={lodgeId} onChange={setLodgeId} loading={lodgesLoading} />
       </div>
 
       {error && (

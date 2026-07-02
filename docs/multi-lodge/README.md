@@ -72,6 +72,7 @@ lodge actually exists (ADR-002).
 
 - [ADR-001: Lodge entity and foreign-key scoping model](decisions/ADR-001-lodge-entity-and-scoping-model.md)
 - [ADR-002: Core data model, not a module](decisions/ADR-002-core-data-model-not-a-module.md)
+- [ADR-003: Lodge configuration hub over a lodge-centric navigation restructure](decisions/ADR-003-lodge-configuration-hub.md)
 
 ## Maintenance Rules
 

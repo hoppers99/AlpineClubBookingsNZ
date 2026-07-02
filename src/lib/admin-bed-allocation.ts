@@ -388,6 +388,93 @@ export async function createBedAllocationRoom(input: {
   });
 }
 
+export const MAX_BULK_ROOMS = 50;
+export const MAX_BULK_BEDS_PER_ROOM = 20;
+
+/**
+ * Seed a lodge with `roomCount` rooms of `bedsPerRoom` beds each
+ * ("<prefix> 1..N" / "Bed 1..M"), transactionally (ADR-003 bulk seeding).
+ * Room names are still globally unique until the phase-2 contract release,
+ * so a clashing prefix rejects the whole batch rather than half-applying.
+ */
+export async function createBedAllocationRoomsBulk(input: {
+  roomCount: number;
+  bedsPerRoom: number;
+  namePrefix?: string;
+  lodgeId?: string;
+  db?: BedAllocationDb;
+}): Promise<{ createdRoomCount: number; createdBedCount: number }> {
+  if (!input.db) {
+    return prisma.$transaction((tx) =>
+      createBedAllocationRoomsBulk({ ...input, db: tx }),
+    );
+  }
+  const db = input.db;
+
+  if (input.roomCount < 1 || input.roomCount > MAX_BULK_ROOMS) {
+    throw new BedAllocationAdminError(
+      `Room count must be between 1 and ${MAX_BULK_ROOMS}.`,
+      400,
+    );
+  }
+  if (input.bedsPerRoom < 0 || input.bedsPerRoom > MAX_BULK_BEDS_PER_ROOM) {
+    throw new BedAllocationAdminError(
+      `Beds per room must be between 0 and ${MAX_BULK_BEDS_PER_ROOM}.`,
+      400,
+    );
+  }
+
+  const namePrefix = input.namePrefix?.trim() || "Room";
+  const lodgeId = input.lodgeId ?? (await getDefaultLodgeId(db));
+  const names = Array.from(
+    { length: input.roomCount },
+    (_, index) => `${namePrefix} ${index + 1}`,
+  );
+
+  const clash = await db.lodgeRoom.findFirst({
+    where: { name: { in: names } },
+    select: { name: true },
+  });
+  if (clash) {
+    throw new BedAllocationAdminError(
+      `A room named "${clash.name}" already exists. Choose a different name prefix.`,
+      409,
+    );
+  }
+
+  const existingCount = await db.lodgeRoom.count({
+    where: lodgeNullTolerantScope(lodgeId),
+  });
+
+  let createdBedCount = 0;
+  for (const [index, name] of names.entries()) {
+    const room = await db.lodgeRoom.create({
+      data: {
+        name,
+        sortOrder: existingCount + index + 1,
+        active: true,
+        lodgeId,
+      },
+    });
+    if (input.bedsPerRoom > 0) {
+      await db.lodgeBed.createMany({
+        data: Array.from({ length: input.bedsPerRoom }, (_, bedIndex) => ({
+          roomId: room.id,
+          name: `Bed ${bedIndex + 1}`,
+          sortOrder: bedIndex + 1,
+          active: true,
+        })),
+      });
+      createdBedCount += input.bedsPerRoom;
+    }
+  }
+
+  return {
+    createdRoomCount: names.length,
+    createdBedCount,
+  };
+}
+
 export async function updateBedAllocationRoom(input: {
   id: string;
   name?: string;

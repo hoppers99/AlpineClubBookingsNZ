@@ -22,6 +22,7 @@ import {
   MAX_BED_ALLOCATION_RANGE_NIGHTS,
   buildBedAllocationWarnings,
   createBedAllocationRoom,
+  createBedAllocationRoomsBulk,
   getRoomsAndBedsConfiguration,
   listBedAllocationRooms,
   manuallyAllocateBedForNights,
@@ -433,5 +434,113 @@ describe("multi-lodge room scoping (phase 7)", () => {
     // not offer the config import (it only seeds the first lodge).
     expect(payload.canImportFromConfig).toBe(false);
     expect(db.lodge.findFirst).not.toHaveBeenCalled();
+  });
+});
+
+describe("createBedAllocationRoomsBulk (ADR-003 bulk seeding)", () => {
+  function buildBulkDb(overrides: {
+    clashName?: string | null;
+    existingRoomCount?: number;
+  } = {}) {
+    const roomCreate = vi
+      .fn()
+      .mockImplementation(({ data }) =>
+        Promise.resolve({ id: `room-${data.name}`, ...data }),
+      );
+    const bedCreateMany = vi.fn().mockResolvedValue({ count: 0 });
+    return {
+      db: {
+        lodgeRoom: {
+          create: roomCreate,
+          count: vi.fn().mockResolvedValue(overrides.existingRoomCount ?? 0),
+          findFirst: vi
+            .fn()
+            .mockResolvedValue(
+              overrides.clashName ? { name: overrides.clashName } : null,
+            ),
+        },
+        lodgeBed: { createMany: bedCreateMany },
+        lodge: { findFirst: vi.fn().mockResolvedValue({ id: "lodge-1" }) },
+      },
+      roomCreate,
+      bedCreateMany,
+    };
+  }
+
+  it("creates N rooms of M beds with sequential names at the given lodge", async () => {
+    const { db, roomCreate, bedCreateMany } = buildBulkDb();
+
+    const result = await createBedAllocationRoomsBulk({
+      roomCount: 3,
+      bedsPerRoom: 4,
+      lodgeId: "lodge-2",
+      db: db as never,
+    });
+
+    expect(result).toEqual({ createdRoomCount: 3, createdBedCount: 12 });
+    expect(roomCreate).toHaveBeenCalledTimes(3);
+    expect(roomCreate).toHaveBeenNthCalledWith(1, {
+      data: expect.objectContaining({
+        name: "Room 1",
+        sortOrder: 1,
+        lodgeId: "lodge-2",
+      }),
+    });
+    expect(bedCreateMany).toHaveBeenCalledTimes(3);
+    expect(bedCreateMany.mock.calls[0][0].data).toHaveLength(4);
+    expect(bedCreateMany.mock.calls[0][0].data[0]).toEqual(
+      expect.objectContaining({ name: "Bed 1", sortOrder: 1, active: true }),
+    );
+  });
+
+  it("continues sort order after the lodge's existing rooms and honours the prefix", async () => {
+    const { db, roomCreate } = buildBulkDb({ existingRoomCount: 5 });
+
+    await createBedAllocationRoomsBulk({
+      roomCount: 1,
+      bedsPerRoom: 0,
+      namePrefix: "Bunkroom",
+      lodgeId: "lodge-2",
+      db: db as never,
+    });
+
+    expect(roomCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({ name: "Bunkroom 1", sortOrder: 6 }),
+    });
+  });
+
+  it("rejects the whole batch when a generated name already exists", async () => {
+    const { db, roomCreate } = buildBulkDb({ clashName: "Room 2" });
+
+    await expect(
+      createBedAllocationRoomsBulk({
+        roomCount: 3,
+        bedsPerRoom: 2,
+        lodgeId: "lodge-2",
+        db: db as never,
+      }),
+    ).rejects.toThrow('A room named "Room 2" already exists');
+    expect(roomCreate).not.toHaveBeenCalled();
+  });
+
+  it("rejects out-of-range counts", async () => {
+    const { db } = buildBulkDb();
+
+    await expect(
+      createBedAllocationRoomsBulk({
+        roomCount: 0,
+        bedsPerRoom: 2,
+        lodgeId: "lodge-2",
+        db: db as never,
+      }),
+    ).rejects.toThrow("Room count must be between");
+    await expect(
+      createBedAllocationRoomsBulk({
+        roomCount: 1,
+        bedsPerRoom: 99,
+        lodgeId: "lodge-2",
+        db: db as never,
+      }),
+    ).rejects.toThrow("Beds per room must be between");
   });
 });

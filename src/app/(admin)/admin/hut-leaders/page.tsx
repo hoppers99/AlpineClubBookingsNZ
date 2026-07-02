@@ -65,7 +65,7 @@ export default function HutLeadersPage() {
   const [error, setError] = useState("");
   // Lodge context for new assignments; LodgeSelect renders nothing (and
   // reports the sole lodge) while fewer than two lodges exist (ADR-002).
-  const { lodges } = useLodgeOptions("admin");
+  const { lodges, loading: lodgesLoading } = useLodgeOptions("admin");
   const [lodgeId, setLodgeId] = useState<string | null>(null);
   const showLodgeColumn = lodges.length > 1;
 
@@ -312,6 +312,7 @@ export default function HutLeadersPage() {
                   lodges={lodges}
                   value={lodgeId}
                   onChange={setLodgeId}
+                  loading={lodgesLoading}
                 />
               </div>
               <div className="grid grid-cols-2 gap-4">

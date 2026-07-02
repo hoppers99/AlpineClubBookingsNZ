@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   lockerFindFirst: vi.fn(),
   lockerFindUnique: vi.fn(),
   lockerCreate: vi.fn(),
+  lockerCreateMany: vi.fn(),
   lockerUpdate: vi.fn(),
   lockerDelete: vi.fn(),
   memberFindMany: vi.fn(),
@@ -52,6 +53,7 @@ vi.mock("@/lib/prisma", () => ({
 }));
 
 import { GET, POST } from "@/app/api/admin/lockers/route";
+import { POST as BULK_POST } from "@/app/api/admin/lockers/bulk/route";
 import {
   DELETE,
   PUT,
@@ -72,6 +74,7 @@ function installTransactionMock() {
     callback({
       locker: {
         create: mocks.lockerCreate,
+        createMany: mocks.lockerCreateMany,
         update: mocks.lockerUpdate,
         delete: mocks.lockerDelete,
       },
@@ -284,5 +287,92 @@ describe("admin locker routes", () => {
       }),
       expect.anything(),
     );
+  });
+});
+
+describe("POST /api/admin/lockers/bulk (ADR-003 bulk seeding)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.auth.mockResolvedValue(adminSession);
+    mocks.requireActiveSessionUser.mockResolvedValue(null);
+    mocks.lockerFindFirst.mockResolvedValue(null);
+    mocks.lodgeFindFirst.mockResolvedValue({ id: "lodge-1" });
+    mocks.lockerCreateMany.mockResolvedValue({ count: 3 });
+    mocks.createAuditLog.mockResolvedValue(undefined);
+    installTransactionMock();
+  });
+
+  function bulkRequest(body: unknown) {
+    return new NextRequest("http://localhost/api/admin/lockers/bulk", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it("creates sequentially named lockers at the requested lodge", async () => {
+    mocks.lodgeFindUnique.mockResolvedValue({ id: "lodge-2", active: true });
+
+    const response = await BULK_POST(bulkRequest({ count: 3, lodgeId: "lodge-2" }));
+    const body = await response.json();
+
+    expect(response.status).toBe(201);
+    expect(body.createdCount).toBe(3);
+    expect(mocks.lockerCreateMany).toHaveBeenCalledWith({
+      data: [
+        { name: "Locker 1", lodgeId: "lodge-2" },
+        { name: "Locker 2", lodgeId: "lodge-2" },
+        { name: "Locker 3", lodgeId: "lodge-2" },
+      ],
+    });
+    expect(mocks.createAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "locker.bulk_created" }),
+      expect.anything(),
+    );
+  });
+
+  it("rejects the whole batch when a generated name already exists", async () => {
+    mocks.lockerFindFirst.mockResolvedValue({ name: "Locker 2" });
+
+    const response = await BULK_POST(bulkRequest({ count: 3 }));
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body.error).toContain('"Locker 2" already exists');
+    expect(mocks.lockerCreateMany).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unknown or inactive lodge", async () => {
+    mocks.lodgeFindUnique.mockResolvedValue(null);
+
+    const response = await BULK_POST(
+      bulkRequest({ count: 3, lodgeId: "lodge-missing" }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(mocks.lockerCreateMany).not.toHaveBeenCalled();
+  });
+
+  it("rejects out-of-range counts", async () => {
+    const response = await BULK_POST(bulkRequest({ count: 0 }));
+    expect(response.status).toBe(400);
+
+    const tooMany = await BULK_POST(bulkRequest({ count: 101 }));
+    expect(tooMany.status).toBe(400);
+    expect(mocks.lockerCreateMany).not.toHaveBeenCalled();
+  });
+
+  it("honours a custom name prefix", async () => {
+    const response = await BULK_POST(
+      bulkRequest({ count: 2, namePrefix: "Cubby" }),
+    );
+
+    expect(response.status).toBe(201);
+    expect(mocks.lockerCreateMany).toHaveBeenCalledWith({
+      data: [
+        { name: "Cubby 1", lodgeId: "lodge-1" },
+        { name: "Cubby 2", lodgeId: "lodge-1" },
+      ],
+    });
   });
 });

@@ -160,7 +160,7 @@ export default function BookPage() {
   // lodges this member may book; LodgeSelect renders nothing (and reports
   // the sole lodge) while fewer than two come back (ADR-002), so
   // single-lodge clubs see no change.
-  const { lodges } = useLodgeOptions("member");
+  const { lodges, loading: lodgesLoading } = useLodgeOptions("member");
   const [lodgeId, setLodgeId] = useState<string | null>(null);
   const [checkIn, setCheckIn] = useState<Date | null>(null);
   const [checkOut, setCheckOut] = useState<Date | null>(null);
@@ -1170,6 +1170,7 @@ export default function BookPage() {
                     lodges={lodges}
                     value={lodgeId}
                     onChange={handleLodgeChange}
+                    loading={lodgesLoading}
                   />
                 </div>
                 {lodges.length > 1 && selectedLodge?.travelNote ? (

@@ -26,23 +26,30 @@ export function LodgeSelect({
   onChange,
   label = "Lodge",
   id = "lodge-select",
+  loading = false,
 }: {
   lodges: LodgeOption[];
   value: string | null;
   onChange: (lodgeId: string | null) => void;
   label?: string;
   id?: string;
+  // True while the lodge options are still being fetched. The sole-lodge /
+  // default-selection normalisation must not run against an empty
+  // still-loading list, or it clobbers a caller-provided initial selection
+  // (e.g. a ?lodgeId= hub link, ADR-003) before the options arrive.
+  loading?: boolean;
 }) {
   useEffect(() => {
+    if (loading) return;
     if (lodges.length < 2) {
       const sole = lodges[0]?.id ?? null;
       if (value !== sole) onChange(sole);
       return;
     }
-    if (value === null && lodges.length > 0) {
+    if (value === null) {
       onChange(lodges[0].id);
     }
-  }, [lodges, value, onChange]);
+  }, [lodges, value, onChange, loading]);
 
   if (lodges.length < 2) {
     return null;

@@ -215,6 +215,28 @@ phase-2 contract release re-scopes the constraints.
 
 **Risk: Medium (UI over already-guarded APIs).**
 
+## Phase 7b — Lodge configuration hub (ADR-003)
+
+**Progress:** delivered on `feature/multi-lodge-support` (2026-07-02).
+`/admin/lodges/[id]` (inside the module-gated lodges route family) shows
+the lodge's identity plus per-area summary cards — rooms & beds with
+resolved capacity, lockers, seasons, chores — linking to the existing
+pages pre-filtered via `?lodgeId=`; those pages now initialise their
+selector from that parameter and render it in one consistent slot.
+Rooms/beds and lockers gained transactional bulk-seed endpoints and
+quick-add forms ("N rooms of M beds", "N lockers") with a name prefix;
+clashes with the still-global name uniqueness are rejected whole, not
+half-applied.
+
+- Hub page summarising a lodge's configuration state with links into the
+  per-area pages (ADR-003).
+- URL-driven lodge context and a single selector placement convention on
+  the retrofitted pages.
+- Bulk seeding for rooms/beds and lockers.
+
+**Risk: Medium (admin UI plus additive bulk-create APIs over existing
+guards).**
+
 ## Phase 8 — Member UI and communications
 
 **Progress:** delivered on `feature/multi-lodge-support` (2026-07-02).
@@ -294,6 +316,12 @@ up.
 - **Per-lodge revenue reporting** via Xero tracking categories or a
   lodge dimension on finance snapshots (kept club-wide by ADR-001; a
   future ADR would record any change).
+- **New-lodge setup wizard.** A guided flow on lodge creation (identity →
+  rooms/beds → lockers → seasons/rates → chores, steps gated by enabled
+  modules) with copy-from-existing-lodge for chores and rates. The
+  ADR-003 hub and bulk-seed endpoints are its building blocks; there is
+  no safety pressure forcing it because an unconfigured lodge resolves to
+  capacity 0 (phase 3).
 
 ## Standing Rules for Every Phase
 

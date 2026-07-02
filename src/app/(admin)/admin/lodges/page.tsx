@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Building2, Pencil, Plus, X } from "lucide-react";
+import Link from "next/link";
+import { Building2, Pencil, Plus, Settings2, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -274,6 +275,12 @@ export default function AdminLodgesPage() {
                     ) : null}
                   </div>
                   <div className="flex gap-2">
+                    <Button asChild variant="outline" size="sm">
+                      <Link href={`/admin/lodges/${lodge.id}`}>
+                        <Settings2 className="mr-2 h-4 w-4" />
+                        Configure
+                      </Link>
+                    </Button>
                     <Button
                       variant="outline"
                       size="sm"
