@@ -149,7 +149,7 @@ new assignment starts hidden/unpublished
 admin edits blurb/sort/published/show-phone/contactable flags
 audited assignment update or deactivate
 published assignment appears on public committee surfaces
-contactable published assignment can receive server-routed contact form mail through the role email alias
+contactable published assignment can receive server-routed contact form mail through the role email alias, or the linked member email when the role email is blank
 ```
 
 ## Refund And Credit Lifecycle

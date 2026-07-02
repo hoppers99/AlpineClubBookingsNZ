@@ -85,9 +85,9 @@ fork for another organisation. See `NOTICE.md`.
    member-linked committee assignments. Assignments remain hidden/unpublished
    until an admin explicitly enables their presentation flags; public contact
    options use only published, contactable assignments and deliver to the
-   role email alias configured on the master role. Linked member email
-   addresses are not used for committee contact delivery, and phone numbers
-   display only when **show phone** is enabled.
+   role email alias configured on the master role, or to the linked member's
+   personal email when the role email is blank. Phone numbers display only when
+   **show phone** is enabled.
 8. Use test/demo credentials for Stripe, Xero, SES, and Sentry until you are
    ready for a controlled deployment of your own environment.
 

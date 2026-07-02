@@ -295,10 +295,11 @@ positions with blurb, sort order, published, show-phone, contactable, and active
 flags. The public committee API reads only active, published assignments with
 active roles, never selects member email, returns phone only when show-phone is
 enabled, and exposes contact keys only for contactable assignments. The contact
-form resolves those assignment keys server-side to the role email alias or falls
-back to the club contact address; it does not deliver committee mail to the
-linked member's private email address. Committee contact email delivery stores
-an opaque committee-contact marker in EmailLog instead of the recipient address.
+form resolves those assignment keys server-side to the role email alias, then to
+the linked member's email when the role email is blank, and finally to the club
+contact address when no recipient email is available. Committee contact email
+delivery stores an opaque committee-contact marker in EmailLog instead of the
+recipient address.
 
 Membership cancellation is a member-initiated account lifecycle workflow.
 Requests can include the requester, dependants, non-login adults, and related

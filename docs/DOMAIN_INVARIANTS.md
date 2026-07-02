@@ -87,9 +87,9 @@ only. Do not add committee positions to access roles or `Member.role`.
 active/inactive independently of access role and seasonal membership type, and
 newly linked assignments are hidden until explicitly published by an admin.
 Committee contact routing uses the role email alias stored on `CommitteeRole`,
-not the linked member's private email address. Booking pricing, booking block
-checks, and effective subscription lockout may depend on the member's seasonal
-membership type for the
+falling back to the linked member's email only when the role email is blank.
+Booking pricing, booking block checks, and effective subscription lockout may
+depend on the member's seasonal membership type for the
 booking season; application access and committee presentation must not.
 Seasonal membership type changes require a guarded admin preview and reasoned
 audit record. Existing future bookings are not automatically repriced by a type

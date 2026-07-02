@@ -343,12 +343,12 @@ blurb or role description, and an opaque assignment contact key only when the
 assignment is contactable. Member email addresses are never returned to the
 browser; `/api/contact` resolves contactable assignment keys server-side and
 delivers to the role email alias configured on `CommitteeRole`, falling back to
-the configured club contact address when no published, contactable assignment
-matches or the role has no alias. Committee-routed contact emails use an opaque
+the linked member's email when the role has no alias, then to the configured
+club contact address when no published, contactable assignment or recipient
+email is available. Committee-routed contact emails use an opaque
 committee-contact marker in EmailLog rows instead of persisting the recipient
-address. Linked member email addresses are not used for committee contact
-delivery. Phone numbers come from the linked member profile and display only
-when the assignment's show-phone flag is enabled.
+address. Phone numbers come from the linked member profile and display only when
+the assignment's show-phone flag is enabled.
 
 The legacy `CommitteeMember` table remains editable for historical/public
 migration reference, but it no longer powers `/api/committee` or committee
