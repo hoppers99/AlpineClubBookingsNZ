@@ -101,7 +101,13 @@ envelope as a safety net with deferred constraint triggers
 (`BookingGuest_stay_range_within_booking`,
 `Booking_dates_consistent_with_guests`) that validate at COMMIT, so a
 transaction may widen guest rows before the parent booking row; only the
-committed state must satisfy the invariant.
+committed state must satisfy the invariant. The modification services call
+`assertBookingEnvelopeInvariants` (`SET CONSTRAINTS … IMMEDIATE`) as the last
+statement of their transactions so a violation is attributed to the calling
+service rather than surfacing as an anonymous commit failure; the modify
+routes recognise the constraint errors via
+`isBookingEnvelopeInvariantViolation` and return a clean 500 instead of
+leaking raw trigger text to the client.
 
 Nightly prices lock at booking time: every edit path — batch modify, date
 change, guest add, single-guest removal, and the modify-quote preview — prices
@@ -109,10 +115,17 @@ only the changed guests/nights at current season rates. A night a guest
 already bought keeps the price stored on its `BookingGuestNight` row, so a
 season-rate change between booking and edit never rolls into unchanged nights
 (adding one guest costs exactly that guest's price; removing one returns
-exactly theirs, policy permitting). The waitlist offer reprice is the
-deliberate exception: an offer re-bases the whole booking at current rates
-before the member confirms, and the offer email states that price. Legacy
-guests without stored night rows price at current rates.
+exactly theirs, policy permitting). Edits also price each untouched guest over
+exactly the night set they hold (#1093): a partial-stay guest never grows
+phantom nights because an unrelated guest was added or removed. A booking date
+change is the deliberate reset: it moves every guest — partial stays included —
+onto the full new range (the batch-path policy) and re-syncs their
+`BookingGuestNight` rows to the newly priced nights, and a guest added mid-life
+gets night rows at creation so later edits honour the prices they joined at.
+The waitlist offer reprice is the other deliberate exception: an offer re-bases
+the whole booking at current rates before the member confirms, and the offer
+email states that price. Legacy guests without stored night rows price at
+current rates.
 
 Every booking-reduction path — batch modify (`removeGuestIds`/date change),
 single-guest removal (`DELETE …/guests/[guestId]`), and date change
