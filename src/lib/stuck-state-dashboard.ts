@@ -9,6 +9,7 @@ import { getAdminAlertDeliveryEscalations } from "@/lib/email-admin-alert-escala
 import { getExhaustedEmailFailureReviewQueue } from "@/lib/email-failure-review";
 import { getEmailDeliverabilityTelemetry } from "@/lib/email-suppression";
 import { getUnassignedHutLeaderDates } from "@/lib/hut-leader-coverage";
+import { countUnconfirmedSchoolAttendeeLists } from "@/lib/school-attendee-confirmation";
 import { loadHutLeaderLookaheadDays } from "@/lib/lodge-settings";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import { MAX_PAYMENT_RECOVERY_ATTEMPTS } from "@/lib/payment-recovery-constants";
@@ -32,6 +33,7 @@ export type StuckStateSeverity = "critical" | "warning" | "info";
 
 export type StuckStateDomain =
   | "payment"
+  | "booking"
   | "xero"
   | "email"
   | "waitlist"
@@ -106,6 +108,7 @@ export interface StuckStateDashboardDependencies {
   getAdminAlertDeliveryEscalations: typeof getAdminAlertDeliveryEscalations;
   getTokenEmailRecoveryQueue: typeof getTokenEmailRecoveryQueue;
   getWaitlistOfferEmailDeliveries: typeof getWaitlistOfferEmailDeliveries;
+  countUnconfirmedSchoolAttendeeLists: typeof countUnconfirmedSchoolAttendeeLists;
   getBedAllocationDashboard: typeof getBedAllocationDashboard;
   getUnassignedHutLeaderDates: typeof getUnassignedHutLeaderDates;
   loadHutLeaderLookaheadDays: typeof loadHutLeaderLookaheadDays;
@@ -113,6 +116,7 @@ export interface StuckStateDashboardDependencies {
 
 const DOMAIN_LABELS: Record<StuckStateDomain, string> = {
   payment: "Payment recovery",
+  booking: "Bookings",
   xero: "Xero",
   email: "Email",
   waitlist: "Waitlist",
@@ -122,6 +126,7 @@ const DOMAIN_LABELS: Record<StuckStateDomain, string> = {
 
 const DOMAIN_ORDER: StuckStateDomain[] = [
   "payment",
+  "booking",
   "xero",
   "email",
   "waitlist",
@@ -144,6 +149,7 @@ const defaultDependencies: StuckStateDashboardDependencies = {
   getAdminAlertDeliveryEscalations,
   getTokenEmailRecoveryQueue,
   getWaitlistOfferEmailDeliveries,
+  countUnconfirmedSchoolAttendeeLists,
   getBedAllocationDashboard,
   getUnassignedHutLeaderDates,
   loadHutLeaderLookaheadDays,
@@ -708,6 +714,27 @@ export async function getStuckStateDashboard(input?: {
   ]);
 
   buildPaymentItems(items, paymentCounts);
+
+  // School attendee lists inside their confirmation window (#1101): the
+  // school has been prompted (or is about to be) but has not confirmed who
+  // is attending; the chore roster still shows placeholder names.
+  const unconfirmedSchoolAttendeeLists =
+    await deps.countUnconfirmedSchoolAttendeeLists(now);
+  addItem(items, {
+    id: "booking-school-attendees-unconfirmed",
+    domain: "booking",
+    title: "Unconfirmed school attendee lists",
+    severity: "warning",
+    owner: "Admin",
+    count: unconfirmedSchoolAttendeeLists,
+    href: "/admin/booking-requests?tab=approvals",
+    summary: `${unconfirmedSchoolAttendeeLists} school ${plural(
+      unconfirmedSchoolAttendeeLists,
+      "booking",
+    )} inside the attendee-confirmation window still ${
+      unconfirmedSchoolAttendeeLists === 1 ? "needs" : "need"
+    } the school contact to confirm who is attending.`,
+  });
 
   await addEmailItems(items, deps);
 

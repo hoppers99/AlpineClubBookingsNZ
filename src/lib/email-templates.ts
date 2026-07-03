@@ -2512,3 +2512,35 @@ export function adminBookingRequestHoldExpiredTemplate(data: {
     ${button("View Bookings", data.reviewUrl, { sameOrigin: true })}
   `);
 }
+
+
+/**
+ * School attendee confirmation prompt (#1101): tokenized link where the
+ * school contact renames placeholder attendees and confirms the list.
+ */
+export function schoolAttendeeConfirmationTemplate(data: {
+  firstName: string;
+  schoolName: string | null;
+  confirmUrl: string;
+  checkIn: Date;
+  checkOut: Date;
+  guestCount: number;
+  isReminder: boolean;
+}): string {
+  const stayLabel = data.schoolName
+    ? escapeHtml(data.schoolName) + "'s stay"
+    : "your school group's stay";
+  return layout(`
+    ${heading(data.isReminder ? "Reminder: Confirm Your Attendee List" : "Confirm Your Attendee List")}
+    ${paragraph("Hi " + escapeHtml(data.firstName) + ", " + stayLabel + " at " + escapeHtml(CLUB_NAME) + "'s lodge is coming up, and the booking currently lists placeholder attendee names. Please tell us who is coming so the lodge roster shows real names on arrival.")}
+    ${infoTable([
+      { label: "Check-in", value: formatNZDate(data.checkIn) },
+      { label: "Check-out", value: formatNZDate(data.checkOut) },
+      { label: "Attendees", value: String(data.guestCount) },
+    ])}
+    ${paragraph("Use the secure link below to update the names and confirm the list. You can come back and edit until you confirm; the link stays valid until check-in.")}
+    ${button("Confirm Attendees", data.confirmUrl)}
+    ${muted("Need to change how many people are coming, or their age groups? Contact the club instead — headcount changes go through a revised quote.")}
+    ${supportContactSentence("If you have any questions, contact the club at ")}
+  `);
+}

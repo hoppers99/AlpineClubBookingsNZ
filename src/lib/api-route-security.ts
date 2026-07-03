@@ -96,6 +96,11 @@ export const explicitPublicApiRoutes = {
     reason:
       "Token-bearing booking request email verification endpoint; returns only non-PII summary fields and is rate limited.",
   },
+  "src/app/api/school-bookings/confirm-attendees/route.ts": {
+    boundary: "public",
+    reason:
+      "Token-bearing school attendee confirmation endpoint (#1101): SHA-256 hashed token rotated per email, identity-only guest renames via the shared quoted-booking machinery, rate limited like the other token flows.",
+  },
   "src/app/api/chores/[token]/route.ts": {
     boundary: "public",
     reason:

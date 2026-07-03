@@ -505,6 +505,7 @@ disable cron with `CRON_ENABLED=false`.
 | `pre-arrival-reminders` | Every 3 hours | Send current directions and door-code reminders before check-in |
 | `purge-booking-requests` | Every 3 hours | Delete expired declined and never-verified public booking requests after the retention window |
 | `quote-expiry-reminders` | Every 3 hours | Remind public booking-request quote recipients before their quote link expires (sends a fresh working link) |
+| `school-attendee-confirmations` | Every 3 hours | Prompt school contacts to confirm their attendee list before check-in (#1101): first email `attendeeConfirmationLeadDays` before arrival, re-sent every `attendeeConfirmationReminderDays` with a fresh tokenized link until confirmed or check-in |
 | `payment-recovery` | Every 15 minutes | Cancel or refund superseded Stripe PaymentIntents |
 | `waitlist-processor` | Every 30 minutes | Expire offers and advance waitlist |
 | `email-retry` | Every 30 minutes | Retry failed email sends |
