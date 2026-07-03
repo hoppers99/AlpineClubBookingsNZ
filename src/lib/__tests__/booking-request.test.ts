@@ -181,6 +181,8 @@ describe("booking request settings", () => {
       showPricingToNonMembers: false,
       quoteResponseTtlDays: 14,
       quoteReminderLeadDays: 3,
+      attendeeConfirmationLeadDays: 14,
+      attendeeConfirmationReminderDays: 3,
     });
   });
 

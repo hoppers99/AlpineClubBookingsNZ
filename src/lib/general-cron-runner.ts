@@ -7,6 +7,7 @@ import {
 import { reapStaleGroupSettlements } from "@/lib/cron-group-settlement-reaper";
 import { sendPreArrivalReminders } from "@/lib/cron-pre-arrival-reminders";
 import { sendQuoteExpiryReminders } from "@/lib/cron-quote-expiry-reminders";
+import { sendSchoolAttendeeConfirmationPrompts } from "@/lib/school-attendee-confirmation";
 import logger from "@/lib/logger";
 
 export const GENERAL_CRON_JOB_NAMES = [
@@ -15,6 +16,7 @@ export const GENERAL_CRON_JOB_NAMES = [
   "pre-arrival-reminders",
   "purge-booking-requests",
   "quote-expiry-reminders",
+  "school-attendee-confirmations",
 ] as const;
 
 export type GeneralCronJobName = (typeof GENERAL_CRON_JOB_NAMES)[number];
@@ -25,6 +27,9 @@ export interface GeneralCronCycleResult {
   preArrivalReminders: Awaited<ReturnType<typeof sendPreArrivalReminders>> | null;
   bookingRequestPurge: Awaited<ReturnType<typeof purgeExpiredBookingRequests>> | null;
   quoteExpiryReminders: Awaited<ReturnType<typeof sendQuoteExpiryReminders>> | null;
+  schoolAttendeeConfirmations: Awaited<
+    ReturnType<typeof sendSchoolAttendeeConfirmationPrompts>
+  > | null;
 }
 
 type GeneralCronResultKey = keyof GeneralCronCycleResult;
@@ -45,6 +50,7 @@ export interface GeneralCronRunnerDependencies {
     sendPreArrivalReminders: typeof sendPreArrivalReminders;
     purgeExpiredBookingRequests: typeof purgeExpiredBookingRequests;
     sendQuoteExpiryReminders: typeof sendQuoteExpiryReminders;
+    sendSchoolAttendeeConfirmationPrompts: typeof sendSchoolAttendeeConfirmationPrompts;
   }>;
 }
 
@@ -117,6 +123,7 @@ export async function runGeneralCronCycle(
     preArrivalReminders: null,
     bookingRequestPurge: null,
     quoteExpiryReminders: null,
+    schoolAttendeeConfirmations: null,
   };
   const failures: Array<{ jobName: GeneralCronJobName; message: string }> = [];
   const tasks: GeneralCronTask<unknown>[] = [
@@ -159,6 +166,14 @@ export async function runGeneralCronCycle(
       work:
         taskDependencies.sendQuoteExpiryReminders ??
         sendQuoteExpiryReminders,
+    },
+    {
+      jobName: "school-attendee-confirmations",
+      resultKey: "schoolAttendeeConfirmations",
+      failureMessage: "School attendee confirmation cron error",
+      work:
+        taskDependencies.sendSchoolAttendeeConfirmationPrompts ??
+        sendSchoolAttendeeConfirmationPrompts,
     },
   ];
 

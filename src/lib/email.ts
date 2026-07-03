@@ -77,6 +77,7 @@ import {
   groupSettlementExpiredTemplate,
   groupJoinReleasedTemplate,
   groupJoinCancelledTemplate,
+  schoolAttendeeConfirmationTemplate,
   type XeroReconciliationReportEmail,
 } from "./email-templates";
 import {
@@ -2808,5 +2809,49 @@ export async function sendAdminBookingRequestHoldExpiredEmail(data: {
       reviewUrl,
     },
     preferenceKey: "adminBookingRequest",
+  });
+}
+
+/**
+ * School attendee confirmation prompt (#1101): tokenized link, rotated on
+ * every send, where the school contact renames placeholder attendees and
+ * confirms the list before check-in.
+ */
+export async function sendSchoolAttendeeConfirmationEmail(params: {
+  email: string;
+  firstName: string;
+  schoolName: string | null;
+  token: string;
+  checkIn: Date;
+  checkOut: Date;
+  guestCount: number;
+  isReminder: boolean;
+}) {
+  const baseUrl = process.env.NEXTAUTH_URL || "http://localhost:3000";
+  const confirmUrl = `${baseUrl}/school-bookings/confirm/${params.token}`;
+
+  await sendEmail({
+    to: params.email,
+    subject: params.isReminder
+      ? `Reminder: confirm your attendee list — ${CLUB_NAME}`
+      : `Confirm your attendee list — ${CLUB_NAME}`,
+    html: schoolAttendeeConfirmationTemplate({
+      firstName: params.firstName,
+      schoolName: params.schoolName,
+      confirmUrl,
+      checkIn: params.checkIn,
+      checkOut: params.checkOut,
+      guestCount: params.guestCount,
+      isReminder: params.isReminder,
+    }),
+    templateName: "school-attendee-confirmation",
+    templateData: {
+      firstName: params.firstName,
+      schoolName: params.schoolName ?? "",
+      checkIn: formatNZDate(params.checkIn),
+      checkOut: formatNZDate(params.checkOut),
+      guestCount: params.guestCount,
+      isReminder: params.isReminder,
+    },
   });
 }

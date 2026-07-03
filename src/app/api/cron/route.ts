@@ -25,6 +25,7 @@ export async function POST(request: NextRequest) {
       preArrivalReminders: result.preArrivalReminders,
       bookingRequestPurge: result.bookingRequestPurge,
       quoteExpiryReminders: result.quoteExpiryReminders,
+      schoolAttendeeConfirmations: result.schoolAttendeeConfirmations,
     });
   } catch (err) {
     if (err instanceof GeneralCronCycleError) {

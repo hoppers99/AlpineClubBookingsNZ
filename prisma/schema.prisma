@@ -1258,6 +1258,14 @@ model BookingRequest {
   verificationTokenExpiresAt DateTime?
   verifiedAt                 DateTime?
 
+  // School attendee confirmation (#1101, SCHOOL requests with a converted
+  // booking). SHA-256 hash only; the raw token is emailed and rotated on
+  // each reminder. Confirmation is the school contact's explicit action.
+  attendeeConfirmationTokenHash      String?   @unique
+  attendeeConfirmationTokenExpiresAt DateTime?
+  attendeeConfirmationLastSentAt     DateTime?
+  attendeesConfirmedAt               DateTime?
+
   pricedByMemberId   String?
   pricedAt           DateTime?
   reviewedByMemberId String?
@@ -1350,6 +1358,10 @@ model BookingRequestSettings {
   showPricingToNonMembers Boolean  @default(false)
   quoteResponseTtlDays    Int      @default(14)
   quoteReminderLeadDays   Int      @default(3)
+  // School attendee confirmation cadence (#1101): first prompt this many
+  // days before check-in, then a reminder every N days until confirmed.
+  attendeeConfirmationLeadDays     Int @default(14)
+  attendeeConfirmationReminderDays Int @default(3)
   updatedByMemberId       String?
   createdAt               DateTime @default(now())
   updatedAt               DateTime @updatedAt

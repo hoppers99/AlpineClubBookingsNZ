@@ -172,7 +172,14 @@ refunds captured payments per the policy.
 
 A booking converted from (or held for) a public/school booking request keeps
 its officer-negotiated price, flat-split across guest rows; the quote's
-per-tier rates are not persisted on the booking. Standard edit paths (batch
+per-tier rates are not persisted on the booking. Before a school group
+arrives, the school contact confirms who is attending (#1101): a tokenized
+public page (hash-stored, rotated per reminder email) applies identity-only
+name updates through the same price-preserving machinery as quoted-booking
+edits, and the explicit confirmation is stored on the booking request.
+Headcount or tier changes still go through the admin re-quote flow, and
+unconfirmed lists inside the prompt window surface on the stuck-state
+dashboard. Standard edit paths (batch
 modify, date change, guest add, single-guest removal, and the modify-quote
 preview) refuse such bookings rather than silently repricing every guest at
 season rates — the change is made by re-pricing or issuing a revised quote

@@ -24,6 +24,10 @@ vi.mock("@/lib/cron-quote-expiry-reminders", () => ({
   sendQuoteExpiryReminders: vi.fn(),
 }));
 
+vi.mock("@/lib/school-attendee-confirmation", () => ({
+  sendSchoolAttendeeConfirmationPrompts: vi.fn(),
+}));
+
 vi.mock("@/lib/logger", () => ({
   default: {
     error: vi.fn(),
@@ -53,6 +57,8 @@ describe("general cron runner", () => {
           scanned: 1,
           reaped: 1,
           releasedChildBookings: 2,
+          expiredSettlements: 0,
+          cancelledChildBookings: 0,
         })),
         sendPreArrivalReminders: vi.fn(async () => ({
           reminderDays: 3,
@@ -69,6 +75,11 @@ describe("general cron runner", () => {
         sendQuoteExpiryReminders: vi.fn(async () => ({
           remindedCount: 1,
           failedCount: 0,
+        })),
+        sendSchoolAttendeeConfirmationPrompts: vi.fn(async () => ({
+          scanned: 0,
+          sent: 0,
+          failed: 0,
         })),
       },
     });
@@ -87,8 +98,15 @@ describe("general cron runner", () => {
       scanned: 1,
       reaped: 1,
       releasedChildBookings: 2,
+      expiredSettlements: 0,
+      cancelledChildBookings: 0,
     });
-    expect(recordCronRun).toHaveBeenCalledTimes(5);
+    expect(result.schoolAttendeeConfirmations).toEqual({
+      scanned: 0,
+      sent: 0,
+      failed: 0,
+    });
+    expect(recordCronRun).toHaveBeenCalledTimes(6);
     expect(recordCronRun).toHaveBeenCalledWith(
       expect.objectContaining({
         jobName: "group-settlement-reaper",
@@ -119,6 +137,12 @@ describe("general cron runner", () => {
         status: "SUCCESS",
       })
     );
+    expect(recordCronRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobName: "school-attendee-confirmations",
+        status: "SUCCESS",
+      })
+    );
   });
 
   it("continues through independent jobs and reports failures after recording each outcome", async () => {
@@ -143,6 +167,13 @@ describe("general cron runner", () => {
       scanned: 0,
       reaped: 0,
       releasedChildBookings: 0,
+      expiredSettlements: 0,
+      cancelledChildBookings: 0,
+    }));
+    const sendSchoolAttendeeConfirmationPrompts = vi.fn(async () => ({
+      scanned: 0,
+      sent: 0,
+      failed: 0,
     }));
 
     await expect(
@@ -157,6 +188,7 @@ describe("general cron runner", () => {
           sendPreArrivalReminders,
           purgeExpiredBookingRequests,
           sendQuoteExpiryReminders,
+          sendSchoolAttendeeConfirmationPrompts,
         },
       })
     ).rejects.toMatchObject<Partial<GeneralCronCycleError>>({
@@ -169,6 +201,7 @@ describe("general cron runner", () => {
     expect(sendPreArrivalReminders).toHaveBeenCalled();
     expect(purgeExpiredBookingRequests).toHaveBeenCalled();
     expect(sendQuoteExpiryReminders).toHaveBeenCalled();
+    expect(sendSchoolAttendeeConfirmationPrompts).toHaveBeenCalled();
     expect(recordCronRun).toHaveBeenCalledWith(
       expect.objectContaining({
         jobName: "confirm-pending",
