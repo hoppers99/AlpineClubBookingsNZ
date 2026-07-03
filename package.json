@@ -121,6 +121,7 @@
     "dotenv": "^17.4.2",
     "eslint": "^10.6.0",
     "eslint-config-next": "16.2.9",
+    "fast-check": "^4.8.0",
     "jsdom": "^29.1.1",
     "tailwindcss": "^4",
     "tsx": "^4.22.4",
