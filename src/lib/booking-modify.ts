@@ -1629,9 +1629,17 @@ export async function applyPaymentAdjustments(
     settlementOptions,
     settlementMethod,
   });
+  // On a reduction against an issued Xero invoice (#1015): when a payment has
+  // been captured the credit note is policy-limited (selectedSettlement); when
+  // the invoice is issued but unpaid (pay-on-account, no captured payment) no
+  // policy tier applies — nothing was paid — so the invoice must be corrected
+  // for the full net delta, otherwise a `settlementOptions` of null leaves
+  // xeroRefund at 0 and the outstanding invoice keeps the removed guests.
   const xeroRefundAmountCents =
     hasIssuedXeroInvoice && netAmountCents < 0
-      ? selectedSettlement.amountCents
+      ? hasSettledPayment
+        ? selectedSettlement.amountCents
+        : Math.abs(netAmountCents)
       : 0;
   const xeroAdditionalAmountCents =
     hasIssuedXeroInvoice && netAmountCents > 0 ? netAmountCents : 0;
@@ -1797,6 +1805,34 @@ export function assertBookingModifiable(
   if (!canModifyBookingStatusForRole(booking.status, role)) {
     throw new ApiError(
       "This booking cannot be modified in its current status",
+      400,
+    );
+  }
+}
+
+/**
+ * Bookings converted from (or held for) a public/school booking request keep
+ * an officer-negotiated price that was flat-split across the guest rows; the
+ * quote's per-tier rates are not persisted on the booking. Every standard
+ * edit path reprices the whole booking at current season rates, which would
+ * silently replace the negotiated basis — a one-student addition can swing
+ * the total by the full quote-vs-season delta (#1032) — so those paths
+ * refuse instead and direct the admin to the booking-request re-quote /
+ * re-price flow.
+ */
+export async function assertBookingNotQuotePriced(
+  db: Prisma.TransactionClient,
+  bookingId: string,
+): Promise<void> {
+  const request = await db.bookingRequest.findFirst({
+    where: {
+      OR: [{ convertedBookingId: bookingId }, { heldBookingId: bookingId }],
+    },
+    select: { id: true },
+  });
+  if (request) {
+    throw new ApiError(
+      "This booking keeps a negotiated booking-request price, so standard edits are disabled — they would reprice every guest at season rates. Re-price or issue a revised quote from its booking request instead.",
       400,
     );
   }

@@ -14,9 +14,13 @@ import {
   getMembershipTypeBookingPolicyErrorBody,
   MembershipTypeBookingPolicyError,
 } from "@/lib/membership-type-policy";
-import { refundPaymentTransactions } from "@/lib/payment-transactions";
-import { enqueueBookingModificationRefundRecovery } from "@/lib/payment-recovery";
+import {
+  createModificationAdditionalPaymentIntent,
+  drainSupersededPrimaryIntents,
+  executeBookingModificationRefund,
+} from "@/lib/booking-modification-settlement";
 import { authorizationRoleFromAccessRoles } from "@/lib/access-roles";
+import type { BookingModificationSettlementMethod } from "@/lib/booking-modify";
 
 export async function DELETE(
   request: NextRequest,
@@ -36,6 +40,23 @@ export async function DELETE(
   const ipAddress =
     request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
 
+  const body = await request.json().catch(() => null);
+  const rawSettlementMethod = (body as { settlementMethod?: unknown } | null)
+    ?.settlementMethod;
+  if (
+    rawSettlementMethod !== undefined &&
+    rawSettlementMethod !== "card" &&
+    rawSettlementMethod !== "credit"
+  ) {
+    return NextResponse.json(
+      { error: "settlementMethod must be 'card' or 'credit'" },
+      { status: 400 },
+    );
+  }
+  const settlementMethod = rawSettlementMethod as
+    | BookingModificationSettlementMethod
+    | undefined;
+
   try {
     const result = await prisma.$transaction((tx) =>
       removeBookingGuestInTransaction({
@@ -44,42 +65,52 @@ export async function DELETE(
         guestId,
         actorMemberId: session.user.id,
         actorRole: authorizationRoleFromAccessRoles(session.user),
+        settlementMethod,
       })
     );
 
-    // Process Stripe refund outside transaction (avoids holding advisory lock during API call)
-    let stripeRefundId: string | undefined;
-    if (result.refundAmountCents > 0 && result.paymentId) {
-      try {
-        const refundResult = await refundPaymentTransactions({
-          paymentId: result.paymentId,
-          amountCents: result.refundAmountCents,
-          metadata: { bookingId, reason: "guest_removed_price_decrease" },
-          idempotencyKeyPrefix: `guest_remove_refund_${bookingId}`,
-        });
-        stripeRefundId = refundResult.refunds[0]?.refundId;
-      } catch (refundErr) {
-        logger.error({ err: refundErr, bookingId, amount: result.refundAmountCents },
-          "Stripe refund failed after guest removal - enqueuing durable recovery");
-        // Match the booking-modification settlement path: enqueue a durable,
-        // admin-visible REFUND_BOOKING_MODIFICATION recovery operation so the
-        // refund is retried instead of silently needing manual reconciliation
-        // (issue #818). Idempotent on the booking modification id.
-        try {
-          await enqueueBookingModificationRefundRecovery({
-            bookingId,
-            paymentId: result.paymentId,
-            bookingModificationId: result.bookingModificationId,
-            amountCents: result.refundAmountCents,
-          });
-        } catch (recoveryErr) {
-          logger.error(
-            { err: recoveryErr, bookingId, amount: result.refundAmountCents },
-            "Failed to enqueue guest-removal refund recovery - manual reconciliation required",
-          );
-        }
-      }
-    }
+    // A zero-dollar auto-pay supersedes any outstanding primary
+    // PaymentIntents inside the transaction; cancel them on Stripe now so a
+    // stale checkout tab cannot capture the pre-removal amount (#1041).
+    await drainSupersededPrimaryIntents({
+      bookingId,
+      supersededPrimaryPaymentIntents: result.supersededPrimaryPaymentIntents,
+    });
+
+    // Process the Stripe refund outside the transaction (avoids holding the
+    // advisory lock during the Stripe API call). Only the Stripe-refundable
+    // slice (pendingRefundAmountCents) is charged back; account credit and
+    // non-Stripe captured payments never issue a Stripe refund. The shared
+    // helper scopes the idempotency key to this modification and enqueues
+    // durable recovery on failure (issue #818).
+    const stripeRefundId = await executeBookingModificationRefund({
+      bookingId,
+      result,
+      metadataReason: "guest_removed_price_decrease",
+      idempotencyKeyPrefix: `guest_remove_refund_${bookingId}`,
+      failureMessage:
+        "Stripe refund failed after guest removal - enqueueing recovery",
+      recoveryFailureMessage:
+        "Failed to enqueue guest-removal refund recovery - manual reconciliation required",
+    });
+
+    // Collect a removal-induced price increase on a Stripe booking (#1042):
+    // removing a guest can invalidate a group promo and raise the price of the
+    // remaining guests. Reuse the batch flow's additional-intent helper; the
+    // payer is always the booking owner (result.memberId), whose booking page
+    // surfaces the pending additional payment via AdditionalPaymentCard.
+    // No-op when nothing is owed or the payment is not a captured Stripe
+    // payment (Internet Banking increases bill via the Xero supplementary
+    // invoice below, unchanged).
+    const { additionalPaymentClientSecret, additionalPaymentIntentId } =
+      await createModificationAdditionalPaymentIntent({
+        bookingId,
+        result,
+        reason: "guest_removal_price_increase",
+        idempotencyKey: `mod_guest_remove_${bookingId}_${result.bookingModificationId}`,
+        failureMessage:
+          "Failed to create additional PaymentIntent for guest removal",
+      });
 
     // Audit log
     logAudit({
@@ -96,6 +127,9 @@ export async function DELETE(
         removedGuest: `${result.removedGuest.firstName} ${result.removedGuest.lastName}`,
         priceDiffCents: result.priceDiffCents,
         refundAmountCents: result.refundAmountCents,
+        accountCreditAmountCents: result.accountCreditAmountCents,
+        settlementMethod: result.settlementMethod,
+        policyRetainedAmountCents: result.policyRetainedAmountCents,
         choreWarnings: result.choreWarnings,
       }),
       metadata: {
@@ -103,6 +137,9 @@ export async function DELETE(
         removedGuest: `${result.removedGuest.firstName} ${result.removedGuest.lastName}`,
         priceDiffCents: result.priceDiffCents,
         refundAmountCents: result.refundAmountCents,
+        accountCreditAmountCents: result.accountCreditAmountCents,
+        settlementMethod: result.settlementMethod,
+        policyRetainedAmountCents: result.policyRetainedAmountCents,
         choreWarnings: result.choreWarnings,
         newGuestCount: result.booking.guests.length,
       },
@@ -118,6 +155,20 @@ export async function DELETE(
       priceDiffCents: result.priceDiffCents,
       changeFeeCents: 0,
       datesChanged: false,
+      // Policy-limited settlement amount + method so a captured-payment
+      // reduction issues the correct (card vs credit) modification credit
+      // note; an unpaid issued invoice falls back to the full delta inside
+      // classifyXeroBookingEditSettlement when this is null.
+      settlementAmountCents: result.xeroRefundAmountCents,
+      settlementMethod: result.settlementMethod,
+      // A Stripe-collected increase must not double-bill through Xero: hold
+      // the supplementary invoice's payment recording on the Stripe intent,
+      // exactly as the batch flow does.
+      requiresAdditionalStripePayment:
+        result.xeroAdditionalAmountCents > 0 && result.hasSucceededPayment,
+      additionalPaymentIntentId,
+      createPrimaryInvoiceWhenMissing:
+        result.zeroDollarAutoPaid && !result.hasIssuedXeroInvoice,
     }).catch((err) =>
       logger.error({ err, bookingId }, "Failed to queue Xero settlement for guest removal")
     );
@@ -141,7 +192,25 @@ export async function DELETE(
         newFinalPriceCents: result.booking.finalPriceCents,
         changeFeeCents: 0,
         refundAmountCents: result.refundAmountCents,
-        additionalAmountCents: 0,
+        accountCreditAmountCents: result.accountCreditAmountCents,
+        // Removing a guest can raise the price when it invalidates a group
+        // promo the remaining guests relied on. Surface the increase when a
+        // way to pay it exists: the Xero supplementary invoice on the
+        // issued-invoice (Internet Banking) path, or the additional
+        // PaymentIntent now created for captured Stripe payments (#1042). If
+        // Stripe intent creation failed, stay silent — an "additional payment
+        // required" note with no way to pay is worse than saying nothing; the
+        // price change still shows via old/new total.
+        additionalAmountCents:
+          result.hasIssuedXeroInvoice || additionalPaymentIntentId
+            ? result.additionalAmountCents
+            : 0,
+        additionalPaymentMethod:
+          result.additionalAmountCents > 0 && additionalPaymentIntentId
+            ? "STRIPE"
+            : result.hasIssuedXeroInvoice && result.additionalAmountCents > 0
+              ? "INTERNET_BANKING"
+              : undefined,
       }).catch((err) =>
         logger.error({ err, bookingId }, "Failed to send booking modified email")
       );
@@ -152,7 +221,20 @@ export async function DELETE(
       removedGuest: result.removedGuest,
       priceDiffCents: result.priceDiffCents,
       refundAmountCents: result.refundAmountCents,
+      accountCreditAmountCents: result.accountCreditAmountCents,
+      settlementMethod: result.settlementMethod,
+      policyRetainedAmountCents: result.policyRetainedAmountCents,
       stripeRefundId: stripeRefundId ?? null,
+      additionalAmountCents: result.additionalAmountCents,
+      // The payer is the booking owner. Hand the client secret only to them
+      // (or an admin acting on their behalf); a linked guest self-removing
+      // must not receive a secret for someone else's payment — the owner
+      // completes it from their booking page instead.
+      additionalPaymentClientSecret:
+        session.user.id === result.memberId ||
+        authorizationRoleFromAccessRoles(session.user) === "ADMIN"
+          ? additionalPaymentClientSecret ?? null
+          : null,
       promoRemoved: result.promoRemoved,
       choreWarnings: result.choreWarnings,
     });

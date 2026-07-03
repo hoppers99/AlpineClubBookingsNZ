@@ -74,6 +74,8 @@ import {
   adminBookingRequestHoldExpiredTemplate,
   groupSettlementReceiptTemplate,
   groupJoinSettledTemplate,
+  groupSettlementExpiredTemplate,
+  groupJoinReleasedTemplate,
   type XeroReconciliationReportEmail,
 } from "./email-templates";
 import {
@@ -2189,6 +2191,7 @@ export async function sendWaitlistOfferEmail(
   guestCount: number,
   expiresAt: Date,
   bookingId: string,
+  priceCents: number,
 ) {
   await sendEmail({
     to: email,
@@ -2200,6 +2203,7 @@ export async function sendWaitlistOfferEmail(
       guestCount,
       expiresAt,
       bookingId,
+      priceCents,
     ),
     templateName: "waitlist-offer",
     templateData: {
@@ -2207,6 +2211,8 @@ export async function sendWaitlistOfferEmail(
       checkIn: formatNZDate(checkIn),
       checkOut: formatNZDate(checkOut),
       guestCount,
+      // The price the member pays on confirmation (repriced at offer time, #1035).
+      price: formatMoneyCents(priceCents),
       expiresAt: formatNZDateTime(expiresAt),
       bookingId,
     },
@@ -2489,6 +2495,63 @@ export async function sendGroupJoinSettledEmail(params: {
       checkIn: formatNZDate(params.checkIn),
       checkOut: formatNZDate(params.checkOut),
       guestCount: params.guestCount,
+    },
+  });
+}
+
+/** Organiser notice that their abandoned combined payment released the beds. */
+export async function sendGroupSettlementExpiredEmail(params: {
+  email: string;
+  firstName: string;
+  checkIn: Date;
+  checkOut: Date;
+  joinerCount: number;
+  totalCents: number;
+}) {
+  await sendEmail({
+    to: params.email,
+    subject: `Your group payment expired — ${CLUB_NAME}`,
+    html: groupSettlementExpiredTemplate({
+      firstName: params.firstName,
+      checkIn: params.checkIn,
+      checkOut: params.checkOut,
+      joinerCount: params.joinerCount,
+      totalCents: params.totalCents,
+    }),
+    templateName: "group-settlement-expired",
+    templateData: {
+      firstName: params.firstName,
+      checkIn: formatNZDate(params.checkIn),
+      checkOut: formatNZDate(params.checkOut),
+      joinerCount: params.joinerCount,
+      total: formatMoneyCents(params.totalCents),
+    },
+  });
+}
+
+/** Joiner notice that the organiser's abandoned payment released their bed. */
+export async function sendGroupJoinReleasedEmail(params: {
+  email: string;
+  firstName: string;
+  organiserName: string;
+  checkIn: Date;
+  checkOut: Date;
+}) {
+  await sendEmail({
+    to: params.email,
+    subject: `Your held spot has been released — ${CLUB_NAME}`,
+    html: groupJoinReleasedTemplate({
+      firstName: params.firstName,
+      organiserName: params.organiserName,
+      checkIn: params.checkIn,
+      checkOut: params.checkOut,
+    }),
+    templateName: "group-join-released",
+    templateData: {
+      firstName: params.firstName,
+      organiserName: params.organiserName,
+      checkIn: formatNZDate(params.checkIn),
+      checkOut: formatNZDate(params.checkOut),
     },
   });
 }
