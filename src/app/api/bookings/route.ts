@@ -157,7 +157,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Only admins can book on behalf of another member" }, { status: 403 });
     }
     if (parsed.data.forMemberId === session.user.id) {
-      return NextResponse.json({ error: "Admins cannot book for themselves — use the admin booking page to book on behalf of a member" }, { status: 400 });
+      return NextResponse.json({ error: "Admins cannot create bookings for their own account — choose another member, or use a separate member account for personal stays" }, { status: 400 });
     }
     const targetMember = await prisma.member.findUnique({
       where: { id: parsed.data.forMemberId },

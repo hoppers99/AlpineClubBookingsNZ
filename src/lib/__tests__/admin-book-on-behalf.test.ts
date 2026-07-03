@@ -217,7 +217,7 @@ describe("Admin Book on Behalf", () => {
     const res = await POST(req);
     expect(res.status).toBe(400);
     const body = await res.json();
-    expect(body.error).toContain("cannot book for themselves");
+    expect(body.error).toContain("cannot create bookings for their own account");
   });
 
   it("rejects booking for inactive target member", async () => {
