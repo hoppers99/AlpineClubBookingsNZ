@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GuestData } from "@/components/guest-form";
 
@@ -169,14 +169,12 @@ async function advanceToGuestsStep() {
 async function advanceToReviewAndConfirm() {
   fireEvent.click(screen.getByText("add test guest"));
   fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-  // With money owed the submit CTA reads "Continue to Payment" and the
-  // redirect anchors the payment card (#1063).
+  // With money owed the submit CTA reads "Continue to Payment" (#1063) and
+  // the card path stays in the wizard on an embedded payment step (#1084).
   fireEvent.click(
     await screen.findByRole("button", { name: "Continue to Payment" }),
   );
-  await waitFor(() =>
-    expect(routerMocks.push).toHaveBeenCalledWith("/bookings/booking-1#payment"),
-  );
+  await screen.findByText("Complete Payment");
 }
 
 function groupCreateCalls(fetchMock: ReturnType<typeof stubFetch>) {
@@ -217,7 +215,7 @@ describe("booking wizard group trip option", () => {
 
     const calls = groupCreateCalls(fetchMock);
     expect(calls).toHaveLength(1);
-    expect(JSON.parse(String(calls[0][1]!.body))).toEqual({
+    expect(JSON.parse(String((calls[0][1] as { body?: unknown })!.body))).toEqual({
       organiserBookingId: "booking-1",
       paymentMode: "ORGANISER_PAYS",
     });

@@ -11,6 +11,8 @@ const settingsSchema = z
     showPricingToNonMembers: z.boolean(),
     quoteResponseTtlDays: z.number().int().min(1).max(60),
     quoteReminderLeadDays: z.number().int().min(0).max(30),
+    attendeeConfirmationLeadDays: z.number().int().min(0).max(90),
+    attendeeConfirmationReminderDays: z.number().int().min(1).max(30),
   })
   .refine((value) => value.quoteReminderLeadDays < value.quoteResponseTtlDays, {
     message:
@@ -50,6 +52,9 @@ export async function PUT(req: NextRequest) {
     showPricingToNonMembers: parsed.data.showPricingToNonMembers,
     quoteResponseTtlDays: parsed.data.quoteResponseTtlDays,
     quoteReminderLeadDays: parsed.data.quoteReminderLeadDays,
+    attendeeConfirmationLeadDays: parsed.data.attendeeConfirmationLeadDays,
+    attendeeConfirmationReminderDays:
+      parsed.data.attendeeConfirmationReminderDays,
     adminMemberId: session.user.id,
   });
 

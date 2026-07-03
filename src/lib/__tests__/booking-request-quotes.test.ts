@@ -154,8 +154,8 @@ beforeEach(() => {
     quoteResponseTtlDays: 14,
     quoteReminderLeadDays: 3,
   });
-  vi.mocked(prisma.$transaction).mockImplementation(async (callback: never) =>
-    (callback as (tx: typeof prisma) => Promise<unknown>)(prisma)
+  vi.mocked(prisma.$transaction).mockImplementation((async (callback: never) =>
+    (callback as (tx: typeof prisma) => Promise<unknown>)(prisma)) as never
   );
   vi.mocked(prisma.lodge.findFirst).mockResolvedValue({ id: "lodge-1" } as never);
 });
@@ -247,7 +247,7 @@ describe("createBookingRequestQuote", () => {
     });
 
     const createData = vi.mocked(prisma.bookingRequestQuote.create).mock.calls[0][0]
-      .data as { options: Array<{ totalCents: number }> };
+      .data as unknown as { options: Array<{ totalCents: number }> };
     expect(createData.options[0].totalCents).toBe(9000);
     expect(prisma.bookingRequest.update).toHaveBeenCalledWith(
       expect.objectContaining({

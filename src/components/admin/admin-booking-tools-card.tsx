@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ConfirmPendingGuestsButton } from "@/components/admin/confirm-pending-guests-button";
 import { CopyBookingButton } from "@/components/admin/copy-booking-button";
+import type { BookingProviderMismatch } from "@/lib/booking-provider-mismatches";
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path";
 import { buildXeroRecordActivityUrl } from "@/lib/xero-record-links";
 import { formatDateOnly } from "@/lib/date-only";
@@ -22,6 +23,7 @@ export function AdminBookingToolsCard({
   paymentId,
   showConfirmPendingGuests,
   hasSavedPaymentMethod,
+  providerMismatches = [],
 }: {
   bookingId: string;
   memberId: string;
@@ -33,6 +35,7 @@ export function AdminBookingToolsCard({
   paymentId: string | null;
   showConfirmPendingGuests: boolean;
   hasSavedPaymentMethod: boolean;
+  providerMismatches?: BookingProviderMismatch[];
 }) {
   const returnTo = `/bookings/${bookingId}`;
   const bedAllocationParams = new URLSearchParams({
@@ -48,6 +51,23 @@ export function AdminBookingToolsCard({
           <CardTitle className="text-base text-slate-900">Admin tools</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
+          {providerMismatches.length > 0 && (
+            <div className="space-y-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              <p className="font-medium">Provider state out of step</p>
+              {providerMismatches.map((mismatch) => (
+                <p key={mismatch.id}>
+                  <span className="font-medium">{mismatch.label}.</span>{" "}
+                  {mismatch.description}{" "}
+                  <Link
+                    className="font-medium underline"
+                    href={buildHrefWithReturnTo(mismatch.href, returnTo)}
+                  >
+                    {mismatch.linkLabel}
+                  </Link>
+                </p>
+              ))}
+            </div>
+          )}
           {!isDeleted && (
             <CopyBookingButton
               bookingId={bookingId}

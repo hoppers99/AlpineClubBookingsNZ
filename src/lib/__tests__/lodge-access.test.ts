@@ -7,11 +7,12 @@ import {
 } from "@/lib/lodge-access";
 
 function dbWithRestrictions(rows: { lodgeId: string }[]) {
+  // Minimal delegate mock: these functions only ever call memberLodgeAccess.findMany.
   return {
     memberLodgeAccess: {
       findMany: vi.fn().mockResolvedValue(rows),
     },
-  };
+  } as unknown as Parameters<typeof assertMemberMayBookLodge>[0];
 }
 
 describe("isMemberEligibleToBookLodge", () => {
@@ -95,7 +96,10 @@ describe("getStaffLodgeBinding", () => {
         findMany: vi.fn().mockResolvedValue([{ lodgeId: "lodge-1" }]),
       },
     };
-    const binding = await getStaffLodgeBinding(db, "member-1");
+    const binding = await getStaffLodgeBinding(
+      db as unknown as Parameters<typeof getStaffLodgeBinding>[0],
+      "member-1",
+    );
     expect(binding).toBe("lodge-1");
     expect(db.memberLodgeAccess.findMany).toHaveBeenCalledWith({
       where: { memberId: "member-1", kind: "STAFF" },
@@ -108,7 +112,10 @@ describe("getStaffLodgeBinding", () => {
     const db = {
       memberLodgeAccess: { findMany: vi.fn().mockResolvedValue([]) },
     };
-    const binding = await getStaffLodgeBinding(db, "member-1");
+    const binding = await getStaffLodgeBinding(
+      db as unknown as Parameters<typeof getStaffLodgeBinding>[0],
+      "member-1",
+    );
     expect(binding).toBeNull();
   });
 
@@ -120,7 +127,10 @@ describe("getStaffLodgeBinding", () => {
           .mockResolvedValue([{ lodgeId: "lodge-1" }, { lodgeId: "lodge-2" }]),
       },
     };
-    const binding = await getStaffLodgeBinding(db, "member-1");
+    const binding = await getStaffLodgeBinding(
+      db as unknown as Parameters<typeof getStaffLodgeBinding>[0],
+      "member-1",
+    );
     expect(binding).toBeNull();
   });
 });

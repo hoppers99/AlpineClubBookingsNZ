@@ -81,9 +81,9 @@ vi.mock("@/lib/prisma", () => ({
 }));
 
 vi.mock("@/lib/auth", () => ({ auth: vi.fn() }));
-const mockRequireActiveSessionUser = vi.fn(async () => null);
+const mockRequireActiveSessionUser = vi.fn<(...args: unknown[]) => Promise<Response | null>>(async () => null);
 vi.mock("@/lib/session-guards", () => ({
-  requireActiveSessionUser: (...args: unknown[]) => mockRequireActiveSessionUser(...args),
+  requireActiveSessionUser: (...args: Parameters<typeof mockRequireActiveSessionUser>) => mockRequireActiveSessionUser(...args),
 }));
 vi.mock("@/lib/capacity", () => ({
   checkCapacity: vi.fn(),
@@ -164,6 +164,9 @@ vi.mock("@/lib/logger", () => ({
 }));
 
 vi.mock("@/lib/payment-transactions", () => ({
+  PartialRefundError: class PartialRefundError extends Error {
+    completedRefundCents = 0;
+  },
   upsertPaymentIntentTransaction: (...args: unknown[]) =>
     mockUpsertPaymentIntentTransaction(...args),
   refundPaymentTransactions: (...args: unknown[]) =>
@@ -177,6 +180,7 @@ vi.mock("@/lib/payment-transactions", () => ({
   syncRefundsFromStripeCharge: vi.fn(),
 }));
 vi.mock("@/lib/payment-recovery", () => ({
+  enqueueAdditionalPaymentIntentRecovery: vi.fn().mockResolvedValue({ id: "recovery_additional" }),
   completeCanceledSupersededPaymentIntentRecovery: (...args: unknown[]) =>
     mockCompleteCanceledSupersededPaymentIntentRecovery(...args),
   queueSupersededPaymentIntentRefundRecovery: (...args: unknown[]) =>
@@ -276,6 +280,13 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
     bookingGuest: {
       create: vi.fn().mockImplementation(({ data }) => Promise.resolve({ id: "new-g", ...data })),
       update: vi.fn().mockResolvedValue({}),
+    },
+    groupDiscountSetting: {
+      findUnique: vi.fn().mockResolvedValue(null),
+    },
+    bookingGuestNight: {
+      deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+      createMany: vi.fn().mockResolvedValue({ count: 0 }),
     },
     bookingModification: { create: vi.fn().mockResolvedValue({ id: "mod1" }) },
     bookingRequest: { findFirst: vi.fn().mockResolvedValue(null) },

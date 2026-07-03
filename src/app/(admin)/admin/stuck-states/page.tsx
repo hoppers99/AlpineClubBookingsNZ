@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   ArrowRight,
   BedDouble,
+  CalendarCheck,
   CreditCard,
   Mail,
   RefreshCw,
@@ -28,6 +29,7 @@ import { cn } from "@/lib/utils";
 
 const domainIcons: Record<StuckStateDomain, typeof CreditCard> = {
   payment: CreditCard,
+  booking: CalendarCheck,
   xero: RefreshCw,
   email: Mail,
   waitlist: AlertTriangle,

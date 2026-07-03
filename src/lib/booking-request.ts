@@ -138,6 +138,9 @@ export async function getBookingRequestSettings(db: Pick<typeof prisma, "booking
     showPricingToNonMembers: record?.showPricingToNonMembers ?? false,
     quoteResponseTtlDays: record?.quoteResponseTtlDays ?? 14,
     quoteReminderLeadDays: record?.quoteReminderLeadDays ?? 3,
+    attendeeConfirmationLeadDays: record?.attendeeConfirmationLeadDays ?? 14,
+    attendeeConfirmationReminderDays:
+      record?.attendeeConfirmationReminderDays ?? 3,
   };
 }
 
@@ -215,6 +218,8 @@ export async function updateBookingRequestSettings(input: {
   showPricingToNonMembers: boolean;
   quoteResponseTtlDays: number;
   quoteReminderLeadDays: number;
+  attendeeConfirmationLeadDays: number;
+  attendeeConfirmationReminderDays: number;
   adminMemberId: string;
 }) {
   const settings = await prisma.bookingRequestSettings.upsert({
@@ -224,12 +229,16 @@ export async function updateBookingRequestSettings(input: {
       showPricingToNonMembers: input.showPricingToNonMembers,
       quoteResponseTtlDays: input.quoteResponseTtlDays,
       quoteReminderLeadDays: input.quoteReminderLeadDays,
+      attendeeConfirmationLeadDays: input.attendeeConfirmationLeadDays,
+      attendeeConfirmationReminderDays: input.attendeeConfirmationReminderDays,
       updatedByMemberId: input.adminMemberId,
     },
     update: {
       showPricingToNonMembers: input.showPricingToNonMembers,
       quoteResponseTtlDays: input.quoteResponseTtlDays,
       quoteReminderLeadDays: input.quoteReminderLeadDays,
+      attendeeConfirmationLeadDays: input.attendeeConfirmationLeadDays,
+      attendeeConfirmationReminderDays: input.attendeeConfirmationReminderDays,
       updatedByMemberId: input.adminMemberId,
     },
   });
@@ -1091,6 +1100,7 @@ export function serializeBookingRequestForAdmin(
     reviewedByMemberId: request.reviewedByMemberId,
     declineReason: request.declineReason,
     convertedBookingId: request.convertedBookingId,
+    attendeesConfirmedAt: request.attendeesConfirmedAt?.toISOString() ?? null,
     convertedMemberId: request.convertedMemberId,
     heldBookingId: request.heldBookingId,
     acceptedQuoteId: request.acceptedQuoteId,

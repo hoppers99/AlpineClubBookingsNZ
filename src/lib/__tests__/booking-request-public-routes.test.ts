@@ -435,7 +435,7 @@ describe("POST /api/booking-requests/quote", () => {
   });
 
   it("returns no price when pricing visibility is off, without parsing the body", async () => {
-    mockedGetSettings.mockResolvedValue({ showPricingToNonMembers: false });
+    mockedGetSettings.mockResolvedValue({ showPricingToNonMembers: false, quoteResponseTtlDays: 14, quoteReminderLeadDays: 3, attendeeConfirmationLeadDays: 14, attendeeConfirmationReminderDays: 3 });
 
     const res = await quoteRequest({ checkIn: "2026-08-01", checkOut: "2026-08-03", guests: [VALID_GUEST] });
     const body = await res.json();
@@ -446,7 +446,7 @@ describe("POST /api/booking-requests/quote", () => {
   });
 
   it("returns an indicative price when pricing visibility is on", async () => {
-    mockedGetSettings.mockResolvedValue({ showPricingToNonMembers: true });
+    mockedGetSettings.mockResolvedValue({ showPricingToNonMembers: true, quoteResponseTtlDays: 14, quoteReminderLeadDays: 3, attendeeConfirmationLeadDays: 14, attendeeConfirmationReminderDays: 3 });
     mockedCalculateIndicative.mockResolvedValue(24000);
 
     const res = await quoteRequest({ checkIn: "2026-08-01", checkOut: "2026-08-03", guests: [VALID_GUEST] });
@@ -457,7 +457,7 @@ describe("POST /api/booking-requests/quote", () => {
   });
 
   it("rejects check-out on or before check-in when pricing is on", async () => {
-    mockedGetSettings.mockResolvedValue({ showPricingToNonMembers: true });
+    mockedGetSettings.mockResolvedValue({ showPricingToNonMembers: true, quoteResponseTtlDays: 14, quoteReminderLeadDays: 3, attendeeConfirmationLeadDays: 14, attendeeConfirmationReminderDays: 3 });
 
     const res = await quoteRequest({ checkIn: "2026-08-03", checkOut: "2026-08-01", guests: [VALID_GUEST] });
 
@@ -466,7 +466,13 @@ describe("POST /api/booking-requests/quote", () => {
   });
 
   it("prices against the requested lodge when a lodgeId is supplied", async () => {
-    mockedGetSettings.mockResolvedValue({ showPricingToNonMembers: true });
+    mockedGetSettings.mockResolvedValue({
+      showPricingToNonMembers: true,
+      quoteResponseTtlDays: 14,
+      quoteReminderLeadDays: 3,
+      attendeeConfirmationLeadDays: 14,
+      attendeeConfirmationReminderDays: 3,
+    });
     mockedCalculateIndicative.mockResolvedValue(18000);
 
     const res = await quoteRequest({
@@ -485,7 +491,13 @@ describe("POST /api/booking-requests/quote", () => {
   });
 
   it("returns 400 for a lodgeId that is not an active lodge", async () => {
-    mockedGetSettings.mockResolvedValue({ showPricingToNonMembers: true });
+    mockedGetSettings.mockResolvedValue({
+      showPricingToNonMembers: true,
+      quoteResponseTtlDays: 14,
+      quoteReminderLeadDays: 3,
+      attendeeConfirmationLeadDays: 14,
+      attendeeConfirmationReminderDays: 3,
+    });
     mockedAssertLodgeActive.mockRejectedValueOnce(
       new BookingRequestError("Lodge not found or not active", 400)
     );
@@ -518,7 +530,7 @@ describe("GET /api/booking-requests/settings", () => {
   });
 
   it("returns the public pricing visibility flag", async () => {
-    mockedGetSettings.mockResolvedValue({ showPricingToNonMembers: true });
+    mockedGetSettings.mockResolvedValue({ showPricingToNonMembers: true, quoteResponseTtlDays: 14, quoteReminderLeadDays: 3, attendeeConfirmationLeadDays: 14, attendeeConfirmationReminderDays: 3 });
     mockedGetPublicLodges.mockResolvedValueOnce([]);
 
     const res = await getBookingRequestSettingsRoute(
@@ -529,16 +541,26 @@ describe("GET /api/booking-requests/settings", () => {
     expect(res.status).toBe(200);
     expect(body).toEqual({
       showPricingToNonMembers: true,
+      quoteResponseTtlDays: 14,
+      quoteReminderLeadDays: 3,
+      attendeeConfirmationLeadDays: 14,
+      attendeeConfirmationReminderDays: 3,
       lodges: [],
       schoolGroupSoftCap: 25,
     });
   });
 
   it("lists active lodges (id and name only) for a multi-lodge club", async () => {
-    mockedGetSettings.mockResolvedValue({ showPricingToNonMembers: false });
+    mockedGetSettings.mockResolvedValue({
+      showPricingToNonMembers: false,
+      quoteResponseTtlDays: 14,
+      quoteReminderLeadDays: 3,
+      attendeeConfirmationLeadDays: 14,
+      attendeeConfirmationReminderDays: 3,
+    });
     mockedGetPublicLodges.mockResolvedValueOnce([
-      { id: "lodge-1", name: "Ruapehu Lodge" },
-      { id: "lodge-2", name: "Whakapapa Lodge" },
+      { id: "lodge-1", name: "Ruapehu Lodge", capacity: 30, schoolGroupSoftCap: 25 },
+      { id: "lodge-2", name: "Whakapapa Lodge", capacity: 40, schoolGroupSoftCap: 25 },
     ]);
 
     const res = await getBookingRequestSettingsRoute(
@@ -548,8 +570,8 @@ describe("GET /api/booking-requests/settings", () => {
 
     expect(res.status).toBe(200);
     expect(body.lodges).toEqual([
-      { id: "lodge-1", name: "Ruapehu Lodge" },
-      { id: "lodge-2", name: "Whakapapa Lodge" },
+      { id: "lodge-1", name: "Ruapehu Lodge", capacity: 30, schoolGroupSoftCap: 25 },
+      { id: "lodge-2", name: "Whakapapa Lodge", capacity: 40, schoolGroupSoftCap: 25 },
     ]);
   });
 });

@@ -49,6 +49,7 @@ import {
   MembershipTypeBookingPolicyError,
   priceBookingGuestsWithMembershipTypePolicy,
 } from "@/lib/membership-type-policy";
+import { toGroupDiscountConfig } from "@/lib/policies/booking-route-decisions";
 import {
   deletePromoRedemptionAndAdjustCount,
   redeemPromoCode,
@@ -318,18 +319,26 @@ export function isBookingFullyPaidForGuestNameEdits(booking: {
 export function resolveGuestNameUpdates({
   booking,
   input,
+  allowWhenFullyPaid = false,
 }: {
   booking: Pick<
     LoadedBookingForModify,
     "guests" | "status" | "finalPriceCents" | "payment"
   >;
   input: Pick<BatchModifyInput, "guestUpdates" | "removeGuestIds">;
+  /**
+   * Quoted (booking-request) bookings are exempt from the paid-name lock
+   * (#1099): their guests are placeholder records ("School Child 1..N") and
+   * replacing them with real attendee names before arrival is the intended
+   * workflow — including after the school has paid its invoice.
+   */
+  allowWhenFullyPaid?: boolean;
 }): ResolvedGuestNameUpdate[] {
   if (!input.guestUpdates?.length) {
     return [];
   }
 
-  if (isBookingFullyPaidForGuestNameEdits(booking)) {
+  if (!allowWhenFullyPaid && isBookingFullyPaidForGuestNameEdits(booking)) {
     throw new ApiError(
       "Non-member guest names cannot be edited after the booking is fully paid",
       400,
@@ -1042,6 +1051,13 @@ export async function calculateModifiedPricing(
           checkOut: newCheckOut,
           guests: policyAdjustedGuestsForPricing,
           seasons: seasonRateData,
+          // Group discount applies to the newly priced nights (#1095); locked
+          // nights keep their booked (discount-inclusive) prices regardless.
+          groupDiscount: toGroupDiscountConfig(
+            await tx.groupDiscountSetting.findUnique({
+              where: { id: "default" },
+            }),
+          ),
           seasonYear,
         });
   } catch (error) {
@@ -1765,7 +1781,15 @@ export async function applyLifecycleTransitions(
   let zeroDollarAutoPaid = false;
   let supersededPrimaryPaymentIntents: SupersededPrimaryPaymentIntent[] = [];
 
-  if (reviewUpdate?.parkForReview && newStatus !== "AWAITING_REVIEW") {
+  // Parking moves a booking to AWAITING_REVIEW only from the pre-payment
+  // statuses that state was built for: approval releases AWAITING_REVIEW to
+  // PAYMENT_PENDING, which must never happen to captured money (#1100). A
+  // paid/confirmed booking that trips a review rule is flagged (the caller
+  // writes requiresAdminReview + adminReviewStatus PENDING, which drives the
+  // admin queue) but keeps its status.
+  const canParkForReview =
+    newStatus === "PENDING" || newStatus === "PAYMENT_PENDING";
+  if (reviewUpdate?.parkForReview && canParkForReview) {
     newStatus = "AWAITING_REVIEW";
   } else if (reviewUpdate?.releaseFromReview && newStatus === "AWAITING_REVIEW") {
     newStatus = "PAYMENT_PENDING";
@@ -1858,20 +1882,27 @@ export function assertBookingModifiable(
  * refuse instead and direct the admin to the booking-request re-quote /
  * re-price flow.
  */
-export async function assertBookingNotQuotePriced(
+export async function isQuotePricedBooking(
   db: Prisma.TransactionClient,
   bookingId: string,
-): Promise<void> {
+): Promise<boolean> {
   const request = await db.bookingRequest.findFirst({
     where: {
       OR: [{ convertedBookingId: bookingId }, { heldBookingId: bookingId }],
     },
     select: { id: true },
   });
-  if (request) {
-    throw new ApiError(
-      "This booking keeps a negotiated booking-request price, so standard edits are disabled — they would reprice every guest at season rates. Re-price or issue a revised quote from its booking request instead.",
-      400,
-    );
+  return Boolean(request);
+}
+
+export const QUOTE_PRICED_EDIT_BLOCK_MESSAGE =
+  "This booking keeps a negotiated booking-request price, so standard edits are disabled — they would reprice every guest at season rates. Re-price or issue a revised quote from its booking request instead.";
+
+export async function assertBookingNotQuotePriced(
+  db: Prisma.TransactionClient,
+  bookingId: string,
+): Promise<void> {
+  if (await isQuotePricedBooking(db, bookingId)) {
+    throw new ApiError(QUOTE_PRICED_EDIT_BLOCK_MESSAGE, 400);
   }
 }

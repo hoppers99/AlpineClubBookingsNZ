@@ -70,6 +70,13 @@ Future reviews and issues should cite this file when proposing changes.
   settlement stays unpaid past its window (never past check-in), voids the
   open intent, and notifies the organiser and joiners — idempotently, and a
   payment that lands first always wins under the shared lock.
+- The reverted children have a terminal path too (#1094): joiners cannot pay
+  an organiser-settled booking themselves, so if the FAILED settlement sits
+  unretried through a second full reap window the same cron cancels the
+  PAYMENT_PENDING children, exactly once, with a joiner notification. A
+  settlement retry (which flips the row back to PENDING and resets its clock)
+  always keeps the children alive — both are re-checked on the fresh row
+  under the shared lock.
 
 ## Booking Modifications
 
@@ -87,16 +94,54 @@ Booking changes must not orphan or desynchronize:
 Positive deltas, negative deltas, credits, refunds, and additional payments must
 remain traceable to the original booking and modification event.
 
+Per-guest stay ranges must sit inside the parent booking's checkIn/checkOut
+envelope. A guest stay range outside the current envelope is not rejected —
+it auto-expands the booking's dates (issue #713). The database enforces the
+envelope as a safety net with deferred constraint triggers
+(`BookingGuest_stay_range_within_booking`,
+`Booking_dates_consistent_with_guests`) that validate at COMMIT, so a
+transaction may widen guest rows before the parent booking row; only the
+committed state must satisfy the invariant. The modification services call
+`assertBookingEnvelopeInvariants` (`SET CONSTRAINTS … IMMEDIATE`) as the last
+statement of their transactions so a violation is attributed to the calling
+service rather than surfacing as an anonymous commit failure; the modify
+routes recognise the constraint errors via
+`isBookingEnvelopeInvariantViolation` and return a clean 500 instead of
+leaking raw trigger text to the client.
+
 Nightly prices lock at booking time: every edit path — batch modify, date
 change, guest add, single-guest removal, and the modify-quote preview — prices
 only the changed guests/nights at current season rates. A night a guest
 already bought keeps the price stored on its `BookingGuestNight` row, so a
 season-rate change between booking and edit never rolls into unchanged nights
 (adding one guest costs exactly that guest's price; removing one returns
-exactly theirs, policy permitting). The waitlist offer reprice is the
-deliberate exception: an offer re-bases the whole booking at current rates
-before the member confirms, and the offer email states that price. Legacy
-guests without stored night rows price at current rates.
+exactly theirs, policy permitting). Edits also price each untouched guest over
+exactly the night set they hold (#1093): a partial-stay guest never grows
+phantom nights because an unrelated guest was added or removed. A booking date
+change is the deliberate reset: it moves every guest — partial stays included —
+onto the full new range (the batch-path policy) and re-syncs their
+`BookingGuestNight` rows to the newly priced nights, and a guest added mid-life
+gets night rows at creation so later edits honour the prices they joined at.
+The waitlist offer reprice is the other deliberate exception: an offer re-bases
+the whole booking at current rates before the member confirms, and the offer
+email states that price. Legacy guests without stored night rows price at
+current rates; a one-off backfill migration (#1098) synthesised rows for
+pre-#713 guests on live, non-quote-priced bookings (stored price split evenly
+across the stay envelope, integer cents, remainder on the first night), so
+that fallback now covers only quote-priced bookings — already protected by
+the #1032 edit block — and rows created outside the app.
+
+Every edit path passes the default group discount into pricing exactly as
+creation and the waitlist reprice do (#1095), and locks win over the discount:
+a night a guest already bought keeps its locked (discount-inclusive) price, so
+a party dropping below the minimum on removal never loses a discount it
+bought, and the discount applies only to newly priced nights — a guest added
+to a qualifying party, or nights a date change adds. Eligibility is per night
+and per party size on that night: a partial-stay guest's absent nights do not
+count toward the minimum. The modify-quote preview prices with the same
+config so previews match what the mutating paths charge. The guest-add route
+therefore prices the whole post-add party in one pass — the added guest's
+stored price and night rows are their slice of the combined breakdown.
 
 Every booking-reduction path — batch modify (`removeGuestIds`/date change),
 single-guest removal (`DELETE …/guests/[guestId]`), and date change
@@ -116,16 +161,38 @@ stale checkout tab cannot capture the pre-change amount), and the non-member
 hold is recalculated from the remaining guests (all-member bookings clear the
 hold; bookings inside the hold window move PENDING → PAYMENT_PENDING). The same
 change must produce the same booking state regardless of which endpoint made
-it. The single-guest removal path keeps its lightweight admin-review flagging
-(no review parking), preserving linked-guest self-removal eligibility.
+it.
+
+A booking left with only non-adults (YOUTH/CHILD/INFANT) requires admin
+approval regardless of how it got there or whether it was already paid: every
+edit path — including single-guest self-removal, which is never blocked for a
+written justification — flags the booking (`adminReviewStatus: PENDING`, with
+an automatic note on the removal path) so it lands in the admin review queue.
+Review parking moves a booking to AWAITING_REVIEW only from the pre-payment
+statuses (PENDING/PAYMENT_PENDING); a paid or confirmed booking is flagged in
+place, and approving it clears the review without re-opening the payment
+lifecycle. Rejection cancels through the shared cancellation flow, which
+refunds captured payments per the policy.
 
 A booking converted from (or held for) a public/school booking request keeps
 its officer-negotiated price, flat-split across guest rows; the quote's
-per-tier rates are not persisted on the booking. Standard edit paths (batch
+per-tier rates are not persisted on the booking. Before a school group
+arrives, the school contact confirms who is attending (#1101): a tokenized
+public page (hash-stored, rotated per reminder email) applies identity-only
+name updates through the same price-preserving machinery as quoted-booking
+edits, and the explicit confirmation is stored on the booking request.
+Headcount or tier changes still go through the admin re-quote flow, and
+unconfirmed lists inside the prompt window surface on the stuck-state
+dashboard. Standard edit paths (batch
 modify, date change, guest add, single-guest removal, and the modify-quote
 preview) refuse such bookings rather than silently repricing every guest at
 season rates — the change is made by re-pricing or issuing a revised quote
-from the booking request.
+from the booking request. The one exception (#1099) is identity-only edits:
+guest name fixes never run the pricing engine — stored totals, per-guest
+prices, and night rows are echoed back unchanged on every booking, quoted or
+not — so they pass the block, and quoted bookings are additionally exempt
+from the paid-name lock (renaming placeholder students after the school has
+paid its invoice is the intended workflow).
 
 A price reduction against an issued-but-unpaid Xero invoice (pay-on-account,
 no captured payment) is corrected for the full net delta — there is no captured

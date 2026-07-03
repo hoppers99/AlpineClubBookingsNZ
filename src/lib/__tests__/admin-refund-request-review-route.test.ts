@@ -76,12 +76,16 @@ vi.mock("@/lib/logger", () => ({
 }));
 
 vi.mock("@/lib/payment-recovery", () => ({
+  enqueueAdditionalPaymentIntentRecovery: vi.fn().mockResolvedValue({ id: "recovery_additional" }),
   enqueueRefundRequestRefundRecovery: (...args: unknown[]) =>
     mocks.enqueueRefundRequestRefundRecovery(...args),
 }));
 
 vi.mock("@/lib/payment-transactions", () => ({
   refundPaymentTransactions: mocks.refundPaymentTransactions,
+  PartialRefundError: class PartialRefundError extends Error {
+    completedRefundCents = 0;
+  },
 }));
 
 import { PUT } from "@/app/api/admin/refund-requests/[id]/route";

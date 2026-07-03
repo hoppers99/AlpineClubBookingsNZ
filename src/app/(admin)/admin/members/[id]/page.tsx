@@ -30,6 +30,7 @@ import {
   type MemberAddressValues,
 } from "@/lib/member-address";
 import { hasAccessRole, isFullAdmin } from "@/lib/access-roles";
+import { toast } from "sonner";
 import { useScrollToFeedback } from "@/hooks/use-scroll-to-feedback";
 import { MemberDetailHeader } from "./_components/member-detail-header";
 import { MemberStatsCards } from "./_components/member-stats-cards";
@@ -146,13 +147,11 @@ export default function MemberDetailPage({
   const [member, setMember] = useState<MemberDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [pageError, setPageError] = useState("");
-  const [success, setSuccess] = useState("");
   const [relationshipError, setRelationshipError] = useState("");
   const [xeroError, setXeroError] = useState("");
-  const pageRef = useRef<HTMLDivElement>(null);
   const relationshipErrorRef = useRef<HTMLDivElement>(null);
   const xeroErrorRef = useRef<HTMLDivElement>(null);
-  const { scrollToError, scrollToTop } = useScrollToFeedback();
+  const { scrollToError } = useScrollToFeedback();
 
   // Edit dialog state
   const [editOpen, setEditOpen] = useState(false);
@@ -324,10 +323,6 @@ export default function MemberDetailPage({
     : `/admin/members/${id}`;
 
   useEffect(() => {
-    if (success) scrollToTop(pageRef);
-  }, [scrollToTop, success]);
-
-  useEffect(() => {
     if (relationshipError) scrollToError(relationshipErrorRef);
   }, [relationshipError, scrollToError]);
 
@@ -423,8 +418,7 @@ export default function MemberDetailPage({
       setAdjustmentAmount("");
       setAdjustmentDescription("");
       setAdjustmentIdempotencyKey(null);
-      setSuccess(data.message || "Credit adjustment submitted for approval");
-      setTimeout(() => setSuccess(""), 3000);
+      toast.success(data.message || "Credit adjustment submitted for approval");
       await fetchCredits();
     } catch (err) {
       setAdjustmentError(
@@ -461,8 +455,7 @@ export default function MemberDetailPage({
       }
 
       const data = await res.json();
-      setSuccess(data.message || "Adjustment reviewed");
-      setTimeout(() => setSuccess(""), 3000);
+      toast.success(data.message || "Adjustment reviewed");
       await fetchCredits();
     } catch (err) {
       setAdjustmentError(
@@ -494,8 +487,7 @@ export default function MemberDetailPage({
       }
 
       setArchiveReason("");
-      setSuccess("Archive request submitted");
-      setTimeout(() => setSuccess(""), 3000);
+      toast.success("Archive request submitted");
       setLoading(true);
       await fetchMember();
     } catch (err) {
@@ -535,10 +527,7 @@ export default function MemberDetailPage({
         delete next[requestId];
         return next;
       });
-      setSuccess(
-        action === "approve" ? "Member archived" : "Archive request rejected",
-      );
-      setTimeout(() => setSuccess(""), 3000);
+      toast.success(action === "approve" ? "Member archived" : "Archive request rejected",);
       setLoading(true);
       await fetchMember();
     } catch (err) {
@@ -574,8 +563,7 @@ export default function MemberDetailPage({
       }
 
       setCancellationReason("");
-      setSuccess("Cancellation request submitted");
-      setTimeout(() => setSuccess(""), 3000);
+      toast.success("Cancellation request submitted");
       setLoading(true);
       await fetchMember();
     } catch (err) {
@@ -1059,8 +1047,7 @@ export default function MemberDetailPage({
         throw new Error(data.error || "Save failed");
       }
       setEditOpen(false);
-      setSuccess("Member updated successfully");
-      setTimeout(() => setSuccess(""), 3000);
+      toast.success("Member updated successfully");
       setLoading(true);
       await fetchMember();
     } catch (err) {
@@ -1141,8 +1128,7 @@ export default function MemberDetailPage({
       }
 
       setDependentOpen(false);
-      setSuccess("Dependent created successfully");
-      setTimeout(() => setSuccess(""), 3000);
+      toast.success("Dependent created successfully");
       setLoading(true);
       await fetchMember();
     } catch (err) {
@@ -1221,8 +1207,7 @@ export default function MemberDetailPage({
       }
 
       setDependentOpen(false);
-      setSuccess("Dependent linked successfully");
-      setTimeout(() => setSuccess(""), 3000);
+      toast.success("Dependent linked successfully");
       setLoading(true);
       await fetchMember();
     } catch (err) {
@@ -1318,8 +1303,7 @@ export default function MemberDetailPage({
       }
 
       setParentLinkOpen(false);
-      setSuccess("Parent linked successfully");
-      setTimeout(() => setSuccess(""), 3000);
+      toast.success("Parent linked successfully");
       setLoading(true);
       await fetchMember();
     } catch (err) {
@@ -1355,8 +1339,7 @@ export default function MemberDetailPage({
         throw new Error(data.error || "Failed to remove parent/dependant link");
       }
 
-      setSuccess("Parent/dependant link removed");
-      setTimeout(() => setSuccess(""), 3000);
+      toast.success("Parent/dependant link removed");
       setLoading(true);
       await fetchMember();
     } catch (err) {
@@ -1401,8 +1384,7 @@ export default function MemberDetailPage({
       setXeroSearchQuery("");
       setXeroSearchResults([]);
       setXeroSearchOpen(false);
-      setSuccess("Member linked to Xero contact");
-      setTimeout(() => setSuccess(""), 3000);
+      toast.success("Member linked to Xero contact");
       setLoading(true);
       await fetchMember();
     } catch (err) {
@@ -1422,8 +1404,7 @@ export default function MemberDetailPage({
       setXeroSearchQuery("");
       setXeroSearchResults([]);
       resetXeroEntranceFeeDecision();
-      setSuccess("Member unlinked from Xero");
-      setTimeout(() => setSuccess(""), 3000);
+      toast.success("Member unlinked from Xero");
       setLoading(true);
       await fetchMember();
     } catch (err) {
@@ -1446,12 +1427,9 @@ export default function MemberDetailPage({
     setXeroCreateDecisionResults([]);
     setXeroDecisionContactId("");
     setXeroDecisionError("");
-    setSuccess(
-      createEntranceFeeInvoice && data.entranceFeeInvoiceQueued
+    toast.success(createEntranceFeeInvoice && data.entranceFeeInvoiceQueued
         ? "Member created in Xero and entrance fee invoice queued"
-        : "Member created in Xero",
-    );
-    setTimeout(() => setSuccess(""), 3000);
+        : "Member created in Xero",);
 
     const warning =
       typeof data.warning === "string"
@@ -1524,8 +1502,7 @@ export default function MemberDetailPage({
       setXeroCreateDecisionOpen(false);
       setXeroCreateDecisionResults([]);
       setXeroDecisionContactId("");
-      setSuccess("Member linked to Xero contact");
-      setTimeout(() => setSuccess(""), 3000);
+      toast.success("Member linked to Xero contact");
       setLoading(true);
       await fetchMember();
     } catch (err) {
@@ -1555,8 +1532,7 @@ export default function MemberDetailPage({
 
       setDeleteDialogOpen(false);
       setDeleteReason("");
-      setSuccess("Delete request submitted for second-admin review");
-      setTimeout(() => setSuccess(""), 3000);
+      toast.success("Delete request submitted for second-admin review");
       setLoading(true);
       await fetchMember();
     } catch (err) {
@@ -1591,12 +1567,9 @@ export default function MemberDetailPage({
 
       setDeleteReviewDialog(null);
       setDeleteReviewNote("");
-      setSuccess(
-        deleteReviewDialog.action === "approve"
+      toast.success(deleteReviewDialog.action === "approve"
           ? "Member deleted and snapshot retained"
-          : "Delete request rejected",
-      );
-      setTimeout(() => setSuccess(""), 3000);
+          : "Delete request rejected",);
       if (deleteReviewDialog.action === "approve") {
         router.push(backHref);
         return;
@@ -1694,7 +1667,7 @@ export default function MemberDetailPage({
   void parentLinkInheritEmail;
 
   return (
-    <div ref={pageRef} className="space-y-6">
+    <div className="space-y-6">
       <MemberDetailHeader
         member={member}
         backHref={backHref}
@@ -1711,11 +1684,6 @@ export default function MemberDetailPage({
         onOpenEditDialog={openEditDialog}
       />
 
-      {success && (
-        <div className="p-3 bg-green-50 border border-green-200 text-green-700 rounded-md text-sm">
-          {success}
-        </div>
-      )}
       {relationshipError && (
         <div
           ref={relationshipErrorRef}
@@ -1868,8 +1836,7 @@ export default function MemberDetailPage({
           if (!open) setFamilyGroupEditorId(null);
         }}
         onChanged={() => {
-          setSuccess("Family group updated successfully");
-          setTimeout(() => setSuccess(""), 3000);
+          toast.success("Family group updated successfully");
           setLoading(true);
           void fetchMember();
         }}

@@ -3,7 +3,14 @@
 import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { useState } from "react";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { useEffect, useRef, useState } from "react";
 import { DateRangeControls } from "@/components/admin/date-range-controls";
 import { bookingFilterDateRangePresets } from "@/lib/date-range-presets";
 import { bookingStatusLabel } from "@/lib/status-colors";
@@ -28,7 +35,7 @@ export function BookingFilters({
   const [checkInFrom, setCheckInFrom] = useState(searchParams.get("checkInFrom") || searchParams.get("from") || "");
   const [checkInTo, setCheckInTo] = useState(searchParams.get("checkInTo") || searchParams.get("to") || "");
   const [search, setSearch] = useState(searchParams.get("search") || "");
-  const [month, setMonth] = useState(searchParams.get("month") || "");
+  const [month, setMonth] = useState(searchParams.get("month") || "all");
   const [deleted, setDeleted] = useState(searchParams.get("deleted") || "hide");
   const [paymentSource, setPaymentSource] = useState(searchParams.get("paymentSource") || "all");
   const [xeroState, setXeroState] = useState(searchParams.get("xeroState") || "all");
@@ -53,25 +60,41 @@ export function BookingFilters({
     }
   }
 
-  function applyFilters() {
-    const params = new URLSearchParams();
-    if (status !== "all") params.set("status", status);
-    if (updatedFrom) params.set("updatedFrom", updatedFrom);
-    if (updatedTo) params.set("updatedTo", updatedTo);
-    if (checkInFrom) params.set("checkInFrom", checkInFrom);
-    if (checkInTo) params.set("checkInTo", checkInTo);
-    if (search) params.set("search", search);
-    if (sortBy !== "updatedAt") params.set("sortBy", sortBy);
-    if (sortDir !== "desc") params.set("sortDir", sortDir);
-    if (month) params.set("month", month);
-    if (deleted !== "hide") params.set("deleted", deleted);
-    if (paymentSource !== "all") params.set("paymentSource", paymentSource);
-    if (xeroState !== "all") params.set("xeroState", xeroState);
-    if (showBedAllocation && bedState !== "all") params.set("bedState", bedState);
-    if (changeState !== "all") params.set("changeState", changeState);
-    if (showLodgeFilter && lodgeId !== "all") params.set("lodgeId", lodgeId);
-    router.push(`/admin/bookings?${params.toString()}`);
-  }
+  // Filters apply automatically (debounced so typing in search doesn't push a
+  // navigation per keystroke) while keeping the URL-driven server model:
+  // filtered views stay shareable links.
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      const params = new URLSearchParams();
+      if (status !== "all") params.set("status", status);
+      if (updatedFrom) params.set("updatedFrom", updatedFrom);
+      if (updatedTo) params.set("updatedTo", updatedTo);
+      if (checkInFrom) params.set("checkInFrom", checkInFrom);
+      if (checkInTo) params.set("checkInTo", checkInTo);
+      if (search) params.set("search", search);
+      if (sortBy !== "updatedAt") params.set("sortBy", sortBy);
+      if (sortDir !== "desc") params.set("sortDir", sortDir);
+      if (month !== "all") params.set("month", month);
+      if (deleted !== "hide") params.set("deleted", deleted);
+      if (paymentSource !== "all") params.set("paymentSource", paymentSource);
+      if (xeroState !== "all") params.set("xeroState", xeroState);
+      if (showBedAllocation && bedState !== "all") params.set("bedState", bedState);
+      if (changeState !== "all") params.set("changeState", changeState);
+      if (showLodgeFilter && lodgeId !== "all") params.set("lodgeId", lodgeId);
+      const next = params.toString();
+      // Compare against the live URL so the initial render is a no-op.
+      const current = new URLSearchParams(window.location.search);
+      current.delete("page");
+      if (next !== current.toString()) {
+        router.push(next ? `/admin/bookings?${next}` : "/admin/bookings");
+      }
+    }, 350);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [status, updatedFrom, updatedTo, checkInFrom, checkInTo, search, month, deleted, paymentSource, xeroState, bedState, changeState, sortBy, sortDir, showBedAllocation, lodgeId, showLodgeFilter, router]);
 
   function clearFilters() {
     setStatus("all");
@@ -80,7 +103,7 @@ export function BookingFilters({
     setCheckInFrom("");
     setCheckInTo("");
     setSearch("");
-    setMonth("");
+    setMonth("all");
     setDeleted("hide");
     setPaymentSource("all");
     setXeroState("all");
@@ -94,18 +117,19 @@ export function BookingFilters({
     <div className="flex flex-wrap items-end gap-3 rounded-lg border bg-white p-4">
       <div className="space-y-1">
         <label className="text-xs font-medium text-gray-500">Status</label>
-        <select
-          value={status}
-          onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setStatus(e.target.value)}
-          className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors"
-        >
-          <option value="all">All</option>
-          {bookingStatuses.map((bookingStatus) => (
-            <option key={bookingStatus} value={bookingStatus}>
-              {bookingStatusLabel(bookingStatus)}
-            </option>
-          ))}
-        </select>
+        <Select value={status} onValueChange={setStatus}>
+          <SelectTrigger className="w-[170px]">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All</SelectItem>
+            {bookingStatuses.map((bookingStatus) => (
+              <SelectItem key={bookingStatus} value={bookingStatus}>
+                {bookingStatusLabel(bookingStatus)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
       {showLodgeFilter && (
         <div className="space-y-1">
@@ -124,86 +148,92 @@ export function BookingFilters({
       )}
       <div className="space-y-1">
         <label className="text-xs font-medium text-gray-500">Month</label>
-        <select
-          value={month}
-          onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setMonth(e.target.value)}
-          className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors"
-        >
-          <option value="">All months</option>
-          {monthOptions.map((opt) => (
-            <option key={opt.value} value={opt.value}>{opt.label}</option>
-          ))}
-        </select>
+        <Select value={month} onValueChange={setMonth}>
+          <SelectTrigger className="w-[140px]">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All months</SelectItem>
+            {monthOptions.map((opt) => (
+              <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
       <div className="space-y-1">
         <label className="text-xs font-medium text-gray-500">Deleted</label>
-        <select
-          value={deleted}
-          onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setDeleted(e.target.value)}
-          className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors"
-        >
-          <option value="hide">Hide deleted</option>
-          <option value="include">Include deleted</option>
-          <option value="only">Deleted only</option>
-        </select>
+        <Select value={deleted} onValueChange={setDeleted}>
+          <SelectTrigger className="w-[150px]">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="hide">Hide deleted</SelectItem>
+            <SelectItem value="include">Include deleted</SelectItem>
+            <SelectItem value="only">Deleted only</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
       <div className="space-y-1">
         <label className="text-xs font-medium text-gray-500">Payment</label>
-        <select
-          value={paymentSource}
-          onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setPaymentSource(e.target.value)}
-          className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors"
-        >
-          <option value="all">All payments</option>
-          <option value="STRIPE">Stripe</option>
-          <option value="INTERNET_BANKING">Internet Banking</option>
-          <option value="NONE">No payment</option>
-        </select>
+        <Select value={paymentSource} onValueChange={setPaymentSource}>
+          <SelectTrigger className="w-[160px]">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All payments</SelectItem>
+            <SelectItem value="STRIPE">Stripe</SelectItem>
+            <SelectItem value="INTERNET_BANKING">Internet Banking</SelectItem>
+            <SelectItem value="NONE">No payment</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
       <div className="space-y-1">
         <label className="text-xs font-medium text-gray-500">Xero</label>
-        <select
-          value={xeroState}
-          onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setXeroState(e.target.value)}
-          className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors"
-        >
-          <option value="all">All Xero states</option>
-          <option value="invoiceLinked">Invoice linked</option>
-          <option value="invoiceMissing">Invoice missing</option>
-          <option value="operationFailed">Failed activity</option>
-          <option value="operationPartial">Partial activity</option>
-          <option value="operationPending">Pending activity</option>
-        </select>
+        <Select value={xeroState} onValueChange={setXeroState}>
+          <SelectTrigger className="w-[160px]">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Xero states</SelectItem>
+            <SelectItem value="invoiceLinked">Invoice linked</SelectItem>
+            <SelectItem value="invoiceMissing">Invoice missing</SelectItem>
+            <SelectItem value="operationFailed">Failed activity</SelectItem>
+            <SelectItem value="operationPartial">Partial activity</SelectItem>
+            <SelectItem value="operationPending">Pending activity</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
       {showBedAllocation ? (
         <div className="space-y-1">
           <label className="text-xs font-medium text-gray-500">Beds</label>
-          <select
-            value={bedState}
-            onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setBedState(e.target.value)}
-            className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors"
-          >
-            <option value="all">All bed states</option>
-            <option value="unallocated">Unallocated</option>
-            <option value="partial">Partial</option>
-            <option value="complete">Complete</option>
-            <option value="warning">Warning</option>
-          </select>
+          <Select value={bedState} onValueChange={setBedState}>
+            <SelectTrigger className="w-[150px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All bed states</SelectItem>
+              <SelectItem value="unallocated">Unallocated</SelectItem>
+              <SelectItem value="partial">Partial</SelectItem>
+              <SelectItem value="complete">Complete</SelectItem>
+              <SelectItem value="warning">Warning</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
       ) : null}
       <div className="space-y-1">
         <label className="text-xs font-medium text-gray-500">Changes</label>
-        <select
-          value={changeState}
-          onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setChangeState(e.target.value)}
-          className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors"
-        >
-          <option value="all">All change states</option>
-          <option value="requiresReview">Requires review</option>
-          <option value="pendingRequest">Pending request</option>
-          <option value="hasModification">Has modification</option>
-          <option value="creditGenerated">Credit generated</option>
-        </select>
+        <Select value={changeState} onValueChange={setChangeState}>
+          <SelectTrigger className="w-[170px]">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All change states</SelectItem>
+            <SelectItem value="requiresReview">Requires review</SelectItem>
+            <SelectItem value="pendingRequest">Pending request</SelectItem>
+            <SelectItem value="hasModification">Has modification</SelectItem>
+            <SelectItem value="creditGenerated">Credit generated</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
       <DateRangeControls
         presets={bookingFilterDateRangePresets}
@@ -235,9 +265,6 @@ export function BookingFilters({
           placeholder="Name or email..."
         />
       </div>
-      <Button onClick={applyFilters} size="sm">
-        Filter
-      </Button>
       <Button onClick={clearFilters} variant="outline" size="sm">
         Clear
       </Button>

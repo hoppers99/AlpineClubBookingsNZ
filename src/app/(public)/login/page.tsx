@@ -109,6 +109,7 @@ function LoginForm() {
   return (
     <Card className="w-full max-w-md">
       <CardHeader className="space-y-1 items-center">
+        <h1 className="sr-only">Sign in</h1>
         <WebsiteLogo
           label={club.name}
           className="mb-2 max-h-14 max-w-52"
@@ -209,6 +210,19 @@ function LoginForm() {
           <Button type="submit" className="w-full" disabled={loading}>
             {loading ? "Signing in..." : "Sign in"}
           </Button>
+
+          <p className="text-sm text-center text-muted-foreground">
+            Didn&apos;t get your account setup or invite email? Check your spam
+            folder, then use{" "}
+            <Link
+              href="/forgot-password"
+              className="text-foreground font-medium underline-offset-4 hover:underline"
+            >
+              forgot password
+            </Link>{" "}
+            to send yourself a fresh link — it works even before your first
+            sign-in.
+          </p>
 
           <p className="text-sm text-center text-muted-foreground">
             Need to join the club?{" "}

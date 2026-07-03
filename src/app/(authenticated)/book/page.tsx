@@ -37,6 +37,10 @@ import {
 } from "@/lib/family-booking";
 import { buildProfilePathWithReturnTo } from "@/lib/internal-return-path";
 import { hasAdminAccess } from "@/lib/access-roles";
+import { isPaymentOwedBookingStatus } from "@/lib/booking-status";
+import { MEMBER_ONBOARDING_CONFIRMED_EVENT } from "@/lib/member-onboarding-events";
+import { getBookingPaymentMode } from "@/lib/booking-payment-flow";
+import BookingPaymentWrapper from "@/components/stripe/BookingPaymentWrapper";
 
 interface FamilyMember {
   id: string;
@@ -171,13 +175,22 @@ export default function BookPage() {
   const router = useRouter();
   const { data: session } = useSession();
   const { lodgeCapacity } = useClubIdentity();
-  const [step, setStep] = useState<"dates" | "guests" | "review">("dates");
+  const [step, setStep] = useState<"dates" | "guests" | "review" | "pay">(
+    "dates",
+  );
   // Lodge being booked (multi-lodge phase 8). /api/lodges only returns
   // lodges this member may book; LodgeSelect renders nothing (and reports
   // the sole lodge) while fewer than two come back (ADR-002), so
   // single-lodge clubs see no change.
   const { lodges, loading: lodgesLoading } = useLodgeOptions("member");
   const [lodgeId, setLodgeId] = useState<string | null>(null);
+  // Set when the booking is created on the card-payment path; drives step 4.
+  const [createdBooking, setCreatedBooking] = useState<{
+    id: string;
+    status: string;
+    amountCents: number;
+    returnUrl: string;
+  } | null>(null);
   const [checkIn, setCheckIn] = useState<Date | null>(null);
   const [checkOut, setCheckOut] = useState<Date | null>(null);
   const [guests, setGuests] = useState<GuestData[]>([]);
@@ -419,10 +432,19 @@ export default function BookPage() {
   }, [session, router]);
 
   useEffect(() => {
-    fetch("/api/members/family")
-      .then((res) => res.ok ? res.json() : { familyMembers: [] })
-      .then((data) => setFamilyMembers(data.familyMembers || []))
-      .catch(() => {});
+    const loadFamilyMembers = () => {
+      fetch("/api/members/family")
+        .then((res) => res.ok ? res.json() : { familyMembers: [] })
+        .then((data) => setFamilyMembers(data.familyMembers || []))
+        .catch(() => {});
+    };
+    loadFamilyMembers();
+    // The confirm-details wizard overlays this page on a member's first visit;
+    // completing it flips canBeBookedAsMember, so the cached list must refetch
+    // or the member's own quick-add button stays disabled until a reload.
+    window.addEventListener(MEMBER_ONBOARDING_CONFIRMED_EVENT, loadFamilyMembers);
+    return () =>
+      window.removeEventListener(MEMBER_ONBOARDING_CONFIRMED_EVENT, loadFamilyMembers);
   }, []);
 
   useEffect(() => {
@@ -863,6 +885,25 @@ export default function BookPage() {
             "Your group trip couldn't be opened yet. You can open it from your booking page once the booking is confirmed.",
           );
         }
+      }
+      // Card path: stay in the wizard and take payment as step 4 (#1084).
+      // Everything else keeps the existing redirects: internet banking gets
+      // its invoice instructions, holds/review/zero-due have nothing to pay.
+      if (
+        showPaymentMethodChoice &&
+        paymentMethod === "stripe" &&
+        isPaymentOwedBookingStatus(data.status)
+      ) {
+        setCreatedBooking({
+          id: data.id,
+          status: data.status,
+          amountCents: remainingToPay,
+          returnUrl: `${window.location.origin}/bookings/${data.id}`,
+        });
+        setStep("pay");
+        setSubmitting(false);
+        window.scrollTo({ top: 0 });
+        return;
       }
       // Land on the payment card when payment is the next step; the hash is a
       // harmless no-op when the card isn't rendered (holds, review, zero due).
@@ -1323,11 +1364,11 @@ export default function BookPage() {
                 </svg>
               </div>
               <div>
-                <h3 className="font-semibold text-purple-900">
+                <h2 className="font-semibold text-purple-900">
                   {lodges.length > 1 && selectedLodge
                     ? `${selectedLodge.name} is fully booked`
                     : "Lodge is fully booked"}
-                </h3>
+                </h2>
                 <p className="text-sm text-purple-700 mt-1">
                   {lodgeLabel} is at capacity on{" "}
                   {waitlistFullNights.length === 1
@@ -1394,19 +1435,19 @@ export default function BookPage() {
 
       {/* Step indicator */}
       <div className="flex items-center gap-2 text-sm">
-        <span className={step === "dates" ? "app-step-active" : "text-gray-400"}>
+        <span className={step === "dates" ? "app-step-active" : "text-gray-600"}>
           1. Select Dates
         </span>
         <span className="text-gray-300">&rarr;</span>
-        <span className={step === "guests" ? "app-step-active" : "text-gray-400"}>
+        <span className={step === "guests" ? "app-step-active" : "text-gray-600"}>
           2. Add Guests
         </span>
         <span className="text-gray-300">&rarr;</span>
-        <span className={step === "review" ? "app-step-active" : "text-gray-400"}>
+        <span className={step === "review" ? "app-step-active" : "text-gray-600"}>
           3. Review & Confirm
         </span>
         <span className="text-gray-300">&rarr;</span>
-        <span className="text-gray-400">
+        <span className={step === "pay" ? "app-step-active" : "text-gray-600"}>
           {requiresAdminReviewLocal ? "4. Admin Review" : "4. Pay"}
         </span>
       </div>
@@ -1645,7 +1686,7 @@ export default function BookPage() {
               </div>
 
               <div className="border-t pt-4">
-                <h4 className="font-medium mb-2">Guests</h4>
+                <h2 className="font-medium mb-2 text-base">Guests</h2>
                 {reviewGuestPayload.map((g, i) => {
                   const stayStart = g.stayStart ?? bookingDateStrings?.checkIn;
                   const stayEnd = g.stayEnd ?? bookingDateStrings?.checkOut;
@@ -1904,6 +1945,7 @@ export default function BookPage() {
                     <div className="space-y-2">
                       {activeWorkPartyEvents.length > 1 && (
                         <select
+                          aria-label="Working bee event"
                           className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                           value={selectedWorkPartyEventId ?? ""}
                           onChange={(e) =>
@@ -2042,6 +2084,40 @@ export default function BookPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Step 4: Pay (card path only; #1084). The booking already exists in
+          the same state as the old redirect flow, so abandoning this step is
+          safe — the booking page's payment card and banner take over. */}
+      {step === "pay" && createdBooking && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Complete Payment</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-gray-600">
+              Your booking is created. Complete payment to finish securing it.
+            </p>
+            <BookingPaymentWrapper
+              bookingId={createdBooking.id}
+              amountCents={createdBooking.amountCents}
+              paymentMode={getBookingPaymentMode(createdBooking.status)}
+              returnUrl={createdBooking.returnUrl}
+              onPaymentComplete={() =>
+                router.push(`/bookings/${createdBooking.id}`)
+              }
+            />
+            <p className="text-sm text-gray-600">
+              <Link
+                href={`/bookings/${createdBooking.id}`}
+                className="underline"
+              >
+                View booking details
+              </Link>{" "}
+              &mdash; you can also pay later from your booking page.
+            </p>
+          </CardContent>
+        </Card>
       )}
     </div>
   );

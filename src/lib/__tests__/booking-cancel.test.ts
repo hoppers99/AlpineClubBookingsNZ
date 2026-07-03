@@ -97,6 +97,9 @@ vi.mock("@/lib/logger", () => ({
 }));
 
 vi.mock("@/lib/payment-transactions", () => ({
+  PartialRefundError: class PartialRefundError extends Error {
+    completedRefundCents = 0;
+  },
   applyLocalRefundAllocation: mocks.applyLocalRefundAllocation,
   markPaymentIntentTransactionFailed: mocks.markPaymentIntentTransactionFailed,
   refundPaymentTransactions: mocks.refundPaymentTransactions,
@@ -387,7 +390,7 @@ describe("cancelBooking credit refunds", () => {
     expect(mocks.paymentUpdate).not.toHaveBeenCalled();
     expect(releaseCancellation).not.toBeNull();
 
-    releaseCancellation?.();
+    (releaseCancellation as (() => void) | null)?.();
     await resultPromise;
 
     expect(mocks.paymentUpdate).toHaveBeenCalledWith({

@@ -194,6 +194,7 @@ enum PaymentRecoveryOperationType {
   CANCEL_PAYMENT_INTENT
   REFUND_SUPERSEDED_PAYMENT
   REFUND_BOOKING_MODIFICATION
+  CREATE_ADDITIONAL_PAYMENT_INTENT
 }
 
 enum PaymentRecoveryOperationStatus {
@@ -1283,6 +1284,14 @@ model BookingRequest {
   verificationTokenExpiresAt DateTime?
   verifiedAt                 DateTime?
 
+  // School attendee confirmation (#1101, SCHOOL requests with a converted
+  // booking). SHA-256 hash only; the raw token is emailed and rotated on
+  // each reminder. Confirmation is the school contact's explicit action.
+  attendeeConfirmationTokenHash      String?   @unique
+  attendeeConfirmationTokenExpiresAt DateTime?
+  attendeeConfirmationLastSentAt     DateTime?
+  attendeesConfirmedAt               DateTime?
+
   pricedByMemberId   String?
   pricedAt           DateTime?
   reviewedByMemberId String?
@@ -1379,6 +1388,10 @@ model BookingRequestSettings {
   // Soft link for the phase-7 singleton-to-per-lodge conversion
   // (docs/multi-lodge/implementation-plan.md); unused by runtime reads today.
   lodgeId                 String?
+  // School attendee confirmation cadence (#1101): first prompt this many
+  // days before check-in, then a reminder every N days until confirmed.
+  attendeeConfirmationLeadDays     Int @default(14)
+  attendeeConfirmationReminderDays Int @default(3)
   updatedByMemberId       String?
   createdAt               DateTime @default(now())
   updatedAt               DateTime @updatedAt
@@ -1626,6 +1639,14 @@ model PaymentRecoveryOperation {
   paymentTransactionId String?
   paymentIntentId      String
   amountCents          Int
+  // #1097: the per-transaction refund allocation frozen on first processing,
+  // so retries re-request exactly the unfinished slices with their original
+  // Stripe idempotency keys. Array of { paymentTransactionId, amountCents }.
+  allocationPlan       Json?
+  // #1152: the originating route's Stripe idempotency key prefix, so a
+  // recovery replays the exact keys the route used — a refund that succeeded
+  // on Stripe but was never recorded locally is replayed, not re-minted.
+  stripeKeyPrefix      String?
   idempotencyKey       String                         @unique
   attempts             Int                            @default(0)
   nextRetryAt          DateTime?                      @default(now())

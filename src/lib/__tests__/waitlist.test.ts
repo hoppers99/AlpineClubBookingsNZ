@@ -885,7 +885,8 @@ describe("waitlist email templates", () => {
       new Date("2026-07-03"),
       2,
       new Date("2026-07-10"),
-      "booking123"
+      "booking123",
+      10000
     );
 
     expect(html).toContain("Spot Has Opened Up");

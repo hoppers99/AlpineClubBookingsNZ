@@ -199,6 +199,7 @@ describe("createSchoolBookingRequest", () => {
         checkOut: CHECK_OUT,
         teachers: [{ firstName: "Tana", lastName: "Teacher" }],
         childCounts: { CHILD: 2 },
+        cateringPreference: "NON_CATERED" as const,
       })
     ).rejects.toThrow(BookingRequestError);
     expect(mockedCreate).not.toHaveBeenCalled();
@@ -215,6 +216,7 @@ describe("createSchoolBookingRequest", () => {
         checkOut: CHECK_OUT,
         teachers: [],
         childCounts: { CHILD: 2 },
+        cateringPreference: "NON_CATERED" as const,
       })
     ).rejects.toThrow(BookingRequestError);
   });
@@ -229,6 +231,7 @@ describe("createSchoolBookingRequest", () => {
       checkOut: CHECK_OUT,
       teachers: [{ firstName: "Tana", lastName: "Teacher", email: "Tana@School.test" }],
       childCounts: { CHILD: 2, YOUTH: 1 },
+      cateringPreference: "NON_CATERED" as const,
     });
 
     expect(mockedCreate).toHaveBeenCalledTimes(1);
@@ -256,6 +259,7 @@ describe("createSchoolBookingRequest", () => {
         checkOut: CHECK_OUT,
         teachers: [{ firstName: "Tana", lastName: "Teacher" }],
         childCounts: { CHILD: 200 },
+        cateringPreference: "NON_CATERED" as const,
       })
     ).rejects.toThrow(/lodge capacity/);
   });
@@ -270,6 +274,7 @@ describe("createSchoolBookingRequest", () => {
       checkOut: CHECK_OUT,
       teachers: [{ firstName: "Tana", lastName: "Teacher" }],
       childCounts: { CHILD: 2 },
+      cateringPreference: "NON_CATERED" as const,
     });
 
     const data = mockedCreate.mock.calls[0][0].data as Record<string, unknown>;
@@ -286,6 +291,7 @@ describe("createSchoolBookingRequest", () => {
       checkOut: CHECK_OUT,
       teachers: [{ firstName: "Tana", lastName: "Teacher" }],
       childCounts: { CHILD: 2 },
+      cateringPreference: "NON_CATERED" as const,
       lodgeId: "lodge-2",
     });
 
@@ -322,7 +328,7 @@ describe("approveSchoolBookingRequest", () => {
     vi.mocked(prisma.lodge.findFirst).mockResolvedValue({ id: "lodge-1" } as never);
 
     let memberCalls = 0;
-    vi.mocked(prisma.member.create).mockImplementation(async () => {
+    vi.mocked(prisma.member.create).mockImplementation((async () => {
       memberCalls += 1;
       return memberCalls === 1
         ? ({ id: "school-member" } as never)
@@ -331,7 +337,7 @@ describe("approveSchoolBookingRequest", () => {
             firstName: "Tana",
             email: "tana@school.test",
           } as never);
-    });
+    }) as never);
     vi.mocked(prisma.booking.create).mockResolvedValue({ id: "booking-1" } as never);
     vi.mocked(prisma.payment.create).mockResolvedValue({} as never);
     vi.mocked(prisma.hutLeaderAssignment.create).mockResolvedValue({} as never);

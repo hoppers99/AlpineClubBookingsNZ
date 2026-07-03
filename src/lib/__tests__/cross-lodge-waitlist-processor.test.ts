@@ -340,7 +340,7 @@ describe("cross-lodge waitlist source contracts", () => {
     // the entry is cancelled — its lodgeId is never reassigned.
     expect(block).toContain("createConfirmedBooking");
     expect(block).toContain("status: BookingStatus.CANCELLED");
-    expect(block).not.toMatch(/data:\s*{[^}]*\blodgeId\s*:/s);
+    expect(block).not.toMatch(/data:\s*{[^}]*\blodgeId\s*:/);
   });
 
   it("promo-bearing entries are excluded from cross-lodge quotes", () => {

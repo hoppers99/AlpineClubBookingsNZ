@@ -3,6 +3,7 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
+import { useConfirm } from "@/components/confirm-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -81,6 +82,7 @@ const KIND_OPTIONS: InductionKind[] = [
 ];
 
 export function InductionRegisterTable() {
+  const { prompt, confirmDialog } = useConfirm();
   const [rows, setRows] = useState<RegisterRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState("");
@@ -264,7 +266,12 @@ export function InductionRegisterTable() {
   }
 
   async function voidInductionRow(id: string) {
-    const reason = window.prompt("Reason for voiding this induction?");
+    const reason = await prompt({
+      title: "Void this induction?",
+      inputLabel: "Reason",
+      confirmLabel: "Void induction",
+      destructive: true,
+    });
     if (!reason) return;
     const res = await fetch(`/api/admin/inductions/${id}`, {
       method: "PATCH",
@@ -283,6 +290,7 @@ export function InductionRegisterTable() {
 
   return (
     <div className="space-y-6">
+      {confirmDialog}
       <Card>
         <CardHeader>
           <CardTitle>Start an induction</CardTitle>

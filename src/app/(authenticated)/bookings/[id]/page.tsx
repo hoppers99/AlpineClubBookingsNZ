@@ -14,6 +14,7 @@ import { BookingEditor, type BookingEditorData } from "@/components/booking-edit
 import { AdditionalPaymentCard } from "@/components/additional-payment-card";
 import { ConfirmDraftButton } from "@/components/confirm-draft-button";
 import { AdminBookingToolsCard } from "@/components/admin/admin-booking-tools-card";
+import { ScrollToHash } from "@/components/scroll-to-hash";
 import { ArrivalTimeEditor } from "@/components/arrival-time-editor";
 import { RequestedRoomEditor } from "@/components/requested-room-editor";
 import { WaitlistOfferCard } from "@/components/waitlist-offer-card";
@@ -43,6 +44,7 @@ import {
 import { isBookingFullyPaidForGuestNameEdits } from "@/lib/booking-modify";
 import { isPaymentOwedBookingStatus } from "@/lib/booking-status";
 import { isBookingBedAllocationLocked } from "@/lib/admin-bed-allocation";
+import { getBookingProviderMismatches } from "@/lib/booking-provider-mismatches";
 import { loadEmailMessageSettings } from "@/lib/email-message-settings";
 import { loadPublicBookingMessages } from "@/lib/booking-message-settings";
 import { renderBookingMessageTemplate } from "@/lib/booking-message-definitions";
@@ -597,8 +599,13 @@ export default async function BookingDetailPage({
     isBookingOwner &&
     (Boolean(organiserGroupState) || canOpenGroup);
 
+  const providerMismatches = isAdmin
+    ? await getBookingProviderMismatches(booking.id)
+    : [];
+
   return (
     <div className="max-w-2xl space-y-6">
+      <ScrollToHash />
       <div className="flex items-center justify-between">
         <h1 className="text-3xl font-bold">Booking Details</h1>
         <div className="flex items-center gap-2">
@@ -632,6 +639,7 @@ export default async function BookingDetailPage({
             booking.payment?.stripePaymentMethodId &&
               booking.payment?.stripeCustomerId,
           )}
+          providerMismatches={providerMismatches}
         />
       )}
 
@@ -1296,6 +1304,13 @@ export default async function BookingDetailPage({
           </div>
         </CardContent>
       </Card>
+
+      <p className="text-xs text-muted-foreground">
+        Waiting on a booking email? This page always shows the live status of
+        your booking — the confirmation, payment, and cancellation details
+        above are up to date even if an email hasn&apos;t arrived. Check your
+        spam folder, and contact the club if our emails keep going missing.
+      </p>
     </div>
   );
 }

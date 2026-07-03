@@ -1,4 +1,9 @@
-import { BookingStatus, type AgeTier, type Prisma } from "@prisma/client";
+import {
+  AdminReviewStatus,
+  BookingStatus,
+  type AgeTier,
+  type Prisma,
+} from "@prisma/client";
 import {
   type SeasonRateData,
 } from "@/lib/pricing";
@@ -11,6 +16,7 @@ import {
   replacePromoRedemptionAllocations,
   validateAndCalculatePromoDiscount,
 } from "@/lib/promo";
+import { toGroupDiscountConfig } from "@/lib/policies/booking-route-decisions";
 import {
   ADULT_SUPERVISION_REVIEW_REASON,
   requiresAdultSupervisionReview,
@@ -129,6 +135,108 @@ function targetBookingGuestIdsForSelectedIndexes(
   return selectedGuestIndexes
     .map((index) => guestNightRates[index]?.bookingGuestId)
     .filter((id): id is string => Boolean(id));
+}
+
+type RemovalReviewUpdate = {
+  requiresAdminReview: boolean;
+  adminReviewReason: string | null;
+  memberReviewJustification: string | null;
+  adminReviewStatus: AdminReviewStatus | null;
+  adminReviewNotes: string | null;
+  adminReviewedById: string | null;
+  adminReviewedAt: Date | null;
+  parkForReview: boolean;
+  releaseFromReview: boolean;
+};
+
+/**
+ * Review fields to write after a guest removal (#1100). Mirrors the batch
+ * path's resolveModifyReviewUpdate scenarios, with one deliberate difference:
+ * a member (or self-removing linked guest) who trips the no-adult rule is
+ * never blocked for a written justification — the removal proceeds and the
+ * booking is flagged with an automatic note so it lands in the admin review
+ * queue, even when the booking is already paid.
+ */
+function resolveRemovalReviewUpdate({
+  booking,
+  actorRole,
+  actorMemberId,
+  nowFlagged,
+  removedGuestName,
+}: {
+  booking: {
+    status: string;
+    requiresAdminReview: boolean;
+    adminReviewStatus: AdminReviewStatus | null;
+    memberReviewJustification: string | null;
+    adminReviewNotes: string | null;
+    adminReviewedById: string | null;
+    adminReviewedAt: Date | null;
+  };
+  actorRole: string;
+  actorMemberId: string;
+  nowFlagged: boolean;
+  removedGuestName: string;
+}): RemovalReviewUpdate {
+  if (!nowFlagged) {
+    // Rule cleared (or never tripped): wipe review state so the booking
+    // returns to the normal lifecycle; release a parked booking.
+    return {
+      requiresAdminReview: false,
+      adminReviewReason: null,
+      memberReviewJustification: null,
+      adminReviewStatus: null,
+      adminReviewNotes: null,
+      adminReviewedById: null,
+      adminReviewedAt: null,
+      parkForReview: false,
+      releaseFromReview: booking.status === BookingStatus.AWAITING_REVIEW,
+    };
+  }
+
+  // Still (or already) flagged with a recorded review: preserve it — admins
+  // are not re-prompted just because the guest list shuffled.
+  if (booking.requiresAdminReview && booking.adminReviewStatus !== null) {
+    return {
+      requiresAdminReview: true,
+      adminReviewReason: ADULT_SUPERVISION_REVIEW_REASON,
+      memberReviewJustification: booking.memberReviewJustification,
+      adminReviewStatus: booking.adminReviewStatus,
+      adminReviewNotes: booking.adminReviewNotes,
+      adminReviewedById: booking.adminReviewedById,
+      adminReviewedAt: booking.adminReviewedAt,
+      parkForReview: booking.adminReviewStatus === AdminReviewStatus.PENDING,
+      releaseFromReview: false,
+    };
+  }
+
+  // First trip. An admin performing the removal is the approval (batch
+  // parity); anyone else flags the booking for admin review.
+  if (actorRole === "ADMIN") {
+    return {
+      requiresAdminReview: true,
+      adminReviewReason: ADULT_SUPERVISION_REVIEW_REASON,
+      memberReviewJustification: null,
+      adminReviewStatus: AdminReviewStatus.APPROVED,
+      adminReviewNotes: "Approved at guest removal by admin.",
+      adminReviewedById: actorMemberId,
+      adminReviewedAt: new Date(),
+      parkForReview: false,
+      releaseFromReview: false,
+    };
+  }
+
+  return {
+    requiresAdminReview: true,
+    adminReviewReason: ADULT_SUPERVISION_REVIEW_REASON,
+    memberReviewJustification: `Automatic: removing ${removedGuestName} left no adult on this booking.`,
+    adminReviewStatus: AdminReviewStatus.PENDING,
+    adminReviewNotes: null,
+    adminReviewedById: null,
+    adminReviewedAt: null,
+    parkForReview: true,
+    releaseFromReview: false,
+  };
 }
 
 export async function removeBookingGuestInTransaction({
@@ -268,6 +376,13 @@ export async function removeBookingGuestInTransaction({
     ageTier: guest.ageTier as AgeTier,
     isMember: guest.isMember,
     memberId: guest.memberId ?? null,
+    // Price remaining guests over exactly the nights they hold (#1093):
+    // their stored night set (or stay envelope for pre-#713 guests without
+    // rows), never the full booking range — removing one guest must not grow
+    // phantom nights on a partial-stay guest who stays behind.
+    stayStart: guest.stayStart,
+    stayEnd: guest.stayEnd,
+    nights: guest.nights && guest.nights.length > 0 ? guest.nights : null,
     // Remaining guests keep their booked nightly prices (#1036): removing a
     // guest must return exactly that guest's own price, policy permitting.
     lockedNightPrices: lockedNightPricesForGuest(guest),
@@ -279,12 +394,19 @@ export async function removeBookingGuestInTransaction({
     seasonYear,
   });
 
+  const groupDiscountSetting = await tx.groupDiscountSetting.findUnique({
+    where: { id: "default" },
+  });
   const priceBreakdown = await priceBookingGuestsWithMembershipTypePolicy(tx, {
     ownerMemberId: booking.memberId,
     checkIn: booking.checkIn,
     checkOut: booking.checkOut,
     guests: guestsForPricing,
     seasons: seasonRateData,
+    // Group discount applies to any newly priced nights (#1095); remaining
+    // guests' locked nights keep their booked (discount-inclusive) prices, so
+    // a party dropping below the minimum never loses a discount it bought.
+    groupDiscount: toGroupDiscountConfig(groupDiscountSetting),
     seasonYear,
   });
   const guestNightRates = guestsForPricing.map((guest, index) => ({
@@ -293,9 +415,9 @@ export async function removeBookingGuestInTransaction({
     isMember: guest.isMember,
     perNightRates: priceBreakdown.guests[index].perNightCents,
     nightDates: priceBreakdown.guests[index].nightDates,
-    // Guests are priced over the full booking range here, so the first
-    // rate is the check-in night. Dates the rates so internal work-party
-    // promos restrict the discount to the event's night window.
+    // nightDates carry each guest's actual priced nights (partial stays
+    // included); firstNight remains the booking's check-in so internal
+    // work-party promos date their window from the stay start.
     firstNight: booking.checkIn,
   }));
 
@@ -309,10 +431,18 @@ export async function removeBookingGuestInTransaction({
   });
   const newFinalPriceCents = newTotalPriceCents + promoResult.newPromoAdjustmentCents;
   const priceDiffCents = newFinalPriceCents - booking.finalPriceCents;
-  const requiresAdminReview = requiresAdultSupervisionReview(remainingGuests);
-  const adminReviewReason = requiresAdminReview
-    ? ADULT_SUPERVISION_REVIEW_REASON
-    : null;
+  // Owner rule (#1100): a booking left with only non-adults must go through
+  // admin approval, even if it was previously paid and approved for a
+  // different composition. The self-removing guest is never blocked — the
+  // removal proceeds and the booking is flagged with an automatic
+  // justification (no written reason can be demanded of someone leaving).
+  const reviewUpdate = resolveRemovalReviewUpdate({
+    booking,
+    actorRole,
+    actorMemberId,
+    nowFlagged: requiresAdultSupervisionReview(remainingGuests),
+    removedGuestName: `${guestToRemove.firstName} ${guestToRemove.lastName}`,
+  });
 
   // Settle the reduction through the same policy-based machinery the batch
   // modify path uses (#1014): a captured payment is refunded/credited only up
@@ -345,11 +475,11 @@ export async function removeBookingGuestInTransaction({
 
   // Run the same lifecycle transitions the batch path applies (#1041):
   // non-member-hold recalculation (an all-member booking clears its hold),
-  // PENDING -> PAYMENT_PENDING inside the hold window, and zero-dollar
-  // auto-pay with superseded-PaymentIntent cancellation. `reviewUpdate` is
-  // deliberately not passed: the removal path keeps its lightweight
-  // requiresAdminReview flagging so linked-guest self-removal (which cannot
-  // supply a review justification) keeps working.
+  // PENDING -> PAYMENT_PENDING inside the hold window, zero-dollar auto-pay
+  // with superseded-PaymentIntent cancellation, and review parking (#1100).
+  // Parking only ever moves pre-payment bookings to AWAITING_REVIEW; a
+  // paid/confirmed booking is flagged for the admin queue without a status
+  // change (applyLifecycleTransitions enforces that).
   const lifecycle = await applyLifecycleTransitions(tx, {
     booking: booking as unknown as LoadedBookingForModify,
     bookingId,
@@ -358,6 +488,7 @@ export async function removeBookingGuestInTransaction({
     guestsForPricing,
     skipBookingLifecycleRules:
       actorRole === "ADMIN" && !usesActiveBookingEditLifecycle(booking.status),
+    reviewUpdate,
   });
 
   await Promise.all(
@@ -379,8 +510,13 @@ export async function removeBookingGuestInTransaction({
       hasNonMembers: lifecycle.hasNonMembers,
       nonMemberHoldUntil: lifecycle.newNonMemberHoldUntil,
       status: lifecycle.newStatus,
-      requiresAdminReview,
-      adminReviewReason,
+      requiresAdminReview: reviewUpdate.requiresAdminReview,
+      adminReviewReason: reviewUpdate.adminReviewReason,
+      memberReviewJustification: reviewUpdate.memberReviewJustification,
+      adminReviewStatus: reviewUpdate.adminReviewStatus,
+      adminReviewNotes: reviewUpdate.adminReviewNotes,
+      adminReviewedById: reviewUpdate.adminReviewedById,
+      adminReviewedAt: reviewUpdate.adminReviewedAt,
     },
     include: { guests: true, payment: true },
   });

@@ -28,11 +28,11 @@ vi.mock("@/lib/prisma", () => ({
 
 vi.mock("@/lib/auth", () => ({ auth: vi.fn() }));
 
-const mockRequireActiveSessionUser = vi.fn(async () => null);
+const mockRequireActiveSessionUser = vi.fn<(...args: unknown[]) => Promise<Response | null>>(async () => null);
 vi.mock("@/lib/session-guards", () => ({
   requireAdmin: async () =>
     (await import("./helpers/require-admin-mock")).evaluateRequireAdminMock(),
-  requireActiveSessionUser: (...args: unknown[]) =>
+  requireActiveSessionUser: (...args: Parameters<typeof mockRequireActiveSessionUser>) =>
     mockRequireActiveSessionUser(...args),
 }));
 
@@ -158,7 +158,7 @@ describe("admin lodge route", () => {
       },
     };
     vi.mocked(prisma.$transaction).mockImplementation(
-      async (cb: (t: unknown) => Promise<unknown>) => cb(tx),
+      (async (cb: (t: unknown) => Promise<unknown>) => cb(tx)) as unknown as typeof prisma.$transaction,
     );
     vi.mocked(prisma.member.update).mockResolvedValue({
       ...memberFactory({ id: "lodge-1", role: "LODGE" }),
@@ -207,7 +207,7 @@ describe("admin lodge route", () => {
       memberLodgeAccess: { create: vi.fn().mockResolvedValue({}) },
     };
     vi.mocked(prisma.$transaction).mockImplementation(
-      async (cb: (t: unknown) => Promise<unknown>) => cb(tx),
+      (async (cb: (t: unknown) => Promise<unknown>) => cb(tx)) as unknown as typeof prisma.$transaction,
     );
     vi.mocked(prisma.memberSubscription.upsert).mockResolvedValue({} as never);
     vi.mocked(prisma.memberAccessRole.createMany).mockResolvedValue({ count: 1 } as never);
