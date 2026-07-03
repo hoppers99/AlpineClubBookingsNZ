@@ -53,6 +53,9 @@ vi.mock("@/lib/lodge-capacity", () => ({
   getLodgeCapacity: vi.fn().mockResolvedValue(20),
   getDefaultLodgeCapacity: vi.fn().mockResolvedValue(20),
 }));
+vi.mock("@/lib/lodge-settings", () => ({
+  loadSchoolGroupSoftCap: vi.fn().mockResolvedValue(25),
+}));
 
 vi.mock("@/lib/logger", () => ({
   default: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
@@ -524,7 +527,11 @@ describe("GET /api/booking-requests/settings", () => {
     const body = await res.json();
 
     expect(res.status).toBe(200);
-    expect(body).toEqual({ showPricingToNonMembers: true, lodges: [] });
+    expect(body).toEqual({
+      showPricingToNonMembers: true,
+      lodges: [],
+      schoolGroupSoftCap: 25,
+    });
   });
 
   it("lists active lodges (id and name only) for a multi-lodge club", async () => {

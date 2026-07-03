@@ -35,7 +35,9 @@ const settingsSchema = z
     // Null clears the override and falls back to the club config bed total.
     capacity: z.number().int().positive().max(100000).nullable(),
     hutLeaderLookaheadDays: z.number().int().min(1).max(365).optional(),
-    // Lodge whose capacity override is edited; the lookahead stays
+    // Per-lodge school-group soft cap; null clears it to the code default.
+    schoolGroupSoftCap: z.number().int().positive().max(100000).nullable().optional(),
+    // Lodge whose per-lodge settings are edited; the lookahead stays
     // club-wide regardless.
     lodgeId: z.string().min(1).optional(),
   })
@@ -53,6 +55,7 @@ export async function GET(request: Request) {
   return NextResponse.json({
     capacity: settings.capacity,
     hutLeaderLookaheadDays: settings.hutLeaderLookaheadDays,
+    schoolGroupSoftCap: settings.schoolGroupSoftCap,
     clubConfigCapacity: CLUB_CONFIG_LODGE_CAPACITY,
   });
 }
@@ -81,6 +84,11 @@ export async function PUT(request: Request) {
     hutLeaderLookaheadDays:
       body.data.hutLeaderLookaheadDays ??
       previousSettings.hutLeaderLookaheadDays,
+    // Omitted keeps the current value; explicit null clears to the default.
+    schoolGroupSoftCap:
+      body.data.schoolGroupSoftCap === undefined
+        ? previousSettings.schoolGroupSoftCap
+        : body.data.schoolGroupSoftCap,
     updatedByMemberId: guard.session.user.id,
     lodgeId: body.data.lodgeId,
   });
@@ -107,6 +115,7 @@ export async function PUT(request: Request) {
   return NextResponse.json({
     capacity: settings.capacity,
     hutLeaderLookaheadDays: settings.hutLeaderLookaheadDays,
+    schoolGroupSoftCap: settings.schoolGroupSoftCap,
     clubConfigCapacity: CLUB_CONFIG_LODGE_CAPACITY,
   });
 }

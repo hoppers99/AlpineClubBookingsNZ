@@ -3,6 +3,7 @@ import {
   getBookingRequestSettings,
   getPublicBookingRequestLodges,
 } from "@/lib/booking-request";
+import { loadSchoolGroupSoftCap } from "@/lib/lodge-settings";
 import { applyRateLimit, rateLimiters } from "@/lib/rate-limit";
 
 /**
@@ -18,9 +19,12 @@ export async function GET(request: NextRequest) {
   const rateLimited = applyRateLimit(rateLimiters.bookingQuery, request);
   if (rateLimited) return rateLimited;
 
-  const [settings, lodges] = await Promise.all([
+  const [settings, lodges, schoolGroupSoftCap] = await Promise.all([
     getBookingRequestSettings(),
     getPublicBookingRequestLodges(),
+    // Default-lodge soft cap for the single-lodge case (no lodge selector);
+    // multi-lodge forms read the per-lodge value from `lodges` instead.
+    loadSchoolGroupSoftCap(),
   ]);
-  return NextResponse.json({ ...settings, lodges });
+  return NextResponse.json({ ...settings, lodges, schoolGroupSoftCap });
 }

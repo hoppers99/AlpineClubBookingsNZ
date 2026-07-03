@@ -31,6 +31,7 @@ import { logAudit } from "@/lib/audit";
 import { recordBookingEvent } from "@/lib/booking-events";
 import { acquireLodgeCapacityLock, checkCapacityForGuestRanges } from "@/lib/capacity";
 import { getLodgeCapacity } from "@/lib/lodge-capacity";
+import { loadSchoolGroupSoftCap } from "@/lib/lodge-settings";
 import { getNonMemberHoldDays } from "@/lib/cancellation";
 import { endOfDateOnlyForTimeZone, formatDateOnly } from "@/lib/date-only";
 import {
@@ -148,21 +149,24 @@ export async function getBookingRequestSettings(db: Pick<typeof prisma, "booking
  */
 export async function getPublicBookingRequestLodges(
   db: Pick<typeof prisma, "lodge"> = prisma
-): Promise<Array<{ id: string; name: string; capacity: number }>> {
+): Promise<
+  Array<{ id: string; name: string; capacity: number; schoolGroupSoftCap: number }>
+> {
   const lodges = await db.lodge.findMany({
     where: { active: true },
     orderBy: lodgeOrderBy(),
     select: { id: true, name: true },
   });
   if (lodges.length < 2) return [];
-  // Each lodge's own capacity so the public forms cap guests against the
-  // chosen lodge, not the default one (lodge-scoping contract). Capacity is
-  // not sensitive and the server re-validates per lodge regardless.
+  // Each lodge's own capacity and school-group soft cap so the public forms
+  // measure against the chosen lodge, not the default one (lodge-scoping
+  // contract). Neither is sensitive and the server re-validates per lodge.
   return Promise.all(
     lodges.map(async (lodge) => ({
       id: lodge.id,
       name: lodge.name,
       capacity: await getLodgeCapacity(lodge.id),
+      schoolGroupSoftCap: await loadSchoolGroupSoftCap(prisma, lodge.id),
     })),
   );
 }

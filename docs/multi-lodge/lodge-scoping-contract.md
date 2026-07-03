@@ -138,6 +138,18 @@ record the outcome here when decided:
   unchanged (`getStaffLodgeBinding`); this only surfaced it. Lodge
   controls render only with a second active lodge (ADR-002).
 
+## School-Group Soft Cap
+
+The school-group soft cap (the bed count above which a school group is
+warned it needs a club member to host — a warning only; the hard limit
+is the lodge's capacity) is per-lodge on `LodgeSettings.schoolGroupSoftCap`,
+resolving via the default lodge in a single-lodge club (ADR-002) and
+falling back to the code default (`DEFAULT_SCHOOL_GROUP_SOFT_CAP`) when
+unset. It is editable on the lodge-settings card (both `/admin/setup`
+and, per-lodge, the lodge hub). The public school form measures against
+the selected lodge's cap (the booking-request settings endpoint returns
+each lodge's cap plus a top-level default for the single-lodge case).
+
 ## Capacity Configuration
 
 Each lodge's capacity resolves in this order (`getLodgeCapacityStatus`):

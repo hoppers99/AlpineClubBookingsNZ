@@ -2494,6 +2494,12 @@ model LodgeSettings {
   id                     String   @id @default("default")
   capacity               Int?
   hutLeaderLookaheadDays Int      @default(14)
+  // Per-lodge school-group soft cap (the bed count above which a school
+  // group needs a club member to host). Null falls back to the code
+  // default. Per-lodge like capacity; resolves via the default lodge in a
+  // single-lodge club (ADR-002). Warning-only — the hard limit stays the
+  // lodge's capacity.
+  schoolGroupSoftCap     Int?
   // Soft link to the lodge this settings row belongs to. Becomes the row key
   // when singleton settings convert to per-lodge rows (phase 7); until then
   // the "default" row keeps serving the sole lodge.

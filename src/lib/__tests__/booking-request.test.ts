@@ -57,6 +57,11 @@ vi.mock("@/lib/lodge-capacity", () => ({
     lodgeId === "lodge-2" ? 40 : 20,
   ),
 }));
+vi.mock("@/lib/lodge-settings", () => ({
+  loadSchoolGroupSoftCap: vi.fn(async (_db: unknown, lodgeId: string) =>
+    lodgeId === "lodge-2" ? 30 : 25,
+  ),
+}));
 vi.mock("@/lib/capacity", () => ({
   acquireLodgeCapacityLock: vi.fn().mockResolvedValue(undefined),
   checkCapacityForGuestRanges: vi.fn(),
@@ -397,8 +402,8 @@ describe("getPublicBookingRequestLodges", () => {
       { id: "lodge-2", name: "Whakapapa Lodge" },
     ] as never);
     await expect(getPublicBookingRequestLodges()).resolves.toEqual([
-      { id: "lodge-1", name: "Ruapehu Lodge", capacity: 20 },
-      { id: "lodge-2", name: "Whakapapa Lodge", capacity: 40 },
+      { id: "lodge-1", name: "Ruapehu Lodge", capacity: 20, schoolGroupSoftCap: 25 },
+      { id: "lodge-2", name: "Whakapapa Lodge", capacity: 40, schoolGroupSoftCap: 30 },
     ]);
     const args = vi.mocked(prisma.lodge.findMany).mock.calls[0][0]!;
     expect(args.where).toEqual({ active: true });

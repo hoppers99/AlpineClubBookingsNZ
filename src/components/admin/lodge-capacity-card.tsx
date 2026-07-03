@@ -18,6 +18,7 @@ import { useScrollToFeedback } from "@/hooks/use-scroll-to-feedback";
 interface LodgeSettingsResponse {
   capacity: number | null;
   hutLeaderLookaheadDays: number;
+  schoolGroupSoftCap: number;
   clubConfigCapacity: number;
 }
 
@@ -32,6 +33,9 @@ export function LodgeCapacityCard() {
   );
   const [capacityValue, setCapacityValue] = useState("");
   const [hutLeaderLookaheadValue, setHutLeaderLookaheadValue] = useState("14");
+  // Per-lodge school-group soft cap (a warning threshold on the public
+  // school request form). Blank shows the resolved default.
+  const [softCapValue, setSoftCapValue] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -55,6 +59,7 @@ export function LodgeCapacityCard() {
       setClubConfigCapacity(body.clubConfigCapacity);
       setCapacityValue(body.capacity === null ? "" : String(body.capacity));
       setHutLeaderLookaheadValue(String(body.hutLeaderLookaheadDays));
+      setSoftCapValue(String(body.schoolGroupSoftCap));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load lodge settings");
     } finally {
@@ -103,6 +108,18 @@ export function LodgeCapacityCard() {
       return;
     }
 
+    const softCapTrimmed = softCapValue.trim();
+    let schoolGroupSoftCap: number | null = null;
+    if (softCapTrimmed !== "") {
+      const parsedSoftCap = Number(softCapTrimmed);
+      if (!Number.isInteger(parsedSoftCap) || parsedSoftCap <= 0) {
+        setError("Enter a whole number greater than zero for the school-group cap, or leave blank for the default.");
+        setSaving(false);
+        return;
+      }
+      schoolGroupSoftCap = parsedSoftCap;
+    }
+
     try {
       const response = await fetch("/api/admin/lodge-settings", {
         method: "PUT",
@@ -111,6 +128,7 @@ export function LodgeCapacityCard() {
         body: JSON.stringify({
           capacity,
           hutLeaderLookaheadDays,
+          schoolGroupSoftCap,
           ...(lodgeId ? { lodgeId } : {}),
         }),
       });
@@ -119,6 +137,7 @@ export function LodgeCapacityCard() {
       setClubConfigCapacity(body.clubConfigCapacity);
       setCapacityValue(body.capacity === null ? "" : String(body.capacity));
       setHutLeaderLookaheadValue(String(body.hutLeaderLookaheadDays));
+      setSoftCapValue(String(body.schoolGroupSoftCap));
       setSavedMessage("Lodge settings saved.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save lodge settings");
@@ -198,6 +217,30 @@ export function LodgeCapacityCard() {
               }}
               disabled={loading || saving}
             />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="school-group-soft-cap">
+              School-group soft cap (beds)
+            </Label>
+            <Input
+              id="school-group-soft-cap"
+              type="number"
+              min={1}
+              inputMode="numeric"
+              className="w-44"
+              placeholder="Default"
+              value={softCapValue}
+              onChange={(event) => {
+                setSoftCapValue(event.target.value);
+                setSavedMessage("");
+              }}
+              disabled={loading || saving}
+            />
+            <p className="text-xs text-slate-500">
+              School groups above this many beds are warned they need a club
+              member to host. Blank uses the default. Warning only — the hard
+              limit stays the capacity above.
+            </p>
           </div>
           <Button type="button" onClick={() => void save()} disabled={loading || saving}>
             {saving ? (

@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { loadLodgeCapacityOverride, loadLodgeSettings } from "@/lib/lodge-settings";
+import {
+  loadLodgeCapacityOverride,
+  loadLodgeSettings,
+  loadSchoolGroupSoftCap,
+} from "@/lib/lodge-settings";
 import { resolveAutoAllocationEnabled } from "@/lib/bed-allocation-lifecycle";
 
 // Settings-singleton conversion (lodge-scoping contract, audited
@@ -73,6 +77,33 @@ describe("loadLodgeSettings lookahead stays club-wide", () => {
     expect(settings.capacity).toBe(20);
     // The club-wide knob comes from the legacy row, never the lodge row.
     expect(settings.hutLeaderLookaheadDays).toBe(21);
+  });
+});
+
+describe("loadSchoolGroupSoftCap per-lodge resolution", () => {
+  it("prefers the lodge's own soft cap", async () => {
+    const db = settingsDb({
+      "lodge-b": { capacity: null, lodgeId: "lodge-b", schoolGroupSoftCap: 40 },
+      default: { capacity: null, lodgeId: "lodge-a", schoolGroupSoftCap: 25 },
+    });
+    expect(await loadSchoolGroupSoftCap(db as never, "lodge-b")).toBe(40);
+  });
+
+  it("falls back to the code default (25) when unset", async () => {
+    const db = settingsDb({
+      "lodge-b": { capacity: null, lodgeId: "lodge-b", schoolGroupSoftCap: null },
+    });
+    expect(await loadSchoolGroupSoftCap(db as never, "lodge-b")).toBe(25);
+  });
+
+  it("does not leak another lodge's legacy soft cap", async () => {
+    const db = settingsDb({
+      default: { capacity: null, lodgeId: "lodge-a", schoolGroupSoftCap: 40 },
+    });
+    // lodge-b has no row and the legacy row is lodge-a's: default 25.
+    expect(await loadSchoolGroupSoftCap(db as never, "lodge-b")).toBe(25);
+    // lodge-a keeps its soft-linked legacy value.
+    expect(await loadSchoolGroupSoftCap(db as never, "lodge-a")).toBe(40);
   });
 });
 

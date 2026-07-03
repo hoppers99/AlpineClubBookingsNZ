@@ -1,11 +1,14 @@
 import { prisma } from "@/lib/prisma";
 
+import { DEFAULT_SCHOOL_GROUP_SOFT_CAP } from "@/lib/school-booking-constants";
+
 export const LODGE_SETTINGS_ID = "default";
 export const DEFAULT_HUT_LEADER_LOOKAHEAD_DAYS = 14;
 
 type LodgeSettingsRecord = {
   capacity: number | null;
   hutLeaderLookaheadDays?: number | null;
+  schoolGroupSoftCap?: number | null;
   lodgeId?: string | null;
 };
 
@@ -28,6 +31,8 @@ export type LodgeSettingsReader = {
 export interface LodgeSettingsValues {
   capacity: number | null;
   hutLeaderLookaheadDays: number;
+  // Resolved per lodge: the lodge's own soft cap, else the code default.
+  schoolGroupSoftCap: number;
 }
 
 export function normalizeHutLeaderLookaheadDays(value: unknown): number {
@@ -53,6 +58,7 @@ export async function loadLodgeSettings(
     return {
       capacity: null,
       hutLeaderLookaheadDays: DEFAULT_HUT_LEADER_LOOKAHEAD_DAYS,
+      schoolGroupSoftCap: DEFAULT_SCHOOL_GROUP_SOFT_CAP,
     };
   }
 
@@ -67,17 +73,56 @@ export async function loadLodgeSettings(
       return {
         capacity: await loadLodgeCapacityOverride(db, lodgeId),
         hutLeaderLookaheadDays: lookahead,
+        schoolGroupSoftCap: await loadSchoolGroupSoftCap(db, lodgeId),
       };
     }
     return {
       capacity: record?.capacity ?? null,
       hutLeaderLookaheadDays: lookahead,
+      schoolGroupSoftCap: record?.schoolGroupSoftCap ?? DEFAULT_SCHOOL_GROUP_SOFT_CAP,
     };
   } catch {
     return {
       capacity: null,
       hutLeaderLookaheadDays: DEFAULT_HUT_LEADER_LOOKAHEAD_DAYS,
+      schoolGroupSoftCap: DEFAULT_SCHOOL_GROUP_SOFT_CAP,
     };
+  }
+}
+
+/**
+ * Per-lodge school-group soft cap, mirroring loadLodgeCapacityOverride's
+ * resolution but returning the code default (never null) as the final
+ * fallback: the lodge's own row wins; else the legacy "default" row when it
+ * is unlinked or linked to this lodge; else the default constant.
+ */
+export async function loadSchoolGroupSoftCap(
+  db: LodgeSettingsReader = prisma,
+  lodgeId?: string | null,
+): Promise<number> {
+  if (!db.lodgeSettings?.findUnique) return DEFAULT_SCHOOL_GROUP_SOFT_CAP;
+  try {
+    if (lodgeId && lodgeId !== LODGE_SETTINGS_ID) {
+      const ownRow = await db.lodgeSettings.findUnique({
+        where: { id: lodgeId },
+      });
+      if (ownRow) return ownRow.schoolGroupSoftCap ?? DEFAULT_SCHOOL_GROUP_SOFT_CAP;
+    }
+    const record = await db.lodgeSettings.findUnique({
+      where: { id: LODGE_SETTINGS_ID },
+    });
+    if (!record) return DEFAULT_SCHOOL_GROUP_SOFT_CAP;
+    if (
+      lodgeId &&
+      record.lodgeId !== undefined &&
+      record.lodgeId !== null &&
+      record.lodgeId !== lodgeId
+    ) {
+      return DEFAULT_SCHOOL_GROUP_SOFT_CAP;
+    }
+    return record.schoolGroupSoftCap ?? DEFAULT_SCHOOL_GROUP_SOFT_CAP;
+  } catch {
+    return DEFAULT_SCHOOL_GROUP_SOFT_CAP;
   }
 }
 
@@ -133,6 +178,8 @@ export async function loadHutLeaderLookaheadDays(
 export async function updateLodgeSettings(input: {
   capacity: number | null;
   hutLeaderLookaheadDays: number;
+  // Per-lodge like capacity; null clears it back to the code default.
+  schoolGroupSoftCap?: number | null;
   updatedByMemberId: string;
   // Lodge whose capacity override is being edited. Omitted keeps the
   // legacy single-row behaviour. The hut-leader lookahead is club-wide
@@ -142,6 +189,7 @@ export async function updateLodgeSettings(input: {
   const lookahead = normalizeHutLeaderLookaheadDays(
     input.hutLeaderLookaheadDays,
   );
+  const softCap = input.schoolGroupSoftCap ?? null;
 
   const legacy = await prisma.lodgeSettings.findUnique({
     where: { id: LODGE_SETTINGS_ID },
@@ -157,18 +205,20 @@ export async function updateLodgeSettings(input: {
     legacy.lodgeId === input.lodgeId;
 
   if (targetsLegacyRow) {
-    return prisma.lodgeSettings.upsert({
+    const row = await prisma.lodgeSettings.upsert({
       where: { id: LODGE_SETTINGS_ID },
       create: {
         id: LODGE_SETTINGS_ID,
         capacity: input.capacity,
         hutLeaderLookaheadDays: lookahead,
+        schoolGroupSoftCap: softCap,
         updatedByMemberId: input.updatedByMemberId,
         lodgeId: input.lodgeId ?? null,
       },
       update: {
         capacity: input.capacity,
         hutLeaderLookaheadDays: lookahead,
+        schoolGroupSoftCap: softCap,
         updatedByMemberId: input.updatedByMemberId,
         // An unlinked legacy row is claimed by the lodge being edited, so a
         // later edit for a different lodge cannot overwrite this override.
@@ -176,8 +226,19 @@ export async function updateLodgeSettings(input: {
           ? { lodgeId: input.lodgeId }
           : {}),
       },
-      select: { capacity: true, hutLeaderLookaheadDays: true, updatedAt: true },
+      select: {
+        capacity: true,
+        hutLeaderLookaheadDays: true,
+        schoolGroupSoftCap: true,
+        updatedAt: true,
+      },
     });
+    return {
+      capacity: row.capacity,
+      hutLeaderLookaheadDays: row.hutLeaderLookaheadDays,
+      schoolGroupSoftCap: row.schoolGroupSoftCap ?? DEFAULT_SCHOOL_GROUP_SOFT_CAP,
+      updatedAt: row.updatedAt,
+    };
   }
 
   const [, ownRow] = await prisma.$transaction([
@@ -195,19 +256,22 @@ export async function updateLodgeSettings(input: {
         lodgeId: input.lodgeId!,
         capacity: input.capacity,
         hutLeaderLookaheadDays: lookahead,
+        schoolGroupSoftCap: softCap,
         updatedByMemberId: input.updatedByMemberId,
       },
       update: {
         capacity: input.capacity,
+        schoolGroupSoftCap: softCap,
         updatedByMemberId: input.updatedByMemberId,
       },
-      select: { capacity: true, updatedAt: true },
+      select: { capacity: true, schoolGroupSoftCap: true, updatedAt: true },
     }),
   ]);
 
   return {
     capacity: ownRow.capacity,
     hutLeaderLookaheadDays: lookahead,
+    schoolGroupSoftCap: ownRow.schoolGroupSoftCap ?? DEFAULT_SCHOOL_GROUP_SOFT_CAP,
     updatedAt: ownRow.updatedAt,
   };
 }
