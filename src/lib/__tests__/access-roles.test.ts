@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   accessRolesFromCompatibilityFields,
   authorizationRoleFromAccessRoles,
-  financeAccessLevelFromAccessRoles,
   legacyRoleFromAccessRoles,
   hasPrivilegedAccess,
   normalizeAssignableAccessRoles,
@@ -54,7 +53,6 @@ describe("access role compatibility helpers", () => {
 
     expect(roles).toEqual(["USER", "FINANCE_ADMIN", "ADMIN_BOOKINGS"]);
     expect(legacyRoleFromAccessRoles(roles)).toBe("USER");
-    expect(financeAccessLevelFromAccessRoles(roles)).toBe("MANAGER");
   });
 
   it("projects a runtime authorization role from access role rows only", () => {

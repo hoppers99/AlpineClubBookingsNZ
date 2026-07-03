@@ -115,14 +115,6 @@ export function financeAccessLevelToAccessRoles(
   }
 }
 
-export function financeAccessLevelFromAccessRoles(
-  roles: ReadonlyArray<string>,
-): FinanceAccessLevel {
-  if (roles.includes("FINANCE_ADMIN")) return "MANAGER";
-  if (roles.includes("FINANCE_USER")) return "VIEWER";
-  return "NONE";
-}
-
 export function legacyRoleFromAccessRoles(
   roles: ReadonlyArray<string>,
 ): Role {
