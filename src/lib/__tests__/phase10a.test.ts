@@ -30,6 +30,17 @@ describe("faq page content (F-PUB-04)", () => {
     expect(body).toContain("chore");
     expect(body).toContain("password");
   });
+
+  it("wraps every question in a native details/summary accordion item (#992)", () => {
+    const body = faq?.contentHtml ?? "";
+    const detailsCount = (body.match(/<details>/g) ?? []).length;
+    const summaryCount = (body.match(/<summary>/g) ?? []).length;
+
+    expect(detailsCount).toBeGreaterThan(0);
+    expect(summaryCount).toBe(detailsCount);
+    // The flat pre-accordion markup used <h3> question headings.
+    expect(body).not.toContain("<h3>");
+  });
 });
 
 // ─── Contact rate limit (F-PUB-03) ─────────────────────────────────────────
@@ -85,6 +96,8 @@ describe("compliance pages (F-COMP-01, F-COMP-02)", () => {
     expect(page?.path).toBe("/privacy");
     expect(page?.title.toLowerCase()).toContain("privacy");
     expect(page?.contentHtml).toContain("Privacy Act 2020");
+    expect(page?.contentHtml).toContain("Google Analytics 4");
+    expect(page?.contentHtml).toContain("Consent Mode starts with analytics storage denied");
   });
 
   it("terms page is seeded as editable PageContent", () => {

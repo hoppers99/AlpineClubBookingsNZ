@@ -400,11 +400,20 @@ async function performBookingCancellation(
     }
     await cleanupPromoRedemption(bookingId);
 
+    // Clear the outstanding balance on an unpaid issued invoice. The true
+    // amount owed is the current finalPrice plus any billed change fee: a
+    // prior reduction issues a modification credit note against the primary
+    // invoice but never reissues it, so the invoice's outstanding balance is
+    // originalTotal minus those credit notes = finalPrice. Reading
+    // `amountCents - refundedAmountCents` instead over-credits during the
+    // window before async Xero reconciliation folds the modification credit
+    // note into refundedAmountCents (the mirror stays at the original total),
+    // issuing a clearing credit note larger than the invoice (#1015). The old
+    // `Math.max` only ever picked that stale term in exactly that leak window;
+    // for price increases (billed via a separate supplementary invoice) and
+    // for unchanged bookings finalPrice already equals the true outstanding.
     const xeroClearingAmountCents = booking.payment?.xeroInvoiceId
-      ? Math.max(
-          booking.payment.amountCents - booking.payment.refundedAmountCents,
-          booking.finalPriceCents + booking.payment.changeFeeCents
-        )
+      ? booking.finalPriceCents + booking.payment.changeFeeCents
       : 0;
 
     if (booking.payment?.id && xeroClearingAmountCents > 0) {
@@ -509,7 +518,18 @@ async function performBookingCancellation(
   // Change fees (from prior booking modifications) are non-refundable per FEE-03
   const paidAmountCents =
     booking.payment.amountCents - booking.payment.refundedAmountCents;
-  const refundableBaseCents = paidAmountCents - booking.payment.changeFeeCents;
+  // Cap the refundable base at the booking's current value (#1031). Prior
+  // reductions can leave the Payment mirror stale — credit-settled reductions
+  // recorded before the local allocation existed, Internet Banking invoices
+  // paid at a reduced amount (reconciliation never rewrites amountCents), and
+  // penalty-window retentions persisted nowhere — and refunding from the stale
+  // mirror pays out more than the booking is worth. Paid-path twin of the
+  // #1015/#1029 unpaid-invoice clearing rule above.
+  const refundableBaseCents =
+    Math.min(
+      paidAmountCents,
+      booking.finalPriceCents + booking.payment.changeFeeCents
+    ) - booking.payment.changeFeeCents;
   const days = daysUntilDate(booking.checkIn);
   const policy = await loadCancellationPolicy(booking.checkIn, booking.lodgeId);
   const { refundAmountCents, refundPercentage } = calculateRefundAmount(

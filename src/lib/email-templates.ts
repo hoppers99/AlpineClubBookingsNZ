@@ -2058,10 +2058,12 @@ export function waitlistOfferTemplate(
   guestCount: number,
   expiresAt: Date,
   bookingId: string,
-  // Cross-lodge offer (ADR-004): the alternate lodge and its quoted price.
-  // The member confirms both explicitly; null renders the same-lodge offer
-  // exactly as before.
-  crossLodgeOffer?: { lodgeName: string | null; priceCents: number } | null
+  // Price the member pays on confirmation (repriced at offer time, #1035;
+  // the offered lodge's quote for cross-lodge offers).
+  priceCents: number,
+  // Cross-lodge offer (ADR-004): names the alternate lodge; the member
+  // confirms lodge and price explicitly. Null renders same-lodge offers.
+  crossLodgeOffer?: { lodgeName: string | null } | null
 ): string {
   const lodgeLabel = crossLodgeOffer?.lodgeName ?? "another of our lodges";
   return layout(`
@@ -2084,9 +2086,10 @@ export function waitlistOfferTemplate(
       { label: "Check-in", value: formatNZDate(checkIn) },
       { label: "Check-out", value: formatNZDate(checkOut) },
       { label: "Guests", value: String(guestCount) },
-      ...(crossLodgeOffer
-        ? [{ label: "Price at this lodge", value: formatCents(crossLodgeOffer.priceCents) }]
-        : []),
+      {
+        label: crossLodgeOffer ? "Price at this lodge" : "Price",
+        value: formatCents(priceCents),
+      },
     ])}
     ${
       crossLodgeOffer
@@ -2324,6 +2327,45 @@ export function groupJoinSettledTemplate(data: {
       { label: "Guests", value: String(data.guestCount) },
     ])}
     ${supportContactSentence("If you have any questions about your stay, contact the club at ")}
+  `);
+}
+
+export function groupSettlementExpiredTemplate(data: {
+  firstName: string;
+  checkIn: Date;
+  checkOut: Date;
+  joinerCount: number;
+  totalCents: number;
+}): string {
+  return layout(`
+    ${heading("Your Group Settlement Has Expired")}
+    ${paragraph("Hi " + escapeHtml(data.firstName) + ", the combined payment you started for your group's stay at " + escapeHtml(CLUB_NAME) + "'s lodge was not completed in time, so the beds held for your joiners have been released.")}
+    ${infoTable([
+      { label: "Check-in", value: formatNZDate(data.checkIn) },
+      { label: "Check-out", value: formatNZDate(data.checkOut) },
+      { label: "Joiners affected", value: String(data.joinerCount) },
+      { label: "Amount not charged", value: formatCents(data.totalCents) },
+    ])}
+    ${paragraph("No money has been taken. If your group still plans to come, restart the payment from your group booking page — the beds are subject to availability.")}
+    ${supportContactSentence("If anything looks wrong, contact the club at ")}
+  `);
+}
+
+export function groupJoinReleasedTemplate(data: {
+  firstName: string;
+  organiserName: string;
+  checkIn: Date;
+  checkOut: Date;
+}): string {
+  return layout(`
+    ${heading("Your Held Spot Has Been Released")}
+    ${paragraph("Hi " + escapeHtml(data.firstName) + ", " + escapeHtml(data.organiserName) + " started a combined payment for your stay at " + escapeHtml(CLUB_NAME) + "'s lodge but it was not completed in time, so your held bed has been released.")}
+    ${infoTable([
+      { label: "Check-in", value: formatNZDate(data.checkIn) },
+      { label: "Check-out", value: formatNZDate(data.checkOut) },
+    ])}
+    ${paragraph("Your booking is back to awaiting payment. If the group still plans to come, the organiser can restart the payment — or check with them about what happens next.")}
+    ${supportContactSentence("If you have any questions, contact the club at ")}
   `);
 }
 

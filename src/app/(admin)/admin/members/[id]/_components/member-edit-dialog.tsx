@@ -3,7 +3,6 @@
 import { useEffect, useRef } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -26,17 +25,17 @@ import { useMemberFieldsSettings } from "@/lib/use-member-fields-settings";
 import { GENDER_OPTIONS, TITLE_OPTIONS } from "@/lib/member-enums";
 import { ExternalLink, Link2, Plus } from "lucide-react";
 import { MemberAddressFields } from "@/components/member-address-fields";
+import { MemberAccessRolePicker } from "@/components/member-access-role-picker";
 import type { XeroSearchResult } from "@/components/admin/xero-suggested-contact-card";
 import { getMissingFieldsForXeroCreate } from "@/lib/admin-member-detail-helpers";
 import type { MemberAddressValues } from "@/lib/member-address";
 import { useScrollToFeedback } from "@/hooks/use-scroll-to-feedback";
 import {
-  ACCESS_ROLE_DESCRIPTIONS,
-  ACCESS_ROLE_LABELS,
-  ACCESS_ROLE_VALUES,
   financeAccessLevelFromAccessRoles,
+  hasPrivilegedAccess,
   legacyRoleFromAccessRoles,
   normalizeAssignableAccessRoles,
+  storedAccessRolesForFullAdminGate,
   type AppAccessRole,
 } from "@/lib/access-roles";
 import type {
@@ -61,6 +60,7 @@ interface MemberEditDialogProps {
   formError: string;
   saving: boolean;
   isSelf: boolean;
+  actorIsFullAdmin: boolean;
   memberLifecycleLocked: boolean;
   postalSameAsPhysical: boolean;
   // inherit email search
@@ -105,6 +105,7 @@ export function MemberEditDialog({
   formError,
   saving,
   isSelf,
+  actorIsFullAdmin,
   memberLifecycleLocked,
   postalSameAsPhysical,
   selectedInheritEmailSource,
@@ -139,6 +140,19 @@ export function MemberEditDialog({
   onSubmit,
 }: MemberEditDialogProps) {
   const { showTitle, showGender, showOccupation } = useMemberFieldsSettings();
+  // Mirror the server-side Full Admin gates (#1012/#1026/#1038) so scoped
+  // admins see disabled controls instead of a 403 after the fact. "live" =
+  // the member's effective roles are privileged; "dormant" = only the stored
+  // legacy role fields are (archive/cancel clears canLogin, not the roles).
+  const memberPrivilege: "live" | "dormant" | null = hasPrivilegedAccess(member)
+    ? "live"
+    : storedAccessRolesForFullAdminGate(member).some(
+          (role) => role !== "USER" && role !== "ORG",
+        )
+      ? "dormant"
+      : null;
+  const emailLockedForActor =
+    !actorIsFullAdmin && !isSelf && hasPrivilegedAccess(member);
   const formErrorRef = useRef<HTMLDivElement>(null);
   const { scrollToError } = useScrollToFeedback();
 
@@ -312,10 +326,17 @@ export function MemberEditDialog({
               id="edit-email"
               type="email"
               value={form.email}
+              disabled={emailLockedForActor}
               onChange={(e) =>
                 onChangeForm((f) => ({ ...f, email: e.target.value }))
               }
             />
+            {emailLockedForActor && (
+              <p className="text-xs text-muted-foreground">
+                Only a Full Admin can change a privileged member&apos;s login
+                email.
+              </p>
+            )}
           </div>
           <div className="space-y-2">
             <Label>Phone</Label>
@@ -582,45 +603,17 @@ export function MemberEditDialog({
           </fieldset>
 
           <div className="grid grid-cols-1 sm:grid-cols-[2fr_1fr] gap-4">
-            <fieldset className="space-y-3 rounded-md border border-slate-200 p-4">
-              <legend className="px-1 text-sm font-medium">
-                Access Roles
-              </legend>
-              <div className="grid gap-3 sm:grid-cols-2">
-                {ACCESS_ROLE_VALUES.map((role) => (
-                  <label
-                    key={role}
-                    className="flex items-start gap-3 rounded-md border border-slate-200 p-3"
-                  >
-                    <Checkbox
-                      checked={form.accessRoles.includes(role)}
-                      disabled={isSelf || !form.canLogin}
-                      onCheckedChange={(checked) =>
-                        toggleAccessRole(role, checked === true)
-                      }
-                    />
-                    <span className="space-y-1">
-                      <span className="block text-sm font-medium">
-                        {ACCESS_ROLE_LABELS[role]}
-                      </span>
-                      <span className="block text-xs text-muted-foreground">
-                        {ACCESS_ROLE_DESCRIPTIONS[role]}
-                      </span>
-                    </span>
-                  </label>
-                ))}
-              </div>
-              {isSelf && (
-                <p className="text-xs text-muted-foreground">
-                  You cannot change your own access roles.
-                </p>
-              )}
-              {!form.canLogin && (
-                <p className="text-xs text-muted-foreground">
-                  Access roles only apply to login-enabled records.
-                </p>
-              )}
-            </fieldset>
+            <MemberAccessRolePicker
+              accessRoles={form.accessRoles}
+              canLogin={form.canLogin}
+              disabled={isSelf}
+              disabledMessage={
+                isSelf ? "You cannot change your own access roles." : undefined
+              }
+              actorIsFullAdmin={actorIsFullAdmin}
+              memberPrivilege={memberPrivilege}
+              onToggleRole={toggleAccessRole}
+            />
             <div className="space-y-2">
               <Label>Age Tier</Label>
               <Select

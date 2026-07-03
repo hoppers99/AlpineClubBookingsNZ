@@ -73,6 +73,7 @@ import { logAudit } from "@/lib/audit";
 import { recordBookingEvent } from "@/lib/booking-events";
 import logger from "@/lib/logger";
 import type { GroupDiscountConfig } from "@/lib/pricing";
+import { assertNoBookingMemberNightConflicts } from "@/lib/booking-member-night-conflicts";
 import {
   ADULT_SUPERVISION_REVIEW_REASON,
   requiresAdultSupervisionReview,
@@ -772,6 +773,15 @@ export async function createDraftBooking(input: DraftBookingInput): Promise<Book
       isOnBehalf,
     });
     await acquireLodgeCapacityLock(tx, bookingLodgeId);
+    // Duplicate member nights (upstream #80cbdf4c): a member cannot hold
+    // two bookings covering the same night, regardless of lodge.
+    await assertNoBookingMemberNightConflicts(tx, {
+      actorMemberId: sessionUserId,
+      actorRole: isOnBehalf ? "ADMIN" : "USER",
+      checkIn,
+      checkOut,
+      guests,
+    });
     const draftExpiresAt = review.blockForReview
       ? null
       : new Date(Date.now() + 72 * 60 * 60 * 1000);
@@ -1100,6 +1110,15 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
         isOnBehalf,
       });
       await acquireLodgeCapacityLock(tx, bookingLodgeId);
+      // Duplicate member nights (upstream #80cbdf4c).
+      await assertNoBookingMemberNightConflicts(tx, {
+        actorMemberId: sessionUserId,
+        actorRole: isOnBehalf ? "ADMIN" : "USER",
+        checkIn,
+        checkOut,
+        guests,
+      });
+
 
       const capacityGuestRanges = getCapacityGuestRanges(primaryGuests, checkIn, checkOut);
       const capacityCheck = await checkCapacityForGuestRanges(
@@ -1742,6 +1761,15 @@ export async function createWaitlistedBooking(input: WaitlistedBookingInput): Pr
 
   const { newBooking, position } = await prisma.$transaction(async (tx) => {
     await acquireLodgeCapacityLock(tx, waitlistLodgeId);
+    // Duplicate member nights (upstream #80cbdf4c): waitlist entries also
+    // may not overlap the member's existing booked nights.
+    await assertNoBookingMemberNightConflicts(tx, {
+      actorMemberId: sessionUserId,
+      actorRole: isOnBehalf ? "ADMIN" : "USER",
+      checkIn,
+      checkOut,
+      guests,
+    });
 
     const createdBooking = await tx.booking.create({
       data: {

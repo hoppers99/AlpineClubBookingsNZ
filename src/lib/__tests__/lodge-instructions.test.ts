@@ -63,6 +63,19 @@ vi.mock("@/lib/lodge-auth", () => ({
   resolveKioskLodgeId: mocks.resolveKioskLodgeId,
 }));
 
+// Deterministic values for text-token resolution; importOriginal keeps the
+// modules' other exports intact for email-templates and club-identity.
+vi.mock("@/config/club-identity", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/config/club-identity")>()),
+  CLUB_NAME: "Test Alpine Club",
+}));
+vi.mock("@/lib/lodge-capacity", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/lodge-capacity")>()),
+  getLodgeCapacity: vi.fn(async () => 32),
+  // The bare {{lodge-capacity}} token resolves the default lodge.
+  getDefaultLodgeCapacity: vi.fn(async () => 32),
+}));
+
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     lodgeInstruction: {
@@ -504,6 +517,77 @@ describe("GET /api/lodge/instructions (kiosk surface)", () => {
     const response = await kioskGET(kioskRequest("not-a-date"));
     expect(response.status).toBe(400);
     expect(mocks.checkLodgeAuth).not.toHaveBeenCalled();
+  });
+});
+
+describe("text token resolution", () => {
+  const tokenDocuments = [
+    {
+      key: "OPEN",
+      contentHtml:
+        "<p>Welcome to {{club-name}}. Capacity: {{lodge-capacity}}.</p>",
+      updatedAt: new Date("2026-06-10T00:00:00Z"),
+    },
+  ];
+
+  beforeEach(() => {
+    mocks.lodgeInstructionFindMany.mockResolvedValue(tokenDocuments);
+  });
+
+  it("resolves tokens on the member reader route", async () => {
+    mocks.auth.mockResolvedValue(adminSession);
+
+    const response = await readerGET(
+      new NextRequest("http://localhost/api/lodge-instructions"),
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.documents[0].contentHtml).toBe(
+      "<p>Welcome to Test Alpine Club. Capacity: 32.</p>",
+    );
+  });
+
+  it("resolves tokens on the kiosk route", async () => {
+    mocks.checkLodgeAuth.mockResolvedValue({
+      session: adminSession,
+      tier: "admin",
+      error: null,
+      status: null,
+    });
+
+    const response = await kioskGET(
+      new NextRequest("http://localhost/api/lodge/instructions?date=2026-06-11"),
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.documents[0].contentHtml).toBe(
+      "<p>Welcome to Test Alpine Club. Capacity: 32.</p>",
+    );
+  });
+
+  it("returns raw tokens on the admin editor route", async () => {
+    mocks.auth.mockResolvedValue(adminSession);
+
+    const response = await adminGET(
+      new NextRequest("http://localhost/api/admin/lodge-instructions"),
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.documents[0].contentHtml).toBe(
+      "<p>Welcome to {{club-name}}. Capacity: {{lodge-capacity}}.</p>",
+    );
+  });
+
+  it("keeps tokens raw by default in getSanitizedLodgeInstructions", async () => {
+    const documents = await getSanitizedLodgeInstructions();
+    expect(documents[0].contentHtml).toContain("{{club-name}}");
+
+    const resolved = await getSanitizedLodgeInstructions({
+      resolveTokens: true,
+    });
+    expect(resolved[0].contentHtml).toBe(
+      "<p>Welcome to Test Alpine Club. Capacity: 32.</p>",
+    );
   });
 });
 

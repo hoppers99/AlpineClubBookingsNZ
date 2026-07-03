@@ -32,13 +32,14 @@ export function buildContentSecurityPolicy(nonce: string) {
       `'nonce-${nonce}'`,
       ...(isDev ? ["'unsafe-eval'"] : []),
       "https://js.stripe.com",
+      "https://www.googletagmanager.com",
     ].join(" "),
     // Keep inline styles during the script nonce rollout; Tailwind/Radix and
     // selected editor-rendered content can still emit runtime style attributes.
     "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data: https:",
+    "img-src 'self' data: https: https://www.google-analytics.com https://*.google-analytics.com",
     "font-src 'self' data:",
-    "connect-src 'self' https://api.stripe.com https://js.stripe.com https://*.ingest.sentry.io",
+    "connect-src 'self' https://api.stripe.com https://js.stripe.com https://*.ingest.sentry.io https://www.google-analytics.com https://*.google-analytics.com",
     "frame-src https://js.stripe.com https://hooks.stripe.com",
     "worker-src 'self' blob:",
     "object-src 'none'",

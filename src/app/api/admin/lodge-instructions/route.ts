@@ -73,6 +73,9 @@ export async function GET(request: NextRequest) {
     return guard.response;
   }
 
+  // Editor surface: tokens stay unresolved so admins see and can edit the
+  // literal {{club-name}} placeholders (round-trip safety). Reads are
+  // partition-scoped: ?lodgeId= shows that lodge's override rows only.
   const lodgeId = request.nextUrl.searchParams.get("lodgeId");
 
   const records = await prisma.lodgeInstruction.findMany({

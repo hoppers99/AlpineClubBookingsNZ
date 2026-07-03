@@ -22,10 +22,15 @@ fork for another organisation. See `NOTICE.md`.
   Banking invoice payments
 - Admin tools for members, shared-email-aware CSV import, bookings, bed
   allocation, payments, seasons, policies, reports, email, audit logs, issue
-  reports, waitlist, lodge settings, Xero operations, and hut leaders
-- Admin-editable public website pages with sanitised HTML content, embed
-  tokens for interactive sections, and a menu generated from page settings
-  (see `CONFIGURATION.md`, "Website Page Content")
+  reports, waitlist, lodge settings, Xero operations, and hut leaders, with
+  contextual help popups on Admin and Finance pages
+- Admin-editable public website pages and footer sections with sanitised HTML
+  content, embed/text tokens where supported, and a menu generated from page
+  settings (see `CONFIGURATION.md`, "Website Page Content" and "Website Site
+  Content"); every admin rich-text editor includes a token help button listing
+  the tokens it supports
+- Admin-managed site banners (urgent/warning/notify) shown above the site
+  header for a set NZ date window, dismissible per browser
 - Lodge kiosk with PIN access, arrivals/departures, chores, and issue reporting
 - Xero integrations for operational accounting, Internet Banking settlement,
   and finance reports backed by the same operational Xero connection
@@ -66,10 +71,14 @@ fork for another organisation. See `NOTICE.md`.
    run the seed command, then change the seeded admin password on first login.
 5. After sign-in, use **Admin > Modules** to set club-level activation for
    optional modules. Kiosk, chores, finance dashboard, waitlist, Xero, bed
-   allocation, Internet Banking payments, address autocomplete, and two-factor
-   authentication default off until an admin enables them. General-purpose
-   modules default on and can be disabled there.
-6. Use **Admin > Membership Types** to review the seeded seasonal membership
+   allocation, Internet Banking payments, address autocomplete, two-factor
+   authentication, and Google Analytics default off until an admin enables
+   them. General-purpose modules default on and can be disabled there.
+6. Use **Admin > Members** to assign access roles. `Full Admin` keeps all
+   admin permissions; `Read-only Admin`, `Booking Office`, `Membership Officer`,
+   `Treasurer`, and `Content Manager` are bundled permissions that can be
+   combined on one login-enabled member for custom access.
+7. Use **Admin > Membership Types** to review the seeded seasonal membership
    types: Full, Associate, Life, School, Non-Member, and Family. Associate is
    the built-in Associate/Reserve-style type and can be renamed by the club.
    These records drive season-aware booking policy (`MEMBER_RATE`,
@@ -81,7 +90,7 @@ fork for another organisation. See `NOTICE.md`.
    previewing affected future bookings, drafts, waitlist records, and
    subscription history;
    existing future bookings are not automatically repriced by this change.
-7. Use **Admin > Committee** to review seeded committee master roles and
+8. Use **Admin > Committee** to review seeded committee master roles and
    member-linked committee assignments. Assignments remain hidden/unpublished
    until an admin explicitly enables their presentation flags; public contact
    options use only published, contactable assignments and deliver to the

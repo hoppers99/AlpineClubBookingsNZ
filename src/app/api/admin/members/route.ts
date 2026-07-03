@@ -83,6 +83,8 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const result = await createAdminMember(parsed.data);
+  const result = await createAdminMember(parsed.data, {
+    accessRoles: guard.session.user.accessRoles,
+  });
   return NextResponse.json(result.body, result.init);
 }

@@ -5,15 +5,22 @@ import { AppProviders } from "@/components/app-providers";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { AdminSidebar } from "@/components/admin-sidebar";
+import { ContextualHelpButton } from "@/components/contextual-help-button";
 import { NavBar } from "@/components/nav-bar";
 import { MemberOnboardingWizard } from "@/components/member-onboarding-wizard";
 import { ReportIssueWidget } from "@/components/report-issue-widget";
 import { clubIdentity } from "@/config/club-identity";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import {
-  hasAdminAccess,
   hasFinanceViewerAccess,
+  resolveAccessRoles,
 } from "@/lib/access-roles";
+import {
+  getAdminRouteRequirement,
+  getFirstAccessibleAdminHref,
+  hasAdminAreaAccess,
+  hasAdminPortalAccess,
+} from "@/lib/admin-permissions";
 import { CSP_NONCE_HEADER } from "@/lib/csp";
 import { isClubThemeComplete } from "@/lib/club-theme";
 import { getDefaultLodgeCapacity } from "@/lib/lodge-capacity";
@@ -69,18 +76,30 @@ export default async function AdminLayout({
     );
   }
 
-  if (!hasAdminAccess(member)) {
-    redirect("/dashboard");
+  const adminRequirement =
+    getAdminRouteRequirement(requestedPath ?? "/admin/dashboard", "GET") ?? {
+      area: "overview" as const,
+      level: "view" as const,
+    };
+
+  if (!hasAdminAreaAccess(member, adminRequirement)) {
+    redirect(getFirstAccessibleAdminHref(member) ?? "/dashboard");
   }
 
   const user = {
     name: session.user.name ?? "Admin",
     email: session.user.email ?? "",
     role: member.role,
+    canAccessAdmin: hasAdminPortalAccess(member),
     canAccessFinance: hasFinanceViewerAccess(member),
     isHutLeader: false,
     isStayingGuest: false,
   };
+  const accessRoles = resolveAccessRoles(member);
+  const canManageContent = hasAdminAreaAccess(member, {
+    area: "content",
+    level: "edit",
+  });
   const showOnboardingWizard = shouldShowMemberOnboarding(member);
   const [effectiveModules, siteStyleComplete, lodgeCapacity] =
     await Promise.all([
@@ -96,10 +115,13 @@ export default async function AdminLayout({
       <div className="app-theme-scope min-h-screen flex flex-col bg-background text-foreground">
         <NavBar user={user} features={effectiveModules} />
         <div className="flex flex-1">
-          <AdminSidebar features={effectiveModules} />
+          <AdminSidebar features={effectiveModules} accessRoles={accessRoles} />
           <div className="flex flex-1 flex-col md:overflow-hidden">
             <main className="flex-1 overflow-y-auto p-6 pb-24 print:overflow-visible print:p-0 md:p-8 md:pb-28">
-              {!siteStyleComplete && (
+              <div className="mb-4 flex justify-end print:hidden">
+                <ContextualHelpButton scope="admin" />
+              </div>
+              {!siteStyleComplete && canManageContent && (
                 <div className="mb-6 rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950 print:hidden">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <p className="font-medium">

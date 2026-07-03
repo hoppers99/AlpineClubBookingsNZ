@@ -26,6 +26,7 @@ const mockValidateAndCalculatePromoDiscount = vi.fn(async () => {
 });
 const mockAuth = vi.fn();
 const mockRefundPaymentTransactions = vi.fn();
+const mockApplyLocalRefundAllocation = vi.fn();
 const mockUpsertPaymentIntentTransaction = vi.fn();
 const mockPaymentTransactionUpdateMany = vi.fn();
 const mockEnqueuePaymentIntentCancellationRecovery = vi.fn();
@@ -147,6 +148,8 @@ vi.mock("@/lib/stripe", () => ({
 vi.mock("@/lib/payment-transactions", () => ({
   refundPaymentTransactions: (...args: unknown[]) =>
     mockRefundPaymentTransactions(...args),
+  applyLocalRefundAllocation: (...args: unknown[]) =>
+    mockApplyLocalRefundAllocation(...args),
   upsertPaymentIntentTransaction: (...args: unknown[]) =>
     mockUpsertPaymentIntentTransaction(...args),
 }));
@@ -291,6 +294,7 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
       ),
     },
     bookingGuest: {
+      findMany: vi.fn().mockResolvedValue([]),
       create: vi.fn().mockImplementation(({ data }: { data: Record<string, unknown> }) => {
         const guest = { id: "g2", ...data };
         createdGuests.push(guest);
@@ -306,6 +310,9 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
     },
     bookingModification: {
       create: vi.fn().mockResolvedValue({ id: "mod_1" }),
+    },
+    bookingRequest: {
+      findFirst: vi.fn().mockResolvedValue(null),
     },
     promoRedemption: {
       delete: vi.fn().mockResolvedValue(undefined),
@@ -442,6 +449,34 @@ describe("PUT /api/bookings/[id]/modify", () => {
     }));
   });
 
+  it("blocks batch edits on a quote-priced booking (#1032)", async () => {
+    // A booking converted from a school/public booking request keeps its
+    // negotiated flat total; the batch edit path would reprice every guest
+    // at season rates, so it refuses with an actionable message instead.
+    const booking = makeBooking();
+    const tx = makeTx(booking);
+    tx.bookingRequest.findFirst.mockResolvedValue({ id: "req_1" });
+    mockTransaction.mockImplementation((fn: (innerTx: typeof tx) => unknown) =>
+      fn(tx)
+    );
+
+    const { PUT } = await import("@/app/api/bookings/[id]/modify/route");
+    const request = new NextRequest("http://localhost/api/bookings/bk1/modify", {
+      method: "PUT",
+      body: JSON.stringify({ addGuests: [{ firstName: "New", lastName: "Student", ageTier: "CHILD", isMember: false }] }),
+    });
+    const response = await PUT(request, {
+      params: Promise.resolve({ id: "bk1" }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: expect.stringContaining("negotiated booking-request price"),
+    });
+    expect(tx.booking.update).not.toHaveBeenCalled();
+    expect(tx.bookingGuest.create).not.toHaveBeenCalled();
+  });
+
   it("returns the shared profile-required shape when added linked member guests are blocked", async () => {
     const booking = makeBooking();
     const tx = makeTx(booking);
@@ -511,6 +546,72 @@ describe("PUT /api/bookings/[id]/modify", () => {
         onBehalfOfMemberId: null,
       }
     );
+    expect(tx.bookingGuest.create).not.toHaveBeenCalled();
+  }, 10_000);
+
+  it("rejects batch add when a linked member is already booked elsewhere", async () => {
+    const booking = makeBooking();
+    const tx = makeTx(booking);
+
+    mockTransaction.mockImplementation((fn: (innerTx: typeof tx) => unknown) =>
+      fn(tx)
+    );
+    tx.bookingGuest.findMany.mockResolvedValue([
+      {
+        id: "existing-guest",
+        memberId: "guest-member-1",
+        firstName: "Bob",
+        lastName: "Jones",
+        stayStart: null,
+        stayEnd: null,
+        nights: [],
+        member: { firstName: "Bob", lastName: "Jones" },
+        booking: {
+          id: "existing-booking",
+          memberId: "other-owner",
+          status: "CONFIRMED",
+          checkIn: booking.checkIn,
+          checkOut: booking.checkOut,
+          member: { firstName: "Other", lastName: "Owner" },
+          guests: [
+            { id: "existing-owner", memberId: "other-owner" },
+            { id: "existing-guest", memberId: "guest-member-1" },
+          ],
+        },
+      },
+    ]);
+
+    const { PUT } = await import("@/app/api/bookings/[id]/modify/route");
+
+    const request = new NextRequest("http://localhost/api/bookings/bk1/modify", {
+      method: "PUT",
+      body: JSON.stringify({
+        addGuests: [
+          {
+            firstName: "Bob",
+            lastName: "Jones",
+            ageTier: "ADULT",
+            isMember: true,
+            memberId: "guest-member-1",
+          },
+        ],
+      }),
+    });
+
+    const response = await PUT(request, {
+      params: Promise.resolve({ id: "bk1" }),
+    });
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      code: "BOOKING_MEMBER_NIGHT_CONFLICT",
+      conflicts: [
+        expect.objectContaining({
+          memberId: "guest-member-1",
+          bookingId: "existing-booking",
+        }),
+      ],
+    });
     expect(tx.bookingGuest.create).not.toHaveBeenCalled();
   }, 10_000);
 
@@ -1480,6 +1581,79 @@ describe("PUT /api/bookings/[id]/modify", () => {
     );
   });
 
+  it("corrects an unpaid pay-on-account Xero invoice for the full delta on a batch reduction (#1015)", async () => {
+    const booking = makeBooking({
+      status: "CONFIRMED",
+      totalPriceCents: 10000,
+      finalPriceCents: 10000,
+    });
+    // Pay-on-account: Xero invoice issued but not yet paid, so no captured
+    // payment. hasCapturedPayment() is false, settlementOptions is null, and
+    // before the fix xeroRefundAmountCents collapsed to 0 -> classify 'none'
+    // -> the outstanding invoice kept the removed guest.
+    booking.guests = [
+      ...booking.guests,
+      {
+        id: "g2",
+        bookingId: "bk1",
+        firstName: "Bob",
+        lastName: "Guest",
+        ageTier: "ADULT",
+        isMember: false,
+        memberId: null,
+        priceCents: 5000,
+      },
+    ];
+    booking.payment = {
+      ...booking.payment!,
+      amountCents: 10000,
+      status: "PENDING",
+      source: "INTERNET_BANKING",
+      stripePaymentIntentId: null,
+      stripeCustomerId: null,
+      xeroInvoiceId: "inv_unpaid_1",
+    };
+    const tx = makeTx(booking);
+
+    mockTransaction.mockImplementation((fn: (innerTx: typeof tx) => unknown) =>
+      fn(tx)
+    );
+    mockCalculateBookingPrice.mockReturnValue({
+      totalPriceCents: 5000,
+      guests: [{ priceCents: 5000, perNightCents: [2500, 2500] }],
+    });
+
+    const { PUT } = await import("@/app/api/bookings/[id]/modify/route");
+
+    // No settlementMethod: an unpaid invoice has no policy tier / captured
+    // funds, so the endpoint must not demand a card/credit choice.
+    const request = new NextRequest("http://localhost/api/bookings/bk1/modify", {
+      method: "PUT",
+      body: JSON.stringify({ removeGuestIds: ["g2"] }),
+    });
+
+    const response = await PUT(request, {
+      params: Promise.resolve({ id: "bk1" }),
+    });
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.refundAmountCents).toBe(0);
+    expect(mockRefundPaymentTransactions).not.toHaveBeenCalled();
+
+    await Promise.resolve();
+    expect(mockEnqueueXeroModificationCreditNoteOperation).toHaveBeenCalledWith(
+      {
+        bookingId: "bk1",
+        refundAmountCents: 5000,
+        bookingModificationId: "mod_1",
+      },
+      {
+        createdByMemberId: "m1",
+      }
+    );
+  });
+
   it("caps partially refunded Stripe reductions at the remaining refundable balance", async () => {
     const booking = makeBooking();
     const tx = makeTx(booking);
@@ -1659,6 +1833,13 @@ describe("PUT /api/bookings/[id]/modify", () => {
         sourceBookingId: "bk1",
         sourceBookingModificationId: "mod_1",
       }),
+    });
+    // #1031: the credit settlement allocates against the payment in the same
+    // transaction, keeping refundedAmountCents truthful for a later cancel.
+    expect(mockApplyLocalRefundAllocation).toHaveBeenCalledWith({
+      paymentId: "pay_1",
+      amountCents: 3750,
+      store: tx,
     });
 
     await Promise.resolve();

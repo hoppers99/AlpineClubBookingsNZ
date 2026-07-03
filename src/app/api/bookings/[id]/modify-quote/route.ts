@@ -50,6 +50,7 @@ import {
   usesActiveBookingEditLifecycle,
 } from "@/lib/booking-edit-policy";
 import {
+  assertBookingNotQuotePriced,
   calculateModificationSettlementOptions,
   resolveGuestNameUpdates,
 } from "@/lib/booking-modify";
@@ -63,6 +64,10 @@ import {
   authorizationRoleFromAccessRoles,
   hasAdminAccess,
 } from "@/lib/access-roles";
+import {
+  findBookingMemberNightConflicts,
+  getBookingMemberNightConflictResponse,
+} from "@/lib/booking-member-night-conflicts";
 
 const modifyQuoteSchema = z.object({
   checkIn: z.string().optional(),
@@ -244,6 +249,18 @@ export async function POST(
       { error: editPolicy.reason ?? "This booking cannot be modified" },
       { status: 400 }
     );
+  }
+
+  // Quote-priced bookings are blocked at preview time too (#1032), so the
+  // admin sees the actionable message instead of a season-rate delta that the
+  // mutating endpoints would refuse anyway.
+  try {
+    await assertBookingNotQuotePriced(prisma, bookingId);
+  } catch (err) {
+    if (err instanceof ApiError) {
+      return NextResponse.json({ error: err.message }, { status: err.status });
+    }
+    throw err;
   }
 
   const json = await parseJsonRequestBody(request);
@@ -536,6 +553,21 @@ export async function POST(
     return NextResponse.json(
       { error: `A booking cannot exceed ${lodgeCapacity} guests` },
       { status: 400 }
+    );
+  }
+
+  const memberNightConflicts = await findBookingMemberNightConflicts(prisma, {
+    actorMemberId: session.user.id,
+    actorRole,
+    checkIn: newCheckIn,
+    checkOut: newCheckOut,
+    guests: guestsForPricing,
+    excludeBookingId: booking.id,
+  });
+  if (memberNightConflicts.length > 0) {
+    return NextResponse.json(
+      getBookingMemberNightConflictResponse(memberNightConflicts),
+      { status: 409 },
     );
   }
 

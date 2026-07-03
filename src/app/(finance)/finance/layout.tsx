@@ -1,5 +1,6 @@
 import { headers } from "next/headers";
 import { AppProviders } from "@/components/app-providers";
+import { ContextualHelpButton } from "@/components/contextual-help-button";
 import { Badge } from "@/components/ui/badge";
 import { NavBar } from "@/components/nav-bar";
 import { ReportIssueWidget } from "@/components/report-issue-widget";
@@ -11,6 +12,7 @@ import {
   hasFinanceManagerAccess,
   requireFinanceViewer,
 } from "@/lib/finance-auth";
+import { hasAdminPortalAccess } from "@/lib/admin-permissions";
 
 export default async function FinanceLayout({
   children,
@@ -36,6 +38,7 @@ export default async function FinanceLayout({
             name: fullName,
             email: member.email,
             role: member.role,
+            canAccessAdmin: hasAdminPortalAccess(member),
             canAccessFinance: true,
           }}
         />
@@ -53,9 +56,12 @@ export default async function FinanceLayout({
                 one place.
               </p>
             </div>
-            <Badge variant={isManager ? "default" : "secondary"}>
-              {isManager ? "Finance manager" : "Finance viewer"}
-            </Badge>
+            <div className="flex items-center gap-2">
+              <Badge variant={isManager ? "default" : "secondary"}>
+                {isManager ? "Finance manager" : "Finance viewer"}
+              </Badge>
+              <ContextualHelpButton scope="finance" />
+            </div>
           </div>
           {children}
         </main>

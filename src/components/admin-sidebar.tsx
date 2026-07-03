@@ -39,6 +39,7 @@ import {
   BedDouble,
   Hammer,
   FilePenLine,
+  PanelBottom,
   Palette,
   Images,
   UserPlus,
@@ -49,6 +50,7 @@ import {
   MessageSquareText,
   BadgeCheck,
   Building2,
+  Megaphone,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -61,6 +63,8 @@ import {
 } from "@/components/ui/sheet";
 import { isFeatureHrefVisible } from "@/config/feature-routes";
 import type { FeatureFlags } from "@/config/schema";
+import { canViewAdminHref } from "@/lib/admin-permissions";
+import type { AppAccessRole } from "@/lib/access-roles";
 
 interface NavSection {
   label?: string;
@@ -258,6 +262,12 @@ const navSections: NavSection[] = [
       },
       { href: "/admin/site-style", label: "Site Style", icon: Palette },
       { href: "/admin/page-content", label: "Page Content", icon: FilePenLine },
+      { href: "/admin/site-banners", label: "Site Banners", icon: Megaphone },
+      {
+        href: "/admin/site-content",
+        label: "Site Content",
+        icon: PanelBottom,
+      },
       {
         href: "/admin/mountain-conditions",
         label: "Mountain Conditions",
@@ -284,12 +294,16 @@ const navSections: NavSection[] = [
 
 export function getVisibleAdminNavSections(
   features: FeatureFlags,
+  accessRoles?: readonly AppAccessRole[],
 ): NavSection[] {
   return navSections
     .map((section) => ({
       ...section,
-      items: section.items.filter((item) =>
-        isFeatureHrefVisible(item.href, features),
+      items: section.items.filter(
+        (item) =>
+          isFeatureHrefVisible(item.href, features) &&
+          (!accessRoles ||
+            canViewAdminHref({ accessRoles, canLogin: true }, item.href)),
       ),
     }))
     .filter((section) => section.items.length > 0);
@@ -300,8 +314,9 @@ type AdminNavBadgeMap = Record<string, number>;
 export function getRenderedAdminNavSections(
   features: FeatureFlags,
   badges: AdminNavBadgeMap,
+  accessRoles?: readonly AppAccessRole[],
 ): NavSection[] {
-  return getVisibleAdminNavSections(features)
+  return getVisibleAdminNavSections(features, accessRoles)
     .map((section) =>
       section.label === NEEDS_ATTENTION_LABEL
         ? {
@@ -383,6 +398,7 @@ function usePendingRefundAppeals(): number {
   return count;
 }
 
+/** Fetch pending internal booking review + change request counts. */
 function usePendingBookingRequests(): number {
   const [count, setCount] = useState(0);
 
@@ -403,6 +419,36 @@ function usePendingBookingRequests(): number {
             (reviewData?.pagination?.total ?? 0) +
               (typeof changeData?.total === "number" ? changeData.total : 0),
           );
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return count;
+}
+
+/**
+ * Fetch the count of public (non-member) booking requests waiting in the
+ * admin queue (VERIFIED, PRICED, QUOTED, QUOTE_SENT, QUERY_PENDING,
+ * MODIFICATION_REQUESTED). Summed with the internal review/change-request
+ * count for the single Booking Requests badge, since /admin/booking-requests
+ * covers both queues via its tabs.
+ */
+function usePendingPublicBookingRequests(): number {
+  const [count, setCount] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    fetch("/api/admin/booking-requests?status=QUEUE&pageSize=1")
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => {
+        if (!cancelled && typeof data?.total === "number") {
+          setCount(data.total);
         }
       })
       .catch(() => {});
@@ -518,9 +564,11 @@ function useUnassignedHutLeaderDates(): number {
 
 function SidebarLinks({
   features,
+  accessRoles,
   onNavigate,
 }: {
   features: FeatureFlags;
+  accessRoles?: readonly AppAccessRole[];
   onNavigate?: () => void;
 }) {
   const pathname = usePathname();
@@ -528,6 +576,7 @@ function SidebarLinks({
   const pendingApplications = usePendingApplications();
   const pendingRefundAppeals = usePendingRefundAppeals();
   const pendingBookingRequests = usePendingBookingRequests();
+  const pendingPublicBookingRequests = usePendingPublicBookingRequests();
   const pendingCreditApprovals = usePendingCreditApprovals();
   const pendingMembershipCancellations = usePendingMembershipCancellations();
   const pendingIssueReports = usePendingIssueReports();
@@ -577,8 +626,9 @@ function SidebarLinks({
   if (pendingFamilyRequests > 0) {
     badges["/admin/family-groups"] = pendingFamilyRequests;
   }
-  if (pendingBookingRequests > 0) {
-    badges["/admin/booking-requests"] = pendingBookingRequests;
+  if (pendingBookingRequests + pendingPublicBookingRequests > 0) {
+    badges["/admin/booking-requests"] =
+      pendingBookingRequests + pendingPublicBookingRequests;
   }
   if (pendingRefundAppeals + pendingCreditApprovals > 0) {
     badges["/admin/refund-requests"] =
@@ -594,8 +644,12 @@ function SidebarLinks({
     badges["/admin/hut-leaders"] = unassignedHutLeaderDates;
   }
 
-  const renderedNavSections = getRenderedAdminNavSections(features, badges);
-  const visibleNavSections = getVisibleAdminNavSections(features);
+  const renderedNavSections = getRenderedAdminNavSections(
+    features,
+    badges,
+    accessRoles,
+  );
+  const visibleNavSections = getVisibleAdminNavSections(features, accessRoles);
 
   // Highlight the most specific nav item whose href is a prefix of the current
   // path, so nested routes (e.g. /admin/xero/setup) activate the deepest match
@@ -695,7 +749,13 @@ function SidebarLinks({
   );
 }
 
-export function AdminSidebar({ features }: { features: FeatureFlags }) {
+export function AdminSidebar({
+  features,
+  accessRoles,
+}: {
+  features: FeatureFlags;
+  accessRoles?: readonly AppAccessRole[];
+}) {
   const [mobileOpen, setMobileOpen] = useState(false);
 
   return (
@@ -709,7 +769,7 @@ export function AdminSidebar({ features }: { features: FeatureFlags }) {
           <span>Admin Panel</span>
         </div>
         <div className="flex-1 overflow-y-auto p-3 pb-8">
-          <SidebarLinks features={features} />
+          <SidebarLinks features={features} accessRoles={accessRoles} />
         </div>
       </aside>
 
@@ -731,6 +791,7 @@ export function AdminSidebar({ features }: { features: FeatureFlags }) {
             <div className="flex-1 overflow-y-auto p-3 pb-8">
               <SidebarLinks
                 features={features}
+                accessRoles={accessRoles}
                 onNavigate={() => setMobileOpen(false)}
               />
             </div>

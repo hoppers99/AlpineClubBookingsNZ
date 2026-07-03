@@ -7,10 +7,14 @@ import logger from "@/lib/logger";
 import { ROLE_VALUES } from "@/lib/member-roles";
 import {
   ACCESS_ROLE_VALUES,
+  accessRoleChangeRequiresFullAdmin,
   accessRolesFromCompatibilityFields,
   financeAccessLevelFromAccessRoles,
+  isFullAdmin,
   legacyRoleFromAccessRoles,
   normalizeAssignableAccessRoles,
+  resolveAccessRoles,
+  storedAccessRolesForFullAdminGate,
 } from "@/lib/access-roles";
 
 const bulkUpdateSchema = z.object({
@@ -91,6 +95,7 @@ export async function POST(req: NextRequest) {
         canLogin: true,
         cancelledAt: true,
         archivedAt: true,
+        accessRoles: { select: { role: true } },
       },
     });
 
@@ -136,6 +141,61 @@ export async function POST(req: NextRequest) {
       return true;
     });
 
+    const setRoleTargets =
+      action === "set-role"
+        ? existingMembers
+            .filter((candidate) => idsToUpdate.includes(candidate.id))
+            .map((member) => ({
+              member,
+              nextAccessRoles:
+                accessRoles !== undefined
+                  ? normalizeAssignableAccessRoles(accessRoles, {
+                      canLogin: member.canLogin,
+                    })
+                  : accessRolesFromCompatibilityFields({
+                      role,
+                      financeAccessLevel:
+                        role === "LODGE" ? "NONE" : member.financeAccessLevel,
+                      canLogin: member.canLogin,
+                    }),
+            }))
+        : [];
+
+    // Full Admin gate (issue #1012): only a Full Admin may grant or revoke
+    // privileged access roles. Compare both the effective roles
+    // (canLogin-aware) and the stored role fields (canLogin-blind) so a
+    // scoped admin can neither change live privileged access nor park a
+    // dormant elevated role for later activation.
+    if (
+      !isFullAdmin(session.user) &&
+      setRoleTargets.some(({ member, nextAccessRoles }) => {
+        const storedAfter =
+          accessRoles !== undefined
+            ? normalizeAssignableAccessRoles(accessRoles, { canLogin: true })
+            : accessRolesFromCompatibilityFields({
+                role,
+                financeAccessLevel:
+                  role === "LODGE" ? "NONE" : member.financeAccessLevel,
+                canLogin: true,
+              });
+        return (
+          accessRoleChangeRequiresFullAdmin(
+            resolveAccessRoles(member),
+            nextAccessRoles,
+          ) ||
+          accessRoleChangeRequiresFullAdmin(
+            storedAccessRolesForFullAdminGate(member),
+            storedAfter,
+          )
+        );
+      })
+    ) {
+      return NextResponse.json(
+        { error: "Only a Full Admin can change member access roles" },
+        { status: 403 },
+      );
+    }
+
     // Perform update in transaction
     const result = await prisma.$transaction(async (tx) => {
       const updateResult =
@@ -146,21 +206,7 @@ export async function POST(req: NextRequest) {
               data: updateData,
             });
       if (action === "set-role") {
-        for (const member of existingMembers.filter((candidate) =>
-          idsToUpdate.includes(candidate.id),
-        )) {
-          const nextAccessRoles =
-            accessRoles !== undefined
-              ? normalizeAssignableAccessRoles(accessRoles, {
-                  canLogin: member.canLogin,
-                })
-              : accessRolesFromCompatibilityFields({
-                  role,
-                  financeAccessLevel:
-                    role === "LODGE" ? "NONE" : member.financeAccessLevel,
-                  canLogin: member.canLogin,
-                });
-
+        for (const { member, nextAccessRoles } of setRoleTargets) {
           await tx.member.update({
             where: { id: member.id },
             data: {

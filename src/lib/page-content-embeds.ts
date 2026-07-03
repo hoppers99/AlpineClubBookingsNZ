@@ -7,10 +7,24 @@ import {
   imagePublicUrl,
   resolveInImagesRoot,
 } from "@/lib/image-storage";
-import { CLUB_NAME } from "@/config/club-identity";
+import {
+  CLUB_FACEBOOK_URL,
+  CLUB_NAME,
+  CLUB_PUBLIC_URL,
+} from "@/config/club-identity";
 import { APP_CURRENCY } from "@/config/operational";
-import { getDefaultLodgeCapacity } from "@/lib/lodge-capacity";
+import {
+  getDefaultLodgeCapacity,
+  getLodgeCapacity,
+} from "@/lib/lodge-capacity";
+import logger from "@/lib/logger";
 import { extractImageDimensions } from "@/lib/media-image";
+import {
+  embedTokenNames,
+  legacySingleBraceTokenNames,
+  parameterisedTextTokenNames,
+  plainTextTokenNames,
+} from "@/lib/token-catalogue";
 
 export type PhotoGalleryImage = {
   src: string;
@@ -34,10 +48,39 @@ type ParsedEmbedToken = {
   parameter: string | undefined;
 };
 
-const EMBED_TOKEN_REGEX =
-  /\{\{\s*(committee-members-cards|member-application-form|contact-form|join-apply-form|skifield-conditions|skifield-whakapapa|photo-gallery|photo-slideshow)(?:\s*:\s*([^{}]+?))?\s*\}\}|\{\s*(committee-members-cards|member-application-form|contact-form|join-apply-form|skifield-conditions|skifield-whakapapa)(?:\s*:\s*([^{}]+?))?\s*\}/gi;
-const TEXT_TOKEN_REGEX =
-  /\{\{\s*(lodge-capacity|club-name|currency)(?:\s*:\s*([^{}]+?))?\s*\}\}/gi;
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Both matchers are derived from src/lib/token-catalogue.ts (single source of
+// truth) and built once at module load. Matching behaviour is unchanged from
+// the previous hardcoded regexes: case-insensitive, whitespace tolerant,
+// double braces with an optional `:parameter`, and the legacy single-brace
+// form only for legacy-enabled embed tokens (photo tokens excluded).
+const EMBED_TOKEN_ALTERNATION = embedTokenNames().map(escapeRegExp).join("|");
+const LEGACY_TOKEN_ALTERNATION = legacySingleBraceTokenNames()
+  .map(escapeRegExp)
+  .join("|");
+const PARAM_TEXT_TOKEN_ALTERNATION = parameterisedTextTokenNames()
+  .map(escapeRegExp)
+  .join("|");
+const PLAIN_TEXT_TOKEN_ALTERNATION = plainTextTokenNames()
+  .map(escapeRegExp)
+  .join("|");
+
+export const EMBED_TOKEN_REGEX = new RegExp(
+  `\\{\\{\\s*(${EMBED_TOKEN_ALTERNATION})(?:\\s*:\\s*([^{}]+?))?\\s*\\}\\}` +
+    `|\\{\\s*(${LEGACY_TOKEN_ALTERNATION})(?:\\s*:\\s*([^{}]+?))?\\s*\\}`,
+  "gi",
+);
+// Text tokens match bare, except those whose catalogue entry declares
+// parameter support (allowsParameter — the multi-lodge
+// {{lodge-capacity:lodge-slug}} form). Group 1/2 = parameterised token and
+// its optional parameter; group 3 = plain token.
+export const TEXT_TOKEN_REGEX = new RegExp(
+  `\\{\\{\\s*(?:(${PARAM_TEXT_TOKEN_ALTERNATION})(?:\\s*:\\s*([^{}]+?))?|(${PLAIN_TEXT_TOKEN_ALTERNATION}))\\s*\\}\\}`,
+  "gi",
+);
 
 function escapeHtmlText(value: string): string {
   return value
@@ -66,7 +109,6 @@ async function resolveLodgeCapacityToken(
         select: { id: true },
       });
       if (lodge) {
-        const { getLodgeCapacity } = await import("@/lib/lodge-capacity");
         return await getLodgeCapacity(lodge.id);
       }
     } catch {
@@ -76,7 +118,47 @@ async function resolveLodgeCapacityToken(
   return getDefaultLodgeCapacity();
 }
 
-async function resolveTextTokens(contentHtml: string): Promise<string> {
+// URL schemes a token value may safely carry into an href attribute. Mirrors
+// allowedSchemes in page-content-html.ts, whose sanitiser cannot vet token
+// values because tokens resolve after sanitisation.
+const SAFE_TOKEN_URL_SCHEMES = new Set(["http:", "https:", "mailto:"]);
+
+function isSafeTokenUrl(value: string): boolean {
+  try {
+    return SAFE_TOKEN_URL_SCHEMES.has(new URL(value).protocol);
+  } catch {
+    return false;
+  }
+}
+
+// Warn once per offending config value so a bad deploy shows up in the logs
+// without repeating on every render.
+const warnedUnsafeTokenUrls = new Set<string>();
+
+// Authors place URL tokens inside href attributes (the starter footer uses
+// <a href="{{facebook-url}}">), and because resolution runs after
+// sanitisation the sanitiser's scheme allowlist never sees the resolved
+// value. HTML-escaping does not neutralise a dangerous URL scheme, so
+// enforce the same http/https/mailto allowlist here before injection.
+function safeTokenUrl(token: string, value: string): string {
+  if (isSafeTokenUrl(value)) {
+    return value;
+  }
+  if (!warnedUnsafeTokenUrls.has(value)) {
+    warnedUnsafeTokenUrls.add(value);
+    logger.warn(
+      { token },
+      "Blocked text-token config value with a disallowed URL scheme; only http, https, and mailto URLs are rendered.",
+    );
+  }
+  return isSafeTokenUrl(CLUB_PUBLIC_URL) ? CLUB_PUBLIC_URL : "#";
+}
+
+// Exported for reuse by other sanitised HTML surfaces (lodge instructions).
+// Replacement values are HTML-escaped via escapeHtmlText and URL-bearing
+// tokens are additionally scheme-validated via safeTokenUrl, so this stays
+// safe to run after sanitisation.
+export async function resolveTextTokens(contentHtml: string): Promise<string> {
   TEXT_TOKEN_REGEX.lastIndex = 0;
   const matches = Array.from(contentHtml.matchAll(TEXT_TOKEN_REGEX));
   if (matches.length === 0) {
@@ -87,7 +169,7 @@ async function resolveTextTokens(contentHtml: string): Promise<string> {
   // callback below is synchronous).
   const capacityParams = new Set(
     matches
-      .filter((match) => match[1].toLowerCase() === "lodge-capacity")
+      .filter((match) => (match[1] ?? "").toLowerCase() === "lodge-capacity")
       .map((match) => (match[2] ?? "").trim().toLowerCase()),
   );
   const capacityByParam = new Map<string, number>();
@@ -100,7 +182,8 @@ async function resolveTextTokens(contentHtml: string): Promise<string> {
 
   return contentHtml.replace(
     TEXT_TOKEN_REGEX,
-    (_match, token: string, parameter?: string) => {
+    (_match, paramToken: string | undefined, parameter: string | undefined, plainToken: string | undefined) => {
+      const token = paramToken ?? plainToken ?? "";
       switch (token.toLowerCase()) {
         case "lodge-capacity": {
           const value = capacityByParam.get(
@@ -112,6 +195,13 @@ async function resolveTextTokens(contentHtml: string): Promise<string> {
           return escapeHtmlText(CLUB_NAME);
         case "currency":
           return escapeHtmlText(APP_CURRENCY);
+        case "facebook-url":
+          // Escaping keeps the value safe as visible text and attribute
+          // content, but not as an href target: a javascript: scheme survives
+          // HTML-escaping, so safeTokenUrl vets the scheme first.
+          return escapeHtmlText(
+            safeTokenUrl("facebook-url", CLUB_FACEBOOK_URL ?? CLUB_PUBLIC_URL),
+          );
         default:
           return "";
       }

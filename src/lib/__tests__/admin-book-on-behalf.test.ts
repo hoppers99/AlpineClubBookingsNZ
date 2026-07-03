@@ -8,6 +8,7 @@ vi.mock("@/lib/prisma", () => ({
     booking: { create: vi.fn(), update: vi.fn(), findMany: vi.fn(), count: vi.fn() },
     lodge: { findFirst: vi.fn() },
     memberLodgeAccess: { findMany: vi.fn() },
+    bookingGuest: { findMany: vi.fn().mockResolvedValue([]) },
     season: { findMany: vi.fn() },
     promoCode: { findUnique: vi.fn() },
     promoCodeAssignment: { findMany: vi.fn() },
@@ -181,6 +182,7 @@ describe("Admin Book on Behalf", () => {
     (mockedPrisma.promoCodeAssignment.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([]);
     (mockedPrisma.lodge.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "lodge-1" });
     (mockedPrisma.memberLodgeAccess.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    (mockedPrisma.bookingGuest.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([]);
   });
 
   it("rejects admin booking without forMemberId (must book on behalf)", async () => {
@@ -526,6 +528,7 @@ describe("Create booking guest normalization", () => {
 describe("Quote API - forMemberId", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    (mockedPrisma.bookingGuest.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([]);
   });
 
   it("uses target member credit balance when admin provides forMemberId", async () => {

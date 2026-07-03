@@ -40,6 +40,46 @@ const HOME_UPDATE_MIGRATION_PATH = join(
   "migration.sql",
 );
 
+const FAQ_UPDATE_MIGRATION_PATH = join(
+  process.cwd(),
+  "prisma",
+  "migrations",
+  "20260702120000_update_starter_faq_accordion",
+  "migration.sql",
+);
+
+const PRIVACY_UPDATE_MIGRATION_PATH = join(
+  process.cwd(),
+  "prisma",
+  "migrations",
+  "20260702144000_update_privacy_for_analytics_consent",
+  "migration.sql",
+);
+
+// Previous starter FAQ contentHtml (flat <h3>/<p> pairs), replaced by the
+// accordion update migration. Extracted verbatim from the policy-pages
+// backfill so the update migration's WHERE guard provably matches what that
+// backfill wrote; rows edited by an admin since then are left untouched.
+function previousFaqContentHtml(policyPagesSql: string) {
+  const faqBlock = policyPagesSql
+    .split("'starter-page-faq'")[1]
+    ?.match(/\$cms\$([\s\S]*?)\$cms\$/)?.[1];
+  if (!faqBlock) {
+    throw new Error("FAQ contentHtml not found in policy pages backfill SQL");
+  }
+  return faqBlock;
+}
+
+function previousPrivacyContentHtml(policyPagesSql: string) {
+  const privacyBlock = policyPagesSql
+    .split("'starter-page-privacy'")[1]
+    ?.match(/\$cms\$([\s\S]*?)\$cms\$/)?.[1];
+  if (!privacyBlock) {
+    throw new Error("Privacy contentHtml not found in policy pages backfill SQL");
+  }
+  return privacyBlock;
+}
+
 // Previous default "home" copy, replaced by the update migration above. The
 // update migration's WHERE clause must guard on these values so deployments
 // where an admin has already edited the home page are left untouched.
@@ -66,8 +106,10 @@ describe("starter page content backfill migration", () => {
   const backfill404Sql = readFileSync(BACKFILL_404_MIGRATION_PATH, "utf8");
   const policyPagesSql = readFileSync(POLICY_PAGES_MIGRATION_PATH, "utf8");
   const updateSql = readFileSync(HOME_UPDATE_MIGRATION_PATH, "utf8");
+  const faqUpdateSql = readFileSync(FAQ_UPDATE_MIGRATION_PATH, "utf8");
+  const privacyUpdateSql = readFileSync(PRIVACY_UPDATE_MIGRATION_PATH, "utf8");
   const allInsertSql = `${insertSql}\n${backfill404Sql}\n${policyPagesSql}`;
-  const combinedSql = `${allInsertSql}\n${updateSql}`;
+  const combinedSql = `${allInsertSql}\n${updateSql}\n${faqUpdateSql}\n${privacyUpdateSql}`;
 
   it("inserts exactly the starter pages defined for the seed", () => {
     const insertedIds = [
@@ -114,6 +156,30 @@ describe("starter page content backfill migration", () => {
   });
 });
 
+describe("starter privacy analytics update migration (#975)", () => {
+  const sql = readFileSync(PRIVACY_UPDATE_MIGRATION_PATH, "utf8");
+  const policyPagesSql = readFileSync(POLICY_PAGES_MIGRATION_PATH, "utf8");
+
+  it("only updates the privacy row, and never inserts or deletes", () => {
+    expect(sql).toMatch(/UPDATE\s+"PageContent"/);
+    expect(sql).not.toMatch(/\bDELETE\b/i);
+    expect(sql).not.toMatch(/\bINSERT\b/i);
+  });
+
+  it("guards the update on the row still holding the backfilled privacy html", () => {
+    expect(sql).toContain(`"slug" = ${sqlQuote("privacy")}`);
+    expect(sql).toContain(previousPrivacyContentHtml(policyPagesSql));
+  });
+
+  it("writes the current consent-gated analytics copy from starterPageContent", () => {
+    const privacy = starterPageContent.find((page) => page.slug === "privacy");
+    expect(privacy).toBeDefined();
+    expect(sql).toContain(privacy!.contentHtml);
+    expect(sql).toContain("Google Analytics 4");
+    expect(sql).toContain("updatedAt");
+  });
+});
+
 describe("starter home page content update migration", () => {
   const sql = readFileSync(HOME_UPDATE_MIGRATION_PATH, "utf8");
 
@@ -138,5 +204,46 @@ describe("starter home page content update migration", () => {
     for (const value of [home!.caption, home!.title, home!.headerText]) {
       expect(sql).toContain(sqlQuote(value));
     }
+  });
+});
+
+describe("starter faq accordion update migration (#992)", () => {
+  const sql = readFileSync(FAQ_UPDATE_MIGRATION_PATH, "utf8");
+  const policyPagesSql = readFileSync(POLICY_PAGES_MIGRATION_PATH, "utf8");
+
+  it("only updates the faq row, and never inserts or deletes", () => {
+    expect(sql).toMatch(/UPDATE\s+"PageContent"/);
+    expect(sql).not.toMatch(/\bDELETE\b/i);
+    expect(sql).not.toMatch(/\bINSERT\b/i);
+  });
+
+  it("guards the update on the row still holding the backfilled flat FAQ html", () => {
+    expect(sql).toContain(`"slug" = ${sqlQuote("faq")}`);
+    expect(sql).toContain(previousFaqContentHtml(policyPagesSql));
+  });
+
+  it("writes the current accordion contentHtml from starterPageContent", () => {
+    const faq = starterPageContent.find((page) => page.slug === "faq");
+    expect(faq).toBeDefined();
+    expect(sql).toContain(faq!.contentHtml);
+    expect(sql).toContain('"updatedAt" = CURRENT_TIMESTAMP');
+
+    // SET (new accordion value) must come before the WHERE guard (old value),
+    // so the two blobs are not accidentally swapped.
+    const setIndex = sql.indexOf(faq!.contentHtml);
+    const whereIndex = sql.indexOf(previousFaqContentHtml(policyPagesSql));
+    expect(setIndex).toBeGreaterThan(-1);
+    expect(whereIndex).toBeGreaterThan(setIndex);
+
+    // The rewrap is structural only: stripping tags must leave the question
+    // and answer text identical to the pre-accordion starter content.
+    const stripTags = (html: string) =>
+      html
+        .replace(/<[^>]+>/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    expect(stripTags(faq!.contentHtml)).toBe(
+      stripTags(previousFaqContentHtml(policyPagesSql)),
+    );
   });
 });

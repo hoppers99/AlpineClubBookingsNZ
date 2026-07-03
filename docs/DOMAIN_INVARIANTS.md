@@ -21,6 +21,16 @@ Future reviews and issues should cite this file when proposing changes.
   source of truth is `CAPACITY_HOLDING_BOOKING_STATUSES` in
   `src/lib/booking-status.ts`.
 - Waitlisted and offered bookings do not consume capacity until confirmed.
+- A waitlist offer reprices the booking at current season rates,
+  membership-type policy, group discount, and promo validity at the moment the
+  offer is issued; the offer email states the price the member will pay on
+  confirmation. The creation-time price snapshot is not a price lock — an
+  identical booking made directly on the offer day pays the same. If repricing
+  fails, the offer proceeds at the stored snapshot rather than being blocked.
+- A linked `Member` may be present on only one live booking per lodge night.
+  This person-night guard is separate from bed capacity: it checks draft,
+  pending, confirmed/paid/completed, waitlist, offered, and admin-review
+  bookings, but ignores cancelled, bumped, deleted, and expired draft rows.
 - Draft, pending, waitlist, payment-recovery, and review states must have
   expiry, retry, admin visibility, or repair paths.
 
@@ -37,6 +47,17 @@ Future reviews and issues should cite this file when proposing changes.
 - Payment, refund, and credit operations must be idempotent across retries,
   webhook replays, cron reruns, and partial failure recovery.
 - External provider side effects require clear retry and idempotency behavior.
+- An organiser-pays group settlement applies only when the payment matches the
+  sum of the settleable children **at apply time**, re-verified under the lock
+  — a child booking edited while the combined intent/invoice was open must not
+  auto-settle at the stale total. Mismatches go to operator review: Stripe
+  captures are auto-refunded with an admin alert; paid Internet Banking
+  invoices stay PENDING with an admin alert.
+- Committing organiser-pays group children to CONFIRMED before payment has an
+  expiry path: the `group-settlement-reaper` cron releases the beds when the
+  settlement stays unpaid past its window (never past check-in), voids the
+  open intent, and notifies the organiser and joiners — idempotently, and a
+  payment that lands first always wins under the shared lock.
 
 ## Booking Modifications
 
@@ -54,6 +75,63 @@ Booking changes must not orphan or desynchronize:
 Positive deltas, negative deltas, credits, refunds, and additional payments must
 remain traceable to the original booking and modification event.
 
+Every booking-reduction path — batch modify (`removeGuestIds`/date change),
+single-guest removal (`DELETE …/guests/[guestId]`), and date change
+(`modify-dates`) — returns member money limited by the same cancellation-policy
+tier for the days until check-in, folding any change fee into the net delta, and
+requires the member to elect a card refund or account credit whenever a captured
+payment makes a settlement returnable. No reduction path refunds the full price
+delta outside the policy. A request against a booking with a captured payment
+that omits the settlement election is rejected rather than defaulted, so a
+body-less self-removal cannot silently settle the booking owner's money; the
+owner or an admin makes the election through the batch edit flow.
+
+Every modification path also applies the same lifecycle transitions: a
+PAYMENT_PENDING booking whose price drops to zero auto-pays with a zero-dollar
+payment (superseding and cancelling any outstanding primary PaymentIntents so a
+stale checkout tab cannot capture the pre-change amount), and the non-member
+hold is recalculated from the remaining guests (all-member bookings clear the
+hold; bookings inside the hold window move PENDING → PAYMENT_PENDING). The same
+change must produce the same booking state regardless of which endpoint made
+it. The single-guest removal path keeps its lightweight admin-review flagging
+(no review parking), preserving linked-guest self-removal eligibility.
+
+A booking converted from (or held for) a public/school booking request keeps
+its officer-negotiated price, flat-split across guest rows; the quote's
+per-tier rates are not persisted on the booking. Standard edit paths (batch
+modify, date change, guest add, single-guest removal, and the modify-quote
+preview) refuse such bookings rather than silently repricing every guest at
+season rates — the change is made by re-pricing or issuing a revised quote
+from the booking request.
+
+A price reduction against an issued-but-unpaid Xero invoice (pay-on-account,
+no captured payment) is corrected for the full net delta — there is no captured
+money and therefore no cancellation-policy tier to apply — via a modification
+credit note against the primary invoice, which is never reissued. Consequently
+the true outstanding balance on such an invoice is the current `finalPrice`
+plus any billed change fee, i.e. the original total minus the modification
+credit notes already issued. Cancellation must clear that true outstanding and
+must not read the captured-amount mirror (`payment.amountCents`), which stays at
+the original total until asynchronous Xero reconciliation folds the credit note
+into `refundedAmountCents`.
+
+The paid-path twin of that rule: cancellation of a booking with a captured
+payment computes its refundable base as
+`min(amountCents − refundedAmountCents, finalPrice + changeFee) − changeFee`,
+never from the raw Payment mirror alone. Prior reductions can leave the mirror
+stale (an Internet Banking invoice paid at its reduced amount, or a
+penalty-window retention), and an uncapped base pays out more than the booking
+is worth. The cancel preview applies the same cap so the member is never
+promised more than the cancel will pay.
+
+A credit-settled modification reduction allocates against the payment's
+captured transactions (`applyLocalRefundAllocation`) in the same transaction
+that writes the `MemberCredit`, exactly as a card-settled reduction does via
+the refund ledger. `refundedAmountCents` therefore reflects every settlement
+method, and no ordering of edit/cancel operations may produce a different
+total payout (refunds plus credits) than another ordering reaching the same
+final state.
+
 Cancelled-booking soft-delete may hide an operational duplicate only when it
 preserves the booking row and no external money/Xero history needs to remain
 operator-visible by default. Balanced internal modification deltas that net to
@@ -68,10 +146,14 @@ contact/link history where required.
 
 Access role, seasonal membership type, age tier, Xero contact-group rule, and
 committee assignment are separate axes. `MemberAccessRole` controls application
-access (`USER`, `ADMIN`, `LODGE`, `FINANCE_USER`, `FINANCE_ADMIN`, `ORG`);
+access (`USER`, `ADMIN`, `ADMIN_READONLY`, `ADMIN_BOOKINGS`,
+`ADMIN_MEMBERSHIP`, `ADMIN_CONTENT`, `LODGE`, `FINANCE_USER`,
+`FINANCE_ADMIN`, `ORG`);
 `Member.role` is limited to `USER`, `ADMIN`, `LODGE`, `NON_MEMBER`, and
 `SCHOOL`, and `financeAccessLevel` is a compatibility field. Neither field may
 be used as a runtime permission gate or for new membership-category semantics.
+Bundled `ADMIN_*` rows are composed by the central admin permission matrix; they
+must not be projected into legacy `Member.role = ADMIN`.
 Legacy membership lifecycle/classification code may read `Member.role` only to
 distinguish compatibility categories such as non-login/non-member records until
 that workflow is fully represented by seasonal membership type.
@@ -99,9 +181,15 @@ when the effective subscription status is `NOT_REQUIRED`.
 When the global two-factor module is enabled, password login is not sufficient
 for protected app access. The Auth.js JWT must carry `twoFactorVerified=false`
 until a server-side two-factor verification or enrollment endpoint flips it.
-Route-group layouts and API guards must enforce that claim; login form code
-must not be the only 2FA gate. TOTP secrets, email OTP codes, and recovery
-codes must never be stored in plaintext.
+The Auth.js session-update trigger is reachable by any authenticated client
+(POST `/api/auth/session`), so the jwt callback must never trust a
+client-supplied `twoFactorVerified` flag. The claim flips only after the
+callback consumes a single-use, short-lived challenge token minted server-side
+by the verification and enrollment endpoints and stored hashed in
+`TwoFactorSessionChallenge`. Route-group layouts and API guards must enforce
+that claim; login form code must not be the only 2FA gate. TOTP secrets, email
+OTP codes, recovery codes, and session challenge tokens must never be stored
+in plaintext.
 
 Pending nomination states must have an expiry, reminder, admin refresh,
 replacement, rejection, or other documented recovery path so applications do

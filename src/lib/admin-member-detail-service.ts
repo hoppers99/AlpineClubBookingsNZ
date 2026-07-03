@@ -48,11 +48,16 @@ import { genderEnum, titleEnum } from "@/lib/member-enums";
 import { ROLE_VALUES } from "@/lib/member-roles";
 import {
   ACCESS_ROLE_VALUES,
+  accessRoleChangeRequiresFullAdmin,
   accessRolesFromCompatibilityFields,
   financeAccessLevelFromAccessRoles,
+  hasPrivilegedAccess,
+  isFullAdmin,
   legacyRoleFromAccessRoles,
   normalizeAssignableAccessRoles,
   resolveAccessRoles,
+  storedAccessRolesForFullAdminGate,
+  type AccessRoleInput,
   type AppAccessRole,
 } from "@/lib/access-roles";
 import { serializeSeasonalMembershipAssignment } from "@/lib/seasonal-membership-assignments";
@@ -239,6 +244,13 @@ function resolveWriteAccessRoles(input: {
     financeAccessLevel: input.financeAccessLevel,
     canLogin: input.canLogin,
   });
+}
+
+function sameAccessRoleSet(
+  a: ReadonlyArray<string>,
+  b: ReadonlyArray<string>,
+) {
+  return a.length === b.length && a.every((role) => b.includes(role));
 }
 
 function getAdminMemberAuditAction(
@@ -623,10 +635,17 @@ export async function getAdminMemberDetail(params: {
 export async function updateAdminMember(params: {
   id: string;
   currentAdminMemberId: string;
+  currentAdminAccessRoles: AccessRoleInput["accessRoles"];
   request: NextRequest;
   data: UpdateMemberInput;
 }): Promise<JsonRouteResult> {
-  const { id, currentAdminMemberId, request: req, data } = params;
+  const {
+    id,
+    currentAdminMemberId,
+    currentAdminAccessRoles,
+    request: req,
+    data,
+  } = params;
   const existing = await prisma.member.findUnique({
     where: { id },
     include: { accessRoles: { select: { role: true } } },
@@ -681,6 +700,27 @@ export async function updateAdminMember(params: {
           : "Cancelled members cannot be reactivated from member edit",
       },
       { status: 409 },
+    );
+  }
+
+  // Full Admin gate on privileged-member email changes (issue #1026): a
+  // scoped admin must not edit the login email of a member who holds a
+  // privileged access role — an email change plus a public forgot-password
+  // request hands the account (and its roles) to the new address. Editing
+  // your own email stays allowed: it grants nothing you do not already
+  // have. Uses effective (canLogin-aware) roles, so contact upkeep on
+  // archived/cancelled ex-admins is unaffected; activating such an account
+  // is already Full-Admin-only via the #1012 role gate.
+  if (
+    data.email !== undefined &&
+    data.email.toLowerCase().trim() !== existing.email &&
+    id !== currentAdminMemberId &&
+    !isFullAdmin({ accessRoles: currentAdminAccessRoles }) &&
+    hasPrivilegedAccess(existing)
+  ) {
+    return jsonResult(
+      { error: "Only a Full Admin can change a privileged member's email" },
+      { status: 403 },
     );
   }
 
@@ -745,7 +785,7 @@ export async function updateAdminMember(params: {
     data.role !== undefined ||
     data.financeAccessLevel !== undefined ||
     data.canLogin !== undefined;
-  const nextAccessRoles = shouldSyncAccessRoles
+  const requestedAccessRoles = shouldSyncAccessRoles
     ? resolveWriteAccessRoles({
         accessRoles: data.accessRoles,
         role: data.role ?? existing.role,
@@ -754,7 +794,70 @@ export async function updateAdminMember(params: {
         canLogin: effectiveCanLogin,
       })
     : null;
-  if (data.accessRoles !== undefined) {
+  // The member edit dialog echoes back role/accessRoles/financeAccessLevel/
+  // canLogin even for contact-only edits, and for a canLogin=false member the
+  // echoed accessRoles are always [] while a stale privileged legacy
+  // role/financeAccessLevel may still be stored (archive and cancellation
+  // clear canLogin but not the role fields). Treat an echo with no
+  // role-field delta and an unchanged effective role set as carrying no role
+  // intent: skip the Full Admin gate (a scoped admin's contact edit is not a
+  // role write) and leave the stored role fields and access-role rows
+  // untouched (deriving them from the echo would silently demote the dormant
+  // role to USER). Any canLogin/role/financeAccessLevel delta — including
+  // activating a dormant ADMIN by enabling login — still runs the gate.
+  const roleSubmissionIsNoOp =
+    shouldSyncAccessRoles &&
+    (data.role === undefined || data.role === existing.role) &&
+    (data.financeAccessLevel === undefined ||
+      data.financeAccessLevel === existing.financeAccessLevel) &&
+    (data.canLogin === undefined || data.canLogin === existing.canLogin) &&
+    (data.accessRoles === undefined ||
+      sameAccessRoleSet(
+        requestedAccessRoles ?? [],
+        resolveAccessRoles(existing),
+      ));
+  const nextAccessRoles = roleSubmissionIsNoOp ? null : requestedAccessRoles;
+  if (shouldSyncAccessRoles && !roleSubmissionIsNoOp) {
+    // Full Admin gate (issue #1012): compare both the effective roles
+    // (canLogin-aware) and the stored role fields (canLogin-blind) so a
+    // scoped admin can neither change live privileged access nor park a
+    // dormant elevated role/financeAccessLevel for later activation.
+    // Unchanged submissions pass, so scoped admins can still edit
+    // name/contact details and toggle login for ordinary members.
+    const storedAfter =
+      data.accessRoles !== undefined
+        ? normalizeAssignableAccessRoles(data.accessRoles, { canLogin: true })
+        : accessRolesFromCompatibilityFields({
+            role: data.role ?? existing.role,
+            financeAccessLevel:
+              (data.role ?? existing.role) === "LODGE"
+                ? "NONE"
+                : (data.financeAccessLevel ?? existing.financeAccessLevel),
+            canLogin: true,
+          });
+    const requiresFullAdmin =
+      accessRoleChangeRequiresFullAdmin(
+        resolveAccessRoles(existing),
+        nextAccessRoles ?? [],
+      ) ||
+      accessRoleChangeRequiresFullAdmin(
+        storedAccessRolesForFullAdminGate(existing),
+        storedAfter,
+      );
+    if (
+      requiresFullAdmin &&
+      !isFullAdmin({ accessRoles: currentAdminAccessRoles })
+    ) {
+      return jsonResult(
+        { error: "Only a Full Admin can change member access roles" },
+        { status: 403 },
+      );
+    }
+  }
+  if (roleSubmissionIsNoOp) {
+    // No role intent: keep the stored role/financeAccessLevel and
+    // access-role rows exactly as they are.
+  } else if (data.accessRoles !== undefined) {
     updateData.role = legacyRoleFromAccessRoles(nextAccessRoles ?? []);
     updateData.financeAccessLevel = financeAccessLevelFromAccessRoles(
       nextAccessRoles ?? [],

@@ -72,6 +72,11 @@ export async function GET(request: NextRequest) {
     request.nextUrl.searchParams.get("lodgeId") ||
     (await resolveMemberInstructionLodgeId(guard.session.user.id));
 
-  const documents = await getSanitizedLodgeInstructions(lodgeId);
+  // Reader surface: the member's lodge documents (club-wide fallback) with
+  // text tokens ({{club-name}} etc.) resolved for display.
+  const documents = await getSanitizedLodgeInstructions({
+    lodgeId,
+    resolveTokens: true,
+  });
   return NextResponse.json({ documents });
 }

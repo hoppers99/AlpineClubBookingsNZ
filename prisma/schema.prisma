@@ -33,6 +33,10 @@ enum FinanceAccessLevel {
 enum AccessRole {
   USER
   ADMIN
+  ADMIN_READONLY
+  ADMIN_BOOKINGS
+  ADMIN_MEMBERSHIP
+  ADMIN_CONTENT
   LODGE
   FINANCE_USER
   FINANCE_ADMIN
@@ -455,6 +459,7 @@ model Member {
   emailChangeTokens                          EmailChangeToken[]
   twoFactorEmailCodes                        TwoFactorEmailCode[]
   twoFactorRecoveryCodes                     TwoFactorRecoveryCode[]
+  twoFactorSessionChallenges                 TwoFactorSessionChallenge[]
   subscriptions                              MemberSubscription[]
   seasonalMembershipAssignments              SeasonalMembershipAssignment[]             @relation("SeasonalMembershipAssignmentMember")
   seasonalMembershipAssignmentsAssigned      SeasonalMembershipAssignment[]             @relation("SeasonalMembershipAssignmentAssignedBy")
@@ -604,6 +609,22 @@ model TwoFactorRecoveryCode {
   @@index([memberId])
   @@index([codeHash])
   @@index([usedAt])
+}
+
+// Single-use proof that a two-factor challenge succeeded. Minted server-side
+// after code verification, consumed (deleted) by the Auth.js jwt callback, so
+// a client-forged session update cannot flip twoFactorVerified.
+model TwoFactorSessionChallenge {
+  id        String   @id @default(cuid())
+  memberId  String
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  member Member @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  @@index([memberId])
+  @@index([expiresAt])
 }
 
 model MemberApplication {
@@ -2423,6 +2444,7 @@ model ClubModuleSettings {
   skifieldConditions      Boolean  @default(true)
   multiLodge              Boolean  @default(false)
   twoFactor               Boolean  @default(false)
+  analytics               Boolean  @default(false)
   updatedByMemberId       String?
   createdAt               DateTime @default(now())
   updatedAt               DateTime @default(now()) @updatedAt
@@ -2576,6 +2598,30 @@ model MediaImage {
 
   @@index([uploadedByMemberId])
   @@index([createdAt])
+}
+
+// Admin-managed site-wide notification banners. Displayed above the site
+// header on public and member shells while today (NZ date-only) falls inside
+// the banner's display window. Message is always rendered as plain text.
+enum SiteBannerPriority {
+  URGENT
+  WARNING
+  NOTIFY
+}
+
+model SiteBanner {
+  id                String             @id @default(cuid())
+  message           String
+  priority          SiteBannerPriority
+  startDate         DateTime           @db.Date
+  endDate           DateTime           @db.Date
+  active            Boolean            @default(true)
+  createdByMemberId String?
+  updatedByMemberId String?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  @@index([active, startDate, endDate])
 }
 
 enum NotificationDeliveryMode {
@@ -2881,6 +2927,32 @@ model LodgeInstruction {
   lodge Lodge? @relation(fields: [lodgeId], references: [id], onDelete: Cascade)
 
   @@unique([lodgeId, key])
+  @@index([updatedByMemberId])
+}
+
+// ---------------------------------------------------------------------------
+// Site Content (issue #993)
+//
+// Admin-editable HTML fragments for site chrome that is not a page of its
+// own (currently the three public footer columns). Deliberately separate
+// from PageContent: these fragments never appear in the website menu or the
+// dynamic public page route. Future chrome sections are one enum value away.
+// ---------------------------------------------------------------------------
+
+enum SiteContentKey {
+  FOOTER_BLURB
+  FOOTER_QUICK_LINKS
+  FOOTER_AFFILIATIONS
+}
+
+model SiteContent {
+  id                String         @id @default(cuid())
+  key               SiteContentKey @unique
+  contentHtml       String
+  updatedByMemberId String?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
   @@index([updatedByMemberId])
 }
 

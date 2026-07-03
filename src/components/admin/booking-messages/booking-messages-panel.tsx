@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
+import { TokenChips } from "@/components/admin/token-help-dialog";
 import {
   Select,
   SelectContent,
@@ -199,11 +200,11 @@ export function BookingMessagesPanel() {
       {currentMessage ? (
         <div className="space-y-2">
           <Label>Merge fields</Label>
-          <div className="flex flex-wrap gap-2">
-            {currentMessage.tokens.map((token) => (
-              <Badge key={token} variant="outline">{`{{${token}}}`}</Badge>
-            ))}
-          </div>
+          {/* Shared chip renderer; token names stay sourced from the
+              API-provided booking message definitions. */}
+          <TokenChips
+            tokens={currentMessage.tokens.map((token) => ({ token }))}
+          />
         </div>
       ) : null}
 

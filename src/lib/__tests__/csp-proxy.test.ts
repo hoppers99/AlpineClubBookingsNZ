@@ -39,6 +39,7 @@ function expectStrictScriptSrc(policy: string) {
 
   expect(scriptSrc).toContain("'self'");
   expect(scriptSrc).toContain("https://js.stripe.com");
+  expect(scriptSrc).toContain("https://www.googletagmanager.com");
   expect(scriptSrc).not.toContain("https://api-nz.addysolutions.com");
   expect(scriptSrc).not.toContain("'unsafe-inline'");
   expect(nonceFromScriptSrc(policy)).toMatch(/^[A-Za-z0-9+/=]+$/);
@@ -53,6 +54,15 @@ describe("CSP policy", () => {
     );
     expect(directive(policy, "script-src")).not.toContain("'unsafe-inline'");
     expect(directive(policy, "style-src")).toContain("'unsafe-inline'");
+    expect(directive(policy, "connect-src")).toContain(
+      "https://www.google-analytics.com",
+    );
+    expect(directive(policy, "connect-src")).toContain(
+      "https://*.google-analytics.com",
+    );
+    expect(directive(policy, "img-src")).toContain(
+      "https://www.google-analytics.com",
+    );
     expect(directive(policy, "worker-src")).toBe("worker-src 'self' blob:");
     expect(directive(policy, "object-src")).toBe("object-src 'none'");
     expect(directive(policy, "frame-ancestors")).toBe("frame-ancestors 'none'");

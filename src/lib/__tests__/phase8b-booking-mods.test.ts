@@ -19,6 +19,10 @@ const mockValidateAndCalculatePromoDiscount = vi.hoisted(() =>
 );
 const mockRefundPaymentTransactions = vi.fn();
 const mockUpsertPaymentIntentTransaction = vi.fn();
+const mockCreatePaymentIntent = vi.fn();
+const mockFindOrCreateCustomer = vi.fn();
+const mockEnqueuePaymentIntentCancellationRecovery = vi.fn();
+const mockProcessPaymentRecoveryOperations = vi.fn();
 const mockEnqueueXeroBookingInvoiceUpdateOperation = vi.fn().mockResolvedValue({ queueOperationId: "op_booking_update", message: "queued" });
 const mockEnqueueXeroSupplementaryInvoiceOperation = vi.fn().mockResolvedValue({ queueOperationId: "op_supplementary", message: "queued" });
 const mockEnqueueXeroModificationCreditNoteOperation = vi.fn().mockResolvedValue({ queueOperationId: "op_mod_credit_note", message: "queued" });
@@ -40,11 +44,13 @@ vi.mock("@/lib/prisma", () => ({
       update: mockUpdate,
     },
     bookingGuest: {
+      findMany: mockFindMany,
       create: mockCreate,
       update: mockUpdate,
       delete: mockDelete,
     },
     bookingModification: { create: mockCreate },
+    bookingRequest: { findFirst: vi.fn().mockResolvedValue(null) },
     promoRedemption: { delete: mockDelete },
     promoCode: { update: mockUpdate },
     choreAssignment: { findMany: mockFindMany, delete: mockDelete, deleteMany: mockDeleteMany },
@@ -76,6 +82,7 @@ vi.mock("@/lib/cancellation", () => ({
   daysUntilDate: vi.fn(),
   loadCancellationPolicy: vi.fn(),
   getNonMemberHoldDays: vi.fn(),
+  calculateDualRefundAmounts: vi.fn(),
 }));
 vi.mock("@/lib/promo", () => ({
   validatePromoCodeRules: vi.fn(),
@@ -87,7 +94,11 @@ vi.mock("@/lib/promo", () => ({
   deletePromoRedemptionAndAdjustCount: vi.fn(),
   getMemberFreeNightsUsed: vi.fn().mockResolvedValue(0),
 }));
-vi.mock("@/lib/stripe", () => ({ processRefund: vi.fn() }));
+vi.mock("@/lib/stripe", () => ({
+  processRefund: vi.fn(),
+  createPaymentIntent: (...args: unknown[]) => mockCreatePaymentIntent(...args),
+  findOrCreateCustomer: (...args: unknown[]) => mockFindOrCreateCustomer(...args),
+}));
 vi.mock("@/lib/payment-transactions", () => ({
   refundPaymentTransactions: (...args: unknown[]) =>
     mockRefundPaymentTransactions(...args),
@@ -96,6 +107,16 @@ vi.mock("@/lib/payment-transactions", () => ({
 }));
 vi.mock("@/lib/audit", () => ({ logAudit: vi.fn() }));
 vi.mock("@/lib/email", () => ({ sendBookingModifiedEmail: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("@/lib/payment-recovery", () => ({
+  enqueuePaymentIntentCancellationRecovery: (...args: unknown[]) =>
+    mockEnqueuePaymentIntentCancellationRecovery(...args),
+  processPaymentRecoveryOperations: (...args: unknown[]) =>
+    mockProcessPaymentRecoveryOperations(...args),
+  enqueueBookingModificationRefundRecovery: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("@/lib/member-credit", () => ({
+  createBookingModificationCredit: vi.fn().mockResolvedValue({ id: "credit_1" }),
+}));
 vi.mock("@/lib/xero-operation-outbox", () => ({
   enqueueXeroBookingInvoiceUpdateOperation: mockEnqueueXeroBookingInvoiceUpdateOperation,
   enqueueXeroSupplementaryInvoiceOperation: mockEnqueueXeroSupplementaryInvoiceOperation,
@@ -111,7 +132,12 @@ import { auth } from "@/lib/auth";
 import { checkCapacity, checkCapacityForGuestRanges } from "@/lib/capacity";
 import { calculateBookingPrice } from "@/lib/pricing";
 import { calculateChangeFee } from "@/lib/change-fee";
-import { daysUntilDate, loadCancellationPolicy, getNonMemberHoldDays } from "@/lib/cancellation";
+import {
+  daysUntilDate,
+  loadCancellationPolicy,
+  getNonMemberHoldDays,
+  calculateDualRefundAmounts,
+} from "@/lib/cancellation";
 import { validateAndCalculatePromoDiscount, validatePromoCodeRules } from "@/lib/promo";
 import { processRefund } from "@/lib/stripe";
 import { logAudit } from "@/lib/audit";
@@ -124,6 +150,7 @@ const mockedCalcPrice = vi.mocked(calculateBookingPrice);
 const mockedCalcChangeFee = vi.mocked(calculateChangeFee);
 const mockedDaysUntilDate = vi.mocked(daysUntilDate);
 const mockedLoadPolicy = vi.mocked(loadCancellationPolicy);
+const mockedCalcDualRefund = vi.mocked(calculateDualRefundAmounts);
 const mockedProcessRefund = vi.mocked(processRefund);
 const mockedGetHoldDays = vi.mocked(getNonMemberHoldDays);
 const mockedValidatePromo = vi.mocked(validatePromoCodeRules);
@@ -180,6 +207,7 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
       }),
     },
     bookingGuest: {
+      findMany: vi.fn().mockResolvedValue([]),
       create: vi.fn().mockImplementation(({ data }) => Promise.resolve({ id: "new-g", ...data })),
       update: vi.fn().mockResolvedValue({}),
       delete: vi.fn().mockResolvedValue({}),
@@ -187,8 +215,15 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
     bookingModification: {
       create: vi.fn().mockResolvedValue({ id: "mod1" }),
     },
+    bookingRequest: {
+      findFirst: vi.fn().mockResolvedValue(null),
+    },
     payment: {
       update: vi.fn().mockResolvedValue({}),
+      upsert: vi.fn().mockResolvedValue({ id: "p1" }),
+    },
+    paymentTransaction: {
+      findMany: vi.fn().mockResolvedValue([]),
     },
     member: {
       findMany: vi.fn().mockResolvedValue([]),
@@ -280,6 +315,26 @@ describe("PUT /api/bookings/[id]/modify-dates", () => {
     });
     const res = await PUT(req, { params: Promise.resolve({ id: "bk1" }) });
     expect(res.status).toBe(404);
+  });
+
+  it("blocks date changes on a quote-priced booking (#1032)", async () => {
+    mockedAuth.mockResolvedValue({ user: { id: "m1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] } } as any);
+    const tx = makeTx(makeBooking());
+    // The booking was converted from (or held for) a booking request: its
+    // negotiated flat price must not be silently repriced at season rates.
+    tx.bookingRequest.findFirst.mockResolvedValue({ id: "req_1" });
+    mockTransaction.mockImplementation((fn: any) => fn(tx));
+
+    const req = new NextRequest("http://localhost/api/bookings/bk1/modify-dates", {
+      method: "PUT",
+      body: JSON.stringify({ checkIn: "2026-06-05" }),
+    });
+    const res = await PUT(req, { params: Promise.resolve({ id: "bk1" }) });
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({
+      error: expect.stringContaining("negotiated booking-request price"),
+    });
+    expect(tx.booking.update).not.toHaveBeenCalled();
   });
 
   it("returns 403 for deactivated members before modifying dates", async () => {
@@ -402,7 +457,23 @@ describe("PUT /api/bookings/[id]/modify-dates", () => {
     });
     mockedCalcChangeFee.mockReturnValue({ feeCents: 0, fromTierRefundPct: 100, toTierRefundPct: 100 });
     mockedDaysUntilDate.mockReturnValue(30);
-    mockedLoadPolicy.mockResolvedValue([]);
+    mockedLoadPolicy.mockResolvedValue([
+      {
+        daysBeforeStay: 0,
+        refundPercentage: 100,
+        creditRefundPercentage: 100,
+        fixedFeeCents: 0,
+        creditFixedFeeCents: 0,
+      },
+    ] as any);
+    // Date reductions now settle through the shared policy machinery (#1024);
+    // a 100% tier keeps the full 5000 refund.
+    mockedCalcDualRefund.mockReturnValue({
+      cardRefundAmountCents: 5000,
+      cardRefundPercentage: 100,
+      creditRefundAmountCents: 5000,
+      creditRefundPercentage: 100,
+    } as any);
     mockedGetHoldDays.mockResolvedValue(7);
     mockRefundPaymentTransactions.mockResolvedValue({
       refunds: [
@@ -418,7 +489,7 @@ describe("PUT /api/bookings/[id]/modify-dates", () => {
 
     const req = new NextRequest("http://localhost/api/bookings/bk1/modify-dates", {
       method: "PUT",
-      body: JSON.stringify({ checkOut: "2026-06-02" }),
+      body: JSON.stringify({ checkOut: "2026-06-02", settlementMethod: "card" }),
     });
     const res = await PUT(req, { params: Promise.resolve({ id: "bk1" }) });
     expect(res.status).toBe(200);
@@ -684,6 +755,28 @@ describe("POST /api/bookings/[id]/guests", () => {
     expect(res.status).toBe(400);
   });
 
+  it("blocks adding guests to a quote-priced booking (#1032)", async () => {
+    // The repro from the audit: adding one student to a school booking
+    // quoted at a negotiated flat total must not reprice all guests at
+    // season rates. The edit is refused with an actionable message.
+    mockedAuth.mockResolvedValue({ user: { id: "m1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] } } as any);
+    const tx = makeTx(makeBooking());
+    tx.bookingRequest.findFirst.mockResolvedValue({ id: "req_1" });
+    mockTransaction.mockImplementation((fn: any) => fn(tx));
+
+    const req = new NextRequest("http://localhost/api/bookings/bk1/guests", {
+      method: "POST",
+      body: JSON.stringify({ guests: [{ firstName: "New", lastName: "Student", ageTier: "CHILD", isMember: false }] }),
+    });
+    const res = await POST(req, { params: Promise.resolve({ id: "bk1" }) });
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({
+      error: expect.stringContaining("negotiated booking-request price"),
+    });
+    expect(tx.bookingGuest.create).not.toHaveBeenCalled();
+    expect(tx.booking.update).not.toHaveBeenCalled();
+  });
+
   it("returns 400 when the add-guests request exceeds lodge capacity in one payload", async () => {
     mockedAuth.mockResolvedValue({ user: { id: "m1", role: "MEMBER", accessRoles: [{ role: "USER" }] } } as any);
     const guests = Array.from({ length: 30 }, (_, index) => ({
@@ -851,6 +944,75 @@ describe("POST /api/bookings/[id]/guests", () => {
         action: "complete_details",
       })
     );
+    expect(tx.bookingGuest.create).not.toHaveBeenCalled();
+  });
+
+  it("returns member-night conflicts when adding a linked guest already booked elsewhere", async () => {
+    mockedAuth.mockResolvedValue({ user: { id: "admin-1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] } } as any);
+    const booking = makeBooking();
+    const tx = makeTx(booking);
+    mockTransaction.mockImplementation((fn: any) => fn(tx));
+    tx.member.findMany.mockResolvedValue([
+      {
+        id: "guest-member-1",
+        active: true,
+        ageTier: "ADULT",
+        firstName: "Bob",
+        lastName: "Jones",
+      },
+    ]);
+    tx.bookingGuest.findMany.mockResolvedValue([
+      {
+        id: "existing-guest",
+        memberId: "guest-member-1",
+        firstName: "Bob",
+        lastName: "Jones",
+        stayStart: null,
+        stayEnd: null,
+        nights: [],
+        member: { firstName: "Bob", lastName: "Jones" },
+        booking: {
+          id: "existing-booking",
+          memberId: "other-owner",
+          status: "CONFIRMED",
+          checkIn: booking.checkIn,
+          checkOut: booking.checkOut,
+          member: { firstName: "Other", lastName: "Owner" },
+          guests: [
+            { id: "existing-owner", memberId: "other-owner" },
+            { id: "existing-guest", memberId: "guest-member-1" },
+          ],
+        },
+      },
+    ]);
+
+    const req = new NextRequest("http://localhost/api/bookings/bk1/guests", {
+      method: "POST",
+      body: JSON.stringify({
+        guests: [
+          {
+            firstName: "Bob",
+            lastName: "Jones",
+            ageTier: "ADULT",
+            isMember: true,
+            memberId: "guest-member-1",
+          },
+        ],
+      }),
+    });
+    const res = await POST(req, { params: Promise.resolve({ id: "bk1" }) });
+    const body = await res.json();
+
+    expect(res.status).toBe(409);
+    expect(body).toMatchObject({
+      code: "BOOKING_MEMBER_NIGHT_CONFLICT",
+      conflicts: [
+        expect.objectContaining({
+          memberId: "guest-member-1",
+          bookingId: "existing-booking",
+        }),
+      ],
+    });
     expect(tx.bookingGuest.create).not.toHaveBeenCalled();
   });
 
@@ -1074,9 +1236,44 @@ describe("DELETE /api/bookings/[id]/guests/[guestId]", () => {
       totalRefundedAmountCents: 0,
     });
     mockUpsertPaymentIntentTransaction.mockResolvedValue(undefined);
+    // Removal reductions now settle through the shared policy machinery
+    // (#1014): default to a 100% card/credit tier so full-refund expectations
+    // hold, and let individual tests override for partial-policy cases.
+    mockedDaysUntilDate.mockReturnValue(30);
+    mockedLoadPolicy.mockResolvedValue([
+      {
+        daysBeforeStay: 0,
+        refundPercentage: 100,
+        creditRefundPercentage: 100,
+        fixedFeeCents: 0,
+        creditFixedFeeCents: 0,
+      },
+    ] as any);
+    mockedCalcDualRefund.mockImplementation((basisAmountCents: number) => ({
+      cardRefundAmountCents: basisAmountCents,
+      cardRefundPercentage: 100,
+      creditRefundAmountCents: basisAmountCents,
+      creditRefundPercentage: 100,
+    }));
     const mod = await import("@/app/api/bookings/[id]/guests/[guestId]/route");
     DELETE = mod.DELETE;
   });
+
+  // Removal of a guest from a booking with a captured payment now requires an
+  // explicit card/credit election (parity with the batch modify endpoint).
+  function deleteWithMethod(
+    guestId: string,
+    settlementMethod: "card" | "credit" = "card",
+  ) {
+    return new NextRequest(
+      `http://localhost/api/bookings/bk1/guests/${guestId}`,
+      {
+        method: "DELETE",
+        body: JSON.stringify({ settlementMethod }),
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  }
 
   it("returns 401 for unauthenticated requests", async () => {
     mockedAuth.mockResolvedValue(null as any);
@@ -1104,6 +1301,51 @@ describe("DELETE /api/bookings/[id]/guests/[guestId]", () => {
     const req = new NextRequest("http://localhost/api/bookings/bk1/guests/g1", { method: "DELETE" });
     const res = await DELETE(req, { params: Promise.resolve({ id: "bk1", guestId: "g1" }) });
     expect(res.status).toBe(403);
+  });
+
+  it("lets a linked future guest remove themselves from another member's booking", async () => {
+    mockedAuth.mockResolvedValue({ user: { id: "guest-member-1", role: "MEMBER", accessRoles: [{ role: "USER" }] } } as any);
+    const booking = makeBooking({
+      status: "DRAFT",
+      payment: null,
+      guests: [
+        { id: "g1", bookingId: "bk1", firstName: "Alice", lastName: "Smith", ageTier: "ADULT", isMember: true, memberId: "m1", priceCents: 5000 },
+        { id: "g2", bookingId: "bk1", firstName: "Bob", lastName: "Jones", ageTier: "ADULT", isMember: true, memberId: "guest-member-1", priceCents: 5000 },
+      ],
+    });
+    const tx = makeTx(booking);
+    mockTransaction.mockImplementation((fn: any) => fn(tx));
+    mockFindUnique.mockResolvedValue({ id: "m1", active: true, email: "a@t.com", firstName: "A" });
+
+    const req = new NextRequest("http://localhost/api/bookings/bk1/guests/g2", { method: "DELETE" });
+    const res = await DELETE(req, { params: Promise.resolve({ id: "bk1", guestId: "g2" }) });
+
+    expect(res.status).toBe(200);
+    expect(tx.bookingGuest.delete).toHaveBeenCalledWith({ where: { id: "g2" } });
+    expect(tx.bookingModification.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ memberId: "guest-member-1" }),
+      })
+    );
+  });
+
+  it("does not let a linked guest remove someone else", async () => {
+    mockedAuth.mockResolvedValue({ user: { id: "guest-member-1", role: "MEMBER", accessRoles: [{ role: "USER" }] } } as any);
+    const booking = makeBooking({
+      guests: [
+        { id: "g1", bookingId: "bk1", firstName: "Alice", lastName: "Smith", ageTier: "ADULT", isMember: true, memberId: "m1", priceCents: 5000 },
+        { id: "g2", bookingId: "bk1", firstName: "Bob", lastName: "Jones", ageTier: "ADULT", isMember: true, memberId: "guest-member-1", priceCents: 5000 },
+        { id: "g3", bookingId: "bk1", firstName: "Carol", lastName: "Jones", ageTier: "ADULT", isMember: true, memberId: "member-3", priceCents: 5000 },
+      ],
+    });
+    const tx = makeTx(booking);
+    mockTransaction.mockImplementation((fn: any) => fn(tx));
+
+    const req = new NextRequest("http://localhost/api/bookings/bk1/guests/g3", { method: "DELETE" });
+    const res = await DELETE(req, { params: Promise.resolve({ id: "bk1", guestId: "g3" }) });
+
+    expect(res.status).toBe(403);
+    expect(tx.bookingGuest.delete).not.toHaveBeenCalled();
   });
 
   it("returns 400 for non-modifiable booking", async () => {
@@ -1164,7 +1406,7 @@ describe("DELETE /api/bookings/[id]/guests/[guestId]", () => {
     });
     mockFindUnique.mockResolvedValue({ id: "m1", active: true, email: "a@t.com", firstName: "A" });
 
-    const req = new NextRequest("http://localhost/api/bookings/bk1/guests/g2", { method: "DELETE" });
+    const req = deleteWithMethod("g2");
     const res = await DELETE(req, { params: Promise.resolve({ id: "bk1", guestId: "g2" }) });
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -1206,7 +1448,7 @@ describe("DELETE /api/bookings/[id]/guests/[guestId]", () => {
     mockedProcessRefund.mockResolvedValue({ id: "re_789" } as any);
     mockFindUnique.mockResolvedValue({ id: "m1", active: true, email: "a@t.com", firstName: "A" });
 
-    const req = new NextRequest("http://localhost/api/bookings/bk1/guests/g2", { method: "DELETE" });
+    const req = deleteWithMethod("g2");
     const res = await DELETE(req, { params: Promise.resolve({ id: "bk1", guestId: "g2" }) });
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -1227,7 +1469,7 @@ describe("DELETE /api/bookings/[id]/guests/[guestId]", () => {
     mockedProcessRefund.mockResolvedValue({ id: "re_000" } as any);
     mockFindUnique.mockResolvedValue({ id: "m1", active: true, email: "a@t.com", firstName: "A" });
 
-    const req = new NextRequest("http://localhost/api/bookings/bk1/guests/g2", { method: "DELETE" });
+    const req = deleteWithMethod("g2");
     await DELETE(req, { params: Promise.resolve({ id: "bk1", guestId: "g2" }) });
     expect(mockedCalcChangeFee).not.toHaveBeenCalled();
   });
@@ -1252,7 +1494,7 @@ describe("DELETE /api/bookings/[id]/guests/[guestId]", () => {
     mockedProcessRefund.mockResolvedValue({ id: "re_nm" } as any);
     mockFindUnique.mockResolvedValue({ id: "m1", active: true, email: "a@t.com", firstName: "A" });
 
-    const req = new NextRequest("http://localhost/api/bookings/bk1/guests/g2", { method: "DELETE" });
+    const req = deleteWithMethod("g2");
     const res = await DELETE(req, { params: Promise.resolve({ id: "bk1", guestId: "g2" }) });
     expect(res.status).toBe(200);
     // Should update hasNonMembers to false
@@ -1275,12 +1517,517 @@ describe("DELETE /api/bookings/[id]/guests/[guestId]", () => {
     mockedProcessRefund.mockResolvedValue({ id: "re_audit" } as any);
     mockFindUnique.mockResolvedValue({ id: "m1", active: true, email: "a@t.com", firstName: "A" });
 
-    const req = new NextRequest("http://localhost/api/bookings/bk1/guests/g2", { method: "DELETE" });
+    const req = deleteWithMethod("g2");
     await DELETE(req, { params: Promise.resolve({ id: "bk1", guestId: "g2" }) });
     expect(logAudit).toHaveBeenCalledWith(
       expect.objectContaining({ action: "booking.modify.guests.remove" })
     );
     expect(sendBookingModifiedEmail).toHaveBeenCalled();
+  });
+
+  it("limits the refund to the cancellation-policy tier (#1014)", async () => {
+    mockedAuth.mockResolvedValue({ user: { id: "m1", role: "MEMBER", accessRoles: [{ role: "USER" }] } } as any);
+    const booking = makeBooking();
+    const tx = makeTx(booking);
+    mockTransaction.mockImplementation((fn: any) => fn(tx));
+    mockedCalcPrice.mockReturnValue({
+      guests: [{ ageTier: "ADULT" as const, isMember: true, nights: 2, priceCents: 5000, perNightCents: [5000, 5000] }],
+      totalPriceCents: 5000,
+    });
+    // 50% card tier inside the window: the 5000 delta returns only 2500,
+    // where the pre-fix path refunded the full 5000.
+    mockedCalcDualRefund.mockReturnValue({
+      cardRefundAmountCents: 2500,
+      cardRefundPercentage: 50,
+      creditRefundAmountCents: 3750,
+      creditRefundPercentage: 75,
+    } as any);
+    mockRefundPaymentTransactions.mockResolvedValue({
+      refunds: [{ paymentIntentId: "pi_123", refundId: "re_pol", amountCents: 2500 }],
+      totalRefundedAmountCents: 2500,
+    });
+
+    const res = await DELETE(deleteWithMethod("g2", "card"), {
+      params: Promise.resolve({ id: "bk1", guestId: "g2" }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.priceDiffCents).toBe(-5000);
+    expect(body.refundAmountCents).toBe(2500);
+    expect(body.policyRetainedAmountCents).toBe(2500);
+    expect(mockRefundPaymentTransactions).toHaveBeenCalledWith(
+      expect.objectContaining({ amountCents: 2500 }),
+    );
+  });
+
+  it("returns 400 when a settled booking is reduced without a settlement method (#1014)", async () => {
+    mockedAuth.mockResolvedValue({ user: { id: "m1", role: "MEMBER", accessRoles: [{ role: "USER" }] } } as any);
+    const booking = makeBooking();
+    const tx = makeTx(booking);
+    mockTransaction.mockImplementation((fn: any) => fn(tx));
+    mockedCalcPrice.mockReturnValue({
+      guests: [{ ageTier: "ADULT" as const, isMember: true, nights: 2, priceCents: 5000, perNightCents: [5000, 5000] }],
+      totalPriceCents: 5000,
+    });
+    mockedCalcDualRefund.mockReturnValue({
+      cardRefundAmountCents: 2500,
+      cardRefundPercentage: 50,
+      creditRefundAmountCents: 3750,
+      creditRefundPercentage: 75,
+    } as any);
+
+    // Body-less DELETE (the night-conflict self-removal shape) on a booking
+    // with a captured payment: must not silently settle the owner's money.
+    const req = new NextRequest("http://localhost/api/bookings/bk1/guests/g2", { method: "DELETE" });
+    const res = await DELETE(req, { params: Promise.resolve({ id: "bk1", guestId: "g2" }) });
+    expect(res.status).toBe(400);
+    expect(mockRefundPaymentTransactions).not.toHaveBeenCalled();
+  });
+
+  it("holds a policy reduction as account credit when credit is elected (#1014)", async () => {
+    mockedAuth.mockResolvedValue({ user: { id: "m1", role: "MEMBER", accessRoles: [{ role: "USER" }] } } as any);
+    const booking = makeBooking();
+    const tx = makeTx(booking);
+    mockTransaction.mockImplementation((fn: any) => fn(tx));
+    mockedCalcPrice.mockReturnValue({
+      guests: [{ ageTier: "ADULT" as const, isMember: true, nights: 2, priceCents: 5000, perNightCents: [5000, 5000] }],
+      totalPriceCents: 5000,
+    });
+    mockedCalcDualRefund.mockReturnValue({
+      cardRefundAmountCents: 2500,
+      cardRefundPercentage: 50,
+      creditRefundAmountCents: 3750,
+      creditRefundPercentage: 75,
+    } as any);
+
+    const res = await DELETE(deleteWithMethod("g2", "credit"), {
+      params: Promise.resolve({ id: "bk1", guestId: "g2" }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.refundAmountCents).toBe(0);
+    expect(body.accountCreditAmountCents).toBe(3750);
+    expect(body.settlementMethod).toBe("credit");
+    // Credit is not a Stripe refund.
+    expect(mockRefundPaymentTransactions).not.toHaveBeenCalled();
+    // #1031: the removal path passes the payment so the credit allocates
+    // against it in-transaction, keeping refundedAmountCents truthful.
+    const { createBookingModificationCredit } = await import("@/lib/member-credit");
+    expect(vi.mocked(createBookingModificationCredit)).toHaveBeenCalledWith(
+      "m1",
+      3750,
+      "bk1",
+      expect.anything(),
+      undefined,
+      expect.anything(),
+      "p1",
+    );
+  });
+
+  it("blocks removing a guest from a quote-priced booking (#1032)", async () => {
+    mockedAuth.mockResolvedValue({ user: { id: "m1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] } } as any);
+    const booking = makeBooking();
+    const tx = makeTx(booking);
+    tx.bookingRequest.findFirst.mockResolvedValue({ id: "req_1" });
+    mockTransaction.mockImplementation((fn: any) => fn(tx));
+
+    const res = await DELETE(deleteWithMethod("g2"), {
+      params: Promise.resolve({ id: "bk1", guestId: "g2" }),
+    });
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({
+      error: expect.stringContaining("negotiated booking-request price"),
+    });
+    expect(tx.bookingGuest.delete).not.toHaveBeenCalled();
+    expect(tx.booking.update).not.toHaveBeenCalled();
+  });
+
+  // --- #1041: lifecycle parity with the batch modify path ---
+
+  function makeZeroDollarBooking(paymentOverrides: Record<string, unknown>) {
+    // PAYMENT_PENDING booking whose price drops to 0 when g2 is removed:
+    // remaining g1 reprices to 10000 and the promo adjustment covers it.
+    return makeBooking({
+      status: "PAYMENT_PENDING",
+      checkIn: new Date("2026-08-10"),
+      checkOut: new Date("2026-08-12"),
+      payment: {
+        id: "p1",
+        bookingId: "bk1",
+        amountCents: 10000,
+        source: "STRIPE",
+        status: "PENDING",
+        stripePaymentIntentId: "pi_123",
+        xeroInvoiceId: null,
+        refundedAmountCents: 0,
+        changeFeeCents: 0,
+      },
+      promoRedemption: {
+        id: "pr1",
+        promoCodeId: "promo1",
+        guestTargets: [],
+        promoCode: { id: "promo1", assignments: [] },
+      },
+      ...paymentOverrides,
+    });
+  }
+
+  function mockFullCoverPromo() {
+    // Remaining guest reprices to 10000 and the promo covers all of it.
+    mockedCalcPrice.mockReturnValue({
+      totalPriceCents: 10000,
+      guests: [{ priceCents: 10000, perNightCents: [5000, 5000] }],
+    } as any);
+    mockValidateAndCalculatePromoDiscount.mockResolvedValueOnce({
+      discount: {
+        discountCents: 0,
+        priceAdjustmentCents: -10000,
+        freeNightsUsed: 0,
+        eligibleGuestCount: 1,
+        allocations: [],
+      },
+      beneficiaryMemberIds: [],
+    } as any);
+  }
+
+  it("auto-pays a zero-dollar booking and cancels superseded intents on removal (Stripe, #1041)", async () => {
+    mockedAuth.mockResolvedValue({ user: { id: "m1", role: "MEMBER", accessRoles: [{ role: "USER" }] } } as any);
+    const booking = makeZeroDollarBooking({});
+    const tx = makeTx(booking);
+    tx.paymentTransaction.findMany.mockResolvedValue([
+      { id: "pt1", stripePaymentIntentId: "pi_123", amountCents: 10000 },
+    ]);
+    mockTransaction.mockImplementation((fn: any) => fn(tx));
+    mockFullCoverPromo();
+
+    const res = await DELETE(deleteWithMethod("g2"), {
+      params: Promise.resolve({ id: "bk1", guestId: "g2" }),
+    });
+    expect(res.status).toBe(200);
+
+    // Batch parity: PAYMENT_PENDING + $0 => PAID with a zero-dollar payment.
+    expect(tx.booking.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: "PAID", finalPriceCents: 0 }),
+      }),
+    );
+    expect(tx.payment.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { bookingId: "bk1" },
+        update: expect.objectContaining({ amountCents: 0, status: "SUCCEEDED" }),
+      }),
+    );
+    // The outstanding pre-removal intent is superseded and drained on Stripe.
+    expect(mockEnqueuePaymentIntentCancellationRecovery).toHaveBeenCalledWith(
+      expect.objectContaining({ paymentIntentId: "pi_123" }),
+    );
+    expect(mockProcessPaymentRecoveryOperations).toHaveBeenCalledWith({ limit: 1 });
+  });
+
+  it("auto-pays a zero-dollar Internet Banking booking on removal (#1041)", async () => {
+    mockedAuth.mockResolvedValue({ user: { id: "m1", role: "MEMBER", accessRoles: [{ role: "USER" }] } } as any);
+    const booking = makeZeroDollarBooking({
+      payment: {
+        id: "p1",
+        bookingId: "bk1",
+        amountCents: 10000,
+        source: "INTERNET_BANKING",
+        status: "PENDING",
+        stripePaymentIntentId: null,
+        xeroInvoiceId: "inv_primary",
+        refundedAmountCents: 0,
+        changeFeeCents: 0,
+      },
+    });
+    const tx = makeTx(booking);
+    mockTransaction.mockImplementation((fn: any) => fn(tx));
+    mockFullCoverPromo();
+
+    const res = await DELETE(deleteWithMethod("g2"), {
+      params: Promise.resolve({ id: "bk1", guestId: "g2" }),
+    });
+    expect(res.status).toBe(200);
+
+    expect(tx.booking.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: "PAID", finalPriceCents: 0 }),
+      }),
+    );
+    expect(tx.payment.upsert).toHaveBeenCalled();
+    // No Stripe intents to supersede on an Internet Banking booking.
+    expect(mockProcessPaymentRecoveryOperations).not.toHaveBeenCalled();
+  });
+
+  it("recalculates the non-member hold when non-members remain after removal (#1041)", async () => {
+    mockedAuth.mockResolvedValue({ user: { id: "m1", role: "MEMBER", accessRoles: [{ role: "USER" }] } } as any);
+    vi.mocked(getNonMemberHoldDays).mockResolvedValue(7);
+    const staleHold = new Date("2026-06-20");
+    const booking = makeBooking({
+      status: "PENDING",
+      checkIn: new Date("2026-08-10"),
+      checkOut: new Date("2026-08-12"),
+      hasNonMembers: true,
+      nonMemberHoldUntil: staleHold,
+      payment: null,
+      guests: [
+        { id: "g1", bookingId: "bk1", firstName: "Alice", lastName: "Smith", ageTier: "ADULT", isMember: true, memberId: "m1", priceCents: 5000 },
+        { id: "g2", bookingId: "bk1", firstName: "Bob", lastName: "Smith", ageTier: "ADULT", isMember: false, memberId: null, priceCents: 7000 },
+        { id: "g3", bookingId: "bk1", firstName: "Cara", lastName: "Jones", ageTier: "ADULT", isMember: false, memberId: null, priceCents: 7000 },
+      ],
+    });
+    const tx = makeTx(booking);
+    mockTransaction.mockImplementation((fn: any) => fn(tx));
+    mockedCalcPrice.mockReturnValue({
+      totalPriceCents: 24000,
+      guests: [
+        { priceCents: 10000, perNightCents: [5000, 5000] },
+        { priceCents: 14000, perNightCents: [7000, 7000] },
+      ],
+    } as any);
+
+    const res = await DELETE(
+      new NextRequest("http://localhost/api/bookings/bk1/guests/g2", { method: "DELETE" }),
+      { params: Promise.resolve({ id: "bk1", guestId: "g2" }) },
+    );
+    expect(res.status).toBe(200);
+
+    // Batch parity: the hold is recomputed from the current rules
+    // (checkIn - holdDays), not left at its stale pre-removal value.
+    const updateData = tx.booking.update.mock.calls.at(-1)?.[0]?.data;
+    expect(updateData.hasNonMembers).toBe(true);
+    expect(updateData.nonMemberHoldUntil).toEqual(
+      new Date(new Date("2026-08-10").getTime() - 7 * 24 * 60 * 60 * 1000),
+    );
+  });
+
+  it("clears the non-member hold when the last non-member is removed (#1041)", async () => {
+    mockedAuth.mockResolvedValue({ user: { id: "m1", role: "MEMBER", accessRoles: [{ role: "USER" }] } } as any);
+    const booking = makeBooking({
+      status: "PENDING",
+      checkIn: new Date("2026-08-10"),
+      checkOut: new Date("2026-08-12"),
+      hasNonMembers: true,
+      nonMemberHoldUntil: new Date("2026-08-03"),
+      payment: null,
+      guests: [
+        { id: "g1", bookingId: "bk1", firstName: "Alice", lastName: "Smith", ageTier: "ADULT", isMember: true, memberId: "m1", priceCents: 5000 },
+        { id: "g2", bookingId: "bk1", firstName: "Bob", lastName: "Smith", ageTier: "ADULT", isMember: false, memberId: null, priceCents: 7000 },
+      ],
+    });
+    const tx = makeTx(booking);
+    mockTransaction.mockImplementation((fn: any) => fn(tx));
+    mockedCalcPrice.mockReturnValue({
+      totalPriceCents: 10000,
+      guests: [{ priceCents: 10000, perNightCents: [5000, 5000] }],
+    } as any);
+
+    const res = await DELETE(
+      new NextRequest("http://localhost/api/bookings/bk1/guests/g2", { method: "DELETE" }),
+      { params: Promise.resolve({ id: "bk1", guestId: "g2" }) },
+    );
+    expect(res.status).toBe(200);
+
+    const updateData = tx.booking.update.mock.calls.at(-1)?.[0]?.data;
+    expect(updateData.hasNonMembers).toBe(false);
+    expect(updateData.nonMemberHoldUntil).toBeNull();
+  });
+
+  // --- #1042: removal-induced price increases are collected ---
+
+  function makePromoIncreaseBooking(overrides: Record<string, unknown> = {}) {
+    // Paid 8000 with a group promo; removing g2 drops the party below the
+    // promo minimum, so the remaining guest reprices to 10000 => +2000.
+    return makeBooking({
+      status: "PAID",
+      checkIn: new Date("2026-08-10"),
+      checkOut: new Date("2026-08-12"),
+      totalPriceCents: 10000,
+      promoAdjustmentCents: -2000,
+      finalPriceCents: 8000,
+      payment: {
+        id: "p1",
+        bookingId: "bk1",
+        amountCents: 8000,
+        source: "STRIPE",
+        status: "SUCCEEDED",
+        stripePaymentIntentId: "pi_123",
+        stripeCustomerId: null,
+        xeroInvoiceId: null,
+        refundedAmountCents: 0,
+        changeFeeCents: 0,
+      },
+      promoRedemption: {
+        id: "pr1",
+        promoCodeId: "promo1",
+        guestTargets: [],
+        promoCode: { id: "promo1", assignments: [] },
+      },
+      ...overrides,
+    });
+  }
+
+  function mockPromoInvalidatedRepricing() {
+    mockedCalcPrice.mockReturnValue({
+      totalPriceCents: 10000,
+      guests: [{ priceCents: 10000, perNightCents: [5000, 5000] }],
+    } as any);
+    mockValidateAndCalculatePromoDiscount.mockResolvedValueOnce({
+      error: "Party is below the promo's minimum group size",
+      discount: null,
+    } as any);
+    mockCreatePaymentIntent.mockResolvedValue({
+      id: "pi_add_1",
+      client_secret: "cs_add_1",
+    });
+    mockFindOrCreateCustomer.mockResolvedValue({ id: "cus_1" });
+  }
+
+  it("collects a promo-invalidation price increase via an additional PaymentIntent (#1042)", async () => {
+    mockedAuth.mockResolvedValue({ user: { id: "m1", role: "MEMBER", accessRoles: [{ role: "USER" }] } } as any);
+    const booking = makePromoIncreaseBooking();
+    const tx = makeTx(booking);
+    mockTransaction.mockImplementation((fn: any) => fn(tx));
+    mockPromoInvalidatedRepricing();
+
+    const res = await DELETE(
+      new NextRequest("http://localhost/api/bookings/bk1/guests/g2", { method: "DELETE" }),
+      { params: Promise.resolve({ id: "bk1", guestId: "g2" }) },
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    expect(body.priceDiffCents).toBe(2000);
+    expect(body.additionalAmountCents).toBe(2000);
+    // The remover is the booking owner, so they get the client secret.
+    expect(body.additionalPaymentClientSecret).toBe("cs_add_1");
+
+    expect(mockCreatePaymentIntent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        amountCents: 2000,
+        customerId: "cus_1",
+        idempotencyKey: "mod_guest_remove_bk1_mod1",
+        metadata: expect.objectContaining({ reason: "guest_removal_price_increase" }),
+      }),
+    );
+    expect(mockUpsertPaymentIntentTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        paymentId: "p1",
+        paymentIntentId: "pi_add_1",
+        amountCents: 2000,
+        status: "PENDING",
+      }),
+    );
+    // The email now surfaces the collectible Stripe increase.
+    expect(sendBookingModifiedEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        additionalAmountCents: 2000,
+        additionalPaymentMethod: "STRIPE",
+      }),
+    );
+  });
+
+  it("does not hand the owner's client secret to a self-removing linked guest (#1042)", async () => {
+    mockedAuth.mockResolvedValue({ user: { id: "guest-member-1", role: "MEMBER", accessRoles: [{ role: "USER" }] } } as any);
+    const booking = makePromoIncreaseBooking({
+      guests: [
+        { id: "g1", bookingId: "bk1", firstName: "Alice", lastName: "Smith", ageTier: "ADULT", isMember: true, memberId: "m1", priceCents: 5000 },
+        { id: "g2", bookingId: "bk1", firstName: "Bob", lastName: "Jones", ageTier: "ADULT", isMember: true, memberId: "guest-member-1", priceCents: 5000 },
+      ],
+    });
+    const tx = makeTx(booking);
+    mockTransaction.mockImplementation((fn: any) => fn(tx));
+    mockPromoInvalidatedRepricing();
+
+    const res = await DELETE(
+      new NextRequest("http://localhost/api/bookings/bk1/guests/g2", { method: "DELETE" }),
+      { params: Promise.resolve({ id: "bk1", guestId: "g2" }) },
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    // The intent is still created — the payer is the booking owner, who pays
+    // from their booking page — but the secret is not returned to the remover.
+    expect(body.additionalPaymentClientSecret).toBeNull();
+    expect(body.additionalAmountCents).toBe(2000);
+    expect(mockCreatePaymentIntent).toHaveBeenCalledWith(
+      expect.objectContaining({ amountCents: 2000 }),
+    );
+    // Customer lookup uses the owner's identity, not the remover's.
+    expect(mockFindOrCreateCustomer).toHaveBeenCalledWith(
+      expect.objectContaining({ memberId: "m1", email: "alice@test.com" }),
+    );
+    expect(sendBookingModifiedEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        additionalAmountCents: 2000,
+        additionalPaymentMethod: "STRIPE",
+      }),
+    );
+  });
+
+  it("creates no additional intent when the removal does not change the price (#1042)", async () => {
+    mockedAuth.mockResolvedValue({ user: { id: "m1", role: "MEMBER", accessRoles: [{ role: "USER" }] } } as any);
+    const booking = makeBooking({
+      status: "PAID",
+      checkIn: new Date("2026-08-10"),
+      checkOut: new Date("2026-08-12"),
+      finalPriceCents: 10000,
+    });
+    const tx = makeTx(booking);
+    mockTransaction.mockImplementation((fn: any) => fn(tx));
+    // Repricing lands exactly on the old final price: zero delta.
+    mockedCalcPrice.mockReturnValue({
+      totalPriceCents: 10000,
+      guests: [{ priceCents: 10000, perNightCents: [5000, 5000] }],
+    } as any);
+
+    const res = await DELETE(deleteWithMethod("g2"), {
+      params: Promise.resolve({ id: "bk1", guestId: "g2" }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    expect(body.additionalAmountCents).toBe(0);
+    expect(body.additionalPaymentClientSecret).toBeNull();
+    expect(mockCreatePaymentIntent).not.toHaveBeenCalled();
+  });
+
+  it("keeps billing Internet Banking increases via the Xero supplementary invoice (#1042)", async () => {
+    mockedAuth.mockResolvedValue({ user: { id: "m1", role: "MEMBER", accessRoles: [{ role: "USER" }] } } as any);
+    const booking = makePromoIncreaseBooking({
+      payment: {
+        id: "p1",
+        bookingId: "bk1",
+        amountCents: 8000,
+        source: "INTERNET_BANKING",
+        status: "SUCCEEDED",
+        stripePaymentIntentId: null,
+        stripeCustomerId: null,
+        xeroInvoiceId: "inv_primary",
+        refundedAmountCents: 0,
+        changeFeeCents: 0,
+      },
+    });
+    const tx = makeTx(booking);
+    mockTransaction.mockImplementation((fn: any) => fn(tx));
+    mockPromoInvalidatedRepricing();
+
+    const res = await DELETE(
+      new NextRequest("http://localhost/api/bookings/bk1/guests/g2", { method: "DELETE" }),
+      { params: Promise.resolve({ id: "bk1", guestId: "g2" }) },
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    // No Stripe intent for a non-Stripe payment; the supplementary invoice
+    // bills the increase, unchanged from the pre-#1042 behaviour.
+    expect(mockCreatePaymentIntent).not.toHaveBeenCalled();
+    expect(body.additionalPaymentClientSecret).toBeNull();
+    expect(sendBookingModifiedEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        additionalAmountCents: 2000,
+        additionalPaymentMethod: "INTERNET_BANKING",
+      }),
+    );
   });
 });
 

@@ -116,6 +116,7 @@ describe("Admin modules schema contract", () => {
     expect(model).toContain("bedAllocation           Boolean  @default(false)");
     expect(model).toContain("internetBankingPayments Boolean  @default(false)");
     expect(model).toContain("addressAutocomplete     Boolean  @default(false)");
+    expect(model).toContain("analytics               Boolean  @default(false)");
     expect(model).toContain("groupBookings           Boolean  @default(true)");
     expect(model).not.toMatch(/secret|token|credential|tenant/i);
     expect(migration).toContain('CREATE TABLE IF NOT EXISTS "ClubModuleSettings"');
@@ -137,6 +138,11 @@ describe("Admin modules schema contract", () => {
         "prisma/migrations/20260628160000_add_address_autocomplete_module/migration.sql",
       ),
     ).toContain('"addressAutocomplete" BOOLEAN NOT NULL DEFAULT false');
+    expect(
+      readRepoFile(
+        "prisma/migrations/20260702143000_add_analytics_module/migration.sql",
+      ),
+    ).toContain('"analytics" BOOLEAN NOT NULL DEFAULT false');
   });
 });
 
@@ -222,6 +228,26 @@ describe("Admin modules API", () => {
 
     expect(addy.readiness.status).toBe("credentials_missing");
     expect(JSON.stringify(addy)).not.toContain("secret-addy-key");
+  });
+
+  it("reports analytics setup without exposing measurement id values", async () => {
+    mocks.auth.mockResolvedValue(adminSession);
+    mocks.clubModuleSettingsFindUnique.mockResolvedValue({
+      id: "default",
+      ...allEnabled,
+      updatedAt: new Date("2026-05-18T11:00:00.000Z"),
+      updatedByMemberId: "admin-1",
+    });
+    vi.stubEnv("NEXT_PUBLIC_GA_MEASUREMENT_ID", "");
+
+    const response = await GET();
+    const body = await response.json();
+    const analytics = body.modules.find(
+      (module: { key: string }) => module.key === "analytics",
+    );
+
+    expect(analytics.readiness.status).toBe("credentials_missing");
+    expect(JSON.stringify(analytics)).not.toContain("G-SECRET");
   });
 
   it("rejects invalid update payloads before writing", async () => {

@@ -23,6 +23,7 @@ const modulesOn: FeatureFlags = {
   communications: true,
   skifieldConditions: true,
   twoFactor: false,
+  analytics: false,
 };
 
 function emptyEmailResponses() {
@@ -73,6 +74,9 @@ function buildDeps(overrides?: Partial<StuckStateDashboardDependencies>) {
         count: vi.fn(),
       },
       booking: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+      groupBookingSettlement: {
         findMany: vi.fn().mockResolvedValue([]),
       },
       issueReport: {

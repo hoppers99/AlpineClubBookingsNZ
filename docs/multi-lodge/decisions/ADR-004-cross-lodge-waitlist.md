@@ -88,6 +88,15 @@ requires the explicit confirm per owner decision 2.
 
 ### Implementation notes (2026-07-03)
 
+**Premise change (upstream #1035, merged 2026-07-03):** upstream decided
+a waitlisted booking's creation-time price snapshot is *not* a price
+lock — same-lodge offers now reprice the entry at current rates,
+membership policy, group discount, and promo validity when the offer is
+issued, scoped on this branch to the entry's own lodge. This harmonises
+with (rather than contradicts) this ADR: both offer kinds now price at
+offer time, cross-lodge offers via the offered lodge's quote with the
+confirm-time drift re-check unchanged.
+
 Two behaviours were pinned down during implementation:
 
 - **Promo-bearing entries are excluded from cross-lodge offers.** The

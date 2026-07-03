@@ -36,6 +36,7 @@ import {
   shouldSkipTokoroaThemeSeed,
 } from "./seed-data";
 import { starterPageContent } from "./starter-page-content";
+import { starterSiteContent } from "./starter-site-content";
 
 const prisma = new PrismaClient({
   adapter: createPrismaPgAdapter(),
@@ -537,6 +538,21 @@ async function main() {
     });
   }
   console.log(`Page content seeded: ${starterPageContent.length} pages`);
+
+  // Seed starter site content (public footer columns) only when records do
+  // not yet exist, so admin edits survive a re-run.
+  for (const section of starterSiteContent) {
+    await prisma.siteContent.upsert({
+      where: { key: section.key },
+      update: {},
+      create: {
+        id: section.id,
+        key: section.key,
+        contentHtml: section.contentHtml,
+      },
+    });
+  }
+  console.log(`Site content seeded: ${starterSiteContent.length} sections`);
 
   // Seed generic committee placeholders only when the table is empty, so a
   // populated production committee is never touched by a re-run.

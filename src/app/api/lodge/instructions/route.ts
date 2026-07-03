@@ -39,8 +39,12 @@ export async function GET(req: NextRequest) {
 
   // The kiosk is lodge-bound server-side: resolve the device's lodge the
   // same way the other kiosk routes do, so a lodge's override documents
-  // replace the club-wide ones on that lodge's kiosk.
+  // replace the club-wide ones on that lodge's kiosk — with text tokens
+  // ({{club-name}} etc.) resolved for display.
   const lodgeId = await resolveKioskLodgeId(authResult, prisma);
-  const documents = await getSanitizedLodgeInstructions(lodgeId);
+  const documents = await getSanitizedLodgeInstructions({
+    lodgeId,
+    resolveTokens: true,
+  });
   return NextResponse.json({ documents });
 }

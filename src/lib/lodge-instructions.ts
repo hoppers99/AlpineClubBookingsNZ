@@ -3,6 +3,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { getTodayDateOnly } from "@/lib/date-only";
 import { sanitizePageContentHtml } from "@/lib/page-content-html";
+import { resolveTextTokens } from "@/lib/page-content-embeds";
 import { hasAdminAccess, type AccessRoleInput } from "@/lib/access-roles";
 
 // Canonical display order for the three keyed documents.
@@ -87,10 +88,29 @@ export async function canReadLodgeInstructions(
  * never merge — the same rule as the booking-policy overrides). Pass the
  * lodge the reader is scoped to; omit it (or pass null) for the club-wide
  * documents only.
+ *
+ * When `resolveTokens` is set, text tokens such as {{club-name}} are
+ * replaced after sanitising; resolveTextTokens HTML-escapes every
+ * replacement value, so resolution cannot reintroduce unsafe markup.
+ * Reader/kiosk routes resolve tokens; the admin editor route must not,
+ * so editors round-trip the literal {{token}} text.
+ *
+ * Accepts either a bare lodgeId (legacy positional form) or an options
+ * object carrying lodgeId and/or resolveTokens.
  */
+export type GetLodgeInstructionsOptions = {
+  lodgeId?: string | null;
+  resolveTokens?: boolean;
+};
+
 export async function getSanitizedLodgeInstructions(
-  lodgeId?: string | null,
+  lodgeIdOrOptions?: string | null | GetLodgeInstructionsOptions,
 ): Promise<LodgeInstructionDocument[]> {
+  const options: GetLodgeInstructionsOptions =
+    typeof lodgeIdOrOptions === "object" && lodgeIdOrOptions !== null
+      ? lodgeIdOrOptions
+      : { lodgeId: lodgeIdOrOptions ?? null };
+  const lodgeId = options.lodgeId ?? null;
   const records = await prisma.lodgeInstruction.findMany({
     where: lodgeId ? { OR: [{ lodgeId: null }, { lodgeId }] } : { lodgeId: null },
     select: {
@@ -112,14 +132,22 @@ export async function getSanitizedLodgeInstructions(
     }
   }
 
-  return LODGE_INSTRUCTION_KEYS.map((key) => {
-    const record = byKey.get(key);
-    return {
-      key,
-      title: LODGE_INSTRUCTION_LABELS[key].title,
-      description: LODGE_INSTRUCTION_LABELS[key].description,
-      contentHtml: record ? sanitizePageContentHtml(record.contentHtml) : "",
-      updatedAt: record ? record.updatedAt.toISOString() : null,
-    };
-  });
+  return Promise.all(
+    LODGE_INSTRUCTION_KEYS.map(async (key) => {
+      const record = byKey.get(key);
+      let contentHtml = record
+        ? sanitizePageContentHtml(record.contentHtml)
+        : "";
+      if (options?.resolveTokens && contentHtml) {
+        contentHtml = await resolveTextTokens(contentHtml);
+      }
+      return {
+        key,
+        title: LODGE_INSTRUCTION_LABELS[key].title,
+        description: LODGE_INSTRUCTION_LABELS[key].description,
+        contentHtml,
+        updatedAt: record ? record.updatedAt.toISOString() : null,
+      };
+    }),
+  );
 }

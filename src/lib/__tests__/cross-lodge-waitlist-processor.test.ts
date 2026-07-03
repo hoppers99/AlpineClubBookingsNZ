@@ -183,10 +183,13 @@ describe("processWaitlistForDates cross-lodge pass", () => {
     expect(update.where).toEqual({ id: "entry-a" });
     expect(update.data.waitlistOfferedLodgeId).toBe("lodge-b");
     expect(update.data.waitlistOfferedPriceCents).toBe(34000);
-    // The offer email states the offered lodge and its price.
+    // The offer email states the price (arg 8 after the merged #1035
+    // reprice param), speaks with the offered lodge's identity, and names
+    // the cross-lodge offer.
     const emailArgs = mocks.sendWaitlistOfferEmail.mock.calls[0];
-    expect(emailArgs[7]).toBe("lodge-b");
-    expect(emailArgs[8]).toEqual({ lodgeName: "River Lodge", priceCents: 34000 });
+    expect(emailArgs[7]).toBe(34000);
+    expect(emailArgs[8]).toBe("lodge-b");
+    expect(emailArgs[9]).toEqual({ lodgeName: "River Lodge" });
   });
 
   it("skips a cross-lodge candidate who is no longer eligible for the freed lodge", async () => {

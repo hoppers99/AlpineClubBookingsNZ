@@ -15,6 +15,9 @@ const mockTx = {
     update: vi.fn(),
     updateMany: vi.fn(),
   },
+  bookingGuest: {
+    findMany: vi.fn(),
+  },
   payment: { create: vi.fn() },
   season: { findMany: vi.fn() },
   promoRedemption: { count: vi.fn(), create: vi.fn() },
@@ -35,6 +38,12 @@ vi.mock("@/lib/prisma", () => ({
       create: vi.fn(),
       update: vi.fn(),
       updateMany: vi.fn(),
+    },
+    bookingGuest: {
+      findMany: vi.fn().mockResolvedValue([]),
+    },
+    bookingRequest: {
+      findFirst: vi.fn().mockResolvedValue(null),
     },
     payment: { create: vi.fn() },
     member: {
@@ -156,6 +165,8 @@ import { POST as getModifyQuote } from "@/app/api/bookings/[id]/modify-quote/rou
 
 const mockPrisma = prisma as unknown as {
   booking: { findUnique: ReturnType<typeof vi.fn>; findMany: ReturnType<typeof vi.fn>; create: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn> };
+  bookingGuest: { findMany: ReturnType<typeof vi.fn> };
+  bookingRequest: { findFirst: ReturnType<typeof vi.fn> };
   payment: { create: ReturnType<typeof vi.fn> };
   member: { count: ReturnType<typeof vi.fn>; findUnique: ReturnType<typeof vi.fn>; findMany: ReturnType<typeof vi.fn> };
   memberSubscription: { findFirst: ReturnType<typeof vi.fn>; findMany: ReturnType<typeof vi.fn> };
@@ -260,11 +271,13 @@ beforeEach(() => {
       xeroInvoiceNumber: null,
     },
   ]);
+  mockPrisma.bookingGuest.findMany.mockResolvedValue([]);
   mockPrisma.season.findMany.mockResolvedValue([]);
 
   mockPrisma.$transaction.mockImplementation(async (fn: (tx: typeof mockTx) => Promise<unknown>) => fn(mockTx as unknown as typeof mockTx));
   mockTx.$executeRaw.mockResolvedValue(undefined);
   mockTx.booking.findMany.mockResolvedValue([]);
+  mockTx.bookingGuest.findMany.mockResolvedValue([]);
   mockTx.booking.create.mockResolvedValue({
     id: "booking-1",
     status: "CONFIRMED",
@@ -473,6 +486,27 @@ describe("P2.3: Guest subscription check", () => {
     const body = await res.json();
     expect(body.code).toBe("GUEST_SUBSCRIPTION_REQUIRED");
     expect(body.unpaidMembers).toContain("Bob Jones");
+  });
+
+  it("blocks the modify quote preview for quote-priced bookings (#1032)", async () => {
+    mockAuth.mockResolvedValue({ user: { id: "member-1", role: "MEMBER", accessRoles: [{ role: "USER" }] } });
+    // The booking was converted from a booking request: previewing an edit
+    // would show a season-rate delta the mutating endpoints refuse anyway.
+    mockPrisma.bookingRequest.findFirst.mockResolvedValueOnce({ id: "req_1" });
+
+    const req = makeModifyQuoteRequest({
+      addGuests: [
+        { firstName: "New", lastName: "Student", ageTier: "CHILD", isMember: false },
+      ],
+    });
+
+    const res = await getModifyQuote(req, {
+      params: Promise.resolve({ id: "booking-1" }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain("negotiated booking-request price");
   });
 
   it("quotes per-guest stay range changes by guest-night ranges", async () => {

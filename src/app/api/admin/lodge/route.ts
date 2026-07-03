@@ -9,6 +9,7 @@ import { nameField } from "@/lib/zod-helpers";
 import { clubDomainEmail } from "@/config/club-identity";
 import { ensureMemberAccessRolesFromCompatibilityFields } from "@/lib/member-access-role-writes";
 import { ensureNotRequiredSubscriptionForRole } from "@/lib/member-subscription-defaults";
+import { isFullAdmin } from "@/lib/access-roles";
 
 // Multi-lodge kiosks: each kiosk login binds to its lodge via a single
 // MemberLodgeAccess STAFF grant (getStaffLodgeBinding in lodge-auth.ts);
@@ -213,6 +214,15 @@ export async function PUT(request: NextRequest) {
     return NextResponse.json({ error: "Lodge account not found" }, { status: 404 });
   }
 
+  if (lodgeId !== undefined && !isFullAdmin(session.user)) {
+    // Rebinding replaces MemberLodgeAccess STAFF grants — an access-role
+    // write under the upstream #1012 separation-of-duties rule.
+    return NextResponse.json(
+      { error: "Full Admin access is required to change a kiosk's lodge" },
+      { status: 403 },
+    );
+  }
+
   if (typeof lodgeId === "string" && !(await validateBindingLodge(lodgeId))) {
     return NextResponse.json(
       { error: "Lodge not found or not active" },
@@ -302,6 +312,15 @@ export async function POST(request: NextRequest) {
   const guard = await requireAdmin();
   if (!guard.ok) return guard.response;
   const session = guard.session;
+  // Separation of duties (upstream #1012): creating an account that holds
+  // the privileged LODGE access role is an access-role write, so scoped
+  // admins may not do it.
+  if (!isFullAdmin(session.user)) {
+    return NextResponse.json(
+      { error: "Full Admin access is required to create kiosk accounts" },
+      { status: 403 },
+    );
+  }
   const body = await request.json();
   const parsed = createSchema.safeParse(body);
   if (!parsed.success) {

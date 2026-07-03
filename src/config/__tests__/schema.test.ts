@@ -75,6 +75,31 @@ describe("clubConfigSchema", () => {
     },
   );
 
+  it("accepts an http(s) socialLinks.facebook URL", () => {
+    const result = clubConfigSchema.safeParse({
+      ...validClub,
+      socialLinks: { facebook: "https://www.facebook.com/exampleclub" },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it.each(["javascript:alert(1)", "data:text/html,hello", "ftp://example.org"])(
+    "rejects socialLinks.facebook schemes that are not http(s): %s",
+    (facebook) => {
+      const result = clubConfigSchema.safeParse({
+        ...validClub,
+        socialLinks: { facebook },
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        const issue = result.error.issues.find(
+          (i) => i.path.join(".") === "socialLinks.facebook",
+        );
+        expect(issue?.message).toMatch(/http\(s\)/);
+      }
+    },
+  );
+
   it("rejects unknown keys (strict mode)", () => {
     const result = clubConfigSchema.safeParse({ ...validClub, unexpectedKey: "boom" });
     expect(result.success).toBe(false);
@@ -196,6 +221,7 @@ describe("featureFlagsSchema", () => {
         skifieldConditions: true,
         multiLodge: false,
         twoFactor: false,
+        analytics: false,
       }),
     ).toBeDefined();
   });
@@ -220,6 +246,7 @@ describe("featureFlagsSchema", () => {
       skifieldConditions: true,
       multiLodge: false,
       twoFactor: false,
+      analytics: false,
       mystery: true,
     });
     expect(result.success).toBe(false);
@@ -245,6 +272,7 @@ describe("featureFlagsSchema", () => {
       skifieldConditions: true,
       multiLodge: false,
       twoFactor: false,
+      analytics: "false",
     });
     expect(result.success).toBe(false);
   });

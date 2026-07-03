@@ -21,6 +21,13 @@ To verify in later review: exact terminal transitions, capacity-holding
 statuses, non-member hold expiry, school group `CONFIRMED` semantics, and
 payment-failure back paths.
 
+Booking quote and create paths reject a linked member who is already present on
+another live booking for any requested lodge night. The guard covers draft,
+pending, confirmed/paid/completed, waitlist, offered, and admin-review bookings,
+but does not change capacity-holding status rules. A member can open their own
+conflicting booking, and a linked guest can remove only themselves from another
+future booking when they are not the last guest.
+
 ### BookingEvent Scope
 
 `BookingEvent` is a durable narrative fact store, not the complete transition
@@ -107,6 +114,12 @@ counted as paying members: school groups (the school contact and each teacher)
 get role `SCHOOL`, and general public booking-request contacts get `NON_MEMBER`.
 Both non-member roles grant no access, are excluded from member rosters, and never
 owe a membership subscription (see Member roles in `docs/ARCHITECTURE.md`).
+
+After conversion (or while a hold booking exists), the resulting booking keeps
+the negotiated flat price and the standard edit endpoints refuse it — editing
+a quoted booking's dates or party is done by re-pricing or issuing a revised
+quote from the booking request, never by season-rate repricing
+(`docs/DOMAIN_INVARIANTS.md`, #1032).
 
 ## Payment Lifecycle
 
@@ -368,10 +381,13 @@ password accepted -> JWT session issued with twoFactorVerified=false
 module off -> session treated verified for normal routing
 module on + unenrolled -> protected layout redirects to /login/enroll
 module on + enrolled -> protected layout redirects to /login/verify
-valid TOTP/email/recovery code -> session update flips twoFactorVerified=true
+valid TOTP/email/recovery code -> server mints single-use challenge token (hashed, short TTL)
+session update carrying that token -> jwt callback consumes it -> twoFactorVerified=true
+client-forged session update without a valid token -> ignored, session stays unverified
 invalid attempts -> per-member counter increments -> 15 minute lockout after 5 failures
 ```
 
-To verify: Auth.js JWT callback claim handling, protected route-group layout
-redirects, API guard rejection, email-code expiry, TOTP skew window, recovery
-code single-use consumption, and lockout reset after successful verification.
+To verify: Auth.js JWT callback claim handling, challenge-token single-use
+consumption, protected route-group layout redirects, API guard rejection,
+email-code expiry, TOTP skew window, recovery code single-use consumption, and
+lockout reset after successful verification.

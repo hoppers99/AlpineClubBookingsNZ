@@ -312,6 +312,7 @@ export function LodgeInstructionsPanel() {
                       setDrafts((prev) => ({ ...prev, [doc.key]: html }))
                     }
                     placeholder={`Write the ${doc.title.toLowerCase()} instructions...`}
+                    tokenHelpContext="lodge-instructions"
                   />
                   <div className="flex flex-wrap items-center justify-end gap-3">
                     {scopeIsLodge && pendingOverride[doc.key] ? (

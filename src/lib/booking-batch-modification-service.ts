@@ -16,6 +16,7 @@ import {
   applyPaymentAdjustments,
   applyPromoCodeChanges,
   assertBookingModifiable,
+  assertBookingNotQuotePriced,
   calculateModificationSettlementOptions,
   calculateModificationChangeFee,
   calculateModifiedPricing,
@@ -131,6 +132,7 @@ export async function modifyBookingBatch({
       role: actor.role,
       actorId: actor.id,
     });
+    await assertBookingNotQuotePriced(tx, bookingId);
 
     const bookingLodgeId = booking.lodgeId ?? (await getDefaultLodgeId(tx));
     await acquireLodgeCapacityLock(tx, bookingLodgeId);
@@ -337,6 +339,7 @@ export async function modifyBookingBatch({
         bookingModification.id,
         undefined,
         tx,
+        booking.payment?.id,
       );
     }
 

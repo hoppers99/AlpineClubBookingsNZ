@@ -37,7 +37,7 @@ does not store API keys, OAuth secrets, SMTP secrets, or bearer tokens.
 | `publicUrl`                                        | yes      | Canonical public origin with no trailing slash.                                                                  |
 | `emailFromName`                                    | yes      | Display name for outbound email sender headers.                                                                  |
 | `lodgeTravelNote`                                  | no       | Email reminder travel/location note.                                                                             |
-| `socialLinks.facebook`                             | no       | Facebook URL used by public pages/footer.                                                                        |
+| `socialLinks.facebook`                             | no       | Facebook URL used by public pages/footer. Must be an http(s) URL, like `publicUrl`.                              |
 | `beds[].id`                                        | yes      | Stable bed or lodge identifier.                                                                                  |
 | `beds[].name`                                      | yes      | User-facing bed/lodge name.                                                                                      |
 | `beds[].capacity`                                  | yes      | Positive integer fallback/import capacity.                                                                       |
@@ -131,7 +131,10 @@ menu.
   require double braces. Legacy single-brace syntax remains accepted only for
   non-photo tokens.
 - Content and header HTML are sanitised on save and again on render. The
-  allowlist lives in `src/lib/page-content-html.ts`.
+  allowlist lives in `src/lib/page-content-html.ts`. It includes native
+  `<details>`/`<summary>` elements (plus the boolean `open` attribute on
+  `<details>`), which the starter FAQ page uses for its collapsible
+  question-and-answer accordion.
 - The editor's image picker can insert images from three sources:
   database-backed image-library uploads, deployed branding files under
   `public/branding/`, and filesystem/image-manager files under the shared
@@ -155,6 +158,48 @@ menu.
   intentionally rejected there because filesystem uploads are served as static
   image assets without the database image route's restrictive CSP.
 
+## Website Site Content
+
+Shared public website chrome is database-backed (`SiteContent`) and edited in
+Admin > Site Content. This is separate from `PageContent`: page records still
+own per-page header/body content and menu entries, while site content owns
+reusable layout fragments that are not routable pages.
+
+- The first site-content sections are the three public footer columns:
+  `FOOTER_BLURB`, `FOOTER_QUICK_LINKS`, and `FOOTER_AFFILIATIONS`.
+- The public footer keeps the logo, current year, copyright line, and
+  privacy/terms links code-managed. Admins can edit or clear the three column
+  HTML fragments; clearing either link column hides that column.
+- The migration backfills starter footer rows with the previous hardcoded
+  footer copy, so deploy-only environments keep the same footer without
+  running the seed. The seed also creates the starter rows when missing and
+  never overwrites existing admin edits.
+- Footer section HTML is sanitised on save and again on render with the same
+  allowlist as page content (`src/lib/page-content-html.ts`). Footer text
+  tokens include `{{club-name}}`, `{{currency}}`, `{{lodge-capacity}}`, and
+  `{{facebook-url}}`; embed tokens are not supported in footer sections.
+- URL-bearing tokens are scheme-validated when they resolve: `{{facebook-url}}`
+  only renders http, https, or mailto values. Anything else is replaced with
+  the configured `publicUrl` (or `#`) and logged as a server warning.
+
+## Website Site Banners
+
+Admin > Site Banners manages site-wide notification banners stored as
+`SiteBanner` records. Banners are plain text only and render above the public
+website, public-auth, and signed-in member headers while active and while the
+current New Zealand date-only value falls inside the inclusive display window.
+
+- Priorities are `URGENT`, `WARNING`, and `NOTIFY`, displayed with faded red,
+  amber, and blue styling respectively.
+- Admins can create, edit, activate/deactivate, and delete banners. The admin
+  page groups banners into current, upcoming, and the 50 most recent past
+  banners by their date-only display windows.
+- Visitors can dismiss a banner per browser. Dismissal is stored in
+  localStorage and is invalidated when an admin edits the banner, so updated
+  wording is shown again.
+- Banner create/update/delete actions write structured audit logs. Messages are
+  rendered as escaped plain text; HTML and tokens are not supported.
+
 ## Lodge Instructions
 
 Lodge opening, closing, and day-to-day instructions for hut leaders are
@@ -168,6 +213,10 @@ public page route.
   the documents to the signed-in hut leader tier.
 - HTML is sanitised on save and again on render with the same allowlist as
   page content (`src/lib/page-content-html.ts`).
+- Text tokens `{{club-name}}`, `{{currency}}`, and `{{lodge-capacity}}` are
+  resolved on the reader and kiosk surfaces (embed tokens are not supported
+  here). The admin editor shows the literal tokens; the editor's token help
+  button lists what is available.
 - The migration backfills the three empty documents, so deploy-only
   environments get editable rows without running the seed.
 
@@ -283,9 +332,13 @@ Seasonal membership type settings are database-backed and managed from
 Xero contact-group rules, and committee assignment are separate axes:
 
 - `MemberAccessRole` is the normalized access source for login permissions:
-  `USER`, `ADMIN`, `LODGE`, `FINANCE_USER`, `FINANCE_ADMIN`, and `ORG`.
-  Runtime authorization must read these rows only. `session.user.role` is kept
-  only for display and older serialized shapes.
+  `USER`, `ADMIN`, `ADMIN_READONLY`, `ADMIN_BOOKINGS`, `ADMIN_MEMBERSHIP`,
+  `ADMIN_CONTENT`, `LODGE`, `FINANCE_USER`, `FINANCE_ADMIN`, and `ORG`.
+  Runtime authorization must read these rows only. `ADMIN` is the full-admin
+  bundle; the other `ADMIN_*` rows are read-only, booking office, membership
+  officer, and content manager bundles. Multiple rows may be combined for a
+  custom role. `session.user.role` is kept only for display and older
+  serialized shapes.
   `Member.role` remains a compatibility/classification field with only
   `USER`, `ADMIN`, `LODGE`, `NON_MEMBER`, and `SCHOOL`; Associate, Life, and
   club-created categories live in `MembershipType`. `financeAccessLevel`
@@ -296,7 +349,8 @@ Xero contact-group rules, and committee assignment are separate axes:
   Non-Member, Family, or club-created types. Each type carries booking behavior
   (`MEMBER_RATE`, `NON_MEMBER_RATE`, `BLOCK_BOOKING`), subscription behavior
   (`REQUIRED`, `NOT_REQUIRED`), allowed age tiers, and optional Xero
-  contact-group rules.
+  contact-group rules. Display names must be unique: creating or renaming a
+  type to a case-insensitive exact match of an existing name is rejected.
 - `AgeTierSetting` remains separate because a member can be Adult Full, Adult
   Life, Adult Associate, Child Family, Youth School, and so on. Age tiers still
   drive age-based rates and age-based default Xero grouping. Use Age Tier Xero
@@ -403,6 +457,7 @@ fields are copied into postal fields before the member or application is saved.
 | `CURRENCY`, `NEXT_PUBLIC_CURRENCY` | Currency display and server default.                                                                 |
 | `TZ`, `NEXT_PUBLIC_TZ`             | Time zone; this app expects New Zealand date-only booking semantics unless a feature says otherwise. |
 | `LOCALE`, `NEXT_PUBLIC_LOCALE`     | Locale for formatting.                                                                               |
+| `NEXT_PUBLIC_GA_MEASUREMENT_ID`    | Optional GA4 measurement id. Google Analytics still requires the Admin Modules toggle and visitor consent before loading. |
 | `LOG_LEVEL`                        | Pino log level such as `debug`, `info`, `warn`, `error`, or `fatal`.                                 |
 | `APP_RUNTIME_ROLE`                 | Runtime label used by health/status reporting, usually set by Compose.                               |
 | `NODE_ENV`                         | Runtime mode set by Node/Next.                                                                       |
@@ -442,6 +497,7 @@ cannot be read, optional modules fail closed.
 | Ski-field conditions | on | Live mountain/road status panel, public API routes, and admin cache controls. |
 | Multiple lodges | off | Lodge-management admin surface for clubs with more than one lodge property. The lodge data model is core and always present; member-facing screens only change once a second active lodge exists. Cannot be turned off while more than one active lodge exists. See `docs/multi-lodge/README.md`. |
 | Two-factor authentication | off | Requires users to complete authenticator-app, email-code, or recovery-code verification after password login. |
+| Google Analytics | off | Consent-gated GA4 tracking on public website and public account pages. Requires `NEXT_PUBLIC_GA_MEASUREMENT_ID`; GA scripts load only after a visitor accepts the analytics banner. |
 
 Cron-backed optional module schedules are still registered when
 `CRON_ENABLED=true`; each run checks the effective module state before doing
@@ -460,7 +516,10 @@ The Two-factor authentication Admin Modules toggle is a global enforcement
 switch. It defaults off. When enabled, password sign-in creates a limited JWT
 session with `twoFactorVerified=false`; protected route-group layouts and API
 guards redirect or reject that session until the user completes `/login/enroll`
-or `/login/verify`.
+or `/login/verify`. A session becomes verified only when the Auth.js jwt
+callback consumes a single-use, short-lived challenge token minted server-side
+after a successful code check (stored hashed in `TwoFactorSessionChallenge`);
+client-initiated session updates cannot flip the flag.
 
 Users enroll either an authenticator app (TOTP) or an email one-time code. TOTP
 secrets are encrypted at rest using key material derived from `AUTH_SECRET` (or
@@ -514,9 +573,10 @@ exact app request, and verify that `XERO_REDIRECT_URI` matches the deployed
 `/api/admin/xero/callback` URL. Then reconnect Xero from `/admin/xero` so fresh
 tokens carry the current scope set. Access is controlled per member by
 `MemberAccessRole` rows. `FINANCE_USER` can read the finance dashboard and
-finance viewer APIs; `FINANCE_ADMIN` can also run manager-only finance actions
-such as manual sync and report mapping writes. `ADMIN` and `LODGE` do not grant
-finance access by themselves, but mixed-role accounts such as `LODGE` plus
+finance viewer APIs; `FINANCE_ADMIN` is the Treasurer bundle and can also run
+manager-only finance actions such as manual sync, report mapping writes, and
+finance admin routes. `ADMIN` has full admin access, while `LODGE` does not
+grant finance access by itself. Mixed-role accounts such as `LODGE` plus
 `FINANCE_USER` are valid. The legacy `financeAccessLevel` field is kept
 synchronized for compatibility only; finance page and API guards ignore it and
 read `MemberAccessRole` rows.
@@ -576,6 +636,7 @@ rate-limited, or temporarily unavailable.
 | ------------------------------------- | --------------------------------------------------------------------------- |
 | `CRON_ENABLED`                        | Enables scheduled jobs in a runtime. Blue/green web slots set this `false`. |
 | `WAITLIST_OFFER_HOURS`                | Waitlist offer expiry window; defaults to 48 hours.                         |
+| `GROUP_SETTLEMENT_REAP_HOURS`         | Stale organiser-pays group settlement window; defaults to 48 hours (clamped to the group's check-in, 2-hour floor). |
 | `WAITLIST_TRANSACTION_RETRY_ATTEMPTS` | Optional waitlist transaction retry count.                                  |
 | `WAITLIST_TRANSACTION_RETRY_DELAY_MS` | Optional waitlist transaction retry delay.                                  |
 | `BACKUP_ENABLED`                      | Enables scheduled PostgreSQL backup job.                                    |

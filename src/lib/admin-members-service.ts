@@ -40,12 +40,15 @@ import {
 } from "@/lib/member-roles";
 import {
   ACCESS_ROLE_VALUES,
+  accessRoleChangeRequiresFullAdmin,
   accessRolesFromCompatibilityFields,
   financeAccessLevelFromAccessRoles,
+  isFullAdmin,
   legacyRoleFromAccessRoles,
   normalizeAssignableAccessRoles,
   resolveAccessRoles,
   isAccessRole,
+  type AccessRoleInput,
   type AppAccessRole,
 } from "@/lib/access-roles";
 
@@ -758,7 +761,33 @@ export async function listAdminMembers(
 
 export async function createAdminMember(
   data: CreateMemberInput,
+  actor: { accessRoles: AccessRoleInput["accessRoles"] },
 ): Promise<JsonRouteResult> {
+  // Full Admin gate (issue #1012): a scoped admin (e.g. membership:edit)
+  // must not be able to mint a privileged account. Evaluated canLogin-blind
+  // so a dormant elevated role cannot be parked for later activation.
+  const requestedGrant =
+    data.accessRoles !== undefined
+      ? normalizeAssignableAccessRoles(data.accessRoles, { canLogin: true })
+      : accessRolesFromCompatibilityFields({
+          role: data.role,
+          financeAccessLevel:
+            data.role === "LODGE" ? "NONE" : data.financeAccessLevel,
+          canLogin: true,
+        });
+  if (
+    accessRoleChangeRequiresFullAdmin([], requestedGrant) &&
+    !isFullAdmin({ accessRoles: actor.accessRoles })
+  ) {
+    return jsonResult(
+      {
+        error:
+          "Only a Full Admin can create members with privileged access roles",
+      },
+      { status: 403 },
+    );
+  }
+
   const email = data.email.toLowerCase().trim();
   const requestedInheritEmailFromId = data.inheritEmailFromId?.trim() || null;
   let parentMember: {

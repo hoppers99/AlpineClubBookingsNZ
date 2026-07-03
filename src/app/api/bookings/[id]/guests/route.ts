@@ -56,6 +56,7 @@ import {
 import { upsertPaymentIntentTransaction } from "@/lib/payment-transactions";
 import { nameField } from "@/lib/zod-helpers";
 import { getBookingEditPolicy } from "@/lib/booking-edit-policy";
+import { assertBookingNotQuotePriced } from "@/lib/booking-modify";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 import { queueSupersededAdditionalIntentCancellations } from "@/lib/booking-payment-cleanup";
 import { getSeasonYear } from "@/lib/utils";
@@ -63,6 +64,11 @@ import {
   authorizationRoleFromAccessRoles,
   hasAdminAccess,
 } from "@/lib/access-roles";
+import {
+  assertNoBookingMemberNightConflicts,
+  BookingMemberNightConflictError,
+  getBookingMemberNightConflictResponse,
+} from "@/lib/booking-member-night-conflicts";
 
 const addGuestsSchema = z.object({
   guests: z
@@ -235,6 +241,7 @@ export async function POST(
           400
         );
       }
+      await assertBookingNotQuotePriced(tx, bookingId);
       if (editPolicy.mode !== "future") {
         throw new ApiError(
           "Use the full booking edit flow for in-progress booking guest changes",
@@ -274,6 +281,15 @@ export async function POST(
         }
         throw error;
       }
+
+      await assertNoBookingMemberNightConflicts(tx, {
+        actorMemberId: session.user.id,
+        actorRole,
+        checkIn: booking.checkIn,
+        checkOut: booking.checkOut,
+        guests: normalizedNewGuests,
+        excludeBookingId: bookingId,
+      });
 
       const seasonYear = getSeasonYear(booking.checkIn);
       await assertMembershipTypeBookingAllowed(tx, {
@@ -767,6 +783,12 @@ export async function POST(
       return NextResponse.json(
         getBookingGuestValidationErrorResponse(err),
         { status: err.status }
+      );
+    }
+    if (err instanceof BookingMemberNightConflictError) {
+      return NextResponse.json(
+        getBookingMemberNightConflictResponse(err.conflicts),
+        { status: 409 },
       );
     }
     if (err instanceof ApiError) {

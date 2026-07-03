@@ -2,12 +2,16 @@ import { auth } from "@/lib/auth";
 import { Inter, League_Spartan } from "next/font/google";
 import { headers } from "next/headers";
 import { AppProviders } from "@/components/app-providers";
+import { AnalyticsConsent } from "@/components/analytics-consent";
+import { SiteBanners } from "@/components/site-banners";
 import { ThemeSwitcher } from "@/components/theme-switcher";
 import { WebsiteHeader } from "@/components/website-header";
 import { WebsiteFooter } from "@/components/website-footer";
 import { clubIdentity } from "@/config/club-identity";
 import { CSP_NONCE_HEADER } from "@/lib/csp";
 import { getDefaultLodgeCapacity } from "@/lib/lodge-capacity";
+import { loadEffectiveModuleFlags } from "@/lib/module-settings";
+import { getCurrentSiteBanners } from "@/lib/site-banners";
 
 const websiteBodyFont = Inter({
   subsets: ["latin"],
@@ -26,9 +30,13 @@ export default async function PublicLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const [session, lodgeCapacity] = await Promise.all([
+  const [session, lodgeCapacity, siteBanners, modules] = await Promise.all([
     auth(),
+    // Default lodge: public-site identity copy (per-lodge figures come
+    // from the {{lodge-capacity:slug}} content token).
     getDefaultLodgeCapacity(),
+    getCurrentSiteBanners(),
+    loadEffectiveModuleFlags(),
   ]);
   const liveClubIdentity = { ...clubIdentity, lodgeCapacity };
   const requestHeaders = await headers();
@@ -40,6 +48,7 @@ export default async function PublicLayout({
       <div
         className={`${websiteBodyFont.variable} ${websiteHeadingFont.variable} app-theme-scope min-h-screen flex flex-col bg-background text-foreground`}
       >
+        <SiteBanners banners={siteBanners} />
         <WebsiteHeader isAuthenticated={!!session?.user} />
         <main className="flex-1">
           <div className="mx-auto flex w-full max-w-7xl justify-end px-4 pt-4 sm:px-6 lg:px-8">
@@ -50,6 +59,11 @@ export default async function PublicLayout({
           </div>
         </main>
         <WebsiteFooter pageSlug={pageSlug} />
+        <AnalyticsConsent
+          enabled={modules.analytics}
+          measurementId={process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID}
+          nonce={nonce}
+        />
       </div>
     </AppProviders>
   );

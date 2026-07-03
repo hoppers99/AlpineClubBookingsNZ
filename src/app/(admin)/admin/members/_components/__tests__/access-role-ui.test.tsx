@@ -10,6 +10,7 @@ import { MemberBulkDialog } from "../member-bulk-dialog";
 import { MemberEditorDialog } from "../member-editor-dialog";
 import { MemberFilterToolbar } from "../member-filter-toolbar";
 import { MemberTable } from "../member-table";
+import { MemberAccessRolePicker } from "@/components/member-access-role-picker";
 
 function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -225,6 +226,10 @@ describe("admin member access-role UI", () => {
         accessRoles: [
           "USER",
           "ADMIN",
+          "ADMIN_READONLY",
+          "ADMIN_BOOKINGS",
+          "ADMIN_MEMBERSHIP",
+          "ADMIN_CONTENT",
           "LODGE",
           "FINANCE_USER",
           "FINANCE_ADMIN",
@@ -245,13 +250,17 @@ describe("admin member access-role UI", () => {
     expect(screen.getByRole("columnheader", { name: /Access/ })).toBeInTheDocument();
     expect(screen.queryByRole("columnheader", { name: /Finance Access/ })).not.toBeInTheDocument();
     expect(screen.getByText("User")).toBeInTheDocument();
-    expect(screen.getByText("Admin")).toBeInTheDocument();
+    expect(screen.getByText("Full Admin")).toBeInTheDocument();
+    expect(screen.getByText("Read-only Admin")).toBeInTheDocument();
+    expect(screen.getByText("Booking Office")).toBeInTheDocument();
+    expect(screen.getByText("Membership Officer")).toBeInTheDocument();
+    expect(screen.getByText("Content Manager")).toBeInTheDocument();
     expect(screen.getByText("Lodge")).toBeInTheDocument();
-    expect(screen.getByText("Finance User")).toBeInTheDocument();
-    expect(screen.getByText("Finance Admin")).toBeInTheDocument();
+    expect(screen.getByText("Finance Viewer")).toBeInTheDocument();
+    expect(screen.getByText("Treasurer")).toBeInTheDocument();
     expect(screen.getByText("Organisation")).toBeInTheDocument();
     expect(screen.getAllByText("No Login").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText("Finance Admin").parentElement).toHaveClass(
+    expect(screen.getByText("Treasurer").parentElement).toHaveClass(
       "flex-wrap",
     );
   });
@@ -277,7 +286,7 @@ describe("admin member access-role UI", () => {
       />,
     );
 
-    expect(screen.getByText(/Access Role: Finance Admin/)).toBeInTheDocument();
+    expect(screen.getByText(/Access Role: Treasurer/)).toBeInTheDocument();
     expect(screen.queryByText("Finance Access")).not.toBeInTheDocument();
   });
 
@@ -332,16 +341,22 @@ describe("admin member access-role UI", () => {
       });
 
     expect(roleCheckbox("User")).toBeChecked();
-    expect(roleCheckbox("Finance Admin")).toBeChecked();
+    expect(roleCheckbox("Treasurer")).toBeChecked();
     expect(screen.queryByText("Finance Access")).not.toBeInTheDocument();
+    expect(screen.getByText("Bookings & Beds")).toBeInTheDocument();
+    expect(screen.getAllByText("Edit").length).toBeGreaterThan(0);
 
     fireEvent.click(canLogin);
 
     expect(roleCheckbox("User")).toBeDisabled();
-    expect(roleCheckbox("Admin")).toBeDisabled();
+    expect(roleCheckbox("Full Admin")).toBeDisabled();
+    expect(roleCheckbox("Read-only Admin")).toBeDisabled();
+    expect(roleCheckbox("Booking Office")).toBeDisabled();
+    expect(roleCheckbox("Membership Officer")).toBeDisabled();
+    expect(roleCheckbox("Content Manager")).toBeDisabled();
     expect(roleCheckbox("Lodge")).toBeDisabled();
-    expect(roleCheckbox("Finance User")).toBeDisabled();
-    expect(roleCheckbox("Finance Admin")).toBeDisabled();
+    expect(roleCheckbox("Finance Viewer")).toBeDisabled();
+    expect(roleCheckbox("Treasurer")).toBeDisabled();
     expect(roleCheckbox("Organisation")).toBeDisabled();
     expect(
       screen.getByText("Access roles only apply to login-enabled records."),
@@ -350,6 +365,82 @@ describe("admin member access-role UI", () => {
     fireEvent.click(canLogin);
 
     expect(roleCheckbox("User")).toBeChecked();
-    expect(roleCheckbox("Finance Admin")).not.toBeChecked();
+    expect(roleCheckbox("Treasurer")).not.toBeChecked();
   });
 });
+
+describe("scoped-admin gated access-role picker (#1038)", () => {
+  afterEach(() => cleanup());
+
+  it("disables privileged roles for scoped admins but leaves User/Org usable", () => {
+    render(
+      <MemberAccessRolePicker
+        accessRoles={["USER"]}
+        canLogin
+        actorIsFullAdmin={false}
+        onToggleRole={vi.fn()}
+      />,
+    );
+
+    const checkboxes = screen.getAllByRole("checkbox");
+    const enabled = checkboxes.filter((box) => !box.hasAttribute("disabled"));
+    // Only the two unprivileged classifications stay editable.
+    expect(enabled).toHaveLength(2);
+    expect(
+      screen.getByText(/Granting or revoking privileged roles requires Full Admin/),
+    ).toBeInTheDocument();
+  });
+
+  it("locks the whole picker when the member holds a live privileged role", () => {
+    render(
+      <MemberAccessRolePicker
+        accessRoles={["ADMIN"]}
+        canLogin
+        actorIsFullAdmin={false}
+        memberPrivilege="live"
+        onToggleRole={vi.fn()}
+      />,
+    );
+
+    for (const box of screen.getAllByRole("checkbox")) {
+      expect(box).toBeDisabled();
+    }
+    expect(
+      screen.getByText(/Only a Full Admin can change this member's access roles/),
+    ).toBeInTheDocument();
+  });
+
+  it("explains the dormant legacy-role case", () => {
+    render(
+      <MemberAccessRolePicker
+        accessRoles={["USER"]}
+        canLogin
+        actorIsFullAdmin={false}
+        memberPrivilege="dormant"
+        onToggleRole={vi.fn()}
+      />,
+    );
+
+    for (const box of screen.getAllByRole("checkbox")) {
+      expect(box).toBeDisabled();
+    }
+    expect(
+      screen.getByText(/dormant privileged legacy role.*requires Full Admin/),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps every control enabled for Full Admins (default)", () => {
+    render(
+      <MemberAccessRolePicker
+        accessRoles={["USER"]}
+        canLogin
+        onToggleRole={vi.fn()}
+      />,
+    );
+
+    for (const box of screen.getAllByRole("checkbox")) {
+      expect(box).not.toBeDisabled();
+    }
+  });
+});
+

@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { TokenChips } from "@/components/admin/token-help-dialog";
 import {
   Select,
   SelectContent,
@@ -313,20 +314,14 @@ export function EmailMessageSettingsPanel() {
         {currentTemplate ? (
           <div className="space-y-2">
             <Label>Tokens</Label>
-            <div className="flex flex-wrap gap-2">
-              {currentTemplate.allowedTokens.map((token) => (
-                <Badge
-                  key={token}
-                  variant={
-                    currentTemplate.requiredTokens.includes(token)
-                      ? "default"
-                      : "outline"
-                  }
-                >
-                  {`{{${token}}}`}
-                </Badge>
-              ))}
-            </div>
+            {/* Shared chip renderer; token names stay sourced from the
+                email message registry, not the HTML token catalogue. */}
+            <TokenChips
+              tokens={currentTemplate.allowedTokens.map((token) => ({
+                token,
+                required: currentTemplate.requiredTokens.includes(token),
+              }))}
+            />
           </div>
         ) : null}
 

@@ -53,8 +53,8 @@ deploy/                         production proxy/runtime support files
 
 Important route groups:
 
-- `src/app/(public)` contains unauthenticated pages such as login, join, FAQ,
-  contact, reset password, nomination, and public token flows.
+- `src/app/(public)` contains unauthenticated pages such as login, register,
+  password reset, email verification, payment, and public token flows.
 - `src/app/(authenticated)` contains member dashboard, booking, profile, family,
   and booking-detail pages.
 - `src/app/(admin)` contains administrative operations for members, member CSV
@@ -157,6 +157,12 @@ The source of truth is `prisma/schema.prisma`. Key domains are:
   connection rather than a separate finance token store.
 - Cron run records, email logs, webhook logs, processed webhook events, and
   backup/audit-retention support records.
+- Public website content records: `PageContent` owns routable page
+  header/body/menu content, while `SiteContent` owns shared public chrome such
+  as the editable footer columns that never appear in the website menu.
+- `SiteBanner` records: admin-managed plain-text notices with
+  `URGENT`/`WARNING`/`NOTIFY` priority and an inclusive NZ date-only display
+  window, rendered above the public and member site headers.
 
 ## Booking and Payment Flow
 
@@ -235,6 +241,28 @@ inbound-event drilldowns, committee data, issue reports, waitlist, lodge
 operations, hut leaders, and roster/chores. Lodge settings are a singleton
 record for lodge-wide operational defaults such as fallback capacity and the
 hut-leader lookahead window used by dashboard and Needs Attention warnings.
+The sidebar's Needs Attention Booking Requests badge sums pending internal
+booking reviews, requested change requests, and queued public booking requests.
+
+`src/lib/token-catalogue.ts` is the client-safe single source of truth for the
+`{{token}}` placeholders supported in admin HTML content (page bodies and lodge
+instructions); the embed/text matching regexes in `src/lib/page-content-embeds.ts`
+and the WysiwygEditor token help dialog are both derived from it. Lodge
+instruction reader/kiosk routes resolve text tokens on read; the admin editor
+route returns them unresolved so edits round-trip.
+
+`src/lib/contextual-help.ts` is the client-safe registry for Admin and Finance
+page help popups. `ContextualHelpButton` reads the current route, opens an
+accessible dialog from the shell-level help icon, and uses the most specific
+matching route entry so nested Admin pages inherit their parent menu help.
+
+Site banners are managed at `/admin/site-banners` (Setup & Configuration).
+Admins create plain-text notices with a priority (URGENT/WARNING/NOTIFY) and
+an inclusive NZ date-only display window; current active banners render above
+the site header on the public, website, and authenticated member shells (not
+admin/finance/lodge shells). Visitors can dismiss a banner per browser via
+localStorage; editing a banner invalidates prior dismissals. All banner
+create/update/delete actions write structured audit logs.
 
 Member CSV import allows distinct identities to share an email address while
 preserving the database invariant that only one member per email can have
@@ -248,7 +276,9 @@ off, is gated by Admin Modules and `src/proxy.ts` before route handlers run, and
 never replaces manual address entry.
 
 Access roles live in `MemberAccessRole` and are the normalized login/permission
-axis: `USER`, `ADMIN`, `LODGE`, `FINANCE_USER`, `FINANCE_ADMIN`, and `ORG`.
+axis: `USER`, `ADMIN`, `ADMIN_READONLY`, `ADMIN_BOOKINGS`,
+`ADMIN_MEMBERSHIP`, `ADMIN_CONTENT`, `LODGE`, `FINANCE_USER`,
+`FINANCE_ADMIN`, and `ORG`.
 `Member.role` remains a synchronized compatibility/classification field with
 `USER`, `ADMIN`, `LODGE`, `NON_MEMBER`, and `SCHOOL`; Associate, Life, and
 club-created categories are membership types, not role enum values.
@@ -259,12 +289,40 @@ live in `src/lib/access-roles.ts`; compatibility role constants stay in
 `src/lib/member-roles.ts` for old imports, membership classification, and
 provider-created non-member records.
 
+Admin authorization is area-based in `src/lib/admin-permissions.ts`. `ADMIN`
+has edit access everywhere; `ADMIN_READONLY`, `ADMIN_BOOKINGS`,
+`ADMIN_MEMBERSHIP`, `ADMIN_CONTENT`, and `FINANCE_ADMIN` are bundled
+permissions that merge when assigned together. `requireAdmin()` infers the
+requested admin path and HTTP method from proxy headers and enforces view/edit
+requirements centrally, while admin layout/sidebar rendering uses the same
+matrix for page access and navigation visibility.
+
+Access-role writes carry an additional separation-of-duties gate, independent
+of the path-inferred area: only a Full Admin (`ADMIN`) may grant or revoke
+privileged access roles (every role other than `USER` and `ORG`), including via
+the legacy `Member.role` and `financeAccessLevel` compatibility fields and the
+member-import `role` column. The shared helpers are `isFullAdmin` and
+`accessRoleChangeRequiresFullAdmin` in `src/lib/access-roles.ts`; the member
+editor, create, bulk-update, and import paths all apply them and return 403
+for a non-Full-Admin actor. `requireAdmin()` returns DB-verified access roles
+on the session user so these checks never trust a stale JWT claim. A
+submission that changes no role field — such as the member editor echoing a
+member's unchanged roles back on a contact-only edit — is not a role write:
+it neither requires Full Admin nor rewrites a dormant privileged legacy role
+still stored on a non-login (archived or cancelled) member. The same
+boundary covers the login email: only a Full Admin may change the email of
+another member who holds a privileged access role, because an email change
+plus a forgot-password request would hand the account and its roles to the
+new address (`hasPrivilegedAccess` in `src/lib/access-roles.ts`).
+
 Seasonal membership types are policy records, not access roles. `MembershipType`
 stores the stable identifier, display text, active/archive state, sort order,
 booking behavior, subscription behavior, allowed age tiers, and optional Xero
 contact-group rules for built-in and admin-defined types. The built-ins are
 Full, Associate, Life, School, Non-Member, and Family; Associate is the single
-Associate/Reserve-style built-in and can be renamed by the club. Age tiers stay
+Associate/Reserve-style built-in and can be renamed by the club. Create and
+rename requests that would duplicate another type's display name
+(case-insensitive exact match) are rejected with a 409. Age tiers stay
 separate because the same tier can appear under several membership types. Age
 Tier Xero groups are for broad age cohorts, Membership Type Xero groups are for
 status or policy labels, and clubs can configure both when Xero needs both
@@ -339,6 +397,12 @@ through `PaymentRecoveryOperation`. The recovery worker cancels still-open
 intents, treats already-cancelled intents as complete, and queues/refunds late
 captures without running the normal booking-confirmation path.
 
+Group-settlement PaymentIntents get the same safety net: switching a group
+settlement to Internet Banking or re-attempting a card settlement voids the
+superseded intent in Stripe, and if a stale intent still captures, the webhook
+handler refunds it in full (with a deterministic idempotency key) and alerts
+admins instead of settling anything.
+
 ### Operational Xero
 
 Operational Xero handles member/contact sync, booking invoices, payments,
@@ -407,6 +471,7 @@ disable cron with `CRON_ENABLED=false`.
 | Job | Schedule | Purpose |
 | --- | --- | --- |
 | `confirm-pending` | Every 3 hours | Confirm pending bookings after hold deadlines |
+| `group-settlement-reaper` | Every 3 hours | Release CONFIRMED-unpaid group children when an organiser-pays settlement stays unpaid past its window (default 48h, clamped to check-in); voids the open intent and notifies the group |
 | `pre-arrival-reminders` | Every 3 hours | Send current directions and door-code reminders before check-in |
 | `purge-booking-requests` | Every 3 hours | Delete expired declined and never-verified public booking requests after the retention window |
 | `quote-expiry-reminders` | Every 3 hours | Remind public booking-request quote recipients before their quote link expires (sends a fresh working link) |
@@ -435,8 +500,10 @@ disable cron with `CRON_ENABLED=false`.
 
 ## Security and Privacy Boundaries
 
-- Auth uses credentials sessions with explicit admin and finance guards.
-- Finance access is separate from general admin access.
+- Auth uses credentials sessions with explicit admin, admin-area, and finance
+  guards.
+- Finance access is separate from general admin access; `FINANCE_ADMIN` also
+  grants Treasurer edit access to finance admin routes.
 - Public bearer tokens are stored hashed or encrypted according to use case.
 - Logs, Sentry events, and webhook records should be redacted before storing or
   emitting sensitive values.
@@ -444,6 +511,9 @@ disable cron with `CRON_ENABLED=false`.
   role/session checks close to the route boundary.
 - External service callbacks and webhooks must verify signatures, state, or
   expected origin data before mutating local state.
+- Google Analytics is optional and privacy-gated: the Analytics module,
+  `NEXT_PUBLIC_GA_MEASUREMENT_ID`, and a visitor opt-in are all required before
+  GA4 loads on public website or public account pages.
 
 ## Deployment and Migrations
 
