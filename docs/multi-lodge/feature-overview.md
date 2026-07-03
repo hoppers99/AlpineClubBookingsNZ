@@ -26,14 +26,19 @@ A lodge is a bookable property with:
 
 - its own rooms, beds, and lockers (names unique within the lodge, so
   both lodges can have a "Bunkroom 1")
-- its own nightly capacity, derived from its own beds
+- its own nightly capacity, derived from its own beds — or, when the Bed
+  Allocation module is off, a capacity set directly on the lodge
 - its own seasons and rates when needed (a road-end lodge and a
   ski-in lodge may price differently)
 - its own chore list and roster
-- its own door code, travel notes, and arrival instructions
+- its own door code, travel notes, and opening/closing/day-to-day
+  kiosk instructions
+- its own shared kiosk sign-in, bound to that lodge's device
+- its own school-group soft cap (the size above which a school group is
+  asked to bring a member host)
 - optionally its own cancellation, minimum-stay, and booking-period
-  rules, when the club decides a lodge needs them (otherwise club-wide
-  rules apply everywhere)
+  rules, and its own lodge-restricted working-bee events, when the club
+  decides a lodge needs them (otherwise club-wide rules apply everywhere)
 
 Everything else — members, families, membership types, applications,
 payments, credits, promo codes (unless deliberately restricted), the
@@ -124,15 +129,45 @@ a transition state.
    works on Lodge A's kiosk, shows Lodge A's roster and guests, and
    does nothing at Lodge B.
 
+## Delivered Capabilities
+
+Beyond the per-lodge booking, pricing, capacity, policy, chore/roster,
+locker, and access scoping above, the feature also includes:
+
+- **Cross-lodge waitlist opt-in (ADR-004).** When a member waitlists a
+  full lodge, they may opt in to alternate lodges they'd also accept.
+  When a bed frees, the processor may offer an opted-in alternate per a
+  club-configurable queue order (own-lodge-first by default, or merged
+  by join time); the offer states the alternate lodge and its price, and
+  acceptance creates a fresh booking at that lodge (never mutating the
+  original entry's lodge).
+- **New-lodge setup wizard.** Creating a lodge opens a guided flow
+  (identity → rooms/beds → lockers → seasons/rates → chores) with
+  quick-seed and copy-from-another-lodge, each step skippable.
+- **Lodge configuration hub.** One page per lodge showing what it still
+  needs, with an inline capacity setting and links into each editor
+  pre-filtered to that lodge.
+- **Per-lodge kiosk accounts.** One shared kiosk sign-in per lodge
+  device, each bound to its lodge; the kiosk header names the lodge it
+  is operating.
+- **Lodge-aware booking requests.** Public and school request forms let
+  the requester choose a lodge (when more than one is active); pricing,
+  capacity, quotes, approval, and the resulting booking all follow that
+  lodge.
+- **Lodge-restricted working-bee events.** A working bee can be bound to
+  a lodge so its discount only applies to bookings at that lodge.
+- **CMS lodge-capacity token.** `{{lodge-capacity:lodge-slug}}` renders a
+  named lodge's capacity on public pages; the bare token stays the
+  default lodge.
+
+Every one of these follows the single-lodge presentation rule (ADR-002):
+with fewer than two active lodges, no lodge selectors, columns, or names
+appear, and behaviour is identical to today's single-lodge club.
+
 ## Boundaries and Non-Goals
 
 - No per-lodge admin accounts or per-lodge module settings.
 - No single booking spanning multiple lodges.
 - No per-lodge Xero connections or ledgers.
-- No cross-lodge waitlist in the initial delivery (a waitlist entry is
-  for the lodge that was full). Offering an alternative lodge when one
-  is full is a planned future enhancement — see the implementation
-  plan's Future Enhancements section — but it builds on multi-lodge
-  rather than shipping with it.
 - Lodge count is unbounded in the data model, but the UI is designed
   for the realistic case of two to a handful of lodges, not dozens.
