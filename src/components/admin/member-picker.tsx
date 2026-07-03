@@ -85,12 +85,14 @@ export function MemberPicker({ onSelect, selected, onClear }: MemberPickerProps)
     return (
       <div className="flex items-center gap-3 p-3 bg-blue-50 border border-blue-200 rounded-lg">
         <div className="flex-1">
-          <p className="font-medium text-sm">
+          {/* Explicit dark text: the card keeps its light background in dark
+              mode, where inherited text is near-white and unreadable. */}
+          <p className="font-medium text-sm text-slate-900">
             Booking on behalf of: {selected.firstName} {selected.lastName}
           </p>
           <p className="text-xs text-slate-500">{selected.email}</p>
         </div>
-        <Badge variant="outline" className="text-xs">{selected.ageTier}</Badge>
+        <Badge variant="outline" className="text-xs text-slate-700">{selected.ageTier}</Badge>
         {onClear && (
           <Button variant="outline" size="sm" onClick={onClear}>
             Change
