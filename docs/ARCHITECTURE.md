@@ -95,6 +95,9 @@ adopters can find the contract without reading the whole application.
 
 `src/lib/xero.ts` is a 199-line compatibility facade for older imports. Prefer
 direct imports from the focused modules below for new code.
+[`docs/xero/ARCHITECTURE.md`](xero/ARCHITECTURE.md) maps the subsystem in
+depth: runtime dataflow, ledger data model, and sequence diagrams for the
+outbound-document, inbound-reconciliation, and repair flows.
 
 | Concern | Focused modules | Notes |
 | --- | --- | --- |

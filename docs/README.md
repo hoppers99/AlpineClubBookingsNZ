@@ -27,6 +27,9 @@ AlpineClubBookingsNZ.
 - `MAINTENANCE.md` records the public validation and release checklist.
 - `E2E_PLAYWRIGHT.md` covers the Playwright browser E2E suite that drives the
   Critical journeys against the staging compose stack.
+- `xero/ARCHITECTURE.md` maps the operational Xero subsystem: module map,
+  reconciliation-ledger data model, and sequence diagrams for the outbound,
+  inbound, and repair flows.
 - `STAGING_ACCESSIBILITY.md` covers non-production browser and Lighthouse
   checks.
 
