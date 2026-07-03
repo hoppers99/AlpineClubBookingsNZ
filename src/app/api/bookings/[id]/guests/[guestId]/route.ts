@@ -14,7 +14,10 @@ import {
   getMembershipTypeBookingPolicyErrorBody,
   MembershipTypeBookingPolicyError,
 } from "@/lib/membership-type-policy";
-import { executeBookingModificationRefund } from "@/lib/booking-modification-settlement";
+import {
+  createModificationAdditionalPaymentIntent,
+  executeBookingModificationRefund,
+} from "@/lib/booking-modification-settlement";
 import { authorizationRoleFromAccessRoles } from "@/lib/access-roles";
 import type { BookingModificationSettlementMethod } from "@/lib/booking-modify";
 
@@ -82,6 +85,24 @@ export async function DELETE(
         "Failed to enqueue guest-removal refund recovery - manual reconciliation required",
     });
 
+    // Collect a removal-induced price increase on a Stripe booking (#1042):
+    // removing a guest can invalidate a group promo and raise the price of the
+    // remaining guests. Reuse the batch flow's additional-intent helper; the
+    // payer is always the booking owner (result.memberId), whose booking page
+    // surfaces the pending additional payment via AdditionalPaymentCard.
+    // No-op when nothing is owed or the payment is not a captured Stripe
+    // payment (Internet Banking increases bill via the Xero supplementary
+    // invoice below, unchanged).
+    const { additionalPaymentClientSecret, additionalPaymentIntentId } =
+      await createModificationAdditionalPaymentIntent({
+        bookingId,
+        result,
+        reason: "guest_removal_price_increase",
+        idempotencyKey: `mod_guest_remove_${bookingId}_${result.bookingModificationId}`,
+        failureMessage:
+          "Failed to create additional PaymentIntent for guest removal",
+      });
+
     // Audit log
     logAudit({
       action: "booking.modify.guests.remove",
@@ -131,6 +152,12 @@ export async function DELETE(
       // classifyXeroBookingEditSettlement when this is null.
       settlementAmountCents: result.xeroRefundAmountCents,
       settlementMethod: result.settlementMethod,
+      // A Stripe-collected increase must not double-bill through Xero: hold
+      // the supplementary invoice's payment recording on the Stripe intent,
+      // exactly as the batch flow does.
+      requiresAdditionalStripePayment:
+        result.xeroAdditionalAmountCents > 0 && result.hasSucceededPayment,
+      additionalPaymentIntentId,
     }).catch((err) =>
       logger.error({ err, bookingId }, "Failed to queue Xero settlement for guest removal")
     );
@@ -156,19 +183,23 @@ export async function DELETE(
         refundAmountCents: result.refundAmountCents,
         accountCreditAmountCents: result.accountCreditAmountCents,
         // Removing a guest can raise the price when it invalidates a group
-        // promo the remaining guests relied on. Only the issued-invoice
-        // (Internet Banking) path actually bills that increase — via a Xero
-        // supplementary invoice — so only surface it there. On a Stripe booking
-        // this endpoint has no mechanism to collect it (tracked in #1042), and
-        // an "additional payment required" note with no way to pay is worse
-        // than saying nothing; the price change still shows via old/new total.
-        additionalAmountCents: result.hasIssuedXeroInvoice
-          ? result.additionalAmountCents
-          : 0,
+        // promo the remaining guests relied on. Surface the increase when a
+        // way to pay it exists: the Xero supplementary invoice on the
+        // issued-invoice (Internet Banking) path, or the additional
+        // PaymentIntent now created for captured Stripe payments (#1042). If
+        // Stripe intent creation failed, stay silent — an "additional payment
+        // required" note with no way to pay is worse than saying nothing; the
+        // price change still shows via old/new total.
+        additionalAmountCents:
+          result.hasIssuedXeroInvoice || additionalPaymentIntentId
+            ? result.additionalAmountCents
+            : 0,
         additionalPaymentMethod:
-          result.hasIssuedXeroInvoice && result.additionalAmountCents > 0
-            ? "INTERNET_BANKING"
-            : undefined,
+          result.additionalAmountCents > 0 && additionalPaymentIntentId
+            ? "STRIPE"
+            : result.hasIssuedXeroInvoice && result.additionalAmountCents > 0
+              ? "INTERNET_BANKING"
+              : undefined,
       }).catch((err) =>
         logger.error({ err, bookingId }, "Failed to send booking modified email")
       );
@@ -183,6 +214,16 @@ export async function DELETE(
       settlementMethod: result.settlementMethod,
       policyRetainedAmountCents: result.policyRetainedAmountCents,
       stripeRefundId: stripeRefundId ?? null,
+      additionalAmountCents: result.additionalAmountCents,
+      // The payer is the booking owner. Hand the client secret only to them
+      // (or an admin acting on their behalf); a linked guest self-removing
+      // must not receive a secret for someone else's payment — the owner
+      // completes it from their booking page instead.
+      additionalPaymentClientSecret:
+        session.user.id === result.memberId ||
+        authorizationRoleFromAccessRoles(session.user) === "ADMIN"
+          ? additionalPaymentClientSecret ?? null
+          : null,
       promoRemoved: result.promoRemoved,
       choreWarnings: result.choreWarnings,
     });

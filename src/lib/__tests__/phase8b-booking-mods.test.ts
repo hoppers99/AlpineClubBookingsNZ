@@ -19,6 +19,8 @@ const mockValidateAndCalculatePromoDiscount = vi.hoisted(() =>
 );
 const mockRefundPaymentTransactions = vi.fn();
 const mockUpsertPaymentIntentTransaction = vi.fn();
+const mockCreatePaymentIntent = vi.fn();
+const mockFindOrCreateCustomer = vi.fn();
 const mockEnqueueXeroBookingInvoiceUpdateOperation = vi.fn().mockResolvedValue({ queueOperationId: "op_booking_update", message: "queued" });
 const mockEnqueueXeroSupplementaryInvoiceOperation = vi.fn().mockResolvedValue({ queueOperationId: "op_supplementary", message: "queued" });
 const mockEnqueueXeroModificationCreditNoteOperation = vi.fn().mockResolvedValue({ queueOperationId: "op_mod_credit_note", message: "queued" });
@@ -88,7 +90,11 @@ vi.mock("@/lib/promo", () => ({
   deletePromoRedemptionAndAdjustCount: vi.fn(),
   getMemberFreeNightsUsed: vi.fn().mockResolvedValue(0),
 }));
-vi.mock("@/lib/stripe", () => ({ processRefund: vi.fn() }));
+vi.mock("@/lib/stripe", () => ({
+  processRefund: vi.fn(),
+  createPaymentIntent: (...args: unknown[]) => mockCreatePaymentIntent(...args),
+  findOrCreateCustomer: (...args: unknown[]) => mockFindOrCreateCustomer(...args),
+}));
 vi.mock("@/lib/payment-transactions", () => ({
   refundPaymentTransactions: (...args: unknown[]) =>
     mockRefundPaymentTransactions(...args),
@@ -1551,6 +1557,204 @@ describe("DELETE /api/bookings/[id]/guests/[guestId]", () => {
       undefined,
       expect.anything(),
       "p1",
+    );
+  });
+
+  // --- #1042: removal-induced price increases are collected ---
+
+  function makePromoIncreaseBooking(overrides: Record<string, unknown> = {}) {
+    // Paid 8000 with a group promo; removing g2 drops the party below the
+    // promo minimum, so the remaining guest reprices to 10000 => +2000.
+    return makeBooking({
+      status: "PAID",
+      checkIn: new Date("2026-08-10"),
+      checkOut: new Date("2026-08-12"),
+      totalPriceCents: 10000,
+      promoAdjustmentCents: -2000,
+      finalPriceCents: 8000,
+      payment: {
+        id: "p1",
+        bookingId: "bk1",
+        amountCents: 8000,
+        source: "STRIPE",
+        status: "SUCCEEDED",
+        stripePaymentIntentId: "pi_123",
+        stripeCustomerId: null,
+        xeroInvoiceId: null,
+        refundedAmountCents: 0,
+        changeFeeCents: 0,
+      },
+      promoRedemption: {
+        id: "pr1",
+        promoCodeId: "promo1",
+        guestTargets: [],
+        promoCode: { id: "promo1", assignments: [] },
+      },
+      ...overrides,
+    });
+  }
+
+  function mockPromoInvalidatedRepricing() {
+    mockedCalcPrice.mockReturnValue({
+      totalPriceCents: 10000,
+      guests: [{ priceCents: 10000, perNightCents: [5000, 5000] }],
+    } as any);
+    mockValidateAndCalculatePromoDiscount.mockResolvedValueOnce({
+      error: "Party is below the promo's minimum group size",
+      discount: null,
+    } as any);
+    mockCreatePaymentIntent.mockResolvedValue({
+      id: "pi_add_1",
+      client_secret: "cs_add_1",
+    });
+    mockFindOrCreateCustomer.mockResolvedValue({ id: "cus_1" });
+  }
+
+  it("collects a promo-invalidation price increase via an additional PaymentIntent (#1042)", async () => {
+    mockedAuth.mockResolvedValue({ user: { id: "m1", role: "MEMBER", accessRoles: [{ role: "USER" }] } } as any);
+    const booking = makePromoIncreaseBooking();
+    const tx = makeTx(booking);
+    mockTransaction.mockImplementation((fn: any) => fn(tx));
+    mockPromoInvalidatedRepricing();
+
+    const res = await DELETE(
+      new NextRequest("http://localhost/api/bookings/bk1/guests/g2", { method: "DELETE" }),
+      { params: Promise.resolve({ id: "bk1", guestId: "g2" }) },
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    expect(body.priceDiffCents).toBe(2000);
+    expect(body.additionalAmountCents).toBe(2000);
+    // The remover is the booking owner, so they get the client secret.
+    expect(body.additionalPaymentClientSecret).toBe("cs_add_1");
+
+    expect(mockCreatePaymentIntent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        amountCents: 2000,
+        customerId: "cus_1",
+        idempotencyKey: "mod_guest_remove_bk1_mod1",
+        metadata: expect.objectContaining({ reason: "guest_removal_price_increase" }),
+      }),
+    );
+    expect(mockUpsertPaymentIntentTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        paymentId: "p1",
+        paymentIntentId: "pi_add_1",
+        amountCents: 2000,
+        status: "PENDING",
+      }),
+    );
+    // The email now surfaces the collectible Stripe increase.
+    expect(sendBookingModifiedEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        additionalAmountCents: 2000,
+        additionalPaymentMethod: "STRIPE",
+      }),
+    );
+  });
+
+  it("does not hand the owner's client secret to a self-removing linked guest (#1042)", async () => {
+    mockedAuth.mockResolvedValue({ user: { id: "guest-member-1", role: "MEMBER", accessRoles: [{ role: "USER" }] } } as any);
+    const booking = makePromoIncreaseBooking({
+      guests: [
+        { id: "g1", bookingId: "bk1", firstName: "Alice", lastName: "Smith", ageTier: "ADULT", isMember: true, memberId: "m1", priceCents: 5000 },
+        { id: "g2", bookingId: "bk1", firstName: "Bob", lastName: "Jones", ageTier: "ADULT", isMember: true, memberId: "guest-member-1", priceCents: 5000 },
+      ],
+    });
+    const tx = makeTx(booking);
+    mockTransaction.mockImplementation((fn: any) => fn(tx));
+    mockPromoInvalidatedRepricing();
+
+    const res = await DELETE(
+      new NextRequest("http://localhost/api/bookings/bk1/guests/g2", { method: "DELETE" }),
+      { params: Promise.resolve({ id: "bk1", guestId: "g2" }) },
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    // The intent is still created — the payer is the booking owner, who pays
+    // from their booking page — but the secret is not returned to the remover.
+    expect(body.additionalPaymentClientSecret).toBeNull();
+    expect(body.additionalAmountCents).toBe(2000);
+    expect(mockCreatePaymentIntent).toHaveBeenCalledWith(
+      expect.objectContaining({ amountCents: 2000 }),
+    );
+    // Customer lookup uses the owner's identity, not the remover's.
+    expect(mockFindOrCreateCustomer).toHaveBeenCalledWith(
+      expect.objectContaining({ memberId: "m1", email: "alice@test.com" }),
+    );
+    expect(sendBookingModifiedEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        additionalAmountCents: 2000,
+        additionalPaymentMethod: "STRIPE",
+      }),
+    );
+  });
+
+  it("creates no additional intent when the removal does not change the price (#1042)", async () => {
+    mockedAuth.mockResolvedValue({ user: { id: "m1", role: "MEMBER", accessRoles: [{ role: "USER" }] } } as any);
+    const booking = makeBooking({
+      status: "PAID",
+      checkIn: new Date("2026-08-10"),
+      checkOut: new Date("2026-08-12"),
+      finalPriceCents: 10000,
+    });
+    const tx = makeTx(booking);
+    mockTransaction.mockImplementation((fn: any) => fn(tx));
+    // Repricing lands exactly on the old final price: zero delta.
+    mockedCalcPrice.mockReturnValue({
+      totalPriceCents: 10000,
+      guests: [{ priceCents: 10000, perNightCents: [5000, 5000] }],
+    } as any);
+
+    const res = await DELETE(deleteWithMethod("g2"), {
+      params: Promise.resolve({ id: "bk1", guestId: "g2" }) },
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    expect(body.additionalAmountCents).toBe(0);
+    expect(body.additionalPaymentClientSecret).toBeNull();
+    expect(mockCreatePaymentIntent).not.toHaveBeenCalled();
+  });
+
+  it("keeps billing Internet Banking increases via the Xero supplementary invoice (#1042)", async () => {
+    mockedAuth.mockResolvedValue({ user: { id: "m1", role: "MEMBER", accessRoles: [{ role: "USER" }] } } as any);
+    const booking = makePromoIncreaseBooking({
+      payment: {
+        id: "p1",
+        bookingId: "bk1",
+        amountCents: 8000,
+        source: "INTERNET_BANKING",
+        status: "SUCCEEDED",
+        stripePaymentIntentId: null,
+        stripeCustomerId: null,
+        xeroInvoiceId: "inv_primary",
+        refundedAmountCents: 0,
+        changeFeeCents: 0,
+      },
+    });
+    const tx = makeTx(booking);
+    mockTransaction.mockImplementation((fn: any) => fn(tx));
+    mockPromoInvalidatedRepricing();
+
+    const res = await DELETE(
+      new NextRequest("http://localhost/api/bookings/bk1/guests/g2", { method: "DELETE" }),
+      { params: Promise.resolve({ id: "bk1", guestId: "g2" }) },
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    // No Stripe intent for a non-Stripe payment; the supplementary invoice
+    // bills the increase, unchanged from the pre-#1042 behaviour.
+    expect(mockCreatePaymentIntent).not.toHaveBeenCalled();
+    expect(body.additionalPaymentClientSecret).toBeNull();
+    expect(sendBookingModifiedEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        additionalAmountCents: 2000,
+        additionalPaymentMethod: "INTERNET_BANKING",
+      }),
     );
   });
 });

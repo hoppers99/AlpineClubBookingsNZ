@@ -50,6 +50,7 @@ export type RemoveBookingGuestResult = {
   settlementMethod: BookingModificationSettlementMethod | null;
   policyRetainedAmountCents: number;
   xeroRefundAmountCents: number;
+  xeroAdditionalAmountCents: number;
   hasSucceededPayment: boolean;
   hasIssuedXeroInvoice: boolean;
   paymentStatus: string | null;
@@ -411,6 +412,7 @@ export async function removeBookingGuestInTransaction({
     settlementMethod: paymentImpact.settlementMethod,
     policyRetainedAmountCents: paymentImpact.policyRetainedAmountCents,
     xeroRefundAmountCents: paymentImpact.xeroRefundAmountCents,
+    xeroAdditionalAmountCents: paymentImpact.xeroAdditionalAmountCents,
     hasSucceededPayment: paymentImpact.hasSucceededPayment,
     hasIssuedXeroInvoice: paymentImpact.hasIssuedXeroInvoice,
     paymentStatus: booking.payment?.status ?? null,
