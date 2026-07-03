@@ -940,7 +940,7 @@ export function adminCapacityWarningTemplate(days: Array<{
   date: Date;
   occupiedBeds: number;
   availableBeds: number;
-}>, lodgeCapacity = FALLBACK_LODGE_CAPACITY): string {
+}>, lodgeCapacity = FALLBACK_LODGE_CAPACITY, lodgeName?: string | null): string {
   const tableRowsHtml = days
     .map((d) => {
       const pct =
@@ -959,7 +959,7 @@ export function adminCapacityWarningTemplate(days: Array<{
     .join("");
 
   return layout(`
-    ${heading("Capacity Warning")}
+    ${heading(lodgeName ? `Capacity Warning — ${escapeHtml(lodgeName)}` : "Capacity Warning")}
     ${alertBox(days.length + " day" + (days.length > 1 ? "s" : "") + " in the next 14 days have high occupancy.", "warning")}
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border: 1px solid ${BORDER_COLOR}; border-radius: 6px; border-collapse: collapse; margin: 16px 0;">
       <tr>
