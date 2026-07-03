@@ -169,6 +169,16 @@ with null-tolerant filters; cross-lodge mutations are rejected.
   allocator; roster pages and print views take lodge context from the
   kiosk/staff session's lodge.
 
+*Progress note (2026-07-03):* the **admin** roster surface
+(`/admin/roster` and its print view) had been missed by the phase 7
+retrofit — the route hardwired the default lodge and the page had no
+picker, so admins could only ever see the default lodge's roster. The
+route now accepts `?lodgeId=` (validated active lodge, 400 otherwise,
+default-lodge fallback when omitted) across GET and every mutation, and
+the page carries the standard `LodgeSelect` + URL lodge context through
+fetches, mutations, and the print link. Kiosk roster routes were already
+lodge-bound and are unchanged.
+
 **Risk: Medium.**
 
 ## Phase 6 — Promo codes

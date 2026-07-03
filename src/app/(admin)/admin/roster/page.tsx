@@ -7,6 +7,11 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import {
+  LodgeSelect,
+  initialLodgeIdFromLocation,
+  useLodgeOptions,
+} from "@/components/lodge-select"
 import { formatDateOnly, getTodayDateOnly } from "@/lib/date-only"
 
 interface Guest {
@@ -71,14 +76,34 @@ export default function RosterPage() {
   const [saving, setSaving] = useState(false)
   const [includeNonEssential, setIncludeNonEssential] = useState<boolean | null>(null)
   const [sendingEmail, setSendingEmail] = useState(false)
+  // Lodge context for the roster; LodgeSelect renders nothing (and reports
+  // the sole lodge) while fewer than two lodges exist (ADR-002).
+  const { lodges, loading: lodgesLoading } = useLodgeOptions("admin")
+  const [lodgeId, setLodgeId] = useState<string | null>(initialLodgeIdFromLocation)
 
-  const fetchRoster = useCallback(async (date: string) => {
+  const rosterUrl = useCallback(
+    (date: string, params: Record<string, string> = {}) => {
+      const query = new URLSearchParams(params)
+      if (lodgeId) query.set("lodgeId", lodgeId)
+      const queryString = query.toString()
+      return `/api/admin/roster/${encodeURIComponent(date)}${queryString ? `?${queryString}` : ""}`
+    },
+    [lodgeId],
+  )
+
+  const fetchRoster = useCallback(async (date: string, signal?: AbortSignal) => {
     setLoading(true)
     setError("")
     try {
-      let url = `/api/admin/roster/${date}?`
-      if (includeNonEssential !== null) url += `includeNonEssential=${includeNonEssential}`
-      const res = await fetch(url)
+      const res = await fetch(
+        rosterUrl(
+          date,
+          includeNonEssential !== null
+            ? { includeNonEssential: String(includeNonEssential) }
+            : {},
+        ),
+        { signal },
+      )
       if (!res.ok) {
         const data = await res.json()
         throw new Error(data.error || "Failed to fetch roster")
@@ -86,22 +111,26 @@ export default function RosterPage() {
       const data: RosterData = await res.json()
       setRoster(data)
     } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return
       setError(err instanceof Error ? err.message : "Unknown error")
     } finally {
       setLoading(false)
     }
-  }, [includeNonEssential])
+  }, [includeNonEssential, rosterUrl])
 
   useEffect(() => {
-    if (selectedDate) {
-      fetchRoster(selectedDate)
-    }
+    if (!selectedDate) return
+    // Abort the in-flight request when the date or lodge changes so a slow
+    // earlier response cannot overwrite the newer selection.
+    const controller = new AbortController()
+    fetchRoster(selectedDate, controller.signal)
+    return () => controller.abort()
   }, [selectedDate, fetchRoster])
 
   async function handleReassign(assignmentId: string, bookingGuestId: string) {
     setSaving(true)
     try {
-      const res = await fetch(`/api/admin/roster/${selectedDate}`, {
+      const res = await fetch(rosterUrl(selectedDate), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "reassign", assignmentId, bookingGuestId }),
@@ -119,7 +148,7 @@ export default function RosterPage() {
     if (!confirm("Remove this person from the chore?")) return
     setSaving(true)
     try {
-      const res = await fetch(`/api/admin/roster/${selectedDate}`, {
+      const res = await fetch(rosterUrl(selectedDate), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "remove", assignmentId }),
@@ -152,7 +181,7 @@ export default function RosterPage() {
     setSaving(true)
     setError("")
     try {
-      const res = await fetch(`/api/admin/roster/${selectedDate}`, {
+      const res = await fetch(rosterUrl(selectedDate), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -178,7 +207,7 @@ export default function RosterPage() {
     const guest = roster.guests[0]
     setSaving(true)
     try {
-      const res = await fetch(`/api/admin/roster/${selectedDate}`, {
+      const res = await fetch(rosterUrl(selectedDate), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -201,7 +230,7 @@ export default function RosterPage() {
     if (!confirm("Confirm all suggested assignments? This marks them as final.")) return
     setSaving(true)
     try {
-      const res = await fetch(`/api/admin/roster/${selectedDate}`, {
+      const res = await fetch(rosterUrl(selectedDate), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "confirm" }),
@@ -219,7 +248,7 @@ export default function RosterPage() {
     if (!confirm("Send chore roster email to all guests for this date?")) return
     setSendingEmail(true)
     try {
-      const res = await fetch(`/api/admin/roster/${selectedDate}`, {
+      const res = await fetch(rosterUrl(selectedDate), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "email" }),
@@ -292,8 +321,16 @@ export default function RosterPage() {
           </p>
         </div>
         <div className="flex items-center space-x-3">
+          <LodgeSelect
+            lodges={lodges}
+            value={lodgeId}
+            onChange={setLodgeId}
+            loading={lodgesLoading}
+          />
           <a
-            href={`/admin/roster/${selectedDatePathSegment}/print`}
+            href={`/admin/roster/${selectedDatePathSegment}/print${
+              lodgeId ? `?lodgeId=${encodeURIComponent(lodgeId)}` : ""
+            }`}
             target="_blank"
             rel="noopener noreferrer"
           >
