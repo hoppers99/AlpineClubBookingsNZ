@@ -366,6 +366,15 @@ up.
   no safety pressure forcing it because an unconfigured lodge resolves to
   capacity 0 (phase 3).
 
+  *Progress note (2026-07-03):* delivered at `/admin/lodges/[id]/setup`.
+  Creating a lodge redirects into the wizard; the hub gains a "Setup
+  wizard" button; every step is skippable. Rooms/lockers steps quick-seed
+  via the existing bulk endpoints with lodge-name-prefixed defaults
+  (names stay club-wide unique until the contract release); seasons and
+  chores copy from an existing lodge through the standard admin create
+  routes with per-item failure reporting. UI-only composition — no new
+  server surface; browser-verified end to end (see ADR-003 update).
+
 ## Standing Rules for Every Phase
 
 - Follow `agents/CODEX_WORKFLOW.md`: one branch per issue-scoped change,

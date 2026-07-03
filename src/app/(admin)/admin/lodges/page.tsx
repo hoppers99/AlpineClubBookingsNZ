@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { Building2, Pencil, Plus, Settings2, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -50,6 +51,7 @@ function formPayload(form: LodgeFormState) {
 }
 
 export default function AdminLodgesPage() {
+  const router = useRouter();
   const [lodges, setLodges] = useState<LodgeRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -121,6 +123,13 @@ export default function AdminLodgesPage() {
           error?: string;
         } | null;
         throw new Error(data?.error ?? "Failed to save lodge");
+      }
+      if (creating) {
+        // A new lodge lands straight in the guided setup wizard; identity is
+        // pre-filled there and every remaining step can be skipped.
+        const data = (await response.json()) as { lodge: LodgeRecord };
+        router.push(`/admin/lodges/${encodeURIComponent(data.lodge.id)}/setup`);
+        return;
       }
       cancelEdit();
       await loadLodges();

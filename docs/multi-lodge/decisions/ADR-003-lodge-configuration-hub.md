@@ -67,6 +67,16 @@ the surface, and phase 3's capacity rule (an unconfigured lodge resolves
 to capacity 0) means there is no safety pressure to force setup through a
 wizard.
 
+*Update (2026-07-03):* the wizard was subsequently built exactly on
+these building blocks at `/admin/lodges/[id]/setup` — creating a lodge
+lands in it, the hub links to it, and every step is skippable. It
+composes the bulk-seed endpoints and the standard admin create routes
+(copy-from-lodge for seasons/rates and chores is a client-side read →
+create loop through those routes), so it added no new server surface.
+Steps gate on the same module flags as the hub. Default room/locker
+name prefixes include the lodge name because both stay club-wide unique
+until the phase-2 contract release.
+
 ## Consequences
 
 ### Positive

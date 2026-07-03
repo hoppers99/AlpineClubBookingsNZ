@@ -245,12 +245,19 @@ export default function LodgeConfigurationHubPage() {
             usual page filtered to this lodge.
           </p>
         </div>
-        <Button asChild variant="outline">
-          <Link href="/admin/lodges">
-            <ArrowLeft className="mr-2 h-4 w-4" />
-            All lodges
-          </Link>
-        </Button>
+        <div className="flex gap-2">
+          <Button asChild variant="outline">
+            <Link href={`/admin/lodges/${encodeURIComponent(lodgeId)}/setup`}>
+              Setup wizard
+            </Link>
+          </Button>
+          <Button asChild variant="outline">
+            <Link href="/admin/lodges">
+              <ArrowLeft className="mr-2 h-4 w-4" />
+              All lodges
+            </Link>
+          </Button>
+        </div>
       </div>
 
       <Card>
