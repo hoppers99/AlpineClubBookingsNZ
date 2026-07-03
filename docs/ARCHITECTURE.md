@@ -93,8 +93,8 @@ adopters can find the contract without reading the whole application.
 
 ### Xero integration layers
 
-`src/lib/xero.ts` is a 199-line compatibility facade for older imports. Prefer
-direct imports from the focused modules below for new code.
+`src/lib/xero.ts` is a compatibility facade (re-exports only) for older
+imports. Prefer direct imports from the focused modules below for new code.
 [`docs/xero/ARCHITECTURE.md`](xero/ARCHITECTURE.md) maps the subsystem in
 depth: runtime dataflow, ledger data model, and sequence diagrams for the
 outbound-document, inbound-reconciliation, and repair flows.
@@ -525,6 +525,7 @@ disable cron with `CRON_ENABLED=false`.
 | `xero-link-backfill` | Daily | Backfill canonical Xero object links into the ledger |
 | `xero-link-cleanup` | Daily | Clean stale canonical Xero object links |
 | `xero-reconciliation-report` | Daily | Send the Xero reconciliation report |
+| `finance-daily-sync` | Daily when the finance dashboard module is enabled | Refresh finance report/invoice/balance snapshots from the operational Xero connection |
 | `data-pruning` | Daily | Prune expired tokens/logs and run audit retention |
 | `draft-cleanup` | Daily | Delete expired draft bookings |
 | `pending-deadline-alerts` | Daily | Alert admins about pending bookings approaching deadline |

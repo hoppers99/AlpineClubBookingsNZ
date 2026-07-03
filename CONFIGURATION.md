@@ -602,6 +602,7 @@ read `MemberAccessRole` rows.
 | `SES_SNS_TOPIC_ARN`                      | SNS topic ARN for SES bounce/complaint webhooks (required for full SES feedback handling when `USE_AWS_SES=true`).                                           |
 | `SES_SNS_ALLOW_UNSAFE_MISSING_TOPIC_ARN` | Local/dev escape hatch only; never enable for deployed SES feedback ingestion.                                                                               |
 | `SES_SNS_ALLOW_SIGNATURE_V1`             | Temporarily permit legacy SNS SignatureVersion 1 (SHA1). Default rejects v1; enable SignatureVersion 2 on the SNS topic and leave this unset in production.   |
+| `BULK_SENDMAIL_LIMIT`                    | Admin bulk-communication sends allowed per hour (default `1`).                                                                                               |
 
 ## Address Autocomplete
 
@@ -634,6 +635,7 @@ rate-limited, or temporarily unavailable.
 | Variable                              | Description                                                                 |
 | ------------------------------------- | --------------------------------------------------------------------------- |
 | `CRON_ENABLED`                        | Enables scheduled jobs in a runtime. Blue/green web slots set this `false`. |
+| `CRON_LEADER_RUNTIME_STATUS_URL`      | Optional internal URL Admin > System Health uses to query the cron leader's runtime status (Compose defaults to the `app` service). |
 | `WAITLIST_OFFER_HOURS`                | Waitlist offer expiry window; defaults to 48 hours.                         |
 | `GROUP_SETTLEMENT_REAP_HOURS`         | Stale organiser-pays group settlement window; defaults to 48 hours (clamped to the group's check-in, 2-hour floor). |
 | `WAITLIST_TRANSACTION_RETRY_ATTEMPTS` | Optional waitlist transaction retry count.                                  |
