@@ -313,6 +313,7 @@ export async function reissuePaymentLinkForToken(
   await sendBookingRequestApprovedEmail({
     email: booking.member.email,
     firstName: booking.member.firstName,
+    lodgeId: booking.lodgeId ?? null,
     token: freshToken,
     checkIn: booking.checkIn,
     checkOut: booking.checkOut,

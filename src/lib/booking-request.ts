@@ -44,7 +44,11 @@ import {
   priceBookingGuests,
   toSeasonRateData,
 } from "@/lib/policies/booking-route-decisions";
-import { getDefaultLodgeId } from "@/lib/lodges";
+import {
+  getDefaultLodgeId,
+  lodgeNullTolerantScope,
+  lodgeOrderBy,
+} from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 import { ageTierEnum } from "@/lib/age-tier-schema";
 import { nameField } from "@/lib/zod-helpers";
@@ -135,6 +139,63 @@ export async function getBookingRequestSettings(db: Pick<typeof prisma, "booking
   };
 }
 
+/**
+ * Active lodges a public requester may choose between. Presentation rule
+ * (docs/multi-lodge/decisions/ADR-002): a single-lodge club never surfaces
+ * lodge copy, so this returns an empty list unless two or more lodges are
+ * active. Public endpoint data — expose only id and name.
+ */
+export async function getPublicBookingRequestLodges(
+  db: Pick<typeof prisma, "lodge"> = prisma
+): Promise<Array<{ id: string; name: string }>> {
+  const lodges = await db.lodge.findMany({
+    where: { active: true },
+    orderBy: lodgeOrderBy(),
+    select: { id: true, name: true },
+  });
+  return lodges.length >= 2 ? lodges : [];
+}
+
+/**
+ * Validate an optional requester-supplied lodge selection. A provided id must
+ * name an ACTIVE lodge; an omitted id returns null, which downstream readers
+ * treat as the club's default lodge (BookingRequest.lodgeId null semantics).
+ */
+export async function assertRequestedLodgeActive(
+  lodgeId: string | null | undefined,
+  db: Pick<typeof prisma, "lodge"> = prisma
+): Promise<string | null> {
+  if (!lodgeId) return null;
+  const lodge = await db.lodge.findUnique({
+    where: { id: lodgeId },
+    select: { id: true, active: true },
+  });
+  if (!lodge?.active) {
+    throw new BookingRequestError("Lodge not found or not active", 400);
+  }
+  return lodge.id;
+}
+
+/**
+ * Lodge name for public booking request summaries (verify/respond pages).
+ * Presentation-only (ADR-002): returns null when the request carries no
+ * explicit lodge or when the club has fewer than two active lodges, so a
+ * single-lodge club never sees lodge copy.
+ */
+export async function resolvePublicRequestLodgeName(
+  lodgeId: string | null | undefined,
+  db: Pick<typeof prisma, "lodge"> = prisma
+): Promise<string | null> {
+  if (!lodgeId) return null;
+  const activeLodgeCount = await db.lodge.count({ where: { active: true } });
+  if (activeLodgeCount < 2) return null;
+  const lodge = await db.lodge.findUnique({
+    where: { id: lodgeId },
+    select: { name: true },
+  });
+  return lodge?.name ?? null;
+}
+
 export async function updateBookingRequestSettings(input: {
   showPricingToNonMembers: boolean;
   quoteResponseTtlDays: number;
@@ -188,17 +249,22 @@ export async function updateBookingRequestSettings(input: {
 /**
  * Price a guest list at the public non-member rates for the given range.
  * Returns null when no active season covers the dates (no rate available).
+ * Prices against the requested lodge's seasons; a null lodgeId means the
+ * club's default lodge (BookingRequest.lodgeId null semantics).
  */
 export async function calculateIndicativeNonMemberPriceCents(input: {
   checkIn: Date;
   checkOut: Date;
   guests: Array<{ ageTier: AgeTier }>;
+  lodgeId?: string | null;
 }): Promise<number | null> {
+  const pricingLodgeId = input.lodgeId ?? (await getDefaultLodgeId(prisma));
   const seasons = await prisma.season.findMany({
     where: {
       active: true,
       startDate: { lte: input.checkOut },
       endDate: { gte: input.checkIn },
+      ...lodgeNullTolerantScope(pricingLodgeId),
     },
     include: { rates: true },
   });
@@ -233,6 +299,12 @@ export interface CreateBookingRequestInput {
   checkOut: Date;
   guests: BookingRequestGuest[];
   message?: string | null;
+  /**
+   * Lodge the stay is requested at. Callers must validate it names an ACTIVE
+   * lodge (assertRequestedLodgeActive). Null/omitted means the club's default
+   * lodge (BookingRequest.lodgeId null semantics).
+   */
+  lodgeId?: string | null;
 }
 
 /**
@@ -251,12 +323,14 @@ export async function createBookingRequest(input: CreateBookingRequestInput) {
     throw new BookingRequestError("At least one guest is required", 422);
   }
 
+  const requestedLodgeId = input.lodgeId ?? null;
   const settings = await getBookingRequestSettings();
   const indicativePriceCents = settings.showPricingToNonMembers
     ? await calculateIndicativeNonMemberPriceCents({
         checkIn: input.checkIn,
         checkOut: input.checkOut,
         guests: input.guests,
+        lodgeId: requestedLodgeId,
       })
     : null;
 
@@ -276,6 +350,7 @@ export async function createBookingRequest(input: CreateBookingRequestInput) {
       guests: input.guests,
       message: cleanNullableString(input.message),
       indicativePriceCents,
+      lodgeId: requestedLodgeId,
       verificationTokenHash: tokenHash,
       verificationTokenExpiresAt,
     },
@@ -290,6 +365,7 @@ export async function createBookingRequest(input: CreateBookingRequestInput) {
       checkOut: input.checkOut,
       guestCount: input.guests.length,
       expiresAt: verificationTokenExpiresAt,
+      lodgeId: input.lodgeId ?? null,
     });
   } catch (err) {
     logger.error(
@@ -312,6 +388,7 @@ export async function createBookingRequest(input: CreateBookingRequestInput) {
       guestCount: input.guests.length,
       indicativePriceCents,
       pricingShown: settings.showPricingToNonMembers,
+      lodgeId: requestedLodgeId,
     },
   });
 
@@ -503,6 +580,7 @@ export async function declineBookingRequest(input: {
       checkIn: request.checkIn,
       checkOut: request.checkOut,
       reason: declineReason,
+      lodgeId: request.lodgeId ?? null,
     });
   } catch (err) {
     logger.error(
@@ -641,8 +719,8 @@ export async function approveBookingRequest(input: {
     conversion = await prisma.$transaction(async (tx) => {
       // Per-lodge advisory lock serialises booking creation paths for the
       // request's lodge so the capacity check below stays safe (same helper
-      // as booking-create.ts).
-      const requestLodgeId = await getDefaultLodgeId(tx);
+      // as booking-create.ts). A null lodgeId means the club's default lodge.
+      const requestLodgeId = request.lodgeId ?? (await getDefaultLodgeId(tx));
       await acquireLodgeCapacityLock(tx, requestLodgeId);
 
       // Status-claim so two admins cannot approve concurrently.
@@ -825,6 +903,7 @@ export async function approveBookingRequest(input: {
       checkIn: request.checkIn,
       checkOut: request.checkOut,
       guestCount: guests.length,
+      lodgeId: request.lodgeId ?? null,
       priceCents,
       bookingReference: conversion.bookingId,
       expiresAt: paymentLinkExpiresAt,
@@ -962,11 +1041,18 @@ function parseAdminTeachers(raw: unknown) {
   return parsed.success ? parsed.data : [];
 }
 
-export function serializeBookingRequestForAdmin(request: BookingRequest) {
+export function serializeBookingRequestForAdmin(
+  request: BookingRequest & { lodge?: { name: string } | null }
+) {
   return {
     id: request.id,
     type: request.type,
     status: request.status,
+    // Null lodgeId means the club's default lodge (pre-multi-lodge rows and
+    // single-lodge submissions); lodgeName is only present when the caller
+    // included the lodge relation.
+    lodgeId: request.lodgeId,
+    lodgeName: request.lodge?.name ?? null,
     schoolName: request.schoolName,
     teachers: parseAdminTeachers(request.teachers),
     cateringPreference: request.cateringPreference,

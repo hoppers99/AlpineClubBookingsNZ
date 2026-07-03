@@ -681,6 +681,9 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
       canManageRoster: true,
       canMarkAttendance: true,
       canCompleteChores: true,
+      // Single-lodge club: the kiosk header lodge name stays hidden
+      // (ADR-002 presentation rule).
+      lodgeName: null,
     });
   });
 

@@ -36,7 +36,8 @@ type ParsedEmbedToken = {
 
 const EMBED_TOKEN_REGEX =
   /\{\{\s*(committee-members-cards|member-application-form|contact-form|join-apply-form|skifield-conditions|skifield-whakapapa|photo-gallery|photo-slideshow)(?:\s*:\s*([^{}]+?))?\s*\}\}|\{\s*(committee-members-cards|member-application-form|contact-form|join-apply-form|skifield-conditions|skifield-whakapapa)(?:\s*:\s*([^{}]+?))?\s*\}/gi;
-const TEXT_TOKEN_REGEX = /\{\{\s*(lodge-capacity|club-name|currency)\s*\}\}/gi;
+const TEXT_TOKEN_REGEX =
+  /\{\{\s*(lodge-capacity|club-name|currency)(?:\s*:\s*([^{}]+?))?\s*\}\}/gi;
 
 function escapeHtmlText(value: string): string {
   return value
@@ -47,29 +48,75 @@ function escapeHtmlText(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
+/**
+ * {{lodge-capacity}} resolves the default lodge's capacity (the pre-
+ * multi-lodge behaviour); {{lodge-capacity:lodge-slug}} resolves the named
+ * lodge's capacity so multi-lodge pages can state each property's size.
+ * An unknown slug falls back to the default lodge rather than rendering
+ * a broken page.
+ */
+async function resolveLodgeCapacityToken(
+  parameter: string | undefined,
+): Promise<number> {
+  if (parameter) {
+    try {
+      const { prisma } = await import("@/lib/prisma");
+      const lodge = await prisma.lodge.findUnique({
+        where: { slug: parameter },
+        select: { id: true },
+      });
+      if (lodge) {
+        const { getLodgeCapacity } = await import("@/lib/lodge-capacity");
+        return await getLodgeCapacity(lodge.id);
+      }
+    } catch {
+      // fall through to the default lodge
+    }
+  }
+  return getDefaultLodgeCapacity();
+}
+
 async function resolveTextTokens(contentHtml: string): Promise<string> {
   TEXT_TOKEN_REGEX.lastIndex = 0;
-  if (!TEXT_TOKEN_REGEX.test(contentHtml)) {
+  const matches = Array.from(contentHtml.matchAll(TEXT_TOKEN_REGEX));
+  if (matches.length === 0) {
     return contentHtml;
   }
 
-  TEXT_TOKEN_REGEX.lastIndex = 0;
-  const lodgeCapacity = contentHtml.match(/\{\{\s*lodge-capacity\s*\}\}/i)
-    ? await getDefaultLodgeCapacity()
-    : null;
+  // Pre-resolve each distinct lodge-capacity parameter (the replace
+  // callback below is synchronous).
+  const capacityParams = new Set(
+    matches
+      .filter((match) => match[1].toLowerCase() === "lodge-capacity")
+      .map((match) => (match[2] ?? "").trim().toLowerCase()),
+  );
+  const capacityByParam = new Map<string, number>();
+  for (const param of capacityParams) {
+    capacityByParam.set(
+      param,
+      await resolveLodgeCapacityToken(param || undefined),
+    );
+  }
 
-  return contentHtml.replace(TEXT_TOKEN_REGEX, (_match, token: string) => {
-    switch (token.toLowerCase()) {
-      case "lodge-capacity":
-        return escapeHtmlText(String(lodgeCapacity));
-      case "club-name":
-        return escapeHtmlText(CLUB_NAME);
-      case "currency":
-        return escapeHtmlText(APP_CURRENCY);
-      default:
-        return "";
-    }
-  });
+  return contentHtml.replace(
+    TEXT_TOKEN_REGEX,
+    (_match, token: string, parameter?: string) => {
+      switch (token.toLowerCase()) {
+        case "lodge-capacity": {
+          const value = capacityByParam.get(
+            (parameter ?? "").trim().toLowerCase(),
+          );
+          return escapeHtmlText(String(value ?? ""));
+        }
+        case "club-name":
+          return escapeHtmlText(CLUB_NAME);
+        case "currency":
+          return escapeHtmlText(APP_CURRENCY);
+        default:
+          return "";
+      }
+    },
+  );
 }
 
 function parseTokenMatch(match: RegExpMatchArray): ParsedEmbedToken {

@@ -430,7 +430,13 @@ describe("multi-lodge capacity scoping", () => {
       LODGE_B,
       twoLodgeDb({
         lodgeSettings: {
-          findUnique: vi.fn().mockResolvedValue({ capacity: 42, lodgeId: LODGE_A }),
+          // Id-keyed like the per-lodge read path: LODGE_B has no row of
+          // its own; the legacy "default" row is linked to LODGE_A.
+          findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
+            where.id === "default"
+              ? { capacity: 42, lodgeId: LODGE_A }
+              : null,
+          ),
         },
       }),
     );

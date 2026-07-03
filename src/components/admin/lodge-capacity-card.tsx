@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { LodgeSelect, useLodgeOptions } from "@/components/lodge-select";
 import { useScrollToFeedback } from "@/hooks/use-scroll-to-feedback";
 
 interface LodgeSettingsResponse {
@@ -21,6 +22,11 @@ interface LodgeSettingsResponse {
 }
 
 export function LodgeCapacityCard() {
+  // Per-lodge capacity override scope (lodge-scoping contract); the picker
+  // renders nothing while fewer than two lodges exist (ADR-002). The
+  // hut-leader lookahead stays club-wide whichever lodge is selected.
+  const { lodges, loading: lodgesLoading } = useLodgeOptions("admin");
+  const [lodgeId, setLodgeId] = useState<string | null>(null);
   const [clubConfigCapacity, setClubConfigCapacity] = useState<number | null>(
     null,
   );
@@ -38,9 +44,12 @@ export function LodgeCapacityCard() {
     setLoading(true);
     setError("");
     try {
-      const response = await fetch("/api/admin/lodge-settings", {
-        credentials: "same-origin",
-      });
+      const response = await fetch(
+        lodgeId
+          ? `/api/admin/lodge-settings?lodgeId=${encodeURIComponent(lodgeId)}`
+          : "/api/admin/lodge-settings",
+        { credentials: "same-origin" },
+      );
       if (!response.ok) throw new Error("Failed to load lodge settings");
       const body = (await response.json()) as LodgeSettingsResponse;
       setClubConfigCapacity(body.clubConfigCapacity);
@@ -55,7 +64,8 @@ export function LodgeCapacityCard() {
 
   useEffect(() => {
     void load();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lodgeId]);
 
   useEffect(() => {
     if (error) scrollToError(feedbackRef);
@@ -98,7 +108,11 @@ export function LodgeCapacityCard() {
         method: "PUT",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ capacity, hutLeaderLookaheadDays }),
+        body: JSON.stringify({
+          capacity,
+          hutLeaderLookaheadDays,
+          ...(lodgeId ? { lodgeId } : {}),
+        }),
       });
       if (!response.ok) throw new Error("Failed to save lodge settings");
       const body = (await response.json()) as LodgeSettingsResponse;
@@ -123,6 +137,12 @@ export function LodgeCapacityCard() {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
+        <LodgeSelect
+          lodges={lodges}
+          value={lodgeId}
+          onChange={setLodgeId}
+          loading={lodgesLoading}
+        />
         {(error || savedMessage) && (
           <div
             ref={feedbackRef}

@@ -76,6 +76,7 @@ import {
   sendAdminSchoolManualInvoiceEmail,
 } from "@/lib/email";
 import { checkCapacityForGuestRanges } from "@/lib/capacity";
+import { getLodgeCapacity } from "@/lib/lodge-capacity";
 import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
 import {
   enqueueXeroBookingInvoiceOperation,
@@ -258,6 +259,49 @@ describe("createSchoolBookingRequest", () => {
       })
     ).rejects.toThrow(/lodge capacity/);
   });
+
+  it("stores null lodgeId (default-lodge semantics) when no lodge is requested", async () => {
+    await createSchoolBookingRequest({
+      schoolName: "New Plymouth Primary School",
+      contactFirstName: "Carol",
+      contactLastName: "Contact",
+      contactEmail: "office@school.test",
+      checkIn: CHECK_IN,
+      checkOut: CHECK_OUT,
+      teachers: [{ firstName: "Tana", lastName: "Teacher" }],
+      childCounts: { CHILD: 2 },
+    });
+
+    const data = mockedCreate.mock.calls[0][0].data as Record<string, unknown>;
+    expect(data.lodgeId).toBeNull();
+  });
+
+  it("persists an explicit lodgeId, checks that lodge's capacity, and prices at its seasons", async () => {
+    await createSchoolBookingRequest({
+      schoolName: "New Plymouth Primary School",
+      contactFirstName: "Carol",
+      contactLastName: "Contact",
+      contactEmail: "office@school.test",
+      checkIn: CHECK_IN,
+      checkOut: CHECK_OUT,
+      teachers: [{ firstName: "Tana", lastName: "Teacher" }],
+      childCounts: { CHILD: 2 },
+      lodgeId: "lodge-2",
+    });
+
+    expect(vi.mocked(getLodgeCapacity)).toHaveBeenCalledWith("lodge-2");
+    // Season lookup is scoped to the requested lodge (null-tolerant during
+    // the expand phase), never the default lodge.
+    const seasonWhere = mockedSeasonFindMany.mock.calls[0][0]!.where as Record<
+      string,
+      unknown
+    >;
+    expect(seasonWhere.OR).toEqual([{ lodgeId: "lodge-2" }, { lodgeId: null }]);
+    expect(vi.mocked(prisma.lodge.findFirst)).not.toHaveBeenCalled();
+
+    const data = mockedCreate.mock.calls[0][0].data as Record<string, unknown>;
+    expect(data.lodgeId).toBe("lodge-2");
+  });
 });
 
 describe("approveSchoolBookingRequest", () => {
@@ -392,6 +436,38 @@ describe("approveSchoolBookingRequest", () => {
       expect.objectContaining({ createdByMemberId: "admin-1" })
     );
     expect(mockedSendManualInvoice).not.toHaveBeenCalled();
+  });
+
+  it("creates the booking at the request's lodge instead of the default lodge", async () => {
+    mockedFindUnique.mockResolvedValue(
+      schoolRequest({ lodgeId: "lodge-2" }) as never
+    );
+
+    const result = await approveSchoolBookingRequest({
+      requestId: "req-school",
+      adminMemberId: "admin-1",
+    });
+
+    expect(result).toMatchObject({ type: "approved", bookingId: "booking-1" });
+    // The default-lodge resolver must not run when the request names a lodge.
+    expect(vi.mocked(prisma.lodge.findFirst)).not.toHaveBeenCalled();
+    expect(mockedCheckCapacity).toHaveBeenCalledWith(
+      "lodge-2",
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      undefined,
+      expect.anything()
+    );
+    const bookingArgs = vi.mocked(prisma.booking.create).mock.calls[0][0]
+      .data as Record<string, unknown>;
+    expect(bookingArgs.lodgeId).toBe("lodge-2");
+    // Approval repricing is scoped to the request's lodge too.
+    const seasonWhere = mockedSeasonFindMany.mock.calls[0][0]!.where as Record<
+      string,
+      unknown
+    >;
+    expect(seasonWhere.OR).toEqual([{ lodgeId: "lodge-2" }, { lodgeId: null }]);
   });
 
   it("falls back to a manual-invoice admin alert when the Xero module is off", async () => {

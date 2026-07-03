@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { checkLodgeAuth } from "@/lib/lodge-auth";
+import { checkLodgeAuth, resolveKioskLodgeId } from "@/lib/lodge-auth";
 import { getSanitizedLodgeInstructions } from "@/lib/lodge-instructions";
+import { prisma } from "@/lib/prisma";
 
 const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
@@ -36,6 +37,10 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  const documents = await getSanitizedLodgeInstructions();
+  // The kiosk is lodge-bound server-side: resolve the device's lodge the
+  // same way the other kiosk routes do, so a lodge's override documents
+  // replace the club-wide ones on that lodge's kiosk.
+  const lodgeId = await resolveKioskLodgeId(authResult, prisma);
+  const documents = await getSanitizedLodgeInstructions(lodgeId);
   return NextResponse.json({ documents });
 }

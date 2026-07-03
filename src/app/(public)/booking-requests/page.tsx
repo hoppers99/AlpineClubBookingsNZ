@@ -37,6 +37,10 @@ export default function BookingRequestPage() {
   const [checkIn, setCheckIn] = useState("");
   const [checkOut, setCheckOut] = useState("");
   const [guests, setGuests] = useState<RequestGuest[]>([emptyGuest()]);
+  // Active lodges from the public settings endpoint; empty for a
+  // single-lodge club, so no lodge copy renders (ADR-002).
+  const [lodges, setLodges] = useState<Array<{ id: string; name: string }>>([]);
+  const [lodgeId, setLodgeId] = useState("");
   const [showPricing, setShowPricing] = useState<boolean | null>(null);
   const [indicativePriceCents, setIndicativePriceCents] = useState<number | null>(null);
   const [quoteLoading, setQuoteLoading] = useState(false);
@@ -47,15 +51,24 @@ export default function BookingRequestPage() {
   useEffect(() => {
     fetch("/api/booking-requests/settings")
       .then((res) => (res.ok ? res.json() : null))
-      .then((data) => setShowPricing(Boolean(data?.showPricingToNonMembers)))
+      .then((data) => {
+        setShowPricing(Boolean(data?.showPricingToNonMembers));
+        setLodges(Array.isArray(data?.lodges) ? data.lodges : []);
+      })
       .catch(() => setShowPricing(false));
   }, []);
 
   const validGuests = guests.filter((g) => g.firstName.trim() && g.lastName.trim());
   const datesValid = Boolean(checkIn && checkOut && checkOut > checkIn);
+  const lodgeChoiceRequired = lodges.length >= 2;
 
   const fetchQuote = useCallback(async () => {
-    if (!showPricing || !datesValid || validGuests.length === 0) {
+    if (
+      !showPricing ||
+      !datesValid ||
+      validGuests.length === 0 ||
+      (lodgeChoiceRequired && !lodgeId)
+    ) {
       setIndicativePriceCents(null);
       return;
     }
@@ -64,7 +77,12 @@ export default function BookingRequestPage() {
       const res = await fetch("/api/booking-requests/quote", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ checkIn, checkOut, guests: validGuests }),
+        body: JSON.stringify({
+          checkIn,
+          checkOut,
+          guests: validGuests,
+          lodgeId: lodgeChoiceRequired ? lodgeId : undefined,
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
@@ -78,7 +96,7 @@ export default function BookingRequestPage() {
       setQuoteLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showPricing, checkIn, checkOut, JSON.stringify(validGuests)]);
+  }, [showPricing, checkIn, checkOut, lodgeChoiceRequired, lodgeId, JSON.stringify(validGuests)]);
 
   useEffect(() => {
     const timer = setTimeout(fetchQuote, 400);
@@ -102,6 +120,10 @@ export default function BookingRequestPage() {
     e.preventDefault();
     setError("");
 
+    if (lodgeChoiceRequired && !lodgeId) {
+      setError("Please choose a lodge.");
+      return;
+    }
     if (!datesValid) {
       setError("Check-out must be after check-in.");
       return;
@@ -123,6 +145,7 @@ export default function BookingRequestPage() {
           contactPhone: contactPhone || undefined,
           checkIn,
           checkOut,
+          lodgeId: lodgeChoiceRequired ? lodgeId : undefined,
           guests: validGuests,
           message: message || undefined,
         }),
@@ -221,6 +244,28 @@ export default function BookingRequestPage() {
               />
             </div>
           </div>
+
+          {lodgeChoiceRequired ? (
+            <div className="space-y-1">
+              <Label htmlFor="lodgeId">Which lodge?</Label>
+              <select
+                id="lodgeId"
+                value={lodgeId}
+                onChange={(e) => setLodgeId(e.target.value)}
+                required
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors"
+              >
+                <option value="" disabled>
+                  Choose a lodge
+                </option>
+                {lodges.map((lodge) => (
+                  <option key={lodge.id} value={lodge.id}>
+                    {lodge.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : null}
 
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-1">

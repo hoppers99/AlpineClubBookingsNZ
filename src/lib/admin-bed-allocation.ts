@@ -204,10 +204,33 @@ export function parseBedAllocationDateRange(input: {
 
 export async function getBedAllocationSettings(
   db: BedAllocationDb = prisma,
+  // Lodge scope (lodge-scoping contract): the lodge's own row (id =
+  // lodgeId) wins; else the legacy "default" row applies when unlinked or
+  // soft-linked to this lodge; else code defaults.
+  lodgeId?: string | null,
 ): Promise<BedAllocationSettingsPayload> {
+  if (lodgeId && lodgeId !== BED_ALLOCATION_SETTINGS_ID) {
+    const ownRow = await db.bedAllocationSettings.findUnique({
+      where: { id: lodgeId },
+    });
+    if (ownRow) {
+      return {
+        autoAllocationEnabled: ownRow.autoAllocationEnabled,
+        updatedByMemberId: ownRow.updatedByMemberId,
+        updatedAt: ownRow.updatedAt.toISOString(),
+      };
+    }
+  }
   const record = await db.bedAllocationSettings.findUnique({
     where: { id: BED_ALLOCATION_SETTINGS_ID },
   });
+  if (record && lodgeId && record.lodgeId && record.lodgeId !== lodgeId) {
+    return {
+      autoAllocationEnabled: true,
+      updatedByMemberId: null,
+      updatedAt: null,
+    };
+  }
 
   return {
     autoAllocationEnabled: record?.autoAllocationEnabled ?? true,
@@ -220,18 +243,38 @@ export async function updateBedAllocationSettings(input: {
   autoAllocationEnabled: boolean;
   updatedByMemberId: string;
   db?: BedAllocationDb;
+  // Lodge scope: the legacy "default" row keeps serving the lodge it was
+  // soft-linked to (and single-lodge clubs); other lodges get their own
+  // row keyed by lodge id. An unlinked legacy row is claimed on write.
+  lodgeId?: string | null;
 }): Promise<BedAllocationSettingsPayload> {
   const db = input.db ?? prisma;
-  const record = await db.bedAllocationSettings.upsert({
+  const legacy = await db.bedAllocationSettings.findUnique({
     where: { id: BED_ALLOCATION_SETTINGS_ID },
+  });
+  const targetsLegacyRow =
+    !input.lodgeId ||
+    !legacy ||
+    legacy.lodgeId === null ||
+    legacy.lodgeId === input.lodgeId;
+  const targetId = targetsLegacyRow
+    ? BED_ALLOCATION_SETTINGS_ID
+    : input.lodgeId!;
+
+  const record = await db.bedAllocationSettings.upsert({
+    where: { id: targetId },
     create: {
-      id: BED_ALLOCATION_SETTINGS_ID,
+      id: targetId,
       autoAllocationEnabled: input.autoAllocationEnabled,
       updatedByMemberId: input.updatedByMemberId,
+      lodgeId: input.lodgeId ?? null,
     },
     update: {
       autoAllocationEnabled: input.autoAllocationEnabled,
       updatedByMemberId: input.updatedByMemberId,
+      ...(input.lodgeId && (!legacy || legacy.lodgeId === null) && targetsLegacyRow
+        ? { lodgeId: input.lodgeId }
+        : {}),
     },
   });
 
@@ -950,7 +993,7 @@ export async function getBedAllocationDashboard(input: {
 }): Promise<BedAllocationDashboardPayload> {
   const db = input.db ?? prisma;
   const [settings, rooms, bookings, allocationRecords] = await Promise.all([
-    getBedAllocationSettings(db),
+    getBedAllocationSettings(db, input.lodgeId),
     listBedAllocationRooms(db, input.lodgeId),
     loadBookingRecords(input.range, db, input.lodgeId),
     loadAllocationRecords(input.range, db, input.lodgeId),

@@ -2432,12 +2432,16 @@ export async function sendBookingRequestVerificationEmail(params: {
   checkOut: Date;
   guestCount: number;
   expiresAt: Date;
+  // Lodge the request is for (multi-lodge): overlays that lodge's
+  // identity via prepareEmailMessage; null keeps club-wide identity.
+  lodgeId?: string | null;
 }) {
   const baseUrl = process.env.NEXTAUTH_URL || "http://localhost:3000";
   const verifyUrl = `${baseUrl}/booking-requests/verify/${params.token}`;
 
   await sendEmail({
     to: params.email,
+    lodgeId: params.lodgeId,
     subject: `Confirm your booking request — ${CLUB_NAME}`,
     html: bookingRequestVerificationTemplate({
       firstName: params.firstName,
@@ -2571,12 +2575,16 @@ export async function sendBookingRequestApprovedEmail(params: {
   priceCents: number;
   bookingReference: string;
   expiresAt: Date;
+  // Lodge the request is for (multi-lodge): overlays that lodge's
+  // identity via prepareEmailMessage; null keeps club-wide identity.
+  lodgeId?: string | null;
 }) {
   const baseUrl = process.env.NEXTAUTH_URL || "http://localhost:3000";
   const payUrl = `${baseUrl}/pay/${params.token}`;
 
   await sendEmail({
     to: params.email,
+    lodgeId: params.lodgeId,
     subject: `Your booking request has been approved — ${CLUB_NAME}`,
     html: bookingRequestApprovedTemplate({
       firstName: params.firstName,
@@ -2616,12 +2624,16 @@ export async function sendBookingRequestQuoteEmail(params: {
   message?: string | null;
   expiresAt: Date;
   isReminder?: boolean;
+  // Lodge the request is for (multi-lodge): overlays that lodge's
+  // identity via prepareEmailMessage; null keeps club-wide identity.
+  lodgeId?: string | null;
 }) {
   const baseUrl = process.env.NEXTAUTH_URL || "http://localhost:3000";
   const respondUrl = `${baseUrl}/booking-requests/respond/${params.token}`;
 
   await sendEmail({
     to: params.email,
+    lodgeId: params.lodgeId,
     subject: params.isReminder
       ? `Reminder: your booking quote expires soon — ${CLUB_NAME}`
       : `Your booking quote is ready — ${CLUB_NAME}`,
@@ -2661,9 +2673,13 @@ export async function sendBookingRequestDeclinedEmail(params: {
   checkIn: Date;
   checkOut: Date;
   reason?: string | null;
+  // Lodge the request is for (multi-lodge): overlays that lodge's
+  // identity via prepareEmailMessage; null keeps club-wide identity.
+  lodgeId?: string | null;
 }) {
   await sendEmail({
     to: params.email,
+    lodgeId: params.lodgeId,
     subject: `Update on your booking request — ${CLUB_NAME}`,
     html: bookingRequestDeclinedTemplate({
       firstName: params.firstName,

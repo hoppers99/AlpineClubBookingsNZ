@@ -109,6 +109,7 @@ interface WorkPartyEvent {
   startDate: string;
   endDate: string;
   discountPercent: number;
+  lodgeName: string | null;
 }
 
 interface SubscriptionStatus {
@@ -647,8 +648,13 @@ export default function BookPage() {
         .then((codes) => setAvailablePromoCodes(codes))
         .catch(() => {});
 
-      // Fetch active working bee events that overlap these dates
-      fetch(`/api/work-parties/active?checkIn=${checkInStr}&checkOut=${checkOutStr}`)
+      // Fetch active working bee events that overlap these dates; events
+      // bound to another lodge are filtered out server-side.
+      fetch(
+        `/api/work-parties/active?checkIn=${checkInStr}&checkOut=${checkOutStr}${
+          lodgeId ? `&lodgeId=${encodeURIComponent(lodgeId)}` : ""
+        }`
+      )
         .then((r) => r.ok ? r.json() : { events: [] })
         .then((data) => {
           const events: WorkPartyEvent[] = data.events || [];
@@ -1648,7 +1654,9 @@ export default function BookPage() {
                           <option value="">Select an event…</option>
                           {activeWorkPartyEvents.map((event) => (
                             <option key={event.id} value={event.id}>
-                              {event.name} ({event.startDate} – {event.endDate})
+                              {event.name}
+                              {event.lodgeName ? ` — held at ${event.lodgeName}` : ""}{" "}
+                              ({event.startDate} – {event.endDate})
                             </option>
                           ))}
                         </select>

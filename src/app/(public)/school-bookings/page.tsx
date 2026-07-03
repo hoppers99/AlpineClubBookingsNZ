@@ -1,7 +1,7 @@
 "use client";
 
 import type { AgeTier } from "@prisma/client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { CheckCircle2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -48,6 +48,10 @@ export default function SchoolBookingRequestPage() {
   const [message, setMessage] = useState("");
   const [checkIn, setCheckIn] = useState("");
   const [checkOut, setCheckOut] = useState("");
+  // Active lodges from the public settings endpoint; empty for a
+  // single-lodge club, so no lodge copy renders (ADR-002).
+  const [lodges, setLodges] = useState<Array<{ id: string; name: string }>>([]);
+  const [lodgeId, setLodgeId] = useState("");
   const [cateringPreference, setCateringPreference] = useState<
     "CATERED" | "NON_CATERED" | "QUOTE_BOTH"
   >("QUOTE_BOTH");
@@ -60,6 +64,15 @@ export default function SchoolBookingRequestPage() {
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    fetch("/api/booking-requests/settings")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => setLodges(Array.isArray(data?.lodges) ? data.lodges : []))
+      .catch(() => setLodges([]));
+  }, []);
+
+  const lodgeChoiceRequired = lodges.length >= 2;
 
   const childTierLabel = (tier: AgeTier) =>
     ageTierOptions.find((option) => option.tier === tier)?.label ?? tier;
@@ -97,6 +110,10 @@ export default function SchoolBookingRequestPage() {
       setError("Please enter the school name.");
       return;
     }
+    if (lodgeChoiceRequired && !lodgeId) {
+      setError("Please choose a lodge.");
+      return;
+    }
     if (!datesValid) {
       setError("Check-out must be after check-in.");
       return;
@@ -127,6 +144,7 @@ export default function SchoolBookingRequestPage() {
           contactPhone: contactPhone || undefined,
           checkIn,
           checkOut,
+          lodgeId: lodgeChoiceRequired ? lodgeId : undefined,
           cateringPreference,
           teachers: validTeachers.map((t) => ({
             firstName: t.firstName,
@@ -246,6 +264,24 @@ export default function SchoolBookingRequestPage() {
               />
             </div>
           </div>
+
+          {lodgeChoiceRequired ? (
+            <div className="space-y-1">
+              <Label htmlFor="lodgeId">Which lodge?</Label>
+              <Select value={lodgeId || undefined} onValueChange={setLodgeId}>
+                <SelectTrigger id="lodgeId">
+                  <SelectValue placeholder="Choose a lodge" />
+                </SelectTrigger>
+                <SelectContent>
+                  {lodges.map((lodge) => (
+                    <SelectItem key={lodge.id} value={lodge.id}>
+                      {lodge.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          ) : null}
 
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-1">

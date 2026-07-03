@@ -375,6 +375,19 @@ up.
   routes with per-item failure reporting. UI-only composition — no new
   server surface; browser-verified end to end (see ADR-003 update).
 
+## Post-audit scoping batch (2026-07-03)
+
+A full-schema audit against the scoping contract (see its "Resolved
+2026-07-03" section) delivered, in one batch on this branch: lodge-bound
+work-party events, per-lodge kiosk instructions with club-wide fallback,
+lodge-aware public/school booking requests end to end, per-lodge
+LodgeSettings/BedAllocationSettings rows (id-keyed, legacy "default" row
+preserved), the parameterised `{{lodge-capacity:slug}}` CMS token, the
+kiosk header lodge name, and lodge identity on booking-request emails.
+`BookingRequestSettings` and `BookingDefaults` are recorded as
+deliberately club-wide policy knobs; inductions, group discount, and
+skifield conditions are recorded club-wide in the contract.
+
 ## Standing Rules for Every Phase
 
 - Follow `agents/CODEX_WORKFLOW.md`: one branch per issue-scoped change,

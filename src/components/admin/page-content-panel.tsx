@@ -1774,6 +1774,10 @@ export function PageContentPanel() {
               <br />
               These text tokens are replaced with the current club name,
               currency code, and lodge capacity when the public page renders.
+              With more than one lodge, name the lodge by its slug —{" "}
+              <code>{"{{lodge-capacity:whakapapa-river-lodge}}"}</code> — to
+              show that lodge&apos;s capacity; the bare token uses the club&apos;s
+              default lodge.
             </p>
           </div>
         </DialogContent>

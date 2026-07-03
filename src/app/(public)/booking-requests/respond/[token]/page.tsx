@@ -34,6 +34,9 @@ interface QuoteContext {
   version: number;
   type: "GENERAL" | "SCHOOL";
   schoolName: string | null;
+  // Non-null only when the request names a lodge and the club has two or
+  // more active lodges (ADR-002 presentation rule).
+  lodgeName: string | null;
   contactFirstName: string;
   checkIn: string;
   checkOut: string;
@@ -178,6 +181,12 @@ export default function BookingRequestQuoteResponsePage() {
                 <p>
                   <span className="text-muted-foreground">School:</span>{" "}
                   {context.schoolName}
+                </p>
+              ) : null}
+              {context.lodgeName ? (
+                <p>
+                  <span className="text-muted-foreground">Lodge:</span>{" "}
+                  {context.lodgeName}
                 </p>
               ) : null}
               <p>

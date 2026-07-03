@@ -1203,6 +1203,7 @@ export async function verifyAndCreateNonMemberJoin(
     await sendBookingRequestApprovedEmail({
       email: join.contactEmail,
       firstName: join.contactFirstName,
+      lodgeId: groupLodgeId,
       token: payToken,
       checkIn,
       checkOut,

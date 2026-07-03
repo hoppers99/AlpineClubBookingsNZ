@@ -9,6 +9,14 @@ type LodgeSettingsRecord = {
   lodgeId?: string | null;
 };
 
+// Per-lodge conversion (lodge-scoping contract): a lodge's settings row is
+// keyed by its lodge id (`id = lodgeId`), while the legacy "default" row —
+// soft-linked to the club's original lodge in the phase-2 backfill — keeps
+// serving that lodge and any pre-conversion reader. Readers resolve: the
+// lodge's own row, else the legacy row when it is unlinked or linked to the
+// same lodge, else code defaults. hutLeaderLookaheadDays deliberately stays
+// a club-wide knob read from the legacy row.
+
 export type LodgeSettingsReader = {
   lodgeSettings?: {
     findUnique: (args: {
@@ -29,11 +37,17 @@ export function normalizeHutLeaderLookaheadDays(value: unknown): number {
 }
 
 /**
- * Reads singleton lodge settings with safe defaults. Missing delegates or query
+ * Reads lodge settings with safe defaults. Missing delegates or query
  * failures fall back to the code defaults so callers can keep rendering.
+ *
+ * With a lodgeId, capacity resolves per lodge (own row, else the legacy
+ * row when unlinked or linked to this lodge); without one, the legacy
+ * club-wide behaviour is unchanged. hutLeaderLookaheadDays always comes
+ * from the legacy row — it is a club-wide knob.
  */
 export async function loadLodgeSettings(
   db: LodgeSettingsReader = prisma,
+  lodgeId?: string | null,
 ): Promise<LodgeSettingsValues> {
   if (!db.lodgeSettings?.findUnique) {
     return {
@@ -46,11 +60,18 @@ export async function loadLodgeSettings(
     const record = await db.lodgeSettings.findUnique({
       where: { id: LODGE_SETTINGS_ID },
     });
+    const lookahead = normalizeHutLeaderLookaheadDays(
+      record?.hutLeaderLookaheadDays,
+    );
+    if (lodgeId && lodgeId !== LODGE_SETTINGS_ID) {
+      return {
+        capacity: await loadLodgeCapacityOverride(db, lodgeId),
+        hutLeaderLookaheadDays: lookahead,
+      };
+    }
     return {
       capacity: record?.capacity ?? null,
-      hutLeaderLookaheadDays: normalizeHutLeaderLookaheadDays(
-        record?.hutLeaderLookaheadDays,
-      ),
+      hutLeaderLookaheadDays: lookahead,
     };
   } catch {
     return {
@@ -65,13 +86,11 @@ export async function loadLodgeSettings(
  * resilient: a missing delegate or a query failure resolves to null so
  * capacity always falls back rather than throwing.
  *
- * The settings row is still the "default" singleton (phase-7 of
- * docs/multi-lodge/implementation-plan.md converts it to per-lodge rows), but
- * it was soft-linked to the club's lodge in the phase-2 backfill. When a
- * lodgeId is supplied, the override only applies to that lodge: a row linked
- * to a different lodge resolves null. An unlinked row (null lodgeId — old
- * data written before the backfill or by a draining old colour) keeps legacy
- * behaviour and applies.
+ * Resolution order when a lodgeId is supplied: the lodge's own settings row
+ * (id = lodgeId) wins; otherwise the legacy "default" row applies only when
+ * it is unlinked (null lodgeId — pre-backfill data or a draining old colour)
+ * or soft-linked to this same lodge. A legacy row linked to a different
+ * lodge resolves null, so one lodge's override can never leak to another.
  */
 export async function loadLodgeCapacityOverride(
   db: LodgeSettingsReader = prisma,
@@ -80,6 +99,12 @@ export async function loadLodgeCapacityOverride(
   if (!db.lodgeSettings?.findUnique) return null;
 
   try {
+    if (lodgeId && lodgeId !== LODGE_SETTINGS_ID) {
+      const ownRow = await db.lodgeSettings.findUnique({
+        where: { id: lodgeId },
+      });
+      if (ownRow) return ownRow.capacity ?? null;
+    }
     const record = await db.lodgeSettings.findUnique({
       where: { id: LODGE_SETTINGS_ID },
     });
@@ -109,24 +134,80 @@ export async function updateLodgeSettings(input: {
   capacity: number | null;
   hutLeaderLookaheadDays: number;
   updatedByMemberId: string;
+  // Lodge whose capacity override is being edited. Omitted keeps the
+  // legacy single-row behaviour. The hut-leader lookahead is club-wide
+  // and always lands on the legacy row regardless of the target lodge.
+  lodgeId?: string | null;
 }): Promise<LodgeSettingsValues & { updatedAt: Date }> {
-  return prisma.lodgeSettings.upsert({
+  const lookahead = normalizeHutLeaderLookaheadDays(
+    input.hutLeaderLookaheadDays,
+  );
+
+  const legacy = await prisma.lodgeSettings.findUnique({
     where: { id: LODGE_SETTINGS_ID },
-    create: {
-      id: LODGE_SETTINGS_ID,
-      capacity: input.capacity,
-      hutLeaderLookaheadDays: normalizeHutLeaderLookaheadDays(
-        input.hutLeaderLookaheadDays,
-      ),
-      updatedByMemberId: input.updatedByMemberId,
-    },
-    update: {
-      capacity: input.capacity,
-      hutLeaderLookaheadDays: normalizeHutLeaderLookaheadDays(
-        input.hutLeaderLookaheadDays,
-      ),
-      updatedByMemberId: input.updatedByMemberId,
-    },
-    select: { capacity: true, hutLeaderLookaheadDays: true, updatedAt: true },
+    select: { lodgeId: true },
   });
+  // The legacy row keeps serving the lodge it was soft-linked to in the
+  // phase-2 backfill (and single-lodge clubs); other lodges get their own
+  // row keyed by lodge id, so overrides can never collide.
+  const targetsLegacyRow =
+    !input.lodgeId ||
+    !legacy ||
+    legacy.lodgeId === null ||
+    legacy.lodgeId === input.lodgeId;
+
+  if (targetsLegacyRow) {
+    return prisma.lodgeSettings.upsert({
+      where: { id: LODGE_SETTINGS_ID },
+      create: {
+        id: LODGE_SETTINGS_ID,
+        capacity: input.capacity,
+        hutLeaderLookaheadDays: lookahead,
+        updatedByMemberId: input.updatedByMemberId,
+        lodgeId: input.lodgeId ?? null,
+      },
+      update: {
+        capacity: input.capacity,
+        hutLeaderLookaheadDays: lookahead,
+        updatedByMemberId: input.updatedByMemberId,
+        // An unlinked legacy row is claimed by the lodge being edited, so a
+        // later edit for a different lodge cannot overwrite this override.
+        ...(input.lodgeId && legacy?.lodgeId === null
+          ? { lodgeId: input.lodgeId }
+          : {}),
+      },
+      select: { capacity: true, hutLeaderLookaheadDays: true, updatedAt: true },
+    });
+  }
+
+  const [, ownRow] = await prisma.$transaction([
+    prisma.lodgeSettings.update({
+      where: { id: LODGE_SETTINGS_ID },
+      data: {
+        hutLeaderLookaheadDays: lookahead,
+        updatedByMemberId: input.updatedByMemberId,
+      },
+    }),
+    prisma.lodgeSettings.upsert({
+      where: { id: input.lodgeId! },
+      create: {
+        id: input.lodgeId!,
+        lodgeId: input.lodgeId!,
+        capacity: input.capacity,
+        hutLeaderLookaheadDays: lookahead,
+        updatedByMemberId: input.updatedByMemberId,
+      },
+      update: {
+        capacity: input.capacity,
+        updatedByMemberId: input.updatedByMemberId,
+      },
+      select: { capacity: true, updatedAt: true },
+    }),
+  ]);
+
+  return {
+    capacity: ownRow.capacity,
+    hutLeaderLookaheadDays: lookahead,
+    updatedAt: ownRow.updatedAt,
+  };
 }

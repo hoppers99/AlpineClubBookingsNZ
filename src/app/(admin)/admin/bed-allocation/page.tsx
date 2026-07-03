@@ -423,7 +423,10 @@ export default function AdminBedAllocationPage() {
         fetch("/api/admin/bed-allocation/settings", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ autoAllocationEnabled }),
+          body: JSON.stringify({
+            autoAllocationEnabled,
+            ...(lodgeId ? { lodgeId } : {}),
+          }),
         }),
       "Bed allocation mode saved",
     );

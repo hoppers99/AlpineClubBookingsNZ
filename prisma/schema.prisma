@@ -1240,6 +1240,13 @@ model BookingRequest {
   // adults are copied into BookingGuest.memberId on hold/acceptance.
   linkedGuestMembers Json?
 
+  // Lodge the stay is requested at (lodge-scoping contract, audited
+  // 2026-07-03). Null rows predate the column and mean the club's default
+  // lodge; readers resolve request.lodgeId ?? default. New requests always
+  // set it (the public forms offer a choice only when a second active
+  // lodge exists, ADR-002).
+  lodgeId String?
+
   // Indicative pricing shown on the public form (when enabled) at submit time.
   indicativePriceCents Int?
   // Officer-set price the requester is asked to pay on approval.
@@ -1270,6 +1277,7 @@ model BookingRequest {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  lodge            Lodge?        @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
   convertedBooking Booking?      @relation("BookingRequestConvertedBooking", fields: [convertedBookingId], references: [id], onDelete: SetNull)
   heldBooking      Booking?      @relation("BookingRequestHeldBooking", fields: [heldBookingId], references: [id], onDelete: SetNull)
   acceptedQuote    BookingRequestQuote? @relation("BookingRequestAcceptedQuote", fields: [acceptedQuoteId], references: [id], onDelete: SetNull)
@@ -1765,13 +1773,21 @@ model WorkPartyEvent {
   discountPercent Int      @default(100)
   active          Boolean  @default(true)
   promoCodeId     String   @unique
+  // Lodge the working bee is held at (lodge-scoping contract, audited
+  // 2026-07-03). Null = club-wide event bookable at any lodge (also the
+  // pre-migration meaning of every existing row). When set, bookings
+  // attending this event must be at this lodge, so the event's internal
+  // promo cannot be redeemed against a stay at the other property.
+  lodgeId         String?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
   promoCode PromoCode @relation(fields: [promoCodeId], references: [id], onDelete: Restrict)
+  lodge     Lodge?    @relation(fields: [lodgeId], references: [id], onDelete: SetNull)
 
   @@index([active])
   @@index([startDate, endDate])
+  @@index([lodgeId])
 }
 
 // ---------------------------------------------------------------------------
@@ -2441,6 +2457,9 @@ model Lodge {
   promoCodes           PromoCodeLodge[]
   waitlistOfferedBookings  Booking[]                       @relation("BookingWaitlistOfferedLodge")
   waitlistAlternateEntries BookingWaitlistAlternateLodge[] @relation("WaitlistAlternateLodge")
+  workPartyEvents          WorkPartyEvent[]
+  instructions             LodgeInstruction[]
+  bookingRequests          BookingRequest[]
 }
 
 model LodgeSettings {
@@ -2839,12 +2858,23 @@ enum LodgeInstructionKey {
 
 model LodgeInstruction {
   id                String              @id @default(cuid())
-  key               LodgeInstructionKey @unique
+  key               LodgeInstructionKey
   contentHtml       String
   updatedByMemberId String?
+  // Per-lodge override partition (lodge-scoping contract, audited
+  // 2026-07-03): null rows are the club-wide documents; a row for
+  // [lodgeId, key] replaces the club-wide document of that key at that
+  // lodge (replace, never merge — same rule as the booking policies).
+  // Nulls are distinct under the composite unique, so the admin route
+  // guards the club-wide partition until the contract release adds a
+  // null-partition partial unique index.
+  lodgeId           String?
   createdAt         DateTime            @default(now())
   updatedAt         DateTime            @updatedAt
 
+  lodge Lodge? @relation(fields: [lodgeId], references: [id], onDelete: Cascade)
+
+  @@unique([lodgeId, key])
   @@index([updatedByMemberId])
 }
 

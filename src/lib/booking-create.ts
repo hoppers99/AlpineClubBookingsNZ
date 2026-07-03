@@ -453,6 +453,9 @@ async function resolveEffectivePromoSource(
     workPartyEventId?: string;
     checkIn: Date;
     checkOut: Date;
+    // Lodge the booking is being created at: a lodge-bound working bee
+    // only discounts stays at its own lodge.
+    lodgeId?: string | null;
   }
 ): Promise<{ promoCodeStr: string; allowInternal: boolean } | null> {
   if (!options.workPartyEventId && !options.promoCodeStr) {
@@ -476,7 +479,8 @@ async function resolveEffectivePromoSource(
       db,
       workPartyEventId,
       options.checkIn,
-      options.checkOut
+      options.checkOut,
+      options.lodgeId
     );
     if (!resolution.ok) {
       throw new BookingPromoError(resolution.error);
@@ -805,6 +809,7 @@ export async function createDraftBooking(input: DraftBookingInput): Promise<Book
       workPartyEventId,
       checkIn,
       checkOut,
+      lodgeId: bookingLodgeId,
     });
     if (promoSource) {
       const resolved = await resolvePromoInTransaction(tx, {
@@ -1139,6 +1144,7 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
         workPartyEventId,
         checkIn,
         checkOut,
+        lodgeId: bookingLodgeId,
       });
       if (promoSource) {
         const resolved = await resolvePromoInTransaction(tx, {
@@ -1682,6 +1688,7 @@ export async function createWaitlistedBooking(input: WaitlistedBookingInput): Pr
     workPartyEventId,
     checkIn,
     checkOut,
+    lodgeId: waitlistLodgeId,
   });
   if (promoSource) {
     const normalizedCode = promoSource.promoCodeStr.toUpperCase().trim();

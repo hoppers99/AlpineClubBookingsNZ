@@ -39,6 +39,15 @@ club-wide set for that policy type. Service code resolves a lodge's
 policy through one shared helper so the replace-not-merge rule cannot
 drift between the three policy types.
 
+`LodgeInstruction` follows the same rule per document key (delivered
+2026-07-03): null-`lodgeId` rows are the club-wide OPEN/CLOSE/DAY_TO_DAY
+documents, and a `[lodgeId, key]` row replaces the club-wide document of
+that key for that lodge — never merged. Readers resolve through
+`getSanitizedLodgeInstructions(lodgeId)`; the kiosk surface derives its
+lodge via `resolveKioskLodgeId`, and the admin editor edits one partition
+at a time (omitted `lodgeId` means the club-wide partition, not the
+default lodge) with an explicit `remove: true` flag to drop an override.
+
 ## Optional Lodge Restrictions
 
 - `PromoCode`: restricted via a `PromoCodeLodge` junction table (phase 6),
@@ -86,26 +95,42 @@ Audited 2026-07-03; these are lodge-relevant but still club-wide or
 default-lodge-pinned. Each needs an owner decision before work starts —
 record the outcome here when decided:
 
-- **`BookingRequest` (public + school requests).** No `lodgeId`; request
-  creation and the bookings made from approved requests pin to the
-  default lodge (`school-booking-request.ts`, `booking-request.ts`). With
-  a second active lodge the public cannot request it. Likely fix: expand
-  migration adding nullable `BookingRequest.lodgeId`, lodge choice on the
-  request forms (ADR-002 presentation rule), threading through quotes,
-  approval, and the admin queue.
-- **`WorkPartyEvent`.** No lodge; the event's internal promo redeems at
-  any lodge, so a member can book the wrong lodge while "attending" a
-  working bee held at the other. Likely fix: optional
-  `WorkPartyEvent.lodgeId` validated against the booking's lodge.
-- **`LodgeInstruction` (kiosk content).** Keyed singleton content; every
-  lodge's kiosk shows identical instructions. Likely fix: nullable
-  `lodgeId` with `[lodgeId, key]` uniqueness and null-fallback, mirroring
-  the policy-override pattern.
-- **Settings singletons (`LodgeSettings`, `BedAllocationSettings`,
-  `BookingRequestSettings`).** Soft-linked to the sole lodge in phase 2
-  and lodge-safe at runtime (e.g. a capacity override applies only to its
-  linked lodge), but per-lodge rows and editing are still the recorded
-  phase-7 leftover; a second lodge currently runs on code defaults.
+(none — the 2026-07-03 audit list is fully resolved; see below)
+
+## Resolved 2026-07-03 (delivered on `feature/multi-lodge-support`)
+
+- **`BookingRequest.lodgeId` (nullable).** Null = the club's default lodge
+  (all pre-migration rows); readers resolve `request.lodgeId ?? default`.
+  The public general and school forms offer a required lodge choice when
+  a second active lodge exists (the public settings endpoint exposes
+  active lodges as id/name only); indicative pricing, capacity guards,
+  holds, quote acceptance, approval, and the created booking all follow
+  the request's lodge, and request emails carry that lodge's identity.
+- **`BookingRequestSettings` stays club-wide.** Its three fields (pricing
+  visibility, quote TTL, reminder lead) are booking-policy knobs like
+  `BookingDefaults`, not per-property values; recorded club-wide rather
+  than converted. A new ADR is needed to change this.
+
+- **`WorkPartyEvent.lodgeId` (nullable).** Null = club-wide event (the
+  pre-migration meaning). A lodge-bound event's internal promo resolves
+  only for bookings at that lodge; the booking form filters events by the
+  chosen lodge and labels lodge-bound ones.
+- **`LodgeSettings` / `BedAllocationSettings` per-lodge rows.** A lodge's
+  row is keyed by its lodge id (`id = lodgeId`); the legacy "default" row
+  keeps serving the lodge it was soft-linked to in the phase-2 backfill
+  (and single-lodge clubs), and an unlinked legacy row is claimed on
+  first per-lodge write. Resolution: own row → legacy row when unlinked
+  or linked to the same lodge → code defaults; one lodge's values never
+  leak to another. `hutLeaderLookaheadDays` stays a club-wide knob on the
+  legacy row. No migration needed; the contract release may later add a
+  real `[lodgeId]` uniqueness once legacy rows are consolidated.
+- **CMS `{{lodge-capacity}}` token.** Gains an optional slug parameter
+  (`{{lodge-capacity:lodge-slug}}`) for per-lodge figures; the bare token
+  keeps resolving the default lodge. No cross-lodge total token — the
+  capacity summing ban above applies to content tokens too.
+- **Kiosk lodge identity.** The kiosk access payload includes the
+  operating lodge's name (null for single-lodge clubs, ADR-002) and the
+  kiosk header displays it.
 
 ## Service Rules
 

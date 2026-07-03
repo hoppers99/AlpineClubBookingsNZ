@@ -222,16 +222,45 @@ async function pruneAllocationsForBooking(
   return deleted.count;
 }
 
+/**
+ * Per-lodge auto-allocation switch (lodge-scoping contract): a lodge's own
+ * settings row (id = lodgeId) wins; otherwise the legacy "default" row
+ * applies when it is unlinked or soft-linked to this lodge; missing rows
+ * default to enabled. Exported for the admin settings surface.
+ */
+export async function resolveAutoAllocationEnabled(
+  db: {
+    bedAllocationSettings: {
+      findUnique: (args: {
+        where: { id: string };
+      }) => Promise<{ autoAllocationEnabled: boolean; lodgeId?: string | null } | null>;
+    };
+  },
+  lodgeId?: string | null,
+): Promise<boolean> {
+  if (lodgeId && lodgeId !== "default") {
+    const ownRow = await db.bedAllocationSettings.findUnique({
+      where: { id: lodgeId },
+    });
+    if (ownRow) return ownRow.autoAllocationEnabled;
+  }
+  const legacy = await db.bedAllocationSettings.findUnique({
+    where: { id: "default" },
+  });
+  if (!legacy) return true;
+  if (lodgeId && legacy.lodgeId && legacy.lodgeId !== lodgeId) {
+    return true;
+  }
+  return legacy.autoAllocationEnabled;
+}
+
 async function autoAllocateMissingBedNights({
   db,
   range,
   lodgeId,
 }: AutoAllocateMissingBedNightsInput): Promise<number> {
-  const settings = await db.bedAllocationSettings.findUnique({
-    where: { id: "default" },
-  });
-
-  if (settings?.autoAllocationEnabled === false) {
+  const enabled = await resolveAutoAllocationEnabled(db, lodgeId);
+  if (!enabled) {
     return 0;
   }
 
