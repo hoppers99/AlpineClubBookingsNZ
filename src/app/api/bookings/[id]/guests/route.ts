@@ -56,7 +56,10 @@ import {
 import { upsertPaymentIntentTransaction } from "@/lib/payment-transactions";
 import { nameField } from "@/lib/zod-helpers";
 import { getBookingEditPolicy } from "@/lib/booking-edit-policy";
-import { assertBookingNotQuotePriced } from "@/lib/booking-modify";
+import {
+  assertBookingNotQuotePriced,
+  lockedNightPricesForGuest,
+} from "@/lib/booking-modify";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 import { queueSupersededAdditionalIntentCancellations } from "@/lib/booking-payment-cleanup";
 import { getSeasonYear } from "@/lib/utils";
@@ -194,7 +197,11 @@ export async function POST(
       const booking = await tx.booking.findUnique({
         where: { id: bookingId },
         include: {
-          guests: true,
+          guests: {
+            include: {
+              nights: { select: { stayDate: true, priceCents: true } },
+            },
+          },
           payment: true,
           member: true,
           promoRedemption: {
@@ -412,6 +419,9 @@ export async function POST(
           ageTier: g.ageTier as AgeTier,
           isMember: g.isMember,
           memberId: g.memberId ?? null,
+          // Existing guests keep their booked nightly prices (#1036): adding
+          // a guest must cost exactly the added guest's own price.
+          lockedNightPrices: lockedNightPricesForGuest(g),
         })),
         ...newGuestInputs.map((guest, index) => ({
           ...guest,

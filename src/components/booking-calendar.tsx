@@ -164,7 +164,7 @@ export function BookingCalendar({ onDateSelect, selectedCheckIn, selectedCheckOu
         </Button>
       </div>
 
-      <div className="text-sm text-gray-600">
+      <div aria-live="polite" className="text-sm text-gray-600">
         {selecting === "checkIn" ? "Select check-in date" : "Select check-out date"}
       </div>
 
@@ -186,6 +186,17 @@ export function BookingCalendar({ onDateSelect, selectedCheckIn, selectedCheckOu
           const occupied = availability[dateStr] ?? 0;
           const available = lodgeCapacity - occupied;
           const isPast = date < today;
+          const dateLabel = date.toLocaleDateString(APP_LOCALE, {
+            weekday: "long",
+            day: "numeric",
+            month: "long",
+            year: "numeric",
+          });
+          const dayLabel = isPast
+            ? `${dateLabel}, unavailable`
+            : available <= 0
+              ? `${dateLabel}, full`
+              : `${dateLabel}, ${available} of ${lodgeCapacity} beds free`;
 
           return (
             <button
@@ -193,10 +204,11 @@ export function BookingCalendar({ onDateSelect, selectedCheckIn, selectedCheckOu
               onClick={() => handleDayClick(day)}
               className={getDayClass(day, available, isPast, dateStr)}
               disabled={isPast || available <= 0}
+              aria-label={dayLabel}
             >
-              <span className="leading-none">{day}</span>
+              <span aria-hidden="true" className="leading-none">{day}</span>
               {!isPast && (
-                <span className="text-[9px] leading-none mt-0.5 opacity-70">
+                <span aria-hidden="true" className="text-xs leading-none mt-0.5 opacity-70">
                   {available}
                 </span>
               )}

@@ -46,6 +46,7 @@ import logger from "@/lib/logger";
 import {
   buildGuestCreateData,
   createConfirmedBooking,
+  GroupJoinConflictError,
   type BookingGuestInput as PricedGuestInput,
 } from "@/lib/booking-create";
 import {
@@ -670,7 +671,9 @@ export async function joinGroupBookingAsMember(
     }
   }
 
-  const outcome = await createConfirmedBooking({
+  let outcome: Awaited<ReturnType<typeof createConfirmedBooking>>;
+  try {
+    outcome = await createConfirmedBooking({
     effectiveMemberId: sessionUserId,
     isOnBehalf: false,
     sessionUserId,
@@ -690,6 +693,9 @@ export async function joinGroupBookingAsMember(
     shouldBePending: hold.shouldBePending,
     holdDays: 0,
     parentBookingId: group.organiserBooking.id,
+    // Roster row is written inside the booking transaction (#1039 item 2) so
+    // a concurrent duplicate join rolls the booking back atomically.
+    groupJoin: { groupBookingId: group.id, joinerMemberId: sessionUserId },
     // ORGANISER_PAYS: flag the child booking so the joiner is never billed and
     // cannot pay it; the organiser settles the group total. No-op for each-pays.
     organiserSettled,
@@ -697,7 +703,13 @@ export async function joinGroupBookingAsMember(
     // raises + emails the Xero invoice when internet_banking is chosen.
     paymentMethod: effectivePaymentMethod,
     internetBankingSettings,
-  });
+    });
+  } catch (err) {
+    if (err instanceof GroupJoinConflictError) {
+      throw new GroupBookingError("You have already joined this group", 409);
+    }
+    throw err;
+  }
 
   if (outcome.type === "capacityExceeded") {
     throw new GroupBookingError("The lodge is full for these dates", 409, {
@@ -707,15 +719,6 @@ export async function joinGroupBookingAsMember(
   }
 
   const booking = outcome.booking;
-  await prisma.groupBookingJoin.create({
-    data: {
-      groupBookingId: group.id,
-      bookingId: booking.id,
-      joinerMemberId: sessionUserId,
-      isMember: true,
-      verifiedAt: new Date(),
-    },
-  });
 
   return {
     bookingId: booking.id,

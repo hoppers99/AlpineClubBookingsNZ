@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowDown, ArrowUp, Pencil, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useConfirm } from "@/components/confirm-dialog";
 import {
   Card,
   CardContent,
@@ -55,6 +56,7 @@ function handleAllocatedToSearchKeyDown(
 }
 
 export default function LockersPage() {
+  const { confirm, confirmDialog } = useConfirm();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -196,7 +198,14 @@ export default function LockersPage() {
   }
 
   async function deleteLocker(locker: LockerRecord) {
-    if (!window.confirm(`Delete locker ${locker.name}? This cannot be undone.`)) {
+    if (
+      !(await confirm({
+        title: `Delete locker ${locker.name}?`,
+        description: "This cannot be undone.",
+        confirmLabel: "Delete",
+        destructive: true,
+      }))
+    ) {
       return;
     }
 
@@ -301,6 +310,7 @@ export default function LockersPage() {
 
   return (
     <div className="space-y-6">
+      {confirmDialog}
       <div>
         <h1 className="text-2xl font-bold text-slate-900">Lockers</h1>
         <p className="mt-1 text-sm text-slate-500">
