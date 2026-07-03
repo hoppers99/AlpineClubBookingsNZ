@@ -2,24 +2,47 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+// snowhq widget payload (proxied via /api/skifield-conditions). Each area's
+// live data lives under `Report`: a `Status` string plus a typed
+// `ReportFields` array (temperature, snow depth, dated snowfall, and free
+// text like the daily snow comment). The top-level `AreaStatus` /
+// `RoadStatus` / `CurrentWeatherConditions` are section-visibility booleans,
+// not data.
+type SnowReportField = {
+  Title?: string;
+  Type?: string;
+  Content?: string | null;
+  Icon?: string | null;
+};
+
+type SnowFacilityType = {
+  Title?: string;
+  Name?: string;
+  Status?: string;
+  [key: string]: unknown;
+};
+
+type SnowAreaReport = {
+  Status?: string;
+  Issued?: string;
+  ReportFields?: SnowReportField[];
+  FacilityTypes?: SnowFacilityType[];
+};
+
 type SnowWidgetArea = {
   Name?: string;
   AreaName?: string;
   Title?: string;
   Status?: string;
   AreaStatus?: string;
-  RoadStatus?: string;
-  CurrentWeatherConditions?: string;
-  Weather?: string;
+  SnowNzWeatherPageLink?: string | null;
+  Report?: SnowAreaReport | null;
   [key: string]: unknown;
 };
 
 type SnowWidgetPayload = {
   Type?: string;
   Areas?: SnowWidgetArea[];
-  AreaStatus?: unknown;
-  RoadStatus?: unknown;
-  CurrentWeatherConditions?: unknown;
   _error?: string;
   upstreamStatus?: number;
 };
@@ -39,9 +62,9 @@ function valueText(value: unknown): string {
 
 function displayName(area: SnowWidgetArea, index: number) {
   return (
+    valueText(area.Title) ||
     valueText(area.Name) ||
     valueText(area.AreaName) ||
-    valueText(area.Title) ||
     `Area ${index + 1}`
   );
 }
@@ -54,6 +77,21 @@ function statusTone(status: string) {
     return "bg-amber-100 text-amber-800";
   }
   return "bg-slate-100 text-slate-700";
+}
+
+// Append the unit implied by a report field's type. Content is the raw
+// snowhq value (e.g. "0.4" for temperature, "0" for a snow depth in cm).
+function formatFieldContent(field: SnowReportField): string {
+  const content = valueText(field.Content);
+  if (!content) return "";
+  switch (field.Type) {
+    case "temperature":
+      return `${content}°C`;
+    case "snowdepth":
+      return `${content} cm`;
+    default:
+      return content;
+  }
 }
 
 export function SkifieldConditionsWidget({ dataHash }: { dataHash?: string }) {
@@ -158,46 +196,124 @@ export function SkifieldConditionsWidget({ dataHash }: { dataHash?: string }) {
       {areas.length > 0 ? (
         <div className="grid gap-4 md:grid-cols-2">
           {areas.map((area, index) => {
-            const primaryStatus =
-              valueText(area.Status) || valueText(area.AreaStatus);
-            const roadStatus = valueText(area.RoadStatus);
-            const weather =
-              valueText(area.CurrentWeatherConditions) ||
-              valueText(area.Weather);
+            const report = area.Report ?? null;
+            const status =
+              valueText(report?.Status) ||
+              valueText(area.Status) ||
+              valueText(area.AreaStatus);
+            const issued = valueText(report?.Issued);
+            const reportFields = Array.isArray(report?.ReportFields)
+              ? report!.ReportFields
+              : [];
+            // Split short measurements from long free-text so temperature and
+            // snow depth read as a compact list and the daily comments read as
+            // paragraphs. Empty (null) fields are dropped either way.
+            const measurements = reportFields
+              .filter((field) => field.Type !== "text")
+              .map((field) => ({
+                title: valueText(field.Title),
+                value: formatFieldContent(field),
+              }))
+              .filter((field) => field.title && field.value);
+            const notes = reportFields
+              .filter((field) => field.Type === "text")
+              .map((field) => ({
+                title: valueText(field.Title),
+                value: valueText(field.Content),
+              }))
+              .filter((field) => field.title && field.value);
+            const facilities = (
+              Array.isArray(report?.FacilityTypes) ? report!.FacilityTypes : []
+            )
+              .map((facility) => ({
+                name: valueText(facility.Title) || valueText(facility.Name),
+                status: valueText(facility.Status),
+              }))
+              .filter((facility) => facility.name);
+            const link = valueText(area.SnowNzWeatherPageLink);
 
             return (
               <article
                 key={`${displayName(area, index)}-${index}`}
                 className="rounded-md border border-slate-200 bg-slate-50 p-4"
               >
-                <h3 className="text-sm font-semibold text-slate-900">
-                  {displayName(area, index)}
-                </h3>
-                {primaryStatus ? (
-                  <p className="mt-2">
+                <div className="flex items-center justify-between gap-2">
+                  <h3 className="text-sm font-semibold text-slate-900">
+                    {displayName(area, index)}
+                  </h3>
+                  {status ? (
                     <span
                       className={`inline-flex rounded-full px-2 py-1 text-xs font-medium ${statusTone(
-                        primaryStatus,
+                        status,
                       )}`}
                     >
-                      {primaryStatus}
+                      {status}
                     </span>
+                  ) : null}
+                </div>
+
+                {measurements.length > 0 ? (
+                  <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs text-slate-600">
+                    {measurements.map((field) => (
+                      <div key={field.title}>
+                        <dt className="font-medium text-slate-700">
+                          {field.title}
+                        </dt>
+                        <dd>{field.value}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                ) : null}
+
+                {facilities.length > 0 ? (
+                  <ul className="mt-3 space-y-1 text-xs text-slate-600">
+                    {facilities.map((facility) => (
+                      <li
+                        key={facility.name}
+                        className="flex items-center justify-between gap-2"
+                      >
+                        <span>{facility.name}</span>
+                        {facility.status ? (
+                          <span
+                            className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${statusTone(
+                              facility.status,
+                            )}`}
+                          >
+                            {facility.status}
+                          </span>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+
+                {notes.map((note) => (
+                  <div key={note.title} className="mt-3 text-xs">
+                    <p className="font-medium text-slate-700">{note.title}</p>
+                    <p className="mt-1 whitespace-pre-line text-slate-600">
+                      {note.value}
+                    </p>
+                  </div>
+                ))}
+
+                {issued ? (
+                  <p className="mt-3 text-[11px] text-slate-400">
+                    Issued {issued}
                   </p>
                 ) : null}
-                <dl className="mt-3 space-y-2 text-xs text-slate-600">
-                  {roadStatus ? (
-                    <div>
-                      <dt className="font-medium text-slate-700">Road</dt>
-                      <dd>{roadStatus}</dd>
-                    </div>
-                  ) : null}
-                  {weather ? (
-                    <div>
-                      <dt className="font-medium text-slate-700">Weather</dt>
-                      <dd>{weather}</dd>
-                    </div>
-                  ) : null}
-                </dl>
+
+                {link ? (
+                  <p className="mt-2 text-xs">
+                    <a
+                      href={link}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-brand-charcoal underline"
+                    >
+                      Full report on snow.nz
+                    </a>
+                  </p>
+                ) : null}
               </article>
             );
           })}
