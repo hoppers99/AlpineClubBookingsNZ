@@ -25,6 +25,11 @@ const {
   mockRefundPaymentTransactions,
   mockSumRecordedRefundsForTransaction,
   mockSendAdminPaymentFailureAlert,
+  mockCreatePaymentIntent,
+  mockFindOrCreateCustomer,
+  mockUpsertPaymentIntentTransaction,
+  mockQueueSupersededAdditionalIntentCancellations,
+  mockAttachIntentToWaitingOps,
 } = vi.hoisted(() => ({
   mockPaymentRecoveryFindMany: vi.fn(),
   mockPaymentRecoveryFindUnique: vi.fn(),
@@ -47,6 +52,13 @@ const {
   mockRefundPaymentTransactions: vi.fn(),
   mockSumRecordedRefundsForTransaction: vi.fn().mockResolvedValue(0),
   mockSendAdminPaymentFailureAlert: vi.fn().mockResolvedValue(undefined),
+  mockCreatePaymentIntent: vi.fn(),
+  mockFindOrCreateCustomer: vi.fn(),
+  mockUpsertPaymentIntentTransaction: vi.fn().mockResolvedValue({}),
+  mockQueueSupersededAdditionalIntentCancellations: vi
+    .fn()
+    .mockResolvedValue([]),
+  mockAttachIntentToWaitingOps: vi.fn().mockResolvedValue({ attached: 0 }),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -77,6 +89,21 @@ vi.mock("@/lib/stripe", () => ({
   cancelPaymentIntentIfCancellableWithResult: (...args: unknown[]) =>
     mockCancelPaymentIntentIfCancellableWithResult(...args),
   processRefund: (...args: unknown[]) => mockProcessRefund(...args),
+  createPaymentIntent: (...args: unknown[]) => mockCreatePaymentIntent(...args),
+  findOrCreateCustomer: (...args: unknown[]) =>
+    mockFindOrCreateCustomer(...args),
+}));
+
+vi.mock("@/lib/booking-payment-cleanup", () => ({
+  queueSupersededAdditionalIntentCancellations: (...args: unknown[]) =>
+    mockQueueSupersededAdditionalIntentCancellations(...args),
+  queueSupersededPrimaryIntentCancellations: vi.fn().mockResolvedValue([]),
+}));
+
+vi.mock("@/lib/xero-operation-outbox", () => ({
+  attachPaymentIntentToWaitingSupplementaryInvoiceOperations: (
+    ...args: unknown[]
+  ) => mockAttachIntentToWaitingOps(...args),
 }));
 
 vi.mock("@/lib/payment-transactions", () => ({
@@ -88,6 +115,8 @@ vi.mock("@/lib/payment-transactions", () => ({
     mockRefundPaymentTransactions(...args),
   sumRecordedRefundsForTransaction: (...args: unknown[]) =>
     mockSumRecordedRefundsForTransaction(...args),
+  upsertPaymentIntentTransaction: (...args: unknown[]) =>
+    mockUpsertPaymentIntentTransaction(...args),
 }));
 
 vi.mock("@/lib/email", () => ({
@@ -738,5 +767,177 @@ describe("payment recovery worker", () => {
         }),
       }),
     );
+  });
+
+  describe("additional PaymentIntent recovery (#1096)", () => {
+    function additionalIntentOperation(overrides: Record<string, unknown> = {}) {
+      return makeOperation({
+        id: "recovery-additional",
+        type: PaymentRecoveryOperationType.CREATE_ADDITIONAL_PAYMENT_INTENT,
+        amountCents: 3000,
+        // The stored Stripe idempotency key until the intent exists.
+        paymentIntentId: "mod_guest_bk1_mod-9",
+        idempotencyKey: "payment_recovery_additional_intent_mod-9",
+        paymentTransactionId: null,
+        createdAt: new Date("2026-06-01T00:00:00.000Z"),
+        ...overrides,
+      });
+    }
+
+    function primeQueue(operation: ReturnType<typeof makeOperation>) {
+      mockPaymentRecoveryFindUnique.mockResolvedValue(operation);
+      mockPaymentRecoveryFindMany.mockImplementation(
+        (args?: { where?: { attempts?: { gte?: number } } }) => {
+          if (args?.where?.attempts && "gte" in args.where.attempts) {
+            return Promise.resolve([]);
+          }
+          return Promise.resolve([{ ...operation, status: "PENDING" }]);
+        },
+      );
+    }
+
+    beforeEach(() => {
+      mockPaymentFindUnique.mockResolvedValue({
+        id: "payment-1",
+        stripeCustomerId: "cus_123",
+        stripePaymentIntentId: "pi_original",
+        transactions: [
+          {
+            id: "txn-1",
+            kind: "PRIMARY",
+            stripePaymentIntentId: "pi_original",
+            amountCents: 10000,
+            refundedAmountCents: 0,
+            status: PaymentStatus.SUCCEEDED,
+            createdAt: new Date("2026-05-01T00:00:00.000Z"),
+          },
+        ],
+        booking: {
+          id: "booking-1",
+          memberId: "m1",
+          member: {
+            id: "m1",
+            email: "alice@test.com",
+            firstName: "Alice",
+            lastName: "Smith",
+          },
+        },
+      });
+      mockCreatePaymentIntent.mockResolvedValue({
+        id: "pi_recovered",
+        client_secret: "secret_recovered",
+      });
+    });
+
+    it("re-creates the intent with the stored modification-scoped Stripe key", async () => {
+      primeQueue(additionalIntentOperation());
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result.succeeded).toBe(1);
+      expect(mockCreatePaymentIntent).toHaveBeenCalledTimes(1);
+      expect(mockCreatePaymentIntent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          amountCents: 3000,
+          customerId: "cus_123",
+          idempotencyKey: "mod_guest_bk1_mod-9",
+          metadata: expect.objectContaining({
+            bookingId: "booking-1",
+            type: "modification_additional",
+          }),
+        }),
+      );
+      expect(mockUpsertPaymentIntentTransaction).toHaveBeenCalledWith(
+        expect.objectContaining({
+          paymentId: "payment-1",
+          paymentIntentId: "pi_recovered",
+          amountCents: 3000,
+          status: PaymentStatus.PENDING,
+        }),
+      );
+      expect(mockQueueSupersededAdditionalIntentCancellations).toHaveBeenCalledWith({
+        bookingId: "booking-1",
+        paymentId: "payment-1",
+        newPaymentIntentId: "pi_recovered",
+      });
+      // The waiting supplementary Xero op is pointed at the recovered intent.
+      expect(mockAttachIntentToWaitingOps).toHaveBeenCalledWith({
+        bookingModificationId: "mod-9",
+        paymentIntentId: "pi_recovered",
+      });
+      // The row's placeholder key is replaced by the real intent id.
+      expect(mockPaymentRecoveryUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: "recovery-additional" },
+          data: { paymentIntentId: "pi_recovered" },
+        }),
+      );
+    });
+
+    it("completes without creating when a later edit already minted a newer additional intent", async () => {
+      primeQueue(additionalIntentOperation());
+      mockPaymentFindUnique.mockResolvedValue({
+        id: "payment-1",
+        stripeCustomerId: "cus_123",
+        transactions: [
+          {
+            id: "txn-newer",
+            kind: "ADDITIONAL",
+            stripePaymentIntentId: "pi_later_edit",
+            amountCents: 4500,
+            refundedAmountCents: 0,
+            status: PaymentStatus.PENDING,
+            // Created after the operation was enqueued: it superseded ours.
+            createdAt: new Date("2026-06-02T00:00:00.000Z"),
+          },
+        ],
+        booking: {
+          id: "booking-1",
+          memberId: "m1",
+          member: {
+            id: "m1",
+            email: "alice@test.com",
+            firstName: "Alice",
+            lastName: "Smith",
+          },
+        },
+      });
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result.succeeded).toBe(1);
+      expect(mockCreatePaymentIntent).not.toHaveBeenCalled();
+      expect(mockUpsertPaymentIntentTransaction).not.toHaveBeenCalled();
+    });
+
+    it("enqueues exactly one recovery row per booking modification", async () => {
+      const { enqueueAdditionalPaymentIntentRecovery } = await import(
+        "@/lib/payment-recovery"
+      );
+
+      await enqueueAdditionalPaymentIntentRecovery({
+        bookingId: "booking-1",
+        paymentId: "payment-1",
+        bookingModificationId: "mod-9",
+        amountCents: 3000,
+        stripeIdempotencyKey: "mod_guest_bk1_mod-9",
+      });
+
+      expect(mockPaymentRecoveryUpsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            idempotencyKey: "payment_recovery_additional_intent_mod-9",
+          },
+          create: expect.objectContaining({
+            type: PaymentRecoveryOperationType.CREATE_ADDITIONAL_PAYMENT_INTENT,
+            status: PaymentRecoveryOperationStatus.PENDING,
+            bookingId: "booking-1",
+            paymentId: "payment-1",
+            paymentIntentId: "mod_guest_bk1_mod-9",
+            amountCents: 3000,
+          }),
+        }),
+      );
+    });
   });
 });

@@ -416,6 +416,17 @@ idempotency keys — Stripe answers repeats with the original refund and the
 `PaymentRefund` ledger dedupes by refund id — instead of re-deriving a
 shifted allocation from whatever progress happens to be recorded.
 
+Additional PaymentIntent creation has the same durable safety net (#1096):
+every price-increasing edit path (batch modify, date change, guest add,
+single-guest removal) creates the intent through one shared settlement
+helper, and a transient Stripe failure enqueues a
+`CREATE_ADDITIONAL_PAYMENT_INTENT` recovery operation keyed to the booking
+modification. The worker re-creates the intent with the original
+modification-scoped Stripe idempotency key (so route and cron can never
+double-mint), skips itself if a later edit already minted a newer additional
+intent, and points any supplementary Xero invoice operation still waiting on
+the failed intent at the recovered one.
+
 Group-settlement PaymentIntents get the same safety net: switching a group
 settlement to Internet Banking or re-attempting a card settlement voids the
 superseded intent in Stripe, and if a stale intent still captures, the webhook

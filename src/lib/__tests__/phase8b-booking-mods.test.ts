@@ -110,6 +110,7 @@ vi.mock("@/lib/payment-transactions", () => ({
 vi.mock("@/lib/audit", () => ({ logAudit: vi.fn() }));
 vi.mock("@/lib/email", () => ({ sendBookingModifiedEmail: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("@/lib/payment-recovery", () => ({
+  enqueueAdditionalPaymentIntentRecovery: vi.fn().mockResolvedValue({ id: "recovery_additional" }),
   enqueuePaymentIntentCancellationRecovery: (...args: unknown[]) =>
     mockEnqueuePaymentIntentCancellationRecovery(...args),
   processPaymentRecoveryOperations: (...args: unknown[]) =>

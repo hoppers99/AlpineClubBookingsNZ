@@ -4,12 +4,15 @@ import {
   PaymentRecoveryOperationType,
   type PaymentRecoveryOperation,
   PaymentStatus,
+  PaymentTransactionKind,
   Prisma,
 } from "@prisma/client";
 import type Stripe from "stripe";
 import { prisma } from "@/lib/prisma";
 import {
   cancelPaymentIntentIfCancellableWithResult,
+  createPaymentIntent,
+  findOrCreateCustomer,
   processRefund,
 } from "@/lib/stripe";
 import {
@@ -17,8 +20,10 @@ import {
   recordStripeRefundLedgerEntry,
   refundPaymentTransactions,
   sumRecordedRefundsForTransaction,
+  upsertPaymentIntentTransaction,
   type RefundAllocationSlice,
 } from "@/lib/payment-transactions";
+import { attachPaymentIntentToWaitingSupplementaryInvoiceOperations } from "@/lib/xero-operation-outbox";
 import { sendAdminPaymentFailureAlert } from "@/lib/email";
 import logger from "@/lib/logger";
 import { MAX_PAYMENT_RECOVERY_ATTEMPTS } from "@/lib/payment-recovery-constants";
@@ -67,6 +72,12 @@ function buildBookingModificationRefundIdempotencyKey(
   bookingModificationId: string,
 ) {
   return `payment_recovery_modification_refund_${bookingModificationId}`;
+}
+
+function buildAdditionalIntentRecoveryIdempotencyKey(
+  bookingModificationId: string,
+) {
+  return `payment_recovery_additional_intent_${bookingModificationId}`;
 }
 
 function errorMessage(error: unknown) {
@@ -210,6 +221,52 @@ export async function enqueueBookingModificationRefundRecovery({
     idempotencyKey:
       buildBookingModificationRefundIdempotencyKey(bookingModificationId),
     store,
+  });
+}
+
+/**
+ * Durable retry for a booking edit's additional PaymentIntent whose creation
+ * failed transiently (#1096). One row per booking modification (unique
+ * idempotency key), replayable by the recovery cron. `paymentIntentId` holds
+ * the modification-scoped Stripe idempotency key until the intent exists —
+ * Stripe answers a repeated key with the same intent, so a retry can never
+ * mint a second collectable instrument — and is updated to the real intent id
+ * once created.
+ */
+export async function enqueueAdditionalPaymentIntentRecovery({
+  bookingId,
+  paymentId,
+  bookingModificationId,
+  amountCents,
+  stripeIdempotencyKey,
+  store = prisma,
+}: {
+  bookingId: string;
+  paymentId: string;
+  bookingModificationId: string;
+  amountCents: number;
+  stripeIdempotencyKey: string;
+  store?: PaymentRecoveryStore;
+}) {
+  const idempotencyKey =
+    buildAdditionalIntentRecoveryIdempotencyKey(bookingModificationId);
+  return store.paymentRecoveryOperation.upsert({
+    where: { idempotencyKey },
+    create: {
+      type: PaymentRecoveryOperationType.CREATE_ADDITIONAL_PAYMENT_INTENT,
+      status: PaymentRecoveryOperationStatus.PENDING,
+      bookingId,
+      paymentId,
+      paymentIntentId: stripeIdempotencyKey,
+      amountCents,
+      idempotencyKey,
+      nextRetryAt: new Date(),
+    },
+    update: {
+      bookingId,
+      paymentId,
+      amountCents,
+    },
   });
 }
 
@@ -777,6 +834,117 @@ async function processBookingModificationRefundOperation(
   await completePaymentRecoveryOperation(operation.id);
 }
 
+/**
+ * Re-create a booking edit's additional PaymentIntent whose original
+ * post-transaction creation failed (#1096). Idempotent: the stored Stripe
+ * idempotency key (`mod_*_{bookingModificationId}`) makes Stripe answer a
+ * retry with the same intent, the ADDITIONAL transaction row is an upsert,
+ * and an additional intent minted by a *later* edit supersedes this one — in
+ * that case the operation completes without creating anything.
+ */
+async function processCreateAdditionalPaymentIntentOperation(
+  operation: PaymentRecoveryOperation,
+) {
+  const payment = await prisma.payment.findUnique({
+    where: { id: operation.paymentId },
+    include: {
+      transactions: true,
+      booking: { include: { member: true } },
+    },
+  });
+
+  if (!payment || !payment.booking) {
+    throw new Error(
+      `Payment ${operation.paymentId} not found for additional intent recovery`,
+    );
+  }
+
+  // A later edit already created a fresh additional intent: it superseded
+  // this modification's collectable, so resurrecting ours would offer the
+  // member two instruments for overlapping money. The later edit repriced
+  // from current state, so its intent is the whole truth.
+  const newerAdditionalTransaction = payment.transactions.find(
+    (transaction) =>
+      transaction.kind === PaymentTransactionKind.ADDITIONAL &&
+      transaction.createdAt > operation.createdAt,
+  );
+  if (newerAdditionalTransaction || operation.amountCents <= 0) {
+    await completePaymentRecoveryOperation(operation.id);
+    return;
+  }
+
+  const member = payment.booking.member;
+  let customerId = payment.stripeCustomerId ?? undefined;
+  if (!customerId) {
+    const customer = await findOrCreateCustomer({
+      email: member.email,
+      name: `${member.firstName} ${member.lastName}`,
+      memberId: member.id,
+    });
+    customerId = customer.id;
+  }
+
+  const stripeIdempotencyKey = operation.paymentIntentId;
+  const pi = await createPaymentIntent({
+    amountCents: operation.amountCents,
+    customerId,
+    metadata: {
+      bookingId: operation.bookingId,
+      type: "modification_additional",
+      reason: "modification_additional_recovery",
+    },
+    idempotencyKey: stripeIdempotencyKey,
+  });
+
+  // Dynamic import: booking-payment-cleanup imports this module.
+  const { queueSupersededAdditionalIntentCancellations } = await import(
+    "@/lib/booking-payment-cleanup"
+  );
+  await queueSupersededAdditionalIntentCancellations({
+    bookingId: operation.bookingId,
+    paymentId: operation.paymentId,
+    newPaymentIntentId: pi.id,
+  }).catch((err) =>
+    logger.error(
+      { err, bookingId: operation.bookingId, paymentIntentId: pi.id },
+      "Failed to queue superseded additional intent cancellations during recovery",
+    ),
+  );
+
+  await upsertPaymentIntentTransaction({
+    paymentId: operation.paymentId,
+    kind: PaymentTransactionKind.ADDITIONAL,
+    paymentIntentId: pi.id,
+    amountCents: operation.amountCents,
+    status: PaymentStatus.PENDING,
+    reason: "modification_additional_recovery",
+    stripeCustomerId: customerId,
+  });
+
+  // A supplementary Xero invoice op enqueued at modification time waited on
+  // an intent that never existed; point it at the recovered one so the
+  // payment webhook can release it.
+  const bookingModificationId = operation.idempotencyKey.slice(
+    "payment_recovery_additional_intent_".length,
+  );
+  await attachPaymentIntentToWaitingSupplementaryInvoiceOperations({
+    bookingModificationId,
+    paymentIntentId: pi.id,
+  }).catch((err) =>
+    logger.error(
+      { err, operationId: operation.id, paymentIntentId: pi.id },
+      "Failed to attach recovered additional intent to waiting Xero operations",
+    ),
+  );
+
+  await prisma.paymentRecoveryOperation.update({
+    where: { id: operation.id },
+    data: { paymentIntentId: pi.id },
+  });
+
+  await completePaymentRecoveryOperation(operation.id);
+}
+
 async function processPaymentRecoveryOperation(
   operation: PaymentRecoveryOperation
 ) {
@@ -790,6 +958,14 @@ async function processPaymentRecoveryOperation(
     PaymentRecoveryOperationType.REFUND_BOOKING_MODIFICATION
   ) {
     await processBookingModificationRefundOperation(operation);
+    return;
+  }
+
+  if (
+    operation.type ===
+    PaymentRecoveryOperationType.CREATE_ADDITIONAL_PAYMENT_INTENT
+  ) {
+    await processCreateAdditionalPaymentIntentOperation(operation);
     return;
   }
 

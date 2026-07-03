@@ -46,6 +46,7 @@ vi.mock("@/lib/payment-transactions", () => ({
   refundPaymentTransactions: mocks.refundPaymentTransactions,
 }));
 vi.mock("@/lib/payment-recovery", () => ({
+  enqueueAdditionalPaymentIntentRecovery: vi.fn().mockResolvedValue({ id: "recovery_additional" }),
   enqueueBookingModificationRefundRecovery:
     mocks.enqueueBookingModificationRefundRecovery,
 }));

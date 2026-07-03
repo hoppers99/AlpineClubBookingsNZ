@@ -32,6 +32,7 @@ const mockPaymentTransactionUpdateMany = vi.fn();
 const mockEnqueuePaymentIntentCancellationRecovery = vi.fn();
 const mockProcessPaymentRecoveryOperations = vi.fn();
 const mockEnqueueBookingModificationRefundRecovery = vi.fn();
+const mockEnqueueAdditionalPaymentIntentRecovery = vi.fn();
 const mockLoadCancellationPolicy = vi.fn();
 const mockAssertLinkedBookingMembersCanBeBooked = vi.fn().mockResolvedValue(undefined);
 const mockGetBookingGuestValidationErrorResponse = vi.fn((error: { message: string }) => ({
@@ -162,6 +163,8 @@ vi.mock("@/lib/payment-recovery", () => ({
     mockProcessPaymentRecoveryOperations(...args),
   enqueueBookingModificationRefundRecovery: (...args: unknown[]) =>
     mockEnqueueBookingModificationRefundRecovery(...args),
+  enqueueAdditionalPaymentIntentRecovery: (...args: unknown[]) =>
+    mockEnqueueAdditionalPaymentIntentRecovery(...args),
 }));
 
 vi.mock("@/lib/audit", () => ({
@@ -414,6 +417,9 @@ describe("PUT /api/bookings/[id]/modify", () => {
     });
     mockEnqueueBookingModificationRefundRecovery.mockResolvedValue({
       id: "recovery_refund",
+    });
+    mockEnqueueAdditionalPaymentIntentRecovery.mockResolvedValue({
+      id: "recovery_additional",
     });
     mockLoadCancellationPolicy.mockResolvedValue([
       {
@@ -882,6 +888,67 @@ describe("PUT /api/bookings/[id]/modify", () => {
       }
     );
     expect(mockKickQueuedXeroOutboxOperationsIfConnected).toHaveBeenCalledWith({ limit: 1 });
+  });
+
+  it("enqueues durable intent recovery when additional PaymentIntent creation fails (#1096)", async () => {
+    const booking = makeBooking();
+    const tx = makeTx(booking);
+
+    mockTransaction.mockImplementation((fn: (innerTx: typeof tx) => unknown) =>
+      fn(tx)
+    );
+
+    mockCalculateBookingPrice
+      .mockReturnValueOnce({
+        totalPriceCents: 15000,
+        guests: [
+          { priceCents: 5000, perNightCents: [2500, 2500] },
+          { priceCents: 10000, perNightCents: [5000, 5000] },
+        ],
+      })
+      .mockReturnValueOnce({
+        totalPriceCents: 5000,
+        guests: [{ priceCents: 5000, perNightCents: [2500, 2500] }],
+      })
+      .mockReturnValueOnce({
+        totalPriceCents: 10000,
+        guests: [{ priceCents: 10000, perNightCents: [5000, 5000] }],
+      });
+    mockCreatePaymentIntent.mockRejectedValueOnce(new Error("stripe down"));
+
+    const { PUT } = await import("@/app/api/bookings/[id]/modify/route");
+
+    const request = new NextRequest("http://localhost/api/bookings/bk1/modify", {
+      method: "PUT",
+      body: JSON.stringify({
+        addGuests: [
+          {
+            firstName: "Bob",
+            lastName: "Guest",
+            ageTier: "ADULT",
+            isMember: false,
+          },
+        ],
+      }),
+    });
+
+    const response = await PUT(request, {
+      params: Promise.resolve({ id: "bk1" }),
+    });
+
+    // The modification stands; the collectable arrives via the recovery cron.
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.additionalPaymentClientSecret ?? null).toBeNull();
+
+    expect(mockEnqueueAdditionalPaymentIntentRecovery).toHaveBeenCalledTimes(1);
+    expect(mockEnqueueAdditionalPaymentIntentRecovery).toHaveBeenCalledWith({
+      bookingId: "bk1",
+      paymentId: "pay_1",
+      bookingModificationId: "mod_1",
+      amountCents: 10000,
+      stripeIdempotencyKey: "mod_batch_bk1_mod_1",
+    });
   });
 
   it("updates non-member guest names while an additional payment is outstanding", async () => {

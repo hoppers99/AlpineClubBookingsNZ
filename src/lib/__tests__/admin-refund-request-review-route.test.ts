@@ -76,6 +76,7 @@ vi.mock("@/lib/logger", () => ({
 }));
 
 vi.mock("@/lib/payment-recovery", () => ({
+  enqueueAdditionalPaymentIntentRecovery: vi.fn().mockResolvedValue({ id: "recovery_additional" }),
   enqueueRefundRequestRefundRecovery: (...args: unknown[]) =>
     mocks.enqueueRefundRequestRefundRecovery(...args),
 }));

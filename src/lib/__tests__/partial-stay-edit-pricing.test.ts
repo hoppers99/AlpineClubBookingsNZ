@@ -124,6 +124,7 @@ vi.mock("@/lib/payment-transactions", () => ({
   syncRefundsFromStripeCharge: vi.fn(),
 }));
 vi.mock("@/lib/payment-recovery", () => ({
+  enqueueAdditionalPaymentIntentRecovery: vi.fn().mockResolvedValue({ id: "recovery_additional" }),
   completeCanceledSupersededPaymentIntentRecovery: vi.fn().mockResolvedValue(undefined),
   queueSupersededPaymentIntentRefundRecovery: vi.fn().mockResolvedValue(undefined),
   queueRefundRecoveryOperation: vi.fn().mockResolvedValue(undefined),

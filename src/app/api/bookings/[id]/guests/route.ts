@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   PaymentSource,
-  PaymentStatus,
-  PaymentTransactionKind,
   type AgeTier,
   type BookingGuest,
 } from "@prisma/client";
@@ -27,7 +25,7 @@ import {
 import { logAudit } from "@/lib/audit";
 import { sendBookingModifiedEmail } from "@/lib/email";
 import { queueXeroBookingEditSettlement } from "@/lib/xero-booking-edit-settlement";
-import { createPaymentIntent, findOrCreateCustomer } from "@/lib/stripe";
+import { createModificationAdditionalPaymentIntent } from "@/lib/booking-modification-settlement";
 import logger from "@/lib/logger";
 import { z } from "zod";
 import { ageTierEnum } from "@/lib/age-tier-schema";
@@ -46,7 +44,6 @@ import {
   ADULT_SUPERVISION_REVIEW_REASON,
   requiresAdultSupervisionReview,
 } from "@/lib/booking-review";
-import { upsertPaymentIntentTransaction } from "@/lib/payment-transactions";
 import { nameField } from "@/lib/zod-helpers";
 import { getBookingEditPolicy } from "@/lib/booking-edit-policy";
 import {
@@ -54,7 +51,6 @@ import {
   lockedNightPricesForGuest,
 } from "@/lib/booking-modify";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
-import { queueSupersededAdditionalIntentCancellations } from "@/lib/booking-payment-cleanup";
 import { getSeasonYear } from "@/lib/utils";
 import {
   authorizationRoleFromAccessRoles,
@@ -642,59 +638,21 @@ export async function POST(
       };
     });
 
-    // Create additional PaymentIntent for price increases (outside transaction to avoid holding advisory lock)
-    let additionalPaymentClientSecret: string | undefined;
-    let additionalPaymentIntentId: string | undefined;
-    if (result.additionalAmountCents > 0 && result.hasSucceededPayment && result.paymentId) {
-      try {
-        let customerId = result.paymentCustomerId ?? undefined;
-        if (!customerId) {
-          const customer = await findOrCreateCustomer({
-            email: result.memberEmail,
-            name: result.memberName,
-            memberId: result.memberId,
-          });
-          customerId = customer.id;
-        }
-
-        const pi = await createPaymentIntent({
-          amountCents: result.additionalAmountCents,
-          customerId,
-          metadata: {
-            bookingId,
-            type: "modification_additional",
-            reason: "guest_add_price_increase",
-          },
-          idempotencyKey: `mod_guest_${bookingId}_${result.bookingModificationId}`,
-        });
-
-        await queueSupersededAdditionalIntentCancellations({
-          bookingId,
-          paymentId: result.paymentId,
-          newPaymentIntentId: pi.id,
-        }).catch((err) =>
-          logger.error(
-            { err, bookingId, paymentIntentId: pi.id },
-            "Failed to queue superseded additional intent cancellations"
-          )
-        );
-
-        await upsertPaymentIntentTransaction({
-          paymentId: result.paymentId,
-          kind: PaymentTransactionKind.ADDITIONAL,
-          paymentIntentId: pi.id,
-          amountCents: result.additionalAmountCents,
-          status: PaymentStatus.PENDING,
-          reason: "guest_add_price_increase",
-          stripeCustomerId: customerId,
-        });
-
-        additionalPaymentClientSecret = pi.client_secret ?? undefined;
-        additionalPaymentIntentId = pi.id;
-      } catch (piErr) {
-        logger.error({ err: piErr, bookingId }, "Failed to create additional PaymentIntent for guest addition");
-      }
-    }
+    // Create additional PaymentIntent for price increases (outside transaction
+    // to avoid holding the advisory lock). Shared settlement helper (#1096):
+    // a transient Stripe failure enqueues a durable recovery operation keyed
+    // to this modification instead of only logging.
+    const { additionalPaymentClientSecret, additionalPaymentIntentId } =
+      await createModificationAdditionalPaymentIntent({
+        bookingId,
+        // Guest adds never decrease the price, so the shared settlement
+        // context's refund side is always zero here.
+        result: { ...result, pendingRefundAmountCents: 0 },
+        reason: "guest_add_price_increase",
+        idempotencyKey: `mod_guest_${bookingId}_${result.bookingModificationId}`,
+        failureMessage:
+          "Failed to create additional PaymentIntent for guest addition",
+      });
 
     // Audit log
     logAudit({
