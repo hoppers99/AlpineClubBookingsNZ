@@ -21,13 +21,17 @@ const createLockerSchema = z.object({
   lodgeId: z.string().min(1).optional(),
 });
 
-async function findDuplicateLockerName(name: string) {
+async function findDuplicateLockerName(name: string, lodgeId: string) {
+  // Per-lodge uniqueness with null tolerance: a null-lodge row is visible
+  // at every lodge, so it clashes here (case-insensitive, matching the
+  // pre-rescope behaviour).
   return prisma.locker.findFirst({
     where: {
       name: {
         equals: name,
         mode: "insensitive",
       },
+      OR: [{ lodgeId }, { lodgeId: null }],
     },
     select: { id: true },
   });
@@ -101,21 +105,18 @@ export async function POST(request: Request) {
     }
   }
 
-  // Locker names stay globally unique until the phase-2 contract release
-  // re-scopes the DB constraint to [lodgeId, name]; keep the check global so
-  // the app rejects duplicates before the DB does.
-  if (await findDuplicateLockerName(parsed.data.name)) {
-    return NextResponse.json(
-      { error: "A locker with that name already exists" },
-      { status: 409 },
-    );
-  }
-
   const lodgeId = await resolveOptionalActiveLodgeId(prisma, parsed.data.lodgeId);
   if (!lodgeId) {
     return NextResponse.json(
       { error: "Lodge not found or not active" },
       { status: 400 },
+    );
+  }
+
+  if (await findDuplicateLockerName(parsed.data.name, lodgeId)) {
+    return NextResponse.json(
+      { error: "A locker with that name already exists at this lodge" },
+      { status: 409 },
     );
   }
 

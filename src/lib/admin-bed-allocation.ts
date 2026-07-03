@@ -420,9 +420,22 @@ export async function createBedAllocationRoom(input: {
 }) {
   const db = input.db ?? prisma;
   const lodgeId = input.lodgeId ?? (await getDefaultLodgeId(db));
+  const name = input.name.trim();
+  // Per-lodge uniqueness with null tolerance: a null-lodge row (pre-backfill
+  // or draining old colour) is visible at every lodge, so it clashes here.
+  const clash = await db.lodgeRoom.findFirst({
+    where: { name, ...lodgeNullTolerantScope(lodgeId) },
+    select: { id: true },
+  });
+  if (clash) {
+    throw new BedAllocationAdminError(
+      `A room named "${name}" already exists at this lodge.`,
+      409,
+    );
+  }
   return db.lodgeRoom.create({
     data: {
-      name: input.name.trim(),
+      name,
       sortOrder: input.sortOrder ?? 0,
       active: input.active ?? true,
       notes: input.notes?.trim() || null,
@@ -437,8 +450,9 @@ export const MAX_BULK_BEDS_PER_ROOM = 20;
 /**
  * Seed a lodge with `roomCount` rooms of `bedsPerRoom` beds each
  * ("<prefix> 1..N" / "Bed 1..M"), transactionally (ADR-003 bulk seeding).
- * Room names are still globally unique until the phase-2 contract release,
- * so a clashing prefix rejects the whole batch rather than half-applying.
+ * Room names are unique per lodge (null-lodge rows clash at every lodge
+ * until the contract release), so a clashing prefix rejects the whole
+ * batch rather than half-applying.
  */
 export async function createBedAllocationRoomsBulk(input: {
   roomCount: number;
@@ -475,12 +489,12 @@ export async function createBedAllocationRoomsBulk(input: {
   );
 
   const clash = await db.lodgeRoom.findFirst({
-    where: { name: { in: names } },
+    where: { name: { in: names }, ...lodgeNullTolerantScope(lodgeId) },
     select: { name: true },
   });
   if (clash) {
     throw new BedAllocationAdminError(
-      `A room named "${clash.name}" already exists. Choose a different name prefix.`,
+      `A room named "${clash.name}" already exists at this lodge. Choose a different name prefix.`,
       409,
     );
   }

@@ -1379,16 +1379,18 @@ model LodgeRoom {
   requestedByBookings Booking[]       @relation("BookingRequestedRoom")
   lodge               Lodge?          @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
 
-  // The global name uniqueness moves to [lodgeId, name] in the phase-2
-  // contract release once lodgeId is NOT NULL.
-  @@unique([name])
+  // Re-scoped from global to per-lodge ahead of the contract release
+  // (expand-safe: existing globally-unique rows satisfy the composite).
+  // Nulls are distinct, so app checks treat null-lodge rows as clashing at
+  // every lodge until the contract release enforces NOT NULL.
+  @@unique([lodgeId, name])
   @@index([active, sortOrder])
   @@index([lodgeId])
 }
 
 model Locker {
   id                  String   @id @default(cuid())
-  name                String   @unique @db.VarChar(200)
+  name                String   @db.VarChar(200)
   allocatedToMemberId String?
   lodgeId             String?
   createdAt           DateTime @default(now())
@@ -1397,6 +1399,10 @@ model Locker {
   allocatedTo Member? @relation("LockerAllocatedMember", fields: [allocatedToMemberId], references: [id], onDelete: SetNull)
   lodge       Lodge?  @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
 
+  // Re-scoped from global to per-lodge ahead of the contract release
+  // (expand-safe; see LodgeRoom). App checks stay case-insensitive and
+  // treat null-lodge rows as clashing at every lodge.
+  @@unique([lodgeId, name])
   @@index([allocatedToMemberId])
   @@index([lodgeId])
 }

@@ -71,6 +71,12 @@ Per ADR-001 sequencing, across several PRs:
   to per-lodge rows.
 - Enforce NOT NULL and re-scoped unique constraints
   (`[lodgeId, name]` on rooms and lockers) after backfill verification.
+  *Progress note (2026-07-03):* the `[lodgeId, name]` re-scoping for
+  rooms and lockers shipped early as an expand-safe index swap
+  (`20260703200000`) after two-lodge testing hit the global "Room 1
+  already exists" clash; app checks treat null-lodge rows as clashing at
+  every lodge until this contract release enforces NOT NULL and adds the
+  null-partition partial indexes.
 - Run `npm run db:check-drift` against a shadow database for every
   migration PR; verify each step against
   `BLUE_GREEN_MIGRATION_POLICY.md`.

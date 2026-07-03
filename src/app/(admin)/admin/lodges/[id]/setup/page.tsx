@@ -112,9 +112,8 @@ export default function LodgeSetupWizardPage() {
   const [doorCode, setDoorCode] = useState("");
   const [travelNote, setTravelNote] = useState("");
 
-  // Step 2 — rooms quick-seed. Room names, like locker names, stay
-  // club-wide unique until the contract release, so the default prefix
-  // includes the lodge name to avoid colliding with other lodges' rooms.
+  // Step 2 — rooms quick-seed. Names are unique per lodge, so plain
+  // prefixes work; the lodge-name default just reads nicely on boards.
   const [roomCount, setRoomCount] = useState("4");
   const [bedsPerRoom, setBedsPerRoom] = useState("4");
   const [roomPrefix, setRoomPrefix] = useState("");
@@ -566,10 +565,6 @@ export default function LodgeSetupWizardPage() {
                   onChange={(e) => setRoomPrefix(e.target.value)}
                   maxLength={80}
                 />
-                <p className="text-xs text-muted-foreground">
-                  Room names are club-wide unique for now, so the default
-                  prefix includes the lodge name.
-                </p>
               </div>
             </div>
             {roomsSeeded && <p className="text-sm text-green-700">{roomsSeeded}</p>}
@@ -626,10 +621,6 @@ export default function LodgeSetupWizardPage() {
                   onChange={(e) => setLockerPrefix(e.target.value)}
                   maxLength={80}
                 />
-                <p className="text-xs text-muted-foreground">
-                  Locker names are club-wide unique for now, so the default
-                  prefix includes the lodge name.
-                </p>
               </div>
             </div>
             {lockersSeeded && (

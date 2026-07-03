@@ -54,10 +54,12 @@ context consistent:
    every retrofitted page.
 4. **Bulk seeding.** The rooms/beds and lockers admin APIs gain bulk
    endpoints ("N rooms of M beds", "N lockers") with a name prefix, used
-   by quick-add forms on those pages. Generated names respect the current
-   global uniqueness constraints (ADR-001: `[lodgeId, name]` re-scoping
-   arrives with the phase-2 contract release), so a clashing prefix is
-   rejected with a clear error rather than half-applied — creation is
+   by quick-add forms on those pages. Generated names respect the
+   uniqueness constraints — re-scoped to `[lodgeId, name]` on 2026-07-03,
+   pulled forward from the phase-2 contract release after two-lodge
+   testing hit "Room 1 already exists"; null-lodge rows still clash at
+   every lodge until NOT NULL lands — so a clashing prefix is rejected
+   with a clear error rather than half-applied; creation is
    transactional.
 
 A guided "new lodge" wizard (create → beds → lockers → rates → chores,
@@ -73,9 +75,9 @@ lands in it, the hub links to it, and every step is skippable. It
 composes the bulk-seed endpoints and the standard admin create routes
 (copy-from-lodge for seasons/rates and chores is a client-side read →
 create loop through those routes), so it added no new server surface.
-Steps gate on the same module flags as the hub. Default room/locker
-name prefixes include the lodge name because both stay club-wide unique
-until the phase-2 contract release.
+Steps gate on the same module flags as the hub. (The wizard's original
+lodge-name default prefixes worked around the then-global name
+uniqueness; with names now unique per lodge they are simply a nicety.)
 
 ## Consequences
 
@@ -96,6 +98,7 @@ until the phase-2 contract release.
 - The lodge dimension lives in two navigation contexts (functional pages
   plus the hub), which costs some conceptual purity.
 - Hub summaries are extra reads per visit (one list call per area).
-- Bulk-generated default names can collide with existing rooms/lockers at
-  other lodges until the contract release re-scopes uniqueness; admins
-  may need to adjust the prefix at a second lodge.
+- Bulk-generated default names could originally collide with other
+  lodges' rooms/lockers under the global uniqueness constraint; resolved
+  2026-07-03 by re-scoping to `[lodgeId, name]` (null-lodge rows still
+  clash everywhere until the contract release enforces NOT NULL).

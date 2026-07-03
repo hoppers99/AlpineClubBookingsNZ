@@ -391,7 +391,11 @@ describe("multi-lodge room scoping (phase 7)", () => {
   it("creates rooms at the requested lodge without consulting the default", async () => {
     const create = vi.fn().mockResolvedValue({ id: "room-1" });
     const findFirst = vi.fn();
-    const db = { lodgeRoom: { create }, lodge: { findFirst } };
+    const db = {
+      // Per-lodge name pre-check: no clash in these fixtures.
+      lodgeRoom: { create, findFirst: vi.fn().mockResolvedValue(null) },
+      lodge: { findFirst },
+    };
 
     await createBedAllocationRoom({
       name: "Bunkroom 1",
@@ -408,7 +412,10 @@ describe("multi-lodge room scoping (phase 7)", () => {
   it("stamps the default lodge when no lodge is requested", async () => {
     const create = vi.fn().mockResolvedValue({ id: "room-1" });
     const findFirst = vi.fn().mockResolvedValue({ id: "lodge-default" });
-    const db = { lodgeRoom: { create }, lodge: { findFirst } };
+    const db = {
+      lodgeRoom: { create, findFirst: vi.fn().mockResolvedValue(null) },
+      lodge: { findFirst },
+    };
 
     await createBedAllocationRoom({ name: "Bunkroom 1", db: db as never });
 
@@ -523,6 +530,49 @@ describe("createBedAllocationRoomsBulk (ADR-003 bulk seeding)", () => {
       }),
     ).rejects.toThrow('A room named "Room 2" already exists');
     expect(roomCreate).not.toHaveBeenCalled();
+  });
+
+  it("allows the same room name at a different lodge", async () => {
+    const create = vi.fn().mockResolvedValue({ id: "room-1" });
+    // The pre-check runs against the lodge's own partition (plus null
+    // tolerance) — a "Room 1" at another lodge must not match.
+    const roomFindFirst = vi.fn(async ({ where }: { where: { OR?: unknown } }) => {
+      expect(where).toMatchObject({
+        name: "Room 1",
+        OR: [{ lodgeId: "lodge-2" }, { lodgeId: null }],
+      });
+      return null;
+    });
+    const db = { lodgeRoom: { create, findFirst: roomFindFirst }, lodge: { findFirst: vi.fn() } };
+
+    await createBedAllocationRoom({
+      name: "Room 1",
+      lodgeId: "lodge-2",
+      db: db as never,
+    });
+
+    expect(roomFindFirst).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalled();
+  });
+
+  it("rejects a duplicate room name within the same lodge", async () => {
+    const create = vi.fn();
+    const db = {
+      lodgeRoom: {
+        create,
+        findFirst: vi.fn().mockResolvedValue({ id: "existing" }),
+      },
+      lodge: { findFirst: vi.fn() },
+    };
+
+    await expect(
+      createBedAllocationRoom({
+        name: "Room 1",
+        lodgeId: "lodge-2",
+        db: db as never,
+      }),
+    ).rejects.toThrow('A room named "Room 1" already exists at this lodge.');
+    expect(create).not.toHaveBeenCalled();
   });
 
   it("rejects out-of-range counts", async () => {

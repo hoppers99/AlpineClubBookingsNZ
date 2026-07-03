@@ -57,13 +57,16 @@ export async function POST(request: Request) {
   }
 
   const clash = await prisma.locker.findFirst({
-    where: { name: { in: names, mode: "insensitive" } },
+    where: {
+      name: { in: names, mode: "insensitive" },
+      OR: [{ lodgeId }, { lodgeId: null }],
+    },
     select: { name: true },
   });
   if (clash) {
     return NextResponse.json(
       {
-        error: `A locker named "${clash.name}" already exists. Choose a different name prefix.`,
+        error: `A locker named "${clash.name}" already exists at this lodge. Choose a different name prefix.`,
       },
       { status: 409 },
     );

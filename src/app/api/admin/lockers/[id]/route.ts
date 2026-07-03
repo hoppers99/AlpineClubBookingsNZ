@@ -17,7 +17,14 @@ const updateLockerSchema = z.object({
   allocatedToMemberId: z.string().trim().min(1).max(191).nullable().optional(),
 });
 
-async function findDuplicateLockerName(name: string, excludeId: string) {
+async function findDuplicateLockerName(
+  name: string,
+  excludeId: string,
+  lodgeId: string | null,
+) {
+  // Per-lodge uniqueness with null tolerance (see the lockers create
+  // route): a null-lodge locker clashes at every lodge, and renaming a
+  // null-lodge locker must stay clash-free everywhere.
   return prisma.locker.findFirst({
     where: {
       id: { not: excludeId },
@@ -25,6 +32,7 @@ async function findDuplicateLockerName(name: string, excludeId: string) {
         equals: name,
         mode: "insensitive",
       },
+      ...(lodgeId ? { OR: [{ lodgeId }, { lodgeId: null }] } : {}),
     },
     select: { id: true },
   });
@@ -47,7 +55,7 @@ export async function PUT(
 
   const existing = await prisma.locker.findUnique({
     where: { id },
-    select: { id: true, name: true, allocatedToMemberId: true },
+    select: { id: true, name: true, allocatedToMemberId: true, lodgeId: true },
   });
   if (!existing) {
     return NextResponse.json({ error: "Locker not found" }, { status: 404 });
@@ -79,9 +87,12 @@ export async function PUT(
   }
 
   const nextName = parsed.data.name ?? existing.name;
-  if (nextName !== existing.name && (await findDuplicateLockerName(nextName, id))) {
+  if (
+    nextName !== existing.name &&
+    (await findDuplicateLockerName(nextName, id, existing.lodgeId ?? null))
+  ) {
     return NextResponse.json(
-      { error: "A locker with that name already exists" },
+      { error: "A locker with that name already exists at this lodge" },
       { status: 409 },
     );
   }
