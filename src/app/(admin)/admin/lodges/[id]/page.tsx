@@ -8,6 +8,7 @@ import {
   BedDouble,
   CalendarRange,
   ClipboardList,
+  Gauge,
   KeyRound,
   Lock,
 } from "lucide-react";
@@ -20,6 +21,8 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 
 // Lodge configuration hub (ADR-003): one place to see a lodge's setup state,
 // with links into the existing per-area pages pre-filtered via ?lodgeId=.
@@ -43,6 +46,13 @@ interface AreaSummary {
 
 const EMPTY_SUMMARY: AreaSummary = { loaded: false, count: 0 };
 
+const CAPACITY_SOURCE_LABELS: Record<string, string> = {
+  configured_beds: "active configured beds",
+  capacity_override: "the capacity set below",
+  club_config: "the club's default lodge capacity",
+  unconfigured_lodge: "not configured yet",
+};
+
 export default function LodgeConfigurationHubPage() {
   const params = useParams<{ id: string }>();
   const lodgeId = params.id;
@@ -54,6 +64,18 @@ export default function LodgeConfigurationHubPage() {
   const [lockers, setLockers] = useState<AreaSummary>(EMPTY_SUMMARY);
   const [seasons, setSeasons] = useState<AreaSummary>(EMPTY_SUMMARY);
   const [chores, setChores] = useState<AreaSummary>(EMPTY_SUMMARY);
+  // Resolved capacity for this lodge and where it came from (beds override
+  // vs the admin capacity override vs the default-lodge fallback), plus the
+  // editable per-lodge override value. Capacity is core lodge config, set
+  // here even when the Bed Allocation module is off.
+  const [resolvedCapacity, setResolvedCapacity] = useState<number | null>(null);
+  const [capacitySource, setCapacitySource] = useState<string | null>(null);
+  const [capacityOverride, setCapacityOverride] = useState("");
+  const [savedCapacityOverride, setSavedCapacityOverride] = useState("");
+  const [savingCapacity, setSavingCapacity] = useState(false);
+  const [capacityMessage, setCapacityMessage] = useState<
+    { type: "success" | "error"; text: string } | null
+  >(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -126,6 +148,10 @@ export default function LodgeConfigurationHubPage() {
           count: data.rooms?.length ?? 0,
           detail: `${bedCount} bed${bedCount === 1 ? "" : "s"} · capacity ${data.capacity?.capacity ?? 0}`,
         });
+        if (data.capacity) {
+          setResolvedCapacity(data.capacity.capacity ?? 0);
+          setCapacitySource(data.capacity.source ?? null);
+        }
       })
       .catch(() => {});
 
@@ -160,10 +186,77 @@ export default function LodgeConfigurationHubPage() {
       })
       .catch(() => {});
 
+    fetch(`/api/admin/lodge-settings?${query}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (cancelled || !data) return;
+        const value = data.capacity === null || data.capacity === undefined
+          ? ""
+          : String(data.capacity);
+        setCapacityOverride(value);
+        setSavedCapacityOverride(value);
+      })
+      .catch(() => {});
+
     return () => {
       cancelled = true;
     };
   }, [lodgeId]);
+
+  async function saveCapacityOverride() {
+    setSavingCapacity(true);
+    setCapacityMessage(null);
+    const trimmed = capacityOverride.trim();
+    let capacity: number | null = null;
+    if (trimmed !== "") {
+      const parsed = Number(trimmed);
+      if (!Number.isInteger(parsed) || parsed <= 0) {
+        setCapacityMessage({
+          type: "error",
+          text: "Enter a whole number greater than zero, or clear it to fall back.",
+        });
+        setSavingCapacity(false);
+        return;
+      }
+      capacity = parsed;
+    }
+    try {
+      const res = await fetch(
+        `/api/admin/lodge-settings?lodgeId=${encodeURIComponent(lodgeId)}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ capacity, lodgeId }),
+        },
+      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error ?? "Failed to save capacity");
+      }
+      setSavedCapacityOverride(trimmed);
+      setCapacityMessage({ type: "success", text: "Capacity saved" });
+      // Re-read the resolved figure (beds still win when they drive it).
+      const refreshed = await fetch(
+        `/api/admin/bed-allocation/rooms?lodgeId=${encodeURIComponent(lodgeId)}`,
+        { cache: "no-store" },
+      )
+        .then((r) => (r.ok ? r.json() : null))
+        .catch(() => null);
+      if (refreshed?.capacity) {
+        setResolvedCapacity(refreshed.capacity.capacity ?? 0);
+        setCapacitySource(refreshed.capacity.source ?? null);
+      }
+    } catch (err) {
+      setCapacityMessage({
+        type: "error",
+        text: err instanceof Error ? err.message : "Failed to save capacity",
+      });
+    } finally {
+      setSavingCapacity(false);
+    }
+  }
+
+  const bedAllocationOn = modules.bedAllocation === true;
 
   const areas = [
     {
@@ -288,6 +381,69 @@ export default function LodgeConfigurationHubPage() {
               {lodge.travelNote ?? "Not set — emails fall back to the club-wide note"}
             </p>
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Gauge className="h-4 w-4" />
+            Capacity
+          </CardTitle>
+          <CardDescription>
+            {bedAllocationOn
+              ? "Bed Allocation is on, so this lodge's capacity is the count of its active beds. The override below only applies if the beds are removed."
+              : "Bed Allocation is off, so this lodge's capacity comes from the value below. Set it before taking bookings — an unset lodge resolves to zero capacity and cannot be booked."}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="text-sm">
+            <p className="text-muted-foreground">Current capacity</p>
+            <p className="font-medium">
+              {resolvedCapacity === null
+                ? "\u2014"
+                : `${resolvedCapacity} bed${resolvedCapacity === 1 ? "" : "s"}`}
+              {capacitySource
+                ? ` (from ${CAPACITY_SOURCE_LABELS[capacitySource] ?? capacitySource})`
+                : ""}
+            </p>
+          </div>
+          <div className="space-y-1 max-w-xs">
+            <Label htmlFor="lodge-capacity-override">
+              Capacity for this lodge
+            </Label>
+            <div className="flex items-center gap-2">
+              <Input
+                id="lodge-capacity-override"
+                type="number"
+                min="1"
+                value={capacityOverride}
+                onChange={(e) => setCapacityOverride(e.target.value)}
+                className="w-28"
+              />
+              <Button
+                onClick={() => void saveCapacityOverride()}
+                disabled={savingCapacity || capacityOverride.trim() === savedCapacityOverride.trim()}
+              >
+                {savingCapacity ? "Saving..." : "Save"}
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Leave blank to fall back to the club default (default lodge) or
+              zero (additional lodges).
+            </p>
+          </div>
+          {capacityMessage && (
+            <div
+              className={`rounded-md p-3 text-sm ${
+                capacityMessage.type === "success"
+                  ? "bg-green-50 text-green-700"
+                  : "bg-red-50 text-red-700"
+              }`}
+            >
+              {capacityMessage.text}
+            </div>
+          )}
         </CardContent>
       </Card>
 

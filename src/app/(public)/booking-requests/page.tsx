@@ -39,7 +39,9 @@ export default function BookingRequestPage() {
   const [guests, setGuests] = useState<RequestGuest[]>([emptyGuest()]);
   // Active lodges from the public settings endpoint; empty for a
   // single-lodge club, so no lodge copy renders (ADR-002).
-  const [lodges, setLodges] = useState<Array<{ id: string; name: string }>>([]);
+  const [lodges, setLodges] = useState<
+    Array<{ id: string; name: string; capacity: number }>
+  >([]);
   const [lodgeId, setLodgeId] = useState("");
   const [showPricing, setShowPricing] = useState<boolean | null>(null);
   const [indicativePriceCents, setIndicativePriceCents] = useState<number | null>(null);
@@ -61,6 +63,10 @@ export default function BookingRequestPage() {
   const validGuests = guests.filter((g) => g.firstName.trim() && g.lastName.trim());
   const datesValid = Boolean(checkIn && checkOut && checkOut > checkIn);
   const lodgeChoiceRequired = lodges.length >= 2;
+  // Cap guests against the chosen lodge; fall back to the club/default
+  // lodge for single-lodge clubs. The server re-validates per lodge.
+  const selectedLodge = lodges.find((lodge) => lodge.id === lodgeId) ?? null;
+  const effectiveCapacity = selectedLodge?.capacity ?? club.lodgeCapacity;
 
   const fetchQuote = useCallback(async () => {
     if (
@@ -108,7 +114,7 @@ export default function BookingRequestPage() {
   }
 
   function addGuest() {
-    if (guests.length >= club.lodgeCapacity) return;
+    if (guests.length >= effectiveCapacity) return;
     setGuests((prev) => [...prev, emptyGuest()]);
   }
 
@@ -295,14 +301,14 @@ export default function BookingRequestPage() {
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-semibold">
-                Guests ({guests.length}/{club.lodgeCapacity} max)
+                Guests ({guests.length}/{effectiveCapacity} max)
               </h3>
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
                 onClick={addGuest}
-                disabled={guests.length >= club.lodgeCapacity}
+                disabled={guests.length >= effectiveCapacity}
               >
                 + Add Guest
               </Button>

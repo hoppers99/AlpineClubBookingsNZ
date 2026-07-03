@@ -138,6 +138,20 @@ record the outcome here when decided:
   unchanged (`getStaffLodgeBinding`); this only surfaced it. Lodge
   controls render only with a second active lodge (ADR-002).
 
+## Capacity Configuration
+
+Each lodge's capacity resolves in this order (`getLodgeCapacityStatus`):
+active configured beds when the Bed Allocation module is on, else the
+per-lodge `LodgeSettings.capacity` override, else the club-config bed
+total for the default lodge only (additional lodges resolve to 0 until
+beds or an override exist, so an unconfigured lodge can never be
+overbooked). The per-lodge override is editable in core lodge config on
+the lodge hub (`/admin/lodges/[id]`) regardless of the Bed Allocation
+module, and on `/admin/setup`. Public and admin booking surfaces cap
+guests against the *selected* lodge's capacity (the public booking-request
+settings endpoint returns each active lodge's capacity), and the server
+re-validates per lodge.
+
 ## Service Rules
 
 - Capacity is per lodge: "beds available on date D at lodge L". No code

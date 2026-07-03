@@ -30,6 +30,7 @@ import { hashActionToken, issueActionToken } from "@/lib/action-tokens";
 import { logAudit } from "@/lib/audit";
 import { recordBookingEvent } from "@/lib/booking-events";
 import { acquireLodgeCapacityLock, checkCapacityForGuestRanges } from "@/lib/capacity";
+import { getLodgeCapacity } from "@/lib/lodge-capacity";
 import { getNonMemberHoldDays } from "@/lib/cancellation";
 import { endOfDateOnlyForTimeZone, formatDateOnly } from "@/lib/date-only";
 import {
@@ -147,13 +148,23 @@ export async function getBookingRequestSettings(db: Pick<typeof prisma, "booking
  */
 export async function getPublicBookingRequestLodges(
   db: Pick<typeof prisma, "lodge"> = prisma
-): Promise<Array<{ id: string; name: string }>> {
+): Promise<Array<{ id: string; name: string; capacity: number }>> {
   const lodges = await db.lodge.findMany({
     where: { active: true },
     orderBy: lodgeOrderBy(),
     select: { id: true, name: true },
   });
-  return lodges.length >= 2 ? lodges : [];
+  if (lodges.length < 2) return [];
+  // Each lodge's own capacity so the public forms cap guests against the
+  // chosen lodge, not the default one (lodge-scoping contract). Capacity is
+  // not sensitive and the server re-validates per lodge regardless.
+  return Promise.all(
+    lodges.map(async (lodge) => ({
+      id: lodge.id,
+      name: lodge.name,
+      capacity: await getLodgeCapacity(lodge.id),
+    })),
+  );
 }
 
 /**
