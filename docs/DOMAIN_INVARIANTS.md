@@ -31,6 +31,18 @@ Future reviews and issues should cite this file when proposing changes.
   This person-night guard is separate from bed capacity: it checks draft,
   pending, confirmed/paid/completed, waitlist, offered, and admin-review
   bookings, but ignores cancelled, bumped, deleted, and expired draft rows.
+- The person-night guard is app-level enforcement by design (#1039 item 3): a
+  database unique index cannot express it because liveness is booking-status
+  dependent and spans `BookingGuest` to `Booking`, which a Postgres partial
+  unique index cannot reference. It is race-free because every booking
+  creation/edit transaction takes the global booking advisory lock before
+  running the guard; that ordering is frozen by test.
+- A member holds at most one group-join roster row per group
+  (`GroupBookingJoin` unique on groupBookingId + joinerMemberId, #1039
+  item 2). The roster row is written inside the child booking's transaction:
+  a duplicate live join aborts the whole transaction, and a row left by a
+  cancelled or bumped join is reused on re-join. Non-member join requests
+  carry a NULL member id and sit outside the constraint.
 - Draft, pending, waitlist, payment-recovery, and review states must have
   expiry, retry, admin visibility, or repair paths.
 
@@ -74,6 +86,17 @@ Booking changes must not orphan or desynchronize:
 
 Positive deltas, negative deltas, credits, refunds, and additional payments must
 remain traceable to the original booking and modification event.
+
+Nightly prices lock at booking time: every edit path — batch modify, date
+change, guest add, single-guest removal, and the modify-quote preview — prices
+only the changed guests/nights at current season rates. A night a guest
+already bought keeps the price stored on its `BookingGuestNight` row, so a
+season-rate change between booking and edit never rolls into unchanged nights
+(adding one guest costs exactly that guest's price; removing one returns
+exactly theirs, policy permitting). The waitlist offer reprice is the
+deliberate exception: an offer re-bases the whole booking at current rates
+before the member confirms, and the offer email states that price. Legacy
+guests without stored night rows price at current rates.
 
 Every booking-reduction path — batch modify (`removeGuestIds`/date change),
 single-guest removal (`DELETE …/guests/[guestId]`), and date change
@@ -136,6 +159,15 @@ Cancelled-booking soft-delete may hide an operational duplicate only when it
 preserves the booking row and no external money/Xero history needs to remain
 operator-visible by default. Balanced internal modification deltas that net to
 zero are not external financial history by themselves.
+
+## Analytics And Privacy
+
+Google Analytics must not load unless all three hold: the Analytics module is
+enabled, `NEXT_PUBLIC_GA_MEASUREMENT_ID` is configured, and the visitor has
+explicitly accepted the consent banner. Declining or dismissing the banner
+counts as denied, Google Consent Mode defaults every storage category to
+denied until an explicit accept, and the stored per-browser choice
+(`analytics-consent.v1`) is honoured on revisit.
 
 ## Membership Lifecycle
 

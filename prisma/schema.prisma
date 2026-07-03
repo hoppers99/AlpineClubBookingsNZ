@@ -1178,6 +1178,11 @@ model GroupBookingJoin {
   booking      Booking?     @relation("GroupBookingJoinBooking", fields: [bookingId], references: [id], onDelete: SetNull)
   joinerMember Member?      @relation(fields: [joinerMemberId], references: [id], onDelete: SetNull)
 
+  // One roster row per member per group (#1039 item 2). Non-member joins
+  // carry a NULL joinerMemberId and are unaffected (NULLs are distinct); a
+  // member re-joining after cancellation reuses their row inside the booking
+  // transaction rather than creating a duplicate.
+  @@unique([groupBookingId, joinerMemberId])
   @@index([groupBookingId])
   @@index([verificationTokenExpiresAt])
   @@index([contactEmail])
@@ -1551,6 +1556,18 @@ model PaymentRefund {
   @@index([stripeChargeId])
   @@index([stripePaymentIntentId])
   @@index([status, createdAt])
+}
+
+// Shared sliding-window rate-limit counters (#1039 item 4). Replicas and
+// blue/green slots must see one counter per limiter+key, so the counter lives
+// in Postgres instead of process memory; the in-memory limiter remains only
+// as a per-process fallback when the database is unreachable.
+model RateLimitCounter {
+  id      String   @id
+  count   Int
+  resetAt DateTime
+
+  @@index([resetAt])
 }
 
 model PaymentRecoveryOperation {

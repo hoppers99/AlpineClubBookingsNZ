@@ -4,6 +4,7 @@ import type { AgeTier } from "@prisma/client";
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
+import { toast } from "sonner";
 import { BookingCalendar } from "@/components/booking-calendar";
 import { GuestForm, type GuestData } from "@/components/guest-form";
 import { Button } from "@/components/ui/button";
@@ -202,6 +203,14 @@ export default function BookPage() {
   const [useCredit, setUseCredit] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<BookingPaymentMethod>("stripe");
   const [internetBankingEnabled, setInternetBankingEnabled] = useState(false);
+  // Group trip: capture the intent up front and auto-open the group right
+  // after the booking is created, instead of leaving the feature to be
+  // discovered on the booking page after payment.
+  const [groupBookingsEnabled, setGroupBookingsEnabled] = useState(false);
+  const [groupTrip, setGroupTrip] = useState(false);
+  const [groupPaymentMode, setGroupPaymentMode] = useState<
+    "EACH_PAYS_OWN" | "ORGANISER_PAYS"
+  >("EACH_PAYS_OWN");
   const [internetBankingUnavailableReason, setInternetBankingUnavailableReason] = useState<string | null>(null);
   const [internetBankingHoldSummary, setInternetBankingHoldSummary] = useState<string | null>(null);
   const [bookingMessages, setBookingMessages] = useState<BookingMessageMap>({});
@@ -402,6 +411,7 @@ export default function BookPage() {
             ? internetBanking.holdPolicy.summary
             : null,
         );
+        setGroupBookingsEnabled(Boolean(data?.groupBookingsEnabled));
       })
       .catch(() => {
         setInternetBankingEnabled(false);
@@ -779,7 +789,39 @@ export default function BookPage() {
 
     if (res.ok) {
       const data = await res.json();
-      router.push(`/bookings/${data.id}`);
+      if (groupTrip && groupBookingsEnabled) {
+        // Best-effort: open the group so the share link is waiting on the
+        // booking page. Bookings that aren't committed yet (e.g. non-member
+        // holds in PENDING, or admin review) can't anchor a group, so tell
+        // the member instead of silently dropping their choice; never block
+        // the redirect.
+        let groupOpened = false;
+        try {
+          const groupRes = await fetch("/api/group-bookings", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              organiserBookingId: data.id,
+              paymentMode: groupPaymentMode,
+            }),
+          });
+          groupOpened = groupRes.ok;
+        } catch {
+          // fall through to the toast
+        }
+        if (!groupOpened) {
+          toast.info(
+            "Your group trip couldn't be opened yet. You can open it from your booking page once the booking is confirmed.",
+          );
+        }
+      }
+      // Land on the payment card when payment is the next step; the hash is a
+      // harmless no-op when the card isn't rendered (holds, review, zero due).
+      router.push(
+        showPaymentMethodChoice
+          ? `/bookings/${data.id}#payment`
+          : `/bookings/${data.id}`,
+      );
     } else {
       const data = await res.json();
       if (data.code === "CAPACITY_EXCEEDED" && data.canWaitlist) {
@@ -888,6 +930,10 @@ export default function BookPage() {
 
     if (res.ok) {
       const data = await res.json();
+      if (groupTrip && groupBookingsEnabled) {
+        // Drafts can't anchor a group; tell the member where the option went.
+        toast.info("You can open the group trip after confirming your booking.");
+      }
       router.push(`/bookings/${data.id}`);
     } else {
       const data = await res.json();
@@ -1044,7 +1090,15 @@ export default function BookPage() {
 
   return (
     <div className="max-w-3xl space-y-6">
-      <h1 className="text-3xl font-bold">Book a Stay</h1>
+      <div className="space-y-1">
+        <Link
+          href="/dashboard"
+          className="text-sm text-muted-foreground hover:text-foreground"
+        >
+          &larr; Back to Dashboard
+        </Link>
+        <h1 className="text-3xl font-bold">Book a Stay</h1>
+      </div>
 
       {/* Subscription warning banner */}
       {!subscriptionLoading && subscriptionUnpaid && (
@@ -1086,7 +1140,7 @@ export default function BookPage() {
       )}
 
       {error && (
-        <div className="rounded-md bg-red-50 p-3 text-sm text-red-700">
+        <div role="alert" className="rounded-md bg-red-50 p-3 text-sm text-red-700">
           <p>{error}</p>
           {guestProfileBlocks.length > 0 && (
             <div className="mt-3 space-y-3">
@@ -1256,6 +1310,10 @@ export default function BookPage() {
         <span className={step === "review" ? "app-step-active" : "text-gray-400"}>
           3. Review & Confirm
         </span>
+        <span className="text-gray-300">&rarr;</span>
+        <span className="text-gray-400">
+          {requiresAdminReviewLocal ? "4. Admin Review" : "4. Pay"}
+        </span>
       </div>
 
       {/* Step 1: Dates */}
@@ -1383,6 +1441,45 @@ export default function BookPage() {
                 return idx >= 0 ? g.perNightCents[idx] : null;
               }}
             />
+            {groupBookingsEnabled && (
+              <div className="space-y-3 rounded-md border border-slate-200 p-4">
+                <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={groupTrip}
+                    onChange={(e) => setGroupTrip(e.target.checked)}
+                    className="rounded border-slate-300"
+                  />
+                  Make this a group trip
+                </label>
+                <p className="text-sm text-muted-foreground">
+                  Others can join this trip with their own booking via a link
+                  you share after you confirm.
+                </p>
+                {groupTrip && (
+                  <div className="space-y-2">
+                    <label className="flex items-center gap-2 text-sm cursor-pointer">
+                      <input
+                        type="radio"
+                        name="groupPaymentMode"
+                        checked={groupPaymentMode === "EACH_PAYS_OWN"}
+                        onChange={() => setGroupPaymentMode("EACH_PAYS_OWN")}
+                      />
+                      Each person pays their own beds
+                    </label>
+                    <label className="flex items-center gap-2 text-sm cursor-pointer">
+                      <input
+                        type="radio"
+                        name="groupPaymentMode"
+                        checked={groupPaymentMode === "ORGANISER_PAYS"}
+                        onChange={() => setGroupPaymentMode("ORGANISER_PAYS")}
+                      />
+                      You pay for everyone (settle one combined bill)
+                    </label>
+                  </div>
+                )}
+              </div>
+            )}
             <div className="flex justify-between pt-4">
               <Button variant="outline" onClick={() => setStep("dates")}>
                 Back
@@ -1499,6 +1596,16 @@ export default function BookPage() {
                     <span>{formatCents(remainingToPay)}</span>
                   </div>
                 </>
+              )}
+
+              {groupTrip && groupBookingsEnabled && (
+                <div className="rounded-md border border-indigo-200 bg-indigo-50 p-4 text-sm text-indigo-900">
+                  <span className="font-medium">Group trip</span> —{" "}
+                  {groupPaymentMode === "EACH_PAYS_OWN"
+                    ? "each person pays their own beds."
+                    : "you pay for everyone and settle one combined bill."}{" "}
+                  You&apos;ll get a shareable join link after confirming.
+                </div>
               )}
 
               {availableCreditCents > 0 && (
@@ -1804,7 +1911,13 @@ export default function BookPage() {
                 {savingDraft ? "Saving draft..." : "Save as Draft"}
               </Button>
               <Button onClick={handleSubmit} disabled={submitting || savingDraft} size="lg">
-                {submitting ? "Creating booking..." : "Confirm Booking"}
+                {submitting
+                  ? "Creating booking..."
+                  : requiresAdminReviewLocal
+                    ? "Submit for Review"
+                    : remainingToPay > 0
+                      ? "Continue to Payment"
+                      : "Confirm Booking"}
               </Button>
             </div>
           </div>

@@ -13,16 +13,16 @@ import { BookingNotesEditor } from "@/components/booking-notes-editor";
 import { BookingEditor, type BookingEditorData } from "@/components/booking-editor";
 import { AdditionalPaymentCard } from "@/components/additional-payment-card";
 import { ConfirmDraftButton } from "@/components/confirm-draft-button";
-import { ConfirmPendingGuestsButton } from "@/components/admin/confirm-pending-guests-button";
+import { AdminBookingToolsCard } from "@/components/admin/admin-booking-tools-card";
 import { ArrivalTimeEditor } from "@/components/arrival-time-editor";
 import { RequestedRoomEditor } from "@/components/requested-room-editor";
 import { WaitlistOfferCard } from "@/components/waitlist-offer-card";
 import { DeleteBookingButton } from "@/components/delete-booking-button";
-import { CopyBookingButton } from "@/components/admin/copy-booking-button";
 import { getBookingEditPolicy } from "@/lib/booking-edit-policy";
 import { getBookingPaymentMode } from "@/lib/booking-payment-flow";
 import { RefundAppealButton } from "@/components/refund-appeal-button";
-import { paymentStatusClass } from "@/lib/status-colors";
+import { humanizeStatus, paymentStatusClass } from "@/lib/status-colors";
+import { WAITLIST_OFFER_HOURS } from "@/lib/waitlist";
 import {
   getCancellationSettlementBreakdown,
   getPaymentDisplayStatus,
@@ -479,6 +479,15 @@ export default async function BookingDetailPage({
     !isProvisionalChild &&
     !isFlaggedProvisional;
 
+  // The Stripe payment card and the payment-required banner render under the
+  // same condition so the banner can never point at a missing card.
+  const showCompletePaymentCard =
+    canManageBooking &&
+    !isDeleted &&
+    !internetBankingPayment &&
+    isPaymentOwedBookingStatus(booking.status) &&
+    (!booking.payment || booking.payment.status !== "SUCCEEDED");
+
   // Issue #778: surface auto-applied member credit (display only). Credit nets
   // off the booking price, so amount due = finalPriceCents - creditAppliedCents.
   const creditAppliedCents = booking.payment?.creditAppliedCents ?? 0;
@@ -591,19 +600,50 @@ export default async function BookingDetailPage({
       <div className="flex items-center justify-between">
         <h1 className="text-3xl font-bold">Booking Details</h1>
         <div className="flex items-center gap-2">
-          {!isDeleted && isAdmin ? (
-            <CopyBookingButton
-              bookingId={booking.id}
-              sourceCheckIn={editorData.checkIn}
-              sourceCheckOut={editorData.checkOut}
-              minCheckIn={editorData.editPolicy.today}
-            />
-          ) : null}
           <Link href={backHref}>
             <Button variant="outline">Back to Bookings</Button>
           </Link>
         </div>
       </div>
+
+      {isAdmin && (
+        <AdminBookingToolsCard
+          bookingId={booking.id}
+          memberId={booking.memberId}
+          memberName={`${booking.member.firstName} ${booking.member.lastName}`}
+          checkIn={booking.checkIn}
+          checkOut={booking.checkOut}
+          copyProps={{
+            sourceCheckIn: editorData.checkIn,
+            sourceCheckOut: editorData.checkOut,
+            minCheckIn: editorData.editPolicy.today,
+          }}
+          isDeleted={isDeleted}
+          paymentId={booking.payment?.id ?? null}
+          showConfirmPendingGuests={Boolean(
+            !isDeleted &&
+              booking.status === "PENDING" &&
+              booking.hasNonMembers &&
+              booking.nonMemberHoldUntil,
+          )}
+          hasSavedPaymentMethod={Boolean(
+            booking.payment?.stripePaymentMethodId &&
+              booking.payment?.stripeCustomerId,
+          )}
+        />
+      )}
+
+      {showCompletePaymentCard && (
+        <div className="rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <p className="font-medium">Payment required</p>
+          <p>{paymentRequiredDescription}</p>
+          <p className="mt-1">
+            <a href="#payment" className="font-medium underline">
+              Go to payment
+            </a>
+          </p>
+        </div>
+      )}
 
       {isDeleted ? (
         <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900">
@@ -746,7 +786,7 @@ export default async function BookingDetailPage({
                       {requested.requested?.summary ?? "Booking change request"}
                     </p>
                     <Badge variant={request.status === "REQUESTED" ? "outline" : "secondary"}>
-                      {request.status}
+                      {humanizeStatus(request.status)}
                     </Badge>
                   </div>
                   <p className="mt-1 text-slate-500">
@@ -840,21 +880,6 @@ export default async function BookingDetailPage({
         </Card>
       ) : null}
 
-      {/* Admin: force-confirm non-member guests still on hold (issue #708) */}
-      {!isDeleted &&
-        isAdmin &&
-        booking.status === "PENDING" &&
-        booking.hasNonMembers &&
-        booking.nonMemberHoldUntil && (
-          <ConfirmPendingGuestsButton
-            bookingId={booking.id}
-            hasSavedPaymentMethod={Boolean(
-              booking.payment?.stripePaymentMethodId &&
-                booking.payment?.stripeCustomerId
-            )}
-          />
-        )}
-
       {/* Draft booking: $0 confirm or payment to complete */}
       {canManageBooking && !isDeleted && isDraft && booking.finalPriceCents === 0 && (
         <ConfirmDraftButton bookingId={booking.id} />
@@ -897,7 +922,8 @@ export default async function BookingDetailPage({
               </p>
             )}
             <p className="text-sm text-purple-700">
-              We&apos;ll email you when a spot opens up. You&apos;ll have 48 hours to confirm your booking.
+              We&apos;ll email you when a spot opens up. You&apos;ll have{" "}
+              {WAITLIST_OFFER_HOURS} hours to confirm your booking.
             </p>
           </CardContent>
         </Card>
@@ -976,8 +1002,8 @@ export default async function BookingDetailPage({
       )}
 
       {/* Show payment form if payment hasn't been completed */}
-      {(canManageBooking && !isDeleted && !internetBankingPayment && isPaymentOwedBookingStatus(booking.status) && (!booking.payment || booking.payment.status !== "SUCCEEDED")) && (
-        <Card>
+      {showCompletePaymentCard && (
+        <Card id="payment" className="scroll-mt-4">
           <CardHeader>
             <CardTitle>Complete Payment</CardTitle>
           </CardHeader>
@@ -1178,7 +1204,7 @@ export default async function BookingDetailPage({
                     }
                     className="align-middle"
                   >
-                    {latestRefundAppeal.status}
+                    {humanizeStatus(latestRefundAppeal.status)}
                   </Badge>
                   {latestRefundAppeal.requestedAmountCents ? (
                     <span className="ml-2 text-slate-600">
