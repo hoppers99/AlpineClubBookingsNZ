@@ -24,7 +24,7 @@ export function EmailDeliverabilitySection({
   const [clearingSuppressionId, setClearingSuppressionId] = useState<string | null>(null);
   const [reviewingEmailFailureId, setReviewingEmailFailureId] = useState<string | null>(null);
   const [reissuingTokenEmailId, setReissuingTokenEmailId] = useState<string | null>(null);
-  const { confirm, confirmDialog } = useConfirm();
+  const { confirm, prompt, confirmDialog } = useConfirm();
 
   async function clearSuppression(id: string, email: string) {
     if (!(await confirm({ title: `Clear email suppression for ${email}?` }))) {
@@ -48,10 +48,12 @@ export function EmailDeliverabilitySection({
   }
 
   async function archiveEmailFailure(id: string, to: string) {
-    const reason = window.prompt(
-      `Archive exhausted email failure for ${to}?`,
-      "Reviewed from admin health dashboard"
-    );
+    const reason = await prompt({
+      title: `Archive exhausted email failure for ${to}?`,
+      inputLabel: "Reason",
+      defaultValue: "Reviewed from admin health dashboard",
+      confirmLabel: "Archive",
+    });
     if (reason === null) {
       return;
     }

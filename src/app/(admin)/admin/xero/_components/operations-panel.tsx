@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
+import { useConfirm } from "@/components/confirm-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -35,6 +36,7 @@ export function OperationsPanel({
   onRefreshDiagnostics: () => void
   refreshToken: number
 }) {
+  const { prompt, confirmDialog } = useConfirm()
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
@@ -204,7 +206,13 @@ export function OperationsPanel({
   }
 
   const markNonReplayable = async (operationId: string) => {
-    const reason = window.prompt("Why is this Xero operation not safe to replay?", "Reviewed from Xero operations dashboard")
+    const reason = await prompt({
+      title: "Mark this Xero operation non-replayable?",
+      description: "Why is this operation not safe to replay?",
+      inputLabel: "Reason",
+      defaultValue: "Reviewed from Xero operations dashboard",
+      confirmLabel: "Mark non-replayable",
+    })
     if (reason === null) return
     setMarkingNonReplayableOperationId(operationId)
     setError("")
@@ -242,7 +250,13 @@ export function OperationsPanel({
   }
 
   const resolveOperation = async (operationId: string) => {
-    const reason = window.prompt("How was this resolved in Xero? This drops it off the active failure list.", "Resolved manually in Xero")
+    const reason = await prompt({
+      title: "Resolve this Xero operation?",
+      description: "How was this resolved in Xero? This drops it off the active failure list.",
+      inputLabel: "Reason",
+      defaultValue: "Resolved manually in Xero",
+      confirmLabel: "Resolve",
+    })
     if (reason === null) return
     setResolvingOperationId(operationId)
     setError("")
@@ -301,6 +315,7 @@ export function OperationsPanel({
       }
     >
       <div className="space-y-4">
+        {confirmDialog}
         {error ? <p className="text-sm text-red-600">{error}</p> : null}
         <details className="rounded-md border bg-slate-50 p-3 text-xs text-slate-600">
           <summary className="cursor-pointer font-medium text-slate-700">What do these statuses mean?</summary>
