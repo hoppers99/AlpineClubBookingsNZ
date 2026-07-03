@@ -7,6 +7,7 @@ import {
 import {
   accessRoleAssignmentRowsFromTokens,
   loadAccessRoleDefinitions,
+  type AccessRoleDefinitionRecord,
 } from "@/lib/access-role-definitions";
 
 type MemberAccessRoleWriter = {
@@ -14,7 +15,7 @@ type MemberAccessRoleWriter = {
     Prisma.TransactionClient["memberAccessRole"],
     "createMany"
   >;
-  accessRoleDefinition: Pick<
+  accessRoleDefinition?: Pick<
     Prisma.TransactionClient["accessRoleDefinition"],
     "findMany"
   >;
@@ -27,6 +28,8 @@ export async function ensureMemberAccessRoles(
     roles: ReadonlyArray<AppAccessRole | string | null | undefined>;
     canLogin?: boolean | null;
     assignedByMemberId?: string | null;
+    /** Preloaded definitions (e.g. fetched before a transaction). */
+    definitions?: ReadonlyArray<AccessRoleDefinitionRecord>;
   },
 ) {
   const roles = normalizeAssignableAccessRoleTokens(params.roles, {
@@ -39,8 +42,13 @@ export async function ensureMemberAccessRoles(
 
   // Dual-write: enum rows are linked to their seeded definition when it
   // exists; definition-id tokens become definition-only rows. Unknown
-  // tokens are dropped by the row resolver (callers validate first).
-  const definitions = await loadAccessRoleDefinitions(db);
+  // tokens are dropped by the row resolver (callers validate first). When
+  // no definitions are reachable, enum rows are written unlinked — the
+  // resolver falls back to the legacy bundles and
+  // ensureAccessRoleDefinitions re-links them on the next seed run.
+  const definitions =
+    params.definitions ??
+    (db.accessRoleDefinition ? await loadAccessRoleDefinitions(db as Required<MemberAccessRoleWriter>) : []);
   const assignmentRows = accessRoleAssignmentRowsFromTokens(
     roles,
     definitions,

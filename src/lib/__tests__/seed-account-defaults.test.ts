@@ -223,6 +223,11 @@ describe("ensureMemberAccessRolesFromCompatibilityFields", () => {
       memberAccessRole: {
         createMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
+      accessRoleDefinition: {
+        // Empty definitions: rows are written enum-only, like pre-seed
+        // installs; ensureAccessRoleDefinitions re-links them later.
+        findMany: vi.fn().mockResolvedValue([]),
+      },
     };
   }
 
@@ -237,7 +242,7 @@ describe("ensureMemberAccessRolesFromCompatibilityFields", () => {
     });
 
     expect(db.memberAccessRole.createMany).toHaveBeenCalledWith({
-      data: [{ memberId: "admin-1", role: "ADMIN" }],
+      data: [{ memberId: "admin-1", role: "ADMIN", roleDefinitionId: null }],
       skipDuplicates: true,
     });
   });

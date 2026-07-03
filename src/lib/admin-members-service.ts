@@ -1071,6 +1071,7 @@ export async function createAdminMember(
         memberId: created.id,
         roles: accessRoles,
         canLogin,
+        definitions: roleDefinitions,
       });
 
       // Admin accounts never owe a membership subscription, so they default
