@@ -69,6 +69,43 @@ new ADR:
   `finance-dashboard/decisions/ADR-005-single-operational-xero-connection.md`.
 - Email, notifications, audit log, webhooks, cron state, page content,
   media, committee, module settings (`ClubModuleSettings` stays one row).
+- Inductions (`InductionChecklistTemplate`/`MemberInduction*`, all kinds
+  including `HUT_LEADER`): inductions certify the member, not a building
+  (recorded 2026-07-03). If hut-leader inductions ever diverge per lodge,
+  that is a new ADR.
+- `GroupDiscountSetting` and `BookingDefaults.nonMemberHoldDays` /
+  `waitlistCrossLodgeOrder`: booking policy knobs that are club fairness
+  decisions, edited club-wide on the booking-policies page.
+- Skifield conditions (`WhakapapaReportCache`, the `skifieldConditions`
+  module): public-website content, not lodge UI. A per-lodge/per-field
+  conditions widget would be a future enhancement, not a scoping change.
+
+## Known Not-Yet-Scoped Surfaces (open)
+
+Audited 2026-07-03; these are lodge-relevant but still club-wide or
+default-lodge-pinned. Each needs an owner decision before work starts —
+record the outcome here when decided:
+
+- **`BookingRequest` (public + school requests).** No `lodgeId`; request
+  creation and the bookings made from approved requests pin to the
+  default lodge (`school-booking-request.ts`, `booking-request.ts`). With
+  a second active lodge the public cannot request it. Likely fix: expand
+  migration adding nullable `BookingRequest.lodgeId`, lodge choice on the
+  request forms (ADR-002 presentation rule), threading through quotes,
+  approval, and the admin queue.
+- **`WorkPartyEvent`.** No lodge; the event's internal promo redeems at
+  any lodge, so a member can book the wrong lodge while "attending" a
+  working bee held at the other. Likely fix: optional
+  `WorkPartyEvent.lodgeId` validated against the booking's lodge.
+- **`LodgeInstruction` (kiosk content).** Keyed singleton content; every
+  lodge's kiosk shows identical instructions. Likely fix: nullable
+  `lodgeId` with `[lodgeId, key]` uniqueness and null-fallback, mirroring
+  the policy-override pattern.
+- **Settings singletons (`LodgeSettings`, `BedAllocationSettings`,
+  `BookingRequestSettings`).** Soft-linked to the sole lodge in phase 2
+  and lodge-safe at runtime (e.g. a capacity override applies only to its
+  linked lodge), but per-lodge rows and editing are still the recorded
+  phase-7 leftover; a second lodge currently runs on code defaults.
 
 ## Service Rules
 
