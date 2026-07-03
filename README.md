@@ -197,6 +197,15 @@ npm run build
 Browser E2E tests for the Critical journeys run separately against the staging
 compose stack: `npm run test:e2e` (see `docs/E2E_PLAYWRIGHT.md`).
 
+`npm test` includes property-based tests (fast-check) for the pure money math —
+pricing, promo discounts, refund tiers, change fees, member credit, and the
+Xero booking-edit settlement classifier — in
+`src/lib/policies/__tests__/*.property.test.ts` and
+`src/lib/__tests__/xero-settlement.property.test.ts`. They enforce the
+`docs/DOMAIN_INVARIANTS.md` "Money" rules as universally-quantified properties
+(integer cents, refund + retained = paid, deterministic repricing, no negative
+money).
+
 This repository uses a current Next.js version. Before changing framework APIs,
 read the relevant versioned guide in `node_modules/next/dist/docs/`.
 
