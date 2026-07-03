@@ -23,6 +23,10 @@ interface MemberPickerProps {
 export function MemberPicker({ onSelect, selected, onClear }: MemberPickerProps) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<PickedMember[]>([]);
+  // True when the search matched only operational accounts (admin/kiosk
+  // logins), which are filtered out — the empty state must say so rather
+  // than claiming nothing matched.
+  const [onlyOperationalMatches, setOnlyOperationalMatches] = useState(false);
   const [loading, setLoading] = useState(false);
   const [showDropdown, setShowDropdown] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -47,8 +51,12 @@ export function MemberPicker({ onSelect, selected, onClear }: MemberPickerProps)
         if (res.ok) {
           const data = await res.json();
           // Filter out operational accounts — they are not bookable members.
-          const members = (data.members || []).filter(
+          const allMatches = data.members || [];
+          const members = allMatches.filter(
             (m: PickedMember & { role?: string }) => !isOperationalRole(m.role)
+          );
+          setOnlyOperationalMatches(
+            allMatches.length > 0 && members.length === 0
           );
           setResults(members);
           setShowDropdown(true);
@@ -130,7 +138,11 @@ export function MemberPicker({ onSelect, selected, onClear }: MemberPickerProps)
       )}
       {showDropdown && results.length === 0 && query.trim().length >= 2 && !loading && (
         <div className="absolute z-50 mt-1 w-full bg-white border rounded-lg shadow-lg p-3">
-          <p className="text-sm text-slate-500">No members found</p>
+          <p className="text-sm text-slate-500">
+            {onlyOperationalMatches
+              ? "Only operational accounts (admin or lodge kiosk logins) matched — they cannot hold bookings. Search for a member instead."
+              : "No members found"}
+          </p>
         </div>
       )}
     </div>
