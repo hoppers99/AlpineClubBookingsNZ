@@ -131,6 +131,12 @@ record the outcome here when decided:
 - **Kiosk lodge identity.** The kiosk access payload includes the
   operating lodge's name (null for single-lodge clubs, ADR-002) and the
   kiosk header displays it.
+- **Per-lodge kiosk accounts (admin surface).** The Lodge Kiosk admin
+  page lists every LODGE-role account with its bound lodge, creates
+  additional kiosk accounts bound via a STAFF grant in one step, and
+  rebinds/unbinds (unbound = default lodge). The binding mechanism is
+  unchanged (`getStaffLodgeBinding`); this only surfaced it. Lodge
+  controls render only with a second active lodge (ADR-002).
 
 ## Service Rules
 
