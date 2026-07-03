@@ -468,6 +468,11 @@ describe("approveSchoolBookingRequest", () => {
     const bookingArgs = vi.mocked(prisma.booking.create).mock.calls[0][0]
       .data as Record<string, unknown>;
     expect(bookingArgs.lodgeId).toBe("lodge-2");
+    // The teacher's hut-leader assignment inherits the booking's lodge, so a
+    // multi-lodge club never gets a lodge-less hut leader from a school booking.
+    const hutLeaderArgs = vi.mocked(prisma.hutLeaderAssignment.create).mock
+      .calls[0][0].data as Record<string, unknown>;
+    expect(hutLeaderArgs.lodgeId).toBe("lodge-2");
     // Approval repricing is scoped to the request's lodge too.
     const seasonWhere = mockedSeasonFindMany.mock.calls[0][0]!.where as Record<
       string,

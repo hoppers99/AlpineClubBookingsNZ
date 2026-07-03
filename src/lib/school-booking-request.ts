@@ -703,6 +703,10 @@ export async function approveSchoolBookingRequest(input: {
             startDate: request.checkIn,
             endDate: request.checkOut,
             hutLeaderPin: plan.hutLeaderPin,
+            // A hut leader serves one lodge (ADR-001 Q5): stamp the booking's
+            // lodge so school-created assignments are lodge-scoped like the
+            // manual and cron paths, not left null.
+            lodgeId: bookingLodgeId,
           },
         });
 
