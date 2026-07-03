@@ -2340,6 +2340,29 @@ export function groupJoinReleasedTemplate(data: {
   `);
 }
 
+/**
+ * Final notice after a reaped organiser-pays place is cancelled (#1094): the
+ * organiser never restarted the combined payment, so the joiner's pending
+ * booking reached its terminal state.
+ */
+export function groupJoinCancelledTemplate(data: {
+  firstName: string;
+  organiserName: string;
+  checkIn: Date;
+  checkOut: Date;
+}): string {
+  return layout(`
+    ${heading("Your Group Booking Has Been Cancelled")}
+    ${paragraph("Hi " + escapeHtml(data.firstName) + ", the combined group payment " + escapeHtml(data.organiserName) + " started for your stay at " + escapeHtml(CLUB_NAME) + "'s lodge was never completed, so your pending booking has now been cancelled. Nothing has been charged to you.")}
+    ${infoTable([
+      { label: "Check-in", value: formatNZDate(data.checkIn) },
+      { label: "Check-out", value: formatNZDate(data.checkOut) },
+    ])}
+    ${paragraph("If you still want to come, you can make your own booking for these dates — or talk to the organiser about starting a fresh group trip.")}
+    ${supportContactSentence("If you have any questions, contact the club at ")}
+  `);
+}
+
 export function bookingRequestApprovedTemplate(data: {
   firstName: string;
   payUrl: string;
@@ -2487,5 +2510,37 @@ export function adminBookingRequestHoldExpiredTemplate(data: {
     ])}
     ${paragraph("Consider following up with the requester or cancelling the booking if payment is not expected.")}
     ${button("View Bookings", data.reviewUrl, { sameOrigin: true })}
+  `);
+}
+
+
+/**
+ * School attendee confirmation prompt (#1101): tokenized link where the
+ * school contact renames placeholder attendees and confirms the list.
+ */
+export function schoolAttendeeConfirmationTemplate(data: {
+  firstName: string;
+  schoolName: string | null;
+  confirmUrl: string;
+  checkIn: Date;
+  checkOut: Date;
+  guestCount: number;
+  isReminder: boolean;
+}): string {
+  const stayLabel = data.schoolName
+    ? escapeHtml(data.schoolName) + "'s stay"
+    : "your school group's stay";
+  return layout(`
+    ${heading(data.isReminder ? "Reminder: Confirm Your Attendee List" : "Confirm Your Attendee List")}
+    ${paragraph("Hi " + escapeHtml(data.firstName) + ", " + stayLabel + " at " + escapeHtml(CLUB_NAME) + "'s lodge is coming up, and the booking currently lists placeholder attendee names. Please tell us who is coming so the lodge roster shows real names on arrival.")}
+    ${infoTable([
+      { label: "Check-in", value: formatNZDate(data.checkIn) },
+      { label: "Check-out", value: formatNZDate(data.checkOut) },
+      { label: "Attendees", value: String(data.guestCount) },
+    ])}
+    ${paragraph("Use the secure link below to update the names and confirm the list. You can come back and edit until you confirm; the link stays valid until check-in.")}
+    ${button("Confirm Attendees", data.confirmUrl)}
+    ${muted("Need to change how many people are coming, or their age groups? Contact the club instead — headcount changes go through a revised quote.")}
+    ${supportContactSentence("If you have any questions, contact the club at ")}
   `);
 }

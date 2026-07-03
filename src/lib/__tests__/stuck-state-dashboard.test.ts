@@ -115,6 +115,7 @@ function buildDeps(overrides?: Partial<StuckStateDashboardDependencies>) {
       .mockResolvedValue(emails.adminAlertDelivery),
     getTokenEmailRecoveryQueue: vi.fn().mockResolvedValue(emails.tokenRecovery),
     getWaitlistOfferEmailDeliveries: vi.fn().mockResolvedValue(new Map()),
+    countUnconfirmedSchoolAttendeeLists: vi.fn().mockResolvedValue(0),
     getBedAllocationDashboard: vi.fn().mockResolvedValue({
       unallocatedGuestNights: [],
       suggestedUnallocatedGuestNights: [],
@@ -166,6 +167,9 @@ describe("getStuckStateDashboard", () => {
         paymentRecoveryOperation: { count: paymentCount },
         booking: {
           findMany: vi.fn().mockResolvedValue(waitlistBookings),
+        },
+        groupBookingSettlement: {
+          findMany: vi.fn().mockResolvedValue([]),
         },
         issueReport: {
           count: vi.fn().mockResolvedValue(17),

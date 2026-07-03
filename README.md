@@ -75,7 +75,7 @@ fork for another organisation. See `NOTICE.md`.
    authentication, and Google Analytics default off until an admin enables
    them. General-purpose modules default on and can be disabled there.
 6. Use **Admin > Members** to assign access roles. `Full Admin` keeps all
-   admin permissions; `Read-only Admin`, `Booking Office`, `Membership Officer`,
+   admin permissions; `Read-only Admin`, `Booking Officer`, `Membership Officer`,
    `Treasurer`, and `Content Manager` are bundled permissions that can be
    combined on one login-enabled member for custom access.
 7. Use **Admin > Membership Types** to review the seeded seasonal membership
@@ -189,9 +189,22 @@ requests. It does not contain live provider credentials. Demo users use
 npm audit --audit-level=high
 npm run lint
 DATABASE_URL=postgresql://user:pass@localhost:5432/tacbookings npx prisma validate
+npm run typecheck
 npm test
 npm run build
 ```
+
+Browser E2E tests for the Critical journeys run separately against the staging
+compose stack: `npm run test:e2e` (see `docs/E2E_PLAYWRIGHT.md`).
+
+`npm test` includes property-based tests (fast-check) for the pure money math —
+pricing, promo discounts, refund tiers, change fees, member credit, and the
+Xero booking-edit settlement classifier — in
+`src/lib/policies/__tests__/*.property.test.ts` and
+`src/lib/__tests__/xero-settlement.property.test.ts`. They enforce the
+`docs/DOMAIN_INVARIANTS.md` "Money" rules as universally-quantified properties
+(integer cents, refund + retained = paid, deterministic repricing, no negative
+money).
 
 This repository uses a current Next.js version. Before changing framework APIs,
 read the relevant versioned guide in `node_modules/next/dist/docs/`.

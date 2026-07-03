@@ -9,6 +9,8 @@ interface BookingRequestSettings {
   showPricingToNonMembers: boolean
   quoteResponseTtlDays: number
   quoteReminderLeadDays: number
+  attendeeConfirmationLeadDays: number
+  attendeeConfirmationReminderDays: number
 }
 
 export function PublicBookingRequestsSection() {
@@ -16,9 +18,13 @@ export function PublicBookingRequestsSection() {
     showPricingToNonMembers: false,
     quoteResponseTtlDays: 14,
     quoteReminderLeadDays: 3,
+    attendeeConfirmationLeadDays: 14,
+    attendeeConfirmationReminderDays: 3,
   })
   const [ttlDraft, setTtlDraft] = useState("14")
   const [reminderDraft, setReminderDraft] = useState("3")
+  const [attendeeLeadDraft, setAttendeeLeadDraft] = useState("14")
+  const [attendeeReminderDraft, setAttendeeReminderDraft] = useState("3")
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState("")
@@ -28,6 +34,8 @@ export function PublicBookingRequestsSection() {
     setSettings(data)
     setTtlDraft(String(data.quoteResponseTtlDays))
     setReminderDraft(String(data.quoteReminderLeadDays))
+    setAttendeeLeadDraft(String(data.attendeeConfirmationLeadDays))
+    setAttendeeReminderDraft(String(data.attendeeConfirmationReminderDays))
   }, [])
 
   const fetchSettings = useCallback(async () => {
@@ -95,6 +103,24 @@ export function PublicBookingRequestsSection() {
     })
   }
 
+  function handleSaveAttendeeTiming() {
+    const lead = Number(attendeeLeadDraft)
+    const reminder = Number(attendeeReminderDraft)
+    if (!Number.isInteger(lead) || lead < 0 || lead > 90) {
+      setError("The attendee prompt lead time must be a whole number of days between 0 and 90.")
+      return
+    }
+    if (!Number.isInteger(reminder) || reminder < 1 || reminder > 30) {
+      setError("The attendee reminder interval must be a whole number of days between 1 and 30.")
+      return
+    }
+    void saveSettings({
+      ...settings,
+      attendeeConfirmationLeadDays: lead,
+      attendeeConfirmationReminderDays: reminder,
+    })
+  }
+
   if (loading) {
     return <div className="text-center py-8">Loading...</div>
   }
@@ -102,6 +128,9 @@ export function PublicBookingRequestsSection() {
   const timingDirty =
     Number(ttlDraft) !== settings.quoteResponseTtlDays ||
     Number(reminderDraft) !== settings.quoteReminderLeadDays
+  const attendeeTimingDirty =
+    Number(attendeeLeadDraft) !== settings.attendeeConfirmationLeadDays ||
+    Number(attendeeReminderDraft) !== settings.attendeeConfirmationReminderDays
 
   return (
     <div className="space-y-6">
@@ -196,6 +225,63 @@ export function PublicBookingRequestsSection() {
             className="rounded bg-brand-charcoal px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
           >
             {saving ? "Saving…" : "Save quote timing"}
+          </button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>School Attendee Confirmation</CardTitle>
+          <CardDescription>
+            Before a school group arrives, the school contact is emailed a secure link to replace the
+            placeholder attendee names and confirm who is coming. The chore roster uses the confirmed
+            names.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-1">
+            <Label htmlFor="attendeeConfirmationLeadDays">First prompt (days before check-in)</Label>
+            <input
+              type="number"
+              id="attendeeConfirmationLeadDays"
+              min={0}
+              max={90}
+              value={attendeeLeadDraft}
+              onChange={(e) => setAttendeeLeadDraft(e.target.value)}
+              className="block w-28 rounded border border-input px-2 py-1 text-sm"
+              disabled={saving}
+            />
+            <p className="text-xs text-muted-foreground">
+              Start prompting the school this many days before check-in. Set to 0 to turn the prompts
+              off.
+            </p>
+          </div>
+
+          <div className="space-y-1">
+            <Label htmlFor="attendeeConfirmationReminderDays">Reminder interval (days)</Label>
+            <input
+              type="number"
+              id="attendeeConfirmationReminderDays"
+              min={1}
+              max={30}
+              value={attendeeReminderDraft}
+              onChange={(e) => setAttendeeReminderDraft(e.target.value)}
+              className="block w-28 rounded border border-input px-2 py-1 text-sm"
+              disabled={saving}
+            />
+            <p className="text-xs text-muted-foreground">
+              Keep re-sending the confirmation link this often until the school confirms the list or
+              check-in arrives. Each email carries a fresh working link.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={handleSaveAttendeeTiming}
+            disabled={saving || !attendeeTimingDirty}
+            className="rounded bg-brand-charcoal px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+          >
+            {saving ? "Saving…" : "Save attendee prompts"}
           </button>
         </CardContent>
       </Card>

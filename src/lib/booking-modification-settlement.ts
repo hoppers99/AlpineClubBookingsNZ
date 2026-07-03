@@ -5,10 +5,12 @@ import {
 } from "@/lib/booking-payment-cleanup";
 import logger from "@/lib/logger";
 import {
+  enqueueAdditionalPaymentIntentRecovery,
   enqueueBookingModificationRefundRecovery,
   processPaymentRecoveryOperations,
 } from "@/lib/payment-recovery";
 import {
+  PartialRefundError,
   refundPaymentTransactions,
   upsertPaymentIntentTransaction,
 } from "@/lib/payment-transactions";
@@ -86,17 +88,33 @@ export async function executeBookingModificationRefund({
       { err: refundErr, bookingId, amount: result.pendingRefundAmountCents },
       failureMessage,
     );
-    await enqueueBookingModificationRefundRecovery({
-      bookingId,
-      paymentId: result.paymentId,
-      bookingModificationId: result.bookingModificationId,
-      amountCents: result.pendingRefundAmountCents,
-    }).catch((enqueueErr) =>
-      logger.error(
-        { err: enqueueErr, bookingId },
-        recoveryFailureMessage,
-      ),
-    );
+    // Enqueue only what is still owed (#1097): slices that already refunded
+    // and recorded before the failure must not be requested again, or a
+    // multi-transaction recovery would re-derive a shifted allocation over
+    // the full amount and over-refund.
+    const completedRefundCents =
+      refundErr instanceof PartialRefundError
+        ? refundErr.completedRefundCents
+        : 0;
+    const remainingRefundCents =
+      result.pendingRefundAmountCents - completedRefundCents;
+    if (remainingRefundCents > 0) {
+      await enqueueBookingModificationRefundRecovery({
+        bookingId,
+        paymentId: result.paymentId,
+        bookingModificationId: result.bookingModificationId,
+        amountCents: remainingRefundCents,
+        // The exact prefix this route just used (#1152): recovery retries
+        // replay the identical Stripe keys, so a refund that succeeded on
+        // Stripe without being recorded is replayed, never re-minted.
+        stripeKeyPrefix: `${idempotencyKeyPrefix}_${result.bookingModificationId}`,
+      }).catch((enqueueErr) =>
+        logger.error(
+          { err: enqueueErr, bookingId },
+          recoveryFailureMessage,
+        ),
+      );
+    }
     return undefined;
   }
 }
@@ -177,6 +195,22 @@ export async function createModificationAdditionalPaymentIntent({
     };
   } catch (piErr) {
     logger.error({ err: piErr, bookingId }, failureMessage);
+    // Durable retry (#1096): a transient Stripe failure must not leave the
+    // recorded price increase with no instrument to collect it. The recovery
+    // cron re-creates the intent with this same modification-scoped Stripe
+    // idempotency key, so route retry and cron retry can never double-mint.
+    await enqueueAdditionalPaymentIntentRecovery({
+      bookingId,
+      paymentId: result.paymentId,
+      bookingModificationId: result.bookingModificationId,
+      amountCents: result.additionalAmountCents,
+      stripeIdempotencyKey: idempotencyKey,
+    }).catch((enqueueErr) =>
+      logger.error(
+        { err: enqueueErr, bookingId },
+        "Failed to enqueue additional PaymentIntent recovery",
+      ),
+    );
     return {
       additionalPaymentClientSecret: undefined,
       additionalPaymentIntentId: undefined,

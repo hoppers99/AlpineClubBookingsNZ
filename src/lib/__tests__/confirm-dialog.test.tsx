@@ -6,7 +6,7 @@ import { useState } from "react";
 import { useConfirm } from "@/components/confirm-dialog";
 
 function Harness() {
-  const { confirm, confirmDialog } = useConfirm();
+  const { confirm, prompt, confirmDialog } = useConfirm();
   const [result, setResult] = useState<string>("none");
 
   return (
@@ -25,6 +25,20 @@ function Harness() {
         }}
       >
         Trigger
+      </button>
+      <button
+        type="button"
+        onClick={async () => {
+          const reason = await prompt({
+            title: "Archive this thing?",
+            inputLabel: "Reason",
+            defaultValue: "Routine review",
+            confirmLabel: "Archive",
+          });
+          setResult(reason === null ? "prompt-cancelled" : `reason:${reason}`);
+        }}
+      >
+        TriggerPrompt
       </button>
       <output>{result}</output>
     </div>
@@ -57,5 +71,33 @@ describe("useConfirm", () => {
       expect(screen.getByText("cancelled")).not.toBeNull(),
     );
     expect(screen.queryByText("Delete this thing?")).toBeNull();
+  });
+});
+
+describe("useConfirm prompt", () => {
+  it("resolves the edited value on confirm", async () => {
+    render(<Harness />);
+
+    fireEvent.click(screen.getByRole("button", { name: "TriggerPrompt" }));
+    const input = screen.getByLabelText("Reason") as HTMLInputElement;
+    expect(input.value).toBe("Routine review");
+
+    fireEvent.change(input, { target: { value: "Custom reason" } });
+    fireEvent.click(screen.getByRole("button", { name: "Archive" }));
+
+    await waitFor(() =>
+      expect(screen.getByText("reason:Custom reason")).not.toBeNull(),
+    );
+  });
+
+  it("resolves null on cancel", async () => {
+    render(<Harness />);
+
+    fireEvent.click(screen.getByRole("button", { name: "TriggerPrompt" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    await waitFor(() =>
+      expect(screen.getByText("prompt-cancelled")).not.toBeNull(),
+    );
   });
 });

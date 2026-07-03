@@ -178,6 +178,7 @@ const baseMember: Member = {
   postalPostalCode: null,
   postalCountry: null,
   familyGroups: [],
+  currentMembershipType: null,
 };
 
 function renderMemberTable(members: Member[]) {
@@ -252,7 +253,7 @@ describe("admin member access-role UI", () => {
     expect(screen.getByText("User")).toBeInTheDocument();
     expect(screen.getByText("Full Admin")).toBeInTheDocument();
     expect(screen.getByText("Read-only Admin")).toBeInTheDocument();
-    expect(screen.getByText("Booking Office")).toBeInTheDocument();
+    expect(screen.getByText("Booking Officer")).toBeInTheDocument();
     expect(screen.getByText("Membership Officer")).toBeInTheDocument();
     expect(screen.getByText("Content Manager")).toBeInTheDocument();
     expect(screen.getByText("Lodge")).toBeInTheDocument();
@@ -277,7 +278,7 @@ describe("admin member access-role UI", () => {
         activeFilterCount={1}
         xeroFeatures={{
           liveMemberGroupLookups: false,
-          autoLoadXeroContactGroups: false,
+          autoLoadContactGroups: false,
         }}
         xeroContactGroupsList={[]}
         onSearchChange={vi.fn()}
@@ -351,7 +352,7 @@ describe("admin member access-role UI", () => {
     expect(roleCheckbox("User")).toBeDisabled();
     expect(roleCheckbox("Full Admin")).toBeDisabled();
     expect(roleCheckbox("Read-only Admin")).toBeDisabled();
-    expect(roleCheckbox("Booking Office")).toBeDisabled();
+    expect(roleCheckbox("Booking Officer")).toBeDisabled();
     expect(roleCheckbox("Membership Officer")).toBeDisabled();
     expect(roleCheckbox("Content Manager")).toBeDisabled();
     expect(roleCheckbox("Lodge")).toBeDisabled();

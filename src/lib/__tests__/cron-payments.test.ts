@@ -20,6 +20,7 @@ vi.mock("@/lib/prisma", () => ({
 }));
 
 vi.mock("@/lib/payment-recovery", () => ({
+  enqueueAdditionalPaymentIntentRecovery: vi.fn().mockResolvedValue({ id: "recovery_additional" }),
   processPaymentRecoveryOperations: (...args: unknown[]) =>
     mockProcessPaymentRecoveryOperations(...args),
 }));

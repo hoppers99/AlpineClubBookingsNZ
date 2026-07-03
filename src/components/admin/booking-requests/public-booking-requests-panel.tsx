@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -129,6 +130,7 @@ interface PublicBookingRequestData {
   reviewedByMemberName: string | null;
   declineReason: string | null;
   convertedBookingId: string | null;
+  attendeesConfirmedAt: string | null;
   convertedMemberId: string | null;
   heldBookingId: string | null;
   acceptedQuoteOptionId: string | null;
@@ -264,7 +266,6 @@ export function PublicBookingRequestsPanel({
   >({});
   const [declineReasons, setDeclineReasons] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
-  const [success, setSuccess] = useState("");
   const currentPath = buildPublicRequestsPath(basePath, fixedSearchParams, filter, requestId);
 
   useEffect(() => {
@@ -382,7 +383,6 @@ export function PublicBookingRequestsPanel({
   async function handleCreateQuote(request: PublicBookingRequestData) {
     setActioningId(request.id);
     setError("");
-    setSuccess("");
     try {
       const pricingMode = pricingModes[request.id] ?? "OVERALL_TOTAL";
       const optionIds = quoteOptionIds(request);
@@ -432,7 +432,7 @@ export function PublicBookingRequestsPanel({
       if (!response.ok) {
         throw new Error(data.error || "Failed to create quote");
       }
-      setSuccess("Quote saved");
+      toast.success("Quote saved");
       await fetchRequests();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create quote");
@@ -444,7 +444,6 @@ export function PublicBookingRequestsPanel({
   async function handleSendQuote(request: PublicBookingRequestData) {
     setActioningId(request.id);
     setError("");
-    setSuccess("");
     try {
       const response = await fetch(`/api/admin/booking-requests/${request.id}/send-quote`, {
         method: "POST",
@@ -458,7 +457,7 @@ export function PublicBookingRequestsPanel({
           "The quote was saved and its link is active, but the email could not be delivered — the requester has not received it. Check the contact email address, then send again or reach them another way.",
         );
       } else {
-        setSuccess("Quote sent");
+        toast.success("Quote sent");
       }
       await fetchRequests();
     } catch (err) {
@@ -468,10 +467,32 @@ export function PublicBookingRequestsPanel({
     }
   }
 
+  async function handleResendAttendeeLink(request: PublicBookingRequestData) {
+    setActioningId(request.id);
+    setError("");
+    try {
+      const response = await fetch(
+        `/api/admin/booking-requests/${request.id}/resend-attendee-confirmation`,
+        { method: "POST" },
+      );
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to re-send the attendee link");
+      }
+      toast.success(`Attendee confirmation link sent to ${data.sentTo}`);
+      await fetchRequests();
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Failed to re-send the attendee link",
+      );
+    } finally {
+      setActioningId(null);
+    }
+  }
+
   async function handleHoldSlots(request: PublicBookingRequestData) {
     setActioningId(request.id);
     setError("");
-    setSuccess("");
     try {
       const response = await fetch(`/api/admin/booking-requests/${request.id}/hold`, {
         method: "POST",
@@ -491,7 +512,7 @@ export function PublicBookingRequestsPanel({
         }
         throw new Error(data.error || "Failed to hold slots");
       }
-      setSuccess(data.reused ? "Slots were already held" : "Slots held");
+      toast.success(data.reused ? "Slots were already held" : "Slots held");
       await fetchRequests();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to hold slots");
@@ -548,7 +569,6 @@ export function PublicBookingRequestsPanel({
   async function handleApprove(request: PublicBookingRequestData) {
     setActioningId(request.id);
     setError("");
-    setSuccess("");
     try {
       // Only send a quantity override when the admin actually edited the school
       // group's child counts; otherwise approve with the submitted numbers.
@@ -581,13 +601,13 @@ export function PublicBookingRequestsPanel({
         throw new Error(data.error || "Failed to approve request");
       }
       if (data.type === "SCHOOL") {
-        setSuccess(
+        toast.success(
           data.invoiceMode === "xero"
             ? "School booking confirmed. The Xero invoice has been emailed to the school and the teacher PIN email sent."
             : "School booking confirmed. The Xero module is off, so admins have been emailed to invoice the school manually."
         );
       } else {
-        setSuccess("Request approved. A payment link has been emailed to the requester.");
+        toast.success("Request approved. A payment link has been emailed to the requester.");
       }
       await fetchRequests();
     } catch (err) {
@@ -600,7 +620,6 @@ export function PublicBookingRequestsPanel({
   async function handleDecline(request: PublicBookingRequestData) {
     setActioningId(request.id);
     setError("");
-    setSuccess("");
     try {
       const reason = declineReasons[request.id]?.trim();
       const response = await fetch(`/api/admin/booking-requests/${request.id}/decline`, {
@@ -612,7 +631,7 @@ export function PublicBookingRequestsPanel({
       if (!response.ok) {
         throw new Error(data.error || "Failed to decline request");
       }
-      setSuccess("Request declined");
+      toast.success("Request declined");
       await fetchRequests();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to decline request");
@@ -641,14 +660,6 @@ export function PublicBookingRequestsPanel({
         </div>
       )}
 
-      {success && (
-        <div className="rounded-md border border-green-200 bg-green-50 px-4 py-3 text-green-800">
-          {success}
-          <button onClick={() => setSuccess("")} className="ml-2 underline">
-            Dismiss
-          </button>
-        </div>
-      )}
 
       <div className="flex flex-wrap gap-2">
         {(Object.keys(FILTER_LABELS) as PublicRequestFilter[]).map((status) => (
@@ -1123,6 +1134,31 @@ export function PublicBookingRequestsPanel({
                             Open booking
                           </Link>
                         </p>
+                      ) : null}
+                      {request.type === "SCHOOL" && request.convertedBookingId ? (
+                        request.attendeesConfirmedAt ? (
+                          <p className="mt-2 text-emerald-700">
+                            Attendee list confirmed{" "}
+                            {formatDateTime(request.attendeesConfirmedAt) ?? ""}
+                          </p>
+                        ) : (
+                          <div className="mt-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={actioningId === request.id}
+                              onClick={() => handleResendAttendeeLink(request)}
+                            >
+                              {actioningId === request.id
+                                ? "Sending…"
+                                : "Re-send attendee confirmation link"}
+                            </Button>
+                            <p className="mt-1 text-xs text-slate-500">
+                              Rotates the secure link and emails it to the school
+                              contact now, outside the reminder cadence.
+                            </p>
+                          </div>
+                        )
                       ) : null}
                     </div>
                   ) : null}

@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import logger from "@/lib/logger";
 import {
   createXeroMembershipCancellationCreditNote,
@@ -861,6 +862,59 @@ export async function releaseXeroSupplementaryInvoiceOperationsForPaymentIntent(
     released: updateResult.count,
     queueOperationIds,
   };
+}
+
+/**
+ * Point a modification's WAITING_PAYMENT supplementary-invoice operations at
+ * a recovered additional PaymentIntent (#1096). The operation was enqueued
+ * while intent creation was failing, so its payload carries a null
+ * paymentIntentId that the payment-succeeded release could never match.
+ */
+export async function attachPaymentIntentToWaitingSupplementaryInvoiceOperations({
+  bookingModificationId,
+  paymentIntentId,
+}: {
+  bookingModificationId: string;
+  paymentIntentId: string;
+}): Promise<{ attached: number }> {
+  const waitingOperations = await prisma.xeroSyncOperation.findMany({
+    where: {
+      status: "WAITING_PAYMENT",
+      direction: "OUTBOUND",
+      entityType: "INVOICE",
+      operationType: "CREATE",
+      requestPayload: {
+        path: ["bookingModificationId"],
+        equals: bookingModificationId,
+      },
+    },
+    select: { id: true, requestPayload: true },
+  });
+
+  let attached = 0;
+  for (const operation of waitingOperations) {
+    const payload =
+      operation.requestPayload &&
+      typeof operation.requestPayload === "object" &&
+      !Array.isArray(operation.requestPayload)
+        ? (operation.requestPayload as Record<string, unknown>)
+        : null;
+    if (!payload || payload.paymentIntentId) {
+      continue;
+    }
+    await prisma.xeroSyncOperation.update({
+      where: { id: operation.id },
+      data: {
+        requestPayload: {
+          ...payload,
+          paymentIntentId,
+        } as Prisma.InputJsonValue,
+      },
+    });
+    attached += 1;
+  }
+
+  return { attached };
 }
 
 const STALE_WAITING_PAYMENT_AGE_DAYS = 14;
