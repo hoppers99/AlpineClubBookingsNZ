@@ -213,7 +213,7 @@ export const WysiwygEditor = forwardRef<
   const [showHtmlFallback, setShowHtmlFallback] = useState(false);
   const [tokenHelpOpen, setTokenHelpOpen] = useState(false);
   const [imagePickerOpen, setImagePickerOpen] = useState(false);
-  const { confirm, confirmDialog } = useConfirm();
+  const { confirm, prompt, confirmDialog } = useConfirm();
   const [loadingSiteImages, setLoadingSiteImages] = useState(false);
   const [siteImages, setSiteImages] = useState<string[]>([]);
   const [loadingUploadedImages, setLoadingUploadedImages] = useState(false);
@@ -593,9 +593,17 @@ export const WysiwygEditor = forwardRef<
     action();
   }
 
-  function insertLink() {
+  async function insertLink() {
     if (showHtmlFallback) return;
-    const href = window.prompt("Enter link URL", "https://");
+    // Capture the editor selection before the dialog steals focus;
+    // runCommand restores it before applying the link.
+    captureSelection();
+    const href = await prompt({
+      title: "Insert link",
+      inputLabel: "Link URL",
+      defaultValue: "https://",
+      confirmLabel: "Insert",
+    });
     if (!href) return;
     runCommand("createLink", href);
   }
