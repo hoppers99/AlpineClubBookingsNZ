@@ -13,6 +13,10 @@ import { personas } from "./helpers/personas";
 // protected-route gating for a session that has not passed the challenge.
 // Runs serially: the later tests rely on the enrollment done in the first.
 test.describe.configure({ mode: "serial" });
+// Each test performs one or more full login flows (fresh enrollment, TOTP
+// windows, recovery-code re-login); the 90s default is too tight on a loaded
+// CI runner.
+test.describe.configure({ timeout: 180_000 });
 
 const enrollee = personas.enrollee;
 
