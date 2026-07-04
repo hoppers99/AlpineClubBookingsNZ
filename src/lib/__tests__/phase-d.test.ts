@@ -16,6 +16,7 @@ const mockPrisma = {
   },
   lodge: {
     findFirst: vi.fn().mockResolvedValue({ id: "lodge-1" }),
+    count: vi.fn().mockResolvedValue(1),
   },
 };
 

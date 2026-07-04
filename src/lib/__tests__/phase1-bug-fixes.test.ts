@@ -94,6 +94,7 @@ vi.mock("@/lib/prisma", () => ({
   prisma: {
     lodge: {
       findFirst: vi.fn().mockResolvedValue({ id: "lodge-1" }),
+      count: vi.fn().mockResolvedValue(1),
     },
     booking: { findMany: vi.fn() },
     member: { count: vi.fn() },
