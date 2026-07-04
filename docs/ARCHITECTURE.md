@@ -75,10 +75,10 @@ Use these ownership boundaries when adding new code:
 | --- | --- | --- |
 | Club configuration | `config/`, `src/config/` | Club identity, capacities, rates, and feature switches must come from config or environment, not hard-coded deployment values. |
 | Pages and route handlers | `src/app/` | Validate input and session state near the route boundary, then delegate decisions to `src/lib/`. |
-| Route-private admin UI | `src/app/(admin)/admin/xero/_components`, `src/app/(admin)/admin/xero/_hooks`, `src/app/(admin)/admin/members/**/_components`, `src/app/(admin)/admin/members/**/_hooks` | Large admin routes should be route shells plus local components/hooks before moving anything to shared UI. |
+| Route-private page UI | `src/app/(admin)/admin/xero/_components`, `src/app/(admin)/admin/xero/_hooks`, `src/app/(admin)/admin/members/**/_components`, `src/app/(admin)/admin/members/**/_hooks`, `src/app/(authenticated)/book/_components` | Large routes should be route shells plus local components/hooks before moving anything to shared UI. |
 | Shared UI | `src/components/` | Reusable view pieces live here; route-specific view state can stay beside the page until it is reused. |
-| Booking lifecycle | `src/lib/booking-create.ts`, `src/lib/booking-modify.ts`, `src/lib/booking-payment-cleanup.ts`, `src/lib/payment-recovery.ts` | Keep route handlers thin; booking orchestration and durable payment recovery live behind these services. |
-| Bed allocation | `src/lib/bed-allocation.ts`, `src/lib/bed-allocation-lifecycle.ts`, `src/lib/admin-bed-allocation.ts` | Room/bed inventory, family-aware allocation planning, lifecycle reconciliation, manual admin allocation, and approval state live behind focused services. |
+| Booking lifecycle | `src/lib/booking-create.ts`, `src/lib/booking-create-types.ts`, `src/lib/booking-create-promo.ts`, `src/lib/booking-create-guests.ts`, `src/lib/booking-modify.ts` (barrel over `booking-modify-validation` / `booking-modify-plan` / `booking-modify-settlement`), `src/lib/booking-payment-cleanup.ts`, `src/lib/payment-recovery.ts` | Keep route handlers thin; booking orchestration and durable payment recovery live behind these services. |
+| Bed allocation | `src/lib/bed-allocation.ts`, `src/lib/bed-allocation-lifecycle.ts`, `src/lib/admin-bed-allocation.ts` | Room/bed inventory, family-aware allocation planning, lifecycle reconciliation, manual admin allocation, and approval state live behind focused services. Beds may be pre-assigned on provisional statuses (`BED_ALLOCATABLE_BOOKING_STATUSES`) before a booking holds capacity, so the admin board tags each bed **Held** vs **Provisional** (#1251) — the state is derived from `isCapacityHoldingBookingStatus` (booking-status.ts), never a duplicated list, so it auto-tracks any capacity-set change. |
 | Policy rules | `src/lib/policies/` | Pricing, age-tier, cancellation, change-fee, minimum-stay, member-credit, and booking-route decisions live as testable policy helpers. |
 | Operational Xero | `src/lib/xero-*.ts`, `src/lib/xero.ts` | `src/lib/xero.ts` is a compatibility facade. New code should import from the focused module that owns the behavior, not from the facade. |
 | Admin/member services | `src/lib/admin-member-xero-actions.ts`, `src/lib/member-serialization.ts`, `src/lib/member-lifecycle-actions.ts`, `src/lib/membership-cancellation-*.ts` | Shared admin/member request wrappers, DTO shape, lifecycle actions, and cancellation workflows live outside page files. |
@@ -93,8 +93,8 @@ adopters can find the contract without reading the whole application.
 
 ### Xero integration layers
 
-`src/lib/xero.ts` is a 199-line compatibility facade for older imports. Prefer
-direct imports from the focused modules below for new code.
+`src/lib/xero.ts` is a compatibility facade (re-exports only) for older
+imports. Prefer direct imports from the focused modules below for new code.
 [`docs/xero/ARCHITECTURE.md`](xero/ARCHITECTURE.md) maps the subsystem in
 depth: runtime dataflow, ledger data model, and sequence diagrams for the
 outbound-document, inbound-reconciliation, and repair flows.
@@ -111,9 +111,22 @@ outbound-document, inbound-reconciliation, and repair flows.
 
 `src/lib/booking-create.ts` owns booking creation orchestration after route
 validation: capacity locking, pricing, promo/member-credit decisions,
-persistence, audit, emails, and Xero queueing. `src/lib/booking-modify.ts` owns
+persistence, audit, emails, and Xero queueing. It keeps the three creation
+orchestrators (`createDraftBooking`, `createConfirmedBooking`,
+`createWaitlistedBooking` — the advisory-lock transactions, person-night guard,
+and capacity checks) and re-exports the pure helpers now split into
+`src/lib/booking-create-types.ts` (shared input/result types and errors),
+`src/lib/booking-create-promo.ts` (promo/pricing resolution), and
+`src/lib/booking-create-guests.ts` (guest-persistence, capacity-range, and
+admin-review helpers), so `@/lib/booking-create` keeps its exact import surface.
+`src/lib/booking-modify.ts` owns
 the modification boundary for date/guest/promo changes and delegates reusable
-decisions to helpers and `src/lib/policies/`.
+decisions to helpers and `src/lib/policies/`. It is a barrel over three
+modules split out in issue #1138 — `booking-modify-validation.ts`
+(edit-eligibility gates and shared loaded types), `booking-modify-plan.ts`
+(the in-transaction guest/pricing/promo pipeline), and
+`booking-modify-settlement.ts` (settlement handoff and lifecycle
+transitions) — so importers keep using `@/lib/booking-modify` unchanged.
 
 `src/lib/booking-payment-cleanup.ts` queues superseded Stripe PaymentIntents
 when booking edits replace or zero out pending payment work.
@@ -136,7 +149,11 @@ booking detail Admin tools card — read-only detection mirroring the
 stuck-state queries.
 
 The `/admin/xero` and `/admin/members` routes are route shells with local
-`_components` and `_hooks` folders. Shared admin/member logic lives in
+`_components` and `_hooks` folders; the member `/book` wizard follows the same
+shape, keeping its wizard-step views in `src/app/(authenticated)/book/_components`
+and its state machine (all wizard state, effects, and handlers) in the
+`src/app/(authenticated)/book/_hooks/use-booking-wizard` hook, with the page
+shell as a thin consumer that renders the step views. Shared admin/member logic lives in
 `src/lib/`: `admin-member-xero-actions` wraps the Xero contact actions used by
 both the members list and detail page, `member-serialization` centralises DTO
 shape, `member-lifecycle-actions` owns archive/delete request handling, and
@@ -289,32 +306,65 @@ off, is gated by Admin Modules and `src/proxy.ts` before route handlers run, and
 never replaces manual address entry.
 
 Access roles live in `MemberAccessRole` and are the normalized login/permission
-axis: `USER`, `ADMIN`, `ADMIN_READONLY`, `ADMIN_BOOKINGS`,
-`ADMIN_MEMBERSHIP`, `ADMIN_CONTENT`, `LODGE`, `FINANCE_USER`,
-`FINANCE_ADMIN`, and `ORG`.
+axis. An assignment row carries the legacy enum value (`USER`, `ADMIN`,
+`ADMIN_READONLY`, `ADMIN_BOOKINGS`, `ADMIN_MEMBERSHIP`, `ADMIN_CONTENT`,
+`LODGE`, `FINANCE_USER`, `FINANCE_ADMIN`, `ORG`) and/or a link to an
+`AccessRoleDefinition` row. Definitions are the club-editable roles managed at
+`/admin/access-roles`: label, description, and a per-area permission matrix.
+The six seeded defaults (Read-only Admin, Booking Officer, Membership
+Officer, Content Manager, Finance Viewer, Treasurer) keep their enum value in
+`AccessRoleDefinition.systemRole` and can be edited or deleted; brand-new
+custom roles are definition-only rows (`role` is NULL). `ADMIN` (Full Admin),
+`LODGE`, `USER`, and `ORG` are protected system roles with no definition row:
+code-defined, never editable or deletable, and Full Admin always keeps full
+permissions.
 `Member.role` remains a synchronized compatibility/classification field with
 `USER`, `ADMIN`, `LODGE`, `NON_MEMBER`, and `SCHOOL`; Associate, Life, and
 club-created categories are membership types, not role enum values.
-`Member.financeAccessLevel` remains synchronized for compatibility visibility,
-but runtime finance guards ignore it. Non-login records simply have no
+`Member.financeAccessLevel` remains synchronized for compatibility visibility
+(derived from the merged matrix finance level on role writes), but runtime
+finance guards ignore it. Non-login records simply have no
 access-role rows. The canonical access-role constants and compatibility helpers
 live in `src/lib/access-roles.ts`; compatibility role constants stay in
 `src/lib/member-roles.ts` for old imports, membership classification, and
 provider-created non-member records.
 
 Admin authorization is area-based in `src/lib/admin-permissions.ts`. `ADMIN`
-has edit access everywhere; `ADMIN_READONLY`, `ADMIN_BOOKINGS`,
-`ADMIN_MEMBERSHIP`, `ADMIN_CONTENT`, and `FINANCE_ADMIN` are bundled
-permissions that merge when assigned together. `requireAdmin()` infers the
-requested admin path and HTTP method from proxy headers and enforces view/edit
-requirements centrally, while admin layout/sidebar rendering uses the same
-matrix for page access and navigation visibility.
+has edit access everywhere (hardcoded, never database-resolved); every other
+role resolves per assignment row: a joined `AccessRoleDefinition` is
+authoritative, a bare enum value falls back to the legacy hardcoded bundle
+(identical to the seeded definitions until the club edits them), and an
+unresolved row contributes nothing — the resolver fails closed, never wider.
+Roles merge by taking the maximum level per area when assigned together.
+Finance-portal access derives from the merged `finance` area level (view ⇒
+finance viewer, edit ⇒ finance manager) via `hasFinanceViewerAccess` and
+`hasFinanceManagerAccess` in `src/lib/admin-permissions.ts` — Full Admin is
+therefore a finance manager, and any role whose matrix grants finance view
+(including Read-only Admin, Booking Officer, and Membership Officer as
+seeded) can open the finance portal read-only. `requireAdmin()` infers the
+requested admin path and HTTP method from proxy headers and enforces
+view/edit requirements centrally, selecting assignment rows with their
+definitions joined (`MEMBER_ACCESS_ROLE_SELECT` in
+`src/lib/access-role-definitions.ts`); the admin layout precomputes the
+matrix server-side and passes it to the sidebar, because definitions cannot
+resolve client-side. Editing a definition applies to every holder on their
+next request — guards re-read roles and definitions from the database and
+never trust the JWT.
+
+Managing the definitions themselves is Full-Admin-only: the
+`/api/admin/access-roles` mutation handlers enforce an explicit `isFullAdmin`
+check on top of `requireAdmin()` (an editable role could otherwise widen
+itself past the area gate), deletion is blocked while any member holds the
+role (including via a bare enum row), and create/update/delete write
+critical-severity audit entries.
 
 Access-role writes carry an additional separation-of-duties gate, independent
 of the path-inferred area: only a Full Admin (`ADMIN`) may grant or revoke
-privileged access roles (every role other than `USER` and `ORG`), including via
-the legacy `Member.role` and `financeAccessLevel` compatibility fields and the
-member-import `role` column. The shared helpers are `isFullAdmin` and
+privileged access roles (every role other than `USER` and `ORG` — custom
+definition-backed roles are always privileged), including via the legacy
+`Member.role` and `financeAccessLevel` compatibility fields and the
+member-import `role` column. Role writes are token-based: the enum value for
+system roles and seeded defaults, the definition id for custom roles. The shared helpers are `isFullAdmin` and
 `accessRoleChangeRequiresFullAdmin` in `src/lib/access-roles.ts`; the member
 editor, create, bulk-update, and import paths all apply them and return 403
 for a non-Full-Admin actor. `requireAdmin()` returns DB-verified access roles
@@ -509,7 +559,7 @@ disable cron with `CRON_ENABLED=false`.
 | Job | Schedule | Purpose |
 | --- | --- | --- |
 | `confirm-pending` | Every 3 hours | Confirm pending bookings after hold deadlines |
-| `group-settlement-reaper` | Every 3 hours | Release CONFIRMED-unpaid group children when an organiser-pays settlement stays unpaid past its window (default 48h, clamped to check-in); voids the open intent and notifies the group. Second phase (#1094): cancels the reverted PAYMENT_PENDING children, with a joiner notice, once the FAILED settlement sits unretried through another full window |
+| `group-settlement-reaper` | Every 3 hours | Release CONFIRMED-unpaid group children when an organiser-pays settlement stays unpaid past its window (default 48h, clamped to check-in); voids the open intent and notifies the group. Second phase (#1094): cancels the reverted PAYMENT_PENDING children, with a joiner notice, once the FAILED settlement sits unretried through another full window. Third phase (#1236): resumes a crash-interrupted organiser-cancel cleanup (ORGANISER_PAYS group still not CANCELLED under a CANCELLED organiser booking, older than `GROUP_CANCEL_RESUME_GRACE_MINUTES`, default 15m), re-driving the idempotent joiner cleanup — its persisted refund plan reconstructs the per-child refund mirror rather than recomputing |
 | `pre-arrival-reminders` | Every 3 hours | Send current directions and door-code reminders before check-in |
 | `purge-booking-requests` | Every 3 hours | Delete expired declined and never-verified public booking requests after the retention window |
 | `quote-expiry-reminders` | Every 3 hours | Remind public booking-request quote recipients before their quote link expires (sends a fresh working link) |
@@ -525,6 +575,7 @@ disable cron with `CRON_ENABLED=false`.
 | `xero-link-backfill` | Daily | Backfill canonical Xero object links into the ledger |
 | `xero-link-cleanup` | Daily | Clean stale canonical Xero object links |
 | `xero-reconciliation-report` | Daily | Send the Xero reconciliation report |
+| `finance-daily-sync` | Daily when the finance dashboard module is enabled | Refresh finance report/invoice/balance snapshots from the operational Xero connection |
 | `data-pruning` | Daily | Prune expired tokens/logs and run audit retention |
 | `draft-cleanup` | Daily | Delete expired draft bookings |
 | `pending-deadline-alerts` | Daily | Alert admins about pending bookings approaching deadline |
@@ -536,6 +587,26 @@ disable cron with `CRON_ENABLED=false`.
 | `nomination-reminders` | Daily | Renew expired unconfirmed nomination links weekly, up to four automatic reminders |
 | `checkin-reminders` | Daily | Send next-day check-in reminders |
 | `backup` | Configurable | Upload PostgreSQL dumps to S3 |
+
+### Failure observability (audit gap G5 — partially closed by design)
+
+Cron and webhook FAILURE paths bridge their `logger.error`/`logger.fatal` catch
+handlers to Sentry through `reportCronError`/`reportWebhookError` in
+`src/lib/observability-bridge.ts`, which log via the pino singleton **and**
+forward to Sentry with a stable `fingerprint`. This is a scoped report-helper,
+not a global pino transport: ordinary route/request loggers never import the
+bridge and stay log-only, so a noisy request path cannot cause alert fatigue —
+the objection #1150 raised against a global bridge. The boundary is deliberate:
+top-level cron catch handlers (including the general cron runner's per-task
+failures) and top-level webhook catch handlers (Stripe, Xero, SES/SNS) are
+bridged, while best-effort per-item failures inside those jobs (e.g. a single
+joiner email that will be retried, waitlist item failures) stay log-only to
+preserve signal-to-noise. An in-process cooldown
+(`OBSERVABILITY_SENTRY_DEDUP_COOLDOWN_MS`, default 5 minutes) keyed by the
+fingerprint stops a stuck cron/webhook from emitting one Sentry event per tick;
+the Sentry fingerprint dedups grouping across processes. Cross-instance
+exact-once alerting remains future work (#1211), and which fingerprints page
+whom is operator-side Sentry alert-rule configuration.
 
 ## Security and Privacy Boundaries
 

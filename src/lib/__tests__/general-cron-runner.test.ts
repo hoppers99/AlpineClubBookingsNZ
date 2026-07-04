@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/booking-request", () => ({
   purgeExpiredBookingRequests: vi.fn(),
@@ -35,14 +35,25 @@ vi.mock("@/lib/logger", () => ({
   },
 }));
 
+vi.mock("@sentry/nextjs", () => ({
+  captureException: vi.fn(),
+  captureMessage: vi.fn(),
+}));
+
+import * as Sentry from "@sentry/nextjs";
 import { runGeneralCronCycle } from "@/lib/general-cron-runner";
+import { resetObservabilityBridgeForTests } from "@/lib/observability-bridge";
 
 describe("general cron runner", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetObservabilityBridgeForTests();
+  });
+
   it("records every job in the shared general cron cycle", async () => {
     const recordCronRun = vi.fn();
     const result = await runGeneralCronCycle({
       recordCronRun,
-      log: { error: vi.fn(), info: vi.fn() },
       tasks: {
         confirmPendingBookings: vi.fn(async () => ({
           confirmedBookingIds: ["booking-1"],
@@ -56,6 +67,8 @@ describe("general cron runner", () => {
           releasedChildBookings: 2,
           expiredSettlements: 0,
           cancelledChildBookings: 0,
+          scannedInterruptedCancels: 0,
+          resumedInterruptedCancels: 0,
         })),
         sendPreArrivalReminders: vi.fn(async () => ({
           reminderDays: 3,
@@ -97,6 +110,8 @@ describe("general cron runner", () => {
       releasedChildBookings: 2,
       expiredSettlements: 0,
       cancelledChildBookings: 0,
+      scannedInterruptedCancels: 0,
+      resumedInterruptedCancels: 0,
     });
     expect(result.schoolAttendeeConfirmations).toEqual({
       scanned: 0,
@@ -166,6 +181,8 @@ describe("general cron runner", () => {
       releasedChildBookings: 0,
       expiredSettlements: 0,
       cancelledChildBookings: 0,
+      scannedInterruptedCancels: 0,
+      resumedInterruptedCancels: 0,
     }));
     const sendSchoolAttendeeConfirmationPrompts = vi.fn(async () => ({
       scanned: 0,
@@ -176,7 +193,6 @@ describe("general cron runner", () => {
     await expect(
       runGeneralCronCycle({
         recordCronRun,
-        log: { error: vi.fn(), info: vi.fn() },
         tasks: {
           confirmPendingBookings: vi.fn(async () => {
             throw new Error("database unavailable");
@@ -210,6 +226,15 @@ describe("general cron runner", () => {
       expect.objectContaining({
         jobName: "quote-expiry-reminders",
         status: "SUCCESS",
+      })
+    );
+    // The failed task bridges to Sentry exactly once (scoped + deduped per job).
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({
+        fingerprint: ["cron", "confirm-pending"],
+        tags: expect.objectContaining({ scope: "cron", operation: "confirm-pending" }),
       })
     );
   });

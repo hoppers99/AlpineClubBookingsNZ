@@ -11,6 +11,19 @@ import { MemberEditorDialog } from "../member-editor-dialog";
 import { MemberFilterToolbar } from "../member-filter-toolbar";
 import { MemberTable } from "../member-table";
 import { MemberAccessRolePicker } from "@/components/member-access-role-picker";
+import { buildFallbackAccessRoleOptions } from "@/lib/access-role-definitions";
+
+// Components resolve role options via this hook (a fetch in the browser);
+// tests use the static fallback options, which mirror the seeded defaults.
+vi.mock("@/hooks/use-access-role-options", async () => {
+  const { buildFallbackAccessRoleOptions } = await import(
+    "@/lib/access-role-definitions"
+  );
+  const options = buildFallbackAccessRoleOptions();
+  return { useAccessRoleOptions: () => options };
+});
+
+const pickerRoleOptions = buildFallbackAccessRoleOptions();
 
 function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -291,6 +304,54 @@ describe("admin member access-role UI", () => {
     expect(screen.queryByText("Finance Access")).not.toBeInTheDocument();
   });
 
+  it("offers non-login member-type options in the filter toolbar", () => {
+    render(
+      <MemberFilterToolbar
+        search=""
+        filters={emptyFilters}
+        activeFilterCount={0}
+        xeroFeatures={{
+          liveMemberGroupLookups: false,
+          autoLoadContactGroups: false,
+        }}
+        xeroContactGroupsList={[]}
+        onSearchChange={vi.fn()}
+        onSetFilter={vi.fn()}
+        onClearFilters={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("All Member Types")).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: "Non-Member" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "School" })).toBeInTheDocument();
+  });
+
+  it("labels a member-type filter chip with the friendly role name", () => {
+    const filters: Filters = {
+      ...emptyFilters,
+      role: "NON_MEMBER",
+    };
+    render(
+      <MemberFilterToolbar
+        search=""
+        filters={filters}
+        activeFilterCount={1}
+        xeroFeatures={{
+          liveMemberGroupLookups: false,
+          autoLoadContactGroups: false,
+        }}
+        xeroContactGroupsList={[]}
+        onSearchChange={vi.fn()}
+        onSetFilter={vi.fn()}
+        onClearFilters={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText(/Access Role: Non-Member/)).toBeInTheDocument();
+  });
+
   it("submits bulk access changes through accessRoles instead of the legacy role field", async () => {
     const onUpdated = vi.fn();
     render(
@@ -376,6 +437,7 @@ describe("scoped-admin gated access-role picker (#1038)", () => {
   it("disables privileged roles for scoped admins but leaves User/Org usable", () => {
     render(
       <MemberAccessRolePicker
+        roleOptions={pickerRoleOptions}
         accessRoles={["USER"]}
         canLogin
         actorIsFullAdmin={false}
@@ -395,6 +457,7 @@ describe("scoped-admin gated access-role picker (#1038)", () => {
   it("locks the whole picker when the member holds a live privileged role", () => {
     render(
       <MemberAccessRolePicker
+        roleOptions={pickerRoleOptions}
         accessRoles={["ADMIN"]}
         canLogin
         actorIsFullAdmin={false}
@@ -414,6 +477,7 @@ describe("scoped-admin gated access-role picker (#1038)", () => {
   it("explains the dormant legacy-role case", () => {
     render(
       <MemberAccessRolePicker
+        roleOptions={pickerRoleOptions}
         accessRoles={["USER"]}
         canLogin
         actorIsFullAdmin={false}
@@ -433,6 +497,7 @@ describe("scoped-admin gated access-role picker (#1038)", () => {
   it("keeps every control enabled for Full Admins (default)", () => {
     render(
       <MemberAccessRolePicker
+        roleOptions={pickerRoleOptions}
         accessRoles={["USER"]}
         canLogin
         onToggleRole={vi.fn()}

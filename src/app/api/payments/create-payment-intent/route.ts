@@ -17,6 +17,7 @@ import {
 } from "@/lib/capacity";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 import { parseJsonRequestBody } from "@/lib/api-json";
+import { queueSupersededPrimaryIntentCancellations } from "@/lib/booking-payment-cleanup";
 import { queueXeroInvoiceForPaidBooking } from "@/lib/xero-booking-invoice-queue";
 import { hasAdminAccess } from "@/lib/access-roles";
 
@@ -159,7 +160,26 @@ export async function POST(request: NextRequest) {
         });
       }
 
-      if (existingIntent.client_secret && existingIntent.status !== "canceled") {
+      if (
+        existingIntent.status !== "canceled" &&
+        existingIntent.amount !== booking.finalPriceCents
+      ) {
+        // The booking was modified after this intent was minted (#1161):
+        // handing back its client_secret would let Stripe capture the old
+        // total and strand the booking in webhook reconciliation. Queue the
+        // stale intent's cancellation and fall through to mint a fresh one
+        // at the current price.
+        if (booking.payment) {
+          await queueSupersededPrimaryIntentCancellations(prisma, {
+            bookingId: booking.id,
+            paymentId: booking.payment.id,
+            newFinalPriceCents: booking.finalPriceCents,
+          });
+        }
+      } else if (
+        existingIntent.client_secret &&
+        existingIntent.status !== "canceled"
+      ) {
         return NextResponse.json({
           clientSecret: existingIntent.client_secret,
           paymentIntentId: existingIntent.id,

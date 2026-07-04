@@ -37,22 +37,52 @@ export const TEST_CARDS = {
   declined: "4000000000000002",
 };
 
-function paymentElementFrame(page: Page): FrameLocator {
-  return page.frameLocator('iframe[title="Secure payment input frame"]');
+// Current Stripe.js mounts more than one iframe with this title (an
+// accessory frame plus the card "easel"), so a bare title locator trips
+// strict mode. Probe the matching frames for the one actually hosting the
+// card inputs instead of relying on Stripe's internal frame layout.
+async function paymentElementFrame(page: Page): Promise<FrameLocator> {
+  const candidates = page.locator('iframe[title="Secure payment input frame"]');
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    const count = await candidates.count();
+    for (let i = 0; i < count; i++) {
+      const frame = page.frameLocator(
+        `iframe[title="Secure payment input frame"] >> nth=${i}`,
+      );
+      const visible = await frame
+        .getByPlaceholder("1234 1234 1234 1234")
+        .isVisible()
+        .catch(() => false);
+      if (visible) return frame;
+    }
+    await page.waitForTimeout(250);
+  }
+  throw new Error(
+    "Stripe Payment Element card frame did not appear within 30s",
+  );
 }
 
 // Fills the Payment Element card form and submits the wizard's Pay button.
 export async function payWithCard(page: Page, cardNumber: string): Promise<void> {
-  const frame = paymentElementFrame(page);
+  const frame = await paymentElementFrame(page);
   const cardField = frame.getByPlaceholder("1234 1234 1234 1234");
   await expect(cardField).toBeVisible({ timeout: 30_000 });
   await cardField.fill(cardNumber);
   await frame.getByPlaceholder("MM / YY").fill("12/34");
   await frame.getByPlaceholder("CVC").fill("123");
 
-  const postcode = frame.getByPlaceholder(/postal code|postcode/i);
-  if (await postcode.isVisible().catch(() => false)) {
-    await postcode.fill("3420");
+  // The Payment Element always names this input postalCode, but localizes its
+  // required format by the runner's geography: US CI runners render a 5-digit
+  // ZIP (numeric, aria-required, placeholder "12345") while NZ renders a 4-digit
+  // postcode (#1218). The US variant is identifiable by its numeric example
+  // placeholder — there is no "ZIP"/aria-label text to match on — so key off the
+  // placeholder digits and fill a value valid for whichever format rendered.
+  const postal = frame.locator('input[name="postalCode"]');
+  if (await postal.isVisible().catch(() => false)) {
+    const placeholder =
+      (await postal.getAttribute("placeholder").catch(() => null)) ?? "";
+    await postal.fill(/\d{5}/.test(placeholder) ? "12345" : "3420");
   }
 
   await page.getByRole("button", { name: "Pay Now" }).click();

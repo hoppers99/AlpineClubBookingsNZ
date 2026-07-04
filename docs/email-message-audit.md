@@ -1,7 +1,9 @@
 # Email Message Audit
 
 This is an audit of outbound email messages in the current repository state.
-The main sender is `src/lib/email.ts`; most HTML bodies are in
+The main senders live under `src/lib/email/` (with `src/lib/email.ts` kept as a
+re-export facade); the core `sendEmail` transport is in `src/lib/email/core.ts`
+and most HTML bodies are in
 `src/lib/email-templates.ts`. Direct one-off senders also exist in the contact
 route, refund appeal admin route, admin bulk communications route, and email
 retry cron.
@@ -454,6 +456,8 @@ Check-out: {{checkOut}}
 
 {{refundMessage}}
 
+{{creditRestoredMessage}}
+
 You can make a new booking at any time from your account.
 
 Make a New Booking: {{BASE_URL}}/book
@@ -471,6 +475,15 @@ A refund of {{refundAmount}} has been processed to your original payment method.
 
 ```text
 No refund was applicable based on the cancellation policy.
+```
+
+Restored-credit line (`{{creditRestoredMessage}}`, empty when no applied credit was
+restored). Since #1164 the account credit originally applied to a booking is restored
+subject to the same cancellation policy as the card slice, so it may be less than the
+full amount applied:
+
+```text
+{{creditRestored}} of previously applied account credit has been restored to your account (per the cancellation policy).
 ```
 
 Triggers and frequency:

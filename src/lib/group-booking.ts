@@ -119,6 +119,7 @@ export class GroupBookingError extends Error {
   }
 }
 
+// test seam
 /**
  * Generate a short, human-typable join code. randomInt uses rejection sampling
  * so every character is chosen with equal probability (a `randomBytes % len`
@@ -321,6 +322,7 @@ export interface GroupBookingRecordForSummary {
   organiserMember: { firstName: string };
 }
 
+// test seam
 /**
  * True when a group is accepting joins: it is OPEN and either has no deadline or
  * the deadline is still in the future. Re-checked inside the locked join
@@ -336,6 +338,7 @@ export function isGroupJoinable(
   return !group.joinDeadline || group.joinDeadline.getTime() > now.getTime();
 }
 
+// test seam
 /**
  * True when the organiser's host booking is still live, so the group can
  * actually accept joins. Mirrors the gate joinGroupBookingAsMember and
@@ -354,6 +357,7 @@ export function isOrganiserBookingActive(booking: {
   );
 }
 
+// test seam
 /** Pure mapping from the selected record to the public-safe summary. */
 export function toGroupBookingSummary(
   group: GroupBookingRecordForSummary,
@@ -921,6 +925,7 @@ function getCapacityFullNights(
     .map((night) => night.date.toISOString().split("T")[0]);
 }
 
+// test seam
 /**
  * Validate the stored guest snapshot. Returns [] (treated as invalid) if the
  * JSON is not the expected array of {firstName, lastName, ageTier}.

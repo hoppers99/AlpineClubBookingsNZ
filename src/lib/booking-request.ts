@@ -29,6 +29,7 @@ import { z } from "zod";
 import { hashActionToken, issueActionToken } from "@/lib/action-tokens";
 import { logAudit } from "@/lib/audit";
 import { recordBookingEvent } from "@/lib/booking-events";
+import { assertNoBookingMemberNightConflicts } from "@/lib/booking-member-night-conflicts";
 import { acquireLodgeCapacityLock, checkCapacityForGuestRanges } from "@/lib/capacity";
 import { getLodgeCapacity } from "@/lib/lodge-capacity";
 import { loadSchoolGroupSoftCap } from "@/lib/lodge-settings";
@@ -58,7 +59,7 @@ import { getSeasonYear } from "@/lib/utils";
 
 export const BOOKING_REQUEST_VERIFICATION_TTL_MS = 48 * 60 * 60 * 1000;
 /** Privacy Act 2020 retention: purge declined and never-verified requests. */
-export const BOOKING_REQUEST_RETENTION_DAYS = 90;
+const BOOKING_REQUEST_RETENTION_DAYS = 90;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -70,7 +71,7 @@ export const bookingRequestGuestSchema = z.object({
 
 export type BookingRequestGuest = z.infer<typeof bookingRequestGuestSchema>;
 
-export const bookingRequestLinkedGuestMemberSchema = z.object({
+const bookingRequestLinkedGuestMemberSchema = z.object({
   guestIndex: z.number().int().min(0),
   memberId: z.string().min(1),
 });
@@ -314,7 +315,7 @@ export async function calculateIndicativeNonMemberPriceCents(input: {
 // Public submission + verification
 // ---------------------------------------------------------------------------
 
-export interface CreateBookingRequestInput {
+interface CreateBookingRequestInput {
   contactFirstName: string;
   contactLastName: string;
   contactEmail: string;
@@ -419,7 +420,7 @@ export async function createBookingRequest(input: CreateBookingRequestInput) {
   return request;
 }
 
-export type VerifyBookingRequestOutcome =
+type VerifyBookingRequestOutcome =
   | { outcome: "verified"; request: BookingRequest }
   | { outcome: "already_verified"; request: BookingRequest }
   | { outcome: "expired" }
@@ -633,7 +634,7 @@ export async function declineBookingRequest(input: {
 // Approval conversion
 // ---------------------------------------------------------------------------
 
-export type ApproveBookingRequestOutcome =
+type ApproveBookingRequestOutcome =
   | {
       type: "approved";
       requestId: string;
@@ -737,6 +738,7 @@ export async function approveBookingRequest(input: {
   let conversion: {
     bookingId: string;
     memberId: string;
+    alreadyConverted: boolean;
   };
 
   try {
@@ -746,6 +748,33 @@ export async function approveBookingRequest(input: {
       // as booking-create.ts). A null lodgeId means the club's default lodge.
       const requestLodgeId = request.lodgeId ?? (await getDefaultLodgeId(tx));
       await acquireLodgeCapacityLock(tx, requestLodgeId);
+
+      // Idempotency (#1232 double-charge guard): a prior approve for this
+      // request — a concurrent double-accept, or a retry whose caller re-armed
+      // the request to PRICED after it had already converted (line ~729 of
+      // booking-request-quotes.ts overwrites CONVERTED->PRICED but never clears
+      // convertedBookingId) — already created the booking. Under the advisory
+      // lock we now observe its committed convertedBookingId, so return that
+      // booking instead of creating a second one.
+      const existing = await tx.bookingRequest.findUnique({
+        where: { id: request.id },
+        select: { convertedBookingId: true, convertedMemberId: true, status: true },
+      });
+      if (existing?.convertedBookingId && existing.convertedMemberId) {
+        if (existing.status !== BookingRequestStatus.CONVERTED) {
+          // A caller re-armed the request to PRICED after it had already
+          // converted; re-assert the true terminal status (we hold the lock).
+          await tx.bookingRequest.update({
+            where: { id: request.id },
+            data: { status: BookingRequestStatus.CONVERTED },
+          });
+        }
+        return {
+          bookingId: existing.convertedBookingId,
+          memberId: existing.convertedMemberId,
+          alreadyConverted: true as const,
+        };
+      }
 
       // Status-claim so two admins cannot approve concurrently.
       const claimed = await tx.bookingRequest.updateMany({
@@ -780,6 +809,19 @@ export async function approveBookingRequest(input: {
       await assertMembershipTypeBookingAllowed(tx, {
         guests: guestCreates,
         seasonYear: getSeasonYear(request.checkIn),
+      });
+
+      // Block admin-mediated double-books: a request whose guests an admin
+      // linked to real members must not put a member on overlapping nights
+      // (issue #1158, invariant DOMAIN_INVARIANTS.md:35-40). On the reuse path
+      // exclude the held booking's own soon-to-be-deleted guests.
+      await assertNoBookingMemberNightConflicts(tx, {
+        actorMemberId: input.adminMemberId,
+        actorRole: "ADMIN",
+        checkIn: request.checkIn,
+        checkOut: request.checkOut,
+        guests: guestCreates,
+        excludeBookingId: request.heldBookingId ?? undefined,
       });
 
       let booking: { id: string };
@@ -899,7 +941,7 @@ export async function approveBookingRequest(input: {
         },
       });
 
-      return { bookingId: booking.id, memberId: member.id };
+      return { bookingId: booking.id, memberId: member.id, alreadyConverted: false as const };
     });
   } catch (err) {
     if (
@@ -912,55 +954,77 @@ export async function approveBookingRequest(input: {
     throw err;
   }
 
-  await recordBookingEvent({
-    bookingId: conversion.bookingId,
-    type: BookingEventType.CREATED,
-    actorMemberId: input.adminMemberId,
-    amountCents: priceCents,
-  });
-
-  try {
-    await sendBookingRequestApprovedEmail({
-      email: request.contactEmail,
-      firstName: request.contactFirstName,
-      token: paymentToken,
-      checkIn: request.checkIn,
-      checkOut: request.checkOut,
-      guestCount: guests.length,
-      lodgeId: request.lodgeId ?? null,
-      priceCents,
-      bookingReference: conversion.bookingId,
-      expiresAt: paymentLinkExpiresAt,
-    });
-  } catch (err) {
-    logger.error(
-      { err, bookingRequestId: request.id, bookingId: conversion.bookingId },
-      "Failed to send booking request approved email"
-    );
-  }
-
-  logAudit({
-    action: "booking_request.approved",
-    memberId: input.adminMemberId,
-    actorMemberId: input.adminMemberId,
-    subjectMemberId: conversion.memberId,
-    targetId: request.id,
-    entityType: "BookingRequest",
-    entityId: request.id,
-    category: "booking",
-    outcome: "success",
-    summary: "Booking request approved and converted to booking",
-    metadata: {
+  // On the idempotent replay path the tx body was skipped, so no new booking,
+  // payment or paymentLink exists: the freshly generated paymentToken was NEVER
+  // persisted as a PaymentLink. Guard every side effect on !alreadyConverted so
+  // we never re-record the CREATED event, never re-log a conversion, and — most
+  // importantly — never email the member a broken (unpersisted) payment link.
+  // The working payment email already went out with the first accept.
+  if (!conversion.alreadyConverted) {
+    await recordBookingEvent({
       bookingId: conversion.bookingId,
-      memberId: conversion.memberId,
-      priceCents,
-      guestCount: guests.length,
-      checkIn: request.checkIn.toISOString(),
-      checkOut: request.checkOut.toISOString(),
-      nonMemberHoldUntil: nonMemberHoldUntil.toISOString(),
-      paymentLinkExpiresAt: paymentLinkExpiresAt.toISOString(),
-    },
-  });
+      type: BookingEventType.CREATED,
+      actorMemberId: input.adminMemberId,
+      amountCents: priceCents,
+    });
+
+    try {
+      await sendBookingRequestApprovedEmail({
+        email: request.contactEmail,
+        firstName: request.contactFirstName,
+        token: paymentToken,
+        checkIn: request.checkIn,
+        checkOut: request.checkOut,
+        guestCount: guests.length,
+        lodgeId: request.lodgeId ?? null,
+        priceCents,
+        bookingReference: conversion.bookingId,
+        expiresAt: paymentLinkExpiresAt,
+      });
+    } catch (err) {
+      logger.error(
+        { err, bookingRequestId: request.id, bookingId: conversion.bookingId },
+        "Failed to send booking request approved email"
+      );
+    }
+
+    logAudit({
+      action: "booking_request.approved",
+      memberId: input.adminMemberId,
+      actorMemberId: input.adminMemberId,
+      subjectMemberId: conversion.memberId,
+      targetId: request.id,
+      entityType: "BookingRequest",
+      entityId: request.id,
+      category: "booking",
+      outcome: "success",
+      summary: "Booking request approved and converted to booking",
+      metadata: {
+        bookingId: conversion.bookingId,
+        memberId: conversion.memberId,
+        priceCents,
+        guestCount: guests.length,
+        checkIn: request.checkIn.toISOString(),
+        checkOut: request.checkOut.toISOString(),
+        nonMemberHoldUntil: nonMemberHoldUntil.toISOString(),
+        paymentLinkExpiresAt: paymentLinkExpiresAt.toISOString(),
+      },
+    });
+  } else {
+    // Observability-only note that a duplicate accept was absorbed (#1232).
+    logAudit({
+      action: "booking_request.approve_idempotent_replay",
+      memberId: input.adminMemberId,
+      actorMemberId: input.adminMemberId,
+      targetId: request.id,
+      entityType: "BookingRequest",
+      entityId: request.id,
+      category: "booking",
+      outcome: "success",
+      summary: "Booking request approve replayed idempotently; no second conversion",
+      metadata: { bookingId: conversion.bookingId, requestId: request.id },
+    });
+  }
 
   return {
     type: "approved",
@@ -1027,7 +1091,7 @@ export async function purgeExpiredBookingRequests(
 // Admin queue serialisation
 // ---------------------------------------------------------------------------
 
-export type AdminBookingRequestStatusFilter =
+type AdminBookingRequestStatusFilter =
   | BookingRequestStatus
   | "QUEUE"
   | "ALL";

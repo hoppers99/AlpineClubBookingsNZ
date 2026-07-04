@@ -1,6 +1,11 @@
 import type { AgeTier, FixedNightlyMode, PromoCodeType, SeasonType } from "@prisma/client";
 import { APP_TIME_ZONE } from "@/config/operational";
-import { addDaysDateOnly, formatDateOnly, parseDateOnly } from "../date-only";
+import {
+  addDaysDateOnly,
+  formatDateOnly,
+  formatDateOnlyForTimeZone,
+  parseDateOnly,
+} from "../date-only";
 import {
   countActiveGuestsForNight,
   type GuestNightInput,
@@ -91,22 +96,10 @@ export interface CalculatePromoDiscountOptions {
 }
 
 function getDateOnlyStringForTimeZone(date: Date, timeZone = APP_TIME_ZONE): string {
-  const formatter = new Intl.DateTimeFormat("en-CA", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  });
-  const parts = formatter.formatToParts(date);
-  const year = parts.find((part) => part.type === "year")?.value;
-  const month = parts.find((part) => part.type === "month")?.value;
-  const day = parts.find((part) => part.type === "day")?.value;
-
-  if (!year || !month || !day) {
-    throw new Error(`Unable to derive booking date for timezone ${timeZone}`);
-  }
-
-  return `${year}-${month}-${day}`;
+  // Shared per-timezone-cached formatter (#1146): pricing normalizes dates
+  // once per (guest, night), so a fresh Intl.DateTimeFormat per call
+  // dominated quote and edit repricing time.
+  return formatDateOnlyForTimeZone(date, timeZone);
 }
 
 function normalizeBookingDate(date: Date): Date {
@@ -183,6 +176,7 @@ function getGuestPricedNights(
   return getStayNights(guestStayStart, guestStayEnd);
 }
 
+// test seam
 /**
  * Find the rate for a specific night, guest tier, and membership status.
  */
@@ -207,6 +201,7 @@ export function findRateForNight(
   return null;
 }
 
+// test seam
 /**
  * Find the season that contains a given date.
  * Returns null if no season covers that date.
@@ -227,6 +222,7 @@ export function findSeasonForDate(
   return null;
 }
 
+// test seam
 /**
  * Get the nightly rate for a specific guest on a specific date.
  * Returns the price in cents, or null if no rate is found.
@@ -269,6 +265,7 @@ export function isGroupDiscountApplicable(
   return season?.type === "SUMMER";
 }
 
+// test seam
 export function isGroupDiscountAppliedToStay(
   checkIn: Date,
   checkOut: Date,
@@ -419,6 +416,41 @@ function addPromoAllocation(
 }
 
 /**
+ * Cap the total promo discount at totalPriceCents and, when the cap binds, rescale each member's
+ * discountCents proportionally (largest-remainder, integer cents) so the per-member allocations sum
+ * exactly to the capped total. Keeps priceAdjustmentCents = -discountCents in lockstep. Defensive:
+ * only binds when the uncapped discount exceeds the booking total (needs percentOff > 100 to survive
+ * validation). (#1206)
+ */
+function capPromoDiscountAcrossAllocations(
+  allocations: Map<string, PromoDiscountAllocation>,
+  uncappedDiscountCents: number,
+  totalPriceCents: number
+): number {
+  const cappedCents = Math.min(uncappedDiscountCents, totalPriceCents);
+  if (uncappedDiscountCents <= 0 || cappedCents >= uncappedDiscountCents) {
+    return cappedCents; // no binding cap → allocations already sum to the total
+  }
+  // Largest-remainder rescale so Σ round-down + distributed remainder === cappedCents.
+  const entries = [...allocations.values()].filter((a) => a.discountCents > 0);
+  const floored = entries.map((a) => {
+    const exact = (a.discountCents * cappedCents) / uncappedDiscountCents;
+    const floor = Math.floor(exact);
+    return { alloc: a, floor, frac: exact - floor };
+  });
+  let remainder = cappedCents - floored.reduce((s, f) => s + f.floor, 0);
+  floored.sort((x, y) => y.frac - x.frac);
+  for (const f of floored) {
+    const add = remainder > 0 ? 1 : 0;
+    remainder -= add;
+    const newDiscount = f.floor + add;
+    f.alloc.discountCents = newDiscount;
+    f.alloc.priceAdjustmentCents = -newDiscount;
+  }
+  return cappedCents;
+}
+
+/**
  * Apply a promo code discount to a booking. All promo types are applied
  * per eligible guest.
  *
@@ -478,7 +510,7 @@ export function calculatePromoDiscount(
         addPromoAllocation(allocations, guest.memberId, guestDiscount, -guestDiscount, 0);
       }
       // Cap at total booking price as a safety rail.
-      const discountCents = Math.min(discount, totalPriceCents);
+      const discountCents = capPromoDiscountAcrossAllocations(allocations, discount, totalPriceCents);
       return {
         discountCents,
         priceAdjustmentCents: -discountCents,
@@ -499,7 +531,7 @@ export function calculatePromoDiscount(
         discount += guestDiscount;
         addPromoAllocation(allocations, guest.memberId, guestDiscount, -guestDiscount, 0);
       }
-      const discountCents = Math.min(discount, totalPriceCents);
+      const discountCents = capPromoDiscountAcrossAllocations(allocations, discount, totalPriceCents);
       return {
         discountCents,
         priceAdjustmentCents: -discountCents,
@@ -561,7 +593,7 @@ export function calculatePromoDiscount(
         freeNightsUsed += 1;
         addPromoAllocation(allocations, memberId, capped, -capped, 1);
       }
-      const discountCents = Math.min(discount, totalPriceCents);
+      const discountCents = capPromoDiscountAcrossAllocations(allocations, discount, totalPriceCents);
       return {
         discountCents,
         priceAdjustmentCents: -discountCents,

@@ -84,6 +84,7 @@ describe("admin bed allocation", () => {
           source: "MANUAL",
           approvedAt: null,
           approvedByName: null,
+          bookingStatus: "CONFIRMED",
         },
         {
           id: "allocation-2",
@@ -99,6 +100,7 @@ describe("admin bed allocation", () => {
           source: "MANUAL",
           approvedAt: null,
           approvedByName: null,
+          bookingStatus: "CONFIRMED",
         },
       ],
     });

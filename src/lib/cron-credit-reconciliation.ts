@@ -1,6 +1,7 @@
 import { prisma } from "./prisma";
 import { isXeroConnected } from "./xero";
 import logger from "@/lib/logger";
+import { reportCronError } from "@/lib/observability-bridge";
 import {
   REFUND_CREDIT_NOTE_GRACE_HOURS,
   getRefundsMissingXeroCreditNotes,
@@ -48,8 +49,11 @@ export async function reconcileCreditBalances(): Promise<{
   });
 
   if (refundsMissingCreditNotes.count > 0) {
-    logger.error(
-      {
+    // Cron context: the scoped bridge logs at error AND pages Sentry (deduped).
+    reportCronError({
+      tag: "credit-reconciliation:refunds-missing-credit-notes",
+      message: `${refundsMissingCreditNotes.count} refunded Stripe payment(s) are missing Xero refund credit notes`,
+      context: {
         alert: "REFUNDS_MISSING_XERO_CREDIT_NOTES",
         count: refundsMissingCreditNotes.count,
         graceHours: REFUND_CREDIT_NOTE_GRACE_HOURS,
@@ -61,8 +65,7 @@ export async function reconcileCreditBalances(): Promise<{
         })),
         href: "/admin/xero",
       },
-      `${refundsMissingCreditNotes.count} refunded Stripe payment(s) are missing Xero refund credit notes`
-    );
+    });
   }
 
   if (negativeBalances.length > 0) {
@@ -74,15 +77,16 @@ export async function reconcileCreditBalances(): Promise<{
       "Members with negative credit balance detected"
     );
 
-    // Log error prominently — Sentry will pick this up
-    logger.error(
-      {
+    // Cron context: the scoped bridge logs at error AND pages Sentry (deduped).
+    reportCronError({
+      tag: "credit-reconciliation:negative-credit-balances",
+      message: `${negativeBalances.length} member(s) have negative credit balances — investigate immediately`,
+      context: {
         alert: "CREDIT_BALANCE_DISCREPANCY",
         count: negativeBalances.length,
         memberIds: negativeBalances.map((b) => b.memberId),
       },
-      `${negativeBalances.length} member(s) have negative credit balances — investigate immediately`
-    );
+    });
   }
 
   // If Xero is connected, log basic stats for manual reconciliation

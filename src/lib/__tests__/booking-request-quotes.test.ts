@@ -5,6 +5,7 @@ import {
   BookingRequestQuoteStatus,
   BookingRequestStatus,
   BookingRequestType,
+  BookingStatus,
   SchoolCateringOption,
 } from "@prisma/client";
 
@@ -110,6 +111,16 @@ vi.mock("@/lib/logger", () => ({
 }));
 vi.mock("bcryptjs", () => ({ hash: vi.fn().mockResolvedValue("hashed") }));
 
+// Keep the real BookingMemberNightConflictError; only the assertion is a spy.
+vi.mock("@/lib/booking-member-night-conflicts", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/booking-member-night-conflicts")>();
+  return {
+    ...actual,
+    assertNoBookingMemberNightConflicts: vi.fn().mockResolvedValue(undefined),
+  };
+});
+
 import { prisma } from "@/lib/prisma";
 import {
   createBookingRequestQuote,
@@ -119,6 +130,31 @@ import {
   sendBookingRequestQuote,
 } from "@/lib/booking-request-quotes";
 import { hashActionToken } from "@/lib/action-tokens";
+import {
+  assertNoBookingMemberNightConflicts,
+  BookingMemberNightConflictError,
+} from "@/lib/booking-member-night-conflicts";
+
+const mockedAssertNoConflicts = vi.mocked(assertNoBookingMemberNightConflicts);
+
+function memberNightConflictError() {
+  return new BookingMemberNightConflictError([
+    {
+      memberId: "member-42",
+      memberName: "Linked Member",
+      bookingId: "existing-booking",
+      bookingStatus: BookingStatus.CONFIRMED,
+      bookingOwnerName: "Other Owner",
+      bookingCheckIn: "2026-08-01",
+      bookingCheckOut: "2026-08-03",
+      guestId: "existing-guest",
+      conflictingNights: ["2026-08-01"],
+      isOwnBooking: false,
+      canOpenBooking: true,
+      canSelfRemove: false,
+    },
+  ]);
+}
 
 const GUESTS = [
   { firstName: "Tara", lastName: "Tester", ageTier: AgeTier.ADULT },
@@ -575,6 +611,8 @@ describe("holdBookingRequestSlots owner role", () => {
     vi.mocked(prisma.member.create).mockResolvedValue({ id: "owner-1" } as never);
     vi.mocked(prisma.booking.create).mockResolvedValue({ id: "held-1" } as never);
     vi.mocked(prisma.bookingRequest.update).mockResolvedValue({} as never);
+    // Default to no member-night conflict; individual tests override to reject.
+    mockedAssertNoConflicts.mockResolvedValue(undefined);
   });
 
   it("creates a NON_MEMBER owner record for general booking requests", async () => {
@@ -633,6 +671,57 @@ describe("holdBookingRequestSlots owner role", () => {
     const bookingArgs = vi.mocked(prisma.booking.create).mock.calls[0][0]
       .data as Record<string, unknown>;
     expect(bookingArgs.lodgeId).toBe("lodge-2");
+  });
+
+  it("runs the member-night conflict guard with linked guests and no exclusion before creating the hold (issue #1158)", async () => {
+    vi.mocked(prisma.bookingRequest.findUnique).mockResolvedValue(
+      baseRequest({
+        type: BookingRequestType.GENERAL,
+        priceCents: 12000,
+        quotes: [],
+        linkedGuestMembers: [{ guestIndex: 0, memberId: "member-42" }],
+      }) as never
+    );
+
+    await holdBookingRequestSlots({ requestId: "req-1", adminMemberId: "admin-1" });
+
+    expect(mockedAssertNoConflicts).toHaveBeenCalledWith(
+      prisma,
+      expect.objectContaining({
+        actorMemberId: "admin-1",
+        actorRole: "ADMIN",
+        checkIn: new Date("2026-08-01T00:00:00.000Z"),
+        checkOut: new Date("2026-08-03T00:00:00.000Z"),
+      })
+    );
+    const guardArgs = mockedAssertNoConflicts.mock.calls[0][1];
+    // A brand-new held booking is created, so nothing is excluded.
+    expect(guardArgs).not.toHaveProperty("excludeBookingId");
+    expect(guardArgs.guests).toHaveLength(2);
+    expect(guardArgs.guests[0]).toMatchObject({
+      memberId: "member-42",
+      stayStart: new Date("2026-08-01T00:00:00.000Z"),
+      stayEnd: new Date("2026-08-03T00:00:00.000Z"),
+    });
+  });
+
+  it("blocks the hold and creates nothing when a linked member double-books (issue #1158)", async () => {
+    vi.mocked(prisma.bookingRequest.findUnique).mockResolvedValue(
+      baseRequest({
+        type: BookingRequestType.GENERAL,
+        priceCents: 12000,
+        quotes: [],
+        linkedGuestMembers: [{ guestIndex: 0, memberId: "member-42" }],
+      }) as never
+    );
+    mockedAssertNoConflicts.mockRejectedValueOnce(memberNightConflictError());
+
+    await expect(
+      holdBookingRequestSlots({ requestId: "req-1", adminMemberId: "admin-1" })
+    ).rejects.toBeInstanceOf(BookingMemberNightConflictError);
+
+    expect(prisma.member.create).not.toHaveBeenCalled();
+    expect(prisma.booking.create).not.toHaveBeenCalled();
   });
 });
 

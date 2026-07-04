@@ -68,6 +68,7 @@ const PLAIN_TEXT_TOKEN_ALTERNATION = plainTextTokenNames()
   .map(escapeRegExp)
   .join("|");
 
+// test seam
 export const EMBED_TOKEN_REGEX = new RegExp(
   `\\{\\{\\s*(${EMBED_TOKEN_ALTERNATION})(?:\\s*:\\s*([^{}]+?))?\\s*\\}\\}` +
     `|\\{\\s*(${LEGACY_TOKEN_ALTERNATION})(?:\\s*:\\s*([^{}]+?))?\\s*\\}`,
@@ -77,6 +78,7 @@ export const EMBED_TOKEN_REGEX = new RegExp(
 // parameter support (allowsParameter — the multi-lodge
 // {{lodge-capacity:lodge-slug}} form). Group 1/2 = parameterised token and
 // its optional parameter; group 3 = plain token.
+// test seam
 export const TEXT_TOKEN_REGEX = new RegExp(
   `\\{\\{\\s*(?:(${PARAM_TEXT_TOKEN_ALTERNATION})(?:\\s*:\\s*([^{}]+?))?|(${PLAIN_TEXT_TOKEN_ALTERNATION}))\\s*\\}\\}`,
   "gi",

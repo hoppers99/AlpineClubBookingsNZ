@@ -111,6 +111,12 @@ interface DashboardAllocation {
   source: "AUTO" | "MANUAL";
   approvedAt: string | null;
   approvedByName: string | null;
+  // Raw booking status (issue #1251). The board derives a "Held" vs
+  // "Provisional" visual state from whether this is in
+  // CAPACITY_HOLDING_BOOKING_STATUSES; carrying the raw status (rather than a
+  // precomputed flag) keeps the single source of truth in the shared helper so
+  // the UI auto-tracks any future capacity-set change (#1254) with no coupling.
+  bookingStatus: string;
 }
 
 interface DashboardGuestNight {
@@ -755,6 +761,11 @@ async function loadAllocationRecords(
       ...(lodgeId ? { room: lodgeNullTolerantScope(lodgeId) } : {}),
     },
     include: {
+      booking: {
+        select: {
+          status: true,
+        },
+      },
       bookingGuest: {
         select: {
           id: true,
@@ -852,6 +863,7 @@ function serializeAllocations(
     approvedByName: allocation.approvedBy
       ? memberName(allocation.approvedBy)
       : null,
+    bookingStatus: allocation.booking.status,
   }));
 }
 
@@ -942,6 +954,7 @@ function buildPlannerRooms(rooms: Awaited<ReturnType<typeof listBedAllocationRoo
   })) satisfies BedAllocationRoom[];
 }
 
+// test seam
 export function buildBedAllocationWarnings(input: {
   allocations: DashboardAllocation[];
 }): AdminBedAllocationWarning[] {

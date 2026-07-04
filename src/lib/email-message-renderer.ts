@@ -64,6 +64,7 @@ export function extractTemplateTokens(value: string): string[] {
     .filter(Boolean);
 }
 
+// test seam
 export function validateApprovedTemplateTokens(values: string[]): string[] {
   return Array.from(
     new Set(
@@ -236,6 +237,7 @@ export function validateEmailTemplateContent({
   };
 }
 
+// test seam
 export function renderTemplateString(
   template: string,
   data: EmailTemplateData,
@@ -271,6 +273,7 @@ const SENSITIVE_SUBJECT_TOKEN_PATTERN = new RegExp(
 // template-substituted into a subject because of buildSubjectSafeTemplateData.
 const SENSITIVE_SUBJECT_VALUE_MIN_LENGTH = 3;
 
+// test seam
 export function neutraliseSensitiveSubjectContent(
   subject: string,
   data: EmailTemplateData,

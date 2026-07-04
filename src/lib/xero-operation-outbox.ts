@@ -1,4 +1,4 @@
-import { Prisma } from "@prisma/client";
+import { PaymentSource, Prisma } from "@prisma/client";
 import logger from "@/lib/logger";
 import {
   createXeroMembershipCancellationCreditNote,
@@ -12,23 +12,28 @@ import {
   failXeroSyncOperation,
   findCanonicalPaymentRefundCreditNote,
   startXeroSyncOperation,
+  sumCoveredRefundCreditNoteCents,
   upsertXeroObjectLink,
 } from "@/lib/xero-sync";
 import {
-  allocateCreditNoteToInvoice,
-  buildEntranceFeeInvoiceIdempotencyKey,
-  createXeroCreditNote,
-  createXeroCreditNoteForModification,
-  createXeroEntranceFeeInvoice,
   createXeroInvoiceForBooking,
-  createXeroSupplementaryInvoice,
+  updateXeroBookingInvoiceForBooking,
+} from "@/lib/xero-booking-invoices";
+import {
+  allocateCreditNoteToInvoice,
   createUnappliedXeroCreditNote,
   createUnappliedXeroCreditNoteForModification,
+  createXeroCreditNote,
+} from "@/lib/xero-credit-notes";
+import { createXeroEntranceFeeInvoice } from "@/lib/xero-entrance-fee-invoices";
+import {
+  buildEntranceFeeInvoiceIdempotencyKey,
   getEntranceFeeContext,
-  isXeroConnected,
-  updateXeroBookingInvoiceForBooking,
   type EntranceFeeContext,
-} from "@/lib/xero";
+} from "@/lib/xero-mappings";
+import { createXeroCreditNoteForModification } from "@/lib/xero-modification-credit-notes";
+import { createXeroSupplementaryInvoice } from "@/lib/xero-supplementary-invoices";
+import { isXeroConnected } from "@/lib/xero-token-store";
 import { createXeroInvoiceForGroupSettlement } from "@/lib/xero-group-settlement-invoices";
 import {
   getQueuedOutboxExpectedOperation,
@@ -493,6 +498,8 @@ export async function enqueueXeroRefundCreditNoteOperation(
     where: { id: paymentId },
     select: {
       id: true,
+      source: true,
+      refundedAmountCents: true,
       xeroRefundCreditNoteId: true,
     },
   });
@@ -509,7 +516,31 @@ export async function enqueueXeroRefundCreditNoteOperation(
   }
 
   const canonicalLink = await findCanonicalPaymentRefundCreditNote(paymentId);
-  if (canonicalLink) {
+  let noteAmountCents = refundAmountCents;
+  let watermarkCents = refundAmountCents;
+
+  if (payment.source === PaymentSource.STRIPE) {
+    // Stripe payments can be refunded in several steps, and each step needs its
+    // own credit note for the still-uncovered delta. `payment.refundedAmountCents`
+    // is the cumulative refund ledger and already includes this delta at enqueue
+    // time, so capping the note to `refundedAmountCents - coveredCents` yields
+    // this delta while replays of an already-covered state cap at zero.
+    const coveredCents = await sumCoveredRefundCreditNoteCents(paymentId);
+    noteAmountCents = Math.max(
+      0,
+      Math.min(refundAmountCents, payment.refundedAmountCents - coveredCents)
+    );
+    watermarkCents = coveredCents + noteAmountCents;
+    if (noteAmountCents <= 0) {
+      return {
+        queueOperationId: null,
+        message: "Refund credit notes already cover this payment's refunded amount.",
+      };
+    }
+  } else if (canonicalLink) {
+    // Non-Stripe callers (internet-banking cron, group-cancel) issue at most one
+    // refund per payment and re-enqueue on cron reruns; the single-note skip
+    // absorbs those replays by repointing at the existing note.
     if (payment.xeroRefundCreditNoteId !== canonicalLink.xeroObjectId) {
       await prisma.payment.update({
         where: { id: paymentId },
@@ -533,12 +564,15 @@ export async function enqueueXeroRefundCreditNoteOperation(
     };
   }
 
+  // The cumulative watermark distinguishes equal-amount Stripe deltas so each one
+  // gets its own note, while replays of the same state produce the same key and
+  // collide into the PENDING/RUNNING dedupe just below.
   const correlationKey = buildXeroIdempotencyKey(
     "payment",
     paymentId,
     "refund-credit-note",
-    refundAmountCents,
-    "v1"
+    payment.source === PaymentSource.STRIPE ? watermarkCents : noteAmountCents,
+    payment.source === PaymentSource.STRIPE ? "v2" : "v1"
   );
 
   const existingQueuedOperation = await prisma.xeroSyncOperation.findFirst({
@@ -576,7 +610,8 @@ export async function enqueueXeroRefundCreditNoteOperation(
     correlationKey,
     requestPayload: {
       queueType: XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE,
-      refundAmountCents,
+      refundAmountCents: noteAmountCents,
+      watermarkCents,
     },
     createdByMemberId: options?.createdByMemberId ?? null,
   });
@@ -590,7 +625,7 @@ export async function enqueueXeroRefundCreditNoteOperation(
 export async function enqueueXeroAccountCreditNoteOperation(
   paymentId: string,
   refundAmountCents: number,
-  options?: { createdByMemberId?: string }
+  options?: { createdByMemberId?: string; store?: Prisma.TransactionClient }
 ) {
   if (refundAmountCents <= 0) {
     return {
@@ -599,7 +634,13 @@ export async function enqueueXeroAccountCreditNoteOperation(
     };
   }
 
-  const payment = await prisma.payment.findUnique({
+  // Optional transaction client so callers (e.g. the late Internet Banking
+  // capacity-fail reconcile) can enqueue the outbox row inside the same
+  // transaction that creates the offsetting local credit; defaults to the
+  // global `prisma` so existing callers are unaffected.
+  const db = options?.store ?? prisma;
+
+  const payment = await db.payment.findUnique({
     where: { id: paymentId },
     select: {
       id: true,
@@ -610,7 +651,7 @@ export async function enqueueXeroAccountCreditNoteOperation(
     throw new Error(`Payment not found: ${paymentId}`);
   }
 
-  const existingLink = await prisma.xeroObjectLink.findFirst({
+  const existingLink = await db.xeroObjectLink.findFirst({
     where: {
       localModel: "Payment",
       localId: paymentId,
@@ -636,7 +677,7 @@ export async function enqueueXeroAccountCreditNoteOperation(
     "v1"
   );
 
-  const existingQueuedOperation = await prisma.xeroSyncOperation.findFirst({
+  const existingQueuedOperation = await db.xeroSyncOperation.findFirst({
     where: {
       correlationKey,
       direction: "OUTBOUND",
@@ -674,6 +715,7 @@ export async function enqueueXeroAccountCreditNoteOperation(
       refundAmountCents,
     },
     createdByMemberId: options?.createdByMemberId ?? null,
+    store: db,
   });
 
   return {
@@ -1432,6 +1474,7 @@ export async function enqueueXeroCreditNoteAllocationOperation(
   };
 }
 
+// test seam
 export async function enqueueXeroMembershipCancellationCreditNoteOperation(
   params: {
     subscriptionId: string;
@@ -1544,6 +1587,7 @@ export async function enqueueXeroMembershipCancellationCreditNoteOperation(
   };
 }
 
+// test seam
 export async function enqueueXeroMembershipCancellationContactOperation(
   params: {
     memberId: string;
@@ -1874,6 +1918,7 @@ export async function processQueuedXeroOutboxOperations(options?: {
           {
             createdByMemberId: queuedOperation.createdByMemberId ?? undefined,
             syncOperationId: queuedOperation.id,
+            watermarkCents: payload.watermarkCents,
           }
         );
       } else if (

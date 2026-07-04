@@ -66,20 +66,43 @@ export function clearStoredTwoFactor(email: string): void {
   fs.rmSync(twoFactorPath(email), { force: true });
 }
 
+// Each persona logs in from its own synthetic client IP (via x-forwarded-for,
+// which getClientIp trusts the same way it trusts the reverse proxy in real
+// deployments). Without this, the serial suite's ~20 logins from one runner IP
+// exhaust the per-IP login rate limit (10 per 15 min) and late specs stall on
+// 429 retries. Deterministic per email so re-logins share their bucket.
+function syntheticClientIp(email: string): string {
+  let hash = 0;
+  for (const ch of email) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+  return `10.99.${(hash >> 8) & 0xff}.${(hash & 0xfe) + 1}`;
+}
+
 export async function submitLoginForm(
   page: Page,
   email: string,
   password: string = DEMO_PASSWORD,
 ): Promise<void> {
+  await page.setExtraHTTPHeaders({ "x-forwarded-for": syntheticClientIp(email) });
   await page.goto("/login");
-  // Seen once in CI (#1154): the freshly-loaded page transiently resolved two
-  // #email nodes, breaking strict mode. 240 local probe iterations (including
-  // 8x CPU throttling) never reproduced it, so treat it as a renderer
-  // artefact: waiting for exactly one #email rides through any transient
-  // duplicate while a *persistent* duplicate — a real app bug — still fails.
+  // The login form transiently duplicates its inputs during hydration: #email
+  // briefly resolves to TWO nodes right after a single-node settle. First seen
+  // in #1154; recurred on CI for #1189 and #1202, where the race window sits
+  // between a count assertion and the subsequent fill. Harden by (a) targeting
+  // the first node for every interaction so a transient duplicate never trips
+  // strict mode, and (b) retrying the fill until the typed values stick, so a
+  // value dropped by a hydration swap of the SSR node is simply re-entered.
+  const emailField = page.locator("#email").first();
+  const passwordField = page.locator("#password").first();
+  await emailField.waitFor({ state: "visible" });
+  await expect(async () => {
+    await emailField.fill(email);
+    await passwordField.fill(password);
+    await expect(emailField).toHaveValue(email);
+    await expect(passwordField).toHaveValue(password);
+  }).toPass({ timeout: 15_000 });
+  // The values stuck, so hydration has settled: a *persistent* duplicate input
+  // is a real app bug and must still fail the run.
   await expect(page.locator("#email")).toHaveCount(1);
-  await page.locator("#email").fill(email);
-  await page.locator("#password").fill(password);
   await page.getByRole("button", { name: "Sign in" }).click();
   // Password sign-in always continues somewhere: the two-factor gate, a forced
   // password change, or the post-login destination.
@@ -121,6 +144,28 @@ export async function verifyTotp(page: Page, secret: string): Promise<void> {
   await page.locator("#two-factor-code").fill(totpCode(secret));
   await page.getByRole("button", { name: "Verify" }).click();
   await page.waitForURL((url) => !url.pathname.startsWith("/login"));
+}
+
+// Signs a persona in and clears whatever two-factor step the server demands,
+// leaving the browser on the post-login destination WITHOUT asserting it is
+// /dashboard. Scoped-role personas (finance/lodge/admin officers) can land
+// elsewhere, so specs that log in as arbitrary personas use this instead of
+// signIn. Enrollment secrets are persisted under e2e/.auth for later logins.
+export async function loginPersona(page: Page, email: string): Promise<void> {
+  await submitLoginForm(page, email);
+
+  if (page.url().includes("/login/enroll")) {
+    await enrollTotp(page, email);
+  } else if (page.url().includes("/login/verify")) {
+    const stored = readStoredTwoFactor(email);
+    if (!stored) {
+      throw new Error(
+        `${email} is enrolled in two-factor auth but no TOTP secret is stored ` +
+          "under e2e/.auth. Reseed the E2E database (npm run test:e2e:prepare).",
+      );
+    }
+    await verifyTotp(page, stored.secret);
+  }
 }
 
 // Full sign-in for a persona: password, then whichever two-factor step the

@@ -63,12 +63,20 @@ import {
 } from "@/components/ui/sheet";
 import { isFeatureHrefVisible } from "@/config/feature-routes";
 import type { FeatureFlags } from "@/config/schema";
-import { canViewAdminHref } from "@/lib/admin-permissions";
-import type { AppAccessRole } from "@/lib/access-roles";
+import {
+  canViewAdminHrefWithMatrix,
+  type AdminPermissionMatrix,
+} from "@/lib/admin-permissions";
 
 interface NavSection {
   label?: string;
-  items: Array<{ href: string; label: string; icon: typeof LayoutDashboard }>;
+  items: Array<{
+    href: string;
+    label: string;
+    icon: typeof LayoutDashboard;
+    /** Shown only to Full Admins (e.g. access-role management). */
+    fullAdminOnly?: boolean;
+  }>;
 }
 
 /**
@@ -260,6 +268,12 @@ const navSections: NavSection[] = [
         label: "Membership Types",
         icon: BadgeCheck,
       },
+      {
+        href: "/admin/access-roles",
+        label: "Access Roles",
+        icon: Shield,
+        fullAdminOnly: true,
+      },
       { href: "/admin/site-style", label: "Site Style", icon: Palette },
       { href: "/admin/page-content", label: "Page Content", icon: FilePenLine },
       { href: "/admin/site-banners", label: "Site Banners", icon: Megaphone },
@@ -292,31 +306,49 @@ const navSections: NavSection[] = [
   },
 ];
 
+// test seam
 export function getVisibleAdminNavSections(
   features: FeatureFlags,
-  accessRoles?: readonly AppAccessRole[],
+  permissionMatrix?: AdminPermissionMatrix,
+  isFullAdmin?: boolean,
+  hutLeaderLabel = "Hut Leader",
 ): NavSection[] {
   return navSections
     .map((section) => ({
       ...section,
-      items: section.items.filter(
-        (item) =>
-          isFeatureHrefVisible(item.href, features) &&
-          (!accessRoles ||
-            canViewAdminHref({ accessRoles, canLogin: true }, item.href)),
-      ),
+      items: section.items
+        .filter(
+          (item) =>
+            isFeatureHrefVisible(item.href, features) &&
+            (!item.fullAdminOnly || isFullAdmin) &&
+            (!permissionMatrix ||
+              canViewAdminHrefWithMatrix(permissionMatrix, item.href)),
+        )
+        .map((item) =>
+          item.href === "/admin/hut-leaders"
+            ? { ...item, label: `${hutLeaderLabel}s` }
+            : item,
+        ),
     }))
     .filter((section) => section.items.length > 0);
 }
 
 type AdminNavBadgeMap = Record<string, number>;
 
+// test seam
 export function getRenderedAdminNavSections(
   features: FeatureFlags,
   badges: AdminNavBadgeMap,
-  accessRoles?: readonly AppAccessRole[],
+  permissionMatrix?: AdminPermissionMatrix,
+  isFullAdmin?: boolean,
+  hutLeaderLabel = "Hut Leader",
 ): NavSection[] {
-  return getVisibleAdminNavSections(features, accessRoles)
+  return getVisibleAdminNavSections(
+    features,
+    permissionMatrix,
+    isFullAdmin,
+    hutLeaderLabel,
+  )
     .map((section) =>
       section.label === NEEDS_ATTENTION_LABEL
         ? {
@@ -370,11 +402,15 @@ function usePendingCounts(): AdminPendingCounts {
 
 function SidebarLinks({
   features,
-  accessRoles,
+  permissionMatrix,
+  isFullAdmin,
+  hutLeaderLabel = "Hut Leader",
   onNavigate,
 }: {
   features: FeatureFlags;
-  accessRoles?: readonly AppAccessRole[];
+  permissionMatrix?: AdminPermissionMatrix;
+  isFullAdmin?: boolean;
+  hutLeaderLabel?: string;
   onNavigate?: () => void;
 }) {
   const pathname = usePathname();
@@ -450,9 +486,16 @@ function SidebarLinks({
   const renderedNavSections = getRenderedAdminNavSections(
     features,
     badges,
-    accessRoles,
+    permissionMatrix,
+    isFullAdmin,
+    hutLeaderLabel,
   );
-  const visibleNavSections = getVisibleAdminNavSections(features, accessRoles);
+  const visibleNavSections = getVisibleAdminNavSections(
+    features,
+    permissionMatrix,
+    isFullAdmin,
+    hutLeaderLabel,
+  );
 
   // Highlight the most specific nav item whose href is a prefix of the current
   // path, so nested routes (e.g. /admin/xero/setup) activate the deepest match
@@ -554,10 +597,14 @@ function SidebarLinks({
 
 export function AdminSidebar({
   features,
-  accessRoles,
+  permissionMatrix,
+  isFullAdmin,
+  hutLeaderLabel = "Hut Leader",
 }: {
   features: FeatureFlags;
-  accessRoles?: readonly AppAccessRole[];
+  permissionMatrix?: AdminPermissionMatrix;
+  isFullAdmin?: boolean;
+  hutLeaderLabel?: string;
 }) {
   const [mobileOpen, setMobileOpen] = useState(false);
 
@@ -572,7 +619,12 @@ export function AdminSidebar({
           <span>Admin Panel</span>
         </div>
         <div className="flex-1 overflow-y-auto p-3 pb-8">
-          <SidebarLinks features={features} accessRoles={accessRoles} />
+          <SidebarLinks
+            features={features}
+            permissionMatrix={permissionMatrix}
+            isFullAdmin={isFullAdmin}
+            hutLeaderLabel={hutLeaderLabel}
+          />
         </div>
       </aside>
 
@@ -594,7 +646,9 @@ export function AdminSidebar({
             <div className="flex-1 overflow-y-auto p-3 pb-8">
               <SidebarLinks
                 features={features}
-                accessRoles={accessRoles}
+                permissionMatrix={permissionMatrix}
+                isFullAdmin={isFullAdmin}
+                hutLeaderLabel={hutLeaderLabel}
                 onNavigate={() => setMobileOpen(false)}
               />
             </div>

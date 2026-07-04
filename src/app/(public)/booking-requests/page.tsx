@@ -68,11 +68,17 @@ export default function BookingRequestPage() {
   const selectedLodge = lodges.find((lodge) => lodge.id === lodgeId) ?? null;
   const effectiveCapacity = selectedLodge?.capacity ?? club.lodgeCapacity;
 
+  // The quote refetch is keyed on the serialized guest list, not the array
+  // identity: `validGuests` is a fresh filter result every render, so using it
+  // directly would re-arm the debounce timer on unrelated re-renders.
+  const validGuestsJson = JSON.stringify(validGuests);
+
   const fetchQuote = useCallback(async () => {
+    const quoteGuests = JSON.parse(validGuestsJson) as RequestGuest[];
     if (
       !showPricing ||
       !datesValid ||
-      validGuests.length === 0 ||
+      quoteGuests.length === 0 ||
       (lodgeChoiceRequired && !lodgeId)
     ) {
       setIndicativePriceCents(null);
@@ -86,7 +92,7 @@ export default function BookingRequestPage() {
         body: JSON.stringify({
           checkIn,
           checkOut,
-          guests: validGuests,
+          guests: quoteGuests,
           lodgeId: lodgeChoiceRequired ? lodgeId : undefined,
         }),
       });
@@ -101,8 +107,7 @@ export default function BookingRequestPage() {
     } finally {
       setQuoteLoading(false);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showPricing, checkIn, checkOut, lodgeChoiceRequired, lodgeId, JSON.stringify(validGuests)]);
+  }, [showPricing, datesValid, checkIn, checkOut, lodgeChoiceRequired, lodgeId, validGuestsJson]);
 
   useEffect(() => {
     const timer = setTimeout(fetchQuote, 400);

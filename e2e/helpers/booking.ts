@@ -117,12 +117,16 @@ export async function bookSelfToReviewStep(
   await selectCalendarDay(page, window.checkIn);
   await selectCalendarDay(page, window.checkOut);
 
-  await expect(page.getByText("Add Guests")).toBeVisible();
-  await page
-    .getByRole("button", {
-      name: `+ ${persona.firstName} ${persona.lastName} (You)`,
-    })
-    .click();
+  // "Add Guests" appears twice on the guests step — the "2. Add Guests" step
+  // breadcrumb (always in the DOM) and the guests-step card title — so the bare
+  // substring locator races the card mount and intermittently trips strict mode
+  // (seen on CI for the Stripe declined spec). Gate on the unambiguous self-add
+  // button the step renders instead.
+  const addSelf = page.getByRole("button", {
+    name: `+ ${persona.firstName} ${persona.lastName} (You)`,
+  });
+  await expect(addSelf).toBeVisible();
+  await addSelf.click();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
 
   await expect(page.getByText("Booking Summary")).toBeVisible();

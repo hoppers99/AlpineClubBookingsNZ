@@ -60,10 +60,12 @@ test("the same member cannot hold the same lodge night twice", async ({
   await selectCalendarDay(page, window.checkIn);
   await selectCalendarDay(page, window.checkOut);
 
-  await expect(page.getByText("Add Guests")).toBeVisible();
+  // "Add Guests" matches both the "2. Add Guests" step breadcrumb and the
+  // guests-step card title, so gate on the unambiguous self-add button instead.
   const addSelf = page.getByRole("button", {
     name: `+ ${personas.booker.firstName} ${personas.booker.lastName} (You)`,
   });
+  await expect(addSelf).toBeVisible();
 
   // The wizard must refuse to carry the member into a second live booking on
   // the same nights: either the quick-add is blocked outright or continuing

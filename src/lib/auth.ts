@@ -84,6 +84,7 @@ function getTokenSessionIssuedAtMs(token: {
   return Date.now();
 }
 
+// test seam
 export const authConfig = {
   trustHost: getAuthTrustHost(),
   secret: getAuthSecret(),
@@ -202,7 +203,11 @@ export const authConfig = {
           const twoFactorRequired = modules.twoFactor === true;
 
           token.role = member.role;
-          token.accessRoles = member.accessRoles.map(({ role }) => role);
+          // role is null for definition-backed custom-role rows; the JWT
+          // claim only carries enum roles, and guards re-read from the DB.
+          token.accessRoles = member.accessRoles
+            .map(({ role }) => role)
+            .filter(isAccessRole);
           token.forcePasswordChange = member.forcePasswordChange;
           token.isEmailVerified = member.emailVerified;
           token.sessionInvalidated =

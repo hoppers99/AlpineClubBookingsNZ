@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { Prisma } from "@prisma/client";
 
 const mocks = vi.hoisted(() => ({
   inboundFindUnique: vi.fn(),
@@ -7,6 +8,8 @@ const mocks = vi.hoisted(() => ({
   paymentFindUnique: vi.fn(),
   linkFindMany: vi.fn(),
   operationFindFirst: vi.fn(),
+  operationCount: vi.fn(),
+  operationCreate: vi.fn(),
   transaction: vi.fn(),
   txPaymentFindUnique: vi.fn(),
   txLinkUpdateMany: vi.fn(),
@@ -28,6 +31,8 @@ vi.mock("@/lib/prisma", () => ({
     },
     xeroSyncOperation: {
       findFirst: mocks.operationFindFirst,
+      count: mocks.operationCount,
+      create: mocks.operationCreate,
     },
     $transaction: mocks.transaction,
   },
@@ -63,8 +68,48 @@ import {
   findCanonicalPaymentRefundCreditNote,
   recordXeroInboundEvent,
   sanitizeForJson,
+  startXeroSyncOperation,
+  sumCoveredRefundCreditNoteCents,
   upsertXeroObjectLink,
 } from "@/lib/xero-sync";
+
+describe("sumCoveredRefundCreditNoteCents (#1162)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("sums the recorded amounts of active refund credit note links", async () => {
+    mocks.linkFindMany.mockResolvedValue([
+      { xeroObjectId: "cn_1", metadata: { amountCents: 5000, watermarkCents: 5000 } },
+      { xeroObjectId: "cn_2", metadata: { amountCents: 3000, watermarkCents: 8000 } },
+    ]);
+
+    await expect(sumCoveredRefundCreditNoteCents("payment_1")).resolves.toBe(8000);
+    expect(mocks.operationFindFirst).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the create operation's allocation amount for links without a recorded amount", async () => {
+    mocks.linkFindMany.mockResolvedValue([
+      { xeroObjectId: "cn_legacy", metadata: null },
+    ]);
+    mocks.operationFindFirst.mockResolvedValue({
+      requestPayload: { allocation: { amount: 50 } },
+    });
+
+    await expect(sumCoveredRefundCreditNoteCents("payment_1")).resolves.toBe(5000);
+    expect(mocks.operationFindFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          xeroObjectId: "cn_legacy",
+          entityType: "CREDIT_NOTE",
+          operationType: "CREATE",
+          localModel: "Payment",
+          localId: "payment_1",
+        }),
+      })
+    );
+  });
+});
 
 describe("buildXeroPayloadHash", () => {
   it("hashes the unredacted outbound payload while stored JSON remains redacted", () => {
@@ -296,6 +341,33 @@ describe("upsertXeroObjectLink", () => {
     );
   });
 
+  it("keeps every Stripe refund credit note link active so per-delta notes coexist (#1162)", async () => {
+    mocks.txPaymentFindUnique.mockResolvedValue({
+      source: "STRIPE",
+      xeroRefundCreditNoteId: "cn_2",
+    });
+
+    await upsertXeroObjectLink({
+      localModel: "Payment",
+      localId: "payment_1",
+      xeroObjectType: "CREDIT_NOTE",
+      xeroObjectId: "cn_1",
+      xeroObjectNumber: "CN-1",
+      role: "REFUND_CREDIT_NOTE",
+      metadata: { amountCents: 5000, watermarkCents: 5000 },
+    });
+
+    // A different note is canonical (cn_2), but cn_1's link must stay active and
+    // its siblings must not be deactivated: each Stripe delta keeps its own note.
+    expect(mocks.txLinkUpdateMany).not.toHaveBeenCalled();
+    expect(mocks.txLinkUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({ active: true }),
+        update: expect.objectContaining({ active: true }),
+      })
+    );
+  });
+
   it("keeps a stale duplicate refund credit note link inactive when it conflicts with the payment canonical note", async () => {
     mocks.txPaymentFindUnique.mockResolvedValue({
       xeroRefundCreditNoteId: "cn_canonical",
@@ -369,5 +441,92 @@ describe("upsertXeroObjectLink", () => {
         }),
       })
     );
+  });
+});
+
+describe("startXeroSyncOperation", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.operationCount.mockResolvedValue(0);
+    mocks.operationCreate.mockImplementation(async ({ data }: { data: unknown }) => ({
+      id: "op_started_1",
+      data,
+    }));
+  });
+
+  it("writes via the global prisma client when no store is supplied and never leaks store into the payload", async () => {
+    await startXeroSyncOperation({
+      direction: "OUTBOUND",
+      entityType: "CREDIT_NOTE",
+      operationType: "CREATE",
+      localModel: "Payment",
+      localId: "payment_1",
+      status: "PENDING",
+      idempotencyKey: "payment:payment_1:unapplied-credit-note:4200:v1",
+      correlationKey: "payment:payment_1:unapplied-credit-note:4200:v1",
+    });
+
+    // The default path exercises the attempt-count read and the create on the
+    // global prisma client.
+    expect(mocks.operationCount).toHaveBeenCalledWith({
+      where: {
+        OR: [
+          { correlationKey: "payment:payment_1:unapplied-credit-note:4200:v1" },
+          { idempotencyKey: "payment:payment_1:unapplied-credit-note:4200:v1" },
+        ],
+      },
+    });
+    expect(mocks.operationCreate).toHaveBeenCalledTimes(1);
+    const createArg = mocks.operationCreate.mock.calls[0][0];
+    expect(createArg.data).toEqual(
+      expect.objectContaining({
+        direction: "OUTBOUND",
+        entityType: "CREDIT_NOTE",
+        operationType: "CREATE",
+        localModel: "Payment",
+        localId: "payment_1",
+        status: "PENDING",
+        attemptCount: 1,
+      })
+    );
+    expect(createArg.data).not.toHaveProperty("store");
+  });
+
+  it("writes through the supplied transaction store and leaves the global prisma client untouched", async () => {
+    const txCount = vi.fn().mockResolvedValue(1);
+    const txCreate = vi
+      .fn()
+      .mockImplementation(async ({ data }: { data: unknown }) => ({ id: "op_tx_1", data }));
+    const store = {
+      xeroSyncOperation: {
+        count: txCount,
+        create: txCreate,
+      },
+    } as unknown as Prisma.TransactionClient;
+
+    const result = await startXeroSyncOperation({
+      direction: "OUTBOUND",
+      entityType: "CREDIT_NOTE",
+      operationType: "CREATE",
+      localModel: "Payment",
+      localId: "payment_2",
+      status: "PENDING",
+      correlationKey: "payment:payment_2:unapplied-credit-note:9900:v1",
+      store,
+    });
+
+    expect(result).toEqual(expect.objectContaining({ id: "op_tx_1" }));
+    // The store handled both the attempt-count read and the create; the global
+    // prisma client was never used.
+    expect(txCount).toHaveBeenCalledTimes(1);
+    expect(txCreate).toHaveBeenCalledTimes(1);
+    expect(mocks.operationCount).not.toHaveBeenCalled();
+    expect(mocks.operationCreate).not.toHaveBeenCalled();
+
+    // attemptCount reflects the store's existing-attempt count (+1) and store is
+    // not forwarded into the persisted row.
+    const createArg = txCreate.mock.calls[0][0];
+    expect(createArg.data.attemptCount).toBe(2);
+    expect(createArg.data).not.toHaveProperty("store");
   });
 });

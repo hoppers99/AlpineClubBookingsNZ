@@ -180,6 +180,7 @@ export async function releaseExpiredInternetBankingHolds(
       payment.booking.checkOut,
       0,
       "credit",
+      0,
       payment.booking.lodgeId,
     ).catch((err) =>
       logger.error(
