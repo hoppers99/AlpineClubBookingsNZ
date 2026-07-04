@@ -2079,6 +2079,17 @@ model XeroSyncOperation {
   @@index([direction, status, createdAt])
   @@index([entityType, status, createdAt])
   @@index([localModel, localId, createdAt])
+  // No @@unique on correlationKey/idempotencyKey by design (#1234, invariant (c)):
+  // (1) the same key legitimately recurs across rows over time -- a terminal-status
+  //     row from attempt 1 plus a fresh PENDING re-enqueue -- so the outbox dedup is
+  //     a `findFirst` scoped to status IN (PENDING, RUNNING[, WAITING_PAYMENT]); a
+  //     full unique would reject a legitimate re-enqueue and break retries.
+  // (2) the only correct DB form is a PARTIAL unique WHERE status IN (...), which
+  //     Prisma schema cannot express -- it would live only in raw migration SQL and
+  //     the Migration drift check (schema-vs-DB) would flag it as drift and fail.
+  // (3) the enqueue race is bounded: both rows carry the same Xero idempotency key,
+  //     so Xero dedups the actual call within its 24h window, and the findFirst
+  //     dedup handles the common sequential case. Not exploitable on any caller path.
   @@index([correlationKey])
   @@index([idempotencyKey])
   @@index([xeroObjectType, xeroObjectId])

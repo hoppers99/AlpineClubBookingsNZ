@@ -296,7 +296,10 @@ describe("processStoredXeroInboundEvents", () => {
         },
         memberCredit: {
           findFirst: mocks.memberCreditFindFirst,
+          findMany: mocks.memberCreditFindMany,
           create: mocks.memberCreditCreate,
+          update: mocks.memberCreditUpdate,
+          aggregate: mocks.memberCreditAggregate,
         },
       })
     );
@@ -2126,12 +2129,16 @@ describe("processStoredXeroInboundEvents", () => {
         {
           id: "pay_booking_1",
           bookingId: "bk234567890",
+          amountCents: 12000,
           creditAppliedCents: 0,
           booking: {
             memberId: "mem_credit_1",
           },
         },
       ]);
+    // The applied-credit repair re-reads the payment's current creditAppliedCents
+    // under the advisory lock before comparing against the aggregated total.
+    mocks.paymentFindUnique.mockResolvedValue({ creditAppliedCents: 0 });
     mocks.memberCreditAggregate.mockResolvedValue({
       _sum: {
         amountCents: -2500,
@@ -2210,6 +2217,135 @@ describe("processStoredXeroInboundEvents", () => {
         }),
       })
     );
+  });
+
+  it("repairs applied-credit ledger state atomically under the advisory lock and clamps to the payment amount", async () => {
+    mocks.inboundFindMany.mockResolvedValue([
+      {
+        id: "evt_clamp",
+        source: "webhook",
+        eventCategory: "CREDIT_NOTE",
+        eventType: "UPDATE",
+        resourceId: "cn_credit_clamp",
+        correlationKey: "corr_clamp",
+        payload: { resourceId: "cn_credit_clamp" },
+      },
+    ]);
+    mocks.processedCreate.mockResolvedValue({ id: "processed_clamp" });
+    mocks.linkFindMany
+      .mockResolvedValueOnce([
+        {
+          localModel: "Payment",
+          localId: "pay_credit_source_1",
+          xeroObjectType: "CREDIT_NOTE",
+          role: "ACCOUNT_CREDIT_NOTE",
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          localId: "pay_credit_source_1",
+          xeroObjectId: "cn_credit_clamp",
+          metadata: {
+            total: 97,
+            status: "AUTHORISED",
+          },
+        },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          localModel: "Payment",
+          localId: "pay_booking_1",
+          xeroObjectType: "INVOICE",
+          role: "PRIMARY_INVOICE",
+        },
+      ]);
+    mocks.paymentFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          id: "pay_credit_source_1",
+          bookingId: "bk123456789",
+          booking: {
+            memberId: "mem_credit_1",
+          },
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: "pay_credit_source_1",
+          amountCents: 12000,
+          refundedAmountCents: 0,
+          status: "SUCCEEDED",
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: "pay_booking_1",
+          bookingId: "bk234567890",
+          // The applied-credit aggregate below (5000) exceeds this payment amount,
+          // so the write must clamp to amountCents (2000), never over-credit.
+          amountCents: 2000,
+          creditAppliedCents: 0,
+          booking: {
+            memberId: "mem_credit_1",
+          },
+        },
+      ]);
+    mocks.paymentFindUnique.mockResolvedValue({ creditAppliedCents: 0 });
+    mocks.memberCreditAggregate.mockResolvedValue({
+      _sum: {
+        amountCents: -5000,
+      },
+    });
+    const accountingApi = {
+      getCreditNote: vi.fn().mockResolvedValue({
+        body: {
+          creditNotes: [
+            {
+              creditNoteID: "cn_credit_clamp",
+              creditNoteNumber: "CN-AC-CLAMP-001",
+              total: 97,
+              appliedAmount: 25,
+              remainingCredit: 72,
+              allocations: [
+                {
+                  amount: 25,
+                  invoice: { invoiceID: "inv_booking_1" },
+                },
+              ],
+              payments: [],
+            },
+          ],
+        },
+      }),
+    };
+    mocks.getAuthenticatedXeroClient.mockResolvedValue({
+      xero: { accountingApi },
+      tenantId: "tenant_1",
+    });
+
+    const result = await processStoredXeroInboundEvents();
+    expect(result).toEqual({
+      found: 1,
+      processed: 1,
+      succeeded: 1,
+      failed: 0,
+      skipped: 0,
+    });
+
+    // The repair runs inside a per-payment transaction whose first statement is
+    // the shared reconcile advisory lock.
+    expect(mocks.transaction).toHaveBeenCalled();
+    expect(mocks.txExecuteRaw).toHaveBeenCalled();
+    // Clamped to the payment amount, not the raw 5000 aggregate.
+    expect(mocks.paymentUpdate).toHaveBeenCalledWith({
+      where: { id: "pay_booking_1" },
+      data: {
+        creditAppliedCents: 2000,
+      },
+    });
   });
 });
 
@@ -2524,7 +2660,10 @@ describe("replayStoredXeroInboundEvent", () => {
         },
         memberCredit: {
           findFirst: mocks.memberCreditFindFirst,
+          findMany: mocks.memberCreditFindMany,
           create: mocks.memberCreditCreate,
+          update: mocks.memberCreditUpdate,
+          aggregate: mocks.memberCreditAggregate,
         },
       })
     );

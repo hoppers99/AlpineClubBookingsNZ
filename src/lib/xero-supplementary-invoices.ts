@@ -34,14 +34,8 @@ import {
 import {
   findOrCreateXeroContact,
   retryXeroWriteWithContactRepair,
-  type FindOrCreateXeroContactOptions,
 } from "./xero-contacts";
 import { formatDate } from "./xero-invoice-helpers";
-
-export interface CreateXeroSupplementaryInvoiceOptions
-  extends FindOrCreateXeroContactOptions {
-  syncOperationId?: string;
-}
 
 export async function createXeroSupplementaryInvoice(params: {
   bookingId: string;
@@ -63,6 +57,18 @@ export async function createXeroSupplementaryInvoice(params: {
     repairExistingLink,
     syncOperationId,
   } = params;
+
+  // A supplementary invoice is always for a specific booking MODIFICATION, so it
+  // must carry a distinct bookingModificationId. Without one the Xero idempotency
+  // key would fall back to bookingId and two same-amount deltas on one booking
+  // would share a key, letting Xero dedup the second createInvoices call and
+  // under-invoice. Both callers always pass it; throwing surfaces any misuse
+  // instead of silently collapsing the key (invariant (c), #1234).
+  if (!bookingModificationId) {
+    throw new Error(
+      "Supplementary invoice requires a bookingModificationId for a distinct Xero idempotency key"
+    );
+  }
 
   const booking = await prisma.booking.findUnique({
     where: { id: bookingId },
@@ -131,12 +137,10 @@ export async function createXeroSupplementaryInvoice(params: {
     return null;
   }
 
-  const bookingModification = bookingModificationId
-    ? await prisma.bookingModification.findUnique({
-        where: { id: bookingModificationId },
-        select: { createdAt: true },
-      })
-    : null;
+  const bookingModification = await prisma.bookingModification.findUnique({
+    where: { id: bookingModificationId },
+    select: { createdAt: true },
+  });
   const supplementaryInvoiceDueDate = formatDate(
     bookingModification?.createdAt ?? new Date()
   );
@@ -152,10 +156,10 @@ export async function createXeroSupplementaryInvoice(params: {
     lineAmountTypes: LineAmountTypes.Inclusive,
   });
 
-  const localModel = bookingModificationId ? "BookingModification" : "Booking";
-  const localId = bookingModificationId ?? bookingId;
+  const localModel = "BookingModification";
+  const localId = bookingModificationId;
   const invoiceIdempotencyKey = buildXeroIdempotencyKey(
-    bookingModificationId ? "booking-mod" : "booking",
+    "booking-mod",
     localId,
     "supplementary-invoice",
     priceDiffCents,
@@ -234,7 +238,7 @@ export async function createXeroSupplementaryInvoice(params: {
         const stripeBankCode = (await getAccountMapping("stripeBankAccount")) ?? "606";
         const totalCents = priceDiffCents + changeFeeCents;
         const paymentIdempotencyKey = buildXeroIdempotencyKey(
-          bookingModificationId ? "booking-mod" : "booking",
+          "booking-mod",
           localId,
           "supplementary-payment",
           totalCents,

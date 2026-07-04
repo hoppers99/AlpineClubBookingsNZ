@@ -2375,6 +2375,7 @@ async function repairAccountCreditAllocationBusinessState(
       select: {
         id: true,
         bookingId: true,
+        amountCents: true,
         creditAppliedCents: true,
         booking: {
           select: {
@@ -2403,137 +2404,163 @@ async function repairAccountCreditAllocationBusinessState(
     const expectedDescription = buildBookingAppliedCreditDescription(
       payment.bookingId
     );
-    const existingAppliedCredits = await prisma.memberCredit.findMany({
-      where: {
-        memberId: payment.booking.memberId,
-        appliedToBookingId: payment.bookingId,
-        type: CreditType.BOOKING_APPLIED,
-        OR: [
-          {
-            xeroCreditNoteId: creditNoteId,
-          },
-          {
-            xeroCreditNoteId: null,
-            amountCents: expectedAmountCents,
-          },
-        ],
-      },
-      select: {
-        id: true,
-        amountCents: true,
-        description: true,
-        xeroCreditNoteId: true,
-      },
-    });
+    // Serialize each payment's applied-credit repair on the shared reconcile
+    // advisory lock so the existing-credit read, the create/link, the aggregate,
+    // and the creditAppliedCents write commit atomically. Without the lock two
+    // concurrent credit-note events for one payment can interleave and
+    // transiently under-set creditAppliedCents; the clamp keeps the applied
+    // total within the payment amount (invariant (b),(d), #1234). DB-only work:
+    // no external Xero call runs inside this transaction.
+    await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
 
-    const linkedAppliedCredits = existingAppliedCredits.filter(
-      (credit) => credit.xeroCreditNoteId === creditNoteId
-    );
-
-    if (linkedAppliedCredits.length === 1) {
-      const appliedCredit = linkedAppliedCredits[0];
-      const updates: {
-        amountCents?: number;
-        description?: string;
-      } = {};
-
-      if (appliedCredit.amountCents !== expectedAmountCents) {
-        updates.amountCents = expectedAmountCents;
-      }
-      if (appliedCredit.description !== expectedDescription) {
-        updates.description = expectedDescription;
-      }
-
-      if (Object.keys(updates).length > 0) {
-        await prisma.memberCredit.update({
-          where: {
-            id: appliedCredit.id,
-          },
-          data: updates,
-        });
-        updatedAppliedCredits += 1;
-      }
-    } else if (linkedAppliedCredits.length > 1) {
-      skippedAllocations += 1;
-      logger.warn(
-        {
-          creditNoteId,
-          invoiceId: target.invoiceId,
-          bookingId: payment.bookingId,
-          appliedCredits: linkedAppliedCredits.length,
+      const existingAppliedCredits = await tx.memberCredit.findMany({
+        where: {
+          memberId: payment.booking.memberId,
+          appliedToBookingId: payment.bookingId,
+          type: CreditType.BOOKING_APPLIED,
+          OR: [
+            {
+              xeroCreditNoteId: creditNoteId,
+            },
+            {
+              xeroCreditNoteId: null,
+              amountCents: expectedAmountCents,
+            },
+          ],
         },
-        "Skipping account-credit allocation repair because multiple local applied-credit rows already point at this Xero credit note"
-      );
-    } else {
-      const unlinkedExactCredits = existingAppliedCredits.filter(
-        (credit) =>
-          credit.xeroCreditNoteId === null &&
-          credit.amountCents === expectedAmountCents
+        select: {
+          id: true,
+          amountCents: true,
+          description: true,
+          xeroCreditNoteId: true,
+        },
+      });
+
+      const linkedAppliedCredits = existingAppliedCredits.filter(
+        (credit) => credit.xeroCreditNoteId === creditNoteId
       );
 
-      if (unlinkedExactCredits.length === 1) {
-        await prisma.memberCredit.update({
-          where: {
-            id: unlinkedExactCredits[0].id,
-          },
-          data: {
-            xeroCreditNoteId: creditNoteId,
-            description: expectedDescription,
-          },
-        });
-        updatedAppliedCredits += 1;
-      } else if (unlinkedExactCredits.length > 1) {
+      if (linkedAppliedCredits.length === 1) {
+        const appliedCredit = linkedAppliedCredits[0];
+        const updates: {
+          amountCents?: number;
+          description?: string;
+        } = {};
+
+        if (appliedCredit.amountCents !== expectedAmountCents) {
+          updates.amountCents = expectedAmountCents;
+        }
+        if (appliedCredit.description !== expectedDescription) {
+          updates.description = expectedDescription;
+        }
+
+        if (Object.keys(updates).length > 0) {
+          await tx.memberCredit.update({
+            where: {
+              id: appliedCredit.id,
+            },
+            data: updates,
+          });
+          updatedAppliedCredits += 1;
+        }
+      } else if (linkedAppliedCredits.length > 1) {
         skippedAllocations += 1;
         logger.warn(
           {
             creditNoteId,
             invoiceId: target.invoiceId,
             bookingId: payment.bookingId,
-            appliedCredits: unlinkedExactCredits.length,
+            appliedCredits: linkedAppliedCredits.length,
           },
-          "Skipping account-credit allocation repair because multiple matching unlinked applied-credit rows exist locally"
+          "Skipping account-credit allocation repair because multiple local applied-credit rows already point at this Xero credit note"
         );
       } else {
-        await prisma.memberCredit.create({
-          data: {
-            memberId: payment.booking.memberId,
-            amountCents: expectedAmountCents,
-            type: CreditType.BOOKING_APPLIED,
-            description: expectedDescription,
-            appliedToBookingId: payment.bookingId,
-            xeroCreditNoteId: creditNoteId,
-          },
-        });
-        createdAppliedCredits += 1;
+        const unlinkedExactCredits = existingAppliedCredits.filter(
+          (credit) =>
+            credit.xeroCreditNoteId === null &&
+            credit.amountCents === expectedAmountCents
+        );
+
+        if (unlinkedExactCredits.length === 1) {
+          await tx.memberCredit.update({
+            where: {
+              id: unlinkedExactCredits[0].id,
+            },
+            data: {
+              xeroCreditNoteId: creditNoteId,
+              description: expectedDescription,
+            },
+          });
+          updatedAppliedCredits += 1;
+        } else if (unlinkedExactCredits.length > 1) {
+          skippedAllocations += 1;
+          logger.warn(
+            {
+              creditNoteId,
+              invoiceId: target.invoiceId,
+              bookingId: payment.bookingId,
+              appliedCredits: unlinkedExactCredits.length,
+            },
+            "Skipping account-credit allocation repair because multiple matching unlinked applied-credit rows exist locally"
+          );
+        } else {
+          await tx.memberCredit.create({
+            data: {
+              memberId: payment.booking.memberId,
+              amountCents: expectedAmountCents,
+              type: CreditType.BOOKING_APPLIED,
+              description: expectedDescription,
+              appliedToBookingId: payment.bookingId,
+              xeroCreditNoteId: creditNoteId,
+            },
+          });
+          createdAppliedCredits += 1;
+        }
       }
-    }
 
-    const aggregate = await prisma.memberCredit.aggregate({
-      where: {
-        memberId: payment.booking.memberId,
-        appliedToBookingId: payment.bookingId,
-        type: CreditType.BOOKING_APPLIED,
-      },
-      _sum: {
-        amountCents: true,
-      },
-    });
-    const appliedCreditTotalCents = Math.max(
-      -(aggregate._sum.amountCents ?? 0),
-      0
-    );
+      const aggregate = await tx.memberCredit.aggregate({
+        where: {
+          memberId: payment.booking.memberId,
+          appliedToBookingId: payment.bookingId,
+          type: CreditType.BOOKING_APPLIED,
+        },
+        _sum: {
+          amountCents: true,
+        },
+      });
+      const appliedCreditTotalCents = Math.min(
+        Math.max(-(aggregate._sum.amountCents ?? 0), 0),
+        payment.amountCents
+      );
 
-    if (payment.creditAppliedCents !== appliedCreditTotalCents) {
-      await prisma.payment.update({
+      // Compare against the payment's current creditAppliedCents read under the
+      // lock; the pre-loop snapshot can be stale, so the write only fires on a
+      // real change against the freshly-aggregated (and clamped) total.
+      const freshPayment = await tx.payment.findUnique({
         where: {
           id: payment.id,
         },
-        data: {
-          creditAppliedCents: appliedCreditTotalCents,
+        select: {
+          creditAppliedCents: true,
         },
       });
-      updatedAppliedPayments += 1;
-    }
+
+      if (
+        freshPayment &&
+        freshPayment.creditAppliedCents !== appliedCreditTotalCents
+      ) {
+        await tx.payment.update({
+          where: {
+            id: payment.id,
+          },
+          data: {
+            creditAppliedCents: appliedCreditTotalCents,
+          },
+        });
+        updatedAppliedPayments += 1;
+      }
+    });
   }
 
   return {
