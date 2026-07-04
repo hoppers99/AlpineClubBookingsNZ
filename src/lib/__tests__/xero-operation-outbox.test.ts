@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { Prisma } from "@prisma/client";
 
 const mocks = vi.hoisted(() => ({
   findFirstLink: vi.fn(),
@@ -699,6 +700,69 @@ describe("enqueueXeroAccountCreditNoteOperation", () => {
     });
 
     expect(mocks.startXeroSyncOperation).not.toHaveBeenCalled();
+  });
+
+  it("reads and enqueues through the supplied transaction store, leaving the global prisma client untouched", async () => {
+    // Fresh store fns distinct from the global prisma mock so the assertions
+    // below actually prove the store — not the global client — was used.
+    const storePaymentFindUnique = vi.fn().mockResolvedValue({ id: "payment_1" });
+    const storeLinkFindFirst = vi.fn().mockResolvedValue(null);
+    const storeOperationFindFirst = vi.fn().mockResolvedValue(null);
+    const store = {
+      payment: { findUnique: storePaymentFindUnique },
+      xeroObjectLink: { findFirst: storeLinkFindFirst },
+      xeroSyncOperation: { findFirst: storeOperationFindFirst },
+    } as unknown as Prisma.TransactionClient;
+
+    await expect(
+      enqueueXeroAccountCreditNoteOperation("payment_1", 4200, { store })
+    ).resolves.toEqual({
+      queueOperationId: "op_account_credit_1",
+      message: "Xero account-credit note queued for background processing.",
+    });
+
+    // Every read went through the store.
+    expect(storePaymentFindUnique).toHaveBeenCalledTimes(1);
+    expect(storeLinkFindFirst).toHaveBeenCalledTimes(1);
+    expect(storeOperationFindFirst).toHaveBeenCalledTimes(1);
+    // The global prisma client was never touched.
+    expect(mocks.findUniquePayment).not.toHaveBeenCalled();
+    expect(mocks.findFirstLink).not.toHaveBeenCalled();
+    expect(mocks.findFirstOperation).not.toHaveBeenCalled();
+    // The store is threaded into the operation writer so the row commits in-tx.
+    expect(mocks.startXeroSyncOperation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entityType: "CREDIT_NOTE",
+        operationType: "CREATE",
+        localModel: "Payment",
+        localId: "payment_1",
+        store,
+      })
+    );
+  });
+
+  it("dedups on an existing queued operation read through the supplied store", async () => {
+    const storePaymentFindUnique = vi.fn().mockResolvedValue({ id: "payment_1" });
+    const storeLinkFindFirst = vi.fn().mockResolvedValue(null);
+    const storeOperationFindFirst = vi
+      .fn()
+      .mockResolvedValue({ id: "existing_queued_op" });
+    const store = {
+      payment: { findUnique: storePaymentFindUnique },
+      xeroObjectLink: { findFirst: storeLinkFindFirst },
+      xeroSyncOperation: { findFirst: storeOperationFindFirst },
+    } as unknown as Prisma.TransactionClient;
+
+    await expect(
+      enqueueXeroAccountCreditNoteOperation("payment_1", 4200, { store })
+    ).resolves.toEqual({
+      queueOperationId: "existing_queued_op",
+      message: "Xero account-credit note is already queued for background processing.",
+    });
+
+    expect(storeOperationFindFirst).toHaveBeenCalledTimes(1);
+    expect(mocks.startXeroSyncOperation).not.toHaveBeenCalled();
+    expect(mocks.findFirstOperation).not.toHaveBeenCalled();
   });
 });
 

@@ -330,13 +330,20 @@ function getAttemptWhere(
   return { OR: or };
 }
 
-export async function startXeroSyncOperation(input: XeroSyncOperationInput) {
+export async function startXeroSyncOperation(
+  input: XeroSyncOperationInput & { store?: Prisma.TransactionClient }
+) {
+  // When a caller passes an in-flight transaction client the operation row is
+  // written inside that transaction so it commits atomically with the caller's
+  // other writes; the default global `prisma` keeps every existing caller
+  // unchanged. `store` is never part of the `create` payload.
+  const db = input.store ?? prisma;
   const attemptWhere = getAttemptWhere(input);
   const attemptCount = attemptWhere
-    ? (await prisma.xeroSyncOperation.count({ where: attemptWhere })) + 1
+    ? (await db.xeroSyncOperation.count({ where: attemptWhere })) + 1
     : 1;
 
-  return prisma.xeroSyncOperation.create({
+  return db.xeroSyncOperation.create({
     data: {
       direction: input.direction,
       entityType: input.entityType,

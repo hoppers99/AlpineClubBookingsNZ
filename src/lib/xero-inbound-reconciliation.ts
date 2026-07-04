@@ -1235,6 +1235,17 @@ async function syncInternetBankingPaymentsForPaidInvoice(
             });
           }
 
+          // Enqueue the offsetting Xero account-credit note inside this same
+          // transaction so the outbox intent commits atomically with the local
+          // credit. Doing this post-commit risked a crash window that left a
+          // local credit with no Xero mirror and no self-healing path (the
+          // booking is now CANCELLED, so a re-run early-returns without
+          // re-enqueueing). The enqueue is a local insert, no-ops when the
+          // amount is <= 0, and dedups, so it is safe to run in-tx.
+          await enqueueXeroAccountCreditNoteOperation(fresh.id, fresh.amountCents, {
+            store: tx,
+          });
+
           return {
             type: "capacityFailed" as const,
             payment: fresh,
@@ -1298,13 +1309,9 @@ async function syncInternetBankingPaymentsForPaidInvoice(
         });
       }
 
-      enqueueXeroAccountCreditNoteOperation(outcome.payment.id, outcome.payment.amountCents)
-        .catch((err) =>
-          logger.error(
-            { err, bookingId: outcome.payment.bookingId, paymentId: outcome.payment.id },
-            "Failed to queue Xero account credit note for late Internet Banking payment"
-          )
-        );
+      // The Xero account-credit note is now enqueued inside the reconcile
+      // transaction above (atomic with the local credit), so there is no
+      // post-commit fire-and-forget enqueue here.
       sendAdminPaymentFailureAlert({
         memberName: `${outcome.payment.booking.member.firstName} ${outcome.payment.booking.member.lastName}`,
         checkIn: outcome.payment.booking.checkIn,

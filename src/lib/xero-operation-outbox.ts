@@ -621,7 +621,7 @@ export async function enqueueXeroRefundCreditNoteOperation(
 export async function enqueueXeroAccountCreditNoteOperation(
   paymentId: string,
   refundAmountCents: number,
-  options?: { createdByMemberId?: string }
+  options?: { createdByMemberId?: string; store?: Prisma.TransactionClient }
 ) {
   if (refundAmountCents <= 0) {
     return {
@@ -630,7 +630,13 @@ export async function enqueueXeroAccountCreditNoteOperation(
     };
   }
 
-  const payment = await prisma.payment.findUnique({
+  // Optional transaction client so callers (e.g. the late Internet Banking
+  // capacity-fail reconcile) can enqueue the outbox row inside the same
+  // transaction that creates the offsetting local credit; defaults to the
+  // global `prisma` so existing callers are unaffected.
+  const db = options?.store ?? prisma;
+
+  const payment = await db.payment.findUnique({
     where: { id: paymentId },
     select: {
       id: true,
@@ -641,7 +647,7 @@ export async function enqueueXeroAccountCreditNoteOperation(
     throw new Error(`Payment not found: ${paymentId}`);
   }
 
-  const existingLink = await prisma.xeroObjectLink.findFirst({
+  const existingLink = await db.xeroObjectLink.findFirst({
     where: {
       localModel: "Payment",
       localId: paymentId,
@@ -667,7 +673,7 @@ export async function enqueueXeroAccountCreditNoteOperation(
     "v1"
   );
 
-  const existingQueuedOperation = await prisma.xeroSyncOperation.findFirst({
+  const existingQueuedOperation = await db.xeroSyncOperation.findFirst({
     where: {
       correlationKey,
       direction: "OUTBOUND",
@@ -705,6 +711,7 @@ export async function enqueueXeroAccountCreditNoteOperation(
       refundAmountCents,
     },
     createdByMemberId: options?.createdByMemberId ?? null,
+    store: db,
   });
 
   return {
