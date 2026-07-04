@@ -159,7 +159,7 @@ this (#1208). Shared JSON-guard micro-helpers (`asRecord`/`readString`/
 | Module | Owns |
 | --- | --- |
 | `xero-inbound-reconciliation` | Stored-event worker + per-entity reconcilers + incremental cursor reconciliation (see Flow 2). |
-| `xero-booking-repair` | Booking-vs-Xero audit and self-repair (see Flow 3). CLI entry: `scripts/xero-booking-repair.ts`. |
+| `xero-booking-repair` | Booking-vs-Xero audit and self-repair (see Flow 3). CLI entry: `scripts/xero-booking-repair.ts`. Split into cohesive `xero-booking-repair-*` sub-modules (#1208 item 2, entry re-exports the public surface); see refactor item 2 for the module map. |
 | `xero-hardening` | Historical `XeroObjectLink` backfill, stale canonical-link cleanup, the emailed reconciliation report, repeated-failure alerting. |
 | `xero-cron-runner` | Maps the 7 cron tasks to the workers above, records `CronJobRun` rows, gates on module + connection. |
 | `xero-admin-failures`, `xero-admin-health`, `xero-record-activity`, `xero-admin-cache` | Admin overviews: failed-operation triage states, missing-invoice/missing-credit-note health snapshot, per-record activity timeline, cached chart-of-accounts/items. |
@@ -391,11 +391,21 @@ These are candidates for future issues, not commitments.
    `repairAccountCreditAllocationBusinessState`, ~220 lines); (e) incremental
    cursor drivers. The settlement/repair code is the highest-risk money logic
    in the subsystem and currently the hardest to review in isolation.
-2. **Split `xero-booking-repair.ts` (3,004 lines)** into detection
-   (finding classification), action planning, action application, and
-   reporting/formatting. Its private helpers duplicate utilities that exist
-   elsewhere (JSON readers vs. `asRecord` copies in 4+ xero modules;
-   `dollarsToCents` vs. shared money utils) — extract or reuse.
+2. **Split `xero-booking-repair.ts` (3,004 lines).** _Done (#1208 item 2):_
+   the ~2,700 lines of private helpers were extracted verbatim (behavior
+   preserving) into cohesive `xero-booking-repair-<phase>.ts` sub-modules —
+   `-types`, `-deps`, `-utils`, `-payments`, `-object-resolution`, `-analysis`,
+   `-findings`, `-classify`, `-load`, `-passes` — with an acyclic import graph
+   (types/deps/utils are leaves; `classify` depends downward; the entry sits on
+   top). `xero-booking-repair.ts` remains the entry (the `runBookingXeroRepair`
+   orchestrator plus `formatBookingXeroRepairHumanSummary`) and re-exports the
+   unchanged public surface. `classifyBookingContext` is a single sequential
+   function that mutates its own local accumulators, so it stays whole in
+   `-classify` (kept together, above the LOC soft cap, rather than editing the
+   body). The private helpers still duplicate utilities elsewhere (JSON readers
+   vs. `asRecord` copies in 4+ xero modules; `dollarsToCents` vs. shared money
+   utils); de-duplicating them is deferred to item 6 to keep this split
+   behavior-preserving.
 3. **Make the outbox queue type first-class.** The PENDING query is a
    hand-written 12-branch `OR` over the `requestPayload.queueType` JSON path
    (unindexable), the dispatcher is a 12-way switch, and the 12 `enqueue*`
@@ -417,9 +427,12 @@ These are candidates for future issues, not commitments.
    `asRecord`/`readString`/`readNumber` guards that appeared in `xero-sync`,
    `xero-operation-queue`, `xero-operation-retry`, `xero-admin-failures`, and
    `xero-operation-outbox-payload` now import from the shared `xero-json`
-   module. The differently-shaped `getJsonRecord`/`readJsonRecord` guards in the
-   money files (`xero-inbound-reconciliation`, `xero-booking-repair`) remain
-   local pending their own splits.
+   module. The differently-shaped `getJsonRecord` guards in
+   `xero-inbound-reconciliation` remain local pending its own split. The
+   `readJsonRecord`/`readJsonString`/`readJsonNumber` guards from
+   `xero-booking-repair` now live (still local, NOT merged into `xero-json`) in
+   its `xero-booking-repair-utils` sub-module after the item-2 split; merging
+   them into `xero-json` is intentionally deferred to preserve behavior.
 7. **Finish retiring the `xero.ts` facade inside the subsystem.** _Done
    (#1208):_ no `src/lib/xero-*` module imports the `@/lib/xero` facade anymore
    — each imports the source domain module directly, and an `eslint.config.mjs`
