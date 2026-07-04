@@ -43,7 +43,7 @@ import {
   WAITLIST_OFFER_BOOKING_ID,
   WAITLIST_OFFER_WINDOW,
   WAITLISTER,
-} from "../e2e/helpers/fixtures";
+} from "./e2e-fixtures";
 
 const prisma = new PrismaClient({ adapter: createPrismaPgAdapter() });
 
