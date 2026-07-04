@@ -21,7 +21,7 @@ export interface MemberProfileCompletenessInput {
   active?: boolean | null;
   canLogin?: boolean | null;
   role?: string | null;
-  accessRoles?: ReadonlyArray<string | { role: string }> | null;
+  accessRoles?: ReadonlyArray<string | { role: string | null }> | null;
   firstName?: string | null;
   lastName?: string | null;
   phoneCountryCode?: string | null;
@@ -179,6 +179,7 @@ export function evaluateSelfServiceProfilePayload(
   };
 }
 
+// test seam
 export function isSelfServiceProfilePayloadComplete(
   input: SelfServiceProfilePayloadInput
 ): boolean {

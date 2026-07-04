@@ -11,7 +11,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { ACCESS_ROLE_LABELS, ACCESS_ROLE_VALUES } from "@/lib/access-roles"
+import { useAccessRoleOptions } from "@/hooks/use-access-role-options"
+import { NON_MEMBER_ROLE_VALUES, ROLE_LABELS } from "@/lib/member-roles"
 import type { Filters, XeroContactGroup, XeroFeatureFlags } from "../_types"
 import { filterLabelMap, filterValueLabels } from "../_utils"
 
@@ -36,6 +37,14 @@ export function MemberFilterToolbar({
   onSetFilter,
   onClearFilters,
 }: MemberFilterToolbarProps) {
+  const roleOptions = useAccessRoleOptions()
+  // The `role` filter param is shared by the Access Role and Member Type
+  // selects (backend reads a single `role` param); the two categories are
+  // mutually exclusive, so each select shows its neutral "All" state when the
+  // active value belongs to the other dimension.
+  const roleFilterIsMemberType = (
+    NON_MEMBER_ROLE_VALUES as readonly string[]
+  ).includes(filters.role)
   const getFilterDisplayValue = (key: string, value: string) =>
     key === "xeroContactGroup"
       ? xeroContactGroupsList.find((group) => group.id === value)?.name ?? value
@@ -53,7 +62,7 @@ export function MemberFilterToolbar({
           />
         </div>
         <Select
-          value={filters.role || "all"}
+          value={roleFilterIsMemberType ? "all" : filters.role || "all"}
           onValueChange={(value) => onSetFilter("role", value === "all" ? "" : value)}
         >
           <SelectTrigger className="w-[160px]" aria-label="Filter by access role">
@@ -61,9 +70,25 @@ export function MemberFilterToolbar({
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All Access Roles</SelectItem>
-            {ACCESS_ROLE_VALUES.map((role) => (
+            {roleOptions.map((option) => (
+              <SelectItem key={option.token} value={option.token}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select
+          value={roleFilterIsMemberType ? filters.role : "all"}
+          onValueChange={(value) => onSetFilter("role", value === "all" ? "" : value)}
+        >
+          <SelectTrigger className="w-[150px]" aria-label="Filter by member type">
+            <SelectValue placeholder="Member Type" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Member Types</SelectItem>
+            {NON_MEMBER_ROLE_VALUES.map((role) => (
               <SelectItem key={role} value={role}>
-                {ACCESS_ROLE_LABELS[role]}
+                {ROLE_LABELS[role]}
               </SelectItem>
             ))}
           </SelectContent>

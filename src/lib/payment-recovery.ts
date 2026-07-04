@@ -27,6 +27,7 @@ import { attachPaymentIntentToWaitingSupplementaryInvoiceOperations } from "@/li
 import { sendAdminPaymentFailureAlert } from "@/lib/email";
 import logger from "@/lib/logger";
 import { MAX_PAYMENT_RECOVERY_ATTEMPTS } from "@/lib/payment-recovery-constants";
+import { isPrismaUniqueConstraintError } from "@/lib/prisma-errors";
 
 type PaymentRecoveryStore = Prisma.TransactionClient | typeof prisma;
 
@@ -307,6 +308,38 @@ export async function enqueueRefundRequestRefundRecovery({
     paymentId,
     amountCents,
     idempotencyKey: `refund_request_refund_${refundRequestId}`,
+    store,
+  });
+}
+
+export function buildBookingCancellationRefundIdempotencyKey(bookingId: string) {
+  return `booking_cancel_refund_recovery_${bookingId}`;
+}
+
+/**
+ * Durable recovery for a booking cancellation whose inline Stripe card refund
+ * failed (#1160). The cancellation CLAIM (status -> CANCELLED) already stands;
+ * the outstanding refund completes through the recovery cron. The processor
+ * reuses the inline cancel Stripe key prefix (`booking_cancel_refund_<id>`) so
+ * a refund that succeeded on Stripe but was never recorded is replayed by
+ * Stripe, not issued a second time. One row per booking (unique key).
+ */
+export async function enqueueBookingCancellationRefundRecovery({
+  bookingId,
+  paymentId,
+  amountCents,
+  store = prisma,
+}: {
+  bookingId: string;
+  paymentId: string;
+  amountCents: number;
+  store?: PaymentRecoveryStore;
+}) {
+  return enqueueLedgerRefundRecovery({
+    bookingId,
+    paymentId,
+    amountCents,
+    idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId),
     store,
   });
 }
@@ -819,15 +852,34 @@ async function processBookingModificationRefundOperation(
   // Recoveries reuse the route's original Stripe idempotency key prefix so a
   // retry after a refund that succeeded on Stripe but was never recorded
   // replays the same refund instead of issuing a new one: refund-request
-  // recoveries reconstruct it (refund_request_<id>, #1039 item 1) and
-  // modification recoveries read the prefix stored at enqueue time (#1152).
-  // Legacy modification rows without a stored prefix keep their
-  // operation-scoped prefix.
+  // recoveries reconstruct it (refund_request_<id>, #1039 item 1), booking
+  // cancellation recoveries reconstruct the inline cancel prefix
+  // (booking_cancel_refund_<bookingId>, #1160), and modification recoveries
+  // read the prefix stored at enqueue time (#1152). Legacy modification rows
+  // without a stored prefix keep their operation-scoped prefix.
   const refundRequestId = operation.idempotencyKey.startsWith(
     "refund_request_refund_",
   )
     ? operation.idempotencyKey.slice("refund_request_refund_".length)
     : null;
+  const isBookingCancellationRecovery = operation.idempotencyKey.startsWith(
+    "booking_cancel_refund_recovery_",
+  );
+
+  let reason: string;
+  let idempotencyKeyPrefix: string;
+  if (refundRequestId) {
+    reason = "refund_request_refund_recovery";
+    idempotencyKeyPrefix = `refund_request_${refundRequestId}`;
+  } else if (isBookingCancellationRecovery) {
+    reason = "booking_cancellation_refund_recovery";
+    idempotencyKeyPrefix = `booking_cancel_refund_${operation.bookingId}`;
+  } else {
+    reason = "booking_modification_refund_recovery";
+    idempotencyKeyPrefix =
+      operation.stripeKeyPrefix ??
+      `payment_recovery_modification_refund_${operation.id}`;
+  }
 
   await refundPaymentTransactions({
     paymentId: operation.paymentId,
@@ -835,15 +887,10 @@ async function processBookingModificationRefundOperation(
     allocation: plan,
     metadata: {
       bookingId: operation.bookingId,
-      reason: refundRequestId
-        ? "refund_request_refund_recovery"
-        : "booking_modification_refund_recovery",
+      reason,
       ...(refundRequestId ? { refundRequestId } : {}),
     },
-    idempotencyKeyPrefix: refundRequestId
-      ? `refund_request_${refundRequestId}`
-      : (operation.stripeKeyPrefix ??
-        `payment_recovery_modification_refund_${operation.id}`),
+    idempotencyKeyPrefix,
   });
 
   await completePaymentRecoveryOperation(operation.id);
@@ -989,17 +1036,15 @@ async function processPaymentRecoveryOperation(
 
 const PAYMENT_RECOVERY_STALE_ALERT_THRESHOLD_MS = 30 * 60 * 1000;
 const PAYMENT_RECOVERY_STALE_ALERT_COOLDOWN_MS = 60 * 60 * 1000;
-let lastStalePaymentRecoveryAlertAt = 0;
+// #1211: shared AlertCooldown key that all instances contend on so the stale
+// payment-recovery-queue alert fires at most once per cooldown window across
+// the whole fleet, not once per process.
+const STALE_PAYMENT_RECOVERY_ALERT_COOLDOWN_KEY = "payment-recovery:stale-queue";
 
 async function alertStalePaymentRecoveryQueueIfNeeded() {
-  if (
-    Date.now() - lastStalePaymentRecoveryAlertAt <
-    PAYMENT_RECOVERY_STALE_ALERT_COOLDOWN_MS
-  ) {
-    return;
-  }
+  const now = new Date();
   const staleThreshold = new Date(
-    Date.now() - PAYMENT_RECOVERY_STALE_ALERT_THRESHOLD_MS,
+    now.getTime() - PAYMENT_RECOVERY_STALE_ALERT_THRESHOLD_MS,
   );
   const oldest = await prisma.paymentRecoveryOperation.findFirst({
     where: {
@@ -1010,7 +1055,42 @@ async function alertStalePaymentRecoveryQueueIfNeeded() {
     include: { booking: { include: { member: true } } },
   });
   if (!oldest) return;
-  lastStalePaymentRecoveryAlertAt = Date.now();
+
+  // Shared cross-instance cooldown: atomically CLAIM the window before sending
+  // so N instances raise at most one alert per
+  // PAYMENT_RECOVERY_STALE_ALERT_COOLDOWN_MS (not one per instance). The
+  // conditional updateMany only matches when the last alert is older than the
+  // window, so a single caller wins the write.
+  const cooldownStart = new Date(
+    now.getTime() - PAYMENT_RECOVERY_STALE_ALERT_COOLDOWN_MS,
+  );
+  const claimed = await prisma.alertCooldown.updateMany({
+    where: {
+      key: STALE_PAYMENT_RECOVERY_ALERT_COOLDOWN_KEY,
+      lastAlertedAt: { lt: cooldownStart },
+    },
+    data: { lastAlertedAt: now },
+  });
+  if (claimed.count === 0) {
+    // Either the row is fresh-within-window (another instance already alerted)
+    // or it does not exist yet (first alert ever). Try to create it; if a
+    // concurrent instance created it first, we lost the race and must not send.
+    try {
+      await prisma.alertCooldown.create({
+        data: {
+          key: STALE_PAYMENT_RECOVERY_ALERT_COOLDOWN_KEY,
+          lastAlertedAt: now,
+        },
+      });
+    } catch (error) {
+      if (isPrismaUniqueConstraintError(error)) return;
+      throw error;
+    }
+  }
+  // We hold the claim → send exactly once cross-instance. The provider call is
+  // claim-first and outside any DB transaction; the tiny residual double-send
+  // window (two instances reading between claim attempts) is bounded and this
+  // is a noise-only alert.
   await sendAdminPaymentFailureAlert({
     memberName: oldest.booking?.member
       ? `${oldest.booking.member.firstName} ${oldest.booking.member.lastName}`

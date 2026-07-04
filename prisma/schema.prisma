@@ -43,6 +43,12 @@ enum AccessRole {
   ORG
 }
 
+enum AdminPermissionLevel {
+  NONE
+  VIEW
+  EDIT
+}
+
 enum TwoFactorMethod {
   TOTP
   EMAIL
@@ -526,19 +532,53 @@ model Member {
 }
 
 model MemberAccessRole {
-  id                 String     @id @default(cuid())
+  id                 String      @id @default(cuid())
   memberId           String
-  role               AccessRole
+  // Enum value for system roles and the seeded default bundles; NULL for
+  // rows backed only by a custom AccessRoleDefinition. Seeded-bundle rows
+  // carry both the enum value and roleDefinitionId for compatibility.
+  role               AccessRole?
+  roleDefinitionId   String?
   assignedByMemberId String?
-  createdAt          DateTime   @default(now())
-  updatedAt          DateTime   @updatedAt
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
 
-  member     Member  @relation("MemberAccessRoleMember", fields: [memberId], references: [id], onDelete: Cascade)
-  assignedBy Member? @relation("MemberAccessRoleAssignedBy", fields: [assignedByMemberId], references: [id], onDelete: SetNull)
+  member         Member                @relation("MemberAccessRoleMember", fields: [memberId], references: [id], onDelete: Cascade)
+  assignedBy     Member?               @relation("MemberAccessRoleAssignedBy", fields: [assignedByMemberId], references: [id], onDelete: SetNull)
+  roleDefinition AccessRoleDefinition? @relation(fields: [roleDefinitionId], references: [id], onDelete: Restrict)
 
   @@unique([memberId, role])
+  @@unique([memberId, roleDefinitionId])
   @@index([role])
+  @@index([roleDefinitionId])
   @@index([assignedByMemberId])
+}
+
+// Editable admin access-role definitions (bundle label, description, and the
+// per-area permission matrix). Only editable/deletable roles are rows here;
+// the protected system roles (ADMIN, LODGE, USER, ORG) stay code-defined and
+// have no row. The six seeded defaults keep their legacy enum value in
+// systemRole so existing MemberAccessRole enum rows resolve to them.
+model AccessRoleDefinition {
+  id              String               @id @default(cuid())
+  key             String               @unique
+  systemRole      AccessRole?          @unique
+  label           String
+  description     String               @db.Text
+  overviewLevel   AdminPermissionLevel @default(NONE)
+  bookingsLevel   AdminPermissionLevel @default(NONE)
+  membershipLevel AdminPermissionLevel @default(NONE)
+  financeLevel    AdminPermissionLevel @default(NONE)
+  lodgeLevel      AdminPermissionLevel @default(NONE)
+  contentLevel    AdminPermissionLevel @default(NONE)
+  supportLevel    AdminPermissionLevel @default(NONE)
+  sortOrder       Int                  @default(0)
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+
+  memberAssignments MemberAccessRole[]
+
+  @@index([sortOrder])
 }
 
 model PasswordResetToken {
@@ -1208,6 +1248,10 @@ model GroupBookingSettlement {
   xeroInvoiceNumber     String?
   amountCents           Int
   status                PaymentStatus @default(PENDING)
+  // Per-child refund plan {childId: cents} persisted on the organiser-cancel
+  // first run so a crash-interrupted re-drive applies the RECORDED amounts
+  // (never recomputes — tier drift is unsafe). #1236
+  refundPlan            Json?
   paidAt                DateTime?
   createdAt             DateTime      @default(now())
   updatedAt             DateTime      @updatedAt
@@ -1581,6 +1625,18 @@ model RateLimitCounter {
   resetAt DateTime
 
   @@index([resetAt])
+}
+
+// #1211: cross-instance cooldown for repeat operational admin alerts. One row
+// per alert key; the stale payment-recovery-queue alert atomically claims a
+// fresh window here (conditional updateMany on the id, falling back to a
+// unique-guarded create) before sending, so N app instances raise at most one
+// alert per window instead of one per instance. No @updatedAt and no column
+// default keeps the migration a plain CREATE TABLE and avoids the
+// @updatedAt/DB-default deploy-drift trap.
+model AlertCooldown {
+  key           String   @id
+  lastAlertedAt DateTime
 }
 
 model PaymentRecoveryOperation {
@@ -2035,6 +2091,17 @@ model XeroSyncOperation {
   @@index([direction, status, createdAt])
   @@index([entityType, status, createdAt])
   @@index([localModel, localId, createdAt])
+  // No @@unique on correlationKey/idempotencyKey by design (#1234, invariant (c)):
+  // (1) the same key legitimately recurs across rows over time -- a terminal-status
+  //     row from attempt 1 plus a fresh PENDING re-enqueue -- so the outbox dedup is
+  //     a `findFirst` scoped to status IN (PENDING, RUNNING[, WAITING_PAYMENT]); a
+  //     full unique would reject a legitimate re-enqueue and break retries.
+  // (2) the only correct DB form is a PARTIAL unique WHERE status IN (...), which
+  //     Prisma schema cannot express -- it would live only in raw migration SQL and
+  //     the Migration drift check (schema-vs-DB) would flag it as drift and fail.
+  // (3) the enqueue race is bounded: both rows carry the same Xero idempotency key,
+  //     so Xero dedups the actual call within its 24h window, and the findFirst
+  //     dedup handles the common sequential case. Not exploitable on any caller path.
   @@index([correlationKey])
   @@index([idempotencyKey])
   @@index([xeroObjectType, xeroObjectId])

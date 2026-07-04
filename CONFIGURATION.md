@@ -37,6 +37,7 @@ does not store API keys, OAuth secrets, SMTP secrets, or bearer tokens.
 | `publicUrl`                                        | yes      | Canonical public origin with no trailing slash.                                                                  |
 | `emailFromName`                                    | yes      | Display name for outbound email sender headers.                                                                  |
 | `lodgeTravelNote`                                  | no       | Email reminder travel/location note.                                                                             |
+| `hutLeaderLabel`                                   | no       | User-facing label for the hut-leader role (e.g. `Lodge Leader`, `Warden`, `Duty Manager`). Defaults to `Hut Leader`. |
 | `socialLinks.facebook`                             | no       | Facebook URL used by public pages/footer. Must be an http(s) URL, like `publicUrl`.                              |
 | `beds[].id`                                        | yes      | Stable bed or lodge identifier.                                                                                  |
 | `beds[].name`                                      | yes      | User-facing bed/lodge name.                                                                                      |
@@ -68,6 +69,29 @@ Public website colours, fonts, and the logo are managed by administrators at
 `/admin/site-style`. Fresh deployments show a neutral setup holding page until
 an admin finishes that wizard. The logo is stored in the database as a validated
 image data URL; there is no runtime upload directory to preserve.
+
+Saved palettes must meet the **WCAG AA 4.5:1** minimum text-contrast ratio on
+the three key public-site pairs — body text on the page background, header text
+on the navigation bar, and button text on the primary-action colour. The wizard
+disables its Save/Finish buttons and the `/admin/site-style` API rejects the
+request (`400`) while any pair falls short, so an admin cannot ship an unreadable
+theme. Both accepted colour formats are measured — hex directly, and `oklch()`
+values via an oklch→linear-sRGB conversion — so pasting a low-contrast oklch
+colour into the value field is blocked the same as a hex one. The shipped default
+gold is `#8fa87c` (4.8:1 against the default charcoal button text); the earlier
+`#7a8f6a` was 3.55:1 and would now block first-run setup.
+
+Transactional and admin **emails** derive their brand palette from the same club
+theme, so a colour change in `/admin/site-style` also restyles the emails
+(header bar, accents, buttons, tables). Emails read the palette through a
+process-level cache that refreshes at most every five minutes, so a theme change
+propagates to newly sent emails within that window; a freshly started process (or
+a database read failure) renders with the site default palette until the cache
+warms. Emails render **hex** colours only: because email clients cannot render
+`oklch()`, a Site Style colour saved as oklch falls back to the site-default hex
+for that slot in email (a full oklch→hex conversion is a possible follow-up), so
+emails never emit unrenderable oklch. Status colours in warning/success callouts
+stay fixed.
 
 The remaining public image assets are still file-based. Replace the default
 assets in `public/branding/`:
@@ -331,14 +355,19 @@ Seasonal membership type settings are database-backed and managed from
 `/admin/membership-types`. Access roles, seasonal membership type, age tier,
 Xero contact-group rules, and committee assignment are separate axes:
 
-- `MemberAccessRole` is the normalized access source for login permissions:
-  `USER`, `ADMIN`, `ADMIN_READONLY`, `ADMIN_BOOKINGS`, `ADMIN_MEMBERSHIP`,
-  `ADMIN_CONTENT`, `LODGE`, `FINANCE_USER`, `FINANCE_ADMIN`, and `ORG`.
-  Runtime authorization must read these rows only. `ADMIN` is the full-admin
-  bundle; the other `ADMIN_*` rows are read-only, booking officer, membership
-  officer, and content manager bundles. Multiple rows may be combined for a
-  custom role. `session.user.role` is kept only for display and older
-  serialized shapes.
+- `MemberAccessRole` is the normalized access source for login permissions.
+  Rows carry the legacy enum value (`USER`, `ADMIN`, `ADMIN_READONLY`,
+  `ADMIN_BOOKINGS`, `ADMIN_MEMBERSHIP`, `ADMIN_CONTENT`, `LODGE`,
+  `FINANCE_USER`, `FINANCE_ADMIN`, `ORG`) and/or a link to a club-editable
+  `AccessRoleDefinition` (managed at `/admin/access-roles`, Full Admin only).
+  Runtime authorization must read these rows (with the definition joined)
+  only. `ADMIN` is the protected full-admin bundle and is never editable;
+  the six seeded defaults — read-only admin, booking officer, membership
+  officer, content manager, finance viewer, and treasurer — are definition
+  rows that can be renamed, re-permissioned, or deleted, and new custom roles
+  can be created. Multiple rows may be combined for a custom mix; finance
+  portal access derives from the merged finance area level.
+  `session.user.role` is kept only for display and older serialized shapes.
   `Member.role` remains a compatibility/classification field with only
   `USER`, `ADMIN`, `LODGE`, `NON_MEMBER`, and `SCHOOL`; Associate, Life, and
   club-created categories live in `MembershipType`. `financeAccessLevel`
@@ -602,6 +631,7 @@ read `MemberAccessRole` rows.
 | `SES_SNS_TOPIC_ARN`                      | SNS topic ARN for SES bounce/complaint webhooks (required for full SES feedback handling when `USE_AWS_SES=true`).                                           |
 | `SES_SNS_ALLOW_UNSAFE_MISSING_TOPIC_ARN` | Local/dev escape hatch only; never enable for deployed SES feedback ingestion.                                                                               |
 | `SES_SNS_ALLOW_SIGNATURE_V1`             | Temporarily permit legacy SNS SignatureVersion 1 (SHA1). Default rejects v1; enable SignatureVersion 2 on the SNS topic and leave this unset in production.   |
+| `BULK_SENDMAIL_LIMIT`                    | Admin bulk-communication sends allowed per hour (default `1`).                                                                                               |
 
 ## Address Autocomplete
 
@@ -634,8 +664,10 @@ rate-limited, or temporarily unavailable.
 | Variable                              | Description                                                                 |
 | ------------------------------------- | --------------------------------------------------------------------------- |
 | `CRON_ENABLED`                        | Enables scheduled jobs in a runtime. Blue/green web slots set this `false`. |
+| `CRON_LEADER_RUNTIME_STATUS_URL`      | Optional internal URL Admin > System Health uses to query the cron leader's runtime status (Compose defaults to the `app` service). |
 | `WAITLIST_OFFER_HOURS`                | Waitlist offer expiry window; defaults to 48 hours.                         |
 | `GROUP_SETTLEMENT_REAP_HOURS`         | Stale organiser-pays group settlement window; defaults to 48 hours (clamped to the group's check-in, 2-hour floor). |
+| `GROUP_CANCEL_RESUME_GRACE_MINUTES`   | Grace before the group-settlement-reaper resumes a crash-interrupted organiser-cancel cleanup (#1236); defaults to 15 minutes. |
 | `WAITLIST_TRANSACTION_RETRY_ATTEMPTS` | Optional waitlist transaction retry count.                                  |
 | `WAITLIST_TRANSACTION_RETRY_DELAY_MS` | Optional waitlist transaction retry delay.                                  |
 | `BACKUP_ENABLED`                      | Enables scheduled PostgreSQL backup job.                                    |

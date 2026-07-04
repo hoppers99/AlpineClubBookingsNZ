@@ -77,6 +77,21 @@ Future reviews and issues should cite this file when proposing changes.
   settlement retry (which flips the row back to PENDING and resets its clock)
   always keeps the children alive — both are re-checked on the fresh row
   under the shared lock.
+- An organiser-cancel group cleanup must be re-drivable after a crash (#1236).
+  Cancelling the organiser booking is single-flight, so a re-invoked cancel
+  409s and cannot re-enter the joiner cleanup; the `group-settlement-reaper`
+  resumes it (an ORGANISER_PAYS group still not CANCELLED under a CANCELLED
+  organiser booking, older than a short grace). The per-child refund plan
+  (`{childId: cents}`) persisted on the settlement is the **record of record**
+  for the organiser-settled per-child `refundedAmountCents` mirror: a re-drive
+  **reconstructs it verbatim and never recomputes** — a >24h re-drive can land
+  in a different cancellation tier, so recomputing the mirror amount would be
+  unsafe. The plan is written before the Stripe refund and before the
+  settlement flips, so the refund fires at most once across re-drives. (Resume
+  completes the local booking/capacity/refund-mirror cleanup only; it does not
+  re-enqueue a Xero refund credit note for a child that crashed after its
+  cancel committed but before its credit note was queued — pre-existing
+  books-drift of the #1233 reconcile class.)
 
 ## Booking Modifications
 
@@ -157,7 +172,12 @@ owner or an admin makes the election through the batch edit flow.
 Every modification path also applies the same lifecycle transitions: a
 PAYMENT_PENDING booking whose price drops to zero auto-pays with a zero-dollar
 payment (superseding and cancelling any outstanding primary PaymentIntents so a
-stale checkout tab cannot capture the pre-change amount), and the non-member
+stale checkout tab cannot capture the pre-change amount), any *other* price
+change supersedes pending primary intents stranded at the old amount (#1161 —
+and belt-and-braces, both intent-issuing endpoints refuse to hand out a
+client_secret whose amount no longer matches `finalPriceCents`, and the
+Stripe webhook alerts admins before refusing a capture that mismatches the
+booking's current total), and the non-member
 hold is recalculated from the remaining guests (all-member bookings clear the
 hold; bookings inside the hold window move PENDING → PAYMENT_PENDING). The same
 change must produce the same booking state regardless of which endpoint made
@@ -245,14 +265,22 @@ contact/link history where required.
 
 Access role, seasonal membership type, age tier, Xero contact-group rule, and
 committee assignment are separate axes. `MemberAccessRole` controls application
-access (`USER`, `ADMIN`, `ADMIN_READONLY`, `ADMIN_BOOKINGS`,
-`ADMIN_MEMBERSHIP`, `ADMIN_CONTENT`, `LODGE`, `FINANCE_USER`,
-`FINANCE_ADMIN`, `ORG`);
+access via the legacy enum values (`USER`, `ADMIN`, `ADMIN_READONLY`,
+`ADMIN_BOOKINGS`, `ADMIN_MEMBERSHIP`, `ADMIN_CONTENT`, `LODGE`,
+`FINANCE_USER`, `FINANCE_ADMIN`, `ORG`) and/or a link to a club-editable
+`AccessRoleDefinition` (label, description, per-area permission matrix).
+`ADMIN`, `LODGE`, `USER`, and `ORG` are protected system roles: code-defined,
+never editable or deletable, and Full Admin always keeps full permissions.
+Deleting a definition is blocked while any member holds it. Custom
+definition-backed roles are privileged for the Full-Admin
+separation-of-duties gate, exactly like the seeded bundles;
 `Member.role` is limited to `USER`, `ADMIN`, `LODGE`, `NON_MEMBER`, and
 `SCHOOL`, and `financeAccessLevel` is a compatibility field. Neither field may
 be used as a runtime permission gate or for new membership-category semantics.
-Bundled `ADMIN_*` rows are composed by the central admin permission matrix; they
-must not be projected into legacy `Member.role = ADMIN`.
+Bundled and definition-backed rows are composed by the central admin
+permission matrix (maximum level per area); they must not be projected into
+legacy `Member.role = ADMIN`. Finance portal access derives from the merged
+`finance` area level, never from the enum values or `financeAccessLevel`.
 Legacy membership lifecycle/classification code may read `Member.role` only to
 distinguish compatibility categories such as non-login/non-member records until
 that workflow is fully represented by seasonal membership type.

@@ -21,7 +21,8 @@ import {
   getLoginBadge,
 } from "@/lib/admin-member-badges"
 import { memberName } from "@/lib/member-serialization"
-import { ACCESS_ROLE_LABELS } from "@/lib/access-roles"
+import { accessRoleLabelForToken } from "@/lib/access-role-definitions"
+import { useAccessRoleOptions } from "@/hooks/use-access-role-options"
 import type { Member } from "../_types"
 import { subscriptionStatusConfig } from "../_utils"
 
@@ -57,6 +58,38 @@ function SortIcon({
   )
 }
 
+// Sortable headers must be keyboard-operable and expose their sort state: a bare
+// <th onClick> can't be tabbed to or activated with Enter/Space, and gives a
+// screen reader no aria-sort. Render a real <button> inside a <th aria-sort>.
+function SortableHeader({
+  column,
+  label,
+  sortBy,
+  sortDir,
+  onToggleSort,
+}: {
+  column: string
+  label: string
+  sortBy: string
+  sortDir: "asc" | "desc"
+  onToggleSort: (column: string) => void
+}) {
+  const ariaSort =
+    sortBy === column ? (sortDir === "asc" ? "ascending" : "descending") : "none"
+  return (
+    <TableHead aria-sort={ariaSort} className="select-none">
+      <button
+        type="button"
+        onClick={() => onToggleSort(column)}
+        className="inline-flex items-center rounded-sm hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        {label}
+        <SortIcon column={column} sortBy={sortBy} sortDir={sortDir} />
+      </button>
+    </TableHead>
+  )
+}
+
 export function MemberTable({
   members,
   loading,
@@ -71,6 +104,7 @@ export function MemberTable({
   onOpenPasswordActionDialog,
   onEditMember,
 }: MemberTableProps) {
+  const roleOptions = useAccessRoleOptions()
   if (loading) {
     return (
       <div className="py-12 text-center">
@@ -110,43 +144,41 @@ export function MemberTable({
               ["email", "Email"],
               ["role", "Access"],
             ].map(([column, label]) => (
-              <TableHead
+              <SortableHeader
                 key={column}
-                className="cursor-pointer select-none"
-                onClick={() => onToggleSort(column)}
-              >
-                <span className="inline-flex items-center">
-                  {label}
-                  <SortIcon column={column} sortBy={sortBy} sortDir={sortDir} />
-                </span>
-              </TableHead>
+                column={column}
+                label={label}
+                sortBy={sortBy}
+                sortDir={sortDir}
+                onToggleSort={onToggleSort}
+              />
             ))}
             <TableHead>Membership Type</TableHead>
-            <TableHead className="cursor-pointer select-none" onClick={() => onToggleSort("ageTier")}>
-              <span className="inline-flex items-center">
-                Age Tier
-                <SortIcon column="ageTier" sortBy={sortBy} sortDir={sortDir} />
-              </span>
-            </TableHead>
-            <TableHead className="cursor-pointer select-none" onClick={() => onToggleSort("active")}>
-              <span className="inline-flex items-center">
-                Status
-                <SortIcon column="active" sortBy={sortBy} sortDir={sortDir} />
-              </span>
-            </TableHead>
+            <SortableHeader
+              column="ageTier"
+              label="Age Tier"
+              sortBy={sortBy}
+              sortDir={sortDir}
+              onToggleSort={onToggleSort}
+            />
+            <SortableHeader
+              column="active"
+              label="Status"
+              sortBy={sortBy}
+              sortDir={sortDir}
+              onToggleSort={onToggleSort}
+            />
             <TableHead>Login</TableHead>
             <TableHead>Family Group</TableHead>
             <TableHead>Subscription</TableHead>
             <TableHead>Xero</TableHead>
-            <TableHead
-              className="cursor-pointer select-none"
-              onClick={() => onToggleSort("createdAt")}
-            >
-              <span className="inline-flex items-center">
-                Joined
-                <SortIcon column="createdAt" sortBy={sortBy} sortDir={sortDir} />
-              </span>
-            </TableHead>
+            <SortableHeader
+              column="createdAt"
+              label="Joined"
+              sortBy={sortBy}
+              sortDir={sortDir}
+              onToggleSort={onToggleSort}
+            />
             <TableHead className="text-right">Actions</TableHead>
           </TableRow>
         </TableHeader>
@@ -212,7 +244,7 @@ export function MemberTable({
                               : ""
                           }
                         >
-                          {ACCESS_ROLE_LABELS[role]}
+                          {accessRoleLabelForToken(role, roleOptions)}
                         </Badge>
                       ))
                     ) : (

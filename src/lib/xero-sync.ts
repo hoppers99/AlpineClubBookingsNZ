@@ -1,7 +1,8 @@
-import { Prisma } from "@prisma/client";
+import { PaymentSource, Prisma } from "@prisma/client";
 import { createHash } from "crypto";
 import { prisma } from "./prisma";
 import { getXeroErrorStatusCode } from "./xero-error-shape";
+import { asRecord, readString } from "./xero-json";
 import { buildXeroObjectUrl } from "./xero-links";
 import {
   redactSensitiveJson,
@@ -56,18 +57,6 @@ const SINGLE_ACTIVE_CANONICAL_LINK_SCOPES = [
   { localModel: "Payment", role: "PRIMARY_INVOICE" },
   { localModel: "MemberSubscription", role: "SUBSCRIPTION_INVOICE" },
 ] as const;
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-
-  return value as Record<string, unknown>;
-}
-
-function readString(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value : null;
-}
 
 export function sanitizeForJson(value: unknown): Prisma.InputJsonValue | undefined {
   if (value === undefined) {
@@ -140,6 +129,57 @@ export function buildXeroIdempotencyKey(
 
   const digest = createHash("sha256").update(base).digest("hex").slice(0, 12);
   return `${base.slice(0, 107)}:${digest}`;
+}
+
+/**
+ * Cents already covered by refund credit notes for a payment (#1162): the sum
+ * of the active REFUND_CREDIT_NOTE links' recorded amounts. Links written
+ * before amounts were recorded fall back to the create operation's persisted
+ * request payload (`allocation.amount` in dollars), which every historical
+ * note carries.
+ */
+export async function sumCoveredRefundCreditNoteCents(
+  paymentId: string
+): Promise<number> {
+  const links = await prisma.xeroObjectLink.findMany({
+    where: {
+      localModel: "Payment",
+      localId: paymentId,
+      xeroObjectType: "CREDIT_NOTE",
+      role: "REFUND_CREDIT_NOTE",
+      active: true,
+    },
+    select: { xeroObjectId: true, metadata: true },
+  });
+
+  let coveredCents = 0;
+  for (const link of links) {
+    const metadata = asRecord(link.metadata);
+    const recorded = metadata?.amountCents;
+    if (typeof recorded === "number" && Number.isFinite(recorded)) {
+      coveredCents += Math.max(0, Math.round(recorded));
+      continue;
+    }
+    const operation = await prisma.xeroSyncOperation.findFirst({
+      where: {
+        direction: "OUTBOUND",
+        entityType: "CREDIT_NOTE",
+        operationType: "CREATE",
+        localModel: "Payment",
+        localId: paymentId,
+        xeroObjectId: link.xeroObjectId,
+      },
+      orderBy: { createdAt: "desc" },
+      select: { requestPayload: true },
+    });
+    const payload = asRecord(operation?.requestPayload);
+    const allocation = asRecord(payload?.allocation);
+    const amountDollars = allocation?.amount;
+    if (typeof amountDollars === "number" && Number.isFinite(amountDollars)) {
+      coveredCents += Math.max(0, Math.round(amountDollars * 100));
+    }
+  }
+  return coveredCents;
 }
 
 export async function findCanonicalPaymentRefundCreditNote(
@@ -279,13 +319,20 @@ function getAttemptWhere(
   return { OR: or };
 }
 
-export async function startXeroSyncOperation(input: XeroSyncOperationInput) {
+export async function startXeroSyncOperation(
+  input: XeroSyncOperationInput & { store?: Prisma.TransactionClient }
+) {
+  // When a caller passes an in-flight transaction client the operation row is
+  // written inside that transaction so it commits atomically with the caller's
+  // other writes; the default global `prisma` keeps every existing caller
+  // unchanged. `store` is never part of the `create` payload.
+  const db = input.store ?? prisma;
   const attemptWhere = getAttemptWhere(input);
   const attemptCount = attemptWhere
-    ? (await prisma.xeroSyncOperation.count({ where: attemptWhere })) + 1
+    ? (await db.xeroSyncOperation.count({ where: attemptWhere })) + 1
     : 1;
 
-  return prisma.xeroSyncOperation.create({
+  return db.xeroSyncOperation.create({
     data: {
       direction: input.direction,
       entityType: input.entityType,
@@ -316,9 +363,23 @@ async function normalizePaymentRefundLinkWithClient(
     const payment = await client.payment.findUnique({
       where: { id: link.localId },
       select: {
+        source: true,
         xeroRefundCreditNoteId: true,
       },
     });
+
+    // Stripe payments can be refunded in several steps, each recorded as its
+    // own active REFUND_CREDIT_NOTE (#1162). Those per-delta notes must all stay
+    // active so `sumCoveredRefundCreditNoteCents` totals them correctly, so skip
+    // the single-active canonical enforcement that non-Stripe single-note
+    // refunds still rely on below.
+    if (payment?.source === PaymentSource.STRIPE) {
+      return {
+        ...link,
+        active: link.active ?? true,
+      };
+    }
+
     const canonicalCreditNoteId = payment?.xeroRefundCreditNoteId ?? link.xeroObjectId;
     const shouldBeActive = (link.active ?? true) && canonicalCreditNoteId === link.xeroObjectId;
 

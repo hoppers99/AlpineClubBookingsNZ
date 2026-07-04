@@ -3,9 +3,11 @@ import { prisma } from "./prisma";
 import { type CancellationRule } from "./policies/cancellation";
 
 export {
+  calculateAppliedCreditRestore,
   calculateDualRefundAmounts,
   calculateRefundAmount,
   daysUntilDate,
+  // test seam
   getRefundTier,
 } from "./policies/cancellation";
 export type { CancellationRule } from "./policies/cancellation";

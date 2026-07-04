@@ -32,6 +32,7 @@ export const IMMEDIATE_PAYMENT_BOOKING_STATUSES = [
   BookingStatus.PENDING,
 ] as const;
 
+// test seam
 export const MEMBER_MODIFIABLE_BOOKING_STATUSES = [
   BookingStatus.PENDING,
   BookingStatus.PAYMENT_PENDING,
@@ -60,10 +61,41 @@ export function isPaymentOwedBookingStatus(status: string) {
   return (PAYMENT_OWED_BOOKING_STATUSES as readonly string[]).includes(status);
 }
 
+// test seam
 export function isCapacityHoldingBookingStatus(status: string) {
   return (CAPACITY_HOLDING_BOOKING_STATUSES as readonly string[]).includes(status);
 }
 
+// test seam
 export function isOperationalStayBookingStatus(status: string) {
   return (OPERATIONAL_STAY_BOOKING_STATUSES as readonly string[]).includes(status);
+}
+
+/**
+ * Lifecycle order of a booking, for sorting the admin list's status column by
+ * lifecycle rather than alphabetically (Decision-menu D9a / #1215). Unknown or
+ * future enum values rank LAST so adding a BookingStatus never throws and never
+ * scatters rows unpredictably.
+ */
+export const BOOKING_STATUS_LIFECYCLE_ORDER: readonly BookingStatus[] = [
+  BookingStatus.DRAFT,
+  BookingStatus.PENDING,
+  BookingStatus.PAYMENT_PENDING,
+  BookingStatus.CONFIRMED,
+  BookingStatus.PAID,
+  BookingStatus.COMPLETED,
+  BookingStatus.WAITLISTED,
+  BookingStatus.WAITLIST_OFFERED,
+  BookingStatus.AWAITING_REVIEW,
+  BookingStatus.CANCELLED,
+  BookingStatus.BUMPED,
+];
+
+const bookingStatusRankByValue = new Map<string, number>(
+  BOOKING_STATUS_LIFECYCLE_ORDER.map((status, index) => [status, index])
+);
+
+/** Lifecycle rank for sorting; unknown/future statuses rank last. */
+export function bookingStatusLifecycleRank(status: string): number {
+  return bookingStatusRankByValue.get(status) ?? BOOKING_STATUS_LIFECYCLE_ORDER.length;
 }

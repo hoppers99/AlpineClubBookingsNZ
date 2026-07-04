@@ -1,4 +1,5 @@
 import type { EntranceFeeCategory } from "@prisma/client";
+import { asRecord, readNumber, readString } from "@/lib/xero-json";
 
 export const XERO_OUTBOX_ENTRANCE_FEE_TYPE = "ENTRANCE_FEE_INVOICE";
 export const XERO_OUTBOX_BOOKING_INVOICE_TYPE = "BOOKING_INVOICE";
@@ -43,6 +44,9 @@ export interface QueuedBookingInvoiceUpdateOutboxPayload {
 export interface QueuedRefundCreditNoteOutboxPayload {
   queueType: typeof XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE;
   refundAmountCents: number;
+  // Cumulative refunded-cents watermark this note settles up to (#1162). Absent
+  // on payloads queued before per-delta refund notes existed.
+  watermarkCents?: number;
 }
 
 export interface QueuedAccountCreditNoteOutboxPayload {
@@ -131,31 +135,6 @@ export interface QueuedOutboxExpectedOperation {
   >;
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-
-  return value as Record<string, unknown>;
-}
-
-function readString(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value : null;
-}
-
-function readNumber(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
-  }
-
-  if (typeof value === "string" && value.trim()) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-
-  return null;
-}
-
 function readEntranceFeeCategory(value: unknown): EntranceFeeCategory | null {
   return value === "ADULT" ||
     value === "FAMILY" ||
@@ -221,6 +200,7 @@ export function readQueuedOutboxPayload(
     return {
       queueType,
       refundAmountCents,
+      watermarkCents: readNumber(payload.watermarkCents) ?? undefined,
     };
   }
 

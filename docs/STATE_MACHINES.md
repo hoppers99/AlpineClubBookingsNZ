@@ -27,12 +27,40 @@ Organiser-pays group children add one cron-driven back path: the
 children (`PAYMENT_PENDING -> CANCELLED`, #1094) if the settlement is still
 FAILED after a second full window — a settlement retry always wins.
 
+The same cron also resumes an organiser-cancel group cleanup interrupted by a
+crash (#1236). Cancelling the organiser booking is single-flight, so a
+re-invoked cancel 409s and never re-enters the joiner cleanup; a third reaper
+phase re-drives it, keying on an ORGANISER_PAYS group still not `CANCELLED`
+under a `CANCELLED` organiser booking older than a short grace. The re-drive is
+idempotent because the first run persists the per-child refund plan
+(`{childId: cents}`) on the settlement **before** the Stripe refund and
+**before** the settlement flips to `REFUNDED`/`PARTIALLY_REFUNDED`: a re-drive
+reconstructs that plan verbatim (never recomputes — a >24h re-drive can land in
+a different cancellation tier) and applies the per-child `refundedAmountCents`
+mirror, and the `SUCCEEDED` guard plus the Stripe idempotency key fire the
+refund at most once.
+
 Booking quote and create paths reject a linked member who is already present on
 another live booking for any requested lodge night. The guard covers draft,
 pending, confirmed/paid/completed, waitlist, offered, and admin-review bookings,
 but does not change capacity-holding status rules. A member can open their own
 conflicting booking, and a linked guest can remove only themselves from another
 future booking when they are not the last guest.
+
+Cancelling a paid booking is single-flight (#1160). The refund plan is frozen
+from a re-read taken under the global booking advisory lock, and the status
+flips to `CANCELLED` atomically with the credit-path ledger writes (refund
+allocation + cancellation credit) inside that same transaction. A concurrent
+cancel or a retry that loses the claim re-reads the already-cancelled booking
+and returns HTTP 409 without moving any money — no description-string
+idempotency guard is needed because the claim itself guarantees the credit
+writers run exactly once. Stripe/Xero work runs only after the claim commits: a
+failed card refund still leaves the booking `CANCELLED` and enqueues the
+outstanding remainder to the durable payment-recovery queue (which replays the
+inline `booking_cancel_refund_<bookingId>` Stripe key, so a
+Stripe-succeeded-but-unrecorded refund is replayed, not repeated), and the
+best-effort cancellation of any outstanding additional PaymentIntent is logged
+rather than allowed to abort the committed claim.
 
 ### BookingEvent Scope
 

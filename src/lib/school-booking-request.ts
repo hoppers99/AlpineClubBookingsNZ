@@ -46,6 +46,7 @@ import {
   splitPriceAcrossGuests,
   type BookingRequestGuest,
 } from "@/lib/booking-request";
+import { assertNoBookingMemberNightConflicts } from "@/lib/booking-member-night-conflicts";
 import { buildInternetBankingPaymentReference } from "@/lib/booking-payment-methods";
 import { checkCapacityForGuestRanges } from "@/lib/capacity";
 import {
@@ -79,7 +80,7 @@ export const SCHOOL_CHILD_TIERS = [
 ] as const;
 
 /** Display name prefix for the generated bulk child guests. */
-export const SCHOOL_CHILD_NAME_PREFIX = "School Child";
+const SCHOOL_CHILD_NAME_PREFIX = "School Child";
 
 // ---------------------------------------------------------------------------
 // Input shapes
@@ -93,7 +94,7 @@ export const schoolTeacherSchema = z.object({
   email: z.string().email().max(200).optional().nullable(),
 });
 
-export type SchoolTeacherInput = z.infer<typeof schoolTeacherSchema>;
+type SchoolTeacherInput = z.infer<typeof schoolTeacherSchema>;
 
 export const schoolChildCountsSchema = z.object({
   INFANT: z.number().int().min(0).max(200).optional(),
@@ -101,9 +102,9 @@ export const schoolChildCountsSchema = z.object({
   YOUTH: z.number().int().min(0).max(200).optional(),
 });
 
-export type SchoolChildCounts = z.infer<typeof schoolChildCountsSchema>;
+type SchoolChildCounts = z.infer<typeof schoolChildCountsSchema>;
 
-export interface CreateSchoolBookingRequestInput {
+interface CreateSchoolBookingRequestInput {
   schoolName: string;
   contactFirstName: string;
   contactLastName: string;
@@ -174,7 +175,7 @@ export function generateSchoolGuests(input: {
   return [...teacherGuests, ...childGuests];
 }
 
-export function parseSchoolTeachers(raw: unknown): StoredTeacher[] {
+function parseSchoolTeachers(raw: unknown): StoredTeacher[] {
   const parsed = z.array(schoolTeacherSchema).safeParse(raw);
   if (!parsed.success) {
     throw new BookingRequestError("Stored school teachers are invalid", 500);
@@ -229,7 +230,7 @@ async function priceSchoolGuests(input: {
   });
 }
 
-export async function calculateSchoolIndicativePriceCents(input: {
+async function calculateSchoolIndicativePriceCents(input: {
   checkIn: Date;
   checkOut: Date;
   guests: Array<{ ageTier: AgeTier }>;
@@ -363,7 +364,7 @@ export async function createSchoolBookingRequest(
 // Approval conversion
 // ---------------------------------------------------------------------------
 
-export type ApproveSchoolBookingRequestOutcome =
+type ApproveSchoolBookingRequestOutcome =
   | {
       type: "approved";
       requestId: string;
@@ -504,6 +505,7 @@ export async function approveSchoolBookingRequest(input: {
       firstName: string;
       pin: string;
     }>;
+    alreadyConverted: boolean;
   };
 
   try {
@@ -511,6 +513,35 @@ export async function approveSchoolBookingRequest(input: {
       // Single advisory lock serialises all booking creation paths so the
       // capacity check below stays safe (same key as booking-create.ts).
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+
+      // Idempotency (#1232 double-charge guard): a prior approve for this
+      // request — a concurrent double-accept, or a retry whose caller re-armed
+      // the request to PRICED after it had already converted (line ~729 of
+      // booking-request-quotes.ts overwrites CONVERTED->PRICED but never clears
+      // convertedBookingId) — already created the booking and queued its Xero
+      // invoice. Under the advisory lock we now observe its committed
+      // convertedBookingId, so return that booking WITHOUT raising a second
+      // school Xero invoice.
+      const existing = await tx.bookingRequest.findUnique({
+        where: { id: request.id },
+        select: { convertedBookingId: true, convertedMemberId: true, status: true },
+      });
+      if (existing?.convertedBookingId && existing.convertedMemberId) {
+        if (existing.status !== BookingRequestStatus.CONVERTED) {
+          // A caller re-armed the request to PRICED after it had already
+          // converted; re-assert the true terminal status (we hold the lock).
+          await tx.bookingRequest.update({
+            where: { id: request.id },
+            data: { status: BookingRequestStatus.CONVERTED },
+          });
+        }
+        return {
+          bookingId: existing.convertedBookingId,
+          schoolMemberId: existing.convertedMemberId,
+          teacherAssignments: [],
+          alreadyConverted: true as const,
+        };
+      }
 
       // Status-claim so two admins cannot approve concurrently.
       const claimed = await tx.bookingRequest.updateMany({
@@ -549,6 +580,19 @@ export async function approveSchoolBookingRequest(input: {
       await assertMembershipTypeBookingAllowed(tx, {
         guests: guestCreates,
         seasonYear: getSeasonYear(request.checkIn),
+      });
+
+      // Block admin-mediated double-books: a request whose guests an admin
+      // linked to real members must not put a member on overlapping nights
+      // (issue #1158, invariant DOMAIN_INVARIANTS.md:35-40). On the reuse path
+      // exclude the held booking's own soon-to-be-deleted guests.
+      await assertNoBookingMemberNightConflicts(tx, {
+        actorMemberId: input.adminMemberId,
+        actorRole: "ADMIN",
+        checkIn: request.checkIn,
+        checkOut: request.checkOut,
+        guests: guestCreates,
+        excludeBookingId: request.heldBookingId ?? undefined,
       });
 
       let booking: { id: string };
@@ -706,6 +750,7 @@ export async function approveSchoolBookingRequest(input: {
         bookingId: booking.id,
         schoolMemberId: schoolMember.id,
         teacherAssignments,
+        alreadyConverted: false as const,
       };
     });
   } catch (err) {
@@ -719,79 +764,101 @@ export async function approveSchoolBookingRequest(input: {
     throw err;
   }
 
-  // Teacher PIN emails (after commit; failures are logged, not fatal).
-  for (const assignment of conversion.teacherAssignments) {
-    sendHutLeaderAssignmentEmail({
-      email: assignment.email,
-      firstName: assignment.firstName,
-      startDate: request.checkIn,
-      endDate: request.checkOut,
-      pin: assignment.pin,
-    }).catch((err) =>
-      logger.error(
-        { err, bookingId: conversion.bookingId, memberId: assignment.memberId },
-        "Failed to send hut leader assignment email for school teacher"
-      )
-    );
-  }
-
-  // Raise + email the Xero invoice via the existing outbox, or notify admins to
-  // invoice manually when the Xero module is off (issue #709 requirement 6).
+  // On the idempotent replay path the tx body was skipped: the booking already
+  // exists and its Xero invoice was already queued by the first accept, and
+  // teacherAssignments is empty. Guard EVERY post-tx side effect on
+  // !alreadyConverted so the money-critical Xero invoice (or manual-invoice
+  // email) is NOT raised a second time and no teacher PIN is re-sent (#1232).
   let invoiceMode: "xero" | "manual" = "manual";
-  if (await isEffectiveModuleEnabled("xeroIntegration")) {
-    invoiceMode = "xero";
-    try {
-      const queued = await enqueueXeroBookingInvoiceOperation(conversion.bookingId, {
-        createdByMemberId: input.adminMemberId,
-      });
-      if (queued.queueOperationId) {
-        await kickQueuedXeroOutboxOperationsIfConnected({ limit: 1 });
-      }
-    } catch (err) {
-      logger.error(
-        { err, bookingId: conversion.bookingId },
-        "Failed to queue Xero invoice for school booking"
+  if (!conversion.alreadyConverted) {
+    // Teacher PIN emails (after commit; failures are logged, not fatal).
+    for (const assignment of conversion.teacherAssignments) {
+      sendHutLeaderAssignmentEmail({
+        email: assignment.email,
+        firstName: assignment.firstName,
+        startDate: request.checkIn,
+        endDate: request.checkOut,
+        pin: assignment.pin,
+      }).catch((err) =>
+        logger.error(
+          { err, bookingId: conversion.bookingId, memberId: assignment.memberId },
+          "Failed to send hut leader assignment email for school teacher"
+        )
       );
     }
-  } else {
-    sendAdminSchoolManualInvoiceEmail({
-      schoolName,
-      contactEmail: request.contactEmail,
-      checkIn: request.checkIn,
-      checkOut: request.checkOut,
-      guestCount: guests.length,
-      totalCents: totalPriceCents,
-    }).catch((err) =>
-      logger.error(
-        { err, bookingId: conversion.bookingId },
-        "Failed to send school manual-invoice admin notification"
-      )
-    );
-  }
 
-  logAudit({
-    action: "booking_request.school_approved",
-    memberId: input.adminMemberId,
-    actorMemberId: input.adminMemberId,
-    subjectMemberId: conversion.schoolMemberId,
-    targetId: request.id,
-    entityType: "BookingRequest",
-    entityId: request.id,
-    category: "booking",
-    outcome: "success",
-    summary: "School booking request approved and confirmed",
-    metadata: {
-      schoolName,
-      bookingId: conversion.bookingId,
-      schoolMemberId: conversion.schoolMemberId,
-      priceCents: totalPriceCents,
-      guestCount: guests.length,
-      teacherCount: conversion.teacherAssignments.length,
-      invoiceMode,
-      checkIn: request.checkIn.toISOString(),
-      checkOut: request.checkOut.toISOString(),
-    },
-  });
+    // Raise + email the Xero invoice via the existing outbox, or notify admins
+    // to invoice manually when the Xero module is off (issue #709 req 6).
+    if (await isEffectiveModuleEnabled("xeroIntegration")) {
+      invoiceMode = "xero";
+      try {
+        const queued = await enqueueXeroBookingInvoiceOperation(conversion.bookingId, {
+          createdByMemberId: input.adminMemberId,
+        });
+        if (queued.queueOperationId) {
+          await kickQueuedXeroOutboxOperationsIfConnected({ limit: 1 });
+        }
+      } catch (err) {
+        logger.error(
+          { err, bookingId: conversion.bookingId },
+          "Failed to queue Xero invoice for school booking"
+        );
+      }
+    } else {
+      sendAdminSchoolManualInvoiceEmail({
+        schoolName,
+        contactEmail: request.contactEmail,
+        checkIn: request.checkIn,
+        checkOut: request.checkOut,
+        guestCount: guests.length,
+        totalCents: totalPriceCents,
+      }).catch((err) =>
+        logger.error(
+          { err, bookingId: conversion.bookingId },
+          "Failed to send school manual-invoice admin notification"
+        )
+      );
+    }
+
+    logAudit({
+      action: "booking_request.school_approved",
+      memberId: input.adminMemberId,
+      actorMemberId: input.adminMemberId,
+      subjectMemberId: conversion.schoolMemberId,
+      targetId: request.id,
+      entityType: "BookingRequest",
+      entityId: request.id,
+      category: "booking",
+      outcome: "success",
+      summary: "School booking request approved and confirmed",
+      metadata: {
+        schoolName,
+        bookingId: conversion.bookingId,
+        schoolMemberId: conversion.schoolMemberId,
+        priceCents: totalPriceCents,
+        guestCount: guests.length,
+        teacherCount: conversion.teacherAssignments.length,
+        invoiceMode,
+        checkIn: request.checkIn.toISOString(),
+        checkOut: request.checkOut.toISOString(),
+      },
+    });
+  } else {
+    // Observability-only note that a duplicate accept was absorbed (#1232).
+    logAudit({
+      action: "booking_request.school_approve_idempotent_replay",
+      memberId: input.adminMemberId,
+      actorMemberId: input.adminMemberId,
+      targetId: request.id,
+      entityType: "BookingRequest",
+      entityId: request.id,
+      category: "booking",
+      outcome: "success",
+      summary:
+        "School booking request approve replayed idempotently; no second conversion",
+      metadata: { bookingId: conversion.bookingId, requestId: request.id },
+    });
+  }
 
   return {
     type: "approved",

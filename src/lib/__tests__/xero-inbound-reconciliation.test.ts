@@ -46,6 +46,10 @@ const mocks = vi.hoisted(() => ({
   withXeroRetry: vi.fn(),
   checkMembershipStatus: vi.fn(),
   getAccountMapping: vi.fn(),
+  checkCapacity: vi.fn(),
+  processWaitlist: vi.fn(),
+  txLinkFindFirst: vi.fn(),
+  txOperationFindFirst: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -122,7 +126,27 @@ vi.mock("@/lib/logger", () => ({
 
 vi.mock("@/lib/email", () => ({
   sendBookingConfirmedEmail: vi.fn().mockResolvedValue(undefined),
+  sendBookingCancelledEmail: vi.fn().mockResolvedValue(undefined),
+  sendAdminPaymentFailureAlert: vi.fn().mockResolvedValue(undefined),
 }));
+
+vi.mock("@/lib/capacity", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/capacity")>();
+
+  return {
+    ...actual,
+    checkCapacityForGuestRanges: mocks.checkCapacity,
+  };
+});
+
+vi.mock("@/lib/waitlist", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/waitlist")>();
+
+  return {
+    ...actual,
+    processWaitlistForDates: mocks.processWaitlist,
+  };
+});
 
 vi.mock("@/lib/group-settlement", () => ({
   applyGroupSettlementSucceededFromInvoice: mocks.applyGroupSettlementFromInvoice,
@@ -191,18 +215,77 @@ vi.mock("@/lib/xero", async (importOriginal) => {
   };
 });
 
+// #1208: xero-inbound-reconciliation now imports these from the source domain
+// modules directly (not the @/lib/xero facade), so the doubles are attached to
+// those modules. The (now-inert) facade mock above is left as-is; real
+// callXeroApi / XeroDailyLimitError from xero-api-client are preserved.
+vi.mock("@/lib/xero-api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/xero-api-client")>();
+
+  return {
+    ...actual,
+    getAuthenticatedXeroClient: mocks.getAuthenticatedXeroClient,
+  };
+});
+
+vi.mock("@/lib/xero-membership-sync", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/xero-membership-sync")>();
+
+  return {
+    ...actual,
+    checkMembershipStatus: mocks.checkMembershipStatus,
+    refreshAllMembershipStatuses: mocks.refreshAllMembershipStatuses,
+    findSubscriptionInvoice: (
+      invoices: Array<{ lineItems?: Array<{ accountCode?: string }>; reference?: string }>
+    ) =>
+      invoices.find(
+        (invoice) =>
+          invoice.lineItems?.some((lineItem) => lineItem.accountCode === "203") ||
+          (invoice.reference ?? "").toLowerCase().includes("annual member subscription")
+      ) ?? null,
+  };
+});
+
+vi.mock("@/lib/xero-contact-cache", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/xero-contact-cache")>();
+
+  return {
+    ...actual,
+    refreshXeroContactCachesFromContact: mocks.refreshXeroContactCachesFromContact,
+  };
+});
+
+vi.mock("@/lib/xero-bulk-contact-sync", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/xero-bulk-contact-sync")>();
+
+  return {
+    ...actual,
+    syncContactsFromXero: mocks.syncContactsFromXero,
+  };
+});
+
 import {
   processStoredXeroInboundEvents,
   runXeroInboundReconciliationCycle,
   replayStoredXeroInboundEvent,
   XeroInboundReplayError,
 } from "@/lib/xero-inbound-reconciliation";
-import { sendBookingConfirmedEmail } from "@/lib/email";
+import {
+  sendAdminPaymentFailureAlert,
+  sendBookingCancelledEmail,
+  sendBookingConfirmedEmail,
+} from "@/lib/email";
 
 describe("processStoredXeroInboundEvents", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     vi.mocked(sendBookingConfirmedEmail).mockResolvedValue(undefined);
+    vi.mocked(sendBookingCancelledEmail).mockResolvedValue(undefined);
+    vi.mocked(sendAdminPaymentFailureAlert).mockResolvedValue(undefined);
+    mocks.checkCapacity.mockResolvedValue({ available: true });
+    mocks.processWaitlist.mockResolvedValue(undefined);
+    mocks.txLinkFindFirst.mockResolvedValue(null);
+    mocks.txOperationFindFirst.mockResolvedValue(null);
     mocks.inboundUpdateMany.mockResolvedValue({ count: 1 });
     mocks.xeroSyncOperationFindMany.mockResolvedValue([]);
     mocks.xeroSyncCursorFindUnique.mockResolvedValue(null);
@@ -262,7 +345,10 @@ describe("processStoredXeroInboundEvents", () => {
         },
         memberCredit: {
           findFirst: mocks.memberCreditFindFirst,
+          findMany: mocks.memberCreditFindMany,
           create: mocks.memberCreditCreate,
+          update: mocks.memberCreditUpdate,
+          aggregate: mocks.memberCreditAggregate,
         },
       })
     );
@@ -846,6 +932,230 @@ describe("processStoredXeroInboundEvents", () => {
       12345,
       undefined
     );
+  });
+
+  it("enqueues the offsetting Xero account-credit note inside the reconcile transaction when a late Internet Banking payment lands after capacity is gone", async () => {
+    // Capture the exact transaction client the reconcile passes to its
+    // callback so we can prove the outbox enqueue committed atomically with the
+    // local credit (same tx object), not via a post-commit fire-and-forget.
+    const txRef: { current: unknown } = { current: null };
+    mocks.transaction.mockImplementation(
+      async (callback: (tx: unknown) => Promise<unknown>) => {
+        const tx = {
+          $executeRaw: mocks.txExecuteRaw,
+          processedWebhookEvent: {
+            deleteMany: mocks.processedDeleteMany,
+          },
+          xeroInboundEvent: {
+            update: mocks.inboundUpdate,
+          },
+          payment: {
+            findUnique: mocks.paymentFindUnique,
+            update: mocks.paymentUpdate,
+          },
+          paymentTransaction: {
+            updateMany: mocks.paymentTransactionUpdateMany,
+            create: mocks.paymentTransactionCreate,
+          },
+          booking: {
+            update: mocks.bookingUpdate,
+          },
+          memberCredit: {
+            findFirst: mocks.memberCreditFindFirst,
+            create: mocks.memberCreditCreate,
+          },
+          // The in-tx enqueue reads its dedup lookups through this same client.
+          xeroObjectLink: {
+            findFirst: mocks.txLinkFindFirst,
+          },
+          xeroSyncOperation: {
+            findFirst: mocks.txOperationFindFirst,
+          },
+        };
+        txRef.current = tx;
+        return callback(tx);
+      }
+    );
+    mocks.checkCapacity.mockResolvedValue({ available: false });
+
+    mocks.inboundFindMany.mockResolvedValue([
+      {
+        id: "evt_ib_cap",
+        source: "webhook",
+        eventCategory: "INVOICE",
+        eventType: "UPDATE",
+        resourceId: "inv_ib_cap",
+        correlationKey: "corr_ib_cap",
+        payload: { resourceId: "inv_ib_cap" },
+      },
+    ]);
+    mocks.processedCreate.mockResolvedValue({ id: "processed_ib_cap" });
+    mocks.linkFindMany
+      .mockResolvedValueOnce([
+        {
+          localModel: "Payment",
+          localId: "pay_ib_cap",
+          xeroObjectType: "INVOICE",
+          role: "PRIMARY_INVOICE",
+        },
+      ])
+      .mockResolvedValueOnce([]);
+    mocks.paymentFindMany
+      .mockResolvedValueOnce([
+        {
+          id: "pay_ib_cap",
+          xeroInvoiceId: null,
+          xeroInvoiceNumber: null,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: "pay_ib_cap",
+          bookingId: "booking_ib_cap",
+          amountCents: 12345,
+          status: "PENDING",
+          source: "INTERNET_BANKING",
+          reference: "BOOKING-CAP12345",
+          xeroInvoiceId: null,
+          xeroInvoiceNumber: null,
+          booking: {
+            id: "booking_ib_cap",
+            memberId: "mem_cap",
+            checkIn: new Date("2026-07-10"),
+            checkOut: new Date("2026-07-12"),
+            status: "PAYMENT_PENDING",
+            finalPriceCents: 12345,
+            discountCents: 0,
+            promoAdjustmentCents: 0,
+            member: {
+              email: "member@example.com",
+              firstName: "Alice",
+              lastName: "Smith",
+            },
+            guests: [{ id: "guest_cap", nights: [] }],
+            promoRedemption: null,
+          },
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: "pay_ib_cap",
+          bookingId: "booking_ib_cap",
+          booking: { memberId: "mem_cap" },
+        },
+      ]);
+    // Reloaded inside the finalization transaction. internetBankingHoldSlots is
+    // false, so the reconcile re-checks capacity (mocked unavailable) and takes
+    // the capacity-fail path.
+    mocks.paymentFindUnique.mockResolvedValue({
+      id: "pay_ib_cap",
+      bookingId: "booking_ib_cap",
+      amountCents: 12345,
+      status: "PENDING",
+      source: "INTERNET_BANKING",
+      reference: "BOOKING-CAP12345",
+      xeroInvoiceId: null,
+      xeroInvoiceNumber: null,
+      internetBankingHoldSlots: false,
+      booking: {
+        id: "booking_ib_cap",
+        memberId: "mem_cap",
+        checkIn: new Date("2026-07-10"),
+        checkOut: new Date("2026-07-12"),
+        status: "PAYMENT_PENDING",
+        finalPriceCents: 12345,
+        discountCents: 0,
+        promoAdjustmentCents: 0,
+        guests: [{ id: "guest_cap", nights: [] }],
+        member: {
+          email: "member@example.com",
+          firstName: "Alice",
+          lastName: "Smith",
+        },
+        promoRedemption: null,
+      },
+    });
+    mocks.memberCreditFindFirst.mockResolvedValue(null);
+    mocks.startXeroSyncOperation.mockResolvedValue({ id: "op_account_credit_cap" });
+    const accountingApi = {
+      getInvoice: vi.fn().mockResolvedValue({
+        body: {
+          invoices: [
+            {
+              invoiceID: "inv_ib_cap",
+              invoiceNumber: "INV-IB-CAP",
+              date: "2026-07-01",
+              status: "PAID",
+              fullyPaidOnDate: "2026-07-02",
+              contact: { contactID: "contact_1" },
+              payments: [
+                {
+                  paymentID: "xpay_ib_cap",
+                  amount: 123.45,
+                  invoiceNumber: "INV-IB-CAP",
+                  status: "PAID",
+                },
+              ],
+              lineItems: [{ accountCode: "200" }],
+            },
+          ],
+        },
+      }),
+    };
+    mocks.getAuthenticatedXeroClient.mockResolvedValue({
+      xero: { accountingApi },
+      tenantId: "tenant_1",
+    });
+
+    await expect(processStoredXeroInboundEvents()).resolves.toEqual({
+      found: 1,
+      processed: 1,
+      succeeded: 1,
+      failed: 0,
+      skipped: 0,
+    });
+
+    // The booking was cancelled and the offsetting local credit was created in
+    // the same transaction.
+    expect(mocks.bookingUpdate).toHaveBeenCalledWith({
+      where: { id: "booking_ib_cap" },
+      data: {
+        status: "CANCELLED",
+        draftExpiresAt: null,
+      },
+    });
+    expect(mocks.memberCreditCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        memberId: "mem_cap",
+        amountCents: 12345,
+        type: "CANCELLATION_REFUND",
+        sourceBookingId: "booking_ib_cap",
+      }),
+    });
+
+    // The account-credit note outbox operation was queued through the SAME
+    // transaction client (store === the captured tx), proving it commits
+    // atomically with the credit rather than post-commit fire-and-forget.
+    expect(txRef.current).not.toBeNull();
+    expect(mocks.startXeroSyncOperation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        direction: "OUTBOUND",
+        entityType: "CREDIT_NOTE",
+        operationType: "CREATE",
+        localModel: "Payment",
+        localId: "pay_ib_cap",
+        requestPayload: expect.objectContaining({
+          queueType: "ACCOUNT_CREDIT_NOTE",
+          refundAmountCents: 12345,
+        }),
+        store: txRef.current,
+      })
+    );
+    // The enqueue's dedup lookups went through the transaction client.
+    expect(mocks.txLinkFindFirst).toHaveBeenCalledTimes(1);
+    expect(mocks.txOperationFindFirst).toHaveBeenCalledTimes(1);
+    // Not the paid path.
+    expect(sendBookingConfirmedEmail).not.toHaveBeenCalled();
   });
 
   it("settles an organiser group when its combined invoice is paid", async () => {
@@ -1868,12 +2178,16 @@ describe("processStoredXeroInboundEvents", () => {
         {
           id: "pay_booking_1",
           bookingId: "bk234567890",
+          amountCents: 12000,
           creditAppliedCents: 0,
           booking: {
             memberId: "mem_credit_1",
           },
         },
       ]);
+    // The applied-credit repair re-reads the payment's current creditAppliedCents
+    // under the advisory lock before comparing against the aggregated total.
+    mocks.paymentFindUnique.mockResolvedValue({ creditAppliedCents: 0 });
     mocks.memberCreditAggregate.mockResolvedValue({
       _sum: {
         amountCents: -2500,
@@ -1952,6 +2266,135 @@ describe("processStoredXeroInboundEvents", () => {
         }),
       })
     );
+  });
+
+  it("repairs applied-credit ledger state atomically under the advisory lock and clamps to the payment amount", async () => {
+    mocks.inboundFindMany.mockResolvedValue([
+      {
+        id: "evt_clamp",
+        source: "webhook",
+        eventCategory: "CREDIT_NOTE",
+        eventType: "UPDATE",
+        resourceId: "cn_credit_clamp",
+        correlationKey: "corr_clamp",
+        payload: { resourceId: "cn_credit_clamp" },
+      },
+    ]);
+    mocks.processedCreate.mockResolvedValue({ id: "processed_clamp" });
+    mocks.linkFindMany
+      .mockResolvedValueOnce([
+        {
+          localModel: "Payment",
+          localId: "pay_credit_source_1",
+          xeroObjectType: "CREDIT_NOTE",
+          role: "ACCOUNT_CREDIT_NOTE",
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          localId: "pay_credit_source_1",
+          xeroObjectId: "cn_credit_clamp",
+          metadata: {
+            total: 97,
+            status: "AUTHORISED",
+          },
+        },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          localModel: "Payment",
+          localId: "pay_booking_1",
+          xeroObjectType: "INVOICE",
+          role: "PRIMARY_INVOICE",
+        },
+      ]);
+    mocks.paymentFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          id: "pay_credit_source_1",
+          bookingId: "bk123456789",
+          booking: {
+            memberId: "mem_credit_1",
+          },
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: "pay_credit_source_1",
+          amountCents: 12000,
+          refundedAmountCents: 0,
+          status: "SUCCEEDED",
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: "pay_booking_1",
+          bookingId: "bk234567890",
+          // The applied-credit aggregate below (5000) exceeds this payment amount,
+          // so the write must clamp to amountCents (2000), never over-credit.
+          amountCents: 2000,
+          creditAppliedCents: 0,
+          booking: {
+            memberId: "mem_credit_1",
+          },
+        },
+      ]);
+    mocks.paymentFindUnique.mockResolvedValue({ creditAppliedCents: 0 });
+    mocks.memberCreditAggregate.mockResolvedValue({
+      _sum: {
+        amountCents: -5000,
+      },
+    });
+    const accountingApi = {
+      getCreditNote: vi.fn().mockResolvedValue({
+        body: {
+          creditNotes: [
+            {
+              creditNoteID: "cn_credit_clamp",
+              creditNoteNumber: "CN-AC-CLAMP-001",
+              total: 97,
+              appliedAmount: 25,
+              remainingCredit: 72,
+              allocations: [
+                {
+                  amount: 25,
+                  invoice: { invoiceID: "inv_booking_1" },
+                },
+              ],
+              payments: [],
+            },
+          ],
+        },
+      }),
+    };
+    mocks.getAuthenticatedXeroClient.mockResolvedValue({
+      xero: { accountingApi },
+      tenantId: "tenant_1",
+    });
+
+    const result = await processStoredXeroInboundEvents();
+    expect(result).toEqual({
+      found: 1,
+      processed: 1,
+      succeeded: 1,
+      failed: 0,
+      skipped: 0,
+    });
+
+    // The repair runs inside a per-payment transaction whose first statement is
+    // the shared reconcile advisory lock.
+    expect(mocks.transaction).toHaveBeenCalled();
+    expect(mocks.txExecuteRaw).toHaveBeenCalled();
+    // Clamped to the payment amount, not the raw 5000 aggregate.
+    expect(mocks.paymentUpdate).toHaveBeenCalledWith({
+      where: { id: "pay_booking_1" },
+      data: {
+        creditAppliedCents: 2000,
+      },
+    });
   });
 });
 
@@ -2266,7 +2709,10 @@ describe("replayStoredXeroInboundEvent", () => {
         },
         memberCredit: {
           findFirst: mocks.memberCreditFindFirst,
+          findMany: mocks.memberCreditFindMany,
           create: mocks.memberCreditCreate,
+          update: mocks.memberCreditUpdate,
+          aggregate: mocks.memberCreditAggregate,
         },
       })
     );
