@@ -2,7 +2,12 @@
 
 ## Status
 
-Proposed
+Accepted (owner direction, 2026-07-02). Implemented on
+`feature/multi-lodge-support`: the `Lodge` table is core and always seeded,
+the `multiLodge` Admin Module (default OFF) gates only the lodge-management
+configuration routes, the module cannot be disabled while more than one
+active lodge exists, and the single-lodge presentation rule is enforced and
+test-covered.
 
 ## Context
 

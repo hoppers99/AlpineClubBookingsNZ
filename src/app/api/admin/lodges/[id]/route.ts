@@ -13,6 +13,8 @@ import {
 } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/session-guards";
+import { ACTIVE_BOOKING_STATUSES } from "@/lib/booking-status";
+import { BookingStatus } from "@prisma/client";
 
 const paramsSchema = z.object({
   id: z.string().min(1),
@@ -24,6 +26,9 @@ const patchSchema = z
     doorCode: z.string().trim().max(80).nullable().optional(),
     travelNote: z.string().trim().max(2000).nullable().optional(),
     active: z.boolean().optional(),
+    // Acknowledge the deactivation dependency pre-flight and proceed anyway.
+    // Never written to the lodge row.
+    force: z.boolean().optional(),
   })
   .strict();
 
@@ -72,6 +77,57 @@ export async function PATCH(
     if (otherActive === 0) {
       return NextResponse.json(
         { error: "At least one lodge must remain active." },
+        { status: 409 },
+      );
+    }
+  }
+
+  // Deactivation stops NEW bookings but does not touch existing dependencies.
+  // Surface them so an admin cannot silently strand future bookings, waitlist
+  // entries, hut-leader assignments, or a bound kiosk account; require an
+  // explicit force to proceed. (What deactivation ultimately means for existing
+  // bookings is an open operational decision — see docs/multi-lodge.)
+  if (parsed.data.active === false && existing.active && !parsed.data.force) {
+    const now = new Date();
+    const [futureBookings, waitlistEntries, hutLeaderAssignments, kioskBindings] =
+      await Promise.all([
+        prisma.booking.count({
+          where: {
+            lodgeId: existing.id,
+            status: { in: [...ACTIVE_BOOKING_STATUSES] },
+            checkOut: { gte: now },
+          },
+        }),
+        prisma.booking.count({
+          where: {
+            lodgeId: existing.id,
+            status: {
+              in: [BookingStatus.WAITLISTED, BookingStatus.WAITLIST_OFFERED],
+            },
+          },
+        }),
+        prisma.hutLeaderAssignment.count({
+          where: { lodgeId: existing.id, endDate: { gte: now } },
+        }),
+        prisma.memberLodgeAccess.count({
+          where: { lodgeId: existing.id, kind: "STAFF" },
+        }),
+      ]);
+    const total =
+      futureBookings + waitlistEntries + hutLeaderAssignments + kioskBindings;
+    if (total > 0) {
+      return NextResponse.json(
+        {
+          error:
+            "This lodge still has active dependencies. Deactivating stops new bookings but leaves these in place. Confirm to proceed.",
+          code: "LODGE_HAS_DEPENDENCIES",
+          dependencies: {
+            futureBookings,
+            waitlistEntries,
+            hutLeaderAssignments,
+            kioskBindings,
+          },
+        },
         { status: 409 },
       );
     }
@@ -135,6 +191,8 @@ export async function PATCH(
           changedFields: Object.keys(data),
           previousLodge: serializeLodge(existing),
           newLodge: serializeLodge(lodge),
+          forcedDeactivation:
+            data.active === false && parsed.data.force === true,
         },
         request: getAuditRequestContext(request),
       }),

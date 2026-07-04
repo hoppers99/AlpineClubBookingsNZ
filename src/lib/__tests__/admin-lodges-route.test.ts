@@ -10,6 +10,9 @@ const mocks = vi.hoisted(() => ({
   lodgeCount: vi.fn(),
   lodgeCreate: vi.fn(),
   lodgeUpdate: vi.fn(),
+  bookingCount: vi.fn(),
+  hutLeaderAssignmentCount: vi.fn(),
+  memberLodgeAccessCount: vi.fn(),
   emailMessageSettingUpsert: vi.fn(),
   auditLogCreate: vi.fn(),
   transaction: vi.fn(),
@@ -33,6 +36,9 @@ vi.mock("@/lib/prisma", () => ({
       findUnique: mocks.lodgeFindUnique,
       count: mocks.lodgeCount,
     },
+    booking: { count: mocks.bookingCount },
+    hutLeaderAssignment: { count: mocks.hutLeaderAssignmentCount },
+    memberLodgeAccess: { count: mocks.memberLodgeAccessCount },
     $transaction: mocks.transaction,
   },
 }));
@@ -97,6 +103,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.auth.mockResolvedValue(adminSession);
   mocks.requireActiveSessionUser.mockResolvedValue(null);
+  mocks.bookingCount.mockResolvedValue(0);
+  mocks.hutLeaderAssignmentCount.mockResolvedValue(0);
+  mocks.memberLodgeAccessCount.mockResolvedValue(0);
   installTransactionMock();
 });
 
@@ -216,6 +225,51 @@ describe("PATCH /api/admin/lodges/[id]", () => {
       jsonRequest("PATCH", { active: false }),
       params("lodge-1"),
     );
+    expect(response.status).toBe(200);
+    expect(mocks.lodgeUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { active: false } }),
+    );
+  });
+
+  it("blocks deactivation and reports counts when the lodge has dependencies", async () => {
+    mocks.lodgeFindUnique.mockResolvedValue(lodgeRecord());
+    mocks.lodgeCount.mockResolvedValue(1);
+    mocks.bookingCount.mockResolvedValueOnce(2).mockResolvedValueOnce(0);
+    mocks.hutLeaderAssignmentCount.mockResolvedValue(1);
+    mocks.memberLodgeAccessCount.mockResolvedValue(0);
+
+    const response = await PATCH(
+      jsonRequest("PATCH", { active: false }),
+      params("lodge-1"),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body.code).toBe("LODGE_HAS_DEPENDENCIES");
+    expect(body.dependencies).toMatchObject({
+      futureBookings: 2,
+      hutLeaderAssignments: 1,
+    });
+    // Nothing was mutated — the deactivation did not proceed.
+    expect(mocks.lodgeUpdate).not.toHaveBeenCalled();
+  });
+
+  it("force-deactivates past dependencies when force is set", async () => {
+    mocks.lodgeFindUnique.mockResolvedValue(lodgeRecord());
+    mocks.lodgeCount.mockResolvedValue(1);
+    mocks.bookingCount.mockResolvedValue(5);
+    mocks.hutLeaderAssignmentCount.mockResolvedValue(3);
+    mocks.memberLodgeAccessCount.mockResolvedValue(1);
+    mocks.lodgeUpdate.mockResolvedValue(lodgeRecord({ active: false }));
+    mocks.lodgeFindMany.mockResolvedValue([
+      { name: "Other Lodge", doorCode: null, travelNote: null },
+    ]);
+
+    const response = await PATCH(
+      jsonRequest("PATCH", { active: false, force: true }),
+      params("lodge-1"),
+    );
+
     expect(response.status).toBe(200);
     expect(mocks.lodgeUpdate).toHaveBeenCalledWith(
       expect.objectContaining({ data: { active: false } }),

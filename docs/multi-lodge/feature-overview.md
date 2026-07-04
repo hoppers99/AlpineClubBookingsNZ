@@ -171,3 +171,7 @@ appear, and behaviour is identical to today's single-lodge club.
 - No per-lodge Xero connections or ledgers.
 - Lodge count is unbounded in the data model, but the UI is designed
   for the realistic case of two to a handful of lodges, not dozens.
+- A cross-lodge waitlist is *not* a non-goal: it is delivered (ADR-004,
+  see "Delivered Capabilities" above). A waitlist entry stays bound to the
+  lodge the member asked for, but the member may opt in to alternate lodges,
+  and acceptance creates a fresh booking at the alternate lodge.

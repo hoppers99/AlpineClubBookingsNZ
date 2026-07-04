@@ -476,7 +476,7 @@ export async function POST(request: NextRequest) {
   }
 
   const hasNonMembers = guestInputs.some((g) => !g.isMember);
-  const holdDays = hasNonMembers ? await getNonMemberHoldDays(checkIn) : 7;
+  const holdDays = hasNonMembers ? await getNonMemberHoldDays(checkIn, parsed.data.lodgeId ?? null) : 7;
   const { shouldBePending, status } = calculateBookingHoldDecision({
     hasNonMembers,
     checkIn,

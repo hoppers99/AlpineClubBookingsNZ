@@ -80,7 +80,7 @@ import {
   loadInternetBankingPaymentSettings,
 } from "@/lib/internet-banking-settings";
 import { recordBookingEvent } from "@/lib/booking-events";
-import { getDefaultLodgeCapacity } from "@/lib/lodge-capacity";
+import { getLodgeCapacity } from "@/lib/lodge-capacity";
 import { getSeasonYear } from "@/lib/utils";
 import { ACTIVE_BOOKING_STATUSES } from "@/lib/booking-status";
 
@@ -400,7 +400,7 @@ export async function resolveGroupBookingByCode(
       paymentMode: true,
       joinDeadline: true,
       organiserBooking: {
-        select: { checkIn: true, checkOut: true, status: true, deletedAt: true },
+        select: { checkIn: true, checkOut: true, status: true, deletedAt: true, lodgeId: true },
       },
       organiserMember: { select: { firstName: true } },
     },
@@ -470,6 +470,7 @@ export async function joinGroupBookingAsMember(
           organiserBooking: {
             select: {
               id: true,
+              lodgeId: true,
               checkIn: true,
               checkOut: true,
               status: true,
@@ -562,7 +563,9 @@ export async function joinGroupBookingAsMember(
     );
   }
 
-  const lodgeCapacity = await getDefaultLodgeCapacity();
+  const groupLodgeId =
+    group.organiserBooking.lodgeId ?? (await getDefaultLodgeId(prisma));
+  const lodgeCapacity = await getLodgeCapacity(groupLodgeId);
   if (guests.length > lodgeCapacity) {
     throw new GroupBookingError(
       `A booking cannot exceed ${lodgeCapacity} guests`,
@@ -783,7 +786,7 @@ export async function createNonMemberJoinRequest(
           joinDeadline: true,
           paymentMode: true,
           organiserBooking: {
-            select: { checkIn: true, checkOut: true, status: true, deletedAt: true },
+            select: { checkIn: true, checkOut: true, status: true, deletedAt: true, lodgeId: true },
           },
         },
       })
@@ -827,7 +830,9 @@ export async function createNonMemberJoinRequest(
     throw new GroupBookingError("At least one guest is required", 422);
   }
 
-  const lodgeCapacity = await getDefaultLodgeCapacity();
+  const groupLodgeId =
+    group.organiserBooking.lodgeId ?? (await getDefaultLodgeId(prisma));
+  const lodgeCapacity = await getLodgeCapacity(groupLodgeId);
   if (input.guests.length > lodgeCapacity) {
     throw new GroupBookingError(
       `A booking cannot exceed ${lodgeCapacity} guests`,

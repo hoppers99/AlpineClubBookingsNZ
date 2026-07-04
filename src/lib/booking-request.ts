@@ -718,7 +718,7 @@ export async function approveBookingRequest(input: {
   // Non-login members never authenticate; store a random bcrypt hash so the
   // row satisfies the schema without any usable credential.
   const placeholderPasswordHash = await hash(randomBytes(32).toString("hex"), 13);
-  const holdDays = await getNonMemberHoldDays(request.checkIn);
+  const holdDays = await getNonMemberHoldDays(request.checkIn, request.lodgeId ?? null);
   const reviewedAt = new Date();
   const nonMemberHoldUntil = resolveRequestBookingHoldUntil(
     request.checkIn,

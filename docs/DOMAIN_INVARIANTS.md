@@ -17,6 +17,23 @@ Future reviews and issues should cite this file when proposing changes.
   unless a feature explicitly requires time-of-day semantics.
 - `BookingGuest.stayStart` and `BookingGuest.stayEnd` represent each guest's
   date-only occupancy inside the booking envelope.
+- Capacity is per lodge. A booking belongs to exactly one lodge
+  (`Booking.lodgeId`); capacity is "beds available on date D at lodge L", and
+  no code path may sum beds across lodges into a single club-wide number. Two
+  bookings at different lodges never contend for the same beds. The one
+  deliberate, documented exception is a reporting-layer occupancy denominator
+  that intentionally aggregates active lodges; any such aggregate must be
+  recorded in `docs/multi-lodge/lodge-scoping-contract.md` and labelled as
+  cross-lodge in the surface that shows it. A single-lodge club is simply a
+  club whose `Lodge` table has one active row — the same per-lodge rules apply
+  with the lodge dimension hidden by the ADR-002 presentation rule.
+- Each lodge's capacity resolves through `getLodgeCapacityStatus`: active
+  configured beds when the Bed Allocation module is on, else the per-lodge
+  `LodgeSettings.capacity` override, else the club-config bed total for the
+  default lodge only. An additional lodge with neither configured beds nor a
+  capacity override resolves to capacity 0 (`unconfigured_lodge`), so a
+  freshly created lodge is unbookable rather than overbookable until it is set
+  up.
 - Only capacity-holding booking statuses consume beds. The implementation
   source of truth is `CAPACITY_HOLDING_BOOKING_STATUSES` in
   `src/lib/booking-status.ts`.

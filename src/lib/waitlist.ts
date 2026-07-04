@@ -584,7 +584,7 @@ export async function confirmWaitlistOffer(
       // Determine new status using the same logic as booking creation.
       // Math.ceil mirrors bookings/route.ts: fractional days over threshold → PENDING.
       const hasNonMembers = booking.guests.some((g) => !g.isMember);
-      const holdDays = hasNonMembers ? await getNonMemberHoldDays(booking.checkIn) : 7;
+      const holdDays = hasNonMembers ? await getNonMemberHoldDays(booking.checkIn, booking.lodgeId) : 7;
       const daysUntilCheckIn = Math.ceil(
         (booking.checkIn.getTime() - Date.now()) / (1000 * 60 * 60 * 24)
       );

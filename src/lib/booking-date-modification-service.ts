@@ -447,7 +447,7 @@ export async function modifyBookingDates({
 
     if (checkInChanged) {
       const now = new Date();
-      const policy = await loadCancellationPolicy(booking.checkIn);
+      const policy = await loadCancellationPolicy(booking.checkIn, booking.lodgeId);
       const feeResult = calculateChangeFee({
         daysUntilOriginalCheckIn: daysUntilDate(booking.checkIn, now),
         daysUntilNewCheckIn: daysUntilDate(newCheckIn, now),
@@ -498,7 +498,7 @@ export async function modifyBookingDates({
     let newStatus = booking.status;
 
     if (hasNonMembers) {
-      const holdDays = await getNonMemberHoldDays(newCheckIn);
+      const holdDays = await getNonMemberHoldDays(newCheckIn, booking.lodgeId);
       const daysUntilNewCheckIn = Math.ceil(
         (newCheckIn.getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24),
       );

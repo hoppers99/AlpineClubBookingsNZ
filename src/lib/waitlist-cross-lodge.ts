@@ -342,7 +342,7 @@ export async function confirmCrossLodgeWaitlistOffer(
     nights: guest.nights.length > 0 ? guest.nights : null,
   }));
   const hasNonMembers = guests.some((guest) => !guest.isMember);
-  const holdDays = hasNonMembers ? await getNonMemberHoldDays(entry.checkIn) : 7;
+  const holdDays = hasNonMembers ? await getNonMemberHoldDays(entry.checkIn, offeredLodgeId) : 7;
   const { shouldBePending, status } = calculateBookingHoldDecision({
     hasNonMembers,
     checkIn: entry.checkIn,

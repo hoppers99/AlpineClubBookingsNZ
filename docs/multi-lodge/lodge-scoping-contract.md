@@ -168,6 +168,16 @@ re-validates per lodge.
 
 - Capacity is per lodge: "beds available on date D at lodge L". No code
   path may sum beds across lodges into one number.
+  - **Documented exception — reporting occupancy denominator.** The admin
+    reports occupancy view and the finance booking-metrics occupancy summary
+    may sum the capacity of all active lodges to form the "all lodges"
+    denominator (`resolveMetricsCapacityAndScope` in
+    `src/lib/finance-booking-metrics.ts`, reused by `/api/admin/reports`).
+    This is the only sanctioned cross-lodge capacity aggregate: a reporting
+    read that never feeds availability, booking, or capacity-enforcement
+    logic. The surface labels the figure as covering all lodges and offers a
+    per-lodge selector; selecting a lodge scopes both the bookings and the
+    denominator to that lodge.
 - A booking's guests, nights, bed allocations, and requested room must all
   belong to `booking.lodgeId`. Enforce in service logic; add DB constraints
   where practical. Manual bed allocation rejects a bed whose room belongs

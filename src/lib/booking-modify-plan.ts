@@ -966,7 +966,7 @@ export async function calculateModificationChangeFee({
     return 0;
   }
   const now = new Date();
-  const policy = await loadCancellationPolicy(booking.checkIn);
+  const policy = await loadCancellationPolicy(booking.checkIn, booking.lodgeId);
   const feeResult = calculateChangeFee({
     daysUntilOriginalCheckIn: daysUntilDate(booking.checkIn, now),
     daysUntilNewCheckIn: daysUntilDate(newCheckIn, now),

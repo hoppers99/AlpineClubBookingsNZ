@@ -67,6 +67,10 @@ lodge actually exists (ADR-002).
   before changing any model's scoping.
 - [test-plan.md](test-plan.md) — required automated coverage and manual
   staging verification.
+- [contract-release.md](contract-release.md) — the consolidated runbook for
+  the phase-2 contract release (NOT NULL enforcement, policy-table
+  null-partition partial unique indexes, `EmailMessageSetting` lodge-column
+  drop): items, preconditions, sequencing, and migration-ledger entries.
 
 ## ADRs
 

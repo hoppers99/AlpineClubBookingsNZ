@@ -192,9 +192,12 @@ The source of truth is `prisma/schema.prisma`. Key domains are:
 
 ## Booking and Payment Flow
 
-1. A member selects check-in and check-out dates.
-2. Capacity is calculated as lodge beds minus capacity-holding guests per
-   night. Only bookings with money committed hold beds: `PAID`, `COMPLETED`,
+1. A member selects a lodge (implicit when only one active lodge exists) and
+   check-in and check-out dates.
+2. Capacity is calculated per lodge as that lodge's beds minus its
+   capacity-holding guests per night; capacity is never summed across lodges,
+   and a booking at one lodge never consumes another lodge's beds. Only
+   bookings with money committed hold beds: `PAID`, `COMPLETED`,
    `CONFIRMED` (pay-on-account school groups), and `AWAITING_REVIEW` (a bed is
    reserved while an admin decides). `PENDING` does not hold capacity; it is a
    provisional non-member hold. The single source of truth is
@@ -209,8 +212,9 @@ The source of truth is `prisma/schema.prisma`. Key domains are:
    date-only range for each guest inside the parent booking envelope. Capacity,
    lodge lists, rosters, and booking-derived finance metrics count a guest only
    on nights in that individual range.
-7. Capacity-sensitive writes use a PostgreSQL advisory transaction lock so
-   overlapping booking decisions serialize at the current lodge scale.
+7. Capacity-sensitive writes use a PostgreSQL advisory transaction lock keyed
+   per lodge (`acquireLodgeCapacityLock`), so overlapping booking decisions at
+   the same lodge serialise while bookings at different lodges never contend.
    Member lifecycle approval (delete / archive) acquires
    `pg_advisory_xact_lock(hashtext('member-lifecycle:<memberId>'))` inside
    the transaction. Future approve / reject paths that recount eligibility
@@ -264,9 +268,11 @@ Admin pages cover member management, member CSV import, bookings, operational
 booking filters, bed allocation, payments, seasons, policies, refund requests,
 promo codes, communications, health, audit logs, reports, Xero operations and
 inbound-event drilldowns, committee data, issue reports, waitlist, lodge
-operations, hut leaders, and roster/chores. Lodge settings are a singleton
-record for lodge-wide operational defaults such as fallback capacity and the
-hut-leader lookahead window used by dashboard and Needs Attention warnings.
+operations, hut leaders, and roster/chores. `LodgeSettings` holds each lodge's
+operational defaults such as its fallback capacity override and school-group
+soft cap; the hut-leader lookahead window used by dashboard and Needs Attention
+warnings stays a club-wide knob on the legacy row. Single-lodge clubs keep one
+row (ADR-002); additional lodges get their own keyed by lodge id.
 The sidebar's Needs Attention Booking Requests badge sums pending internal
 booking reviews, requested change requests, and queued public booking requests.
 All sidebar badge counts come from the single `GET /api/admin/pending-counts`

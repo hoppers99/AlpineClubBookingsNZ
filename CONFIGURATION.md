@@ -256,6 +256,135 @@ Admin > Setup includes lodge-wide settings stored in the singleton
   dashboard, the hut-leader assignment API, and the queue-driven Needs
   Attention sidebar item.
 
+For a club that runs more than one lodge, each lodge gets its own
+`LodgeSettings` row (capacity override, school-group soft cap); the hut-leader
+lookahead stays a single club-wide value. See "Adding a Second Lodge" below.
+
+## Adding a Second Lodge
+
+A club can run more than one lodge property under one membership, one finance
+backend, and one admin. The lodge data model is always present, but a
+single-lodge club never sees it. This section walks an admin through turning
+on and setting up a second lodge. Design rationale lives in
+`docs/multi-lodge/` (start with `feature-overview.md`); this is the operator
+how-to.
+
+### 1. Enable the Multiple lodges module
+
+Admin > Modules > **Multiple lodges** (default OFF). Enabling it exposes the
+lodge-management admin surface (the Lodges page and per-lodge settings). It
+does **not** by itself change anything members see — member-facing screens
+only gain a lodge dimension once a *second active lodge actually exists*. The
+module cannot be turned off again while more than one active lodge exists, so a
+multi-lodge club can never strand itself without the UI to manage its lodges.
+
+### 2. Create the lodge
+
+On the Lodges page, create the new lodge: name, and optionally its door code
+and travel note (these are the per-lodge identity fields used in that lodge's
+confirmation and pre-arrival emails). The club's original lodge already exists
+as the seeded default lodge.
+
+### 3. Run the setup wizard
+
+Creating a lodge lands in a guided setup wizard (`/admin/lodges/[id]/setup`):
+identity → rooms/beds → lockers → seasons/rates → chores. Every step is
+skippable, and rooms/beds/lockers support bulk seeding ("8 rooms of 4 beds",
+"N lockers" with a name prefix) plus copy-from-another-lodge for seasons/rates
+and chores. The lodge configuration hub (`/admin/lodges/[id]`) is the
+"what does this lodge still need?" view and links into each editor pre-filtered
+to that lodge. Wizard and hub cards for module-gated areas (bed allocation,
+lockers, chores) appear only when that module is enabled.
+
+### 4. Capacity and the 0-capacity fail-safe (read this first)
+
+**A newly created lodge is unbookable until you give it beds or a capacity
+override.** This is deliberate, and it will look like a bug the first time:
+a lodge with no configured beds and no override resolves to **capacity 0**, so
+the booking flow refuses all bookings at it rather than risk overbooking an
+unconfigured lodge.
+
+Each lodge's capacity resolves in this order (`getLodgeCapacityStatus`):
+
+1. Active configured beds, when the Bed Allocation module is on and the lodge
+   has active beds.
+2. Otherwise, the per-lodge **capacity override** on the lodge's
+   `LodgeSettings` (set it on the lodge hub or Admin > Setup). This works even
+   with Bed Allocation off.
+3. Otherwise, the club-config bed total — but **only for the original default
+   lodge**. Any *additional* lodge falls through to 0.
+
+So to make a new lodge bookable, either configure its beds (Bed Allocation
+module) or set its capacity override. Until then it correctly shows as
+unavailable.
+
+Per-lodge overrides *replace*, they do not merge: setting a lodge's capacity
+override does not add to the club-config total, it substitutes for it at that
+lodge.
+
+### 5. Bind the kiosk account to the lodge
+
+Each lodge's shared kiosk device signs in with a lodge-operational (kiosk)
+account bound to that lodge. On the **Lodge Kiosk** admin page (`/admin/lodge`)
+you can see every kiosk account with its bound lodge, create an additional
+kiosk account bound to the new lodge in one step, and rebind or unbind existing
+accounts (an unbound account falls back to the default lodge). The kiosk shows
+only its bound lodge's arrivals, departures, and roster, and its header names
+the lodge it is operating. Binding is a `STAFF` grant in `MemberLodgeAccess`;
+you can also manage a member's STAFF grants from their member page.
+
+### 6. Per-lodge hut-leader PINs
+
+A hut-leader assignment belongs to one lodge. A hut leader's PIN works only at
+that lodge's kiosk and surfaces only that lodge's roster, chore sign-off, and
+guest lists — it does nothing at another lodge's kiosk. Assign hut leaders per
+lodge in Admin > Hut leaders; each assignment carries its lodge, and PIN
+matching is scoped to the kiosk's bound lodge.
+
+### 7. Per-lodge policy overrides ("replace, not merge")
+
+Cancellation, minimum-stay, and booking-period rules are **club-wide by
+default**. Most clubs never need per-lodge rules. When a lodge does need its
+own (for example a remote lodge with a longer cancellation window), you set
+that lodge's own rules on the policy pages via the per-lodge override path.
+
+The key semantic: a lodge's own rules **replace** the club-wide set for that
+policy type — they are not merged with it. If you give Lodge B a cancellation
+tier set, Lodge B uses *only* those tiers; it does not also inherit the
+club-wide tiers. Lodges with no override keep using the club-wide rules. The
+booking flow shows a member the rules for the lodge they booked. Lodge
+opening/closing/day-to-day kiosk instructions follow the same replace-not-merge
+rule per document.
+
+### 8. Eligibility restrictions and cross-lodge waitlist
+
+- **Eligibility is default-open.** Every active member can book every active
+  lodge unless you configure a restriction. On a member's page you can add a
+  booking restriction limiting them to specific lodges; a restricted member
+  simply never sees the other lodges offered. Admin bookings made on behalf of
+  a member deliberately bypass the restriction (the audited override path).
+- **Promo codes** are club-wide by default; each promo can optionally be
+  restricted to selected lodges. An unrestricted promo works at every lodge,
+  including lodges created later.
+- **Cross-lodge waitlist (ADR-004).** When a member waitlists a full lodge,
+  they can opt in to alternate lodges they would also accept. When a bed frees,
+  the processor may offer an opted-in alternate. The queue order is a single
+  club-wide setting on the booking-policies page,
+  `BookingDefaults.waitlistCrossLodgeOrder`:
+  - `OWN_LODGE_FIRST` (default): the freeing lodge's own queue is served first
+    in join order, then cross-lodge opt-ins, so no one is overtaken in a queue
+    they joined.
+  - `MERGED`: everyone who could be satisfied at that lodge — its own queue
+    plus opt-ins — is ranked purely by join time.
+  A cross-lodge offer states the alternate lodge and its price and requires the
+  member to confirm; accepting creates a fresh booking at that lodge rather
+  than moving the original. (Waitlist entries carrying a promo redemption are
+  not offered cross-lodge — a documented limitation.)
+
+Every one of these follows the single-lodge presentation rule: with only one
+active lodge, none of the selectors, columns, or lodge names appear, and the
+club behaves exactly as it does today.
+
 ## Required Local Setup Variables
 
 These are enough for a local database-backed app with external services left in

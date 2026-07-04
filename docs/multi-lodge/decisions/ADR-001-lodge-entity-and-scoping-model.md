@@ -133,7 +133,7 @@ its own review pass given the money- and capacity-critical invariants in
   added.
 - Xero/finance, membership, and core auth stay untouched, limiting blast
   radius to booking/lodge-operations code.
-- Existing single-lodge behavior is preserved by construction: after
+- Existing single-lodge behaviour is preserved by construction: after
   backfill, a deployment with exactly one `Lodge` row behaves exactly as
   today.
 

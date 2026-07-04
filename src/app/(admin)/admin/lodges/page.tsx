@@ -140,19 +140,50 @@ export default function AdminLodgesPage() {
     }
   }
 
-  async function setActive(lodge: LodgeRecord, active: boolean) {
+  async function setActive(lodge: LodgeRecord, active: boolean, force = false) {
     setSaving(true);
     setError(null);
     try {
       const response = await fetch(`/api/admin/lodges/${lodge.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ active }),
+        body: JSON.stringify(force ? { active, force: true } : { active }),
       });
       if (!response.ok) {
         const data = (await response.json().catch(() => null)) as {
           error?: string;
+          code?: string;
+          dependencies?: {
+            futureBookings: number;
+            waitlistEntries: number;
+            hutLeaderAssignments: number;
+            kioskBindings: number;
+          };
         } | null;
+        // Deactivation pre-flight: the lodge still has dependencies. Show what
+        // they are and let the admin confirm; a confirmed retry sends force.
+        if (
+          !force &&
+          data?.code === "LODGE_HAS_DEPENDENCIES" &&
+          data.dependencies
+        ) {
+          const d = data.dependencies;
+          const parts = [
+            d.futureBookings ? `${d.futureBookings} future booking(s)` : null,
+            d.waitlistEntries ? `${d.waitlistEntries} waitlist entry(ies)` : null,
+            d.hutLeaderAssignments
+              ? `${d.hutLeaderAssignments} hut-leader assignment(s)`
+              : null,
+            d.kioskBindings ? `${d.kioskBindings} bound kiosk account(s)` : null,
+          ].filter(Boolean);
+          const proceed = window.confirm(
+            `${lodge.name} still has ${parts.join(", ")}. Deactivating stops new bookings but leaves these in place. Deactivate anyway?`,
+          );
+          if (proceed) {
+            await setActive(lodge, active, true);
+          }
+          return;
+        }
         throw new Error(data?.error ?? "Failed to update lodge");
       }
       await loadLodges();

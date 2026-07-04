@@ -69,7 +69,7 @@ export async function calculateModificationSettlementOptions({
   booking,
   netChargeCents,
 }: {
-  booking: Pick<LoadedBookingForModify, "checkIn" | "status" | "payment">;
+  booking: Pick<LoadedBookingForModify, "checkIn" | "status" | "payment" | "lodgeId">;
   netChargeCents: number;
 }): Promise<BookingModificationSettlementOptions | null> {
   const reductionAmountCents = Math.max(0, -netChargeCents);
@@ -85,7 +85,7 @@ export async function calculateModificationSettlementOptions({
     return null;
   }
 
-  const policy = await loadCancellationPolicy(booking.checkIn);
+  const policy = await loadCancellationPolicy(booking.checkIn, booking.lodgeId);
   const daysUntilCheckIn = daysUntilDate(booking.checkIn);
   const {
     cardRefundAmountCents,
@@ -292,7 +292,7 @@ export async function applyLifecycleTransitions(
   }
 
   if (!skipBookingLifecycleRules && hasNonMembers) {
-    const holdDays = await getNonMemberHoldDays(newCheckIn);
+    const holdDays = await getNonMemberHoldDays(newCheckIn, booking.lodgeId);
     const daysUntilNewCheckIn = Math.ceil(
       (newCheckIn.getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24),
     );

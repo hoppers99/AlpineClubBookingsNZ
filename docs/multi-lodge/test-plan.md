@@ -37,7 +37,12 @@ lifted.
   `lodgeId`; invalid or inactive lodge rejected
 - booking creation under concurrent load at two lodges: capacity locks
   do not contend across lodges, and per-lodge double-booking protection
-  still holds
+  still holds. **Deferred to the phase-9 manual staging pass** (see
+  Manual Verification → Cross-Lodge Isolation): a real contention test
+  needs a live Postgres to exercise advisory locks and serialised
+  transactions, which the mocked CI suite cannot reproduce. The lock-key
+  shape is unit-tested at `src/lib/__tests__/capacity.test.ts`; the
+  behaviour under genuine concurrency is verified only on staging.
 - migration backfill assertions: every pre-existing row lands on the
   seeded lodge; re-scoped unique constraints reject cross-lodge
   collisions but allow same-name rooms at different lodges
@@ -65,6 +70,12 @@ lifted.
 - cancel at lodge A; confirm no availability change at lodge B
 - waitlist at a full lodge A while B has space; confirm the waitlist
   offer is for lodge A only
+- **concurrent two-lodge booking load (moved here from Integration
+  Tests):** drive simultaneous booking creation at both lodges against a
+  live database and confirm capacity locks do not contend across lodges
+  while per-lodge double-booking protection still holds. This is the
+  real-database concurrency check the automated suite cannot cover with
+  mocked transactions.
 
 ### Money and Pricing
 

@@ -531,7 +531,7 @@ export async function POST(
       // Update nonMemberHoldUntil if adding non-members
       let nonMemberHoldUntil = booking.nonMemberHoldUntil;
       if (addingNonMembers && !booking.hasNonMembers) {
-        const holdDays = await getNonMemberHoldDays(booking.checkIn);
+        const holdDays = await getNonMemberHoldDays(booking.checkIn, booking.lodgeId);
         const daysUntilCheckIn = Math.ceil(
           (new Date(booking.checkIn).getTime() - new Date().getTime()) /
             (1000 * 60 * 60 * 24)
