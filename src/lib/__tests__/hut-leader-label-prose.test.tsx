@@ -24,6 +24,7 @@ vi.mock("@/components/admin/lodge-instructions-panel", () => ({
 
 import LodgeInstructionsAdminPage from "@/app/(admin)/admin/lodge-instructions/page";
 import MemberLodgeInstructionsPage from "@/app/(authenticated)/lodge-instructions/page";
+import { LodgeCapacityCard } from "@/components/admin/lodge-capacity-card";
 
 const wardenIdentity: ClubIdentity = {
   bookingsName: "Example Bookings",
@@ -86,6 +87,42 @@ describe("custom hut-leader label reaches lower-priority prose (#1320)", () => {
       ).toBeTruthy();
       expect(document.body.textContent?.toLowerCase()).not.toContain(
         "hut leader",
+      );
+    });
+  });
+
+  describe("client surface: Lodge Capacity card", () => {
+    const originalFetch = global.fetch;
+
+    beforeEach(() => {
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          capacity: 20,
+          hutLeaderLookaheadDays: 14,
+          clubConfigCapacity: 24,
+        }),
+      }) as unknown as typeof fetch;
+    });
+
+    afterEach(() => {
+      global.fetch = originalFetch;
+      vi.clearAllMocks();
+    });
+
+    it("uses the custom label in the lookahead description and field label", () => {
+      render(
+        <ClubIdentityProvider value={wardenIdentity}>
+          <LodgeCapacityCard />
+        </ClubIdentityProvider>,
+      );
+
+      expect(
+        screen.getByText(/how far ahead warden coverage is checked/i),
+      ).toBeTruthy();
+      expect(screen.getByText(/warden lookahead \(days\)/i)).toBeTruthy();
+      expect(document.body.textContent?.toLowerCase()).not.toContain(
+        "hut-leader",
       );
     });
   });
