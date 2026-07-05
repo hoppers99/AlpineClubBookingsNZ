@@ -85,6 +85,7 @@ describe("admin bed allocation", () => {
           approvedAt: null,
           approvedByName: null,
           bookingStatus: "CONFIRMED",
+          holdsCapacity: true,
         },
         {
           id: "allocation-2",
@@ -101,6 +102,7 @@ describe("admin bed allocation", () => {
           approvedAt: null,
           approvedByName: null,
           bookingStatus: "CONFIRMED",
+          holdsCapacity: true,
         },
       ],
     });

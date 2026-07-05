@@ -204,10 +204,20 @@ describe("capacity calendar availability", () => {
   it("queries completed bookings as capacity-holding bookings", async () => {
     await getMonthAvailability(LODGE_A, 2026, 3);
 
+    // Capacity-holding is now an OR of the holding-status set plus
+    // request-converted PENDING holds (issue #1254, refining #737).
     const call = mocks.bookingFindMany.mock.calls[0][0];
-    expect(call.where.status.in).toEqual(
+    const holdingStatusClause = call.where.OR.find(
+      (clause: { status?: { in?: BookingStatus[] } }) =>
+        Array.isArray(clause.status?.in)
+    );
+    expect(holdingStatusClause.status.in).toEqual(
       expect.arrayContaining([BookingStatus.COMPLETED])
     );
+    expect(call.where.OR).toContainEqual({
+      status: BookingStatus.PENDING,
+      originBookingRequest: { isNot: null },
+    });
   });
 
   it("counts completed bookings in monthly occupied beds", async () => {
@@ -248,9 +258,11 @@ describe("capacity calendar availability", () => {
     expect(mocks.bookingFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          status: {
-            in: expect.arrayContaining([BookingStatus.COMPLETED]),
-          },
+          OR: expect.arrayContaining([
+            expect.objectContaining({
+              status: { in: expect.arrayContaining([BookingStatus.COMPLETED]) },
+            }),
+          ]),
         }),
       })
     );
@@ -371,14 +383,14 @@ describe("multi-lodge capacity scoping", () => {
     );
 
     const call = mocks.bookingFindMany.mock.calls[0][0];
-    expect(call.where.OR).toEqual([{ lodgeId: LODGE_B }, { lodgeId: null }]);
+    expect(call.where.AND).toEqual([{ OR: [{ lodgeId: LODGE_B }, { lodgeId: null }] }]);
   });
 
   it("applies the same lodge filter to month availability queries", async () => {
     await getMonthAvailability(LODGE_A, 2026, 3);
 
     const call = mocks.bookingFindMany.mock.calls[0][0];
-    expect(call.where.OR).toEqual([{ lodgeId: LODGE_A }, { lodgeId: null }]);
+    expect(call.where.AND).toEqual([{ OR: [{ lodgeId: LODGE_A }, { lodgeId: null }] }]);
   });
 
   it("resolves zero capacity for an unconfigured additional lodge", async () => {

@@ -6,7 +6,7 @@ import { lodgeNullTolerantScope } from "@/lib/lodges";
 import { getNZSTToday } from "./nzst-date";
 import { eachDayOfInterval, addDays } from "date-fns";
 import logger from "@/lib/logger";
-import { CAPACITY_HOLDING_BOOKING_STATUSES } from "@/lib/booking-status";
+import { capacityHoldingBookingFilter } from "@/lib/booking-status";
 
 const WARN_THRESHOLD_BEDS = 5; // Alert when <= 5 beds remaining
 
@@ -50,8 +50,10 @@ export async function checkCapacityWarnings(): Promise<{ alertedDays: number }> 
       where: {
         checkIn: { lt: endDate },
         checkOut: { gt: todayNZ },
-        status: { in: [...CAPACITY_HOLDING_BOOKING_STATUSES] },
-        ...lodgeNullTolerantScope(lodge.id),
+        // Capacity-holding population (issue #1254); per-lodge scope under AND
+        // so the two OR fragments compose rather than clobber.
+        ...capacityHoldingBookingFilter(),
+        AND: [lodgeNullTolerantScope(lodge.id)],
       },
       include: { guests: true },
     });
