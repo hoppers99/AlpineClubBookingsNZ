@@ -1,280 +1,36 @@
-"use client";
-
-import { Suspense, useState } from "react";
-import { signIn } from "next-auth/react";
-import { useRouter, useSearchParams } from "next/navigation";
-import Link from "next/link";
-import { useClubIdentity } from "@/components/club-identity-provider";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardFooter, CardHeader } from "@/components/ui/card";
-import { WebsiteLogo } from "@/components/website-logo";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { resolvePostLoginPath } from "@/lib/auth-redirect";
+import { LoginForm } from "./login-form";
 
-function LoginForm() {
-  const club = useClubIdentity();
-  const router = useRouter();
-  const searchParams = useSearchParams();
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [emailNotVerified, setEmailNotVerified] = useState(false);
-  const [resendLoading, setResendLoading] = useState(false);
-  const [resendSuccess, setResendSuccess] = useState(false);
-
-  const verified = searchParams.get("verified") === "true";
-  const verifyError = searchParams.get("verifyError");
-  const emailChanged = searchParams.get("emailChanged") === "true";
-  const redirectTo = resolvePostLoginPath(searchParams.get("callbackUrl"));
-
-  async function resolveTwoFactorPath() {
-    const response = await fetch("/api/auth/2fa/status", {
-      credentials: "same-origin",
-    });
-    if (!response.ok) return null;
-    const status = (await response.json()) as {
-      required?: boolean;
-      verified?: boolean;
-      enrolled?: boolean;
-      forcePasswordChange?: boolean;
-    };
-
-    if (status.forcePasswordChange) {
-      return "/change-password";
-    }
-
-    if (!status.required || status.verified) {
-      return null;
-    }
-
-    const params = new URLSearchParams({ callbackUrl: redirectTo });
-    return status.enrolled
-      ? `/login/verify?${params.toString()}`
-      : `/login/enroll?${params.toString()}`;
-  }
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setError("");
-    setEmailNotVerified(false);
-    setResendSuccess(false);
-    setLoading(true);
-
-    try {
-      const result = await signIn("credentials", {
-        email,
-        password,
-        redirect: false,
-        redirectTo,
-      });
-
-      if (result?.error) {
-        // NextAuth v5 sets result.code from CredentialsSignin subclass code
-        if (result.code === "EMAIL_NOT_VERIFIED" || result.error === "EMAIL_NOT_VERIFIED") {
-          setEmailNotVerified(true);
-        } else {
-          setError("Invalid email or password. Please try again.");
-        }
-      } else {
-        router.push((await resolveTwoFactorPath()) ?? redirectTo);
-      }
-    } catch {
-      setError("Something went wrong. Please try again.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleResendVerification() {
-    setResendLoading(true);
-    setResendSuccess(false);
-    try {
-      const res = await fetch("/api/auth/resend-verification", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email }),
-      });
-      if (res.ok) {
-        setResendSuccess(true);
-      }
-    } catch {
-      // Silently fail
-    } finally {
-      setResendLoading(false);
-    }
-  }
-
-  return (
-    <Card className="w-full max-w-md">
-      <CardHeader className="space-y-1 items-center">
-        <h1 className="sr-only">Sign in</h1>
-        <WebsiteLogo
-          label={club.name}
-          className="mb-2 max-h-14 max-w-52"
-          textClassName="mb-2 text-center text-2xl text-foreground"
-        />
-        <CardDescription className="text-center">
-          Sign in to your account to manage bookings
-        </CardDescription>
-      </CardHeader>
-
-      <form onSubmit={handleSubmit}>
-        <CardContent className="space-y-4">
-          {verified && (
-            <div className="rounded-md bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800">
-              Your email has been verified. You can now sign in.
-            </div>
-          )}
-
-          {emailChanged && (
-            <div className="rounded-md bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800">
-              Your email has been changed successfully.
-            </div>
-          )}
-
-          {verifyError && (
-            <div className="rounded-md bg-destructive/10 border border-destructive/20 px-4 py-3 text-sm text-destructive">
-              {verifyError === "expired"
-                ? "Your verification link has expired. Please request a new one."
-                : verifyError === "invalid"
-                ? "Invalid verification link."
-                : "An error occurred during email verification."}
-            </div>
-          )}
-
-          {error && (
-            <div className="rounded-md bg-destructive/10 border border-destructive/20 px-4 py-3 text-sm text-destructive">
-              {error}
-            </div>
-          )}
-
-          {emailNotVerified && (
-            <div className="rounded-md bg-yellow-50 border border-yellow-200 px-4 py-3 text-sm space-y-2">
-              <p className="text-yellow-800 font-medium">Please verify your email</p>
-              <p className="text-yellow-700">
-                Check your inbox for a verification email. Click the link to verify your account.
-              </p>
-              {resendSuccess ? (
-                <p className="text-green-700 font-medium">Verification email sent!</p>
-              ) : (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={handleResendVerification}
-                  disabled={resendLoading}
-                >
-                  {resendLoading ? "Sending..." : "Resend verification email"}
-                </Button>
-              )}
-            </div>
-          )}
-
-          <div className="space-y-2">
-            <Label htmlFor="email">Email</Label>
-            <Input
-              id="email"
-              type="email"
-              placeholder="you@example.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-              autoComplete="email"
-            />
-          </div>
-
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label htmlFor="password">Password</Label>
-              <Link
-                href="/forgot-password"
-                className="text-sm text-muted-foreground hover:text-foreground underline-offset-4 hover:underline"
-              >
-                Forgot password?
-              </Link>
-            </div>
-            <Input
-              id="password"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              autoComplete="current-password"
-            />
-          </div>
-        </CardContent>
-
-        <CardFooter className="flex flex-col gap-4">
-          <Button type="submit" className="w-full" disabled={loading}>
-            {loading ? "Signing in..." : "Sign in"}
-          </Button>
-
-          <p className="text-sm text-center text-muted-foreground">
-            Didn&apos;t get your account setup or invite email? Check your spam
-            folder, then use{" "}
-            <Link
-              href="/forgot-password"
-              className="text-foreground font-medium underline-offset-4 hover:underline"
-            >
-              forgot password
-            </Link>{" "}
-            to send yourself a fresh link — it works even before your first
-            sign-in.
-          </p>
-
-          <p className="text-sm text-center text-muted-foreground">
-            Need to join the club?{" "}
-            <Link
-              href="/join/apply"
-              className="text-foreground font-medium underline-offset-4 hover:underline"
-            >
-              Apply for membership
-            </Link>
-          </p>
-
-          <p className="text-sm text-center text-muted-foreground">
-            Just want to stay with us?{" "}
-            <Link
-              href="/booking-requests"
-              className="text-foreground font-medium underline-offset-4 hover:underline"
-            >
-              Request a booking without an account
-            </Link>
-          </p>
-
-          <p className="text-sm text-center text-muted-foreground">
-            Booking for a school group?{" "}
-            <Link
-              href="/school-bookings"
-              className="text-foreground font-medium underline-offset-4 hover:underline"
-            >
-              Request a school group booking
-            </Link>
-          </p>
-        </CardFooter>
-      </form>
-    </Card>
-  );
+function singleSearchParam(value?: string | string[]) {
+  return Array.isArray(value) ? value[0] : value;
 }
 
-export default function LoginPage() {
-  const club = useClubIdentity();
+// Server component: resolve the login query params here so the client form
+// never needs useSearchParams(). Reading them client-side forced the form into
+// a Suspense boundary whose hard-load hydration is the suspected cause of the
+// #email double-render E2E flake (#1207/#1140).
+export default async function LoginPage({
+  searchParams,
+}: {
+  searchParams: Promise<{
+    verified?: string | string[];
+    verifyError?: string | string[];
+    emailChanged?: string | string[];
+    callbackUrl?: string | string[];
+  }>;
+}) {
+  const params = await searchParams;
+  const verified = singleSearchParam(params.verified) === "true";
+  const emailChanged = singleSearchParam(params.emailChanged) === "true";
+  const verifyError = singleSearchParam(params.verifyError);
+  const redirectTo = resolvePostLoginPath(singleSearchParam(params.callbackUrl));
 
   return (
-    <Suspense fallback={
-      <Card className="w-full max-w-md">
-        <CardHeader className="space-y-1 items-center">
-          <WebsiteLogo
-            label={club.name}
-            className="max-h-14 max-w-52"
-            textClassName="text-center text-2xl text-foreground"
-          />
-        </CardHeader>
-      </Card>
-    }>
-      <LoginForm />
-    </Suspense>
+    <LoginForm
+      verified={verified}
+      verifyError={verifyError}
+      emailChanged={emailChanged}
+      redirectTo={redirectTo}
+    />
   );
 }

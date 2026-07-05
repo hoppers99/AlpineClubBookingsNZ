@@ -51,10 +51,15 @@ Future reviews and issues should cite this file when proposing changes.
   database unique index cannot express it because liveness is booking-status
   dependent and spans `BookingGuest` to `Booking`, which a Postgres partial
   unique index cannot reference. It is race-free because every transaction that
-  writes a member-linked `BookingGuest`/`BookingGuestNight` takes the global
-  booking advisory lock (`pg_advisory_xact_lock(1)`) before running the guard
-  (`assertNoBookingMemberNightConflicts`); that lock-before-guard ordering is
-  frozen for every such writer by `review-findings-contracts.test.ts`.
+  **creates or re-dates** a member-linked `BookingGuest`/`BookingGuestNight`
+  footprint takes the global booking advisory lock (`pg_advisory_xact_lock(1)`)
+  before running the guard (`assertNoBookingMemberNightConflicts`); that
+  lock-before-guard ordering is frozen for every such writer by
+  `review-findings-contracts.test.ts`. Writes that do not change the member-night
+  footprint — re-pricing, name-only guest edits, lodge arrive/depart timestamps,
+  and anonymization that clears the member link — legitimately skip the guard, as
+  does the non-member group-join path (`verifyAndCreateNonMemberJoin`, which
+  writes only `memberId: null` guests and takes the lock but is a guard no-op).
 - A member holds at most one group-join roster row per group
   (`GroupBookingJoin` unique on groupBookingId + joinerMemberId, #1039
   item 2). The roster row is written inside the child booking's transaction:
@@ -239,6 +244,28 @@ arrives, the school contact confirms who is attending (#1101): a tokenized
 public page (hash-stored, rotated per reminder email) applies identity-only
 name updates through the same price-preserving machinery as quoted-booking
 edits, and the explicit confirmation is stored on the booking request.
+The booking's owning contact is an admin decision taken where the owner is
+first materialised — a capacity hold, or approval when no hold exists (#1255):
+the admin either creates a new non-login `NON_MEMBER`/`SCHOOL` contact or maps
+the request onto an existing non-login `NON_MEMBER`/`SCHOOL` contact, and
+mapping reuses that contact's Xero contact instead of spawning a duplicate. A
+booking request is never mapped onto a `canLogin:true` member, a held request's
+owner stays fixed until the hold is released (an admin **Release hold** action
+cancels the `AWAITING_REVIEW` held booking through the shared cancel path,
+freeing the beds and re-enabling the contact choice). Because this is an admin
+re-mapping rather than a requester cancellation, the release suppresses the
+customer "booking cancelled" email (`cancelBooking`'s
+`suppressCustomerNotification` option — the detach/reconcile/audit still run),
+and it deliberately does **not** revoke the requester's quote response token:
+the link stays active, so the admin is warned to re-send a fresh quote after
+re-mapping. Per-teacher hut-leader records are always created fresh. The held owner is re-validated at conversion:
+if a previously mapped contact is no longer a valid non-login contact by the time
+the requester accepts (login enabled, archived, deactivated, role changed), the
+accept still succeeds — a fresh non-login contact is substituted and an
+admin-attention audit row (`booking_request.owner_substituted`) is recorded so
+the substituted Xero contact can be reconciled. When the Xero module is off, the
+manual-invoice admin notification names the resolved booking owner (the mapped
+contact when mapped), not the raw request school/contact.
 Headcount or tier changes still go through the admin re-quote flow, and
 unconfirmed lists inside the prompt window surface on the stuck-state
 dashboard. Standard edit paths (batch

@@ -245,10 +245,42 @@ render-layer normalization in `src/components/website-footer.tsx`:
 content, the migration, and the sanitiser allowlist are untouched; the footer
 now sits at `h2` under the page `h1` with no visual change.
 
-### Item 3 — live keyboard-only + screen-reader walk (PENDING live verification)
+### Item 3 — live keyboard-only walk (DONE, 2026-07-05, #1295)
 
-**Not done here — needs the running stack.** The keyboard-only and screen-reader
-(NVDA/VoiceOver) walkthrough of the booking wizard and the admin members table
-against the running app (staging / `:3101`) is still outstanding and remains a
-human manual-QA task. Items 1 and 2 above are static markup fixes and were not
-exercised against a live browser in this change.
+Keyboard-only walk driven with Playwright against the running staging stack
+(`:3101`, rebuilt from current `main`), as `wanda-waitlist` (booking wizard) and
+`e2e-admin` (admin members). This exercised the #1149 fixes in a real browser
+(they had only been analysed statically). **All three behave correctly; no code
+fix was needed.**
+
+- **Booking wizard** (`src/app/(authenticated)/book/**`,
+  `src/components/booking-calendar.tsx`):
+  - The 31 calendar day cells are native `<button>`s carrying `aria-pressed` and
+    a descriptive `aria-label` (e.g. "Sunday, 5 July 2026, 12 of 14 beds free").
+    They sit in the natural Tab order (first available day was reached at Tab
+    stop 10, right after the Prev/Next-month buttons) and show a visible
+    keyboard focus ring (`outline: auto 1px`; `:focus-visible` matches).
+  - **Enter** picks the check-in day: `aria-pressed` flips to `true` and the
+    calendar's `aria-live="polite"` hint updates "Select check-in date" →
+    "Select check-out date". **Space** picks the check-out day and auto-advances
+    the wizard.
+  - The step indicator's visually-hidden `aria-live="polite"` announcer updates
+    on auto-advance ("Step 1 of 4: Select Dates" → "Step 2 of 4: Add Guests"),
+    and `aria-current="step"` tracks the active step. Note: on auto-advance the
+    old step's focus target unmounts and focus falls back to `<body>` — #1149
+    deliberately **announces** the transition via `aria-live` rather than moving
+    focus, so this is the accepted design, not a gap.
+- **Admin members table** (`src/app/(admin)/admin/members/_components/member-table.tsx`):
+  - The six sortable columns render real `<button>`s inside `<th aria-sort>`
+    cells. They are keyboard-focusable with a visible focus-visible ring (2px
+    `--ring` box-shadow). **Enter** toggles direction
+    (`aria-sort` ascending → descending → ascending on Name) and **Space** sorts
+    a new column (Email `none` → `ascending`); the arrow `SortIcon` and
+    `aria-sort` convey state together.
+
+Out of scope (unchanged): a **screen-reader (NVDA/VoiceOver) walkthrough by a
+real assistive-technology user** remains a human manual-QA task. This automated
+pass verifies focusability, focus order, the visible focus ring, keyboard
+activation, and that the relevant ARIA attributes/live-regions update on
+interaction — the legitimate DOM-level proxy — but does not substitute for a
+real AT announcement check.
