@@ -220,6 +220,11 @@ export default async function BookingDetailPage({
     !isAdmin &&
     booking.guests.some((guest) => guest.memberId === session.user.id);
   const canManageBooking = isBookingOwner || isAdmin;
+  // A Full Admin viewing someone else's booking acts on behalf of the member
+  // (admin-on-behalf is intentional). Member-framed self-service controls
+  // ("Save Payment Method", "Complete Payment", the owner-second-person
+  // on-hold notice) are gated off this so they only ever render for the owner.
+  const actingAsAdmin = isAdmin && !isBookingOwner;
   if (!canManageBooking && !isLinkedGuestViewer) {
     redirect("/bookings");
   }
@@ -465,26 +470,36 @@ export default async function BookingDetailPage({
   // which left testers unsure whether one should exist. The "Save Payment
   // Method" card below already explains the save-card flow, so the on-hold
   // explanation is only needed when that card is not showing.
+  // Member self-service "Save Payment Method" card (#1303): gated positively on
+  // the booking owner so a non-owner admin never sees it. An admin entering
+  // their own card on a member's booking is a footgun with no legitimate use,
+  // and the owner-positive gate is robust to read-only admin viewers (#1289).
   const showSavePaymentMethodCard =
-    canManageBooking &&
+    isBookingOwner &&
     !isDeleted &&
     !internetBankingPayment &&
     booking.status === "PENDING" &&
     (!booking.payment || !booking.payment.stripeSetupIntentId);
   // Suppress when a more specific provisional banner already explains the
   // on-hold/no-charge state (the split-booking child and the bumped-guest
-  // flagged-provisional notices both render near the top of the page).
+  // flagged-provisional notices both render near the top of the page). Also
+  // suppress for a non-owner admin: the notice is owner-second-person
+  // ("your place/your guests/your stay") and, before the owner-only save-card
+  // gate above, an admin never reached it (#1303).
   const showPaymentOnHoldNotice =
     !isDeleted &&
+    !actingAsAdmin &&
     booking.status === "PENDING" &&
     !showSavePaymentMethodCard &&
     !isProvisionalChild &&
     !isFlaggedProvisional;
 
   // The Stripe payment card and the payment-required banner render under the
-  // same condition so the banner can never point at a missing card.
+  // same condition so the banner can never point at a missing card. Member
+  // self-service "Complete Payment" (#1303): gated positively on the booking
+  // owner so a non-owner admin never sees the member pay/banner controls.
   const showCompletePaymentCard =
-    canManageBooking &&
+    isBookingOwner &&
     !isDeleted &&
     !internetBankingPayment &&
     isPaymentOwedBookingStatus(booking.status) &&
@@ -1091,6 +1106,7 @@ export default async function BookingDetailPage({
         <CancelBookingButton
           bookingId={booking.id}
           refundAppealDescription={refundAppealDescription}
+          onBehalfOfMember={actingAsAdmin}
         />
       )}
 
