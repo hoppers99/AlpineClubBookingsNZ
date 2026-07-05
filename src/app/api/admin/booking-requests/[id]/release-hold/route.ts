@@ -70,7 +70,12 @@ export async function POST(
     request.heldBookingId,
     session.user.id,
     "ADMIN",
-    getClientIp(req)
+    getClientIp(req),
+    "card",
+    // #1255 RR-2: suppress the requester's "booking cancelled" email — this is
+    // an admin releasing a hold to re-map, not the requester cancelling. The
+    // detach/reconcile/audit in the shared cancel path still run.
+    { suppressCustomerNotification: true }
   );
 
   // A concurrent cancel/accept won the race (#1160 single-flight): surface the
@@ -89,5 +94,13 @@ export async function POST(
     );
   }
 
-  return NextResponse.json({ ok: true });
+  // #1255 RR-1 (Option B): the requester's quote link is intentionally NOT
+  // revoked here, so they can still accept the (now-released) quote. Surface the
+  // caveat so the admin re-sends a fresh quote after re-mapping.
+  return NextResponse.json({
+    ok: true,
+    quoteLinkStillActive: true,
+    caveat:
+      "The requester's existing quote link is still active. Re-send a fresh quote after re-mapping the owner.",
+  });
 }

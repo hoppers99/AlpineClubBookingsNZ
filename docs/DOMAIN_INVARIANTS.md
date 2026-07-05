@@ -252,8 +252,13 @@ mapping reuses that contact's Xero contact instead of spawning a duplicate. A
 booking request is never mapped onto a `canLogin:true` member, a held request's
 owner stays fixed until the hold is released (an admin **Release hold** action
 cancels the `AWAITING_REVIEW` held booking through the shared cancel path,
-freeing the beds and re-enabling the contact choice), and per-teacher hut-leader
-records are always created fresh. The held owner is re-validated at conversion:
+freeing the beds and re-enabling the contact choice). Because this is an admin
+re-mapping rather than a requester cancellation, the release suppresses the
+customer "booking cancelled" email (`cancelBooking`'s
+`suppressCustomerNotification` option — the detach/reconcile/audit still run),
+and it deliberately does **not** revoke the requester's quote response token:
+the link stays active, so the admin is warned to re-send a fresh quote after
+re-mapping. Per-teacher hut-leader records are always created fresh. The held owner is re-validated at conversion:
 if a previously mapped contact is no longer a valid non-login contact by the time
 the requester accepts (login enabled, archived, deactivated, role changed), the
 accept still succeeds — a fresh non-login contact is substituted and an

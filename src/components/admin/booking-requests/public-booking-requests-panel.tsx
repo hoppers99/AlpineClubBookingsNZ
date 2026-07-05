@@ -936,6 +936,13 @@ export function PublicBookingRequestsPanel({
                                 This frees the held beds and returns the request
                                 to an un-held state so you can re-map and re-hold.
                               </p>
+                              <p className="text-xs font-medium">
+                                Warning: the requester&apos;s existing quote link
+                                stays active. If they accept before you re-hold,
+                                releasing may drop their reservation or lose the
+                                intended mapping. Re-send a fresh quote after
+                                re-mapping the owner.
+                              </p>
                               <div className="flex flex-wrap gap-2">
                                 <Button
                                   type="button"

@@ -119,13 +119,20 @@ describe("POST /api/admin/booking-requests/[id]/release-hold", () => {
 
     expect(res.status).toBe(200);
     expect(body).toMatchObject({ ok: true });
+    // RR-1 (Option B): the quote link is intentionally NOT revoked; the response
+    // surfaces the caveat so the admin re-sends a fresh quote after re-mapping.
+    expect(body).toMatchObject({ quoteLinkStillActive: true });
+    expect(body.caveat).toMatch(/quote link/i);
     // Reuses the shared cancel path (which detaches heldBookingId + frees beds)
-    // with the admin identity and client IP — no duplicated cancel logic.
+    // with the admin identity and client IP — no duplicated cancel logic — and
+    // RR-2 (Option A): suppresses the requester's cancellation email.
     expect(mocks.cancelBooking).toHaveBeenCalledWith(
       "held-1",
       "admin1",
       "ADMIN",
-      "203.0.113.9"
+      "203.0.113.9",
+      "card",
+      { suppressCustomerNotification: true }
     );
   });
 
