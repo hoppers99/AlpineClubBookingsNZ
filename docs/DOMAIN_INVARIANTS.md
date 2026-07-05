@@ -27,6 +27,16 @@ Future reviews and issues should cite this file when proposing changes.
   cross-lodge in the surface that shows it. A single-lodge club is simply a
   club whose `Lodge` table has one active row — the same per-lodge rules apply
   with the lodge dimension hidden by the ADR-002 presentation rule.
+- `lodgeId` is **nullable by design and stays that way** — there is no
+  `NOT NULL` "contract" release. The blue/green deploy runs migrations while the
+  old app colour still serves, and clubs target `latest` (skipping intermediate
+  versions), so a breaking `SET NOT NULL` could reject a pre-lodge old colour's
+  writes mid-cutover. Integrity is instead held by: the expand backfill (no
+  legacy nulls survive), every writer stamping `lodgeId`, and the
+  `lodgeNullTolerantScope` / `?? getDefaultLodgeId()` resolver (any stray null
+  resolves to the default lodge; null-lodge rows are treated as conflicting at
+  every lodge so they can't be double-booked). See
+  `docs/multi-lodge/contract-release.md`.
 - Each lodge's capacity resolves through `getLodgeCapacityStatus`: active
   configured beds when the Bed Allocation module is on, else the per-lodge
   `LodgeSettings.capacity` override, else the club-config bed total for the

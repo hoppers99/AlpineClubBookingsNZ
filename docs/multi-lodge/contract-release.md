@@ -1,194 +1,121 @@
-# Multi-Lodge Contract Release Runbook
+# Multi-Lodge Schema Posture — Expand-Only (why there is no contract release)
 
-The multi-lodge schema shipped as an **expand** release: `lodgeId` columns
-were added nullable, backfilled to the sole seeded lodge, and every runtime
-writer now stamps a lodge. The **contract** release is the follow-up that
-tightens those columns to `NOT NULL`, adds the null-partition partial unique
-indexes for the policy tables, and drops the superseded `EmailMessageSetting`
-lodge-identity columns.
+**Decision (owner, 2026-07-05): the multi-lodge schema stays permanently in its
+expand shape. `lodgeId` remains `NULL`-able on every scoped table, and the
+superseded legacy columns are retained. There is no follow-up "contract"
+release that enforces `NOT NULL` or drops columns.** Integrity is held at the
+application layer instead (below). This document explains *why*, how the deploy
+works, what outage a contract migration *would* cause, and — for the record —
+what a contract release would contain if the deployment model ever changed.
 
-This runbook exists because the obligations are otherwise scattered across
-ADR-001, ADR-003, the implementation plan, the scoping contract, and inline
-schema/code comments. It is the single derived checklist for whoever writes
-that migration. **Nothing here is invented** — every item traces to a nullable
-column, a comment, or a documented deferral in the current schema/docs. If the
-schema has changed since this was written, re-derive against
-`prisma/schema.prisma` and `docs/BLUE_GREEN_MIGRATION_SAFETY.tsv`.
+## Why expand-only (and not "expand now, contract later")
 
-Read `docs/BLUE_GREEN_MIGRATION_POLICY.md` and ADR-001's "Migration
-sequencing" first. This is **Critical/High-risk, owner-approval-required**
-work on booking-critical tables (per `CLAUDE.md`/`AGENTS.md` risk gate).
+The classic expand/contract pattern assumes a **sequenced** rollout: ship the
+expand release, let every deployment run it and drain its old code, *then* ship
+the contract release that tightens the schema. Two facts about this project
+break that assumption:
 
-## Preconditions (all must hold before running)
+1. **Deploys are blue/green (zero-downtime).** `prisma migrate deploy` runs from
+   the `migrate` container **while the old app colour is still serving**
+   (deploy step 13/19), and the old colour keeps taking writes until Caddy cuts
+   over (step 16) and the old container is removed (step 17). So there is always
+   a window where the *old* code runs against the *newly-migrated* schema. That
+   is exactly what expand migrations are designed to survive — and what
+   `SET NOT NULL` / `DROP COLUMN` are not (`docs/BLUE_GREEN_MIGRATION_POLICY.md`
+   classifies them as breaking).
+2. **Clubs target `latest` and skip intermediate versions.** A self-hosted club
+   that hasn't updated in months (or years) jumps straight from a pre-lodge
+   version to whatever `latest` is. `prisma migrate deploy` then applies the
+   expand *and* any later contract migrations in **one** run — with the club's
+   **pre-lodge** code as the old colour. That old colour does not stamp
+   `lodgeId`, so the instant a contract `NOT NULL` migration is applied it starts
+   rejecting the old colour's inserts.
 
-1. **The expand release is fully deployed and cut over.** All of the
-   `20260702*`/`20260703*` lodge expand migrations in the ledger are applied in
-   production and the *new* application code — the one that stamps `lodgeId` on
-   every write via `getDefaultLodgeId` — is the only code serving traffic.
-2. **The old colour is fully drained.** No blue/green slot running pre-lodge
-   code may still be accepting writes. A draining old colour can still insert
-   `NULL`-`lodgeId` rows (rooms, lockers, seasons, bookings, chore templates,
-   hut-leader assignments); `NOT NULL` will fail loudly against any such row,
-   and the overlap/uniqueness code paths currently treat null-lodge rows as
-   conflicting at every lodge precisely to stay safe during the drain. Confirm
-   the old slot is stopped, not merely idle.
-3. **Backfill is verified complete.** Run the verification queries below and
-   confirm every count is `0` before adding any `NOT NULL` constraint. These
-   are the assertions the production review (§2) flags as owed *before* this
-   migration ships — write them as tests against a shadow database too.
+Put together: we can never guarantee the old colour serving during a cutover is
+lodge-aware, so a contract migration would break real deployments. Sequencing
+(option A) doesn't save us because target-latest bypasses the intermediate
+release the sequencing relies on.
 
-### Backfill verification queries
+## What outage a contract migration would cause
 
-Run against the production (or a production-clone shadow) database. Every
-result must be `0`.
+Concretely, during the step 13→17 window of a deploy that includes a breaking
+lodge migration, with pre-lodge code as the old colour:
+
+- **`SET NOT NULL` on `Booking.lodgeId` (etc.):** every booking/room/season/etc.
+  write the old colour attempts (a member booking, an admin creating a room)
+  fails with a `NOT NULL` violation → 500s on those paths until cutover
+  completes. A partial outage of the write paths for the ~seconds-to-minutes the
+  old colour is still live, and any in-flight transaction on those tables aborts.
+- **`DROP COLUMN` on `EmailMessageSetting.*`:** the old colour still reads those
+  columns → errors on the surfaces that render lodge identity until cutover.
+
+The migrate step itself would also fail loudly if a pre-lodge colour had already
+inserted a `NULL`-`lodgeId` row between the backfill and the `NOT NULL` within
+the same run. The blue/green policy therefore treats these as breaking and
+requires `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1` + a maintenance window — which
+defeats the zero-downtime model we rely on.
+
+## How integrity is maintained without `NOT NULL`
+
+`lodgeId` is nullable *by constraint* but effectively never null *in practice*:
+
+- **Backfill on expand.** `20260702120000_add_lodge_id_scoping_expand` backfills
+  every existing row to the sole seeded lodge, so no legacy nulls survive the
+  upgrade.
+- **Every writer stamps a lodge.** All create/modify paths resolve and write
+  `lodgeId` (`getDefaultLodgeId` when a caller doesn't specify one). New rows are
+  never null in normal operation.
+- **Null-tolerant reads.** `lodgeNullTolerantScope(lodgeId)` and the
+  `lodgeId ?? getDefaultLodgeId()` fallback mean that even if a null row appeared
+  (e.g. a pre-lodge old colour wrote one during a cutover), it resolves to the
+  default lodge rather than disappearing or erroring. Overlap/uniqueness checks
+  deliberately treat null-lodge rows as belonging to every lodge, so they can
+  never be double-booked.
+- **Legacy identity columns kept in sync.** `EmailMessageSetting.lodgeName/…`
+  are retained and kept current by `syncSoleActiveLodgeIdentity`, so any code
+  path (old or new) reads consistent values.
+
+The DB-level `NOT NULL` guarantee is therefore a *nice-to-have we forgo* to keep
+zero-downtime, target-latest deploys safe — not a correctness requirement.
+
+## Additive hardening that IS still safe (optional)
+
+Not everything a contract release would do is breaking. Adding **partial unique
+indexes** (`WHERE "lodgeId" IS NULL`) on the policy tables
+(`CancellationPolicy`, `MinimumStayPolicy`, `BookingPeriod`, `LodgeInstruction`)
+is *additive* — existing null rows already satisfy uniqueness (app-enforced
+since expand), so the index validates cleanly and the old colour is unaffected.
+These may ship in a normal expand-safe migration if we want the club-wide
+partition's uniqueness re-hardened at the DB level. They are optional and
+independent of the `NOT NULL` decision above.
+
+---
+
+## Appendix — if the deployment model ever changes
+
+Should the project ever move to coordinated maintenance-window upgrades (old
+colour stopped before migrate), the breaking items below become runnable. This
+is retained so the derivation isn't lost — **do not run any of it under the
+current blue/green + target-latest model.**
+
+Preconditions if ever run: old colour fully stopped (not merely idle); backfill
+verified (every count below `0`) before any `NOT NULL`.
 
 ```sql
--- Entity tables that become NOT NULL. Any NULL here blocks the migration.
-SELECT count(*) FROM "LodgeRoom"            WHERE "lodgeId" IS NULL;
-SELECT count(*) FROM "Locker"               WHERE "lodgeId" IS NULL;
-SELECT count(*) FROM "Season"               WHERE "lodgeId" IS NULL;
-SELECT count(*) FROM "Booking"              WHERE "lodgeId" IS NULL;
-SELECT count(*) FROM "ChoreTemplate"        WHERE "lodgeId" IS NULL;
-SELECT count(*) FROM "HutLeaderAssignment"  WHERE "lodgeId" IS NULL;
-
--- Every stamped lodgeId points at a real lodge (FK integrity sanity check).
-SELECT count(*) FROM "Booking" b
-  LEFT JOIN "Lodge" l ON l.id = b."lodgeId"
-  WHERE b."lodgeId" IS NOT NULL AND l.id IS NULL;
-
--- Policy tables: these stay nullable (null = club-wide default). Confirm the
--- club-wide partition has no accidental duplicates before adding the partial
--- unique index — each of these must be 0.
-SELECT "daysBeforeStay", count(*) FROM "CancellationPolicy"
-  WHERE "lodgeId" IS NULL GROUP BY "daysBeforeStay" HAVING count(*) > 1;
--- (repeat the equivalent club-wide-partition duplicate check for the
---  MinimumStayPolicy and BookingPeriod key columns before their partial
---  indexes are added.)
+SELECT count(*) FROM "LodgeRoom"           WHERE "lodgeId" IS NULL;
+SELECT count(*) FROM "Locker"              WHERE "lodgeId" IS NULL;
+SELECT count(*) FROM "Season"              WHERE "lodgeId" IS NULL;
+SELECT count(*) FROM "Booking"             WHERE "lodgeId" IS NULL;
+SELECT count(*) FROM "ChoreTemplate"       WHERE "lodgeId" IS NULL;
+SELECT count(*) FROM "HutLeaderAssignment" WHERE "lodgeId" IS NULL;
 ```
 
-## Items (the full derived list)
-
-### 1. `NOT NULL` on the five entity tables + `HutLeaderAssignment`
-
-These carry a `lodgeId` that is *conceptually required* but was left nullable
-for the expand release. Enforce `NOT NULL` after the backfill checks pass:
-
-| Table | Field | Current | Target |
-| --- | --- | --- | --- |
-| `LodgeRoom` | `lodgeId` | `String?` | `String` (NOT NULL) |
-| `Locker` | `lodgeId` | `String?` | `String` (NOT NULL) |
-| `Season` | `lodgeId` | `String?` | `String` (NOT NULL) |
-| `Booking` | `lodgeId` | `String?` | `String` (NOT NULL) |
-| `ChoreTemplate` | `lodgeId` | `String?` | `String` (NOT NULL) |
-| `HutLeaderAssignment` | `lodgeId` | `String?` | `String` (NOT NULL) |
-
-`HutLeaderAssignment` is included per the production review: hut-leader PINs
-currently match legacy null-lodge assignments as a compatibility path
-(implementation-plan phase 4); once `NOT NULL` lands, that legacy branch is
-dead and can be removed. `Booking.waitlistOfferedLodgeId` stays nullable — it
-is the ADR-004 offer marker, not the entity scope.
-
-### 2. Null-partition partial unique indexes for the policy tables
-
-`CancellationPolicy`, `MinimumStayPolicy`, and `BookingPeriod` keep a
-*permanently nullable* `lodgeId` (null = club-wide default; ADR-001 Q3). The
-expand release re-scoped their uniqueness to `[lodgeId, …]`, but because
-PostgreSQL treats NULLs as distinct, the database no longer hard-enforces
-club-wide uniqueness on the null partition — the admin routes enforce it in a
-Serializable replace transaction in the meantime (see the
-`20260702210000_rescope_cancellation_tier_uniqueness` ledger note).
-
-Add a **partial unique index `WHERE "lodgeId" IS NULL`** on each policy table's
-key so the club-wide partition regains today's DB-level guarantee:
-
-- `CancellationPolicy` — partial unique on `(daysBeforeStay) WHERE "lodgeId" IS NULL`
-- `MinimumStayPolicy` — partial unique on its key column(s) `WHERE "lodgeId" IS NULL`
-- `BookingPeriod` — partial unique on its key column(s) `WHERE "lodgeId" IS NULL`
-
-Confirm the exact key columns against `prisma/schema.prisma` at migration time
-(Prisma expresses partial indexes as raw SQL in the migration; the schema-level
-`@@unique` cannot express the `WHERE` clause). `LodgeInstruction` follows the
-same pattern per document key — its null-partition partial unique index on
-`(key) WHERE "lodgeId" IS NULL` belongs in this release too (see the
-`20260703153000_rescope_lodge_instructions` ledger note).
-
-### 3. Rooms/lockers `NOT NULL` completion of the pulled-forward re-scoping
-
-The `[lodgeId, name]` uniqueness re-scoping for `LodgeRoom` and `Locker` was
-**pulled forward** into the expand release
-(`20260703200000_rescope_room_locker_name_uniqueness`) after two-lodge testing
-hit "Room 1 already exists". That migration only swapped the index; it did not
-make `lodgeId` NOT NULL. Item 1 above completes it. Once `lodgeId` is NOT NULL,
-add the null-partition handling is moot for these two (no nulls remain), and
-the app-side "null rows clash at every lodge" pre-checks in the bulk-seed
-routes (`admin/bed-allocation/rooms/bulk`, `admin/lockers/bulk`) can be
-simplified to a straight per-lodge check.
-
-### 4. `EmailMessageSetting` lodge-identity column drop
-
-The lodge-identity fields were moved onto `Lodge` (the `Lodge` model now owns
-`doorCode` and `travelNote`; identity is synced by `syncSoleActiveLodgeIdentity`).
-The legacy columns still exist on `EmailMessageSetting` and are superseded:
-
-- `EmailMessageSetting.lodgeName`
-- `EmailMessageSetting.lodgeTravelNote`
-- `EmailMessageSetting.doorCode`
-
-Drop these in the contract release. A column drop is only blue/green-safe once
-no running code reads them — confirm no writer/reader remains before dropping
-(implementation-plan phase 1/2 records this as deferred to the contract
-release precisely because a drop is destructive).
-
-### 5. Possible `LodgeSettings` legacy-row consolidation (optional)
-
-`LodgeSettings` / `BedAllocationSettings` became per-lodge rows keyed by lodge
-id, but the legacy `"default"` row is kept and claimed on first per-lodge write
-(scoping contract, "Resolved 2026-07-03"). The contract release *may*
-consolidate the legacy rows and then add a real `[lodgeId]` uniqueness once no
-unlinked legacy row remains. This is optional and lower-risk than items 1–4;
-only do it if the legacy-row resolution logic is being retired. `hutLeaderLookaheadDays`
-stays a club-wide knob on the legacy row regardless.
-
-## Sequencing
-
-Ship as one or more contract migrations, in this order, after the preconditions
-hold:
-
-1. **Verify backfill** (queries above) — abort if any count is non-zero;
-   re-run the expand-era backfill for the offending table first.
-2. **Add the policy-table + `LodgeInstruction` null-partition partial unique
-   indexes** (item 2). These are additive and safe on the existing null rows,
-   which already satisfy uniqueness.
-3. **Enforce `NOT NULL`** on the six entity/assignment tables (items 1 and 3).
-   `Booking` is the hot table — take the brief `ACCESS EXCLUSIVE` lock during
-   low booking traffic; the column is already fully populated so there is no
-   table rewrite, only a validation scan (or use the
-   `ADD CONSTRAINT … NOT VALID` → `VALIDATE CONSTRAINT` split if the scan lock
-   window is a concern).
-4. **Drop the superseded `EmailMessageSetting` columns** (item 4) — destructive,
-   so last, and only once no code reads them.
-5. **(Optional) consolidate `LodgeSettings` legacy rows** (item 5).
-6. Remove the now-dead null-lodge compatibility branches in code (overlap
-   queries counting null rows against every lodge; the hut-leader legacy
-   null-assignment match; the bulk-seed null-clash pre-checks) — code change,
-   can follow the migration once it is confirmed applied.
-
-## Migration-ledger entries this release will need
-
-Add one row per migration to `docs/BLUE_GREEN_MIGRATION_SAFETY.tsv`. All the
-lodge expand rows use `phase = expand`; these are the first lodge rows with
-`phase = contract`, so each destructive/NOT-NULL migration **must** name its
-`previous_expand_release` (the ledger requires it for contract migrations) and
-carry a lock-impact plan. Templates (fill the exact migration name and the
-expand release it depends on):
-
-```
-<name>_multi_lodge_policy_partial_unique_indexes	contract	20260702210000_rescope_cancellation_tier_uniqueness	yes	Adds WHERE "lodgeId" IS NULL partial unique indexes on CancellationPolicy, MinimumStayPolicy, BookingPeriod, and LodgeInstruction so the club-wide (null) partition regains DB-level uniqueness the nulls-distinct expand swap gave up. Existing null rows already satisfy uniqueness (app-enforced since the expand release), so index creation validates cleanly. Additive; brief lock on small admin-written tables.
-<name>_multi_lodge_entity_lodge_id_not_null	contract	20260702120000_add_lodge_id_scoping_expand	yes	Enforces NOT NULL on lodgeId for LodgeRoom, Locker, Season, Booking, ChoreTemplate, and HutLeaderAssignment after backfill verification. Requires the old (pre-lodge) colour fully drained: a draining old colour could still insert null-lodge rows and fail the constraint. Booking is hot — the column is fully populated so no rewrite; take the ACCESS EXCLUSIVE validation lock during low booking traffic, or split into ADD CONSTRAINT NOT VALID then VALIDATE CONSTRAINT to shorten the blocking window.
-<name>_drop_email_message_setting_lodge_columns	contract	20260702100000_add_lodge_entity_and_multi_lodge_module	yes	Drops the superseded EmailMessageSetting.lodgeName/lodgeTravelNote/doorCode columns now that lodge identity lives on Lodge (synced by syncSoleActiveLodgeIdentity). Destructive: run only once no serving code reads these columns. Small single-row table; brief metadata lock.
-```
-
-Verify each row's `old_code_compatible` honestly (the NOT NULL and column-drop
-migrations are only compatible once the old colour is gone — that is why the
-drained-precondition is mandatory, not advisory), and run
-`npm run db:check-drift` against a shadow database for every migration PR.
+Items a contract release would contain: (1) `NOT NULL` on `LodgeRoom`, `Locker`,
+`Season`, `Booking`, `ChoreTemplate`, `HutLeaderAssignment` `lodgeId`; (2) the
+policy-table partial unique indexes (additive — see above, shippable now); (3)
+simplify the null-lodge compatibility branches once no nulls remain; (4) drop
+`EmailMessageSetting.lodgeName/lodgeTravelNote/doorCode`; (5) optional
+`LodgeSettings` legacy-`"default"`-row consolidation. Each `NOT NULL`/drop row in
+`docs/BLUE_GREEN_MIGRATION_SAFETY.tsv` would be `phase = contract`, name its
+`previous_expand_release`, and honestly carry `old_code_compatible = no` — which
+is precisely why they are not run under blue/green.
