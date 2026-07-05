@@ -17,7 +17,13 @@ import { prisma } from "@/lib/prisma";
  */
 export async function claimXeroSyncOperationToRunning(
   operationId: string,
-  guard: Prisma.XeroSyncOperationWhereInput,
+  // `id` and `status` are owned by the helper — they ARE the atomic
+  // single-flight precondition — and are intentionally not overridable by
+  // callers, so `Omit` compile-blocks a guard that would silently weaken the
+  // claim (e.g. `{ status: "RUNNING" }`, which would claim an already-running
+  // row and double-process). AND/OR/NOT nesting remains an unused escape hatch,
+  // so this stops the realistic accidental foot-gun, not every theoretical one.
+  guard: Omit<Prisma.XeroSyncOperationWhereInput, "id" | "status">,
 ): Promise<boolean> {
   const result = await prisma.xeroSyncOperation.updateMany({
     where: {
