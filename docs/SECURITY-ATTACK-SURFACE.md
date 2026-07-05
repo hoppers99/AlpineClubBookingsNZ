@@ -681,9 +681,16 @@ they do not change the member-night footprint. See DOMAIN_INVARIANTS.md.
 
 ### Money-path integrity (#1234)
 
-Layered idempotency defenses on the payment/settlement path plus a `@@unique`
-constraint on the Xero outbox to prevent duplicate sequencing under retry. See
-the *Money, Booking, And Lifecycle Integrity Review* above.
+Extended the money-path invariant defenses: **L1** repairs credit allocations
+atomically under the booking advisory lock (`pg_advisory_xact_lock(1)`); **L2**
+guards the supplementary-invoice path with an idempotency key, rejecting a
+supplementary invoice when its `bookingModificationId` is absent. **L3 was
+ratified as no-change**: the Xero outbox (`XeroSyncOperation`) deliberately keeps
+**no** `@@unique` on `correlationKey`/`idempotencyKey` — a full unique would
+reject a legitimate re-enqueue (a settled row from attempt 1 plus a fresh
+`PENDING` retry) and break retries, so outbox dedup stays status-based (see the
+by-design schema comment and the *Money, Booking, And Lifecycle Integrity Review*
+above).
 
 ### Member-facing info-leak on the pay step (#1223)
 
