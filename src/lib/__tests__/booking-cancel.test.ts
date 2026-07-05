@@ -780,6 +780,144 @@ describe("cancelBooking credit refunds", () => {
     expect(mocks.refundPaymentTransactions).not.toHaveBeenCalled();
     expect(mocks.applyLocalRefundAllocation).not.toHaveBeenCalled();
   });
+
+  // -------------------------------------------------------------------------
+  // Authorization widening + refund parity (issue #1313, owner-approved option
+  // A2). A Booking Officer (bookings:edit) may cancel a booking they do not own
+  // with the SAME authority as a Full Admin. `hasBookingsEditAccess` widens ONLY
+  // the authorization gate; the refund plan keys off booking state + policy
+  // tier, never the actor role, so an officer cancel and a Full-Admin cancel are
+  // byte-identical in money, Stripe path, email, and audit (only the actor id
+  // differs). These inherit the outer beforeEach (a PAID booking owned by
+  // "member_1" with a fixed 50% / 5000c card refund plan).
+  // -------------------------------------------------------------------------
+  describe("authorization widening + refund parity (issue #1313 option A2)", () => {
+    it("lets a non-owner Booking Officer (bookings:edit) cancel and refund exactly as the owner does", async () => {
+      const result = await cancelBooking(
+        "booking_1",
+        "officer-1", // NOT the owner (member_1)
+        "USER", // an officer keeps their honest legacy authorization role
+        "127.0.0.1",
+        "card",
+        { hasBookingsEditAccess: true }
+      );
+
+      expect(result).toMatchObject({
+        status: 200,
+        data: expect.objectContaining({
+          success: true,
+          refundAmountCents: 5000,
+          refundMethod: "card",
+        }),
+      });
+      // Refund lands on the OWNER's original payment (payment_1), actor-independent.
+      expect(mocks.refundPaymentTransactions).toHaveBeenCalledWith(
+        expect.objectContaining({ paymentId: "payment_1", amountCents: 5000 })
+      );
+    });
+
+    it("forbids a non-owner actor without bookings:edit (a plain member AND a read-only admin both resolve to role USER + flag false)", async () => {
+      const result = await cancelBooking(
+        "booking_1",
+        "intruder-1",
+        "USER",
+        "127.0.0.1",
+        "card"
+        // No hasBookingsEditAccess: the member-facing route passes `false` for a
+        // plain member and for a read-only admin (bookings:view, not :edit).
+      );
+
+      expect(result).toEqual({ status: 403, error: "Forbidden" });
+      expect(mocks.bookingUpdate).not.toHaveBeenCalled();
+      expect(mocks.refundPaymentTransactions).not.toHaveBeenCalled();
+      expect(mocks.sendBookingCancelledEmail).not.toHaveBeenCalled();
+    });
+
+    it("leaves the booking owner's cancel path unchanged", async () => {
+      const result = await cancelBooking(
+        "booking_1",
+        "member_1",
+        "USER",
+        "127.0.0.1",
+        "card"
+      );
+      expect(result.status).toBe(200);
+      expect(mocks.refundPaymentTransactions).toHaveBeenCalledWith(
+        expect.objectContaining({ paymentId: "payment_1", amountCents: 5000 })
+      );
+    });
+
+    it("leaves the Full-Admin (role ADMIN) cancel path unchanged", async () => {
+      const result = await cancelBooking(
+        "booking_1",
+        "admin-1",
+        "ADMIN",
+        "127.0.0.1",
+        "card"
+      );
+      expect(result.status).toBe(200);
+    });
+
+    it("produces byte-identical refund, cancellation email, and audit for an officer cancel vs a Full-Admin cancel (only the actor id differs)", async () => {
+      const officer = await cancelBooking(
+        "booking_1",
+        "officer-1",
+        "USER",
+        "127.0.0.1",
+        "card",
+        { hasBookingsEditAccess: true }
+      );
+      const admin = await cancelBooking(
+        "booking_1",
+        "admin-1",
+        "ADMIN",
+        "127.0.0.1",
+        "card"
+      );
+
+      // Same money outcome (the whole success payload matches).
+      expect(officer.status).toBe(200);
+      expect(admin.status).toBe(200);
+      if (officer.status !== 200 || admin.status !== 200) {
+        throw new Error("expected both cancels to succeed");
+      }
+      expect(officer.data).toEqual(admin.data);
+      expect(officer.data.refundAmountCents).toBe(5000);
+
+      // Same Stripe refund: same amount, same destination payment (payment_1).
+      const refundCalls = mocks.refundPaymentTransactions.mock.calls;
+      expect(refundCalls).toHaveLength(2);
+      expect(refundCalls[0][0]).toMatchObject({
+        paymentId: "payment_1",
+        amountCents: 5000,
+      });
+      expect(refundCalls[1][0]).toMatchObject({
+        paymentId: "payment_1",
+        amountCents: 5000,
+      });
+
+      // Same cancellation email to the OWNER — identical args for both actors.
+      const emailCalls = mocks.sendBookingCancelledEmail.mock.calls;
+      expect(emailCalls).toHaveLength(2);
+      expect(emailCalls[0]).toEqual(emailCalls[1]);
+      expect(emailCalls[0][0]).toBe("member@example.com");
+      expect(emailCalls[0][4]).toBe(5000);
+
+      // Same audit — identical details + settlement metadata + subjectMemberId
+      // (the booking owner); ONLY the actor `memberId` differs.
+      const auditCalls = mocks.logAudit.mock.calls
+        .map((call) => call[0])
+        .filter((entry) => entry?.action === "booking.cancel");
+      expect(auditCalls).toHaveLength(2);
+      const [officerAudit, adminAudit] = auditCalls;
+      expect(officerAudit.memberId).toBe("officer-1");
+      expect(adminAudit.memberId).toBe("admin-1");
+      expect(officerAudit.subjectMemberId).toBe("member_1");
+      expect(adminAudit.subjectMemberId).toBe("member_1");
+      expect(officerAudit.details).toEqual(adminAudit.details);
+      expect(officerAudit.metadata).toEqual(adminAudit.metadata);
+    });
+  });
 });
 
 

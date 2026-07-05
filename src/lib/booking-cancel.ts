@@ -104,6 +104,14 @@ type CancelBookingResponse =
  * re-open owner mapping without telling the requester their reservation was
  * cancelled. Refund-path notifications are unaffected. Defaults to `false`, so
  * every existing caller is unchanged.
+ *
+ * `options.hasBookingsEditAccess` (#1313, option A2): when `true`, a non-owner
+ * actor holding the `bookings:edit` permission (a Booking Officer) is authorized
+ * to cancel exactly as a Full Admin does. This is an authorization widening
+ * ONLY — `sessionUserRole` is still passed through honestly and the refund /
+ * Stripe / email / audit logic never reads it beyond the gate below, so the
+ * money outcome is independent of which authorized actor triggered the cancel.
+ * Defaults to `false`, so every existing caller is unchanged.
  */
 export async function cancelBooking(
   bookingId: string,
@@ -111,7 +119,10 @@ export async function cancelBooking(
   sessionUserRole: string,
   ipAddress: string,
   refundMethod: "card" | "credit" = "card",
-  options: { suppressCustomerNotification?: boolean } = {}
+  options: {
+    suppressCustomerNotification?: boolean;
+    hasBookingsEditAccess?: boolean;
+  } = {}
 ): Promise<CancelBookingResponse> {
   const result = await performBookingCancellation(
     bookingId,
@@ -119,7 +130,8 @@ export async function cancelBooking(
     sessionUserRole,
     ipAddress,
     refundMethod,
-    options.suppressCustomerNotification ?? false
+    options.suppressCustomerNotification ?? false,
+    options.hasBookingsEditAccess ?? false
   );
 
   if (result.status === 200) {
@@ -223,7 +235,8 @@ async function performBookingCancellation(
   sessionUserRole: string,
   ipAddress: string,
   refundMethod: "card" | "credit" = "card",
-  suppressCustomerNotification = false
+  suppressCustomerNotification = false,
+  hasBookingsEditAccess = false
 ): Promise<CancelBookingResponse> {
   const booking = await prisma.booking.findUnique({
     where: { id: bookingId },
@@ -234,7 +247,18 @@ async function performBookingCancellation(
     return { status: 404, error: "Booking not found" };
   }
 
-  if (booking.memberId !== sessionUserId && sessionUserRole !== "ADMIN") {
+  // Authorization (issue #1313, option A2): the booking owner, a Full Admin
+  // (sessionUserRole === "ADMIN"), OR a Booking Officer (bookings:edit, passed
+  // as hasBookingsEditAccess by the member-facing cancel route) may cancel.
+  // Adding the officer is an authorization widening ONLY — `sessionUserRole` and
+  // `hasBookingsEditAccess` are read nowhere below this gate, so the refund
+  // amount, refund method/destination, Stripe path, cancellation email, and
+  // audit are all identical regardless of which authorized actor triggered it.
+  if (
+    booking.memberId !== sessionUserId &&
+    sessionUserRole !== "ADMIN" &&
+    !hasBookingsEditAccess
+  ) {
     return { status: 403, error: "Forbidden" };
   }
 
