@@ -214,11 +214,20 @@ The `two-factor` module is already enabled for the run by
 
 ## CI
 
-`.github/workflows/e2e.yml` runs the suite on PRs and pushes to `main`. It is
-**non-blocking** (`continue-on-error: true`) while the suite beds in — a red
-E2E job does not fail the workflow. Check the job log and the uploaded
-`playwright-report` artifact when it goes red. Promote it to a required gate
-by removing `continue-on-error` once it has proven stable.
+`.github/workflows/e2e.yml` runs the suite on PRs and pushes to `main`. It is a
+**blocking gate** — a red E2E job fails the workflow (promoted from advisory in
+#1315 after a stable green window on `main`). Check the job log and the uploaded
+`playwright-report` artifact when it goes red.
+
+Note on scope: `main` is not branch-protected, so a red E2E run is an honest
+failing signal but does not itself hard-block a merge. Making E2E a required
+status that blocks merges is a separate branch-protection setting.
+
+The Stripe payment specs remain an environment dependency: they run only when
+the `STRIPE_TEST_SECRET_KEY` / `STRIPE_TEST_PUBLISHABLE_KEY` repository secrets
+hold genuine Stripe **test-mode** keys, and otherwise `test.skip` cleanly (they
+are also retry-scoped to absorb the datacenter-IP Link/hCaptcha flake). So a
+green E2E run does not imply Stripe E2E coverage ran unless those secrets are set.
 
 ## Safety
 
