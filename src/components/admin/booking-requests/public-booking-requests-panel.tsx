@@ -172,6 +172,18 @@ interface UiMemberLink {
   label?: string;
 }
 
+// Advisory-only member-night conflict surfaced when the admin links a guest to
+// a real member (issue #1226). Purely informational — the hard block stays at
+// approve/hold time — so we only carry the fields the warning renders.
+interface LinkMemberNightConflict {
+  memberId: string;
+  memberName: string;
+  bookingOwnerName: string;
+  bookingCheckIn: string;
+  bookingCheckOut: string;
+  conflictingNights: string[];
+}
+
 function formatDate(value: string) {
   return formatNZDate(new Date(value));
 }
@@ -261,6 +273,9 @@ export function PublicBookingRequestsPanel({
   >({});
   const [rateInputs, setRateInputs] = useState<Record<string, string>>({});
   const [memberLinks, setMemberLinks] = useState<Record<string, UiMemberLink[]>>({});
+  const [linkConflicts, setLinkConflicts] = useState<
+    Record<string, LinkMemberNightConflict[]>
+  >({});
   const [memberQueries, setMemberQueries] = useState<Record<string, string>>({});
   const [memberResults, setMemberResults] = useState<
     Record<string, MemberSearchResult[]>
@@ -627,6 +642,44 @@ export function PublicBookingRequestsPanel({
     }
   }
 
+  // Advisory-only pre-check (issue #1226): whenever the admin changes the
+  // guest→member links, ask the server if any linked member is already on an
+  // overlapping booking. This never blocks — the 409 hard block stays at
+  // approve/hold time — it just surfaces the overlap earlier so the admin can
+  // resolve it before approving.
+  async function refreshLinkConflicts(
+    request: PublicBookingRequestData,
+    links: UiMemberLink[]
+  ) {
+    if (links.length === 0) {
+      setLinkConflicts((prev) => ({ ...prev, [request.id]: [] }));
+      return;
+    }
+    try {
+      const response = await fetch(
+        `/api/admin/booking-requests/${request.id}/link-conflicts`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            links: links.map(({ guestIndex, memberId }) => ({
+              guestIndex,
+              memberId,
+            })),
+          }),
+        }
+      );
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) return; // advisory only — never surface as a hard error
+      setLinkConflicts((prev) => ({
+        ...prev,
+        [request.id]: Array.isArray(data.conflicts) ? data.conflicts : [],
+      }));
+    } catch {
+      // Advisory pre-check is best-effort; ignore transport errors.
+    }
+  }
+
   function handleLinkMember(
     request: PublicBookingRequestData,
     guestIndex: number,
@@ -639,15 +692,15 @@ export function PublicBookingRequestsPanel({
     nextLinks.push({ guestIndex, memberId: member.id, label });
     setMemberLinks((prev) => ({ ...prev, [request.id]: nextLinks }));
     setMemberResults((prev) => ({ ...prev, [`${request.id}:${guestIndex}`]: [] }));
+    void refreshLinkConflicts(request, nextLinks);
   }
 
   function handleUnlinkMember(request: PublicBookingRequestData, guestIndex: number) {
-    setMemberLinks((prev) => ({
-      ...prev,
-      [request.id]: activeMemberLinks(request).filter(
-        (link) => link.guestIndex !== guestIndex
-      ),
-    }));
+    const nextLinks = activeMemberLinks(request).filter(
+      (link) => link.guestIndex !== guestIndex
+    );
+    setMemberLinks((prev) => ({ ...prev, [request.id]: nextLinks }));
+    void refreshLinkConflicts(request, nextLinks);
   }
 
   async function handleApprove(request: PublicBookingRequestData) {
@@ -1126,6 +1179,38 @@ export function PublicBookingRequestsPanel({
 
                       <div className="space-y-2">
                         <p className="text-sm font-medium">Linked member guests</p>
+                        {linkConflicts[request.id]?.length ? (
+                          <div
+                            className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900"
+                            role="status"
+                          >
+                            <p className="font-medium">
+                              Heads up: member-night overlap on{" "}
+                              {linkConflicts[request.id].length === 1
+                                ? "a linked member"
+                                : "linked members"}
+                            </p>
+                            <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                              {linkConflicts[request.id].map((conflict) => (
+                                <li key={`${conflict.memberId}-${conflict.bookingCheckIn}`}>
+                                  {conflict.memberName} is already on{" "}
+                                  {conflict.bookingOwnerName}&apos;s booking (
+                                  {formatDate(conflict.bookingCheckIn)}–
+                                  {formatDate(conflict.bookingCheckOut)}) for{" "}
+                                  {conflict.conflictingNights
+                                    .map((night) => formatDate(night))
+                                    .join(", ")}
+                                  .
+                                </li>
+                              ))}
+                            </ul>
+                            <p className="mt-1">
+                              This is advisory only. Approving or holding is still
+                              blocked while a member is double-booked — resolve the
+                              overlap before you approve.
+                            </p>
+                          </div>
+                        ) : null}
                         <div className="grid gap-2">
                           {request.guests.map((guest, guestIndex) => {
                             const key = `${request.id}:${guestIndex}`;
