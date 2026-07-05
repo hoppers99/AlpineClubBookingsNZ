@@ -1391,6 +1391,14 @@ export function PublicBookingRequestsPanel({
                           Decline
                         </Button>
                       </div>
+                      <p className="text-xs text-muted-foreground">
+                        Hold slots reserves the beds before a quote is sent
+                        (sending a quote auto-holds them, so use Hold slots to
+                        reserve capacity while you price or set the contact). An
+                        accepted-but-unpaid booking can still be bumped by the
+                        confirm-pending job if the lodge capacity for these nights
+                        is later lowered below what is booked.
+                      </p>
                       {request.status === "VERIFIED" ? (
                         <p className="text-xs text-muted-foreground">
                           {request.type === "SCHOOL"

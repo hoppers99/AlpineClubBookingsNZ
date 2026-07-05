@@ -244,14 +244,25 @@ the loser returns 409. The guest swap
 at accept updates the held booking's existing guest rows in place (stable
 `bookingGuest` ids) instead of delete-then-recreate, so an admin's pre-assigned
 `BedAllocation` rows, #713 night sets, promo guest targets, and chore
-assignments are preserved. The hold is released only on cancel (requester
-declines the quote) or expiry: the quote-expiry cron
+assignments are preserved. The hold is released on cancel (requester declines
+the quote), expiry, or a capacity-reduction bump: the quote-expiry cron
 (`cron-quote-expiry-reminders.ts`) frees the bed behind any SENT quote whose
 response link has lapsed, and the accepted-but-unpaid booking is released by
 the same hold-deadline machinery as any other PENDING request booking
 (`cron-confirm-pending.ts`). Every release path detaches
 `BookingRequest.heldBookingId` so a later re-quote can never reuse a released
 row.
+
+An accepted-but-unpaid quote hold is **not** protected against a later reduction
+of lodge capacity for its nights (owner-ratified, #1317). At the hold deadline
+`cron-confirm-pending.ts` re-checks capacity for those nights under the booking
+advisory lock; if capacity has since been lowered below what is booked, the
+still-unpaid hold is bumped/cancelled (no charge, bumped email sent) exactly as
+any other over-capacity PENDING request booking would be. The capacity-priority
+rule above ("a later *member* booking can no longer bump an accepted-but-unpaid
+quote") is unchanged — only an admin lowering the nightly capacity can reclaim an
+unpaid hold. Paying the hold moves it to a fully capacity-holding status and ends
+this exposure.
 
 A booking converted from (or held for) a public/school booking request keeps
 its officer-negotiated price, flat-split across guest rows; the quote's
