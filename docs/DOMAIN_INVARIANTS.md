@@ -51,10 +51,15 @@ Future reviews and issues should cite this file when proposing changes.
   database unique index cannot express it because liveness is booking-status
   dependent and spans `BookingGuest` to `Booking`, which a Postgres partial
   unique index cannot reference. It is race-free because every transaction that
-  writes a member-linked `BookingGuest`/`BookingGuestNight` takes the global
-  booking advisory lock (`pg_advisory_xact_lock(1)`) before running the guard
-  (`assertNoBookingMemberNightConflicts`); that lock-before-guard ordering is
-  frozen for every such writer by `review-findings-contracts.test.ts`.
+  **creates or re-dates** a member-linked `BookingGuest`/`BookingGuestNight`
+  footprint takes the global booking advisory lock (`pg_advisory_xact_lock(1)`)
+  before running the guard (`assertNoBookingMemberNightConflicts`); that
+  lock-before-guard ordering is frozen for every such writer by
+  `review-findings-contracts.test.ts`. Writes that do not change the member-night
+  footprint — re-pricing, name-only guest edits, lodge arrive/depart timestamps,
+  and anonymization that clears the member link — legitimately skip the guard, as
+  does the non-member group-join path (`verifyAndCreateNonMemberJoin`, which
+  writes only `memberId: null` guests and takes the lock but is a guard no-op).
 - A member holds at most one group-join roster row per group
   (`GroupBookingJoin` unique on groupBookingId + joinerMemberId, #1039
   item 2). The roster row is written inside the child booking's transaction:

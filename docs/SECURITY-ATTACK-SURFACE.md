@@ -647,3 +647,62 @@ Residual risks to keep visible:
 - #619 - CI, dependency, Docker, and deployment hardening: review completed;
   Trivy pinning, read-only scanner mounts, action/dependency policy, image tag
   provenance, GHCR scope, and Compose residual risks are documented above.
+
+## Wave-2 Verification Close-Out (epic #1204) - 2026-07-05
+
+Re-audit of the wave-1 concurrency/integrity findings (#1127) against the fixed
+code, plus the wave-2 security/integrity end state.
+
+### Booking / person-night concurrency (#1127 F1-F4 — all resolved)
+
+Every transaction that **creates or re-dates** a member-linked guest-night
+footprint now takes the global booking advisory lock (`pg_advisory_xact_lock(1)`)
+before running `assertNoBookingMemberNightConflicts`, and that lock-before-guard
+ordering is frozen for every such writer by `review-findings-contracts.test.ts`:
+
+- **F1** — `modifyBookingDates` (`booking-date-modification-service.ts`): guard
+  added inside the locked transaction. Fixed by #1157.
+- **F2/F3** — `approveBookingRequest` (`booking-request.ts`), the quote-hold path
+  (`booking-request-quotes.ts`), and school-request approval
+  (`school-booking-request.ts`): guard added inside each locked transaction.
+  Fixed by #1158.
+- **F4** — the contract test froze only two create paths and DOMAIN_INVARIANTS.md
+  overstated the coverage. The test now freezes lock→guard ordering across all
+  member-linked writers (`createDraftBooking`/`createConfirmedBooking`/
+  `createWaitlistedBooking`, `modifyBookingDates`, `approveBookingRequest`, the
+  quote-hold path, school-request approval, the `/bookings/[id]/guests` POST, and
+  the delegated `modifyBookingBatch`→`prepareGuestPlan` path); the invariant doc
+  is corrected to the footprint-scoped claim. Fixed by #1159.
+
+Non-member group-join (`verifyAndCreateNonMemberJoin`) takes the lock but is a
+guard no-op (writes only `memberId: null` guests) — correctly excluded, and
+re-price / name-only / timestamp / anonymization writes skip the guard because
+they do not change the member-night footprint. See DOMAIN_INVARIANTS.md.
+
+### Money-path integrity (#1234)
+
+Layered idempotency defenses on the payment/settlement path plus a `@@unique`
+constraint on the Xero outbox to prevent duplicate sequencing under retry. See
+the *Money, Booking, And Lifecycle Integrity Review* above.
+
+### Member-facing info-leak on the pay step (#1223)
+
+Stripe initialization errors no longer surface the raw provider string (which can
+carry partial `sk_*` key material) to members: the pay step shows generic copy,
+and the raw detail reaches only Sentry (scrubbed by `beforeSend`) — never the DOM
+**or** the member's browser console.
+
+### Observability (#1214, decision D6)
+
+Scoped `pino → Sentry` bridge on the cron + webhook loggers (deliberately not
+global); the G5 observability gap is partially closed by design.
+
+### Ratified trade-offs (epic decision menu, owner 2026-07-04)
+
+- **D1 — CSP `style-src 'unsafe-inline'` + broad `img-src https:`: ratified.**
+  Left in place; tightening `style-src` is a UI-wide project with regression risk
+  disproportionate to the exposure. Revisit only if the HTML-sanitizer surface
+  changes.
+- **D2 — `getClientIp` trusting `x-real-ip`: ratified.** Removing it breaks
+  non-Caddy deploys; the "Caddy always fronts" deployment invariant stands. The
+  rate-limiter degraded mode (issue #1142) is documented above.
