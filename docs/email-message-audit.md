@@ -64,6 +64,27 @@ Admin alert emails are sent once per active admin whose admin notification
 preference allows that alert type. They are sent as separate emails, not one
 BCC. SES bounce/complaint suppression can skip a recipient before SMTP send.
 
+Member notification preferences (`NotificationPreference`, managed from the
+profile page) split into two groups by design (#1285):
+
+- **Must-send transactional (always sent, not toggleable):** booking
+  confirmation/pending (`bookingConfirmation`), pending-booking bumps
+  (`bookingBumped`), and cancellation/refund notices (`bookingCancelled`). These
+  are essential updates about a booking the member owns, so the send path never
+  gates them. The profile UI lists them as informational "Always sent" rows with
+  no on/off switch — a switch there would promise control that is never honored
+  and could hide a cancellation or refund from the person affected.
+- **Optional (honored on the send path via `shouldSendEmail`):** check-in
+  reminders (`bookingReminder`, gated in `cron-checkin-reminders.ts`) and chore
+  rosters (`choreRoster`, gated in `sendChoreRosterEmail`). A member who switches
+  either off does not receive that mail. A non-member guest has no preference
+  record, so their chore roster is always sent. Club Communications
+  (`marketingEmails`) is honored separately by the bulk-send recipient filter.
+
+`shouldSendEmail` (`src/lib/email/core.ts`) is the canonical gate for the
+optional member categories; it is never applied to the must-send transactional
+senders.
+
 Failed non-sensitive emails with retained HTML are retried every 30 minutes,
 with a 15 minute backoff and at most 3 attempts. Token-bearing templates are not
 auto-retried because their HTML is deliberately not retained.
@@ -594,6 +615,7 @@ Triggers and frequency:
 - Cron job `checkin-reminders`, scheduled daily at 9:00 AM NZST.
 - Sends for paid/operational bookings checking in tomorrow.
 - Skips if a sent `checkin-reminder` email to the same recipient with the same subject exists within the last 48 hours.
+- Honors the member's `bookingReminder` preference (#1285): skipped if the member has switched Check-in Reminders off.
 
 ### pre-arrival-reminder
 
@@ -665,6 +687,7 @@ Triggers and frequency:
 - Admin roster route email action for a lodge date.
 - Sends one email per guest with an email address and assigned chores.
 - The route deletes old guest chore tokens for that guest/date before creating a new 48-hour token.
+- Honors the guest member's `choreRoster` preference (#1285): skipped if that member has switched Chore Roster off. Non-member guests have no preference and are always sent.
 
 ### hut-leader-assignment
 

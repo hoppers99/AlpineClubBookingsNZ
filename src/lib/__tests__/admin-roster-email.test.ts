@@ -122,4 +122,47 @@ describe("PUT /api/admin/roster/[date] email action", () => {
     expect(body.failures).toHaveLength(1);
     expect(mockGuestTokenDeleteMany).toHaveBeenCalledTimes(2);
   });
+
+  // #1285: verifies the service actually threads the guest's own member id
+  // through to the roster sender so `sendChoreRosterEmail` can honor that
+  // member's choreRoster preference. A sender-level unit test alone cannot catch
+  // a broken select/wiring here (memberId would silently be undefined).
+  it("passes the guest's memberId through to the roster sender (#1285)", async () => {
+    mockChoreAssignmentFindMany.mockResolvedValue([
+      {
+        choreTemplate: { name: "Kitchen", description: null },
+        bookingGuest: {
+          id: "guest-1",
+          firstName: "Alice",
+          lastName: "Smith",
+          member: {
+            id: "member-1",
+            email: "alice@test.com",
+            inheritEmailFromId: null,
+            inheritEmailFrom: null,
+          },
+        },
+      },
+    ]);
+    mockSendChoreRosterEmail.mockResolvedValue(undefined);
+
+    const { PUT } = await import("@/app/api/admin/roster/[date]/route");
+    const req = new NextRequest("http://localhost/api/admin/roster/2026-04-10", {
+      method: "PUT",
+      body: JSON.stringify({ action: "email" }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    const res = await PUT(req, { params: Promise.resolve({ date: "2026-04-10" }) });
+
+    expect(res.status).toBe(200);
+    expect(mockSendChoreRosterEmail).toHaveBeenCalledWith(
+      "alice@test.com",
+      "Alice Smith",
+      "2026-04-10",
+      [{ name: "Kitchen", description: null }],
+      expect.stringContaining("/chores/"),
+      "member-1",
+    );
+  });
 });

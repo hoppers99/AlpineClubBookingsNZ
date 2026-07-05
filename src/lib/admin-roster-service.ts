@@ -428,6 +428,7 @@ export async function updateAdminRosterForDate(params: {
             include: {
               member: {
                 select: {
+                  id: true,
                   email: true,
                   inheritEmailFromId: true,
                   inheritEmailFrom: { select: { email: true } },
@@ -441,6 +442,9 @@ export async function updateAdminRosterForDate(params: {
       // Group assignments by guest, resolving effective email for dependents
       const byGuest = new Map<string, {
         email: string | null
+        // #1285: the guest's own member id (null for non-member guests) so the
+        // roster send can honor that member's choreRoster notification pref.
+        memberId: string | null
         name: string
         chores: Array<{ name: string; description: string | null }>
       }>()
@@ -454,6 +458,7 @@ export async function updateAdminRosterForDate(params: {
             : null
           byGuest.set(guestId, {
             email: effectiveEmail,
+            memberId: a.bookingGuest.member?.id ?? null,
             name: `${a.bookingGuest.firstName} ${a.bookingGuest.lastName}`,
             chores: [],
           })
@@ -487,7 +492,8 @@ export async function updateAdminRosterForDate(params: {
                 guest.name,
                 dateStr,
                 guest.chores,
-                choreLink
+                choreLink,
+                guest.memberId
               )
               return {
                 guestId,

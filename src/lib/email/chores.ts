@@ -8,7 +8,8 @@ import {
   CLUB_NAME,
 } from "@/config/club-identity";
 import { formatNZDate } from "../nzst-date";
-import { sendEmail } from "./core";
+import logger from "@/lib/logger";
+import { sendEmail, shouldSendEmail } from "./core";
 
 export async function sendChoreRosterEmail(
   email: string,
@@ -16,7 +17,21 @@ export async function sendChoreRosterEmail(
   date: string,
   chores: Array<{ name: string; description: string | null }>,
   choreLink?: string,
+  memberId?: string | null,
 ) {
+  // #1285: honor the member's "Chore Roster" notification preference. Chore
+  // rosters are optional/operational — NOT must-send transactional mail — so a
+  // member who has switched this category off should not receive one. When the
+  // guest has no linked member record (a non-member guest), there is no
+  // preference to consult and the roster is always sent.
+  if (memberId && !(await shouldSendEmail(memberId, "choreRoster"))) {
+    logger.debug(
+      { memberId, date },
+      "Skipped chore roster email — member opted out of the choreRoster category",
+    );
+    return;
+  }
+
   const formattedDate = new Date(date + "T00:00:00").toLocaleDateString(
     "en-NZ",
     {
