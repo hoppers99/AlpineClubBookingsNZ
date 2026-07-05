@@ -87,10 +87,15 @@ export async function submitLoginForm(
   // The login form transiently duplicates its inputs during hydration: #email
   // briefly resolves to TWO nodes right after a single-node settle. First seen
   // in #1154; recurred on CI for #1189 and #1202, where the race window sits
-  // between a count assertion and the subsequent fill. Harden by (a) targeting
-  // the first node for every interaction so a transient duplicate never trips
-  // strict mode, and (b) retrying the fill until the typed values stick, so a
-  // value dropped by a hydration swap of the SSR node is simply re-entered.
+  // between a count assertion and the subsequent fill. #1207 addresses the
+  // suspected root cause — the login page read its query params via
+  // useSearchParams(), which forced the form into a Suspense boundary whose
+  // hard-load hydration is the likely source of the transient duplicate; the
+  // params are now resolved server-side so the form renders deterministically.
+  // This ride-through stays as defence in depth:
+  // (a) target the first node for every interaction so any residual transient
+  // duplicate never trips strict mode, and (b) retry the fill until the typed
+  // values stick, so a value dropped by a hydration swap is simply re-entered.
   const emailField = page.locator("#email").first();
   const passwordField = page.locator("#password").first();
   await emailField.waitFor({ state: "visible" });
@@ -114,7 +119,7 @@ export async function submitLoginForm(
 // codes. Leaves the browser on the post-login destination.
 export async function enrollTotp(page: Page, email: string): Promise<StoredTwoFactor> {
   await expect(
-    page.getByText("Set up two-factor authentication"),
+    page.getByRole("heading", { name: "Set up two-factor authentication" }),
   ).toBeVisible();
 
   const setupKey = page.locator("div.font-mono").first();
@@ -124,7 +129,9 @@ export async function enrollTotp(page: Page, email: string): Promise<StoredTwoFa
   await page.locator("#totp-code").fill(totpCode(secret));
   await page.getByRole("button", { name: "Enroll" }).click();
 
-  await expect(page.getByText("Save your recovery codes")).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Save your recovery codes" }),
+  ).toBeVisible();
   const recoveryCodes = (
     await page.locator("div.font-mono > div").allInnerTexts()
   ).map((code) => code.trim());
