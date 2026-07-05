@@ -34,14 +34,7 @@ stamps `lodgeId`; the default only ever fires for an old colour's omitted-column
 write during a cutover). Removing it later would re-open the window and is not
 planned.
 
-**One deploy caveat (not an outage):** the blue/green validator flags
-`ALTER COLUMN … SET NOT NULL` via a pure-regex breaking check, so it can't see
-that the same-migration `SET DEFAULT` makes it old-code-safe. Deploying this
-migration therefore needs `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1` +
-`BLUE_GREEN_MIGRATION_OVERRIDE_REASON` — a one-time reviewer acknowledgement, not
-downtime (the safety-ledger row records why it is genuinely compatible). A future
-option is to teach the validator that `SET NOT NULL` paired with a same-column
-`SET DEFAULT` is safe, so no override is needed.
+**Deploy: no override needed.** The blue/green migration validator recognises the safe pattern — a `SET NOT NULL` whose same table+column also gets a `SET DEFAULT` in the same migration is old-code-compatible — so this deploys through the normal blue/green flow **without** `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS`. It still carries a documented safety-ledger row; genuinely-breaking SQL (drops, renames, type changes, or an *unmatched* `SET NOT NULL`) stays gated.
 
 The null-tolerant code paths for these tables are now retired:
 `lodgeNullTolerantScope` returns a strict `{ lodgeId }`, capacity queries scope
