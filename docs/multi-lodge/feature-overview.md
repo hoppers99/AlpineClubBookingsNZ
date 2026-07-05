@@ -169,11 +169,10 @@ appear, and behaviour is identical to today's single-lodge club.
 - No per-lodge admin accounts or per-lodge module settings.
 - No single booking spanning multiple lodges.
 - No per-lodge Xero connections or ledgers.
-- `lodgeId` stays **nullable by design** — there is no `NOT NULL` "contract"
-  release. Blue/green deploys + clubs targeting `latest` (skipping versions)
-  make a breaking `NOT NULL` unsafe (it would reject the old colour's writes
-  mid-cutover); integrity is held at the app layer instead. See
-  `contract-release.md`.
+- `lodgeId` is **`NOT NULL`** on the entity tables, enforced without an outage
+  via a `default_lodge_id()` column default (an old colour's omitted-column
+  insert auto-fills the default lodge). Policy tables keep a nullable `lodgeId`
+  (club-wide default). See `contract-release.md`.
 - Lodge count is unbounded in the data model, but the UI is designed
   for the realistic case of two to a handful of lodges, not dozens.
 - A cross-lodge waitlist is *not* a non-goal: it is delivered (ADR-004,

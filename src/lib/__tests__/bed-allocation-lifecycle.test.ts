@@ -461,7 +461,7 @@ describe("bed allocation lifecycle", () => {
 });
 
 describe("lifecycle auto-allocation lodge scope", () => {
-  it("scopes the reconcile auto-fill to the booking's lodge, tolerating null rows", async () => {
+  it("scopes the reconcile auto-fill strictly to the booking's lodge", async () => {
     const db = makeDb({
       bedAllocationSettings: {
         findUnique: vi.fn().mockResolvedValue({ autoAllocationEnabled: true }),
@@ -496,20 +496,20 @@ describe("lifecycle auto-allocation lodge scope", () => {
     // would violate the lodge-scoping contract.
     expect(db.lodgeRoom.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { OR: [{ lodgeId: "lodge-2" }, { lodgeId: null }] },
+        where: { lodgeId: "lodge-2" },
       }),
     );
     expect(db.booking.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          OR: [{ lodgeId: "lodge-2" }, { lodgeId: null }],
+          lodgeId: "lodge-2",
         }),
       }),
     );
     expect(db.bedAllocation.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          room: { OR: [{ lodgeId: "lodge-2" }, { lodgeId: null }] },
+          room: { lodgeId: "lodge-2" },
         }),
       }),
     );

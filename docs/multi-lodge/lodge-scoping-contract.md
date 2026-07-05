@@ -122,9 +122,9 @@ record the outcome here when decided:
   first per-lodge write. Resolution: own row → legacy row when unlinked
   or linked to the same lodge → code defaults; one lodge's values never
   leak to another. `hutLeaderLookaheadDays` stays a club-wide knob on the
-  legacy row. No migration needed. (There is no `NOT NULL` contract release —
-  the schema stays expand-only by design; see the posture note below and
-  `contract-release.md`. Additive partial-unique hardening could still ship.)
+  legacy row. No migration needed — these settings soft-links keep a nullable
+  `lodgeId` by design (the `NOT NULL` tightening applies only to the six entity
+  tables; see `contract-release.md`).
 - **CMS `{{lodge-capacity}}` token.** Gains an optional slug parameter
   (`{{lodge-capacity:lodge-slug}}`) for per-lodge figures; the bare token
   keeps resolving the default lodge. No cross-lodge total token — the
@@ -169,13 +169,13 @@ re-validates per lodge.
 
 - Capacity is per lodge: "beds available on date D at lodge L". No code
   path may sum beds across lodges into one number.
-- **`lodgeId` is nullable by design (expand-only; no contract release).** The
-  blue/green deploy migrates while the old app colour still serves, and clubs
-  target `latest` (skipping intermediate versions), so a breaking `SET NOT NULL`
-  could reject a pre-lodge colour's writes mid-cutover. Integrity is held by the
-  expand backfill + every-writer-stamping + the null-tolerant resolver (this
-  section's rules). See `contract-release.md` for the full rationale and the
-  outage a contract migration would cause.
+- **`lodgeId` is `NOT NULL` on the six entity tables** (LodgeRoom, Locker,
+  Season, Booking, ChoreTemplate, HutLeaderAssignment), enforced without an
+  outage via a `default_lodge_id()` column default (migration `20260705230000`):
+  an old colour's omitted-column insert auto-fills the default lodge, so no null
+  is written mid-cutover. `lodgeNullTolerantScope` is now a strict `{ lodgeId }`.
+  Policy/settings tables keep a nullable `lodgeId` (null = club-wide default) and
+  scope via `resolvePolicyRowsForLodge`. See `contract-release.md`.
   - **Documented exception — reporting occupancy denominator.** The admin
     reports occupancy view and the finance booking-metrics occupancy summary
     may sum the capacity of all active lodges to form the "all lodges"

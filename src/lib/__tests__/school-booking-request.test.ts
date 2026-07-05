@@ -330,13 +330,13 @@ describe("createSchoolBookingRequest", () => {
     });
 
     expect(vi.mocked(getLodgeCapacity)).toHaveBeenCalledWith("lodge-2");
-    // Season lookup is scoped to the requested lodge (null-tolerant during
-    // the expand phase), never the default lodge.
+    // Season lookup is scoped strictly to the requested lodge, never the
+    // default lodge.
     const seasonWhere = mockedSeasonFindMany.mock.calls[0][0]!.where as Record<
       string,
       unknown
     >;
-    expect(seasonWhere.OR).toEqual([{ lodgeId: "lodge-2" }, { lodgeId: null }]);
+    expect(seasonWhere.lodgeId).toBe("lodge-2");
     expect(vi.mocked(prisma.lodge.findFirst)).not.toHaveBeenCalled();
 
     const data = mockedCreate.mock.calls[0][0].data as Record<string, unknown>;
@@ -509,12 +509,12 @@ describe("approveSchoolBookingRequest", () => {
     const hutLeaderArgs = vi.mocked(prisma.hutLeaderAssignment.create).mock
       .calls[0][0].data as Record<string, unknown>;
     expect(hutLeaderArgs.lodgeId).toBe("lodge-2");
-    // Approval repricing is scoped to the request's lodge too.
+    // Approval repricing is scoped strictly to the request's lodge too.
     const seasonWhere = mockedSeasonFindMany.mock.calls[0][0]!.where as Record<
       string,
       unknown
     >;
-    expect(seasonWhere.OR).toEqual([{ lodgeId: "lodge-2" }, { lodgeId: null }]);
+    expect(seasonWhere.lodgeId).toBe("lodge-2");
   });
 
   it("is idempotent on a re-armed convertedBookingId: a replayed accept returns the existing booking and raises no second Xero invoice or PIN (#1232)", async () => {

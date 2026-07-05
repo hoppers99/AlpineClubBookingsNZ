@@ -90,15 +90,16 @@ export async function countActiveLodges(db: LodgeDb): Promise<number> {
   return db.lodge.count({ where: { active: true } });
 }
 
-// Prisma where-fragment scoping a query to one lodge while tolerating rows
-// with a null lodgeId (written before the phase-2 backfill or by a draining
-// old colour during the expand deploy). Null rows behave as belonging to
-// every lodge, which is exact while one lodge exists and conservative
-// afterwards; the branch goes dead once the phase-2 contract release
-// enforces NOT NULL. Policy tables deliberately keep null rows as club-wide
-// defaults and must NOT use this fragment for override resolution.
+// Prisma where-fragment scoping a query to exactly one lodge. Named for the
+// historical expand-release null tolerance; the entity tables it is used on now
+// have a NOT NULL lodgeId, so it is a strict match (see below).
 export function lodgeNullTolerantScope(lodgeId: string) {
-  return { OR: [{ lodgeId }, { lodgeId: null }] };
+  // The entity tables this scopes (Booking, Season, LodgeRoom, Locker,
+  // ChoreTemplate, HutLeaderAssignment) are NOT NULL on lodgeId, so a strict
+  // per-lodge match is exact — there are no null-lodge rows to tolerate. (Policy
+  // tables keep nullable lodgeId and scope via resolvePolicyRowsForLodge, not
+  // this helper.)
+  return { lodgeId };
 }
 
 // Resolve the club-wide-with-override policy pattern (ADR-001 resolved

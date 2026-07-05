@@ -111,7 +111,7 @@ describe("admin locker routes", () => {
     );
   });
 
-  it("filters lockers to a lodge while tolerating null lodgeId rows", async () => {
+  it("filters lockers strictly to a lodge", async () => {
     mocks.lockerFindMany.mockResolvedValue([]);
     mocks.memberFindMany.mockResolvedValue([]);
 
@@ -122,7 +122,7 @@ describe("admin locker routes", () => {
     expect(response.status).toBe(200);
     expect(mocks.lockerFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { OR: [{ lodgeId: "lodge-2" }, { lodgeId: null }] },
+        where: { lodgeId: "lodge-2" },
       }),
     );
   });

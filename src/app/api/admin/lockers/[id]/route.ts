@@ -22,9 +22,8 @@ async function findDuplicateLockerName(
   excludeId: string,
   lodgeId: string | null,
 ) {
-  // Per-lodge uniqueness with null tolerance (see the lockers create
-  // route): a null-lodge locker clashes at every lodge, and renaming a
-  // null-lodge locker must stay clash-free everywhere.
+  // Per-lodge name uniqueness (lodgeId is NOT NULL on Locker): scope the
+  // clash check to the requested lodge when one is given.
   return prisma.locker.findFirst({
     where: {
       id: { not: excludeId },
@@ -32,7 +31,7 @@ async function findDuplicateLockerName(
         equals: name,
         mode: "insensitive",
       },
-      ...(lodgeId ? { OR: [{ lodgeId }, { lodgeId: null }] } : {}),
+      ...(lodgeId ? { lodgeId } : {}),
     },
     select: { id: true },
   });

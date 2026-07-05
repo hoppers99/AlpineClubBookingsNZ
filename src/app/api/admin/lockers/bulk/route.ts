@@ -59,7 +59,7 @@ export async function POST(request: Request) {
   const clash = await prisma.locker.findFirst({
     where: {
       name: { in: names, mode: "insensitive" },
-      OR: [{ lodgeId }, { lodgeId: null }],
+      lodgeId,
     },
     select: { name: true },
   });

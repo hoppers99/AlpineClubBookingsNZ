@@ -927,13 +927,13 @@ model Season {
   startDate DateTime   @db.Date
   endDate   DateTime   @db.Date
   active    Boolean    @default(true)
-  lodgeId   String?
+  lodgeId   String @default(dbgenerated("default_lodge_id()"))
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
 
   // Relations
   rates SeasonRate[]
-  lodge Lodge?       @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
+  lodge Lodge       @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
 
   @@index([startDate, endDate])
   @@index([lodgeId])
@@ -1011,15 +1011,15 @@ model Booking {
   deletedAt                 DateTime?
   deletedById               String?
   deletedReason             String?            @db.VarChar(500)
-  // Nullable during the phase-2 expand release; every writer sets it and the
-  // contract release enforces NOT NULL. One booking belongs to exactly one
-  // lodge (ADR-001 resolved question 1).
-  lodgeId                   String?
+  // NOT NULL (migration 20260705230000): a default_lodge_id() column default
+  // fills omitted-column writes so enforcement was outage-free. One booking
+  // belongs to exactly one lodge (ADR-001 resolved question 1).
+  lodgeId                   String @default(dbgenerated("default_lodge_id()"))
   createdAt                 DateTime           @default(now())
   updatedAt                 DateTime           @updatedAt
 
   member                      Member                       @relation(fields: [memberId], references: [id], onDelete: Restrict)
-  lodge                       Lodge?                       @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
+  lodge                       Lodge                       @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
   waitlistOfferedLodge        Lodge?                       @relation("BookingWaitlistOfferedLodge", fields: [waitlistOfferedLodgeId], references: [id], onDelete: SetNull)
   waitlistAlternateLodges     BookingWaitlistAlternateLodge[]
   createdBy                   Member?                      @relation("BookingsCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
@@ -1453,19 +1453,17 @@ model LodgeRoom {
   sortOrder Int      @default(0)
   active    Boolean  @default(true)
   notes     String?  @db.VarChar(500)
-  lodgeId   String?
+  lodgeId   String @default(dbgenerated("default_lodge_id()"))
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   beds                LodgeBed[]
   allocations         BedAllocation[]
   requestedByBookings Booking[]       @relation("BookingRequestedRoom")
-  lodge               Lodge?          @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
+  lodge               Lodge          @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
 
-  // Re-scoped from global to per-lodge ahead of the contract release
-  // (expand-safe: existing globally-unique rows satisfy the composite).
-  // Nulls are distinct, so app checks treat null-lodge rows as clashing at
-  // every lodge until the contract release enforces NOT NULL.
+  // Per-lodge name uniqueness. lodgeId is NOT NULL (migration 20260705230000),
+  // so [lodgeId, name] is exact per lodge; no null-lodge rows remain.
   @@unique([lodgeId, name])
   @@index([active, sortOrder])
   @@index([lodgeId])
@@ -1475,12 +1473,12 @@ model Locker {
   id                  String   @id @default(cuid())
   name                String   @db.VarChar(200)
   allocatedToMemberId String?
-  lodgeId             String?
+  lodgeId             String @default(dbgenerated("default_lodge_id()"))
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
   allocatedTo Member? @relation("LockerAllocatedMember", fields: [allocatedToMemberId], references: [id], onDelete: SetNull)
-  lodge       Lodge?  @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
+  lodge       Lodge  @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
 
   // Re-scoped from global to per-lodge ahead of the contract release
   // (expand-safe; see LodgeRoom). App checks stay case-insensitive and
@@ -1931,13 +1929,13 @@ model ChoreTemplate {
   frequencyDays        Int?
   frequencyDaysOfWeek  Int[]
   active               Boolean            @default(true)
-  lodgeId              String?
+  lodgeId              String @default(dbgenerated("default_lodge_id()"))
   createdAt            DateTime           @default(now())
   updatedAt            DateTime           @updatedAt
 
   // Relations
   assignments ChoreAssignment[]
-  lodge       Lodge?            @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
+  lodge       Lodge            @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
 
   @@index([lodgeId])
 }
@@ -2960,12 +2958,12 @@ model HutLeaderAssignment {
   // A hut leader serves one lodge (ADR-001 resolved question 5). Nullable
   // during the phase-4 expand release (null = the club's default lodge); a
   // later contract release enforces NOT NULL.
-  lodgeId      String?
+  lodgeId      String @default(dbgenerated("default_lodge_id()"))
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
   member Member @relation(fields: [memberId], references: [id], onDelete: Cascade)
-  lodge  Lodge? @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
+  lodge  Lodge @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
 
   @@index([memberId])
   @@index([startDate, endDate])

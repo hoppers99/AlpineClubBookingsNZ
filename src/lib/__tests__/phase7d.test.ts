@@ -353,7 +353,7 @@ describe("F8: Hut Leader Role Assignment", () => {
       expect(mockPrisma.hutLeaderAssignment.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: expect.objectContaining({
-            OR: [{ lodgeId: "lodge-2" }, { lodgeId: null }],
+            lodgeId: "lodge-2",
           }),
         })
       );

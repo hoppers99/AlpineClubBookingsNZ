@@ -24,15 +24,9 @@ export interface NightAvailability {
   availableBeds: number;
 }
 
-// Overlap filter for one lodge's capacity-holding bookings. Bookings with a
-// null lodgeId (written before the phase-2 backfill or by a draining old
-// colour during the expand deploy) still hold capacity: they are counted
-// against every lodge, which is exact while one lodge exists and conservative
-// afterwards. The null branch goes dead once the phase-2 contract release
-// enforces NOT NULL — before a second lodge can be created.
-function lodgeScopeFilter(lodgeId: string) {
-  return { OR: [{ lodgeId }, { lodgeId: null }] };
-}
+// Capacity queries scope to one lodge with a plain `lodgeId` field alongside
+// the capacity-holding filter: Booking.lodgeId is NOT NULL (no null-lodge rows
+// to tolerate), so the per-lodge match is exact.
 
 /**
  * Serialize capacity-mutating booking transactions for one lodge. Replaces
@@ -159,7 +153,7 @@ export async function checkCapacity(
       // per-lodge scope (also an OR fragment) goes under AND so the two OR
       // conditions compose — a second top-level OR would clobber the first.
       ...capacityHoldingBookingFilter(),
-      AND: [lodgeScopeFilter(lodgeId)],
+      lodgeId,
       ...(excludeBookingId ? { id: { not: excludeBookingId } } : {}),
     },
     include: {
@@ -216,7 +210,7 @@ export async function checkCapacityForGuestRanges(
       // per-lodge scope (also an OR fragment) goes under AND so the two OR
       // conditions compose — a second top-level OR would clobber the first.
       ...capacityHoldingBookingFilter(),
-      AND: [lodgeScopeFilter(lodgeId)],
+      lodgeId,
       ...(excludeBookingId ? { id: { not: excludeBookingId } } : {}),
     },
     include: {
@@ -269,7 +263,7 @@ export async function getMonthAvailability(
       // Capacity-holding population (issue #1254) spread at top level; the
       // per-lodge scope (also an OR fragment) goes under AND so the two compose.
       ...capacityHoldingBookingFilter(),
-      AND: [lodgeScopeFilter(lodgeId)],
+      lodgeId,
     },
     include: {
       // Load each guest's explicit night set (issue #713) so non-contiguous

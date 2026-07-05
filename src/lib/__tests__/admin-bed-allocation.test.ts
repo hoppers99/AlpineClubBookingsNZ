@@ -368,7 +368,7 @@ describe("manuallyAllocateBedForNights", () => {
 });
 
 describe("multi-lodge room scoping (phase 7)", () => {
-  it("filters rooms to a lodge while tolerating null lodgeId rows", async () => {
+  it("filters rooms strictly to a lodge", async () => {
     const findMany = vi.fn().mockResolvedValue([]);
     const db = { lodgeRoom: { findMany } };
 
@@ -376,7 +376,7 @@ describe("multi-lodge room scoping (phase 7)", () => {
 
     expect(findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { OR: [{ lodgeId: "lodge-2" }, { lodgeId: null }] },
+        where: { lodgeId: "lodge-2" },
       }),
     );
   });
@@ -538,12 +538,12 @@ describe("createBedAllocationRoomsBulk (ADR-003 bulk seeding)", () => {
 
   it("allows the same room name at a different lodge", async () => {
     const create = vi.fn().mockResolvedValue({ id: "room-1" });
-    // The pre-check runs against the lodge's own partition (plus null
-    // tolerance) — a "Room 1" at another lodge must not match.
-    const roomFindFirst = vi.fn(async ({ where }: { where: { OR?: unknown } }) => {
+    // The pre-check runs strictly against the lodge's own partition — a
+    // "Room 1" at another lodge must not match.
+    const roomFindFirst = vi.fn(async ({ where }: { where: { lodgeId?: unknown } }) => {
       expect(where).toMatchObject({
         name: "Room 1",
-        OR: [{ lodgeId: "lodge-2" }, { lodgeId: null }],
+        lodgeId: "lodge-2",
       });
       return null;
     });
@@ -630,7 +630,7 @@ describe("bed allocation board lodge scope (ADR-003)", () => {
     to: "2026-07-08",
   });
 
-  it("scopes rooms, bookings, and allocations to the lodge, tolerating null rows", async () => {
+  it("scopes rooms, bookings, and allocations strictly to the lodge", async () => {
     const { db, bookingFindMany, allocationFindMany, roomFindMany } =
       buildDashboardDb();
 
@@ -638,20 +638,20 @@ describe("bed allocation board lodge scope (ADR-003)", () => {
 
     expect(roomFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { OR: [{ lodgeId: "lodge-2" }, { lodgeId: null }] },
+        where: { lodgeId: "lodge-2" },
       }),
     );
     expect(bookingFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          OR: [{ lodgeId: "lodge-2" }, { lodgeId: null }],
+          lodgeId: "lodge-2",
         }),
       }),
     );
     expect(allocationFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          room: { OR: [{ lodgeId: "lodge-2" }, { lodgeId: null }] },
+          room: { lodgeId: "lodge-2" },
         }),
       }),
     );
@@ -684,7 +684,7 @@ describe("bed allocation board lodge scope (ADR-003)", () => {
     expect(updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          room: { OR: [{ lodgeId: "lodge-2" }, { lodgeId: null }] },
+          room: { lodgeId: "lodge-2" },
         }),
       }),
     );

@@ -749,7 +749,7 @@ describe("F6: GET /api/lodge/roster/[date]/chores", () => {
       { id: "ct1", name: "Kitchen", active: true, sortOrder: 1 },
     ]);
     expect(mockPrisma.choreTemplate.findMany).toHaveBeenCalledWith({
-      where: { active: true, OR: [{ lodgeId: "default-lodge" }, { lodgeId: null }] },
+      where: { active: true, lodgeId: "default-lodge" },
       orderBy: { sortOrder: "asc" },
     });
   });

@@ -3,6 +3,7 @@ import { readFileSync } from "fs";
 import path from "path";
 import { BookingStatus } from "@prisma/client";
 import { parseDateOnly } from "@/lib/date-only";
+import { capacityHoldingBookingFilter } from "@/lib/booking-status";
 
 const mocks = vi.hoisted(() => ({
   bookingFindMany: vi.fn(),
@@ -374,7 +375,7 @@ describe("multi-lodge capacity scoping", () => {
     mocks.lodgeBedCount.mockResolvedValue(0);
   });
 
-  it("filters capacity queries to the requested lodge plus legacy null rows", async () => {
+  it("filters capacity queries strictly to the requested lodge", async () => {
     await checkCapacity(
       LODGE_B,
       parseDateOnly("2026-04-10"),
@@ -383,14 +384,18 @@ describe("multi-lodge capacity scoping", () => {
     );
 
     const call = mocks.bookingFindMany.mock.calls[0][0];
-    expect(call.where.AND).toEqual([{ OR: [{ lodgeId: LODGE_B }, { lodgeId: null }] }]);
+    // lodgeId is NOT NULL on Booking, so the scope is a strict per-lodge
+    // match at the top level; the only where.OR is the capacity-holding filter.
+    expect(call.where.lodgeId).toBe(LODGE_B);
+    expect(call.where.OR).toEqual(capacityHoldingBookingFilter().OR);
   });
 
   it("applies the same lodge filter to month availability queries", async () => {
     await getMonthAvailability(LODGE_A, 2026, 3);
 
     const call = mocks.bookingFindMany.mock.calls[0][0];
-    expect(call.where.AND).toEqual([{ OR: [{ lodgeId: LODGE_A }, { lodgeId: null }] }]);
+    expect(call.where.lodgeId).toBe(LODGE_A);
+    expect(call.where.OR).toEqual(capacityHoldingBookingFilter().OR);
   });
 
   it("resolves zero capacity for an unconfigured additional lodge", async () => {

@@ -98,16 +98,13 @@ describe("dual-lodge booking price totals", () => {
 });
 
 describe("season query scoping is lodge-specific", () => {
-  it("scopes the season lookup to one lodge (null-tolerant during expand)", () => {
+  it("scopes the season lookup strictly to one lodge", () => {
     // The value split above only holds because booking-create.ts fetches each
     // booking's seasons through lodgeNullTolerantScope(lodgeId), which never
-    // returns another lodge's rows. Pin the fragment so a regression that drops
-    // the lodge scope from the season query would fail here too.
-    expect(lodgeNullTolerantScope("lodge-a")).toEqual({
-      OR: [{ lodgeId: "lodge-a" }, { lodgeId: null }],
-    });
-    expect(lodgeNullTolerantScope("lodge-b")).toEqual({
-      OR: [{ lodgeId: "lodge-b" }, { lodgeId: null }],
-    });
+    // returns another lodge's rows. Season.lodgeId is NOT NULL, so the scope is
+    // a strict per-lodge match. Pin the fragment so a regression that drops the
+    // lodge scope from the season query would fail here too.
+    expect(lodgeNullTolerantScope("lodge-a")).toEqual({ lodgeId: "lodge-a" });
+    expect(lodgeNullTolerantScope("lodge-b")).toEqual({ lodgeId: "lodge-b" });
   });
 });

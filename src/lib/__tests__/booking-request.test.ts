@@ -380,11 +380,11 @@ describe("createBookingRequest", () => {
       lodgeId: "lodge-2",
     });
 
-    // Season lookup is scoped to the requested lodge (null-tolerant during
-    // the expand phase), never the default lodge.
+    // Season lookup is scoped strictly to the requested lodge, never the
+    // default lodge.
     const seasonWhere = vi.mocked(prisma.season.findMany).mock.calls[0][0]!
       .where as Record<string, unknown>;
-    expect(seasonWhere.OR).toEqual([{ lodgeId: "lodge-2" }, { lodgeId: null }]);
+    expect(seasonWhere.lodgeId).toBe("lodge-2");
     expect(prisma.lodge.findFirst).not.toHaveBeenCalled();
 
     const createArgs = mockedCreate.mock.calls[0][0].data as Record<string, unknown>;

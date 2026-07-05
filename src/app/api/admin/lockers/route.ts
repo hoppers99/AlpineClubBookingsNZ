@@ -31,7 +31,7 @@ async function findDuplicateLockerName(name: string, lodgeId: string) {
         equals: name,
         mode: "insensitive",
       },
-      OR: [{ lodgeId }, { lodgeId: null }],
+      lodgeId,
     },
     select: { id: true },
   });

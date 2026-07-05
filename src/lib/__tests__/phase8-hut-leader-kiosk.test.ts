@@ -171,7 +171,7 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
     expect(mockPrisma.hutLeaderAssignment.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          OR: [{ lodgeId: "kiosk-lodge" }, { lodgeId: null }],
+          lodgeId: "kiosk-lodge",
         }),
       })
     );
@@ -244,7 +244,7 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
     expect(mockPrisma.hutLeaderAssignment.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          OR: [{ lodgeId: "bound-lodge" }, { lodgeId: null }],
+          lodgeId: "bound-lodge",
         }),
       })
     );
@@ -281,7 +281,7 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
     expect(mockPrisma.hutLeaderAssignment.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          OR: [{ lodgeId: "default-lodge" }, { lodgeId: null }],
+          lodgeId: "default-lodge",
         }),
       })
     );

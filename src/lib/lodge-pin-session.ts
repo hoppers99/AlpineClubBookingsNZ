@@ -163,12 +163,9 @@ export async function findActiveHutLeaderAssignmentByPin(
       startDate: { lte: nextDay },
       endDate: { gte: date },
       // A hut leader serves one lodge (ADR-001 resolved question 5): a PIN
-      // only works on that lodge's kiosk. Assignments with a null lodgeId
-      // (pre-backfill or draining-old-colour writes) keep working anywhere
-      // until the contract release enforces NOT NULL.
-      ...(kioskLodgeId
-        ? { OR: [{ lodgeId: kioskLodgeId }, { lodgeId: null }] }
-        : {}),
+      // only works on that lodge's kiosk. lodgeId is NOT NULL, so scope the
+      // PIN lookup strictly to the kiosk's lodge when one is supplied.
+      ...(kioskLodgeId ? { lodgeId: kioskLodgeId } : {}),
     },
     include: {
       member: {

@@ -138,7 +138,7 @@ describe("GET /api/admin/chores", () => {
     );
   });
 
-  it("filters templates to a lodge while tolerating null lodgeId rows", async () => {
+  it("filters templates strictly to a lodge", async () => {
     const res = await GET(
       new NextRequest("http://localhost/api/admin/chores?lodgeId=lodge-2")
     );
@@ -146,7 +146,7 @@ describe("GET /api/admin/chores", () => {
     expect(res.status).toBe(200);
     expect(mockChoreFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { OR: [{ lodgeId: "lodge-2" }, { lodgeId: null }] },
+        where: { lodgeId: "lodge-2" },
       })
     );
   });

@@ -87,7 +87,7 @@ describe("admin season routes (multi-lodge phase 7)", () => {
     );
   });
 
-  it("filters seasons to a lodge while tolerating null lodgeId rows", async () => {
+  it("filters seasons strictly to a lodge", async () => {
     mocks.seasonFindMany.mockResolvedValue([]);
 
     const res = await GET(
@@ -97,7 +97,7 @@ describe("admin season routes (multi-lodge phase 7)", () => {
     expect(res.status).toBe(200);
     expect(mocks.seasonFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { OR: [{ lodgeId: "lodge-2" }, { lodgeId: null }] },
+        where: { lodgeId: "lodge-2" },
       }),
     );
   });
@@ -121,7 +121,7 @@ describe("admin season routes (multi-lodge phase 7)", () => {
       expect.objectContaining({
         where: expect.objectContaining({
           AND: expect.arrayContaining([
-            { OR: [{ lodgeId: "lodge-2" }, { lodgeId: null }] },
+            { lodgeId: "lodge-2" },
           ]),
         }),
       }),
@@ -230,7 +230,7 @@ describe("admin season routes (multi-lodge phase 7)", () => {
         where: expect.objectContaining({
           id: { not: "season-1" },
           AND: expect.arrayContaining([
-            { OR: [{ lodgeId: "lodge-2" }, { lodgeId: null }] },
+            { lodgeId: "lodge-2" },
           ]),
         }),
       }),
