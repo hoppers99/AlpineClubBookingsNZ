@@ -2946,6 +2946,17 @@ model FamilyGroupMember {
   @@index([familyGroupId])
 }
 
+model HiddenFamilySuggestion {
+  id               String   @id @default(cuid())
+  signature        String   @unique
+  memberIds        String[] @default([])
+  hiddenByMemberId String
+  createdAt        DateTime @default(now())
+
+  @@index([hiddenByMemberId])
+  @@index([createdAt])
+}
+
 model FamilyGroupJoinRequest {
   id            String    @id @default(cuid())
   familyGroupId String
