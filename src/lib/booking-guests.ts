@@ -411,10 +411,13 @@ export function normalizeBookingGuestPricingInputs(
   });
 }
 
-export function normalizeBookingGuestInputs(
-  guests: BookingGuestInput[],
+// Generic over the caller's parsed guest shape (bookable-tier zod inputs,
+// #1440): linking a member can widen the tier to the member's stored AgeTier,
+// so only the ageTier field is re-typed on the way out.
+export function normalizeBookingGuestInputs<T extends BookingGuestInput>(
+  guests: T[],
   linkedMembers: Map<string, LinkedBookingMember>
-): BookingGuestInput[] {
+): Array<Omit<T, "ageTier"> & { ageTier: AgeTier }> {
   return guests.map((guest) => {
     const memberId = guest.memberId?.trim();
     if (!memberId) {
