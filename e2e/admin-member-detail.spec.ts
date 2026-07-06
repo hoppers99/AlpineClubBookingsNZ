@@ -12,12 +12,19 @@ import { personas } from "./helpers/personas";
 
 test.describe.configure({ mode: "serial" });
 
-const SEARCH_PLACEHOLDER = "Search by name or email...";
-
 async function openMemberDetail(page: import("@playwright/test").Page, name: string) {
   await page.goto("/admin/members");
-  await page.getByPlaceholder(SEARCH_PLACEHOLDER).fill(name);
-  await page.getByRole("link", { name: new RegExp(name) }).first().click();
+  // The table renders client-side after the members fetch; the demo seed fits
+  // on page 1 sorted by name, so no search needed. Interacting before the
+  // page settles (e.g. filling the search box right after goto) raced
+  // hydration in CI and wiped the input, so the first interaction is this
+  // auto-waited click. Locate by href+text rather than accessible name.
+  const memberLink = page
+    .locator('a[href*="/admin/members/"]')
+    .filter({ hasText: name })
+    .first();
+  await expect(memberLink).toBeVisible({ timeout: 30_000 });
+  await memberLink.click();
   await expect(page).toHaveURL(/\/admin\/members\/(?!$)[^/?#]+/);
 }
 
