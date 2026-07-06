@@ -110,19 +110,29 @@ Future reviews and issues should cite this file when proposing changes.
   never overwrites a (PARTIALLY_)REFUNDED payment or transaction status back
   to SUCCEEDED.
 - The same cash-evidence rule gates Internet Banking SETTLEMENT itself, not
-  just credit minting (#1435): the inbound per-payment settlement loop runs
-  only when the PAID invoice carries positive cash evidence (`amountPaid`,
-  falling back to actual payment records). An allocation-cleared invoice
-  settles nothing anywhere in the loop — no PaymentTransaction or Payment
-  SUCCEEDED flip, no booking PAID flip, no member credit. Mixed cash+credit
-  invoices settle (amountPaid is the cash portion; allocations accrue to
-  amountCredited). A payload carrying NEITHER field skips settlement with a
-  warning and a result counter rather than settling on no evidence
-  (owner-approved default): the reconcile always re-fetches the invoice, so
-  a wrongly-skipped real payment self-heals on the next reconcile, while a
-  wrong SUCCEEDED/PAID flip (confirmation email, capacity claim) does not.
-  Invoice-identifier backfill is unaffected — it belongs to
-  `syncLinkedPaymentInvoiceMetadata`, which runs before the settlement loop.
+  just credit minting (#1435), on BOTH inbound settlement surfaces: the
+  per-payment loop and the combined group-settlement flip. Settlement runs
+  only when the PAID invoice carries positive cash evidence: `amountPaid`
+  when present (an explicit 0 is authoritative), falling back to actual
+  non-DELETED payment records. Operator-applied OVERPAYMENT and PREPAYMENT
+  allocations also count as cash — they are real member money on the Xero
+  contact, and the app's own bookkeeping only ever produces credit-note
+  allocations, so they can never be the clearing-note echo the gate exists
+  to stop. Mixed cash+credit invoices settle (`amountPaid` is the cash
+  portion; credit allocations accrue to `amountCredited`). A credit-note-
+  cleared invoice settles nothing — no PaymentTransaction or Payment
+  SUCCEEDED flip, no booking PAID flip, no member credit, no group-child
+  flips; the skip only stamps MISSING invoice identifiers (linkage, never
+  status) so a later real-cash event for the same invoice still matches its
+  payments, and it alerts the admins when the affected booking is still live
+  (an operator cleared the invoice Xero-side while the app still awaits
+  payment — nothing else would ever settle or expire that booking). A
+  payload carrying NEITHER cash field fails the inbound event instead of
+  settling blind or skipping terminally (owner-approved default): the
+  FAILED-retry sweep re-fetches the invoice fresh, so transient payload
+  degradation self-heals and persistent degradation stays loud and
+  operator-replayable. Canonical single-payment identifier backfill remains
+  with `syncLinkedPaymentInvoiceMetadata`, which runs before the loop.
 - Payment, refund, and credit operations must be idempotent across retries,
   webhook replays, cron reruns, and partial failure recovery.
 - External provider side effects require clear retry and idempotency behavior.
