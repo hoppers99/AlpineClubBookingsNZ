@@ -35,7 +35,15 @@ member bookings still cannot. The admin "Confirm pending guests" override
 (`/api/admin/bookings/[id]/confirm-pending-guests`) now runs the same
 `pg_advisory_xact_lock(1)` re-read + capacity re-check before flipping a booking
 to a capacity-holding status on its zero-dollar and charge-saved-card branches,
-returning 409 unless an explicit overbook is requested (#1366).
+returning 409 unless an explicit overbook is requested (#1366). Its
+charge-saved-card branch follows the cron's claim-first shape (#1418): claim
+`PENDING -> CONFIRMED` (hold cleared) under the lock, charge outside it, then
+promote to PAID. A failed or requires-action charge releases the claim back to
+`PENDING` with the hold restored and (on failure) alerts admins; a captured
+charge is durably recorded as a PRIMARY payment transaction before promotion,
+so if the promotion fails the booking stays CONFIRMED holding its beds, admins
+are alerted, and the Stripe webhook finishes the promotion idempotently —
+captured money is never silently orphaned.
 
 Lodge check-in gate (F27 / #1372 + #1422) — status-preserving. A booking that
 carries a pending admin review (`requiresAdminReview` true and
