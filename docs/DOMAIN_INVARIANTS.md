@@ -677,6 +677,20 @@ the correct member identity — and therefore correct member pricing — instead
 silently re-adding the member as a mispriced non-member. The member-scoped
 `GET /api/admin/members/[id]/family` remains gated on `membership:view` for
 membership surfaces.
+On-behalf CREATION is aligned with modification (#1313/#1442): `/api/bookings`,
+`/api/bookings/quote`, and `/api/promo-codes/validate` authorize a
+`forMemberId` via `bookingManagementAuthorizationRole` (`bookings:edit`), so a
+Booking Officer and a Full Admin drive identical on-behalf behaviour. A
+`forMemberId` from a caller without `bookings:edit` is rejected (403) — a quote
+or promo check must never silently price the caller instead of the target. No
+on-behalf actor may target themselves (separation of duties): an admin's or
+officer's own stays go through the member `/book` flow and normal member
+payment paths. Portal context determines intent: a dual-hat account
+(`USER` token + admin roles) self-books as a plain member with NO admin
+bypasses — email verification, Xero-link, subscription, guest-subscription,
+and minimum-stay gates all apply to self-bookings; the gate bypasses are keyed
+to authorized on-behalf bookings only. Only admin-only accounts (no `USER`
+token) are redirected from the member wizard to `/admin/book`.
 Legacy membership lifecycle/classification code may read `Member.role` only to
 distinguish compatibility categories such as non-login/non-member records until
 that workflow is fully represented by seasonal membership type.

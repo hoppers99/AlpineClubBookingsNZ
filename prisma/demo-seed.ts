@@ -30,6 +30,7 @@ import {
 import { backfillCurrentSeasonMembershipAssignments } from "../src/lib/membership-types";
 import { createPrismaPgAdapter } from "../src/lib/prisma-adapter";
 import {
+  DUAL_HAT_ADMIN,
   E2E_ADMIN,
   EMAIL_2FA_ENROLLEE,
   IB_BOOKING_ID,
@@ -858,6 +859,22 @@ async function main() {
     "1979-11-03",
     "5552003",
   );
+
+  // Dual-hat committee member (USER + ADMIN tokens): paid-up, complete
+  // profile, so the dual-hat booking spec can create a real self-booking
+  // through the member /book wizard under full member rules (#1442).
+  const dana = await seedConfirmedPaidMember(
+    DUAL_HAT_ADMIN.email.split("@")[0],
+    DUAL_HAT_ADMIN.firstName,
+    DUAL_HAT_ADMIN.lastName,
+    "1986-09-09",
+    "5552004",
+  );
+  await ensureMemberAccessRoles(prisma, {
+    memberId: dana.id,
+    roles: ["USER", "ADMIN"],
+    canLogin: true,
+  });
 
   // Email-code two-factor enrollee: un-enrolled (makeMember sets no two-factor
   // state) so global enforcement forces enrollment, and the email-code spec
