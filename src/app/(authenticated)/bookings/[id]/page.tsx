@@ -730,6 +730,7 @@ export default async function BookingDetailPage({
             booking.payment?.stripePaymentMethodId &&
               booking.payment?.stripeCustomerId,
           )}
+          finalPriceCents={booking.finalPriceCents}
           providerMismatches={providerMismatches}
         />
       )}
