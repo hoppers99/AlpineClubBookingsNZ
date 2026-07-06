@@ -854,13 +854,15 @@ describe("runBookingXeroRepair", () => {
         (candidate) => candidate.type === "QUEUE_CREDIT_NOTE_ALLOCATION"
       )
     ).toEqual([]);
-    const finding = bookingReport.findings.find(
-      (candidate) => candidate.code === "MISSING_MODIFICATION_CREDIT_NOTE"
-    );
-    expect(finding).toMatchObject({
-      severity: "manual_review",
-      safeToAutoApply: false,
-    });
+    // The executed account note IS the settlement — no missing-note nag.
+    expect(
+      bookingReport.findings.filter((candidate) =>
+        [
+          "MISSING_MODIFICATION_CREDIT_NOTE",
+          "XERO_AMOUNT_MISMATCH",
+        ].includes(candidate.code)
+      )
+    ).toEqual([]);
   });
 
   // #1427: the executed invoice-applied note's overwritten payload keeps
@@ -1661,25 +1663,167 @@ describe("runBookingXeroRepair", () => {
     });
 
     const bookingReport = report.passes[0].bookings[0];
-    // No allocation of the account note against the primary invoice.
+    // No allocation of the account note against the primary invoice, no
+    // wrong link, no blocked finding — and no "missing note" nag either:
+    // the account credit IS this modification's legitimate settlement.
     const allocationActions = bookingReport.actions.filter(
       (candidate) => candidate.type === "QUEUE_CREDIT_NOTE_ALLOCATION"
     );
     expect(allocationActions).toEqual([]);
-    // The invoice-applied note is reported missing (manual review: captured
-    // payment, no invoice-applied evidence), not masked by a blocked finding.
-    const finding = bookingReport.findings.find(
-      (candidate) => candidate.code === "MISSING_MODIFICATION_CREDIT_NOTE"
-    );
-    expect(finding).toMatchObject({
-      severity: "manual_review",
-      safeToAutoApply: false,
-    });
     expect(
-      bookingReport.findings.filter(
-        (candidate) => candidate.code === "BLOCKED_BY_XERO_OPERATION"
+      bookingReport.findings.filter((candidate) =>
+        [
+          "MISSING_MODIFICATION_CREDIT_NOTE",
+          "MISSING_CREDIT_NOTE_ALLOCATION",
+          "BLOCKED_BY_XERO_OPERATION",
+          "XERO_AMOUNT_MISMATCH",
+        ].includes(candidate.code)
       )
     ).toEqual([]);
+  });
+
+  // #1427 BLOCKER regression (review, empirically reproduced): the
+  // pre-column executed ledger has queueType NULL in BOTH the column (the
+  // #1347 backfill copied from already-overwritten payloads) and the
+  // payload (the account-credit executor leaves a bare document). The
+  // correlation-key segment is the only surviving discriminator — without
+  // it, the member's unapplied account-credit note resolves as the
+  // invoice-applied note and gets allocated against the PAID primary
+  // invoice, sized to its own total so Xero silently accepts.
+  it("discriminates a PRE-COLUMN executed account-credit note by its correlation key (#1427)", async () => {
+    const booking = makeBooking({
+      modifications: [
+        {
+          id: "mod_precol_account",
+          bookingId: "booking_1",
+          modificationType: "GUEST_REMOVE",
+          priceDiffCents: -10000,
+          changeFeeCents: 0,
+          createdAt: new Date("2026-05-02T00:00:00Z"),
+        },
+      ],
+    });
+    const deps = createDependencies({
+      bookings: [booking],
+      operations: [
+        makeOperation({
+          id: "operation_precol_account",
+          entityType: "CREDIT_NOTE",
+          operationType: "CREATE",
+          localId: "mod_precol_account",
+          status: "SUCCEEDED",
+          xeroObjectType: "CREDIT_NOTE",
+          xeroObjectId: "cn_precol_account",
+          queueType: null,
+          correlationKey:
+            "booking-mod:mod_precol_account:mod-unapplied-credit-note:5000:v1",
+          idempotencyKey:
+            "booking-mod:mod_precol_account:mod-unapplied-credit-note:5000:v1",
+          requestPayload: {
+            creditNotes: [{ type: "ACCRECCREDIT", total: 50.0 }],
+          },
+        }),
+      ],
+    });
+
+    const report = await runBookingXeroRepair({
+      dependencies: deps,
+      scope: { all: true },
+    });
+
+    const bookingReport = report.passes[0].bookings[0];
+    expect(
+      bookingReport.actions.filter(
+        (candidate) => candidate.type === "QUEUE_CREDIT_NOTE_ALLOCATION"
+      )
+    ).toEqual([]);
+    // Settled by account credit: nothing to repair, nothing to nag.
+    expect(
+      bookingReport.findings.filter((candidate) =>
+        [
+          "MISSING_MODIFICATION_CREDIT_NOTE",
+          "MISSING_CREDIT_NOTE_ALLOCATION",
+          "XERO_AMOUNT_MISMATCH",
+        ].includes(candidate.code)
+      )
+    ).toEqual([]);
+  });
+
+  // The pre-column executed INVOICE-APPLIED note keeps working through the
+  // same correlation-key hint: overwritten payload, null column.
+  it("recovers a PRE-COLUMN executed invoice-applied note via its correlation key (#1427)", async () => {
+    const booking = makeBooking({
+      modifications: [
+        {
+          id: "mod_precol_note",
+          bookingId: "booking_1",
+          modificationType: "GUEST_REMOVE",
+          priceDiffCents: -10000,
+          changeFeeCents: 0,
+          createdAt: new Date("2026-05-02T00:00:00Z"),
+        },
+      ],
+    });
+    const deps = createDependencies({
+      bookings: [booking],
+      links: [
+        {
+          id: "link_precol_note",
+          localModel: "BookingModification",
+          localId: "mod_precol_note",
+          xeroObjectType: "CREDIT_NOTE",
+          xeroObjectId: "cn_precol_note",
+          xeroObjectNumber: "CN-PRECOL",
+          xeroObjectUrl: null,
+          role: "MODIFICATION_CREDIT_NOTE",
+          active: true,
+          metadata: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ],
+      operations: [
+        makeOperation({
+          id: "operation_precol_note",
+          entityType: "CREDIT_NOTE",
+          operationType: "CREATE",
+          localId: "mod_precol_note",
+          status: "SUCCEEDED",
+          xeroObjectType: "CREDIT_NOTE",
+          xeroObjectId: "cn_precol_note",
+          queueType: null,
+          correlationKey:
+            "booking-mod:mod_precol_note:mod-credit-note:5000:v1",
+          idempotencyKey:
+            "booking-mod:mod_precol_note:mod-credit-note:5000:v1",
+          requestPayload: {
+            creditNotes: [{ type: "ACCRECCREDIT", total: 50.0 }],
+            invoiceId: "inv_primary",
+            refundAmountCents: 5000,
+          },
+        }),
+      ],
+    });
+
+    const report = await runBookingXeroRepair({
+      dependencies: deps,
+      scope: { all: true },
+    });
+
+    const bookingReport = report.passes[0].bookings[0];
+    expect(
+      bookingReport.findings.filter(
+        (finding) =>
+          finding.code === "XERO_AMOUNT_MISMATCH" &&
+          finding.details.xeroObjectId === "cn_precol_note"
+      )
+    ).toEqual([]);
+    const action = bookingReport.actions.find(
+      (candidate) => candidate.type === "QUEUE_CREDIT_NOTE_ALLOCATION"
+    );
+    expect(action).toMatchObject({
+      payload: { creditNoteId: "cn_precol_note", amountCents: 5000 },
+    });
   });
 
   // #1427 third arm for allocations: a live-but-not-retryable allocation op

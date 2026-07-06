@@ -43,9 +43,15 @@ import {
   buildRetryAction,
   recoverStoredXeroAmountCents,
 } from "./xero-booking-repair-findings";
-import { toDateOnly } from "./xero-booking-repair-utils";
+import {
+  getOperationQueueTypeHint,
+  toDateOnly,
+} from "./xero-booking-repair-utils";
 import { hasCapturedPayment } from "@/lib/booking-payment-state";
-import { XERO_OUTBOX_MODIFICATION_CREDIT_NOTE_TYPE } from "@/lib/xero-operation-outbox-payload";
+import {
+  XERO_OUTBOX_MODIFICATION_ACCOUNT_CREDIT_NOTE_TYPE,
+  XERO_OUTBOX_MODIFICATION_CREDIT_NOTE_TYPE,
+} from "@/lib/xero-operation-outbox-payload";
 
 export function classifyBookingContext(
   context: BookingClassificationContext
@@ -487,6 +493,31 @@ export function classifyBookingContext(
         // the primary invoice would double-count the credit).
         payloadQueueType: XERO_OUTBOX_MODIFICATION_CREDIT_NOTE_TYPE,
       });
+
+      // #1427 (review finding): a net<0 modification legitimately settled
+      // by an ACCOUNT credit note (the member keeps the value as account
+      // credit; the paid primary invoice stays untouched) has NO
+      // invoice-applied note to repair — classifying it as "missing" would
+      // nag manual review forever. Positive identification only: a link
+      // with the account role, or an executed op whose queue-type hint
+      // names the account variant (hint-less rows never count).
+      const settledByAccountCredit =
+        modificationLinks.some(
+          (link) =>
+            link.xeroObjectType === "CREDIT_NOTE" &&
+            link.role === "MODIFICATION_ACCOUNT_CREDIT_NOTE"
+        ) ||
+        modificationOperations.some(
+          (operation) =>
+            operation.entityType === "CREDIT_NOTE" &&
+            operation.operationType === "CREATE" &&
+            ["SUCCEEDED", "PARTIAL"].includes(operation.status) &&
+            getOperationQueueTypeHint(operation) ===
+              XERO_OUTBOX_MODIFICATION_ACCOUNT_CREDIT_NOTE_TYPE
+        );
+      if (!modificationCreditNote && settledByAccountCredit) {
+        continue;
+      }
 
       // #1427: abs(net) is only an upper bound on the credit note — the
       // primary path caps the credit at the policy-limited settlement

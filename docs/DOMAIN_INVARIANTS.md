@@ -516,16 +516,25 @@ components. On the credit-note side the repair pass sizes by STORED evidence
 (#1427): abs(net) is only an upper bound, because the primary path caps the
 credit at the policy-limited settlement the modification row cannot
 reconstruct. Queue actions and the amount-evidence expectation prefer the
-OLDEST typed enqueue payload — the first enqueue is the primary-path
-settlement decision, and replaying it rebuilds the identical amount-embedding
-correlation key, so a requeue of a note that already reached Xero dedups
-instead of duplicating — then link metadata, then executed note totals, then
-(last resort) a bare legacy payload naming no queueType. Operation evidence
-is discriminated by the immutable `queueType` COLUMN (falling back to the
-payload for pre-#1347 rows — executors legitimately overwrite requestPayload
-at dispatch, stripping its queueType): an account-credit-note op beside the
-invoice-applied note (same entityType/operationType) never sizes, resolves
-as, blocks, or pollutes the mismatch evidence of the invoice-applied note. A
+resolved note's own enqueue payload (then oldest-first — the first enqueue
+is the primary-path settlement decision; CANCELLED attempts rank last), and
+replaying that amount rebuilds the identical amount-embedding correlation
+key, so the local outbox dedup holds and a recent attempt that already
+reached Xero dedups within Xero's idempotency window — then link metadata,
+then executed note totals, then (last resort) a bare legacy payload.
+Operation evidence, object resolution, and blocking detection are all
+discriminated by the operation's queue-type hint: the immutable `queueType`
+COLUMN (#1347), then the payload's own name, then the correlation-key
+segment — decisive for the pre-column executed ledger, whose payloads were
+overwritten at dispatch before the column backfill copied them. An
+account-credit-note op beside the invoice-applied note (same
+entityType/operationType) therefore never sizes, resolves as, blocks, or
+pollutes the mismatch evidence of the invoice-applied note — in the
+worst case that confusion allocated the member's UNAPPLIED account-credit
+note against the already-paid primary invoice (double-refund exposure). A
+net-negative modification positively settled by an account credit note (link
+role or executed op hint) is complete as-is: it has no invoice-applied note
+to repair and produces no finding. A
 stored amount outside (0, abs(net)] is ignored as inconsistent, so an
 over-sized note still flags against abs(net); the deliberate limit of
 evidence-first is that a wrongly-enqueued amount INSIDE the range reads as

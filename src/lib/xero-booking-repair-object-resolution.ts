@@ -3,7 +3,7 @@
 // xero-booking-repair.ts (#1208 item 2).
 import { buildXeroInvoiceUrl } from "@/lib/xero-links";
 import { getXeroOperationRetryMeta } from "@/lib/xero-operation-retry";
-import { readQueueType } from "@/lib/xero-operation-outbox-payload";
+import { getOperationQueueTypeHint } from "./xero-booking-repair-utils";
 import type {
   BlockingOperationMatch,
   ResolvedLocalObject,
@@ -32,11 +32,11 @@ function buildObjectUrl(
 // #1427: an operation of a DIFFERENT queueType belongs to another money
 // object that happens to share entityType/operationType (a modification
 // holds both an invoice-applied credit-note op and an account-credit-note
-// op). The immutable `queueType` COLUMN is the authority — executors
-// legitimately overwrite requestPayload at dispatch, stripping its queueType
-// — with the payload read as the fallback for rows predating the #1347
-// column. Rows naming NO queueType anywhere predate the typed-outbox era
-// and stay admissible.
+// op). getOperationQueueTypeHint resolves the kind across every ledger era
+// (column, payload, correlation-key segment — executors overwrite payloads
+// at dispatch and the #1347 column backfill copied from those overwritten
+// payloads, so the key segment is decisive for pre-column executed rows).
+// Rows carrying no hint at all stay admissible.
 function payloadQueueTypeCompatible(
   operation: XeroOperationRecord,
   payloadQueueType: string | undefined
@@ -44,8 +44,7 @@ function payloadQueueTypeCompatible(
   if (!payloadQueueType) {
     return true;
   }
-  const queueType =
-    operation.queueType ?? readQueueType(operation.requestPayload);
+  const queueType = getOperationQueueTypeHint(operation);
   return queueType === null || queueType === payloadQueueType;
 }
 

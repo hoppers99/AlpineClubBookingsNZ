@@ -14,10 +14,10 @@ import type {
 } from "./xero-booking-repair-types";
 import { buildMemberName } from "./xero-booking-repair-analysis";
 import {
+  getOperationQueueTypeHint,
   readStoredXeroAmountCents,
   toIsoDate,
 } from "./xero-booking-repair-utils";
-import { readQueueType } from "@/lib/xero-operation-outbox-payload";
 
 export function addAction(
   actionMap: Map<string, BookingXeroRepairAction>,
@@ -145,13 +145,12 @@ function collectXeroAmountEvidence(params: {
 // DIFFERENT queueType belongs to another money object (a modification holds
 // BOTH an invoice-applied credit-note op and an account-credit-note op —
 // same entityType and operationType, different amounts) and must never be
-// read as this object's evidence. The immutable `queueType` COLUMN is the
-// authority: executors legitimately OVERWRITE requestPayload at dispatch
-// (the account-credit executor replaces it with a bare document payload
-// naming no queueType at all), so the payload read is only the fallback for
-// rows predating the #1347 column. A row naming NO queueType anywhere
-// predates the typed-outbox era and stays admissible: the account-credit
-// variants postdate both discriminators, so a truly bare row cannot be one.
+// read as this object's evidence. getOperationQueueTypeHint resolves the
+// kind across every ledger era (column, payload, correlation-key segment —
+// executors overwrite payloads at dispatch and the #1347 column backfill
+// copied from those overwritten payloads, so the key segment is decisive
+// for pre-column executed rows). Rows carrying no hint at all stay
+// admissible.
 function operationQueueTypeCompatible(
   operation: XeroOperationRecord,
   payloadQueueType: string | undefined
@@ -159,8 +158,7 @@ function operationQueueTypeCompatible(
   if (!payloadQueueType) {
     return true;
   }
-  const queueType =
-    operation.queueType ?? readQueueType(operation.requestPayload);
+  const queueType = getOperationQueueTypeHint(operation);
   return queueType === null || queueType === payloadQueueType;
 }
 
