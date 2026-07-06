@@ -15,9 +15,11 @@ vi.mock("next-auth/react", () => ({
   }),
 }));
 
+let searchParamsValue = new URLSearchParams();
+
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn() }),
-  useSearchParams: () => new URLSearchParams(),
+  useSearchParams: () => searchParamsValue,
 }));
 
 vi.mock("@/components/admin/family-group-editor-dialog", () => ({
@@ -70,7 +72,7 @@ function adminMember() {
     financeAccessLevel: "NONE",
     active: true,
     forcePasswordChange: false,
-    xeroContactId: null,
+    xeroContactId: null as string | null,
     joinedDate: "2024-05-01T00:00:00.000Z",
     createdAt: "2024-05-01T00:00:00.000Z",
     canLogin: true,
@@ -152,8 +154,14 @@ async function renderPage() {
 }
 
 describe("Admin member detail grouped layout", () => {
+  let memberOverrides: Partial<ReturnType<typeof adminMember>>;
+  let xeroStatusResponse: { connected: boolean };
+
   beforeEach(() => {
     vi.clearAllMocks();
+    memberOverrides = {};
+    xeroStatusResponse = { connected: false };
+    searchParamsValue = new URLSearchParams();
     window.localStorage.clear();
     window.HTMLElement.prototype.scrollIntoView = vi.fn();
     global.fetch = fetchMock as typeof fetch;
@@ -161,7 +169,10 @@ describe("Admin member detail grouped layout", () => {
       const url = String(input);
 
       if (url === "/api/admin/members/member-1") {
-        return Promise.resolve({ ok: true, json: async () => adminMember() });
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ ...adminMember(), ...memberOverrides }),
+        });
       }
       if (url === "/api/admin/members/member-1/credits") {
         return Promise.resolve({
@@ -194,6 +205,12 @@ describe("Admin member detail grouped layout", () => {
       }
       if (url.startsWith("/api/admin/committee/roles")) {
         return Promise.resolve({ ok: true, json: async () => ({ roles: [] }) });
+      }
+      if (url === "/api/admin/xero/status") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ ...xeroStatusResponse, features: {} }),
+        });
       }
       return Promise.reject(new Error(`Unexpected fetch: ${url}`));
     });
@@ -272,6 +289,99 @@ describe("Admin member detail grouped layout", () => {
     expect(screen.getByText("Dependents")).toBeTruthy();
     // Other groups stay collapsed.
     expect(screen.queryByText("First Name")).toBeNull();
+  });
+
+  it("hides all Xero header actions while Xero is disconnected", async () => {
+    // Default mock: connected false. Add Dependent keeps its own gating.
+    await renderPage();
+
+    expect(screen.getByRole("button", { name: /Add Dependent/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /View in Xero/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Link to Xero/ })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "More member actions" })
+    ).toBeNull();
+  });
+
+  it("shows View in Xero plus an overflow menu when connected and linked", async () => {
+    xeroStatusResponse = { connected: true };
+    memberOverrides = { xeroContactId: "xero-contact-1" };
+
+    await renderPage();
+
+    expect(
+      screen.getByRole("button", { name: /View in Xero/ })
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "More member actions" })
+    ).toBeTruthy();
+    // Rare actions stay tucked away until the menu is opened.
+    expect(screen.queryByText("Change Xero Link")).toBeNull();
+    expect(screen.queryByText("Unlink Xero Contact")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Link to Xero/ })).toBeNull();
+  });
+
+  it("shows Link to Xero when connected and unlinked", async () => {
+    xeroStatusResponse = { connected: true };
+
+    await renderPage();
+
+    expect(screen.getByRole("button", { name: /Link to Xero/ })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "More member actions" })
+    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /View in Xero/ })).toBeNull();
+    expect(screen.queryByText("Create in Xero")).toBeNull();
+  });
+
+  it("saves an inline contact edit with only the contact group's fields", async () => {
+    await renderPage();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Contact & Personal/ })
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+
+    const phoneInput = await screen.findByLabelText("Phone number");
+    fireEvent.change(phoneInput, { target: { value: "7654321" } });
+
+    fetchMock.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Save Changes" }));
+
+    await waitFor(() => {
+      const putCall = fetchMock.mock.calls.find(
+        ([, init]) => (init as RequestInit | undefined)?.method === "PUT"
+      );
+      expect(putCall).toBeTruthy();
+    });
+    const [putUrl, putInit] = fetchMock.mock.calls.find(
+      ([, init]) => (init as RequestInit | undefined)?.method === "PUT"
+    )!;
+    expect(String(putUrl)).toBe("/api/admin/members/member-1");
+    const body = JSON.parse(String((putInit as RequestInit).body));
+    expect(body.phoneNumber).toBe("7654321");
+    expect(body.email).toBe("alice@example.com");
+    // Group scoping: no access/auth fields, no lifeMemberDate ride-alongs.
+    expect(body).not.toHaveProperty("accessRoles");
+    expect(body).not.toHaveProperty("canLogin");
+    expect(body).not.toHaveProperty("active");
+    expect(body).not.toHaveProperty("lifeMemberDate");
+    // Edit mode exits and the display view returns after refetch.
+    expect(await screen.findByText("First Name")).toBeTruthy();
+  });
+
+  it("expands and unlocks Contact & Personal for the ?edit=true deep link", async () => {
+    searchParamsValue = new URLSearchParams("edit=true");
+
+    await renderPage();
+
+    // Contact group is open in edit mode: form inputs present.
+    expect(await screen.findByLabelText("First Name *")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Save Changes" })).toBeTruthy();
+    // Transient open: nothing persisted for the contact section.
+    expect(
+      window.localStorage.getItem(memberSectionStorageKeys.contact)
+    ).not.toBe("true");
   });
 
   it("opens the Finance group and scrolls for the #account-credit deep link", async () => {

@@ -24,6 +24,7 @@ import { resolveInternalReturnPath } from "@/lib/internal-return-path";
 import { hasAccessRole, isFullAdmin } from "@/lib/access-roles";
 import { toast } from "sonner";
 import { useScrollToFeedback } from "@/hooks/use-scroll-to-feedback";
+import { useXeroStatus } from "@/hooks/use-xero-status";
 import { Accordion } from "@/components/ui/accordion";
 import { subscriptionStatusLabel } from "@/lib/status-colors";
 import { MemberDetailHeader } from "./_components/member-detail-header";
@@ -42,8 +43,15 @@ import { MemberDependentsCard } from "./_components/member-dependents-card";
 import { MemberCreditCard } from "./_components/member-credit-card";
 import { MemberSeasonalMembershipCard } from "./_components/member-seasonal-membership-card";
 import { MemberCommitteeAssignmentsCard } from "./_components/member-committee-assignments-card";
-import { MemberEditDialog } from "./_components/member-edit-dialog";
 import { MemberXeroLinkDialog } from "./_components/member-xero-link-dialog";
+import {
+  buildAccountEditForm,
+  buildAccountPayload,
+  buildContactEditForm,
+  buildContactPayload,
+  type MemberAccountEditForm,
+  type MemberContactEditForm,
+} from "@/lib/admin-member-edit-groups";
 import { MemberXeroCreateDialog } from "./_components/member-xero-create-dialog";
 import { MemberXeroDecisionDialog } from "./_components/member-xero-decision-dialog";
 import { MemberParentLinkDialog } from "./_components/member-parent-link-dialog";
@@ -58,7 +66,8 @@ import { useMemberRelationships } from "./_hooks/use-member-relationships";
 import { useMemberParentLink } from "./_hooks/use-member-parent-link";
 import { useMemberDependentDialog } from "./_hooks/use-member-dependent-dialog";
 import { useMemberXero } from "./_hooks/use-member-xero";
-import { useMemberEdit } from "./_hooks/use-member-edit";
+import { useInheritEmailSearch } from "./_hooks/use-inherit-email-search";
+import { useMemberGroupEdit } from "./_hooks/use-member-group-edit";
 import type { MemberDetail } from "./_types";
 
 // Re-exports preserve the existing import paths used by tests and other callers
@@ -220,9 +229,7 @@ export default function MemberDetailPage({
     xeroSearchQuery,
     xeroSearchResults,
     xeroSearching,
-    xeroChoice,
     xeroLinking,
-    selectedXeroContactId,
     xeroUnlinking,
     xeroPushing,
     xeroCreateOpen,
@@ -236,9 +243,6 @@ export default function MemberDetailPage({
     xeroDecisionError,
     setXeroSearchOpen,
     setXeroSearchQuery,
-    setXeroSearchResults,
-    setXeroChoice,
-    setSelectedXeroContactId,
     setXeroCreateOpen,
     setXeroCreateEntranceFeeInvoice,
     setXeroEntranceFeeSkipReason,
@@ -257,41 +261,39 @@ export default function MemberDetailPage({
     openCreateXero,
   } = useMemberXero({ id, fetchMember, setLoading, setXeroError });
 
-  // Edit dialog state
-  const {
-    editOpen,
-    form,
-    editPostalSameAsPhysical,
-    saving,
-    formError,
-    inheritEmailSearch,
-    inheritEmailSearchResults,
-    inheritEmailSearchError,
-    inheritEmailSearching,
-    selectedInheritEmailSource,
-    setEditOpen,
-    setForm,
-    setEditPostalSameAsPhysical,
-    setInheritEmailSearch,
-    openEditDialog,
-    handleSave,
-    updateEditAddressFields,
-    selectInheritEmailSource,
-    clearInheritEmailSource,
-  } = useMemberEdit({
-    id,
-    member,
-    loading,
-    shouldAutoOpenEdit,
-    fetchMember,
-    setLoading,
-    setXeroError,
-    setXeroChoice,
-    setSelectedXeroContactId,
-    setXeroSearchQuery,
-    setXeroSearchResults,
-    setXeroCreateEntranceFeeInvoice,
+  // Per-group inline edit state: each group unlocks and saves only its own
+  // fields (the member PUT schema is fully partial).
+  const refreshMemberAfterSave = async () => {
+    setLoading(true);
+    await fetchMember();
+  };
+  const contactEdit = useMemberGroupEdit<MemberContactEditForm>({
+    memberId: id,
+    buildForm: () => (member ? buildContactEditForm(member) : null),
+    buildPayload: buildContactPayload,
+    successMessage: "Member updated successfully",
+    onSaved: refreshMemberAfterSave,
   });
+  const accountEditBase = useMemberGroupEdit<MemberAccountEditForm>({
+    memberId: id,
+    buildForm: () => (member ? buildAccountEditForm(member) : null),
+    buildPayload: buildAccountPayload,
+    successMessage: "Member updated successfully",
+    onSaved: refreshMemberAfterSave,
+  });
+  const inheritEmail = useInheritEmailSearch({
+    memberId: member?.id,
+    enabled: accountEditBase.editing && accountEditBase.form?.canLogin === false,
+  });
+  // Entering account edit re-seeds the recipient picker from the member's
+  // current inheritance so a cancelled edit leaves nothing stale behind.
+  const accountEdit = {
+    ...accountEditBase,
+    startEdit: () => {
+      inheritEmail.resetTo(member?.inheritEmailFrom ?? null);
+      accountEditBase.startEdit();
+    },
+  };
 
   // Delete state
   const {
@@ -323,6 +325,7 @@ export default function MemberDetailPage({
     onValueChange: onSectionsChange,
     openSection,
   } = useCollapsibleMemberSections();
+  const { connected: xeroConnected } = useXeroStatus();
 
   const isAdultMember = member?.ageTier === "ADULT";
   const memberIsArchived = Boolean(member?.archivedAt);
@@ -347,14 +350,12 @@ export default function MemberDetailPage({
     if (
       xeroError &&
       !xeroSearchOpen &&
-      !editOpen &&
       !xeroCreateOpen &&
       !xeroCreateDecisionOpen
     ) {
       scrollToError(xeroErrorRef);
     }
   }, [
-    editOpen,
     scrollToError,
     xeroCreateDecisionOpen,
     xeroCreateOpen,
@@ -381,6 +382,32 @@ export default function MemberDetailPage({
         ?.scrollIntoView({ behavior: "smooth", block: "start" });
     }, 250);
   }, [loading, member, openSection]);
+
+  // The members-list row Edit button navigates here with ?edit=true. The old
+  // behavior opened the edit dialog; now it expands the Contact & Personal
+  // group, unlocks it, and scrolls to it — once per member id.
+  const handledInitialEditParam = useRef(false);
+  useEffect(() => {
+    handledInitialEditParam.current = false;
+  }, [id]);
+  useEffect(() => {
+    if (
+      handledInitialEditParam.current ||
+      !shouldAutoOpenEdit ||
+      loading ||
+      !member
+    ) {
+      return;
+    }
+    handledInitialEditParam.current = true;
+    openSection("contact");
+    contactEdit.startEdit();
+    window.setTimeout(() => {
+      document
+        .getElementById("member-group-contact")
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 250);
+  }, [contactEdit, loading, member, openSection, shouldAutoOpenEdit]);
 
   const isSelf = session?.user?.id === id;
   const actorIsFullAdmin = isFullAdmin({
@@ -504,13 +531,13 @@ export default function MemberDetailPage({
         isAdultMember={isAdultMember}
         memberIsArchived={memberIsArchived}
         pendingDeleteRequest={pendingDeleteRequest}
+        xeroConnected={xeroConnected}
         xeroPushing={xeroPushing}
         xeroUnlinking={xeroUnlinking}
         onOpenDependentDialog={openDependentDialog}
         onOpenLinkXero={openLinkXero}
         onOpenCreateXero={openCreateXero}
         onUnlinkXero={handleXeroUnlink}
-        onOpenEditDialog={openEditDialog}
       />
 
       {relationshipError && (
@@ -525,7 +552,6 @@ export default function MemberDetailPage({
       )}
       {xeroError &&
         !xeroSearchOpen &&
-        !editOpen &&
         !xeroCreateOpen &&
         !xeroCreateDecisionOpen && (
           <div
@@ -556,7 +582,12 @@ export default function MemberDetailPage({
           title="Contact & Personal"
           preview={groupPreviews.contact}
         >
-          <MemberContactGroup member={member} />
+          <MemberContactGroup
+            member={member}
+            isSelf={isSelf}
+            actorIsFullAdmin={actorIsFullAdmin}
+            edit={contactEdit}
+          />
         </MemberGroupCard>
 
         <MemberGroupCard
@@ -564,7 +595,14 @@ export default function MemberDetailPage({
           title="Account & Access"
           preview={groupPreviews.account}
         >
-          <MemberAccountAccessGroup member={member} />
+          <MemberAccountAccessGroup
+            member={member}
+            isSelf={isSelf}
+            actorIsFullAdmin={actorIsFullAdmin}
+            memberLifecycleLocked={memberLifecycleLocked}
+            edit={accountEdit}
+            inheritEmail={inheritEmail}
+          />
         </MemberGroupCard>
 
         <MemberGroupCard
@@ -922,49 +960,6 @@ export default function MemberDetailPage({
         }}
         onChangeReviewNote={setDeleteReviewNote}
         onSubmit={handleReviewDeleteRequest}
-      />
-
-      <MemberEditDialog
-        open={editOpen}
-        onOpenChange={setEditOpen}
-        member={member}
-        form={form}
-        formError={formError}
-        saving={saving}
-        isSelf={isSelf}
-        actorIsFullAdmin={actorIsFullAdmin}
-        memberLifecycleLocked={memberLifecycleLocked}
-        postalSameAsPhysical={editPostalSameAsPhysical}
-        selectedInheritEmailSource={selectedInheritEmailSource}
-        inheritEmailSearch={inheritEmailSearch}
-        inheritEmailSearching={inheritEmailSearching}
-        inheritEmailSearchError={inheritEmailSearchError}
-        inheritEmailSearchResults={inheritEmailSearchResults}
-        xeroError={xeroError}
-        xeroChoice={xeroChoice}
-        xeroSearchQuery={xeroSearchQuery}
-        xeroSearchResults={xeroSearchResults}
-        xeroSearching={xeroSearching}
-        xeroLinking={xeroLinking}
-        xeroUnlinking={xeroUnlinking}
-        xeroPushing={xeroPushing}
-        selectedXeroContactId={selectedXeroContactId}
-        onChangeForm={setForm}
-        onChangeAddressFields={updateEditAddressFields}
-        onChangePostalSameAsPhysical={setEditPostalSameAsPhysical}
-        onChangeInheritEmailSearch={setInheritEmailSearch}
-        onSelectInheritEmailSource={selectInheritEmailSource}
-        onClearInheritEmailSource={clearInheritEmailSource}
-        onChangeXeroSearchQuery={setXeroSearchQuery}
-        onChangeSelectedXeroContactId={setSelectedXeroContactId}
-        onChangeXeroChoice={setXeroChoice}
-        onClearXeroError={() => setXeroError("")}
-        onOpenLinkXero={openLinkXero}
-        onOpenCreateXero={openCreateXero}
-        onXeroSearch={handleXeroSearch}
-        onXeroLink={handleXeroLink}
-        onXeroUnlink={handleXeroUnlink}
-        onSubmit={handleSave}
       />
     </div>
   );
