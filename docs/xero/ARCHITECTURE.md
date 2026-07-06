@@ -264,7 +264,14 @@ group-settlement invoice.
 Xero pushes CONTACT and INVOICE events; the webhook stores them and returns
 fast. Reconciliation happens in a bounded worker kicked after the response and
 swept by cron. Internet-banking settlement rides this flow: when an invoice is
-paid in Xero, the matching local payments/bookings are flipped here.
+paid in Xero **with cash evidence** (`amountPaid` > 0, falling back to actual
+payment records; operator-applied overpayments/prepayments count), the
+matching local payments/bookings are flipped here. A PAID event produced by
+credit-note allocation — the app's own invoice-clearing notes do exactly that
+on every unpaid-IB cancellation — settles nothing (#1435): identifiers are
+stamped for linkage only, admins are alerted if the booking is still live,
+and a payload carrying neither cash field fails the event into the
+FAILED-retry sweep rather than settling blind.
 
 ```mermaid
 sequenceDiagram
@@ -291,8 +298,8 @@ sequenceDiagram
         alt CONTACT
             REC->>BIZ: refresh contact cache + member link,<br/>managed group sync, membership backfill
         else INVOICE (paid)
-            REC->>BIZ: syncInternetBankingPaymentsForPaidInvoice:<br/>flip IB payments → PAID, confirm booking,<br/>bed allocation, waitlist, emails
-            REC->>BIZ: syncGroupSettlementForPaidInvoice:<br/>flip all joiner bookings on the organiser invoice
+            REC->>BIZ: syncInternetBankingPaymentsForPaidInvoice:<br/>cash-gated (#1435) — with cash evidence flip IB<br/>payments → PAID, confirm booking, bed allocation,<br/>waitlist, emails; allocation-only PAID settles nothing<br/>(identifier stamp + live-booking admin alert)
+            REC->>BIZ: syncGroupSettlementForPaidInvoice:<br/>same cash gate; with cash evidence flip all<br/>joiner bookings on the organiser invoice
             REC->>BIZ: refresh linked subscriptions
         else PAYMENT / CREDIT-NOTE
             REC->>BIZ: reconcile payment / credit note:<br/>refund business-state repair,<br/>account-credit allocation repair
@@ -362,6 +369,21 @@ non-replayable), the health snapshot lists paid bookings missing invoices and
 refunds missing credit notes (flagged when the refunded amount still exceeds the
 cents already covered by active refund credit notes, so multi-note refunds are
 handled), and per-record activity shows the ledger for one booking/payment/member.
+
+Expanding an operation in the admin Xero operations panel shows a plain-English
+summary by default instead of raw JSON (#1448). `summarizeXeroOperation`
+(`src/lib/xero-operation-summaries.ts`, a framework-agnostic pure module the
+client panel imports) keys on `(entityType, operationType)` plus payload-shape
+sniffing: it reads `requestPayload.queueType` when it is still present
+(PENDING / failed-before-dispatch rows) and otherwise recognises the persisted
+Xero request/response shapes (invoice, credit note, allocation, managed
+contact-group sync). It builds facts from data already run through the
+object-level `redactSensitiveJson`, so a summary can never surface a value the
+redacted raw view would mask, and money is formatted only through the shared
+`formatCents` helper (integer cents; Xero decimal dollars are converted to cents
+first). Unknown or unmapped shapes return `null`, and the panel falls back to
+the redacted raw request/response JSON exactly as before. A per-row **Show raw
+JSON** toggle reveals the same redacted `<pre>` blocks for any mapped row.
 
 ### Historical rounding-drift audit (#1318, read-only)
 
