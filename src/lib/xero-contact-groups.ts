@@ -322,6 +322,24 @@ export async function getXeroContactGroups(options?: {
   }));
 }
 
+/**
+ * Returns the ISO timestamp of the most recent successful contact-group cache
+ * refresh, or null when the cache has never been populated. Reads the same
+ * cursor (resource + scope) that {@link refreshXeroContactGroupCache} writes, so
+ * the value always reflects the "Refresh Xero Groups" admin action.
+ */
+export async function getXeroContactGroupCacheLastRefreshedAt(): Promise<
+  string | null
+> {
+  const cursor = await getXeroSyncCursor(
+    CONTACT_GROUP_CACHE_CURSOR_RESOURCE,
+    DEFAULT_XERO_SYNC_SCOPE
+  );
+  return cursor?.lastSuccessfulSyncAt
+    ? cursor.lastSuccessfulSyncAt.toISOString()
+    : null;
+}
+
 export async function getXeroContactGroupMemberships(
   contactIds: string[]
 ): Promise<Record<string, Array<{ id: string; name: string }>>> {
