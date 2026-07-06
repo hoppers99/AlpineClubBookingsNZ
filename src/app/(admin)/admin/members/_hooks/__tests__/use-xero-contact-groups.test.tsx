@@ -75,17 +75,46 @@ describe("useXeroContactGroups lastRefreshedAt", () => {
     expect(result.current.xeroContactGroupsList).toEqual([])
   })
 
-  it("reports a null timestamp when the cache has never been refreshed", async () => {
-    mockStatus(true, { liveMemberGroupLookups: false })
-    mockContactGroupsFetch({ groups: [], lastRefreshedAt: null })
+  it("sets the timestamp from the fetched cache value and transitions to null for an empty cache", async () => {
+    // Two queued responses: a populated cache, then an empty one. Asserting the
+    // populated value first proves the read path actually sets state (the test
+    // would stay stuck at the initial null if the code ignored the response),
+    // and the second phase proves an empty cache maps to null rather than a
+    // stale value.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ groups: [], lastRefreshedAt: REFRESHED_AT }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ groups: [], lastRefreshedAt: null }),
+      })
+    vi.stubGlobal("fetch", fetchMock)
 
-    const { result } = renderHook(() => useXeroContactGroups(hookOptions))
+    mockStatus(true, {
+      autoLoadContactGroups: false,
+      liveMemberGroupLookups: false,
+    })
+    const { result, rerender } = renderHook(() =>
+      useXeroContactGroups(hookOptions)
+    )
 
-    // Allow the mount fetch to resolve.
-    await waitFor(() => expect(fetch).toHaveBeenCalled())
-    await Promise.resolve()
+    await waitFor(() =>
+      expect(result.current.lastRefreshedAt).toBe(REFRESHED_AT)
+    )
 
-    expect(result.current.lastRefreshedAt).toBeNull()
+    // Flip a mount-effect dependency to re-run the cache fetch with an empty
+    // cache, and assert the timestamp transitions to null.
+    mockStatus(true, {
+      autoLoadContactGroups: true,
+      liveMemberGroupLookups: false,
+    })
+    rerender()
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(result.current.lastRefreshedAt).toBeNull())
   })
 
   it("renders the same timestamp on the live auto-load path and adopts the groups list", async () => {

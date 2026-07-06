@@ -253,7 +253,7 @@ export default function MembersPage() {
             {debouncedSearch ? ` matching "${debouncedSearch}"` : " total"}
           </p>
         </div>
-        <div className="flex flex-col items-end gap-1.5">
+        <div className="flex flex-col items-start gap-1.5">
           <div className="flex gap-2">
             {xeroConnected && (
               <ViewOnlyActionButton
