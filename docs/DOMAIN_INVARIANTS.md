@@ -512,7 +512,20 @@ the modification credit-note paths, and both the outbox enqueue and the
 executor refuse (skip, replay-safely) rather than gross-bill the fee. The
 booking-vs-Xero repair pass applies the same rule: it verifies supplementary
 invoices against the modification net and queues missing ones with the signed
-components. The manual retry stack replays the operation's STORED amounts
+components. On the credit-note side the repair pass sizes by STORED evidence,
+never abs(net) (#1427): abs(net) is only an upper bound, because the primary
+path caps the credit at the policy-limited settlement the modification row
+cannot reconstruct. Queue actions and the amount-evidence expectation both
+prefer the enqueue-time operation payload (which also rebuilds the identical
+amount-embedding correlation key, so a requeue of a note that already reached
+Xero dedups instead of duplicating), then link metadata, then executed note
+totals — and the allocation is sized to the NOTE's evidenced amount. When no
+stored evidence exists and the payment has captured money, the repair pass
+emits a manual-review finding instead of auto-queueing abs(net) (a policy
+tier may have applied); auto-queueing abs(net) remains correct only for the
+no-captured-payment case, where the full delta is a pure bookkeeping
+correction (#1015). A pending or running credit-note operation surfaces as
+blocked rather than silence. The manual retry stack replays the operation's STORED amounts
 first (the #1354 queued-payload-first rule): the Xero idempotency key embeds
 the amounts, so replaying the enqueued values keeps the retry deduplicable
 against the original attempt, preserves a policy-limited credit-note

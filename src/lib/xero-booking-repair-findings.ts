@@ -135,6 +135,72 @@ function collectXeroAmountEvidence(params: {
   return evidence;
 }
 
+// #1427: recover the amount a Xero money object was actually enqueued or
+// executed with. The policy-limited settlement a modification credit note
+// carries is NOT reconstructable from the modification row (the
+// cancellation-policy tier depended on days-until-check-in at modification
+// time), so the stored ledger is the record of record — the enqueue-time
+// operation payload first (#1356 queued-payload-first; replaying that amount
+// also rebuilds the identical amount-embedding correlation key, keeping
+// Xero-side dedup intact on a requeue), then link metadata, then an executed
+// object's response totals. Unlike collectXeroAmountEvidence this reads
+// operations in ANY status: a FAILED or CANCELLED attempt still records what
+// the app decided the settlement was.
+export function recoverStoredXeroAmountCents(params: {
+  links: XeroObjectLinkRecord[];
+  operations: XeroOperationRecord[];
+  xeroObjectType: string;
+  role: string;
+  entityType: string;
+  operationType: string;
+  objectId?: string | null;
+}): {
+  amountCents: number;
+  source: "operation-request" | "link" | "operation-response";
+} | null {
+  const operations = params.operations
+    .filter(
+      (operation) =>
+        operation.entityType === params.entityType &&
+        operation.operationType === params.operationType &&
+        (!params.objectId ||
+          !operation.xeroObjectId ||
+          operation.xeroObjectId === params.objectId)
+    )
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
+  for (const operation of operations) {
+    const amountCents = readStoredXeroAmountCents(operation.requestPayload);
+    if (amountCents !== null) {
+      return { amountCents, source: "operation-request" };
+    }
+  }
+
+  for (const link of params.links) {
+    if (
+      link.xeroObjectType !== params.xeroObjectType ||
+      link.role !== params.role ||
+      (params.objectId ? link.xeroObjectId !== params.objectId : false)
+    ) {
+      continue;
+    }
+
+    const amountCents = readStoredXeroAmountCents(link.metadata);
+    if (amountCents !== null) {
+      return { amountCents, source: "link" };
+    }
+  }
+
+  for (const operation of operations) {
+    const amountCents = readStoredXeroAmountCents(operation.responsePayload);
+    if (amountCents !== null) {
+      return { amountCents, source: "operation-response" };
+    }
+  }
+
+  return null;
+}
+
 export function addXeroAmountMismatchFinding(params: {
   findings: MutableFinding[];
   actionMap: Map<string, BookingXeroRepairAction>;
