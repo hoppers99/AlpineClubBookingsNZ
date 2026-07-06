@@ -13,6 +13,11 @@ import {
 } from "@/components/ui/select"
 import { useAccessRoleOptions } from "@/hooks/use-access-role-options"
 import { NON_MEMBER_ROLE_VALUES, ROLE_LABELS } from "@/lib/member-roles"
+import {
+  LOGIN_STAGE_FILTER_VALUES,
+  LOGIN_STAGE_LABELS,
+  type MemberLoginStage,
+} from "@/lib/member-login-stage"
 import type { Filters, XeroContactGroup, XeroFeatureFlags } from "../_types"
 import { filterLabelMap, filterValueLabels } from "../_utils"
 
@@ -143,14 +148,16 @@ export function MemberFilterToolbar({
           value={filters.inviteStatus || "all"}
           onValueChange={(value) => onSetFilter("inviteStatus", value === "all" ? "" : value)}
         >
-          <SelectTrigger className="w-[165px]" aria-label="Filter by invite status">
-            <SelectValue placeholder="Invite Status" />
+          <SelectTrigger className="w-[165px]" aria-label="Filter by login access">
+            <SelectValue placeholder="Login Access" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All Invite Status</SelectItem>
-            <SelectItem value="invite">Invite</SelectItem>
-            <SelectItem value="resend-invite">Resend Invite</SelectItem>
-            <SelectItem value="reset-password">Reset Password</SelectItem>
+            <SelectItem value="all">All Login Access</SelectItem>
+            {(Object.keys(LOGIN_STAGE_LABELS) as MemberLoginStage[]).map((stage) => (
+              <SelectItem key={stage} value={LOGIN_STAGE_FILTER_VALUES[stage]}>
+                {LOGIN_STAGE_LABELS[stage]}
+              </SelectItem>
+            ))}
           </SelectContent>
         </Select>
         <Select

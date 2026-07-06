@@ -467,12 +467,18 @@ export async function listAdminMembers(
     andConditions.push({ xeroContactId: null });
   }
 
-  // Filter: invite status. This mirrors the action shown in the members table.
+  // Filter: login access stage. This mirrors the single Access-column stage the
+  // members table shows (getMemberLoginStage) and the row action button. The
+  // four values are mutually exclusive: no-login (canLogin off), invite (login
+  // on, not yet invited), resend-invite (pending unexpired invite), and
+  // reset-password (setup complete).
   const activePendingInviteFilter = {
     used: false,
     expiresAt: { gt: now },
   };
-  if (inviteStatusFilter === "invite") {
+  if (inviteStatusFilter === "no-login") {
+    andConditions.push({ canLogin: false });
+  } else if (inviteStatusFilter === "invite") {
     andConditions.push(
       { canLogin: true },
       { passwordChangedAt: null },

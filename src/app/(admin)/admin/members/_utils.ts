@@ -1,6 +1,7 @@
 import type { Filters, MemberForm } from "./_types";
 import { ACCESS_ROLE_LABELS } from "@/lib/access-roles";
 import { ROLE_LABELS } from "@/lib/member-roles";
+import { LOGIN_STAGE_LABELS } from "@/lib/member-login-stage";
 
 export const emptyForm: MemberForm = {
   title: "",
@@ -56,7 +57,7 @@ export const filterLabelMap: Record<keyof Filters, string> = {
   lifecycleStatus: "Status",
   ageTier: "Age Tier",
   familyGroup: "Family Group",
-  inviteStatus: "Invite Status",
+  inviteStatus: "Login Access",
   xeroLinked: "Xero",
   subscription: "Subscription",
   xeroContactGroup: "Xero Group",
@@ -81,10 +82,13 @@ export const filterValueLabels: Partial<
     SCHOOL: ROLE_LABELS.SCHOOL,
   },
   familyGroup: { any: "Yes", none: "No" },
+  // The `inviteStatus` param carries the four mutually-exclusive login stages
+  // (#1444); the three login-on values stay the historical action kinds.
   inviteStatus: {
-    invite: "Invite",
-    "resend-invite": "Resend Invite",
-    "reset-password": "Reset Password",
+    "no-login": LOGIN_STAGE_LABELS["no-login"],
+    invite: LOGIN_STAGE_LABELS["not-invited"],
+    "resend-invite": LOGIN_STAGE_LABELS.invited,
+    "reset-password": LOGIN_STAGE_LABELS["can-login"],
   },
   xeroLinked: { true: "Linked", false: "Not Linked" },
   subscription: {

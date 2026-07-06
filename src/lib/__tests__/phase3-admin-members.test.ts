@@ -593,6 +593,20 @@ describe("Phase 3: Admin Member Management", () => {
       ]));
     });
 
+    it("filters by no-login status", async () => {
+      // #1444 folded the standalone Login column into the Access stage filter;
+      // the new no-login value scopes to members whose login is switched off.
+      mockedAuth.mockResolvedValue(adminSession);
+      vi.mocked(prisma.member.findMany).mockResolvedValue([]);
+      mockSessionAndMemberListCounts(0);
+
+      await getMembers(new NextRequest("http://localhost/api/admin/members?inviteStatus=no-login"));
+      const call = vi.mocked(prisma.member.findMany).mock.calls[0][0]!;
+      expect(call.where?.AND).toEqual(expect.arrayContaining([
+        { canLogin: false },
+      ]));
+    });
+
     it("filters admin users as subscription not required", async () => {
       mockedAuth.mockResolvedValue(adminSession);
       vi.mocked(prisma.member.findMany).mockResolvedValue([]);

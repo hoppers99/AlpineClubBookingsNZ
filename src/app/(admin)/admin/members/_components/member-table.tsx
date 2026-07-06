@@ -16,13 +16,13 @@ import {
   MemberPasswordActionButton,
 } from "@/components/admin/member-password-action-button"
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path"
+import { getLifecycleStatusConfig } from "@/lib/admin-member-badges"
 import {
-  getLifecycleStatusConfig,
-  getLoginBadge,
-} from "@/lib/admin-member-badges"
+  getMemberLoginStage,
+  LOGIN_STAGE_LABELS,
+} from "@/lib/member-login-stage"
+import { deriveUserType, USER_TYPE_LABELS } from "@/lib/access-roles"
 import { memberName } from "@/lib/member-serialization"
-import { accessRoleLabelForToken } from "@/lib/access-role-definitions"
-import { useAccessRoleOptions } from "@/hooks/use-access-role-options"
 import type { Member } from "../_types"
 import { subscriptionStatusConfig } from "../_utils"
 
@@ -106,7 +106,6 @@ export function MemberTable({
   onOpenPasswordActionDialog,
   onEditMember,
 }: MemberTableProps) {
-  const roleOptions = useAccessRoleOptions()
   if (loading) {
     return (
       <div className="py-12 text-center">
@@ -146,6 +145,10 @@ export function MemberTable({
             {[
               ["name", "Name"],
               ["email", "Email"],
+              // Access shows the member's derived type plus their single login
+              // stage. The login stage is derived (no sortable DB column), so
+              // this header sorts by the stored `role` — an approximation of
+              // type order — rather than the rendered stage.
               ["role", "Access"],
             ].map(([column, label]) => (
               <SortableHeader
@@ -172,7 +175,6 @@ export function MemberTable({
               sortDir={sortDir}
               onToggleSort={onToggleSort}
             />
-            <TableHead>Login</TableHead>
             <TableHead>Family Group</TableHead>
             <TableHead>Subscription</TableHead>
             <TableHead>Xero</TableHead>
@@ -189,7 +191,18 @@ export function MemberTable({
         <TableBody>
           {members.map((member) => {
             const lifecycleConfig = getLifecycleStatusConfig(member)
-            const loginBadge = getLoginBadge(member.canLogin)
+            // One Access column (#1444): the member's derived type plus their
+            // single login-journey stage. The no-login case renders just "No
+            // login" (no type prefix); every login-on stage renders
+            // "{Type} · {Stage}", e.g. "Admin · Invited".
+            const loginStage = getMemberLoginStage(member)
+            const userType = deriveUserType(member.accessRoles, member.canLogin)
+            const accessTypeLabel =
+              userType === "lodge" ? "Lodge" : USER_TYPE_LABELS[userType]
+            const accessLabel =
+              loginStage === "no-login"
+                ? LOGIN_STAGE_LABELS["no-login"]
+                : `${accessTypeLabel} · ${LOGIN_STAGE_LABELS[loginStage]}`
             const subscriptionConfig =
               subscriptionStatusConfig[member.subscriptionStatus ?? "NONE"] ||
               subscriptionStatusConfig.NOT_INVOICED
@@ -236,27 +249,16 @@ export function MemberTable({
                 </TableCell>
                 <TableCell className="text-slate-600">{member.email}</TableCell>
                 <TableCell>
-                  <div className="flex max-w-[220px] flex-wrap gap-1">
-                    {member.accessRoles.length > 0 ? (
-                      member.accessRoles.map((role) => (
-                        <Badge
-                          key={role}
-                          variant={
-                            role.startsWith("ADMIN") ? "default" : "secondary"
-                          }
-                          className={
-                            role.startsWith("ADMIN")
-                              ? "bg-blue-600 text-white hover:bg-blue-700"
-                              : ""
-                          }
-                        >
-                          {accessRoleLabelForToken(role, roleOptions)}
-                        </Badge>
-                      ))
-                    ) : (
-                      <Badge variant="secondary">No Login</Badge>
-                    )}
-                  </div>
+                  <Badge
+                    variant={userType === "admin" ? "default" : "secondary"}
+                    className={
+                      userType === "admin"
+                        ? "bg-blue-600 text-white hover:bg-blue-700"
+                        : ""
+                    }
+                  >
+                    {accessLabel}
+                  </Badge>
                 </TableCell>
                 <TableCell>
                   {member.currentMembershipType ? (
@@ -284,11 +286,6 @@ export function MemberTable({
                     className={lifecycleConfig.className}
                   >
                     {lifecycleConfig.label}
-                  </Badge>
-                </TableCell>
-                <TableCell>
-                  <Badge variant="secondary" className={loginBadge.className}>
-                    {loginBadge.label}
                   </Badge>
                 </TableCell>
                 <TableCell>
