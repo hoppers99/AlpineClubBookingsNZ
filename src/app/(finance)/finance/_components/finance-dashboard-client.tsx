@@ -52,6 +52,7 @@ import {
   FINANCE_DASHBOARD_VIEWS,
 } from "@/lib/finance-dashboard-ranges";
 import type { FinanceDashboardPageModel } from "@/lib/finance-dashboard-page";
+import { RatioExplorer } from "./ratio-explorer";
 
 interface FinanceDashboardClientProps {
   model: FinanceDashboardPageModel;
@@ -204,51 +205,57 @@ export function FinanceDashboardClient({ model }: FinanceDashboardClientProps) {
                 ))}
               </select>
             </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="finance-range">Range</Label>
-              <select
-                id="finance-range"
-                name="range"
-                defaultValue={model.selection.range}
-                className="flex h-10 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm"
-              >
-                {FINANCE_DASHBOARD_RANGE_OPTIONS.map((option) => (
-                  <option key={option} value={option}>
-                    {FINANCE_DASHBOARD_RANGE_LABELS[option]}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="finance-compare">Compare</Label>
-              <select
-                id="finance-compare"
-                name="compare"
-                defaultValue={model.selection.compare}
-                className="flex h-10 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm"
-              >
-                {FINANCE_DASHBOARD_COMPARE_OPTIONS.map((option) => (
-                  <option key={option} value={option}>
-                    {FINANCE_DASHBOARD_COMPARE_LABELS[option]}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="finance-forward">Forward</Label>
-              <select
-                id="finance-forward"
-                name="forward"
-                defaultValue={model.selection.forward}
-                className="flex h-10 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm"
-              >
-                {FINANCE_DASHBOARD_FORWARD_OPTIONS.map((option) => (
-                  <option key={option} value={option}>
-                    {FINANCE_DASHBOARD_FORWARD_LABELS[option]}
-                  </option>
-                ))}
-              </select>
-            </div>
+            {model.selection.view !== "ratios" ? (
+              <>
+                <div className="space-y-1.5">
+                  <Label htmlFor="finance-range">Range</Label>
+                  <select
+                    id="finance-range"
+                    name="range"
+                    defaultValue={model.selection.range}
+                    className="flex h-10 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm"
+                  >
+                    {FINANCE_DASHBOARD_RANGE_OPTIONS.map((option) => (
+                      <option key={option} value={option}>
+                        {FINANCE_DASHBOARD_RANGE_LABELS[option]}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="finance-compare">Compare</Label>
+                  <select
+                    id="finance-compare"
+                    name="compare"
+                    defaultValue={model.selection.compare}
+                    className="flex h-10 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm"
+                  >
+                    {FINANCE_DASHBOARD_COMPARE_OPTIONS.map((option) => (
+                      <option key={option} value={option}>
+                        {FINANCE_DASHBOARD_COMPARE_LABELS[option]}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </>
+            ) : null}
+            {model.selection.view === "bookings" ? (
+              <div className="space-y-1.5">
+                <Label htmlFor="finance-forward">Forward</Label>
+                <select
+                  id="finance-forward"
+                  name="forward"
+                  defaultValue={model.selection.forward}
+                  className="flex h-10 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm"
+                >
+                  {FINANCE_DASHBOARD_FORWARD_OPTIONS.map((option) => (
+                    <option key={option} value={option}>
+                      {FINANCE_DASHBOARD_FORWARD_LABELS[option]}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : null}
             <div className="flex items-end">
               <Button type="submit" className="w-full">
                 <Filter className="h-4 w-4" />
@@ -256,62 +263,68 @@ export function FinanceDashboardClient({ model }: FinanceDashboardClientProps) {
               </Button>
             </div>
 
-            <div className="space-y-1.5">
-              <Label htmlFor="finance-from">From</Label>
-              <Input
-                id="finance-from"
-                name="from"
-                type="date"
-                defaultValue={model.selection.primary.from}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="finance-to">To</Label>
-              <Input
-                id="finance-to"
-                name="to"
-                type="date"
-                defaultValue={model.selection.primary.to}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="finance-compare-from">Compare From</Label>
-              <Input
-                id="finance-compare-from"
-                name="compareFrom"
-                type="date"
-                defaultValue={model.selection.comparison.from}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="finance-compare-to">Compare To</Label>
-              <Input
-                id="finance-compare-to"
-                name="compareTo"
-                type="date"
-                defaultValue={model.selection.comparison.to}
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              <div className="space-y-1.5">
-                <Label htmlFor="finance-forward-from">Forward From</Label>
-                <Input
-                  id="finance-forward-from"
-                  name="forwardFrom"
-                  type="date"
-                  defaultValue={model.selection.forwardWindow.from ?? ""}
-                />
+            {model.selection.view !== "ratios" ? (
+              <>
+                <div className="space-y-1.5">
+                  <Label htmlFor="finance-from">From month</Label>
+                  <Input
+                    id="finance-from"
+                    name="from"
+                    type="month"
+                    defaultValue={model.selection.primary.fromMonth}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="finance-to">To month</Label>
+                  <Input
+                    id="finance-to"
+                    name="to"
+                    type="month"
+                    defaultValue={model.selection.primary.toMonth}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="finance-compare-from">Compare from month</Label>
+                  <Input
+                    id="finance-compare-from"
+                    name="compareFrom"
+                    type="month"
+                    defaultValue={model.selection.comparison?.fromMonth ?? ""}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="finance-compare-to">Compare to month</Label>
+                  <Input
+                    id="finance-compare-to"
+                    name="compareTo"
+                    type="month"
+                    defaultValue={model.selection.comparison?.toMonth ?? ""}
+                  />
+                </div>
+              </>
+            ) : null}
+            {model.selection.view === "bookings" ? (
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1.5">
+                  <Label htmlFor="finance-forward-from">Forward from</Label>
+                  <Input
+                    id="finance-forward-from"
+                    name="forwardFrom"
+                    type="month"
+                    defaultValue={model.selection.forwardWindow.from?.slice(0, 7) ?? ""}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="finance-forward-to">Forward to</Label>
+                  <Input
+                    id="finance-forward-to"
+                    name="forwardTo"
+                    type="month"
+                    defaultValue={model.selection.forwardWindow.to?.slice(0, 7) ?? ""}
+                  />
+                </div>
               </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="finance-forward-to">Forward To</Label>
-                <Input
-                  id="finance-forward-to"
-                  name="forwardTo"
-                  type="date"
-                  defaultValue={model.selection.forwardWindow.to ?? ""}
-                />
-              </div>
-            </div>
+            ) : null}
 
             {model.costFilters ? (
               <>
@@ -378,6 +391,14 @@ export function FinanceDashboardClient({ model }: FinanceDashboardClientProps) {
             {model.selectionLabels.primaryWindow}; generated {model.generatedOn}
           </p>
         </div>
+
+        {model.ratios ? (
+          <RatioExplorer
+            matrix={model.ratios.matrix}
+            initialNumeratorId={model.ratios.initialNumeratorId}
+            initialDenominatorId={model.ratios.initialDenominatorId}
+          />
+        ) : null}
 
         <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           {model.cards.map((card) => (
