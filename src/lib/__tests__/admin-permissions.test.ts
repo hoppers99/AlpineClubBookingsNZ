@@ -453,6 +453,86 @@ describe("admin route requirements", () => {
       level: "edit",
     });
   });
+
+  it("maps the bookings-scoped on-behalf family pickers to the bookings area (#1376)", () => {
+    // Both new on-behalf pickers live under /api/admin/bookings so the route
+    // map keeps them in the bookings area — NOT membership. If either were
+    // accidentally placed under /api/admin/members it would silently inherit
+    // membership:view (the exact mispricing bug #1376 fixes).
+    expect(
+      getAdminRouteRequirement(
+        "/api/admin/bookings/booking-1/eligible-family",
+        "GET",
+      ),
+    ).toEqual({ area: "bookings", level: "view" });
+    expect(
+      getAdminRouteRequirement("/api/admin/bookings/eligible-family", "GET"),
+    ).toEqual({ area: "bookings", level: "view" });
+  });
+
+  it("lets a bookings:edit actor without membership:view reach the on-behalf pickers (#1376)", () => {
+    // The seeded Booking Officer holds bookings:edit; a club may customise the
+    // role to drop membership:view. The endpoints demand bookings:edit
+    // explicitly, so this actor passes while a membership-only viewer does not.
+    const officerNoMembershipView = {
+      accessRoles: [] as AppAccessRole[],
+      adminPermissionMatrix: {
+        overview: "view",
+        bookings: "edit",
+        membership: "none",
+        finance: "none",
+        lodge: "none",
+        content: "none",
+        support: "none",
+      },
+    };
+    expect(
+      hasAdminAreaAccess(officerNoMembershipView, {
+        area: "bookings",
+        level: "edit",
+      }),
+    ).toBe(true);
+
+    const membershipViewerNoBookings = {
+      accessRoles: [] as AppAccessRole[],
+      adminPermissionMatrix: {
+        overview: "view",
+        bookings: "none",
+        membership: "edit",
+        finance: "none",
+        lodge: "none",
+        content: "none",
+        support: "none",
+      },
+    };
+    expect(
+      hasAdminAreaAccess(membershipViewerNoBookings, {
+        area: "bookings",
+        level: "edit",
+      }),
+    ).toBe(false);
+
+    // A bookings VIEWER (not editor) is also rejected — the explicit edit gate
+    // is enforced, not merely bookings-area presence.
+    const bookingsViewerOnly = {
+      accessRoles: [] as AppAccessRole[],
+      adminPermissionMatrix: {
+        overview: "view",
+        bookings: "view",
+        membership: "none",
+        finance: "none",
+        lodge: "none",
+        content: "none",
+        support: "none",
+      },
+    };
+    expect(
+      hasAdminAreaAccess(bookingsViewerOnly, {
+        area: "bookings",
+        level: "edit",
+      }),
+    ).toBe(false);
+  });
 });
 
 describe("definition-backed access roles", () => {

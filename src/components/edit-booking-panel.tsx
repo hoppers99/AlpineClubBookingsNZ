@@ -260,9 +260,13 @@ export function EditBookingPanel({
 
   useEffect(() => {
     let cancelled = false;
+    // Admin on-behalf uses the bookings-scoped picker gated on bookings:edit
+    // (the booking owner is resolved server-side from the booking), so a
+    // Booking Officer without membership:view still gets the member's family
+    // and correct member pricing (#1376). Members use their own family route.
     const familyUrl =
       booking.viewerRole === "ADMIN"
-        ? `/api/admin/members/${booking.bookingMemberId}/family`
+        ? `/api/admin/bookings/${booking.id}/eligible-family`
         : "/api/members/family";
 
     fetch(familyUrl)
@@ -281,7 +285,7 @@ export function EditBookingPanel({
     return () => {
       cancelled = true;
     };
-  }, [booking.bookingMemberId, booking.viewerRole]);
+  }, [booking.id, booking.viewerRole]);
 
   // Check if anything has changed
   const remainingGuests = useMemo(

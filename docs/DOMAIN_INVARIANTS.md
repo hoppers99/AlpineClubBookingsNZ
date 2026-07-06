@@ -465,6 +465,18 @@ Bundled and definition-backed rows are composed by the central admin
 permission matrix (maximum level per area); they must not be projected into
 legacy `Member.role = ADMIN`. Finance portal access derives from the merged
 `finance` area level, never from the enum values or `financeAccessLevel`.
+On-behalf booking must not depend on `membership:view`: a Booking Officer
+(`bookings:edit`) reaches the booking owner's or target member's family group
+through the bookings-scoped pickers
+(`GET /api/admin/bookings/[id]/eligible-family`, resolving the owner from the
+booking server-side, and `GET /api/admin/bookings/eligible-family?forMemberId=`),
+each gated on `bookings:edit` and returning exactly one member's family group
+via the shared `resolveMemberFamily` helper. This decoupling means a club that
+customises the Booking Officer role to drop `membership:view` can still attach
+the correct member identity — and therefore correct member pricing — instead of
+silently re-adding the member as a mispriced non-member. The member-scoped
+`GET /api/admin/members/[id]/family` remains gated on `membership:view` for
+membership surfaces.
 Legacy membership lifecycle/classification code may read `Member.role` only to
 distinguish compatibility categories such as non-login/non-member records until
 that workflow is fully represented by seasonal membership type.

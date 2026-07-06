@@ -437,7 +437,7 @@ const adminHelpEntries: HelpEntry[] = [
         {
           name: "Member",
           description:
-            "The account that owns the booking and receives booking communications.",
+            "The account that owns the booking and receives booking communications. Selecting the member loads their family group (from your bookings:edit permission) so you can add family guests at the correct member price.",
         },
         {
           name: "Guests",
@@ -795,7 +795,7 @@ const adminHelpEntries: HelpEntry[] = [
         {
           name: "Access role",
           description:
-            "Controls app access such as user, admin, finance, lodge, or organisation access.",
+            "Controls app access such as user, admin, finance, lodge, or organisation access. On-behalf booking family selection works from a Booking Officer's bookings:edit permission, so dropping membership:view from a customised role does not break member pricing.",
         },
         {
           name: "Seasonal membership type",
