@@ -137,6 +137,38 @@ function stubFetch() {
   return stubFetchByMonth({ [occupancyResponse.month]: occupancyResponse });
 }
 
+function stubFetchWithFirstJulyFailure() {
+  let julyAttempts = 0;
+  const emptyAugustResponse = {
+    month: "2099-08",
+    nights: [],
+    bookings: [],
+  };
+  const fetchMock = vi.fn(async (input: string) => {
+    const url = new URL(input, "http://localhost");
+    const month = url.searchParams.get("month");
+    if (month === "2099-07") {
+      julyAttempts += 1;
+      if (julyAttempts === 1) {
+        return {
+          ok: false,
+          json: async () => ({}),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => occupancyResponse,
+      };
+    }
+    return {
+      ok: month === "2099-08",
+      json: async () => emptyAugustResponse,
+    };
+  }) as unknown as typeof fetch;
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock as unknown as ReturnType<typeof vi.fn>;
+}
+
 function RangeHarness() {
   const [selection, setSelection] = useState({ startDate: "2099-07-01", endDate: "" });
   return (
@@ -222,6 +254,36 @@ describe("OccupancyCalendar", () => {
     expect(
       screen.getByText(/2099-07-31 to 2099-08-02 - 2 guest-nights/i),
     ).toBeInTheDocument();
+  });
+
+  it("shows a failed selection state and retries a failed month later", async () => {
+    const fetchMock = stubFetchWithFirstJulyFailure();
+    render(<RangeHarness />);
+
+    await screen.findByText("Occupancy could not be loaded.");
+    expect(
+      screen.getByText("Occupancy could not be loaded for this selection."),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Loading occupancy for this selection..."),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Next month" }));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith("/api/admin/occupancy?month=2099-08"),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Previous month" }));
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.filter(
+          ([input]) => input === "/api/admin/occupancy?month=2099-07",
+        ),
+      ).toHaveLength(2);
+    });
+
+    expect(await screen.findByRole("button", { name: /10 Jul.*1 guest/i }))
+      .toBeInTheDocument();
   });
 
   it("selects one date in single mode", async () => {

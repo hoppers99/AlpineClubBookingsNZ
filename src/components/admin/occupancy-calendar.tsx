@@ -96,6 +96,7 @@ export function OccupancyCalendar({
     Record<string, OccupancyCalendarResponse>
   >({});
   const [loadingMonthKeys, setLoadingMonthKeys] = useState<string[]>([]);
+  const [failedMonthKeys, setFailedMonthKeys] = useState<string[]>([]);
   const [loadError, setLoadError] = useState("");
   const [rangeAnchor, setRangeAnchor] = useState<string | null>(null);
   const requestedMonthKeys = useRef(new Set<string>());
@@ -119,6 +120,7 @@ export function OccupancyCalendar({
     setLoadingMonthKeys((current) =>
       current.includes(month) ? current : [...current, month],
     );
+    setFailedMonthKeys((current) => current.filter((key) => key !== month));
     setLoadError("");
 
     fetch(`/api/admin/occupancy?month=${month}`)
@@ -132,14 +134,19 @@ export function OccupancyCalendar({
             ...current,
             [month]: data,
           }));
+          setFailedMonthKeys((current) => current.filter((key) => key !== month));
         }
       })
       .catch(() => {
         if (!cancelled) {
+          setFailedMonthKeys((current) =>
+            current.includes(month) ? current : [...current, month],
+          );
           setLoadError("Occupancy could not be loaded.");
         }
       })
       .finally(() => {
+        requestedMonthKeys.current.delete(month);
         if (!cancelled) {
           setLoadingMonthKeys((current) => current.filter((key) => key !== month));
         }
@@ -242,7 +249,15 @@ export function OccupancyCalendar({
   const selectedRangeLoading = Boolean(
     selectedPanelRange &&
       selectedMonthKeys.some(
-        (month) => !occupancyByMonth[month] || loadingMonthKeys.includes(month),
+        (month) =>
+          loadingMonthKeys.includes(month) ||
+          (!occupancyByMonth[month] && !failedMonthKeys.includes(month)),
+      ),
+  );
+  const selectedRangeLoadFailed = Boolean(
+    selectedPanelRange &&
+      selectedMonthKeys.some(
+        (month) => failedMonthKeys.includes(month) && !occupancyByMonth[month],
       ),
   );
 
@@ -424,6 +439,10 @@ export function OccupancyCalendar({
           {selectedRangeLoading ? (
             <p className="mt-3 text-sm text-slate-500">
               Loading occupancy for this selection...
+            </p>
+          ) : selectedRangeLoadFailed ? (
+            <p className="mt-3 text-sm text-red-700">
+              Occupancy could not be loaded for this selection.
             </p>
           ) : selectedPanelRange && selectedBookings.length === 0 ? (
             <p className="mt-3 text-sm text-slate-500">No operational bookings in this selection.</p>
