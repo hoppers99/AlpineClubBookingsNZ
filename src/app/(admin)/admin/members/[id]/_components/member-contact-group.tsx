@@ -83,7 +83,7 @@ export function MemberContactGroup({
   // Mirror of the server-side org predicate (#1440): ORG access role, or the
   // legacy SCHOOL role (whose resolved tokens omit ORG when login is off).
   const isOrganisationMember =
-    member.accessRoles.includes("ORG") || member.role === "SCHOOL";
+    (member.accessRoles ?? []).includes("ORG") || member.role === "SCHOOL";
 
   const { editing, form, saving, error, errorRef } = edit;
 
