@@ -9,6 +9,7 @@ import { FamilyGroupEditorDialog } from "@/components/admin/family-group-editor-
 import {
   formatMemberAccountPreview,
   formatMemberAuditLogSummary as formatMemberAuditLogSummaryHelper,
+  formatMemberDateNz,
   formatMemberCommitteePreview,
   formatMemberContactPreview,
   formatMemberFamilyPreview,
@@ -664,6 +665,14 @@ export default function MemberDetailPage({
           contentClassName="px-0 pb-0"
         >
           <div className="divide-y">
+            {member.lifeMemberDate && (
+              <div className="p-6 text-sm">
+                <span className="text-slate-500">Life member since </span>
+                <span className="font-medium">
+                  {formatMemberDateNz(member.lifeMemberDate)}
+                </span>
+              </div>
+            )}
             <MemberSeasonalMembershipCard
               className={embeddedCardClassName}
               member={member}
