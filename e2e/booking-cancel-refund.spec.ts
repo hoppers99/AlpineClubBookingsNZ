@@ -64,21 +64,23 @@ test("member cancels a paid booking for account credit and the money outcome is 
     .getByRole("button", { name: "Confirm Cancellation" })
     .click();
 
-  // Inline component-state outcome (no reload needed): success + the credit
-  // line. The credit line only renders for a POSITIVE credit refund, so the
-  // dollar match proves a real money outcome, not a $0 no-op.
+  // After Confirm, the dialog's inline success message races the refreshed
+  // server render of the now-CANCELLED booking (the refresh can replace the
+  // component before the message is observed — seen in CI). Accept either
+  // signal here; the authoritative money assertions follow after the reload.
   await expect(
-    memberPage.getByText("Booking cancelled successfully"),
-  ).toBeVisible();
-  await expect(
-    memberPage.getByText(/A credit of \$\d+\.\d{2} has been added/),
+    memberPage
+      .getByText("Booking cancelled successfully")
+      .or(memberPage.getByRole("main").getByText("Cancellation Outcome"))
+      .first(),
   ).toBeVisible();
 
   // Money outcome #1: a hard reload re-renders the server page (router.refresh()
   // is a soft refresh; the waitlist/IB specs use a hard reload for badge/DOM
   // assertions). The booking is now CANCELLED — proven by the Cancellation
-  // Outcome card, which only renders for a CANCELLED booking — with the
-  // account-credit settlement row, and the cancel affordance is gone.
+  // Outcome card, which only renders for a CANCELLED booking — with a
+  // POSITIVE account-credit settlement row (so a real money outcome, not a
+  // $0 no-op), and the cancel affordance is gone.
   // /bookings/[id] streams behind loading.tsx, so a reload can leave a
   // persistent HIDDEN duplicate of the page content in the DOM (root-caused in
   // #1400, PR #1462); scope every post-reload assertion to <main> — the final
@@ -87,7 +89,7 @@ test("member cancels a paid booking for account credit and the money outcome is 
   const main = memberPage.getByRole("main");
   await expect(main.getByText("Cancellation Outcome")).toBeVisible();
   await expect(
-    main.getByText("Held as account credit:"),
+    main.getByText(/Held as account credit: \$(?!0\.00)\d+\.\d{2}/),
   ).toBeVisible();
   await expect(
     main.getByRole("button", { name: "Cancel Booking" }),
