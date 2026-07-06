@@ -718,6 +718,7 @@ async function loadBookingRecords(
       createdAt: true,
       checkIn: true,
       checkOut: true,
+      lodgeId: true,
       requestedRoomId: true,
       parentBookingId: true,
       // Whether this booking is the converted booking of a BookingRequest — an
@@ -949,12 +950,13 @@ function candidateGuestBookings(
   }
 
   return [...guestsByBooking.entries()]
-    .map(([bookingId, guests]) => {
+    .map(([bookingId, guests]): BedAllocationBooking | null => {
       const booking = bookingById.get(bookingId);
       if (!booking) return null;
       return {
         id: booking.id,
         createdAt: booking.createdAt,
+        lodgeId: booking.lodgeId,
         requestedRoomId: booking.requestedRoomId,
         guests,
       };
@@ -968,6 +970,7 @@ function buildPlannerRooms(rooms: Awaited<ReturnType<typeof listBedAllocationRoo
     name: room.name,
     sortOrder: room.sortOrder,
     active: room.active,
+    lodgeId: room.lodgeId,
     beds: room.beds.map((bed) => ({
       id: bed.id,
       roomId: bed.roomId,

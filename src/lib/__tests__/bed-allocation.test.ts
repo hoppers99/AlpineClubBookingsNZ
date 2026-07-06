@@ -672,3 +672,116 @@ describe("bed allocation schema contract", () => {
     );
   });
 });
+
+describe("bed allocation lodge isolation", () => {
+  // Two lodges' rooms pooled into one planner call — the shape the club-wide
+  // board auto-allocation produces (no lodgeId scope on the query). The matcher
+  // must keep each booking in its own lodge's beds regardless.
+  const twoLodgeRooms: BedAllocationRoom[] = [
+    {
+      id: "room-a1",
+      name: "Lodge A Room 1",
+      sortOrder: 1,
+      lodgeId: "lodge-a",
+      beds: [{ id: "bed-a1", roomId: "room-a1", name: "A1", sortOrder: 1 }],
+    },
+    {
+      id: "room-b1",
+      name: "Lodge B Room 1",
+      sortOrder: 2,
+      lodgeId: "lodge-b",
+      beds: [{ id: "bed-b1", roomId: "room-b1", name: "B1", sortOrder: 1 }],
+    },
+  ];
+
+  function lodgeBooking(
+    id: string,
+    lodgeId: string | null,
+    guestId: string,
+  ): BedAllocationBooking {
+    return {
+      id,
+      createdAt: new Date("2026-06-01"),
+      lodgeId,
+      requestedRoomId: null,
+      guests: [
+        {
+          id: guestId,
+          bookingId: id,
+          stayStart: parseDateOnly("2026-07-01"),
+          stayEnd: parseDateOnly("2026-07-02"),
+        },
+      ],
+    };
+  }
+
+  it("places a lodge-A booking only in lodge-A beds even when lodge-B rooms are pooled in", () => {
+    const plan = buildFirstFitBedAllocationPlan({
+      enabled: true,
+      rooms: twoLodgeRooms,
+      bookings: [lodgeBooking("booking-a", "lodge-a", "guest-a")],
+    });
+
+    expect(plan.unallocatedGuestNights).toEqual([]);
+    expect(plan.allocations).toHaveLength(1);
+    // The only allocation must be a lodge-A bed — never bed-b1.
+    expect(plan.allocations[0]).toMatchObject({
+      bookingId: "booking-a",
+      roomId: "room-a1",
+      bedId: "bed-a1",
+    });
+    expect(
+      plan.allocations.some((a) => a.roomId === "room-b1" || a.bedId === "bed-b1"),
+    ).toBe(false);
+  });
+
+  it("leaves a lodge-A booking unallocated rather than borrowing a lodge-B bed", () => {
+    // Only lodge B has a free bed; a lodge-A booking must NOT take it.
+    const plan = buildFirstFitBedAllocationPlan({
+      enabled: true,
+      rooms: twoLodgeRooms,
+      bookings: [lodgeBooking("booking-a", "lodge-a", "guest-a")],
+      occupiedBedNights: [{ bedId: "bed-a1", stayDate: "2026-07-01" }],
+    });
+
+    expect(plan.allocations).toEqual([]);
+    expect(plan.unallocatedGuestNights).toEqual([
+      {
+        bookingId: "booking-a",
+        bookingGuestId: "guest-a",
+        stayDate: "2026-07-01",
+        reason: "NO_BED_AVAILABLE",
+      },
+    ]);
+  });
+
+  it("keeps two same-date bookings in their own lodges from one pooled plan", () => {
+    const plan = buildFirstFitBedAllocationPlan({
+      enabled: true,
+      rooms: twoLodgeRooms,
+      bookings: [
+        lodgeBooking("booking-a", "lodge-a", "guest-a"),
+        lodgeBooking("booking-b", "lodge-b", "guest-b"),
+      ],
+    });
+
+    const byBooking = Object.fromEntries(
+      plan.allocations.map((a) => [a.bookingId, a]),
+    );
+    expect(byBooking["booking-a"]).toMatchObject({ bedId: "bed-a1" });
+    expect(byBooking["booking-b"]).toMatchObject({ bedId: "bed-b1" });
+  });
+
+  it("treats a null-lodge booking as club-wide (expand-release tolerance)", () => {
+    // Before the contract release enforces NOT NULL, a booking with a null
+    // lodgeId must still be placeable in any lodge's bed.
+    const plan = buildFirstFitBedAllocationPlan({
+      enabled: true,
+      rooms: [twoLodgeRooms[1]], // only lodge-B room available
+      bookings: [lodgeBooking("booking-legacy", null, "guest-legacy")],
+    });
+
+    expect(plan.unallocatedGuestNights).toEqual([]);
+    expect(plan.allocations[0]).toMatchObject({ bedId: "bed-b1" });
+  });
+});
