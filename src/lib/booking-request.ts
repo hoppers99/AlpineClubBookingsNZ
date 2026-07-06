@@ -19,6 +19,7 @@ import { hash } from "bcryptjs";
 import {
   AgeTier,
   BookingEventType,
+  BookingRequestQuoteStatus,
   BookingRequestStatus,
   BookingStatus,
   PaymentStatus,
@@ -507,20 +508,52 @@ export async function declineBookingRequest(input: {
 
   const reviewedAt = new Date();
   const declineReason = cleanNullableString(input.reason);
-  const claimed = await prisma.bookingRequest.updateMany({
-    where: {
-      id: input.requestId,
-      status: { in: [...DECLINABLE_BOOKING_REQUEST_STATUSES] },
-    },
-    data: {
-      status: BookingRequestStatus.DECLINED,
-      reviewedByMemberId: input.adminMemberId,
-      reviewedAt,
-      declineReason,
-    },
+  // Claim the request AND retire any outstanding SENT quote in ONE interactive
+  // transaction (#1423). Retiring the live quote is what makes the decline truly
+  // final for a QUOTE_SENT request: `loadSentQuoteByToken` requires
+  // `status === SENT`, so with the quote flipped to SUPERSEDED every requester
+  // quote action (accept / modify / query / cancel) 409s and can no longer
+  // resurrect the DECLINED request, AND the pre-expiry reminder cron (which
+  // selects SENT quotes with no request-status filter) skips it instead of
+  // nudging a just-declined requester. We use SUPERSEDED (an ADMIN retired the
+  // quote), NOT CANCELLED (that is the requester-cancel semantic). The claim is
+  // still status-guarded, so a wrong-state decline claims NOTHING and must touch
+  // NOTHING — the quote retirement runs only when the claim succeeded, and the
+  // 409 is thrown OUTSIDE the transaction so a failed decline never opens a
+  // write. Everything after the claim (email, audit, and the #1365 hold-release)
+  // stays OUTSIDE the transaction: `cancelBooking` self-locks on advisory key 1
+  // and runs its own transactions, so it must never nest inside this one.
+  const claimResult = await prisma.$transaction(async (tx) => {
+    const claimed = await tx.bookingRequest.updateMany({
+      where: {
+        id: input.requestId,
+        status: { in: [...DECLINABLE_BOOKING_REQUEST_STATUSES] },
+      },
+      data: {
+        status: BookingRequestStatus.DECLINED,
+        reviewedByMemberId: input.adminMemberId,
+        reviewedAt,
+        declineReason,
+      },
+    });
+    if (claimed.count === 0) {
+      // Wrong-state decline: touch nothing, signal the caller to 409 outside.
+      return { claimed: false as const };
+    }
+    await tx.bookingRequestQuote.updateMany({
+      where: {
+        bookingRequestId: input.requestId,
+        status: BookingRequestQuoteStatus.SENT,
+      },
+      data: {
+        status: BookingRequestQuoteStatus.SUPERSEDED,
+        supersededAt: reviewedAt,
+      },
+    });
+    return { claimed: true as const };
   });
 
-  if (claimed.count === 0) {
+  if (!claimResult.claimed) {
     throw new BookingRequestError(
       "This booking request can no longer be declined (it may already be approved, converted, cancelled, or declined).",
       409

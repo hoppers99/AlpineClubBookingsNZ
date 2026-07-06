@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { BookingRequestStatus, BookingStatus, PaymentStatus } from "@prisma/client";
+import {
+  BookingRequestQuoteStatus,
+  BookingRequestStatus,
+  BookingStatus,
+  PaymentStatus,
+} from "@prisma/client";
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
@@ -13,6 +18,9 @@ vi.mock("@/lib/prisma", () => ({
     bookingRequestSettings: {
       findUnique: vi.fn(),
       upsert: vi.fn(),
+    },
+    bookingRequestQuote: {
+      updateMany: vi.fn(),
     },
     member: {
       create: vi.fn(),
@@ -134,6 +142,7 @@ const mockedLogAudit = vi.mocked(logAudit);
 const mockedAssertNoConflicts = vi.mocked(assertNoBookingMemberNightConflicts);
 const mockedBookingFindUnique = vi.mocked(prisma.booking.findUnique);
 const mockedCancelBooking = vi.mocked(cancelBooking);
+const mockedQuoteUpdateMany = vi.mocked(prisma.bookingRequestQuote.updateMany);
 
 function memberNightConflictError() {
   return new BookingMemberNightConflictError([
@@ -475,6 +484,14 @@ describe("priceBookingRequest", () => {
 describe("declineBookingRequest", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // #1423: the claim + SENT-quote retirement now run in one interactive
+    // transaction; run the callback against the same prisma mock so the inner
+    // tx.bookingRequest.updateMany / tx.bookingRequestQuote.updateMany are the
+    // spied mocks.
+    mockedTransaction.mockImplementation(async (fn: (tx: typeof prisma) => Promise<unknown>) =>
+      fn(prisma)
+    );
+    mockedQuoteUpdateMany.mockResolvedValue({ count: 1 } as never);
   });
 
   it("throws 404 when the request does not exist", async () => {
@@ -578,6 +595,18 @@ describe("declineBookingRequest", () => {
       "card",
       { suppressCustomerNotification: true, requireRequestHold: true }
     );
+    // #1423: the outstanding SENT quote is retired (SENT -> SUPERSEDED) in the
+    // same transaction as the claim, so no requester quote action or reminder
+    // cron can act on the declined request.
+    expect(mockedQuoteUpdateMany).toHaveBeenCalledWith({
+      where: {
+        bookingRequestId: "req-1",
+        status: BookingRequestQuoteStatus.SENT,
+      },
+      data: expect.objectContaining({
+        status: BookingRequestQuoteStatus.SUPERSEDED,
+      }),
+    });
   });
 
   it.each([
@@ -648,6 +677,9 @@ describe("declineBookingRequest", () => {
       expect(mockedUpdateMany).not.toHaveBeenCalledWith(
         expect.objectContaining({ data: { heldBookingId: null } })
       );
+      // A failed (wrong-state) decline retires NO quote — claim-first, the tx
+      // returns before the quote retirement.
+      expect(mockedQuoteUpdateMany).not.toHaveBeenCalled();
     }
   );
 

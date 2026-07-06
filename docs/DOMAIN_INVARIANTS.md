@@ -336,11 +336,22 @@ panel shows the Decline button for — `VERIFIED`, `PRICED`, `QUOTED`,
 (`DECLINABLE_BOOKING_REQUEST_STATUSES`) — and each can carry a live
 `AWAITING_REVIEW` hold that the decline frees (claim-first: the `DECLINED` flip
 lands before any hold release, so a wrong-state decline `409`s and never touches
-the hold). A requester quote-accept can never resurrect a finalised request: the
-accept's re-arm to `PRICED` is status-guarded (`status notIn [DECLINED,
-CANCELLED]`), so once an admin decline (or a requester cancel) has finalised the
-request and released its hold, a late accept `409`s and creates no new booking,
-Payment, or PaymentLink. The guard still permits a re-arm from
+the hold).
+
+A DECLINED request is untouchable by every other actor. In the SAME transaction
+as the `DECLINED` claim, the decline retires any outstanding `SENT` quote
+(`SENT` -> `SUPERSEDED`; `SUPERSEDED` = admin retired it, distinct from a
+requester-cancel `CANCELLED`). Because `loadSentQuoteByToken` requires
+`status === SENT`, that retirement alone `409`s all four requester quote actions
+(accept / modify / query / cancel) on a still-live link, and the pre-expiry
+reminder cron (which selects only `SENT` quotes) skips the declined request
+instead of nudging it. As defence-in-depth against a request finalised between a
+requester POST's token load and its write, the accept re-arm, the modify/query
+re-status, and the losing-accept capacity revert are each status-guarded with
+`status notIn [DECLINED, CANCELLED]`: a late accept or modify/query `409`s (no
+new booking, Payment, or PaymentLink; no resurrection to
+`MODIFICATION_REQUESTED`/`QUERY_PENDING`), and the revert simply does not
+un-decline the request. The guards still permit a re-arm from
 `CONVERTED`/`APPROVED`, preserving approve's `convertedBookingId` idempotency
 (#1232 double-accept returns the one existing booking). Per-teacher hut-leader records are always created fresh. The held owner is re-validated at conversion:
 if a previously mapped contact is no longer a valid non-login contact by the time

@@ -901,7 +901,9 @@ describe("public quote response", () => {
       fullNights: ["2026-08-01", "2026-08-02"],
     });
     // #1423: the initial re-arm to PRICED claims (the request is still live);
-    // the capacity loss then reverts it to QUOTE_SENT via a plain update.
+    // the capacity loss then reverts it to QUOTE_SENT via a status-guarded
+    // updateMany (both are prisma.bookingRequest.updateMany, so count 1 covers
+    // the re-arm and the revert).
     vi.mocked(prisma.bookingRequest.updateMany).mockResolvedValue({
       count: 1,
     } as never);
@@ -913,8 +915,17 @@ describe("public quote response", () => {
       message: expect.stringContaining("2026-08-01, 2026-08-02"),
     });
 
-    expect(prisma.bookingRequest.update).toHaveBeenLastCalledWith(
+    expect(prisma.bookingRequest.updateMany).toHaveBeenLastCalledWith(
       expect.objectContaining({
+        where: expect.objectContaining({
+          id: "req-1",
+          status: {
+            notIn: [
+              BookingRequestStatus.DECLINED,
+              BookingRequestStatus.CANCELLED,
+            ],
+          },
+        }),
         data: expect.objectContaining({
           status: BookingRequestStatus.QUOTE_SENT,
           acceptedQuoteId: null,
@@ -923,6 +934,158 @@ describe("public quote response", () => {
       })
     );
   });
+
+  it("does NOT un-decline a request the admin declined concurrently when a losing accept reverts (#1423)", async () => {
+    // decline-wins-first during accept: the request was finalised to DECLINED
+    // after this accept re-armed it to PRICED. approve loses on capacity and the
+    // revert runs — but its status-guarded updateMany (notIn [DECLINED,
+    // CANCELLED]) claims NOTHING (count 0), so the DECLINED request is never
+    // un-declined back to QUOTE_SENT. The accept still 409s via capacityExceeded.
+    const token = "h".repeat(64);
+    vi.mocked(prisma.bookingRequestQuote.findUnique).mockResolvedValue({
+      id: "quote-1",
+      bookingRequestId: "req-1",
+      version: 1,
+      status: BookingRequestQuoteStatus.SENT,
+      createdByMemberId: "admin-1",
+      responseTokenExpiresAt: new Date(Date.now() + 60_000),
+      options: [
+        {
+          id: "STANDARD",
+          label: "Quote",
+          cateringOption: null,
+          totalCents: 2500,
+          pricingMode: BookingRequestPricingMode.OVERALL_TOTAL,
+          guestBreakdown: [],
+        },
+      ],
+      bookingRequest: baseRequest(),
+    } as never);
+    mockApproveBookingRequest.mockResolvedValue({
+      type: "capacityExceeded",
+      fullNights: ["2026-08-01"],
+    });
+    // First call (step-1 re-arm) claims; second call (the revert) finds the
+    // request already DECLINED and claims nothing.
+    vi.mocked(prisma.bookingRequest.updateMany)
+      .mockResolvedValueOnce({ count: 1 } as never)
+      .mockResolvedValue({ count: 0 } as never);
+
+    await expect(
+      respondToBookingRequestQuote({ token, action: "ACCEPT", optionId: "STANDARD" })
+    ).rejects.toMatchObject({ status: 409 });
+
+    // The revert was attempted with the finalisation guard and simply claimed
+    // nothing — never a plain update that could un-decline.
+    expect(prisma.bookingRequest.update).not.toHaveBeenCalled();
+    expect(prisma.bookingRequest.updateMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          status: {
+            notIn: [
+              BookingRequestStatus.DECLINED,
+              BookingRequestStatus.CANCELLED,
+            ],
+          },
+        }),
+        data: expect.objectContaining({
+          status: BookingRequestStatus.QUOTE_SENT,
+        }),
+      })
+    );
+  });
+
+  it.each([
+    ["MODIFY", "modification_requested", BookingRequestStatus.MODIFICATION_REQUESTED],
+    ["QUERY", "query_sent", BookingRequestStatus.QUERY_PENDING],
+  ] as const)(
+    "processes a requester %s on a live QUOTE_SENT request (guarded re-status still passes)",
+    async (action, outcome, expectedStatus) => {
+      const token = "j".repeat(64);
+      vi.mocked(prisma.bookingRequestQuote.findUnique).mockResolvedValue({
+        id: "quote-1",
+        bookingRequestId: "req-1",
+        version: 1,
+        status: BookingRequestQuoteStatus.SENT,
+        createdByMemberId: "admin-1",
+        responseTokenExpiresAt: new Date(Date.now() + 60_000),
+        options: [],
+        bookingRequest: baseRequest({ status: BookingRequestStatus.QUOTE_SENT }),
+      } as never);
+      // Live request: the guarded re-status claims it.
+      vi.mocked(prisma.bookingRequest.updateMany).mockResolvedValue({
+        count: 1,
+      } as never);
+
+      const result = await respondToBookingRequestQuote({
+        token,
+        action,
+        message: "please change dates",
+      });
+
+      expect(result).toMatchObject({ outcome });
+      expect(prisma.bookingRequest.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ status: expectedStatus }),
+        })
+      );
+      expect(prisma.bookingRequestQuote.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            status: BookingRequestQuoteStatus.SUPERSEDED,
+          }),
+        })
+      );
+    }
+  );
+
+  it.each(["MODIFY", "QUERY"] as const)(
+    "refuses a requester %s once the request was declined/cancelled (#1423)",
+    async (action) => {
+      // decline-wins-first for the MODIFY/QUERY branch: a POST that loaded the
+      // SENT quote just before the decline retired it must not resurrect the
+      // finalised request. The status-guarded updateMany (notIn [DECLINED,
+      // CANCELLED]) claims nothing → 409, and the throw rolls back the quote
+      // supersede in the same transaction.
+      const token = "i".repeat(64);
+      vi.mocked(prisma.bookingRequestQuote.findUnique).mockResolvedValue({
+        id: "quote-1",
+        bookingRequestId: "req-1",
+        version: 1,
+        status: BookingRequestQuoteStatus.SENT,
+        createdByMemberId: "admin-1",
+        responseTokenExpiresAt: new Date(Date.now() + 60_000),
+        options: [],
+        bookingRequest: baseRequest({ status: BookingRequestStatus.DECLINED }),
+      } as never);
+      // The request is already finalised: the guarded re-status claims nothing.
+      vi.mocked(prisma.bookingRequest.updateMany).mockResolvedValue({
+        count: 0,
+      } as never);
+
+      await expect(
+        respondToBookingRequestQuote({ token, action, message: "hello" })
+      ).rejects.toMatchObject({ status: 409 });
+
+      // Guarded updateMany (not a plain update) and no booking mutation.
+      expect(prisma.bookingRequest.update).not.toHaveBeenCalled();
+      expect(prisma.bookingRequest.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            id: "req-1",
+            status: {
+              notIn: [
+                BookingRequestStatus.DECLINED,
+                BookingRequestStatus.CANCELLED,
+              ],
+            },
+          }),
+        })
+      );
+      expect(prisma.booking.create).not.toHaveBeenCalled();
+      expect(prisma.booking.update).not.toHaveBeenCalled();
+    }
+  );
 });
 
 describe("holdBookingRequestSlots owner role", () => {

@@ -788,8 +788,24 @@ export async function respondToBookingRequestQuote(input: {
           supersededAt: respondedAt,
         },
       });
-      await tx.bookingRequest.update({
-        where: { id: quote.bookingRequestId },
+      // #1423: guard the request re-status exactly like the ACCEPT re-arm. A
+      // concurrent admin decline (or requester cancel) may have finalised this
+      // request to DECLINED/CANCELLED between loadSentQuoteByToken and here (the
+      // decline retires the SENT quote, but a POST already in flight had loaded
+      // it a moment earlier). The status-guarded updateMany refuses to resurrect
+      // a finalised request into MODIFICATION_REQUESTED/QUERY_PENDING; the throw
+      // rolls back the quote supersede above too. A normal MODIFY/QUERY on a live
+      // QUOTE_SENT request passes (count 1), so no happy-path regression.
+      const restated = await tx.bookingRequest.updateMany({
+        where: {
+          id: quote.bookingRequestId,
+          status: {
+            notIn: [
+              BookingRequestStatus.DECLINED,
+              BookingRequestStatus.CANCELLED,
+            ],
+          },
+        },
         data: {
           status:
             input.action === "MODIFY"
@@ -799,6 +815,12 @@ export async function respondToBookingRequestQuote(input: {
           responseMessageAt: respondedAt,
         },
       });
+      if (restated.count === 0) {
+        throw new BookingRequestQuoteError(
+          "This quote can no longer be updated — the booking request has been declined or cancelled.",
+          409
+        );
+      }
     });
     logAudit({
       action:
@@ -893,8 +915,18 @@ export async function respondToBookingRequestQuote(input: {
         });
 
   if (conversion.type === "capacityExceeded") {
-    await prisma.bookingRequest.update({
-      where: { id: quote.bookingRequestId },
+    // #1423: revert the losing accept to QUOTE_SENT, but ONLY if the request is
+    // not already finalised — a concurrent admin decline (or requester cancel)
+    // may have moved it to DECLINED/CANCELLED. Guard with updateMany + notIn so
+    // the revert can never un-decline a finalised request; if it was finalised
+    // we simply do not revert (the accept already 409s below via capacityExceeded).
+    await prisma.bookingRequest.updateMany({
+      where: {
+        id: quote.bookingRequestId,
+        status: {
+          notIn: [BookingRequestStatus.DECLINED, BookingRequestStatus.CANCELLED],
+        },
+      },
       data: {
         status: BookingRequestStatus.QUOTE_SENT,
         acceptedQuoteId: null,

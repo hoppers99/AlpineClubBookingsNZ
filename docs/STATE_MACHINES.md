@@ -220,6 +220,9 @@ SENT  -> SUPERSEDED (requester asks a question / requests changes, or admin issu
                the hold is retained across a re-quote for the same dates, but if the request
                settles in MODIFICATION_REQUESTED / QUERY_PENDING with no outstanding quote the
                quote-expiry cron auto-releases the hold once the last response window lapses, #1254)
+SENT  -> SUPERSEDED (admin DECLINES the request; the outstanding quote is retired in the SAME
+               transaction as the DECLINED claim so no requester action or reminder cron can act
+               on it — SUPERSEDED = admin retired it, distinct from a requester-cancel CANCELLED, #1423)
 SENT  -> (link expires; the quote-expiry cron releases the held booking, frees the beds, and
           detaches heldBookingId — the request stays QUOTE_SENT so an admin can re-quote)
 ```
@@ -250,21 +253,33 @@ A held pointer that is stale or no longer a live `AWAITING_REVIEW` hold is simpl
 detached. SCHOOL requests use the same function (no type branch).
 
 Because `QUOTE_SENT` (and other quote-bearing states) DO carry a live `SENT`
-quote a requester could still accept, broadening decline reintroduces a
-decline-vs-accept race, closed on both sides:
+quote a requester could still act on, broadening decline reintroduces a
+decline-vs-requester race. A DECLINED request is made untouchable by every other
+actor:
 
+- **Primary — retire the quote atomically with the claim.** The decline flips the
+  outstanding `SENT` quote to `SUPERSEDED` in the SAME transaction as the
+  `DECLINED` claim (and only when the claim actually landed, so a wrong-state
+  decline still touches nothing). Since `loadSentQuoteByToken` requires
+  `status === SENT`, this alone `409`s all four requester quote actions
+  (accept / modify / query / cancel) on a still-live link, and makes the
+  pre-expiry reminder cron — which selects only `SENT` quotes — skip the declined
+  request instead of nudging it.
 - **accept-wins-first:** the requester accept converts the held booking to a live
   `PENDING` booking before the decline runs. Decline passes `requireRequestHold:
   true` to the shared cancel path (#1406), which then refuses (`409`, no side
   effect) rather than clobber the just-converted booking.
-- **decline-wins-first:** the decline claims `DECLINED` and releases the hold
-  first (`heldBookingId` detached, `convertedBookingId` still null). The
-  concurrent requester-accept's re-arm to `PRICED` is a **status-guarded**
-  `updateMany` with `status notIn [DECLINED, CANCELLED]`, so it claims nothing and
-  the accept `409`s — it can no longer resurrect the finalised request into a
-  brand-new paid booking. The guard deliberately still allows a re-arm from
-  `CONVERTED`/`APPROVED` so approve's `convertedBookingId` idempotency replay
-  (#1232 double-accept) keeps returning the one existing booking.
+- **decline-wins-first (defence-in-depth for a POST already past its token
+  load):** the decline claims `DECLINED` and releases the hold first
+  (`heldBookingId` detached, `convertedBookingId` still null). The concurrent
+  requester's accept re-arm to `PRICED`, its modify/query re-status to
+  `MODIFICATION_REQUESTED`/`QUERY_PENDING`, and the losing-accept capacity revert
+  to `QUOTE_SENT` are each a **status-guarded** `updateMany` with `status notIn
+  [DECLINED, CANCELLED]`. A late accept or modify/query `409`s (no new booking and
+  no resurrection), and the revert simply does not un-decline the request. The
+  guards deliberately still allow a re-arm from `CONVERTED`/`APPROVED` so approve's
+  `convertedBookingId` idempotency replay (#1232 double-accept) keeps returning the
+  one existing booking.
 
 As of #1385 the manual **Hold slots** admin UI entry is hidden on the generic
 (non-SCHOOL) quote flow: auto-hold-on-send (#1280) reserves the beds across the
@@ -289,10 +304,13 @@ Token-link outcomes the requester can see:
 - Past expiry: `410` "This quote has expired." with a recover-by-contacting-the-club path.
 - Accept after the lodge fills: the request reverts to `QUOTE_SENT`, the link stays
   active, and the requester is told which nights are now full.
-- Accept after an admin declined (or the requester cancelled) the request: the
-  status-guarded re-arm claims nothing and the accept `409`s ("This quote can no
-  longer be accepted — the booking request has been declined or cancelled."),
-  creating no booking (#1423).
+- Any action after an admin declined the request (#1423): the decline retired the
+  quote (`SENT` -> `SUPERSEDED`), so the link now returns the `409` "This quote is
+  no longer active." above for accept / modify / query / cancel alike. In the rare
+  case a requester POST loaded the still-`SENT` quote a moment before the
+  retirement committed, the status-guarded re-arm / re-status is the backstop and
+  `409`s ("...has been declined or cancelled."), creating no booking and never
+  resurrecting the request.
 - Accept racing the expiry / hold-release cron (owner-ratified, #1317): harmless.
   The accept and the cron both serialize on the booking advisory lock, so at most
   one side wins; the loser gets a safe conflict response it can retry, the quote
