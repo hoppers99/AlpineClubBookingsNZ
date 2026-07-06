@@ -64,14 +64,15 @@ test("member cancels a paid booking for account credit and the money outcome is 
     .getByRole("button", { name: "Confirm Cancellation" })
     .click();
 
-  // Inline component-state outcome (no reload needed): success + the credit
-  // line. The credit line only renders for a POSITIVE credit refund, so the
-  // dollar match proves a real money outcome, not a $0 no-op.
+  // After Confirm, the dialog's inline success message races the refreshed
+  // server render of the now-CANCELLED booking (CI trace: the refresh can
+  // replace the component before the message is observed). Accept either
+  // signal; the authoritative money assertions follow after the reload.
   await expect(
-    memberPage.getByText("Booking cancelled successfully"),
-  ).toBeVisible();
-  await expect(
-    memberPage.getByText(/A credit of \$\d+\.\d{2} has been added/),
+    memberPage
+      .getByText("Booking cancelled successfully")
+      .or(memberPage.getByRole("main").getByText("Cancellation Outcome"))
+      .first(),
   ).toBeVisible();
 
   // Money outcome #1: a hard reload re-renders the server page (router.refresh()

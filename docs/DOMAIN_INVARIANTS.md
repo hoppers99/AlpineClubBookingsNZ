@@ -164,11 +164,18 @@ Future reviews and issues should cite this file when proposing changes.
   **reconstructs it verbatim and never recomputes** — a >24h re-drive can land
   in a different cancellation tier, so recomputing the mirror amount would be
   unsafe. The plan is written before the Stripe refund and before the
-  settlement flips, so the refund fires at most once across re-drives. (Resume
-  completes the local booking/capacity/refund-mirror cleanup only; it does not
-  re-enqueue a Xero refund credit note for a child that crashed after its
-  cancel committed but before its credit note was queued — pre-existing
-  books-drift of the #1233 reconcile class.)
+  settlement flips, so the refund fires at most once across re-drives.
+- The group-cancel refund credit-note enqueue is **durable** (#1257/#1377).
+  Each child's Xero refund credit-note outbox row (integer cents) is enqueued
+  **inside the same transaction** as that child's cancel + `refundedAmountCents`
+  mirror — the enqueue is a DB outbox insert, not a provider call, so it may
+  join the tx. A crash can therefore never leave a `CANCELLED` child with its
+  refund mirror written but no credit-note operation queued: either both commit
+  or neither does (the reaper then re-drives the still-`ACTIVE` child). This
+  closes the window for **every** payment source, including Internet-Banking
+  children the #1354 daily reconcile self-heal cannot recover because they carry
+  no per-child `xeroInvoiceId`; that daily self-heal remains a Stripe-only
+  backstop. Only the outbox worker *kick* stays best-effort and post-commit.
 - A failed settlement refund must stay durably owed (#1351): the frozen plan
   is never nulled, a payment-recovery operation persisted before the inline
   Stripe call retries the refund under the same
@@ -414,9 +421,11 @@ un-decline the request. The guards still permit a re-arm from
 (#1232 double-accept returns the one existing booking). Per-teacher hut-leader records are always created fresh. The held owner is re-validated at conversion:
 if a previously mapped contact is no longer a valid non-login contact by the time
 the requester accepts (login enabled, archived, deactivated, role changed), the
-accept still succeeds — a fresh non-login contact is substituted and an
-admin-attention audit row (`booking_request.owner_substituted`) is recorded so
-the substituted Xero contact can be reconciled. When the Xero module is off, the
+accept still succeeds — a fresh non-login contact is substituted and both a
+durable admin-attention audit row (`booking_request.owner_substituted`) and an
+active `admin-owner-substitution` admin email alert (gated by the
+`adminXeroSyncError` preference, F20 residual #2 / #1377) are raised post-commit
+so the substituted Xero contact can be reconciled. When the Xero module is off, the
 manual-invoice admin notification names the resolved booking owner (the mapped
 contact when mapped), not the raw request school/contact.
 Headcount or tier changes still go through the admin re-quote flow, and
@@ -512,7 +521,42 @@ the modification credit-note paths, and both the outbox enqueue and the
 executor refuse (skip, replay-safely) rather than gross-bill the fee. The
 booking-vs-Xero repair pass applies the same rule: it verifies supplementary
 invoices against the modification net and queues missing ones with the signed
-components. The manual retry stack replays the operation's STORED amounts
+components. On the credit-note side the repair pass sizes by STORED evidence
+(#1427): abs(net) is only an upper bound, because the primary path caps the
+credit at the policy-limited settlement the modification row cannot
+reconstruct. Queue actions and the amount-evidence expectation prefer the
+resolved note's own enqueue payload (then oldest-first — the first enqueue
+is the primary-path settlement decision; CANCELLED attempts rank last), and
+replaying that amount rebuilds the identical amount-embedding correlation
+key, so the local outbox dedup holds and a recent attempt that already
+reached Xero dedups within Xero's idempotency window — then link metadata,
+then executed note totals, then (last resort) a bare legacy payload.
+Operation evidence, object resolution, and blocking detection are all
+discriminated by the operation's queue-type hint: the immutable `queueType`
+COLUMN (#1347), then the payload's own name, then the correlation-key
+segment — decisive for the pre-column executed ledger, whose payloads were
+overwritten at dispatch before the column backfill copied them. An
+account-credit-note op beside the invoice-applied note (same
+entityType/operationType) therefore never sizes, resolves as, blocks, or
+pollutes the mismatch evidence of the invoice-applied note — in the
+worst case that confusion allocated the member's UNAPPLIED account-credit
+note against the already-paid primary invoice (double-refund exposure). A
+net-negative modification positively settled by an account credit note (link
+role or executed op hint) is complete as-is: it has no invoice-applied note
+to repair and produces no finding. A
+stored amount outside (0, abs(net)] is ignored as inconsistent, so an
+over-sized note still flags against abs(net); the deliberate limit of
+evidence-first is that a wrongly-enqueued amount INSIDE the range reads as
+the app's recorded decision and reports clean — the alternative (flagging
+every non-abs(net) note) drowned real drift in a false positive on every
+policy-tiered booking. When no stored evidence exists and the payment has
+captured money (by aggregate status or a captured transaction row), BOTH the
+missing-note queue and the missing-allocation queue become manual-review
+findings instead of auto-applying abs(net); auto-queueing abs(net) remains
+correct only for the no-captured-payment case, where the full delta is a
+pure bookkeeping correction (#1015). A live-but-not-retryable credit-note or
+allocation operation surfaces as blocked rather than silence (and a
+FAILED-unretryable one says so, not "pending"). The manual retry stack replays the operation's STORED amounts
 first (the #1354 queued-payload-first rule): the Xero idempotency key embeds
 the amounts, so replaying the enqueued values keeps the retry deduplicable
 against the original attempt, preserves a policy-limited credit-note
