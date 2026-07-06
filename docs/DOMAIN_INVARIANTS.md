@@ -419,6 +419,16 @@ replays rather than repeats. The mirror of this rule is the group-cancel
 settlement, which persists its per-child `refundPlan` before its Stripe refund
 for the same reason.
 
+Xero contact resolution (`findOrCreateXeroContact` /
+`createXeroContactForMember`) performs every provider call — OAuth refresh,
+searches, creates, and their retry sleeps — OUTSIDE any database transaction
+(#1355): concurrent duplicate creation is bounded by the member-scoped Xero
+idempotency key, and only the local link write takes a SHORT advisory-locked
+transaction with a re-check (first-writer-wins against a concurrent
+resolver). Operation-log success is recorded post-commit only; a local-link
+failure after the Xero call marks the operation FAILED, never SUCCEEDED for
+rolled-back state.
+
 Stepped Stripe refunds settle into Xero as per-delta credit notes whose cents
 must sum exactly to the payment's refunded total (#1354). The amounts billed
 to Xero are derived from EXECUTION-TIME state (`refundedAmountCents` minus the
