@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => ({
   enqueueXero: vi.fn(),
   kickXero: vi.fn(),
   sendConfirmedEmail: vi.fn(),
+  sendPaymentFailureAlert: vi.fn(),
+  upsertPaymentIntentTransaction: vi.fn(),
   createStructuredAuditLog: vi.fn(),
   getAuditRequestContext: vi.fn(),
 }));
@@ -48,7 +50,13 @@ vi.mock("@/lib/xero-operation-outbox", () => ({
   enqueueXeroBookingInvoiceOperation: mocks.enqueueXero,
   kickQueuedXeroOutboxOperationsIfConnected: mocks.kickXero,
 }));
-vi.mock("@/lib/email", () => ({ sendBookingConfirmedEmail: mocks.sendConfirmedEmail }));
+vi.mock("@/lib/email", () => ({
+  sendBookingConfirmedEmail: mocks.sendConfirmedEmail,
+  sendAdminPaymentFailureAlert: mocks.sendPaymentFailureAlert,
+}));
+vi.mock("@/lib/payment-transactions", () => ({
+  upsertPaymentIntentTransaction: mocks.upsertPaymentIntentTransaction,
+}));
 vi.mock("@/lib/audit", () => ({
   createStructuredAuditLog: mocks.createStructuredAuditLog,
   getAuditRequestContext: mocks.getAuditRequestContext,
@@ -133,7 +141,9 @@ beforeEach(() => {
   mocks.reconcile.mockResolvedValue({ enabled: false, deletedCount: 0, createdCount: 0 });
   mocks.bookingUpdate.mockResolvedValue({});
   mocks.bookingUpdateMany.mockResolvedValue({ count: 1 });
-  mocks.paymentUpsert.mockResolvedValue({});
+  mocks.paymentUpsert.mockResolvedValue({ id: "pay1" });
+  mocks.sendPaymentFailureAlert.mockResolvedValue(undefined);
+  mocks.upsertPaymentIntentTransaction.mockResolvedValue(undefined);
   mocks.executeRaw.mockResolvedValue(1);
   // Default: capacity is available. Each test that needs a full lodge overrides.
   mocks.checkCapacity.mockResolvedValue(AVAILABLE);
@@ -172,10 +182,27 @@ describe("POST /api/admin/bookings/[id]/confirm-pending-guests", () => {
     expect(mocks.chargePaymentMethod).toHaveBeenCalledWith(
       expect.objectContaining({ amountCents: 10000, idempotencyKey: "pending_charge_b1" })
     );
-    expect(mocks.bookingUpdate).toHaveBeenCalledWith({
-      where: { id: "b1" },
-      data: { nonMemberHoldUntil: null },
+    // Claim-first (#1418): capacity is claimed as CONFIRMED (hold cleared)
+    // BEFORE Stripe is touched, mirroring the cron.
+    expect(mocks.bookingUpdateMany).toHaveBeenCalledWith({
+      where: { id: "b1", status: "PENDING" },
+      data: { status: "CONFIRMED", nonMemberHoldUntil: null },
     });
+    expect(
+      mocks.bookingUpdateMany.mock.invocationCallOrder[0]
+    ).toBeLessThan(mocks.chargePaymentMethod.mock.invocationCallOrder[0]);
+    // The captured charge is durably recorded before reconciliation.
+    expect(mocks.upsertPaymentIntentTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        paymentId: "pay1",
+        paymentIntentId: "pi_1",
+        amountCents: 10000,
+        status: "SUCCEEDED",
+      })
+    );
+    expect(
+      mocks.upsertPaymentIntentTransaction.mock.invocationCallOrder[0]
+    ).toBeLessThan(mocks.markBookingPaymentSucceeded.mock.invocationCallOrder[0]);
     expect(mocks.createStructuredAuditLog).toHaveBeenCalled();
   });
 
@@ -213,6 +240,144 @@ describe("POST /api/admin/bookings/[id]/confirm-pending-guests", () => {
     expect(res.status).toBe(200);
     expect(body).toMatchObject({ status: "PAID", charged: true });
     expect(mocks.chargePaymentMethod).toHaveBeenCalled();
+  });
+
+  // #1418: charge captured, then reconciliation throws (e.g. transient DB
+  // failure or a concurrent status change). The captured money must never go
+  // silent: the transaction row is already durably recorded (webhook can
+  // finish the promotion), the claim keeps holding the beds, and admins are
+  // alerted.
+  it("alerts and leaves the booking claimed when reconciliation fails after a captured charge (#1418)", async () => {
+    mocks.bookingFindUnique.mockResolvedValue(makeBooking());
+    mocks.chargePaymentMethod.mockResolvedValue({
+      id: "pi_1",
+      status: "succeeded",
+      amount: 10000,
+      payment_method: "pm_1",
+    });
+    mocks.markBookingPaymentSucceeded.mockRejectedValue(
+      new Error("Booking is not payable from status CANCELLED")
+    );
+
+    const res = await POST(makeRequest(), { params });
+    const body = await res.json();
+
+    expect(res.status).toBe(500);
+    expect(body).toMatchObject({ paymentIntentId: "pi_1" });
+    expect(body.error).toContain("charge succeeded");
+    // The captured charge was durably recorded BEFORE reconciliation ran.
+    expect(mocks.upsertPaymentIntentTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ paymentIntentId: "pi_1", status: "SUCCEEDED" })
+    );
+    // Admins are alerted with the intent id.
+    expect(mocks.sendPaymentFailureAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        paymentIntentId: "pi_1",
+        amountCents: 10000,
+        errorMessage: expect.stringContaining("captured"),
+      })
+    );
+    // The claim is NOT released — CONFIRMED keeps holding the paid-for beds.
+    expect(mocks.bookingUpdateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: "PENDING" }),
+      })
+    );
+    // No confirmation email for an unfinalised booking.
+    expect(mocks.sendConfirmedEmail).not.toHaveBeenCalled();
+  });
+
+  it("releases the claim and alerts when the Stripe charge itself fails (#1418)", async () => {
+    mocks.bookingFindUnique.mockResolvedValue(makeBooking());
+    mocks.chargePaymentMethod.mockRejectedValue(new Error("card_declined"));
+
+    const res = await POST(makeRequest(), { params });
+    const body = await res.json();
+
+    expect(res.status).toBe(502);
+    expect(body.error).toContain("charge failed");
+    // Claim released: CONFIRMED -> PENDING with the original hold restored.
+    expect(mocks.bookingUpdateMany).toHaveBeenCalledWith({
+      where: { id: "b1", status: "CONFIRMED" },
+      data: {
+        status: "PENDING",
+        nonMemberHoldUntil: new Date("2026-07-08"),
+      },
+    });
+    expect(mocks.sendPaymentFailureAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        amountCents: 10000,
+        errorMessage: "card_declined",
+      })
+    );
+    expect(mocks.markBookingPaymentSucceeded).not.toHaveBeenCalled();
+    expect(mocks.upsertPaymentIntentTransaction).not.toHaveBeenCalled();
+  });
+
+  it("releases the claim without alerting when the card needs further authorisation (#1418)", async () => {
+    mocks.bookingFindUnique.mockResolvedValue(makeBooking());
+    mocks.chargePaymentMethod.mockResolvedValue({
+      id: "pi_1",
+      status: "requires_action",
+      amount: 10000,
+      payment_method: "pm_1",
+    });
+
+    const res = await POST(makeRequest(), { params });
+    const body = await res.json();
+
+    expect(res.status).toBe(409);
+    expect(body).toMatchObject({ paymentStatus: "requires_action" });
+    expect(mocks.bookingUpdateMany).toHaveBeenCalledWith({
+      where: { id: "b1", status: "CONFIRMED" },
+      data: {
+        status: "PENDING",
+        nonMemberHoldUntil: new Date("2026-07-08"),
+      },
+    });
+    expect(mocks.markBookingPaymentSucceeded).not.toHaveBeenCalled();
+    expect(mocks.sendPaymentFailureAlert).not.toHaveBeenCalled();
+  });
+
+  it("reports the auto-refund accurately when the final capacity claim fails (#1418)", async () => {
+    mocks.bookingFindUnique.mockResolvedValue(makeBooking());
+    mocks.chargePaymentMethod.mockResolvedValue({
+      id: "pi_1",
+      status: "succeeded",
+      amount: 10000,
+      payment_method: "pm_1",
+    });
+    mocks.markBookingPaymentSucceeded.mockResolvedValue({
+      outcome: "cancelled_refunded",
+    });
+
+    const res = await POST(makeRequest(), { params });
+    const body = await res.json();
+
+    expect(res.status).toBe(409);
+    expect(body.error).toContain("refunded in full");
+    expect(mocks.sendConfirmedEmail).not.toHaveBeenCalled();
+    expect(mocks.enqueueXero).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a refund failure after a capacity-failed charge as a 500 (#1418)", async () => {
+    mocks.bookingFindUnique.mockResolvedValue(makeBooking());
+    mocks.chargePaymentMethod.mockResolvedValue({
+      id: "pi_1",
+      status: "succeeded",
+      amount: 10000,
+      payment_method: "pm_1",
+    });
+    mocks.markBookingPaymentSucceeded.mockResolvedValue({
+      outcome: "cancelled_refund_failed",
+    });
+
+    const res = await POST(makeRequest(), { params });
+    const body = await res.json();
+
+    expect(res.status).toBe(500);
+    expect(body).toMatchObject({ paymentIntentId: "pi_1" });
+    expect(mocks.sendConfirmedEmail).not.toHaveBeenCalled();
   });
 
   it("moves a no-card (request-origin) booking to payment-owed without charging or capacity gate", async () => {
