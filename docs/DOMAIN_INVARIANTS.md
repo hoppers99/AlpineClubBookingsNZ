@@ -94,6 +94,31 @@ Future reviews and issues should cite this file when proposing changes.
   (re-runs skip it), so an intent enqueued post-commit would ride a crash
   window with no self-heal. The outbox enqueue is a pure local insert — the
   Xero call itself stays in the outbox worker, outside the transaction.
+- Cancelling a booking never rewrites captured-payment truth (#1473).
+  "Captured" is decided on LEDGER evidence — a payment transaction row in a
+  captured status (SUCCEEDED / (PARTIALLY_)REFUNDED), or, for STRIPE rows
+  with no ledger rows (pre-ledger data), the refund mirror (Stripe refunds
+  require a captured charge) — never on the aggregate mirror alone: the
+  inbound reconcile folds invoice-applied modification credit notes into
+  `refundedAmountCents`/`PARTIALLY_REFUNDED` on never-captured IB payments
+  (pure bookkeeping, zero cash), so the mirror lies in both directions. A
+  never-captured payment — including that folded shape — flips to FAILED at
+  cancel and its open invoice gets the finalPrice+changeFee invoice-clearing
+  credit note (the #1015 outstanding-balance rule; supplementary invoices
+  from unpaid price increases are a separate pre-existing gap). A captured
+  payment keeps its status and refund history, its captured Stripe intent is
+  not sent a cancel, and no clearing note is enqueued: finalPrice+changeFee
+  is not its open balance — normally the invoice is already settled
+  Xero-side, and in the failed-payment-record window a cancel-time clearing
+  note would close the invoice underneath the op retry stack's recording
+  repair and permanently poison it. Two consequences are deliberate and
+  owner-visible: the cancel issues no NEW refund for captured non-SUCCEEDED
+  payments (the paid path claims only SUCCEEDED — an open product decision on
+  #1473's Decision Record, and note the operator repair pass's
+  late-capture-after-cancellation action resolves it in practice by
+  auto-refunding the full retained remainder with no policy tiering), and
+  rows already flattened by the old defect are not backfilled (the repair
+  pass synthesizes captured state from the STRIPE mirror).
 - A payment landing on an already-CANCELLED booking's stale open invoice must
   never settle silently (#1357) — but a PAID invoice event alone proves
   nothing: Xero also reports PAID when OUR OWN clearing credit note is
