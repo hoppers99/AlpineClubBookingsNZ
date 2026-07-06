@@ -322,6 +322,42 @@ not — so they pass the block, and quoted bookings are additionally exempt
 from the paid-name lock (renaming placeholder students after the school has
 paid its invoice is the intended workflow).
 
+The paid-name lock on free-text (non-member) guest names blocks changing who a
+booking is for after full payment — an unauthorised transfer/resale. It has one
+narrow exemption (#1386): on an **identity-only** edit (no structural change) of
+a fully-paid, non-quoted booking, an identity-preserving spelling **typo** may
+be corrected. A change qualifies only when, on names normalised as trim +
+lowercase + collapse-internal-whitespace: (a) neither new part is blank; (b) the
+first name and last name each keep the same word/token count (a typo never adds
+or removes a name part); (c) no positionally-aligned token is a whole-token
+replacement — for each aligned first/last token pair, at least half of the
+longer token must be preserved (edit distance × 2 &lt; max token length), which
+refuses surname-family swaps like "David Ng" → "David Wu" and "Ann Ho" →
+"Ann Lo" even though their overall distance is ≤ 2; and (d) the
+Damerau-Levenshtein distance (adjacent transposition = 1 edit) between the
+normalised full names is at most `min(2, floor(0.25 × lengthOfLongerFullName))`
+— at most two edits and never more than a quarter of the longer name, distance 0
+(pure case/whitespace) included. Anything else keeps the hard reject ("only
+spelling corrections are allowed after payment; contact the office to change who
+a booking is for"), so a same-surname given-name swap ("John Smith" →
+"Jane Smith", distance 3) and a full swap ("John Smith" → "Aroha Ngata") are
+refused. The rule is enforced server-side (`src/lib/guest-name-similarity.ts`,
+mirrored in the modify-quote preview); it never reprices or rechecks capacity
+(the identity-only price-preserving path still applies), and every allowed fix
+writes a `BookingModification` audit row discriminated as `GUEST_TYPO_FIX` (with
+a `paidNameTypoFix` snapshot flag) carrying old→new names, actor, and time.
+Member-linked guest names remain unrenameable regardless.
+
+**Residual risk (accepted, audit-mitigated):** the per-token and distance bounds
+above stop wider swaps, but a SINGLE-character change that keeps most of a
+token is fundamentally indistinguishable from a spelling typo by string
+comparison, so short one-edit substitutions such as "Kim" → "Tim", "Sam" →
+"Pam", or "Rob" → "Bob" are STILL accepted after payment. This is
+self-serviceable by the booking owner (`booking.memberId === actor`) on
+PAID/CONFIRMED bookings and cannot be closed in code. Its only mitigation is the
+`GUEST_TYPO_FIX` audit trail, which admins should periodically review for
+suspicious post-payment renames.
+
 A price reduction against an issued-but-unpaid Xero invoice (pay-on-account,
 no captured payment) is corrected for the full net delta — there is no captured
 money and therefore no cancellation-policy tier to apply — via a modification
@@ -360,6 +396,19 @@ same frozen slices, so they mint identical Stripe idempotency keys and Stripe
 replays rather than repeats. The mirror of this rule is the group-cancel
 settlement, which persists its per-child `refundPlan` before its Stripe refund
 for the same reason.
+
+For `source: STRIPE` payments the local refund ledger is Stripe-truth and
+inbound Xero reconciliation may only raise it, never lower it (#1353). The
+inbound credit-note repair keeps the local `refundedAmountCents` when the
+Xero-derived total is below it (logging and raising the deduped Xero sync
+alert instead of rewriting), and never flips a REFUNDED/PARTIALLY_REFUNDED
+Stripe payment back to SUCCEEDED from Xero-derived data — an operator voiding
+a refund credit note in Xero cannot "un-refund" money Stripe has already paid
+out, and a missing refund-delta credit note can no longer silently lower the
+ledger the missing-credit-note detector compares against (which previously
+self-masked the divergence). Internet Banking payments are the deliberate
+exception: Xero is their payment rail, so the repair remains authoritative in
+both directions for them.
 
 Cancelled-booking soft-delete may hide an operational duplicate only when it
 preserves the booking row and no external money/Xero history needs to remain
