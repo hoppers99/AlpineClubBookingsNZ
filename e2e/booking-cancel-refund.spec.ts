@@ -101,7 +101,14 @@ test("member cancels a paid booking for account credit and the money outcome is 
   const adminPage = await adminContext.newPage();
   await loginPersona(adminPage, E2E_ADMIN.email);
 
-  await adminPage.goto("/admin/payments");
+  // The payments page defaults its "last updated" window's To-bound to the
+  // BROWSER's local date, while the server interprets that bound as
+  // end-of-day in the club timezone (NZ). On a UTC runner, everything that
+  // happens after NZ midnight (the ~12h window each day) falls outside the
+  // default window and the list renders empty — which is why this assertion
+  // passed in an afternoon-UTC PR run and failed after NZ midnight. Pin an
+  // explicit far-future bound so the assertion is time-of-day independent.
+  await adminPage.goto("/admin/payments?lastUpdatedTo=2030-01-01");
   // The list re-fetches as the search term changes; narrowing to Nadia's email
   // keeps the settlement assertion unambiguous (other seeded cancellations own
   // their own rows).
