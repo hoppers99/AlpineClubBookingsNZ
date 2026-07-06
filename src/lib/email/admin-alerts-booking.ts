@@ -1,4 +1,5 @@
 import {
+  adminMinorsReviewRequiredTemplate,
   adminNewBookingTemplate,
   adminPendingDeadlineTemplate,
   adminBookingBumpedTemplate,
@@ -41,6 +42,33 @@ export async function sendAdminNewBookingAlert(data: {
       total: formatMoneyCents(data.totalCents),
       reviewReason: data.reviewReason ?? "",
       memberJustification: data.memberJustification ?? "",
+    },
+    preferenceKey: "adminNewBooking",
+  });
+}
+
+// F27 / #1372: Admin alert - paid booking edited into a minors-only (no-adult)
+// composition. The booking KEEPS its PAID status (Option A) but is blocked from
+// lodge check-in until an admin clears the review, so admins need a nudge that a
+// silent flag was set. Reuses the "New bookings" (Booking Review Required)
+// admin preference category.
+export async function sendAdminMinorsOnlyReviewAlert(data: {
+  memberName: string;
+  checkIn: Date;
+  checkOut: Date;
+  guestCount: number;
+  reviewReason: string;
+}) {
+  await sendToAdmins({
+    subject: `Review required: booking has only under-18 guests (${data.memberName})`,
+    html: adminMinorsReviewRequiredTemplate(data),
+    templateName: "admin-minors-review",
+    templateData: {
+      memberName: data.memberName,
+      checkIn: formatNZDate(data.checkIn),
+      checkOut: formatNZDate(data.checkOut),
+      guestCount: data.guestCount,
+      reviewReason: data.reviewReason,
     },
     preferenceKey: "adminNewBooking",
   });

@@ -1717,6 +1717,36 @@ Triggers and frequency:
 - Second admin rejects a hard-delete lifecycle request.
 - Sent once to the requesting admin. The target member is not emailed because hard delete is reserved for erroneous records.
 
+### admin-minors-review
+
+Subject:
+
+```text
+Review required: booking has only under-18 guests ({{memberName}})
+```
+
+Body:
+
+```text
+Booking Review Required
+
+A paid booking was edited and now has only under-18 guests. It is blocked from lodge check-in until an admin reviews it.
+
+{{reviewReason}}
+
+Member: {{memberName}}
+Check-in: {{checkIn}}
+Check-out: {{checkOut}}
+Guests: {{guestCount}}
+
+Review Bookings: {{BASE_URL}}/admin/bookings
+```
+
+Triggers and frequency:
+
+- A guest removal or batch edit newly drops a paid (capacity-holding) booking into a minors-only (no-adult) composition (F27 / #1372).
+- The booking keeps its PAID status but is blocked from lodge check-in until an admin clears the review; sent once to opted-in admins per event. Not sent when the booking already carried a pending review or still has an adult.
+
 ### admin-new-booking
 
 Subject variants:

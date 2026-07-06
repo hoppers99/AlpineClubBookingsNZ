@@ -24,6 +24,7 @@ export interface EmailTemplateDefinition {
 
 const ADMIN_SYSTEM_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
   "admin-membership-application-pending",
+  "admin-minors-review",
   "admin-new-booking",
   "admin-payment-failure",
   "admin-pending-deadline",
@@ -214,6 +215,11 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
   "admin-booking-change-request": {
     triggerSummary: "Locked booking change request submitted",
     frequency: "Per member/admin request submission",
+  },
+  "admin-minors-review": {
+    triggerSummary:
+      "Paid booking edited into a minors-only (no-adult) composition",
+    frequency: "Once when a guest removal or batch edit newly trips the flag",
   },
   "membership-cancellation-submitted": {
     triggerSummary: "Membership cancellation request submitted",

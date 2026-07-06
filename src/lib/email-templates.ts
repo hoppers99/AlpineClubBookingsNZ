@@ -773,6 +773,31 @@ export function adminNewBookingTemplate(data: {
   `);
 }
 
+// ---- F27 / #1372: Admin Alert — booking left with only under-18 guests ----
+
+export function adminMinorsReviewRequiredTemplate(data: {
+  memberName: string;
+  checkIn: Date;
+  checkOut: Date;
+  guestCount: number;
+  reviewReason: string;
+}): string {
+  return layout(`
+    ${heading("Booking Review Required")}
+    ${paragraph(
+      "A paid booking was edited and now has only under-18 guests. It is blocked from lodge check-in until an admin reviews it.",
+    )}
+    ${alertBox(escapeHtml(data.reviewReason), "warning")}
+    ${infoTable([
+      { label: "Member", value: escapeHtml(data.memberName) },
+      { label: "Check-in", value: formatNZDate(data.checkIn) },
+      { label: "Check-out", value: formatNZDate(data.checkOut) },
+      { label: "Guests", value: String(data.guestCount) },
+    ])}
+    ${button("Review Bookings", BASE_URL + "/admin/bookings")}
+  `);
+}
+
 // ---- N-04: Admin Alert — Payment Failure ----
 
 export function adminPaymentFailureTemplate(data: {

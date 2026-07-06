@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { OPERATIONAL_STAY_BOOKING_STATUSES } from "@/lib/booking-status";
+import { checkinNotBlockedByMinorsReviewFilter } from "@/lib/booking-review";
 
 export const LODGE_VISIBLE_BOOKING_STATUSES = [
   ...OPERATIONAL_STAY_BOOKING_STATUSES,
@@ -15,6 +16,8 @@ export async function findLodgeGuestForDate(bookingGuestId: string, date: Date) 
         status: { in: [...LODGE_VISIBLE_BOOKING_STATUSES] },
         checkIn: { lte: date },
         checkOut: { gt: date },
+        // Hide a paid booking blocked by a pending minors-only review (#1372).
+        ...checkinNotBlockedByMinorsReviewFilter(),
       },
     },
     select: {
@@ -47,6 +50,8 @@ export async function findLodgeGuestDepartingOnDate(
         status: { in: [...LODGE_VISIBLE_BOOKING_STATUSES] },
         checkIn: { lte: date },
         checkOut: { gte: date },
+        // Hide a paid booking blocked by a pending minors-only review (#1372).
+        ...checkinNotBlockedByMinorsReviewFilter(),
       },
     },
     select: {
@@ -83,6 +88,8 @@ export async function validateRosterAllocationsForDate(
         status: { in: [...LODGE_VISIBLE_BOOKING_STATUSES] },
         checkIn: { lte: date },
         checkOut: { gt: date },
+        // Hide a paid booking blocked by a pending minors-only review (#1372).
+        ...checkinNotBlockedByMinorsReviewFilter(),
       },
     },
     select: {

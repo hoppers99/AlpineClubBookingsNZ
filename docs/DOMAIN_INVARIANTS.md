@@ -236,6 +236,19 @@ place, and approving it clears the review without re-opening the payment
 lifecycle. Rejection cancels through the shared cancellation flow, which
 refunds captured payments per the policy.
 
+Because a paid minors-only booking is deliberately **not** parked to
+AWAITING_REVIEW (Option A / F27, issue #1372 — parking a paid booking would
+collide with the captured-money invariant #1100), a second gate protects the
+child-safety concern: while its minors-only review is PENDING the booking is
+**blocked from lodge check-in** — hidden from every lodge check-in surface
+(guest list, arrive/depart, roster generate/confirm) via the single shared
+`checkinNotBlockedByMinorsReviewFilter()` predicate, scoped specifically to the
+adult-supervision review reason. The booking keeps its PAID status throughout;
+clearing the review to APPROVED makes it check-in-eligible again. When the flag
+newly trips on a paid booking a best-effort admin email fires (template
+`admin-minors-review`), since nothing changes the booking's visible status to
+signal the block.
+
 A quote hold spans the whole quote lifecycle (issue #1254). Sending a quote
 places the hold automatically: the held booking (AWAITING_REVIEW, a
 capacity-holding status) reserves the beds/guest-nights before the send is

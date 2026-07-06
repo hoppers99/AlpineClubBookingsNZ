@@ -17,6 +17,7 @@ import {
 } from "@/lib/booking-guest-stay-ranges";
 import logger from "@/lib/logger";
 import { OPERATIONAL_STAY_BOOKING_STATUSES } from "@/lib/booking-status";
+import { checkinNotBlockedByMinorsReviewFilter } from "@/lib/booking-review";
 
 const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const bodySchema = z.object({
@@ -83,6 +84,9 @@ export async function POST(
             stayEnd: { gt: date },
           },
         },
+        // Don't roster a paid booking blocked by a pending minors-only review
+        // (#1372); it can't check in until an admin clears the review.
+        ...checkinNotBlockedByMinorsReviewFilter(),
       },
       include: {
         guests: {

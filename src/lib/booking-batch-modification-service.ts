@@ -39,7 +39,14 @@ import {
   executeBookingModificationRefund,
   type BookingModificationPaymentContext,
 } from "@/lib/booking-modification-settlement";
-import { sendBookingModifiedEmail } from "@/lib/email";
+import {
+  sendAdminMinorsOnlyReviewAlert,
+  sendBookingModifiedEmail,
+} from "@/lib/email";
+import {
+  ADULT_SUPERVISION_REVIEW_REASON,
+  minorsReviewAlertShouldFire,
+} from "@/lib/booking-review";
 import logger from "@/lib/logger";
 import { createBookingModificationCredit } from "@/lib/member-credit";
 import { prisma } from "@/lib/prisma";
@@ -79,6 +86,9 @@ type BatchModificationTransactionResult =
     guestNameUpdates: ResolvedGuestNameUpdate[];
     guestIdentityChanged: boolean;
     identityOnlyModification: boolean;
+    // #1372: this edit newly dropped a paid (capacity-holding) booking into the
+    // blocked minors-only review state, so the post-tx step alerts admins.
+    minorsOnlyReviewNewlyFlagged: boolean;
   };
 
 export type BatchModificationResponse = {
@@ -453,6 +463,12 @@ export async function modifyBookingBatch({
       guestNameUpdates,
       guestIdentityChanged: guestNameUpdates.length > 0,
       identityOnlyModification,
+      // #1372: newly blocked a paid booking on the minors-only rule? Computed
+      // from the pre-edit review state and the freshly written booking.
+      minorsOnlyReviewNewlyFlagged: minorsReviewAlertShouldFire({
+        previous: booking,
+        updated: updatedBooking,
+      }),
       paymentId: booking.payment?.id ?? null,
       paymentCustomerId: booking.payment?.stripeCustomerId ?? null,
       memberEmail: booking.member.email,
@@ -578,6 +594,24 @@ async function dispatchBatchPostTransactionSideEffects({
       "Failed to queue Xero settlement for batch modification",
     ),
   );
+
+  // #1372: an edit that dropped the last adult from a paid booking blocks its
+  // lodge check-in (the booking KEEPS its PAID status). Nudge admins to review
+  // it, best-effort — an email failure must never affect the completed edit.
+  if (result.minorsOnlyReviewNewlyFlagged) {
+    sendAdminMinorsOnlyReviewAlert({
+      memberName: result.memberName,
+      checkIn: result.booking.checkIn,
+      checkOut: result.booking.checkOut,
+      guestCount: result.booking.guests.length,
+      reviewReason: ADULT_SUPERVISION_REVIEW_REASON,
+    }).catch((err) =>
+      logger.error(
+        { err, bookingId },
+        "Failed to send minors-only review admin alert",
+      ),
+    );
+  }
 
   if (result.identityOnlyModification) {
     return;
