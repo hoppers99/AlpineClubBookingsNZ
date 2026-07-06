@@ -204,7 +204,15 @@ genuine late capture, execute exactly that refund with
 action in the human summary and in the JSON report; combine with
 `--booking <id>` to keep the rest of the apply run scoped, and note the run
 warns about forced keys that matched nothing); if it is a deliberate
-retention, leave it. Tiered cancels that
+retention, leave it. If a multi-slice refund fails partway (one captured
+Stripe intent refunds and records, a later one declines), the action reports
+`failed`, but the Xero refund credit note is still queued for exactly the
+slices that actually refunded — sized from the recorded refund ledger, not the
+requested total — so Xero never understates the refund (#1495). Re-run
+`--apply-action` with the new, smaller remainder key the report now prints (it
+embeds the still-outstanding cents): it refunds only the remainder and queues a
+note for exactly that delta under a distinct cumulative-watermark correlation
+key, never re-noting the completed slices. Tiered cancels that
 deliberately retained a policy penalty produce no finding at all — their
 books are correct.
 
