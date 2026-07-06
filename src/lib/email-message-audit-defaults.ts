@@ -202,6 +202,10 @@ export const EMAIL_AUDIT_DEFAULTS = {
     "defaultSubject": "Member delete rejected: {{memberName}}",
     "defaultBody": "Member Delete Request Rejected\n\nHi {{requesterName}},\n\nThe hard-delete request for {{memberName}} was not approved.\n\nReason:\n{{reason}}\n\nReview note: {{reviewNote}} [only when reviewNote exists]\n\nOpen Member: {{reviewUrl}}\n\n{{CLUB_NAME}} — {{SUPPORT_EMAIL}}"
   },
+  "admin-minors-review": {
+    "defaultSubject": "Review required: booking has only under-18 guests ({{memberName}})",
+    "defaultBody": "Booking Review Required\n\nA paid booking was edited and now has only under-18 guests. It is blocked from lodge check-in until an admin reviews it.\n\n{{reviewReason}}\n\nMember: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nGuests: {{guestCount}}\n\nReview Bookings: {{BASE_URL}}/admin/bookings"
+  },
   "admin-new-booking": {
     "defaultSubject": "New Booking: {{memberName}} ({{status}})",
     "defaultBody": "New Booking Created\n\nA new booking has been created.\n\n{{reviewReason}} [only when reviewReason exists]\n\nMember: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nGuests: {{guestCount}}\nTotal: {{total}}\nStatus: {{status}}\n\nView Bookings: {{BASE_URL}}/admin/bookings"

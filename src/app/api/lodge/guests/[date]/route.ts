@@ -9,6 +9,7 @@ import { formatXeroPhone } from "@/lib/phone";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
 import { OPERATIONAL_STAY_BOOKING_STATUSES } from "@/lib/booking-status";
+import { checkinNotBlockedByMinorsReviewFilter } from "@/lib/booking-review";
 import {
   getGuestStayEnd,
   getGuestStayStart,
@@ -63,6 +64,9 @@ export async function GET(
           stayEnd: isLodgeListScope ? { gte: date } : { gt: date },
         },
       },
+      // A paid booking flagged minors-only (no adult) with a pending admin
+      // review is blocked from lodge check-in until an admin clears it (#1372).
+      ...checkinNotBlockedByMinorsReviewFilter(),
     },
     include: {
       guests: {
