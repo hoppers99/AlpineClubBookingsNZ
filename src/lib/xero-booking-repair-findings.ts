@@ -17,7 +17,10 @@ import {
   readStoredXeroAmountCents,
   toIsoDate,
 } from "./xero-booking-repair-utils";
-import { asRecord, readString } from "@/lib/xero-json";
+import {
+  readQueueType,
+  readQueuedOutboxPayload,
+} from "@/lib/xero-operation-outbox-payload";
 
 export function addAction(
   actionMap: Map<string, BookingXeroRepairAction>,
@@ -174,12 +177,29 @@ export function recoverStoredXeroAmountCents(params: {
           !operation.xeroObjectId ||
           operation.xeroObjectId === params.objectId) &&
         (!params.payloadQueueType ||
-          readString(asRecord(operation.requestPayload)?.queueType) ===
-            params.payloadQueueType)
+          readQueueType(operation.requestPayload) === params.payloadQueueType)
     )
     .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 
   for (const operation of operations) {
+    if (params.payloadQueueType) {
+      // Read through the canonical typed parser (the same one the outbox
+      // scan and the #1356 retry stack use), so the amount claimed here is
+      // exactly the one whose replay rebuilds the amount-embedding
+      // correlation key — never a loose read of some other payload field.
+      const queued = readQueuedOutboxPayload(operation.requestPayload);
+      if (
+        queued &&
+        queued.queueType === params.payloadQueueType &&
+        "refundAmountCents" in queued
+      ) {
+        return {
+          amountCents: queued.refundAmountCents,
+          source: "operation-request",
+        };
+      }
+      continue;
+    }
     const amountCents = readStoredXeroAmountCents(operation.requestPayload);
     if (amountCents !== null) {
       return { amountCents, source: "operation-request" };

@@ -485,7 +485,7 @@ export function classifyBookingContext(
       // correlation key, so a note that already hit Xero dedups instead of
       // duplicating), then link metadata, then executed note totals. A
       // stored amount outside (0, abs(net)] is inconsistent and is ignored.
-      const storedSettlement = recoverStoredXeroAmountCents({
+      const storedEvidence = recoverStoredXeroAmountCents({
         links: modificationLinks,
         operations: modificationOperations,
         xeroObjectType: "CREDIT_NOTE",
@@ -498,15 +498,15 @@ export function classifyBookingContext(
         // payloads that name themselves invoice-applied count as evidence.
         payloadQueueType: XERO_OUTBOX_MODIFICATION_CREDIT_NOTE_TYPE,
       });
-      const storedSettlementCents =
-        storedSettlement &&
-        storedSettlement.amountCents > 0 &&
-        storedSettlement.amountCents <= refundDueCents
-          ? storedSettlement.amountCents
+      const storedSettlement =
+        storedEvidence &&
+        storedEvidence.amountCents > 0 &&
+        storedEvidence.amountCents <= refundDueCents
+          ? storedEvidence
           : null;
-      const expectedCreditNoteCents = storedSettlementCents ?? refundDueCents;
-      const expectedAmountSource =
-        storedSettlementCents !== null ? storedSettlement!.source : "net-amount";
+      const expectedCreditNoteCents =
+        storedSettlement?.amountCents ?? refundDueCents;
+      const expectedAmountSource = storedSettlement?.source ?? "net-amount";
 
       if (!modificationCreditNote) {
         const blockingOperation = getBlockingOperation(
@@ -532,7 +532,7 @@ export function classifyBookingContext(
             actionKeys: [action.key],
           });
         } else if (!blockingOperation) {
-          if (storedSettlementCents !== null || !hasCapturedPayment(payment)) {
+          if (storedSettlement !== null || !hasCapturedPayment(payment)) {
             // Sizing is safe: either the stored ledger records the
             // settlement this note was enqueued with, or no money was ever
             // captured, so no cancellation-policy tier can have applied and
@@ -559,6 +559,7 @@ export function classifyBookingContext(
                 modificationId: modification.id,
                 refundAmountCents: expectedCreditNoteCents,
                 refundAmountSource: expectedAmountSource,
+                refundDueCents,
                 priceDiffCents: modification.priceDiffCents,
                 changeFeeCents: modification.changeFeeCents,
               },

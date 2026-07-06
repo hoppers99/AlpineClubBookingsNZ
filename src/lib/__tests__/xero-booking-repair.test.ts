@@ -921,6 +921,8 @@ describe("runBookingXeroRepair", () => {
           xeroObjectId: "cn_amount",
           requestPayload: {
             queueType: "MODIFICATION_CREDIT_NOTE",
+            bookingId: "booking_1",
+            bookingModificationId: "mod_amount_credit",
             refundAmountCents: 3000,
           },
         }),
