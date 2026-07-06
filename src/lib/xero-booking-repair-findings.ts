@@ -17,6 +17,7 @@ import {
   readStoredXeroAmountCents,
   toIsoDate,
 } from "./xero-booking-repair-utils";
+import { asRecord, readString } from "@/lib/xero-json";
 
 export function addAction(
   actionMap: Map<string, BookingXeroRepairAction>,
@@ -145,7 +146,12 @@ function collectXeroAmountEvidence(params: {
 // Xero-side dedup intact on a requeue), then link metadata, then an executed
 // object's response totals. Unlike collectXeroAmountEvidence this reads
 // operations in ANY status: a FAILED or CANCELLED attempt still records what
-// the app decided the settlement was.
+// the app decided the settlement was. When `payloadQueueType` is given, only
+// operations whose payload carries that exact queueType count — a
+// modification can hold BOTH an invoice-applied credit-note op and an
+// account-credit-note op (same entityType/operationType, different amounts),
+// and a payload too old or too bare to name its queueType is ambiguous
+// between them, so it is skipped rather than guessed at.
 export function recoverStoredXeroAmountCents(params: {
   links: XeroObjectLinkRecord[];
   operations: XeroOperationRecord[];
@@ -154,6 +160,7 @@ export function recoverStoredXeroAmountCents(params: {
   entityType: string;
   operationType: string;
   objectId?: string | null;
+  payloadQueueType?: string;
 }): {
   amountCents: number;
   source: "operation-request" | "link" | "operation-response";
@@ -165,7 +172,10 @@ export function recoverStoredXeroAmountCents(params: {
         operation.operationType === params.operationType &&
         (!params.objectId ||
           !operation.xeroObjectId ||
-          operation.xeroObjectId === params.objectId)
+          operation.xeroObjectId === params.objectId) &&
+        (!params.payloadQueueType ||
+          readString(asRecord(operation.requestPayload)?.queueType) ===
+            params.payloadQueueType)
     )
     .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 

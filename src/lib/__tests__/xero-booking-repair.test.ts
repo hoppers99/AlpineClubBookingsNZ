@@ -748,6 +748,62 @@ describe("runBookingXeroRepair", () => {
     });
   });
 
+  // #1427: an ACCOUNT-credit-note op shares entityType/operationType with
+  // the invoice-applied note op on the same modification — its amount must
+  // never size the invoice-applied note. With no usable evidence and a
+  // captured payment, the safe route is manual review.
+  it("ignores account-credit-note operation payloads when sizing the invoice-applied note (#1427)", async () => {
+    const booking = makeBooking({
+      modifications: [
+        {
+          id: "mod_account_credit",
+          bookingId: "booking_1",
+          modificationType: "GUEST_REMOVE",
+          priceDiffCents: -10000,
+          changeFeeCents: 0,
+          createdAt: new Date("2026-05-02T00:00:00Z"),
+        },
+      ],
+    });
+    const deps = createDependencies({
+      bookings: [booking],
+      operations: [
+        makeOperation({
+          id: "operation_account_credit",
+          entityType: "CREDIT_NOTE",
+          operationType: "CREATE",
+          localId: "mod_account_credit",
+          status: "CANCELLED",
+          xeroObjectType: "CREDIT_NOTE",
+          xeroObjectId: null,
+          requestPayload: {
+            queueType: "MODIFICATION_ACCOUNT_CREDIT_NOTE",
+            bookingId: "booking_1",
+            bookingModificationId: "mod_account_credit",
+            refundAmountCents: 2000,
+          },
+        }),
+      ],
+    });
+
+    const report = await runBookingXeroRepair({
+      dependencies: deps,
+      scope: { all: true },
+    });
+
+    const bookingReport = report.passes[0].bookings[0];
+    expect(bookingReport.actions.map((action) => action.type)).not.toContain(
+      "QUEUE_MODIFICATION_CREDIT_NOTE"
+    );
+    const finding = bookingReport.findings.find(
+      (candidate) => candidate.code === "MISSING_MODIFICATION_CREDIT_NOTE"
+    );
+    expect(finding).toMatchObject({
+      severity: "manual_review",
+      safeToAutoApply: false,
+    });
+  });
+
   // #1427 (the #1356 third-arm rule): a pending/running credit-note
   // operation must surface as blocked instead of silence.
   it("surfaces a pending modification credit-note operation as blocked instead of staying silent (#1427)", async () => {
@@ -863,7 +919,10 @@ describe("runBookingXeroRepair", () => {
           localId: "mod_amount_credit",
           xeroObjectType: "CREDIT_NOTE",
           xeroObjectId: "cn_amount",
-          requestPayload: { refundAmountCents: 3000 },
+          requestPayload: {
+            queueType: "MODIFICATION_CREDIT_NOTE",
+            refundAmountCents: 3000,
+          },
         }),
       ],
     });

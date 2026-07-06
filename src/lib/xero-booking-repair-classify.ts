@@ -43,6 +43,7 @@ import {
 } from "./xero-booking-repair-findings";
 import { toDateOnly } from "./xero-booking-repair-utils";
 import { hasCapturedPayment } from "@/lib/booking-payment-state";
+import { XERO_OUTBOX_MODIFICATION_CREDIT_NOTE_TYPE } from "@/lib/xero-operation-outbox-payload";
 
 export function classifyBookingContext(
   context: BookingClassificationContext
@@ -492,6 +493,10 @@ export function classifyBookingContext(
         entityType: "CREDIT_NOTE",
         operationType: "CREATE",
         objectId: modificationCreditNote?.objectId ?? null,
+        // A modification can also hold an ACCOUNT-credit-note op with the
+        // same entityType/operationType and a different amount — only
+        // payloads that name themselves invoice-applied count as evidence.
+        payloadQueueType: XERO_OUTBOX_MODIFICATION_CREDIT_NOTE_TYPE,
       });
       const storedSettlementCents =
         storedSettlement &&
