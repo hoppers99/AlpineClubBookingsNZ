@@ -65,7 +65,7 @@ export function ConfirmPendingGuestsButton({
       const data = await res.json().catch(() => ({}));
       const message =
         data.error === "CAPACITY_EXCEEDED"
-          ? "Not enough beds remain for these dates."
+          ? "Not enough beds remain for these dates. Use Force confirm to overbook if intended."
           : data.error || "Failed to confirm pending guests";
       setError(message);
       toast.error(message);

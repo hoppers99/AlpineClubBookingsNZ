@@ -118,9 +118,37 @@ describe("ConfirmPendingGuestsButton", () => {
 
     await waitFor(() =>
       expect(toastError).toHaveBeenCalledWith(
-        "Not enough beds remain for these dates."
+        "Not enough beds remain for these dates. Use Force confirm to overbook if intended."
       )
     );
     expect(toastSuccess).not.toHaveBeenCalled();
+  });
+
+  it("states the no-charge copy and a plain Confirm label for a $0 booking", () => {
+    stubFetch({ ok: true, body: { success: true } });
+    render(
+      <ConfirmPendingGuestsButton
+        bookingId="b1"
+        hasSavedPaymentMethod
+        finalPriceCents={0}
+      />
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Confirm pending guests" })
+    );
+
+    const dialog = screen.getByRole("dialog");
+    expect(
+      within(dialog).getByText(/confirm the booking at no charge/i)
+    ).not.toBeNull();
+    // Zero-dollar path never charges, so the confirm affordance is a plain
+    // "Confirm" — not "Charge and confirm".
+    expect(
+      within(dialog).queryByRole("button", { name: "Charge and confirm" })
+    ).toBeNull();
+    expect(
+      within(dialog).getByRole("button", { name: "Confirm" })
+    ).not.toBeNull();
   });
 });

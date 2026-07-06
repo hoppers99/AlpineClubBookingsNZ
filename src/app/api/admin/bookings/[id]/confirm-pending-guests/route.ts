@@ -143,10 +143,23 @@ export async function POST(
       const zeroResult = await prisma.$transaction(async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
 
+        // Re-read this booking's own capacity inputs INSIDE the lock (mirroring
+        // cron-confirm-pending / force-confirm). Using the pre-lock findUnique
+        // snapshot would let a concurrent guest-count increase slip through: we
+        // would validate the smaller party but promote the larger one to a
+        // capacity-holding status (same-booking TOCTOU).
+        const locked = await tx.booking.findUnique({
+          where: { id: bookingId },
+          include: { guests: { include: { nights: true } } },
+        });
+        if (!locked || locked.status !== BookingStatus.PENDING) {
+          return { error: "Booking is no longer pending" as const, status: 409 };
+        }
+
         const { available, nightDetails } = await checkCapacityForGuestRanges(
-          booking.checkIn,
-          booking.checkOut,
-          booking.guests,
+          locked.checkIn,
+          locked.checkOut,
+          locked.guests,
           bookingId,
           tx
         );
@@ -231,29 +244,54 @@ export async function POST(
 
     // Pre-charge capacity re-check under the advisory lock. A generic
     // non-member-hold PENDING booking does not hold capacity (#737), so beds
-    // may already be gone; charging a saved card into a full lodge would force
-    // a refund. Take the lock, re-check, and RELEASE it before touching Stripe
-    // — never hold a DB lock across a payment-provider network call.
+    // may already be gone. Take the lock, re-read + re-check, and RELEASE it
+    // before touching Stripe — never hold a DB lock across a payment-provider
+    // network call.
     //
-    // Residual (documented): a small window remains between releasing this lock
-    // and the PAID promotion inside markBookingPaymentSucceeded where another
-    // booking could claim the beds. Closing it fully would require holding
-    // capacity state across the Stripe charge (a larger, Fable-tier redesign);
-    // this pre-check removes the main oversell hole.
+    // This does NOT risk an oversell even after the lock is released:
+    // markBookingPaymentSucceeded (payment-reconciliation.ts) independently
+    // re-takes pg_advisory_xact_lock(1), re-checks capacity, and CANCELS +
+    // auto-refunds rather than overselling if the lodge filled in the meantime.
+    // The only residual is therefore a rare, self-healing charge-then-refund
+    // churn — the member is charged, then auto-refunded and the booking
+    // cancelled — when beds are claimed between this pre-check and that
+    // promotion. This pre-check exists to make that churn rare by rejecting an
+    // already-full lodge up front. Eliminating the churn entirely (if ever
+    // desired) would mean adopting the cron's claim-then-charge pattern: claim
+    // PENDING -> CONFIRMED inside this lock, then charge, then promote
+    // (cron-confirm-pending.ts:347-398) — a modest change, not a large redesign.
     const chargePreCheck = await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+      // Re-read this booking's own capacity inputs INSIDE the lock (see the
+      // zero-dollar branch) so a concurrent guest-count change can't gate the
+      // charge on a stale, smaller party.
+      const locked = await tx.booking.findUnique({
+        where: { id: bookingId },
+        include: { guests: { include: { nights: true } } },
+      });
+      if (!locked || locked.status !== BookingStatus.PENDING) {
+        return { notPending: true as const };
+      }
       const { available, nightDetails } = await checkCapacityForGuestRanges(
-        booking.checkIn,
-        booking.checkOut,
-        booking.guests,
+        locked.checkIn,
+        locked.checkOut,
+        locked.guests,
         bookingId,
         tx
       );
       return {
+        notPending: false as const,
         available,
         overbookDates: getOverbookedNightDates(nightDetails),
       };
     });
+
+    if (chargePreCheck.notPending) {
+      return NextResponse.json(
+        { error: "Booking is no longer pending" },
+        { status: 409 }
+      );
+    }
 
     if (!chargePreCheck.available && !allowOverbook) {
       return NextResponse.json(

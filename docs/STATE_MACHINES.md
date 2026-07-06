@@ -31,7 +31,11 @@ an accepted-but-unpaid hold is NOT protected against a *capacity reduction* — 
 an admin lowers the lodge capacity for those nights below what is booked, the
 `cron-confirm-pending` job bumps/cancels the still-unpaid hold at its hold
 deadline (no charge). Only an admin capacity cut can reclaim the bed; competing
-member bookings still cannot.
+member bookings still cannot. The admin "Confirm pending guests" override
+(`/api/admin/bookings/[id]/confirm-pending-guests`) now runs the same
+`pg_advisory_xact_lock(1)` re-read + capacity re-check before flipping a booking
+to a capacity-holding status on its zero-dollar and charge-saved-card branches,
+returning 409 unless an explicit overbook is requested (#1366).
 
 To verify in later review: exact terminal transitions, non-member hold expiry,
 school group `CONFIRMED` semantics, and payment-failure back paths.
