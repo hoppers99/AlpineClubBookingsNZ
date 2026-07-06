@@ -62,6 +62,16 @@ export const E2E_ADMIN = {
   lastName: "Admin",
 } as const;
 
+// Dual-hat committee member: USER + ADMIN access-role tokens, complete
+// confirmed profile, PAID subscription. Books their own stay through the
+// member /book wizard under full member rules — the wizard must NOT redirect
+// them to /admin/book (e2e/dual-hat-booking.spec.ts, issue #1442).
+export const DUAL_HAT_ADMIN = {
+  email: demoEmail("dana-dualhat"),
+  firstName: "Dana",
+  lastName: "Dualhat",
+} as const;
+
 // Second paid-up, nomination-eligible member (alice is the first). Needed so
 // the public membership-application POST has two valid nominators.
 export const NOMINATOR_TWO = {
