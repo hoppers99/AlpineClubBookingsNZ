@@ -322,6 +322,28 @@ not — so they pass the block, and quoted bookings are additionally exempt
 from the paid-name lock (renaming placeholder students after the school has
 paid its invoice is the intended workflow).
 
+The paid-name lock on free-text (non-member) guest names blocks changing who a
+booking is for after full payment — an unauthorised transfer/resale. It has one
+narrow exemption (#1386): on an **identity-only** edit (no structural change) of
+a fully-paid, non-quoted booking, an identity-preserving spelling **typo** may
+be corrected. A change qualifies only when, on names normalised as trim +
+lowercase + collapse-internal-whitespace: (a) neither new part is blank; (b) the
+first name and last name each keep the same word/token count (a typo never adds
+or removes a name part); and (c) the Damerau-Levenshtein distance (adjacent
+transposition = 1 edit) between the normalised full names is at most
+`min(2, floor(0.25 × lengthOfLongerFullName))` — at most two edits and never
+more than a quarter of the longer name, distance 0 (pure case/whitespace)
+included. Anything else keeps the hard reject ("only spelling corrections are
+allowed after payment; contact the office to change who a booking is for"), so a
+same-surname given-name swap ("John Smith" → "Jane Smith", distance 3) and a
+full swap ("John Smith" → "Aroha Ngata") are refused. The rule is enforced
+server-side (`src/lib/guest-name-similarity.ts`, mirrored in the modify-quote
+preview); it never reprices or rechecks capacity (the identity-only
+price-preserving path still applies), and every allowed fix writes a
+`BookingModification` audit row discriminated as `GUEST_TYPO_FIX` (with a
+`paidNameTypoFix` snapshot flag) carrying old→new names, actor, and time.
+Member-linked guest names remain unrenameable regardless.
+
 A price reduction against an issued-but-unpaid Xero invoice (pay-on-account,
 no captured payment) is corrected for the full net delta — there is no captured
 money and therefore no cancellation-policy tier to apply — via a modification
