@@ -87,25 +87,39 @@ test("a full admin creates, edits, assigns a custom access role and sees the eff
   await page.goto(`/admin/members/${target!.id}`);
   await expect(page).toHaveURL(/\/admin\/members\/(?!$)[^/?#]+/);
 
-  // Expand Account & Access (groups start collapsed) and edit it inline.
+  // Expand the Account & Access group (groups start collapsed), then scope every
+  // interaction to that group's content REGION — its accessible name is the
+  // trigger text (Radix AccordionContent is role="region" labelled by its
+  // trigger). This mirrors the group idiom e2e/admin-member-detail.spec.ts drives
+  // on this same page, and keeps the group's "Access Roles" dt, inline Edit, and
+  // role badge from colliding with the admin sidebar's "Access Roles" nav link
+  // or the other inline-edit groups' controls.
   await page.getByRole("button", { name: /Account & Access/ }).click();
-  await expect(page.getByText("Access Roles", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Edit", exact: true }).first().click();
+  const accessGroup = page.getByRole("region", { name: /Account & Access/ });
+  await expect(
+    accessGroup.getByText("Access Roles", { exact: true }),
+  ).toBeVisible();
+  await accessGroup
+    .getByRole("button", { name: "Edit", exact: true })
+    .click();
 
   // Tick the new role's checkbox — scoped through its wrapping <label> (whose
   // text carries the unique role label) so the Radix checkbox resolves robustly.
-  const roleCheckbox = page
+  const roleCheckbox = accessGroup
     .locator("label")
     .filter({ hasText: roleLabel })
     .getByRole("checkbox");
   await expect(roleCheckbox).toBeVisible({ timeout: 30_000 });
   await roleCheckbox.click();
-  await page.getByRole("button", { name: "Save Changes" }).click();
+  await accessGroup.getByRole("button", { name: "Save Changes" }).click();
   await expect(page.getByText("Member updated successfully")).toBeVisible();
 
   // ── Effect ──
-  // Back in display mode, the Access Roles value shows a badge for the role.
-  await expect(page.getByText(roleLabel)).toBeVisible({ timeout: 30_000 });
+  // Back in display mode, the group's Access Roles value shows a badge for the
+  // role (scoped to the group so it never matches a dialog/list remnant).
+  await expect(accessGroup.getByText(roleLabel)).toBeVisible({
+    timeout: 30_000,
+  });
 
   // And the role now has exactly one holder (authenticated admin API — robust
   // vs a brittle UI count locator).
