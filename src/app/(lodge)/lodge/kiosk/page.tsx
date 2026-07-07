@@ -55,6 +55,10 @@ interface AccessInfo {
   // Lodge this kiosk session operates; null for single-lodge clubs
   // (ADR-002 presentation rule) and older responses.
   lodgeName?: string | null;
+  // Set when this kiosk account is assigned to more than one lodge (M5): the
+  // data routes 403, so render a fix-the-assignment message instead.
+  misconfigured?: boolean;
+  error?: string;
 }
 
 function formatDate(date: Date): string {
@@ -131,6 +135,17 @@ export default function KioskPage() {
       const accessData = await accessRes.json();
       setAccess(accessData);
       setAuthRequired(false);
+
+      // A kiosk account bound to more than one lodge is denied everywhere data
+      // is served (M5). Stop before the guest/roster fetches (which 403) and
+      // render the fix-the-assignment notice instead of a generic failure.
+      if (accessData.misconfigured) {
+        setBookings([]);
+        setAssignments([]);
+        setError(null);
+        setFailCount(0);
+        return;
+      }
 
       const [guestsRes, rosterRes] = await Promise.all([
         fetch(`/api/lodge/guests/${date}?scope=lodge-list`),
@@ -369,6 +384,27 @@ export default function KioskPage() {
     return (
       <div className="theme-aware-kiosk min-h-screen bg-slate-900 text-white flex items-center justify-center">
         <div className="text-2xl">Loading...</div>
+      </div>
+    );
+  }
+
+  // This kiosk account is assigned to more than one lodge, so it cannot serve
+  // a single property's guest list or roster (M5). Show a clear, dead-end
+  // notice rather than empty panels an admin would have to guess at.
+  if (access?.misconfigured) {
+    return (
+      <div className="theme-aware-kiosk min-h-screen bg-slate-900 text-white flex items-center justify-center p-6">
+        <div className="max-w-lg rounded-2xl border border-red-700/50 bg-red-900/50 p-6 text-center text-red-200">
+          <h1 className="text-2xl font-bold text-red-100">Kiosk needs attention</h1>
+          <p className="mt-3 text-lg">
+            {access.error ??
+              "This kiosk account is assigned to more than one lodge, so it cannot show a lodge list."}
+          </p>
+          <p className="mt-2 text-sm text-red-300/80">
+            An administrator can fix this under Admin &rarr; Lodge Kiosk by
+            setting this account to operate a single lodge.
+          </p>
+        </div>
       </div>
     );
   }
