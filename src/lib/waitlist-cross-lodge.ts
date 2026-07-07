@@ -274,9 +274,14 @@ export async function confirmCrossLodgeWaitlistOffer(
       // expiry re-offer + confirm) would create a SECOND booking and a second
       // payment request for the same stay. Reject when the member already holds
       // an active booking overlapping the offer's dates at the offered lodge.
-      // Runs under the offered lodge's capacity lock (taken above), so it is
-      // serialised against the create-and-cancel path. The entry itself is
-      // excluded by id, and waitlist placeholders never count.
+      // The offered lodge's capacity lock (taken above) spans only THIS
+      // Phase-1 transaction, so the guard reliably catches any COMMITTED
+      // earlier confirm (the stranded-offer re-confirm and expiry-re-offer
+      // paths). Two fully-concurrent in-flight confirms of the same offer can
+      // still both pass Phase 1 before either creates its booking in Phase 2 —
+      // a known residual; Phase 2's capacity re-check under the lock still
+      // bounds overbooking. The entry itself is excluded by id, and waitlist
+      // placeholders never count.
       const duplicateStay = await tx.booking.findFirst({
         where: {
           memberId,

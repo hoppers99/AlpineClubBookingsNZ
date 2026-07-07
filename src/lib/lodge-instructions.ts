@@ -11,7 +11,9 @@ export const LODGE_INSTRUCTION_KEYS = ["OPEN", "CLOSE", "DAY_TO_DAY"] as const;
 
 type LodgeInstructionKeyValue = (typeof LODGE_INSTRUCTION_KEYS)[number];
 
-const LODGE_INSTRUCTION_LABELS: Record<
+// Re-exported: the multi-lodge admin editor route consumes these labels
+// (post-#1519 cleanup, this export is live again).
+export const LODGE_INSTRUCTION_LABELS: Record<
   LodgeInstructionKeyValue,
   { title: string; description: string }
 > = {

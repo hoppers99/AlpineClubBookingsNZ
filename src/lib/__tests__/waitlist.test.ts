@@ -5,7 +5,15 @@
  * cancellation triggers, cron job, API routes, status colors, email templates.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, beforeAll } from "vitest";
+
+// Pay the module-graph transform cost once, outside any single test's 5s
+// budget: every test dynamic-imports @/lib/waitlist (for mock ordering), and
+// the FIRST such import transforms the whole dependency graph — which on a
+// loaded host can alone exceed the per-test timeout.
+beforeAll(async () => {
+  await import("@/lib/waitlist");
+});
 
 // ─── Mocks ───
 
