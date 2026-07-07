@@ -22,6 +22,22 @@ describe("contextual help registry", () => {
     expect(glossary?.details.some((d) => d.startsWith("Confirmed (Unpaid)"))).toBe(true);
   });
 
+  it("documents the access-roles admin page with the seven areas", () => {
+    const help = getContextualHelp("/admin/access-roles", "admin");
+
+    expect(help.title).toBe("Access roles and admin areas");
+    const areaFields = help.fields?.map((field) => field.name);
+    expect(areaFields).toEqual([
+      "Admin Overview",
+      "Bookings & Beds",
+      "Membership",
+      "Finance",
+      "Lodge Operations",
+      "Content",
+      "Support & System",
+    ]);
+  });
+
   it("uses the most specific parent route for nested admin pages", () => {
     const help = getContextualHelp("/admin/xero/setup/provider-test", "admin");
 
