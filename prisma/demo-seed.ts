@@ -1059,6 +1059,73 @@ async function main() {
   await prisma.notificationPreference.create({ data: { memberId: alice.id, marketingEmails: true } });
 
   // -------------------------------------------------------------------------
+  // Optional second lodge (DEMO_SECOND_LODGE=1) — makes two-lodge flows
+  // demoable: per-lodge capacity, lodge-name labels, cross-lodge reporting.
+  // Gated so the default demo dataset stays byte-for-byte unchanged when unset.
+  // -------------------------------------------------------------------------
+  if (process.env.DEMO_SECOND_LODGE === "1") {
+    // Create-if-missing: cleanup() clears rooms/beds/bookings each run but never
+    // deletes Lodge rows, so only the Lodge itself needs idempotent creation. It
+    // is created after the default lodge (later createdAt), so getDefaultLodgeId
+    // still resolves the original lodge — this one never becomes the default.
+    const secondLodge =
+      (await prisma.lodge.findFirst({ where: { slug: "west-ridge-hut" } })) ??
+      (await prisma.lodge.create({
+        data: { name: "West Ridge Hut", slug: "west-ridge-hut", active: true },
+      }));
+    const lodge2Id = secondLodge.id;
+
+    const room2A = await prisma.lodgeRoom.create({ data: { name: "Summit Bunk Room", sortOrder: 1, lodgeId: lodge2Id } });
+    const room2B = await prisma.lodgeRoom.create({ data: { name: "Valley Twin", sortOrder: 2, lodgeId: lodge2Id } });
+    for (let i = 1; i <= 4; i++) {
+      await prisma.lodgeBed.create({ data: { roomId: room2A.id, name: `S${i}`, sortOrder: i } });
+    }
+    for (let i = 1; i <= 2; i++) {
+      await prisma.lodgeBed.create({ data: { roomId: room2B.id, name: `V${i}`, sortOrder: i } });
+    }
+
+    const NIGHTLY2 = 5000; // $50/night member rate at the second lodge (demo)
+    async function makeSecondLodgeBooking(
+      member: MemberRec,
+      status: string,
+      checkIn: string,
+      checkOut: string,
+    ) {
+      const nights = nightsBetween(checkIn, checkOut).length;
+      const total = NIGHTLY2 * nights;
+      return prisma.booking.create({
+        data: {
+          memberId: member.id,
+          checkIn: d(checkIn),
+          checkOut: d(checkOut),
+          status: status as never,
+          totalPriceCents: total,
+          finalPriceCents: total,
+          lodgeId: lodge2Id,
+        },
+      });
+    }
+
+    const b2Draft = await makeSecondLodgeBooking(alice, "DRAFT", "2026-08-05", "2026-08-07");
+    await addGuest(b2Draft.id, { firstName: "Alice", lastName: "Anderson", ageTier: "ADULT", isMember: true, memberId: alice.id }, "2026-08-05", "2026-08-07", NIGHTLY2);
+    await prisma.bookingEvent.create({ data: { bookingId: b2Draft.id, type: "CREATED", actorMemberId: alice.id } });
+
+    const b2Confirmed = await makeSecondLodgeBooking(bob, "CONFIRMED", "2026-08-10", "2026-08-13");
+    await addGuest(b2Confirmed.id, { firstName: "Bob", lastName: "Brown", ageTier: "ADULT", isMember: true, memberId: bob.id }, "2026-08-10", "2026-08-13", NIGHTLY2);
+    const b2Payment = await prisma.payment.create({ data: { bookingId: b2Confirmed.id, amountCents: b2Confirmed.finalPriceCents, source: "INTERNET_BANKING", reference: "BANK-REF-8802", status: "SUCCEEDED", xeroInvoiceNumber: "INV-2301" } });
+    await prisma.paymentTransaction.create({ data: { paymentId: b2Payment.id, kind: "PRIMARY", source: "INTERNET_BANKING", amountCents: b2Confirmed.finalPriceCents, status: "SUCCEEDED", reference: "BANK-REF-8802" } });
+    await prisma.bookingEvent.create({ data: { bookingId: b2Confirmed.id, type: "CREATED", actorMemberId: bob.id } });
+    await prisma.bookingEvent.create({ data: { bookingId: b2Confirmed.id, type: "MEMBER_PAID", actorMemberId: bob.id, amountCents: b2Confirmed.finalPriceCents } });
+
+    const b2Pending = await makeSecondLodgeBooking(carol, "PENDING", "2026-08-18", "2026-08-20");
+    await addGuest(b2Pending.id, { firstName: "Carol", lastName: "Clark", ageTier: "ADULT", isMember: true, memberId: carol.id }, "2026-08-18", "2026-08-20", NIGHTLY2);
+    await prisma.payment.create({ data: { bookingId: b2Pending.id, amountCents: b2Pending.finalPriceCents, source: "STRIPE", status: "PENDING", stripePaymentIntentId: "pi_demo_lodge2_pending" } });
+    await prisma.bookingEvent.create({ data: { bookingId: b2Pending.id, type: "CREATED", actorMemberId: carol.id } });
+
+    console.log("Second demo lodge seeded (DEMO_SECOND_LODGE=1): West Ridge Hut + 2 rooms + 3 bookings");
+  }
+
+  // -------------------------------------------------------------------------
   // Summary
   // -------------------------------------------------------------------------
   const [members, bookings, payments, promos, credits, inductions, requests] = await Promise.all([

@@ -7,9 +7,12 @@
 -- new code always stamps lodgeId explicitly and it only ever fires for an old
 -- colour's omitted-column writes during a cutover.
 --
--- NOTE: this trips the blue/green validator's SET-NOT-NULL breaking regex. It is
--- genuinely old_code_compatible via the default — see the BLUE_GREEN_MIGRATION_SAFETY
--- ledger entry; deploy with ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1 + reason.
+-- NOTE: this passes the blue/green validator override-free. The validator
+-- recognises a SET NOT NULL paired with a same-column non-NULL SET DEFAULT (its
+-- "Reviewed no-outage NOT NULL" exemption branch) as old_code_compatible, so the
+-- deploy gate accepts it WITHOUT ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS — see the
+-- BLUE_GREEN_MIGRATION_SAFETY ledger entry. An operator must NOT set that override
+-- for this migration.
 
 -- Resolve the club's default lodge (mirrors getDefaultLodgeId: oldest active, else
 -- oldest). STABLE: same result within a statement; safe as a column default.

@@ -437,6 +437,7 @@ test/demo mode or disabled:
 | `SEED_LODGE_PASSWORD`   | Initial password for the seeded shared lodge kiosk account.      |
 | `ALLOW_DEMO_SEED`       | Local-only opt-in; must be `1` for `npm run db:seed:demo`.       |
 | `DEMO_SEED_PASSWORD`    | Optional local-only password for `npm run db:seed:demo` users.   |
+| `DEMO_SECOND_LODGE`     | Local-only; set to `1` to also seed a second demo lodge (rooms + a few bookings) so two-lodge flows are demoable. Default demo dataset is unchanged when unset. |
 
 `prisma/seed.ts` fails before seeding if `SEED_ADMIN_EMAIL` or
 `SEED_ADMIN_PASSWORD` is unset, and fails before creating the lodge kiosk

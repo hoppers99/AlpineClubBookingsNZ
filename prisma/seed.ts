@@ -297,6 +297,9 @@ async function main() {
   // other name are club data and are never touched.
   const existingLodges = await prisma.lodge.findMany({
     select: { id: true, name: true },
+    // Deterministic order so the else-branch below stamps the oldest lodge
+    // (matching getDefaultLodgeId), not whatever the engine returns first.
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     take: 2,
   });
   let seedLodgeId: string;

@@ -33,14 +33,16 @@ migration_name_for_file() {
 
 # Breaking SQL lines that are genuinely unsafe for a blue/green cutover. This is
 # every BREAKING_SQL_REGEX match EXCEPT an "ALTER COLUMN ... SET NOT NULL" whose
-# same table+column also gets a "SET DEFAULT" in the SAME migration: an old
-# colour that omits the column on INSERT receives the default, so no null is ever
-# written and the NOT NULL holds throughout the cutover (old-code-compatible, no
-# outage). Such a NOT NULL still needs a documented ledger entry, but not the
-# ALLOW_BREAKING override. Drops, renames, type changes, and an unmatched
-# SET NOT NULL remain unsafe.
+# same table+column also gets a NON-NULL "SET DEFAULT" in the SAME migration: an
+# old colour that omits the column on INSERT receives that default, so no null is
+# ever written and the NOT NULL holds throughout the cutover (old-code-compatible,
+# no outage). Such a NOT NULL still needs a documented ledger entry, but not the
+# ALLOW_BREAKING override. A "SET DEFAULT NULL" does NOT qualify: it fills nothing,
+# so an old colour's omitted-column INSERT still lands a null and the NOT NULL
+# would abort — the pairing is vacuous and the NOT NULL stays unsafe. Drops,
+# renames, type changes, and an unmatched SET NOT NULL remain unsafe.
 unsafe_breaking_lines() {
-  local file="$1" breaking line stmt table col
+  local file="$1" breaking line stmt table col default_lines
   breaking="$(sql_lines "$file" | grep -Ei "$BREAKING_SQL_REGEX" || true)"
   [ -n "$breaking" ] || return 0
   while IFS= read -r line; do
@@ -50,9 +52,17 @@ unsafe_breaking_lines() {
     if printf '%s' "$stmt" | grep -Eiq 'ALTER COLUMN .* SET NOT NULL'; then
       table="$(printf '%s' "$stmt" | sed -nE 's/.*ALTER TABLE "([^"]+)".*/\1/p')"
       col="$(printf '%s' "$stmt" | sed -nE 's/.*ALTER COLUMN "([^"]+)".*/\1/p')"
-      if [ -n "$table" ] && [ -n "$col" ] &&
-        sql_lines "$file" | grep -Eiq "ALTER TABLE \"${table}\" ALTER COLUMN \"${col}\" SET DEFAULT"; then
-        continue
+      if [ -n "$table" ] && [ -n "$col" ]; then
+        default_lines="$(sql_lines "$file" |
+          grep -Ei "ALTER TABLE \"${table}\" ALTER COLUMN \"${col}\" SET DEFAULT" || true)"
+        # Qualifies only if a same-column SET DEFAULT with a non-NULL value
+        # exists. -Eivq succeeds iff at least one matching line is NOT a bare
+        # "SET DEFAULT NULL" (case-insensitive, whitespace/semicolon tolerant).
+        if [ -n "$default_lines" ] &&
+          printf '%s\n' "$default_lines" |
+            grep -Eivq 'SET DEFAULT[[:space:]]+NULL[[:space:]]*;?[[:space:]]*$'; then
+          continue
+        fi
       fi
     fi
     printf '%s\n' "$line"

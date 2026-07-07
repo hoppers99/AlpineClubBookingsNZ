@@ -124,6 +124,15 @@ export function resolvePolicyRowsForLodge<
 // oldest active one — the phase-1 seeded lodge in every current deployment).
 // Phases 3+ replace call sites with real lodge context threaded from the
 // request; do not add new callers once a surface carries its own lodgeId.
+//
+// MIRROR CONTRACT: this resolution (oldest active lodge, else oldest lodge of
+// any state) must stay byte-identical to the default_lodge_id() SQL function
+// created in migration 20260708001100 — that function backs the column DEFAULT
+// that keeps the lodgeId NOT NULLs old-code-compatible. The fallback to an
+// inactive lodge is deliberate so both sides always resolve the same row. Any
+// change to the ordering/fallback here must be mirrored by a new migration that
+// replaces the SQL function (and vice versa), or a blue/green cutover could
+// stamp different lodges from the two code paths.
 export async function getDefaultLodgeId(db: LodgeDb): Promise<string> {
   const lodge =
     (await db.lodge.findFirst({

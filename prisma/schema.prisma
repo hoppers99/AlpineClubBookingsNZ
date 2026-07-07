@@ -1495,8 +1495,9 @@ model Locker {
   lodge       Lodge   @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
 
   // Re-scoped from global to per-lodge ahead of the contract release
-  // (expand-safe; see LodgeRoom). App checks stay case-insensitive and
-  // treat null-lodge rows as clashing at every lodge.
+  // (expand-safe; see LodgeRoom). lodgeId is NOT NULL (migration 20260708001100),
+  // so [lodgeId, name] is exact per lodge; no null-lodge rows remain. App checks
+  // stay case-insensitive.
   @@unique([lodgeId, name])
   @@index([allocatedToMemberId])
   @@index([lodgeId])

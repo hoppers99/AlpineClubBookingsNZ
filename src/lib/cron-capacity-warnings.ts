@@ -44,8 +44,9 @@ export async function checkCapacityWarnings(): Promise<{ alertedDays: number }> 
     const lodgeCapacity = await getLodgeCapacity(lodge.id);
     if (lodgeCapacity <= 0) continue;
 
-    // Overlapping bookings at this lodge only (null rows are pre-backfill
-    // tolerance and count against every lodge, matching capacity.ts).
+    // Overlapping bookings at this lodge only. Booking.lodgeId is NOT NULL
+    // (migration 20260708001100), so lodgeNullTolerantScope is a strict
+    // per-lodge match — no null-lodge rows to count against every lodge.
     const overlappingBookings = await prisma.booking.findMany({
       where: {
         checkIn: { lt: endDate },

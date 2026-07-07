@@ -582,6 +582,228 @@ describe("review finding source/schema contracts", () => {
     }
   });
 
+  it(
+    "passes a SET NOT NULL paired with a same-column non-NULL SET DEFAULT without an override (H4)",
+    { timeout: 20000 },
+    () => {
+      // The multi-lodge contract migration (20260708001100) SET NOT NULL on
+      // lodgeId while giving the same column a default_lodge_id() DEFAULT in the
+      // same migration: an old (pre-lodge) colour's omitted-column INSERT gets
+      // the default, so no null is written and the NOT NULL is old-code-safe. The
+      // validator must treat that pairing as reviewed-safe (no ALLOW_BREAKING
+      // override), while still requiring a well-formed ledger entry. LodgeRoom is
+      // deliberately not a hot table, so no lock-impact plan is needed here.
+      const fixture = createTempMigration(
+        [
+          'ALTER TABLE "LodgeRoom" ALTER COLUMN "lodgeId" SET DEFAULT default_lodge_id();',
+          'ALTER TABLE "LodgeRoom" ALTER COLUMN "lodgeId" SET NOT NULL;',
+          "",
+        ].join("\n"),
+        [
+          LEDGER_HEADER,
+          "20990101000000_test_migration\texpand\tn/a\tyes\tPaired same-column SET DEFAULT keeps old-colour inserts non-null; no row rewrite.",
+        ].join("\n")
+      );
+
+      try {
+        const result = runMigrationSafetyValidator(
+          fixture.migrationPath,
+          fixture.ledgerPath
+        );
+
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stderr).toContain("Reviewed no-outage NOT NULL");
+      } finally {
+        rmSync(fixture.tempDir, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it(
+    "requires an override for an unmatched SET NOT NULL with no same-column SET DEFAULT (H4)",
+    { timeout: 20000 },
+    () => {
+      const fixture = createTempMigration(
+        'ALTER TABLE "LodgeRoom" ALTER COLUMN "lodgeId" SET NOT NULL;\n',
+        [
+          LEDGER_HEADER,
+          "20990101000000_test_migration\texpand\tn/a\tyes\tSET NOT NULL with no paired default; documented as breaking.",
+        ].join("\n")
+      );
+
+      try {
+        const blocked = runMigrationSafetyValidator(
+          fixture.migrationPath,
+          fixture.ledgerPath
+        );
+        const allowed = runMigrationSafetyValidator(
+          fixture.migrationPath,
+          fixture.ledgerPath,
+          {
+            ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
+            BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
+              "unmatched NOT NULL verified old-code compatible out of band",
+          }
+        );
+
+        expect(blocked.status).not.toBe(0);
+        expect(blocked.stderr).toContain("ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS");
+        expect(blocked.stderr).not.toContain("Reviewed no-outage NOT NULL");
+        expect(allowed.status).toBe(0);
+      } finally {
+        rmSync(fixture.tempDir, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it(
+    "requires an override for a RENAME COLUMN (H4)",
+    { timeout: 20000 },
+    () => {
+      // RENAME hits the destructive-removal regex, so the ledger must record it
+      // as phase=contract naming the previous expand release (mirrors the
+      // DROP COLUMN fixture) before it can even reach the breaking-SQL gate.
+      const fixture = createTempMigration(
+        'ALTER TABLE "LodgeRoom" RENAME COLUMN "oldName" TO "name";\n',
+        [
+          LEDGER_HEADER,
+          "20990101000000_test_migration\tcontract\t20261201000000_room_rename_expand\tyes\tRenames a retired column after all readers moved to the new name.",
+        ].join("\n")
+      );
+
+      try {
+        const blocked = runMigrationSafetyValidator(
+          fixture.migrationPath,
+          fixture.ledgerPath
+        );
+        const allowed = runMigrationSafetyValidator(
+          fixture.migrationPath,
+          fixture.ledgerPath,
+          {
+            ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
+            BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
+              "rename verified against previous deployed runtime",
+          }
+        );
+
+        expect(blocked.status).not.toBe(0);
+        expect(blocked.stderr).toContain("ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS");
+        expect(allowed.status).toBe(0);
+      } finally {
+        rmSync(fixture.tempDir, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it(
+    "requires an override for an ALTER COLUMN ... TYPE change (H4)",
+    { timeout: 20000 },
+    () => {
+      const fixture = createTempMigration(
+        'ALTER TABLE "LodgeRoom" ALTER COLUMN "sortOrder" TYPE BIGINT;\n',
+        [
+          LEDGER_HEADER,
+          "20990101000000_test_migration\texpand\tn/a\tyes\tWidens a column type; documented as breaking for blue/green.",
+        ].join("\n")
+      );
+
+      try {
+        const blocked = runMigrationSafetyValidator(
+          fixture.migrationPath,
+          fixture.ledgerPath
+        );
+        const allowed = runMigrationSafetyValidator(
+          fixture.migrationPath,
+          fixture.ledgerPath,
+          {
+            ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
+            BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
+              "type change verified compatible with both colours",
+          }
+        );
+
+        expect(blocked.status).not.toBe(0);
+        expect(blocked.stderr).toContain("ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS");
+        expect(allowed.status).toBe(0);
+      } finally {
+        rmSync(fixture.tempDir, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it(
+    "rejects a SET NOT NULL paired only with SET DEFAULT NULL as vacuous (H4)",
+    { timeout: 20000 },
+    () => {
+      // A SET DEFAULT NULL fills nothing, so an old colour's omitted-column
+      // INSERT still lands a null and the NOT NULL would abort mid-cutover. The
+      // pairing is vacuous: the NOT NULL must stay breaking (override required),
+      // never quietly waived like a real non-null default.
+      const fixture = createTempMigration(
+        [
+          'ALTER TABLE "LodgeRoom" ALTER COLUMN "lodgeId" SET DEFAULT NULL;',
+          'ALTER TABLE "LodgeRoom" ALTER COLUMN "lodgeId" SET NOT NULL;',
+          "",
+        ].join("\n"),
+        [
+          LEDGER_HEADER,
+          "20990101000000_test_migration\texpand\tn/a\tyes\tSET DEFAULT NULL does not backfill; NOT NULL stays breaking.",
+        ].join("\n")
+      );
+
+      try {
+        const blocked = runMigrationSafetyValidator(
+          fixture.migrationPath,
+          fixture.ledgerPath
+        );
+        const allowed = runMigrationSafetyValidator(
+          fixture.migrationPath,
+          fixture.ledgerPath,
+          {
+            ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
+            BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
+              "NULL-default NOT NULL accepted after out-of-band verification",
+          }
+        );
+
+        expect(blocked.status).not.toBe(0);
+        expect(blocked.stderr).toContain("ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS");
+        expect(blocked.stderr).not.toContain("Reviewed no-outage NOT NULL");
+        expect(allowed.status).toBe(0);
+      } finally {
+        rmSync(fixture.tempDir, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it(
+    "passes the committed multi-lodge NOT NULL migration override-free against the real ledger (H4)",
+    { timeout: 20000 },
+    () => {
+      // Reviewer reproduction, CI-enforced: run the REAL file on disk (never a
+      // copy) through the validator with the REAL ledger and NO override. The
+      // paired same-column default_lodge_id() DEFAULT must keep it override-free,
+      // so the migration header's "deploy with ALLOW_BREAKING" note stays wrong
+      // and can never silently drift back to true.
+      const realMigrationPath = path.resolve(
+        process.cwd(),
+        "prisma/migrations/20260708001100_multi_lodge_entity_lodge_id_not_null/migration.sql"
+      );
+      const realLedgerPath = path.resolve(
+        process.cwd(),
+        "docs/BLUE_GREEN_MIGRATION_SAFETY.tsv"
+      );
+
+      const result = runMigrationSafetyValidator(
+        realMigrationPath,
+        realLedgerPath
+      );
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stderr).toContain("Reviewed no-outage NOT NULL");
+    }
+  );
+
   it("flags hot-table trigger operations in the blue/green validator", () => {
     // #1359 (finding F8): 20260704100000 ran DROP TRIGGER / CREATE CONSTRAINT
     // TRIGGER on hot tables Booking/BookingGuest, but the validator's hot-table
