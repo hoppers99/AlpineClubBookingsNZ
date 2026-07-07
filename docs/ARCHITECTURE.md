@@ -396,6 +396,43 @@ re-read roles and definitions from the database, and the session-embedded
 matrix is itself recomputed from that same database join per request rather
 than trusted from an old token.
 
+The seven areas and what each governs (from `ADMIN_PERMISSION_AREAS`, with the
+notable members that live under a broader-sounding prefix called out):
+
+| Area key | Label | Governs |
+| --- | --- | --- |
+| `overview` | Admin Overview | The dashboard and cross-area entry points. The only `/api/admin` route here is the `pending-counts` badge aggregate (the resolver catch-all — see below). |
+| `bookings` | Bookings & Beds | Bookings, public booking requests, booking policy, waitlist, and bed allocation — plus seasons, age tiers, and promo codes. |
+| `membership` | Membership | Members, applications, family links, memberships, inductions, and communications — plus committee roles/contacts, lockers, and per-member lodge-access. |
+| `finance` | Finance | Payments, subscriptions, refunds, reports, Xero sync, and accounting setup — plus the member-prefix carve-outs (member credits and member Xero link/push/unlink). |
+| `lodge` | Lodge Operations | Hut leaders, rosters, chores, work parties, lodge settings, and lodges (multi-lodge). The rooms-beds admin *page* is lodge-area, while its bed-allocation *APIs* sit under `bookings`. |
+| `content` | Content | Page content, site chrome, banners, public images, and site style. |
+| `support` | Support & System | Setup, modules, health, deliverability, audit, issue reports, and operational diagnostics — plus booking-messages and access-role management. |
+
+The six seeded editable roles from `src/lib/access-role-definitions.ts`, plus
+the protected Full Admin bundle, resolve to this baseline matrix (`—` = no
+access). Definitions are club-editable, so this is the SEEDED starting point,
+not a fixed policy; a club may narrow or widen any row except Full Admin:
+
+| Role | overview | bookings | membership | finance | lodge | content | support |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Full Admin (`ADMIN`, protected) | edit | edit | edit | edit | edit | edit | edit |
+| Read-only Admin | view | view | view | view | view | view | view |
+| Booking Officer | view | edit | view | view | edit | — | view |
+| Membership Officer | view | view | edit | view | — | — | view |
+| Content Manager | view | — | — | — | — | edit | — |
+| Treasurer | view | view | view | edit | — | — | view |
+| Finance Viewer | — | — | — | view | — | — | — |
+
+A few route groupings are intentional and adjudicated (issue #1548), not bugs
+to "fix" by remapping — any remap silently changes the effective access of every
+custom role already deployed: module toggling and booking-messages are system
+configuration and sit under `support`; committee records and per-member
+lodge-access are member data and sit under `membership`; and `pending-counts` is
+the deliberate `overview` catch-all. `src/lib/__tests__/admin-route-area-matrix.test.ts`
+pins the full `/api/admin` route → area assignment to a frozen snapshot, so any
+prefix edit that moves a route between areas fails CI with a precise diff.
+
 When you add a new admin page (`src/app/(admin)`) or `/api/admin/**` route,
 update **both** central route maps: the permission-area map in
 `src/lib/admin-permissions.ts` (`ROUTE_AREA_PREFIXES`, or
