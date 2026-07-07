@@ -79,7 +79,9 @@ import {
   BookingReviewJustificationRequiredError,
   BookingLodgeError,
   GroupJoinConflictError,
+  DuplicateStayConflictError,
 } from "./booking-create-types";
+import { DUPLICATE_STAY_BOOKING_STATUSES } from "./booking-status";
 import {
   type ResolvedPromo,
   getPromoTargetBookingGuestIds,
@@ -104,6 +106,7 @@ export {
   BookingReviewJustificationRequiredError,
   BookingLodgeError,
   GroupJoinConflictError,
+  DuplicateStayConflictError,
 };
 export type {
   BookingGuestInput,
@@ -484,6 +487,7 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
     organiserSettled,
     lodgeId,
     groupJoin,
+    duplicateStayGuard,
   } = input;
   // Auto-expand (issue #713): cover every guest night (members + non-members)
   // so the member booking and any linked non-member child share one range.
@@ -591,6 +595,51 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
         isOnBehalf,
       });
       await acquireLodgeCapacityLock(tx, bookingLodgeId);
+
+      // Cross-lodge duplicate-stay guard, in-transaction layer (#1587 item 2).
+      // Only the cross-lodge waitlist confirm sets duplicateStayGuard; every
+      // other caller leaves it undefined and this block is skipped. The offered
+      // lodge's capacity lock is held (acquired above), so re-running the same
+      // duplicate-stay query the confirm ran in its pre-flight phase closes the
+      // window where two fully-concurrent confirms of one offer both pass the
+      // earlier, separately-committed guard: the second transaction serialises
+      // behind the first's commit, sees its committed booking here, and rolls
+      // back rather than creating a duplicate stay. Member, lodge, and dates
+      // come from this booking's own resolved values so the guard cannot
+      // disagree with the row about to be written; the confirm's own entry is
+      // excluded by id.
+      //
+      // Runs BEFORE the member-night guard on purpose: a member guest on the
+      // offer's still-live WAITLIST_OFFERED entry trips the member-night check
+      // in every guarded Phase-2 run — race or not — because that check
+      // receives no exclude-id here (pre-existing; tracked in #1609). Ordering
+      // this first at least makes the true race surface as the friendly
+      // DUPLICATE_STAY rejection rather than a generic member-night error. It
+      // is a strict no-op for a normal confirm and every non-cross-lodge
+      // caller: the only overlapping booking in those cases is the
+      // WAITLIST_OFFERED entry, and WAITLIST_OFFERED is not in
+      // DUPLICATE_STAY_BOOKING_STATUSES (ACTIVE + COMPLETED), so the query
+      // matches nothing and nothing throws until a real concurrent stay
+      // exists.
+      if (duplicateStayGuard) {
+        const duplicateStay = await tx.booking.findFirst({
+          where: {
+            memberId: effectiveMemberId,
+            lodgeId: bookingLodgeId,
+            id: { not: duplicateStayGuard.excludeBookingId },
+            deletedAt: null,
+            status: { in: [...DUPLICATE_STAY_BOOKING_STATUSES] },
+            // Date-only overlap, matching the pre-flight guard's predicate.
+            checkIn: { lt: checkOut },
+            checkOut: { gt: checkIn },
+          },
+          select: { id: true },
+        });
+        if (duplicateStay) {
+          throw new DuplicateStayConflictError();
+        }
+      }
+
       // Duplicate member nights (upstream #80cbdf4c).
       await assertNoBookingMemberNightConflicts(tx, {
         actorMemberId: sessionUserId,
@@ -599,7 +648,6 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
         checkOut,
         guests,
       });
-
 
       const capacityGuestRanges = getCapacityGuestRanges(primaryGuests, checkIn, checkOut);
       const capacityCheck = await checkCapacityForGuestRanges(
