@@ -1224,6 +1224,267 @@ describe("processStoredXeroInboundEvents", () => {
     ).toBe(true);
   });
 
+  // #1587: an unheld PAYMENT_PENDING reconcile takes the booking's lodge lock
+  // and re-reads the booking before the capacity claim (the H2 fix). This helper
+  // drives the exact interleaving the fix guards: the PRE-lock read (full member
+  // include) still shows PAYMENT_PENDING, but the POST-lodge-lock read (guests-
+  // only include) shows a status a concurrent actor set inside the lock wait
+  // window. Distinguishing the two reads by include shape lets the post-lock
+  // snapshot differ from the pre-lock one.
+  function mockPostLockReconcileEvent(params: {
+    lockedBookingStatus: "CANCELLED" | "PAYMENT_PENDING";
+    capacityAvailable: boolean;
+  }) {
+    const txOperationUpdateMany = vi.fn().mockResolvedValue({ count: 1 });
+    mocks.transaction.mockImplementation(
+      async (callback: (tx: unknown) => Promise<unknown>) => {
+        const tx = {
+          $executeRaw: mocks.txExecuteRaw,
+          $queryRaw: mocks.txExecuteRaw,
+          lodge: { findFirst: mocks.lodgeFindFirst },
+          processedWebhookEvent: { deleteMany: mocks.processedDeleteMany },
+          xeroInboundEvent: { update: mocks.inboundUpdate },
+          payment: {
+            findUnique: mocks.paymentFindUnique,
+            update: mocks.paymentUpdate,
+          },
+          paymentTransaction: {
+            updateMany: mocks.paymentTransactionUpdateMany,
+            findFirst: vi.fn().mockResolvedValue({ id: "ptx_primary" }),
+            create: mocks.paymentTransactionCreate,
+          },
+          booking: { update: mocks.bookingUpdate },
+          memberCredit: {
+            findFirst: mocks.memberCreditFindFirst,
+            create: mocks.memberCreditCreate,
+            aggregate: mocks.memberCreditAggregate,
+          },
+          xeroObjectLink: { findFirst: mocks.txLinkFindFirst },
+          xeroSyncOperation: {
+            findFirst: mocks.txOperationFindFirst,
+            updateMany: txOperationUpdateMany,
+          },
+        };
+        return callback(tx);
+      }
+    );
+    mocks.checkCapacity.mockResolvedValue({ available: params.capacityAvailable });
+
+    mocks.inboundFindMany.mockResolvedValue([
+      {
+        id: "evt_ib_pl",
+        source: "webhook",
+        eventCategory: "INVOICE",
+        eventType: "UPDATE",
+        resourceId: "inv_ib_pl",
+        correlationKey: "corr_ib_pl",
+        payload: { resourceId: "inv_ib_pl" },
+      },
+    ]);
+    mocks.processedCreate.mockResolvedValue({ id: "processed_ib_pl" });
+    mocks.linkFindMany
+      .mockResolvedValueOnce([
+        {
+          localModel: "Payment",
+          localId: "pay_ib_pl",
+          xeroObjectType: "INVOICE",
+          role: "PRIMARY_INVOICE",
+        },
+      ])
+      .mockResolvedValueOnce([]);
+
+    // Pre-lock snapshot: still PAYMENT_PENDING and holding no beds, so the
+    // reconcile enters the lodge-lock / re-read block. Full member/guest graph,
+    // and it is the object routed into the credit-mint arm (payment status
+    // PENDING => the arm's paymentNeverSettled guard mints).
+    const freshPreLock = {
+      id: "pay_ib_pl",
+      bookingId: "booking_ib_pl",
+      amountCents: 12345,
+      status: "PENDING",
+      source: "INTERNET_BANKING",
+      reference: "BOOKING-PL123456",
+      xeroInvoiceId: null,
+      xeroInvoiceNumber: null,
+      internetBankingHoldSlots: false,
+      xeroRefundCreditNoteId: null,
+      booking: {
+        id: "booking_ib_pl",
+        memberId: "mem_pl",
+        lodgeId: "lodge_ib_pl",
+        checkIn: new Date("2026-07-10"),
+        checkOut: new Date("2026-07-12"),
+        status: "PAYMENT_PENDING",
+        finalPriceCents: 12345,
+        discountCents: 0,
+        promoAdjustmentCents: 0,
+        guests: [{ id: "guest_pl", nights: [] }],
+        member: {
+          email: "member@example.com",
+          firstName: "Alice",
+          lastName: "Smith",
+        },
+        promoRedemption: null,
+      },
+    };
+    // Post-lock snapshot: what the reconcile sees AFTER taking the lodge lock.
+    // The guests-only include (no member) is how the mock distinguishes it from
+    // the pre-lock read.
+    const lockedPostLock = {
+      ...freshPreLock,
+      booking: {
+        id: "booking_ib_pl",
+        lodgeId: "lodge_ib_pl",
+        checkIn: new Date("2026-07-10"),
+        checkOut: new Date("2026-07-12"),
+        status: params.lockedBookingStatus,
+        guests: [{ id: "guest_pl", nights: [] }],
+      },
+    };
+
+    mocks.paymentFindMany
+      .mockResolvedValueOnce([
+        { id: "pay_ib_pl", xeroInvoiceId: null, xeroInvoiceNumber: null },
+      ])
+      .mockResolvedValueOnce([freshPreLock])
+      .mockResolvedValueOnce([
+        {
+          id: "pay_ib_pl",
+          bookingId: "booking_ib_pl",
+          booking: { memberId: "mem_pl" },
+        },
+      ]);
+
+    // The reconcile loop reads the payment twice inside its transaction: once
+    // before the lodge lock (full member/guest include) and once after (guests
+    // only). Return the post-lock snapshot only for the guests-only re-read.
+    mocks.paymentFindUnique.mockImplementation((args: unknown) => {
+      const includesMember = Boolean(
+        (args as { include?: { booking?: { include?: { member?: unknown } } } })
+          ?.include?.booking?.include?.member
+      );
+      return Promise.resolve(includesMember ? freshPreLock : lockedPostLock);
+    });
+
+    mocks.memberCreditFindFirst.mockResolvedValue(null);
+    mocks.startXeroSyncOperation.mockResolvedValue({ id: "op_account_credit_pl" });
+    const accountingApi = {
+      getInvoice: vi.fn().mockResolvedValue({
+        body: {
+          invoices: [
+            {
+              invoiceID: "inv_ib_pl",
+              invoiceNumber: "INV-IB-PL",
+              date: "2026-07-01",
+              status: "PAID",
+              fullyPaidOnDate: "2026-07-02",
+              contact: { contactID: "contact_1" },
+              payments: [
+                {
+                  paymentID: "xpay_ib_pl",
+                  amount: 123.45,
+                  invoiceNumber: "INV-IB-PL",
+                  status: "PAID",
+                },
+              ],
+              lineItems: [{ accountCode: "200" }],
+            },
+          ],
+        },
+      }),
+    };
+    mocks.getAuthenticatedXeroClient.mockResolvedValue({
+      xero: { accountingApi },
+      tenantId: "tenant_1",
+    });
+  }
+
+  it("routes a booking cancelled inside the lodge-lock window into the credit-mint arm instead of resurrecting it to PAID (#1587)", async () => {
+    mockPostLockReconcileEvent({
+      lockedBookingStatus: "CANCELLED",
+      capacityAvailable: true,
+    });
+
+    await expect(processStoredXeroInboundEvents()).resolves.toEqual({
+      found: 1,
+      processed: 1,
+      succeeded: 1,
+      failed: 0,
+      skipped: 0,
+    });
+
+    // We reached the post-lock position: the booking's per-lodge lock was taken
+    // and the re-read ran BEFORE the interception.
+    const rawCalls = mocks.txExecuteRaw.mock.calls as unknown[][];
+    const sqlOf = (call: unknown[]) => (call[0] as string[]).join("?");
+    expect(
+      rawCalls.some(
+        (c) =>
+          sqlOf(c).includes("pg_advisory_xact_lock(hashtextextended(") &&
+          c[1] === "lodge_ib_pl"
+      )
+    ).toBe(true);
+
+    // The load-bearing assertion: NO status write at all — the booking is never
+    // flipped to PAID (no phantom capacity claim) and the arm never touches
+    // booking.update. The interception fired before the capacity gate.
+    expect(mocks.bookingUpdate).not.toHaveBeenCalled();
+    expect(mocks.checkCapacity).not.toHaveBeenCalled();
+
+    // The cash was routed into the already-cancelled credit-mint arm: the
+    // member keeps their money as account credit, keyed on the cancelled-booking
+    // description this pipeline dedups against.
+    expect(mocks.memberCreditCreate).toHaveBeenCalledWith({
+      data: {
+        memberId: "mem_pl",
+        amountCents: 12345,
+        type: "CANCELLATION_REFUND",
+        description:
+          "Internet Banking payment credit for cancelled booking booking_",
+        sourceBookingId: "booking_ib_pl",
+      },
+    });
+    expect(sendBookingCancelledEmail).toHaveBeenCalledWith(
+      "member@example.com",
+      "Alice",
+      expect.any(Date),
+      expect.any(Date),
+      12345,
+      "credit",
+      0,
+      "lodge_ib_pl"
+    );
+    expect(sendBookingConfirmedEmail).not.toHaveBeenCalled();
+  });
+
+  it("still flips a booking that is unchanged after the lodge-lock re-read to PAID (#1587)", async () => {
+    mockPostLockReconcileEvent({
+      lockedBookingStatus: "PAYMENT_PENDING",
+      capacityAvailable: true,
+    });
+
+    await expect(processStoredXeroInboundEvents()).resolves.toEqual({
+      found: 1,
+      processed: 1,
+      succeeded: 1,
+      failed: 0,
+      skipped: 0,
+    });
+
+    // The #1587 guard falls through cleanly for a still-active booking: the
+    // capacity gate runs and the PAID flip happens exactly as before.
+    expect(mocks.checkCapacity).toHaveBeenCalled();
+    expect(mocks.bookingUpdate).toHaveBeenCalledWith({
+      where: { id: "booking_ib_pl" },
+      data: {
+        status: "PAID",
+        draftExpiresAt: null,
+      },
+    });
+    expect(mocks.memberCreditCreate).not.toHaveBeenCalled();
+    expect(sendBookingConfirmedEmail).toHaveBeenCalled();
+  });
+
   it("clamps the late-capacity-failure credit to the invoice's cash on a mixed invoice (#1459)", async () => {
     // The capacity-fail arm mints too: a live booking's invoice half-paid in
     // cash and half written off must credit only the cash portion.

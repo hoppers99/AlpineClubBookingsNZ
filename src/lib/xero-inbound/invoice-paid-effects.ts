@@ -502,7 +502,15 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
         };
       }
 
-      if (fresh.booking.status === BookingStatus.CANCELLED) {
+      // #1587: the already-cancelled credit-mint arm, hoisted into a local
+      // closure so it is reachable from BOTH the pre-lock CANCELLED branch and
+      // the post-lodge-lock re-read (a booking a concurrent actor cancelled
+      // inside the lodge-lock wait window). Cash that arrived for a cancelled
+      // booking becomes member credit — resurrecting it to PAID would be a
+      // phantom capacity claim + inconsistent money state. The body is
+      // byte-identical to the pre-#1587 arm and closes over tx/fresh/
+      // paymentWasPending and the invoice-scoped cash context lexically.
+      const runAlreadyCancelledCreditMintArm = async () => {
         // A member paying the stale open invoice of an already-cancelled
         // booking (#1357, F17) must not land silently — but this branch is
         // reachable for EVERY cancelled booking whose invoice reports PAID,
@@ -658,6 +666,10 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
           zeroCashAnomaly,
           clearingNoteAlreadyIssued: Boolean(fresh.xeroRefundCreditNoteId),
         };
+      };
+
+      if (fresh.booking.status === BookingStatus.CANCELLED) {
+        return runAlreadyCancelledCreditMintArm();
       }
 
       if (
@@ -684,6 +696,20 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
             booking: { include: { guests: { include: { nights: true } } } },
           },
         });
+
+        // #1587: a concurrent actor may have CANCELLED this booking while we
+        // waited on the lodge lock — the pre-lock branch decision above was
+        // taken under lock(1) only, so a cancellation that landed inside the
+        // lodge-lock wait window is only visible now. Flipping it to PAID from
+        // here would resurrect a cancelled booking (a phantom capacity claim
+        // and inconsistent money state). Route the cash into the SAME
+        // already-cancelled credit-mint arm instead, exactly as if the
+        // cancellation had been observed before the payment landed. Only the
+        // post-lock-CANCELLED path changes; every other post-lock state falls
+        // through to the capacity gate / PAID flip below unchanged.
+        if (locked && locked.booking.status === BookingStatus.CANCELLED) {
+          return runAlreadyCancelledCreditMintArm();
+        }
 
         // Only an unheld PAYMENT_PENDING booking still needs the capacity gate.
         // If the post-lock read shows it moved on (already CONFIRMED/PAID by a
