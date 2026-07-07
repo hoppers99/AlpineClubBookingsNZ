@@ -179,6 +179,18 @@ export async function modifyBookingDates({
   } = input;
 
   const result = await prisma.$transaction(async (tx) => {
+    // Pre-lock read: only the lock key. lodgeId is immutable, so keying the
+    // lock from this read is safe; every capacity- and price-relevant field
+    // below is taken from the post-lock re-read.
+    const lockTarget = await tx.booking.findUnique({
+      where: { id: bookingId },
+      select: { lodgeId: true },
+    });
+    const bookingLodgeId = lockTarget?.lodgeId ?? (await getDefaultLodgeId(tx));
+    await acquireLodgeCapacityLock(tx, bookingLodgeId);
+
+    // Re-read the full booking under the lock; all validation, pricing, the
+    // capacity check and the claim consume ONLY this post-lock snapshot.
     const booking = await tx.booking.findUnique({
       where: { id: bookingId },
       include: {
@@ -206,9 +218,6 @@ export async function modifyBookingDates({
     if (!booking) {
       throw new ApiError("Booking not found", 404);
     }
-
-    const bookingLodgeId = booking.lodgeId ?? (await getDefaultLodgeId(tx));
-    await acquireLodgeCapacityLock(tx, bookingLodgeId);
 
     if (booking.memberId !== actor.id && actor.role !== "ADMIN") {
       throw new ApiError("Forbidden", 403);

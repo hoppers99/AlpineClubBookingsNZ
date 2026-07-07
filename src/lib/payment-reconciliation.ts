@@ -83,6 +83,24 @@ export async function markBookingPaymentSucceeded({
   paymentMethodId: string | null;
 }): Promise<MarkBookingPaymentSucceededResult> {
   const reconciliation = await prisma.$transaction(async (tx) => {
+    // Pre-lock read: only the lock key. lodgeId is immutable, so keying the
+    // lock from this read is safe; every status/capacity-relevant field is
+    // taken from the post-lock re-read below.
+    const lockTarget = await tx.booking.findUnique({
+      where: { id: bookingId },
+      select: { lodgeId: true },
+    });
+
+    if (!lockTarget) {
+      throw new Error("Booking not found");
+    }
+
+    const bookingLodgeId = lockTarget.lodgeId ?? (await getDefaultLodgeId(tx));
+    await acquireLodgeCapacityLock(tx, bookingLodgeId);
+
+    // Re-read the full booking under the lock; the status/amount checks, the
+    // capacity check and the PAID/CANCELLED claim below consume ONLY this
+    // post-lock snapshot.
     const booking = await tx.booking.findUnique({
       where: { id: bookingId },
       include: {
@@ -94,9 +112,6 @@ export async function markBookingPaymentSucceeded({
     if (!booking) {
       throw new Error("Booking not found");
     }
-
-    const bookingLodgeId = booking.lodgeId ?? (await getDefaultLodgeId(tx));
-    await acquireLodgeCapacityLock(tx, bookingLodgeId);
 
     const payment = await tx.payment.upsert({
       where: { bookingId },

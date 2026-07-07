@@ -419,6 +419,16 @@ export async function createPaymentIntentForPaymentLink(
   // Capacity/status revalidation under the shared booking advisory lock,
   // mirroring the session path's preflight before charging.
   await prisma.$transaction(async (tx) => {
+    // Pre-lock read: only the lock key. lodgeId is immutable, so keying the
+    // lock from this read is safe; the status re-validation and capacity check
+    // consume ONLY the post-lock re-read below.
+    const lockTarget = await tx.booking.findUnique({
+      where: { id: booking.id },
+      select: { lodgeId: true },
+    });
+    const bookingLodgeId = lockTarget?.lodgeId ?? (await getDefaultLodgeId(tx));
+    await acquireLodgeCapacityLock(tx, bookingLodgeId);
+
     const freshBooking = await tx.booking.findUnique({
       where: { id: booking.id },
       // Load per-night sets (issue #713) so a non-contiguous booking is
@@ -434,9 +444,6 @@ export async function createPaymentIntentForPaymentLink(
     ) {
       throw new PaymentLinkError(NOT_PAYABLE_MESSAGE, 410);
     }
-
-    const bookingLodgeId = freshBooking.lodgeId ?? (await getDefaultLodgeId(tx));
-    await acquireLodgeCapacityLock(tx, bookingLodgeId);
 
     const capacity = await checkCapacityForGuestRanges(
       bookingLodgeId,

@@ -149,6 +149,18 @@ export async function modifyBookingBatch({
   ipAddress: string;
 }): Promise<BatchModificationResponse> {
   const result = await prisma.$transaction(async (tx) => {
+    // Pre-lock read: only the lock key. lodgeId is immutable, so keying the
+    // lock from this read is safe; the eligibility checks, pricing, capacity
+    // check and claim below all run against the post-lock re-read.
+    const lockTarget = await tx.booking.findUnique({
+      where: { id: bookingId },
+      select: { lodgeId: true },
+    });
+    const bookingLodgeId = lockTarget?.lodgeId ?? (await getDefaultLodgeId(tx));
+    await acquireLodgeCapacityLock(tx, bookingLodgeId);
+
+    // Re-read the full booking under the lock; everything below consumes ONLY
+    // this post-lock snapshot.
     const booking = (await tx.booking.findUnique({
       where: { id: bookingId },
       include: {
@@ -194,9 +206,6 @@ export async function modifyBookingBatch({
     if (!requestIsIdentityOnly && quotePriced) {
       throw new ApiError(QUOTE_PRICED_EDIT_BLOCK_MESSAGE, 400);
     }
-
-    const bookingLodgeId = booking.lodgeId ?? (await getDefaultLodgeId(tx));
-    await acquireLodgeCapacityLock(tx, bookingLodgeId);
 
     const dates = resolveTargetDates({
       booking,

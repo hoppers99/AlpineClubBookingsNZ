@@ -258,6 +258,23 @@ export async function removeBookingGuestInTransaction({
   actorRole: string;
   settlementMethod?: BookingModificationSettlementMethod;
 }): Promise<RemoveBookingGuestResult> {
+  // Pre-lock read: only the lock key. lodgeId is immutable, so keying the lock
+  // from this read is safe; the guest set, pricing and refund below consume
+  // ONLY the post-lock re-read.
+  const lockTarget = await tx.booking.findUnique({
+    where: { id: bookingId },
+    select: { lodgeId: true },
+  });
+
+  if (!lockTarget) {
+    throw new BookingGuestRemovalError("Booking not found", 404);
+  }
+
+  const bookingLodgeId = lockTarget.lodgeId ?? (await getDefaultLodgeId(tx));
+  await acquireLodgeCapacityLock(tx, bookingLodgeId);
+
+  // Re-read the full booking under the lock; every field consumed below comes
+  // from this post-lock snapshot.
   const booking = await tx.booking.findUnique({
     where: { id: bookingId },
     include: {
@@ -285,9 +302,6 @@ export async function removeBookingGuestInTransaction({
   if (!booking) {
     throw new BookingGuestRemovalError("Booking not found", 404);
   }
-
-  const bookingLodgeId = booking.lodgeId ?? (await getDefaultLodgeId(tx));
-  await acquireLodgeCapacityLock(tx, bookingLodgeId);
 
   const guestToRemove = booking.guests.find((guest) => guest.id === guestId);
   const isOwnerOrAdmin = booking.memberId === actorMemberId || actorRole === "ADMIN";

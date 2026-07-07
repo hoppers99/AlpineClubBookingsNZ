@@ -208,6 +208,34 @@ async function resolveHoldWindowUnderLock(
   now: Date
 ): Promise<HoldResolution> {
   return prisma.$transaction(async (tx) => {
+    // Pre-lock read: only the fields the early bail and the lock key need.
+    // lodgeId is immutable, so keying the lock from this read is safe; every
+    // capacity-relevant field is taken from the post-lock re-read below.
+    const preLock = await tx.booking.findUnique({
+      where: { id: bookingId },
+      select: { lodgeId: true, status: true, nonMemberHoldUntil: true },
+    });
+
+    if (
+      !preLock ||
+      preLock.status !== BookingStatus.PENDING ||
+      !preLock.nonMemberHoldUntil ||
+      preLock.nonMemberHoldUntil > now
+    ) {
+      logger.info(
+        { bookingId, job: "confirmPendingBookings" },
+        "Booking already processed by another handler"
+      );
+      return { type: "already_processed" };
+    }
+
+    const bookingLodgeId = preLock.lodgeId ?? (await getDefaultLodgeId(tx));
+    await acquireLodgeCapacityLock(tx, bookingLodgeId);
+
+    // Re-read the full booking under the lock; the capacity check, claims and
+    // reconcile below consume ONLY this post-lock snapshot. Re-validate the
+    // hold window: a concurrent handler may have resolved it between the
+    // pre-lock read and acquiring the lock.
     const booking = await tx.booking.findUnique({
       where: { id: bookingId },
       include: pendingBookingInclude,
@@ -225,9 +253,6 @@ async function resolveHoldWindowUnderLock(
       );
       return { type: "already_processed" };
     }
-
-    const bookingLodgeId = booking.lodgeId ?? (await getDefaultLodgeId(tx));
-    await acquireLodgeCapacityLock(tx, bookingLodgeId);
 
     const capacityCheck = await checkCapacityForGuestRanges(
       bookingLodgeId,

@@ -1192,6 +1192,38 @@ describe("processStoredXeroInboundEvents", () => {
     expect(sendBookingConfirmedEmail).not.toHaveBeenCalled();
   });
 
+  it("takes BOTH the global lock(1) and the booking's per-lodge lock before the capacity claim (H2)", async () => {
+    // The PAYMENT_PENDING (no hold slots) reconcile is a net-new capacity claim
+    // (available -> PAID, unavailable -> CANCELLED + credit). It must keep the
+    // global pg_advisory_xact_lock(1) that sequences IB webhook processing AND
+    // additionally serialise on the booking's per-lodge lock, or per-lodge
+    // booking creators (who no longer contend on lock(1)) race the claim.
+    mockCapacityFailInboundEvent();
+
+    await processStoredXeroInboundEvents();
+
+    // We are on the capacity-claim branch (booking cancelled, credit minted).
+    expect(mocks.bookingUpdate).toHaveBeenCalledWith({
+      where: { id: "booking_ib_cap" },
+      data: { status: "CANCELLED", draftExpiresAt: null },
+    });
+
+    const rawCalls = mocks.txExecuteRaw.mock.calls as unknown[][];
+    const sqlOf = (call: unknown[]) => (call[0] as string[]).join("?");
+    // Global webhook-sequencing lock still taken (composition preserved).
+    expect(
+      rawCalls.some((c) => sqlOf(c).includes("pg_advisory_xact_lock(1)"))
+    ).toBe(true);
+    // ...AND the per-lodge capacity lock keyed to the booking's lodge.
+    expect(
+      rawCalls.some(
+        (c) =>
+          sqlOf(c).includes("pg_advisory_xact_lock(hashtextextended(") &&
+          c[1] === "lodge_ib_cap"
+      )
+    ).toBe(true);
+  });
+
   it("clamps the late-capacity-failure credit to the invoice's cash on a mixed invoice (#1459)", async () => {
     // The capacity-fail arm mints too: a live booking's invoice half-paid in
     // cash and half written off must credit only the cash portion.
