@@ -99,10 +99,23 @@ export async function POST(req: NextRequest) {
   }
 
   // The kiosk account's STAFF grant binds this device to one lodge; without a
-  // grant the club's default lodge applies (single-lodge behaviour).
+  // grant the club's default lodge applies (single-lodge behaviour). A grant
+  // at more than one lodge is ambiguous — deny rather than accept the default
+  // lodge's hut-leader PINs on the wrong property (M5).
+  const binding = await getStaffLodgeBinding(prisma, session.user.id);
+  if (binding.kind === "ambiguous") {
+    return NextResponse.json(
+      {
+        error:
+          "This kiosk account is assigned to multiple lodges — an admin must fix the assignment.",
+      },
+      { status: 403 }
+    );
+  }
   const kioskLodgeId =
-    (await getStaffLodgeBinding(prisma, session.user.id)) ??
-    (await getDefaultLodgeId(prisma));
+    binding.kind === "bound"
+      ? binding.lodgeId
+      : await getDefaultLodgeId(prisma);
   const assignment = await findActiveHutLeaderAssignmentByPin(
     parsed.data.pin,
     undefined,

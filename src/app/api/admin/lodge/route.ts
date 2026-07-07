@@ -44,9 +44,14 @@ type KioskRow = {
 };
 
 function serializeKioskAccount(row: KioskRow) {
-  // Exactly one STAFF grant = bound to that lodge; zero (or a legacy
-  // many-grant state) resolves null and the kiosk serves the default
-  // lodge — matching getStaffLodgeBinding.
+  // Exactly one STAFF grant = bound to that lodge; zero grants = null (the
+  // kiosk serves the default lodge). A many-grant state also collapses to
+  // null here for display, but note it no longer behaves like "default":
+  // getStaffLodgeBinding now reports it as ambiguous and the kiosk/PIN paths
+  // DENY it (M5). This admin list still renders such an account as unbound —
+  // it is set only via the member lodge-access surface, not this route (which
+  // replaces STAFF grants one-at-a-time). Surfacing the ambiguous state here
+  // is a possible follow-up.
   const binding = row.lodgeAccess.length === 1 ? row.lodgeAccess[0] : null;
   return {
     id: row.id,

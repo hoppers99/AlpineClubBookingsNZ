@@ -57,22 +57,52 @@ export async function assertMemberMayBookLodge(
 }
 
 /**
- * The lodge a lodge-operational (kiosk) account is bound to via STAFF grants.
- * Exactly one grant = bound to that lodge; zero grants = null (caller falls
- * back to the club's default lodge, preserving single-lodge behaviour).
- * Multiple grants also resolve null with the caller deciding, since a shared
- * device must belong to exactly one property to be meaningful.
+ * Thrown when a kiosk (STAFF) account is bound to more than one lodge. A
+ * shared kiosk device must belong to exactly one property; serving the
+ * default lodge's data instead would leak the wrong property's guest
+ * list/roster and accept the wrong lodge's hut-leader PINs. Callers deny
+ * until an admin fixes the MemberLodgeAccess grants.
  */
+export class AmbiguousKioskLodgeError extends Error {
+  status: number;
+
+  constructor(
+    message = "This kiosk account is assigned to multiple lodges — an admin must fix the assignment.",
+  ) {
+    super(message);
+    this.name = "AmbiguousKioskLodgeError";
+    this.status = 403;
+  }
+}
+
+/**
+ * How a lodge-operational (kiosk) account is bound to a lodge via STAFF grants:
+ * - "none": zero grants. The caller falls back to the club's default lodge,
+ *   preserving single-lodge behaviour.
+ * - "bound": exactly one grant. The kiosk is bound to that lodge.
+ * - "ambiguous": two or more grants. A shared device cannot belong to more
+ *   than one property, so the caller MUST deny (an admin misselection is one
+ *   click away) rather than silently serve the default lodge's data.
+ */
+export type StaffLodgeBinding =
+  | { kind: "none" }
+  | { kind: "bound"; lodgeId: string }
+  | { kind: "ambiguous" };
+
 export async function getStaffLodgeBinding(
   db: LodgeAccessDb,
   memberId: string,
-): Promise<string | null> {
+): Promise<StaffLodgeBinding> {
   const grants = await db.memberLodgeAccess.findMany({
     where: { memberId, kind: "STAFF" },
     select: { lodgeId: true },
     take: 2,
   });
-  return grants.length === 1 ? grants[0].lodgeId : null;
+  // @@unique([memberId, lodgeId, kind]) guarantees two rows = two distinct
+  // lodges, so a length of 2 is genuinely ambiguous, not a duplicate.
+  if (grants.length === 0) return { kind: "none" };
+  if (grants.length === 1) return { kind: "bound", lodgeId: grants[0].lodgeId };
+  return { kind: "ambiguous" };
 }
 
 export function serializeLodgeAccessRows(

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { checkLodgeAuth, resolveKioskLodgeId } from "@/lib/lodge-auth";
+import { checkLodgeAuth, kioskLodgeAuthErrorResponse, resolveKioskLodgeId } from "@/lib/lodge-auth";
 import { getSanitizedLodgeInstructions } from "@/lib/lodge-instructions";
 import { prisma } from "@/lib/prisma";
 
@@ -41,7 +41,14 @@ export async function GET(req: NextRequest) {
   // same way the other kiosk routes do, so a lodge's override documents
   // replace the club-wide ones on that lodge's kiosk — with text tokens
   // ({{club-name}} etc.) resolved for display.
-  const lodgeId = await resolveKioskLodgeId(authResult, prisma);
+  let lodgeId: string;
+  try {
+    lodgeId = await resolveKioskLodgeId(authResult, prisma);
+  } catch (err) {
+    const denied = kioskLodgeAuthErrorResponse(err);
+    if (denied) return denied;
+    throw err;
+  }
   const documents = await getSanitizedLodgeInstructions({
     lodgeId,
     resolveTokens: true,

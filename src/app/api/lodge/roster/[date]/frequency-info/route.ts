@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { checkLodgeAuth, resolveKioskLodgeId } from "@/lib/lodge-auth";
+import { checkLodgeAuth, kioskLodgeAuthErrorResponse, resolveKioskLodgeId } from "@/lib/lodge-auth";
 import { formatDateOnly, parseDateOnly } from "@/lib/date-only";
 import { lodgeNullTolerantScope } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
@@ -35,7 +35,14 @@ export async function GET(
 
   // Frequency history is per lodge: last-rostered dates only consider
   // assignments of this kiosk's lodge's chore templates.
-  const kioskLodgeId = await resolveKioskLodgeId(authResult, prisma);
+  let kioskLodgeId: string;
+  try {
+    kioskLodgeId = await resolveKioskLodgeId(authResult, prisma);
+  } catch (err) {
+    const denied = kioskLodgeAuthErrorResponse(err);
+    if (denied) return denied;
+    throw err;
+  }
   const lastRosteredRecords = await prisma.choreAssignment.groupBy({
     by: ["choreTemplateId"],
     where: {

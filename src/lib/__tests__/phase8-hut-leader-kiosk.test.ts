@@ -287,6 +287,91 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
     );
   });
 
+  it("denies PIN login when the kiosk account is bound to multiple lodges (M5)", async () => {
+    mockAuth.mockResolvedValue({
+      user: { id: "lodge-1", role: "LODGE", accessRoles: [{ role: "LODGE" }], email: "lodge@example.org" },
+    });
+    mockPrisma.member.findUnique.mockResolvedValue({
+      id: "lodge-1",
+      accessRoles: [{ role: "LODGE" }],
+    });
+    // Two STAFF grants: an ordinary admin misselection. The kiosk must not
+    // silently accept the default lodge's hut-leader PINs.
+    mockPrisma.memberLodgeAccess.findMany.mockResolvedValue([
+      { lodgeId: "lodge-A" },
+      { lodgeId: "lodge-B" },
+    ]);
+    mockPrisma.hutLeaderAssignment.findMany.mockResolvedValue([]);
+
+    const { POST } = await import("@/app/api/lodge/pin-login/route");
+    const res = await POST(
+      new Request("http://localhost/api/lodge/pin-login", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-forwarded-for": "10.0.0.11",
+        },
+        body: JSON.stringify({ pin: "654321" }),
+      }) as any
+    );
+
+    expect(res.status).toBe(403);
+    await expect(res.json()).resolves.toEqual({
+      error:
+        "This kiosk account is assigned to multiple lodges — an admin must fix the assignment.",
+    });
+    // Deny before falling back to the default lodge or attempting a PIN match.
+    expect(mockPrisma.lodge.findFirst).not.toHaveBeenCalled();
+    expect(mockPrisma.hutLeaderAssignment.findMany).not.toHaveBeenCalled();
+  });
+
+  it("resolveKioskLodgeId denies an ambiguous multi-lodge kiosk binding (M5)", async () => {
+    mockPrisma.memberLodgeAccess.findMany.mockResolvedValue([
+      { lodgeId: "lodge-A" },
+      { lodgeId: "lodge-B" },
+    ]);
+
+    const { resolveKioskLodgeId } = await import("@/lib/lodge-auth");
+    const { AmbiguousKioskLodgeError } = await import("@/lib/lodge-access");
+
+    await expect(
+      resolveKioskLodgeId(
+        { tier: "lodge", member: { id: "lodge-1" } },
+        mockPrisma as never
+      )
+    ).rejects.toBeInstanceOf(AmbiguousKioskLodgeError);
+    // "No default-lodge data served": the default lodge is never resolved.
+    expect(mockPrisma.lodge.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("resolveKioskLodgeId returns the bound lodge for a single kiosk grant (M5)", async () => {
+    mockPrisma.memberLodgeAccess.findMany.mockResolvedValue([
+      { lodgeId: "bound-lodge" },
+    ]);
+
+    const { resolveKioskLodgeId } = await import("@/lib/lodge-auth");
+    const lodgeId = await resolveKioskLodgeId(
+      { tier: "lodge", member: { id: "lodge-1" } },
+      mockPrisma as never
+    );
+
+    expect(lodgeId).toBe("bound-lodge");
+    expect(mockPrisma.lodge.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("resolveKioskLodgeId falls back to the default lodge with no kiosk grant (M5)", async () => {
+    mockPrisma.memberLodgeAccess.findMany.mockResolvedValue([]);
+    mockPrisma.lodge.findFirst.mockResolvedValue({ id: "default-lodge" });
+
+    const { resolveKioskLodgeId } = await import("@/lib/lodge-auth");
+    const lodgeId = await resolveKioskLodgeId(
+      { tier: "admin", member: { id: "lodge-1" } },
+      mockPrisma as never
+    );
+
+    expect(lodgeId).toBe("default-lodge");
+  });
+
   it("formats member guest phone numbers for the kiosk guest list API", async () => {
     mockAuth.mockResolvedValue({
       user: { id: "admin-1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }], email: "support@example.org" },

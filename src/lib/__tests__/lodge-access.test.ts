@@ -90,7 +90,7 @@ describe("assertMemberMayBookLodge", () => {
 });
 
 describe("getStaffLodgeBinding", () => {
-  it("returns the lodge id for exactly one STAFF grant", async () => {
+  it("returns a bound binding for exactly one STAFF grant", async () => {
     const db = {
       memberLodgeAccess: {
         findMany: vi.fn().mockResolvedValue([{ lodgeId: "lodge-1" }]),
@@ -100,7 +100,7 @@ describe("getStaffLodgeBinding", () => {
       db as unknown as Parameters<typeof getStaffLodgeBinding>[0],
       "member-1",
     );
-    expect(binding).toBe("lodge-1");
+    expect(binding).toEqual({ kind: "bound", lodgeId: "lodge-1" });
     expect(db.memberLodgeAccess.findMany).toHaveBeenCalledWith({
       where: { memberId: "member-1", kind: "STAFF" },
       select: { lodgeId: true },
@@ -108,7 +108,7 @@ describe("getStaffLodgeBinding", () => {
     });
   });
 
-  it("returns null when there are zero STAFF grants", async () => {
+  it("returns a none binding when there are zero STAFF grants", async () => {
     const db = {
       memberLodgeAccess: { findMany: vi.fn().mockResolvedValue([]) },
     };
@@ -116,10 +116,10 @@ describe("getStaffLodgeBinding", () => {
       db as unknown as Parameters<typeof getStaffLodgeBinding>[0],
       "member-1",
     );
-    expect(binding).toBeNull();
+    expect(binding).toEqual({ kind: "none" });
   });
 
-  it("returns null when there are two or more STAFF grants", async () => {
+  it("returns an ambiguous binding when there are two or more STAFF grants", async () => {
     const db = {
       memberLodgeAccess: {
         findMany: vi
@@ -131,6 +131,8 @@ describe("getStaffLodgeBinding", () => {
       db as unknown as Parameters<typeof getStaffLodgeBinding>[0],
       "member-1",
     );
-    expect(binding).toBeNull();
+    // M5: two grants must be distinguishable from zero so the caller denies
+    // rather than silently serving the default lodge's data.
+    expect(binding).toEqual({ kind: "ambiguous" });
   });
 });

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { checkLodgeAuth, getLodgeAuthActorMemberId, resolveKioskLodgeId } from "@/lib/lodge-auth";
+import { checkLodgeAuth, getLodgeAuthActorMemberId, kioskLodgeAuthErrorResponse, resolveKioskLodgeId } from "@/lib/lodge-auth";
 import { getBookingGuestDisplayAgeTier } from "@/lib/booking-guests";
 import { parseDateOnly } from "@/lib/date-only";
 import { lodgeNullTolerantScope } from "@/lib/lodges";
@@ -48,7 +48,14 @@ export async function GET(
     return NextResponse.json({ error: "Invalid date" }, { status: 400 });
   }
 
-  const lodgeId = await resolveKioskLodgeId(authResult, prisma);
+  let lodgeId: string;
+  try {
+    lodgeId = await resolveKioskLodgeId(authResult, prisma);
+  } catch (err) {
+    const denied = kioskLodgeAuthErrorResponse(err);
+    if (denied) return denied;
+    throw err;
+  }
 
   const assignments = await prisma.choreAssignment.findMany({
     where: { date, booking: lodgeNullTolerantScope(lodgeId) },
@@ -211,6 +218,8 @@ export async function PUT(
       },
     });
   } catch (err) {
+    const denied = kioskLodgeAuthErrorResponse(err);
+    if (denied) return denied;
     logger.error({ err }, "Error toggling chore completion");
     return NextResponse.json(
       { error: "Failed to update assignment" },

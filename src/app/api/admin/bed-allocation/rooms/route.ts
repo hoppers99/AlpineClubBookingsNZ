@@ -31,6 +31,14 @@ export async function GET(request: Request) {
   try {
     const lodgeId =
       new URL(request.url).searchParams.get("lodgeId") ?? undefined;
+    // Validate an explicit lodge scope the way the POST path does (400 on
+    // unknown/inactive); omitted stays club-wide.
+    if (lodgeId && !(await resolveOptionalActiveLodgeId(prisma, lodgeId))) {
+      return NextResponse.json(
+        { error: "Lodge not found or not active" },
+        { status: 400 },
+      );
+    }
     return NextResponse.json(
       await getRoomsAndBedsConfiguration(undefined, lodgeId),
     );

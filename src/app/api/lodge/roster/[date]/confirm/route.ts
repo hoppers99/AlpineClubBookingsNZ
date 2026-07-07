@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { checkLodgeAuth, resolveKioskLodgeId } from "@/lib/lodge-auth";
+import { checkLodgeAuth, kioskLodgeAuthErrorResponse, resolveKioskLodgeId } from "@/lib/lodge-auth";
 import { parseDateOnly } from "@/lib/date-only";
 import { validateRosterAllocationsForDate } from "@/lib/lodge-date-scoping";
 import { lodgeNullTolerantScope } from "@/lib/lodges";
@@ -144,6 +144,8 @@ export async function POST(
 
     return NextResponse.json({ success: true });
   } catch (err) {
+    const denied = kioskLodgeAuthErrorResponse(err);
+    if (denied) return denied;
     logger.error({ err }, "Error confirming roster");
     return NextResponse.json({ error: "Failed to confirm roster" }, { status: 500 });
   }

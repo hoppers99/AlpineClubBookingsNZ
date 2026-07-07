@@ -3,6 +3,7 @@ import { checkCapacity } from "@/lib/capacity";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { requireActiveSessionUser } from "@/lib/session-guards";
+import { isMemberEligibleToBookLodge } from "@/lib/lodge-access";
 import { getDefaultLodgeId } from "@/lib/lodges";
 import { z } from "zod";
 import { formatDateOnly, isDateOnlyString, parseDateOnly } from "@/lib/date-only";
@@ -58,6 +59,15 @@ export async function GET(request: NextRequest) {
     lodgeId = lodge.id;
   } else {
     lodgeId = await getDefaultLodgeId(prisma);
+  }
+
+  // A BOOKING_RESTRICTION-ed member must not read a forbidden lodge's
+  // availability, mirroring the booking create path (assertMemberMayBookLodge).
+  if (!(await isMemberEligibleToBookLodge(prisma, session.user.id, lodgeId))) {
+    return NextResponse.json(
+      { error: "This member cannot book the selected lodge." },
+      { status: 403 }
+    );
   }
 
   const result = await checkCapacity(lodgeId, checkIn, checkOut, 1);

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { requireActiveSessionUser } from "@/lib/session-guards";
+import { isMemberEligibleToBookLodge } from "@/lib/lodge-access";
 import { getDefaultLodgeId, lodgeNullTolerantScope } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 import {
@@ -172,6 +173,19 @@ export async function POST(request: NextRequest) {
     quoteLodgeId = lodge.id;
   } else {
     quoteLodgeId = await getDefaultLodgeId(prisma);
+  }
+
+  // A BOOKING_RESTRICTION-ed member must not read a forbidden lodge's pricing.
+  // Mirror the create path exactly: admin on-behalf quotes bypass the
+  // restriction (the audited override), everyone else is checked.
+  if (
+    !isAuthorizedOnBehalf &&
+    !(await isMemberEligibleToBookLodge(prisma, effectiveMemberId, quoteLodgeId))
+  ) {
+    return NextResponse.json(
+      { error: "This member cannot book the selected lodge." },
+      { status: 403 }
+    );
   }
 
   // Duplicate member nights (upstream #80cbdf4c): a member cannot hold two

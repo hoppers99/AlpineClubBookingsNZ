@@ -5,6 +5,7 @@ import { requireActiveSessionUser } from "@/lib/session-guards";
 import { applyRateLimit, rateLimiters } from "@/lib/rate-limit";
 import { z } from "zod";
 import { getMonthAvailability } from "@/lib/capacity";
+import { isMemberEligibleToBookLodge } from "@/lib/lodge-access";
 import { getDefaultLodgeId, lodgeNullTolerantScope } from "@/lib/lodges";
 import {
   eachDateOnlyInRange,
@@ -68,6 +69,15 @@ export async function GET(request: NextRequest) {
     lodgeId = lodge.id;
   } else {
     lodgeId = await getDefaultLodgeId(prisma);
+  }
+
+  // A BOOKING_RESTRICTION-ed member must not read a forbidden lodge's
+  // availability, mirroring the booking create path (assertMemberMayBookLodge).
+  if (!(await isMemberEligibleToBookLodge(prisma, session.user.id, lodgeId))) {
+    return NextResponse.json(
+      { error: "This member cannot book the selected lodge." },
+      { status: 403 }
+    );
   }
 
   const startDate = getMonthStartDateOnly(year, month);

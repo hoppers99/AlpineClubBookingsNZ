@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { checkLodgeAuth, resolveKioskLodgeId } from "@/lib/lodge-auth";
+import { checkLodgeAuth, kioskLodgeAuthErrorResponse, resolveKioskLodgeId } from "@/lib/lodge-auth";
 import { addDaysDateOnly, parseDateOnly } from "@/lib/date-only";
 import { getBookingGuestDisplayAgeTier } from "@/lib/booking-guests";
 import { lodgeNullTolerantScope } from "@/lib/lodges";
@@ -193,6 +193,8 @@ export async function POST(
       guests,
     });
   } catch (err) {
+    const denied = kioskLodgeAuthErrorResponse(err);
+    if (denied) return denied;
     logger.error({ err }, "Error generating roster");
     return NextResponse.json({ error: "Failed to generate roster" }, { status: 500 });
   }

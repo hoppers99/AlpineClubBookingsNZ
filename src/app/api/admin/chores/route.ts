@@ -51,6 +51,15 @@ export async function GET(req: NextRequest) {
   // Null-tolerant filter: rows without a lodgeId (pre-backfill or written by
   // a draining old colour during the expand deploy) show under every lodge.
   const lodgeId = req.nextUrl.searchParams.get("lodgeId")
+  // Validate an explicit lodge scope the way the POST path does (400 on
+  // unknown/inactive). Omitted lists chores across every lodge, so only
+  // validate when a lodgeId is supplied.
+  if (lodgeId && !(await resolveOptionalActiveLodgeId(prisma, lodgeId))) {
+    return NextResponse.json(
+      { error: "Lodge not found or not active" },
+      { status: 400 }
+    )
+  }
   const chores = await prisma.choreTemplate.findMany({
     where: lodgeId ? lodgeNullTolerantScope(lodgeId) : undefined,
     orderBy: { sortOrder: "asc" },

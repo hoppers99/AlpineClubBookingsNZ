@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { checkLodgeAuth, resolveKioskLodgeId } from "@/lib/lodge-auth";
+import { checkLodgeAuth, kioskLodgeAuthErrorResponse, resolveKioskLodgeId } from "@/lib/lodge-auth";
 import { getBookingGuestDisplayAgeTier } from "@/lib/booking-guests";
 import {
   addDaysDateOnly,
@@ -52,7 +52,14 @@ export async function GET(
   const scope = new URL(req.url).searchParams.get("scope");
   const isLodgeListScope = scope === LODGE_LIST_SCOPE;
   const canViewGuestContactDetails = tier !== "staying-guest";
-  const lodgeId = await resolveKioskLodgeId(authResult, prisma);
+  let lodgeId: string;
+  try {
+    lodgeId = await resolveKioskLodgeId(authResult, prisma);
+  } catch (err) {
+    const denied = kioskLodgeAuthErrorResponse(err);
+    if (denied) return denied;
+    throw err;
+  }
 
   // Default scope is stay-night compatible for roster allocation.
   // Lodge-list scope also includes guests on their checkout/departure date.

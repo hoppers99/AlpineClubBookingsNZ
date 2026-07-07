@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
+import { resolveOptionalActiveLodgeId } from "@/lib/lodges";
 import { z } from "zod";
 import { BookingStatus, SubscriptionStatus } from "@prisma/client";
 import { getOccupiedBedsForNight } from "@/lib/capacity";
@@ -58,6 +59,19 @@ export async function GET(request: NextRequest) {
 
   if (toDate <= fromDate) {
     return NextResponse.json({ error: "to must be after from" }, { status: 400 });
+  }
+
+  // Validate an explicit lodge scope the way the write paths do (400 on
+  // unknown/inactive). Omitted stays "all active lodges" — the sanctioned
+  // reporting aggregate — so only validate when a lodgeId is supplied.
+  if (
+    parsed.data.lodgeId &&
+    !(await resolveOptionalActiveLodgeId(prisma, parsed.data.lodgeId))
+  ) {
+    return NextResponse.json(
+      { error: "Lodge not found or not active" },
+      { status: 400 }
+    );
   }
 
   try {

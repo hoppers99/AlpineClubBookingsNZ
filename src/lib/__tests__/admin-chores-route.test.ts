@@ -139,6 +139,8 @@ describe("GET /api/admin/chores", () => {
   });
 
   it("filters templates strictly to a lodge", async () => {
+    mockLodgeFindUnique.mockResolvedValue({ id: "lodge-2", active: true });
+
     const res = await GET(
       new NextRequest("http://localhost/api/admin/chores?lodgeId=lodge-2")
     );
@@ -149,5 +151,16 @@ describe("GET /api/admin/chores", () => {
         where: { lodgeId: "lodge-2" },
       })
     );
+  });
+
+  it("rejects listing chores at an unknown or inactive lodge (Low 2)", async () => {
+    mockLodgeFindUnique.mockResolvedValue({ id: "lodge-2", active: false });
+
+    const res = await GET(
+      new NextRequest("http://localhost/api/admin/chores?lodgeId=lodge-2")
+    );
+
+    expect(res.status).toBe(400);
+    expect(mockChoreFindMany).not.toHaveBeenCalled();
   });
 });

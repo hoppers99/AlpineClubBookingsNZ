@@ -47,6 +47,11 @@ that key for that lodge — never merged. Readers resolve through
 lodge via `resolveKioskLodgeId`, and the admin editor edits one partition
 at a time (omitted `lodgeId` means the club-wide partition, not the
 default lodge) with an explicit `remove: true` flag to drop an override.
+On the member reader (`GET /api/lodge-instructions?lodgeId=`), a hut leader
+may only request a lodge they hold a current/upcoming assignment for
+(assignment lodge set); an out-of-set `lodgeId` is `403`. Admins may request
+any lodge. This keeps a lodge A hut leader from reading lodge B's
+operational documents (which may carry door/emergency access details).
 
 ## Optional Lodge Restrictions
 
@@ -57,11 +62,22 @@ default lodge) with an explicit `remove: true` flag to drop an override.
   `MemberLodgeAccess` junction table (delivered in phase 4) with a `kind`
   enum. `BOOKING_RESTRICTION` rows mean the member may book only the
   listed lodges; no rows is default-open. Enforcement lives in the
-  booking service (`assertMemberMayBookLodge`), and admin on-behalf
-  bookings bypass it as the audited override path. `STAFF` rows bind a
-  kiosk account to its lodge; hut-leader assignments carry their own
-  `lodgeId` and PINs match only at the bound lodge's kiosk. `ADMIN`
-  access is club-wide and never lodge-filtered.
+  booking service (`assertMemberMayBookLodge`), and the same eligibility
+  check (`isMemberEligibleToBookLodge`) also gates the read-side
+  availability/pricing surfaces so a restricted member cannot discover a
+  forbidden lodge's data: `/api/availability`, `/api/availability/check`,
+  `/api/bookings/quote`, and `/api/bookings/rooms` return `403` for the
+  restricted lodge. Admin on-behalf bookings and quotes bypass it as the
+  audited override path. `STAFF` rows bind a kiosk account to its lodge;
+  exactly one grant binds, zero grants fall back to the default lodge, and
+  **two or more grants are ambiguous and denied** (`getStaffLodgeBinding`
+  returns `{ kind: "ambiguous" }`; `resolveKioskLodgeId` throws
+  `AmbiguousKioskLodgeError` and every kiosk data route maps it to a clean
+  `403` via `kioskLodgeAuthErrorResponse`, while PIN login returns `403`
+  directly, rather than serve the default lodge's data on the wrong property).
+  Hut-leader assignments carry their own `lodgeId` and PINs match only at
+  the bound lodge's kiosk. `ADMIN` access is club-wide and never
+  lodge-filtered.
 
 ## Club-Wide Models (No Lodge Dimension)
 
@@ -136,8 +152,16 @@ record the outcome here when decided:
   page lists every LODGE-role account with its bound lodge, creates
   additional kiosk accounts bound via a STAFF grant in one step, and
   rebinds/unbinds (unbound = default lodge). The binding mechanism is
-  unchanged (`getStaffLodgeBinding`); this only surfaced it. Lodge
-  controls render only with a second active lodge (ADR-002).
+  `getStaffLodgeBinding`, which returns `none` (unbound → default lodge),
+  `bound` (one grant → that lodge), or `ambiguous` (two or more grants).
+  An `ambiguous` binding is **denied, never defaulted**: `resolveKioskLodgeId`
+  throws `AmbiguousKioskLodgeError`, which every kiosk data route maps to a
+  `403` (via `kioskLodgeAuthErrorResponse`, so a one-click misconfiguration
+  is a clean deny rather than a 500) and PIN login returns `403` directly
+  ("assigned to multiple lodges — an admin must fix the assignment"), so an
+  accidental double-grant cannot silently serve the default lodge's guest
+  list/roster or accept its hut-leader PINs on a shared screen. Lodge controls render
+  only with a second active lodge (ADR-002).
 
 ## School-Group Soft Cap
 

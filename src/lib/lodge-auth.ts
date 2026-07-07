@@ -1,4 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
+import { NextResponse } from "next/server";
 import { auth } from "./auth";
 import {
   getKioskAccessTier,
@@ -8,7 +9,7 @@ import { addDaysDateOnly, getTodayDateOnly, isDateOnlyString, parseDateOnly } fr
 import { LODGE_VISIBLE_BOOKING_STATUSES } from "./lodge-date-scoping";
 import { getActiveLodgePinSessionForRequest } from "./lodge-pin-session";
 import { getDefaultLodgeId } from "./lodges";
-import { getStaffLodgeBinding } from "./lodge-access";
+import { AmbiguousKioskLodgeError, getStaffLodgeBinding } from "./lodge-access";
 import { requireActiveSessionUser } from "./session-guards";
 import { hasLodgeAccess } from "@/lib/access-roles";
 import { prisma } from "@/lib/prisma";
@@ -140,7 +141,9 @@ interface ResolveKioskLodgeIdAuthResult {
  *   (nullable) lodgeId; null falls back to the club's default lodge.
  * - lodge / admin: a STAFF MemberLodgeAccess grant binds the kiosk account
  *   to a lodge; no grant falls back to the default lodge. Admin kiosk
- *   devices may also be bound, so the same lookup applies.
+ *   devices may also be bound, so the same lookup applies. A grant at more
+ *   than one lodge is ambiguous and throws AmbiguousKioskLodgeError (deny)
+ *   rather than serving the default lodge's data on the wrong property.
  * - staying-guest: resolved from the member's active booking for "today"
  *   (the same query shape as getKioskAccessTier's staying-guest branch),
  *   using the booking's lodgeId, defaulting if null.
@@ -189,8 +192,16 @@ export async function resolveKioskLodgeId(
           `resolveKioskLodgeId: ${authResult.tier} tier requires a resolved member`
         );
       }
-      const staffLodgeId = await getStaffLodgeBinding(db, memberId);
-      return staffLodgeId ?? (await getDefaultLodgeId(db));
+      const binding = await getStaffLodgeBinding(db, memberId);
+      if (binding.kind === "ambiguous") {
+        // A kiosk account granted STAFF at more than one lodge cannot be
+        // resolved to a single property: serving the default lodge would
+        // leak the wrong lodge's guest list/roster on a shared screen (M5).
+        throw new AmbiguousKioskLodgeError();
+      }
+      return binding.kind === "bound"
+        ? binding.lodgeId
+        : await getDefaultLodgeId(db);
     }
     case "staying-guest": {
       const memberId = authResult.member?.id;
@@ -231,4 +242,24 @@ export async function resolveKioskLodgeId(
         `resolveKioskLodgeId: cannot resolve a lodge for tier "${authResult.tier}"`
       );
   }
+}
+
+/**
+ * Maps a caught kiosk lodge-resolution error to an HTTP response, or null when
+ * the caller should handle it (rethrow / fall through to its own 500). A kiosk
+ * account granted STAFF at two or more lodges (a one-click admin
+ * misconfiguration) makes resolveKioskLodgeId throw AmbiguousKioskLodgeError;
+ * every kiosk route denies it with a clean 403 rather than a 500, so a
+ * misconfigured account produces no Sentry noise on each kiosk request (M5).
+ */
+export function kioskLodgeAuthErrorResponse(
+  error: unknown
+): NextResponse | null {
+  if (error instanceof AmbiguousKioskLodgeError) {
+    return NextResponse.json(
+      { error: error.message },
+      { status: error.status }
+    );
+  }
+  return null;
 }

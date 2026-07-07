@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { checkLodgeAuth, getLodgeAuthActorMemberId, resolveKioskLodgeId } from "@/lib/lodge-auth";
+import { checkLodgeAuth, getLodgeAuthActorMemberId, kioskLodgeAuthErrorResponse, resolveKioskLodgeId } from "@/lib/lodge-auth";
 import { findLodgeGuestForDate } from "@/lib/lodge-date-scoping";
 import { parseDateOnly } from "@/lib/date-only";
 import { prisma } from "@/lib/prisma";
@@ -109,6 +109,8 @@ export async function PUT(
 
     return NextResponse.json({ success: true, arrivedAt: arrivedAt?.toISOString() ?? null });
   } catch (err) {
+    const denied = kioskLodgeAuthErrorResponse(err);
+    if (denied) return denied;
     logger.error({ err }, "Error marking guest arrival");
     return NextResponse.json({ error: "Failed to update guest" }, { status: 500 });
   }

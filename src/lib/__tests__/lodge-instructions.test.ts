@@ -279,6 +279,50 @@ describe("GET /api/lodge-instructions (reader access control)", () => {
     // No inference query needed when the lodge is named explicitly.
     expect(mocks.hutLeaderAssignmentFindMany).not.toHaveBeenCalled();
   });
+
+  it("M4: denies a hut leader requesting a lodge they are not assigned to", async () => {
+    mocks.auth.mockResolvedValue(memberSession);
+    // Gate passes (a current assignment exists) but it is for lodge-A only.
+    useAssignments([{ memberId: "member-1", endDate: getTodayDateOnly() }]);
+    mocks.hutLeaderAssignmentFindMany.mockResolvedValue([
+      { lodgeId: "lodge-A" },
+    ]);
+
+    const response = await readerGET(readerRequest("?lodgeId=lodge-B"));
+    expect(response.status).toBe(403);
+    // Never read the requested (forbidden) lodge's documents.
+    expect(mocks.lodgeInstructionFindMany).not.toHaveBeenCalled();
+  });
+
+  it("M4: allows a hut leader requesting their own assignment lodge", async () => {
+    mocks.auth.mockResolvedValue(memberSession);
+    useAssignments([{ memberId: "member-1", endDate: getTodayDateOnly() }]);
+    mocks.hutLeaderAssignmentFindMany.mockResolvedValue([
+      { lodgeId: "lodge-A" },
+    ]);
+
+    const response = await readerGET(readerRequest("?lodgeId=lodge-A"));
+    expect(response.status).toBe(200);
+    expect(mocks.lodgeInstructionFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { OR: [{ lodgeId: null }, { lodgeId: "lodge-A" }] },
+      }),
+    );
+  });
+
+  it("M4: allows an admin requesting any lodge", async () => {
+    mocks.auth.mockResolvedValue(adminSession);
+
+    const response = await readerGET(readerRequest("?lodgeId=lodge-B"));
+    expect(response.status).toBe(200);
+    expect(mocks.lodgeInstructionFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { OR: [{ lodgeId: null }, { lodgeId: "lodge-B" }] },
+      }),
+    );
+    // Admins skip the assignment-set lookup entirely.
+    expect(mocks.hutLeaderAssignmentFindMany).not.toHaveBeenCalled();
+  });
 });
 
 describe("admin lodge-instructions route", () => {

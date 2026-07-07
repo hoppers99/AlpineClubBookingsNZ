@@ -705,6 +705,29 @@ describe("F9: GET /api/lodge/guests/[date] - arrivedAt/departedAt", () => {
     expect(data.error).toBe("Unauthorised");
     expect(mockPrisma.booking.findMany).not.toHaveBeenCalled();
   });
+
+  it("denies with 403 (not 500) when the kiosk account is bound to multiple lodges", async () => {
+    // M5: a STAFF account granted at 2+ lodges is ambiguous; resolveKioskLodgeId
+    // throws AmbiguousKioskLodgeError, and the route maps it to a clean 403 deny
+    // rather than a 500, so a one-click admin misconfiguration is quiet and
+    // never serves the wrong lodge's guest list.
+    mockPrisma.memberLodgeAccess.findMany.mockResolvedValue([
+      { lodgeId: "lodge-A" },
+      { lodgeId: "lodge-B" },
+    ]);
+
+    const { GET } = await import("@/app/api/lodge/guests/[date]/route");
+    const req = new Request("http://localhost/api/lodge/guests/2026-07-10") as any;
+
+    const res = await GET(req, makeParams());
+    const data = await res.json();
+
+    expect(res.status).toBe(403);
+    expect(data.error).toBe(
+      "This kiosk account is assigned to multiple lodges — an admin must fix the assignment."
+    );
+    expect(mockPrisma.booking.findMany).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------

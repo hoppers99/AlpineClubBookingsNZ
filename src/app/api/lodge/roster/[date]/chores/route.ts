@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { checkLodgeAuth, resolveKioskLodgeId } from "@/lib/lodge-auth";
+import { checkLodgeAuth, kioskLodgeAuthErrorResponse, resolveKioskLodgeId } from "@/lib/lodge-auth";
 import { lodgeNullTolerantScope } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
@@ -30,7 +30,14 @@ export async function GET(
     return NextResponse.json({ error: "Invalid date format" }, { status: 400 });
   }
 
-  const lodgeId = await resolveKioskLodgeId(authResult, prisma);
+  let lodgeId: string;
+  try {
+    lodgeId = await resolveKioskLodgeId(authResult, prisma);
+  } catch (err) {
+    const denied = kioskLodgeAuthErrorResponse(err);
+    if (denied) return denied;
+    throw err;
+  }
 
   const templates = await prisma.choreTemplate.findMany({
     where: { active: true, ...lodgeNullTolerantScope(lodgeId) },

@@ -828,6 +828,55 @@ describe("Quote API - forMemberId", () => {
     expect(mockedGetCredit).toHaveBeenCalledWith("m1");
   });
 
+  it("Low 1: denies a restricted member quoting a forbidden lodge", async () => {
+    mockedAuth.mockResolvedValue({ user: { id: "m1", role: "MEMBER", accessRoles: [{ role: "USER" }] } } as never);
+    (mockedPrisma.lodge.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "lodge-1" });
+    (mockedPrisma.season.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    // A BOOKING_RESTRICTION list that excludes the resolved default lodge.
+    (mockedPrisma.memberLodgeAccess.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { lodgeId: "other-lodge" },
+    ]);
+
+    const req = new NextRequest("http://localhost/api/bookings/quote", {
+      method: "POST",
+      body: JSON.stringify({
+        checkIn,
+        checkOut,
+        guests: [{ ageTier: "ADULT", isMember: true }],
+      }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    const res = await postQuote(req);
+    expect(res.status).toBe(403);
+    // Rejected before pricing the forbidden lodge.
+    expect(mockedGetCredit).not.toHaveBeenCalled();
+  });
+
+  it("Low 1: prices a restricted member for a lodge they may book", async () => {
+    mockedAuth.mockResolvedValue({ user: { id: "m1", role: "MEMBER", accessRoles: [{ role: "USER" }] } } as never);
+    (mockedPrisma.lodge.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "lodge-1" });
+    (mockedPrisma.season.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    (mockedPrisma.memberLodgeAccess.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { lodgeId: "lodge-1" },
+    ]);
+    mockedGetCredit.mockResolvedValue(0);
+
+    const req = new NextRequest("http://localhost/api/bookings/quote", {
+      method: "POST",
+      body: JSON.stringify({
+        checkIn,
+        checkOut,
+        guests: [{ ageTier: "ADULT", isMember: true }],
+      }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    const res = await postQuote(req);
+    expect(res.status).toBe(200);
+    expect(mockedGetCredit).toHaveBeenCalledWith("m1");
+  });
+
   it("treats manually typed guests as non-members in quotes", async () => {
     mockedAuth.mockResolvedValue({ user: { id: "m1", role: "MEMBER", accessRoles: [{ role: "USER" }] } } as never);
     (mockedPrisma.season.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([]);
