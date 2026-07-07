@@ -270,6 +270,11 @@ All notable public reference-release changes should be recorded here.
 - Planning and research (owner-ratified as research-only, no runtime change):
   recorded the Node 26 LTS upgrade plan (#1497) and the better-auth evaluation
   (#1498).
+- Added the fork-facing production upgrade runbook
+  (`docs/PRODUCTION_UPGRADE_RUNBOOK.md`) for the v0.9.0-era → v0.10.0 window:
+  pre-flight backup and prediction queries, blue/green migrate with the AgeTier
+  quiet-window plan, post-upgrade checklist, rollback, and rehearsal/execution
+  records (#1502).
 - Testing, CI, and release hygiene: added end-to-end coverage for the
   bed-allocation module gate (#1314), route-map drift tests (#1333), email/2FA
   E2E coverage (#1336), made Playwright E2E blocking in CI (#1346), added E2E
