@@ -38,6 +38,8 @@ const emptyForm = {
   published: false,
   showPhone: false,
   contactable: false,
+  contactEmailMode: "ROLE" as "ROLE" | "MEMBER" | "CUSTOM",
+  contactEmailOverride: "",
   isActive: true,
 };
 
@@ -92,6 +94,9 @@ export function MemberCommitteeAssignmentsCard({
     () => roles.filter((role) => role.isActive),
     [roles],
   );
+
+  const selectedRoleEmail =
+    roles.find((role) => role.id === form.committeeRoleId)?.contactEmail ?? null;
 
   async function loadRoles() {
     setRolesLoading(true);
@@ -158,6 +163,8 @@ export function MemberCommitteeAssignmentsCard({
       published: assignment.published,
       showPhone: assignment.showPhone,
       contactable: assignment.contactable,
+      contactEmailMode: assignment.contactEmailMode,
+      contactEmailOverride: assignment.contactEmailOverride ?? "",
       isActive: assignment.isActive,
     });
     setShowForm(true);
@@ -178,9 +185,25 @@ export function MemberCommitteeAssignmentsCard({
       return;
     }
 
+    const trimmedOverride = form.contactEmailOverride.trim();
+    if (
+      form.contactable &&
+      form.contactEmailMode === "CUSTOM" &&
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedOverride)
+    ) {
+      setError("Enter a valid custom committee email");
+      return;
+    }
+
     setSaving(true);
     setError("");
     setMessage("");
+
+    const contactEmailMode = form.contactable ? form.contactEmailMode : "ROLE";
+    const contactEmailOverride =
+      form.contactable && form.contactEmailMode === "CUSTOM"
+        ? trimmedOverride || null
+        : null;
 
     const payload = {
       memberId: member.id,
@@ -190,6 +213,8 @@ export function MemberCommitteeAssignmentsCard({
       published: form.published,
       showPhone: form.showPhone,
       contactable: form.contactable,
+      contactEmailMode,
+      contactEmailOverride,
       isActive: form.isActive,
     };
 
@@ -210,6 +235,8 @@ export function MemberCommitteeAssignmentsCard({
                   published: payload.published,
                   showPhone: payload.showPhone,
                   contactable: payload.contactable,
+                  contactEmailMode: payload.contactEmailMode,
+                  contactEmailOverride: payload.contactEmailOverride,
                   isActive: payload.isActive,
                 }
               : payload,
@@ -386,6 +413,57 @@ export function MemberCommitteeAssignmentsCard({
                 </label>
               ))}
             </div>
+            {form.contactable ? (
+              <div className="mt-4 space-y-2 rounded-md border border-slate-200 bg-slate-50 p-3">
+                <Label htmlFor="committeeContactEmailMode">Contact email</Label>
+                <Select
+                  value={form.contactEmailMode}
+                  onValueChange={(value) =>
+                    setForm({
+                      ...form,
+                      contactEmailMode: value as "ROLE" | "MEMBER" | "CUSTOM",
+                    })
+                  }
+                >
+                  <SelectTrigger id="committeeContactEmailMode">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="ROLE" disabled={!selectedRoleEmail}>
+                      Committee role email ({selectedRoleEmail ?? "none set"})
+                    </SelectItem>
+                    <SelectItem value="MEMBER">
+                      Member&apos;s own email ({member.email})
+                    </SelectItem>
+                    <SelectItem value="CUSTOM">Custom email</SelectItem>
+                  </SelectContent>
+                </Select>
+                {!selectedRoleEmail ? (
+                  <p className="text-xs text-slate-500">
+                    This role has no email — set one under Admin → Committee, or
+                    choose another option.
+                  </p>
+                ) : null}
+                {form.contactEmailMode === "CUSTOM" ? (
+                  <div>
+                    <Label htmlFor="committeeContactEmailOverride">
+                      Custom committee email
+                    </Label>
+                    <Input
+                      id="committeeContactEmailOverride"
+                      type="email"
+                      value={form.contactEmailOverride}
+                      onChange={(event) =>
+                        setForm({
+                          ...form,
+                          contactEmailOverride: event.target.value,
+                        })
+                      }
+                    />
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
             <div className="mt-4 flex gap-2">
               <Button type="submit" disabled={saving}>
                 <Save className="mr-2 h-4 w-4" />
@@ -439,9 +517,13 @@ export function MemberCommitteeAssignmentsCard({
                       <span>
                         {assignment.contactable ? "Contactable" : "Not contactable"}
                       </span>
-                      {assignment.committeeRole.contactEmail ? (
+                      {assignment.contactable ? (
                         <span>
-                          Role email {assignment.committeeRole.contactEmail}
+                          {assignment.contactEmailMode === "MEMBER"
+                            ? `Contact via member email ${assignment.member.email}`
+                            : assignment.contactEmailMode === "CUSTOM"
+                              ? `Contact via custom email ${assignment.contactEmailOverride ?? "(none set)"}`
+                              : `Contact via role email ${assignment.committeeRole.contactEmail ?? "(none set)"}`}
                         </span>
                       ) : null}
                     </div>
