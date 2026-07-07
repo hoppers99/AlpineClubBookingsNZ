@@ -86,7 +86,7 @@ as a red flag and check the release notes before deploying.
 
 ## v0.10.0 → v0.10.1
 
-`v0.10.1` is a patch release: five payment/booking-recovery hardening changes
+`v0.10.1` is a patch release: four payment/booking-recovery hardening changes
 and one operator cleanup script (see the `CHANGELOG.md` `0.10.1` section). It
 contains **no database migrations** and no schema changes — there is nothing to
 look up in `docs/BLUE_GREEN_MIGRATION_SAFETY.tsv`, and either app color can

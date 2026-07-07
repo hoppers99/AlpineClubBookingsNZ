@@ -8,10 +8,10 @@ All notable public reference-release changes should be recorded here.
 
 ## 0.10.1 - 2026-07-07
 
-- Release classification: patch public reference release. Five
+- Release classification: patch public reference release. Four
   payment/booking-recovery hardening changes and one operator cleanup script on
   top of `0.10.0`; no database migrations, no schema changes, no new features,
-  and no behaviour changes outside the raced/edge windows described below. Safe
+  and no behaviour changes outside the raced/edge shapes described below. Safe
   to deploy tag-to-tag from `v0.10.0` with the standard backup-first procedure
   (`docs/UPGRADING.md`).
 - Guarded the booking-request quote re-send status flip against a concurrent
@@ -31,7 +31,11 @@ All notable public reference-release changes should be recorded here.
   so the replay re-requests exactly the original slices under the original
   idempotency keys. This supersedes the previous completed-refund remainder
   heuristic and closes the last refund-recovery path that re-derived its
-  allocation at replay time (#1510).
+  allocation at replay time. In the exotic mixed Stripe + Internet-Banking
+  appeal shape, the route now refunds the plannable Stripe portion inline and
+  logs any shortfall instead of pushing the mismatch into recovery — net
+  Stripe money is unchanged and the Internet-Banking portion still settles via
+  credit note (#1510).
 - Capped the never-settled Internet-Banking credit mint per invoice in
   aggregate: multiple never-settled IB payments matched to a single invoice can
   no longer collectively mint account credit above that invoice's cash. The
