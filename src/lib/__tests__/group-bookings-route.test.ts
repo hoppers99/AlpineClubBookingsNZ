@@ -187,6 +187,7 @@ describe("GET /api/group-bookings/[code]", () => {
       status: GroupBookingStatus.OPEN,
       paymentMode: GroupBookingPaymentMode.EACH_PAYS_OWN,
       organiserFirstName: "Andy",
+      lodgeName: "West Ridge Hut",
       checkIn: new Date("2026-07-01T00:00:00Z"),
       checkOut: new Date("2026-07-03T00:00:00Z"),
       joinDeadline: null,
@@ -201,6 +202,7 @@ describe("GET /api/group-bookings/[code]", () => {
     expect(body).toMatchObject({
       code: "ABCD2345",
       organiserFirstName: "Andy",
+      lodgeName: "West Ridge Hut",
       isJoinable: true,
     });
     // No internal ids leaked.

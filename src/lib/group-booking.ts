@@ -300,6 +300,11 @@ export interface GroupBookingSummary {
   status: GroupBookingStatus;
   paymentMode: GroupBookingPaymentMode;
   organiserFirstName: string;
+  // The name of the lodge the group is actually staying at (the organiser
+  // booking's lodge), so public join copy names the right property in a
+  // multi-lodge club. For a single-lodge club this is the sole lodge's name,
+  // so nothing changes visibly (ADR-002).
+  lodgeName: string;
   checkIn: Date;
   checkOut: Date;
   joinDeadline: Date | null;
@@ -318,6 +323,7 @@ export interface GroupBookingRecordForSummary {
     checkOut: Date;
     status: BookingStatus;
     deletedAt: Date | null;
+    lodge: { name: string };
   };
   organiserMember: { firstName: string };
 }
@@ -368,6 +374,7 @@ export function toGroupBookingSummary(
     status: group.status,
     paymentMode: group.paymentMode,
     organiserFirstName: group.organiserMember.firstName,
+    lodgeName: group.organiserBooking.lodge.name,
     checkIn: group.organiserBooking.checkIn,
     checkOut: group.organiserBooking.checkOut,
     joinDeadline: group.joinDeadline,
@@ -400,7 +407,14 @@ export async function resolveGroupBookingByCode(
       paymentMode: true,
       joinDeadline: true,
       organiserBooking: {
-        select: { checkIn: true, checkOut: true, status: true, deletedAt: true, lodgeId: true },
+        select: {
+          checkIn: true,
+          checkOut: true,
+          status: true,
+          deletedAt: true,
+          lodgeId: true,
+          lodge: { select: { name: true } },
+        },
       },
       organiserMember: { select: { firstName: true } },
     },
