@@ -1697,6 +1697,61 @@ const adminHelpEntries: HelpEntry[] = [
       ],
     ),
   ),
+  entry(
+    "/admin/access-roles",
+    help(
+      "Access roles and admin areas",
+      "Access roles grant per-area admin access at one of three levels — none, view, or edit. Assign one or more roles to a member; their effective access is the strongest level each role grants per area.",
+      [
+        "Open a role to set its per-area access, or create a custom role, then assign roles to members from the member editor.",
+        "Give the least access that does the job: view where a role only needs to read, edit only where it must change records.",
+        "Deleting or narrowing a role changes every current holder — check who holds it before you save.",
+      ],
+      [
+        {
+          name: "Admin Overview",
+          description:
+            "Dashboard and cross-area entry points, including the pending-counts badges.",
+        },
+        {
+          name: "Bookings & Beds",
+          description:
+            "Bookings, booking requests, policies, waitlist, bed allocation, seasons, age tiers, and promo codes.",
+        },
+        {
+          name: "Membership",
+          description:
+            "Members, applications, families, memberships, inductions, communications, committee, lockers, and member lodge-access.",
+        },
+        {
+          name: "Finance",
+          description:
+            "Payments, subscriptions, refunds, reports, Xero sync, accounting setup, and member credits.",
+        },
+        {
+          name: "Lodge Operations",
+          description:
+            "Hut leaders, rosters, chores, work parties, lodge settings, and lodges.",
+        },
+        {
+          name: "Content",
+          description:
+            "Public page content, site chrome, banners, images, and site style.",
+        },
+        {
+          name: "Support & System",
+          description:
+            "Setup, modules, health, deliverability, audit, issue reports, and booking messages.",
+        },
+      ],
+      [
+        "Each area grants none, view, or edit. Edit implies view; anything other than a read requires edit, and a read-only page needs only view.",
+        "A member can hold several roles; their access is the maximum level each role grants per area — levels merge upward and never subtract.",
+        "The six seeded roles (Read-only Admin, Booking Officer, Membership Officer, Content Manager, Treasurer, Finance Viewer) are starting points you can edit or delete; an edit applies to every holder on their next request.",
+        "Full Admin is a protected role with edit everywhere. Its permissions are never editable, and you cannot demote or deactivate your own account — but nothing stops the last OTHER Full Admin being deactivated, so keep a second Full Admin account.",
+      ],
+    ),
+  ),
 ];
 
 const financeHelpEntries: HelpEntry[] = [
