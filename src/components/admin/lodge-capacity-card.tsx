@@ -36,6 +36,7 @@ export function LodgeCapacityCard() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [forbidden, setForbidden] = useState(false);
   const [savedMessage, setSavedMessage] = useState("");
   const cardRef = useRef<HTMLDivElement>(null);
   const feedbackRef = useRef<HTMLDivElement>(null);
@@ -48,6 +49,21 @@ export function LodgeCapacityCard() {
       const response = await fetch("/api/admin/lodge-settings", {
         credentials: "same-origin",
       });
+      // The embedding page normally hides this card by permission matrix; this
+      // in-card backstop keeps a future cross-area embedding degrading quietly
+      // (render nothing) instead of showing the error box for a viewer who
+      // simply lacks lodge access. Genuine failures (5xx/network) keep it.
+      if (response.status === 403 || response.status === 401) {
+        // Dev breadcrumb: the embedding page hides this card by matrix, so a
+        // denial here means matrix↔enforcement drift or mid-session revocation.
+        if (process.env.NODE_ENV !== "production") {
+          console.warn(
+            "LodgeCapacityCard: lodge-settings fetch denied; hiding card (matrix/enforcement drift or revoked session?)",
+          );
+        }
+        setForbidden(true);
+        return;
+      }
       if (!response.ok) throw new Error("Failed to load lodge settings");
       const body = (await response.json()) as LodgeSettingsResponse;
       setClubConfigCapacity(body.clubConfigCapacity);
@@ -119,6 +135,8 @@ export function LodgeCapacityCard() {
       setSaving(false);
     }
   }
+
+  if (forbidden) return null;
 
   return (
     <Card ref={cardRef}>
