@@ -22,7 +22,7 @@ interface FactSeed {
   month: string;
   accountCode: string;
   accountName: string;
-  accountClass: "REVENUE" | "EXPENSE";
+  accountClass: "REVENUE" | "EXPENSE" | null;
   amountCents: number;
   isProvisional?: boolean;
 }
@@ -187,6 +187,44 @@ describe("buildFinanceMonthlyPnlSummary", () => {
       (group) => group.id === "cat-fundraising-costs"
     );
     expect(fundraising?.amountCents).toBe(25_000);
+  });
+
+  it("keeps an unclassed unmapped account in the costs view, not dropped from both", async () => {
+    mockListMonthlyFacts.mockImplementation(
+      async (input: { fromMonth: string }) =>
+        input.fromMonth === PRIMARY.fromMonth
+          ? [
+              fact({ month: "2026-05", accountCode: "310", accountName: "Catering", accountClass: "EXPENSE", amountCents: 40_000 }),
+              // Unmapped account with no Xero class (e.g. missing from a stale
+              // chart snapshot). It must land in exactly one view, not vanish
+              // from both, so the "unmapped stays in totals" promise holds.
+              fact({ month: "2026-05", accountCode: "990", accountName: "Sundry", accountClass: null, amountCents: 12_000 }),
+            ]
+          : []
+    );
+
+    const costs = await buildFinanceMonthlyPnlSummary({
+      kind: "EXPENSE",
+      primary: PRIMARY,
+      comparison: null,
+      currentMonth: "2026-07",
+    });
+    const revenue = await buildFinanceMonthlyPnlSummary({
+      kind: "REVENUE",
+      primary: PRIMARY,
+      comparison: null,
+      currentMonth: "2026-07",
+    });
+
+    // Costs keeps the unclassed line, in the Unmapped group and the total,
+    // matching the ratio explorer's "unclassed counts as expense" rule.
+    expect(costs.amountCents).toBe(52_000);
+    expect(costs.groups.find((group) => group.id === "unmapped")).toMatchObject({
+      amountCents: 12_000,
+      lineCount: 1,
+    });
+    // Revenue excludes it, confirming it is not double-counted or dropped.
+    expect(revenue.amountCents).toBe(0);
   });
 
   it("returns null comparison fields when no comparison window is selected", async () => {

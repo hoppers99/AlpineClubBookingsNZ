@@ -150,14 +150,19 @@ export async function buildFinanceMonthlyPnlSummary(
   const categoryByCode = buildCategoryLookup(categories);
 
   // A fact row belongs to this view when the treasurer mapped its code to a
-  // category of this kind, or — unmapped — when its Xero account class says
-  // so. Mappings win over class so deliberate re-grouping is honoured.
+  // category of this kind, or — unmapped — when its Xero account class says so.
+  // Mappings win over class so deliberate re-grouping is honoured. An unmapped
+  // account whose class is neither REVENUE nor EXPENSE (e.g. null on a stale
+  // chart snapshot) falls into EXPENSE, matching the ratio explorer
+  // (finance-ratio-insights.ts) so both views cover the same account set and
+  // the "unmapped accounts stay in totals" promise holds — no row is silently
+  // dropped from both views.
   const belongsToKind = (record: FinanceMonthlyFactRecord): boolean => {
     const mapped = categoryByCode.get(normalizeCode(record.accountCode));
     if (mapped) {
       return mapped.kind === input.kind;
     }
-    return classKind(record.accountClass) === input.kind;
+    return (classKind(record.accountClass) ?? "EXPENSE") === input.kind;
   };
 
   const lines = new Map<string, AccountLineAggregate>();

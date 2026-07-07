@@ -641,8 +641,12 @@ async function buildMappedPnlDashboard(input: {
       data: summary.trend.map((point) => ({
         label: point.isProvisional ? `${point.label} (MTD)` : point.label,
         amount: point.amountCents,
-        ...(hasComparison
-          ? { comparison: point.comparisonAmountCents ?? 0 }
+        // A custom comparison window shorter than the primary leaves trailing
+        // months unaligned (comparisonAmountCents null). Omit the key so the
+        // chart renders a gap rather than a fake $0 bar, matching the CSV/PDF
+        // export which prints "" for the same case.
+        ...(hasComparison && point.comparisonAmountCents !== null
+          ? { comparison: point.comparisonAmountCents }
           : {}),
       })),
       series: [

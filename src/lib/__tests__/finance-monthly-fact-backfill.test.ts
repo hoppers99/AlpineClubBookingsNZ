@@ -156,6 +156,32 @@ describe("buildFinanceMonthlyFactBackfillDatasets", () => {
     expect(snapshots).toHaveLength(1);
   });
 
+  it("walks past a dormant chunk to reach an explicit fromMonth", async () => {
+    mockFetchPnl.mockImplementation(
+      async (_context, window: { endMonth: string }) =>
+        // The 2025-04 chunk is a quiet year with no activity. Without a bound
+        // the walk would stop there (pre-history); with an explicit fromMonth
+        // it must keep going so a dormant year cannot block older history.
+        buildChunkSnapshot(
+          window.endMonth,
+          window.endMonth === "2025-04" ? 0 : 12500
+        )
+    );
+
+    const datasets = buildFinanceMonthlyFactBackfillDatasets({
+      fromMonth: "2023-06",
+      maxChunks: 30,
+    });
+    const snapshots = (await datasets[1].sync(createContext())) as unknown[];
+
+    expect(mockFetchPnl.mock.calls.map(([, window]) => window.endMonth)).toEqual([
+      "2026-04",
+      "2025-04",
+      "2024-04",
+    ]);
+    expect(snapshots).toHaveLength(3);
+  });
+
   it("respects the maxChunks cap", async () => {
     mockFetchPnl.mockImplementation(
       async (_context, window: { endMonth: string }) =>

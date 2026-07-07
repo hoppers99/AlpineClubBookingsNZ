@@ -51,7 +51,11 @@ multi-period Xero report payload:
 - AccountIDs resolve through the latest `CHART_OF_ACCOUNTS` snapshot
   (`loadFinanceMonthlyChartContext` in `finance-monthly-fact-store.ts`). Rows
   with amounts that cannot resolve to a GL code are reported as
-  `unresolvedRowLabels` and surface in the sync run summary.
+  `unresolvedRowLabels`; the dataset handler fails the pull rather than storing
+  a partial set (see Failure behaviour).
+- The extraction also reports `periodColumnCount` (the header's non-label data
+  cells) so the dataset handler can detect a period header that only partially
+  parsed.
 
 `src/lib/finance-monthly-fact-store.ts` persists rows with whole-window
 replacement: a pull covering months M1..Mn atomically deletes and recreates
@@ -84,17 +88,31 @@ Dataset handlers attach fact rows to their snapshot via the optional
 the snapshot, then replaces the covered fact months, and records
 `factRowCount`/`unresolvedFactRowCount` per dataset in the run summary.
 
-Failure behaviour is deliberately loud: a report with an unparseable period
-header, a missing chart-of-accounts snapshot, or zero resolvable rows fails
-the dataset rather than silently replacing stored months with nothing.
+Failure behaviour is deliberately loud, so no pull silently replaces stored
+months with an incomplete set. The dataset handler throws — leaving the stored
+months untouched and marking only that dataset failed — when a report has:
+
+- an unparseable period header (no date columns parse), or a header whose date
+  cells only **partially** parse (fewer months than `periodColumnCount`), which
+  would otherwise drop the unparsed months from both the rows and the replace
+  window and leave them stale;
+- a missing chart-of-accounts snapshot; or
+- **any** leaf row that carries an amount but does not resolve to a GL code
+  (not just the all-unresolved case) — a resolved subset would otherwise
+  replace the whole window and drop the unresolved account's amounts. The chart
+  dataset is pulled fresh earlier in the same run, so an unresolved row means a
+  genuinely new/absent account; rerun after the chart snapshot catches up.
 
 ## Historical backfill
 
 `src/lib/finance-monthly-fact-backfill.ts` walks backwards from the current
-month in 12-month chunks (2 Xero calls per chunk-year) until organisation
-pre-history (a chunk with no non-zero amounts) or an explicit `fromMonth`
-bound. It runs through `runFinanceSync` under the
-`finance-monthly-fact-backfill` workflow with trigger `BACKFILL`.
+month in 12-month chunks (2 Xero calls per chunk-year). The **unbounded** walk
+(no `fromMonth`) stops at organisation pre-history — the first chunk with no
+non-zero amounts. When an explicit `fromMonth` is given, the walk instead runs
+to the chunk containing that month and **ignores dormant chunks along the way**,
+so a quiet year mid-history cannot block older data the operator asked for. It
+runs through `runFinanceSync` under the `finance-monthly-fact-backfill`
+workflow with trigger `BACKFILL`.
 
 Operator entry points:
 

@@ -62,6 +62,14 @@ export interface ExtractMonthlyFactsResult {
    * surfaced so sync diagnostics can flag mapping gaps.
    */
   unresolvedRowLabels: string[];
+  /**
+   * Number of period columns the report header exposes (its non-label data
+   * cells). When fewer months parse than this, some date cells were in a format
+   * the parser did not recognise, so those months would silently drop out of
+   * both the extracted rows and the replace window — callers compare
+   * `months.length` against this to fail loudly instead.
+   */
+  periodColumnCount: number;
 }
 
 const MONTH_KEY_REGEX = /^\d{4}-(0[1-9]|1[0-2])$/;
@@ -202,8 +210,18 @@ interface HeaderColumnMonth {
   month: string;
 }
 
-function findHeaderColumnMonths(rows: PnlReportRow[]): HeaderColumnMonth[] {
-  const visit = (candidates: PnlReportRow[]): HeaderColumnMonth[] | null => {
+interface HeaderColumns {
+  columns: HeaderColumnMonth[];
+  /**
+   * Non-blank data cells in the chosen header row (every cell after the leading
+   * row-label column). Each is a period column the report exposes; a shortfall
+   * against `columns.length` means a date cell failed to parse.
+   */
+  periodColumnCount: number;
+}
+
+function findHeaderColumnMonths(rows: PnlReportRow[]): HeaderColumns {
+  const visit = (candidates: PnlReportRow[]): HeaderColumns | null => {
     for (const row of candidates) {
       if (row.rowType?.toLowerCase() === "header") {
         const columns = row.cells.flatMap((cell, cellIndex) => {
@@ -212,7 +230,10 @@ function findHeaderColumnMonths(rows: PnlReportRow[]): HeaderColumnMonth[] {
         });
 
         if (columns.length > 0) {
-          return columns;
+          const periodColumnCount = row.cells.filter(
+            (cell, cellIndex) => cellIndex > 0 && Boolean(cell.value?.trim())
+          ).length;
+          return { columns, periodColumnCount };
         }
       }
 
@@ -225,7 +246,7 @@ function findHeaderColumnMonths(rows: PnlReportRow[]): HeaderColumnMonth[] {
     return null;
   };
 
-  return visit(rows) ?? [];
+  return visit(rows) ?? { columns: [], periodColumnCount: 0 };
 }
 
 function collectLeafRows(rows: PnlReportRow[]): PnlReportRow[] {
@@ -270,10 +291,10 @@ export function extractMonthlyFactsFromReport(input: {
 }): ExtractMonthlyFactsResult {
   const report = readPnlReportPayload(input.payload);
   if (!report) {
-    return { months: [], rows: [], unresolvedRowLabels: [] };
+    return { months: [], rows: [], unresolvedRowLabels: [], periodColumnCount: 0 };
   }
 
-  const columns = findHeaderColumnMonths(report.rows);
+  const { columns, periodColumnCount } = findHeaderColumnMonths(report.rows);
   const provisionalFromMonth =
     input.provisionalFromMonth && isMonthKey(input.provisionalFromMonth)
       ? input.provisionalFromMonth
@@ -336,5 +357,6 @@ export function extractMonthlyFactsFromReport(input: {
         left.accountCode.localeCompare(right.accountCode)
     ),
     unresolvedRowLabels: Array.from(unresolvedRowLabels).sort(),
+    periodColumnCount,
   };
 }

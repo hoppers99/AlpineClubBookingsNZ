@@ -82,6 +82,23 @@ export function financeFinancialYearBuckets(input: {
   });
 }
 
+/**
+ * The "last 12 months" window: 12 calendar months ending at the latest data
+ * month (that month plus the 11 before it). Using calendar arithmetic — not
+ * `months[length - 12]` — keeps the window exactly 12 months wide even when
+ * stored history has gaps; the missing months are simply absent data points
+ * rather than stretching the window past a year.
+ */
+export function last12MonthWindow(
+  matrix: Pick<FinanceRatioMatrix, "months" | "currentMonth">
+): { fromMonth: string; toMonth: string } {
+  const lastDataMonth = matrix.months.at(-1) ?? matrix.currentMonth;
+  return {
+    fromMonth: shiftMonthKey(lastDataMonth, -11),
+    toMonth: lastDataMonth,
+  };
+}
+
 /** Sum a series over an inclusive month-key window. */
 export function sumRatioSeries(
   matrix: Pick<FinanceRatioMatrix, "months">,

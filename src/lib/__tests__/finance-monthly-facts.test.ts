@@ -315,7 +315,12 @@ describe("extractMonthlyFactsFromReport", () => {
   it("returns empty results for unreadable payloads", () => {
     expect(
       extractMonthlyFactsFromReport({ payload: null, chart: buildChart() })
-    ).toEqual({ months: [], rows: [], unresolvedRowLabels: [] });
+    ).toEqual({
+      months: [],
+      rows: [],
+      unresolvedRowLabels: [],
+      periodColumnCount: 0,
+    });
   });
 
   it("returns no months when the header has no parseable date columns", () => {
@@ -329,6 +334,27 @@ describe("extractMonthlyFactsFromReport", () => {
 
     expect(result.months).toEqual([]);
     expect(result.rows).toEqual([]);
+  });
+
+  it("reports the period-column count so partial header parses are detectable", () => {
+    // Three period columns in the header, but the middle one uses a format the
+    // parser does not recognise, so only two months come out. periodColumnCount
+    // stays 3 so callers can tell a date cell was silently dropped.
+    const payload = buildMultiPeriodPayload();
+    payload.rows[0].cells = [
+      plainCell(""),
+      plainCell("30 Apr 26"),
+      plainCell("Foo 26"),
+      plainCell("28 Feb 26"),
+    ];
+
+    const result = extractMonthlyFactsFromReport({
+      payload,
+      chart: buildChart(),
+    });
+
+    expect(result.months).toEqual(["2026-02", "2026-04"]);
+    expect(result.periodColumnCount).toBe(3);
   });
 
   it("treats accounts missing from the chart as unresolved when they carry amounts", () => {

@@ -12,6 +12,7 @@ import {
 import { Label } from "@/components/ui/label";
 import {
   financeFinancialYearBuckets,
+  last12MonthWindow,
   ratioForWindow,
   sumRatioSeries,
   type FinanceRatioMatrix,
@@ -74,10 +75,7 @@ function buildRangeChips(matrix: FinanceRatioMatrix): RangeChip[] {
   const [thisFy, lastFy, fyBefore] = financeFinancialYearBuckets(matrix);
   const lastDataMonth = matrix.months.at(-1) ?? matrix.currentMonth;
   const firstDataMonth = matrix.months[0] ?? matrix.currentMonth;
-  const last12From =
-    matrix.months.length > 12
-      ? matrix.months[matrix.months.length - 12]
-      : firstDataMonth;
+  const last12 = last12MonthWindow(matrix);
 
   return [
     { key: "this-fy", ...thisFy },
@@ -86,8 +84,8 @@ function buildRangeChips(matrix: FinanceRatioMatrix): RangeChip[] {
     {
       key: "last-12",
       label: "Last 12 months",
-      fromMonth: last12From,
-      toMonth: lastDataMonth,
+      fromMonth: last12.fromMonth,
+      toMonth: last12.toMonth,
     },
     {
       key: "all",

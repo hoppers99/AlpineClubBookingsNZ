@@ -3,11 +3,12 @@
  *
  * Walks backwards from the current month in 12-month chunks, pulling the same
  * multi-period Xero reports the daily sync uses (one profit-and-loss and one
- * balance-sheet call per chunk-year) until it reaches organisation
- * pre-history (a chunk with no non-zero amounts) or the optional fromMonth
- * bound. Chunks replace their own months idempotently, so the backfill can be
- * re-run at any time — including to pick up late Xero edits older than the
- * daily sync's rolling 12-month window.
+ * balance-sheet call per chunk-year). The unbounded walk stops at organisation
+ * pre-history (the first chunk with no non-zero amounts); an explicit fromMonth
+ * bound instead walks the whole requested window, ignoring dormant chunks so a
+ * quiet year mid-history cannot block older data. Chunks replace their own
+ * months idempotently, so the backfill can be re-run at any time — including to
+ * pick up late Xero edits older than the daily sync's rolling 12-month window.
  *
  * Runs through runFinanceSync so every backfill gets the same run tracking,
  * snapshot provenance and failure handling as the daily sync. All Xero calls
@@ -50,9 +51,11 @@ export const DEFAULT_FINANCE_BACKFILL_MAX_CHUNKS = 30;
 export interface BackfillFinanceMonthlyFactsInput {
   requestedByMemberId?: string | null;
   /**
-   * Optional inclusive lower bound ("YYYY-MM"). The walk stops after the
-   * chunk containing this month; chunk granularity means up to 11 earlier
-   * months may still be pulled. Omit to backfill the full org history.
+   * Optional inclusive lower bound ("YYYY-MM"). The walk runs until the chunk
+   * containing this month — dormant chunks along the way do not stop it, so a
+   * quiet year cannot block older history; chunk granularity means up to 11
+   * earlier months may still be pulled. Omit to backfill the full org history
+   * (which does stop at the first dormant chunk / pre-history).
    */
   fromMonth?: string | null;
   maxChunks?: number;
@@ -115,8 +118,11 @@ async function backfillReportChunks(
     if (options.fromMonth && oldestMonth <= options.fromMonth) {
       break;
     }
-    if (!chunkHasActivity(snapshot)) {
-      // Organisation pre-history: a whole year with no non-zero amounts.
+    if (!options.fromMonth && !chunkHasActivity(snapshot)) {
+      // Organisation pre-history: a whole year with no non-zero amounts. Only
+      // the unbounded walk stops here — an explicit fromMonth means the
+      // operator wants that whole window, so a dormant year mid-history must
+      // not cut the walk short before reaching the requested bound.
       break;
     }
 

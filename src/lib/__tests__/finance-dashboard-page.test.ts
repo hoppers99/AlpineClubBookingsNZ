@@ -626,4 +626,45 @@ describe("finance dashboard page model", () => {
     );
     expect(withoutComparison.selectionLabels.comparisonWindow).toBe("None");
   });
+
+  it("renders a gap, not a $0 bar, for unaligned trailing comparison months", async () => {
+    mockBuildFinanceMonthlyPnlSummary.mockImplementation(
+      async (input: { kind: "REVENUE" | "EXPENSE" }) => ({
+        ...mappedSummary(input.kind),
+        trend: [
+          {
+            monthKey: "2026-05",
+            label: "May 2026",
+            amountCents: 100_000,
+            comparisonAmountCents: 80_000,
+            isProvisional: false,
+          },
+          {
+            // A comparison window shorter than the primary leaves this month
+            // unaligned (null), which must render as a gap rather than $0.
+            monthKey: "2026-06",
+            label: "Jun 2026",
+            amountCents: 120_000,
+            comparisonAmountCents: null,
+            isProvisional: false,
+          },
+        ],
+      })
+    );
+
+    const model = await buildFinanceDashboardPageModel({
+      member: financeManager(),
+      searchParams: { view: "revenue" },
+    });
+    const trend = model.trends[0];
+
+    expect(trend.data[0]).toMatchObject({
+      label: "May 2026",
+      amount: 100_000,
+      comparison: 80_000,
+    });
+    expect(trend.data[1]).toMatchObject({ label: "Jun 2026", amount: 120_000 });
+    // The unaligned month omits the comparison key so the chart draws a gap.
+    expect("comparison" in trend.data[1]).toBe(false);
+  });
 });

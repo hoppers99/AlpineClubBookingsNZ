@@ -1597,5 +1597,105 @@ describe("finance-sync-datasets", () => {
         syncFinanceProfitAndLossByMonthFacts(context as never)
       ).rejects.toThrow(/could not be matched to GL codes/);
     });
+
+    it("fails loudly when the period header only partially parses", async () => {
+      const context = createFinanceSyncContext();
+      context.xero.accountingApi.getReportProfitAndLoss.mockResolvedValue({
+        body: {
+          reports: [
+            createMultiPeriodReport({
+              rows: [
+                {
+                  // Two period columns, but only "30 Apr 26" parses; the
+                  // unrecognised "Foo 26" cell would silently drop March from
+                  // both the extracted rows and the replace window.
+                  rowType: "Header" as never,
+                  cells: [{ value: "" }, { value: "30 Apr 26" }, { value: "Foo 26" }],
+                },
+                {
+                  rowType: SECTION,
+                  title: "Income",
+                  rows: [
+                    {
+                      rowType: ROW,
+                      cells: [
+                        {
+                          value: "Hut Fees",
+                          attributes: [{ id: "account", value: "acc-hut" }],
+                        },
+                        { value: "1,250.00" },
+                        { value: "980.50" },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            }),
+          ],
+        },
+      });
+
+      await expect(
+        syncFinanceProfitAndLossByMonthFacts(context as never)
+      ).rejects.toThrow(/only partially parsed \(1 of 2 monthly columns\)/);
+    });
+
+    it("fails loudly when only some rows resolve to a GL code", async () => {
+      // The chart snapshot (from beforeEach) knows acc-hut but not acc-new, as
+      // happens when a newly created Xero account is missing from a stale
+      // snapshot. Storing only the resolved subset would drop acc-new's amounts
+      // from the whole replaced window, so the dataset must fail instead.
+      const context = createFinanceSyncContext();
+      context.xero.accountingApi.getReportProfitAndLoss.mockResolvedValue({
+        body: {
+          reports: [
+            createMultiPeriodReport({
+              rows: [
+                {
+                  rowType: "Header" as never,
+                  cells: [
+                    { value: "" },
+                    { value: "30 Apr 26" },
+                    { value: "31 Mar 26" },
+                  ],
+                },
+                {
+                  rowType: SECTION,
+                  title: "Income",
+                  rows: [
+                    {
+                      rowType: ROW,
+                      cells: [
+                        {
+                          value: "Hut Fees",
+                          attributes: [{ id: "account", value: "acc-hut" }],
+                        },
+                        { value: "1,250.00" },
+                        { value: "980.50" },
+                      ],
+                    },
+                    {
+                      rowType: ROW,
+                      cells: [
+                        {
+                          value: "New Account",
+                          attributes: [{ id: "account", value: "acc-new" }],
+                        },
+                        { value: "500.00" },
+                        { value: "0.00" },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            }),
+          ],
+        },
+      });
+
+      await expect(
+        syncFinanceProfitAndLossByMonthFacts(context as never)
+      ).rejects.toThrow(/could not be matched to GL codes \(1 unresolved\)/);
+    });
   });
 });

@@ -22,6 +22,7 @@ import {
 } from "@/lib/finance-ratio-insights";
 import {
   financeFinancialYearBuckets,
+  last12MonthWindow,
   ratioForWindow,
   sumRatioSeries,
 } from "@/lib/finance-ratio-shared";
@@ -76,6 +77,31 @@ describe("financeFinancialYearBuckets", () => {
         isYearToDate: false,
       },
     ]);
+  });
+});
+
+describe("last12MonthWindow", () => {
+  it("spans exactly 12 calendar months even when stored history has gaps", () => {
+    // 16 stored data months over a 30-month calendar span. The old
+    // months[length - 12] logic anchored on 2024-08 (23 calendar months);
+    // calendar arithmetic keeps the window a true year.
+    const months = [
+      "2024-01", "2024-02", "2024-04", "2024-06", "2024-08", "2024-10",
+      "2024-12", "2025-02", "2025-04", "2025-06", "2025-08", "2025-10",
+      "2025-12", "2026-02", "2026-04", "2026-06",
+    ];
+
+    expect(last12MonthWindow({ months, currentMonth: "2026-07" })).toEqual({
+      fromMonth: "2025-07",
+      toMonth: "2026-06",
+    });
+  });
+
+  it("falls back to the current month when no data is stored", () => {
+    expect(last12MonthWindow({ months: [], currentMonth: "2026-07" })).toEqual({
+      fromMonth: "2025-08",
+      toMonth: "2026-07",
+    });
   });
 });
 

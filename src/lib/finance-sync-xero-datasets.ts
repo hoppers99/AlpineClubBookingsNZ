@@ -1466,9 +1466,12 @@ function requireMonthlyFactChartContext(
 /**
  * Derive fact rows from a freshly pulled multi-period report and attach them
  * to the snapshot for runFinanceSync to persist. Throws instead of returning
- * empty facts when the report cannot be read (unparseable period header, or
- * no row resolved to a GL code) so a bad pull fails the dataset loudly rather
- * than silently replacing stored months with nothing.
+ * partial facts when the report cannot be fully read — an unparseable period
+ * header, a header whose date cells only partially parse, or any leaf row that
+ * carries an amount but does not resolve to a GL code — so a bad pull fails the
+ * dataset loudly rather than silently replacing stored months with an
+ * incomplete set (the throw runs before persistence, so the stored months are
+ * left untouched and only this dataset is marked failed).
  */
 function attachMonthlyFacts(input: {
   snapshot: FinanceSyncSnapshotInput;
@@ -1490,9 +1493,15 @@ function attachMonthlyFacts(input: {
     );
   }
 
-  if (extraction.rows.length === 0 && extraction.unresolvedRowLabels.length > 0) {
+  if (extraction.months.length < extraction.periodColumnCount) {
     throw new Error(
-      `${input.operation} report rows could not be matched to GL codes (${extraction.unresolvedRowLabels.length} unresolved). Refusing to replace stored monthly facts; run the chart-of-accounts sync and retry.`
+      `${input.operation} returned a report whose period header only partially parsed (${extraction.months.length} of ${extraction.periodColumnCount} monthly columns). Refusing to replace stored monthly facts because the unparsed months would linger stale; report an unrecognised Xero date format.`
+    );
+  }
+
+  if (extraction.unresolvedRowLabels.length > 0) {
+    throw new Error(
+      `${input.operation} report rows could not be matched to GL codes (${extraction.unresolvedRowLabels.length} unresolved). Refusing to replace stored monthly facts because the unresolved amounts would be dropped; run the chart-of-accounts sync and retry.`
     );
   }
 

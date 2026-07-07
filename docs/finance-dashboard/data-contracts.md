@@ -91,7 +91,10 @@ Mappings match Xero P&L lines **by account code only** (resolved through the
 stored Chart-of-Accounts snapshot, which maps Xero `AccountID` → code). If no
 Chart-of-Accounts snapshot exists yet, lines cannot be matched and appear under
 `Unmapped` until one is captured via Backfill. Unmapped revenue and expense
-lines remain included in dashboard totals under `Unmapped`. On the dashboard,
+lines remain included in dashboard totals under `Unmapped`; an unmapped account
+whose Xero class is neither REVENUE nor EXPENSE (e.g. absent from a stale
+Chart-of-Accounts snapshot) counts as an expense, matching the ratio explorer,
+so no line is dropped from both the revenue and costs views. On the dashboard,
 groups render under their `subtype` sub-heading with a per-subtype sub-total.
 
 > Note: the legacy `FinanceReportCategoryMapping.sectionLabel` / `lineLabel`
