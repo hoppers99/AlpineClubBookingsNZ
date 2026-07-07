@@ -44,22 +44,33 @@ type KioskRow = {
 };
 
 function serializeKioskAccount(row: KioskRow) {
-  // Exactly one STAFF grant = bound to that lodge; zero grants = null (the
-  // kiosk serves the default lodge). A many-grant state also collapses to
-  // null here for display, but note it no longer behaves like "default":
-  // getStaffLodgeBinding now reports it as ambiguous and the kiosk/PIN paths
-  // DENY it (M5). This admin list still renders such an account as unbound —
-  // it is set only via the member lodge-access surface, not this route (which
-  // replaces STAFF grants one-at-a-time). Surfacing the ambiguous state here
-  // is a possible follow-up.
-  const binding = row.lodgeAccess.length === 1 ? row.lodgeAccess[0] : null;
-  return {
+  const base = {
     id: row.id,
     email: row.email,
     firstName: row.firstName,
     lastName: row.lastName,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+  };
+  // Two or more STAFF grants is ambiguous: getStaffLodgeBinding reports it as
+  // such and the kiosk/PIN paths DENY it (M5). Surface the ambiguous state so
+  // an admin sees what to fix instead of a misleading unbound "Default lodge"
+  // account. The extra fields are added only for this case, so single-grant
+  // and zero-grant payloads stay byte-identical.
+  if (row.lodgeAccess.length >= 2) {
+    return {
+      ...base,
+      boundLodgeId: null,
+      boundLodgeName: null,
+      binding: "ambiguous" as const,
+      assignedLodgeCount: row.lodgeAccess.length,
+    };
+  }
+  // Exactly one STAFF grant = bound to that lodge; zero grants = null (the
+  // kiosk serves the default lodge).
+  const binding = row.lodgeAccess.length === 1 ? row.lodgeAccess[0] : null;
+  return {
+    ...base,
     boundLodgeId: binding?.lodgeId ?? null,
     boundLodgeName: binding?.lodge.name ?? null,
   };

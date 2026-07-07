@@ -24,6 +24,10 @@ interface KioskAccount {
   updatedAt: string;
   boundLodgeId: string | null;
   boundLodgeName: string | null;
+  // Present only when this account holds STAFF grants at two or more lodges:
+  // the kiosk/PIN paths deny it (M5), so an admin must reassign it to one lodge.
+  binding?: "ambiguous";
+  assignedLodgeCount?: number;
 }
 
 type SaveMessage = { type: "success" | "error"; text: string } | null;
@@ -106,7 +110,9 @@ function AccountCard({
       <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle>
           {showLodgeControls
-            ? `Kiosk account — ${account.boundLodgeName ?? "Default lodge"}`
+            ? account.binding === "ambiguous"
+              ? "Kiosk account — Ambiguous assignment"
+              : `Kiosk account — ${account.boundLodgeName ?? "Default lodge"}`
             : "Lodge Account Settings"}
         </CardTitle>
         {!editing && (
@@ -123,6 +129,20 @@ function AccountCard({
         )}
       </CardHeader>
       <CardContent className="space-y-4">
+        {account.binding === "ambiguous" && (
+          <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+            <p className="font-semibold">
+              Ambiguous — assigned to {account.assignedLodgeCount} lodges
+            </p>
+            <p className="mt-1">
+              This kiosk account has STAFF access at more than one lodge, so it
+              is blocked from the kiosk and PIN sign-in.
+              {showLodgeControls
+                ? " Set it to operate a single lodge below and save to fix this."
+                : " Reassign it to a single lodge to fix this."}
+            </p>
+          </div>
+        )}
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-1">
             <Label htmlFor={fieldId("first")}>First Name</Label>

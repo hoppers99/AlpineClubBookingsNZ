@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { checkLodgeAuth, resolveKioskLodgeId } from "@/lib/lodge-auth";
 import { getKioskAccessInfo } from "@/lib/kiosk-access";
 import { countActiveLodges } from "@/lib/lodges";
+import { AmbiguousKioskLodgeError, getStaffLodgeBinding } from "@/lib/lodge-access";
 import { parseDateOnly } from "@/lib/date-only";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
@@ -65,6 +66,30 @@ export async function GET(req: NextRequest) {
 
   if ("member" in authResult && authResult.member) {
     const access = await getKioskAccessInfo(authResult.member, date);
+
+    // A kiosk (STAFF) account granted at more than one lodge cannot be scoped
+    // to a single property, so every kiosk data route denies it with a 403
+    // (M5). Surface that up front so the kiosk shows a fix-the-assignment
+    // message instead of rendering enabled UI that then hits clean 403s. Only
+    // the STAFF-bound tiers resolve their lodge via getStaffLodgeBinding; hut
+    // leaders and staying guests carry their own lodge and are never ambiguous.
+    if (access.tier === "lodge" || access.tier === "admin") {
+      const binding = await getStaffLodgeBinding(prisma, authResult.member.id);
+      if (binding.kind === "ambiguous") {
+        // No lodge name or guest/roster data is served here — the same data
+        // the M5 denial hides — only a generic fix-the-assignment message.
+        return NextResponse.json({
+          tier: "none",
+          misconfigured: true,
+          error: new AmbiguousKioskLodgeError().message,
+          dateRange: null,
+          canManageRoster: false,
+          canMarkAttendance: false,
+          canCompleteChores: false,
+          lodgeName: null,
+        });
+      }
+    }
 
     return NextResponse.json({
       ...access,
