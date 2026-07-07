@@ -80,6 +80,19 @@ export interface ConfirmedBookingInput extends BaseInput {
    * duplicate roster row. A row left by a cancelled/bumped join is reused.
    */
   groupJoin?: { groupBookingId: string; joinerMemberId: string };
+  /**
+   * Cross-lodge waitlist confirm, in-transaction duplicate-stay guard (#1587
+   * item 2). When set, the same duplicate-stay query the confirm ran in its
+   * pre-flight phase is re-run under the offered lodge's held capacity lock,
+   * just before the booking row is created; a match throws
+   * DuplicateStayConflictError so the transaction rolls back instead of
+   * committing a second booking for the same stay. The member, lodge, and
+   * date range are taken from this input's resolved values — only the entry to
+   * exclude is carried here, so the guard can never disagree with the booking
+   * being created. Only the cross-lodge confirm path sets this; every other
+   * caller leaves it undefined and the guard is skipped.
+   */
+  duplicateStayGuard?: { excludeBookingId: string };
 }
 
 /**
@@ -91,6 +104,20 @@ export class GroupJoinConflictError extends Error {
   constructor() {
     super("You have already joined this group");
     this.name = "GroupJoinConflictError";
+  }
+}
+
+/**
+ * Thrown inside the booking transaction when the in-transaction duplicate-stay
+ * guard (#1587 item 2) finds the member already holds an overlapping stay at
+ * the offered lodge. The cross-lodge confirm maps it to the same DUPLICATE_STAY
+ * rejection its pre-flight guard uses; the transaction rollback discards the
+ * would-be duplicate booking.
+ */
+export class DuplicateStayConflictError extends Error {
+  constructor() {
+    super("You already have a booking at this lodge for these dates");
+    this.name = "DuplicateStayConflictError";
   }
 }
 

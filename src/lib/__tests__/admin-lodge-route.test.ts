@@ -56,6 +56,31 @@ function makePutRequest(body: Record<string, unknown>) {
   return jsonRequest("/api/admin/lodge", body, { method: "PUT" });
 }
 
+// Build a KIOSK_SELECT-shaped row with the given STAFF lodge grants, then
+// stub GET to return exactly that one account so serializeKioskAccount can be
+// asserted directly.
+function stubGetWithGrants(
+  grants: Array<{ lodgeId: string; lodge: { name: string } }>,
+) {
+  mockedAuth.mockResolvedValue(adminSession({ id: "admin-1" }));
+  vi.mocked(prisma.member.findMany).mockResolvedValue([
+    {
+      ...memberFactory({
+        id: "kiosk-1",
+        email: "kiosk@example.org",
+        role: "LODGE",
+        financeAccessLevel: "NONE",
+        canLogin: true,
+        createdAt: new Date("2026-04-11"),
+        updatedAt: new Date("2026-04-11"),
+      }),
+      lodgeAccess: grants,
+    },
+  ] as never);
+  vi.mocked(prisma.memberAccessRole.createMany).mockResolvedValue({ count: 1 } as never);
+  vi.mocked(prisma.memberSubscription.upsert).mockResolvedValue({} as never);
+}
+
 describe("admin lodge route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -267,5 +292,55 @@ describe("admin lodge route", () => {
 
     expect(res.status).toBe(409);
     expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  // Item 5 (#1587): a kiosk account granted STAFF at two or more lodges is
+  // ambiguous (the kiosk/PIN paths DENY it, M5). The admin list surfaces the
+  // ambiguous state with a count instead of rendering it as an unbound account.
+  it("serializes a two-grant kiosk account as ambiguous with a lodge count", async () => {
+    stubGetWithGrants([
+      { lodgeId: "lodge-a", lodge: { name: "Alpine Lodge" } },
+      { lodgeId: "lodge-b", lodge: { name: "River Lodge" } },
+    ]);
+
+    const res = await GET();
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.accounts[0]).toMatchObject({
+      id: "kiosk-1",
+      binding: "ambiguous",
+      assignedLodgeCount: 2,
+      boundLodgeId: null,
+      boundLodgeName: null,
+    });
+  });
+
+  it("serializes a single-grant kiosk account as bound, with no ambiguity fields", async () => {
+    stubGetWithGrants([{ lodgeId: "lodge-a", lodge: { name: "Alpine Lodge" } }]);
+
+    const res = await GET();
+
+    expect(res.status).toBe(200);
+    const account = (await res.json()).accounts[0];
+    expect(account.boundLodgeId).toBe("lodge-a");
+    expect(account.boundLodgeName).toBe("Alpine Lodge");
+    // Byte-identical to the pre-#1587 shape: no ambiguity fields added.
+    expect(account).not.toHaveProperty("binding");
+    expect(account).not.toHaveProperty("assignedLodgeCount");
+  });
+
+  it("serializes a zero-grant kiosk account as default, with no ambiguity fields", async () => {
+    stubGetWithGrants([]);
+
+    const res = await GET();
+
+    expect(res.status).toBe(200);
+    const account = (await res.json()).accounts[0];
+    expect(account.boundLodgeId).toBeNull();
+    expect(account.boundLodgeName).toBeNull();
+    // Byte-identical to the pre-#1587 shape: no ambiguity fields added.
+    expect(account).not.toHaveProperty("binding");
+    expect(account).not.toHaveProperty("assignedLodgeCount");
   });
 });

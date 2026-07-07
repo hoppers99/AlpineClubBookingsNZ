@@ -14,11 +14,16 @@ import {
   checkCapacityForGuestRanges,
 } from "@/lib/capacity";
 import { isMemberEligibleToBookLodge } from "@/lib/lodge-access";
-import { ACTIVE_BOOKING_STATUSES } from "@/lib/booking-status";
+import { DUPLICATE_STAY_BOOKING_STATUSES } from "@/lib/booking-status";
 import {
   createConfirmedBooking,
   type BookingGuestInput,
 } from "@/lib/booking-create";
+// Import the guard's typed error from the leaf types module, not from
+// "@/lib/booking-create": the cross-lodge confirm test mocks the whole
+// booking-create module, which would replace this binding with undefined and
+// break the `instanceof` check below. booking-create re-exports the same class.
+import { DuplicateStayConflictError } from "@/lib/booking-create-types";
 import { getNonMemberHoldDays } from "@/lib/cancellation";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 import { logAudit } from "@/lib/audit";
@@ -152,15 +157,12 @@ export interface CrossLodgeConfirmResult {
   code?: string;
 }
 
-// A member's existing "real stay" for the duplicate-stay guard: everything
-// that is not cancelled/bumped and not a waitlist placeholder. This includes
-// PAYMENT_PENDING (a real pending stay awaiting payment) and COMPLETED (for
-// completeness, though it cannot overlap a future offer's dates); it excludes
-// WAITLISTED / WAITLIST_OFFERED, which are not stays.
-const DUPLICATE_STAY_BOOKING_STATUSES = [
-  ...ACTIVE_BOOKING_STATUSES,
-  BookingStatus.COMPLETED,
-] as const;
+// Shared by the pre-flight (Phase 1) guard and the in-transaction guard's
+// rejection mapping (Phase 2) so both reject with the identical message. The
+// duplicate-stay status set lives in booking-status.ts, imported above, so the
+// two guards count the same booking statuses.
+const DUPLICATE_STAY_ERROR =
+  "You already have a booking at this lodge for these dates. Cancel it before accepting this offer.";
 
 type CrossLodgeOfferEntry = Prisma.BookingGetPayload<{
   include: {
@@ -268,20 +270,23 @@ export async function confirmCrossLodgeWaitlistOffer(
         };
       }
 
-      // Duplicate-stay guard. If Phase 3 (cancel the waitlist entry) failed on
-      // an earlier confirm, the entry is stranded in WAITLIST_OFFERED with a
-      // booking already created at the offered lodge; a re-confirm (or an
-      // expiry re-offer + confirm) would create a SECOND booking and a second
-      // payment request for the same stay. Reject when the member already holds
-      // an active booking overlapping the offer's dates at the offered lodge.
-      // The offered lodge's capacity lock (taken above) spans only THIS
-      // Phase-1 transaction, so the guard reliably catches any COMMITTED
-      // earlier confirm (the stranded-offer re-confirm and expiry-re-offer
-      // paths). Two fully-concurrent in-flight confirms of the same offer can
-      // still both pass Phase 1 before either creates its booking in Phase 2 —
-      // a known residual; Phase 2's capacity re-check under the lock still
-      // bounds overbooking. The entry itself is excluded by id, and waitlist
-      // placeholders never count.
+      // Duplicate-stay guard — layer 1 of 2 (#1587 item 2). If Phase 3 (cancel
+      // the waitlist entry) failed on an earlier confirm, the entry is stranded
+      // in WAITLIST_OFFERED with a booking already created at the offered lodge;
+      // a re-confirm (or an expiry re-offer + confirm) would create a SECOND
+      // booking and a second payment request for the same stay. Reject when the
+      // member already holds an active booking overlapping the offer's dates at
+      // the offered lodge. The offered lodge's capacity lock (taken above) spans
+      // only THIS Phase-1 transaction, so this cheap pre-flight guard reliably
+      // catches any COMMITTED earlier confirm (the stranded-offer re-confirm and
+      // expiry-re-offer paths) and gives a friendly rejection before Phase 2
+      // even starts. The concurrent-confirm window it once left open — two
+      // in-flight confirms of the same offer both passing here before either
+      // creates its booking in Phase 2 — is now closed by layer 2: the same
+      // query re-runs INSIDE createConfirmedBooking under the offered lodge's
+      // held capacity lock (duplicateStayGuard below), where the second
+      // transaction serialises behind the first's commit and rolls back. The
+      // entry itself is excluded by id, and waitlist placeholders never count.
       const duplicateStay = await tx.booking.findFirst({
         where: {
           memberId,
@@ -300,8 +305,7 @@ export async function confirmCrossLodgeWaitlistOffer(
           ok: false as const,
           result: {
             success: false,
-            error:
-              "You already have a booking at this lodge for these dates. Cancel it before accepting this offer.",
+            error: DUPLICATE_STAY_ERROR,
             code: "DUPLICATE_STAY",
           },
         };
@@ -420,8 +424,21 @@ export async function confirmCrossLodgeWaitlistOffer(
       status,
       shouldBePending,
       holdDays,
+      // Layer 2 of the duplicate-stay guard (#1587 item 2): re-run the guard
+      // inside the creation transaction, under the offered lodge's held lock,
+      // so a fully-concurrent confirm of the same offer that slipped past
+      // Phase 1 rolls back here instead of committing a duplicate booking.
+      duplicateStayGuard: { excludeBookingId: entry.id },
     });
   } catch (err) {
+    if (err instanceof DuplicateStayConflictError) {
+      // A concurrent confirm committed a booking for the same stay after this
+      // one passed Phase 1; the in-transaction guard rolled this creation back,
+      // so no duplicate was created. Reject exactly as the Phase-1 guard does —
+      // same message and code — and leave the offer intact (do NOT revert to
+      // WAITLISTED) so the member can cancel the duplicate and re-confirm.
+      return { success: false, error: DUPLICATE_STAY_ERROR, code: "DUPLICATE_STAY" };
+    }
     logger.error(
       { err, bookingId, offeredLodgeId },
       "Failed to create replacement booking for cross-lodge waitlist confirm",

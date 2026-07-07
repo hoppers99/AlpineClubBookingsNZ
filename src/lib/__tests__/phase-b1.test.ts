@@ -19,6 +19,16 @@ const mockPrisma = {
     count: vi.fn(),
     findUnique: vi.fn(),
   },
+  // Kiosk lodge binding (multi-lodge): getStaffLodgeBinding reads STAFF grants
+  // and the /api/lodge/access route resolves the header lodge name from them.
+  memberLodgeAccess: {
+    findMany: vi.fn(),
+  },
+  lodge: {
+    count: vi.fn(),
+    findFirst: vi.fn(),
+    findUnique: vi.fn(),
+  },
 };
 
 vi.mock("@/lib/prisma", () => ({ prisma: mockPrisma }));
@@ -756,6 +766,10 @@ describe("#24: Lodge Access API", () => {
       active: true,
       forcePasswordChange: false,
     });
+    // Default: no STAFF grants (unbound → default lodge) and a single active
+    // lodge, so the kiosk header lodge name stays hidden (ADR-002).
+    mockPrisma.memberLodgeAccess.findMany.mockResolvedValue([]);
+    mockPrisma.lodge.count.mockResolvedValue(1);
   });
 
   it("returns access info for authenticated user", async () => {
@@ -819,6 +833,86 @@ describe("#24: Lodge Access API", () => {
     const req = new NextRequest("http://localhost/api/lodge/access");
     const res = await GET(req);
     expect(res.status).toBe(400);
+  });
+
+  // Item 4 (#1587): a kiosk (STAFF) account granted at more than one lodge is
+  // denied everywhere data is served (M5). The access route surfaces that up
+  // front so the kiosk shows a fix-the-assignment message instead of enabled
+  // UI that then hits clean 403s.
+  it("returns a misconfigured payload for an ambiguous multi-lodge kiosk account", async () => {
+    mockAuth.mockResolvedValue({ user: authUser("kiosk-1", "LODGE") });
+    mockSessionMemberRoles("kiosk-1", "LODGE");
+    mockPrisma.memberLodgeAccess.findMany.mockResolvedValue([
+      { lodgeId: "lodge-A" },
+      { lodgeId: "lodge-B" },
+    ]);
+
+    const { NextRequest } = await import("next/server");
+    const { GET } = await import("@/app/api/lodge/access/route");
+    const res = await GET(
+      new NextRequest("http://localhost/api/lodge/access?date=2026-04-08"),
+    );
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data).toEqual({
+      tier: "none",
+      misconfigured: true,
+      error:
+        "This kiosk account is assigned to multiple lodges — an admin must fix the assignment.",
+      dateRange: null,
+      canManageRoster: false,
+      canMarkAttendance: false,
+      canCompleteChores: false,
+      lodgeName: null,
+    });
+    // No lodge name or guest/roster data is leaked: the lodge name is never
+    // resolved for an ambiguous account.
+    expect(mockPrisma.lodge.count).not.toHaveBeenCalled();
+    expect(mockPrisma.lodge.findUnique).not.toHaveBeenCalled();
+  });
+
+  it("returns normal lodge access for a single-lodge kiosk account (not misconfigured)", async () => {
+    mockAuth.mockResolvedValue({ user: authUser("kiosk-1", "LODGE") });
+    mockSessionMemberRoles("kiosk-1", "LODGE");
+    mockPrisma.memberLodgeAccess.findMany.mockResolvedValue([
+      { lodgeId: "lodge-A" },
+    ]);
+
+    const { NextRequest } = await import("next/server");
+    const { GET } = await import("@/app/api/lodge/access/route");
+    const res = await GET(
+      new NextRequest("http://localhost/api/lodge/access?date=2026-04-08"),
+    );
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.tier).toBe("lodge");
+    expect(data.misconfigured).toBeUndefined();
+    expect(data.canMarkAttendance).toBe(true);
+    expect(data.canManageRoster).toBe(false);
+  });
+
+  it("does not flag a staying-guest (member) tier as misconfigured", async () => {
+    mockAuth.mockResolvedValue({ user: authUser("guest-1", "USER") });
+    mockSessionMemberRoles("guest-1", "USER");
+    mockPrisma.hutLeaderAssignment.count.mockResolvedValue(0);
+    mockPrisma.booking.count.mockResolvedValue(1);
+    mockPrisma.hutLeaderAssignment.findMany.mockResolvedValue([]);
+    mockPrisma.booking.findMany.mockResolvedValue([]);
+
+    const { NextRequest } = await import("next/server");
+    const { GET } = await import("@/app/api/lodge/access/route");
+    const res = await GET(
+      new NextRequest("http://localhost/api/lodge/access?date=2026-04-08"),
+    );
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.tier).toBe("staying-guest");
+    expect(data.misconfigured).toBeUndefined();
+    // Members are not lodge-bound via STAFF grants, so the binding is never read.
+    expect(mockPrisma.memberLodgeAccess.findMany).not.toHaveBeenCalled();
   });
 });
 
