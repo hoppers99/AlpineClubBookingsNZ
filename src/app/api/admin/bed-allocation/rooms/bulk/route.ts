@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import {
-  createBedAllocationRoom,
-  getRoomsAndBedsConfiguration,
+  MAX_BULK_BEDS_PER_ROOM,
+  MAX_BULK_ROOMS,
+  createBedAllocationRoomsBulk,
 } from "@/lib/admin-bed-allocation";
 import {
   bedAllocationErrorResponse,
@@ -14,31 +15,19 @@ import { prisma } from "@/lib/prisma";
 import { resolveOptionalActiveLodgeId } from "@/lib/lodges";
 
 // requireAdmin() is enforced by requireBedAllocationAdmin().
-const roomSchema = z
+const bulkSchema = z
   .object({
-    name: z.string().trim().min(1).max(100),
-    sortOrder: z.coerce.number().int().min(0).max(10000).default(0),
-    active: z.boolean().default(true),
-    notes: z.string().trim().max(500).nullable().optional(),
+    roomCount: z.coerce.number().int().min(1).max(MAX_BULK_ROOMS),
+    bedsPerRoom: z.coerce.number().int().min(0).max(MAX_BULK_BEDS_PER_ROOM),
+    namePrefix: z.string().trim().min(1).max(80).optional(),
     lodgeId: z.string().min(1).optional(),
   })
   .strict();
 
-export async function GET(request: Request) {
-  const guard = await requireBedAllocationAdmin();
-  if (!guard.ok) return guard.response;
-
-  try {
-    const lodgeId =
-      new URL(request.url).searchParams.get("lodgeId") ?? undefined;
-    return NextResponse.json(
-      await getRoomsAndBedsConfiguration(undefined, lodgeId),
-    );
-  } catch (error) {
-    return bedAllocationErrorResponse(error);
-  }
-}
-
+/**
+ * POST /api/admin/bed-allocation/rooms/bulk
+ * Seed N rooms of M beds each in one transaction (ADR-003 bulk seeding).
+ */
 export async function POST(request: Request) {
   const guard = await requireBedAllocationAdmin();
   if (!guard.ok) return guard.response;
@@ -47,7 +36,7 @@ export async function POST(request: Request) {
     const json = await parseJsonRequestBody(request);
     if (!json.ok) return json.response;
 
-    const body = roomSchema.safeParse(json.body);
+    const body = bulkSchema.safeParse(json.body);
     if (!body.success) {
       return NextResponse.json(
         { error: "Invalid input", details: body.error.flatten() },
@@ -66,19 +55,30 @@ export async function POST(request: Request) {
       );
     }
 
-    const room = await createBedAllocationRoom({ ...body.data, lodgeId });
-    logAudit({
-      action: "BED_ALLOCATION_ROOM_CREATED",
-      memberId: guard.session.user.id,
-      entityType: "LodgeRoom",
-      entityId: room.id,
-      category: "admin",
-      outcome: "success",
-      summary: "Bed allocation room created",
-      metadata: { roomId: room.id, name: room.name },
+    const result = await createBedAllocationRoomsBulk({
+      roomCount: body.data.roomCount,
+      bedsPerRoom: body.data.bedsPerRoom,
+      namePrefix: body.data.namePrefix,
+      lodgeId,
     });
 
-    return NextResponse.json({ room }, { status: 201 });
+    logAudit({
+      action: "BED_ALLOCATION_ROOMS_BULK_CREATED",
+      memberId: guard.session.user.id,
+      entityType: "LodgeRoom",
+      entityId: lodgeId,
+      category: "admin",
+      outcome: "success",
+      summary: "Bed allocation rooms bulk created",
+      metadata: {
+        lodgeId,
+        roomCount: result.createdRoomCount,
+        bedCount: result.createdBedCount,
+        namePrefix: body.data.namePrefix ?? "Room",
+      },
+    });
+
+    return NextResponse.json(result, { status: 201 });
   } catch (error) {
     return bedAllocationErrorResponse(error);
   }
