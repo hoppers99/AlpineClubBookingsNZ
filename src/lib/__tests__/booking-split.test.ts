@@ -29,6 +29,7 @@ const h = vi.hoisted(() => ({
   groupJoinCreate: vi.fn(),
   groupJoinUpdate: vi.fn(),
   acquireLodgeCapacityLock: vi.fn(),
+  bookingFindFirst: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -105,6 +106,7 @@ vi.mock("@/lib/logger", () => ({
 import {
   createConfirmedBooking,
   GroupJoinConflictError,
+  DuplicateStayConflictError,
   type BookingGuestInput,
 } from "@/lib/booking-create";
 
@@ -137,6 +139,7 @@ const tx = {
   booking: {
     create: (...a: unknown[]) => h.bookingCreate(...a),
     update: (...a: unknown[]) => h.bookingUpdate(...a),
+    findFirst: (...a: unknown[]) => h.bookingFindFirst(...a),
   },
   payment: { create: (...a: unknown[]) => h.paymentCreate(...a) },
   lodge: { findFirst: (...a: unknown[]) => h.lodgeFindFirst(...a) },
@@ -430,5 +433,100 @@ describe("group join roster writes (#1039 items 2 and 3)", () => {
     const bookingCreateOrder = h.bookingCreate.mock.invocationCallOrder[0];
     expect(lockOrder).toBeLessThan(bookingCreateOrder);
     expect(lockOrder).toBeLessThan(rosterCheckOrder);
+  });
+});
+
+describe("in-transaction duplicate-stay guard (#1587 item 2)", () => {
+  const duplicateStayGuard = { excludeBookingId: "entry-1" };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    createdCount = 0;
+    h.transaction.mockImplementation(async (fn: (store: typeof tx) => Promise<unknown>) => fn(tx));
+    h.executeRaw.mockResolvedValue(undefined);
+    h.seasonFindMany.mockResolvedValue(mockSeasons);
+    h.checkCapacityForGuestRanges.mockResolvedValue({ available: true, nightDetails: [] });
+    h.reconcileBedAllocationsForBooking.mockResolvedValue(undefined);
+    h.bookingUpdate.mockResolvedValue({});
+    h.memberFindUnique.mockResolvedValue({ id: "member-1", firstName: "Mem", lastName: "Ber", email: "m@example.com" });
+    h.lodgeFindFirst.mockResolvedValue({ id: "lodge-1" });
+    h.memberLodgeAccessFindMany.mockResolvedValue([]);
+    // Default: no overlapping stay found.
+    h.bookingFindFirst.mockResolvedValue(null);
+    h.bookingCreate.mockImplementation((args: { data: Record<string, unknown> }) => {
+      createdCount += 1;
+      const id = `booking-${createdCount}`;
+      const guestRows = (args.data.guests as { create: Array<Record<string, unknown>> }).create.map(
+        (g, i) => ({ ...g, id: `${id}-g${i}` })
+      );
+      return Promise.resolve({ ...args.data, id, guests: guestRows });
+    });
+  });
+
+  it("aborts with DuplicateStayConflictError and creates no booking when the guard finds an overlapping stay", async () => {
+    // A concurrent confirm committed a stay for the same member/lodge/dates
+    // after Phase 1 passed; the guard, running under the held capacity lock,
+    // sees it and rolls the transaction back.
+    h.bookingFindFirst.mockResolvedValue({ id: "concurrent-booking" });
+
+    await expect(
+      createConfirmedBooking(baseInput([guest(true, "Alice")], { duplicateStayGuard }))
+    ).rejects.toBeInstanceOf(DuplicateStayConflictError);
+
+    // The whole point: no duplicate booking row is written.
+    expect(h.bookingCreate).not.toHaveBeenCalled();
+    // The guard ran before the create, under the lock.
+    expect(h.acquireLodgeCapacityLock.mock.invocationCallOrder[0]).toBeLessThan(
+      h.bookingFindFirst.mock.invocationCallOrder[0]
+    );
+  });
+
+  it("proceeds normally and scopes the guard query when no overlapping stay exists", async () => {
+    const outcome = await createConfirmedBooking(
+      baseInput([guest(true, "Alice")], { duplicateStayGuard })
+    );
+
+    expect(outcome.type).toBe("created");
+    expect(h.bookingCreate).toHaveBeenCalledTimes(1);
+
+    // The guard query is scoped to the member, the resolved lodge, active +
+    // completed statuses, an overlapping range, and excludes the named entry.
+    const where = h.bookingFindFirst.mock.calls[0][0].where;
+    expect(where).toEqual(
+      expect.objectContaining({
+        memberId: "member-1",
+        lodgeId: "lodge-1",
+        id: { not: "entry-1" },
+        deletedAt: null,
+      })
+    );
+    expect(where.status.in).toEqual(
+      expect.arrayContaining([
+        BookingStatus.PENDING,
+        BookingStatus.PAYMENT_PENDING,
+        BookingStatus.CONFIRMED,
+        BookingStatus.PAID,
+        BookingStatus.AWAITING_REVIEW,
+        BookingStatus.COMPLETED,
+      ])
+    );
+    // Waitlist placeholders and terminal statuses never count as a real stay.
+    expect(where.status.in).not.toContain(BookingStatus.WAITLISTED);
+    expect(where.status.in).not.toContain(BookingStatus.WAITLIST_OFFERED);
+    expect(where.status.in).not.toContain(BookingStatus.CANCELLED);
+    // Date-only overlap predicate: booking.checkIn < stay.checkOut and
+    // booking.checkOut > stay.checkIn.
+    expect(where.checkIn.lt).toBeInstanceOf(Date);
+    expect(where.checkOut.gt).toBeInstanceOf(Date);
+    expect(where.checkIn.lt.getTime()).toBeGreaterThan(where.checkOut.gt.getTime());
+  });
+
+  it("does not run the guard for callers that leave duplicateStayGuard unset", async () => {
+    // Every existing caller (group-booking, the bookings route) omits the
+    // field; the guard query must not run for them.
+    const outcome = await createConfirmedBooking(baseInput([guest(true, "Alice")]));
+
+    expect(outcome.type).toBe("created");
+    expect(h.bookingFindFirst).not.toHaveBeenCalled();
   });
 });

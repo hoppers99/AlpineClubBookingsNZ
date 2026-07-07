@@ -12,6 +12,9 @@ const mocks = vi.hoisted(() => ({
   bookingFindFirst: vi.fn(),
   bookingUpdate: vi.fn(),
   lodgeFindUnique: vi.fn(),
+  seasonFindMany: vi.fn(),
+  groupDiscountFindUnique: vi.fn(),
+  priceBooking: vi.fn(),
   acquireLodgeCapacityLock: vi.fn(),
   checkCapacityForGuestRanges: vi.fn(),
   isMemberEligibleToBookLodge: vi.fn(),
@@ -29,6 +32,8 @@ const txClient = {
     update: mocks.bookingUpdate,
   },
   lodge: { findUnique: mocks.lodgeFindUnique },
+  season: { findMany: mocks.seasonFindMany },
+  groupDiscountSetting: { findUnique: mocks.groupDiscountFindUnique },
 };
 
 vi.mock("@/lib/prisma", () => ({
@@ -47,6 +52,9 @@ vi.mock("@/lib/bed-allocation-lifecycle", () => ({
 vi.mock("@/lib/booking-create", () => ({
   createConfirmedBooking: mocks.createConfirmedBooking,
 }));
+vi.mock("@/lib/membership-type-policy", () => ({
+  priceBookingGuestsWithMembershipTypePolicy: mocks.priceBooking,
+}));
 vi.mock("@/lib/cancellation", () => ({
   getNonMemberHoldDays: mocks.getNonMemberHoldDays,
 }));
@@ -59,6 +67,9 @@ vi.mock("@/lib/logger", () => ({
 }));
 
 import { confirmCrossLodgeWaitlistOffer } from "@/lib/waitlist-cross-lodge";
+// Real class (this module is NOT mocked here), so both the production code and
+// the test share its identity and `instanceof` works.
+import { DuplicateStayConflictError } from "@/lib/booking-create-types";
 
 const CHECK_IN = new Date("2026-08-10");
 const CHECK_OUT = new Date("2026-08-12");
@@ -156,5 +167,72 @@ describe("confirmCrossLodgeWaitlistOffer duplicate-stay guard (M3)", () => {
     expect(mocks.bookingFindFirst.mock.calls[0][0].where.id).toEqual({
       not: "entry-1",
     });
+  });
+});
+
+describe("confirmCrossLodgeWaitlistOffer in-transaction duplicate-stay guard (M2)", () => {
+  // These cases drive Phase 1 to completion (no duplicate visible to the
+  // pre-flight guard, capacity available, quote unchanged) so Phase 2 —
+  // createConfirmedBooking — actually runs; the concurrent-confirm window is
+  // closed by the guard re-running INSIDE that transaction, surfaced here as a
+  // DuplicateStayConflictError thrown by createConfirmedBooking.
+  beforeEach(() => {
+    // Phase-1 duplicate-stay guard sees nothing (the concurrent confirm hasn't
+    // committed yet from this transaction's snapshot).
+    mocks.bookingFindFirst.mockResolvedValue(null);
+    mocks.checkCapacityForGuestRanges.mockResolvedValue({ available: true });
+    // Quote path: a priceable lodge whose price still matches the stored offer.
+    mocks.seasonFindMany.mockResolvedValue([
+      {
+        id: "season-1",
+        startDate: new Date("2026-08-01"),
+        endDate: new Date("2026-08-31"),
+        type: "STANDARD",
+        rates: [],
+      },
+    ]);
+    mocks.groupDiscountFindUnique.mockResolvedValue(null);
+    mocks.priceBooking.mockResolvedValue({ totalPriceCents: 34_000 });
+  });
+
+  it("rejects with DUPLICATE_STAY, creates no committed booking, and leaves the offer intact when the in-transaction re-check trips", async () => {
+    // Phase 1 passes; the second-layer guard inside createConfirmedBooking finds
+    // a stay committed by a concurrent confirm and rolls its transaction back,
+    // surfaced as DuplicateStayConflictError.
+    mocks.createConfirmedBooking.mockRejectedValue(new DuplicateStayConflictError());
+
+    const result = await confirmCrossLodgeWaitlistOffer("entry-1", "member-1");
+
+    expect(result.success).toBe(false);
+    expect(result.code).toBe("DUPLICATE_STAY");
+    // Same friendly message as the Phase-1 guard.
+    expect(result.error).toBe(
+      "You already have a booking at this lodge for these dates. Cancel it before accepting this offer.",
+    );
+    // Phase 2 ran (Phase 1 passed) and was handed the guard field naming the
+    // entry to exclude.
+    expect(mocks.createConfirmedBooking).toHaveBeenCalledTimes(1);
+    expect(mocks.createConfirmedBooking.mock.calls[0][0]).toEqual(
+      expect.objectContaining({
+        duplicateStayGuard: { excludeBookingId: "entry-1" },
+      }),
+    );
+    // The rolled-back transaction committed nothing, and the offer is NOT
+    // reverted to WAITLISTED — no booking mutation happens on this path.
+    expect(mocks.bookingUpdate).not.toHaveBeenCalled();
+    expect(mocks.reconcileBedAllocations).not.toHaveBeenCalled();
+  });
+
+  it("lets a non-guard error from createConfirmedBooking propagate to the generic failure (not misclassified as DUPLICATE_STAY)", async () => {
+    // A different failure inside Phase 2 must not be mapped to the duplicate
+    // rejection: only DuplicateStayConflictError is special-cased.
+    mocks.createConfirmedBooking.mockRejectedValue(new Error("boom"));
+
+    const result = await confirmCrossLodgeWaitlistOffer("entry-1", "member-1");
+
+    expect(result.success).toBe(false);
+    expect(result.code).toBeUndefined();
+    expect(result.error).toBe("An error occurred while confirming your booking");
+    expect(mocks.createConfirmedBooking).toHaveBeenCalledTimes(1);
   });
 });

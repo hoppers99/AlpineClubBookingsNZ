@@ -68,6 +68,18 @@ export const ACTIVE_BOOKING_STATUSES = [
   BookingStatus.AWAITING_REVIEW,
 ] as const;
 
+// A member's existing "real stay" for the cross-lodge duplicate-stay guard
+// (ADR-004, #1587): everything that is not cancelled/bumped and not a waitlist
+// placeholder. This includes PAYMENT_PENDING (a real pending stay awaiting
+// payment) and COMPLETED (for completeness, though it cannot overlap a future
+// offer's dates); it excludes WAITLISTED / WAITLIST_OFFERED, which are not
+// stays. Shared by the pre-flight guard (waitlist-cross-lodge.ts) and the
+// in-transaction guard (createConfirmedBooking) so both count identically.
+export const DUPLICATE_STAY_BOOKING_STATUSES = [
+  ...ACTIVE_BOOKING_STATUSES,
+  BookingStatus.COMPLETED,
+] as const;
+
 export function isPaymentOwedBookingStatus(status: string) {
   return (PAYMENT_OWED_BOOKING_STATUSES as readonly string[]).includes(status);
 }
