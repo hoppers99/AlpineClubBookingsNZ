@@ -76,24 +76,55 @@ export async function canReadLodgeInstructions(
  * dangerouslySetInnerHTML, so sanitise again on read (defence in depth,
  * matching getSanitizedPageContentByPath).
  *
+ * Lodge scoping (docs/multi-lodge/lodge-scoping-contract.md): rows with a
+ * null lodgeId are the club-wide documents; a row for [lodgeId, key]
+ * REPLACES the club-wide document of that key for that lodge (replace,
+ * never merge — the same rule as the booking-policy overrides). Pass the
+ * lodge the reader is scoped to; omit it (or pass null) for the club-wide
+ * documents only.
+ *
  * When `resolveTokens` is set, text tokens such as {{club-name}} are
  * replaced after sanitising; resolveTextTokens HTML-escapes every
  * replacement value, so resolution cannot reintroduce unsafe markup.
  * Reader/kiosk routes resolve tokens; the admin editor route must not,
  * so editors round-trip the literal {{token}} text.
+ *
+ * Accepts either a bare lodgeId (legacy positional form) or an options
+ * object carrying lodgeId and/or resolveTokens.
  */
-export async function getSanitizedLodgeInstructions(options?: {
+export type GetLodgeInstructionsOptions = {
+  lodgeId?: string | null;
   resolveTokens?: boolean;
-}): Promise<LodgeInstructionDocument[]> {
+};
+
+export async function getSanitizedLodgeInstructions(
+  lodgeIdOrOptions?: string | null | GetLodgeInstructionsOptions,
+): Promise<LodgeInstructionDocument[]> {
+  const options: GetLodgeInstructionsOptions =
+    typeof lodgeIdOrOptions === "object" && lodgeIdOrOptions !== null
+      ? lodgeIdOrOptions
+      : { lodgeId: lodgeIdOrOptions ?? null };
+  const lodgeId = options.lodgeId ?? null;
   const records = await prisma.lodgeInstruction.findMany({
+    where: lodgeId ? { OR: [{ lodgeId: null }, { lodgeId }] } : { lodgeId: null },
     select: {
       key: true,
       contentHtml: true,
       updatedAt: true,
+      lodgeId: true,
     },
   });
 
-  const byKey = new Map(records.map((record) => [record.key, record]));
+  // Per key, prefer the lodge's override row over the club-wide (null) row.
+  // Loose null check: mocked or narrow rows may omit lodgeId entirely; a
+  // missing lodgeId means club-wide, same as null.
+  const byKey = new Map<string, (typeof records)[number]>();
+  for (const record of records) {
+    const existing = byKey.get(record.key);
+    if (!existing || record.lodgeId != null) {
+      byKey.set(record.key, record);
+    }
+  }
 
   return Promise.all(
     LODGE_INSTRUCTION_KEYS.map(async (key) => {
