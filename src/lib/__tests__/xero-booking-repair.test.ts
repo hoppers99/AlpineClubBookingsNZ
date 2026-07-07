@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { runBookingXeroRepair } from "@/lib/xero-booking-repair";
+import { PartialRefundError } from "@/lib/payment-transactions";
 
 function makeBooking(overrides: Record<string, unknown> = {}) {
   return {
@@ -2465,5 +2466,215 @@ describe("runBookingXeroRepair", () => {
     });
     expect(booking.payment.status).toBe("REFUNDED");
     expect(report.summary.bookingsWithFindings).toBe(0);
+  });
+
+  it("keeps Xero consistent when a multi-slice late-capture refund fails partway, then notes only the remainder on re-run (#1495)", async () => {
+    // Two captured Stripe slices on a cancelled booking with a linked invoice:
+    // the newer 6000c slice refunds and records first; the older 7000c slice
+    // fails at Stripe on the first attempt. The refund credit note MUST cover
+    // the 6000 that actually moved even though the overall action fails, and a
+    // later re-run for the 7000 remainder must add a note for exactly 7000 —
+    // never re-noting the 6000 and never noting the full 13000.
+    // Loosely typed like the rest of this harness: makeBooking's base literal
+    // widens transactions to never[] and xeroRefundCreditNoteId to null, which
+    // this fixture deliberately populates/mutates.
+    const booking: any = makeBooking({
+      status: "CANCELLED",
+      payment: {
+        ...makeBooking().payment,
+        amountCents: 13000,
+        refundedAmountCents: 0,
+        status: "SUCCEEDED",
+        additionalPaymentIntentId: "pi_newer_slice",
+        additionalAmountCents: 6000,
+        additionalPaymentStatus: "SUCCEEDED",
+        transactions: [
+          {
+            id: "txn_older",
+            paymentId: "payment_1",
+            kind: "PRIMARY",
+            source: "STRIPE",
+            stripePaymentIntentId: "pi_older_slice",
+            amountCents: 7000,
+            refundedAmountCents: 0,
+            status: "SUCCEEDED",
+            paymentMethodId: "pm_123",
+            reason: null,
+            createdAt: new Date("2026-05-01T00:00:00Z"),
+            updatedAt: new Date("2026-05-01T00:00:00Z"),
+          },
+          {
+            id: "txn_newer",
+            paymentId: "payment_1",
+            kind: "ADDITIONAL",
+            source: "STRIPE",
+            stripePaymentIntentId: "pi_newer_slice",
+            amountCents: 6000,
+            refundedAmountCents: 0,
+            status: "SUCCEEDED",
+            paymentMethodId: null,
+            reason: "date_change",
+            createdAt: new Date("2026-05-02T00:00:00Z"),
+            updatedAt: new Date("2026-05-02T00:00:00Z"),
+          },
+        ],
+      },
+    });
+    // Provide the PRIMARY_INVOICE link so no field/link backfill action fires;
+    // the only forced action this run is the late-capture refund.
+    const primaryInvoiceLink = {
+      id: "link_primary_invoice",
+      localModel: "Payment",
+      localId: "payment_1",
+      xeroObjectType: "INVOICE",
+      xeroObjectId: "inv_primary",
+      xeroObjectNumber: "INV-001",
+      xeroObjectUrl: null,
+      role: "PRIMARY_INVOICE",
+      active: true,
+      metadata: null,
+      createdAt: new Date("2026-05-01T00:00:00Z"),
+      updatedAt: new Date("2026-05-01T00:00:00Z"),
+    };
+    const deps = createDependencies({
+      bookings: [booking],
+      links: [primaryInvoiceLink],
+    });
+
+    // Mirror the real system: once a refund credit note is queued for a
+    // payment it becomes a resolvable REFUND_CREDIT_NOTE, so the classifier's
+    // separate "missing refund credit note" arm stops re-detecting it. Without
+    // this the spy would leave the payment note-less forever and that safe arm
+    // would re-fire every pass, obscuring the late-capture behavior under test.
+    deps.enqueueXeroRefundCreditNoteOperation = vi
+      .fn()
+      .mockImplementation(async () => {
+        booking.payment.xeroRefundCreditNoteId = "cn_refund";
+        return { queueOperationId: "queue_refund_credit", message: "queued" };
+      });
+
+    // Fail the older slice at Stripe on the first attempt (after the newer
+    // slice has refunded and recorded); succeed on the re-run.
+    let failOlderSlice = true;
+    deps.refundPaymentTransactions = vi
+      .fn()
+      .mockImplementation(async ({ amountCents }: { amountCents: number }) => {
+        const refundable = [...(booking.payment.transactions ?? [])]
+          .filter((transaction: any) =>
+            isCapturedTransactionStatus(transaction.status)
+          )
+          .filter(
+            (transaction: any) =>
+              transaction.amountCents - transaction.refundedAmountCents > 0
+          )
+          .sort(
+            (left: any, right: any) =>
+              new Date(right.createdAt).getTime() -
+              new Date(left.createdAt).getTime()
+          );
+
+        const refunds: Array<{
+          paymentIntentId: string;
+          refundId: string;
+          amountCents: number;
+        }> = [];
+        let completedRefundCents = 0;
+        let remainingAmountCents = amountCents;
+
+        for (const transaction of refundable) {
+          if (remainingAmountCents <= 0) {
+            break;
+          }
+          if (transaction.id === "txn_older" && failOlderSlice) {
+            // The already-refunded newer slice is carried on the error so the
+            // repair can note exactly what moved (#1097 PartialRefundError).
+            throw new PartialRefundError({
+              completedRefundCents,
+              refunds,
+              cause: new Error("card_declined"),
+            });
+          }
+          const sliceAmountCents = Math.min(
+            remainingAmountCents,
+            transaction.amountCents - transaction.refundedAmountCents
+          );
+          transaction.refundedAmountCents += sliceAmountCents;
+          transaction.status =
+            transaction.refundedAmountCents >= transaction.amountCents
+              ? "REFUNDED"
+              : "PARTIALLY_REFUNDED";
+          refunds.push({
+            paymentIntentId: transaction.stripePaymentIntentId,
+            refundId: `re_${transaction.stripePaymentIntentId}`,
+            amountCents: sliceAmountCents,
+          });
+          completedRefundCents += sliceAmountCents;
+          remainingAmountCents -= sliceAmountCents;
+        }
+
+        if (remainingAmountCents > 0) {
+          throw new Error("Refund amount exceeds captured Stripe payments");
+        }
+        recomputePaymentSummary(booking.payment);
+        return { refunds, totalRefundedAmountCents: amountCents };
+      });
+
+    // First run: force the full 13000 late-capture refund. The older slice
+    // fails, so the action fails — but the 6000 that refunded and recorded must
+    // still get its Xero refund credit note.
+    const firstReport = await runBookingXeroRepair({
+      apply: true,
+      applyActionKeys: ["late-capture-refund:booking_1:payment_1:13000"],
+      dependencies: deps,
+      scope: { all: true },
+    });
+
+    expect(deps.refundPaymentTransactions).toHaveBeenCalledWith(
+      expect.objectContaining({ paymentId: "payment_1", amountCents: 13000 })
+    );
+    expect(deps.enqueueXeroRefundCreditNoteOperation).toHaveBeenCalledWith(
+      "payment_1",
+      6000
+    );
+
+    const firstRunActions = firstReport.passes.flatMap((pass) =>
+      pass.bookings.flatMap((bookingReport) => bookingReport.actions)
+    );
+    const failedLateCapture = firstRunActions.find(
+      (action) => action.key === "late-capture-refund:booking_1:payment_1:13000"
+    );
+    expect(failedLateCapture?.status).toBe("failed");
+
+    // Re-run after the older slice recovers: the outstanding amount is now only
+    // 7000, so the operator forces the remainder key.
+    failOlderSlice = false;
+    const secondReport = await runBookingXeroRepair({
+      apply: true,
+      applyActionKeys: ["late-capture-refund:booking_1:payment_1:7000"],
+      dependencies: deps,
+      scope: { all: true },
+    });
+
+    expect(deps.refundPaymentTransactions).toHaveBeenCalledWith(
+      expect.objectContaining({ paymentId: "payment_1", amountCents: 7000 })
+    );
+    expect(deps.enqueueXeroRefundCreditNoteOperation).toHaveBeenCalledWith(
+      "payment_1",
+      7000
+    );
+
+    // No double-noting: exactly the completed 6000 then the 7000 remainder,
+    // and never the full 13000.
+    const refundNoteAmounts = (
+      deps.enqueueXeroRefundCreditNoteOperation as ReturnType<typeof vi.fn>
+    ).mock.calls
+      .filter((call) => call[0] === "payment_1")
+      .map((call) => call[1]);
+    expect(refundNoteAmounts).toEqual([6000, 7000]);
+    expect(refundNoteAmounts).not.toContain(13000);
+
+    // The remainder refund succeeded and the payment is fully refunded.
+    expect(booking.payment.status).toBe("REFUNDED");
+    expect(secondReport.summary.bookingsWithFindings).toBe(0);
   });
 });
