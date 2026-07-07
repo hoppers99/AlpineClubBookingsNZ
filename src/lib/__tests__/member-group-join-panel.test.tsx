@@ -9,13 +9,6 @@ vi.mock("next/navigation", () => ({
 }));
 
 import { MemberGroupJoinPanel } from "@/app/(website)/join/[code]/member-group-join-panel";
-import type { ClubIdentity } from "@/config/club-identity-types";
-
-const club = {
-  name: "Test Club",
-  lodgeName: "Test Lodge",
-  lodgeCapacity: 30,
-} as ClubIdentity;
 
 const CODE = "ABCD2345";
 
@@ -25,6 +18,7 @@ function summary(overrides: Record<string, unknown> = {}) {
     status: "OPEN",
     paymentMode: "ORGANISER_PAYS",
     organiserFirstName: "Olive",
+    lodgeName: "West Ridge Hut",
     checkIn: "2026-07-01",
     checkOut: "2026-07-03",
     joinDeadline: null,
@@ -105,7 +99,11 @@ describe("MemberGroupJoinPanel", () => {
       joinBody: { bookingId: "b1", organiserSettled: true, requiresPayment: false },
     });
 
-    render(<MemberGroupJoinPanel club={club} code={CODE} />);
+    render(<MemberGroupJoinPanel code={CODE} />);
+
+    // The heading names the group's OWN lodge (from the summary), not the
+    // static club-wide lodge name (#11).
+    expect(await screen.findByText(/group at West Ridge Hut/)).toBeDefined();
 
     // Self is pre-selected (ticked button).
     const selfButton = await screen.findByRole("button", {
@@ -126,7 +124,7 @@ describe("MemberGroupJoinPanel", () => {
       joinBody: { bookingId: "b1", organiserSettled: false, requiresPayment: true },
     });
 
-    render(<MemberGroupJoinPanel club={club} code={CODE} />);
+    render(<MemberGroupJoinPanel code={CODE} />);
 
     fireEvent.click(await screen.findByRole("button", { name: /Join and pay/ }));
 
@@ -142,7 +140,7 @@ describe("MemberGroupJoinPanel", () => {
       joinBody: { bookingId: "b1", organiserSettled: false, requiresPayment: true },
     });
 
-    render(<MemberGroupJoinPanel club={club} code={CODE} />);
+    render(<MemberGroupJoinPanel code={CODE} />);
 
     // Pick internet banking, then join.
     fireEvent.click(await screen.findByRole("button", { name: /Internet Banking/ }));
@@ -171,7 +169,7 @@ describe("MemberGroupJoinPanel", () => {
       joinBody: { bookingId: "b1", requiresPayment: true },
     });
 
-    render(<MemberGroupJoinPanel club={club} code={CODE} />);
+    render(<MemberGroupJoinPanel code={CODE} />);
 
     await screen.findByRole("button", { name: /Join and pay/ });
     expect(screen.queryByRole("button", { name: /Internet Banking/ })).toBeNull();
@@ -183,7 +181,7 @@ describe("MemberGroupJoinPanel", () => {
       joinBody: { error: "You have already joined this group" },
     });
 
-    render(<MemberGroupJoinPanel club={club} code={CODE} />);
+    render(<MemberGroupJoinPanel code={CODE} />);
 
     fireEvent.click(await screen.findByRole("button", { name: /Join group/ }));
 

@@ -132,6 +132,7 @@ describe("toGroupBookingSummary", () => {
       checkOut: new Date("2026-07-03T00:00:00Z"),
       status: BookingStatus.CONFIRMED,
       deletedAt: null,
+      lodge: { name: "West Ridge Hut" },
     },
     organiserMember: { firstName: "Andy" },
   };
@@ -143,6 +144,9 @@ describe("toGroupBookingSummary", () => {
       status: GroupBookingStatus.OPEN,
       paymentMode: GroupBookingPaymentMode.EACH_PAYS_OWN,
       organiserFirstName: "Andy",
+      // The group's actual lodge (organiser booking's lodge), so public join
+      // copy names the right property in a multi-lodge club (#11).
+      lodgeName: "West Ridge Hut",
       checkIn: baseRecord.organiserBooking.checkIn,
       checkOut: baseRecord.organiserBooking.checkOut,
       joinDeadline: null,
@@ -151,6 +155,8 @@ describe("toGroupBookingSummary", () => {
     // No leaking of internal identifiers or member contact details.
     expect(summary).not.toHaveProperty("organiserBookingId");
     expect(summary).not.toHaveProperty("organiserMemberId");
+    // The lodge id (internal) is never exposed — only the display name.
+    expect(summary).not.toHaveProperty("lodgeId");
   });
 
   it("reflects joinability for a closed group", () => {

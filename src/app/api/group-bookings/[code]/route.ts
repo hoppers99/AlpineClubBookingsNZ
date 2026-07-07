@@ -35,6 +35,7 @@ export async function GET(
     status: summary.status,
     paymentMode: summary.paymentMode,
     organiserFirstName: summary.organiserFirstName,
+    lodgeName: summary.lodgeName,
     checkIn: summary.checkIn.toISOString(),
     checkOut: summary.checkOut.toISOString(),
     joinDeadline: summary.joinDeadline?.toISOString() ?? null,

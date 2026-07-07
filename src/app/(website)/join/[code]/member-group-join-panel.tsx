@@ -12,7 +12,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import type { ClubIdentity } from "@/config/club-identity-types";
 import {
   getFamilyMemberBookingActionLabel,
   getFamilyMemberBookingBlockMessage,
@@ -28,6 +27,7 @@ interface GroupSummary {
   status: string;
   paymentMode: "EACH_PAYS_OWN" | "ORGANISER_PAYS";
   organiserFirstName: string;
+  lodgeName: string;
   checkIn: string;
   checkOut: string;
   joinDeadline: string | null;
@@ -52,10 +52,8 @@ interface FamilyMember extends BookingFamilyMember {
  * family fetches ride the session cookie.
  */
 export function MemberGroupJoinPanel({
-  club,
   code,
 }: {
-  club: ClubIdentity;
   code: string;
 }) {
   const router = useRouter();
@@ -234,7 +232,7 @@ export function MemberGroupJoinPanel({
       <Card>
         <CardHeader>
           <CardTitle>
-            Join {summary.organiserFirstName}&apos;s group at {club.lodgeName}
+            Join {summary.organiserFirstName}&apos;s group at {summary.lodgeName}
           </CardTitle>
           <CardDescription>
             {formatNZDate(new Date(summary.checkIn))} to {formatNZDate(new Date(summary.checkOut))}

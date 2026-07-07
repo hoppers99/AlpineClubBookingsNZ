@@ -27,7 +27,7 @@ export default async function GroupJoinPage({
   // than wrapping the public site in a client SessionProvider.
   const session = await auth();
   if (session?.user) {
-    return <MemberGroupJoinPanel club={clubIdentity} code={code} />;
+    return <MemberGroupJoinPanel code={code} />;
   }
   return <GroupJoinPageClient club={clubIdentity} code={code} />;
 }

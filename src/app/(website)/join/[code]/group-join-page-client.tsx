@@ -23,6 +23,7 @@ interface GroupSummary {
   status: string;
   paymentMode: "EACH_PAYS_OWN" | "ORGANISER_PAYS";
   organiserFirstName: string;
+  lodgeName: string;
   checkIn: string;
   checkOut: string;
   joinDeadline: string | null;
@@ -156,7 +157,7 @@ export function GroupJoinPageClient({
       <Card>
         <CardHeader>
           <CardTitle>
-            Join {summary.organiserFirstName}&apos;s group at {club.lodgeName}
+            Join {summary.organiserFirstName}&apos;s group at {summary.lodgeName}
           </CardTitle>
           <CardDescription>
             {formatNZDate(new Date(summary.checkIn))} to {formatNZDate(new Date(summary.checkOut))}
