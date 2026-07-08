@@ -9,13 +9,17 @@ import {
   type ReadDb,
 } from "./import-types";
 import { siteContentImporter } from "./categories/site-content";
+import { clubSettingsImporter } from "./categories/club-settings";
 
 // Import plan orchestrator (dry-run). Reads + validates the bundle, runs each
 // selected category's planner, and produces a stateless ImportPlan with a
 // fingerprint of the touched rows. See ADR-002.
 
 /** All registered category importers, in dependency-safe apply order. */
-export const CATEGORY_IMPORTERS: CategoryImporter[] = [siteContentImporter];
+export const CATEGORY_IMPORTERS: CategoryImporter[] = [
+  siteContentImporter,
+  clubSettingsImporter,
+];
 
 export async function buildImportPlan(
   db: ReadDb,

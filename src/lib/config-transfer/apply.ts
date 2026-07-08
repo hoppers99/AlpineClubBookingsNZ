@@ -41,7 +41,6 @@ export type ApplyConfigImportParams = {
   actorMemberId: string;
   /** Fingerprint from the dry-run; apply refuses if the DB has since drifted. */
   expectedFingerprint: string;
-  request?: { id?: string; ipAddress?: string; userAgent?: string };
 };
 
 export type ApplyConfigImportResult = {

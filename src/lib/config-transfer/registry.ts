@@ -55,7 +55,10 @@ export const FORBIDDEN_FIELD_PATTERNS: RegExp[] = [
   /token/i,
   /(^|[^a-z])api[_-]?key/i,
   /passwordhash/i,
-  /twofactor|2fa|totp|recoverycode/i,
+  // 2FA/OTP *secrets* — but not the plain `twoFactor` module toggle (config).
+  /two.?factor.*(secret|code|hash|token)/i,
+  /totp/i,
+  /recoverycode/i,
   // Member identity coupling (members are out of scope entirely).
   /^memberid$/i,
   /memberid$/i, // updatedByMemberId, uploadedByMemberId, allocatedToMemberId, …

@@ -6,13 +6,17 @@ import { buildBundle, type BundleEntry } from "./bundle";
 import type { ConfigTransferCategory } from "./manifest";
 import type { CategoryExporter, MediaCollector, ReadDb } from "./export-types";
 import { siteContentExporter } from "./categories/site-content";
+import { clubSettingsExporter } from "./categories/club-settings";
 
 // Export orchestrator: runs the selected category exporters, bundles any
 // referenced images (bytes + an id→path map so import can remap references),
 // and produces the final zip. See docs/config-transfer/decisions/ADR-001.
 
 /** All registered category exporters, in dependency-safe order. */
-export const CATEGORY_EXPORTERS: CategoryExporter[] = [siteContentExporter];
+export const CATEGORY_EXPORTERS: CategoryExporter[] = [
+  siteContentExporter,
+  clubSettingsExporter,
+];
 
 const CONTENT_TYPE_EXT: Record<string, string> = {
   "image/png": "png",
