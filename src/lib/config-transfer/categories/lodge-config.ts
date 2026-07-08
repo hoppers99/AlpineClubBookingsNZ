@@ -2,7 +2,7 @@ import { strToU8, strFromU8 } from "fflate";
 
 import type { BundleEntry } from "../bundle";
 import { serialiseCsv, parseCsv } from "../csv";
-import { registerEntity, type EntityDescriptor } from "../registry";
+import { registerEntity } from "../registry";
 import type { CategoryExporter, ExportContext } from "../export-types";
 import {
   hashRow,
@@ -52,7 +52,7 @@ registerEntity({
   singleton: false,
   fields: [...ROOM_FIELDS],
 });
-export const lodgeBedDescriptor: EntityDescriptor = registerEntity({
+registerEntity({
   entity: "lodge-bed",
   category: "lodge-config",
   tier: "key-strong",
