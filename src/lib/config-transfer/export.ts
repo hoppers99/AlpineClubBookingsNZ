@@ -7,6 +7,7 @@ import type { ConfigTransferCategory } from "./manifest";
 import type { CategoryExporter, MediaCollector, ReadDb } from "./export-types";
 import { siteContentExporter } from "./categories/site-content";
 import { clubSettingsExporter } from "./categories/club-settings";
+import { lodgeConfigExporter } from "./categories/lodge-config";
 
 // Export orchestrator: runs the selected category exporters, bundles any
 // referenced images (bytes + an id→path map so import can remap references),
@@ -16,6 +17,7 @@ import { clubSettingsExporter } from "./categories/club-settings";
 export const CATEGORY_EXPORTERS: CategoryExporter[] = [
   siteContentExporter,
   clubSettingsExporter,
+  lodgeConfigExporter,
 ];
 
 const CONTENT_TYPE_EXT: Record<string, string> = {

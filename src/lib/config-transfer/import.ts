@@ -10,6 +10,7 @@ import {
 } from "./import-types";
 import { siteContentImporter } from "./categories/site-content";
 import { clubSettingsImporter } from "./categories/club-settings";
+import { lodgeConfigImporter } from "./categories/lodge-config";
 
 // Import plan orchestrator (dry-run). Reads + validates the bundle, runs each
 // selected category's planner, and produces a stateless ImportPlan with a
@@ -19,6 +20,7 @@ import { clubSettingsImporter } from "./categories/club-settings";
 export const CATEGORY_IMPORTERS: CategoryImporter[] = [
   siteContentImporter,
   clubSettingsImporter,
+  lodgeConfigImporter,
 ];
 
 export async function buildImportPlan(
