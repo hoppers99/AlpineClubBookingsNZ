@@ -57,7 +57,6 @@ async function exportBundle(includeDoorCodes: boolean) {
     includeDoorCodes,
     appVersion: "0.10.1",
     prismaMigration: null,
-    sourceXeroTenantId: null,
     generatedAt: "2026-07-08T00:00:00.000Z",
   });
 }

@@ -1,5 +1,6 @@
 import { strToU8, strFromU8 } from "fflate";
 import type { Prisma } from "@prisma/client";
+import { z } from "zod";
 
 import type { BundleEntry } from "../bundle";
 import { serialiseCsv, parseCsv } from "../csv";
@@ -17,12 +18,31 @@ import {
 
 // xero-config category: the accounting mappings — GL account/item-code mappings
 // and per-category item codes. Contact-group rules/accepted-groups are excluded
-// (they FK to member types / age-tier settings and are Xero-org-specific). The
-// manifest stamps the source Xero tenant id; the plan warns on an org mismatch
-// so codes are verified before applying (ADR-002).
+// (they FK to member types / age-tier settings and are Xero-org-specific).
+// The source Xero tenant id is recorded in xero-config/source.json (sealed with
+// the rest of the category, so it only exists when Xero is exported); the plan
+// warns on an org mismatch so codes are verified before applying (ADR-002).
 
 const ACCOUNT_FILE = "xero-config/account-mappings.csv";
 const ITEM_FILE = "xero-config/item-code-mappings.csv";
+/** Provenance: the Xero org connected at export time. Category-local, sealed. */
+const XERO_SOURCE_FILE = "xero-config/source.json";
+
+const xeroSourceSchema = z.object({ tenantId: z.string().nullable() });
+
+/** Read the source Xero tenant id from the bundle (null if absent/unparseable). */
+export function readXeroSourceTenantId(
+  files: Map<string, Uint8Array>,
+): string | null {
+  const bytes = files.get(XERO_SOURCE_FILE);
+  if (!bytes) return null;
+  try {
+    const parsed = xeroSourceSchema.safeParse(JSON.parse(strFromU8(bytes)));
+    return parsed.success ? parsed.data.tenantId : null;
+  } catch {
+    return null;
+  }
+}
 
 const ACCOUNT_FIELDS = ["key", "code", "itemCode"] as const;
 const ITEM_FIELDS = [
@@ -107,10 +127,30 @@ export const xeroConfigExporter: CategoryExporter = {
         entranceFeeCategory: true, itemCode: true, amountCents: true,
       },
     });
-    return [
-      { path: ACCOUNT_FILE, category: "xero-config", rowCount: accounts.length, bytes: strToU8(serialiseCsv([...ACCOUNT_FIELDS], accounts)) },
-      { path: ITEM_FILE, category: "xero-config", rowCount: items.length, bytes: strToU8(serialiseCsv([...ITEM_FIELDS], items)) },
-    ];
+
+    const entries: BundleEntry[] = [];
+    if (accounts.length > 0 || items.length > 0) {
+      entries.push(
+        { path: ACCOUNT_FILE, category: "xero-config", rowCount: accounts.length, bytes: strToU8(serialiseCsv([...ACCOUNT_FIELDS], accounts)) },
+        { path: ITEM_FILE, category: "xero-config", rowCount: items.length, bytes: strToU8(serialiseCsv([...ITEM_FIELDS], items)) },
+      );
+    }
+
+    // Stamp the connected Xero org for provenance whenever the category has any
+    // content (or an org is connected), so import can warn on a cross-org apply.
+    const token = await ctx.db.xeroToken.findFirst({
+      select: { tenantId: true },
+      orderBy: { updatedAt: "desc" },
+    });
+    if (entries.length > 0 || token?.tenantId) {
+      entries.push({
+        path: XERO_SOURCE_FILE,
+        category: "xero-config",
+        rowCount: null,
+        bytes: strToU8(JSON.stringify({ tenantId: token?.tenantId ?? null }, null, 2)),
+      });
+    }
+    return entries;
   },
 };
 

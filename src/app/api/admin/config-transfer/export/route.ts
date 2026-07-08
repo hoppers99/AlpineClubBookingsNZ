@@ -39,22 +39,15 @@ export async function POST(request: Request) {
     );
   }
 
-  const sourceXeroTenantId = parsed.data.categories.includes("xero-config")
-    ? (
-        await prisma.xeroToken.findFirst({
-          select: { tenantId: true },
-          orderBy: { updatedAt: "desc" },
-        })
-      )?.tenantId ?? null
-    : null;
-
+  // The source Xero org id is stamped by the Xero exporter into
+  // xero-config/source.json (no longer the manifest), so the route no longer
+  // needs to resolve it here.
   const result = await buildConfigExport({
     db: prisma,
     categories: parsed.data.categories,
     includeDoorCodes: parsed.data.includeDoorCodes,
     appVersion: process.env.npm_package_version ?? "unknown",
     prismaMigration: null,
-    sourceXeroTenantId,
     generatedAt: new Date().toISOString(),
   });
 

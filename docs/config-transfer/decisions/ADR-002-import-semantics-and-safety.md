@@ -52,9 +52,13 @@ database backup, not this tool.
      **replace-present / keep-omitted** (default; an older bundle cannot
      wipe newer fields) or **full row replace** (bundle fully defines the
      object; omitted fields reset to defaults);
-   - Xero category → if the manifest's source tenant id differs from the
-     connected org (or none is connected), a prominent warning with
-     *apply anyway* / *skip category*.
+   - Xero category → if the bundle's source tenant id (from
+     `xero-config/source.json`, not the manifest) differs from the connected
+     org (or none is connected), a prominent warning with *apply anyway* /
+     *skip category*.
+   - Bundle integrity → any advisory checksum/row-count/file-set drift from a
+     hand-edited bundle is listed (never blocks); the admin can apply as-is or
+     "reseal" to regenerate the manifest first.
 3. **Apply.** Take the automatic DB backup, re-verify the DB fingerprint
    (**drift → refuse and re-plan**, never apply a stale plan), execute the
    fully-resolved plan inside a transaction in dependency order (lodges →

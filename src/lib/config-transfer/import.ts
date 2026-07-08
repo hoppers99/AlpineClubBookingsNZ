@@ -14,7 +14,7 @@ import { lodgeConfigImporter } from "./categories/lodge-config";
 import { lodgeOpsImporter } from "./categories/lodge-ops";
 import { committeeImporter } from "./categories/committee";
 import { inductionImporter } from "./categories/induction";
-import { xeroConfigImporter } from "./categories/xero-config";
+import { xeroConfigImporter, readXeroSourceTenantId } from "./categories/xero-config";
 
 // Import plan orchestrator (dry-run). Reads + validates the bundle, runs each
 // selected category's planner, and produces a stateless ImportPlan with a
@@ -35,7 +35,7 @@ export async function buildImportPlan(
   db: ReadDb,
   bundleBytes: Uint8Array,
 ): Promise<ImportPlan> {
-  const { manifest, files } = readBundle(bundleBytes);
+  const { manifest, files, warnings: integrityWarnings } = readBundle(bundleBytes);
 
   // A category may be served by more than one importer module (e.g.
   // lodge-config); merge their results into one plan section per category.
@@ -66,22 +66,23 @@ export async function buildImportPlan(
   const categories: CategoryPlan[] = [...byCategory.values()];
 
   // Xero cross-org check only matters when the Xero category is present.
+  // Source org now comes from xero-config/source.json, not the manifest.
   const xeroInBundle = manifest.includedCategories.includes("xero-config");
+  const sourceTenantId = xeroInBundle ? readXeroSourceTenantId(files) : null;
   const targetTenantId = xeroInBundle
     ? await getConnectedXeroTenantId(db)
     : null;
   const mismatch =
-    xeroInBundle &&
-    manifest.sourceXeroTenantId !== null &&
-    manifest.sourceXeroTenantId !== targetTenantId;
+    xeroInBundle && sourceTenantId !== null && sourceTenantId !== targetTenantId;
 
   return {
     formatVersion: manifest.formatVersion,
     categories,
     fingerprint: computeFingerprint(fingerprintParts),
     doorCodesIncluded: manifest.doorCodesIncluded,
+    integrityWarnings,
     xero: {
-      sourceTenantId: manifest.sourceXeroTenantId,
+      sourceTenantId,
       targetTenantId,
       mismatch,
     },

@@ -66,7 +66,6 @@ describe("config-transfer export", () => {
       includeDoorCodes: false,
       appVersion: "0.10.1",
       prismaMigration: null,
-      sourceXeroTenantId: null,
       generatedAt: "2026-07-08T00:00:00.000Z",
     });
 
@@ -106,7 +105,6 @@ describe("config-transfer export", () => {
       includeDoorCodes: false,
       appVersion: "0.10.1",
       prismaMigration: null,
-      sourceXeroTenantId: null,
       generatedAt: "2026-07-08T00:00:00.000Z",
     });
     expect(result.categories).toEqual([]);

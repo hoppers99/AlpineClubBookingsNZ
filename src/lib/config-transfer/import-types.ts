@@ -43,6 +43,12 @@ export interface ImportPlan {
   categories: CategoryPlan[];
   fingerprint: string;
   doorCodesIncluded: boolean;
+  /**
+   * Advisory bundle-integrity notes (checksum drift, declared-but-missing or
+   * present-but-undeclared files) from a hand-edited bundle. Shown in the
+   * dry-run; never blocks. See ADR-001 "hand-edit".
+   */
+  integrityWarnings: string[];
   xero: {
     sourceTenantId: string | null;
     targetTenantId: string | null;

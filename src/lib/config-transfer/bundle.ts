@@ -3,7 +3,9 @@ import "server-only";
 import { createHash } from "node:crypto";
 import { unzipSync, zipSync, strToU8, strFromU8 } from "fflate";
 
+import { parseCsv } from "./csv";
 import {
+  CONFIG_TRANSFER_CATEGORIES,
   CONFIG_TRANSFER_FORMAT_VERSION,
   CONFIG_TRANSFER_MANIFEST_PATH,
   configTransferManifestSchema,
@@ -47,7 +49,6 @@ export type BuildBundleParams = {
   entries: BundleEntry[];
   appVersion: string;
   prismaMigration: string | null;
-  sourceXeroTenantId: string | null;
   includedCategories: ConfigTransferCategory[];
   doorCodesIncluded: boolean;
   /** ISO-8601 timestamp; the app stamps this (kept out of this pure builder). */
@@ -76,7 +77,6 @@ export function buildBundle(params: BuildBundleParams): Uint8Array {
       version: params.appVersion,
       prismaMigration: params.prismaMigration,
     },
-    sourceXeroTenantId: params.sourceXeroTenantId,
     includedCategories: params.includedCategories,
     files: params.entries.map((entry) => ({
       path: entry.path,
@@ -101,15 +101,36 @@ export function buildBundle(params: BuildBundleParams): Uint8Array {
 
 export type ReadBundleResult = {
   manifest: ConfigTransferManifest;
-  /** All non-manifest files, keyed by their path in the zip. */
+  /**
+   * Every non-manifest file actually present in the zip, keyed by path
+   * (files-first: the importer trusts the bytes on disk, not the manifest's
+   * declared list, so a hand-added file is usable and a hand-removed one simply
+   * absent).
+   */
   files: Map<string, Uint8Array>;
+  /**
+   * Advisory integrity notes (checksum drift, declared-but-missing, or
+   * present-but-undeclared files). Surfaced in the dry-run so the admin can
+   * decide; never blocks the import. See ADR-001 "hand-edit".
+   */
+  warnings: string[];
 };
 
+/** Reject path-traversal / absolute / backslash entry names (safety, not integrity). */
+function isUnsafeEntryPath(name: string): boolean {
+  if (name.startsWith("/") || /^[a-zA-Z]:/.test(name)) return true;
+  if (name.includes("\\")) return true;
+  return name.split("/").some((seg) => seg === ".." || seg === ".");
+}
+
 /**
- * Parse + fully validate a bundle. Throws ConfigTransferBundleError on any
- * problem: oversized, too many files, missing/invalid manifest, unsupported
- * (newer) format version, checksum mismatch, or a declared/actual file-set
- * mismatch. Never trusts the bundle's own claims without verifying bytes.
+ * Parse + validate a bundle. HARD-throws ConfigTransferBundleError only for
+ * problems that make the bundle unprocessable or unsafe: oversized, too many
+ * files, unsafe entry paths, not-a-zip, missing/invalid manifest, or an
+ * unsupported (newer) format version. Integrity issues that a hand-editor can
+ * legitimately cause — checksum drift, row-count/file-set differences — are
+ * returned as `warnings`, not thrown, because bundles are meant to be editable
+ * and a human reviews the dry-run before anything writes (ADR-001 "hand-edit").
  */
 export function readBundle(zipBytes: Uint8Array): ReadBundleResult {
   if (zipBytes.byteLength > MAX_BUNDLE_BYTES) {
@@ -132,6 +153,11 @@ export function readBundle(zipBytes: Uint8Array): ReadBundleResult {
     );
   }
   for (const name of names) {
+    if (isUnsafeEntryPath(name)) {
+      throw new ConfigTransferBundleError(
+        `Bundle contains an unsafe entry path: ${name}`,
+      );
+    }
     if (unzipped[name].byteLength > MAX_BUNDLE_FILE_BYTES) {
       throw new ConfigTransferBundleError(
         `Bundle file exceeds the per-file limit: ${name}`,
@@ -168,33 +194,78 @@ export function readBundle(zipBytes: Uint8Array): ReadBundleResult {
     );
   }
 
-  // Every declared file must exist with a matching checksum, and no extra
-  // (undeclared) files may be present besides the manifest itself.
-  const declared = new Set<string>();
+  // Files-first: every file actually present (bar the manifest) is usable.
   const files = new Map<string, Uint8Array>();
-  for (const file of manifest.files) {
-    const bytes = unzipped[file.path];
-    if (!bytes) {
-      throw new ConfigTransferBundleError(
-        `Manifest declares a missing file: ${file.path}`,
-      );
-    }
-    if (sha256Hex(bytes) !== file.sha256) {
-      throw new ConfigTransferBundleError(
-        `Checksum mismatch for ${file.path} (bundle tampered or corrupt)`,
-      );
-    }
-    declared.add(file.path);
-    files.set(file.path, bytes);
-  }
   for (const name of names) {
     if (name === CONFIG_TRANSFER_MANIFEST_PATH) continue;
-    if (!declared.has(name)) {
-      throw new ConfigTransferBundleError(
-        `Bundle contains an undeclared file: ${name}`,
+    files.set(name, unzipped[name]);
+  }
+
+  // Advisory integrity: compare the manifest's declared file list to what is
+  // present. Drift is expected for hand-edited bundles, so these are warnings.
+  const warnings: string[] = [];
+  const declared = new Set<string>();
+  for (const file of manifest.files) {
+    declared.add(file.path);
+    const bytes = files.get(file.path);
+    if (!bytes) {
+      warnings.push(`Manifest lists ${file.path}, but it is not in the bundle`);
+      continue;
+    }
+    if (sha256Hex(bytes) !== file.sha256) {
+      warnings.push(
+        `${file.path} differs from its manifest checksum (edited since export)`,
       );
+    }
+  }
+  for (const name of files.keys()) {
+    if (!declared.has(name)) {
+      warnings.push(`${name} is present but not listed in the manifest`);
     }
   }
 
-  return { manifest, files };
+  return { manifest, files, warnings };
+}
+
+/** Map a zip path to its owning category (media rides with site-content). */
+function categoryForPath(path: string): ConfigTransferCategory {
+  const seg = path.split("/")[0];
+  if (seg === "media") return "site-content";
+  const cat = CONFIG_TRANSFER_CATEGORIES.find((c) => c === seg);
+  if (!cat) {
+    throw new ConfigTransferBundleError(
+      `Cannot map "${path}" to a known category for reseal`,
+    );
+  }
+  return cat;
+}
+
+/**
+ * Regenerate a bundle's manifest from the files actually present, so a
+ * hand-edited bundle imports without integrity warnings. Recomputes every
+ * checksum + row count and re-derives includedCategories from the files; keeps
+ * the envelope metadata (app version, timestamp, door-codes flag). Structural
+ * limits still apply (throws on unsafe/oversized/invalid input).
+ */
+export function resealBundle(zipBytes: Uint8Array): Uint8Array {
+  const { manifest, files } = readBundle(zipBytes);
+  const entries: BundleEntry[] = [];
+  for (const [path, bytes] of files) {
+    entries.push({
+      path,
+      category: categoryForPath(path),
+      rowCount: path.endsWith(".csv")
+        ? parseCsv(strFromU8(bytes)).rows.length
+        : null,
+      bytes,
+    });
+  }
+  return buildBundle({
+    entries,
+    appVersion: manifest.app.version,
+    prismaMigration: manifest.app.prismaMigration,
+    includedCategories: [...new Set(entries.map((e) => e.category))],
+    doorCodesIncluded: manifest.doorCodesIncluded,
+    generatedAt: manifest.generatedAt,
+  });
 }

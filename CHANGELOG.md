@@ -28,12 +28,18 @@ All notable public reference-release changes should be recorded here.
   a `pg_dump` backup before applying, runs under a single-flight advisory lock,
   and is audited. Categories: site content (pages/site-content/theme, with
   embedded-image bundling + reference remap), club settings singletons, lodge
-  configuration (lodges/rooms/beds/seasons/rates/instructions/chore templates),
-  committee (roles + standalone members), induction checklist templates, and
-  Xero account/item-code mappings. Never carries secrets, members, transactional
-  data, or (by default) door codes. Not a database backup; the `pg_dump`
-  subsystem remains the disaster-recovery tool. No schema migration. See
-  `docs/config-transfer/`.
+  configuration (each lodge a self-contained `lodge-config/lodges/<slug>/`
+  folder — `lodge.json` + rooms/beds/seasons/rates/instructions/chore-template
+  CSVs, lodge implied by folder), committee **role definitions** (the legacy
+  standalone member directory and member-linked assignments are excluded),
+  induction checklist templates, and Xero account/item-code mappings (source
+  org id in a sealed `xero-config/source.json`). Bundles are hand-editable:
+  manifest checksums/row counts are advisory (mismatches warn in the dry-run,
+  never block; import is files-first), with a "reseal" action to regenerate the
+  manifest; only structural/safety problems are hard-refused. Never carries
+  secrets, members, transactional data, or (by default) door codes. Not a
+  database backup; the `pg_dump` subsystem remains the disaster-recovery tool.
+  No schema migration. See `docs/config-transfer/`.
 
 ## 0.10.1 - 2026-07-07
 

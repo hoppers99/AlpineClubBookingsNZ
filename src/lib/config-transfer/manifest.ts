@@ -33,14 +33,22 @@ export type ConfigTransferCategory =
 
 export const configTransferCategorySchema = z.enum(CONFIG_TRANSFER_CATEGORIES);
 
-/** One file inside the zip, with an integrity checksum. */
+/**
+ * One file inside the zip, with an integrity checksum.
+ *
+ * These entries are ADVISORY: the bundle is intended to be hand-editable, so a
+ * mismatch between a file's bytes and its declared sha256/rowCount is surfaced
+ * as a dry-run warning, not a hard rejection. The importer reads the files that
+ * are actually present (files-first) and uses this list only to flag drift and
+ * to offer a "reseal" that regenerates the manifest. See ADR-001 "hand-edit".
+ */
 export const manifestFileSchema = z.object({
   /** Path within the zip, e.g. "site-content/pages.csv" or "media/<hash>.png". */
   path: z.string().min(1).max(512),
   category: configTransferCategorySchema,
-  /** Row count for tabular/document files; null for binary media. */
+  /** Row count for tabular/document files; null for binary media. Advisory. */
   rowCount: z.number().int().nonnegative().nullable(),
-  /** Lowercase hex SHA-256 of the file's bytes, for tamper/corruption detection. */
+  /** Lowercase hex SHA-256 of the file's bytes. Advisory (warn, not reject). */
   sha256: z.string().regex(/^[0-9a-f]{64}$/),
 });
 
@@ -54,12 +62,10 @@ export const configTransferManifestSchema = z.object({
     /** Prisma migration head at export time, for skew diagnostics. Nullable. */
     prismaMigration: z.string().nullable(),
   }),
-  /**
-   * Xero org (tenant) id connected at export time, or null if not connected.
-   * The importer compares this to the target's connected org for the Xero
-   * category (ADR-002): same → apply; different/none → warn + user chooses.
-   */
-  sourceXeroTenantId: z.string().nullable(),
+  // NB: the source Xero org (tenant) id is NOT here — it lives in
+  // xero-config/source.json (a sealed, category-local file) so it only exists
+  // when the Xero category is exported and is covered by the file checksum.
+  // See ADR-002 "Xero provenance".
   /** Categories actually present in this bundle. */
   includedCategories: z.array(configTransferCategorySchema),
   /** Every non-manifest file in the zip, for validation + integrity. */

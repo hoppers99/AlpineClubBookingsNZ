@@ -52,7 +52,6 @@ export type BuildExportParams = {
   includeDoorCodes: boolean;
   appVersion: string;
   prismaMigration: string | null;
-  sourceXeroTenantId: string | null;
   /** ISO timestamp; caller stamps it. */
   generatedAt: string;
 };
@@ -91,7 +90,6 @@ export async function buildConfigExport(
     entries,
     appVersion: params.appVersion,
     prismaMigration: params.prismaMigration,
-    sourceXeroTenantId: params.sourceXeroTenantId,
     // A category may be produced by more than one module (e.g. lodge-config);
     // list it once.
     includedCategories: [...new Set(included)],

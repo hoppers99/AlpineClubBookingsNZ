@@ -13,11 +13,19 @@ admins at **Admin → Setup & Configuration → Export & Import**
 - **Export:** tick the categories to include (door codes are opt-in), download a
   `.zip` bundle.
 - **Import:** upload a bundle → a mandatory **dry-run** shows exactly what will
-  be created/updated per entity (plus door-code and Xero-org warnings) → confirm
-  to apply. The server takes a `pg_dump` backup first, applies inside one
-  transaction under a single-flight advisory lock, and audits the result. Import
-  **never deletes**, so a "restore" won't remove anything added since the export;
-  the pre-apply backup is the true rollback.
+  be created/updated per entity (plus door-code, Xero-org, and any bundle
+  integrity warnings) → confirm to apply. The server takes a `pg_dump` backup
+  first, applies inside one transaction under a single-flight advisory lock, and
+  audits the result. Import **never deletes**, so a "restore" won't remove
+  anything added since the export; the pre-apply backup is the true rollback.
+- **Hand-editing:** bundles are meant to be edited (e.g. tweak a CSV, add a
+  lodge folder). The manifest's per-file checksums and row counts are
+  **advisory** — a mismatch is surfaced as a dry-run warning, never a hard
+  rejection, and the import reads the files actually present (files-first).
+  "Reseal edited bundle" regenerates the manifest so an edited bundle validates
+  clean again. Only structural/safety problems (not a zip, missing/invalid
+  manifest, a newer format version, size/count caps, or unsafe entry paths) are
+  hard-refused.
 
 ## Implemented categories
 
@@ -28,15 +36,25 @@ admins at **Admin → Setup & Configuration → Export & Import**
   defaults, member-fields, bed-allocation, booking-request, IB payments, email
   message settings, group discount, membership nomination/lockout/cancellation).
 - **lodge-config** — lodges, rooms, beds, seasons, season rates, lodge
-  instructions (content images bundled + remapped), and chore templates (foreign
-  keys carried as natural keys — lodge slug, room/season name).
-- **committee** — role definitions + the legacy standalone committee members
-  (the member-linked assignment style stays out; members are excluded).
+  instructions (content images bundled + remapped), and chore templates. Each
+  lodge is a **self-contained folder**, `lodge-config/lodges/<slug>/` with a
+  `lodge.json` descriptor (slug, name, active, travel note, door code if opted
+  in) plus `rooms.csv` / `beds.csv` / `seasons.csv` / `season-rates.csv` /
+  `instructions.csv` / `chore-templates.csv`. The lodge a row belongs to is
+  **implied by its folder**, not a CSV column, so a whole lodge is easy to add,
+  curate, or spot as a unit. Club-wide (lodge-less) instructions live in a
+  top-level `lodge-config/instructions.csv`.
+- **committee** — the `CommitteeRole` definitions only (the new, live
+  role/assignment model's config). The legacy standalone committee directory
+  (`CommitteeMember`) is **not** transferred — it is a migration aid, not
+  ongoing config — and member-linked `CommitteeAssignment`s stay out because
+  they reference real members.
 - **induction** — induction checklist templates with their nested sections and
   items (as JSON documents; member-specific results excluded).
-- **xero-config** — Xero account mappings and item-code mappings. The manifest
-  stamps the source Xero tenant; the plan warns on an org mismatch so codes are
-  verified before applying.
+- **xero-config** — Xero account mappings and item-code mappings. The source
+  Xero org id is recorded in a category-local `xero-config/source.json` (sealed
+  with the rest of the category, not the manifest); the plan warns on an org
+  mismatch so codes are verified before applying.
 
 Intentionally excluded / deferred:
 

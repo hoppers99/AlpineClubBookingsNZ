@@ -6,8 +6,8 @@ vi.mock("server-only", () => ({}));
 import {
   buildBundle,
   readBundle,
+  resealBundle,
   sha256Hex,
-  ConfigTransferBundleError,
   type BundleEntry,
 } from "@/lib/config-transfer/bundle";
 import {
@@ -39,7 +39,6 @@ function build(entries = sampleEntries()) {
     entries,
     appVersion: "0.10.1",
     prismaMigration: "20260708230000_add_member_credit_note_allocation",
-    sourceXeroTenantId: null,
     includedCategories: ["site-content", "club-settings"],
     doorCodesIncluded: false,
     generatedAt: GENERATED_AT,
@@ -55,7 +54,7 @@ function manifestOf(zip: Uint8Array): ConfigTransferManifest {
 describe("config-transfer bundle codec", () => {
   it("round-trips entries and stamps a valid manifest with checksums", () => {
     const zip = build();
-    const { manifest, files } = readBundle(zip);
+    const { manifest, files, warnings } = readBundle(zip);
 
     expect(manifest.formatVersion).toBe(1);
     expect(manifest.generatedAt).toBe(GENERATED_AT);
@@ -64,6 +63,7 @@ describe("config-transfer bundle codec", () => {
       "club-settings",
     ]);
     expect(manifest.doorCodesIncluded).toBe(false);
+    expect(warnings).toEqual([]);
     expect(files.get("site-content/pages.csv")).toBeDefined();
     expect(strFromU8(files.get("club-settings/modules.json")!)).toContain(
       "bedAllocation",
@@ -73,21 +73,33 @@ describe("config-transfer bundle codec", () => {
     expect(pages?.sha256).toBe(sha256Hex(files.get("site-content/pages.csv")!));
   });
 
-  it("rejects a tampered file (checksum mismatch)", () => {
+  it("WARNS (does not reject) on a hand-edited file whose checksum drifted", () => {
     const zip = build();
     const unzipped = unzipSync(zip);
-    unzipped["site-content/pages.csv"] = strToU8("slug,title\nhacked,Hacked\n");
-    const tampered = zipSync(unzipped); // manifest checksum now stale
-    expect(() => readBundle(tampered)).toThrow(ConfigTransferBundleError);
-    expect(() => readBundle(tampered)).toThrow(/checksum mismatch/i);
+    unzipped["site-content/pages.csv"] = strToU8("slug,title\nedited,Edited\n");
+    const edited = zipSync(unzipped); // manifest checksum now stale
+    const { files, warnings } = readBundle(edited);
+    // Bundle is still usable (files-first) and the edit is surfaced, not blocked.
+    expect(strFromU8(files.get("site-content/pages.csv")!)).toContain("Edited");
+    expect(warnings.some((w) => /site-content\/pages\.csv/.test(w) && /checksum|edited/i.test(w))).toBe(true);
   });
 
-  it("rejects a bundle with an undeclared extra file", () => {
+  it("WARNS (does not reject) on a present-but-undeclared file", () => {
     const zip = build();
     const unzipped = unzipSync(zip);
-    unzipped["stowaway.txt"] = strToU8("surprise");
+    unzipped["site-content/extra.csv"] = strToU8("added\n");
     const extra = zipSync(unzipped);
-    expect(() => readBundle(extra)).toThrow(/undeclared file/i);
+    const { files, warnings } = readBundle(extra);
+    expect(files.get("site-content/extra.csv")).toBeDefined();
+    expect(warnings.some((w) => /not listed in the manifest/i.test(w))).toBe(true);
+  });
+
+  it("rejects an unsafe entry path (path traversal)", () => {
+    const zip = build();
+    const unzipped = unzipSync(zip);
+    unzipped["../escape.txt"] = strToU8("no");
+    const unsafe = zipSync(unzipped);
+    expect(() => readBundle(unsafe)).toThrow(/unsafe entry path/i);
   });
 
   it("rejects a bundle missing the manifest", () => {
@@ -100,7 +112,6 @@ describe("config-transfer bundle codec", () => {
       formatVersion: 999,
       generatedAt: GENERATED_AT,
       app: { version: "9.9.9", prismaMigration: null },
-      sourceXeroTenantId: null,
       includedCategories: [],
       files: [],
       doorCodesIncluded: false,
@@ -112,9 +123,7 @@ describe("config-transfer bundle codec", () => {
   });
 
   it("rejects invalid zip bytes", () => {
-    expect(() => readBundle(strToU8("not a zip"))).toThrow(
-      /not a valid zip/i,
-    );
+    expect(() => readBundle(strToU8("not a zip"))).toThrow(/not a valid zip/i);
   });
 
   it("refuses to build an entry that collides with the manifest path", () => {
@@ -130,18 +139,31 @@ describe("config-transfer bundle codec", () => {
     ).toThrow(/collides with the manifest/i);
   });
 
-  it("records the source Xero tenant id and door-code opt-in in the manifest", () => {
+  it("records the door-code opt-in in the manifest", () => {
     const zip = buildBundle({
       entries: sampleEntries(),
       appVersion: "0.10.1",
       prismaMigration: null,
-      sourceXeroTenantId: "tenant-abc",
       includedCategories: ["site-content", "club-settings"],
       doorCodesIncluded: true,
       generatedAt: GENERATED_AT,
     });
     const manifest = manifestOf(zip);
-    expect(manifest.sourceXeroTenantId).toBe("tenant-abc");
     expect(manifest.doorCodesIncluded).toBe(true);
+    // The manifest no longer carries a source Xero tenant id.
+    expect("sourceXeroTenantId" in manifest).toBe(false);
+  });
+
+  it("reseal regenerates the manifest so an edited bundle validates clean", () => {
+    const zip = build();
+    const unzipped = unzipSync(zip);
+    unzipped["site-content/pages.csv"] = strToU8("slug,title\nedited,Edited\n");
+    const edited = zipSync(unzipped);
+    expect(readBundle(edited).warnings.length).toBeGreaterThan(0);
+
+    const resealed = resealBundle(edited);
+    const { warnings, files } = readBundle(resealed);
+    expect(warnings).toEqual([]);
+    expect(strFromU8(files.get("site-content/pages.csv")!)).toContain("Edited");
   });
 });

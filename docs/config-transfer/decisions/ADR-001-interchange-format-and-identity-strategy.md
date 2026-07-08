@@ -31,15 +31,28 @@ schema does not enforce.
 One `.zip` file, deliberately hand-editable (extract → edit → re-zip):
 
 - `manifest.json` — format version, exporting app version and Prisma
-  migration head, generatedAt, **source Xero tenant id** (when connected),
-  the included categories, and per-file row counts + SHA-256 checksums.
+  migration head, generatedAt, the included categories, and per-file row counts
+  + SHA-256 checksums. The manifest is **envelope metadata only**; category
+  data (including the source Xero org id, now in `xero-config/source.json`)
+  lives in the category files so it is covered by the file checksums and only
+  present when that category is exported.
 - **CSV** files for flat tabular entities (rooms, beds, rate rows, committee
   roles, mappings…).
 - **JSON** files for singletons and structured "document" entities (module
-  settings, theme, a page's fields, an induction template with its nested
-  sections/items).
+  settings, theme, a page's fields, a `lodge.json` descriptor, an induction
+  template with its nested sections/items).
+- **Per-lodge folders** — `lodge-config/lodges/<slug>/` groups one lodge's
+  `lodge.json` + its rooms/beds/seasons/rates/instructions/chore-templates
+  CSVs, so the lodge is implied by the folder (not a CSV column) and a whole
+  lodge is a self-contained, hand-curatable unit. The authoritative slug is
+  `lodge.json`'s `slug`; the folder name is just a container.
 - `media/` — image bytes referenced by content, with a mapping file
   (original id → bundle filename) used for reference rewriting on import.
+
+Committee scope: only `CommitteeRole` definitions transfer. The legacy
+standalone `CommitteeMember` directory is a migration aid, not ongoing config,
+so it is out; member-linked `CommitteeAssignment`s are out because members are
+out of scope entirely.
 
 ### Identity: natural keys only, two tiers
 
@@ -128,6 +141,11 @@ Considerations).
   the importing admin on import.
 - Door codes are physical-access information: excluded by default, opt-in
   export only, flagged in the export UI.
-- The manifest's checksums let the import detect tampering/corruption, but
-  are integrity aids, not authentication — bundles are untrusted regardless
-  and fully validated + sanitised on import (ADR-002).
+- The manifest's checksums + row counts are **advisory**, not authentication:
+  because bundles are meant to be hand-edited, a checksum/row-count/file-set
+  mismatch is surfaced as a dry-run warning (never a hard reject), and the
+  import reads the files actually present (files-first). A "reseal" action
+  regenerates the manifest after edits. Bundles are untrusted regardless and
+  fully validated + sanitised on import; only structural/safety problems (not a
+  zip, missing/invalid manifest, newer format version, size/count caps, unsafe
+  entry paths) are hard-refused (ADR-002).

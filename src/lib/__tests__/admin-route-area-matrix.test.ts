@@ -159,6 +159,7 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   "/api/admin/config-transfer/apply": "support",
   "/api/admin/config-transfer/export": "support",
   "/api/admin/config-transfer/plan": "support",
+  "/api/admin/config-transfer/reseal": "support",
   "/api/admin/committee/roles": "membership",
   "/api/admin/committee/roles/[id]": "membership",
   "/api/admin/communications/history": "membership",

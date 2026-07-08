@@ -47,6 +47,7 @@ type ImportPlan = {
   categories: CategoryPlan[];
   fingerprint: string;
   doorCodesIncluded: boolean;
+  integrityWarnings: string[];
   xero: { sourceTenantId: string | null; targetTenantId: string | null; mismatch: boolean };
   summary: { create: number; update: number; unchanged: number };
 };
@@ -68,6 +69,7 @@ export default function ConfigTransferPage() {
   const [plan, setPlan] = useState<ImportPlan | null>(null);
   const [planning, setPlanning] = useState(false);
   const [applying, setApplying] = useState(false);
+  const [resealing, setResealing] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
   const [applied, setApplied] = useState<string | null>(null);
 
@@ -144,6 +146,35 @@ export default function ConfigTransferPage() {
       setImportError(err instanceof Error ? err.message : "Preview failed.");
     } finally {
       setPlanning(false);
+    }
+  }
+
+  async function runReseal() {
+    if (!file) return;
+    setResealing(true);
+    setImportError(null);
+    try {
+      const form = new FormData();
+      form.append("bundle", file);
+      const res = await fetch("/api/admin/config-transfer/reseal", {
+        method: "POST",
+        body: form,
+      });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(data?.error ?? "Reseal failed.");
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `config-transfer-resealed-${new Date().toISOString().slice(0, 10)}.zip`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : "Reseal failed.");
+    } finally {
+      setResealing(false);
     }
   }
 
@@ -277,6 +308,14 @@ export default function ConfigTransferPage() {
             >
               {applying ? "Applying…" : "Apply import"}
             </Button>
+            <Button
+              variant="ghost"
+              onClick={() => void runReseal()}
+              disabled={!file || resealing}
+              title="Regenerate the manifest for a hand-edited bundle"
+            >
+              {resealing ? "Resealing…" : "Reseal edited bundle"}
+            </Button>
           </div>
 
           {plan && (
@@ -289,6 +328,23 @@ export default function ConfigTransferPage() {
                 <p className="text-amber-800">
                   This bundle includes door codes.
                 </p>
+              )}
+              {plan.integrityWarnings.length > 0 && (
+                <div className="rounded-md bg-amber-50 p-2">
+                  <p className="flex items-center gap-2 font-medium text-amber-800">
+                    <AlertTriangle className="h-4 w-4" />
+                    This bundle was edited since export:
+                  </p>
+                  <ul className="ml-6 list-disc text-amber-800">
+                    {plan.integrityWarnings.slice(0, 20).map((w) => (
+                      <li key={w}>{w}</li>
+                    ))}
+                  </ul>
+                  <p className="mt-1 text-xs text-amber-700">
+                    You can still apply, or “Reseal edited bundle” to refresh its
+                    manifest.
+                  </p>
+                </div>
               )}
               {plan.xero.mismatch && (
                 <p className="flex items-center gap-2 text-amber-800">

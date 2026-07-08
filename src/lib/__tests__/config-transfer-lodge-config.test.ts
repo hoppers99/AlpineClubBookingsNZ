@@ -9,6 +9,16 @@ import { readBundle } from "@/lib/config-transfer/bundle";
 import { parseCsv } from "@/lib/config-transfer/csv";
 import type { ReadDb } from "@/lib/config-transfer/import-types";
 
+const LODGE_JSON = "lodge-config/lodges/main/lodge.json";
+const ROOMS = "lodge-config/lodges/main/rooms.csv";
+const BEDS = "lodge-config/lodges/main/beds.csv";
+const SEASONS = "lodge-config/lodges/main/seasons.csv";
+const RATES = "lodge-config/lodges/main/season-rates.csv";
+
+function readJson(files: Map<string, Uint8Array>, path: string) {
+  return JSON.parse(strFromU8(files.get(path)!)) as Record<string, unknown>;
+}
+
 function sourceDb(): ReadDb {
   return {
     lodge: {
@@ -73,64 +83,57 @@ async function exportLodges(includeDoorCodes: boolean) {
     includeDoorCodes,
     appVersion: "0.10.1",
     prismaMigration: null,
-    sourceXeroTenantId: null,
     generatedAt: "2026-07-08T00:00:00.000Z",
   });
 }
 
-describe("config-transfer lodge-config", () => {
-  it("exports lodges/rooms/beds with FKs flattened to natural keys", async () => {
+describe("config-transfer lodge-config (per-lodge folders)", () => {
+  it("exports a lodge folder with lodge.json + collection CSVs (lodge implied by folder)", async () => {
     const { zip } = await exportLodges(false);
     const { files } = readBundle(zip);
 
-    const lodges = parseCsv(strFromU8(files.get("lodge-config/lodges.csv")!));
-    expect(lodges.rows[0].slug).toBe("main");
-    expect(lodges.headers).not.toContain("doorCode"); // opt-in only
+    const lodge = readJson(files, LODGE_JSON);
+    expect(lodge.slug).toBe("main");
+    expect(lodge.name).toBe("Main Lodge");
+    expect("doorCode" in lodge).toBe(false); // opt-in only
 
-    const rooms = parseCsv(strFromU8(files.get("lodge-config/rooms.csv")!));
-    expect(rooms.rows[0]).toMatchObject({ lodgeSlug: "main", name: "Bunk A" });
+    // Collection CSVs no longer carry a lodgeSlug column — the folder implies it.
+    const rooms = parseCsv(strFromU8(files.get(ROOMS)!));
+    expect(rooms.headers).not.toContain("lodgeSlug");
+    expect(rooms.rows[0]).toMatchObject({ name: "Bunk A" });
 
-    const beds = parseCsv(strFromU8(files.get("lodge-config/beds.csv")!));
-    expect(beds.rows[0]).toMatchObject({
-      lodgeSlug: "main",
-      roomName: "Bunk A",
-      name: "A1",
-    });
+    const beds = parseCsv(strFromU8(files.get(BEDS)!));
+    expect(beds.headers).not.toContain("lodgeSlug");
+    expect(beds.rows[0]).toMatchObject({ roomName: "Bunk A", name: "A1" });
 
-    const seasons = parseCsv(strFromU8(files.get("lodge-config/seasons.csv")!));
-    expect(seasons.rows[0]).toMatchObject({
-      lodgeSlug: "main",
-      name: "Winter",
-      startDate: "2026-06-01",
-    });
+    const seasons = parseCsv(strFromU8(files.get(SEASONS)!));
+    expect(seasons.rows[0]).toMatchObject({ name: "Winter", startDate: "2026-06-01" });
 
-    const rates = parseCsv(strFromU8(files.get("lodge-config/season-rates.csv")!));
+    const rates = parseCsv(strFromU8(files.get(RATES)!));
     expect(rates.rows[0]).toMatchObject({
-      lodgeSlug: "main",
       seasonName: "Winter",
       ageTier: "ADULT",
       pricePerNightCents: "5000",
     });
   });
 
-  it("includes door codes only when opted in", async () => {
+  it("includes door code in lodge.json only when opted in", async () => {
     const { zip } = await exportLodges(true);
-    const { files } = readBundle(zip);
-    const lodges = parseCsv(strFromU8(files.get("lodge-config/lodges.csv")!));
-    expect(lodges.headers).toContain("doorCode");
-    expect(lodges.rows[0].doorCode).toBe("9999");
+    const lodge = readJson(readBundle(zip).files, LODGE_JSON);
+    expect(lodge.doorCode).toBe("9999");
   });
 
-  it("plans all-create against an empty target, warning on rooms before their lodge exists", async () => {
+  it("plans all-create against an empty target with no integrity or lodge warnings", async () => {
     const { zip } = await exportLodges(false);
     const plan = await buildImportPlan(emptyTargetDb(), zip);
     const cat = plan.categories.find((c) => c.category === "lodge-config")!;
-    const actions = Object.fromEntries(
-      cat.items.map((i) => [i.entity, i.action]),
-    );
+    const actions = Object.fromEntries(cat.items.map((i) => [i.entity, i.action]));
     expect(actions["lodge"]).toBe("create");
     expect(actions["lodge-room"]).toBe("create");
     expect(actions["lodge-bed"]).toBe("create");
-    expect(cat.warnings.join(" ")).toMatch(/unknown lodge/i);
+    expect(actions["season"]).toBe("create");
+    expect(actions["season-rate"]).toBe("create");
+    expect(cat.warnings).toEqual([]);
+    expect(plan.integrityWarnings).toEqual([]);
   });
 });

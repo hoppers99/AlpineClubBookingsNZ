@@ -36,7 +36,6 @@ function pagesBundle(rows: Array<Record<string, unknown>>): Uint8Array {
     ],
     appVersion: "0.10.1",
     prismaMigration: null,
-    sourceXeroTenantId: null,
     includedCategories: ["site-content"],
     doorCodesIncluded: false,
     generatedAt: "2026-07-08T00:00:00.000Z",
