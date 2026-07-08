@@ -2226,18 +2226,12 @@ model FinanceReportCategoryMapping {
   id           String                @id @default(cuid())
   categoryId   String
   accountCode  String?               @db.VarChar(40)
-  // Deprecated: fallback P&L text-label matching has been removed. Categories
-  // now match Xero P&L lines by accountCode only. These columns are retained to
-  // avoid a breaking migration and are no longer read or written by the app.
-  sectionLabel String?               @db.VarChar(200)
-  lineLabel    String?               @db.VarChar(200)
   createdAt    DateTime              @default(now())
   updatedAt    DateTime              @updatedAt
   category     FinanceReportCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
 
   @@index([categoryId])
   @@index([accountCode])
-  @@index([sectionLabel, lineLabel])
 }
 
 // ---------------------------------------------------------------------------
