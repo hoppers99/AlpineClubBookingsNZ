@@ -1,11 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("server-only", () => ({}));
 
 import {
   assertDescriptorValid,
   isForbiddenField,
   isSensitiveOptInField,
+  getRegisteredEntities,
   type EntityDescriptor,
 } from "@/lib/config-transfer/registry";
+// Importing a category module registers its descriptors as a side effect.
+import "@/lib/config-transfer/categories/site-content";
 
 function descriptor(overrides: Partial<EntityDescriptor> = {}): EntityDescriptor {
   return {
@@ -97,5 +102,21 @@ describe("config-transfer registry — assertDescriptorValid", () => {
     expect(() =>
       assertDescriptorValid(descriptor({ optInFields: ["doorCode"] })),
     ).toThrow(/optInField not in fields/i);
+  });
+});
+
+describe("config-transfer registry — registered descriptors", () => {
+  it("registers site-content descriptors and they are all valid", () => {
+    const entities = getRegisteredEntities();
+    expect(entities.map((e) => e.entity)).toEqual(
+      expect.arrayContaining(["page-content", "site-content", "club-theme"]),
+    );
+    // Every registered descriptor must satisfy the security/shape rules.
+    for (const descriptor of entities) {
+      expect(() => assertDescriptorValid(descriptor)).not.toThrow();
+      for (const field of descriptor.fields) {
+        expect(isForbiddenField(field)).toBe(false);
+      }
+    }
   });
 });

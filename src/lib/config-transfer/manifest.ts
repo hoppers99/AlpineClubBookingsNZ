@@ -44,8 +44,6 @@ export const manifestFileSchema = z.object({
   sha256: z.string().regex(/^[0-9a-f]{64}$/),
 });
 
-export type ManifestFile = z.infer<typeof manifestFileSchema>;
-
 export const configTransferManifestSchema = z.object({
   formatVersion: z.number().int().positive(),
   /** ISO-8601, stamped by the app at export time. */
