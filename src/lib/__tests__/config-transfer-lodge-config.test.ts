@@ -26,6 +26,28 @@ function sourceDb(): ReadDb {
         { name: "A1", sortOrder: 1, active: true, room: { name: "Bunk A", lodge: { slug: "main" } } },
       ]),
     },
+    season: {
+      findMany: vi.fn().mockResolvedValue([
+        {
+          name: "Winter",
+          type: "WINTER",
+          startDate: new Date("2026-06-01T00:00:00.000Z"),
+          endDate: new Date("2026-09-01T00:00:00.000Z"),
+          active: true,
+          lodge: { slug: "main" },
+        },
+      ]),
+    },
+    seasonRate: {
+      findMany: vi.fn().mockResolvedValue([
+        {
+          ageTier: "ADULT",
+          isMember: true,
+          pricePerNightCents: 5000,
+          season: { name: "Winter", lodge: { slug: "main" } },
+        },
+      ]),
+    },
   } as unknown as ReadDb;
 }
 
@@ -34,6 +56,8 @@ function emptyTargetDb(): ReadDb {
     lodge: { findMany: vi.fn().mockResolvedValue([]), findUnique: vi.fn().mockResolvedValue(null) },
     lodgeRoom: { findUnique: vi.fn().mockResolvedValue(null) },
     lodgeBed: { findUnique: vi.fn().mockResolvedValue(null) },
+    season: { findFirst: vi.fn().mockResolvedValue(null) },
+    seasonRate: { findUnique: vi.fn().mockResolvedValue(null) },
     xeroToken: { findFirst: vi.fn().mockResolvedValue(null) },
   } as unknown as ReadDb;
 }
@@ -67,6 +91,21 @@ describe("config-transfer lodge-config", () => {
       lodgeSlug: "main",
       roomName: "Bunk A",
       name: "A1",
+    });
+
+    const seasons = parseCsv(strFromU8(files.get("lodge-config/seasons.csv")!));
+    expect(seasons.rows[0]).toMatchObject({
+      lodgeSlug: "main",
+      name: "Winter",
+      startDate: "2026-06-01",
+    });
+
+    const rates = parseCsv(strFromU8(files.get("lodge-config/season-rates.csv")!));
+    expect(rates.rows[0]).toMatchObject({
+      lodgeSlug: "main",
+      seasonName: "Winter",
+      ageTier: "ADULT",
+      pricePerNightCents: "5000",
     });
   });
 

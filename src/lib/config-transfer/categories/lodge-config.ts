@@ -26,10 +26,22 @@ import {
 const LODGE_FILE = "lodge-config/lodges.csv";
 const ROOM_FILE = "lodge-config/rooms.csv";
 const BED_FILE = "lodge-config/beds.csv";
+const SEASON_FILE = "lodge-config/seasons.csv";
+const RATE_FILE = "lodge-config/season-rates.csv";
 
 const LODGE_FIELDS = ["slug", "name", "active", "travelNote", "doorCode"] as const;
 const ROOM_FIELDS = ["lodgeSlug", "name", "sortOrder", "active", "notes"] as const;
 const BED_FIELDS = ["lodgeSlug", "roomName", "name", "sortOrder", "active"] as const;
+const SEASON_FIELDS = ["lodgeSlug", "name", "type", "startDate", "endDate", "active"] as const;
+const RATE_FIELDS = ["lodgeSlug", "seasonName", "ageTier", "isMember", "pricePerNightCents"] as const;
+
+/** date-only (@db.Date) helpers: serialise as YYYY-MM-DD, parse to UTC midnight. */
+function toDateStr(value: Date | null | undefined): string {
+  return value ? new Date(value).toISOString().slice(0, 10) : "";
+}
+function fromDateStr(value: string | undefined): Date {
+  return new Date(`${(value ?? "").trim()}T00:00:00.000Z`);
+}
 
 registerEntity({
   entity: "lodge",
@@ -61,6 +73,26 @@ registerEntity({
   naturalKey: ["lodgeSlug", "roomName", "name"],
   singleton: false,
   fields: [...BED_FIELDS],
+});
+registerEntity({
+  entity: "season",
+  category: "lodge-config",
+  tier: "key-weak",
+  format: "csv",
+  file: SEASON_FILE,
+  naturalKey: ["lodgeSlug", "name"],
+  singleton: false,
+  fields: [...SEASON_FIELDS],
+});
+registerEntity({
+  entity: "season-rate",
+  category: "lodge-config",
+  tier: "key-strong",
+  format: "csv",
+  file: RATE_FILE,
+  naturalKey: ["lodgeSlug", "seasonName", "ageTier", "isMember"],
+  singleton: false,
+  fields: [...RATE_FIELDS],
 });
 
 function coerceInt(value: string | undefined, fallback: number): number {
@@ -115,6 +147,42 @@ export const lodgeConfigExporter: CategoryExporter = {
         room: { select: { name: true, lodge: { select: { slug: true } } } },
       },
     });
+    const seasons = await ctx.db.season.findMany({
+      orderBy: [{ startDate: "asc" }, { name: "asc" }],
+      select: {
+        name: true,
+        type: true,
+        startDate: true,
+        endDate: true,
+        active: true,
+        lodge: { select: { slug: true } },
+      },
+    });
+    const rates = await ctx.db.seasonRate.findMany({
+      orderBy: [{ ageTier: "asc" }, { isMember: "asc" }],
+      select: {
+        ageTier: true,
+        isMember: true,
+        pricePerNightCents: true,
+        season: { select: { name: true, lodge: { select: { slug: true } } } },
+      },
+    });
+
+    const seasonRows = seasons.map((s) => ({
+      lodgeSlug: s.lodge.slug,
+      name: s.name,
+      type: s.type,
+      startDate: toDateStr(s.startDate),
+      endDate: toDateStr(s.endDate),
+      active: s.active,
+    }));
+    const rateRows = rates.map((r) => ({
+      lodgeSlug: r.season.lodge.slug,
+      seasonName: r.season.name,
+      ageTier: r.ageTier,
+      isMember: r.isMember,
+      pricePerNightCents: r.pricePerNightCents,
+    }));
 
     const lodgeRows = lodges.map((l) => ({
       slug: l.slug,
@@ -160,6 +228,18 @@ export const lodgeConfigExporter: CategoryExporter = {
         category: "lodge-config",
         rowCount: bedRows.length,
         bytes: strToU8(serialiseCsv([...BED_FIELDS], bedRows)),
+      },
+      {
+        path: SEASON_FILE,
+        category: "lodge-config",
+        rowCount: seasonRows.length,
+        bytes: strToU8(serialiseCsv([...SEASON_FIELDS], seasonRows)),
+      },
+      {
+        path: RATE_FILE,
+        category: "lodge-config",
+        rowCount: rateRows.length,
+        bytes: strToU8(serialiseCsv([...RATE_FIELDS], rateRows)),
       },
     ];
   },
@@ -225,6 +305,34 @@ async function planLodgeConfig(ctx: PlanContext): Promise<CategoryPlanResult> {
       : null;
     fingerprintParts.push(`lodge-bed:${key}:${current ? hashRow(["name", "sortOrder", "active"], current) : "absent"}`);
     items.push({ entity: "lodge-bed", key, action: current ? "update" : "create" });
+  }
+
+  // Seasons (key-weak: match by lodge + name).
+  for (const raw of readCsv(ctx.files, SEASON_FILE)) {
+    const key = `${raw.lodgeSlug}/${raw.name}`;
+    const lodgeId = slugToId.get(raw.lodgeSlug ?? "");
+    const current = lodgeId
+      ? await ctx.db.season.findFirst({
+          where: { lodgeId, name: raw.name ?? "" },
+          select: { name: true, type: true, active: true },
+        })
+      : null;
+    fingerprintParts.push(`season:${key}:${current ? hashRow(["name", "type", "active"], current) : "absent"}`);
+    items.push({ entity: "season", key, action: current ? "update" : "create" });
+  }
+
+  // Season rates.
+  for (const raw of readCsv(ctx.files, RATE_FILE)) {
+    const key = `${raw.lodgeSlug}/${raw.seasonName}/${raw.ageTier}/${raw.isMember}`;
+    const lodgeId = slugToId.get(raw.lodgeSlug ?? "");
+    const season = lodgeId
+      ? await ctx.db.season.findFirst({
+          where: { lodgeId, name: raw.seasonName ?? "" },
+          select: { id: true },
+        })
+      : null;
+    fingerprintParts.push(`season-rate:${key}:${season ? "present" : "absent"}`);
+    items.push({ entity: "season-rate", key, action: season ? "update" : "create" });
   }
 
   return { items, warnings, fingerprintParts };
@@ -298,6 +406,66 @@ async function applyLodgeConfig(ctx: ApplyContext): Promise<CategoryApplyResult>
     await ctx.tx.lodgeBed.upsert({
       where: { roomId_name: { roomId: room.id, name } },
       create: { roomId: room.id, name, ...data },
+      update: data,
+    });
+    if (existing) result.updated += 1;
+    else result.created += 1;
+  }
+
+  // 4) Seasons (key-weak: match/create by lodge + name). Build a name->id map.
+  const seasonIdByKey = new Map<string, string>();
+  for (const raw of readCsv(ctx.files, SEASON_FILE)) {
+    const lodgeId = slugToId.get(raw.lodgeSlug ?? "");
+    if (!lodgeId) { result.skipped += 1; continue; }
+    const name = raw.name ?? "";
+    const data = {
+      type: raw.type as never,
+      startDate: fromDateStr(raw.startDate),
+      endDate: fromDateStr(raw.endDate),
+      active: coerceBool(raw.active),
+    };
+    const existing = await ctx.tx.season.findFirst({
+      where: { lodgeId, name },
+      select: { id: true },
+    });
+    if (existing) {
+      await ctx.tx.season.update({ where: { id: existing.id }, data });
+      seasonIdByKey.set(`${raw.lodgeSlug}/${name}`, existing.id);
+      result.updated += 1;
+    } else {
+      const created = await ctx.tx.season.create({
+        data: { lodgeId, name, ...data },
+        select: { id: true },
+      });
+      seasonIdByKey.set(`${raw.lodgeSlug}/${name}`, created.id);
+      result.created += 1;
+    }
+  }
+
+  // 5) Season rates (by seasonId + ageTier + isMember).
+  for (const raw of readCsv(ctx.files, RATE_FILE)) {
+    let seasonId = seasonIdByKey.get(`${raw.lodgeSlug}/${raw.seasonName}`);
+    if (!seasonId) {
+      const lodgeId = slugToId.get(raw.lodgeSlug ?? "");
+      const season = lodgeId
+        ? await ctx.tx.season.findFirst({
+            where: { lodgeId, name: raw.seasonName ?? "" },
+            select: { id: true },
+          })
+        : null;
+      seasonId = season?.id;
+    }
+    if (!seasonId) { result.skipped += 1; continue; }
+    const ageTier = raw.ageTier as never;
+    const isMember = coerceBool(raw.isMember);
+    const data = { pricePerNightCents: coerceInt(raw.pricePerNightCents, 0) };
+    const existing = await ctx.tx.seasonRate.findUnique({
+      where: { seasonId_ageTier_isMember: { seasonId, ageTier, isMember } },
+      select: { id: true },
+    });
+    await ctx.tx.seasonRate.upsert({
+      where: { seasonId_ageTier_isMember: { seasonId, ageTier, isMember } },
+      create: { seasonId, ageTier, isMember, ...data },
       update: data,
     });
     if (existing) result.updated += 1;
