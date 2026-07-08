@@ -152,7 +152,14 @@ test("(d) a cross-lodge waitlist offer confirms into a fresh lodge B booking", a
   const page = await memberContext.newPage();
   await page.goto(`/bookings/${CROSS_LODGE_OFFER_BOOKING_ID}`);
 
-  await expect(page.getByText("A Spot Has Opened Up!")).toBeVisible();
+  // The /bookings/[id] segment has a loading.tsx, so it is a React streaming
+  // (Suspense) boundary: during the reveal the offer card exists twice for a
+  // beat — once in a `hidden` streamed template and once live — which trips
+  // strict mode on a bare text match (#21). Filter to the visible instance so
+  // the assertion converges on the revealed card instead of the template.
+  await expect(
+    page.getByText("A Spot Has Opened Up!").filter({ visible: true }),
+  ).toBeVisible();
   // The cross-lodge offer names lodge B on its accept CTA (substring match, so
   // the lodge name's parentheses need no escaping).
   const confirm = page.getByRole("button", {
@@ -186,7 +193,10 @@ test("(e) a member-guest cross-lodge offer confirms into a fresh lodge B booking
   const page = await memberContext.newPage();
   await page.goto(`/bookings/${CROSS_LODGE_OFFER_MEMBER_GUEST_BOOKING_ID}`);
 
-  await expect(page.getByText("A Spot Has Opened Up!")).toBeVisible();
+  // Filter to the visible card: the streaming template briefly duplicates it (#21).
+  await expect(
+    page.getByText("A Spot Has Opened Up!").filter({ visible: true }),
+  ).toBeVisible();
   const confirm = page.getByRole("button", {
     name: `Confirm at ${SECOND_LODGE.name}`,
   });
