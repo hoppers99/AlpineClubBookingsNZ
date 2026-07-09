@@ -7,7 +7,9 @@ import { serialiseCsv, parseCsv } from "../csv";
 import { registerEntity } from "../registry";
 import type { CategoryExporter, ExportContext } from "../export-types";
 import {
+  changedFields,
   hashRow,
+  planActionFor,
   updateDataForMode,
   type ApplyContext,
   type CategoryApplyResult,
@@ -107,6 +109,14 @@ function itemWhere(row: Record<string, string>): Prisma.XeroItemCodeMappingWhere
   };
 }
 
+/** Write-data builders shared by plan (diff) and apply (write). */
+function buildAccountData(raw: Record<string, string>) {
+  return { code: nz(raw.code), itemCode: nz(raw.itemCode) };
+}
+function buildItemData(raw: Record<string, string>) {
+  return { itemCode: nz(raw.itemCode), amountCents: nzInt(raw.amountCents) };
+}
+
 function itemKey(row: Record<string, unknown>): string {
   return [row.category, row.ageTier, row.seasonType, row.isMember, row.entranceFeeCategory]
     .map((v) => (v === null || v === undefined || v === "" ? "-" : v))
@@ -167,17 +177,21 @@ async function planXeroConfig(ctx: PlanContext): Promise<CategoryPlanResult> {
       select: { key: true, code: true, itemCode: true },
     });
     fingerprintParts.push(`xero-account-mapping:${key}:${current ? hashRow([...ACCOUNT_FIELDS], current) : "absent"}`);
-    items.push({ entity: "xero-account-mapping", key, action: current ? "update" : "create" });
+    const write = updateDataForMode(ctx.mode, raw, buildAccountData(raw));
+    const changed = changedFields(write, current);
+    items.push({ entity: "xero-account-mapping", key, action: planActionFor(current, changed), changedFields: changed.length ? changed : undefined });
   }
 
   for (const raw of readCsv(ctx.files, ITEM_FILE)) {
     const key = itemKey(raw);
     const current = await ctx.db.xeroItemCodeMapping.findUnique({
       where: itemWhere(raw),
-      select: { id: true },
+      select: { itemCode: true, amountCents: true },
     });
-    fingerprintParts.push(`xero-item-code-mapping:${key}:${current ? "present" : "absent"}`);
-    items.push({ entity: "xero-item-code-mapping", key, action: current ? "update" : "create" });
+    fingerprintParts.push(`xero-item-code-mapping:${key}:${current ? hashRow(["itemCode", "amountCents"], current) : "absent"}`);
+    const write = updateDataForMode(ctx.mode, raw, buildItemData(raw));
+    const changed = changedFields(write, current);
+    items.push({ entity: "xero-item-code-mapping", key, action: planActionFor(current, changed), changedFields: changed.length ? changed : undefined });
   }
 
   if (items.length > 0) {
@@ -192,7 +206,7 @@ async function applyXeroConfig(ctx: ApplyContext): Promise<CategoryApplyResult> 
   for (const raw of readCsv(ctx.files, ACCOUNT_FILE)) {
     const key = raw.key ?? "";
     if (!key) { result.skipped += 1; continue; }
-    const data = { code: nz(raw.code), itemCode: nz(raw.itemCode) };
+    const data = buildAccountData(raw);
     const existing = await ctx.tx.xeroAccountMapping.findUnique({ where: { key }, select: { id: true } });
     await ctx.tx.xeroAccountMapping.upsert({ where: { key }, create: { key, ...data }, update: updateDataForMode(ctx.mode, raw, data) });
     if (existing) result.updated += 1;
@@ -203,7 +217,7 @@ async function applyXeroConfig(ctx: ApplyContext): Promise<CategoryApplyResult> 
     const category = raw.category ?? "";
     if (!category) { result.skipped += 1; continue; }
     const where = itemWhere(raw);
-    const data = { itemCode: nz(raw.itemCode), amountCents: nzInt(raw.amountCents) };
+    const data = buildItemData(raw);
     const create = {
       category,
       ageTier: nz(raw.ageTier) as never,

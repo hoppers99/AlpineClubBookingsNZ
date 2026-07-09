@@ -123,7 +123,7 @@ export default function ConfigTransferPage() {
     }
   }
 
-  async function runPreview() {
+  async function runPreview(previewMode: "merge" | "overwrite" = mode) {
     if (!file) return;
     setPlanning(true);
     setImportError(null);
@@ -132,6 +132,9 @@ export default function ConfigTransferPage() {
     try {
       const form = new FormData();
       form.append("bundle", file);
+      // The plan is mode-aware (what changes differs by mode), so preview in the
+      // selected mode.
+      form.append("mode", previewMode);
       const res = await fetch("/api/admin/config-transfer/plan", {
         method: "POST",
         body: form,
@@ -326,9 +329,9 @@ export default function ConfigTransferPage() {
                 Plan: {plan.summary.create} new, {plan.summary.update} updated,{" "}
                 {plan.summary.unchanged} unchanged.
               </p>
-              <fieldset className="rounded-md border p-3">
+              <fieldset className="rounded-md border p-3" disabled={planning}>
                 <legend className="px-1 text-xs font-medium text-muted-foreground">
-                  How to apply to existing records
+                  How to apply to existing records (changing this re-previews)
                 </legend>
                 <label className="flex items-start gap-2" htmlFor="mode-merge">
                   <input
@@ -337,7 +340,7 @@ export default function ConfigTransferPage() {
                     name="import-mode"
                     className="mt-1"
                     checked={mode === "merge"}
-                    onChange={() => setMode("merge")}
+                    onChange={() => { setMode("merge"); void runPreview("merge"); }}
                   />
                   <span>
                     <span className="font-medium">Merge</span> (recommended) — only
@@ -352,7 +355,7 @@ export default function ConfigTransferPage() {
                     name="import-mode"
                     className="mt-1"
                     checked={mode === "overwrite"}
-                    onChange={() => setMode("overwrite")}
+                    onChange={() => { setMode("overwrite"); void runPreview("overwrite"); }}
                   />
                   <span>
                     <span className="font-medium">Overwrite</span> — the bundle fully

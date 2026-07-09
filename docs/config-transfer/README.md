@@ -23,7 +23,9 @@ admins at **Admin → Setup & Configuration → Export & Import**
   that carry a value in the bundle — blank/omitted fields keep the record's
   existing value, so a partial or skeleton bundle patches rather than wipes.
   *Overwrite* makes the bundle fully define each record (blank fields clear the
-  value). Creates always use the bundle's values in either mode.
+  value). Creates always use the bundle's values in either mode. The **dry-run
+  is mode-aware**: it shows the exact fields that will change for the selected
+  mode (and marks no-change rows "unchanged"); switching mode re-previews.
 - **Hand-editing:** bundles are meant to be edited (e.g. tweak a CSV, add a
   lodge folder). The manifest's per-file checksums and row counts are
   **advisory** — a mismatch is surfaced as a dry-run warning, never a hard
@@ -44,8 +46,8 @@ admins at **Admin → Setup & Configuration → Export & Import**
 - **lodge-config** — lodges, rooms, beds, seasons, season rates, lodge
   instructions (content images bundled + remapped), and chore templates. Each
   lodge is a **self-contained folder**, `lodge-config/lodges/<slug>/` with a
-  `lodge.json` descriptor (slug, name, active, travel note, door code if opted
-  in) plus `rooms.csv` / `beds.csv` / `seasons.csv` / `season-rates.csv` /
+  `lodge.json` descriptor (slug, name, active, travel note, `isDefault`, door
+  code if opted in) plus `rooms.csv` / `beds.csv` / `seasons.csv` / `season-rates.csv` /
   `instructions.csv` / `chore-templates.csv`. The lodge a row belongs to is
   **implied by its folder**, not a CSV column, so a whole lodge is easy to add,
   curate, or spot as a unit. The full per-lodge file set is always emitted

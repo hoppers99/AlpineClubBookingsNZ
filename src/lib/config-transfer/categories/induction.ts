@@ -4,6 +4,8 @@ import type { BundleEntry } from "../bundle";
 import { registerEntity } from "../registry";
 import type { CategoryExporter, ExportContext } from "../export-types";
 import {
+  changedFields,
+  planActionFor,
   updateDataForMode,
   type ApplyContext,
   type CategoryApplyResult,
@@ -12,6 +14,40 @@ import {
   type PlanContext,
   type PlanItem,
 } from "../import-types";
+
+/** Template-level write-data (leaf fields), shared by plan (diff) and apply. */
+function buildTemplateData(tpl: Record<string, unknown>) {
+  return {
+    kind: tpl.kind as never,
+    sourceLabel: (tpl.sourceLabel ?? null) as string | null,
+    isActive: Boolean(tpl.isActive),
+  };
+}
+
+/** Stable canonical string of a template's sections+items, for change detection. */
+function canonicalNested(sections: unknown): string {
+  const arr = Array.isArray(sections) ? (sections as Record<string, unknown>[]) : [];
+  const norm = arr
+    .map((s) => ({
+      title: String(s.title ?? ""),
+      description: s.description ?? null,
+      priority: s.priority ?? null,
+      sortOrder: s.sortOrder ?? 0,
+      items: (Array.isArray(s.items) ? (s.items as Record<string, unknown>[]) : [])
+        .map((i) => ({
+          label: String(i.label ?? ""),
+          competencyPrompt: i.competencyPrompt ?? null,
+          notesPrompt: i.notesPrompt ?? null,
+          isMandatory: Boolean(i.isMandatory),
+          requiresDemonstration: Boolean(i.requiresDemonstration),
+          sortOrder: i.sortOrder ?? 0,
+          legacySourceText: i.legacySourceText ?? null,
+        }))
+        .sort((a, b) => a.label.localeCompare(b.label)),
+    }))
+    .sort((a, b) => a.title.localeCompare(b.title));
+  return JSON.stringify(norm);
+}
 
 // induction category: induction checklist templates with their nested sections
 // and items, as a single JSON document (the nested rows have no natural key of
@@ -117,10 +153,31 @@ async function planInduction(ctx: PlanContext): Promise<CategoryPlanResult> {
     const key = `${tpl.name}/${tpl.version}`;
     const current = await ctx.db.inductionChecklistTemplate.findFirst({
       where: { name: tpl.name, version: tpl.version },
-      select: { id: true },
+      select: {
+        kind: true, sourceLabel: true, isActive: true,
+        sections: {
+          select: {
+            title: true, description: true, priority: true, sortOrder: true,
+            items: {
+              select: {
+                label: true, competencyPrompt: true, notesPrompt: true,
+                isMandatory: true, requiresDemonstration: true, sortOrder: true, legacySourceText: true,
+              },
+            },
+          },
+        },
+      },
     });
     fingerprintParts.push(`induction-template:${key}:${current ? "present" : "absent"}`);
-    items.push({ entity: "induction-template", key, action: current ? "update" : "create" });
+    const tplRecord = tpl as unknown as Record<string, unknown>;
+    const write = updateDataForMode(ctx.mode, tplRecord, buildTemplateData(tplRecord));
+    const changed = changedFields(write, current);
+    // Nested sections/items are upsert-set; flag them as a coarse "sections"
+    // change when the bundle's nested content differs from the current template.
+    if (current && canonicalNested(tplRecord.sections) !== canonicalNested(current.sections)) {
+      changed.push("sections");
+    }
+    items.push({ entity: "induction-template", key, action: planActionFor(current, changed), changedFields: changed.length ? changed : undefined });
   }
   return { items, warnings: [], fingerprintParts };
 }
@@ -129,11 +186,7 @@ async function applyInduction(ctx: ApplyContext): Promise<CategoryApplyResult> {
   const result: CategoryApplyResult = { created: 0, updated: 0, unchanged: 0, skipped: 0 };
   for (const tpl of readTemplates(ctx.files)) {
     if (!tpl.name || !tpl.version) { result.skipped += 1; continue; }
-    const tplData = {
-      kind: tpl.kind as never,
-      sourceLabel: tpl.sourceLabel ?? null,
-      isActive: Boolean(tpl.isActive),
-    };
+    const tplData = buildTemplateData(tpl as unknown as Record<string, unknown>);
     let templateId: string;
     const existing = await ctx.tx.inductionChecklistTemplate.findFirst({
       where: { name: tpl.name, version: tpl.version },

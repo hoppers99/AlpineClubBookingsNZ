@@ -40,8 +40,12 @@ All notable public reference-release changes should be recorded here.
   per-run **write mode** (default **merge**): merge writes only fields that
   carry a value in the bundle (blank/omitted fields keep the record's existing
   value, so a partial or skeleton bundle patches rather than wipes); overwrite
-  makes the bundle fully define each record (blanks clear). Never carries
-  secrets, members, transactional data, or (by default) door codes. Not a
+  makes the bundle fully define each record (blanks clear). The **dry-run is
+  mode-aware** — it shows the exact per-field changes for the selected mode and
+  marks no-change rows unchanged. Lodge folders carry the `isDefault`
+  default-lodge marker (adopted from fork #15), applied via a safe
+  clear-then-set. Never carries secrets, members, transactional data, or (by
+  default) door codes. Not a
   database backup; the `pg_dump` subsystem remains the disaster-recovery tool.
   No schema migration. See `docs/config-transfer/`.
 

@@ -23,7 +23,7 @@ function sourceDb(): ReadDb {
   return {
     lodge: {
       findMany: vi.fn().mockResolvedValue([
-        { slug: "main", name: "Main Lodge", active: true, travelNote: "Turn left", doorCode: "9999" },
+        { slug: "main", name: "Main Lodge", active: true, travelNote: "Turn left", doorCode: "9999", isDefault: true },
       ]),
     },
     lodgeRoom: {
@@ -65,7 +65,7 @@ function sourceDb(): ReadDb {
 
 function emptyTargetDb(): ReadDb {
   return {
-    lodge: { findMany: vi.fn().mockResolvedValue([]), findUnique: vi.fn().mockResolvedValue(null) },
+    lodge: { findMany: vi.fn().mockResolvedValue([]), findUnique: vi.fn().mockResolvedValue(null), findFirst: vi.fn().mockResolvedValue(null) },
     lodgeRoom: { findUnique: vi.fn().mockResolvedValue(null) },
     lodgeBed: { findUnique: vi.fn().mockResolvedValue(null) },
     season: { findFirst: vi.fn().mockResolvedValue(null) },
@@ -95,6 +95,7 @@ describe("config-transfer lodge-config (per-lodge folders)", () => {
     const lodge = readJson(files, LODGE_JSON);
     expect(lodge.slug).toBe("main");
     expect(lodge.name).toBe("Main Lodge");
+    expect(lodge.isDefault).toBe(true); // default-lodge marker travels (fork #15)
     expect("doorCode" in lodge).toBe(false); // opt-in only
 
     // Collection CSVs no longer carry a lodgeSlug column — the folder implies it.
@@ -133,7 +134,7 @@ describe("config-transfer lodge-config (per-lodge folders)", () => {
     expect(lodge.doorCode).toBe("9999");
   });
 
-  it("plans all-create against an empty target with no integrity or lodge warnings", async () => {
+  it("plans all-create against an empty target and flags the default-lodge change", async () => {
     const { zip } = await exportLodges(false);
     const plan = await buildImportPlan(emptyTargetDb(), zip);
     const cat = plan.categories.find((c) => c.category === "lodge-config")!;
@@ -143,7 +144,8 @@ describe("config-transfer lodge-config (per-lodge folders)", () => {
     expect(actions["lodge-bed"]).toBe("create");
     expect(actions["season"]).toBe("create");
     expect(actions["season-rate"]).toBe("create");
-    expect(cat.warnings).toEqual([]);
     expect(plan.integrityWarnings).toEqual([]);
+    // The bundle designates "main" as default and the target has none yet.
+    expect(cat.warnings.join(" ")).toMatch(/default lodge will be set to "main"/i);
   });
 });

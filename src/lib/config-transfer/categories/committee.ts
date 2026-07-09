@@ -5,7 +5,9 @@ import { serialiseCsv, parseCsv } from "../csv";
 import { registerEntity } from "../registry";
 import type { CategoryExporter, ExportContext } from "../export-types";
 import {
+  changedFields,
   hashRow,
+  planActionFor,
   updateDataForMode,
   type ApplyContext,
   type CategoryApplyResult,
@@ -51,6 +53,17 @@ const readCsv = (files: Map<string, Uint8Array>, path: string) => {
   return b ? parseCsv(strFromU8(b)).rows : [];
 };
 
+/** Write-data for a role row, shared by plan (diff) and apply (write). */
+function buildRoleData(raw: Record<string, string>, key: string) {
+  return {
+    name: raw.name ?? key,
+    description: raw.description || null,
+    contactEmail: raw.contactEmail || null,
+    isActive: coerceBool(raw.isActive),
+    sortOrder: coerceInt(raw.sortOrder, 0),
+  };
+}
+
 export const committeeExporter: CategoryExporter = {
   category: "committee",
   descriptors: [],
@@ -76,7 +89,9 @@ async function planCommittee(ctx: PlanContext): Promise<CategoryPlanResult> {
       select: { key: true, name: true, description: true, contactEmail: true, isActive: true, sortOrder: true },
     });
     fingerprintParts.push(`committee-role:${key}:${current ? hashRow([...ROLE_FIELDS], current) : "absent"}`);
-    items.push({ entity: "committee-role", key, action: current ? "update" : "create" });
+    const write = updateDataForMode(ctx.mode, raw, buildRoleData(raw, key));
+    const changed = changedFields(write, current);
+    items.push({ entity: "committee-role", key, action: planActionFor(current, changed), changedFields: changed.length ? changed : undefined });
   }
 
   return { items, warnings: [], fingerprintParts };
@@ -88,13 +103,7 @@ async function applyCommittee(ctx: ApplyContext): Promise<CategoryApplyResult> {
   for (const raw of readCsv(ctx.files, ROLE_FILE)) {
     const key = raw.key ?? "";
     if (!key) { result.skipped += 1; continue; }
-    const data = {
-      name: raw.name ?? key,
-      description: raw.description || null,
-      contactEmail: raw.contactEmail || null,
-      isActive: coerceBool(raw.isActive),
-      sortOrder: coerceInt(raw.sortOrder, 0),
-    };
+    const data = buildRoleData(raw, key);
     const existing = await ctx.tx.committeeRole.findUnique({ where: { key }, select: { id: true } });
     await ctx.tx.committeeRole.upsert({
       where: { key },

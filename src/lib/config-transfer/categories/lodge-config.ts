@@ -42,7 +42,7 @@ const BEDS_CSV = "beds.csv";
 const SEASONS_CSV = "seasons.csv";
 const RATES_CSV = "season-rates.csv";
 
-const LODGE_FIELDS = ["slug", "name", "active", "travelNote", "doorCode"] as const;
+const LODGE_FIELDS = ["slug", "name", "active", "travelNote", "doorCode", "isDefault"] as const;
 const ROOM_FIELDS = ["name", "sortOrder", "active", "notes"] as const;
 const BED_FIELDS = ["roomName", "name", "sortOrder", "active"] as const;
 const SEASON_FIELDS = ["name", "type", "startDate", "endDate", "active"] as const;
@@ -208,6 +208,21 @@ function buildRateData(raw: Record<string, unknown>) {
   return { pricePerNightCents: coerceInt(raw.pricePerNightCents, 0) };
 }
 
+// The slug the bundle designates as the default lodge (first lodge.json with
+// isDefault=true), or null if none. isDefault is handled by a dedicated
+// clear-then-set pass (never the per-lodge upsert) because at most one lodge may
+// be flagged (partial unique index Lodge_isDefault_key); a two-default state
+// mid-write would trip it. We only ever SET a default, never clear to none.
+function bundleDesignatedDefaultSlug(files: Map<string, Uint8Array>): string | null {
+  for (const segment of lodgeFolderSegments(files)) {
+    const descriptor = readLodgeJson(files, lodgeFolderFiles(segment).lodge);
+    if (descriptor && asStr(descriptor.slug) && "isDefault" in descriptor && coerceBool(descriptor.isDefault)) {
+      return asStr(descriptor.slug);
+    }
+  }
+  return null;
+}
+
 // ---- Export ----------------------------------------------------------------
 
 export const lodgeConfigExporter: CategoryExporter = {
@@ -216,7 +231,7 @@ export const lodgeConfigExporter: CategoryExporter = {
   async export(ctx: ExportContext): Promise<BundleEntry[]> {
     const lodges = await ctx.db.lodge.findMany({
       orderBy: { slug: "asc" },
-      select: { slug: true, name: true, active: true, travelNote: true, doorCode: true },
+      select: { slug: true, name: true, active: true, travelNote: true, doorCode: true, isDefault: true },
     });
     const rooms = await ctx.db.lodgeRoom.findMany({
       orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
@@ -259,6 +274,7 @@ export const lodgeConfigExporter: CategoryExporter = {
         name: lodge.name,
         active: lodge.active,
         travelNote: lodge.travelNote,
+        isDefault: lodge.isDefault,
       };
       if (ctx.includeDoorCodes) descriptor.doorCode = lodge.doorCode;
       entries.push({
@@ -367,6 +383,16 @@ async function planLodgeConfig(ctx: PlanContext): Promise<CategoryPlanResult> {
     }
   }
 
+  // Default-lodge marker (isDefault) is applied by a dedicated pass; surface a
+  // change in the dry-run when the designated default differs from the current.
+  const desiredDefault = bundleDesignatedDefaultSlug(ctx.files);
+  if (desiredDefault) {
+    const currentDefault = await ctx.db.lodge.findFirst({ where: { isDefault: true }, select: { slug: true } });
+    if (currentDefault?.slug !== desiredDefault) {
+      warnings.push(`The default lodge will be set to "${desiredDefault}".`);
+    }
+  }
+
   return { items, warnings, fingerprintParts };
 }
 
@@ -461,6 +487,18 @@ async function applyLodgeConfig(ctx: ApplyContext): Promise<CategoryApplyResult>
       await ctx.tx.seasonRate.upsert({ where: { seasonId_ageTier_isMember: { seasonId, ageTier, isMember } }, create: { seasonId, ageTier, isMember, ...data }, update: updateDataForMode(ctx.mode, raw, data) });
       if (existing) result.updated += 1;
       else result.created += 1;
+    }
+  }
+
+  // Default-lodge marker: at most one lodge may be flagged (Lodge_isDefault_key),
+  // so set it clear-then-set in this one transaction to avoid a transient
+  // two-default state. Only ever SET a designated default; never clear to none.
+  const desiredDefault = bundleDesignatedDefaultSlug(ctx.files);
+  if (desiredDefault) {
+    const target = await ctx.tx.lodge.findUnique({ where: { slug: desiredDefault }, select: { isDefault: true } });
+    if (target && !target.isDefault) {
+      await ctx.tx.lodge.updateMany({ data: { isDefault: false } });
+      await ctx.tx.lodge.update({ where: { slug: desiredDefault }, data: { isDefault: true } });
     }
   }
 

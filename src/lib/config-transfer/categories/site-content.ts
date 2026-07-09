@@ -11,7 +11,9 @@ import { serialiseCsv, parseCsv } from "../csv";
 import { registerEntity, type EntityDescriptor } from "../registry";
 import type { CategoryExporter, ExportContext } from "../export-types";
 import {
+  changedFields,
   hashRow,
+  planActionFor,
   updateDataForMode,
   type CategoryImporter,
   type CategoryApplyResult,
@@ -282,29 +284,28 @@ async function planSiteContent(ctx: PlanContext): Promise<CategoryPlanResult> {
       },
     });
     const byslug = new Map(existing.map((row) => [row.slug, row]));
-    for (const page of incomingPages) {
-      const current = byslug.get(page.slug);
-      const currentHash = current
-        ? hashRow([...PAGE_CONTENT_FIELDS], current)
-        : "absent";
-      fingerprintParts.push(`page-content:${page.slug}:${currentHash}`);
-      if (!current) {
-        items.push({ entity: "page-content", key: page.slug, action: "create" });
-      } else {
-        const changed = PAGE_CONTENT_FIELDS.filter(
-          (f) => String(current[f] ?? "") !== String(page[f] ?? ""),
-        );
-        items.push(
-          changed.length
-            ? {
-                entity: "page-content",
-                key: page.slug,
-                action: "update",
-                changedFields: [...changed],
-              }
-            : { entity: "page-content", key: page.slug, action: "unchanged" },
-        );
-      }
+    // Iterate the raw CSV rows so merge can detect blank cells (a coerced page
+    // would turn a blank into a value). contentHtml is sanitised but not remapped
+    // here (imageRemap is apply-time) — accurate for non-image pages, and merely
+    // conservative (shows "changed") for image-embedding ones.
+    for (const raw of readCsvFile(ctx.files, PAGE_FILE)) {
+      const page = coercePage(raw);
+      const current = byslug.get(page.slug) ?? null;
+      fingerprintParts.push(
+        `page-content:${page.slug}:${current ? hashRow([...PAGE_CONTENT_FIELDS], current) : "absent"}`,
+      );
+      const write = updateDataForMode(ctx.mode, raw, {
+        path: page.path,
+        caption: page.caption,
+        menuTitle: page.menuTitle,
+        title: page.title,
+        headerText: page.headerText,
+        sortOrder: page.sortOrder,
+        contentHtml: sanitizePageContentHtml(page.contentHtml),
+        published: page.published,
+      });
+      const changed = changedFields(write, current);
+      items.push({ entity: "page-content", key: page.slug, action: planActionFor(current, changed), changedFields: changed.length ? changed : undefined });
     }
   }
 
@@ -322,15 +323,11 @@ async function planSiteContent(ctx: PlanContext): Promise<CategoryPlanResult> {
           current ? hashRow([...SITE_CONTENT_FIELDS], current) : "absent"
         }`,
       );
-      if (!current) {
-        items.push({ entity: "site-content", key, action: "create" });
-      } else {
-        items.push(
-          String(current.contentHtml) !== String(row.contentHtml ?? "")
-            ? { entity: "site-content", key, action: "update", changedFields: ["contentHtml"] }
-            : { entity: "site-content", key, action: "unchanged" },
-        );
-      }
+      const write = updateDataForMode(ctx.mode, row, {
+        contentHtml: sanitizePageContentHtml(row.contentHtml ?? ""),
+      });
+      const changed = changedFields(write, current);
+      items.push({ entity: "site-content", key, action: planActionFor(current, changed), changedFields: changed.length ? changed : undefined });
     }
   }
 
@@ -348,10 +345,15 @@ async function planSiteContent(ctx: PlanContext): Promise<CategoryPlanResult> {
         current ? hashRow([...CLUB_THEME_FIELDS], current) : "absent"
       }`,
     );
+    const data: Record<string, unknown> = {};
+    for (const f of CLUB_THEME_FIELDS) if (f in theme) data[f] = theme[f];
+    const write = updateDataForMode(ctx.mode, theme, data);
+    const changed = changedFields(write, current);
     items.push({
       entity: "club-theme",
       key: "default",
-      action: current ? "update" : "create",
+      action: planActionFor(current, changed),
+      changedFields: changed.length ? changed : undefined,
     });
   }
 

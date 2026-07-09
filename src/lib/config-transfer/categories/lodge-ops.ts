@@ -14,12 +14,14 @@ import {
   lodgeFolderSegments,
 } from "./lodge-config";
 import {
+  changedFields,
   hashRow,
+  planActionFor,
+  updateDataForMode,
   type ApplyContext,
   type CategoryApplyResult,
   type CategoryImporter,
   type CategoryPlanResult,
-  updateDataForMode,
   type PlanContext,
   type PlanItem,
   type ReadDb,
@@ -86,6 +88,38 @@ const readCsv = (files: Map<string, Uint8Array>, path: string) => {
 async function slugToId(db: ReadDb | TxDb): Promise<Map<string, string>> {
   const lodges = await db.lodge.findMany({ select: { id: true, slug: true } });
   return new Map(lodges.map((l) => [l.slug, l.id]));
+}
+
+/** Write-data for a chore-template row, shared by plan (diff) and apply (write). */
+function buildChoreData(raw: Record<string, string>) {
+  return {
+    description: nz(raw.description),
+    recommendedPeopleMin: coerceInt(raw.recommendedPeopleMin, 1),
+    recommendedPeopleMax: coerceInt(raw.recommendedPeopleMax, 2),
+    isEssential: coerceBool(raw.isEssential),
+    ageRestriction: (raw.ageRestriction || "ANY") as never,
+    conditionalNote: nz(raw.conditionalNote),
+    minAge: coerceInt(raw.minAge, 0),
+    sortOrder: coerceInt(raw.sortOrder, 0),
+    timeOfDay: (raw.timeOfDay || "ANYTIME") as never,
+    frequencyMode: (raw.frequencyMode || "DAILY") as never,
+    frequencyDays: nzInt(raw.frequencyDays),
+    active: coerceBool(raw.active),
+  };
+}
+const CHORE_SELECT = {
+  description: true, recommendedPeopleMin: true, recommendedPeopleMax: true,
+  isEssential: true, ageRestriction: true, conditionalNote: true, minAge: true,
+  sortOrder: true, timeOfDay: true, frequencyMode: true, frequencyDays: true, active: true,
+} as const;
+
+/** Plan a single instruction row (club-wide or per-lodge) with a content diff. */
+function instructionWrite(ctx: PlanContext, raw: Record<string, string>) {
+  return updateDataForMode(
+    ctx.mode,
+    { contentHtml: raw.contentHtml ?? "" },
+    { contentHtml: sanitizePageContentHtml(raw.contentHtml ?? "") },
+  );
 }
 
 export const lodgeOpsExporter: CategoryExporter = {
@@ -169,10 +203,11 @@ async function planLodgeOps(ctx: PlanContext): Promise<CategoryPlanResult> {
     const key = `club/${raw.key}`;
     const current = await ctx.db.lodgeInstruction.findFirst({
       where: { lodgeId: null, key: (raw.key ?? "") as never },
-      select: { id: true },
+      select: { contentHtml: true },
     });
-    fingerprintParts.push(`lodge-instruction:${key}:${current ? "present" : "absent"}`);
-    items.push({ entity: "lodge-instruction", key, action: current ? "update" : "create" });
+    fingerprintParts.push(`lodge-instruction:${key}:${current ? hashRow(["contentHtml"], current) : "absent"}`);
+    const changed = changedFields(instructionWrite(ctx, raw), current);
+    items.push({ entity: "lodge-instruction", key, action: planActionFor(current, changed), changedFields: changed.length ? changed : undefined });
   }
 
   // Per-lodge instructions + chore templates.
@@ -185,19 +220,22 @@ async function planLodgeOps(ctx: PlanContext): Promise<CategoryPlanResult> {
     for (const raw of readCsv(ctx.files, paths.instructions)) {
       const key = `${slug}/${raw.key}`;
       const current = lodgeId
-        ? await ctx.db.lodgeInstruction.findFirst({ where: { lodgeId, key: (raw.key ?? "") as never }, select: { id: true } })
+        ? await ctx.db.lodgeInstruction.findFirst({ where: { lodgeId, key: (raw.key ?? "") as never }, select: { contentHtml: true } })
         : null;
-      fingerprintParts.push(`lodge-instruction:${key}:${current ? "present" : "absent"}`);
-      items.push({ entity: "lodge-instruction", key, action: current ? "update" : "create" });
+      fingerprintParts.push(`lodge-instruction:${key}:${current ? hashRow(["contentHtml"], current) : "absent"}`);
+      const changed = changedFields(instructionWrite(ctx, raw), current);
+      items.push({ entity: "lodge-instruction", key, action: planActionFor(current, changed), changedFields: changed.length ? changed : undefined });
     }
 
     for (const raw of readCsv(ctx.files, paths.choreTemplates)) {
       const key = `${slug}/${raw.name}`;
       const current = lodgeId
-        ? await ctx.db.choreTemplate.findFirst({ where: { lodgeId, name: raw.name ?? "" }, select: { name: true, sortOrder: true, active: true } })
+        ? await ctx.db.choreTemplate.findFirst({ where: { lodgeId, name: raw.name ?? "" }, select: CHORE_SELECT })
         : null;
-      fingerprintParts.push(`chore-template:${key}:${current ? hashRow(["name", "sortOrder", "active"], current) : "absent"}`);
-      items.push({ entity: "chore-template", key, action: current ? "update" : "create" });
+      fingerprintParts.push(`chore-template:${key}:${current ? hashRow(["sortOrder", "active", "description"], current) : "absent"}`);
+      const write = updateDataForMode(ctx.mode, raw, buildChoreData(raw));
+      const changed = changedFields(write, current);
+      items.push({ entity: "chore-template", key, action: planActionFor(current, changed), changedFields: changed.length ? changed : undefined });
     }
   }
 
@@ -251,20 +289,7 @@ async function applyLodgeOps(ctx: ApplyContext): Promise<CategoryApplyResult> {
       if (!lodgeId) { result.skipped += 1; continue; }
       const name = raw.name ?? "";
       if (!name) { result.skipped += 1; continue; }
-      const data = {
-        description: nz(raw.description),
-        recommendedPeopleMin: coerceInt(raw.recommendedPeopleMin, 1),
-        recommendedPeopleMax: coerceInt(raw.recommendedPeopleMax, 2),
-        isEssential: coerceBool(raw.isEssential),
-        ageRestriction: (raw.ageRestriction || "ANY") as never,
-        conditionalNote: nz(raw.conditionalNote),
-        minAge: coerceInt(raw.minAge, 0),
-        sortOrder: coerceInt(raw.sortOrder, 0),
-        timeOfDay: (raw.timeOfDay || "ANYTIME") as never,
-        frequencyMode: (raw.frequencyMode || "DAILY") as never,
-        frequencyDays: nzInt(raw.frequencyDays),
-        active: coerceBool(raw.active),
-      };
+      const data = buildChoreData(raw);
       const existing = await ctx.tx.choreTemplate.findFirst({ where: { lodgeId, name }, select: { id: true } });
       if (existing) {
         await ctx.tx.choreTemplate.update({ where: { id: existing.id }, data: updateDataForMode(ctx.mode, raw, data) });

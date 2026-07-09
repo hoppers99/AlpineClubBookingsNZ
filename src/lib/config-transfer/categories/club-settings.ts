@@ -4,7 +4,9 @@ import type { BundleEntry } from "../bundle";
 import { registerEntity, type EntityDescriptor } from "../registry";
 import type { CategoryExporter, ExportContext } from "../export-types";
 import {
+  changedFields,
   hashRow,
+  planActionFor,
   updateDataForMode,
   type ApplyContext,
   type CategoryApplyResult,
@@ -83,9 +85,12 @@ const SINGLETONS: SingletonSpec[] = [
   {
     entity: "email-message-setting",
     delegate: "emailMessageSetting",
+    // lodgeName / lodgeTravelNote were dropped upstream (fork #15, PR #1663):
+    // lodge identity now resolves from the Lodge row, so they are no longer
+    // columns here and must not be exported/imported.
     fields: [
-      "clubName", "bookingsName", "lodgeName", "emailFromName", "supportEmail",
-      "contactEmail", "publicUrl", "lodgeTravelNote", "doorCode",
+      "clubName", "bookingsName", "emailFromName", "supportEmail",
+      "contactEmail", "publicUrl", "doorCode",
     ],
     optInFields: ["doorCode"],
   },
@@ -190,19 +195,18 @@ async function planClubSettings(
       ? hashRow(spec.fields, current)
       : "absent";
     fingerprintParts.push(`${spec.entity}:default:${currentHash}`);
-    if (!current) {
-      items.push({ entity: spec.entity, key: "default", action: "create" });
-      continue;
-    }
-    const changed = Object.keys(incoming).filter(
-      (f) => spec.fields.includes(f) &&
-        String(current[f] ?? "") !== String(incoming[f] ?? ""),
-    );
-    items.push(
-      changed.length
-        ? { entity: spec.entity, key: "default", action: "update", changedFields: changed }
-        : { entity: spec.entity, key: "default", action: "unchanged" },
-    );
+    // Mirror apply's write-data (present allowlisted fields, mode-filtered) and
+    // diff it against the current row so the dry-run reflects the chosen mode.
+    const data: Record<string, unknown> = {};
+    for (const f of spec.fields) if (f in incoming) data[f] = incoming[f];
+    const writeData = updateDataForMode(ctx.mode, incoming, data);
+    const changed = changedFields(writeData, current);
+    items.push({
+      entity: spec.entity,
+      key: "default",
+      action: planActionFor(current, changed),
+      changedFields: changed.length ? changed : undefined,
+    });
   }
   return { items, warnings: [], fingerprintParts };
 }
