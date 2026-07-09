@@ -187,7 +187,7 @@ test("admin shifts the in-progress booking forward one night (the motivating cas
   await page.getByRole("button", { name: "Edit Booking" }).click();
   await expect(page.locator("#edit-checkin")).toHaveValue(isoDay(0));
   // Frozen price survives a second shift too.
-  await page.getByRole("button", { name: "Cancel" }).click();
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
   expect(await readTotalDigits(page)).toBe(totalBefore);
   await page.close();
 });
@@ -221,7 +221,7 @@ test("admin moves the booking fully into the past, then shifts it again", async 
   await page.reload();
   await page.getByRole("button", { name: "Edit Booking" }).click();
   await expect(page.locator("#edit-checkin")).toHaveValue(isoDay(-5));
-  await page.getByRole("button", { name: "Cancel" }).click();
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
 
   // Move the fully-past record again (+1 day) — the fully-past path end to end.
   await adminShiftTo(page, isoDay(-4));
