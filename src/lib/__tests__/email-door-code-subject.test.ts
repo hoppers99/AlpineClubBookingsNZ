@@ -23,6 +23,12 @@ const { mockPrisma, mockTransporter, mockLogger } = vi.hoisted(() => {
     emailMessageSetting: {
       findUnique: vi.fn(),
     },
+    // Lodge identity (name, travel note, door code) now resolves from the Lodge
+    // table — the default lodge when a send carries no explicit lodgeId.
+    lodge: {
+      findFirst: vi.fn(),
+      findUnique: vi.fn(),
+    },
     emailTemplateOverride: {
       findUnique: vi.fn(),
     },
@@ -86,8 +92,13 @@ describe("door code never reaches email subjects, EmailLog, or app logs", () => 
     vi.stubEnv("NODE_ENV", "production");
     mockPrisma.emailMessageSetting.findUnique.mockResolvedValue({
       id: "default",
+    });
+    // The live door code and travel note come from the default lodge, resolved
+    // from the Lodge table (no explicit lodgeId on these sends).
+    mockPrisma.lodge.findFirst.mockResolvedValue({
+      name: "Test Club Lodge",
+      travelNote: "Drive carefully up the mountain road.",
       doorCode: LIVE_DOOR_CODE,
-      lodgeTravelNote: "Drive carefully up the mountain road.",
     });
     mockPrisma.emailTemplateOverride.findUnique.mockResolvedValue(null);
   });

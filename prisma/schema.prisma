@@ -2699,13 +2699,10 @@ model EmailMessageSetting {
   id                String   @id @default("default")
   clubName          String?
   bookingsName      String?
-  lodgeName         String?
   emailFromName     String?
   supportEmail      String?
   contactEmail      String?
   publicUrl         String?
-  lodgeTravelNote   String?
-  doorCode          String?  @db.VarChar(80)
   updatedByMemberId String?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt

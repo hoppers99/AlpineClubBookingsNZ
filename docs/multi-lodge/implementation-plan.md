@@ -22,12 +22,15 @@ club-wide.
 ## Phase 1 — Lodge entity and admin management (delivered 2026-07-02)
 
 Delivered on `feature/multi-lodge-support`. The lodge identity fields were
-copied (not moved) from `EmailMessageSetting`: lodge edits write-through to
-the singleton while exactly one active lodge exists
-(`syncSoleActiveLodgeIdentity` in `src/lib/lodges.ts`). Email templates
-read per-booking lodge context since phase 8; the `EmailMessageSetting`
-columns are dropped in the phase-2 contract release (a column drop is only
-blue/green-safe once no running colour reads it).
+initially copied (not moved) from `EmailMessageSetting`, with lodge edits
+writing through to the singleton while exactly one active lodge existed
+(`syncSoleActiveLodgeIdentity`). Email templates read per-booking lodge
+context since phase 8. *Progress note (2026-07-09):* the singleton columns
+are now DROPPED (migration
+`20260709130000_drop_email_message_setting_lodge_identity_columns`), email
+identity always resolves from `Lodge` (default lodge when no `lodgeId` is
+in scope), and the write-through helper is retired — see
+`contract-release.md`.
 
 - Add the `Lodge` model, seeded with one row (migration 1 of the ADR-001
   sequence).
@@ -301,11 +304,10 @@ bumped/guests-cancelled, cancelled, review approved/declined, chore
 roster, check-in reminder, modified, card-setup-failed, and the three
 waitlist emails — fifteen senders, twenty-seven call sites) now thread
 the booking's `lodgeId` through `sendEmail` as well, completing the
-sweep. Deliberately deferred:
-dropping the `EmailMessageSetting` lodge-identity columns (phase 1 note)
-moves to the phase-2 contract release — a column drop is only blue/green-safe once no
-running colour reads it, and `syncSoleActiveLodgeIdentity` keeps the
-compat path correct until then.
+sweep. The deferred drop of the `EmailMessageSetting` lodge-identity
+columns landed 2026-07-09 as migration `20260709130000` together with the
+identity-resolution refactor that made it safe (see `contract-release.md`);
+`syncSoleActiveLodgeIdentity` is retired.
 
 - Booking flow lodge selection step (shown only with >1 active lodge),
   carried through availability, quote, and creation calls.
