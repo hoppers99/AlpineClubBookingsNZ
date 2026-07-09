@@ -332,7 +332,7 @@ export async function prepareEmailMessage({
   html: string;
   templateData?: EmailTemplateData;
   // Lodge whose identity (name, travel note, door code) this message carries
-  // (multi-lodge phase 8). Omitted/null keeps the club-wide singleton values.
+  // (multi-lodge phase 8). Omitted/null resolves the default lodge identity.
   lodgeId?: string | null;
 }): Promise<PreparedEmailMessage> {
   const settings = await loadEmailMessageSettingsForLodge(lodgeId);

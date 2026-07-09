@@ -9,8 +9,8 @@ import {
   lodgeOrderBy,
   lodgeSelect,
   normalizeLodgeText,
+  redactLodgeForAudit,
   serializeLodge,
-  syncSoleActiveLodgeIdentity,
 } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/session-guards";
@@ -70,8 +70,6 @@ export async function POST(request: Request) {
       select: lodgeSelect,
     });
 
-    await syncSoleActiveLodgeIdentity(tx);
-
     await tx.auditLog.create(
       buildStructuredAuditLogCreateArgs({
         action: "LODGE_CREATED",
@@ -81,7 +79,7 @@ export async function POST(request: Request) {
         severity: "important",
         outcome: "success",
         summary: "Lodge created",
-        metadata: { newLodge: serializeLodge(lodge) },
+        metadata: { newLodge: redactLodgeForAudit(serializeLodge(lodge)) },
         request: getAuditRequestContext(request),
       }),
     );

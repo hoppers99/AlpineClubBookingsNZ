@@ -41,19 +41,37 @@ The null-tolerant code paths for these tables are now retired:
 with a plain `lodgeId` field, and the bulk-seed / hut-leader-PIN "null clashes
 everywhere" branches are gone.
 
+## Done: `EmailMessageSetting` lodge-identity columns dropped — identity resolves from `Lodge`
+
+Migration `20260709001000_drop_email_message_setting_lodge_identity_columns`
+drops `EmailMessageSetting.lodgeName / lodgeTravelNote / doorCode`. It landed
+with the code refactor it required: `loadEmailMessageSettingsForLodge` now
+**always** resolves a lodge and reads name / travel note / door code from the
+`Lodge` table — the explicit booking lodge when given, otherwise the club's
+**default lodge** (oldest active, else oldest — the same resolution as
+`getDefaultLodgeId` and the SQL `default_lodge_id()` function). The club-level
+fields (club name, bookings name, sender name, support / contact email, public
+URL) stay on the singleton. `loadEmailMessageSettings()` now delegates to
+`loadEmailMessageSettingsForLodge(null)`, and the compatibility mirror
+`syncSoleActiveLodgeIdentity` is retired.
+
+The drop is **value-dead** after the same-release refactor — nothing reads the
+columns' values anymore. The migration **backfills first** so no admin-entered
+value is lost: it copies the singleton's `lodgeTravelNote` / `doorCode` onto the
+default lodge wherever that lodge's own columns are still NULL. `lodgeName` is
+not backfilled — `Lodge.name` is NOT NULL and authoritative, so a divergent
+email-only lodge name is superseded by design.
+
+**Deploy: breaking-gated.** The columns stayed in the Prisma model until this
+release, so an old colour during a cutover still SELECTs them by name on the
+singleton. Member-facing sends **degrade gracefully** (the persisted-settings
+loader catches the error and falls back to config defaults, and per-booking
+identity already reads from `Lodge`), but the admin email-settings and
+lodge-admin routes error until cutover — admin-only, brief, retryable. Deploy
+with old traffic idle or drained and `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1`;
+the migration-ledger row records the full rationale.
+
 ## Deliberately NOT done
-
-### `EmailMessageSetting` lodge-identity columns — code-gated, not just window-gated
-
-`EmailMessageSetting.lodgeName / lodgeTravelNote / doorCode` are **still read**:
-`loadEmailMessageSettingsForLodge` reads the `EmailMessageSetting` singleton as
-the **base** identity and only overrides from `Lodge` when a `lodgeId` is in
-scope (kept in sync by `syncSoleActiveLodgeIdentity`; unaffected by the
-`multiLodge` module flag). So a drop would break the **current** code, not merely
-an old colour during a cutover. Dropping them requires **first** refactoring
-identity resolution to always resolve a lodge and read from `Lodge` (falling back
-to the default lodge when none is given). Until then the columns stay — they are
-tiny and harmless. This is a code refactor, not a schema-only follow-up.
 
 ### Policy-table null-partition partial unique indexes — not expressible in Prisma
 

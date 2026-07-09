@@ -27,7 +27,7 @@ sequencing):
 | `BedAllocationSettings` | per-lodge row | converted from singleton |
 | `BookingDefaults` | per-lodge row | converted from singleton |
 | `BookingRequestSettings` | per-lodge row | converted from singleton |
-| Lodge identity fields (`lodgeName`, `doorCode`, `lodgeTravelNote`) | move to `Lodge` / per-lodge settings | currently on the `EmailMessageSetting` singleton |
+| Lodge identity fields (`lodgeName`, `doorCode`, `lodgeTravelNote`) | resolve from `Lodge` (default lodge when no `lodgeId` is in scope) | dropped from the `EmailMessageSetting` singleton (migration `20260709001000`) |
 
 ## Club-Wide Defaults With Per-Lodge Overrides
 

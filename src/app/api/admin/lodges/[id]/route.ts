@@ -8,8 +8,8 @@ import {
   buildUniqueLodgeSlug,
   lodgeSelect,
   normalizeLodgeText,
+  redactLodgeForAudit,
   serializeLodge,
-  syncSoleActiveLodgeIdentity,
 } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/session-guards";
@@ -166,8 +166,6 @@ export async function PATCH(
       select: lodgeSelect,
     });
 
-    await syncSoleActiveLodgeIdentity(tx);
-
     await tx.auditLog.create(
       buildStructuredAuditLogCreateArgs({
         action:
@@ -189,8 +187,8 @@ export async function PATCH(
               : "Lodge deactivated",
         metadata: {
           changedFields: Object.keys(data),
-          previousLodge: serializeLodge(existing),
-          newLodge: serializeLodge(lodge),
+          previousLodge: redactLodgeForAudit(serializeLodge(existing)),
+          newLodge: redactLodgeForAudit(serializeLodge(lodge)),
           forcedDeactivation:
             data.active === false && parsed.data.force === true,
         },

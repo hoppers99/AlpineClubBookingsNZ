@@ -48,7 +48,7 @@ import { isBookingFullyPaidForGuestNameEdits } from "@/lib/booking-modify";
 import { isPaymentOwedBookingStatus } from "@/lib/booking-status";
 import { isBookingBedAllocationLocked } from "@/lib/admin-bed-allocation";
 import { getBookingProviderMismatches } from "@/lib/booking-provider-mismatches";
-import { loadEmailMessageSettings } from "@/lib/email-message-settings";
+import { loadEmailMessageSettingsForLodge } from "@/lib/email-message-settings";
 import { loadPublicBookingMessages } from "@/lib/booking-message-settings";
 import { renderBookingMessageTemplate } from "@/lib/booking-message-definitions";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
@@ -504,8 +504,10 @@ export default async function BookingDetailPage({
     !isDeleted &&
     (booking.memberId === session.user.id || isLinkedGuestViewer) &&
     ["CONFIRMED", "PAID"].includes(booking.status);
+  // Arrival instructions must carry THIS booking's lodge identity (door
+  // code, travel note), not the default lodge's.
   const memberArrivalInstructions = showMemberArrivalInstructions
-    ? await loadEmailMessageSettings()
+    ? await loadEmailMessageSettingsForLodge(booking.lodgeId)
     : null;
 
   // Split-booking group presentation (#738).

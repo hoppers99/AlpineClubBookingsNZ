@@ -46,6 +46,18 @@ export function serializeLodge(lodge: LodgeRecord): SerializedLodge {
   };
 }
 
+// Audit-log shape: the door code is a physical-access secret and must never be
+// stored in audit metadata — record only whether one is set (same convention
+// as the retired email-settings redactor).
+export function redactLodgeForAudit(
+  lodge: SerializedLodge,
+): Omit<SerializedLodge, "doorCode"> & { doorCode: "[set]" | null } {
+  return {
+    ...lodge,
+    doorCode: lodge.doorCode ? "[set]" : null,
+  };
+}
+
 export function lodgeOrderBy() {
   return [{ createdAt: "asc" }, { id: "asc" }] satisfies
     Prisma.LodgeOrderByWithRelationInput[];
@@ -132,7 +144,10 @@ export function resolvePolicyRowsForLodge<
 // inactive lodge is deliberate so both sides always resolve the same row. Any
 // change to the ordering/fallback here must be mirrored by a new migration that
 // replaces the SQL function (and vice versa), or a blue/green cutover could
-// stamp different lodges from the two code paths.
+// stamp different lodges from the two code paths. A third copy of this
+// resolution lives in email-message-settings.ts resolveLodgeIdentity (it needs
+// identity fields and never-throw semantics, so it cannot call this helper);
+// it shares lodgeOrderBy() and must be updated in the same change.
 export async function getDefaultLodgeId(db: LodgeDb): Promise<string> {
   const lodge =
     (await db.lodge.findFirst({
@@ -169,34 +184,4 @@ export async function resolveOptionalActiveLodgeId(
     return lodge?.active ? lodge.id : null;
   }
   return getDefaultLodgeId(db);
-}
-
-// Compatibility path (implementation-plan.md phase 1): email rendering still
-// reads lodge identity from the EmailMessageSetting singleton until phase 8
-// switches templates to per-booking lodge context. While the club has exactly
-// one active lodge, keep that singleton in sync so lodge edits show up in
-// emails immediately. With more than one active lodge the singleton is
-// ambiguous by design and is left untouched.
-export async function syncSoleActiveLodgeIdentity(
-  tx: Prisma.TransactionClient,
-): Promise<void> {
-  const activeLodges = await tx.lodge.findMany({
-    where: { active: true },
-    select: { name: true, doorCode: true, travelNote: true },
-    take: 2,
-  });
-  if (activeLodges.length !== 1) return;
-
-  const [lodge] = activeLodges;
-  const identity = {
-    lodgeName: lodge.name,
-    doorCode: lodge.doorCode,
-    lodgeTravelNote: lodge.travelNote,
-  };
-
-  await tx.emailMessageSetting.upsert({
-    where: { id: "default" },
-    create: { id: "default", ...identity },
-    update: identity,
-  });
 }

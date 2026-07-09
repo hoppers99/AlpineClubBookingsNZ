@@ -127,7 +127,7 @@ describe("admin email message APIs", () => {
     mocks.auth.mockResolvedValue({ user: { id: "member-1", role: "MEMBER", accessRoles: [{ role: "USER" }] } });
 
     const response = await putEmailSettings(
-      request("/api/admin/email-settings", { doorCode: "2468" }),
+      request("/api/admin/email-settings", { clubName: "Hacked Club" }),
     );
 
     expect(response.status).toBe(403);
@@ -258,40 +258,37 @@ describe("admin email message APIs", () => {
     );
   });
 
-  it("saves door code changes without audit logging the code value", async () => {
-    mocks.emailMessageSettingFindUnique.mockResolvedValue({
-      id: "default",
-      doorCode: "1357",
-      lodgeTravelNote: "Old directions",
-    });
-
+  it("saves club-field updates and audit logs the changed keys", async () => {
     const response = await putEmailSettings(
-      request("/api/admin/email-settings", { doorCode: " 2468 " }),
+      request("/api/admin/email-settings", { clubName: "River Valley Club" }),
     );
 
     expect(response.status).toBe(200);
     expect(mocks.emailMessageSettingUpsert).toHaveBeenCalledWith(
       expect.objectContaining({
-        create: expect.objectContaining({
-          doorCode: "2468",
-        }),
-        update: expect.objectContaining({
-          doorCode: "2468",
-        }),
+        create: expect.objectContaining({ clubName: "River Valley Club" }),
+        update: expect.objectContaining({ clubName: "River Valley Club" }),
       }),
     );
 
     const auditPayload = mocks.auditLogCreate.mock.calls.at(-1)?.[0];
-    const serializedAuditPayload = JSON.stringify(auditPayload);
-    expect(serializedAuditPayload).not.toContain("1357");
-    expect(serializedAuditPayload).not.toContain("2468");
-    expect(auditPayload.data.metadata).toEqual(
-      expect.objectContaining({
-        changedKeys: ["doorCode"],
-        previousSettings: expect.objectContaining({ doorCode: "[set]" }),
-        newSettings: expect.objectContaining({ doorCode: "[set]" }),
-      }),
-    );
+    expect(auditPayload.data.metadata.changedKeys).toEqual(["clubName"]);
+  });
+
+  it("rejects the retired lodge-identity fields", async () => {
+    for (const field of [
+      { lodgeName: "Ghost Lodge" },
+      { lodgeTravelNote: "n/a" },
+      { doorCode: "2468" },
+    ]) {
+      const response = await putEmailSettings(
+        request("/api/admin/email-settings", field),
+      );
+      expect(response.status).toBe(400);
+    }
+    // Lodge identity now lives on the Lodge table; the strict settings schema
+    // no longer accepts these keys, so nothing is persisted.
+    expect(mocks.emailMessageSettingUpsert).not.toHaveBeenCalled();
   });
 
   it("reports stale template overrides without listing them as current templates", async () => {

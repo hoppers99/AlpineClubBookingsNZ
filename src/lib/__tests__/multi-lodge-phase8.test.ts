@@ -86,28 +86,47 @@ describe("resolveOptionalActiveLodgeId", () => {
 describe("loadEmailMessageSettingsForLodge", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // The singleton now persists only club-level fields; lodge identity resolves
+    // from the Lodge table.
     mocks.emailMessageSettingFindUnique.mockResolvedValue({
       clubName: "Test Club",
       bookingsName: "Test Club - Bookings",
-      lodgeName: "Singleton Lodge",
       emailFromName: "Test Club",
       supportEmail: "support@example.org",
       contactEmail: "contact@example.org",
       publicUrl: "https://example.org",
-      lodgeTravelNote: "Singleton travel note",
-      doorCode: "1111",
     });
   });
 
-  it("keeps the singleton values when no lodge is given", async () => {
+  it("resolves the default lodge (oldest active) when no lodge is given", async () => {
+    mocks.lodgeFindFirst.mockResolvedValue({
+      name: "Default Lodge",
+      travelNote: "Follow the valley road.",
+      doorCode: "1234",
+    });
+
     const settings = await loadEmailMessageSettingsForLodge(null);
 
-    expect(settings.lodgeName).toBe("Singleton Lodge");
-    expect(settings.doorCode).toBe("1111");
+    expect(settings.lodgeName).toBe("Default Lodge");
+    expect(settings.lodgeTravelNote).toBe("Follow the valley road.");
+    expect(settings.doorCode).toBe("1234");
+    // The default lodge is resolved via findFirst, not a keyed findUnique.
     expect(mocks.lodgeFindUnique).not.toHaveBeenCalled();
+    expect(mocks.lodgeFindFirst).toHaveBeenCalled();
   });
 
-  it("overlays the booking lodge's name, travel note, and door code", async () => {
+  it("falls back to config defaults, without throwing, when no lodge rows exist", async () => {
+    mocks.lodgeFindFirst.mockResolvedValue(null);
+
+    const settings = await loadEmailMessageSettingsForLodge(null);
+
+    // Config defaults on a fresh pre-seed install; never throws.
+    expect(settings.lodgeName).toMatch(/Lodge$/);
+    expect(settings.lodgeTravelNote.length).toBeGreaterThan(0);
+    expect(settings.doorCode).toBeNull();
+  });
+
+  it("prefers an explicit lodgeId over the default lodge", async () => {
     mocks.lodgeFindUnique.mockResolvedValue({
       name: "River Lodge",
       travelNote: "Cross the swing bridge.",
@@ -119,9 +138,11 @@ describe("loadEmailMessageSettingsForLodge", () => {
     expect(settings.lodgeName).toBe("River Lodge");
     expect(settings.lodgeTravelNote).toBe("Cross the swing bridge.");
     expect(settings.doorCode).toBe("2222");
+    // The explicit lodge wins; the default-lodge findFirst is not consulted.
+    expect(mocks.lodgeFindFirst).not.toHaveBeenCalled();
   });
 
-  it("never leaks the singleton door code to a lodge without one", async () => {
+  it("never leaks a door code to a lodge without one", async () => {
     mocks.lodgeFindUnique.mockResolvedValue({
       name: "River Lodge",
       travelNote: null,
@@ -131,18 +152,48 @@ describe("loadEmailMessageSettingsForLodge", () => {
     const settings = await loadEmailMessageSettingsForLodge("lodge-2");
 
     expect(settings.lodgeName).toBe("River Lodge");
-    // Missing lodge door code means no door code — not lodge A's from the
-    // singleton.
+    // A lodge without its own door code means no door code — never another
+    // lodge's.
     expect(settings.doorCode).toBeNull();
   });
 
-  it("keeps the singleton values when the lodge row is missing", async () => {
+  it("falls back to the default lodge when the explicit lodge is missing", async () => {
     mocks.lodgeFindUnique.mockResolvedValue(null);
+    mocks.lodgeFindFirst.mockResolvedValue({
+      name: "Default Lodge",
+      travelNote: null,
+      doorCode: "9999",
+    });
 
     const settings = await loadEmailMessageSettingsForLodge("lodge-gone");
 
-    expect(settings.lodgeName).toBe("Singleton Lodge");
-    expect(settings.doorCode).toBe("1111");
+    expect(settings.lodgeName).toBe("Default Lodge");
+    expect(settings.doorCode).toBe("9999");
+  });
+
+  it("applies singleton club-field overrides alongside Lodge-sourced identity", async () => {
+    mocks.emailMessageSettingFindUnique.mockResolvedValue({
+      clubName: "River Valley Alpine Club",
+      bookingsName: "River Valley - Bookings",
+      emailFromName: "River Valley",
+      supportEmail: "help@example.org",
+      contactEmail: "contact@example.org",
+      publicUrl: "https://rv.example.org",
+    });
+    mocks.lodgeFindFirst.mockResolvedValue({
+      name: "Summit Hut",
+      travelNote: "Chains required.",
+      doorCode: "4321",
+    });
+
+    const settings = await loadEmailMessageSettingsForLodge(null);
+
+    // Club fields from the singleton...
+    expect(settings.clubName).toBe("River Valley Alpine Club");
+    expect(settings.bookingsName).toBe("River Valley - Bookings");
+    // ...alongside Lodge-sourced identity.
+    expect(settings.lodgeName).toBe("Summit Hut");
+    expect(settings.doorCode).toBe("4321");
   });
 });
 

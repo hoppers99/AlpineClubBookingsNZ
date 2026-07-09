@@ -1,5 +1,6 @@
 import { clubConfig } from "@/config/club";
 import { escapeHtml } from "@/lib/email-templates";
+import { lodgeOrderBy } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 
 export const EMAIL_MESSAGE_SETTINGS_ID = "default";
@@ -17,16 +18,16 @@ export interface EmailMessageSettings {
   doorCode: string | null;
 }
 
+// Persisted club-level fields only. Lodge identity (lodgeName, lodgeTravelNote,
+// doorCode) was dropped from this singleton — email identity now always resolves
+// from the Lodge table (see loadEmailMessageSettingsForLodge below).
 export interface PersistedEmailMessageSettings {
   clubName: string | null;
   bookingsName: string | null;
-  lodgeName: string | null;
   emailFromName: string | null;
   supportEmail: string | null;
   contactEmail: string | null;
   publicUrl: string | null;
-  lodgeTravelNote: string | null;
-  doorCode: string | null;
   updatedAt?: Date | string | null;
   updatedByMemberId?: string | null;
 }
@@ -78,19 +79,22 @@ export function normalizeEmailMessageSettings(
   persisted?: Partial<PersistedEmailMessageSettings> | null,
 ): EmailMessageSettings {
   const defaults = getDefaultEmailMessageSettings();
+  // Lodge identity is no longer persisted here; it resolves from the Lodge table
+  // via loadEmailMessageSettingsForLodge. Callers that need real lodge identity
+  // go through the load functions; this normaliser returns config defaults for
+  // the lodge fields.
   return {
     clubName: trimOptional(persisted?.clubName) ?? defaults.clubName,
     bookingsName: trimOptional(persisted?.bookingsName) ?? defaults.bookingsName,
-    lodgeName: trimOptional(persisted?.lodgeName) ?? defaults.lodgeName,
+    lodgeName: defaults.lodgeName,
     emailFromName:
       trimOptional(persisted?.emailFromName) ?? defaults.emailFromName,
     supportEmail: trimOptional(persisted?.supportEmail) ?? defaults.supportEmail,
     contactEmail: trimOptional(persisted?.contactEmail) ?? defaults.contactEmail,
     publicUrl:
       normalizeEmailMessagePublicUrl(persisted?.publicUrl) ?? defaults.publicUrl,
-    lodgeTravelNote:
-      trimOptional(persisted?.lodgeTravelNote) ?? defaults.lodgeTravelNote,
-    doorCode: trimOptional(persisted?.doorCode) ?? null,
+    lodgeTravelNote: defaults.lodgeTravelNote,
+    doorCode: defaults.doorCode,
   };
 }
 
@@ -114,44 +118,94 @@ export async function loadPersistedEmailMessageSettings(): Promise<
   }
 }
 
-export async function loadEmailMessageSettings(): Promise<EmailMessageSettings> {
-  return normalizeEmailMessageSettings(await loadPersistedEmailMessageSettings());
+type LodgeIdentityRow = {
+  name: string;
+  travelNote: string | null;
+  doorCode: string | null;
+};
+
+/**
+ * Resolve the lodge whose identity an email should carry. An explicit lodgeId is
+ * looked up directly; a falsy id, or a lookup that misses, falls back to the
+ * club's DEFAULT lodge — oldest active, else oldest of any state. That ordering
+ * mirrors `getDefaultLodgeId` in lodges.ts and the SQL `default_lodge_id()`
+ * function (migration 20260708001100), so email identity and the column DEFAULT
+ * always resolve the same lodge.
+ *
+ * Returns null when no Lodge row exists (fresh pre-seed install), when the DB is
+ * unreachable (vitest runs with an unreachable DATABASE_URL), or when the lodge
+ * delegate is absent — the caller then falls back to config defaults instead of
+ * throwing.
+ */
+async function resolveLodgeIdentity(
+  lodgeId: string | null | undefined,
+): Promise<LodgeIdentityRow | null> {
+  const delegate = (prisma as unknown as {
+    lodge?: {
+      findUnique: (args: unknown) => Promise<LodgeIdentityRow | null>;
+      findFirst: (args: unknown) => Promise<LodgeIdentityRow | null>;
+    };
+  }).lodge;
+
+  if (!delegate) return null;
+
+  const select = { name: true, travelNote: true, doorCode: true } as const;
+
+  try {
+    if (lodgeId) {
+      const lodge = await delegate.findUnique({ where: { id: lodgeId }, select });
+      if (lodge) return lodge;
+    }
+    return (
+      (await delegate.findFirst({
+        where: { active: true },
+        orderBy: lodgeOrderBy(),
+        select,
+      })) ??
+      (await delegate.findFirst({
+        orderBy: lodgeOrderBy(),
+        select,
+      }))
+    );
+  } catch {
+    return null;
+  }
 }
 
 /**
- * Per-booking lodge identity (multi-lodge phase 8): when the booking's lodge
- * is known, its name, travel note, and door code replace the singleton's
- * values so each lodge's emails carry the right identity. The door code is
- * strictly the lodge's own — never another lodge's from the singleton. A
- * missing/null lodgeId (expand-release tolerance) keeps the singleton
- * behaviour, which `syncSoleActiveLodgeIdentity` keeps correct while exactly
- * one active lodge exists.
+ * Single resolution path for email lodge identity (multi-lodge). Club-level
+ * fields come from the EmailMessageSetting singleton; lodge identity (name,
+ * travel note, door code) always resolves from the Lodge table — the explicit
+ * lodgeId when given, otherwise the club's default lodge. When no Lodge row can
+ * be resolved (fresh pre-seed install or unreachable DB) the config defaults
+ * stand in. The door code is strictly the resolved lodge's own — never leaked
+ * from another lodge.
  */
 export async function loadEmailMessageSettingsForLodge(
   lodgeId: string | null | undefined,
 ): Promise<EmailMessageSettings> {
-  const settings = await loadEmailMessageSettings();
-  if (!lodgeId) return settings;
+  // Independent lookups — run per outgoing email, so don't serialise them.
+  const [persisted, lodge] = await Promise.all([
+    loadPersistedEmailMessageSettings(),
+    resolveLodgeIdentity(lodgeId),
+  ]);
+  const base = normalizeEmailMessageSettings(persisted);
+  const defaults = getDefaultEmailMessageSettings();
 
-  let lodge: { name: string; travelNote: string | null; doorCode: string | null } | null = null;
-  try {
-    lodge = await prisma.lodge.findUnique({
-      where: { id: lodgeId },
-      select: { name: true, travelNote: true, doorCode: true },
-    });
-  } catch {
-    lodge = null;
-  }
-  if (!lodge) return settings;
+  if (!lodge) return base;
 
   return {
-    ...settings,
-    lodgeName: trimOptional(lodge.name) ?? settings.lodgeName,
-    lodgeTravelNote:
-      trimOptional(lodge.travelNote) ??
-      getDefaultEmailMessageSettings().lodgeTravelNote,
+    ...base,
+    lodgeName: trimOptional(lodge.name) ?? defaults.lodgeName,
+    lodgeTravelNote: trimOptional(lodge.travelNote) ?? defaults.lodgeTravelNote,
     doorCode: trimOptional(lodge.doorCode),
   };
+}
+
+export async function loadEmailMessageSettings(): Promise<EmailMessageSettings> {
+  // Delegate so every caller gets lodge-resolved identity (default lodge when no
+  // lodgeId is in scope).
+  return loadEmailMessageSettingsForLodge(null);
 }
 
 export function buildEmailTemplateGlobalData(settings: EmailMessageSettings) {
