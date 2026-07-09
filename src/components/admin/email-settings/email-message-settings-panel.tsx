@@ -17,16 +17,15 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 
+// Lodge identity (lodge name, travel note, door code) is no longer edited here;
+// it comes from each lodge's own settings (Admin → Lodges).
 interface EmailSettings {
   clubName: string;
   bookingsName: string;
-  lodgeName: string;
   emailFromName: string;
   supportEmail: string;
   contactEmail: string;
   publicUrl: string;
-  lodgeTravelNote: string;
-  doorCode: string | null;
 }
 
 interface TemplateOverride {
@@ -56,13 +55,10 @@ const settingFields: Array<{
 }> = [
   { key: "clubName", label: "Club name" },
   { key: "bookingsName", label: "Bookings name" },
-  { key: "lodgeName", label: "Lodge name" },
   { key: "emailFromName", label: "Sender display name" },
   { key: "supportEmail", label: "Support email" },
   { key: "contactEmail", label: "Contact email" },
   { key: "publicUrl", label: "Public URL" },
-  { key: "lodgeTravelNote", label: "Lodge travel note", multiline: true },
-  { key: "doorCode", label: "Door code" },
 ];
 
 export function EmailMessageSettingsPanel() {
@@ -134,11 +130,16 @@ export function EmailMessageSettingsPanel() {
     if (!settings) return;
     setSavingSettings(true);
     try {
+      // Only the editable club-level fields are persisted; the strict API schema
+      // rejects the lodge-identity keys the response may still carry.
+      const payload = Object.fromEntries(
+        settingFields.map((field) => [field.key, settings[field.key]]),
+      );
       const response = await fetch("/api/admin/email-settings", {
         method: "PUT",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(settings),
+        body: JSON.stringify(payload),
       });
       const body = await response.json().catch(() => null);
       if (!response.ok) {
@@ -276,6 +277,10 @@ export function EmailMessageSettingsPanel() {
             </div>
           ))}
         </div>
+        <p className="text-sm text-slate-500">
+          Lodge name, travel note, and door code now come from each lodge&apos;s
+          own settings (Admin → Lodges).
+        </p>
         <Button onClick={saveSettings} disabled={savingSettings}>
           <Save className="h-4 w-4" />
           {savingSettings ? "Saving" : "Save Email Settings"}

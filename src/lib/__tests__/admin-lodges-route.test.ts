@@ -13,7 +13,6 @@ const mocks = vi.hoisted(() => ({
   bookingCount: vi.fn(),
   hutLeaderAssignmentCount: vi.fn(),
   memberLodgeAccessCount: vi.fn(),
-  emailMessageSettingUpsert: vi.fn(),
   auditLogCreate: vi.fn(),
   transaction: vi.fn(),
 }));
@@ -89,9 +88,6 @@ function installTransactionMock() {
         update: mocks.lodgeUpdate,
         findMany: mocks.lodgeFindMany,
       },
-      emailMessageSetting: {
-        upsert: mocks.emailMessageSettingUpsert,
-      },
       auditLog: {
         create: mocks.auditLogCreate,
       },
@@ -151,7 +147,12 @@ describe("POST /api/admin/lodges", () => {
   it("creates a lodge with a unique slug and audit log", async () => {
     mocks.lodgeFindFirst.mockResolvedValue(null);
     mocks.lodgeCreate.mockResolvedValue(
-      lodgeRecord({ id: "lodge-2", name: "River Lodge", slug: "river-lodge" }),
+      lodgeRecord({
+        id: "lodge-2",
+        name: "River Lodge",
+        slug: "river-lodge",
+        doorCode: "1234",
+      }),
     );
     mocks.lodgeFindMany.mockResolvedValue([
       { name: "River Lodge", doorCode: null, travelNote: null },
@@ -171,6 +172,17 @@ describe("POST /api/admin/lodges", () => {
       }),
     );
     expect(mocks.auditLogCreate).toHaveBeenCalledTimes(1);
+    // Door codes are physical-access secrets: the audit log must record only
+    // that one is set, never the code itself.
+    expect(mocks.auditLogCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          metadata: expect.objectContaining({
+            newLodge: expect.objectContaining({ doorCode: "[set]" }),
+          }),
+        }),
+      }),
+    );
   });
 
   it("derives a suffixed slug when the base slug is taken", async () => {
@@ -301,44 +313,5 @@ describe("PATCH /api/admin/lodges/[id]", () => {
       }),
     );
     expect(mocks.auditLogCreate).toHaveBeenCalledTimes(1);
-  });
-
-  it("syncs the sole active lodge identity to email settings", async () => {
-    mocks.lodgeFindUnique.mockResolvedValue(lodgeRecord());
-    mocks.lodgeUpdate.mockResolvedValue(lodgeRecord({ doorCode: "4321" }));
-    mocks.lodgeFindMany.mockResolvedValue([
-      { name: "Alpine Lodge", doorCode: "4321", travelNote: null },
-    ]);
-
-    const response = await PATCH(
-      jsonRequest("PATCH", { doorCode: "4321" }),
-      params("lodge-1"),
-    );
-    expect(response.status).toBe(200);
-    expect(mocks.emailMessageSettingUpsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        update: {
-          lodgeName: "Alpine Lodge",
-          doorCode: "4321",
-          lodgeTravelNote: null,
-        },
-      }),
-    );
-  });
-
-  it("does not sync email settings when two lodges are active", async () => {
-    mocks.lodgeFindUnique.mockResolvedValue(lodgeRecord());
-    mocks.lodgeUpdate.mockResolvedValue(lodgeRecord({ doorCode: "4321" }));
-    mocks.lodgeFindMany.mockResolvedValue([
-      { name: "Alpine Lodge", doorCode: "4321", travelNote: null },
-      { name: "River Lodge", doorCode: null, travelNote: null },
-    ]);
-
-    const response = await PATCH(
-      jsonRequest("PATCH", { doorCode: "4321" }),
-      params("lodge-1"),
-    );
-    expect(response.status).toBe(200);
-    expect(mocks.emailMessageSettingUpsert).not.toHaveBeenCalled();
   });
 });

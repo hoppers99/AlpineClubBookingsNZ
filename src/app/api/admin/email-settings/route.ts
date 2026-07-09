@@ -6,9 +6,9 @@ import {
 } from "@/lib/audit";
 import {
   EMAIL_MESSAGE_SETTINGS_ID,
+  loadEmailMessageSettingsForLodge,
   loadPersistedEmailMessageSettings,
   normalizeEmailMessagePublicUrl,
-  normalizeEmailMessageSettings,
 } from "@/lib/email-message-settings";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/session-guards";
@@ -17,7 +17,6 @@ const settingsSchema = z
   .object({
     clubName: z.string().trim().min(1).max(200).nullable().optional(),
     bookingsName: z.string().trim().min(1).max(200).nullable().optional(),
-    lodgeName: z.string().trim().min(1).max(200).nullable().optional(),
     emailFromName: z.string().trim().min(1).max(200).nullable().optional(),
     supportEmail: z.string().trim().email().max(320).nullable().optional(),
     contactEmail: z.string().trim().email().max(320).nullable().optional(),
@@ -32,26 +31,8 @@ const settingsSchema = z
       .transform((value) => normalizeEmailMessagePublicUrl(value)!)
       .nullable()
       .optional(),
-    lodgeTravelNote: z.string().trim().min(1).max(2000).nullable().optional(),
-    doorCode: z
-      .string()
-      .trim()
-      .max(80)
-      .transform((value) => value || null)
-      .nullable()
-      .optional(),
   })
   .strict();
-
-function redactDoorCodeForAudit<T extends Record<string, unknown> | null>(
-  settings: T,
-): T {
-  if (!settings || !("doorCode" in settings)) return settings;
-  return {
-    ...settings,
-    doorCode: settings.doorCode ? "[set]" : null,
-  } as T;
-}
 
 export async function GET() {
   const guard = await requireAdmin();
@@ -59,7 +40,9 @@ export async function GET() {
 
   const persisted = await loadPersistedEmailMessageSettings();
   return NextResponse.json({
-    settings: normalizeEmailMessageSettings(persisted),
+    // Lodge identity in `settings` resolves from the default lodge (Lodge table),
+    // not from `persisted`, so the admin preview shows real default-lodge values.
+    settings: await loadEmailMessageSettingsForLodge(null),
     persisted,
   });
 }
@@ -112,15 +95,17 @@ export async function PUT(request: NextRequest) {
       summary: "Email message settings updated",
       metadata: {
         changedKeys: Object.keys(parsed.data),
-        previousSettings: redactDoorCodeForAudit(before),
-        newSettings: redactDoorCodeForAudit(parsed.data),
+        previousSettings: before,
+        newSettings: parsed.data,
       },
       request: getAuditRequestContext(request),
     }),
   );
 
   return NextResponse.json({
-    settings: normalizeEmailMessageSettings(record),
+    // Re-resolve from the default lodge so the response reflects real lodge
+    // identity, not just the club fields written above.
+    settings: await loadEmailMessageSettingsForLodge(null),
     persisted: record,
   });
 }

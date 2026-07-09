@@ -60,11 +60,17 @@ describe("email message settings", () => {
     expect(normalized.publicUrl).not.toContain("javascript");
   });
 
-  it("normalizes blank and configured door codes", () => {
-    expect(normalizeEmailMessageSettings({ doorCode: "  2468  " }).doorCode).toBe(
-      "2468",
-    );
-    expect(normalizeEmailMessageSettings({ doorCode: "   " }).doorCode).toBeNull();
-    expect(normalizeEmailMessageSettings({}).doorCode).toBeNull();
+  it("reads club fields from persisted but keeps lodge identity at config defaults", () => {
+    const defaults = normalizeEmailMessageSettings(null);
+    const withClub = normalizeEmailMessageSettings({ clubName: "River Valley Club" });
+
+    // Club-level fields still come from the persisted singleton.
+    expect(withClub.clubName).toBe("River Valley Club");
+    // Lodge identity is no longer persisted here: normalize returns the config
+    // defaults regardless of persisted input (real lodge identity resolves via
+    // the load functions, from the Lodge table).
+    expect(withClub.lodgeName).toBe(defaults.lodgeName);
+    expect(withClub.lodgeTravelNote).toBe(defaults.lodgeTravelNote);
+    expect(withClub.doorCode).toBeNull();
   });
 });

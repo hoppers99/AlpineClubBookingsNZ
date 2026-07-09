@@ -41,30 +41,66 @@ The null-tolerant code paths for these tables are now retired:
 with a plain `lodgeId` field, and the bulk-seed / hut-leader-PIN "null clashes
 everywhere" branches are gone.
 
-## Deliberately NOT done
+## Done: club-wide policy partitions are now DB-enforced (partial unique indexes)
 
-### `EmailMessageSetting` lodge-identity columns — code-gated, not just window-gated
+Migration `20260709000100_add_clubwide_policy_partial_unique_indexes` adds raw-SQL
+partial unique indexes over the club-wide (null-`lodgeId`) partitions:
 
-`EmailMessageSetting.lodgeName / lodgeTravelNote / doorCode` are **still read**:
-`loadEmailMessageSettingsForLodge` reads the `EmailMessageSetting` singleton as
-the **base** identity and only overrides from `Lodge` when a `lodgeId` is in
-scope (kept in sync by `syncSoleActiveLodgeIdentity`; unaffected by the
-`multiLodge` module flag). So a drop would break the **current** code, not merely
-an old colour during a cutover. Dropping them requires **first** refactoring
-identity resolution to always resolve a lodge and read from `Lodge` (falling back
-to the default lodge when none is given). Until then the columns stay — they are
-tiny and harmless. This is a code refactor, not a schema-only follow-up.
+- `CancellationPolicy_clubwide_daysBeforeStay_unique` — `("daysBeforeStay") WHERE "lodgeId" IS NULL`
+- `LodgeInstruction_clubwide_key_unique` — `("key") WHERE "lodgeId" IS NULL`
 
-### Policy-table null-partition partial unique indexes — not expressible in Prisma
+This closes the "not expressible in Prisma" deferral. The premise that a raw-SQL
+partial index "would itself fail `db:check-drift`" turned out to be false in
+practice: `prisma migrate diff` does not surface partial indexes it cannot
+express in PSL, so the drift gate stays green — the same precedent as the
+long-standing `Member_email_primary_unique` / `Member_email_login_unique`
+indexes and the `XeroSyncOperation` ACTIVE-per-correlation index (#1354). The
+trade-off is that these indexes are **invisible to Prisma tooling**: they exist
+only in the migration SQL and in schema comments on the two models. CI guards
+them (issue #1664): the migration-drift job applies the migrations and asserts
+every partial index against the committed manifest
+`prisma/partial-unique-indexes.tsv` — update the manifest in the same PR as any
+intentional change.
 
-`CancellationPolicy` and `LodgeInstruction` keep a **nullable** `lodgeId`
-(null = club-wide default) with `@@unique([lodgeId, …])`. PostgreSQL treats NULLs
-as distinct, so the club-wide (null) partition isn't DB-enforced; a partial
-`… WHERE "lodgeId" IS NULL` unique index would restore it. Prisma's schema cannot
-express a partial index, so adding one as raw SQL would itself fail
-`db:check-drift`. The club-wide uniqueness therefore stays **app-enforced** (the
-admin routes' Serializable replace transactions), unchanged from the expand
-release. Revisit only if Prisma gains partial-index support.
+The migration dedupes each null partition first (keeping the most recently
+updated row) so the index build cannot abort a deploy, though app-side
+enforcement (the cancellation route's Serializable replace transaction, the
+instructions route's findFirst-then-write) should mean no duplicates exist.
+App-side enforcement stays as the first line of defence; the indexes are the
+backstop that was previously missing. Old colours during a blue/green cutover
+already enforce the same uniqueness app-side, so the indexes reject nothing an
+old colour legitimately writes.
+
+## Done: `EmailMessageSetting` lodge-identity columns dropped — identity resolves from `Lodge`
+
+Migration `20260709130000_drop_email_message_setting_lodge_identity_columns`
+drops `EmailMessageSetting.lodgeName / lodgeTravelNote / doorCode`. It landed
+with the code refactor it required: `loadEmailMessageSettingsForLodge` now
+**always** resolves a lodge and reads name / travel note / door code from the
+`Lodge` table — the explicit booking lodge when given, otherwise the club's
+**default lodge** (the `Lodge.isDefault` flag, else oldest active, else oldest —
+the same resolution as `getDefaultLodgeId` and the SQL `default_lodge_id()`
+function; see the MIRROR CONTRACT comment in `src/lib/lodges.ts`). The
+club-level fields (club name, bookings name, sender name, support / contact
+email, public URL) stay on the singleton. `loadEmailMessageSettings()` now
+delegates to `loadEmailMessageSettingsForLodge(null)`, and the compatibility
+mirror `syncSoleActiveLodgeIdentity` is retired.
+
+The drop is **value-dead** after the same-release refactor — nothing reads the
+columns' values anymore. The migration **backfills first** so no admin-entered
+value is lost: it copies the singleton's `lodgeTravelNote` / `doorCode` onto the
+default lodge wherever that lodge's own columns are still NULL. `lodgeName` is
+not backfilled — `Lodge.name` is NOT NULL and authoritative, so a divergent
+email-only lodge name is superseded by design.
+
+**Deploy: breaking-gated.** The columns stayed in the Prisma model until this
+release, so an old colour during a cutover still SELECTs them by name on the
+singleton. Member-facing sends **degrade gracefully** (the persisted-settings
+loader catches the error and falls back to config defaults, and per-booking
+identity already reads from `Lodge`), but the admin email-settings and
+lodge-admin routes error until cutover — admin-only, brief, retryable. Deploy
+with old traffic idle or drained and `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1`;
+the migration-ledger row records the full rationale.
 
 ## Policy tables keep nullable `lodgeId` by design
 

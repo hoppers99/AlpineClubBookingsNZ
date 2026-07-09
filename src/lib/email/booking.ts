@@ -32,7 +32,9 @@ export async function sendBookingConfirmedEmail(
     promoAdjustmentCents?: number;
     promoCode?: string;
     // Booking's lodge (multi-lodge phase 8): the email carries this lodge's
-    // name, travel note, and door code. Omitted/null = singleton values.
+    // name, travel note, and door code. Omitted/null resolves the club's
+    // default lodge — including its real door code, so always thread the
+    // booking's own lodgeId.
     lodgeId?: string | null;
   },
 ) {
@@ -217,7 +219,8 @@ export async function sendBookingReviewApprovedEmail(params: {
   checkOut: Date;
   adminNotes: string;
   bookingId: string;
-  // Booking's lodge (multi-lodge phase 8); omitted/null = singleton values.
+  // Booking's lodge (multi-lodge phase 8); omitted/null resolves the
+  // default lodge identity — always thread the booking's own lodgeId.
   lodgeId?: string | null;
 }) {
   await sendEmail({
@@ -248,7 +251,8 @@ export async function sendBookingReviewRejectedEmail(params: {
   checkIn: Date;
   checkOut: Date;
   adminNotes: string;
-  // Booking's lodge (multi-lodge phase 8); omitted/null = singleton values.
+  // Booking's lodge (multi-lodge phase 8); omitted/null resolves the
+  // default lodge identity — always thread the booking's own lodgeId.
   lodgeId?: string | null;
 }) {
   await sendEmail({
@@ -312,7 +316,9 @@ export async function sendPreArrivalReminderEmail(params: {
   guestCount: number;
   expectedArrivalTime?: string | null;
   // Booking's lodge (multi-lodge phase 8): the email carries this lodge's
-  // name, travel note, and door code. Omitted/null = singleton values.
+  // name, travel note, and door code. Omitted/null resolves the club's
+  // default lodge — including its real door code, so always thread the
+  // booking's own lodgeId.
   lodgeId?: string | null;
 }) {
   const settings = await loadEmailMessageSettingsForLodge(params.lodgeId);

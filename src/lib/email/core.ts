@@ -68,7 +68,7 @@ export async function sendEmail({
   attachments?: EmailAttachment[];
   logRecipient?: string;
   // Lodge whose identity this message carries (multi-lodge phase 8);
-  // omitted/null keeps the club-wide singleton values.
+  // omitted/null resolves the club's default lodge identity.
   lodgeId?: string | null;
 }): Promise<EmailSendOutcome> {
   const prepared = await prepareEmailMessage({
