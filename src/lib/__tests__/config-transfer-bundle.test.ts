@@ -154,6 +154,26 @@ describe("config-transfer bundle codec", () => {
     expect("sourceXeroTenantId" in manifest).toBe(false);
   });
 
+  it("tolerates a single wrapper folder + macOS junk (re-zip mistake)", () => {
+    const zip = build();
+    const unzipped = unzipSync(zip);
+    // Simulate macOS "Compress the folder": everything nested under one dir,
+    // plus __MACOSX/ and .DS_Store cruft.
+    const wrapped: Record<string, Uint8Array> = {
+      ".DS_Store": strToU8("junk"),
+      "__MACOSX/._top": strToU8("junk"),
+    };
+    for (const [name, bytes] of Object.entries(unzipped)) {
+      wrapped[`config-transfer-2026-07-09/${name}`] = bytes;
+      wrapped[`__MACOSX/config-transfer-2026-07-09/._${name}`] = strToU8("junk");
+    }
+    const { manifest, files, warnings } = readBundle(zipSync(wrapped));
+    expect(manifest.formatVersion).toBe(1); // manifest found after prefix strip
+    expect(files.get("site-content/pages.csv")).toBeDefined();
+    expect([...files.keys()].some((k) => k.startsWith("__MACOSX") || k.includes(".DS_Store"))).toBe(false);
+    expect(warnings).toEqual([]); // stripped cleanly → checksums still match
+  });
+
   it("reseal regenerates the manifest so an edited bundle validates clean", () => {
     const zip = build();
     const unzipped = unzipSync(zip);

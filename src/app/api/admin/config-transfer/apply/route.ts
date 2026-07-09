@@ -8,10 +8,8 @@ import {
   ConfigImportDriftError,
   ConfigImportBackupError,
 } from "@/lib/config-transfer/apply";
-import {
-  ConfigTransferBundleError,
-  MAX_BUNDLE_BYTES,
-} from "@/lib/config-transfer/bundle";
+import { MAX_BUNDLE_BYTES } from "@/lib/config-transfer/bundle";
+import { configTransferErrorResponse } from "@/lib/config-transfer/route-error";
 
 // POST /api/admin/config-transfer/apply — full-admin only.
 // Applies a previewed bundle: re-plans, refuses on fingerprint drift, backs up,
@@ -77,12 +75,10 @@ export async function POST(request: Request) {
     if (error instanceof ConfigImportDriftError) {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }
-    if (error instanceof ConfigTransferBundleError) {
-      return NextResponse.json({ error: error.message }, { status: 400 });
-    }
     if (error instanceof ConfigImportBackupError) {
       return NextResponse.json({ error: error.message }, { status: 503 });
     }
-    throw error;
+    // Bad bundle → 400; anything else is logged server-side + sanitised 500.
+    return configTransferErrorResponse("Apply", error);
   }
 }

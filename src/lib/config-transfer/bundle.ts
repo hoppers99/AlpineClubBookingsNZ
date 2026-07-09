@@ -124,6 +124,43 @@ function isUnsafeEntryPath(name: string): boolean {
 }
 
 /**
+ * Tolerate the two most common re-zip mistakes for a hand-edited bundle:
+ * 1. macOS archive cruft — drop `__MACOSX/…` and any `.DS_Store` entry.
+ * 2. a single wrapper directory — if `manifest.json` isn't at the root but
+ *    exactly one top-level folder contains it (the "Compress the folder"
+ *    mistake), strip that folder prefix so the bundle reads as if at the root.
+ * Anything ambiguous (no wrapper, or several candidate folders) is left as-is
+ * and falls through to the normal missing-manifest error.
+ */
+function normalizeBundleEntries(
+  unzipped: Record<string, Uint8Array>,
+): Record<string, Uint8Array> {
+  const cleaned = Object.entries(unzipped).filter(
+    ([name]) =>
+      !name.startsWith("__MACOSX/") && !name.split("/").includes(".DS_Store"),
+  );
+  if (cleaned.some(([name]) => name === CONFIG_TRANSFER_MANIFEST_PATH)) {
+    return Object.fromEntries(cleaned);
+  }
+  const wrapperPrefixes = new Set<string>();
+  for (const [name] of cleaned) {
+    const slash = name.indexOf("/");
+    if (slash > 0 && name.slice(slash + 1) === CONFIG_TRANSFER_MANIFEST_PATH) {
+      wrapperPrefixes.add(name.slice(0, slash + 1));
+    }
+  }
+  if (wrapperPrefixes.size === 1) {
+    const prefix = [...wrapperPrefixes][0];
+    return Object.fromEntries(
+      cleaned
+        .filter(([name]) => name.startsWith(prefix))
+        .map(([name, bytes]) => [name.slice(prefix.length), bytes]),
+    );
+  }
+  return Object.fromEntries(cleaned);
+}
+
+/**
  * Parse + validate a bundle. HARD-throws ConfigTransferBundleError only for
  * problems that make the bundle unprocessable or unsafe: oversized, too many
  * files, unsafe entry paths, not-a-zip, missing/invalid manifest, or an
@@ -145,6 +182,8 @@ export function readBundle(zipBytes: Uint8Array): ReadBundleResult {
   } catch {
     throw new ConfigTransferBundleError("Bundle is not a valid zip archive");
   }
+  // Forgive the common re-zip mistakes (macOS cruft, single wrapper folder).
+  unzipped = normalizeBundleEntries(unzipped);
 
   const names = Object.keys(unzipped);
   if (names.length > MAX_BUNDLE_FILES) {

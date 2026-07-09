@@ -7,6 +7,7 @@ import { parseJsonRequestBody } from "@/lib/api-json";
 import { createAuditLog } from "@/lib/audit";
 import { prisma } from "@/lib/prisma";
 import { buildConfigExport } from "@/lib/config-transfer/export";
+import { configTransferErrorResponse } from "@/lib/config-transfer/route-error";
 import { CONFIG_TRANSFER_CATEGORIES } from "@/lib/config-transfer/manifest";
 
 // POST /api/admin/config-transfer/export — full-admin only.
@@ -39,40 +40,44 @@ export async function POST(request: Request) {
     );
   }
 
-  // The source Xero org id is stamped by the Xero exporter into
-  // xero-config/source.json (no longer the manifest), so the route no longer
-  // needs to resolve it here.
-  const result = await buildConfigExport({
-    db: prisma,
-    categories: parsed.data.categories,
-    includeDoorCodes: parsed.data.includeDoorCodes,
-    appVersion: process.env.npm_package_version ?? "unknown",
-    prismaMigration: null,
-    generatedAt: new Date().toISOString(),
-  });
-
-  await createAuditLog({
-    action: "configuration.exported",
-    memberId: session.user.id,
-    category: "admin",
-    severity: "info",
-    outcome: "success",
-    summary: `Exported configuration bundle (${result.categories.join(", ") || "empty"})`,
-    metadata: {
-      categories: result.categories,
+  try {
+    // The source Xero org id is stamped by the Xero exporter into
+    // xero-config/source.json (no longer the manifest), so the route no longer
+    // needs to resolve it here.
+    const result = await buildConfigExport({
+      db: prisma,
+      categories: parsed.data.categories,
       includeDoorCodes: parsed.data.includeDoorCodes,
-      entryCount: result.entryCount,
-      imageCount: result.imageCount,
-    },
-  });
+      appVersion: process.env.npm_package_version ?? "unknown",
+      prismaMigration: null,
+      generatedAt: new Date().toISOString(),
+    });
 
-  const stamp = new Date().toISOString().slice(0, 10);
-  return new NextResponse(new Uint8Array(result.zip), {
-    status: 200,
-    headers: {
-      "Content-Type": "application/zip",
-      "Content-Disposition": `attachment; filename="config-transfer-${stamp}.zip"`,
-      "Cache-Control": "no-store",
-    },
-  });
+    await createAuditLog({
+      action: "configuration.exported",
+      memberId: session.user.id,
+      category: "admin",
+      severity: "info",
+      outcome: "success",
+      summary: `Exported configuration bundle (${result.categories.join(", ") || "empty"})`,
+      metadata: {
+        categories: result.categories,
+        includeDoorCodes: parsed.data.includeDoorCodes,
+        entryCount: result.entryCount,
+        imageCount: result.imageCount,
+      },
+    });
+
+    const stamp = new Date().toISOString().slice(0, 10);
+    return new NextResponse(new Uint8Array(result.zip), {
+      status: 200,
+      headers: {
+        "Content-Type": "application/zip",
+        "Content-Disposition": `attachment; filename="config-transfer-${stamp}.zip"`,
+        "Cache-Control": "no-store",
+      },
+    });
+  } catch (error) {
+    return configTransferErrorResponse("Export", error);
+  }
 }

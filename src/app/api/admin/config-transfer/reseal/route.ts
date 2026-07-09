@@ -2,11 +2,8 @@ import { NextResponse } from "next/server";
 
 import { requireAdmin } from "@/lib/session-guards";
 import { isFullAdmin } from "@/lib/access-roles";
-import {
-  ConfigTransferBundleError,
-  MAX_BUNDLE_BYTES,
-  resealBundle,
-} from "@/lib/config-transfer/bundle";
+import { MAX_BUNDLE_BYTES, resealBundle } from "@/lib/config-transfer/bundle";
+import { configTransferErrorResponse } from "@/lib/config-transfer/route-error";
 
 // POST /api/admin/config-transfer/reseal — full-admin only.
 // Accepts a hand-edited bundle (multipart 'bundle' file) and returns a copy with
@@ -53,9 +50,6 @@ export async function POST(request: Request) {
       },
     });
   } catch (error) {
-    if (error instanceof ConfigTransferBundleError) {
-      return NextResponse.json({ error: error.message }, { status: 400 });
-    }
-    throw error;
+    return configTransferErrorResponse("Reseal", error);
   }
 }

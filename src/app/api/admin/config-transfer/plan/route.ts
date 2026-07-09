@@ -4,10 +4,8 @@ import { requireAdmin } from "@/lib/session-guards";
 import { isFullAdmin } from "@/lib/access-roles";
 import { prisma } from "@/lib/prisma";
 import { buildImportPlan } from "@/lib/config-transfer/import";
-import {
-  ConfigTransferBundleError,
-  MAX_BUNDLE_BYTES,
-} from "@/lib/config-transfer/bundle";
+import { MAX_BUNDLE_BYTES } from "@/lib/config-transfer/bundle";
+import { configTransferErrorResponse } from "@/lib/config-transfer/route-error";
 
 // POST /api/admin/config-transfer/plan — full-admin only.
 // Dry-run: accepts an uploaded bundle (multipart 'bundle' file) and returns the
@@ -54,9 +52,6 @@ export async function POST(request: Request) {
     const plan = await buildImportPlan(prisma, bytes, mode);
     return NextResponse.json({ plan });
   } catch (error) {
-    if (error instanceof ConfigTransferBundleError) {
-      return NextResponse.json({ error: error.message }, { status: 400 });
-    }
-    throw error;
+    return configTransferErrorResponse("Preview", error);
   }
 }
