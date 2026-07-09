@@ -42,7 +42,7 @@ interface SingletonSpec {
   optInFields?: string[];
 }
 
-const SINGLETONS: SingletonSpec[] = [
+export const SINGLETONS: SingletonSpec[] = [
   {
     entity: "club-module-settings",
     delegate: "clubModuleSettings",
@@ -85,14 +85,14 @@ const SINGLETONS: SingletonSpec[] = [
   {
     entity: "email-message-setting",
     delegate: "emailMessageSetting",
-    // lodgeName / lodgeTravelNote were dropped upstream (fork #15, PR #1663):
-    // lodge identity now resolves from the Lodge row, so they are no longer
-    // columns here and must not be exported/imported.
+    // lodgeName / lodgeTravelNote / doorCode were all dropped upstream (fork
+    // #15, PR #1663): lodge identity (incl. the lodge door code) now resolves
+    // from the Lodge row, so none are columns here — do not export/import them.
+    // (The lodge's door code travels in lodge.json, opt-in.)
     fields: [
       "clubName", "bookingsName", "emailFromName", "supportEmail",
-      "contactEmail", "publicUrl", "doorCode",
+      "contactEmail", "publicUrl",
     ],
-    optInFields: ["doorCode"],
   },
   {
     entity: "group-discount-setting",

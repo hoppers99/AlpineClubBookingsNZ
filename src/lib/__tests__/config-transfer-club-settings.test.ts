@@ -3,9 +3,12 @@ import { strFromU8 } from "fflate";
 
 vi.mock("server-only", () => ({}));
 
+import { Prisma } from "@prisma/client";
+
 import { buildConfigExport } from "@/lib/config-transfer/export";
 import { buildImportPlan } from "@/lib/config-transfer/import";
 import { readBundle } from "@/lib/config-transfer/bundle";
+import { SINGLETONS } from "@/lib/config-transfer/categories/club-settings";
 import type { ReadDb } from "@/lib/config-transfer/import-types";
 
 // Delegate names touched by the club-settings category.
@@ -75,16 +78,9 @@ describe("config-transfer club-settings", () => {
       strFromU8(files.get("club-settings/email-message-setting.json")!),
     );
     expect(email.clubName).toBe("Grads");
+    // doorCode was dropped from EmailMessageSetting (fork #15); it must never be
+    // emitted here — the lodge door code travels in lodge.json instead.
     expect("doorCode" in email).toBe(false);
-  });
-
-  it("includes door codes only when opted in", async () => {
-    const { zip } = await exportBundle(true);
-    const { files } = readBundle(zip);
-    const email = JSON.parse(
-      strFromU8(files.get("club-settings/email-message-setting.json")!),
-    );
-    expect(email.doorCode).toBe("1234");
   });
 
   it("plans singleton create vs update against the target DB", async () => {
@@ -100,5 +96,31 @@ describe("config-transfer club-settings", () => {
     expect(modules?.action).toBe("update");
     expect(modules?.changedFields).toContain("multiLodge");
     expect(email?.action).toBe("create");
+  });
+});
+
+// Guard against the class of bug where an upstream schema change drops/renames a
+// column that a singleton allowlist still names — the club-settings apply uses an
+// untyped delegate, so typecheck can't catch it and it only fails at write time
+// on the server (as EmailMessageSetting.doorCode did after fork #15). This
+// validates every singleton field against the real Prisma model columns.
+describe("club-settings allowlists match the Prisma schema", () => {
+  it("every singleton field is a real column on its model", () => {
+    const columnsByModel = new Map(
+      Prisma.dmmf.datamodel.models.map((m) => [m.name, new Set(m.fields.map((f) => f.name))]),
+    );
+    const problems: string[] = [];
+    for (const spec of SINGLETONS) {
+      const modelName = spec.delegate[0].toUpperCase() + spec.delegate.slice(1);
+      const columns = columnsByModel.get(modelName);
+      if (!columns) {
+        problems.push(`delegate "${spec.delegate}" → no Prisma model "${modelName}"`);
+        continue;
+      }
+      for (const field of spec.fields) {
+        if (!columns.has(field)) problems.push(`${modelName}.${field} is not a column`);
+      }
+    }
+    expect(problems).toEqual([]);
   });
 });
