@@ -137,7 +137,13 @@ function normalizeBundleEntries(
 ): Record<string, Uint8Array> {
   const cleaned = Object.entries(unzipped).filter(
     ([name]) =>
-      !name.startsWith("__MACOSX/") && !name.split("/").includes(".DS_Store"),
+      // Drop directory markers (a re-zip via macOS/`zip -r` adds explicit
+      // "foo/" entries; our own export stores flat paths), macOS cruft, and
+      // .DS_Store — none are bundle files, so they must not be treated as
+      // undeclared entries.
+      !name.endsWith("/") &&
+      !name.startsWith("__MACOSX/") &&
+      !name.split("/").includes(".DS_Store"),
   );
   if (cleaned.some(([name]) => name === CONFIG_TRANSFER_MANIFEST_PATH)) {
     return Object.fromEntries(cleaned);

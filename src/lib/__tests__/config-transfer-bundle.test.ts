@@ -174,6 +174,20 @@ describe("config-transfer bundle codec", () => {
     expect(warnings).toEqual([]); // stripped cleanly → checksums still match
   });
 
+  it("ignores explicit directory entries a re-zip adds (no spurious warnings)", () => {
+    const zip = build();
+    const withDirs: Record<string, Uint8Array> = {
+      ...unzipSync(zip),
+      "site-content/": new Uint8Array(0),
+      "club-settings/": new Uint8Array(0),
+    };
+    const { files, warnings } = readBundle(zipSync(withDirs));
+    expect(files.has("site-content/")).toBe(false);
+    expect(files.has("club-settings/")).toBe(false);
+    // Directory markers are not files, so they must not warn as "undeclared".
+    expect(warnings).toEqual([]);
+  });
+
   it("reseal regenerates the manifest so an edited bundle validates clean", () => {
     const zip = build();
     const unzipped = unzipSync(zip);
