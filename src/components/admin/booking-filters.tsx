@@ -117,7 +117,26 @@ export function BookingFilters({
   // navigation per keystroke) while keeping the URL-driven server model:
   // filtered views stay shareable links.
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Mount-time snapshot of the URL-seeded filter values (#1732). While the
+  // live values still equal it, an auto-apply push only renames legacy params
+  // to their canonical form — the result set is unchanged — so the URL's
+  // `page` is carried over; once any value differs, it is dropped. NOTE: the
+  // server currently IGNORES `page` (the list always returns the first 100
+  // rows and no in-page pagination links exist), so today this only keeps a
+  // bookmarked URL stable. If pagination is ever added, revisit: this
+  // mount-scoped snapshot never refreshes, so change-then-revert sequences
+  // would re-attach a stale page onto a different result set.
+  const initialFilterSnapshotRef = useRef<string | null>(null);
   useEffect(() => {
+    const filterSnapshot = JSON.stringify([
+      status, updatedFrom, updatedTo, checkInFrom, checkInTo, checkOutFrom,
+      checkOutTo, search, sortBy, sortDir, month, deleted, paymentSource,
+      xeroState, bedState, changeState, lodgeId,
+    ]);
+    if (initialFilterSnapshotRef.current === null) {
+      initialFilterSnapshotRef.current = filterSnapshot;
+    }
+    const isPureRewrite = filterSnapshot === initialFilterSnapshotRef.current;
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
       const params = new URLSearchParams(window.location.search);
@@ -144,9 +163,15 @@ export function BookingFilters({
       const next = params.toString();
       // Compare against the live URL so the initial render is a no-op.
       const current = new URLSearchParams(window.location.search);
+      const livePage = current.get("page");
       current.delete("page");
       if (next !== current.toString()) {
-        router.push(next ? `/admin/bookings?${next}` : "/admin/bookings");
+        // A pure legacy→canonical rewrite (e.g. a bookmarked
+        // ?from=A&to=B&page=3) keeps the URL's inert `page` param; a real
+        // filter change drops it (see the snapshot note above).
+        if (isPureRewrite && livePage) params.set("page", livePage);
+        const target = params.toString();
+        router.push(target ? `/admin/bookings?${target}` : "/admin/bookings");
       }
     }, 350);
     return () => {
