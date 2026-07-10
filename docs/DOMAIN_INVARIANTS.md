@@ -85,6 +85,45 @@ Future reviews and issues should cite this file when proposing changes.
   envelope. Existing allocation rows are never rewritten by planning — only
   provisional displacement moves rows — and re-planning a fully-allocated
   state is a no-op.
+- **Double-bed shared occupancy (#1701):** a `DOUBLE` bed may hold two occupants
+  on a night — one primary and one second occupant — when they are declared
+  partners (v1: two `ADULT` members of the same `FamilyGroup`, the single-source
+  `mayShareDoubleBed()` rule in `double-bed-sharing.ts`; the real member↔member
+  partner model is #1682). Only an admin adds the second occupant on the board,
+  and only onto a bed whose primary already **holds capacity** — so displacement
+  can never move the primary out from under the partner. Auto-allocation never
+  creates a second occupant; every other bed type stays exactly one occupant per
+  night. DB-enforced without CHECK constraints:
+  `@@unique([bedId, stayDate, isSecondOccupant])` caps a bed-night at ≤2 rows and
+  a raw-SQL partial unique index (`WHERE "bedType" <> 'DOUBLE'`, recorded in
+  `prisma/partial-unique-indexes.tsv`) caps every non-DOUBLE bed at exactly one;
+  `BedAllocation.bedType` is a denormalized copy the partial index reads (a
+  partial index cannot join to `LodgeBed`). Capacity is unchanged — a shared
+  double is still ONE bed of nightly capacity and each occupant is a full
+  person-night (pricing/settlement untouched). A DOUBLE holding a second occupant
+  cannot be retyped to a non-double until that occupant is removed. Whenever a
+  shared double loses its primary — a board delete (#1743), a board move of the
+  primary onto another bed, or a cross-booking cancellation / reconcile prune
+  (#1750) — the surviving partner is **auto-promoted** to primary on the vacated
+  bed-night atomically with the removal on transactional paths, each with its own audit entry
+  (`BED_ALLOCATION_PARTNER_PROMOTED`) because the partner may belong to a
+  different booking (sharing eligibility is member-level). Promotion is gated on
+  `isSecondOccupant` alone, never the denormalized `bedType` of the removed row or
+  the survivor: an AUTO-allocated row on a real DOUBLE carries the SINGLE default,
+  so trusting that type would strand the partner it needs to promote. The
+  bed-night is
+  therefore never left dead-ended behind the orphaned-second-occupant guard in
+  `resolveSecondOccupant`, and re-pairing follows the normal sharing rules (in
+  particular the promoted primary's booking must hold capacity before a new
+  partner may join). The two atomicity shapes differ by path: the board
+  delete/move helpers self-wrap their read + write + promote in a transaction,
+  while the lifecycle prune captures-before / flips-after on the caller's own
+  client. Reconcile is usually already inside a transaction, but a few callers
+  reconcile on the bare `prisma` singleton (e.g. `cron-complete-bookings`, the
+  confirm-pending-guests route); on those a crash between the delete and the flip
+  regresses to the pre-#1750 state — a recoverable orphaned second occupant,
+  visible on the board and cleared by the next successful reconcile or a manual
+  move, never a capacity or double-booking violation.
 - Waitlisted and offered bookings do not consume capacity until confirmed.
 - A waitlist offer reprices the booking at current season rates,
   membership-type policy, group discount, and promo validity at the moment the
@@ -600,7 +639,13 @@ override requires an explicit `pricingMode`:
   email on the Internet Banking path is deliberately outside this choice and is
   ALWAYS sent** — it is the member's payment instruction (invoice number + bank
   details), so suppressing it could strand an unpaid invoice the member was
-  never told about (owner decision on #1705).
+  never told about (owner decision on #1705). Three further cancellation
+  emails are **deliberately always-notify** and outside the choice (owner
+  decision 2026-07-10, #1730): the joiner emails when a **group organiser
+  cancels** the group, the member email on an **admin review-rejection**
+  cancel, and the cancellation emails sent by **deletion-request cleanup** —
+  in each, the recipient is losing a booking they own, and a missed email
+  risks a member arriving for a stay that no longer exists.
 - **recalculate** — the existing full-reprice machinery with the locked-period
   clamps lifted, so locked-night pricing semantics are otherwise preserved
   (a night the guest already bought keeps its stored `BookingGuestNight` price).
@@ -653,20 +698,41 @@ effective lock date (409 `XERO_PERIOD_LOCKED`, with unlock instructions). The
 guard is **skipped when Xero is not connected** and **fails closed** (retryable
 503 `XERO_LOCK_DATE_CHECK_FAILED`) when the lock dates cannot be read; the Xero
 call is made outside any DB transaction and its result is cached ~5 minutes.
-The same guard protects the **admin override modify paths** (#1697,
-`xero-period-lock-guard`): a **recalculate** override can queue a
-**check-in-dated primary-invoice write** — the invoice date/narration update
-on a booking whose payment is not yet settled, or the invoice create a
-zero-dollar recalculate performs — and is rejected (same 409/503 contract, at
-the modify-quote preview and at apply in both modify services, before their
-transactions) when the check-in the booking would end up with lands on or
-before the effective lock date; a check-out-only recalculate is guarded via
-the unchanged past check-in. Supplementary invoices and modification credit
-notes are dated at the day they are raised (not check-in), so on an
-already-paid booking a recalculate writes no check-in-dated document — the
-guard **still fires there by design** (deliberately conservative, recorded on
-#1697; narrowing it to the actual check-in-dated writes is tracked as a
-follow-up). **Shift overrides are exempt**: a shift writes no Xero documents.
+The same guard protects the **booking modify paths**
+(`xero-period-lock-guard`), with two deliberately asymmetric scopes:
+- **Admin override** (#1697): a **recalculate** override can queue a
+  **check-in-dated primary-invoice write** — the invoice date/narration update
+  on a booking whose payment is not yet settled, or the invoice create a
+  zero-dollar recalculate performs — and is rejected (same 409/503 contract, at
+  the modify-quote preview and at apply in both modify services, before their
+  transactions) when the check-in the booking would end up with lands on or
+  before the effective lock date; a check-out-only recalculate is guarded via
+  the unchanged past check-in. Supplementary invoices and modification credit
+  notes are dated at the day they are raised (not check-in), so on an
+  already-paid booking a recalculate writes no check-in-dated document — the
+  override guard **still fires there by design**: **deliberately conservative,
+  a settled owner decision** (#1697, re-affirmed and closed on #1718 —
+  workarounds for the over-block on paid bookings are shift mode or briefly
+  unlocking the period).
+- **Ordinary (non-override) date edits** (#1729) get a **NARROW guard** at the
+  same pre-transaction points (both modify services and the modify-quote
+  preview): it fires only when the edit would **actually queue the
+  check-in-dated invoice update** — issued Xero invoice, dates changing,
+  payment not settled — via the settlement classifier's own predicate
+  (`wouldQueueCheckInDatedInvoiceUpdate`, shared so guard and
+  `queueXeroBookingEditSettlement` can never drift). Error text is
+  **actor-appropriate**: admins get the unlock instructions, members get a
+  "contact an administrator" 409 (and a softer fail-closed 503) — same codes
+  either way; a member's request against a booking they do not own skips the
+  guard silently (the transaction's 403 answers it — no lock-date disclosure
+  to non-owners). **Identity-only edits (guest name fixes) are never guarded**
+  (owner decision, #1729): the outbox backstop covers that rare strand rather
+  than blocking a typo fix. Also outbox-backstopped, not guarded: the
+  check-in-dated invoice CREATE a $0-collapsing ordinary edit can queue for a
+  never-invoiced booking, and guest-range edits that move the stay envelope
+  without date fields in the request.
+
+**Shift overrides are exempt**: a shift writes no Xero documents.
 As at create, only past check-ins are guarded.
 Over-capacity past nights are **warn-and-confirm** (the same
 `OverCapacityConfirmationRequiredError` → 409 `OVER_CAPACITY_CONFIRM_REQUIRED`
