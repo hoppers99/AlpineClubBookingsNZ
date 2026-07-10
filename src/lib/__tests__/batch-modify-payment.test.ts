@@ -2686,13 +2686,24 @@ describe("PUT /api/bookings/[id]/modify", () => {
     expect(vi.mocked(sendBookingModifiedEmail)).toHaveBeenCalledTimes(1);
   });
 
-  it("always emails a member self-edit (notifyMember is not honoured for non-admins) (#1696)", async () => {
+  it("always emails a member self-edit by default (#1696)", async () => {
     // Default session (a plain member owner) resolves to the USER actor, whose
-    // edits always notify regardless of any flag.
+    // edits always notify.
     const response = await runZeroNetDateChange({});
     expect(response.status).toBe(200);
 
     const { sendBookingModifiedEmail } = await import("@/lib/email");
     expect(vi.mocked(sendBookingModifiedEmail)).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects notifyMember from a member self-edit with 403 under real role resolution (#1696)", async () => {
+    // Default session resolves to the USER actor via the REAL
+    // bookingManagementAuthorizationRole, so any notify flag is refused before
+    // the service runs — a member can never suppress their own notification.
+    const response = await runZeroNetDateChange({ notifyMember: false });
+    expect(response.status).toBe(403);
+
+    const { sendBookingModifiedEmail } = await import("@/lib/email");
+    expect(vi.mocked(sendBookingModifiedEmail)).not.toHaveBeenCalled();
   });
 });
