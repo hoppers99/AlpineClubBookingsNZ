@@ -1,16 +1,27 @@
 import { describe, it, expect, vi } from "vitest";
+
+vi.mock("server-only", () => ({}));
+
 import { mayShareDoubleBed } from "@/lib/double-bed-sharing";
+import { canonicalPartnerPair } from "@/lib/member-partner-link";
 
 type FakeMember = {
   id: string;
   ageTier: string;
-  familyGroupMemberships: Array<{ familyGroupId: string }>;
 };
 
-// The predicate takes a db client, so a tiny fake `member.findMany` is all the
-// test needs — no prisma mock. findMany filters the seeded members by the
-// `where: { id: { in: [...] } }` clause the predicate builds.
-function fakeDb(members: FakeMember[]) {
+type FakePartnerLink = {
+  memberAId: string;
+  memberBId: string;
+  status: string;
+};
+
+// The predicate takes a db client, so tiny fakes for `member.findMany` and
+// `memberPartnerLink.findUnique` are all the test needs — no prisma mock.
+// findMany filters the seeded members by the `where: { id: { in: [...] } }`
+// clause the predicate builds; findUnique matches a seeded link by the
+// canonical pair the predicate looks up.
+function fakeDb(members: FakeMember[], links: FakePartnerLink[] = []) {
   return {
     member: {
       findMany: vi.fn(async (args: { where: { id: { in: string[] } } }) => {
@@ -18,52 +29,81 @@ function fakeDb(members: FakeMember[]) {
         return members.filter((member) => ids.includes(member.id));
       }),
     },
+    memberPartnerLink: {
+      findUnique: vi.fn(
+        async (args: {
+          where: {
+            memberAId_memberBId: { memberAId: string; memberBId: string };
+          };
+        }) => {
+          const pair = args.where.memberAId_memberBId;
+          return (
+            links.find(
+              (link) =>
+                link.memberAId === pair.memberAId &&
+                link.memberBId === pair.memberBId,
+            ) ?? null
+          );
+        },
+      ),
+    },
   } as unknown as NonNullable<Parameters<typeof mayShareDoubleBed>[2]>;
 }
 
-const adult = (id: string, groups: string[]): FakeMember => ({
-  id,
-  ageTier: "ADULT",
-  familyGroupMemberships: groups.map((familyGroupId) => ({ familyGroupId })),
+const adult = (id: string): FakeMember => ({ id, ageTier: "ADULT" });
+
+// Seed a link the way the service stores it: as the canonical ordered pair.
+const link = (
+  memberOneId: string,
+  memberTwoId: string,
+  status: string,
+): FakePartnerLink => ({
+  ...canonicalPartnerPair(memberOneId, memberTwoId),
+  status,
 });
 
 describe("mayShareDoubleBed", () => {
-  it("allows two adults in the same family group", async () => {
-    const db = fakeDb([adult("a", ["g1"]), adult("b", ["g1", "g2"])]);
+  it("allows two adults with a CONFIRMED partner link", async () => {
+    const db = fakeDb([adult("a"), adult("b")], [link("a", "b", "CONFIRMED")]);
     await expect(mayShareDoubleBed("a", "b", db)).resolves.toBe(true);
   });
 
-  it("rejects two adults in different family groups", async () => {
-    const db = fakeDb([adult("a", ["g1"]), adult("b", ["g2"])]);
+  it("is symmetric: argument order does not matter", async () => {
+    const db = fakeDb([adult("a"), adult("b")], [link("a", "b", "CONFIRMED")]);
+    await expect(mayShareDoubleBed("b", "a", db)).resolves.toBe(true);
+  });
+
+  it("rejects a PENDING (unconfirmed) partner link", async () => {
+    const db = fakeDb([adult("a"), adult("b")], [link("a", "b", "PENDING")]);
     await expect(mayShareDoubleBed("a", "b", db)).resolves.toBe(false);
   });
 
-  it("rejects when either member is a minor", async () => {
-    const db = fakeDb([
-      adult("a", ["g1"]),
-      { id: "b", ageTier: "YOUTH", familyGroupMemberships: [{ familyGroupId: "g1" }] },
-    ]);
+  it("rejects two adults with no partner link (family-group co-membership no longer suffices)", async () => {
+    const db = fakeDb([adult("a"), adult("b")]);
+    await expect(mayShareDoubleBed("a", "b", db)).resolves.toBe(false);
+  });
+
+  it("rejects when either member is a minor, even with a CONFIRMED link", async () => {
+    const db = fakeDb(
+      [adult("a"), { id: "b", ageTier: "YOUTH" }],
+      [link("a", "b", "CONFIRMED")],
+    );
     await expect(mayShareDoubleBed("a", "b", db)).resolves.toBe(false);
   });
 
   it("rejects the same member id (cannot partner with self)", async () => {
-    const db = fakeDb([adult("a", ["g1"])]);
+    const db = fakeDb([adult("a")]);
     await expect(mayShareDoubleBed("a", "a", db)).resolves.toBe(false);
   });
 
   it("rejects when a member id does not resolve", async () => {
-    const db = fakeDb([adult("a", ["g1"])]);
+    const db = fakeDb([adult("a")], [link("a", "ghost", "CONFIRMED")]);
     await expect(mayShareDoubleBed("a", "ghost", db)).resolves.toBe(false);
   });
 
-  it("rejects when a member has no family group at all", async () => {
-    const db = fakeDb([adult("a", ["g1"]), adult("b", [])]);
-    await expect(mayShareDoubleBed("a", "b", db)).resolves.toBe(false);
-  });
-
   it("rejects empty member ids without querying", async () => {
-    const db = fakeDb([adult("a", ["g1"])]);
+    const db = fakeDb([adult("a")]);
     await expect(mayShareDoubleBed("", "b", db)).resolves.toBe(false);
-    expect((db.member.findMany as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+    expect(db.member.findMany as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
   });
 });

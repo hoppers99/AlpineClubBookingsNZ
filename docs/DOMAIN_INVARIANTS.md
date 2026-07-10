@@ -87,9 +87,11 @@ Future reviews and issues should cite this file when proposing changes.
   state is a no-op.
 - **Double-bed shared occupancy (#1701):** a `DOUBLE` bed may hold two occupants
   on a night — one primary and one second occupant — when they are declared
-  partners (v1: two `ADULT` members of the same `FamilyGroup`, the single-source
-  `mayShareDoubleBed()` rule in `double-bed-sharing.ts`; the real member↔member
-  partner model is #1682). Only an admin adds the second occupant on the board,
+  partners: two `ADULT` members holding a **CONFIRMED** `MemberPartnerLink`
+  (#1742), the single-source `mayShareDoubleBed()` rule in
+  `double-bed-sharing.ts`. A PENDING link grants nothing. (#1744 swapped this
+  signal in for the interim same-`FamilyGroup` rule, which wrongly permitted
+  e.g. a parent and an adult child.) Only an admin adds the second occupant on the board,
   and only onto a bed whose primary already **holds capacity** — so displacement
   can never move the primary out from under the partner. Auto-allocation never
   creates a second occupant; every other bed type stays exactly one occupant per

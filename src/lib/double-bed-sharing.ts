@@ -1,23 +1,29 @@
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
+import {
+  canonicalPartnerPair,
+  PARTNER_LINK_CONFIRMED,
+} from "@/lib/member-partner-link";
 
 type DoubleBedSharingDb = typeof prisma | Prisma.TransactionClient;
 
 /**
  * Whether two members may share one DOUBLE bed for a night (#1701).
  *
- * v1 signal = "declared partners", modelled as two ADULT members who belong to
- * the same FamilyGroup — there is no dedicated member-to-member partner model
- * yet (that is #1682, being built separately). This is the **single source of
+ * The signal is a CONFIRMED Partner/Husband/Wife relationship — a
+ * `MemberPartnerLink` row (#1742). #1744 swapped this in for the interim v1
+ * rule (two ADULT members sharing a FamilyGroup), which wrongly permitted
+ * e.g. a parent and an adult child to share. This is the **single source of
  * truth** for the who-may-share rule: admin-board placement and the board UI
- * both go through here, so when #1682's real partner relationship lands, only
- * this function body changes (swap the same-FamilyGroup test for the partner
- * check) — not the placement/UI/capacity code around it.
+ * both go through here, so the eligibility signal changes only in this
+ * function body — not in the placement/UI/capacity code around it.
  *
- * Deliberately strict: both ids must resolve to real members, be distinct, and
- * be ageTier ADULT (no minor may be a declared partner in v1), and the two must
- * share at least one FamilyGroup. Anything else returns false so the caller can
- * reject the placement with a clear domain error.
+ * Deliberately strict: both ids must resolve to real members, be distinct,
+ * and be ageTier ADULT (links are ADULT-only at creation; re-checked here so
+ * a later tier correction immediately revokes sharing), and the pair must
+ * hold a CONFIRMED link — a PENDING request grants nothing. Anything else
+ * returns false so the caller can reject the placement with a clear domain
+ * error.
  */
 export async function mayShareDoubleBed(
   memberIdA: string,
@@ -28,27 +34,20 @@ export async function mayShareDoubleBed(
 
   const members = await db.member.findMany({
     where: { id: { in: [memberIdA, memberIdB] } },
-    select: {
-      id: true,
-      ageTier: true,
-      familyGroupMemberships: { select: { familyGroupId: true } },
-    },
+    select: { id: true, ageTier: true },
   });
 
   // Both ids must resolve to distinct, existing members.
   if (members.length !== 2) return false;
 
-  // v1: only two adults may be declared partners.
+  // Only two adults may share a double.
   if (!members.every((member) => member.ageTier === "ADULT")) return false;
 
-  // They must co-belong to at least one FamilyGroup (the declared-partner
-  // signal until #1682). Intersection is symmetric, so member order is
-  // irrelevant.
-  const [first, second] = members;
-  const firstGroupIds = new Set(
-    first.familyGroupMemberships.map((membership) => membership.familyGroupId),
-  );
-  return second.familyGroupMemberships.some((membership) =>
-    firstGroupIds.has(membership.familyGroupId),
-  );
+  // The link row is a canonical ordered pair (memberAId < memberBId), so one
+  // indexed unique lookup covers both argument orders.
+  const link = await db.memberPartnerLink.findUnique({
+    where: { memberAId_memberBId: canonicalPartnerPair(memberIdA, memberIdB) },
+    select: { status: true },
+  });
+  return link?.status === PARTNER_LINK_CONFIRMED;
 }
