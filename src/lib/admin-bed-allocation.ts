@@ -2004,7 +2004,7 @@ export async function deleteBedAllocation(input: {
   // Explicit return type: the function references itself in the $transaction
   // branch, which TS cannot infer through (TS7023), matching the annotation on
   // the other self-recursive transaction helpers here.
-}): Promise<BedAllocation> {
+}): Promise<{ deleted: BedAllocation; promotedPartner: BedAllocation | null }> {
   // Delete + orphan auto-promotion must be atomic so a failure between the two
   // writes cannot strand a lone isSecondOccupant=true row (#1743). A
   // caller-supplied client is assumed to already be transactional.
@@ -2021,24 +2021,42 @@ export async function deleteBedAllocation(input: {
 
   // Orphan auto-promote (#1743, owner-locked): removing the PRIMARY of a shared
   // DOUBLE flips the surviving partner row to primary on that bed-night, so the
-  // bed is immediately re-pairable instead of dead-ending behind the
-  // orphaned-second-occupant guard in resolveSecondOccupant. Per-night by
-  // construction — one allocation row is one bed-night, and the WHERE pins the
-  // deleted row's own (bedId, stayDate). The delete removed the bed-night's
-  // only isSecondOccupant=false row, so the flip cannot collide with
-  // @@unique([bedId, stayDate, isSecondOccupant]).
-  if (!deleted.isSecondOccupant && deleted.bedType === "DOUBLE") {
-    await db.bedAllocation.updateMany({
+  // bed-night is not left blocked behind the orphaned-second-occupant guard in
+  // resolveSecondOccupant. Per-night by construction — one allocation row is
+  // one bed-night, and the WHERE pins the deleted row's own (bedId, stayDate).
+  // The delete removed the bed-night's only isSecondOccupant=false row, so the
+  // flip cannot collide with @@unique([bedId, stayDate, isSecondOccupant]).
+  //
+  // Deliberately NOT gated on deleted.bedType === "DOUBLE": AUTO-created rows
+  // never set the denormalized bedType (replaceBedAllocationsForBooking), so an
+  // auto-allocated primary on a real DOUBLE carries the default SINGLE and
+  // would skip the promotion its partner needs. A second-occupant row can only
+  // exist on a genuine shared double (resolveSecondOccupant checks the live
+  // bed), so the isSecondOccupant filter alone is the reliable gate — on every
+  // other bed the lookup finds nothing and nothing is written.
+  //
+  // The promoted row is returned so the caller can audit it: the partner may
+  // belong to a DIFFERENT booking than the deleted row, and that cross-booking
+  // state change needs its own audit entry (@@unique caps the bed-night at one
+  // second-occupant row, so findFirst is deterministic).
+  let promotedPartner: BedAllocation | null = null;
+  if (!deleted.isSecondOccupant) {
+    const partner = await db.bedAllocation.findFirst({
       where: {
         bedId: deleted.bedId,
         stayDate: deleted.stayDate,
         isSecondOccupant: true,
       },
-      data: { isSecondOccupant: false },
     });
+    if (partner) {
+      promotedPartner = await db.bedAllocation.update({
+        where: { id: partner.id },
+        data: { isSecondOccupant: false },
+      });
+    }
   }
 
-  return deleted;
+  return { deleted, promotedPartner };
 }
 
 /**

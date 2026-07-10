@@ -103,11 +103,14 @@ Future reviews and issues should cite this file when proposing changes.
   person-night (pricing/settlement untouched). A DOUBLE holding a second occupant
   cannot be retyped to a non-double until that occupant is removed. Removing the
   primary of a shared double on the board **auto-promotes** the remaining partner
-  to primary in the same transaction (#1743), so the bed-night is immediately
-  re-pairable. A lone second occupant can still be left when the primary leaves
-  by another path (board move of the primary to a different bed, or a
-  cross-booking cancellation/reconcile prune) — that state is harmless (no DB
-  violation) and surfaced on the board to re-pair or remove.
+  to primary in the same transaction, with its own audit entry because the
+  partner may belong to a different booking (#1743) — the bed-night is no longer
+  blocked by an orphaned second occupant, and re-pairing follows the normal
+  sharing rules (in particular the promoted primary's booking must hold capacity
+  before a new partner may join). A lone second occupant can still be left when
+  the primary leaves by another path (board move of the primary to a different
+  bed, or a cross-booking cancellation/reconcile prune) — that state is harmless
+  (no DB violation) and surfaced on the board to re-pair or remove.
 - Waitlisted and offered bookings do not consume capacity until confirmed.
 - A waitlist offer reprices the booking at current season rates,
   membership-type policy, group discount, and promo validity at the moment the
