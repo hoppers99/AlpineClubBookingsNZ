@@ -25,6 +25,8 @@ import { stayWindow } from "./helpers/stay-dates";
 // date ranges the normal edit window locks.
 test.describe.configure({ mode: "serial" });
 
+// stayWindow itself skips the reserved September fixture Mondays (#1703), so
+// index 5 is always clear of the seeded-FULL/offer/IB windows on any run date.
 const window = stayWindow(5);
 
 let memberContext: BrowserContext;
@@ -122,36 +124,12 @@ test.beforeAll(async ({ browser }) => {
   adminContext = await browser.newContext();
   const adminPage = await adminContext.newPage();
   await loginPersona(adminPage, E2E_ADMIN.email);
-
-  // A cross-month shift makes reconcileBedAllocationsForBooking auto-allocate
-  // the whole merged old+new range lodge-wide. With the setting ON, this spec's
-  // Sept→July shifts auto-placed OTHER bookings' guests (it AUTO-placed the
-  // bed-allocation spec's Ken King on the first CI run, emptying that spec's
-  // awaiting-allocation bucket). Disable it for the spec's duration —
-  // bed-allocation.spec.ts manages the same setting for its own run.
-  const disabled = await adminContext.request.put(
-    "/api/admin/bed-allocation/settings",
-    { data: { autoAllocationEnabled: false } },
-  );
-  expect(
-    disabled.ok(),
-    `disable auto-allocation (${disabled.status()})`,
-  ).toBeTruthy();
   await adminPage.close();
 });
 
 test.afterAll(async () => {
-  try {
-    if (adminContext) {
-      // Restore the default (schema default is true).
-      await adminContext.request.put("/api/admin/bed-allocation/settings", {
-        data: { autoAllocationEnabled: true },
-      });
-    }
-  } finally {
-    await memberContext?.close();
-    await adminContext?.close();
-  }
+  await memberContext?.close();
+  await adminContext?.close();
 });
 
 test("member books a future stay for the admin to override", async () => {
@@ -242,5 +220,15 @@ test("admin moves the booking fully into the past, then shifts it again", async 
   await page.reload();
   await expect(page.getByRole("button", { name: "Edit Booking" })).toBeVisible();
   expect(await readTotalDigits(page)).toBe(totalBefore);
+
+  // Park the booking back in its own dedicated future window (a full-circle
+  // override: past → future). With auto-allocation on, each shift drafts THIS
+  // booking's guest onto its resting nights (#1686 scoped reconcile) — parked
+  // near today those could collide with bed-allocation.spec's fixed July seed
+  // window (Bunk Room A/A1) on unlucky run dates, so never leave them there.
+  await adminShiftTo(page, window.checkIn);
+  await page.reload();
+  await page.getByRole("button", { name: "Edit Booking" }).click();
+  await expect(page.locator("#edit-checkin")).toHaveValue(window.checkIn);
   await page.close();
 });
