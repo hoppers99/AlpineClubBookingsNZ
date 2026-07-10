@@ -77,7 +77,9 @@ Future reviews and issues should cite this file when proposing changes.
   stay; fallback bookings are reported in
   `BedAllocationPlan.roomContinuityFallbackBookingIds`. Displacement relocates
   or unallocates a provisional booking's ENTIRE visible stay (one destination
-  room, newest bookings evicted first) and never night-splits it; an
+  room) and never night-splits it — whole-stay room claims (Phase 2) evict
+  newest bookings first, while the per-night fallback (Phase 3) selects
+  victims in room/bed sort order; an
   admin-approved allocation (#776 lock) on ANY night pins the whole booking
   against displacement, as does a stay extending beyond the reconcile load
   envelope. Existing allocation rows are never rewritten by planning — only
