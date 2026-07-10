@@ -2,12 +2,7 @@ import { type BrowserContext, expect, test, type Page } from "@playwright/test";
 import { loginPersona } from "./helpers/auth";
 import { bookSelfToReviewStep, confirmBookingToPaymentStep } from "./helpers/booking";
 import { personas } from "./helpers/personas";
-import {
-  E2E_ADMIN,
-  IB_WINDOW,
-  WAITLIST_FULL_WINDOW,
-  WAITLIST_OFFER_WINDOW,
-} from "./helpers/fixtures";
+import { E2E_ADMIN } from "./helpers/fixtures";
 import { storageStatePath } from "./helpers/auth";
 import { stayWindow } from "./helpers/stay-dates";
 
@@ -30,26 +25,9 @@ import { stayWindow } from "./helpers/stay-dates";
 // date ranges the normal edit window locks.
 test.describe.configure({ mode: "serial" });
 
-// stayWindow Mondays drift weekly while the September fixture windows are
-// fixed dates, so index 5 periodically lands ON one of them — including the
-// seeded-FULL waitlist window (22 guests), where this spec's booking creation
-// would be refused outright. Take the first window from index 5 that avoids
-// every reserved September fixture Monday.
-const RESERVED_WINDOW_CHECKINS = new Set([
-  IB_WINDOW.checkIn,
-  WAITLIST_FULL_WINDOW.checkIn,
-  WAITLIST_OFFER_WINDOW.checkIn,
-]);
-function firstFreeWindow(startIndex: number) {
-  for (let index = startIndex; index < startIndex + 8; index++) {
-    const candidate = stayWindow(index);
-    if (!RESERVED_WINDOW_CHECKINS.has(candidate.checkIn)) {
-      return candidate;
-    }
-  }
-  throw new Error("No stay window clear of the reserved September fixtures");
-}
-const window = firstFreeWindow(5);
+// stayWindow itself skips the reserved September fixture Mondays (#1703), so
+// index 5 is always clear of the seeded-FULL/offer/IB windows on any run date.
+const window = stayWindow(5);
 
 let memberContext: BrowserContext;
 let adminContext: BrowserContext;
