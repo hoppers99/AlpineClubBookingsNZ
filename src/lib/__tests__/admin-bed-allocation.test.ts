@@ -2,6 +2,7 @@ import { readFileSync } from "fs";
 import path from "path";
 import { Prisma } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
+import { canonicalPartnerPair } from "@/lib/member-partner-link-shared";
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {},
@@ -297,7 +298,12 @@ describe("manuallyAllocateBedForNights", () => {
     members?: Array<{
       id: string;
       ageTier: string;
-      familyGroupMemberships: Array<{ familyGroupId: string }>;
+      active: boolean;
+    }>;
+    partnerLinks?: Array<{
+      memberAId: string;
+      memberBId: string;
+      status: string;
     }>;
   }) {
     return {
@@ -307,13 +313,33 @@ describe("manuallyAllocateBedForNights", () => {
       lodgeBed: {
         findUnique: vi.fn().mockResolvedValue(input.bed),
       },
-      // #1701: mayShareDoubleBed() resolves both members' age tier + family
-      // groups; findMany filters the seeded members by the queried ids.
+      // #1701/#1744: mayShareDoubleBed() resolves both members' age tier and
+      // looks up the pair's partner link; findMany filters the seeded members
+      // by the queried ids, findUnique matches a seeded link by the canonical
+      // pair.
       member: {
         findMany: vi.fn(async (args: { where: { id: { in: string[] } } }) =>
           (input.members ?? []).filter((member) =>
             args.where.id.in.includes(member.id),
           ),
+        ),
+      },
+      memberPartnerLink: {
+        findUnique: vi.fn(
+          async (args: {
+            where: {
+              memberAId_memberBId: { memberAId: string; memberBId: string };
+            };
+          }) => {
+            const pair = args.where.memberAId_memberBId;
+            return (
+              (input.partnerLinks ?? []).find(
+                (partnerLink) =>
+                  partnerLink.memberAId === pair.memberAId &&
+                  partnerLink.memberBId === pair.memberBId,
+              ) ?? null
+            );
+          },
         ),
       },
       bedAllocation: {
@@ -477,12 +503,13 @@ describe("manuallyAllocateBedForNights", () => {
     ).rejects.toThrow("Booking status is not allocatable");
   });
 
-  // #1701 double-bed shared occupancy.
-  const adultMember = (id: string, groups: string[]) => ({
-    id,
-    ageTier: "ADULT",
-    familyGroupMemberships: groups.map((familyGroupId) => ({ familyGroupId })),
-  });
+  // #1701 double-bed shared occupancy (#1744: eligibility = CONFIRMED partner link).
+  const adultMember = (id: string) => ({ id, ageTier: "ADULT", active: true });
+
+  // Seed a link the way the service stores it: as the canonical ordered pair.
+  const confirmedPartners = (memberOneId: string, memberTwoId: string) => [
+    { ...canonicalPartnerPair(memberOneId, memberTwoId), status: "CONFIRMED" },
+  ];
 
   function primaryOccupant(overrides: Partial<{
     isSecondOccupant: boolean;
@@ -498,14 +525,15 @@ describe("manuallyAllocateBedForNights", () => {
     };
   }
 
-  it("places an eligible same-family adult as a second occupant on a double", async () => {
+  it("places the primary's confirmed partner as a second occupant on a double", async () => {
     const upsert = vi.fn().mockImplementation(({ create }) => ({ id: "alloc", ...create }));
     const db = buildDb({
       guest: buildGuest({ id: "guest-2", memberId: "m-new" }),
       bed: buildBed({ bedType: "DOUBLE" }),
       upsert,
       existingOccupants: vi.fn().mockResolvedValue([primaryOccupant()]),
-      members: [adultMember("m-primary", ["fg-1"]), adultMember("m-new", ["fg-1"])],
+      members: [adultMember("m-primary"), adultMember("m-new")],
+      partnerLinks: confirmedPartners("m-primary", "m-new"),
     });
 
     const result = await manuallyAllocateBedForNights({
@@ -531,7 +559,8 @@ describe("manuallyAllocateBedForNights", () => {
       bed: buildBed({ bedType: "SINGLE" }),
       upsert,
       existingOccupants: vi.fn().mockResolvedValue([primaryOccupant()]),
-      members: [adultMember("m-primary", ["fg-1"]), adultMember("m-new", ["fg-1"])],
+      members: [adultMember("m-primary"), adultMember("m-new")],
+      partnerLinks: confirmedPartners("m-primary", "m-new"),
     });
 
     const result = await manuallyAllocateBedForNights({
@@ -546,13 +575,13 @@ describe("manuallyAllocateBedForNights", () => {
     expect(upsert).not.toHaveBeenCalled();
   });
 
-  it("rejects a second occupant who is not an eligible partner (different family)", async () => {
+  it("rejects a second occupant without a confirmed partner link (family-group co-membership is not enough)", async () => {
     const db = buildDb({
       guest: buildGuest({ id: "guest-2", memberId: "m-new" }),
       bed: buildBed({ bedType: "DOUBLE" }),
       upsert: vi.fn(),
       existingOccupants: vi.fn().mockResolvedValue([primaryOccupant()]),
-      members: [adultMember("m-primary", ["fg-1"]), adultMember("m-new", ["fg-2"])],
+      members: [adultMember("m-primary"), adultMember("m-new")],
     });
 
     const result = await manuallyAllocateBedForNights({
@@ -573,7 +602,8 @@ describe("manuallyAllocateBedForNights", () => {
       // PENDING is bed-allocatable but not capacity-holding, so the primary is
       // not pinned from displacement — pairing must be refused.
       existingOccupants: vi.fn().mockResolvedValue([primaryOccupant({ bookingStatus: "PENDING" })]),
-      members: [adultMember("m-primary", ["fg-1"]), adultMember("m-new", ["fg-1"])],
+      members: [adultMember("m-primary"), adultMember("m-new")],
+      partnerLinks: confirmedPartners("m-primary", "m-new"),
     });
 
     const result = await manuallyAllocateBedForNights({
@@ -594,7 +624,8 @@ describe("manuallyAllocateBedForNights", () => {
       existingOccupants: vi
         .fn()
         .mockResolvedValue([primaryOccupant(), primaryOccupant({ isSecondOccupant: true, memberId: "m-new" })]),
-      members: [adultMember("m-primary", ["fg-1"]), adultMember("m-third", ["fg-1"])],
+      members: [adultMember("m-primary"), adultMember("m-third")],
+      partnerLinks: confirmedPartners("m-primary", "m-third"),
     });
 
     const result = await manuallyAllocateBedForNights({
