@@ -20,12 +20,59 @@ crammed into a room, but a lower whole-lodge cap for fire / consent / licence
 reasons (#1653). Booking availability must respect the **ceiling**, while
 bed allocation still places people across the **larger** physical bed set.
 
-Double-bed shared occupancy (#1701) does **not** change any of this. A shared
-`DOUBLE` counts as **one** bed of `activeBedCount`, and its two declared-partner
-occupants are two guests / two person-nights against the ceiling — exactly as if
-they slept in two beds. Availability (`checkCapacityForGuestRanges`) counts
-guests against `getLodgeCapacity`, never `BedAllocation` rows, so a second
-occupant is purely a *placement* detail and cannot inflate or deflate capacity.
+Double-bed shared occupancy (#1701) does **not** change the base figure. A
+shared `DOUBLE` counts as **one** bed of `activeBedCount`, and availability
+(`checkCapacityForGuestRanges`) counts guests against `getLodgeCapacity`,
+never `BedAllocation` rows. What a shareable double adds is **partner-shared
+headroom** on top of that base figure — see the dedicated section below
+(#1745): extra admissions only the admin-initiated partner flow can use, so a
+second occupant still cannot inflate what ordinary bookings see.
+
+## Partner-shared double-bed headroom (#1745)
+
+A shareable `DOUBLE` can sleep a second occupant (the primary's CONFIRMED
+partner, #1742/#1744), so each active DOUBLE contributes one **partner-shared
+slot** above the base capacity — **reserved and bounded**, not a blanket
+ceiling bump:
+
+- **Reserved:** only the admin-initiated partner-shared admission
+  (`checkCapacityForPartnerSharedAdmission`, `src/lib/capacity.ts`) can use
+  the slots; every public/member/system path keeps reading the unchanged
+  base `getLodgeCapacity`. An ordinary guest can never be admitted into
+  partner headroom. Initiation is admin-only (#1746).
+- **Bounded:** at most `activeDoubleBedCount` shared admissions per night.
+  Each admitted sharer must hold a CONFIRMED partner link with a member
+  staying every requested night (`mayShareDoubleBed` stays the single source
+  of truth for the pair rule), so every shared admission maps to a distinct
+  double and allocation can always place every admitted pair.
+- **Ceiling interplay (#1653):** an explicit `LodgeSettings.capacity` is a
+  maximum *sleeping* capacity (fire/consent/licence) and binds people, not
+  beds. Headroom is therefore
+  `max(0, min(activeDoubleBedCount, capacity − activeBedCount))` when a
+  capacity is set: a `capped_beds` lodge gets **no** partner headroom, and a
+  capacity between `beds` and `beds + doubles` allows only the gap. With no
+  explicit capacity, headroom = `activeDoubleBedCount`.
+- **Resolution:** `getLodgePartnerSharedCapacityStatus`
+  (`src/lib/lodge-capacity.ts`) returns the base status plus
+  `activeDoubleBedCount` and `partnerSharedHeadroom`. It is a separate
+  resolver so ordinary availability checks pay no extra query.
+
+Per-night admission rule (owner decision, #1745): admit if a base slot is
+free, OR the guest is an eligible partner-sharer **and**
+`sharedSlotsUsed < partnerSharedHeadroom` for that night. Occupancy already
+above the base ceiling counts as used shared slots.
+
+| Active beds | of which DOUBLE | Capacity set | Base figure | Partner headroom |
+|---|---|---|---|---|
+| 10 | 1 | unset | 10 (`configured_beds`) | 1 |
+| 10 | 2 | 11 | 10 (`configured_beds`) | 1 |
+| 10 | 2 | 10 | 10 (`configured_beds`) | 0 |
+| 10 | 2 | 8 | 8 (`capped_beds`) | 0 |
+| 0 (module off) | — | 30 | 30 (`capacity_override`) | 0 |
+
+The admin lodge **Capacity** card shows the figure broken out — e.g.
+"10 beds + up to 1 partner spot" — never a single combined number, so an
+admin can see the extra is partner-only.
 
 ## Resolution
 
