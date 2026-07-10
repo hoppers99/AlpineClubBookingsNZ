@@ -1736,8 +1736,9 @@ async function assertManualAllocationInput(input: {
  *     out from under the partner and pair the second occupant with an unrelated
  *     booking — the #1701 displacement-safety pin);
  *   - both guests are linked to a member; and
- *   - mayShareDoubleBed() says the two members may share (v1: adults in the same
- *     family group — the single source of truth for the who-may-share rule).
+ *   - mayShareDoubleBed() says the two members may share (a CONFIRMED partner
+ *     link between two adults, #1744 — the single source of truth for the
+ *     who-may-share rule).
  *
  * The composite @@unique([bedId, stayDate, isSecondOccupant]) and the non-double
  * partial index are the DB backstop against races and non-double beds.
@@ -1805,7 +1806,7 @@ async function resolveSecondOccupant(input: {
   );
   if (!eligible) {
     throw new BedAllocationAdminError(
-      "Only two adults in the same family group may share a double bed.",
+      "Only two adults with a confirmed partner relationship may share a double bed.",
       409,
     );
   }
