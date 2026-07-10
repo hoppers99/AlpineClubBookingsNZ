@@ -14,6 +14,13 @@ import type { GuestNightInput } from "@/lib/booking-guest-stay-ranges";
 
 export type BookingWithGuests = Booking & { guests: BookingGuest[] };
 
+/**
+ * Maximum rolling lookback (in NZ date-only days) for an admin retroactive
+ * booking (#1695): the check-in may be at most this many days before today.
+ * Enforced at the route AND re-checked in the service (defence in depth).
+ */
+export const RETROACTIVE_BOOKING_MAX_LOOKBACK_DAYS = 365;
+
 export interface BookingGuestInput {
   firstName: string;
   lastName: string;
@@ -73,6 +80,13 @@ export interface ConfirmedBookingInput extends BaseInput {
   holdDays: number;
   paymentMethod?: BookingPaymentMethod;
   internetBankingSettings?: InternetBankingPaymentSettingsValues;
+  // Retroactive booking (#1695). Honoured only for on-behalf creates: the
+  // check-in may fall in the past (up to RETROACTIVE_BOOKING_MAX_LOOKBACK_DAYS),
+  // over-capacity nights become warn-and-confirm, and the member email is a
+  // per-create choice. Absent/false keeps the member flow byte-identical.
+  allowPastDates?: boolean;
+  confirmOverCapacity?: boolean;
+  notifyMember?: boolean;
   /**
    * When set, the group roster row is written in the same transaction as the
    * child booking (#1039 item 2): a concurrent duplicate join aborts here and

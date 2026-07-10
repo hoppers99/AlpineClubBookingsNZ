@@ -39,6 +39,12 @@ import {
 import { priceBookingGuestsWithMembershipTypePolicy } from "@/lib/membership-type-policy";
 import { acquireLodgeCapacityLock, checkCapacityForGuestRanges } from "@/lib/capacity";
 import {
+  OverCapacityConfirmationRequiredError,
+  overCapacityNights,
+} from "@/lib/over-capacity-confirmation";
+import { ApiError } from "@/lib/api-error";
+import { addDaysDateOnly, getTodayDateOnly } from "@/lib/date-only";
+import {
   redeemPromoCode,
   shouldPersistPromoRedemption,
   validateAndCalculatePromoDiscount,
@@ -81,6 +87,7 @@ import {
   BookingLodgeError,
   GroupJoinConflictError,
   DuplicateStayConflictError,
+  RETROACTIVE_BOOKING_MAX_LOOKBACK_DAYS,
 } from "./booking-create-types";
 import { DUPLICATE_STAY_BOOKING_STATUSES } from "./booking-status";
 import {
@@ -108,6 +115,7 @@ export {
   BookingLodgeError,
   GroupJoinConflictError,
   DuplicateStayConflictError,
+  RETROACTIVE_BOOKING_MAX_LOOKBACK_DAYS,
 };
 export type {
   BookingGuestInput,
@@ -498,6 +506,34 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
     inputCheckOut
   );
 
+  // Retroactive booking (#1695). Honoured only for on-behalf creates. When set,
+  // a past check-in is allowed (up to the rolling lookback) and over-capacity
+  // nights become warn-and-confirm; when unset, every code path below stays
+  // byte-identical to the member flow.
+  const allowPastDates = Boolean(input.allowPastDates) && isOnBehalf;
+  // The member email is a per-create choice only for on-behalf bookings; a
+  // member booking for themselves is always emailed.
+  const notifyMember = !isOnBehalf || input.notifyMember !== false;
+
+  // Defence in depth: the route already gates a past-dated on-behalf create,
+  // but the service re-checks so no caller can persist a past stay without the
+  // explicit admin override (also guards the group-join and cross-lodge-confirm
+  // callers, which always create today-or-future stays — behaviour-neutral).
+  const todayDateOnly = getTodayDateOnly();
+  if (checkIn < todayDateOnly) {
+    if (!allowPastDates) {
+      throw new ApiError("Cannot book in the past", 400);
+    }
+    if (
+      checkIn < addDaysDateOnly(todayDateOnly, -RETROACTIVE_BOOKING_MAX_LOOKBACK_DAYS)
+    ) {
+      throw new ApiError(
+        `Retroactive bookings can go back at most ${RETROACTIVE_BOOKING_MAX_LOOKBACK_DAYS} days.`,
+        400,
+      );
+    }
+  }
+
   const review = resolveAdminReviewFields({
     guests,
     isOnBehalf,
@@ -578,6 +614,10 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
 
   let isZeroDollarConfirmed = false;
   let capacityFullNights: string[] | null = null;
+  // Set inside the transaction when a retroactive booking is created over
+  // capacity with the admin's explicit confirmation (#1695); recorded in the
+  // audit metadata after commit.
+  let capacityOverridden = false;
   // Captured inside the transaction so the split child's CREATED event can be
   // written once, after commit (issue #740).
   let splitChild: { id: string; finalPriceCents: number } | null = null;
@@ -747,8 +787,20 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
         !capacityCheck.available &&
         (requestedStatus === BookingStatus.PENDING || effectivePriceCents > 0 || review.blockForReview)
       ) {
-        capacityFullNights = getCapacityFullNights(capacityCheck.nightDetails);
-        throw new Error("CAPACITY_EXCEEDED_SENTINEL");
+        if (allowPastDates) {
+          // Retroactive over-capacity is warn-and-confirm (#1695): the lodge
+          // capacity lock is still held, only the availability decision defers
+          // to the admin's explicit confirmation.
+          if (input.confirmOverCapacity !== true) {
+            throw new OverCapacityConfirmationRequiredError(
+              overCapacityNights(capacityCheck),
+            );
+          }
+          capacityOverridden = true;
+        } else {
+          capacityFullNights = getCapacityFullNights(capacityCheck.nightDetails);
+          throw new Error("CAPACITY_EXCEEDED_SENTINEL");
+        }
       }
 
       const nonMemberHoldUntil = primaryShouldBePending && !internetBankingPaymentSelected
@@ -834,13 +886,23 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
           tx
         );
         if (!finalCapacityCheck.available) {
-          // Since #737/#738 a PENDING booking holds no capacity, so there is no
-          // synchronous bump to fall back on: a $0 all-member booking that does
-          // not fit against committed bookings is rejected with the
-          // capacity-exceeded response, never bumped into a full lodge
-          // (issue #738, carried over from R1).
-          capacityFullNights = getCapacityFullNights(finalCapacityCheck.nightDetails);
-          throw new Error("CAPACITY_EXCEEDED_SENTINEL");
+          if (allowPastDates) {
+            // Retroactive $0 booking over capacity: warn-and-confirm (#1695).
+            if (input.confirmOverCapacity !== true) {
+              throw new OverCapacityConfirmationRequiredError(
+                overCapacityNights(finalCapacityCheck),
+              );
+            }
+            capacityOverridden = true;
+          } else {
+            // Since #737/#738 a PENDING booking holds no capacity, so there is
+            // no synchronous bump to fall back on: a $0 all-member booking that
+            // does not fit against committed bookings is rejected with the
+            // capacity-exceeded response, never bumped into a full lodge
+            // (issue #738, carried over from R1).
+            capacityFullNights = getCapacityFullNights(finalCapacityCheck.nightDetails);
+            throw new Error("CAPACITY_EXCEEDED_SENTINEL");
+          }
         }
 
         isZeroDollarConfirmed = true;
@@ -1027,6 +1089,15 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
       zeroDollarConfirmed: isZeroDollarConfirmed,
       paymentMethod,
       split: splitBooking,
+      // Retroactive-create audit fields (#1695), only when the override is
+      // active — a normal create records nothing new.
+      ...(allowPastDates
+        ? {
+            allowPastDates: true,
+            confirmOverCapacity: input.confirmOverCapacity === true,
+            capacityOverridden,
+          }
+        : {}),
     },
   });
 
@@ -1051,6 +1122,15 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
         finalPriceCents: booking.finalPriceCents,
         paymentMethod,
         split: splitBooking,
+        // The admin's email choice is recorded on every on-behalf create.
+        notifyMember,
+        ...(allowPastDates
+          ? {
+              allowPastDates: true,
+              confirmOverCapacity: input.confirmOverCapacity === true,
+              capacityOverridden,
+            }
+          : {}),
       },
     });
   }
@@ -1101,28 +1181,32 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
         },
       });
       if (fullBooking) {
-        sendBookingConfirmedEmail(
-          fullBooking.member.email,
-          fullBooking.member.firstName,
-          fullBooking.checkIn,
-          fullBooking.checkOut,
-          fullBooking.guests.length,
-          fullBooking.finalPriceCents,
-          {
-            lodgeId: fullBooking.lodgeId,
-            ...(fullBooking.promoRedemption?.promoCode
-              ? {
-                  discountCents: fullBooking.discountCents,
-                  promoAdjustmentCents: fullBooking.promoAdjustmentCents,
-                  // Internal work-party promo codes are meaningless to
-                  // members; label the discount with the event name instead.
-                  promoCode:
-                    fullBooking.promoRedemption.promoCode.workPartyEvent?.name ??
-                    fullBooking.promoRedemption.promoCode.code,
-                }
-              : {}),
-          },
-        ).catch((err) => logger.error({ err, bookingId: booking.id }, "Failed to send confirmation email for $0 booking"));
+        // The member confirmation email is suppressed when an admin on-behalf
+        // create opts out (#1695); the Xero invoice below is still queued.
+        if (notifyMember) {
+          sendBookingConfirmedEmail(
+            fullBooking.member.email,
+            fullBooking.member.firstName,
+            fullBooking.checkIn,
+            fullBooking.checkOut,
+            fullBooking.guests.length,
+            fullBooking.finalPriceCents,
+            {
+              lodgeId: fullBooking.lodgeId,
+              ...(fullBooking.promoRedemption?.promoCode
+                ? {
+                    discountCents: fullBooking.discountCents,
+                    promoAdjustmentCents: fullBooking.promoAdjustmentCents,
+                    // Internal work-party promo codes are meaningless to
+                    // members; label the discount with the event name instead.
+                    promoCode:
+                      fullBooking.promoRedemption.promoCode.workPartyEvent?.name ??
+                      fullBooking.promoRedemption.promoCode.code,
+                  }
+                : {}),
+            },
+          ).catch((err) => logger.error({ err, bookingId: booking.id }, "Failed to send confirmation email for $0 booking"));
+        }
 
         const effectiveModules = await loadEffectiveModuleFlags();
         if (effectiveModules.xeroIntegration) {
@@ -1171,7 +1255,8 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
 
   if (booking.status === BookingStatus.PENDING && booking.nonMemberHoldUntil) {
     const member = await prisma.member.findUnique({ where: { id: effectiveMemberId } });
-    if (member) {
+    // Suppressed when an admin on-behalf create opts out of member email (#1695).
+    if (member && notifyMember) {
       sendBookingPendingEmail(
         member.email,
         member.firstName,
