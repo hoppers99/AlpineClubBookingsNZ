@@ -158,6 +158,12 @@ export async function buildImportPlanFromParsed(
   const targetTenantId = xeroSelected ? await connectedXeroTenantId(db) : null;
   const mismatch =
     xeroSelected && sourceTenantId !== null && sourceTenantId !== targetTenantId;
+  // The previewed cross-org verdict must still hold at apply: fingerprint the
+  // TARGET org so connecting/switching Xero between preview and apply trips
+  // the drift guard instead of applying against an org the admin never saw.
+  if (xeroSelected) {
+    fingerprintParts.push(`xero-target-org:${targetTenantId ?? "none"}`);
+  }
 
   return {
     formatVersion: manifest.formatVersion,

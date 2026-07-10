@@ -253,6 +253,36 @@ describe("xero item identity is null-honest", () => {
   });
 });
 
+describe("xero target-org binding", () => {
+  it("fingerprints the TARGET org so a connect/switch between preview and apply drifts", async () => {
+    const zip = bundleOf(
+      [
+        {
+          path: "xero-config/account-mappings.csv",
+          category: "xero-config",
+          rowCount: 1,
+          bytes: strToU8("key,code,itemCode\nhutFeesIncome,200,\n"),
+        },
+      ],
+      ["xero-config"],
+    );
+    const dbWithTenant = (tenantId: string | null) =>
+      ({
+        xeroAccountMapping: { findMany: vi.fn().mockResolvedValue([]) },
+        xeroItemCodeMapping: { findMany: vi.fn().mockResolvedValue([]) },
+        xeroToken: {
+          findFirst: vi
+            .fn()
+            .mockResolvedValue(tenantId ? { tenantId } : null),
+        },
+      }) as unknown as ReadDb;
+
+    const disconnected = await buildImportPlan(dbWithTenant(null), zip, { mode: "merge" });
+    const connected = await buildImportPlan(dbWithTenant("org-a"), zip, { mode: "merge" });
+    expect(connected.fingerprint).not.toBe(disconnected.fingerprint);
+  });
+});
+
 describe("bundle resource limits + coverage warnings", () => {
   it("rejects too many entries before inflating them", () => {
     const entries: Record<string, Uint8Array> = {};
