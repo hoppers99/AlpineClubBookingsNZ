@@ -14,29 +14,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { HeartHandshake } from "lucide-react";
-
-interface PartnerLinkView {
-  id: string;
-  status: string;
-  partner: { id: string; firstName: string; lastName: string; canLogin: boolean };
-  initiatedByMe: boolean;
-  assignedByAdmin: boolean;
-  confirmedAt: string | null;
-  createdAt: string;
-}
-
-interface PartnerLinkState {
-  confirmed: PartnerLinkView | null;
-  pendingIncoming: PartnerLinkView[];
-  pendingOutgoing: PartnerLinkView[];
-  // No-login adult family members the caller may declare in one step
-  // (present only when the caller is their family group's admin).
-  oneStepCandidates: Array<{ id: string; firstName: string; lastName: string }>;
-  // Outstanding partner-invite token minted with the declared-partner flag:
-  // the partnership forms when the invitee joins and claims it. The inviter
-  // may cancel it while unclaimed (#1754).
-  pendingPartnerInvite: { id: string; invitedEmail: string; expiresAt: string } | null;
-}
+import type {
+  MemberPartnerLinkStateResponse,
+  SerializedPartnerLinkMember,
+} from "@/lib/partner-link-views";
 
 interface PartnerLinkSectionProps {
   canManage?: boolean;
@@ -53,7 +34,7 @@ function partnerName(partner: { firstName: string; lastName: string }) {
  * (the "one login manages the family" one-step flow).
  */
 export function PartnerLinkSection({ canManage = false }: PartnerLinkSectionProps) {
-  const [state, setState] = useState<PartnerLinkState | null>(null);
+  const [state, setState] = useState<MemberPartnerLinkStateResponse | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   const [email, setEmail] = useState("");
   const [selectedMemberId, setSelectedMemberId] = useState("");
@@ -148,7 +129,7 @@ export function PartnerLinkSection({ canManage = false }: PartnerLinkSectionProp
     );
   }
 
-  const familyCandidates = state.oneStepCandidates ?? [];
+  const familyCandidates: SerializedPartnerLinkMember[] = state.oneStepCandidates ?? [];
   const canRequest =
     canManage && !state.confirmed && state.pendingOutgoing.length === 0;
 
