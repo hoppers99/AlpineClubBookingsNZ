@@ -54,6 +54,7 @@ import logger from "@/lib/logger";
 import { createBookingModificationCredit } from "@/lib/member-credit";
 import { prisma } from "@/lib/prisma";
 import { queueXeroBookingEditSettlement } from "@/lib/xero-booking-edit-settlement";
+import { assertProposedCheckInClearsXeroLockDate } from "@/lib/xero-period-lock-guard";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 
 type ModifiedBooking = Booking & {
@@ -190,6 +191,18 @@ export async function modifyBookingBatch({
         400,
       );
     }
+    // Xero lock-date guard (#1697): a recalculate override re-dates the
+    // booking's Xero documents at the (possibly unchanged) check-in, so the
+    // proposed check-in must clear the effective lock date — same semantics as
+    // the retroactive create (#1695). Shift mode writes no Xero documents and
+    // is never guarded. Runs before the transaction: the Xero call must stay
+    // outside it, and the pre-read is only advisory (the outbox still fails
+    // safely if the lock dates change mid-flight).
+    await assertProposedCheckInClearsXeroLockDate(
+      prisma,
+      bookingId,
+      input.checkIn,
+    );
   }
 
   const result = await prisma.$transaction(async (tx) => {
