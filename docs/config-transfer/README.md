@@ -22,11 +22,20 @@ admins at **Admin → Setup & Configuration → Export & Import**
   **never deletes**, so a "restore" won't remove anything added since the
   export; the pre-apply backup is the true rollback.
 - **Validation blocks apply:** every row is strictly validated at plan time —
-  malformed dates, unknown enum values, and non-integer/negative money are
-  **errors** (named by file, row, and field) that disable Apply until the
-  bundle is fixed (edit → reseal → re-preview). Blank cells are legal only
-  where merge mode keeps an existing value. The import never quietly writes
-  less, or different data, than the file says.
+  malformed dates, unknown enum values, non-integer/negative money, and
+  invalid or reserved page slugs (the same rules the admin page editor
+  enforces) are **errors** (named by file, row, and field) that disable Apply
+  until the bundle is fixed (edit → reseal → re-preview). Blank cells are
+  legal only where merge mode keeps an existing value. The import never
+  quietly writes less, or different data, than the file says. Page paths are
+  derived from the slug (never trusted from the file), and page HTML —
+  including the header — is stored sanitised, exactly like the admin editor.
+  Page rows also enforce the admin editor's field caps (slug/title/caption/
+  menu-title lengths, header and content HTML sizes, sort-order range — the
+  shared `PAGE_CONTENT_LIMITS`) and its system-page protections: a bundle
+  cannot hide a page the editor refuses to unpublish (system and built-in
+  pages), and cannot move a system page's fixed menu order (re-importing the
+  page's current order — an instance's own export — stays clean).
 - **Door codes:** the dry-run prominently names each lodge whose door code the
   import would set or change, and the audit records which lodges' codes were
   actually written (never the values). Reseal recomputes the bundle's

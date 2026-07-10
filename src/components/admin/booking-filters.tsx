@@ -29,6 +29,8 @@ const KNOWN_BOOKING_FILTER_QUERY_KEYS = [
   "updatedTo",
   "checkInFrom",
   "checkInTo",
+  "checkOutFrom",
+  "checkOutTo",
   "from",
   "to",
   "search",
@@ -54,8 +56,22 @@ export function BookingFilters({
   const [status, setStatus] = useState(searchParams.get("status") || "all");
   const [updatedFrom, setUpdatedFrom] = useState(searchParams.get("updatedFrom") || "");
   const [updatedTo, setUpdatedTo] = useState(searchParams.get("updatedTo") || "");
+  // Legacy `from` is a check-in lower bound server-side
+  // (admin-bookings-service: `query.checkInFrom ?? query.from`), so it seeds
+  // the Check In From control.
   const [checkInFrom, setCheckInFrom] = useState(searchParams.get("checkInFrom") || searchParams.get("from") || "");
-  const [checkInTo, setCheckInTo] = useState(searchParams.get("checkInTo") || searchParams.get("to") || "");
+  const [checkInTo, setCheckInTo] = useState(searchParams.get("checkInTo") || "");
+  const [checkOutFrom, setCheckOutFrom] = useState(searchParams.get("checkOutFrom") || "");
+  // Legacy `to` is a CHECK-OUT upper bound server-side, and the service
+  // ignores it whenever an explicit checkInTo/checkOutTo param is present.
+  // Mirror that precedence exactly so rewriting a legacy link into named
+  // params keeps the same result set (#1720).
+  const [checkOutTo, setCheckOutTo] = useState(() => {
+    const explicitCheckOutTo = searchParams.get("checkOutTo");
+    if (explicitCheckOutTo) return explicitCheckOutTo;
+    if (searchParams.get("checkInTo")) return "";
+    return searchParams.get("to") || "";
+  });
   const [search, setSearch] = useState(searchParams.get("search") || "");
   const [month, setMonth] = useState(searchParams.get("month") || "all");
   const [deleted, setDeleted] = useState(searchParams.get("deleted") || "hide");
@@ -113,6 +129,8 @@ export function BookingFilters({
       if (updatedTo) params.set("updatedTo", updatedTo);
       if (checkInFrom) params.set("checkInFrom", checkInFrom);
       if (checkInTo) params.set("checkInTo", checkInTo);
+      if (checkOutFrom) params.set("checkOutFrom", checkOutFrom);
+      if (checkOutTo) params.set("checkOutTo", checkOutTo);
       if (search) params.set("search", search);
       if (sortBy !== "updatedAt") params.set("sortBy", sortBy);
       if (sortDir !== "desc") params.set("sortDir", sortDir);
@@ -134,7 +152,7 @@ export function BookingFilters({
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [status, updatedFrom, updatedTo, checkInFrom, checkInTo, search, month, deleted, paymentSource, xeroState, bedState, changeState, sortBy, sortDir, showBedAllocation, lodgeId, showLodgeFilter, router]);
+  }, [status, updatedFrom, updatedTo, checkInFrom, checkInTo, checkOutFrom, checkOutTo, search, month, deleted, paymentSource, xeroState, bedState, changeState, sortBy, sortDir, showBedAllocation, lodgeId, showLodgeFilter, router]);
 
   function clearFilters() {
     setStatus("all");
@@ -142,6 +160,8 @@ export function BookingFilters({
     setUpdatedTo("");
     setCheckInFrom("");
     setCheckInTo("");
+    setCheckOutFrom("");
+    setCheckOutTo("");
     setSearch("");
     setMonth("all");
     setDeleted("hide");
@@ -299,6 +319,17 @@ export function BookingFilters({
         idPrefix="bookings-check-in"
         onFromChange={setCheckInFrom}
         onToChange={setCheckInTo}
+      />
+      <DateRangeControls
+        presets={bookingFilterDateRangePresets}
+        from={checkOutFrom}
+        to={checkOutTo}
+        presetLabel="Check Out Range"
+        fromLabel="Check Out From"
+        toLabel="Check Out To"
+        idPrefix="bookings-check-out"
+        onFromChange={setCheckOutFrom}
+        onToChange={setCheckOutTo}
       />
       <div className="space-y-1">
         <label className="text-xs font-medium text-gray-500">Search member</label>
