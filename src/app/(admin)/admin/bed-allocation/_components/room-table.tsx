@@ -8,6 +8,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { BedTypeIndicator } from "@/components/admin/bed-type-indicator";
 import {
   BED_ALLOCATION_COLUMN_WIDTH_CLASS,
   BED_ALLOCATION_COLUMN_WIDTH_REM,
@@ -19,6 +20,19 @@ import {
   type DashboardAllocation,
   type DashboardRoom,
 } from "./types";
+
+// Accessible label for a bed's type icon: a *paired* bunk (its group holds two
+// beds) reads as "Bunk A · top"; a half-pair whose partner was deleted must not
+// imply a partner, so it falls back to the indicator's own type label.
+function bedTypeAccessibleLabel(
+  bed: DashboardRoom["beds"][number],
+  pairedBunkGroups: Set<string>,
+): string | undefined {
+  if (!bed.bunkGroup || !pairedBunkGroups.has(bed.bunkGroup)) return undefined;
+  if (bed.bedType === "BUNK_TOP") return `${bed.bunkGroup} · top`;
+  if (bed.bedType === "BUNK_BOTTOM") return `${bed.bunkGroup} · bottom`;
+  return undefined;
+}
 
 interface RoomTableProps {
   room: DashboardRoom;
@@ -50,6 +64,24 @@ export function RoomTable({
   if (activeBeds.length === 0) {
     return null;
   }
+
+  // Group membership is a property of the whole room (including any inactive
+  // bed), so a bunk only reads as "paired" when its group holds two beds. A
+  // half-pair left after a partner delete falls back to a plain type label.
+  const bunkGroupCounts = new Map<string, number>();
+  for (const bed of room.beds) {
+    if (bed.bunkGroup) {
+      bunkGroupCounts.set(
+        bed.bunkGroup,
+        (bunkGroupCounts.get(bed.bunkGroup) ?? 0) + 1,
+      );
+    }
+  }
+  const pairedBunkGroups = new Set(
+    [...bunkGroupCounts.entries()]
+      .filter(([, count]) => count >= 2)
+      .map(([group]) => group),
+  );
 
   return (
     <div className="overflow-x-auto rounded-md border">
@@ -87,7 +119,14 @@ export function RoomTable({
               <TableCell
                 className={`${BED_ALLOCATION_COLUMN_WIDTH_CLASS} sticky left-0 z-10 bg-background font-medium`}
               >
-                <span className="block truncate">{bed.name}</span>
+                <span className="flex items-center gap-1.5">
+                  <BedTypeIndicator
+                    bedType={bed.bedType}
+                    labelOverride={bedTypeAccessibleLabel(bed, pairedBunkGroups)}
+                    className="shrink-0 text-muted-foreground"
+                  />
+                  <span className="block min-w-0 truncate">{bed.name}</span>
+                </span>
               </TableCell>
               {nights.map((night) => {
                 const allocation = allocationByBedAndDate.get(`${bed.id}:${night}`);
