@@ -85,6 +85,45 @@ Future reviews and issues should cite this file when proposing changes.
   envelope. Existing allocation rows are never rewritten by planning — only
   provisional displacement moves rows — and re-planning a fully-allocated
   state is a no-op.
+- **Double-bed shared occupancy (#1701):** a `DOUBLE` bed may hold two occupants
+  on a night — one primary and one second occupant — when they are declared
+  partners (v1: two `ADULT` members of the same `FamilyGroup`, the single-source
+  `mayShareDoubleBed()` rule in `double-bed-sharing.ts`; the real member↔member
+  partner model is #1682). Only an admin adds the second occupant on the board,
+  and only onto a bed whose primary already **holds capacity** — so displacement
+  can never move the primary out from under the partner. Auto-allocation never
+  creates a second occupant; every other bed type stays exactly one occupant per
+  night. DB-enforced without CHECK constraints:
+  `@@unique([bedId, stayDate, isSecondOccupant])` caps a bed-night at ≤2 rows and
+  a raw-SQL partial unique index (`WHERE "bedType" <> 'DOUBLE'`, recorded in
+  `prisma/partial-unique-indexes.tsv`) caps every non-DOUBLE bed at exactly one;
+  `BedAllocation.bedType` is a denormalized copy the partial index reads (a
+  partial index cannot join to `LodgeBed`). Capacity is unchanged — a shared
+  double is still ONE bed of nightly capacity and each occupant is a full
+  person-night (pricing/settlement untouched). A DOUBLE holding a second occupant
+  cannot be retyped to a non-double until that occupant is removed. Whenever a
+  shared double loses its primary — a board delete (#1743), a board move of the
+  primary onto another bed, or a cross-booking cancellation / reconcile prune
+  (#1750) — the surviving partner is **auto-promoted** to primary on the vacated
+  bed-night atomically with the removal on transactional paths, each with its own audit entry
+  (`BED_ALLOCATION_PARTNER_PROMOTED`) because the partner may belong to a
+  different booking (sharing eligibility is member-level). Promotion is gated on
+  `isSecondOccupant` alone, never the denormalized `bedType` of the removed row or
+  the survivor: an AUTO-allocated row on a real DOUBLE carries the SINGLE default,
+  so trusting that type would strand the partner it needs to promote. The
+  bed-night is
+  therefore never left dead-ended behind the orphaned-second-occupant guard in
+  `resolveSecondOccupant`, and re-pairing follows the normal sharing rules (in
+  particular the promoted primary's booking must hold capacity before a new
+  partner may join). The two atomicity shapes differ by path: the board
+  delete/move helpers self-wrap their read + write + promote in a transaction,
+  while the lifecycle prune captures-before / flips-after on the caller's own
+  client. Reconcile is usually already inside a transaction, but a few callers
+  reconcile on the bare `prisma` singleton (e.g. `cron-complete-bookings`, the
+  confirm-pending-guests route); on those a crash between the delete and the flip
+  regresses to the pre-#1750 state — a recoverable orphaned second occupant,
+  visible on the board and cleared by the next successful reconcile or a manual
+  move, never a capacity or double-booking violation.
 - Waitlisted and offered bookings do not consume capacity until confirmed.
 - A waitlist offer reprices the booking at current season rates,
   membership-type policy, group discount, and promo validity at the moment the
