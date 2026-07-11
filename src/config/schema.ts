@@ -144,6 +144,7 @@ export const featureFlagsSchema = z
     multiLodge: z.boolean(),
     twoFactor: z.boolean(),
     analytics: z.boolean(),
+    lobbyDisplay: z.boolean(),
   })
   .strict();
 

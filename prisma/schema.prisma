@@ -2633,6 +2633,7 @@ model ClubModuleSettings {
   multiLodge              Boolean  @default(false)
   twoFactor               Boolean  @default(false)
   analytics               Boolean  @default(false)
+  lobbyDisplay            Boolean  @default(false)
   updatedByMemberId       String?
   createdAt               DateTime @default(now())
   updatedAt               DateTime @default(now()) @updatedAt
@@ -2661,6 +2662,10 @@ model Lodge {
   isDefault  Boolean  @default(false)
   doorCode   String?  @db.VarChar(80)
   travelNote String?
+  // Per-lodge config glob for the lobby display's {{config:<key>}}
+  // placeholders (docs/lobby-display/design.md §3, fork issue #26): free-form
+  // string key/value pairs, validated at the admin edit surface. Null = none.
+  displayConfig Json?
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
@@ -2685,6 +2690,7 @@ model Lodge {
   workPartyEvents          WorkPartyEvent[]
   instructions             LodgeInstruction[]
   bookingRequests          BookingRequest[]
+  displayDevices           LodgeDisplayDevice[]
 }
 
 model LodgeSettings {
@@ -2738,6 +2744,7 @@ model EmailTemplateOverride {
 
   @@index([updatedByMemberId])
 }
+
 
 model BookingMessageOverride {
   id                String   @id @default(cuid())
@@ -3834,4 +3841,58 @@ model MembershipLockoutSettings {
   updatedByMemberId             String?
   createdAt                     DateTime @default(now())
   updatedAt                     DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Lobby TV Display (docs/lobby-display/design.md, fork epic #25)
+// ---------------------------------------------------------------------------
+
+// Where a display template definition came from: an admin override of a
+// built-in (code-registry) template, or a fully custom template. Built-in
+// templates ship in code; rows exist only for overrides and custom templates
+// (the EmailTemplateOverride pattern).
+enum DisplayTemplateSource {
+  BUILT_IN_OVERRIDE
+  CUSTOM
+}
+
+model DisplayTemplate {
+  id         String                @id @default(cuid())
+  key        String                @unique @db.VarChar(80)
+  name       String                @db.VarChar(120)
+  source     DisplayTemplateSource
+  // Region layout + per-region module/option configuration (data-only; the
+  // template engine rejects unknown module/condition names at load time).
+  definition Json
+  createdAt  DateTime              @default(now())
+  updatedAt  DateTime              @updatedAt
+
+  devices LodgeDisplayDevice[]
+}
+
+// A physical lobby display (TV/browser) paired to exactly one lodge. The raw
+// display token is never stored — only its hash (docs/TOKEN_HASHING.md);
+// pairing codes are short-lived and single-use. Lifecycle: created → pairing
+// (code active) → paired → revoked (docs/lobby-display/design.md §4).
+// Deleting a bound template falls the device back to the club default
+// (SetNull) rather than breaking the device.
+model LodgeDisplayDevice {
+  id                   String    @id @default(cuid())
+  lodgeId              String
+  name                 String    @db.VarChar(120)
+  pairingCode          String?   @db.VarChar(16)
+  pairingCodeExpiresAt DateTime?
+  tokenHash            String?   @unique
+  templateId           String?
+  regionConfig         Json?
+  lastSeenAt           DateTime?
+  revokedAt            DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  lodge    Lodge            @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
+  template DisplayTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+
+  @@index([lodgeId])
+  @@index([templateId])
 }

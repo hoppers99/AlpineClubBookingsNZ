@@ -234,6 +234,7 @@ describe("featureFlagsSchema", () => {
         multiLodge: false,
         twoFactor: false,
         analytics: false,
+        lobbyDisplay: false,
       }),
     ).toBeDefined();
   });

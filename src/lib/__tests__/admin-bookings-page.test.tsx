@@ -81,6 +81,7 @@ const effectiveModulesOn = {
   skifieldConditions: false,
   twoFactor: false,
   analytics: false,
+  lobbyDisplay: false,
   multiLodge: false,
 };
 
