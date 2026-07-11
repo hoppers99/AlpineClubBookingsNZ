@@ -11,6 +11,9 @@ export const DISPLAY_CONDITION_NAMES = [
   "whole-lodge-booking-in-window",
   "arrivals-today",
   "no-guests",
+  // A committee notice exists (#36) — lets a rotation skip the notice
+  // panel when nothing is posted.
+  "notice-set",
 ] as const;
 
 export type DisplayConditionName = (typeof DISPLAY_CONDITION_NAMES)[number];
@@ -22,6 +25,7 @@ const CONDITIONS: Record<DisplayConditionName, (state: DisplayState) => boolean>
   "arrivals-today": (state) => (state.occupancy[0]?.arriving ?? 0) > 0,
   "no-guests": (state) =>
     state.occupancy.every((day) => day.staying === 0),
+  "notice-set": (state) => state.notice !== null,
 };
 
 export function isDisplayConditionName(

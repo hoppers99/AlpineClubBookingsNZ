@@ -2671,6 +2671,11 @@ model Lodge {
   // (FIRST_NAME_SURNAME_INITIAL). Enum defined with the lobby-display
   // models at the end of this file.
   displayNameGranularity DisplayNameGranularity?
+  // Committee notice board for the lobby display (fork issue #36): the one
+  // deliberately AUTHORED display surface — free text, admin-edited,
+  // rendered as text nodes only ({{config:<key>}} placeholders resolve
+  // inside it). Null = no notice.
+  displayNotice          String?  @db.VarChar(2000)
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 

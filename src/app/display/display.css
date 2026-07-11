@@ -224,3 +224,24 @@
 .display-rules-body p { margin: 0 0 1vmin; }
 
 .display-module-placeholder { min-height: 4vmin; }
+
+/* --- committee notice board (#36) ---------------------------------------- */
+
+.display-notice-board {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1.5vh;
+  text-align: center;
+  padding: 0 8vmin;
+}
+
+.display-notice-kicker {
+  font-size: 2.4vmin;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  color: #e8c268;
+}
+
+.display-notice-text { font-size: 3.2vmin; margin: 0; }

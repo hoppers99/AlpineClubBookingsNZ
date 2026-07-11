@@ -160,7 +160,9 @@ describe("DisplayScreen lifecycle", () => {
         template: {
           key: "future",
           name: "Future",
-          regions: [{ key: "main", panels: [{ module: "notice-board" }] }],
+          // A name with no renderer (defensive path — real templates are
+          // validated against the registry server-side).
+          regions: [{ key: "main", panels: [{ module: "future-module" }] }],
         },
       },
     });
@@ -169,7 +171,7 @@ describe("DisplayScreen lifecycle", () => {
       await vi.advanceTimersByTimeAsync(10);
     });
     expect(
-      container.querySelector('.display-module-placeholder[data-module="notice-board"]')
+      container.querySelector('.display-module-placeholder[data-module="future-module"]')
     ).not.toBeNull();
   });
 });

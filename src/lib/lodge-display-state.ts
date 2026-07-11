@@ -71,7 +71,9 @@ export interface DisplayState {
   }>;
   chores: Array<{ date: string; title: string; assigneeLabels: string[] }>;
   rules: Array<{ title: string; html: string }> | null;
-  /** Committee notice board content — wired by LTV-011 (#36); null until then. */
+  /** Committee notice board content (#36): admin-authored free text,
+   * rendered as text nodes only; {{config:<key>}} placeholders resolve
+   * inside it at render. */
   notice: string | null;
   config: Record<string, string>;
 }
@@ -192,6 +194,7 @@ export async function buildDisplayState(
         active: true,
         displayConfig: true,
         displayNameGranularity: true,
+        displayNotice: true,
       },
     }),
     loadEffectiveModuleFlags(),
@@ -438,7 +441,10 @@ export async function buildDisplayState(
             html: doc.contentHtml,
           }))
         : null,
-    notice: null,
+    notice:
+      lodge.displayNotice && lodge.displayNotice.trim().length > 0
+        ? lodge.displayNotice.trim().slice(0, 2000)
+        : null,
     config: sanitiseDisplayConfig(lodge.displayConfig),
   };
 }

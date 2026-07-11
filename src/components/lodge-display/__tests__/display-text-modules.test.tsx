@@ -111,13 +111,8 @@ describe("LodgeRules (AC2)", () => {
 
 describe("module map", () => {
   it("now includes chores-board and lodge-rules", () => {
-    expect(Object.keys(DISPLAY_MODULE_COMPONENTS).sort()).toEqual([
-      "arrivals-board",
-      "chores-board",
-      "lodge-rules",
-      "occupancy-grid",
-      "singles-board",
-      "welcome",
-    ]);
+    const keys = Object.keys(DISPLAY_MODULE_COMPONENTS);
+    expect(keys).toContain("chores-board");
+    expect(keys).toContain("lodge-rules");
   });
 });

@@ -86,6 +86,7 @@ export default function AdminDisplayTemplatesPage() {
   const [copyName, setCopyName] = useState("");
   const [config, setConfig] = useState<Array<{ key: string; value: string }>>([]);
   const [granularity, setGranularity] = useState<string>("");
+  const [notice, setNotice] = useState<string>("");
   const [lodgeName, setLodgeName] = useState<string>("");
   const [message, setMessage] = useState<string | null>(null);
 
@@ -104,12 +105,14 @@ export default function AdminDisplayTemplatesPage() {
         lodgeName: string;
         displayConfig: Record<string, string>;
         displayNameGranularity: string | null;
+        displayNotice: string | null;
       };
       setLodgeName(body.lodgeName);
       setConfig(
         Object.entries(body.displayConfig).map(([key, value]) => ({ key, value }))
       );
       setGranularity(body.displayNameGranularity ?? "");
+      setNotice(body.displayNotice ?? "");
     }
   }, []);
 
@@ -214,6 +217,7 @@ export default function AdminDisplayTemplatesPage() {
       body: JSON.stringify({
         displayConfig,
         displayNameGranularity: granularity === "" ? null : granularity,
+        displayNotice: notice.trim() === "" ? null : notice,
       }),
     });
     const body = (await response.json().catch(() => null)) as { error?: string } | null;
@@ -340,6 +344,22 @@ export default function AdminDisplayTemplatesPage() {
               Enforced in the display data feed itself — no template can show
               more than this allows. Bookings that include children always
               collapse to a family label.
+            </p>
+          </div>
+
+          <div className="space-y-1">
+            <Label htmlFor="display-notice">Committee notice</Label>
+            <textarea
+              id="display-notice"
+              className="border-input bg-background min-h-24 w-full rounded-md border p-3 text-sm"
+              maxLength={2000}
+              placeholder="A free-text notice shown by the notice-board panel. {{config:key}} placeholders work here."
+              value={notice}
+              onChange={(event) => setNotice(event.target.value)}
+            />
+            <p className="text-muted-foreground text-xs">
+              Shown wherever a template places the notice-board panel; leave
+              empty to skip the panel entirely.
             </p>
           </div>
 
