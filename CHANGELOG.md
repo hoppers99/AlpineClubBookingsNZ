@@ -4,6 +4,14 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Manual-board `MINOR_ADULT_MIX` warning-only behaviour documented as
+  intended.** The deferred owner decision from #1768/PR #1775 is closed:
+  automated placement paths enforce the cross-booking minor/adult invariant
+  hard, while the manual allocation board deliberately stays warn-not-block as
+  an admin-judgment escape hatch. `docs/DOMAIN_INVARIANTS.md` and
+  `docs/STATE_MACHINES.md` now record this as the intended function
+  (docs-only; no behaviour change).
+
 - **Admin can choose whether to email members on force-confirm,
   confirm-pending-guests, and admin guest-add (#1769b).** Part of #1780 /
   #1769b, extending the #1705 cancel notify pattern to three more admin
