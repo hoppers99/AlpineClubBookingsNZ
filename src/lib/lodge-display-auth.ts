@@ -184,6 +184,7 @@ export interface DisplayAuthResult {
     lodgeId: string;
     name: string;
     templateId: string | null;
+    templateKey: string | null;
     regionConfig: unknown;
   };
 }
@@ -207,6 +208,7 @@ export async function checkDisplayAuth(
       lodgeId: true,
       name: true,
       templateId: true,
+      templateKey: true,
       regionConfig: true,
       revokedAt: true,
       lodge: { select: { active: true } },
@@ -221,6 +223,7 @@ export async function checkDisplayAuth(
       lodgeId: device.lodgeId,
       name: device.name,
       templateId: device.templateId,
+      templateKey: device.templateKey,
       regionConfig: device.regionConfig,
     },
   };

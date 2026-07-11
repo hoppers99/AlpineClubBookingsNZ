@@ -39,15 +39,19 @@ export async function resolveDisplayTemplate(
 }
 
 /**
- * Resolve the template a device should render (fork issue #32): its bound
- * DisplayTemplate row when one is set (validated on load), otherwise the
- * built-in default. Binding devices to BUILT-IN templates by key (no DB row)
- * needs a `templateKey` column — deferred to LTV-008 (#33) where the
- * assignment UI lands.
+ * Resolve the template a device should render (fork issues #32/#33), in
+ * order: templateKey (a registry key — built-in or custom row, the binding
+ * the admin UI writes), then a legacy templateId row, then the club default.
  */
-export async function resolveDisplayTemplateForDevice(
-  templateId: string | null
-): Promise<ResolvedDisplayTemplate> {
+export async function resolveDisplayTemplateForDevice(device: {
+  templateKey: string | null;
+  templateId: string | null;
+}): Promise<ResolvedDisplayTemplate> {
+  const { templateKey, templateId } = device;
+  if (templateKey) {
+    const byKey = await resolveDisplayTemplate(templateKey);
+    if (byKey) return byKey;
+  }
   if (templateId) {
     const row = await prisma.displayTemplate.findUnique({
       where: { id: templateId },
