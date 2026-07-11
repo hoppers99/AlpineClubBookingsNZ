@@ -54,7 +54,14 @@ Per lodge:
   `{{skifield-conditions}}` embed once widget data is configured for the
   relevant skifield. Not a v1 blocker.
 
-## 3. Data model (sketch — final shapes in the schema task + ADR)
+## 3. Data model
+
+> **Implemented** (fork issue #26, migration `20260711000100_add_lobby_display_schema`):
+> `prisma/schema.prisma` is now the source of truth for these shapes. The
+> sketch below is retained for rationale; the implemented schema differs only
+> in detail — length caps on name/key/pairing-code columns, explicit
+> `onDelete: Restrict` (lodge) / `SetNull` (template) referential actions,
+> and indexes on `lodgeId`/`templateId`.
 
 ```prisma
 model LodgeDisplayDevice {

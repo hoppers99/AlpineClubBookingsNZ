@@ -143,6 +143,12 @@ describe("Admin modules schema contract", () => {
         "prisma/migrations/20260702143000_add_analytics_module/migration.sql",
       ),
     ).toContain('"analytics" BOOLEAN NOT NULL DEFAULT false');
+    expect(model).toContain("lobbyDisplay            Boolean  @default(false)");
+    expect(
+      readRepoFile(
+        "prisma/migrations/20260711000100_add_lobby_display_schema/migration.sql",
+      ),
+    ).toContain('"lobbyDisplay" BOOLEAN NOT NULL DEFAULT false');
   });
 });
 
