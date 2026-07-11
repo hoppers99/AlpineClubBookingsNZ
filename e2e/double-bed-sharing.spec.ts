@@ -291,7 +291,12 @@ test.beforeAll(async ({ browser }) => {
   test.setTimeout(180_000);
   adminContext = await browser.newContext();
   const adminPage = await adminContext.newPage();
-  await loginPersona(adminPage, E2E_ADMIN.email);
+  // E2E_ADMIN is logged in by ~10 other admin specs, which fully consume its
+  // shared login bucket (rateLimiters.login = 10 / 15 min, keyed per synthetic
+  // IP-per-email). Adding this spec's login to that bucket would push the tail
+  // spec (waitlist) past the ceiling and stall its beforeAll to a timeout, so
+  // log in from a private IP bucket outside syntheticClientIp's 10.99.0.0/16.
+  await loginPersona(adminPage, E2E_ADMIN.email, "10.88.7.47");
   await adminPage.close();
 
   // Disable auto-allocation so nothing auto-places a bed under our manual
