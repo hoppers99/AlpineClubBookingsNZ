@@ -1030,6 +1030,21 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
             requestedRoomId: requestedRoomId || null,
             cancelIfGuestsBumped: false,
             createdById: isOnBehalf ? sessionUserId : null,
+            // Persisted capacity override (#1771): a mixed-party overbook admits
+            // the WHOLE party over the ceiling behind the admin's confirm, so the
+            // provisional non-member child inherits the same override as its
+            // parent. Without this the parent (stamped) survives payment while the
+            // hold cron bumps the unstamped child days later — the exact silent
+            // partial-drop this feature exists to prevent. capacityOverridden is
+            // true here only when the member guests alone overflowed (the split
+            // gate checks member guests); if only the non-members overflow it stays
+            // false and the child keeps ordinary #738 hold-window behaviour.
+            ...(capacityOverridden
+              ? {
+                  capacityOverriddenAt: new Date(),
+                  capacityOverriddenByMemberId: sessionUserId,
+                }
+              : {}),
             guests: {
               create: buildGuestCreateData(
                 nonMemberGuests,

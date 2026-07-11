@@ -236,7 +236,11 @@ actually fires, and deliberately **not** cleared on cancel. The predicate
 (#1668/#1695/#1767 pre-create + $0/credit-covered branches), the date and batch
 modification services (#1668), waitlist force-confirm (#1668/waitlist),
 confirm-pending-guests ($0 and priced gates, #1366), and admin capacity-hold
-(#1764).
+(#1764). For a **mixed-party split** create whose member guests alone overflow,
+the provisional non-member child booking (#738) inherits the same override as
+its member parent — otherwise the parent would survive payment while the
+hold cron silently bumped the unstamped child, a partial-drop against an
+explicit admin overbook.
 
 **Read-sites** (honour it → settle/proceed instead of cancel/refund/409/bump):
 `markBookingPaymentSucceeded` (settlement), `createPaymentIntentForPaymentLink`,
