@@ -741,8 +741,8 @@ waitlist confirm (a 48-hour offer accepted after NZ midnight) — the marker
 skips only the past-date rejection, never the retroactive semantics, and is
 not exposed via the API. Any of the three flags (`allowPastDates`,
 `confirmOverCapacity`, `notifyMember`) present without the ADMIN role is a
-403; the flag combination is validated (flag without `forMemberId` → 400,
-`confirmOverCapacity` without `allowPastDates` → 400, retroactive
+403; the flag combination is validated (any flag without `forMemberId` → 400,
+`confirmOverCapacity` combined with `draft`/`waitlist` → 400, retroactive
 `draft`/`waitlist` → 400). Because a
 retroactive booking invoices at its check-in (the invoice **issue date stays =
 checkIn**, no clamp), a create-time **Xero lock-date guard** protects it: when
@@ -788,9 +788,24 @@ The same guard protects the **booking modify paths**
 
 **Shift overrides are exempt**: a shift writes no Xero documents.
 As at create, only past check-ins are guarded.
-Over-capacity past nights are **warn-and-confirm** (the same
+Over-capacity nights on **any on-behalf create** — past (#1695) or
+future-dated (#1767) — are **warn-and-confirm** (the same
 `OverCapacityConfirmationRequiredError` → 409 `OVER_CAPACITY_CONFIRM_REQUIRED`
-contract as #1668, capacity lock still taken, `capacityOverridden` recorded).
+contract as #1668, capacity lock still taken, `capacityOverridden` recorded),
+with two carve-outs: an on-behalf create that opted into the **waitlist
+fallback** keeps the capacity-exceeded outcome so the route can create the
+WAITLISTED booking instead of prompting, and a **non-member hold-eligible
+(PENDING) party** keeps the hard capacity block (v1, #1767 — the
+`cron-confirm-pending` hold re-check knows nothing of the override and would
+silently bump the confirmed booking; unreachable retroactively, since a past
+check-in is never hold-eligible). A **member self-create can never
+overbook**: without `isOnBehalf` the service keeps the hard capacity block
+regardless of any flag, and the route rejects the flags outright (403
+non-admin, 400 without `forMemberId`). Known limitation shared with every
+override surface: the payment-time capacity re-checks do not consult the
+override, so a **priced** overridden booking can still be cancelled when
+payment arrives over capacity — see `docs/CAPACITY_MODEL.md` "Exceeding the
+ceiling"; $0/credit-covered overridden creates settle at create time.
 The member confirmation / hold email is an **explicit per-create choice**
 (`notifyMember`, honoured only for on-behalf creates) recorded in the
 `booking.created_on_behalf` audit metadata alongside `allowPastDates`,
