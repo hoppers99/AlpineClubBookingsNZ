@@ -108,18 +108,28 @@ Notes:
 
 ## 4. Device pairing and display auth
 
-New auth surface, deliberately weaker than every existing tier. ADR required
-before implementation (threat model, token lifetime, cookie vs header).
+New auth surface, deliberately weaker than every existing tier. Decided in
+[ADR-001](decisions/ADR-001-device-pairing-auth-model.md) (threat model,
+token lifetime, cookie vs header, rate limiting) and implemented in issue
+#27.
 
-Pairing flow:
+> **Route namespace (ADR-001 §1):** display routes live at `/display` and
+> `/api/display/*` (admin management under `/api/admin/display/*`) — NOT
+> under `/lodge` as first sketched, because the kiosk flag gates the whole
+> `/lodge` prefix space and the display module must work without the kiosk.
+
+Pairing flow (stateless start / admin bind / device claim — ADR-001 §2):
 
 1. Admin creates a device record (name + lodge) in the admin UI.
-2. TV browser visits `/lodge/display` unauthenticated → the page shows a
-   short pairing code (device generates/receives it from a public pairing
-   endpoint; code is short-lived, single-use, rate-limited).
-3. Admin enters/confirms the code against the device record in the admin UI.
-4. The TV receives a long-lived display token (httpOnly cookie), stored
-   hashed on the device record. The page reloads into display mode.
+2. TV browser visits `/display` unauthenticated → the page requests a
+   pairing code from the public pairing endpoint, which returns the code
+   inside an HMAC-signed httpOnly cookie blob and persists nothing.
+3. Admin enters/confirms the code against the device record in the admin UI
+   (this persists the code + 15-minute expiry onto the device row).
+4. The TV's claim poll matches its signed blob to the bound code and
+   receives a long-lived display token (httpOnly cookie), stored hashed on
+   the device record; the pairing fields clear (single-use). The page
+   reloads into display mode.
 
 Auth behaviour:
 
@@ -138,7 +148,7 @@ Auth behaviour:
 
 ## 5. Display-state API (the data contract)
 
-`GET /api/lodge/display/state` (display-token auth; window parameters
+`GET /api/display/state` (display-token auth; window parameters
 validated server-side against configured bounds).
 
 One JSON payload per request covering the display window — every module is
@@ -244,7 +254,7 @@ Modelled on the kiosk account management surface (`/admin/lodge`):
 
 ## 9. Display page
 
-- Full-screen route (`/lodge/display`), 16:9-first, container-query sizing
+- Full-screen route (`/display` — ADR-001 §1 namespace), 16:9-first, container-query sizing
   (`cqh`/`cqw`), dedicated display stylesheet sharing club branding tokens
   (palette/logo) with the site. Rendering lessons from the mockups apply
   (content-height grid rows so dense bars never clip; charset; text sized
