@@ -471,6 +471,21 @@ describe("createConfirmedBooking forward-dated on-behalf over-capacity (#1767)",
     expect(h.bookingCreate).not.toHaveBeenCalled();
   });
 
+  it("keeps the hard block for a non-member hold-eligible (PENDING) party — v1 carve-out, the hold cron would silently bump a confirmed overbook", async () => {
+    overCapacity();
+
+    const outcome = await createConfirmedBooking(
+      baseInput([guest(false, "Bob")], {
+        status: BookingStatus.PENDING,
+        shouldBePending: true,
+        confirmOverCapacity: true,
+      }),
+    );
+
+    expect(outcome.type).toBe("capacityExceeded");
+    expect(h.bookingCreate).not.toHaveBeenCalled();
+  });
+
   it("returns the capacityExceeded outcome under waitlistIntent so the route's waitlist fallback still runs", async () => {
     overCapacity();
 

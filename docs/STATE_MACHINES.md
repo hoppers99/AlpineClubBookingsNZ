@@ -263,8 +263,10 @@ raises `OverCapacityConfirmationRequiredError` (409,
 warn-and-confirm contract covers **every admin on-behalf create** — past-dated
 (#1695) and future-dated (#1767) — except a create that opted into the
 waitlist fallback (which keeps the capacity-exceeded outcome so the
-WAITLISTED booking is created instead); a member self-create keeps the hard
-capacity block and can never overbook. Every override move
+WAITLISTED booking is created instead) and a non-member hold-eligible
+(PENDING) party (hard block in v1 — the hold cron would bump a confirmed
+overbook); a member self-create keeps the hard capacity block and can never
+overbook. Every override move
 is audited as `booking.modify.admin_override` (including the admin's explicit
 member-notification choice, `notifyMember`) and linked, best-effort, to the
 booking's most recent APPROVED-but-unlinked change request that the move

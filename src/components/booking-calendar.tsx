@@ -246,7 +246,7 @@ export function BookingCalendar({ onDateSelect, selectedCheckIn, selectedCheckOu
             (isPast
               ? `${dateLabel}, unavailable`
               : available <= 0
-                ? `${dateLabel}, full`
+                ? `${dateLabel}, full${allowFullDates ? " — selectable for over-capacity booking" : ""}`
                 : `${dateLabel}, ${available} of ${lodgeCapacity} beds free`) +
             retroSuffix +
             selectionSuffix;

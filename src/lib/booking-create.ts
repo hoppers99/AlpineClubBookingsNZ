@@ -798,7 +798,18 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
         !capacityCheck.available &&
         (requestedStatus === BookingStatus.PENDING || effectivePriceCents > 0 || review.blockForReview)
       ) {
-        if (overCapacityWarnAndConfirm) {
+        if (
+          overCapacityWarnAndConfirm &&
+          // v1 carve-out (#1767): a non-member provisional hold (PENDING)
+          // never holds capacity, and cron-confirm-pending re-checks capacity
+          // at the hold window with no knowledge of the override — a
+          // confirmed overbook there would silently self-destruct (bump email
+          // included). Until the override is persisted and honoured by the
+          // re-check paths, the hold shape keeps the hard capacity block. A
+          // retroactive create can never be hold-eligible (past check-in), so
+          // #1695 behaviour is untouched.
+          (requestedStatus !== BookingStatus.PENDING || retroactiveOverride)
+        ) {
           // On-behalf over-capacity is warn-and-confirm (#1695/#1767): the
           // lodge capacity lock is still held, only the availability decision
           // defers to the admin's explicit confirmation.
