@@ -54,6 +54,7 @@ import {
   PaymentStatus,
 } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { RELEASE_ADMIN_CAPACITY_HOLD_UPDATE } from "@/lib/booking-status";
 import { cancelPaymentIntentIfCancellable } from "@/lib/stripe";
 import { settleGroupBookingOnOrganiserCancel } from "@/lib/group-cancel";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
@@ -456,7 +457,10 @@ async function cancelReapedChildren(
     for (const child of children) {
       await tx.booking.update({
         where: { id: child.id },
-        data: { status: BookingStatus.CANCELLED },
+        data: {
+          status: BookingStatus.CANCELLED,
+          ...RELEASE_ADMIN_CAPACITY_HOLD_UPDATE,
+        },
       });
     }
 

@@ -45,7 +45,10 @@ import {
   hasCapturedPayment,
 } from "@/lib/booking-payment-state";
 import { isBookingFullyPaidForGuestNameEdits } from "@/lib/booking-modify";
-import { isPaymentOwedBookingStatus } from "@/lib/booking-status";
+import {
+  bookingHoldsCapacity,
+  isPaymentOwedBookingStatus,
+} from "@/lib/booking-status";
 import { isBookingBedAllocationLocked } from "@/lib/admin-bed-allocation";
 import { getBookingProviderMismatches } from "@/lib/booking-provider-mismatches";
 import { loadEmailMessageSettingsForLodge } from "@/lib/email-message-settings";
@@ -113,6 +116,11 @@ export default async function BookingDetailPage({
       guests: { include: { nights: { select: { stayDate: true } } } },
       payment: true,
       member: { select: { firstName: true, lastName: true } },
+      // Admin capacity hold (#1764): who placed it, for the admin tools card.
+      adminCapacityHoldBy: { select: { firstName: true, lastName: true } },
+      // Request-converted PENDING holds capacity (#1254); the admin hold
+      // controls need the natural-holding answer to hide Release correctly.
+      originBookingRequest: { select: { id: true } },
       // Cross-lodge waitlist offer (ADR-004): named on the offer card.
       waitlistOfferedLodge: { select: { name: true } },
       requestedRoom: {
@@ -755,6 +763,19 @@ export default async function BookingDetailPage({
           finalPriceCents={booking.finalPriceCents}
           providerMismatches={providerMismatches}
           features={modules}
+          capacityHold={{
+            hasAdminCapacityHold: Boolean(booking.adminCapacityHoldAt),
+            adminCapacityHoldAt:
+              booking.adminCapacityHoldAt?.toISOString() ?? null,
+            heldByName: booking.adminCapacityHoldBy
+              ? `${booking.adminCapacityHoldBy.firstName} ${booking.adminCapacityHoldBy.lastName}`
+              : null,
+            holdsCapacityNaturally: bookingHoldsCapacity({
+              status: booking.status,
+              isRequestConverted: Boolean(booking.originBookingRequest),
+            }),
+            canPlaceHold: booking.status === "PAYMENT_PENDING",
+          }}
         />
       )}
 

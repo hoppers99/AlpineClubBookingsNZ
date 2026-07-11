@@ -602,7 +602,11 @@ describe("cancelBooking credit refunds", () => {
     );
     expect(mocks.bookingUpdate).toHaveBeenCalledWith({
       where: { id: "booking_pr" },
-      data: { status: "CANCELLED" },
+      data: {
+        status: "CANCELLED",
+        adminCapacityHoldAt: null,
+        adminCapacityHoldByMemberId: null,
+      },
     });
     // No FAILED flattening and no unpaid-branch clearing note.
     for (const [args] of mocks.paymentUpdate.mock.calls) {
@@ -820,7 +824,11 @@ describe("cancelBooking credit refunds", () => {
     // write of any kind.
     expect(mocks.bookingUpdate).toHaveBeenCalledWith({
       where: { id: "booking_fr" },
-      data: { status: "CANCELLED" },
+      data: {
+        status: "CANCELLED",
+        adminCapacityHoldAt: null,
+        adminCapacityHoldByMemberId: null,
+      },
     });
     expect(mocks.paymentUpdate).not.toHaveBeenCalled();
     // No clearing note against a settled invoice, and no Stripe cancel of a
@@ -1293,7 +1301,11 @@ describe("cancelBooking credit refunds", () => {
     expect(mocks.bookingUpdate).toHaveBeenCalledTimes(1);
     expect(mocks.bookingUpdate).toHaveBeenCalledWith({
       where: { id: "booking_1" },
-      data: { status: "CANCELLED" },
+      data: {
+        status: "CANCELLED",
+        adminCapacityHoldAt: null,
+        adminCapacityHoldByMemberId: null,
+      },
     });
   });
 
@@ -1506,7 +1518,11 @@ describe("cancelBooking credit refunds", () => {
       expect(result.status).toBe(200);
       expect(mocks.bookingUpdate).toHaveBeenCalledWith({
         where: { id: "booking_1" },
-        data: { status: "CANCELLED" },
+        data: {
+        status: "CANCELLED",
+        adminCapacityHoldAt: null,
+        adminCapacityHoldByMemberId: null,
+      },
       });
       // ...and the debt was persisted in-tx BEFORE the refund attempt, with
       // the plan the cron will replay under the same
@@ -1728,7 +1744,11 @@ describe("cancelBooking credit refunds", () => {
     expect(mocks.bookingUpdate).toHaveBeenCalledTimes(1);
     expect(mocks.bookingUpdate).toHaveBeenCalledWith({
       where: { id: "booking_1" },
-      data: { status: "CANCELLED" },
+      data: {
+        status: "CANCELLED",
+        adminCapacityHoldAt: null,
+        adminCapacityHoldByMemberId: null,
+      },
     });
     expect(mocks.refundPaymentTransactions).not.toHaveBeenCalled();
     expect(mocks.applyLocalRefundAllocation).not.toHaveBeenCalled();
@@ -2066,7 +2086,11 @@ describe("cancelBooking credit refunds", () => {
       // Booking flipped + payment flattened inside the claim.
       expect(mocks.bookingUpdate).toHaveBeenCalledWith({
         where: { id: "bk_nc" },
-        data: { status: "CANCELLED" },
+        data: {
+        status: "CANCELLED",
+        adminCapacityHoldAt: null,
+        adminCapacityHoldByMemberId: null,
+      },
       });
       expect(mocks.paymentUpdate).toHaveBeenCalledWith({
         where: { id: "payment_nc" },
@@ -2593,6 +2617,8 @@ describe("cancelBooking no-payment claim-first (issue #1311)", () => {
       where: { id: "held-1" },
       data: {
         status: "CANCELLED",
+        adminCapacityHoldAt: null,
+        adminCapacityHoldByMemberId: null,
         waitlistOfferedAt: null,
         waitlistOfferExpiresAt: null,
         waitlistPosition: null,
@@ -2756,6 +2782,8 @@ describe("cancelBooking no-payment claim-first (issue #1311)", () => {
       where: { id: "held-1" },
       data: {
         status: "CANCELLED",
+        adminCapacityHoldAt: null,
+        adminCapacityHoldByMemberId: null,
         waitlistOfferedAt: null,
         waitlistOfferExpiresAt: null,
         waitlistPosition: null,
@@ -2876,6 +2904,8 @@ describe("cancelBooking requireRequestHold guard (issue #1406)", () => {
       where: { id: "held-1" },
       data: {
         status: "CANCELLED",
+        adminCapacityHoldAt: null,
+        adminCapacityHoldByMemberId: null,
         waitlistOfferedAt: null,
         waitlistOfferExpiresAt: null,
         waitlistPosition: null,
@@ -2942,7 +2972,11 @@ describe("cancelBooking requireRequestHold guard (issue #1406)", () => {
     expect(result.status).toBe(200);
     expect(mocks.bookingUpdate).toHaveBeenCalledWith({
       where: { id: "pending-1" },
-      data: { status: "CANCELLED" },
+      data: {
+        status: "CANCELLED",
+        adminCapacityHoldAt: null,
+        adminCapacityHoldByMemberId: null,
+      },
     });
   });
 });

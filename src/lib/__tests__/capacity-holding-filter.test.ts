@@ -16,9 +16,9 @@ describe("capacityHoldingBookingFilter (issue #1254)", () => {
   const filter = capacityHoldingBookingFilter();
   const orClauses = filter.OR ?? [];
 
-  it("is an OR of the holding-status set plus request-converted PENDING", () => {
+  it("is an OR of the holding-status set, request-converted PENDING, and admin-held PAYMENT_PENDING (#1764)", () => {
     expect(Array.isArray(orClauses)).toBe(true);
-    expect(orClauses).toHaveLength(2);
+    expect(orClauses).toHaveLength(3);
   });
 
   it("holds capacity for every capacity-holding status", () => {

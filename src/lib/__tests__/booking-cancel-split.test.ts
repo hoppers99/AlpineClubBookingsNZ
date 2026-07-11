@@ -143,7 +143,11 @@ describe("cancelBooking split cascade (#738)", () => {
     // ...and cancelled the child booking.
     expect(mocks.bookingUpdate).toHaveBeenCalledWith({
       where: { id: "child_1" },
-      data: { status: "CANCELLED" },
+      data: {
+        status: "CANCELLED",
+        adminCapacityHoldAt: null,
+        adminCapacityHoldByMemberId: null,
+      },
     });
   });
 

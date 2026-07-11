@@ -425,6 +425,7 @@ async function autoAllocateMissingBedNights({
         // give capacity-holding bookings first claim on beds.
         status: true,
         originBookingRequest: { select: { id: true } },
+        adminCapacityHoldAt: true,
         // Whole-stay planning (issue #1677): load every guest of an
         // overlapping booking, not just the reconcile-range slice — guest
         // stays sit inside the booking envelope, which is inside the widened
@@ -493,6 +494,7 @@ async function autoAllocateMissingBedNights({
           checkIn: true,
           checkOut: true,
           originBookingRequest: { select: { id: true } },
+          adminCapacityHoldAt: true,
         },
       },
       bookingGuest: {
@@ -549,6 +551,7 @@ async function autoAllocateMissingBedNights({
             holdsCapacity: bookingHoldsCapacity({
               status: booking.status,
               isRequestConverted: Boolean(booking.originBookingRequest),
+              hasAdminCapacityHold: Boolean(booking.adminCapacityHoldAt),
             }),
             guests,
           }
@@ -608,6 +611,9 @@ async function autoAllocateMissingBedNights({
             status: allocation.booking.status,
             isRequestConverted: Boolean(
               allocation.booking.originBookingRequest,
+            ),
+            hasAdminCapacityHold: Boolean(
+              allocation.booking.adminCapacityHoldAt,
             ),
           })
         : false,

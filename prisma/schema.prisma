@@ -527,6 +527,7 @@ model Member {
   adminCreditAdjustmentRequestsReviewed      AdminCreditAdjustmentRequest[]             @relation("AdminCreditAdjustmentRequestsReviewed")
   bookingsCreatedOnBehalf                    Booking[]                                  @relation("BookingsCreatedBy")
   bookingsAdminReviewed                      Booking[]                                  @relation("BookingsAdminReviewed")
+  bookingsAdminCapacityHeld                  Booking[]                                  @relation("BookingsAdminCapacityHeld")
   approvedBedAllocations                     BedAllocation[]                            @relation("BedAllocationApprover")
   refundRequests                             RefundRequest[]
   issueReports                               IssueReport[]
@@ -1079,6 +1080,15 @@ model Booking {
   // fills omitted-column writes so enforcement was outage-free. One booking
   // belongs to exactly one lodge (ADR-001 resolved question 1).
   lodgeId                   String             @default(dbgenerated("default_lodge_id()"))
+  // Admin capacity hold (#1764): while set AND the booking is PAYMENT_PENDING,
+  // the booking consumes lodge capacity exactly as if it were in a naturally
+  // capacity-holding status (see capacityHoldingBookingFilter). Orthogonal to
+  // the lifecycle status — the status keeps meaning what it means. Cleared by
+  // Admin Unhold and by every cancel path; left set-but-inert once the booking
+  // reaches a naturally-holding status (the status disjunct then holds the
+  // beds, so capacity is never double-counted).
+  adminCapacityHoldAt         DateTime?
+  adminCapacityHoldByMemberId String?
   createdAt                 DateTime           @default(now())
   updatedAt                 DateTime           @updatedAt
 
@@ -1089,6 +1099,7 @@ model Booking {
   createdBy                   Member?                         @relation("BookingsCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
   deletedBy                   Member?                         @relation("BookingsDeletedBy", fields: [deletedById], references: [id], onDelete: SetNull)
   adminReviewedBy             Member?                         @relation("BookingsAdminReviewed", fields: [adminReviewedById], references: [id], onDelete: SetNull)
+  adminCapacityHoldBy         Member?                         @relation("BookingsAdminCapacityHeld", fields: [adminCapacityHoldByMemberId], references: [id], onDelete: SetNull)
   requestedRoom               LodgeRoom?                      @relation("BookingRequestedRoom", fields: [requestedRoomId], references: [id], onDelete: SetNull)
   parentBooking               Booking?                        @relation("BookingGroup", fields: [parentBookingId], references: [id], onDelete: SetNull, onUpdate: Cascade)
   linkedBookings              Booking[]                       @relation("BookingGroup")
@@ -1135,6 +1146,7 @@ model Booking {
   @@index([status, preArrivalReminderSentAt, checkIn])
   @@index([adminReviewStatus, createdAt])
   @@index([adminReviewedById])
+  @@index([adminCapacityHoldByMemberId])
   @@index([requestedRoomId])
   @@index([parentBookingId])
   @@index([lodgeId])

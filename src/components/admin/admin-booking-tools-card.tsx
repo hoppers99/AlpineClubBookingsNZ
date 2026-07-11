@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { AdminCapacityHoldControls } from "@/components/admin/admin-capacity-hold-controls";
 import { ConfirmPendingGuestsButton } from "@/components/admin/confirm-pending-guests-button";
 import { CopyBookingButton } from "@/components/admin/copy-booking-button";
 import type { BookingProviderMismatch } from "@/lib/booking-provider-mismatches";
@@ -28,6 +29,7 @@ export function AdminBookingToolsCard({
   finalPriceCents,
   providerMismatches = [],
   features,
+  capacityHold,
 }: {
   bookingId: string;
   memberId: string;
@@ -42,6 +44,14 @@ export function AdminBookingToolsCard({
   finalPriceCents: number;
   providerMismatches?: BookingProviderMismatch[];
   features: FeatureFlags;
+  /** Admin capacity hold state (#1764); omitted for deleted bookings. */
+  capacityHold?: {
+    hasAdminCapacityHold: boolean;
+    adminCapacityHoldAt: string | null;
+    heldByName: string | null;
+    holdsCapacityNaturally: boolean;
+    canPlaceHold: boolean;
+  };
 }) {
   const returnTo = `/bookings/${bookingId}`;
   const bedAllocationParams = new URLSearchParams({
@@ -77,6 +87,16 @@ export function AdminBookingToolsCard({
                 </p>
               ))}
             </div>
+          )}
+          {!isDeleted && capacityHold && (
+            <AdminCapacityHoldControls
+              bookingId={bookingId}
+              hasAdminCapacityHold={capacityHold.hasAdminCapacityHold}
+              adminCapacityHoldAt={capacityHold.adminCapacityHoldAt}
+              heldByName={capacityHold.heldByName}
+              holdsCapacityNaturally={capacityHold.holdsCapacityNaturally}
+              canPlaceHold={capacityHold.canPlaceHold}
+            />
           )}
           {!isDeleted && (
             <CopyBookingButton
