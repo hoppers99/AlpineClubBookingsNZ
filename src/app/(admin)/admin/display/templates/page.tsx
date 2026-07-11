@@ -279,6 +279,15 @@ export default function AdminDisplayTemplatesPage() {
                 <Button variant="outline" onClick={() => void loadPreview()}>
                   Preview with live data
                 </Button>
+                <Button variant="outline" asChild>
+                  <a
+                    href={`/display?preview=1&templateKey=${encodeURIComponent(selectedKey)}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Full-screen preview
+                  </a>
+                </Button>
                 <div className="flex items-end gap-2">
                   <div>
                     <Label htmlFor="copy-key" className="text-xs">

@@ -4,15 +4,20 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { DisplayState } from "@/lib/lodge-display-state";
 import type { DisplayTemplateDefinition } from "@/lib/lodge-display/template-registry";
 
-// Client lifecycle for the lobby display page (fork issue #32):
+// Client lifecycle for the lobby display page (fork issues #32/#52):
 //
-//   pairing  — no/invalid token: request a code, show it, poll claim
-//   active   — render the bound template from the latest good payload
-//   (stale)  — active with a stale-data flag when fetches keep failing
+//   pairing        — no/invalid token: request a code, show it, poll claim
+//   active         — render the bound template from the latest good payload
+//   (stale)        — active with a stale-data flag when fetches keep failing
+//   preview-denied — ?preview/?previewDevice present but the caller is not a
+//                    signed-in full admin (the kiosk-preview pattern, #52)
 //
-// A transient failure NEVER clears the screen (issue #32 AC5): the last good
-// payload keeps rendering and a stale indicator appears past the threshold.
-// A 401 (revoked/expired token) drops back to pairing within one poll (AC6).
+// PREVIEW MODE (?previewDevice=<id> or ?preview=1): the query string is
+// forwarded to the state API, which honours it only for a full admin; the
+// pairing flow never starts, and no banner is shown (owner's call — the
+// preview IS the real screen). A transient failure NEVER clears the screen
+// (issue #32 AC5); a 401 on a real device drops back to pairing within one
+// poll (AC6).
 
 export const DISPLAY_POLL_SECONDS = 60;
 export const DISPLAY_CLAIM_POLL_SECONDS = 4;
@@ -25,7 +30,16 @@ export interface DisplayPayload extends DisplayState {
 export type DisplayLifecycle =
   | { mode: "loading" }
   | { mode: "pairing"; code: string | null; expiresAt: string | null }
+  | { mode: "preview-denied" }
   | { mode: "active"; payload: DisplayPayload; stale: boolean };
+
+function previewSearch(): string | null {
+  if (typeof window === "undefined") return null;
+  const params = new URLSearchParams(window.location.search);
+  return params.has("previewDevice") || params.has("preview")
+    ? window.location.search
+    : null;
+}
 
 export function useDisplayState(): DisplayLifecycle {
   const [lifecycle, setLifecycle] = useState<DisplayLifecycle>({ mode: "loading" });
@@ -50,7 +64,8 @@ export function useDisplayState(): DisplayLifecycle {
 
   const fetchState = useCallback(async (): Promise<"ok" | "unauthorised" | "failed"> => {
     try {
-      const response = await fetch("/api/display/state");
+      const search = previewSearch();
+      const response = await fetch(`/api/display/state${search ?? ""}`);
       if (response.status === 401) return "unauthorised";
       if (!response.ok) return "failed";
       const payload = (await response.json()) as DisplayPayload;
@@ -73,6 +88,12 @@ export function useDisplayState(): DisplayLifecycle {
       if (cancelled) return;
 
       if (result === "unauthorised") {
+        if (previewSearch()) {
+          // Preview requests never pair — they need an admin login instead.
+          setLifecycle({ mode: "preview-denied" });
+          timer = setTimeout(tick, DISPLAY_POLL_SECONDS * 1000);
+          return;
+        }
         await startPairing();
         if (!cancelled) timer = setTimeout(claimTick, DISPLAY_CLAIM_POLL_SECONDS * 1000);
         return;

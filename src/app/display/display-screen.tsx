@@ -119,6 +119,18 @@ export function DisplayScreen() {
     return <div className="display-shell display-loading" />;
   }
 
+  if (lifecycle.mode === "preview-denied") {
+    return (
+      <div className="display-shell display-pairing">
+        <span className="display-pairing-kicker">Display preview</span>
+        <span className="display-pairing-help">
+          Previewing the lobby display requires an administrator login in this
+          browser. Sign in to the admin area, then reload this page.
+        </span>
+      </div>
+    );
+  }
+
   if (lifecycle.mode === "pairing") {
     return (
       <div className="display-shell display-pairing">

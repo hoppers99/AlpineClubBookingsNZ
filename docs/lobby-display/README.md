@@ -47,6 +47,9 @@ read at a glance, always matching the booking system.
   each screen area shows; panels rotate only when they make sense (e.g. the
   whole-lodge view appears only while the lodge actually has a full-lodge
   booking).
+- **Admin preview** — administrators can open any device's board or any
+  template full-screen in their own browser (read-only, same privacy rules,
+  no effect on the device's "last seen") before it ever reaches a lobby wall.
 - **Privacy-aware by design** — configurable name granularity (full name /
   first name + initial / first name / counts only), enforced at the data
   layer so no template can display more than the API serves; bookings that
