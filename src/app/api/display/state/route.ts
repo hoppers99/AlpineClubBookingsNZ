@@ -8,6 +8,7 @@ import {
   resolveDisplayTemplateForDevice,
 } from "@/lib/lodge-display/template-resolution";
 import { getDefaultLodgeId } from "@/lib/lodges";
+import { isDateOnlyString, parseDateOnly } from "@/lib/date-only";
 import { prisma } from "@/lib/prisma";
 import { applyRateLimit, rateLimiters } from "@/lib/rate-limit";
 
@@ -23,7 +24,9 @@ import { applyRateLimit, rateLimiters } from "@/lib/rate-limit";
 //    is read-only by construction — it never stamps lastSeenAt — and renders
 //    through the SAME privacy-reduced serialiser, so a preview can never show
 //    more than a lobby wall would. The parameter is honoured ONLY for a full
-//    admin; anyone else gets the normal 401.
+//    admin; anyone else gets the normal 401. A preview may also carry
+//    ?previewDate=YYYY-MM-DD (issue #60) to start the window on a simulated
+//    date instead of today — preview-only; device fetches never honour it.
 //
 // The serialiser (lodge-display-state.ts) is the privacy enforcement point;
 // nothing here shapes or filters names. Window size is clamped server-side
@@ -64,6 +67,18 @@ async function resolvePreview(
   };
 }
 
+// The simulated preview start date (issue #60): strict date-only shape plus a
+// real-calendar validity check. Malformed values fall back to today silently
+// (null → the serialiser starts from today). Preview-only; the caller must
+// never reach this from the device path.
+function parsePreviewDate(req: NextRequest): Date | null {
+  const raw = req.nextUrl.searchParams.get("previewDate");
+  if (!raw || !/^\d{4}-\d{2}-\d{2}$/.test(raw) || !isDateOnlyString(raw)) {
+    return null;
+  }
+  return parseDateOnly(raw);
+}
+
 export async function GET(req: NextRequest) {
   const rateLimited = await applyRateLimit(rateLimiters.api, req);
   if (rateLimited) return rateLimited;
@@ -94,7 +109,10 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
   }
 
-  const state = await buildDisplayState(preview.lodgeId, { days });
+  const state = await buildDisplayState(preview.lodgeId, {
+    days,
+    windowStart: parsePreviewDate(req),
+  });
   if (!state) {
     return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
   }

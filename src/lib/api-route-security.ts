@@ -126,7 +126,7 @@ export const explicitPublicApiRoutes = {
   "src/app/api/display/state/route.ts": {
     boundary: "public",
     reason:
-      "Display-token-authenticated lobby display data feed (#28): sessionless hashed-token credential resolves to one device's lodge; the payload is privacy-reduced in the serialiser (names at configured granularity, minors never individually named, no money/contact/member ids). A full-admin session may alternatively preview via ?previewDevice/?preview (#52) — GET-only, same reduced payload, never stamps lastSeenAt. Rate limited; module-flag gated at the proxy.",
+      "Display-token-authenticated lobby display data feed (#28): sessionless hashed-token credential resolves to one device's lodge; the payload is privacy-reduced in the serialiser (names at configured granularity, minors never individually named, no money/contact/member ids). A full-admin session may alternatively preview via ?previewDevice/?preview (#52) — GET-only, same reduced payload, never stamps lastSeenAt, and may pass ?previewDate=YYYY-MM-DD to simulate the window's start date (#60, preview-only; device fetches ignore it). Rate limited; module-flag gated at the proxy.",
   },
   "src/app/api/display/pair/route.ts": {
     boundary: "public",

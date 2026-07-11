@@ -183,10 +183,13 @@ export function clampDisplayWindowDays(requested: number | null): number {
  */
 export async function buildDisplayState(
   lodgeId: string,
-  options: { days?: number | null } = {}
+  options: { days?: number | null; windowStart?: Date | null } = {}
 ): Promise<DisplayState | null> {
   const days = clampDisplayWindowDays(options.days ?? null);
-  const startDate = getTodayDateOnly();
+  // `windowStart` is the admin-preview simulated date (issue #60); it only
+  // reaches here from the preview branch of the state route — device fetches
+  // never pass it, so a real screen always starts today.
+  const startDate = options.windowStart ?? getTodayDateOnly();
   const endExclusive = addDaysDateOnly(startDate, days);
   const endInclusive = addDaysDateOnly(endExclusive, -1);
   const windowDates = eachDateOnlyInRange(startDate, endExclusive).slice(0, days);
