@@ -781,6 +781,57 @@ The member confirmation / hold email is an **explicit per-create choice**
 `confirmOverCapacity`, and `capacityOverridden`; `sendAdminNewBookingAlert` and
 the Xero invoice email are unaffected by the choice.
 
+A **finished stay's card obligation never lingers unseen** (#1709, #1723). Two
+**disjoint** admin queues surface every uncollected card obligation on a stay
+whose check-out is on or before NZ today, both driven by the shared
+predicate/href helpers in `src/lib/unpaid-finished-stays.ts` (the dashboard
+attention cards, the sidebar Needs Attention badges via
+`admin-pending-counts`, and the bookings-list deep links all consume the same
+helpers so the surfaces can never drift):
+
+- **Unpaid finished stays** (#1709/#1731): `deletedAt` null +
+  `status = PAYMENT_PENDING` + `checkOut ≤ today` — the whole booking price is
+  still owed (a retroactive card create qualifies from the moment of
+  creation). Deep link:
+  `/admin/bookings?status=PAYMENT_PENDING&checkOutTo=<today>`.
+- **Unsettled finished-stay additions** (#1723 path 2, owner decision B — the
+  card additional-payment flow stays): `deletedAt` null + `checkOut ≤ today` +
+  `status ∈ {CONFIRMED, PAID, COMPLETED}` + payment
+  `additionalAmountCents > 0` with `additionalPaymentStatus` null or not
+  `SUCCEEDED` — a settled stay whose upward modification delta (admin
+  recalculate, guest add, date change) was never collected. The payment
+  summary columns mirror the LATEST ADDITIONAL payment transaction, and the
+  predicate mirrors the member-facing owed test (member dashboard / booking
+  detail), so admin and member agree on what is owed; `PAYMENT_PENDING` is
+  deliberately excluded so the two queue counts can be summed without
+  double-counting a booking. Deep link:
+  `/admin/bookings?additionalOwed=owed&checkOutTo=<today>` via the bookings
+  list's `additionalOwed` filter (AND-composed, so explicit status/date
+  filters in the same URL still narrow).
+
+Three side doors into the finished-unpaid state are closed at the door
+(owner decisions 2026-07-11, #1723):
+
+- **Past-dated waitlist force-confirm** (path 1, decision B — allow, flag at
+  creation): a force-confirm that lands `PAYMENT_PENDING` on a booking whose
+  check-out has already passed is allowed but flagged at creation —
+  `createdUnpaidFinishedStay` in the audit details/metadata, an
+  `unpaidFinishedStay` field in the route response, and an amber "Unpaid
+  finished stay created" card on the admin waitlist page. $0 force-confirms
+  (land `PAID`) and parked-for-review outcomes carry no obligation and are
+  not flagged.
+- **Upward modification of a settled past stay** (path 2, decision B): kept
+  on the card additional-payment flow rather than blocked; the uncollected
+  delta counts on the second queue above.
+- **Stale group join** (path 3, decision A — exclude): a group whose
+  organiser booking's stay has fully ended (`checkOut ≤ NZ today`, the same
+  cutoff as the queues — a stay checking out today has fully ended) leaves
+  the joinable set entirely: `hasGroupStayFullyEnded` gates the public
+  summary's `isJoinable`, the member join (409), the non-member join request
+  (409 `GROUP_STAY_ENDED`), and the emailed-token verify (`not_joinable`),
+  sitting directly after the open/deadline check and ahead of the
+  payment-mode/active-booking gates.
+
 A booking left with only non-adults (YOUTH/CHILD/INFANT) requires admin
 approval regardless of how it got there or whether it was already paid: every
 edit path — including single-guest self-removal, which is never blocked for a
