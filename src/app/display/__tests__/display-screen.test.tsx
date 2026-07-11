@@ -193,6 +193,44 @@ describe("DisplayScreen lifecycle", () => {
     }
   });
 
+  it("marks the header clock as simulated (amber, in place) when a previewDate is active (issue #60)", async () => {
+    window.history.pushState({}, "", "/display?previewDevice=dev-9&previewDate=2026-08-01");
+    try {
+      const isPreviewState = (url: string) =>
+        url.includes("/api/display/state?previewDevice=dev-9");
+      enqueue(isPreviewState, { status: 200, body: PAYLOAD });
+      const { container } = render(<DisplayScreen />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10);
+      });
+      // The existing clock container carries the simulated state — recoloured
+      // in place, so no separate marker element is added.
+      expect(
+        container.querySelector(".display-header-clock[data-simulated]")
+      ).not.toBeNull();
+      // The date line is a picker with a hidden date input in preview mode.
+      expect(container.querySelector('input[type="date"]')).not.toBeNull();
+      // Accessible-only hint, but no visible layout-shifting marker element.
+      expect(screen.getByText(/Simulating/)).toBeDefined();
+    } finally {
+      window.history.pushState({}, "", "/display");
+    }
+  });
+
+  it("renders no date picker and no simulated state in real (non-preview) mode", async () => {
+    enqueue(isState, { status: 200, body: PAYLOAD });
+    const { container } = render(<DisplayScreen />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    expect(screen.getByText("Silverpeak Lodge")).toBeDefined();
+    expect(container.querySelector('input[type="date"]')).toBeNull();
+    expect(
+      container.querySelector(".display-header-clock[data-simulated]")
+    ).toBeNull();
+    expect(screen.queryByText(/Simulating/)).toBeNull();
+  });
+
   it("renders a neutral placeholder for a module with no renderer yet", async () => {
     enqueue(isState, {
       status: 200,

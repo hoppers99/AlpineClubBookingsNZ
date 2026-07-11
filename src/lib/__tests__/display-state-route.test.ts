@@ -140,6 +140,7 @@ describe("GET /api/display/state — admin preview (issue #52)", () => {
     expect(res.status).toBe(200);
     expect(mockBuildDisplayState).toHaveBeenCalledWith("lodge-b", {
       days: null,
+      windowStart: null,
     });
     expect(mockResolveTemplate).toHaveBeenCalledWith("occupancy-rotating");
     // Read-only by construction: a preview must never look like a live screen.
@@ -163,6 +164,7 @@ describe("GET /api/display/state — admin preview (issue #52)", () => {
     expect(res.status).toBe(200);
     expect(mockBuildDisplayState).toHaveBeenCalledWith("lodge-default", {
       days: null,
+      windowStart: null,
     });
     expect(mockResolveTemplate).toHaveBeenCalledWith("room-occupancy-week");
     expect(mockPrisma.lodgeDisplayDevice.update).not.toHaveBeenCalled();
@@ -189,5 +191,40 @@ describe("GET /api/display/state — admin preview (issue #52)", () => {
     expect(mockBuildDisplayState).toHaveBeenCalledWith("lodge-a", {
       days: null,
     });
+  });
+
+  it("?previewDate simulates the window start for an admin preview (issue #60)", async () => {
+    loginAs(ADMIN_MEMBER);
+    const { GET } = await import("@/app/api/display/state/route");
+
+    const res = await GET(await stateRequest("?preview=1&previewDate=2026-08-01"));
+    expect(res.status).toBe(200);
+    const [, options] = mockBuildDisplayState.mock.calls[0];
+    expect(options.windowStart).toBeInstanceOf(Date);
+    expect((options.windowStart as Date).toISOString().slice(0, 10)).toBe(
+      "2026-08-01"
+    );
+  });
+
+  it("a malformed previewDate falls back to today silently", async () => {
+    loginAs(ADMIN_MEMBER);
+    const { GET } = await import("@/app/api/display/state/route");
+
+    const res = await GET(await stateRequest("?preview=1&previewDate=next-week"));
+    expect(res.status).toBe(200);
+    const [, options] = mockBuildDisplayState.mock.calls[0];
+    expect(options.windowStart ?? null).toBeNull();
+  });
+
+  it("never honours previewDate on a device-token fetch (device path is date-blind)", async () => {
+    mockCheckDisplayAuth.mockResolvedValue(DEVICE_AUTH);
+    const { GET } = await import("@/app/api/display/state/route");
+
+    const res = await GET(await stateRequest("?previewDate=2026-08-01"));
+    expect(res.status).toBe(200);
+    const [lodgeId, options] = mockBuildDisplayState.mock.calls[0];
+    expect(lodgeId).toBe("lodge-a");
+    expect(options.windowStart ?? null).toBeNull();
+    expect(mockPrisma.lodgeDisplayDevice.update).toHaveBeenCalled();
   });
 });

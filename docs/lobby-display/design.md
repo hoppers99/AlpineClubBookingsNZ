@@ -279,7 +279,12 @@ Modelled on the kiosk account management surface (`/admin/lodge`):
   a sign-in prompt instead of a pairing code. Previews render through the
   same privacy-reduced serialiser, never stamp `lastSeenAt`, and show no
   warning banner (the preview is the real screen). A genuine device token
-  always takes precedence over preview parameters.
+  always takes precedence over preview parameters. A preview may also carry
+  `?previewDate=YYYY-MM-DD` (LTV-017) to start the window on a simulated date
+  instead of today, set by clicking the header date line — preview-only, and
+  device-token fetches ignore it (malformed values fall back to today). While
+  active the header clock recolours amber in place (the date line shows the
+  simulated date) so the layout never shifts.
 - **Lodge config glob**: JSON editor with key validation and token-help
   copy derived from the catalogue.
 - Name-granularity setting surfaced alongside (home per the privacy task).
