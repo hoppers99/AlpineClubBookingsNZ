@@ -2666,6 +2666,11 @@ model Lodge {
   // placeholders (docs/lobby-display/design.md §3, fork issue #26): free-form
   // string key/value pairs, validated at the admin edit surface. Null = none.
   displayConfig Json?
+  // Per-lodge override of the lobby display name granularity (fork issue
+  // #28, design.md §10). Null = the club-wide code default
+  // (FIRST_NAME_SURNAME_INITIAL). Enum defined with the lobby-display
+  // models at the end of this file.
+  displayNameGranularity DisplayNameGranularity?
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
@@ -3895,4 +3900,15 @@ model LodgeDisplayDevice {
 
   @@index([lodgeId])
   @@index([templateId])
+}
+
+// How guest names are reduced by the lobby display's privacy serialiser
+// (fork issue #28, docs/lobby-display/design.md §10). Enforcement lives in
+// src/lib/lodge-display-state.ts — the single choke point for what a public
+// screen may show. Minors are never individually named at ANY level.
+enum DisplayNameGranularity {
+  FULL_NAME
+  FIRST_NAME_SURNAME_INITIAL
+  FIRST_NAME_ONLY
+  COUNTS_ONLY
 }
