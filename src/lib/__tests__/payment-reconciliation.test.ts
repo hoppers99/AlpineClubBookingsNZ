@@ -170,6 +170,64 @@ describe("markBookingPaymentSucceeded", () => {
     });
   });
 
+  // #1764 — pay-while-held. An admin capacity hold makes the booking part of
+  // the capacity-holding population while still PAYMENT_PENDING; the payment
+  // claim must count it exactly ONCE: the settlement capacity re-check
+  // excludes the booking's own (held) row, and the PAID flip leaves the hold
+  // fields untouched (set-but-inert — the status clause now holds the beds).
+  it("settles an admin-held booking counting its capacity exactly once and leaving the hold record inert (#1764)", async () => {
+    const heldBooking = {
+      ...makeStaggeredBooking(),
+      adminCapacityHoldAt: parseDateOnly("2026-04-01"),
+      adminCapacityHoldByMemberId: "admin-1",
+    };
+    mocks.bookingFindUnique.mockResolvedValue(heldBooking);
+    // The lodge is otherwise FULL except for the held booking's own beds: if
+    // the claim double-counted the held booking (self-occupancy not
+    // excluded), this capacity re-check would fail and cancel-refund it.
+    mocks.bookingFindMany.mockImplementation(
+      async (args: { where?: { id?: { not?: string } } }) => {
+        // The occupancy query must exclude the settling booking itself.
+        expect(args.where?.id).toEqual({ not: "booking-1" });
+        return [
+          {
+            id: "existing-booking",
+            status: BookingStatus.PAID,
+            checkIn: parseDateOnly("2026-04-10"),
+            checkOut: parseDateOnly("2026-04-12"),
+            guests: Array.from({ length: LODGE_CAPACITY - 1 }, (_, index) => ({
+              id: `existing-${index}`,
+              stayStart: parseDateOnly("2026-04-10"),
+              stayEnd: parseDateOnly("2026-04-12"),
+            })),
+          },
+        ];
+      },
+    );
+
+    const result = await markBookingPaymentSucceeded({
+      bookingId: "booking-1",
+      paymentIntentId: "pi_held",
+      amountCents: 10000,
+      paymentMethodId: "pm_held",
+    });
+
+    expect(result).toEqual({
+      outcome: "paid",
+      bookingId: "booking-1",
+      bumpedBookingIds: [],
+    });
+    // The PAID flip must not clear (or otherwise write) the hold fields:
+    // unhold-after-paid is refused at the API and the record stays inert.
+    expect(mocks.bookingUpdate).toHaveBeenCalledWith({
+      where: { id: "booking-1" },
+      data: {
+        status: BookingStatus.PAID,
+        draftExpiresAt: null,
+      },
+    });
+  });
+
   // #1641 — the effective-price guard. A card booking with applied credit is
   // captured at finalPrice − applied; the guard must accept that AND the full
   // price (legacy in-flight intents) while still rejecting any other amount.
@@ -342,7 +400,12 @@ describe("markBookingPaymentSucceeded", () => {
     // The booking is cancelled and the payment refunded — never marked PAID.
     expect(mocks.bookingUpdate).toHaveBeenCalledWith({
       where: { id: "booking-1" },
-      data: { status: BookingStatus.CANCELLED, draftExpiresAt: null },
+      data: {
+        status: BookingStatus.CANCELLED,
+        draftExpiresAt: null,
+        adminCapacityHoldAt: null,
+        adminCapacityHoldByMemberId: null,
+      },
     });
     expect(mocks.bookingUpdate).not.toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ status: BookingStatus.PAID }) })

@@ -1164,6 +1164,8 @@ async function loadBookingRecords(
       // booking of a SCHOOL request (#1280).
       originBookingRequest: { select: { id: true, type: true } },
       heldForBookingRequest: { select: { type: true } },
+      // Admin capacity hold (#1764): held PAYMENT_PENDING shows as Held too.
+      adminCapacityHoldAt: true,
       requestedRoom: {
         select: {
           id: true,
@@ -1220,6 +1222,8 @@ async function loadAllocationRecords(
           status: true,
           // Accepted-but-unpaid quote holds capacity while PENDING (#1254).
           originBookingRequest: { select: { id: true } },
+          // Admin capacity hold (#1764): held PAYMENT_PENDING shows as Held.
+          adminCapacityHoldAt: true,
         },
       },
       bookingGuest: {
@@ -1288,6 +1292,7 @@ function serializeBookings(
     holdsCapacity: bookingHoldsCapacity({
       status: booking.status,
       isRequestConverted: Boolean(booking.originBookingRequest),
+      hasAdminCapacityHold: Boolean(booking.adminCapacityHoldAt),
     }),
     createdAt: booking.createdAt.toISOString(),
     checkIn: formatDateOnly(booking.checkIn),
@@ -1329,6 +1334,7 @@ function serializeAllocations(
     holdsCapacity: bookingHoldsCapacity({
       status: allocation.booking.status,
       isRequestConverted: Boolean(allocation.booking.originBookingRequest),
+      hasAdminCapacityHold: Boolean(allocation.booking.adminCapacityHoldAt),
     }),
     isSecondOccupant: allocation.isSecondOccupant,
   }));

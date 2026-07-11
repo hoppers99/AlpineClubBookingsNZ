@@ -114,6 +114,37 @@ The admin lodge **Capacity** card shows the figure broken out — e.g.
 "10 beds + up to 1 partner spot" — never a single combined number, so an
 admin can see the extra is partner-only.
 
+## Which bookings consume capacity (the holding population)
+
+Orthogonal to *how much* capacity a lodge has is *which bookings consume it*.
+The single source of truth is `capacityHoldingBookingFilter()` (per-row form:
+`bookingHoldsCapacity()`) in `src/lib/booking-status.ts`; every availability,
+occupancy, waitlist, bed-allocation, and stats query reads through it. A
+booking holds capacity when:
+
+1. Its status is naturally capacity-holding: `PAID`, `COMPLETED`, `CONFIRMED`,
+   or `AWAITING_REVIEW`.
+2. It is `PENDING` **and** is the converted booking of a `BookingRequest`
+   (accepted-but-unpaid quote / directly-approved request, #1254 refining
+   #737). Generic `PENDING` stays non-holding and bumpable.
+3. It is `PAYMENT_PENDING` **and** carries an **admin capacity hold**
+   (#1764): `Booking.adminCapacityHoldAt` is set. A Full Admin / Booking
+   Officer reserved the beds while the member arranges payment, without
+   faking a payment or changing the booking's real status.
+
+The admin hold (clause 3) is deliberately **status-scoped**: a cancelled or
+expired booking with a stale hold flag can never hold beds, and when the
+booking pays (moving into clause 1) it is counted exactly once — the clauses
+are OR'd, never summed. Placing a hold runs under the per-lodge advisory
+capacity lock with a capacity re-check (the #1366 pattern); an over-capacity
+hold requires the explicit overbook confirm, mirroring force-confirm. The
+hold is released by Admin Unhold (only until the booking holds naturally),
+and every cancel path — member/admin cancel, group-child cancel, settlement
+reaper, Internet Banking hold expiry, capacity-failed settlement — clears the
+hold fields via the shared `RELEASE_ADMIN_CAPACITY_HOLD_UPDATE` fragment, so
+no orphaned hold records survive a cancellation. Both hold and unhold write
+audit rows (`booking.admin_capacity_hold.*`).
+
 ## Resolution
 
 Effective capacity is decided in this order:

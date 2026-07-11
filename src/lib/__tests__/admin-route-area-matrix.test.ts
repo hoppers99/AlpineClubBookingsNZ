@@ -142,6 +142,7 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   "/api/admin/booking-requests/settings": "bookings",
   "/api/admin/booking-reviews": "bookings",
   "/api/admin/bookings": "bookings",
+  "/api/admin/bookings/[id]/capacity-hold": "bookings",
   "/api/admin/bookings/[id]/confirm-pending-guests": "bookings",
   "/api/admin/bookings/[id]/copy": "bookings",
   "/api/admin/bookings/[id]/eligible-family": "bookings",

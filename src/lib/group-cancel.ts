@@ -77,6 +77,7 @@ import {
   loadCancellationPolicy,
 } from "./cancellation";
 import { reconcileBedAllocationsForBooking } from "./bed-allocation-lifecycle";
+import { RELEASE_ADMIN_CAPACITY_HOLD_UPDATE } from "./booking-status";
 import { revokePaymentLinksForBooking } from "./payment-link";
 import { recordBookingEvent } from "./booking-events";
 import { logAudit } from "./audit";
@@ -412,7 +413,10 @@ export async function settleGroupBookingOnOrganiserCancel(
       queuedCreditNoteOperationId = await prisma.$transaction(async (tx) => {
         await tx.booking.update({
           where: { id: child.id },
-          data: { status: BookingStatus.CANCELLED },
+          data: {
+            status: BookingStatus.CANCELLED,
+            ...RELEASE_ADMIN_CAPACITY_HOLD_UPDATE,
+          },
         });
         await reconcileBedAllocationsForBooking({
           bookingId: child.id,

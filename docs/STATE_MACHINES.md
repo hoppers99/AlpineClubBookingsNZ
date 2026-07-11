@@ -19,12 +19,33 @@ AWAITING_REVIEW -> PENDING (quote accepted, #1254) or CONFIRMED/PAID or CANCELLE
 
 Capacity-holding is not a pure function of status (#1254, refining #737). A
 booking holds beds when its status is capacity-holding (PAID, COMPLETED,
-CONFIRMED, AWAITING_REVIEW) **or** it is PENDING and is the converted booking of
-a `BookingRequest` (an accepted-but-unpaid quote / approved request). Generic
-PENDING (split-booking children #738, member "only-if-my-guests-come" holds)
-still does not hold and stays bumpable. The single source of truth is
-`capacityHoldingBookingFilter()` in `src/lib/booking-status.ts`; every
-availability query uses it. Consequence: an accepted-but-unpaid quote booking
+CONFIRMED, AWAITING_REVIEW), **or** it is PENDING and is the converted booking
+of a `BookingRequest` (an accepted-but-unpaid quote / approved request), **or**
+it is PAYMENT_PENDING and carries an **admin capacity hold** (#1764,
+`adminCapacityHoldAt` set — an orthogonal flag, NOT a status: the lifecycle
+status keeps meaning what it means). Generic PENDING (split-booking children
+#738, member "only-if-my-guests-come" holds) still does not hold and stays
+bumpable, and PAYMENT_PENDING without an admin hold stays non-holding. The
+single source of truth is `capacityHoldingBookingFilter()` in
+`src/lib/booking-status.ts`; every availability query uses it.
+
+Admin capacity hold interaction (#1764): Hold is admin-only
+(`POST /api/admin/bookings/[id]/capacity-hold`), allowed only on a
+PAYMENT_PENDING booking that does not already hold capacity, taken under the
+per-lodge advisory lock with a capacity re-check (409 CAPACITY_EXCEEDED unless
+an explicit overbook is confirmed, mirroring force-confirm). Unhold (`DELETE`
+on the same route) releases the beds and is refused (409) once the booking
+holds capacity naturally — releasing a paid/confirmed booking's capacity stays
+impossible. A natural transition (payment success -> PAID etc.) needs no hold
+handshake: the filter's clauses are OR'd, so capacity is counted exactly once
+and the hold record simply becomes inert; if a settlement failure later
+reverts the booking to PAYMENT_PENDING (group-settlement reaper), the still-set
+hold re-engages seamlessly — capacity was continuously held either way. Every
+cancel-shaped transition (cancel routes, group-child cancel, settlement
+reaper expiry, Internet Banking hold release, capacity-failed settlement)
+clears the hold fields via the shared `RELEASE_ADMIN_CAPACITY_HOLD_UPDATE`
+fragment — no orphaned holds. Both actions write audit rows
+(`booking.admin_capacity_hold.placed[_overbook]` / `.released`). Consequence: an accepted-but-unpaid quote booking
 keeps its bed until it is paid, expires, or is cancelled, and a later member
 booking can no longer bump it. One deliberate exception (owner-ratified, #1317):
 an accepted-but-unpaid hold is NOT protected against a *capacity reduction* — if

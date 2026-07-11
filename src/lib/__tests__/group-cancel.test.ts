@@ -212,7 +212,11 @@ describe("settleGroupBookingOnOrganiserCancel", () => {
     expect(mocks.bookingUpdate).toHaveBeenCalledTimes(2);
     expect(mocks.bookingUpdate).toHaveBeenCalledWith({
       where: { id: "child-1" },
-      data: { status: BookingStatus.CANCELLED },
+      data: {
+        status: BookingStatus.CANCELLED,
+        adminCapacityHoldAt: null,
+        adminCapacityHoldByMemberId: null,
+      },
     });
     expect(mocks.reconcileBedAllocations).toHaveBeenCalledTimes(2);
     expect(mocks.sendBookingCancelledEmail).toHaveBeenCalledWith(
@@ -285,7 +289,11 @@ describe("settleGroupBookingOnOrganiserCancel", () => {
     });
     expect(mocks.bookingUpdate).toHaveBeenCalledWith({
       where: { id: "child-1" },
-      data: { status: BookingStatus.CANCELLED },
+      data: {
+        status: BookingStatus.CANCELLED,
+        adminCapacityHoldAt: null,
+        adminCapacityHoldByMemberId: null,
+      },
     });
     // Joiners emailed with their refund amount.
     expect(mocks.sendBookingCancelledEmail).toHaveBeenCalledWith(
@@ -358,7 +366,11 @@ describe("settleGroupBookingOnOrganiserCancel", () => {
     expect(mocks.processRefund).not.toHaveBeenCalled();
     expect(mocks.bookingUpdate).toHaveBeenCalledWith({
       where: { id: "child-1" },
-      data: { status: BookingStatus.CANCELLED },
+      data: {
+        status: BookingStatus.CANCELLED,
+        adminCapacityHoldAt: null,
+        adminCapacityHoldByMemberId: null,
+      },
     });
     expect(mocks.sendBookingCancelledEmail).toHaveBeenCalledWith(
       "joiner@example.com",
@@ -509,7 +521,11 @@ describe("settleGroupBookingOnOrganiserCancel", () => {
     // The child is still cancelled and its bed released.
     expect(mocks.bookingUpdate).toHaveBeenCalledWith({
       where: { id: "child-1" },
-      data: { status: BookingStatus.CANCELLED },
+      data: {
+        status: BookingStatus.CANCELLED,
+        adminCapacityHoldAt: null,
+        adminCapacityHoldByMemberId: null,
+      },
     });
   });
 });
@@ -590,7 +606,11 @@ describe("settleGroupBookingOnOrganiserCancel re-drivability (#1236)", () => {
     });
     expect(mocks.bookingUpdate).toHaveBeenCalledWith({
       where: { id: "child-1" },
-      data: { status: BookingStatus.CANCELLED },
+      data: {
+        status: BookingStatus.CANCELLED,
+        adminCapacityHoldAt: null,
+        adminCapacityHoldByMemberId: null,
+      },
     });
     expect(mocks.enqueueXeroRefund).toHaveBeenCalledWith("pay-1", 4500, {
       createdByMemberId: ORGANISER,
@@ -695,7 +715,11 @@ describe("settleGroupBookingOnOrganiserCancel re-drivability (#1236)", () => {
     // mirror yet — the replay writes it after the money actually moves.
     expect(mocks.bookingUpdate).toHaveBeenCalledWith({
       where: { id: "child-1" },
-      data: { status: BookingStatus.CANCELLED },
+      data: {
+        status: BookingStatus.CANCELLED,
+        adminCapacityHoldAt: null,
+        adminCapacityHoldByMemberId: null,
+      },
     });
     expect(mocks.paymentUpdate).not.toHaveBeenCalled();
     expect(mocks.enqueueXeroRefund).not.toHaveBeenCalled();
@@ -797,7 +821,11 @@ describe("settleGroupBookingOnOrganiserCancel re-drivability (#1236)", () => {
     expect(mocks.paymentUpdate).not.toHaveBeenCalled();
     expect(mocks.bookingUpdate).toHaveBeenCalledWith({
       where: { id: "child-1" },
-      data: { status: BookingStatus.CANCELLED },
+      data: {
+        status: BookingStatus.CANCELLED,
+        adminCapacityHoldAt: null,
+        adminCapacityHoldByMemberId: null,
+      },
     });
   });
 });

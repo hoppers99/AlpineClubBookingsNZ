@@ -21,6 +21,7 @@ import { sendAdminPaymentFailureAlert } from "@/lib/email";
 import logger from "@/lib/logger";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 import { getDefaultLodgeId } from "@/lib/lodges";
+import { RELEASE_ADMIN_CAPACITY_HOLD_UPDATE } from "@/lib/booking-status";
 
 type ReconciliationBooking = Prisma.BookingGetPayload<{
   include: {
@@ -242,6 +243,7 @@ export async function markBookingPaymentSucceeded({
         data: {
           status: BookingStatus.CANCELLED,
           draftExpiresAt: null,
+          ...RELEASE_ADMIN_CAPACITY_HOLD_UPDATE,
         },
       });
       await reconcileBedAllocationsForBooking({
