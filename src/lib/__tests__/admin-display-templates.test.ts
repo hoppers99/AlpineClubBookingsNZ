@@ -17,6 +17,7 @@ const { mockPrisma, mockRequireAdmin } = vi.hoisted(() => ({
       update: vi.fn(),
     },
     lodge: { findUnique: vi.fn(), findFirst: vi.fn(), update: vi.fn() },
+    clubTheme: { findUnique: vi.fn().mockResolvedValue(null) },
     lodgeRoom: { findMany: vi.fn() },
     booking: { findMany: vi.fn() },
     choreAssignment: { findMany: vi.fn() },

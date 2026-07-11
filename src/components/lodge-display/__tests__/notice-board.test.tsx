@@ -14,6 +14,7 @@ import { evaluateDisplayCondition } from "@/lib/lodge-display/conditions";
 function state(overrides: Partial<DisplayState>): DisplayState {
   return {
     lodge: { name: "Silverpeak Lodge" },
+    club: { name: "Alpine Sports Club", logoDataUrl: null },
     generatedAt: "2026-04-13T00:00:00.000Z",
     window: { start: "2026-04-13", days: 3 },
     rooms: null,

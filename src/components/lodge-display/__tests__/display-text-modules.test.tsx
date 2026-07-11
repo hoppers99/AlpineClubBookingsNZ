@@ -16,6 +16,7 @@ import { DISPLAY_MODULE_COMPONENTS } from "@/components/lodge-display/modules";
 function state(overrides: Partial<DisplayState>): DisplayState {
   return {
     lodge: { name: "Silverpeak Lodge" },
+    club: { name: "Alpine Sports Club", logoDataUrl: null },
     generatedAt: "2026-04-13T00:00:00.000Z",
     window: { start: "2026-04-13", days: 3 },
     rooms: null,
@@ -84,9 +85,10 @@ describe("ChoresBoard (AC1/AC7)", () => {
     expect(screen.getByText("Organiser family")).toBeDefined();
   });
 
-  it("shows an explicit empty state", () => {
-    render(<ChoresBoard state={state({})} />);
-    expect(screen.getByText("No chores assigned")).toBeDefined();
+  it("renders no card at all when there are no chores (issue #56)", () => {
+    const { container } = render(<ChoresBoard state={state({})} />);
+    expect(container.querySelector(".display-chores-board-empty")).not.toBeNull();
+    expect(container.querySelector(".display-card")).toBeNull();
   });
 });
 
