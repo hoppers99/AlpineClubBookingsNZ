@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { strFromU8 } from "fflate";
+import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 
 vi.mock("server-only", () => ({}));
 
@@ -23,7 +23,13 @@ function sourceDb(): ReadDb {
   return {
     lodge: {
       findMany: vi.fn().mockResolvedValue([
-        { slug: "main", name: "Main Lodge", active: true, travelNote: "Turn left", doorCode: "9999", isDefault: true },
+        {
+          slug: "main", name: "Main Lodge", active: true, travelNote: "Turn left",
+          doorCode: "9999", isDefault: true,
+          displayConfig: { "wifi-code": "alpine1234" },
+          displayNameGranularity: "FULL_NAME",
+          displayNotice: "Working bee Sunday",
+        },
       ]),
     },
     lodgeRoom: {
@@ -60,6 +66,19 @@ function sourceDb(): ReadDb {
     },
     lodgeInstruction: { findMany: vi.fn().mockResolvedValue([]) },
     choreTemplate: { findMany: vi.fn().mockResolvedValue([]) },
+    displayTemplate: {
+      findMany: vi.fn().mockResolvedValue([
+        {
+          key: "our-foyer",
+          name: "Our foyer",
+          definition: {
+            key: "our-foyer",
+            name: "Our foyer",
+            regions: [{ key: "main", panels: [{ module: "arrivals-board", options: { days: 3 } }] }],
+          },
+        },
+      ]),
+    },
   } as unknown as ReadDb;
 }
 
@@ -73,6 +92,7 @@ function emptyTargetDb(): ReadDb {
     lodgeInstruction: { findMany: vi.fn().mockResolvedValue([]) },
     choreTemplate: { findMany: vi.fn().mockResolvedValue([]) },
     xeroToken: { findFirst: vi.fn().mockResolvedValue(null) },
+    displayTemplate: { findMany: vi.fn().mockResolvedValue([]) },
   } as unknown as ReadDb;
 }
 
@@ -147,5 +167,102 @@ describe("config-transfer lodge-config (per-lodge folders)", () => {
     expect(plan.integrityWarnings).toEqual([]);
     // The bundle designates "main" as default and the target has none yet.
     expect(cat.warnings.join(" ")).toMatch(/default lodge will be set to "main"/i);
+  });
+});
+
+describe("config-transfer lobby display (issue #50)", () => {
+  it("exports display settings in lodge.json and templates in display-templates.json", async () => {
+    const { zip } = await exportLodges(false);
+    const { files } = readBundle(zip);
+
+    const lodge = readJson(files, LODGE_JSON);
+    expect(lodge.displayConfig).toEqual({ "wifi-code": "alpine1234" });
+    expect(lodge.displayNameGranularity).toBe("FULL_NAME");
+    expect(lodge.displayNotice).toBe("Working bee Sunday");
+
+    const templates = JSON.parse(
+      strFromU8(files.get("lodge-config/display-templates.json")!),
+    ) as Array<{ key: string; definition: { regions: unknown[] } }>;
+    expect(templates).toHaveLength(1);
+    expect(templates[0].key).toBe("our-foyer");
+    expect(templates[0].definition.regions).toHaveLength(1);
+  });
+
+  it("plans display settings + template creates against an empty target", async () => {
+    const { zip } = await exportLodges(false);
+    const plan = await buildImportPlan(emptyTargetDb(), zip, { mode: "merge" });
+    const cat = plan.categories.find((c) => c.category === "lodge-config")!;
+    expect(cat.errors).toEqual([]);
+    const template = cat.items.find((i) => i.entity === "display-template");
+    expect(template).toMatchObject({ key: "our-foyer", action: "create" });
+  });
+
+  it("BLOCKS a bundle template referencing an unknown module (ADR-002 gate)", async () => {
+    const { zip } = await exportLodges(false);
+    const unzipped = unzipSync(zip);
+    unzipped["lodge-config/display-templates.json"] = strToU8(
+      JSON.stringify([
+        {
+          key: "evil",
+          name: "Evil",
+          definition: {
+            key: "evil",
+            name: "Evil",
+            regions: [{ key: "main", panels: [{ module: "crypto-miner" }] }],
+          },
+        },
+      ]),
+    );
+    const rezipped = zipSync(unzipped); // integrity is warn-only by design
+    const plan = await buildImportPlan(emptyTargetDb(), rezipped, { mode: "merge" });
+    const cat = plan.categories.find((c) => c.category === "lodge-config")!;
+    expect(cat.errors.join("\n")).toMatch(/unknown module "crypto-miner"/);
+    expect(cat.items.find((i) => i.entity === "display-template")).toBeUndefined();
+  });
+
+  it("rejects invalid display settings in lodge.json with explicit errors", async () => {
+    const { zip } = await exportLodges(false);
+    const unzipped = unzipSync(zip);
+    unzipped[LODGE_JSON] = strToU8(
+      JSON.stringify({
+        slug: "main",
+        name: "Main Lodge",
+        active: true,
+        displayNameGranularity: "SHOUT_EVERYTHING",
+        displayConfig: { "Bad Key!": "x" },
+        displayNotice: "x".repeat(2001),
+      }),
+    );
+    const rezipped = zipSync(unzipped); // integrity is warn-only by design
+    const plan = await buildImportPlan(emptyTargetDb(), rezipped, { mode: "merge" });
+    const cat = plan.categories.find((c) => c.category === "lodge-config")!;
+    const joined = cat.errors.join("\n");
+    expect(joined).toMatch(/displayNameGranularity/);
+    expect(joined).toMatch(/displayConfig key "Bad Key!"/);
+    expect(joined).toMatch(/displayNotice/);
+  });
+
+  it("diffs Json fields structurally (same template re-imported = unchanged)", async () => {
+    const { zip } = await exportLodges(false);
+    const db = emptyTargetDb() as unknown as {
+      displayTemplate: { findMany: ReturnType<typeof vi.fn> };
+    };
+    db.displayTemplate.findMany.mockResolvedValue([
+      {
+        key: "our-foyer",
+        name: "Our foyer",
+        definition: {
+          // Key order deliberately DIFFERENT from the export — a structural
+          // diff must still see equality.
+          regions: [{ panels: [{ options: { days: 3 }, module: "arrivals-board" }], key: "main" }],
+          name: "Our foyer",
+          key: "our-foyer",
+        },
+      },
+    ]);
+    const plan = await buildImportPlan(db as unknown as ReadDb, zip, { mode: "merge" });
+    const cat = plan.categories.find((c) => c.category === "lodge-config")!;
+    const template = cat.items.find((i) => i.entity === "display-template");
+    expect(template?.action).toBe("unchanged");
   });
 });
