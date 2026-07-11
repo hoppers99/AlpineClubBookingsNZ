@@ -58,11 +58,15 @@ every screen:
   action confirmations and failures — a button was clicked, the action
   succeeded or failed, there is nothing further to read or fix in place
   (e.g. "Invitation sent", "Profile updated", "Banner deleted").
-- **Inline banners** for feedback the user must act on in place: validation
-  errors pointing at form fields, multi-step flow outcomes that carry
-  next-step content (cancellation summaries, nomination confirmations), and
-  long admin forms — pair those with the `use-scroll-to-feedback` hook so the
-  banner is brought into view.
+- **Inline `Alert` (`src/components/ui/alert.tsx`)** for persistent page state
+  the user must act on in place: validation errors pointing at form fields,
+  multi-step flow outcomes that carry next-step content (cancellation
+  summaries, nomination confirmations), and long admin forms — pair those with
+  the `use-scroll-to-feedback` hook so the banner is brought into view. Use its
+  four variants (`info`/`success`/`warning`/`error`), each of which pairs a
+  lucide icon with its text so status is never signalled by colour alone, and
+  reads the semantic tokens so it adapts to dark mode. Prefer `Alert` over
+  hand-rolled coloured banner `<div>`s.
 - **Destructive confirmations** use `useConfirm()` from
   `src/components/confirm-dialog.tsx`, never `window.confirm`.
 
