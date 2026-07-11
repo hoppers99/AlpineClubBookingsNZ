@@ -154,7 +154,7 @@ describe("registry resolution (AC1/AC2/AC3)", () => {
 
   it("resolves a built-in when no DB row exists", async () => {
     const { resolveDisplayTemplate } = await import(
-      "@/lib/lodge-display/template-registry"
+      "@/lib/lodge-display/template-resolution"
     );
     const resolved = await resolveDisplayTemplate("everyday-board");
     expect(resolved?.source).toBe("built-in");
@@ -172,7 +172,7 @@ describe("registry resolution (AC1/AC2/AC3)", () => {
       },
     });
     const { resolveDisplayTemplate } = await import(
-      "@/lib/lodge-display/template-registry"
+      "@/lib/lodge-display/template-resolution"
     );
     const resolved = await resolveDisplayTemplate("everyday-board");
     expect(resolved?.source).toBe("override");
@@ -192,7 +192,7 @@ describe("registry resolution (AC1/AC2/AC3)", () => {
       },
     });
     const { resolveDisplayTemplate } = await import(
-      "@/lib/lodge-display/template-registry"
+      "@/lib/lodge-display/template-resolution"
     );
     const resolved = await resolveDisplayTemplate("our-foyer");
     expect(resolved?.source).toBe("custom");
@@ -208,7 +208,10 @@ describe("registry resolution (AC1/AC2/AC3)", () => {
         regions: [{ key: "main", panels: [{ module: "not-a-module" }] }],
       },
     });
-    const { resolveDisplayTemplate, InvalidDisplayTemplateError } = await import(
+    const { resolveDisplayTemplate } = await import(
+      "@/lib/lodge-display/template-resolution"
+    );
+    const { InvalidDisplayTemplateError } = await import(
       "@/lib/lodge-display/template-registry"
     );
     await expect(resolveDisplayTemplate("everyday-board")).rejects.toThrow(
@@ -218,7 +221,7 @@ describe("registry resolution (AC1/AC2/AC3)", () => {
 
   it("returns null for an unknown key", async () => {
     const { resolveDisplayTemplate } = await import(
-      "@/lib/lodge-display/template-registry"
+      "@/lib/lodge-display/template-resolution"
     );
     expect(await resolveDisplayTemplate("nope")).toBeNull();
   });

@@ -1,11 +1,15 @@
 import type { DisplayState } from "../lodge-display-state";
-import { prisma } from "../prisma";
 import {
   DISPLAY_CONDITION_NAMES,
   evaluateDisplayCondition,
   isDisplayConditionName,
   type DisplayConditionName,
 } from "./conditions";
+
+// NOTE: this module is CLIENT-SAFE by design — pure data, validation, and
+// eligibility logic only, no prisma/database imports. The display page's
+// client bundle imports it; DB-backed template resolution lives in
+// template-resolution.ts (server-only).
 
 // Lobby display template registry (fork issue #29, ADR-002): data-only
 // template definitions validated against closed module/condition name
@@ -233,30 +237,8 @@ export interface ResolvedDisplayTemplate {
   source: "built-in" | "override" | "custom";
 }
 
-/**
- * Resolve a template key: a DB row (override of a built-in key, or a custom
- * template) wins over the code default (ADR-002 §2, issue #29 AC2). Returns
- * null for an unknown key; throws InvalidDisplayTemplateError if a stored
- * definition fails validation.
- */
-export async function resolveDisplayTemplate(
-  key: string
-): Promise<ResolvedDisplayTemplate | null> {
-  const row = await prisma.displayTemplate.findUnique({ where: { key } });
-  const builtIn = BUILT_IN_DEFINITIONS.find((definition) => definition.key === key);
-
-  if (row) {
-    const definition = validateDisplayTemplateDefinition(row.definition);
-    return {
-      definition,
-      source: builtIn ? "override" : "custom",
-    };
-  }
-  if (builtIn) {
-    return { definition: { ...builtIn }, source: "built-in" };
-  }
-  return null;
-}
+/** The club-wide default template for a device with no explicit binding. */
+export const DEFAULT_DISPLAY_TEMPLATE_KEY = "everyday-board";
 
 /**
  * Filter a region's panels to those whose condition holds for the current

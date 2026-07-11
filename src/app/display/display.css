@@ -1,0 +1,226 @@
+/* Lobby TV display stylesheet (fork issue #32). Dedicated to the /display
+ * surface: designed for a 16:9 screen read across a room, dark by default,
+ * sized with viewport units so a TV, a Pi, or a browser window all render
+ * sensibly. Visual reference: docs/lobby-display/mockups/. */
+
+.display-shell {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: #0b1b1e;
+  color: #e8f1f2;
+  font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  overflow: hidden;
+}
+
+/* --- pairing / loading ------------------------------------------------- */
+
+.display-pairing,
+.display-loading {
+  align-items: center;
+  justify-content: center;
+  gap: 2vh;
+  text-align: center;
+  padding: 6vmin;
+}
+
+.display-pairing-kicker {
+  font-size: 3vmin;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: #7fb6bd;
+}
+
+.display-pairing-code {
+  font-size: 14vmin;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  color: #ffffff;
+}
+
+.display-pairing-help {
+  font-size: 2.4vmin;
+  color: #9db8bc;
+  max-width: 60vmin;
+}
+
+/* --- active screen ----------------------------------------------------- */
+
+.display-screen {
+  flex: 1;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  padding: 2.5vmin 3vmin;
+  gap: 2vmin;
+  position: relative;
+}
+
+.display-region-header { display: flex; }
+.display-region-main { overflow: hidden; }
+.display-region-footer { display: flex; }
+
+.display-lodge-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  width: 100%;
+}
+
+.display-lodge-name { font-size: 4vmin; font-weight: 700; }
+.display-lodge-date { font-size: 2.6vmin; color: #9db8bc; }
+
+.display-info-footer {
+  display: flex;
+  gap: 4vmin;
+  font-size: 2.2vmin;
+  color: #9db8bc;
+  border-top: 1px solid #1e3a3f;
+  padding-top: 1.5vmin;
+  width: 100%;
+}
+
+.display-stale-badge {
+  position: absolute;
+  top: 2vmin;
+  right: 3vmin;
+  font-size: 1.8vmin;
+  color: #0b1b1e;
+  background: #e8c268;
+  border-radius: 0.6vmin;
+  padding: 0.4vmin 1.2vmin;
+  font-weight: 700;
+}
+
+/* --- arrivals bar board ------------------------------------------------- */
+
+.display-arrivals-board {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8vmin;
+  height: 100%;
+}
+
+.display-board-head {
+  display: grid;
+  grid-template-columns: 16vmin 1fr;
+  font-size: 2vmin;
+  color: #7fb6bd;
+}
+
+.display-board-head .display-board-day { text-align: left; }
+
+.display-arrivals-board[data-days="3"] .display-board-head {
+  grid-template-columns: 16vmin repeat(3, 1fr);
+}
+
+.display-board-row {
+  display: grid;
+  grid-template-columns: 16vmin 1fr;
+  align-items: start;
+  border-top: 1px solid #16333a;
+  padding-top: 0.8vmin;
+}
+
+.display-board-room { font-size: 2.4vmin; font-weight: 600; }
+
+.display-board-lanes {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-auto-rows: minmax(4.6vmin, max-content);
+  gap: 0.6vmin;
+}
+
+.display-bar {
+  background: #1f5c50;
+  border-left: 0.6vmin solid #5fd3a5;
+  border-radius: 0.8vmin;
+  padding: 0.6vmin 1vmin;
+  font-size: 2vmin;
+  line-height: 1.25;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.display-bar[data-whole-lodge] { background: #3c3760; border-left-color: #a99df2; }
+.display-bar[data-ends-after] { border-right: 0.6vmin solid #e8c268; }
+
+.display-bar-names { font-weight: 600; overflow-wrap: anywhere; }
+.display-bar-overflow { color: #bfe3d9; font-weight: 400; }
+.display-bar-out { font-size: 1.6vmin; color: #9db8bc; }
+
+/* --- blockout / welcome ------------------------------------------------- */
+
+.display-occupancy-grid,
+.display-welcome {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2vh;
+  text-align: center;
+}
+
+.display-blockout-kicker,
+.display-welcome-kicker {
+  font-size: 2.6vmin;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  color: #7fb6bd;
+}
+
+.display-blockout-label,
+.display-welcome-group { font-size: 8vmin; font-weight: 800; }
+
+.display-blockout-detail,
+.display-welcome-note { font-size: 2.6vmin; color: #9db8bc; }
+
+.display-occupancy-strip {
+  display: flex;
+  gap: 3vmin;
+  font-size: 2vmin;
+  color: #9db8bc;
+}
+
+.display-occupancy-day { display: flex; flex-direction: column; align-items: center; }
+.display-occupancy-count { font-size: 3vmin; font-weight: 700; color: #e8f1f2; }
+
+/* --- singles board ------------------------------------------------------ */
+
+.display-singles-board {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(38vmin, 1fr));
+  gap: 0.8vmin 3vmin;
+  align-content: start;
+  height: 100%;
+}
+
+.display-singles-row {
+  display: flex;
+  gap: 1.5vmin;
+  font-size: 2.2vmin;
+  border-bottom: 1px solid #16333a;
+  padding-bottom: 0.5vmin;
+  align-items: baseline;
+}
+
+.display-singles-room { color: #7fb6bd; min-width: 9vmin; }
+.display-singles-guest { font-weight: 600; flex: 1; }
+.display-singles-out { font-size: 1.7vmin; color: #9db8bc; }
+
+/* --- chores / rules ------------------------------------------------------ */
+
+.display-chores-board { font-size: 2.2vmin; display: flex; flex-direction: column; gap: 1.5vmin; }
+.display-chores-date { color: #7fb6bd; font-weight: 600; }
+.display-chores-list { list-style: none; margin: 0; padding: 0; }
+.display-chore { display: flex; justify-content: space-between; gap: 2vmin; padding: 0.4vmin 0; }
+.display-chore-assignees { color: #9db8bc; }
+.display-chores-empty { color: #9db8bc; }
+
+.display-lodge-rules { font-size: 2vmin; overflow: hidden; }
+.display-rules-title { font-size: 2.6vmin; margin: 0 0 1vmin; }
+.display-rules-body p { margin: 0 0 1vmin; }
+
+.display-module-placeholder { min-height: 4vmin; }
