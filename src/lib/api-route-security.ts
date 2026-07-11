@@ -123,6 +123,16 @@ export const explicitPublicApiRoutes = {
     boundary: "public",
     reason: "Token-bearing non-member group join confirmation; only the matching SHA-256 token resolves a staged join, the create is idempotent and rate limited, and it mirrors the booking-request approval conversion (non-login member, PENDING child booking, pay link).",
   },
+  "src/app/api/display/pair/route.ts": {
+    boundary: "public",
+    reason:
+      "Lobby display pairing (ADR-001): anonymous start issues a code inside an HMAC-signed httpOnly blob and persists nothing; claim can only present the code from its own signed blob and succeeds only after an admin binds that code to a device. Both actions rate limited; module-flag gated at the proxy.",
+  },
+  "src/app/api/display/heartbeat/route.ts": {
+    boundary: "public",
+    reason:
+      "Display-token-authenticated heartbeat (ADR-001): sessionless hashed-token credential resolves to one device; updates only that device's lastSeenAt; rejected tokens update nothing. Rate limited; module-flag gated at the proxy.",
+  },
   "src/app/api/health/ready/route.ts": {
     boundary: "public",
     reason: "Readiness endpoint for load balancers and deploy checks.",

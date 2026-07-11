@@ -119,6 +119,7 @@ export const config = {
     "/api/admin/bookings/:id/force-confirm",
     "/api/chores/:path*",
     "/api/cron/xero",
+    "/api/display/:path*",
     "/api/finance/:path*",
     "/api/group-bookings/:path*",
     "/api/inductions/:path*",
