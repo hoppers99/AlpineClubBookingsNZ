@@ -9,7 +9,9 @@ wifi details and check-in reminders. Everything on screen is driven by data the
 system already holds — nothing to manually update, safe to hang on a public
 wall and forget.
 
-> **Status:** in development on the `feature/lobby-display` branch.
+> **Status:** feature-complete on the `feature/lobby-display` branch —
+> all eleven delivery tasks are merged and awaiting the end-to-end owner
+> review before the single upstream PR.
 > Delivery is tracked in [epic hoppers99#25](https://github.com/hoppers99/AlpineClubBookingsNZ/issues/25);
 > the feature was proposed and discussed in
 > [upstream discussion #964](https://github.com/thatskiff33/AlpineClubBookingsNZ/discussions/964#discussioncomment-17602129).
@@ -45,9 +47,11 @@ read at a glance, always matching the booking system.
   each screen area shows; panels rotate only when they make sense (e.g. the
   whole-lodge view appears only while the lodge actually has a full-lodge
   booking).
-- **Privacy-aware by design** — configurable name granularity, enforced at the
-  data layer so no template can display more than the API serves. Exact naming
-  rules are an open design question (see the brief).
+- **Privacy-aware by design** — configurable name granularity (full name /
+  first name + initial / first name / counts only), enforced at the data
+  layer so no template can display more than the API serves; bookings that
+  include children always collapse to a family label, and organisations
+  (schools) show their group name only.
 - **Optional module** — feature-flagged off by default; clubs that don't enable
   it see nothing.
 - **Later** — skifield weather/conditions panel reusing the existing conditions

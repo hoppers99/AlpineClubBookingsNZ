@@ -1,7 +1,8 @@
 # Lobby TV Display — Design Specification
 
-**Status:** Draft — fork feature in development on the `feature/lobby-display`
-integration branch. Not yet proposed upstream as code; heads-up posted in
+**Status:** Implemented on the `feature/lobby-display` integration branch
+(epic hoppers99#25, all tasks merged). Not yet proposed upstream as code;
+heads-up posted in
 [upstream discussion #964](https://github.com/thatskiff33/AlpineClubBookingsNZ/discussions/964#discussioncomment-17602129).
 
 This document expands the [feature brief](brief.md) into a technical design —
