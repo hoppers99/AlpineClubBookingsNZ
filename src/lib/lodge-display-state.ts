@@ -292,6 +292,12 @@ export async function buildDisplayState(
 
   // --- occupancy + per-booking visibility per window day -------------------
   const perBookingDayCounts = new Map<string, Map<string, number>>();
+  // NIGHT counts (departure day excluded) drive whole-lodge detection: a
+  // group leaving Monday morning still had the lodge to itself even when
+  // someone arrives Monday evening (issue #58 — the departure-day overlap
+  // used to break the blockout for every back-to-back handover).
+  const perBookingNightCounts = new Map<string, Map<string, number>>();
+  const nightTotals = new Map<string, number>();
   const occupancy = windowDates.map((date) => {
     const dateKey = formatDateOnly(date);
     let arriving = 0;
@@ -313,6 +319,18 @@ export async function buildDisplayState(
         }
         dayMap.set(dateKey, visible.length);
       }
+      const nightGuests = visible.filter(
+        (guest) => getGuestStayEnd(guest, booking).getTime() !== date.getTime()
+      );
+      if (nightGuests.length > 0) {
+        let nightMap = perBookingNightCounts.get(booking.id);
+        if (!nightMap) {
+          nightMap = new Map();
+          perBookingNightCounts.set(booking.id, nightMap);
+        }
+        nightMap.set(dateKey, nightGuests.length);
+        nightTotals.set(dateKey, (nightTotals.get(dateKey) ?? 0) + nightGuests.length);
+      }
       staying += visible.length;
       arriving += visible.filter(
         (guest) => getGuestStayStart(guest, booking).getTime() === date.getTime()
@@ -325,19 +343,18 @@ export async function buildDisplayState(
     return { date: dateKey, arriving, departing, staying };
   });
 
-  // --- whole-lodge detection (design.md §10): sole occupancy on every day
-  // the booking appears, and a genuine group (organisation or >= threshold).
+  // --- whole-lodge detection (design.md §10): sole occupancy on every NIGHT
+  // the booking covers, and a genuine group (organisation or >= threshold).
   const wholeLodgeBookingIds = new Set<string>();
   for (const booking of bookings) {
-    const dayMap = perBookingDayCounts.get(booking.id);
-    if (!dayMap || dayMap.size === 0) continue;
-    const isSoleOnAllDays = [...dayMap.entries()].every(([dateKey, count]) => {
-      const day = occupancy.find((entry) => entry.date === dateKey);
-      return day !== undefined && day.staying === count;
-    });
+    const nightMap = perBookingNightCounts.get(booking.id);
+    if (!nightMap || nightMap.size === 0) continue;
+    const isSoleOnAllNights = [...nightMap.entries()].every(
+      ([dateKey, count]) => nightTotals.get(dateKey) === count
+    );
     const guestCount = booking.guests.length;
     const isOrganisation = booking.member.ageTier === "NOT_APPLICABLE";
-    if (isSoleOnAllDays && (isOrganisation || guestCount >= WHOLE_LODGE_MIN_GUESTS)) {
+    if (isSoleOnAllNights && (isOrganisation || guestCount >= WHOLE_LODGE_MIN_GUESTS)) {
       wholeLodgeBookingIds.add(booking.id);
     }
   }

@@ -198,6 +198,70 @@ describe("OccupancyGrid / WelcomePanel (whole-lodge treatment, AC3/AC5)", () => 
     expect(screen.getByText(/Welcome to Silverpeak Lodge/)).toBeDefined();
     expect(screen.getByText("Harakeke College")).toBeDefined();
   });
+
+  it("welcome shows the mock's info tiles for the group (issue #58)", () => {
+    const { container } = render(
+      <WelcomePanel
+        state={{
+          ...blockoutState,
+          config: { "whole-lodge-note": "See your group leader" },
+        }}
+      />
+    );
+    expect(screen.getByText("Group")).toBeDefined();
+    expect(screen.getByText("Staying")).toBeDefined();
+    expect(screen.getByText("See your group leader")).toBeDefined();
+    expect(container.querySelectorAll(".display-welcome-tile").length).toBe(3);
+  });
+
+  it("statement variant (no rooms) renders the block statement with a week strip (issue #58)", () => {
+    const { container } = render(<OccupancyGrid state={blockoutState} />);
+    expect(screen.getByText("The lodge is fully booked")).toBeDefined();
+    expect(container.querySelectorAll(".display-week-day").length).toBe(3);
+  });
+
+  it("board variant blocks only the booked nights and keeps other bars (part-week, issue #58)", () => {
+    const partWeek = state({
+      rooms: [
+        { id: "room-1", name: "A - Kea" },
+        { id: "room-2", name: "B - Tui" },
+      ],
+      bookings: [
+        row({
+          key: "row-wl",
+          wholeLodge: true,
+          label: "Harakeke College",
+          guests: null,
+          guestCount: 42,
+          roomId: null,
+          stayStart: "2026-04-13",
+          stayEnd: "2026-04-15", // nights 13+14; the 15th is free
+        }),
+        row({
+          key: "row-jess",
+          label: "Jess L",
+          guests: [
+            { label: "Jess L", stayStart: "2026-04-15", stayEnd: "2026-04-16" },
+          ],
+          guestCount: 1,
+          roomId: "room-2",
+          stayStart: "2026-04-15",
+          stayEnd: "2026-04-16",
+        }),
+      ],
+    });
+    const { container } = render(<OccupancyGrid state={partWeek} />);
+    const block = container.querySelector(".display-blockout-panel") as HTMLElement;
+    expect(block).not.toBeNull();
+    // Columns 2..3 (nights 13+14) — column 4 (the 15th) stays free.
+    expect(block.style.gridColumnStart).toBe("2");
+    expect(block.style.gridColumnEnd).toBe("span 2");
+    expect(screen.getByText("Jess L")).toBeDefined();
+    // The room with a live bar lights up; the held room stays dimmed.
+    const rooms = container.querySelectorAll(".display-board-room");
+    expect(rooms[1].hasAttribute("data-live")).toBe(true);
+    expect(rooms[0].hasAttribute("data-live")).toBe(false);
+  });
 });
 
 describe("SinglesBoard (AC4)", () => {
@@ -218,8 +282,9 @@ describe("SinglesBoard (AC4)", () => {
       />
     );
     expect(screen.getByText("Jane S")).toBeDefined();
-    expect(screen.getByText("out 2026-04-14")).toBeDefined();
-    expect(screen.getByText("out 2026-04-15")).toBeDefined();
+    // Weekday out labels (issue #58) — each guest keeps their own check-out.
+    expect(screen.getByText("out Tue 14")).toBeDefined();
+    expect(screen.getByText("out Wed 15")).toBeDefined();
   });
 
   it("keeps reduced labels for counts-only rows", () => {

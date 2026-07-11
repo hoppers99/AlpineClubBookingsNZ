@@ -95,11 +95,13 @@ model DisplayTemplate {
 // Per-lodge config glob (probably a field, not a model):
 // Lodge.displayConfig Json?  — {"wifi-code": "...", "checkin-note": "..."}
 //
-// Keys the built-in furniture reads (LTV-015; any other key is available
-// to templates via {{config:<key>}}):
+// Keys the built-in furniture reads (LTV-015/016; any other key is
+// available to templates via {{config:<key>}}):
 //   wifi-name / wifi-code  — the footer Wi-Fi item
 //   contact-email          — the footer email item
 //   footer-note            — right-aligned accent note in the footer
+//   whole-lodge-note       — note pill on the blockout panel + welcome tile
+//   checkin-note           — message line on the welcome panel
 ```
 
 Notes:
@@ -318,9 +320,12 @@ upstream owner's input on discussion #964):
    clubs): the booking shows the organisation's full name at every level;
    its guests are never listed individually.
 2. **Whole-lodge blockout**: a booking that is the sole occupant on every
-   day it appears in the window AND is a genuine group (organisation, or
-   ≥ `WHOLE_LODGE_MIN_GUESTS` = 8 guests) collapses to its label only. The
-   guest-count heuristic is a v1 constant — review-flagged on epic #25.
+   NIGHT it covers in the window AND is a genuine group (organisation, or
+   ≥ `WHOLE_LODGE_MIN_GUESTS` = 8 guests) collapses to its label only. Sole
+   occupancy is measured on nights, not departure-day visibility (LTV-016):
+   a group leaving in the morning keeps its blockout even when the next
+   booking arrives that evening. The guest-count heuristic is a v1
+   constant — review-flagged on epic #25.
 3. **Bookings containing minors** (`ageTier` INFANT/CHILD/YOUTH): collapse
    to a family label — "«Surname» family" at the two fuller levels,
    "Family of N" at `FIRST_NAME_ONLY` — and guests are never listed.

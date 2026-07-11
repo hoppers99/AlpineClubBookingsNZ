@@ -304,20 +304,178 @@
   font-weight: 600;
 }
 
-/* --- blockout / welcome ------------------------------------------------- */
+/* --- whole-lodge blockout (issue #58; mocks whole-lodge.html A/B/C) ------- */
 
-.display-occupancy-grid,
+/* Board variant: grid chrome stays, the block panel spans the booked nights. */
+.display-blockout-board {
+  display: grid;
+  grid-template-columns: 17vmin repeat(var(--display-days, 3), 1fr);
+  grid-template-rows: auto repeat(var(--display-block-rooms, 8), minmax(0, 1fr));
+  height: 100%;
+  min-width: 0;
+}
+
+.display-blockout-head {
+  grid-row: 1;
+  font-size: 2vmin;
+  font-weight: 700;
+  color: var(--display-muted);
+  border-bottom: 0.22vmin solid var(--display-line);
+  padding: 0 0 1vmin 1.2vmin;
+  display: flex;
+  align-items: flex-end;
+}
+
+.display-blockout-head.display-board-corner { padding-left: 0; }
+
+.display-blockout-board .display-board-room {
+  grid-column: 1;
+  border-bottom: 1px solid var(--display-line);
+  color: var(--display-muted);
+  opacity: 0.7;
+}
+
+.display-blockout-board .display-board-room[data-live] {
+  color: var(--display-ink);
+  opacity: 1;
+}
+
+.display-blockout-cells {
+  border-bottom: 1px solid var(--display-line);
+  background-image: linear-gradient(
+    to right,
+    var(--display-line) 0,
+    var(--display-line) 1px,
+    transparent 1px
+  );
+  background-size: calc(100% / var(--display-days, 3)) 100%;
+}
+
+.display-blockout-board .display-bar { z-index: 1; }
+
+.display-blockout-panel {
+  z-index: 2;
+  margin: 0.7vmin 0.6vmin;
+  border-radius: 1.6vmin;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 2vmin 1.4vmin;
+  background: linear-gradient(
+    160deg,
+    color-mix(in srgb, var(--display-group) 30%, var(--display-panel)),
+    color-mix(in srgb, var(--display-group) 15%, var(--display-panel))
+  );
+  box-shadow: inset 0 0 0 0.22vmin color-mix(in srgb, var(--display-group) 55%, transparent);
+  overflow: hidden;
+}
+
+.display-blockout-kicker {
+  font-size: 1.9vmin;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  font-weight: 800;
+  color: var(--display-group);
+}
+
+.display-blockout-label {
+  font-size: 5.6vmin;
+  font-weight: 850;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+  margin: 1vmin 0 0.5vmin;
+}
+
+.display-blockout-sub { font-size: 2.4vmin; font-weight: 600; }
+
+.display-blockout-dates {
+  font-size: 2vmin;
+  color: var(--display-muted);
+  margin-top: 0.7vmin;
+  font-variant-numeric: tabular-nums;
+}
+
+.display-blockout-note {
+  margin-top: 1.5vmin;
+  font-size: 1.75vmin;
+  color: var(--display-muted);
+  background: var(--display-panel);
+  border: 1px solid var(--display-line);
+  border-radius: 1vmin;
+  padding: 0.8vmin 1.4vmin;
+}
+
+/* Statement variant: no rooms — a clean full-width block + week strip. */
+.display-blockout-statement {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.display-blockout-statement .display-blockout-kicker { font-size: 2.2vmin; letter-spacing: 0.16em; }
+.display-blockout-statement .display-blockout-label { font-size: 9vmin; margin: 1.2vmin 0 0.6vmin; }
+.display-blockout-statement .display-blockout-sub { font-size: 3.2vmin; }
+.display-blockout-statement .display-blockout-dates { font-size: 2.6vmin; margin-top: 1.2vmin; }
+.display-blockout-statement .display-blockout-note {
+  margin-top: 2vmin;
+  font-size: 2.1vmin;
+  padding: 1.1vmin 2vmin;
+}
+
+.display-week-strip {
+  display: flex;
+  gap: 1.4vmin;
+  margin-top: 3vmin;
+  width: 80%;
+}
+
+.display-week-day { flex: 1; text-align: center; }
+.display-week-name { font-size: 1.9vmin; color: var(--display-muted); }
+.display-week-day[data-today] .display-week-name { color: var(--display-accent); font-weight: 700; }
+
+.display-week-bar {
+  display: block;
+  height: 2vmin;
+  border-radius: 1vmin;
+  background: var(--display-line);
+  margin-top: 0.9vmin;
+  overflow: hidden;
+}
+
+.display-week-bar span {
+  display: block;
+  height: 100%;
+  border-radius: 1vmin;
+  background: var(--display-accent);
+}
+
+.display-week-bar span[data-blocked] { background: var(--display-group); }
+
+.display-week-count {
+  display: block;
+  font-size: 2.2vmin;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  margin-top: 0.7vmin;
+}
+
+/* --- welcome panel (issue #58; mock whole-lodge-rotating.html B) ---------- */
+
 .display-welcome {
   height: 100%;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 2vh;
+  gap: 1.2vmin;
   text-align: center;
 }
 
-.display-blockout-kicker,
 .display-welcome-kicker {
   font-size: 2.6vmin;
   letter-spacing: 0.25em;
@@ -325,44 +483,125 @@
   color: var(--display-muted);
 }
 
-.display-blockout-label,
-.display-welcome-group { font-size: 8vmin; font-weight: 800; }
+.display-welcome-group { font-size: 8vmin; font-weight: 850; letter-spacing: -0.02em; }
 
-.display-blockout-detail,
-.display-welcome-note { font-size: 2.6vmin; color: var(--display-muted); }
+.display-welcome-note { font-size: 3vmin; font-weight: 600; }
 
-.display-occupancy-strip {
+.display-welcome-tiles {
   display: flex;
-  gap: 3vmin;
-  font-size: 2vmin;
-  color: var(--display-muted);
+  gap: 1.8vmin;
+  margin-top: 3.2vmin;
+  width: 82%;
 }
 
-.display-occupancy-day { display: flex; flex-direction: column; align-items: center; }
-.display-occupancy-count { font-size: 3vmin; font-weight: 700; color: var(--display-ink); }
+.display-welcome-tile {
+  flex: 1;
+  background: var(--display-panel);
+  border: 1px solid var(--display-line);
+  border-radius: 1.4vmin;
+  padding: 1.6vmin 1.2vmin;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6vmin;
+}
 
-/* --- singles board ------------------------------------------------------ */
+.display-tile-key {
+  color: var(--display-muted);
+  font-size: 1.7vmin;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.display-tile-value { font-size: 2.7vmin; font-weight: 750; }
+.display-tile-value small { font-weight: 600; color: var(--display-muted); font-size: 1.9vmin; }
+
+/* --- singles by-booking board (issue #58; mock singles-by-booking.html) --- */
 
 .display-singles-board {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(38vmin, 1fr));
-  gap: 0.8vmin 3vmin;
+  grid-template-columns: 14vmin 22vmin repeat(var(--display-days, 3), 1fr);
+  /* Mock sizing: a full house of 32 rows must fit one 16:9 screen. */
+  grid-auto-rows: minmax(2.15vmin, auto);
   align-content: start;
   height: 100%;
+  min-width: 0;
+  overflow: hidden;
 }
 
-.display-singles-row {
+.display-singles-board:not([data-has-rooms]) {
+  grid-template-columns: 26vmin repeat(var(--display-days, 3), 1fr);
+}
+
+.display-singles-head {
+  grid-row: 1;
+  font-size: 1.7vmin;
+  font-weight: 700;
+  color: var(--display-muted);
+  border-bottom: 0.22vmin solid var(--display-line);
+  padding: 0 0 0.8vmin 0.8vmin;
   display: flex;
-  gap: 1.5vmin;
-  font-size: 2.2vmin;
-  border-bottom: 1px solid var(--display-line);
-  padding-bottom: 0.5vmin;
-  align-items: baseline;
+  align-items: flex-end;
 }
 
-.display-singles-room { color: var(--display-muted); min-width: 9vmin; }
-.display-singles-guest { font-weight: 600; flex: 1; }
-.display-singles-out { font-size: 1.7vmin; color: var(--display-muted); }
+.display-singles-head[data-today] { color: var(--display-accent); }
+
+.display-singles-room {
+  grid-column: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.7vmin;
+  font-size: 1.85vmin;
+  font-weight: 750;
+  border-bottom: 1px solid var(--display-line);
+  border-right: 1px solid var(--display-line);
+  padding: 0 1vmin;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.display-singles-guest {
+  display: flex;
+  align-items: center;
+  font-size: 1.7vmin;
+  font-weight: 600;
+  border-bottom: 1px solid var(--display-line);
+  padding: 0 1vmin;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.display-singles-track {
+  border-bottom: 1px solid var(--display-line);
+  background-image: linear-gradient(
+    to right,
+    var(--display-line) 0,
+    var(--display-line) 1px,
+    transparent 1px
+  );
+  background-size: calc(100% / var(--display-days, 3)) 100%;
+}
+
+.display-singles-bar {
+  z-index: 1;
+  margin: 0.25vmin 0.4vmin;
+  border-radius: 0.8vmin;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 1vmin;
+  overflow: hidden;
+  font-size: 1.35vmin;
+  font-weight: 700;
+  color: var(--display-muted);
+  white-space: nowrap;
+  background: color-mix(in srgb, var(--display-arriving) 26%, var(--display-panel));
+  box-shadow: inset 0.4vmin 0 0 var(--display-arriving);
+}
+
+.display-singles-bar[data-departing] {
+  background: color-mix(in srgb, var(--display-departing) 26%, var(--display-panel));
+  box-shadow: inset -0.4vmin 0 0 var(--display-departing);
+}
 
 /* --- chores / rules ------------------------------------------------------ */
 
