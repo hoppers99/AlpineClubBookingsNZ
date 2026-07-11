@@ -20,6 +20,12 @@ import {
   type ReadDb,
 } from "../import-types";
 import { RowValidator, asStr, coerceBool, nz, readCsvRows } from "../values";
+import {
+  InvalidDisplayTemplateError,
+  listBuiltInDisplayTemplates,
+  validateDisplayTemplateDefinition,
+  type DisplayTemplateDefinition,
+} from "../../lodge-display/template-registry";
 
 // lodge-config category (part 1): lodges + their rooms + beds + seasons + rates
 // — the structural "multi-lodge" core. Each lodge is a self-contained folder,
@@ -47,7 +53,25 @@ const BEDS_CSV = "beds.csv";
 const SEASONS_CSV = "seasons.csv";
 const RATES_CSV = "season-rates.csv";
 
-const LODGE_FIELDS = ["slug", "name", "active", "travelNote", "doorCode", "isDefault"] as const;
+const LODGE_FIELDS = [
+  "slug", "name", "active", "travelNote", "doorCode", "isDefault",
+  // Lobby display settings (fork epic #25 / issue #50): the per-lodge
+  // {{config:<key>}} glob, the name-granularity override, and the committee
+  // notice travel with the lodge descriptor.
+  "displayConfig", "displayNameGranularity", "displayNotice",
+] as const;
+
+/** Club-wide lobby display templates (issue #50): one JSON file of
+ * DisplayTemplate rows. `source` is NOT transferred — it is derived on apply
+ * (a built-in key imports as BUILT_IN_OVERRIDE, anything else as CUSTOM). */
+export const DISPLAY_TEMPLATES_FILE = "lodge-config/display-templates.json";
+const DISPLAY_TEMPLATE_FIELDS = ["key", "name", "definition"] as const;
+const DISPLAY_GRANULARITIES = [
+  "FULL_NAME", "FIRST_NAME_SURNAME_INITIAL", "FIRST_NAME_ONLY", "COUNTS_ONLY",
+] as const;
+const DISPLAY_CONFIG_KEY_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const DISPLAY_CONFIG_VALUE_MAX = 500;
+const DISPLAY_NOTICE_MAX = 2000;
 const ROOM_FIELDS = ["name", "sortOrder", "active", "notes"] as const;
 const BED_FIELDS = ["roomName", "name", "sortOrder", "active", "bedType", "bunkGroup"] as const;
 const SEASON_FIELDS = ["name", "type", "startDate", "endDate", "active"] as const;
@@ -132,6 +156,16 @@ registerEntity({
   optInFields: ["doorCode"],
 });
 registerEntity({
+  entity: "display-template",
+  category: "lodge-config",
+  tier: "key-strong",
+  format: "json",
+  file: DISPLAY_TEMPLATES_FILE,
+  naturalKey: ["key"],
+  singleton: false,
+  fields: [...DISPLAY_TEMPLATE_FIELDS],
+});
+registerEntity({
   entity: "lodge-room",
   category: "lodge-config",
   tier: "key-strong",
@@ -185,6 +219,21 @@ function buildLodgeData(descriptor: Record<string, unknown>, slug: string): Reco
     travelNote: asNullableStr(descriptor.travelNote),
   };
   if ("doorCode" in descriptor) data.doorCode = asNullableStr(descriptor.doorCode);
+  // Display settings: written only when the descriptor carries the key (hand
+  // authors omit a key to leave the value alone in merge mode). A null
+  // displayConfig writes the empty glob — Prisma Json columns reject JS null.
+  if ("displayNameGranularity" in descriptor) {
+    data.displayNameGranularity = asNullableStr(descriptor.displayNameGranularity);
+  }
+  if ("displayConfig" in descriptor) {
+    data.displayConfig =
+      descriptor.displayConfig && typeof descriptor.displayConfig === "object"
+        ? descriptor.displayConfig
+        : {};
+  }
+  if ("displayNotice" in descriptor) {
+    data.displayNotice = asNullableStr(descriptor.displayNotice);
+  }
   return data;
 }
 
@@ -196,6 +245,9 @@ interface LodgeCurrent {
   travelNote: string | null;
   doorCode: string | null;
   isDefault: boolean;
+  displayConfig: unknown;
+  displayNameGranularity: string | null;
+  displayNotice: string | null;
 }
 interface SeasonCurrent {
   id: string;
@@ -221,7 +273,11 @@ interface LodgeBatch {
 async function loadLodgeBatch(db: ReadDb, slugs: string[]): Promise<LodgeBatch> {
   const lodgeRows = await db.lodge.findMany({
     where: { slug: { in: slugs } },
-    select: { id: true, slug: true, name: true, active: true, travelNote: true, doorCode: true, isDefault: true },
+    select: {
+      id: true, slug: true, name: true, active: true, travelNote: true,
+      doorCode: true, isDefault: true,
+      displayConfig: true, displayNameGranularity: true, displayNotice: true,
+    },
   });
   const lodges = new Map(lodgeRows.map((l) => [l.slug, l]));
   const lodgeIds = lodgeRows.map((l) => l.id);
@@ -300,7 +356,15 @@ export const lodgeConfigExporter: CategoryExporter = {
   async export(ctx: ExportContext): Promise<BundleEntry[]> {
     const lodges = await ctx.db.lodge.findMany({
       orderBy: { slug: "asc" },
-      select: { slug: true, name: true, active: true, travelNote: true, doorCode: true, isDefault: true },
+      select: {
+        slug: true, name: true, active: true, travelNote: true,
+        doorCode: true, isDefault: true,
+        displayConfig: true, displayNameGranularity: true, displayNotice: true,
+      },
+    });
+    const displayTemplates = await ctx.db.displayTemplate.findMany({
+      orderBy: { key: "asc" },
+      select: { key: true, name: true, definition: true },
     });
     const rooms = await ctx.db.lodgeRoom.findMany({
       orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
@@ -343,6 +407,9 @@ export const lodgeConfigExporter: CategoryExporter = {
         active: lodge.active,
         travelNote: lodge.travelNote,
         isDefault: lodge.isDefault,
+        displayConfig: lodge.displayConfig ?? null,
+        displayNameGranularity: lodge.displayNameGranularity,
+        displayNotice: lodge.displayNotice,
       };
       if (ctx.includeDoorCodes) descriptor.doorCode = lodge.doorCode;
       entries.push({
@@ -363,6 +430,21 @@ export const lodgeConfigExporter: CategoryExporter = {
       emit(paths.seasons, SEASON_FIELDS, seasonsBy.get(lodge.slug) ?? []);
       emit(paths.rates, RATE_FIELDS, ratesBy.get(lodge.slug) ?? []);
     }
+
+    // Club-wide display templates: always emitted (empty array when none) so
+    // the file documents the format for hand-authoring.
+    entries.push({
+      path: DISPLAY_TEMPLATES_FILE,
+      category: "lodge-config",
+      rowCount: displayTemplates.length,
+      bytes: strToU8(
+        JSON.stringify(
+          displayTemplates.map((t) => ({ key: t.key, name: t.name, definition: t.definition })),
+          null,
+          2,
+        ),
+      ),
+    });
     return entries;
   },
 };
@@ -403,6 +485,47 @@ function parseLodgeFolder(
   const slug = asStr(descriptor.slug);
   const lodge = batch.lodges.get(slug) ?? null;
   const lodgeId = lodge?.id ?? null;
+
+  // Display settings validation (issue #50): invalid values are errors (which
+  // block apply) and the offending key is dropped so no partial write occurs.
+  if ("displayNameGranularity" in descriptor && descriptor.displayNameGranularity !== null) {
+    const value = asStr(descriptor.displayNameGranularity);
+    if (!(DISPLAY_GRANULARITIES as readonly string[]).includes(value)) {
+      errors.push(
+        `${paths.lodge}: displayNameGranularity must be one of ${DISPLAY_GRANULARITIES.join(", ")} or null`,
+      );
+      delete descriptor.displayNameGranularity;
+    }
+  }
+  if ("displayConfig" in descriptor && descriptor.displayConfig !== null) {
+    const config = descriptor.displayConfig;
+    if (!config || typeof config !== "object" || Array.isArray(config)) {
+      errors.push(`${paths.lodge}: displayConfig must be an object of string values or null`);
+      delete descriptor.displayConfig;
+    } else {
+      for (const [key, value] of Object.entries(config as Record<string, unknown>)) {
+        if (!DISPLAY_CONFIG_KEY_PATTERN.test(key)) {
+          errors.push(`${paths.lodge}: displayConfig key "${key}" must be a lower-case slug (max 64 chars)`);
+          delete descriptor.displayConfig;
+          break;
+        }
+        if (typeof value !== "string" || value.length > DISPLAY_CONFIG_VALUE_MAX) {
+          errors.push(
+            `${paths.lodge}: displayConfig value for "${key}" must be text of at most ${DISPLAY_CONFIG_VALUE_MAX} characters`,
+          );
+          delete descriptor.displayConfig;
+          break;
+        }
+      }
+    }
+  }
+  if ("displayNotice" in descriptor && descriptor.displayNotice !== null) {
+    const notice = descriptor.displayNotice;
+    if (typeof notice !== "string" || notice.length > DISPLAY_NOTICE_MAX) {
+      errors.push(`${paths.lodge}: displayNotice must be text of at most ${DISPLAY_NOTICE_MAX} characters or null`);
+      delete descriptor.displayNotice;
+    }
+  }
 
   const out: ParsedLodgeRows = { slug, descriptor, rooms: [], beds: [], seasons: [], rates: [] };
 
@@ -462,6 +585,66 @@ function parseLodgeFolder(
   });
 
   return out;
+}
+
+// ---- Display templates (club-wide; shared by plan + apply) -------------------
+
+interface ParsedDisplayTemplate {
+  key: string;
+  name: string;
+  definition: DisplayTemplateDefinition;
+}
+
+/** Parse + validate the club-wide display-templates file. Every definition
+ * passes the ADR-002 registry validator — a bundle can never install a
+ * template referencing unknown modules/conditions or non-scalar options. */
+function parseDisplayTemplates(
+  files: Map<string, Uint8Array>,
+  errors: string[],
+): ParsedDisplayTemplate[] {
+  const bytes = files.get(DISPLAY_TEMPLATES_FILE);
+  if (!bytes) return [];
+  let raw: unknown;
+  try {
+    raw = JSON.parse(strFromU8(bytes));
+  } catch {
+    errors.push(`${DISPLAY_TEMPLATES_FILE}: not valid JSON`);
+    return [];
+  }
+  if (!Array.isArray(raw)) {
+    errors.push(`${DISPLAY_TEMPLATES_FILE}: must be a JSON array of templates`);
+    return [];
+  }
+  const out: ParsedDisplayTemplate[] = [];
+  raw.forEach((item, index) => {
+    const record =
+      item && typeof item === "object" && !Array.isArray(item)
+        ? (item as Record<string, unknown>)
+        : null;
+    try {
+      const definition = validateDisplayTemplateDefinition(record?.definition);
+      const key = asStr(record?.key) || definition.key;
+      if (key !== definition.key) {
+        errors.push(
+          `${DISPLAY_TEMPLATES_FILE}[${index}]: key "${key}" must match definition.key "${definition.key}"`,
+        );
+        return;
+      }
+      out.push({ key, name: asStr(record?.name) || definition.name, definition });
+    } catch (error) {
+      const detail =
+        error instanceof InvalidDisplayTemplateError ? error.message : "invalid definition";
+      errors.push(`${DISPLAY_TEMPLATES_FILE}[${index}]: ${detail}`);
+    }
+  });
+  return out;
+}
+
+async function loadCurrentDisplayTemplates(db: ReadDb) {
+  const rows = await db.displayTemplate.findMany({
+    select: { key: true, name: true, definition: true },
+  });
+  return new Map(rows.map((row) => [row.key, row]));
 }
 
 // ---- Plan ------------------------------------------------------------------
@@ -590,6 +773,26 @@ async function planLodgeConfig(ctx: PlanContext): Promise<CategoryPlanResult> {
   const desiredDefault = bundleDesignatedDefaultSlug(ctx.files);
   if (desiredDefault && desiredDefault !== batch.currentDefaultSlug) {
     warnings.push(`The default lodge will be set to "${desiredDefault}".`);
+  }
+
+  // Club-wide display templates (issue #50).
+  const bundleTemplates = parseDisplayTemplates(ctx.files, errors);
+  if (bundleTemplates.length > 0) {
+    const currentByKey = await loadCurrentDisplayTemplates(ctx.db);
+    for (const template of bundleTemplates) {
+      const current = currentByKey.get(template.key) ?? null;
+      fingerprintParts.push(
+        `display-template:${template.key}:${current ? hashRow(["name", "definition"], current) : "absent"}`,
+      );
+      const write = { name: template.name, definition: template.definition };
+      const changed = changedFields(write, current);
+      items.push({
+        entity: "display-template",
+        key: template.key,
+        action: planActionFor(current, changed),
+        changedFields: changed.length ? changed : undefined,
+      });
+    }
   }
 
   return { items, warnings, errors, fingerprintParts, doorCodeChanges };
@@ -751,6 +954,44 @@ async function applyLodgeConfig(ctx: ApplyContext): Promise<CategoryApplyResult>
     if (target && !target.isDefault) {
       await ctx.tx.lodge.updateMany({ where: { isDefault: true }, data: { isDefault: false } });
       await ctx.tx.lodge.update({ where: { slug: desiredDefault }, data: { isDefault: true } });
+    }
+  }
+
+  // Club-wide display templates (issue #50). `source` is derived, never
+  // trusted from the bundle: a built-in key imports as its override, any
+  // other key as a custom template (ADR-002 §2).
+  {
+    const applyErrors: string[] = [];
+    const bundleTemplates = parseDisplayTemplates(ctx.files, applyErrors);
+    if (bundleTemplates.length > 0) {
+      const builtInKeys = new Set(listBuiltInDisplayTemplates().map((t) => t.key));
+      const currentByKey = await loadCurrentDisplayTemplates(ctx.tx);
+      for (const template of bundleTemplates) {
+        const current = currentByKey.get(template.key) ?? null;
+        if (!current) {
+          await ctx.tx.displayTemplate.create({
+            data: {
+              key: template.key,
+              name: template.name,
+              source: builtInKeys.has(template.key) ? "BUILT_IN_OVERRIDE" : "CUSTOM",
+              definition: template.definition as object,
+            },
+          });
+          result.created += 1;
+          continue;
+        }
+        const write = { name: template.name, definition: template.definition };
+        const changed = changedFields(write, current);
+        if (changed.length > 0) {
+          await ctx.tx.displayTemplate.update({
+            where: { key: template.key },
+            data: { name: template.name, definition: template.definition as object },
+          });
+          result.updated += 1;
+        } else {
+          result.unchanged += 1;
+        }
+      }
     }
   }
 
