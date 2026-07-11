@@ -89,6 +89,16 @@ const isPairStart = (url: string, init?: RequestInit) =>
 const isPairClaim = (url: string, init?: RequestInit) =>
   url.includes("/api/display/pair") && String(init?.body).includes("claim");
 
+describe("display page render mode", () => {
+  it("forces dynamic rendering so inline scripts carry the CSP nonce (issue #54)", async () => {
+    // A statically prerendered /display ships Next's inline bootstrap
+    // scripts without the per-request nonce; the production nonce-only CSP
+    // then blocks hydration and the page renders blank on real TVs.
+    const page = await import("@/app/display/page");
+    expect(page.dynamic).toBe("force-dynamic");
+  });
+});
+
 describe("DisplayScreen lifecycle", () => {
   it("walks pairing → claim → active, keeps the last payload on failure, and re-pairs on revocation", async () => {
     // 1. unauthorised → pairing start shows the code

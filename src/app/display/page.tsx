@@ -12,6 +12,13 @@ export const metadata: Metadata = {
   robots: { index: false, follow: false },
 };
 
+// Must render per-request (fork issue #54): the CSP is nonce-only in
+// production and Next stamps the nonce into its inline bootstrap scripts
+// only during dynamic rendering. A statically prerendered /display ships
+// unnonced inline scripts, the browser blocks them, and this client-shell
+// page stays blank on real TVs.
+export const dynamic = "force-dynamic";
+
 export default function DisplayPage() {
   return <DisplayScreen />;
 }
