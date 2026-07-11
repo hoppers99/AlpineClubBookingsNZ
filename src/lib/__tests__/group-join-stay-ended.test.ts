@@ -111,7 +111,10 @@ function openGroup(stay: { checkIn: Date; checkOut: Date }) {
   };
 }
 
-function verifyJoinRow(stay: { checkIn: Date; checkOut: Date }) {
+function verifyJoinRow(
+  stay: { checkIn: Date; checkOut: Date },
+  paymentMode: GroupBookingPaymentMode = GroupBookingPaymentMode.EACH_PAYS_OWN,
+) {
   return {
     id: "join-1",
     isMember: false,
@@ -128,7 +131,7 @@ function verifyJoinRow(stay: { checkIn: Date; checkOut: Date }) {
     groupBooking: {
       status: GroupBookingStatus.OPEN,
       joinDeadline: null,
-      paymentMode: GroupBookingPaymentMode.EACH_PAYS_OWN,
+      paymentMode,
       organiserBooking: {
         id: "booking-1",
         checkIn: stay.checkIn,
@@ -250,9 +253,9 @@ describe("verifyAndCreateNonMemberJoin refuses a fully ended stay", () => {
     // An ended ORGANISER_PAYS group reports the ended stay, not the
     // individual-sign-ups message — the ended gate sits directly after
     // isGroupJoinable, ahead of the payment-mode/active-booking checks.
-    const row = verifyJoinRow(endedStay);
-    row.groupBooking.paymentMode = GroupBookingPaymentMode.ORGANISER_PAYS;
-    mocks.joinFindUnique.mockResolvedValue(row);
+    mocks.joinFindUnique.mockResolvedValue(
+      verifyJoinRow(endedStay, GroupBookingPaymentMode.ORGANISER_PAYS),
+    );
 
     await expect(verifyAndCreateNonMemberJoin(VALID_TOKEN)).resolves.toEqual({
       outcome: "not_joinable",
@@ -263,9 +266,9 @@ describe("verifyAndCreateNonMemberJoin refuses a fully ended stay", () => {
   it("lets a still-running stay through to the next gate", async () => {
     // A live ORGANISER_PAYS group fails on payment mode, proving the
     // ended-stay gate passed a stay that checks out tomorrow.
-    const row = verifyJoinRow(liveStay);
-    row.groupBooking.paymentMode = GroupBookingPaymentMode.ORGANISER_PAYS;
-    mocks.joinFindUnique.mockResolvedValue(row);
+    mocks.joinFindUnique.mockResolvedValue(
+      verifyJoinRow(liveStay, GroupBookingPaymentMode.ORGANISER_PAYS),
+    );
 
     await expect(verifyAndCreateNonMemberJoin(VALID_TOKEN)).resolves.toEqual({
       outcome: "not_joinable",
