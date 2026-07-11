@@ -28,6 +28,7 @@ import {
   Trash2,
   Sliders,
   House,
+  LayoutTemplate,
   Tablet,
   Tv,
   UsersRound,
@@ -221,6 +222,11 @@ const navSections: NavSection[] = [
       { href: "/admin/roster", label: "Roster", icon: ClipboardList },
       { href: "/admin/lodge", label: "Lodge Kiosk", icon: Tablet },
       { href: "/admin/display", label: "Lobby Display", icon: Tv },
+      {
+        href: "/admin/display/templates",
+        label: "Display Templates",
+        icon: LayoutTemplate,
+      },
       { href: "/admin/work-parties", label: "Work Parties", icon: Hammer },
       {
         href: "/admin/lodge-instructions",
