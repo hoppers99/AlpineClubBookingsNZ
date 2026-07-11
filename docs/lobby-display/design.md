@@ -136,7 +136,10 @@ Auth behaviour:
 
 - The display token authenticates **only**: the display page shell, the
   display-state API, and a lightweight heartbeat (updates `lastSeenAt`).
-  Everything else treats it as anonymous.
+  Everything else treats it as anonymous. In practice the state poll
+  doubles as the heartbeat (LTV-013): every successful device-token fetch
+  stamps `lastSeenAt`, so admins see a live "last seen" without a separate
+  call; admin previews never stamp it.
 - Tokens are revocable per device from the admin UI; a revoked device stops
   rendering lodge data within one refresh interval and returns to the
   pairing screen.
@@ -252,10 +255,20 @@ Modelled on the kiosk account management surface (`/admin/lodge`):
 
 - **Devices**: list per lodge (name, paired state, last seen), create,
   pair (code confirmation), revoke, per-device template assignment and
-  region configuration.
+  region configuration. The page opens with setup instructions showing the
+  concrete display URL (copyable), and each device offers a **Preview**
+  link opening `/display?previewDevice=<id>` in a new tab.
 - **Templates**: list built-ins, copy-to-custom, edit region config,
   **preview** rendered with live data (reusing the read-only preview
-  pattern from the kiosk per-account preview, upstream PR #1721).
+  pattern from the kiosk per-account preview, upstream PR #1721), plus a
+  **full-screen preview** link (`/display?preview=1&templateKey=<key>`).
+- **Admin preview** (implemented in LTV-013): the display state API honours
+  `?previewDevice=<id>` / `?preview=1[&templateKey=…]` only for a
+  signed-in full admin; anyone else gets the normal 401 and the page shows
+  a sign-in prompt instead of a pairing code. Previews render through the
+  same privacy-reduced serialiser, never stamp `lastSeenAt`, and show no
+  warning banner (the preview is the real screen). A genuine device token
+  always takes precedence over preview parameters.
 - **Lodge config glob**: JSON editor with key validation and token-help
   copy derived from the catalogue.
 - Name-granularity setting surfaced alongside (home per the privacy task).

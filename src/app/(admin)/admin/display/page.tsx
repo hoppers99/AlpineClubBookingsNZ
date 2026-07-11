@@ -44,6 +44,12 @@ export default function AdminDisplayPage() {
   const [codeByDevice, setCodeByDevice] = useState<Record<string, string>>({});
   const [message, setMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [displayUrl, setDisplayUrl] = useState("/display");
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    setDisplayUrl(`${window.location.origin}/display`);
+  }, []);
 
   const refresh = useCallback(async () => {
     const [devicesRes, templatesRes, lodgesRes] = await Promise.all([
@@ -153,6 +159,36 @@ export default function AdminDisplayPage() {
       </div>
 
       {message && <p className="text-sm font-medium">{message}</p>}
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Setting up a screen</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2 text-sm">
+          <p>
+            1. On the TV (or any browser on the screen device), open:{" "}
+            <code className="bg-muted rounded px-2 py-1 font-mono">{displayUrl}</code>{" "}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                void navigator.clipboard.writeText(displayUrl).then(() => {
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 2000);
+                });
+              }}
+            >
+              {copied ? "Copied" : "Copy URL"}
+            </Button>
+          </p>
+          <p>2. The screen shows a six-character pairing code.</p>
+          <p>
+            3. Create (or pick) a device below, type the code into its Pair box,
+            and the screen connects itself within a few seconds. It keeps
+            working across reboots until you revoke it.
+          </p>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>
@@ -271,6 +307,15 @@ export default function AdminDisplayPage() {
                         ))}
                       </select>
                     </div>
+                    <Button variant="outline" asChild>
+                      <a
+                        href={`/display?previewDevice=${device.id}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        Preview
+                      </a>
+                    </Button>
                     <Button variant="destructive" onClick={() => void revoke(device.id)}>
                       Revoke
                     </Button>

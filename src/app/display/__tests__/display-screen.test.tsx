@@ -152,6 +152,34 @@ describe("DisplayScreen lifecycle", () => {
     expect(screen.queryByText("Silverpeak Lodge")).toBeNull();
   });
 
+  it("preview mode never pairs: denied shows the admin-login prompt, an admin session renders the board (issue #52)", async () => {
+    window.history.pushState({}, "", "/display?previewDevice=dev-9");
+    try {
+      // The preview query is forwarded verbatim to the state API.
+      const isPreviewState = (url: string) =>
+        url.includes("/api/display/state?previewDevice=dev-9");
+
+      // 1. not signed in as an admin → denied prompt, NO pairing start
+      enqueue(isPreviewState, { status: 401, body: { error: "Unauthorised" } });
+      render(<DisplayScreen />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10);
+      });
+      expect(screen.getByText("Display preview")).toBeDefined();
+      expect(screen.getByText(/administrator login/)).toBeDefined();
+      expect(screen.queryByText("Pair this display")).toBeNull();
+
+      // 2. admin signs in elsewhere → the next poll renders the board
+      enqueue(isPreviewState, { status: 200, body: PAYLOAD });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+      expect(screen.getByText("Silverpeak Lodge")).toBeDefined();
+    } finally {
+      window.history.pushState({}, "", "/display");
+    }
+  });
+
   it("renders a neutral placeholder for a module with no renderer yet", async () => {
     enqueue(isState, {
       status: 200,
