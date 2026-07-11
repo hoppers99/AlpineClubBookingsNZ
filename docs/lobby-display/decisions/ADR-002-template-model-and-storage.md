@@ -1,6 +1,11 @@
 # ADR-002: Display template model and storage
 
-**Status:** Accepted (2026-07-11)
+**Status:** Superseded by [ADR-003](./ADR-003-layout-template-authoring-model.md)
+— the data-only region/panel model here was the MVP (staging only, never
+shipped); ADR-003 replaces the storage/editing layer with the Layout / Template /
+Module authoring model. The closed-registry validation *principle* and the
+data-only stance on *definitions* carry forward; admin-authored HTML/CSS
+(never JS) and code modules are the change.
 **Issue:** fork #29 (LTV-004), epic #25
 **Deciders:** fork owner (delivery authorisation on epic #25), implementation agent
 
