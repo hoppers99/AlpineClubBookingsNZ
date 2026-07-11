@@ -205,13 +205,11 @@ describe("SinglesBoard (AC4)", () => {
 });
 
 describe("module map and options (AC6/AC7)", () => {
-  it("maps exactly this task's four registry names to components", () => {
-    expect(Object.keys(DISPLAY_MODULE_COMPONENTS).sort()).toEqual([
-      "arrivals-board",
-      "occupancy-grid",
-      "singles-board",
-      "welcome",
-    ]);
+  it("maps this task's four registry names to components (later tasks add theirs)", () => {
+    const keys = Object.keys(DISPLAY_MODULE_COMPONENTS);
+    for (const name of ["arrivals-board", "occupancy-grid", "singles-board", "welcome"]) {
+      expect(keys).toContain(name);
+    }
   });
 
   it("intOption clamps and falls back per documented defaults", () => {

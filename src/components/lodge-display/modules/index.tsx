@@ -3,6 +3,8 @@ import type { DisplayState } from "@/lib/lodge-display-state";
 import type { DisplayModuleName } from "@/lib/lodge-display/template-registry";
 import type { DisplayPanelOptions } from "./module-options";
 import { ArrivalsBoard } from "./arrivals-board";
+import { ChoresBoard } from "./chores-board";
+import { LodgeRules } from "./lodge-rules";
 import { OccupancyGrid } from "./occupancy-grid";
 import { SinglesBoard } from "./singles-board";
 import { WelcomePanel } from "./welcome-panel";
@@ -27,4 +29,6 @@ export const DISPLAY_MODULE_COMPONENTS: Partial<
   "occupancy-grid": OccupancyGrid,
   welcome: WelcomePanel,
   "singles-board": SinglesBoard,
+  "chores-board": ChoresBoard,
+  "lodge-rules": LodgeRules,
 };
