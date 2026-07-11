@@ -191,6 +191,13 @@ interface DisplayState {
 
 ## 6. Template model
 
+> **Implemented** (fork issue #29, [ADR-002](decisions/ADR-002-template-model-and-storage.md)):
+> `src/lib/lodge-display/template-registry.ts` (definition schema, validator,
+> built-in starter templates, DB-override resolution) and
+> `src/lib/lodge-display/conditions.ts` (named condition engine). Definitions
+> are data-only and revalidated on every load; unknown module/condition names
+> are rejected with the offending detail.
+
 Two layers (settled in the brief):
 
 - **Templates define structure**: a named set of regions plus the config

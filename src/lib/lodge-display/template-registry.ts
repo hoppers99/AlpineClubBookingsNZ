@@ -1,0 +1,273 @@
+import type { DisplayState } from "../lodge-display-state";
+import { prisma } from "../prisma";
+import {
+  DISPLAY_CONDITION_NAMES,
+  evaluateDisplayCondition,
+  isDisplayConditionName,
+  type DisplayConditionName,
+} from "./conditions";
+
+// Lobby display template registry (fork issue #29, ADR-002): data-only
+// template definitions validated against closed module/condition name
+// registries. Built-in templates ship here in code; DisplayTemplate rows are
+// admin overrides (BUILT_IN_OVERRIDE shadows a built-in key) or custom
+// templates (CUSTOM), revalidated on every load exactly like code defaults —
+// an invalid definition is rejected with the offending detail, never
+// rendered partially broken.
+
+/**
+ * The closed set of module names a template may place in a region. The
+ * renderers attach in LTV-005/LTV-006/LTV-011; keeping the NAME registry
+ * here lets the validator reject unknown modules before any renderer exists.
+ */
+export const DISPLAY_MODULE_NAMES = [
+  "lodge-header",
+  "arrivals-board",
+  "occupancy-grid",
+  "welcome",
+  "singles-board",
+  "chores-board",
+  "lodge-rules",
+  "notice-board",
+  "info-footer",
+] as const;
+
+export type DisplayModuleName = (typeof DISPLAY_MODULE_NAMES)[number];
+
+export type DisplayPanelOptionValue = string | number | boolean;
+
+export interface DisplayPanelDefinition {
+  module: DisplayModuleName;
+  /** Rotation eligibility; defaults to "always". */
+  condition?: DisplayConditionName;
+  options?: Record<string, DisplayPanelOptionValue>;
+}
+
+export interface DisplayRegionDefinition {
+  key: string;
+  panels: DisplayPanelDefinition[];
+  /** Seconds per panel when the region rotates (>1 eligible panel). */
+  rotateSeconds?: number;
+}
+
+export interface DisplayTemplateDefinition {
+  key: string;
+  name: string;
+  regions: DisplayRegionDefinition[];
+}
+
+export const DEFAULT_ROTATE_SECONDS = 8;
+
+/** Thrown when a definition (code or DB) fails validation (ADR-002 §1). */
+export class InvalidDisplayTemplateError extends Error {
+  constructor(templateKey: string, detail: string) {
+    super(`Display template "${templateKey}" is invalid: ${detail}`);
+    this.name = "InvalidDisplayTemplateError";
+  }
+}
+
+function isModuleName(name: string): name is DisplayModuleName {
+  return (DISPLAY_MODULE_NAMES as readonly string[]).includes(name);
+}
+
+/**
+ * Validates a definition (data-only — ADR-002 §1). Throws
+ * InvalidDisplayTemplateError with the offending detail; a template is never
+ * accepted partially broken (issue #29 AC6) and no code path exists in a
+ * definition (AC7 — options are scalars only).
+ */
+export function validateDisplayTemplateDefinition(
+  value: unknown
+): DisplayTemplateDefinition {
+  const keyForError =
+    value && typeof value === "object" && "key" in value
+      ? String((value as { key: unknown }).key)
+      : "(unknown)";
+
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new InvalidDisplayTemplateError(keyForError, "definition must be an object");
+  }
+  const def = value as Partial<DisplayTemplateDefinition>;
+  if (typeof def.key !== "string" || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(def.key)) {
+    throw new InvalidDisplayTemplateError(keyForError, "key must be a lower-case slug");
+  }
+  if (typeof def.name !== "string" || def.name.trim().length === 0) {
+    throw new InvalidDisplayTemplateError(def.key, "name is required");
+  }
+  if (!Array.isArray(def.regions) || def.regions.length === 0) {
+    throw new InvalidDisplayTemplateError(def.key, "at least one region is required");
+  }
+
+  const seenRegionKeys = new Set<string>();
+  for (const region of def.regions) {
+    if (!region || typeof region !== "object" || Array.isArray(region)) {
+      throw new InvalidDisplayTemplateError(def.key, "each region must be an object");
+    }
+    if (typeof region.key !== "string" || region.key.trim().length === 0) {
+      throw new InvalidDisplayTemplateError(def.key, "each region needs a key");
+    }
+    if (seenRegionKeys.has(region.key)) {
+      throw new InvalidDisplayTemplateError(def.key, `duplicate region key "${region.key}"`);
+    }
+    seenRegionKeys.add(region.key);
+    if (
+      region.rotateSeconds !== undefined &&
+      (typeof region.rotateSeconds !== "number" ||
+        region.rotateSeconds < 3 ||
+        region.rotateSeconds > 300)
+    ) {
+      throw new InvalidDisplayTemplateError(
+        def.key,
+        `region "${region.key}" rotateSeconds must be 3-300`
+      );
+    }
+    if (!Array.isArray(region.panels) || region.panels.length === 0) {
+      throw new InvalidDisplayTemplateError(
+        def.key,
+        `region "${region.key}" needs at least one panel`
+      );
+    }
+    for (const panel of region.panels) {
+      if (!panel || typeof panel !== "object" || Array.isArray(panel)) {
+        throw new InvalidDisplayTemplateError(def.key, "each panel must be an object");
+      }
+      if (typeof panel.module !== "string" || !isModuleName(panel.module)) {
+        throw new InvalidDisplayTemplateError(
+          def.key,
+          `unknown module "${String(panel.module)}" in region "${region.key}" ` +
+            `(known: ${DISPLAY_MODULE_NAMES.join(", ")})`
+        );
+      }
+      if (
+        panel.condition !== undefined &&
+        (typeof panel.condition !== "string" || !isDisplayConditionName(panel.condition))
+      ) {
+        throw new InvalidDisplayTemplateError(
+          def.key,
+          `unknown condition "${String(panel.condition)}" in region "${region.key}" ` +
+            `(known: ${DISPLAY_CONDITION_NAMES.join(", ")})`
+        );
+      }
+      if (panel.options !== undefined) {
+        if (
+          !panel.options ||
+          typeof panel.options !== "object" ||
+          Array.isArray(panel.options)
+        ) {
+          throw new InvalidDisplayTemplateError(
+            def.key,
+            `options in region "${region.key}" must be a flat object`
+          );
+        }
+        for (const [optionKey, optionValue] of Object.entries(panel.options)) {
+          const valueType = typeof optionValue;
+          if (valueType !== "string" && valueType !== "number" && valueType !== "boolean") {
+            throw new InvalidDisplayTemplateError(
+              def.key,
+              `option "${optionKey}" in region "${region.key}" must be a scalar`
+            );
+          }
+        }
+      }
+    }
+  }
+
+  return def as DisplayTemplateDefinition;
+}
+
+// ---------------------------------------------------------------------------
+// Built-in starter templates — the approved design-exploration mockups
+// (docs/lobby-display/mockups/). Region skeletons only; the module renderers
+// attach in LTV-005/LTV-006.
+// ---------------------------------------------------------------------------
+
+const BUILT_IN_DEFINITIONS: DisplayTemplateDefinition[] = [
+  {
+    key: "everyday-board",
+    name: "Everyday board",
+    regions: [
+      { key: "header", panels: [{ module: "lodge-header" }] },
+      { key: "main", panels: [{ module: "arrivals-board", options: { days: 3 } }] },
+      { key: "footer", panels: [{ module: "info-footer" }] },
+    ],
+  },
+  {
+    key: "whole-lodge",
+    name: "Whole lodge",
+    regions: [
+      { key: "header", panels: [{ module: "lodge-header" }] },
+      {
+        key: "main",
+        rotateSeconds: DEFAULT_ROTATE_SECONDS,
+        panels: [
+          { module: "occupancy-grid", condition: "whole-lodge-booking-in-window" },
+          { module: "welcome" },
+        ],
+      },
+      { key: "footer", panels: [{ module: "info-footer" }] },
+    ],
+  },
+  {
+    key: "singles-house",
+    name: "Singles house",
+    regions: [
+      { key: "header", panels: [{ module: "lodge-header" }] },
+      { key: "main", panels: [{ module: "singles-board" }] },
+      { key: "footer", panels: [{ module: "info-footer" }] },
+    ],
+  },
+];
+
+// Validate built-ins at module load: a broken starter template is a
+// programming error and should fail fast in tests/build, not at render.
+for (const definition of BUILT_IN_DEFINITIONS) {
+  validateDisplayTemplateDefinition(definition);
+}
+
+export function listBuiltInDisplayTemplates(): DisplayTemplateDefinition[] {
+  return BUILT_IN_DEFINITIONS.map((definition) => ({ ...definition }));
+}
+
+export interface ResolvedDisplayTemplate {
+  definition: DisplayTemplateDefinition;
+  source: "built-in" | "override" | "custom";
+}
+
+/**
+ * Resolve a template key: a DB row (override of a built-in key, or a custom
+ * template) wins over the code default (ADR-002 §2, issue #29 AC2). Returns
+ * null for an unknown key; throws InvalidDisplayTemplateError if a stored
+ * definition fails validation.
+ */
+export async function resolveDisplayTemplate(
+  key: string
+): Promise<ResolvedDisplayTemplate | null> {
+  const row = await prisma.displayTemplate.findUnique({ where: { key } });
+  const builtIn = BUILT_IN_DEFINITIONS.find((definition) => definition.key === key);
+
+  if (row) {
+    const definition = validateDisplayTemplateDefinition(row.definition);
+    return {
+      definition,
+      source: builtIn ? "override" : "custom",
+    };
+  }
+  if (builtIn) {
+    return { definition: { ...builtIn }, source: "built-in" };
+  }
+  return null;
+}
+
+/**
+ * Filter a region's panels to those whose condition holds for the current
+ * payload (ADR-002 §3; issue #29 AC5). The renderer shows the survivors in
+ * order and rotates when more than one remains.
+ */
+export function eligibleDisplayPanels(
+  region: DisplayRegionDefinition,
+  state: DisplayState
+): DisplayPanelDefinition[] {
+  return region.panels.filter((panel) =>
+    evaluateDisplayCondition(panel.condition ?? "always", state)
+  );
+}
