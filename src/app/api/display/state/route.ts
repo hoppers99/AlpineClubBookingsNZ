@@ -33,7 +33,7 @@ export async function GET(req: NextRequest) {
   // The device's resolved template travels with the payload (issue #32) so
   // the display renders in one round trip; the definition is data-only and
   // was validated on load (ADR-002).
-  const template = await resolveDisplayTemplateForDevice(auth.device.templateId);
+  const template = await resolveDisplayTemplateForDevice(auth.device);
 
   return NextResponse.json({ ...state, template: template.definition });
 }

@@ -29,6 +29,7 @@ import {
   Sliders,
   House,
   Tablet,
+  Tv,
   UsersRound,
   Bell,
   Bug,
@@ -219,6 +220,7 @@ const navSections: NavSection[] = [
       { href: "/admin/hut-leaders", label: "Hut Leaders", icon: UserCheck },
       { href: "/admin/roster", label: "Roster", icon: ClipboardList },
       { href: "/admin/lodge", label: "Lodge Kiosk", icon: Tablet },
+      { href: "/admin/display", label: "Lobby Display", icon: Tv },
       { href: "/admin/work-parties", label: "Work Parties", icon: Hammer },
       {
         href: "/admin/lodge-instructions",

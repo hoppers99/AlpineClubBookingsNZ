@@ -134,7 +134,7 @@ export const FEATURE_ROUTE_RULES: FeatureRouteRule[] = [
     // the kiosk flag, and the display module must work without the kiosk
     // (ADR-001 §1, docs/lobby-display/decisions/).
     flag: "lobbyDisplay",
-    prefixes: ["/display", "/api/display", "/api/admin/display"],
+    prefixes: ["/display", "/api/display", "/admin/display", "/api/admin/display"],
   },
 ];
 
