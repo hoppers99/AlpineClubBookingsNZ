@@ -5,6 +5,7 @@ import type { DisplayPanelOptions } from "./module-options";
 import { ArrivalsBoard } from "./arrivals-board";
 import { ChoresBoard } from "./chores-board";
 import { LodgeRules } from "./lodge-rules";
+import { NoticeBoard } from "./notice-board";
 import { OccupancyGrid } from "./occupancy-grid";
 import { SinglesBoard } from "./singles-board";
 import { WelcomePanel } from "./welcome-panel";
@@ -31,4 +32,5 @@ export const DISPLAY_MODULE_COMPONENTS: Partial<
   "singles-board": SinglesBoard,
   "chores-board": ChoresBoard,
   "lodge-rules": LodgeRules,
+  "notice-board": NoticeBoard,
 };

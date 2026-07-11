@@ -20,6 +20,11 @@ const putSchema = z.object({
     .enum(["FULL_NAME", "FIRST_NAME_SURNAME_INITIAL", "FIRST_NAME_ONLY", "COUNTS_ONLY"])
     .nullable()
     .optional(),
+  displayNotice: z
+    .string()
+    .max(2000, "The notice must be 2000 characters or fewer")
+    .nullable()
+    .optional(),
 });
 
 async function resolveLodgeId(requested: string | null): Promise<string> {
@@ -38,6 +43,7 @@ export async function GET(req: NextRequest) {
       name: true,
       displayConfig: true,
       displayNameGranularity: true,
+      displayNotice: true,
     },
   });
   if (!lodge) {
@@ -48,6 +54,7 @@ export async function GET(req: NextRequest) {
     lodgeName: lodge.name,
     displayConfig: lodge.displayConfig ?? {},
     displayNameGranularity: lodge.displayNameGranularity,
+    displayNotice: lodge.displayNotice,
   });
 }
 
@@ -106,6 +113,9 @@ export async function PUT(req: NextRequest) {
         : {}),
       ...(body.displayNameGranularity !== undefined
         ? { displayNameGranularity: body.displayNameGranularity }
+        : {}),
+      ...(body.displayNotice !== undefined
+        ? { displayNotice: body.displayNotice }
         : {}),
     },
   });
