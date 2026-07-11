@@ -11,6 +11,7 @@ import { DisplayScreen } from "@/app/display/display-screen";
 
 const PAYLOAD = {
   lodge: { name: "Silverpeak Lodge" },
+  club: { name: "Alpine Sports Club", logoDataUrl: null },
   generatedAt: "2026-04-13T00:00:00.000Z",
   window: { start: "2026-04-13", days: 3 },
   rooms: null,
@@ -129,7 +130,9 @@ describe("DisplayScreen lifecycle", () => {
     });
     expect(screen.getByText("Silverpeak Lodge")).toBeDefined();
     expect(screen.getByText(/Jane S/)).toBeDefined();
-    expect(screen.getByText(/Wi-Fi · alpine1234/)).toBeDefined();
+    // Footer wifi item: text is split across elements ("Wi-Fi" + <b>code</b>).
+    expect(screen.getByText("alpine1234")).toBeDefined();
+    expect(screen.getByText(/Wi-Fi/)).toBeDefined();
 
     // 4. transient network failure → last payload retained, no stale badge yet
     enqueue(isState, { reject: true });

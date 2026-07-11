@@ -1,3 +1,4 @@
+import type { CSSProperties } from "react";
 import type {
   DisplayState,
   DisplayStateBooking,
@@ -9,12 +10,13 @@ import {
   type DisplayPanelOptions,
 } from "./module-options";
 
-// The everyday bar board (fork issue #30; visual reference:
+// The everyday bar board (fork issues #30/#56; visual reference:
 // docs/lobby-display/mockups/everyday-bar-board.html). Pure function of the
 // privacy-reduced DisplayState payload: room rows (or per-booking rows when
-// allocation is off), one continuous bar per booking row across the nights it
-// covers, up to N names then "+N", check-out date on each bar. Styling
-// attaches via the display stylesheet (LTV-007) through the display-*
+// allocation is off), one continuous bar per booking row across the NIGHTS it
+// covers (the check-out morning is not a night — the mock's bars end the
+// night before), up to N names then "+N", a weekday check-out label on each
+// bar. Styling attaches via the display stylesheet through the display-*
 // class hooks.
 
 export interface BarLayout {
@@ -22,12 +24,21 @@ export interface BarLayout {
   spanColumns: number;
   startsBeforeWindow: boolean;
   endsAfterWindow: boolean;
+  /** The bar's real last night is the window's first day (mock "dep"). */
+  departing: boolean;
+}
+
+function nextDateOnly(date: string): string {
+  const day = new Date(`${date}T00:00:00Z`);
+  day.setUTCDate(day.getUTCDate() + 1);
+  return day.toISOString().slice(0, 10);
 }
 
 /**
- * Compute a bar's grid placement within the visible window. Exported for
- * direct unit testing — the maths is where clipping bugs live (the mockup
- * iteration caught exactly this class of defect).
+ * Compute a bar's grid placement within the visible window. stayEnd is the
+ * CHECK-OUT date, so the bar's last occupied night is stayEnd - 1 (issue #56
+ * — bars span nights, matching the mock). Exported for direct unit testing —
+ * the maths is where clipping bugs live.
  */
 export function computeBarLayout(
   row: { stayStart: string; stayEnd: string },
@@ -36,13 +47,15 @@ export function computeBarLayout(
   if (windowDates.length === 0) return null;
   const first = windowDates[0];
   const last = windowDates[windowDates.length - 1];
-  if (row.stayEnd < first || row.stayStart > last) return null;
+  // No nights in window: checked out on/before the first day, or arrives
+  // after the last day.
+  if (row.stayEnd <= first || row.stayStart > last) return null;
 
   const startIndex = windowDates.findIndex((date) => date >= row.stayStart);
   const clampedStart = startIndex === -1 ? 0 : startIndex;
-  let endIndex = windowDates.length - 1;
-  for (let i = windowDates.length - 1; i >= 0; i--) {
-    if (windowDates[i] <= row.stayEnd) {
+  let endIndex = clampedStart;
+  for (let i = windowDates.length - 1; i >= clampedStart; i--) {
+    if (windowDates[i] < row.stayEnd) {
       endIndex = i;
       break;
     }
@@ -52,7 +65,13 @@ export function computeBarLayout(
     startColumn: clampedStart + 1,
     spanColumns: Math.max(1, endIndex - clampedStart + 1),
     startsBeforeWindow: row.stayStart < first,
+    // Checkout after the last window date → the stay runs past the board
+    // (mock "out Mon 6 →" on a Fri–Sun window).
     endsAfterWindow: row.stayEnd > last,
+    // Amber "checking out" treatment: last night is tonight AND the stay
+    // began before the window — a same-day arrival stays green (mock Kea).
+    departing:
+      row.stayEnd === nextDateOnly(first) && row.stayStart < first,
   };
 }
 
@@ -72,10 +91,31 @@ export function windowDatesOf(state: DisplayState): string[] {
   return state.occupancy.map((day) => day.date);
 }
 
-function formatDayHeading(date: string, index: number): string {
+function shortDay(date: string): string {
   const day = new Date(`${date}T00:00:00`);
-  const weekday = day.toLocaleDateString("en-NZ", { weekday: "short" });
-  return index === 0 ? `Tonight · ${weekday} ${day.getDate()}` : `${weekday} ${day.getDate()}`;
+  return `${day.toLocaleDateString("en-NZ", { weekday: "short" })} ${day.getDate()}`;
+}
+
+function formatDayHeading(date: string, index: number): string {
+  return index === 0 ? `Tonight · ${shortDay(date)}` : shortDay(date);
+}
+
+/** "out Sun 12", "since Wed → out Sun 12", "out Tue 14 →". */
+export function barMeta(
+  row: { stayStart: string; stayEnd: string },
+  layout: BarLayout
+): string {
+  const since = layout.startsBeforeWindow
+    ? `since ${new Date(`${row.stayStart}T00:00:00`).toLocaleDateString("en-NZ", { weekday: "short" })} → `
+    : "";
+  return `${since}out ${shortDay(row.stayEnd)}${layout.endsAfterWindow ? " →" : ""}`;
+}
+
+/** Split "A - Kea" / "B Tui" style names into a letter tag + display name. */
+export function splitRoomName(name: string): { tag: string | null; label: string } {
+  const match = /^([A-Za-z0-9]{1,3})\s*[-–·:]\s+(.+)$/.exec(name.trim());
+  if (!match) return { tag: null, label: name };
+  return { tag: match[1], label: match[2] };
 }
 
 export function ArrivalsBoard({
@@ -110,54 +150,67 @@ export function ArrivalsBoard({
         ].filter((group) => group.rows.length > 0 || group.heading !== "Unassigned");
 
   return (
-    <div className="display-arrivals-board" data-days={windowDates.length}>
+    <div
+      className="display-arrivals-board"
+      style={{ "--display-days": windowDates.length } as CSSProperties}
+    >
       <div className="display-board-head" role="row">
-        <span className="display-board-corner" />
+        <span className="display-board-corner">Room</span>
         {windowDates.map((date, index) => (
-          <span key={date} className="display-board-day" role="columnheader">
+          <span
+            key={date}
+            className="display-board-day"
+            data-today={index === 0 || undefined}
+            role="columnheader"
+          >
             {formatDayHeading(date, index)}
           </span>
         ))}
       </div>
-      {rowGroups.map((group, groupIndex) => (
-        <div className="display-board-row" key={group.heading ?? `group-${groupIndex}`}>
-          {group.heading !== null && (
-            <span className="display-board-room" role="rowheader">
-              {group.heading}
-            </span>
-          )}
-          <div className="display-board-lanes">
-            {group.rows.map((row) => {
-              const layout = computeBarLayout(row, windowDates);
-              if (!layout) return null;
-              const { names, overflow } = barNames(row, maxNames);
-              return (
-                <div
-                  key={row.key}
-                  className="display-bar"
-                  data-whole-lodge={row.wholeLodge || undefined}
-                  data-starts-before={layout.startsBeforeWindow || undefined}
-                  data-ends-after={layout.endsAfterWindow || undefined}
-                  style={{
-                    gridColumnStart: layout.startColumn,
-                    gridColumnEnd: `span ${layout.spanColumns}`,
-                  }}
-                >
-                  <span className="display-bar-names">
-                    {names.join(", ")}
-                    {overflow > 0 && (
-                      <span className="display-bar-overflow"> +{overflow}</span>
-                    )}
-                  </span>
-                  <span className="display-bar-out">
-                    {layout.endsAfterWindow ? `out ${row.stayEnd} →` : `out ${row.stayEnd}`}
-                  </span>
-                </div>
-              );
-            })}
+      {rowGroups.map((group, groupIndex) => {
+        const room = group.heading === null ? null : splitRoomName(group.heading);
+        return (
+          <div className="display-board-row" key={group.heading ?? `group-${groupIndex}`}>
+            {room !== null && (
+              <span className="display-board-room" role="rowheader">
+                {room.tag && <span className="display-board-room-tag">{room.tag}</span>}
+                {room.label}
+              </span>
+            )}
+            <div className="display-board-lanes">
+              {group.rows.map((row) => {
+                const layout = computeBarLayout(row, windowDates);
+                if (!layout) return null;
+                const { names, overflow } = barNames(row, maxNames);
+                const grouped = row.guests === null;
+                return (
+                  <div
+                    key={row.key}
+                    className="display-bar"
+                    data-group={grouped || undefined}
+                    data-whole-lodge={row.wholeLodge || undefined}
+                    data-departing={layout.departing || undefined}
+                    data-starts-before={layout.startsBeforeWindow || undefined}
+                    data-ends-after={layout.endsAfterWindow || undefined}
+                    style={{
+                      gridColumnStart: layout.startColumn,
+                      gridColumnEnd: `span ${layout.spanColumns}`,
+                    }}
+                  >
+                    <span className="display-bar-names">
+                      {grouped ? `${row.label} · ${row.guestCount}` : names.join(", ")}
+                      {overflow > 0 && (
+                        <span className="display-bar-overflow"> +{overflow}</span>
+                      )}
+                    </span>
+                    <span className="display-bar-out">{barMeta(row, layout)}</span>
+                  </div>
+                );
+              })}
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

@@ -94,6 +94,12 @@ model DisplayTemplate {
 
 // Per-lodge config glob (probably a field, not a model):
 // Lodge.displayConfig Json?  — {"wifi-code": "...", "checkin-note": "..."}
+//
+// Keys the built-in furniture reads (LTV-015; any other key is available
+// to templates via {{config:<key>}}):
+//   wifi-name / wifi-code  — the footer Wi-Fi item
+//   contact-email          — the footer email item
+//   footer-note            — right-aligned accent note in the footer
 ```
 
 Notes:
@@ -219,7 +225,10 @@ against the display-state payload. v1 conditions are a fixed named set
 (recommendation: `always`, `whole-lodge-booking-in-window`,
 `arrivals-today`, `no-guests`); ineligible panels are skipped so a screen
 never rotates into a view that is wrong for the current data. Device-level
-playlists are out of v1 scope.
+playlists are out of v1 scope. A region may alternatively declare
+`layout: "stack"` (LTV-015) to render all eligible panels at once — the
+everyday board's side rail uses this for its chores/instructions/notice
+cards, matching the approved mockup's rail treatment.
 
 Starter templates (from the approved mockups in the design exploration):
 

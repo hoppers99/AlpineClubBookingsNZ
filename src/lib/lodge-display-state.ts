@@ -11,6 +11,8 @@ import {
   formatDateOnly,
   getTodayDateOnly,
 } from "./date-only";
+import { clubConfig } from "@/config/club";
+import { CLUB_THEME_ID } from "./club-theme-schema";
 import { getSanitizedLodgeInstructions } from "./lodge-instructions";
 import { lodgeNullTolerantScope } from "./lodges";
 import { loadEffectiveModuleFlags } from "./module-settings";
@@ -59,6 +61,10 @@ export interface DisplayStateBooking {
 
 export interface DisplayState {
   lodge: { name: string };
+  /** Club branding for the header brand block (issue #56): the configured
+   * club name and the club-theme logo data URL — presentation-only fields
+   * already public on every website page. */
+  club: { name: string; logoDataUrl: string | null };
   generatedAt: string;
   window: { start: string; days: number };
   rooms: Array<{ id: string; name: string }> | null;
@@ -426,8 +432,15 @@ export async function buildDisplayState(
     };
   });
 
+  // Club branding is best-effort: a missing theme row must never take the
+  // board down, so failures degrade to a text-only brand block.
+  const theme = await prisma.clubTheme
+    .findUnique({ where: { id: CLUB_THEME_ID }, select: { logoDataUrl: true } })
+    .catch(() => null);
+
   return {
     lodge: { name: lodge.name },
+    club: { name: clubConfig.name, logoDataUrl: theme?.logoDataUrl ?? null },
     generatedAt: new Date().toISOString(),
     window: { start: formatDateOnly(startDate), days },
     rooms,

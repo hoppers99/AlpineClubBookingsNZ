@@ -17,6 +17,7 @@ vi.mock("@/lib/prisma", () => ({ prisma: mockPrisma }));
 function stateWith(overrides: Partial<DisplayState>): DisplayState {
   return {
     lodge: { name: "Silverpeak Lodge" },
+    club: { name: "Alpine Sports Club", logoDataUrl: null },
     generatedAt: "2026-04-13T00:00:00.000Z",
     window: { start: "2026-04-13", days: 3 },
     rooms: null,
@@ -137,6 +138,36 @@ describe("template validation (AC6/AC7)", () => {
         regions: [],
       })
     ).toThrow(/at least one region/);
+  });
+
+  it("accepts the stack layout and rejects unknown layouts (issue #56)", async () => {
+    const { validateDisplayTemplateDefinition } = await import(
+      "@/lib/lodge-display/template-registry"
+    );
+
+    expect(() =>
+      validateDisplayTemplateDefinition({
+        key: "stacked",
+        name: "Stacked",
+        regions: [
+          {
+            key: "side",
+            layout: "stack",
+            panels: [{ module: "chores-board" }, { module: "lodge-rules" }],
+          },
+        ],
+      })
+    ).not.toThrow();
+
+    expect(() =>
+      validateDisplayTemplateDefinition({
+        key: "bad-layout",
+        name: "Bad",
+        regions: [
+          { key: "side", layout: "carousel", panels: [{ module: "welcome" }] },
+        ],
+      })
+    ).toThrow(/layout must be "rotate" or "stack"/);
   });
 });
 

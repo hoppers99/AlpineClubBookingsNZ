@@ -52,6 +52,12 @@ export interface DisplayRegionDefinition {
   panels: DisplayPanelDefinition[];
   /** Seconds per panel when the region rotates (>1 eligible panel). */
   rotateSeconds?: number;
+  /**
+   * How a region with several eligible panels presents them (issue #56):
+   * "rotate" (default) cycles them; "stack" renders them all at once —
+   * the sidebar-card treatment from the approved mockups.
+   */
+  layout?: "rotate" | "stack";
 }
 
 export interface DisplayTemplateDefinition {
@@ -125,6 +131,16 @@ export function validateDisplayTemplateDefinition(
         `region "${region.key}" rotateSeconds must be 3-300`
       );
     }
+    if (
+      region.layout !== undefined &&
+      region.layout !== "rotate" &&
+      region.layout !== "stack"
+    ) {
+      throw new InvalidDisplayTemplateError(
+        def.key,
+        `region "${region.key}" layout must be "rotate" or "stack"`
+      );
+    }
     if (!Array.isArray(region.panels) || region.panels.length === 0) {
       throw new InvalidDisplayTemplateError(
         def.key,
@@ -192,6 +208,15 @@ const BUILT_IN_DEFINITIONS: DisplayTemplateDefinition[] = [
     regions: [
       { key: "header", panels: [{ module: "lodge-header" }] },
       { key: "main", panels: [{ module: "arrivals-board", options: { days: 3 } }] },
+      {
+        key: "side",
+        layout: "stack",
+        panels: [
+          { module: "chores-board" },
+          { module: "lodge-rules" },
+          { module: "notice-board", condition: "notice-set" },
+        ],
+      },
       { key: "footer", panels: [{ module: "info-footer" }] },
     ],
   },
@@ -206,6 +231,7 @@ const BUILT_IN_DEFINITIONS: DisplayTemplateDefinition[] = [
         panels: [
           { module: "occupancy-grid", condition: "whole-lodge-booking-in-window" },
           { module: "welcome" },
+          { module: "notice-board", condition: "notice-set" },
         ],
       },
       { key: "footer", panels: [{ module: "info-footer" }] },
@@ -216,7 +242,13 @@ const BUILT_IN_DEFINITIONS: DisplayTemplateDefinition[] = [
     name: "Singles house",
     regions: [
       { key: "header", panels: [{ module: "lodge-header" }] },
-      { key: "main", panels: [{ module: "singles-board" }] },
+      {
+        key: "main",
+        panels: [
+          { module: "singles-board" },
+          { module: "notice-board", condition: "notice-set" },
+        ],
+      },
       { key: "footer", panels: [{ module: "info-footer" }] },
     ],
   },

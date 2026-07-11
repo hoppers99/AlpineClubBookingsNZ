@@ -13,15 +13,21 @@ export function LodgeRules({
   state: DisplayState;
   options?: DisplayPanelOptions;
 }) {
-  if (!state.rules || state.rules.length === 0) {
+  // Instruction docs arrive as a fixed keyed set; only the ones with actual
+  // content earn a card (issue #56 — no empty cards on a lobby wall).
+  const docs = (state.rules ?? []).filter((doc) => doc.html.trim().length > 0);
+  if (docs.length === 0) {
     return <div className="display-lodge-rules display-lodge-rules-empty" />;
   }
 
   return (
     <div className="display-lodge-rules">
-      {state.rules.map((doc) => (
-        <section key={doc.title} className="display-rules-doc">
-          <h3 className="display-rules-title">{doc.title}</h3>
+      {docs.map((doc) => (
+        <section key={doc.title} className="display-rules-doc display-card">
+          <h4 className="display-card-title">
+            <span className="display-card-icon">›</span>
+            {doc.title}
+          </h4>
           <div
             className="display-rules-body"
             // Sanitised upstream (getSanitizedLodgeInstructions → serialiser).

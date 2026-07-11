@@ -39,6 +39,7 @@ function row(overrides: Partial<DisplayStateBooking>): DisplayStateBooking {
 function state(overrides: Partial<DisplayState>): DisplayState {
   return {
     lodge: { name: "Silverpeak Lodge" },
+    club: { name: "Alpine Sports Club", logoDataUrl: null },
     generatedAt: "2026-04-13T00:00:00.000Z",
     window: { start: "2026-04-13", days: 3 },
     rooms: null,
@@ -58,14 +59,17 @@ function state(overrides: Partial<DisplayState>): DisplayState {
 }
 
 describe("bar layout maths (clipping regression surface)", () => {
-  it("places an in-window stay on the right columns", () => {
+  // stayEnd is the CHECK-OUT date (issue #56): a bar occupies nights
+  // stayStart .. stayEnd-1, matching the approved mock.
+  it("places an in-window stay on its nights only (checkout morning excluded)", () => {
     expect(
       computeBarLayout({ stayStart: "2026-04-14", stayEnd: "2026-04-15" }, WINDOW)
     ).toEqual({
       startColumn: 2,
-      spanColumns: 2,
+      spanColumns: 1,
       startsBeforeWindow: false,
       endsAfterWindow: false,
+      departing: false,
     });
   });
 
@@ -77,12 +81,38 @@ describe("bar layout maths (clipping regression surface)", () => {
       spanColumns: 3,
       startsBeforeWindow: true,
       endsAfterWindow: true,
+      departing: false,
     });
   });
 
-  it("returns null for a stay entirely outside the window", () => {
+  it("marks a stay whose last night is tonight as departing (amber treatment)", () => {
+    expect(
+      computeBarLayout({ stayStart: "2026-04-10", stayEnd: "2026-04-14" }, WINDOW)
+    ).toEqual({
+      startColumn: 1,
+      spanColumns: 1,
+      startsBeforeWindow: true,
+      endsAfterWindow: false,
+      departing: true,
+    });
+  });
+
+  it("does NOT mark a same-day arrival leaving tomorrow as departing (mock Kea stays green)", () => {
+    const layout = computeBarLayout(
+      { stayStart: "2026-04-13", stayEnd: "2026-04-14" },
+      WINDOW
+    );
+    expect(layout).toMatchObject({ spanColumns: 1, departing: false });
+  });
+
+  it("returns null when there are no nights in the window", () => {
+    // Entirely after the window.
     expect(
       computeBarLayout({ stayStart: "2026-05-01", stayEnd: "2026-05-03" }, WINDOW)
+    ).toBeNull();
+    // Checks out on the window's first morning — no night tonight.
+    expect(
+      computeBarLayout({ stayStart: "2026-04-10", stayEnd: "2026-04-13" }, WINDOW)
     ).toBeNull();
   });
 });

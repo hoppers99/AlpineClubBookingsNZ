@@ -20,7 +20,7 @@ A template definition is pure data, validated against closed registries:
 ```ts
 DisplayTemplateDefinition {
   key, name,
-  regions: [{ key, panels: [{ module, condition?, options? }], rotateSeconds? }]
+  regions: [{ key, panels: [{ module, condition?, options? }], rotateSeconds?, layout? }]
 }
 ```
 
@@ -53,7 +53,11 @@ DisplayTemplateDefinition {
 
 ### 3. Rotation: template-level, condition-aware
 
-A region with more than one panel rotates (`rotateSeconds`, default 8).
+A region with more than one panel rotates (`rotateSeconds`, default 8) —
+unless it declares `layout: "stack"` (added in LTV-015, issue #56), which
+renders every eligible panel at once: the sidebar-card treatment from the
+approved mockups (chores + instruction cards beside the board). The default
+`layout: "rotate"` keeps every pre-existing definition valid unchanged.
 Each panel's `condition` is evaluated **as a pure function of the
 `DisplayState` payload** — no queries, no side effects — and ineligible
 panels are skipped, so a screen never rotates into a view that is wrong for
