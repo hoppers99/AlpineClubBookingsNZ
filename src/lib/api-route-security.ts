@@ -123,6 +123,11 @@ export const explicitPublicApiRoutes = {
     boundary: "public",
     reason: "Token-bearing non-member group join confirmation; only the matching SHA-256 token resolves a staged join, the create is idempotent and rate limited, and it mirrors the booking-request approval conversion (non-login member, PENDING child booking, pay link).",
   },
+  "src/app/api/display/state/route.ts": {
+    boundary: "public",
+    reason:
+      "Display-token-authenticated lobby display data feed (#28): sessionless hashed-token credential resolves to one device's lodge; the payload is privacy-reduced in the serialiser (names at configured granularity, minors never individually named, no money/contact/member ids). Rate limited; module-flag gated at the proxy.",
+  },
   "src/app/api/display/pair/route.ts": {
     boundary: "public",
     reason:

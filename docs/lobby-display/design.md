@@ -265,13 +265,57 @@ Modelled on the kiosk account management surface (`/admin/lodge`):
 
 ## 10. Privacy and security
 
-- Public physical screen ⇒ treat shown names as published. Granularity
-  levels, family/group labelling, and minors handling are **open design
-  questions** to be settled in the privacy task before the serialiser is
-  built. Firm intent: minors are not individually named on a public screen;
-  enforcement lives in the API serialiser.
+### Settled naming rules (issue #28, 2026-07-11)
+
+Enforced solely in `src/lib/lodge-display-state.ts` — the serialiser is the
+single choke point; no template or module can display more than it serves.
+
+**Granularity levels** (`DisplayNameGranularity`; per-lodge override on
+`Lodge.displayNameGranularity`, null = club default
+`FIRST_NAME_SURNAME_INITIAL` — full names included as a level per the
+upstream owner's input on discussion #964):
+
+| Level | Adult guest renders as |
+|---|---|
+| `FULL_NAME` | Jane Smith |
+| `FIRST_NAME_SURNAME_INITIAL` (default) | Jane S |
+| `FIRST_NAME_ONLY` | Jane |
+| `COUNTS_ONLY` | (no names — counts and labels only) |
+
+**Rules that override the level (in order):**
+
+1. **Organisations** (organiser member `ageTier = NOT_APPLICABLE` — schools,
+   clubs): the booking shows the organisation's full name at every level;
+   its guests are never listed individually.
+2. **Whole-lodge blockout**: a booking that is the sole occupant on every
+   day it appears in the window AND is a genuine group (organisation, or
+   ≥ `WHOLE_LODGE_MIN_GUESTS` = 8 guests) collapses to its label only. The
+   guest-count heuristic is a v1 constant — review-flagged on epic #25.
+3. **Bookings containing minors** (`ageTier` INFANT/CHILD/YOUTH): collapse
+   to a family label — "«Surname» family" at the two fuller levels,
+   "Family of N" at `FIRST_NAME_ONLY` — and guests are never listed.
+   **Minors are never individually named at any level**, including as chore
+   assignees (a minor's chore shows the booking's family/group label
+   instead).
+4. Otherwise (adults-only booking): the organiser labels the booking and
+   guests list at the configured level.
+
+**Window**: default 3 days, hard cap 7 (`DISPLAY_WINDOW_MAX_DAYS`) — an
+out-of-range request clamps rather than erroring.
+
+**Payload deltas from the §5 sketch** (implemented shape in
+`lodge-display-state.ts`): booking rows are split per (booking, room) with
+an opaque `key` (never the real booking id); per-guest `arriving` dropped
+(derivable from dates client-side); `rules` is an array of instruction
+documents; a `notice` field ships null until LTV-011.
+
+### Standing security properties
+
 - Display token: hashed at rest, revocable, least-privilege route
-  allow-list, rate-limited pairing, no PII in URLs.
+  allow-list, rate-limited pairing, no PII in URLs (ADR-001).
+- The serialiser never selects monetary, payment, contact, or member-id
+  fields; the phone-number opt-in feature (#37) would extend it under an
+  explicit two-sided consent model, not here.
 - The display surface performs no writes except its own pairing/heartbeat
   bookkeeping.
 - Security-sensitive tasks (pairing/auth, serialiser) carry `risk:high`
