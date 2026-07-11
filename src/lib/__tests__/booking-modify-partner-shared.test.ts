@@ -80,6 +80,23 @@ describe("resolvePartnerSharedCapacity", () => {
     expect(ordinary).toEqual([range("m-partner"), range("m-sharer")]);
   });
 
+  it("throws when the same member is flagged twice", async () => {
+    await expect(
+      resolvePartnerSharedCapacity({
+        lodgeId: "lodge-a",
+        rangeStart: CHECK_IN,
+        rangeEnd: CHECK_OUT,
+        proposedRanges: [range("m-partner"), range("m-sharer")],
+        partnerSharedGuests: [
+          { memberId: "m-sharer", partnerMemberId: "m-partner" },
+          { memberId: "m-sharer", partnerMemberId: "m-other" },
+        ],
+        excludeBookingId: "b1",
+      }),
+    ).rejects.toThrow(/more than once/i);
+    expect(checkCapacityForPartnerSharedAdmission).not.toHaveBeenCalled();
+  });
+
   it("throws when a flagged sharer matches no proposed guest", async () => {
     await expect(
       resolvePartnerSharedCapacity({

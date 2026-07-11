@@ -659,6 +659,15 @@ export async function resolvePartnerSharedCapacity(params: {
   const sharerByMemberId = new Map(
     params.partnerSharedGuests.map((sharer) => [sharer.memberId, sharer]),
   );
+  if (sharerByMemberId.size !== params.partnerSharedGuests.length) {
+    // Two flags for one member would otherwise collapse last-wins; reject so
+    // a malformed caller payload can never silently change which partner an
+    // admission is checked against.
+    throw new ApiError(
+      "The same guest was flagged as a partner-sharer more than once.",
+      400,
+    );
+  }
   const matchedSharerIds = new Set<string>();
   const ordinary: typeof params.proposedRanges = [];
   const sharers: Array<{

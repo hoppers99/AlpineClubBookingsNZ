@@ -902,17 +902,31 @@ export async function POST(
   if (skipBookingLifecycleRules) {
     capacity = { available: true, minAvailable: Number.POSITIVE_INFINITY, nightDetails: [] };
   } else if (partnerSharedGuests.length > 0) {
-    const shared = await resolvePartnerSharedCapacity({
-      lodgeId: bookingLodgeId,
-      rangeStart: inProgressPlan && editableFrom ? editableFrom : newCheckIn,
-      rangeEnd: newCheckOut,
-      proposedRanges:
-        inProgressPlan && editableFrom
-          ? inProgressPlan.capacityGuestRanges
-          : policyAdjustedGuestsForPricing,
-      partnerSharedGuests,
-      excludeBookingId: bookingId,
-    });
+    let shared;
+    try {
+      shared = await resolvePartnerSharedCapacity({
+        lodgeId: bookingLodgeId,
+        rangeStart: inProgressPlan && editableFrom ? editableFrom : newCheckIn,
+        rangeEnd: newCheckOut,
+        proposedRanges:
+          inProgressPlan && editableFrom
+            ? inProgressPlan.capacityGuestRanges
+            : policyAdjustedGuestsForPricing,
+        partnerSharedGuests,
+        excludeBookingId: bookingId,
+      });
+    } catch (error) {
+      // Mirror the apply route's status for splitter input errors (an
+      // unmatched or duplicated sharer flag) — a 400-class payload must not
+      // 500 the preview while 400ing the apply.
+      if (error instanceof ApiError) {
+        return NextResponse.json(
+          { error: error.message },
+          { status: error.status },
+        );
+      }
+      throw error;
+    }
     partnerSharedReason = shared.available ? null : shared.reason;
     capacity = {
       available: shared.available,
