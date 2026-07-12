@@ -14,8 +14,10 @@ import {
 import { clubConfig } from "@/config/club";
 import { CLUB_THEME_ID } from "./club-theme-schema";
 import { getSanitizedLodgeInstructions } from "./lodge-instructions";
+import { DISPLAY_RELEVANT_MODULE_KEYS } from "./lodge-display/conditions";
 import { lodgeNullTolerantScope } from "./lodges";
 import { loadEffectiveModuleFlags } from "./module-settings";
+import type { ModuleKey } from "@/config/modules";
 import { prisma } from "./prisma";
 
 // The lobby display's data contract and privacy serialiser (fork issue #28,
@@ -82,6 +84,11 @@ export interface DisplayState {
    * inside it at render. */
   notice: string | null;
   config: Record<string, string>;
+  /** Display-relevant module flags only (ADR-003 §3): the capability
+   * conditions read these instead of querying, so the evaluator stays a pure
+   * function of the payload. Limited to DISPLAY_RELEVANT_MODULE_KEYS — the
+   * whole club flag map is never shipped to a public wall. */
+  capabilities: Record<string, boolean>;
 }
 
 function isMinor(ageTier: AgeTier): boolean {
@@ -452,6 +459,15 @@ export async function buildDisplayState(
     };
   });
 
+  // Only the display-relevant module flags reach the public payload — never
+  // the whole club flag map (ADR-003 §3). The capability conditions read these.
+  const capabilities: Record<string, boolean> = Object.fromEntries(
+    (Object.keys(DISPLAY_RELEVANT_MODULE_KEYS) as ModuleKey[]).map((key) => [
+      key,
+      Boolean(flags[key]),
+    ])
+  );
+
   // Club branding is best-effort: a missing theme row must never take the
   // board down, so failures degrade to a text-only brand block.
   const theme = await prisma.clubTheme
@@ -479,5 +495,6 @@ export async function buildDisplayState(
         ? lodge.displayNotice.trim().slice(0, 2000)
         : null,
     config: sanitiseDisplayConfig(lodge.displayConfig),
+    capabilities,
   };
 }

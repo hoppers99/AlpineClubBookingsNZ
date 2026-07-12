@@ -236,9 +236,13 @@ Two layers (settled in the brief):
 
 Rotation is **template-level and condition-aware**: a region may hold a
 rotation of panels; each panel declares an eligibility condition evaluated
-against the display-state payload. v1 conditions are a fixed named set
-(recommendation: `always`, `whole-lodge-booking-in-window`,
-`arrivals-today`, `no-guests`); ineligible panels are skipped so a screen
+against the display-state payload. Conditions are a closed, namespaced
+`namespace:name` registry (ADR-003 §3, LTV-025): the default `always`, the
+`occupancy:*` states (`whole-lodge-today`, `whole-lodge-in-window`,
+`empty-today`, `arrivals-today`, `departures-today`), the `content:*` states
+(`notice`, `instructions`), and the `<module>:*` capability/data conditions
+(`bed-allocation:enabled`, `chores:enabled`, `chores:today`) generated from the
+module registry. Ineligible panels are skipped so a screen
 never rotates into a view that is wrong for the current data. Device-level
 playlists are out of v1 scope. A region may alternatively declare
 `layout: "stack"` (LTV-015) to render all eligible panels at once — the

@@ -28,6 +28,7 @@ function state(overrides: Partial<DisplayState>): DisplayState {
     rules: null,
     notice: null,
     config: { "wifi-code": "alpine1234" },
+    capabilities: { bedAllocation: false, chores: false },
     ...overrides,
   };
 }
