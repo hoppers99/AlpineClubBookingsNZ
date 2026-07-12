@@ -15,6 +15,8 @@ const DEVICE_SELECT = {
   lodgeId: true,
   lodge: { select: { name: true } },
   templateKey: true,
+  templateId: true,
+  template: { select: { name: true } },
   tokenHash: true,
   pairingCodeExpiresAt: true,
   lastSeenAt: true,
@@ -28,6 +30,8 @@ type DeviceRow = {
   lodgeId: string;
   lodge: { name: string };
   templateKey: string | null;
+  templateId: string | null;
+  template: { name: string } | null;
   tokenHash: string | null;
   pairingCodeExpiresAt: Date | null;
   lastSeenAt: Date | null;
@@ -44,6 +48,8 @@ function toClientDevice(device: DeviceRow) {
     lodgeId: device.lodgeId,
     lodgeName: device.lodge.name,
     templateKey: device.templateKey,
+    templateId: device.templateId,
+    templateName: device.template?.name ?? null,
     paired: device.tokenHash !== null,
     pairingArmedUntil:
       device.pairingCodeExpiresAt && device.pairingCodeExpiresAt > new Date()
