@@ -106,14 +106,12 @@ describe("GET/POST /api/admin/display/templates", () => {
     expect(mockPrisma.displayTemplate.create).not.toHaveBeenCalled();
   });
 
-  it("returns BOTH the built-ins and the v2 template rows (with layout + deviceCount)", async () => {
+  it("returns the v2 template rows (with layout + deviceCount) and no built-ins group (LTV-038)", async () => {
     const { GET } = await import("@/app/api/admin/display/templates/route");
     const body = await (await GET()).json();
-    expect(body.builtIns.map((t: { key: string }) => t.key)).toEqual([
-      "everyday-board",
-      "whole-lodge",
-      "singles-house",
-    ]);
+    // LTV-038 retired the separate built-ins group — the built-ins are seeded
+    // v2 rows now, so they arrive in `templates`, not a `builtIns` array.
+    expect(body.builtIns).toBeUndefined();
     expect(body.templates[0]).toMatchObject({
       id: "tpl-1",
       key: "foyer",

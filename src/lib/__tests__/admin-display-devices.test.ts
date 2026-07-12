@@ -132,36 +132,22 @@ describe("GET/POST /api/admin/display/devices", () => {
 describe("PATCH /api/admin/display/devices/[id] (template assignment, AC7)", () => {
   const routeParams = { params: Promise.resolve({ id: "dev-1" }) };
 
-  it("assigns a registry built-in key, clearing any v2 template binding", async () => {
+  it("rejects a retired templateKey binding without persisting (LTV-038)", async () => {
     mockPrisma.lodgeDisplayDevice.findUnique.mockResolvedValue({ id: "dev-1" });
     const { PATCH } = await import(
       "@/app/api/admin/display/devices/[id]/route"
     );
+    // The built-ins are seeded v2 rows now; a stale client sending templateKey
+    // must be refused (strict schema), never silently no-op.
     const res = await PATCH(
       await jsonRequest("http://localhost/x", "PATCH", { templateKey: "whole-lodge" }),
-      routeParams
-    );
-    expect(res.status).toBe(200);
-    // Built-in binding clears the v2 id so resolution stays unambiguous.
-    expect(mockPrisma.lodgeDisplayDevice.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: { templateKey: "whole-lodge", templateId: null } })
-    );
-  });
-
-  it("rejects an unknown built-in key without persisting", async () => {
-    mockPrisma.lodgeDisplayDevice.findUnique.mockResolvedValue({ id: "dev-1" });
-    const { PATCH } = await import(
-      "@/app/api/admin/display/devices/[id]/route"
-    );
-    const res = await PATCH(
-      await jsonRequest("http://localhost/x", "PATCH", { templateKey: "nope" }),
       routeParams
     );
     expect(res.status).toBe(400);
     expect(mockPrisma.lodgeDisplayDevice.update).not.toHaveBeenCalled();
   });
 
-  it("assigns a v2 templateId after validating it exists, clearing any built-in key", async () => {
+  it("assigns a v2 templateId after validating it exists, clearing the vestigial key", async () => {
     mockPrisma.lodgeDisplayDevice.findUnique.mockResolvedValue({ id: "dev-1" });
     mockPrisma.displayTemplate.findUnique.mockResolvedValue({ id: "tpl-1" });
     const { PATCH } = await import(
@@ -192,18 +178,18 @@ describe("PATCH /api/admin/display/devices/[id] (template assignment, AC7)", () 
     expect(mockPrisma.lodgeDisplayDevice.update).not.toHaveBeenCalled();
   });
 
-  it("clears a binding back to the club default with null (both fields)", async () => {
+  it("clears a binding back to the club default with templateId null (also clears the key)", async () => {
     mockPrisma.lodgeDisplayDevice.findUnique.mockResolvedValue({ id: "dev-1" });
     const { PATCH } = await import(
       "@/app/api/admin/display/devices/[id]/route"
     );
     const res = await PATCH(
-      await jsonRequest("http://localhost/x", "PATCH", { templateKey: null }),
+      await jsonRequest("http://localhost/x", "PATCH", { templateId: null }),
       routeParams
     );
     expect(res.status).toBe(200);
     expect(mockPrisma.lodgeDisplayDevice.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: { templateKey: null, templateId: null } })
+      expect.objectContaining({ data: { templateId: null, templateKey: null } })
     );
   });
 });
@@ -252,14 +238,14 @@ describe("POST /api/admin/display/devices/[id]/revoke (AC5)", () => {
   });
 });
 
-describe("GET /api/admin/display/templates (dual shape for the device picker)", () => {
-  it("lists the code built-ins under builtIns for the device picker", async () => {
+describe("GET /api/admin/display/templates (v2 rows only for the device picker)", () => {
+  it("lists the v2 template rows and no separate built-ins group (LTV-038)", async () => {
     const { GET } = await import("@/app/api/admin/display/templates/route");
     const res = await GET();
     const body = await res.json();
-    const keys = body.builtIns.map((t: { key: string }) => t.key);
-    expect(keys).toEqual(["everyday-board", "whole-lodge", "singles-house"]);
-    // v2 rows ride alongside (empty here) so the picker can offer both.
+    // The built-ins are seeded v2 rows now — they appear in `templates`, not a
+    // separate `builtIns` group.
+    expect(body.builtIns).toBeUndefined();
     expect(Array.isArray(body.templates)).toBe(true);
   });
 });

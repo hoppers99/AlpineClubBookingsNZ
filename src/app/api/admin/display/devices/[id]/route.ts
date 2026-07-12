@@ -3,35 +3,29 @@ import { z } from "zod";
 import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import { logAudit } from "@/lib/audit";
-import { resolveDisplayTemplate } from "@/lib/lodge-display/template-resolution";
 import { nameField } from "@/lib/zod-helpers";
 
-// Admin device update (fork issue #33; template binding extended in LTV-033):
-// rename and template assignment. A device binds EITHER to a code built-in
-// (`templateKey`, validated against the registry) OR to a v2 DisplayTemplate
-// (`templateId`, validated to exist) — never both. Binding one clears the
-// other, so the resolution order (templateId → templateKey → club default)
-// stays unambiguous. Both are validated before persisting (never a dangling
-// binding), and a binding change is audit-logged.
+// Admin device update (fork issue #33; v2-only binding since LTV-038): rename
+// and template assignment. A device binds to a v2 DisplayTemplate (`templateId`,
+// validated to exist) or to the club default (`templateId: null`). The legacy
+// code built-ins are now seeded v2 Template rows (LTV-038), so `templateKey`
+// binding is RETIRED — the vestigial column stays in the schema (#86 owns its
+// removal) but is never written here; a request carrying `templateKey` is
+// rejected by the strict schema. The binding is validated before persisting
+// (never a dangling id) and a change is audit-logged.
 
 const patchSchema = z
   .object({
     name: nameField().optional(),
-    templateKey: z.string().max(80).nullable().optional(),
     templateId: z.string().max(80).nullable().optional(),
   })
+  // Reject any unexpected field — notably the retired `templateKey`, which a
+  // stale client might still send (LTV-038): it must fail rather than silently
+  // no-op, so the caller learns the binding surface changed.
+  .strict()
   .refine(
-    (value) =>
-      value.name !== undefined ||
-      value.templateKey !== undefined ||
-      value.templateId !== undefined,
+    (value) => value.name !== undefined || value.templateId !== undefined,
     { message: "Nothing to update" }
-  )
-  // A device binds to a built-in OR a v2 template, never both at once.
-  .refine(
-    (value) =>
-      !(typeof value.templateKey === "string" && typeof value.templateId === "string"),
-    { message: "Bind either a built-in or a template, not both" }
   );
 
 export async function PATCH(
@@ -57,16 +51,6 @@ export async function PATCH(
     return NextResponse.json({ error: "Device not found" }, { status: 404 });
   }
 
-  // Built-in key: must resolve against the code registry.
-  if (typeof body.templateKey === "string") {
-    const resolved = resolveDisplayTemplate(body.templateKey);
-    if (!resolved) {
-      return NextResponse.json(
-        { error: "Unknown display template" },
-        { status: 400 }
-      );
-    }
-  }
   // v2 template id: must name an existing DisplayTemplate row.
   if (typeof body.templateId === "string") {
     const template = await prisma.displayTemplate.findUnique({
@@ -81,8 +65,9 @@ export async function PATCH(
     }
   }
 
-  // Binding is mutually exclusive: setting one clears the other so resolution
-  // (templateId → templateKey → club default) is never ambiguous.
+  // Setting a templateId (or clearing to null for the club default) also clears
+  // the vestigial templateKey, so a device migrated off a legacy built-in never
+  // carries a stale key alongside its new binding.
   const data: {
     name?: string;
     templateKey?: string | null;
@@ -93,10 +78,6 @@ export async function PATCH(
     data.templateId = body.templateId;
     data.templateKey = null;
   }
-  if (body.templateKey !== undefined) {
-    data.templateKey = body.templateKey;
-    data.templateId = null;
-  }
 
   const updated = await prisma.lodgeDisplayDevice.update({
     where: { id },
@@ -104,13 +85,11 @@ export async function PATCH(
     select: { id: true, name: true, templateKey: true, templateId: true },
   });
 
-  if (body.templateKey !== undefined || body.templateId !== undefined) {
+  if (body.templateId !== undefined) {
     const binding =
       typeof body.templateId === "string"
         ? `template ${body.templateId}`
-        : typeof body.templateKey === "string"
-          ? `built-in "${body.templateKey}"`
-          : "club default";
+        : "club default";
     logAudit({
       action: "DISPLAY_DEVICE_TEMPLATE_ASSIGNED",
       entityType: "LodgeDisplayDevice",

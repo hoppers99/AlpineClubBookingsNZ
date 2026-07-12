@@ -261,3 +261,65 @@ describe("buildLayoutRender — LTV-029 CSS hardening + theme", () => {
     expect(render.themeCss).toBe("");
   });
 });
+
+// LTV-038: the three seeded built-ins must build cleanly through the SAME server
+// assembler the state route runs — a broken seed would fall a real wall back to
+// the fallback board, so proving they validate + sanitise + scope here is the
+// structural half of the visual-parity guarantee (the render half lives in the
+// jsdom display-built-in-parity test).
+describe("buildLayoutRender — LTV-038 seeded built-ins build cleanly", () => {
+  it("assembles each built-in layout+template without throwing, scoping its CSS", async () => {
+    const { BUILT_IN_DISPLAY_LAYOUTS, BUILT_IN_DISPLAY_TEMPLATES } = await import(
+      "@/lib/lodge-display/built-in-seeds"
+    );
+    for (const layout of BUILT_IN_DISPLAY_LAYOUTS) {
+      const template = BUILT_IN_DISPLAY_TEMPLATES.find(
+        (candidate) => candidate.layoutKey === layout.key
+      )!;
+      const render = buildLayoutRender(
+        {
+          bodyHtml: layout.bodyHtml,
+          defaultCss: layout.defaultCss,
+          areas: layout.areas,
+          slotContent: template.slotContent,
+          cssOverrides: template.cssOverrides,
+          footerHtml: template.footerHtml,
+        },
+        state()
+      );
+      // Every area placeholder became an inert marker; no raw token survived.
+      expect(render.bodyHtml).not.toContain("{{area:");
+      expect(render.bodyHtml).toContain("data-display-area=");
+      // The layout CSS is scoped to the authored root (chrome-safe).
+      if (layout.defaultCss.trim().length > 0) {
+        expect(render.defaultCss).toContain(".display-authored-root");
+      }
+    }
+  });
+
+  it("scopes the everyday-board board+rail grid so it cannot reach the chrome", async () => {
+    const { BUILT_IN_DISPLAY_LAYOUTS, BUILT_IN_DISPLAY_TEMPLATES } = await import(
+      "@/lib/lodge-display/built-in-seeds"
+    );
+    const layout = BUILT_IN_DISPLAY_LAYOUTS.find((l) => l.key === "everyday-board")!;
+    const template = BUILT_IN_DISPLAY_TEMPLATES.find(
+      (t) => t.key === "everyday-board"
+    )!;
+    const render = buildLayoutRender(
+      {
+        bodyHtml: layout.bodyHtml,
+        defaultCss: layout.defaultCss,
+        areas: layout.areas,
+        slotContent: template.slotContent,
+        cssOverrides: template.cssOverrides,
+        footerHtml: template.footerHtml,
+      },
+      state()
+    );
+    // The two-column grid selector survived sanitisation and is scoped.
+    expect(render.defaultCss).toContain(".display-authored-root .eb-grid");
+    expect(render.defaultCss).toContain("grid-template-columns: 1fr 27vw");
+    // color-mix()/var() in the notice card treatment are preserved (not stripped).
+    expect(render.defaultCss).toContain("color-mix(in srgb, var(--display-departing)");
+  });
+});

@@ -3915,9 +3915,11 @@ model LodgeDisplayDevice {
   pairingCodeExpiresAt DateTime?
   tokenHash            String?   @unique
   templateId           String?
-  // Interim binding (LTV-024): a code built-in key resolved via
-  // resolveDisplayTemplateForDevice(). Resolution order:
-  // templateKey -> built-in -> club default.
+  // VESTIGIAL since LTV-038: a device used to bind a code built-in by this key.
+  // The built-ins are now seeded v2 Template rows and devices bind by templateId;
+  // the seed migrated any existing templateKey onto templateId and the devices
+  // PATCH no longer writes it. The column is retained (the #86 re-layer owns
+  // schema consolidation) but is dead — nothing reads it for device rendering.
   templateKey          String?   @db.VarChar(80)
   lastSeenAt           DateTime?
   revokedAt            DateTime?

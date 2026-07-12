@@ -84,6 +84,36 @@ Per lodge:
 > room-occupancy starter bundle lives at
 > `docs/lobby-display/seeds/room-occupancy-templates.bundle.zip`.
 
+> **Built-ins are seeded v2 rows** (LTV-038, ADR-003 §1 Consequences "Redone").
+> The three built-ins — **everyday-board**, **whole-lodge**, **singles-house** —
+> are re-expressed as v2 `DisplayLayout` + `DisplayTemplate` definitions in
+> `src/lib/lodge-display/built-in-seeds.ts` and **seeded create-if-missing** by
+> `ensureBuiltInDisplays(prisma)`, wired into `prisma/seed.ts` (the formal seed
+> entry point; admins can also import them via the config-transfer bundle). The
+> upsert-by-`key` carries an **empty update**, so an admin who customised a
+> built-in keeps their version — a re-run never clobbers admin edits. Visual
+> parity with the LTV-015/016 mocks is preserved by re-creating the legacy page
+> grid (the `.display-screen:has(.display-region-side)` two-column board+rail, the
+> `.display-region-stack` side rail, and the compact notice card) inside each
+> **Layout's `defaultCss`** in the authored-CSS scoped world — the module
+> components and their hooks in `display.css` are untouched. The everyday-board
+> side rail becomes three adjacent areas (chores, rules, a `content:notice`-gated
+> notice) inside a rail container div in the layout body (nesting works since
+> LTV-041); whole-lodge and singles keep their rotation as **rotator areas**.
+>
+> **Legacy device path retired.** On seed, any device still bound to a built-in by
+> the interim `templateKey` is migrated onto the seeded Template's `templateId`
+> (idempotent, only when it has no v2 binding yet). The devices **PATCH no longer
+> accepts `templateKey`** (a stale client is rejected by the strict schema), the
+> device picker **drops the built-ins group** (the built-ins appear as ordinary
+> templates), and `LodgeDisplayDevice.templateKey` is now **vestigial** — retained
+> in the schema (the #86 re-layer owns its removal) but never written or read for
+> device rendering. The code built-in definition (`template-registry.ts`) and the
+> legacy region renderer survive **only** as the zero-DB known-good design the
+> unattended-safety fallback board renders (LTV-030) and the club-default board
+> for a device with no binding, plus the `?preview=1[&templateKey=…]` /
+> `/api/admin/display/preview` admin testing path.
+
 > **Implemented** (fork issue #26, migration `20260711000100_add_lobby_display_schema`):
 > `prisma/schema.prisma` is now the source of truth for these shapes. The
 > sketch below is retained for rationale; the implemented schema differs only
@@ -445,13 +475,14 @@ client-safe `css-tokens.ts` before they ship in the payload:
 > by the save contract regardless of the authoring surface. Noted for the owner to
 > revisit if a reusable rich editor is later extracted.
 >
-> *Device binding (the point of a Template).* The **Devices** picker now offers
-> **both** built-ins (bound by `templateKey`) and v2 templates (bound by
-> `templateId`) from the dual-shape `/api/admin/display/templates` GET
-> (`{ builtIns, templates }`); picking a v2 template PATCHes `templateId` and
-> clears `templateKey`, picking a built-in does the reverse, so the resolution
-> order (`templateId → templateKey → club default`) stays unambiguous. Built-ins
-> remain pickable until LTV-038 retires them.
+> *Device binding (the point of a Template).* The **Devices** picker offers the
+> **club default** and every **v2 template** (bound by `templateId`) from
+> `/api/admin/display/templates` GET (`{ templates }`). Since **LTV-038** the
+> three built-ins are ordinary seeded templates, so the separate built-ins group
+> is gone and the PATCH no longer accepts `templateKey`: picking a template
+> PATCHes `templateId` (clearing the vestigial key), the club default clears the
+> binding with `templateId: null`. The `templateKey` resolution path is retired
+> for devices — see the §3 "Built-ins are seeded v2 rows" callout.
 
 > **Reference (LTV-034, #80).** The **Reference** entry
 > (`/admin/display/reference`) is live: one read-only page, three Cards, backed

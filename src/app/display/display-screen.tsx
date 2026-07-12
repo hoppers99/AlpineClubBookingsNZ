@@ -743,8 +743,10 @@ export function DisplayScreen() {
   // known-good FallbackBoard (LTV-030). A broken binding the server already
   // caught (layoutRenderError, no layoutRender) renders the same FallbackBoard
   // directly — silent on a real wall, marked in preview. Otherwise the legacy
-  // built-in board path renders unchanged (LTV-038 retires it); walls on
-  // built-ins keep working exactly as before.
+  // built-in board path renders the club-default board: LTV-038 seeded the three
+  // built-ins as v2 rows (devices now bind them by templateId → LayoutScreen), so
+  // this ActiveScreen path serves only a device with NO binding, plus it and the
+  // Region renderer remain the zero-DB engine the FallbackBoard leans on.
   const { payload, stale } = lifecycle;
   let board: ReactNode;
   if (payload.layoutRender) {

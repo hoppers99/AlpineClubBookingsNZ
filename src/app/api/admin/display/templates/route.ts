@@ -4,7 +4,6 @@ import { z } from "zod";
 import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import { logAudit } from "@/lib/audit";
-import { listBuiltInDisplayTemplates } from "@/lib/lodge-display/template-registry";
 import { validateTemplateForSave } from "@/lib/lodge-display/authoring-validation";
 
 // Admin lobby-display TEMPLATE management (fork issue #79, LTV-033, ADR-003 §1).
@@ -13,12 +12,11 @@ import { validateTemplateForSave } from "@/lib/lodge-display/authoring-validatio
 // footer, and renders dynamically against whichever lodge its display is bound
 // to.
 //
-// This GET serves TWO consumers at once during the v2 transition:
-//   • `builtIns` — the legacy code built-ins (key + name), still the only thing
-//     the devices picker can bind by `templateKey` until LTV-038 retires them.
-//   • `templates` — the v2 DisplayTemplate rows, bindable by `templateId`.
-// The devices picker offers both; picking a v2 template PATCHes templateId,
-// picking a built-in PATCHes templateKey (see devices/[id]/route.ts).
+// This GET lists the v2 DisplayTemplate rows (bindable by `templateId`) for the
+// devices picker and the templates authoring page. Since LTV-038 the three
+// legacy code built-ins are seeded as ordinary v2 Template rows, so they appear
+// here as normal templates — the picker no longer offers a separate built-ins
+// group and the devices PATCH no longer accepts `templateKey`.
 //
 // POST creates a v2 Template. Every authored field is judged by the shared save
 // contract (`validateTemplateForSave`) BEFORE it is persisted — a lobby wall is
@@ -66,10 +64,6 @@ export async function GET() {
   });
 
   return NextResponse.json({
-    builtIns: listBuiltInDisplayTemplates().map((template) => ({
-      key: template.key,
-      name: template.name,
-    })),
     templates: rows.map((row) => ({
       id: row.id,
       key: row.key,

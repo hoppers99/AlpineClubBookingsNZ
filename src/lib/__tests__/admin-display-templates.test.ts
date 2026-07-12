@@ -65,15 +65,16 @@ beforeEach(() => {
   mockPrisma.lodge.update.mockResolvedValue({});
 });
 
-describe("GET /api/admin/display/templates (dual shape, LTV-033)", () => {
-  it("returns the code built-ins plus the v2 template rows", async () => {
+describe("GET /api/admin/display/templates (v2 rows only, LTV-038)", () => {
+  it("returns the v2 template rows and no legacy built-ins group", async () => {
     const { GET } = await import("@/app/api/admin/display/templates/route");
     const res = await GET();
     expect(res.status).toBe(200);
     const body = await res.json();
-    const keys = body.builtIns.map((t: { key: string }) => t.key);
-    expect(keys).toEqual(["everyday-board", "whole-lodge", "singles-house"]);
     expect(Array.isArray(body.templates)).toBe(true);
+    // LTV-038 retired the separate built-ins group — the built-ins are now
+    // ordinary seeded template rows, so the picker binds everything by id.
+    expect(body.builtIns).toBeUndefined();
     // The retired source concept is gone from the payload.
     expect(JSON.stringify(body)).not.toMatch(/override|custom|BUILT_IN/);
   });
