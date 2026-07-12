@@ -25,6 +25,7 @@ import {
   backfillCurrentSeasonMembershipAssignments,
 } from "../src/lib/membership-types";
 import { ensureAccessRoleDefinitions } from "../src/lib/access-role-definitions";
+import { ensureBuiltInDisplays } from "../src/lib/lodge-display/built-in-seeds";
 import { ensureMemberAccessRolesFromCompatibilityFields } from "../src/lib/member-access-role-writes";
 import { ensureNotRequiredSubscriptionForRole } from "../src/lib/member-subscription-defaults";
 import { createPrismaPgAdapter } from "../src/lib/prisma-adapter";
@@ -610,6 +611,15 @@ async function main() {
   await seedClubTheme();
 
   await seedInductionChecklistTemplate();
+
+  // Seed the three built-in lobby-display designs as v2 Layout + Template rows
+  // (LTV-038) create-if-missing, and migrate any device still bound to a legacy
+  // built-in `templateKey` onto the seeded `templateId`. Admin-customised
+  // built-ins are never clobbered (upsert with empty update).
+  const builtInDisplays = await ensureBuiltInDisplays(prisma);
+  console.log(
+    `Built-in display layouts/templates seeded; devices migrated from legacy templateKey: ${builtInDisplays.migratedDeviceCount}`,
+  );
 
   console.log("Seeding complete!");
 }

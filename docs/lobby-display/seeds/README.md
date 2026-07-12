@@ -6,6 +6,15 @@ category), review the plan, and apply. The v2 Layout/Template library travels in
 the `lodge-config` category (LTV-037), so the display setup imports as one unit
 alongside a club's lodge configuration.
 
+> **Built-in designs are seeded automatically** (LTV-038). The three built-ins —
+> `everyday-board`, `whole-lodge`, and `singles-house` — are code-defined in
+> `src/lib/lodge-display/built-in-seeds.ts` and seeded **create-if-missing** by
+> `prisma/seed.ts` (`ensureBuiltInDisplays`), so a fresh install already has them
+> as ordinary v2 Layout + Template rows on **Admin → Display Layouts / Templates**
+> — no bundle import needed. The bundles below are *additional* starter sets. A
+> re-run of the seed never clobbers an admin-customised built-in (upsert with an
+> empty update).
+
 ## `room-occupancy-templates.bundle.zip`
 
 The room-occupancy starter set in the v2 Layout/Template shape (ADR-003 §1),

@@ -26,11 +26,6 @@ interface ClientDevice {
   revoked: boolean;
 }
 
-interface BuiltInOption {
-  key: string;
-  name: string;
-}
-
 interface TemplateOption {
   id: string;
   key: string;
@@ -40,10 +35,11 @@ interface TemplateOption {
   updatedAt: string;
 }
 
-// The picker mixes built-ins (bound by key) and v2 templates (bound by id) in
-// one <select>, so option values are prefixed to say which binding to PATCH.
+// The picker offers the club default and every v2 template (LTV-038 retired the
+// separate built-ins group — the built-ins are now ordinary seeded templates).
+// The empty value is the club default; a template value is prefixed so the
+// change handler knows to PATCH its templateId.
 const CLUB_DEFAULT = "";
-const builtInValue = (key: string) => `builtin:${key}`;
 const templateValue = (id: string) => `template:${id}`;
 
 interface LodgeOption {
@@ -53,7 +49,6 @@ interface LodgeOption {
 
 export default function AdminDisplayPage() {
   const [devices, setDevices] = useState<ClientDevice[]>([]);
-  const [builtIns, setBuiltIns] = useState<BuiltInOption[]>([]);
   const [templates, setTemplates] = useState<TemplateOption[]>([]);
   const [lodges, setLodges] = useState<LodgeOption[]>([]);
   const [newName, setNewName] = useState("");
@@ -80,10 +75,8 @@ export default function AdminDisplayPage() {
     }
     if (templatesRes.ok) {
       const body = (await templatesRes.json()) as {
-        builtIns: BuiltInOption[];
         templates: TemplateOption[];
       };
-      setBuiltIns(body.builtIns ?? []);
       setTemplates(body.templates ?? []);
     }
     if (lodgesRes?.ok) {
@@ -143,16 +136,12 @@ export default function AdminDisplayPage() {
 
   async function assignTemplate(deviceId: string, selection: string) {
     setMessage(null);
-    // Decode the prefixed picker value into the binding field to PATCH. Club
-    // default clears the built-in binding (the route clears templateId with it).
-    let patch: { templateKey: string | null } | { templateId: string };
-    if (selection.startsWith("template:")) {
-      patch = { templateId: selection.slice("template:".length) };
-    } else if (selection.startsWith("builtin:")) {
-      patch = { templateKey: selection.slice("builtin:".length) };
-    } else {
-      patch = { templateKey: null };
-    }
+    // Decode the picker value into the binding to PATCH: a template value binds
+    // its id; the empty value clears the binding back to the club default
+    // (templateId null). templateKey is retired (LTV-038) and never sent.
+    const patch: { templateId: string | null } = selection.startsWith("template:")
+      ? { templateId: selection.slice("template:".length) }
+      : { templateId: null };
     const response = await fetch(`/api/admin/display/devices/${deviceId}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
@@ -336,9 +325,7 @@ export default function AdminDisplayPage() {
                         value={
                           device.templateId
                             ? templateValue(device.templateId)
-                            : device.templateKey
-                              ? builtInValue(device.templateKey)
-                              : CLUB_DEFAULT
+                            : CLUB_DEFAULT
                         }
                         onChange={(event) =>
                           void assignTemplate(device.id, event.target.value)
@@ -357,16 +344,6 @@ export default function AdminDisplayPage() {
                             ))}
                           </optgroup>
                         )}
-                        <optgroup label="Built-ins">
-                          {builtIns.map((builtIn) => (
-                            <option
-                              key={builtIn.key}
-                              value={builtInValue(builtIn.key)}
-                            >
-                              {builtIn.name}
-                            </option>
-                          ))}
-                        </optgroup>
                       </select>
                     </div>
                     <Button variant="outline" asChild>
