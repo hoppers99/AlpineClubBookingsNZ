@@ -76,7 +76,12 @@ opportunistically when a file is already being touched.
 ## Design Foundation — Restrained Alpine (#1800)
 
 The authenticated + admin app shells carry the club identity, not just stock
-shadcn neutral (epic #1800). The foundation (#1801) establishes:
+shadcn neutral (epic #1800). `/admin/site-style` now supplies the same saved
+brand accent, neutral ramp, and font choices to the website and both app shells
+(#1808); the occupancy meter follows that accent. Semantic success, warning,
+information, danger/error, and waitlist tones remain curated, contrast-locked
+light/dark pairs rather than editable brand fields. The foundation (#1801)
+establishes:
 
 - **Type:** Inter (body) + League Spartan (headings) load on the app-scope
   wrapper in `(authenticated)`/`(admin)` layouts via

@@ -85,8 +85,10 @@ recommended reading paths.
    name, contact emails, public URL, beds, age tiers, and integer-cent rates.
    If `config/club.json` is absent, the app falls back to
    `config/club.example.json`.
-3. Complete `/admin/site-style` after first sign-in to set public colours,
-   fonts, and the database-stored logo. Replace the remaining images in
+3. Complete `/admin/site-style` after first sign-in to set the shared public,
+   member, and admin brand colours and fonts, plus the database-stored public
+   logo. Operational success, warning, information, and danger colours remain
+   curated rather than editable. Replace the remaining images in
    `public/branding/` with your own favicon, Open Graph image, and public
    website photos. Keep the `*.example.*` files as reusable placeholders for
    forks.

@@ -100,7 +100,7 @@ describe("site style admin API", () => {
     expect(mocks.revalidatePath).not.toHaveBeenCalled();
   });
 
-  it("saves completion and revalidates the website layout", async () => {
+  it("saves completion and revalidates every themed layout", async () => {
     const response = await PUT(
       request({
         ...DEFAULT_CLUB_THEME_VALUES,
@@ -120,7 +120,11 @@ describe("site style admin API", () => {
         }),
       }),
     );
-    expect(mocks.revalidatePath).toHaveBeenCalledWith("/(website)", "layout");
+    expect(mocks.revalidatePath.mock.calls).toEqual([
+      ["/(website)", "layout"],
+      ["/(authenticated)", "layout"],
+      ["/(admin)", "layout"],
+    ]);
     expect(mocks.auditLogCreate).toHaveBeenCalled();
   });
 });

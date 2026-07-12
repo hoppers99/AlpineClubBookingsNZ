@@ -37,6 +37,7 @@ describe("club theme validation", () => {
     expect(css).toContain(
       `--brand-gold:${DEFAULT_CLUB_THEME_VALUES.brandGold}`,
     );
+    expect(css).toContain(":root,.website-theme,.app-theme-scope{");
     expect(css).toContain("--font-website-body:var(--font-theme-inter)");
     expect(css).not.toContain("example.test");
     expect(css).not.toContain("NOT_A_FONT");
@@ -87,6 +88,37 @@ describe("getBlockingContrastWarnings", () => {
         (warning) => warning.ratio !== null && warning.ratio < 4.5,
       ),
     ).toBe(true);
+  });
+
+  it("pins every editable brand contrast pair, including the dark app accent", () => {
+    const failing = {
+      ...DEFAULT_CLUB_THEME_VALUES,
+      brandGold: "#333333",
+      brandCharcoal: "#303030",
+      brandDeep: "#343434",
+      brandSnow: "#353535",
+    };
+
+    expect(getContrastWarnings(failing).map((warning) => warning.id)).toEqual([
+      "body-on-snow",
+      "header-on-charcoal",
+      "button-on-gold",
+      "app-accent-on-deep",
+    ]);
+  });
+
+  it("blocks an app accent that is unreadable on dark app chrome", () => {
+    const blocking = getBlockingContrastWarnings({
+      ...DEFAULT_CLUB_THEME_VALUES,
+      brandGold: "#30343b",
+      brandDeep: "#33373e",
+    });
+
+    expect(blocking).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "app-accent-on-deep" }),
+      ]),
+    );
   });
 
   it("measures oklch() colours and blocks a low-contrast oklch pair", () => {

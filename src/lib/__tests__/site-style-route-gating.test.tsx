@@ -147,11 +147,22 @@ describe("site style route-group gating", () => {
   });
 
   it("does not block the admin route group when setup is incomplete", async () => {
+    mocks.getWebsiteThemeRenderState.mockResolvedValue({
+      css: ":root{--brand-gold:#123456}",
+      logoDataUrl: null,
+      isComplete: false,
+      values: {},
+    });
     render(await AdminLayout({ children: <p>Admin child</p> }));
 
     expect(screen.getByText("Admin child")).toBeTruthy();
     expect(
       screen.getByText("Complete your site style before opening the public website."),
     ).toBeTruthy();
+    const style = document.querySelector(
+      'style[data-site-style="club-theme"]',
+    );
+    expect(style?.textContent).toContain("--brand-gold:#123456");
+    expect(mocks.getWebsiteThemeRenderState).toHaveBeenCalled();
   });
 });

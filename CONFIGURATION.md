@@ -68,14 +68,20 @@ Keep all money values in integer cents.
 
 ## Branding Assets
 
-Public website colours, fonts, and the logo are managed by administrators at
-`/admin/site-style`. Fresh deployments show a neutral setup holding page until
-an admin finishes that wizard. The logo is stored in the database as a validated
+Shared public-website, member-area, and admin-area brand colours and fonts are
+managed by administrators at `/admin/site-style`. The existing primary accent
+and neutral-ramp fields theme all three surfaces; the app does not maintain a
+second accent setting. The occupancy meter follows the primary accent. Semantic
+success, warning, information, danger/error, and waitlist colours stay curated,
+contrast-locked light/dark pairs and are not editable brand fields. Fresh
+deployments show a neutral public-site holding page until an admin finishes that
+wizard. The logo is public-site only and is stored in the database as a validated
 image data URL; there is no runtime upload directory to preserve.
 
 Saved palettes must meet the **WCAG AA 4.5:1** minimum text-contrast ratio on
-the three key public-site pairs — body text on the page background, header text
-on the navigation bar, and button text on the primary-action colour. The wizard
+the key public/app pairs — body text on the page background, header text on the
+navigation bar, button text on the primary-action colour, and the app accent on
+dark app chrome. The wizard
 disables its Save/Finish buttons and the `/admin/site-style` API rejects the
 request (`400`) while any pair falls short, so an admin cannot ship an unreadable
 theme. Both accepted colour formats are measured — hex directly, and `oklch()`

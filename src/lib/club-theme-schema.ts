@@ -2,7 +2,7 @@ export const CLUB_THEME_ID = "default";
 export const MAX_LOGO_DATA_URL_BYTES = 900_000;
 
 export const CLUB_THEME_COLOUR_FIELDS = [
-  { key: "brandGold", label: "Gold" },
+  { key: "brandGold", label: "Primary accent" },
   { key: "brandCharcoal", label: "Charcoal" },
   { key: "brandDeep", label: "Deep" },
   { key: "brandRidge", label: "Ridge" },
@@ -220,7 +220,7 @@ export function buildClubThemeCss(
   value: Partial<Record<keyof ClubThemeValues, unknown>> | null | undefined,
 ): string {
   const theme = normaliseThemeValues(value);
-  const base = `:root,.website-theme{--brand-gold:${theme.brandGold};--brand-charcoal:${theme.brandCharcoal};--brand-deep:${theme.brandDeep};--brand-ridge:${theme.brandRidge};--brand-mist:${theme.brandMist};--brand-snow:${theme.brandSnow};--brand-safety:${theme.brandSafety};--font-website-heading:var(${fontCssVariable(theme.headingFontKey)});--font-website-body:var(${fontCssVariable(theme.bodyFontKey)});}`;
+  const base = `:root,.website-theme,.app-theme-scope{--brand-gold:${theme.brandGold};--brand-charcoal:${theme.brandCharcoal};--brand-deep:${theme.brandDeep};--brand-ridge:${theme.brandRidge};--brand-mist:${theme.brandMist};--brand-snow:${theme.brandSnow};--brand-safety:${theme.brandSafety};--font-website-heading:var(${fontCssVariable(theme.headingFontKey)});--font-website-body:var(${fontCssVariable(theme.bodyFontKey)});}`;
   return theme.rawCss ? `${base}\n${theme.rawCss}` : base;
 }
 
@@ -352,6 +352,12 @@ export function getContrastWarnings(
       label: "Button text on primary action",
       foreground: theme.brandCharcoal,
       background: theme.brandGold,
+    },
+    {
+      id: "app-accent-on-deep",
+      label: "App accent on dark app chrome",
+      foreground: theme.brandGold,
+      background: theme.brandDeep,
     },
   ];
 

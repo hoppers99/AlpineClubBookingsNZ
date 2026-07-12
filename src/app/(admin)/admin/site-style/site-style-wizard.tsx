@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { OccupancyMeter } from "@/components/ui/occupancy-meter";
 import {
   Select,
   SelectContent,
@@ -297,8 +298,8 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
             <CardTitle>Style Setup Wizard</CardTitle>
             <CardDescription>
               {completedAt
-                ? "The public website is using this style."
-                : "The public website stays on the setup holding page until this is finished."}
+                ? "The public website, member area, and admin area are using this style."
+                : "The member and admin areas use this style immediately; the public website stays on the setup holding page until setup is finished."}
             </CardDescription>
           </div>
           <Badge variant={completedAt ? "success" : "warning"}>
@@ -339,40 +340,59 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
             </div>
 
             {step === "colours" && (
-              <div className="grid gap-4 sm:grid-cols-2">
-                {CLUB_THEME_COLOUR_FIELDS.map((field) => (
-                  <div key={field.key} className="space-y-2">
-                    <Label htmlFor={field.key}>{field.label}</Label>
-                    <div className="flex gap-2">
-                      <Input
-                        id={field.key}
-                        type="color"
-                        value={
-                          values[field.key].startsWith("#")
-                            ? values[field.key]
-                            : DEFAULT_CLUB_THEME_VALUES[field.key]
-                        }
-                        onChange={(event) =>
-                          updateColour(field.key, event.target.value)
-                        }
-                        className="h-10 w-14 shrink-0 p-1"
-                        aria-label={`${field.label} swatch`}
-                      />
-                      <Input
-                        value={values[field.key]}
-                        onChange={(event) =>
-                          updateColour(field.key, event.target.value)
-                        }
-                        aria-label={`${field.label} value`}
-                      />
+              <div className="space-y-5">
+                <div className="rounded-md border bg-muted/45 p-4 text-sm text-muted-foreground">
+                  <p className="font-medium text-foreground">Editable brand layer</p>
+                  <p className="mt-1">
+                    These colours set the identity, neutral warmth, primary actions,
+                    navigation, and occupancy meter across the public website,
+                    member area, and admin area. The primary accent is glacial teal
+                    by default and may be club gold or another accessible brand colour.
+                  </p>
+                </div>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  {CLUB_THEME_COLOUR_FIELDS.map((field) => (
+                    <div key={field.key} className="space-y-2">
+                      <Label htmlFor={field.key}>{field.label}</Label>
+                      <div className="flex gap-2">
+                        <Input
+                          id={field.key}
+                          type="color"
+                          value={
+                            values[field.key].startsWith("#")
+                              ? values[field.key]
+                              : DEFAULT_CLUB_THEME_VALUES[field.key]
+                          }
+                          onChange={(event) =>
+                            updateColour(field.key, event.target.value)
+                          }
+                          className="h-10 w-14 shrink-0 p-1"
+                          aria-label={`${field.label} swatch`}
+                        />
+                        <Input
+                          value={values[field.key]}
+                          onChange={(event) =>
+                            updateColour(field.key, event.target.value)
+                          }
+                          aria-label={`${field.label} value`}
+                        />
+                      </div>
+                      {fieldErrors[field.key]?.[0] && (
+                        <p className="text-sm text-red-700">
+                          {fieldErrors[field.key]?.[0]}
+                        </p>
+                      )}
                     </div>
-                    {fieldErrors[field.key]?.[0] && (
-                      <p className="text-sm text-red-700">
-                        {fieldErrors[field.key]?.[0]}
-                      </p>
-                    )}
-                  </div>
-                ))}
+                  ))}
+                </div>
+                <div className="rounded-md border p-4 text-sm text-muted-foreground">
+                  <p className="font-medium text-foreground">Fixed semantic layer</p>
+                  <p className="mt-1">
+                    Success, warning, information, danger/error, and waitlist states
+                    use curated light/dark colour pairs. They are not brand pickers,
+                    so operational meaning and contrast stay consistent.
+                  </p>
+                </div>
               </div>
             )}
 
@@ -425,8 +445,9 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
               <div className="space-y-3">
                 <p className="text-sm text-slate-600">
                   Add custom CSS rules that will be appended to the generated
-                  theme stylesheet on every public page. Use sparingly — prefer
-                  colour and font settings above where possible.
+                  theme stylesheet on the public website, member area, and admin
+                  area. Use sparingly — prefer colour and font settings above
+                  where possible.
                 </p>
                 <textarea
                   value={values.rawCss}
@@ -573,6 +594,34 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
                   Primary action
                 </button>
               </div>
+            </div>
+
+            <div
+              className="app-theme-scope space-y-4 overflow-hidden rounded-md border bg-background p-5 text-foreground"
+              style={previewStyle(values)}
+            >
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Member + admin app preview
+                </p>
+                <h3 className="mt-1 text-2xl font-bold">Upcoming lodge stay</h3>
+              </div>
+              <OccupancyMeter filled={18} capacity={30} label="Occupancy" />
+              <button
+                type="button"
+                className="rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground"
+              >
+                Primary action
+              </button>
+              <div className="flex flex-wrap gap-2 text-xs font-medium">
+                <span className="rounded-md bg-success-muted px-2 py-1 text-success">Success</span>
+                <span className="rounded-md bg-warning-muted px-2 py-1 text-warning">Warning</span>
+                <span className="rounded-md bg-info-muted px-2 py-1 text-info">Information</span>
+                <span className="rounded-md bg-danger-muted px-2 py-1 text-danger">Danger</span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Brand colours and fonts update this app preview. Status colours stay fixed.
+              </p>
             </div>
 
             {blockingContrastWarnings.length > 0 && (

@@ -89,4 +89,25 @@ describe("site style wizard", () => {
     expect(lastCallBody.completeSetup).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(5);
   }, 15_000);
+
+  it("explains and previews the editable brand and fixed semantic layers", () => {
+    render(
+      <SiteStyleWizard
+        initialTheme={{
+          ...DEFAULT_CLUB_THEME_VALUES,
+          completedAt: "2026-07-12T00:00:00.000Z",
+          contrastWarnings: [],
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Editable brand layer")).toBeTruthy();
+    expect(screen.getByText("Fixed semantic layer")).toBeTruthy();
+    expect(screen.getByText("Member + admin app preview")).toBeTruthy();
+    expect(screen.getByText("Success")).toBeTruthy();
+    expect(screen.getByText("Danger")).toBeTruthy();
+    expect(screen.getByRole("progressbar").getAttribute("aria-label")).toBe(
+      "Occupancy: 18 of 30 bunks filled",
+    );
+  });
 });
