@@ -46,6 +46,7 @@ async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot> {
         multiLodge: true,
         twoFactor: true,
         analytics: true,
+        lobbyDisplay: true,
       },
     }),
     prisma.ageTierSetting.count(),

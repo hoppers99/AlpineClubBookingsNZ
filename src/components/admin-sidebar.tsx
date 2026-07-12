@@ -29,6 +29,8 @@ import {
   Sliders,
   House,
   Tablet,
+  Tv,
+  LayoutTemplate,
   UsersRound,
   Bell,
   Bug,
@@ -223,6 +225,36 @@ const navSections: NavSection[] = [
       {
         href: "/admin/lodge-instructions",
         label: "Lodge Instructions",
+        icon: BookOpen,
+      },
+    ],
+  },
+  {
+    // Lobby Display (ADR-003 "Navigation & terminology"): one parent grouping
+    // the display surfaces instead of scattering them through Lodge Operations.
+    // Layouts, Templates, Modules, and the Conditions/Modules Reference entries
+    // arrive with their authoring UIs (#78/#79/#80); this group exists now so
+    // they mount cleanly. The old "Display Settings" entry was removed by
+    // LTV-035/#81: the per-lodge display config (glob, name granularity,
+    // committee notice) now lives on each lodge in the lodge configuration hub
+    // (/admin/lodges/[id]), so it edits the lodge being viewed rather than the
+    // club default. /admin/display/settings redirects here to Devices.
+    label: "Lobby Display",
+    items: [
+      { href: "/admin/display", label: "Devices", icon: Tv },
+      {
+        href: "/admin/display/layouts",
+        label: "Layouts",
+        icon: LayoutTemplate,
+      },
+      {
+        href: "/admin/display/templates",
+        label: "Templates",
+        icon: LayoutTemplate,
+      },
+      {
+        href: "/admin/display/reference",
+        label: "Reference",
         icon: BookOpen,
       },
     ],
