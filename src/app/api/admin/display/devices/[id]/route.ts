@@ -12,11 +12,10 @@ import {
 // Admin device update (fork issue #33; v2-only binding since LTV-038): rename
 // and template assignment. A device binds to a v2 DisplayTemplate (`templateId`,
 // validated to exist) or to the club default (`templateId: null`). The legacy
-// code built-ins are now seeded v2 Template rows (LTV-038), so `templateKey`
-// binding is RETIRED — the vestigial column stays in the schema (#86 owns its
-// removal) but is never written here; a request carrying `templateKey` is
-// rejected by the strict schema. The binding is validated before persisting
-// (never a dangling id) and a change is audit-logged.
+// code built-ins are now seeded v2 Template rows (LTV-038) and the vestigial
+// `templateKey` device column was removed in #86, so a request carrying
+// `templateKey` is rejected by the strict schema. The binding is validated
+// before persisting (never a dangling id) and a change is audit-logged.
 
 const patchSchema = z
   .object({
@@ -83,19 +82,14 @@ export async function PATCH(
     }
   }
 
-  // Setting a templateId (or clearing to null for the club default) also clears
-  // the vestigial templateKey, so a device migrated off a legacy built-in never
-  // carries a stale key alongside its new binding.
   const data: {
     name?: string;
-    templateKey?: string | null;
     templateId?: string | null;
     pollSeconds?: number | null;
   } = {};
   if (body.name !== undefined) data.name = body.name;
   if (body.templateId !== undefined) {
     data.templateId = body.templateId;
-    data.templateKey = null;
   }
   if (body.pollSeconds !== undefined) data.pollSeconds = body.pollSeconds;
 
@@ -105,7 +99,6 @@ export async function PATCH(
     select: {
       id: true,
       name: true,
-      templateKey: true,
       templateId: true,
       pollSeconds: true,
     },

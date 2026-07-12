@@ -3915,12 +3915,6 @@ model LodgeDisplayDevice {
   pairingCodeExpiresAt DateTime?
   tokenHash            String?   @unique
   templateId           String?
-  // VESTIGIAL since LTV-038: a device used to bind a code built-in by this key.
-  // The built-ins are now seeded v2 Template rows and devices bind by templateId;
-  // the seed migrated any existing templateKey onto templateId and the devices
-  // PATCH no longer writes it. The column is retained (the #86 re-layer owns
-  // schema consolidation) but is dead — nothing reads it for device rendering.
-  templateKey          String?   @db.VarChar(80)
   // Per-device state-poll cadence in seconds (LTV-039, issue #85; consolidates
   // #66). null = the client default (~60s). Clamped server-side to 15–600 on
   // read and write. The poll doubles as the device heartbeat, so this also

@@ -119,12 +119,13 @@ describe("display authoring v2 Prisma models (LTV-024)", () => {
     expect(templateBlock).toMatch(/onDelete: Restrict/);
     // The old data-only model and its enum are gone.
     expect(SCHEMA).not.toContain("enum DisplayTemplateSource");
-    // The device drops regionConfig but keeps templateKey + a SetNull FK.
+    // The device drops regionConfig and the vestigial templateKey (removed in
+    // #86 / LTV-040), keeping only the templateId SetNull FK.
     const deviceBlock = SCHEMA.slice(
       SCHEMA.indexOf("model LodgeDisplayDevice {"),
     );
     expect(deviceBlock).not.toContain("regionConfig");
-    expect(deviceBlock).toMatch(/templateKey\s+String\?/);
+    expect(deviceBlock).not.toContain("templateKey");
     expect(deviceBlock).toMatch(/onDelete: SetNull/);
   });
 

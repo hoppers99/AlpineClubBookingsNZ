@@ -7,11 +7,12 @@ import {
 } from "@/lib/lodge-display/built-in-seeds";
 
 // LTV-038: the three built-ins seeded as v2 Layout + Template rows. These tests
-// cover the SEED CONTRACT (create-if-missing, admin-safe, idempotent) and the
-// device templateKey→templateId migration, without a database — a structural
-// mock captures the upsert/updateMany shapes. The layout-render VALIDITY of the
-// seeded definitions (they build cleanly through the real server assembler) is
-// asserted in lodge-display-layout-render.test.ts's LTV-038 block.
+// cover the SEED CONTRACT (create-if-missing, admin-safe, idempotent), without a
+// database — a structural mock captures the upsert shapes. The legacy device
+// `templateKey`→`templateId` migration was removed in #86 (LTV-040) along with
+// the device column. The layout-render VALIDITY of the seeded definitions (they
+// build cleanly through the real server assembler) is asserted in
+// lodge-display-layout-render.test.ts's LTV-038 block.
 
 interface UpsertCall {
   where: { key: string };
@@ -19,15 +20,9 @@ interface UpsertCall {
   create: { id: string; key: string; layoutId?: string };
 }
 
-interface UpdateManyCall {
-  where: { templateKey: string; templateId: null };
-  data: { templateId: string; templateKey: null };
-}
-
-function makeClient(migratedPerKey: Record<string, number> = {}) {
+function makeClient() {
   const layoutUpserts: UpsertCall[] = [];
   const templateUpserts: UpsertCall[] = [];
-  const updateManyCalls: UpdateManyCall[] = [];
   const client: EnsureBuiltInDisplaysClient = {
     displayLayout: {
       upsert: vi.fn(async (args) => {
@@ -41,15 +36,8 @@ function makeClient(migratedPerKey: Record<string, number> = {}) {
         return { id: (args.create as { id: string }).id };
       }),
     },
-    lodgeDisplayDevice: {
-      updateMany: vi.fn(async (args) => {
-        const call = args as unknown as UpdateManyCall;
-        updateManyCalls.push(call);
-        return { count: migratedPerKey[call.where.templateKey] ?? 0 };
-      }),
-    },
   };
-  return { client, layoutUpserts, templateUpserts, updateManyCalls };
+  return { client, layoutUpserts, templateUpserts };
 }
 
 describe("built-in display seeds — definitions", () => {
@@ -111,40 +99,17 @@ describe("ensureBuiltInDisplays — seed contract", () => {
     expect(everydayTemplate.create.layoutId).toBe("builtin-layout-everyday-board");
   });
 
-  it("migrates devices from a legacy templateKey onto the seeded templateId, only where unbound", async () => {
-    const { client, updateManyCalls } = makeClient({
-      "everyday-board": 2,
-      "whole-lodge": 1,
-    });
-    const result = await ensureBuiltInDisplays(client);
+  it("is idempotent: a second run only re-issues empty-update upserts (no clobber)", async () => {
+    // A populated DB: layouts/templates already exist, so every upsert's empty
+    // update is a no-op and an admin-customised row is never overwritten.
+    const { client, layoutUpserts, templateUpserts } = makeClient();
+    await ensureBuiltInDisplays(client);
+    await ensureBuiltInDisplays(client);
 
-    // One migration per built-in, gated on an empty v2 binding.
-    expect(updateManyCalls).toHaveLength(3);
-    for (const call of updateManyCalls) {
-      expect(call.where.templateId).toBeNull();
-      expect(call.data.templateKey).toBeNull();
-      expect(call.data.templateId).toBe(`builtin-template-${call.where.templateKey}`);
-    }
-    // The result aggregates the migrated counts across built-ins (2 + 1 + 0).
-    expect(result.migratedDeviceCount).toBe(3);
-  });
-
-  it("is idempotent: a second run creates nothing new and migrates nothing (no key matches)", async () => {
-    // A populated DB: layouts/templates already exist (upsert update is empty, a
-    // no-op) and no device still carries a legacy key, so updateMany matches 0.
-    const { client, updateManyCalls } = makeClient();
-    const first = await ensureBuiltInDisplays(client);
-    const second = await ensureBuiltInDisplays(client);
-
-    expect(first.migratedDeviceCount).toBe(0);
-    expect(second.migratedDeviceCount).toBe(0);
-    // Every migration query is scoped to devices that still carry the key AND
-    // have no templateId — so once migrated (key cleared) it matches nothing.
-    for (const call of updateManyCalls) {
-      expect(call.where).toEqual({
-        templateKey: call.where.templateKey,
-        templateId: null,
-      });
+    expect(layoutUpserts).toHaveLength(6);
+    expect(templateUpserts).toHaveLength(6);
+    for (const call of [...layoutUpserts, ...templateUpserts]) {
+      expect(call.update).toEqual({});
     }
   });
 });

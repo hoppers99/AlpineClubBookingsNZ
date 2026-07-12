@@ -14,7 +14,6 @@ const DEVICE_SELECT = {
   name: true,
   lodgeId: true,
   lodge: { select: { name: true } },
-  templateKey: true,
   templateId: true,
   template: { select: { name: true } },
   pollSeconds: true,
@@ -30,7 +29,6 @@ type DeviceRow = {
   name: string;
   lodgeId: string;
   lodge: { name: string };
-  templateKey: string | null;
   templateId: string | null;
   template: { name: string } | null;
   pollSeconds: number | null;
@@ -49,7 +47,6 @@ function toClientDevice(device: DeviceRow) {
     name: device.name,
     lodgeId: device.lodgeId,
     lodgeName: device.lodge.name,
-    templateKey: device.templateKey,
     templateId: device.templateId,
     templateName: device.template?.name ?? null,
     // null = the device uses the default refresh cadence (LTV-039).

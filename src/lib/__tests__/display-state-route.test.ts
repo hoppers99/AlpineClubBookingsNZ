@@ -80,7 +80,6 @@ const DEVICE_AUTH = {
     lodgeId: "lodge-a",
     name: "Lobby TV",
     templateId: null,
-    templateKey: null,
     pollSeconds: null,
   },
 };
@@ -194,7 +193,6 @@ describe("GET /api/display/state — admin preview (issue #52)", () => {
     mockPrisma.lodgeDisplayDevice.findUnique.mockResolvedValue({
       lodgeId: "lodge-b",
       templateId: "tpl-1",
-      templateKey: "occupancy-rotating",
     });
     const { GET } = await import("@/app/api/display/state/route");
 
@@ -204,7 +202,9 @@ describe("GET /api/display/state — admin preview (issue #52)", () => {
       days: null,
       windowStart: null,
     });
-    expect(mockResolveTemplate).toHaveBeenCalledWith("occupancy-rotating");
+    // The legacy fallback `template` field always resolves to the club default
+    // now (the device templateKey column is gone, #86).
+    expect(mockResolveForDevice).toHaveBeenCalledWith({ templateKey: null });
     // Read-only by construction: a preview must never look like a live screen.
     expect(mockPrisma.lodgeDisplayDevice.update).not.toHaveBeenCalled();
     // A preview always gets the default cadence, never a device's custom one.
@@ -219,30 +219,20 @@ describe("GET /api/display/state — admin preview (issue #52)", () => {
     expect(res.status).toBe(401);
   });
 
-  it("?preview=1 serves the default lodge with the requested templateKey", async () => {
+  it("?preview=1 serves the default lodge on the club-default fallback board", async () => {
     loginAs(ADMIN_MEMBER);
     const { GET } = await import("@/app/api/display/state/route");
 
-    const res = await GET(
-      await stateRequest("?preview=1&templateKey=room-occupancy-week")
-    );
+    const res = await GET(await stateRequest("?preview=1"));
     expect(res.status).toBe(200);
     expect(mockBuildDisplayState).toHaveBeenCalledWith("lodge-default", {
       days: null,
       windowStart: null,
     });
-    expect(mockResolveTemplate).toHaveBeenCalledWith("room-occupancy-week");
+    // The legacy templateKey preview param was removed in #86 (LTV-040); a
+    // bare ?preview=1 always renders the club-default board.
+    expect(mockResolveForDevice).toHaveBeenCalledWith({ templateKey: null });
     expect(mockPrisma.lodgeDisplayDevice.update).not.toHaveBeenCalled();
-  });
-
-  it("falls back to default resolution when the requested templateKey is unknown", async () => {
-    loginAs(ADMIN_MEMBER);
-    mockResolveTemplate.mockReturnValue(null);
-    const { GET } = await import("@/app/api/display/state/route");
-
-    const res = await GET(await stateRequest("?preview=1&templateKey=nope"));
-    expect(res.status).toBe(200);
-    expect(mockResolveForDevice).toHaveBeenCalled();
   });
 
   it("a paired device wins over preview parameters (device path first)", async () => {
@@ -454,7 +444,6 @@ describe("GET /api/display/state — v2 layoutRender path (LTV-027)", () => {
       lodgeId: "lodge-a",
       name: "Lobby TV",
       templateId: "tpl-42",
-      templateKey: null,
     },
   };
 
@@ -569,7 +558,7 @@ describe("GET /api/display/state — v2 layoutRender path (LTV-027)", () => {
     mockPrisma.member.findUnique.mockResolvedValue(ADMIN_MEMBER);
     const { GET } = await import("@/app/api/display/state/route");
 
-    const res = await GET(await stateRequest("?preview=1&templateKey=everyday-board"));
+    const res = await GET(await stateRequest("?preview=1"));
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.layoutRender).toBeUndefined();

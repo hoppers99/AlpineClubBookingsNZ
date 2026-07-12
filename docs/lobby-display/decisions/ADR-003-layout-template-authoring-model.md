@@ -189,7 +189,11 @@ a forward "drop old display tables + create new" migration or — preferred, sin
 nothing shipped — **consolidate the branch's display migrations into one clean
 schema for the eventual upstream PR and reset staging.** The whole branch is
 **re-layered onto a clean history** before the single upstream PR (as done for
-multi-lodge), so the upstream diff reflects the end-state.
+multi-lodge), so the upstream diff reflects the end-state. *(Implemented in #86 /
+LTV-040: the six branch migrations were consolidated into the single
+`20260712130000_add_lobby_display` expand migration and the vestigial
+`LodgeDisplayDevice.templateKey` column was removed; staging/dev databases that
+applied the superseded migrations are reset with a fresh `migrate deploy`.)*
 
 ## Security Considerations
 

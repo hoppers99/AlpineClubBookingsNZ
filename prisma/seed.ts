@@ -613,13 +613,10 @@ async function main() {
   await seedInductionChecklistTemplate();
 
   // Seed the three built-in lobby-display designs as v2 Layout + Template rows
-  // (LTV-038) create-if-missing, and migrate any device still bound to a legacy
-  // built-in `templateKey` onto the seeded `templateId`. Admin-customised
-  // built-ins are never clobbered (upsert with empty update).
-  const builtInDisplays = await ensureBuiltInDisplays(prisma);
-  console.log(
-    `Built-in display layouts/templates seeded; devices migrated from legacy templateKey: ${builtInDisplays.migratedDeviceCount}`,
-  );
+  // (LTV-038) create-if-missing. Admin-customised built-ins are never clobbered
+  // (upsert with empty update); devices bind to them by `templateId`.
+  await ensureBuiltInDisplays(prisma);
+  console.log("Built-in display layouts/templates seeded");
 
   console.log("Seeding complete!");
 }

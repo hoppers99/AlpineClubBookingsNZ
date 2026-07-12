@@ -146,7 +146,7 @@ describe("Admin modules schema contract", () => {
     expect(model).toContain("lobbyDisplay            Boolean  @default(false)");
     expect(
       readRepoFile(
-        "prisma/migrations/20260711000100_add_lobby_display_schema/migration.sql",
+        "prisma/migrations/20260712130000_add_lobby_display/migration.sql",
       ),
     ).toContain('"lobbyDisplay" BOOLEAN NOT NULL DEFAULT false');
   });

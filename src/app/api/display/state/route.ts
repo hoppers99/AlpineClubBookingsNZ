@@ -3,10 +3,7 @@ import { auth } from "@/lib/auth";
 import { hasAdminAccess } from "@/lib/access-roles";
 import { checkDisplayAuth, decodePreviewGrant } from "@/lib/lodge-display-auth";
 import { buildDisplayState, type DisplayState } from "@/lib/lodge-display-state";
-import {
-  resolveDisplayTemplate,
-  resolveDisplayTemplateForDevice,
-} from "@/lib/lodge-display/template-resolution";
+import { resolveDisplayTemplateForDevice } from "@/lib/lodge-display/template-resolution";
 import { buildLayoutRender } from "@/lib/lodge-display/layout-render";
 import type { LayoutRenderPayload } from "@/lib/lodge-display/layout-registry";
 import {
@@ -30,7 +27,7 @@ import logger from "@/lib/logger";
 //    upstream #1721): a full admin passes ?previewDevice=<id> (that device's
 //    lodge + template), ?preview=1&templateId=<id>[&previewLodge=<id>] (an
 //    AUTHORED v2 template against an explicit lodge — LTV-036, ADR-003 §5), or
-//    ?preview=1[&templateKey=…] (default lodge, legacy built-in). Preview is
+//    ?preview=1 (default lodge, club-default fallback board). Preview is
 //    read-only by construction — it never stamps lastSeenAt — and renders
 //    through the SAME privacy-reduced serialiser, so a preview can never show
 //    more than a lobby wall would. The parameter is honoured ONLY for a full
@@ -71,7 +68,6 @@ async function resolvePreview(
   | {
       lodgeId: string;
       templateId: string | null;
-      templateKey: string | null;
       deviceId?: string;
     }
   | "not-a-preview"
@@ -95,7 +91,7 @@ async function resolvePreview(
   if (previewDeviceId) {
     const device = await prisma.lodgeDisplayDevice.findUnique({
       where: { id: previewDeviceId },
-      select: { lodgeId: true, templateId: true, templateKey: true },
+      select: { lodgeId: true, templateId: true },
     });
     if (!device) return "denied";
     return { ...device, deviceId: previewDeviceId };
@@ -112,13 +108,12 @@ async function resolvePreview(
       req.nextUrl.searchParams.get("previewLodge")
     );
     if (!lodgeId) return "denied";
-    return { lodgeId, templateId: previewTemplateId, templateKey: null };
+    return { lodgeId, templateId: previewTemplateId };
   }
 
   return {
     lodgeId: await getDefaultLodgeId(prisma),
     templateId: null,
-    templateKey: req.nextUrl.searchParams.get("templateKey"),
   };
 }
 
@@ -272,7 +267,7 @@ export async function GET(req: NextRequest) {
       // like a failed auth rather than serving a partial payload (AC8).
       return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
     }
-    const template = resolveDisplayTemplateForDevice(deviceAuth.device);
+    const template = resolveDisplayTemplateForDevice({ templateKey: null });
     // The poll doubles as the device heartbeat (issue #52): only genuine
     // device-token fetches stamp lastSeenAt — previews never do.
     await prisma.lodgeDisplayDevice.update({
@@ -310,12 +305,9 @@ export async function GET(req: NextRequest) {
   if (!state) {
     return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
   }
-  const template = preview.templateKey
-    ? (resolveDisplayTemplate(preview.templateKey) ??
-      resolveDisplayTemplateForDevice(preview))
-    : resolveDisplayTemplateForDevice(preview);
+  const template = resolveDisplayTemplateForDevice({ templateKey: null });
   // ?previewDevice of a v2-bound device renders the layout engine; ?preview=1
-  // (templateId null, e.g. &templateKey=…) stays on the legacy path.
+  // (templateId null) stays on the club-default fallback board.
   const layoutResult = preview.templateId
     ? await loadLayoutRender(preview.templateId, state, {
         deviceId: preview.deviceId,

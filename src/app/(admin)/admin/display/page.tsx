@@ -17,7 +17,6 @@ interface ClientDevice {
   name: string;
   lodgeId: string;
   lodgeName: string;
-  templateKey: string | null;
   templateId: string | null;
   templateName: string | null;
   // Per-device refresh cadence in seconds (LTV-039); null = the default (~60s).
@@ -140,7 +139,7 @@ export default function AdminDisplayPage() {
     setMessage(null);
     // Decode the picker value into the binding to PATCH: a template value binds
     // its id; the empty value clears the binding back to the club default
-    // (templateId null). templateKey is retired (LTV-038) and never sent.
+    // (templateId null).
     const patch: { templateId: string | null } = selection.startsWith("template:")
       ? { templateId: selection.slice("template:".length) }
       : { templateId: null };

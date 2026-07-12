@@ -9,7 +9,7 @@ import {
 // Built-in lobby-display designs, re-expressed as v2 Layout + Template rows
 // (LTV-038, ADR-003 §1 Consequences "Redone"). The MVP shipped three code
 // built-ins (everyday-board / whole-lodge / singles-house) as region/panel
-// definitions resolved by `templateKey` (template-registry.ts). This module
+// definitions resolved by their registry key (template-registry.ts). This module
 // re-expresses the SAME three designs in the v2 shapes — an HTML Layout with
 // named areas + a Template that fills those areas with library modules — and
 // SEEDS them create-if-missing so they become ordinary, admin-editable rows.
@@ -28,10 +28,10 @@ import {
 // SEED CONTRACT (create-if-missing, admin-safe): `ensureBuiltInDisplays` upserts
 // each Layout/Template by its unique `key` with an EMPTY update, so a re-run
 // never clobbers an admin who customised a built-in — they keep their version.
-// Devices still pointing at a legacy `templateKey` are migrated to the seeded
-// Template's `templateId` (only when they have no v2 binding yet), completing
-// the retirement of the code built-ins for DEVICES. All three steps are
-// idempotent: a second run creates nothing and migrates nothing.
+// Devices bind to these seeded rows by `templateId`; the legacy device
+// `templateKey` column and its one-shot migration were removed in #86 (LTV-040)
+// before the feature shipped. Every step is idempotent: a second run creates
+// nothing.
 //
 // This module is import-safe for a jsdom/client test (it only TYPE-imports
 // Prisma — erased at build — and its data + validation come from the client-safe
@@ -268,7 +268,7 @@ export const BUILT_IN_DISPLAY_LAYOUTS: BuiltInLayoutSeed[] = [
 ];
 
 /** The three built-in Templates, one per Layout, keyed identically to the legacy
- * code built-ins so a device's `templateKey` migrates to the matching row. */
+ * code built-ins (the registry keys `resolveDisplayTemplate` still resolves). */
 export const BUILT_IN_DISPLAY_TEMPLATES: BuiltInTemplateSeed[] = [
   EVERYDAY_TEMPLATE,
   WHOLE_LODGE_TEMPLATE,
@@ -302,35 +302,19 @@ export interface EnsureBuiltInDisplaysClient {
   displayTemplate: {
     upsert: (args: Prisma.DisplayTemplateUpsertArgs) => Promise<{ id: string }>;
   };
-  lodgeDisplayDevice: {
-    updateMany: (
-      args: Prisma.LodgeDisplayDeviceUpdateManyArgs
-    ) => Promise<{ count: number }>;
-  };
-}
-
-export interface EnsureBuiltInDisplaysResult {
-  /** Devices migrated from a legacy `templateKey` to the seeded `templateId`. */
-  migratedDeviceCount: number;
 }
 
 /**
- * Seed the three built-in Layouts + Templates create-if-missing and migrate any
- * device still bound by a legacy `templateKey` onto the seeded Template's
- * `templateId` (LTV-038). Idempotent and admin-safe:
- *
- *  - Layouts/Templates upsert by `key` with an EMPTY update, so an admin who
- *    customised a built-in keeps their version (create-if-missing).
- *  - The device migration only touches a device whose `templateKey` matches AND
- *    which has no `templateId` yet, then clears the `templateKey`; a second run
- *    matches nothing (the key is now null), and a device already on a v2 template
- *    is never disturbed.
+ * Seed the three built-in Layouts + Templates create-if-missing (LTV-038).
+ * Idempotent and admin-safe: Layouts/Templates upsert by `key` with an EMPTY
+ * update, so an admin who customised a built-in keeps their version
+ * (create-if-missing). Devices bind to these seeded rows by `templateId`; the
+ * legacy device `templateKey` column and its one-shot migration were removed in
+ * #86 (LTV-040), before the feature shipped.
  */
 export async function ensureBuiltInDisplays(
   prisma: EnsureBuiltInDisplaysClient
-): Promise<EnsureBuiltInDisplaysResult> {
-  let migratedDeviceCount = 0;
-
+): Promise<void> {
   for (const layout of BUILT_IN_DISPLAY_LAYOUTS) {
     await prisma.displayLayout.upsert({
       where: { key: layout.key },
@@ -355,7 +339,7 @@ export async function ensureBuiltInDisplays(
     // admin pre-created a layout with this key, its id differs, but a matching
     // pre-created template would already bind it, and the empty-update upsert
     // leaves that admin row untouched.
-    const seededTemplate = await prisma.displayTemplate.upsert({
+    await prisma.displayTemplate.upsert({
       where: { key: template.key },
       update: {},
       create: {
@@ -369,17 +353,5 @@ export async function ensureBuiltInDisplays(
       },
       select: { id: true },
     });
-
-    // Migrate devices still bound to this built-in by the legacy `templateKey`
-    // onto the seeded Template's id, but only where they have no v2 binding yet
-    // (never clobber a device an admin already moved to a template). Clearing the
-    // key makes the migration idempotent — a re-run matches nothing.
-    const migrated = await prisma.lodgeDisplayDevice.updateMany({
-      where: { templateKey: template.key, templateId: null },
-      data: { templateId: seededTemplate.id, templateKey: null },
-    });
-    migratedDeviceCount += migrated.count;
   }
-
-  return { migratedDeviceCount };
 }

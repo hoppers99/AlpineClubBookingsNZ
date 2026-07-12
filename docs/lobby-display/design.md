@@ -57,18 +57,19 @@ Per lodge:
 
 ## 3. Data model
 
-> **Superseded by v2** (LTV-024, migration `20260712100000_display_authoring_v2`):
-> ADR-003's authoring model landed. The data-only `DisplayTemplate`
-> region/panel model and its `DisplayTemplateSource` enum are **removed**, and
-> `LodgeDisplayDevice.regionConfig` is dropped (per-display content now lives on
-> the Template). The new entities in `prisma/schema.prisma` are **`DisplayLayout`**
-> (`key`, `name`, `description?`, `bodyHtml`, `defaultCss`, `areas` Json) and a
-> fresh **`DisplayTemplate`** (`key`, `name`, `layoutId` FK → DisplayLayout
-> [Restrict], `slotContent` Json, `cssOverrides`, `footerHtml`). The device keeps
-> `templateId` (FK → the new DisplayTemplate, SetNull) and `templateKey`
-> (interim resolution against the code built-ins until LTV-027/033). The Lodge
-> display columns (`displayConfig`, `displayNameGranularity`, `displayNotice`)
-> are unchanged. The sketch below is the retired MVP shape, kept for history.
+> **Superseded by v2** (LTV-024; consolidated into migration
+> `20260712130000_add_lobby_display`): ADR-003's authoring model landed. The
+> data-only `DisplayTemplate` region/panel model and its `DisplayTemplateSource`
+> enum are **removed**, and `LodgeDisplayDevice.regionConfig` is dropped
+> (per-display content now lives on the Template). The new entities in
+> `prisma/schema.prisma` are **`DisplayLayout`** (`key`, `name`, `description?`,
+> `bodyHtml`, `defaultCss`, `areas` Json) and a fresh **`DisplayTemplate`**
+> (`key`, `name`, `layoutId` FK → DisplayLayout [Restrict], `slotContent` Json,
+> `cssOverrides`, `footerHtml`). The device keeps `templateId` (FK → the new
+> DisplayTemplate, SetNull); the interim `templateKey` device column was removed
+> in #86 (LTV-040). The Lodge display columns (`displayConfig`,
+> `displayNameGranularity`, `displayNotice`) are unchanged. The sketch below is
+> the retired MVP shape, kept for history.
 
 > **Config-transfer v2** (LTV-037): the club-wide Layout/Template library is
 > portable through **Admin → Export & Import Setup** in the `lodge-config`
@@ -101,25 +102,24 @@ Per lodge:
 > notice) inside a rail container div in the layout body (nesting works since
 > LTV-041); whole-lodge and singles keep their rotation as **rotator areas**.
 >
-> **Legacy device path retired.** On seed, any device still bound to a built-in by
-> the interim `templateKey` is migrated onto the seeded Template's `templateId`
-> (idempotent, only when it has no v2 binding yet). The devices **PATCH no longer
-> accepts `templateKey`** (a stale client is rejected by the strict schema), the
-> device picker **drops the built-ins group** (the built-ins appear as ordinary
-> templates), and `LodgeDisplayDevice.templateKey` is now **vestigial** — retained
-> in the schema (the #86 re-layer owns its removal) but never written or read for
-> device rendering. The code built-in definition (`template-registry.ts`) and the
-> legacy region renderer survive **only** as the zero-DB known-good design the
+> **Legacy device path retired.** Devices bind to the seeded built-ins by
+> `templateId`. The devices **PATCH no longer accepts `templateKey`** (a stale
+> client is rejected by the strict schema), the device picker **drops the
+> built-ins group** (the built-ins appear as ordinary templates), and the
+> vestigial `LodgeDisplayDevice.templateKey` column — along with its one-shot
+> seed migration — was **removed in #86 (LTV-040)** before the feature shipped.
+> The code built-in definition (`template-registry.ts`) and the legacy region
+> renderer survive **only** as the zero-DB known-good design the
 > unattended-safety fallback board renders (LTV-030) and the club-default board
-> for a device with no binding, plus the `?preview=1[&templateKey=…]` /
-> `/api/admin/display/preview` admin testing path.
+> for a device with no binding, plus the `/api/admin/display/preview` admin
+> testing path (which previews a built-in by its registry key).
 
-> **Implemented** (fork issue #26, migration `20260711000100_add_lobby_display_schema`):
-> `prisma/schema.prisma` is now the source of truth for these shapes. The
-> sketch below is retained for rationale; the implemented schema differs only
-> in detail — length caps on name/key/pairing-code columns, explicit
-> `onDelete: Restrict` (lodge) / `SetNull` (template) referential actions,
-> and indexes on `lodgeId`/`templateId`.
+> **Implemented** (fork issue #26; consolidated into migration
+> `20260712130000_add_lobby_display`): `prisma/schema.prisma` is now the source
+> of truth for these shapes. The sketch below is retained for rationale; the
+> implemented schema differs only in detail — length caps on name/key/pairing-code
+> columns, explicit `onDelete: Restrict` (lodge) / `SetNull` (template)
+> referential actions, and indexes on `lodgeId`/`templateId`.
 
 ```prisma
 model LodgeDisplayDevice {
@@ -225,7 +225,8 @@ validated server-side against configured bounds).
 > `?previewDevice=<id>` (the device's lodge + template), `?preview=1&templateId=<id>[&previewLodge=<id>]`
 > (an authored v2 template against an **explicit** lodge — validated active,
 > club default when omitted; the old silent default is gone, #64), and
-> `?preview=1[&templateKey=…]` (legacy built-in, default lodge). These honour a
+> `?preview=1` (the club-default fallback board, default lodge; the legacy
+> `&templateKey=…` param was removed in #86 / LTV-040). These honour a
 > full-admin session. A fourth caller, `?previewGrant=<token>`, is a signed
 > preview grant (LTV-036, ADR-003 §5): it authorises one template/lodge preview
 > **without** a session so the authoring page can embed it in a sandboxed
@@ -493,9 +494,9 @@ client-safe `css-tokens.ts` before they ship in the payload:
 > `/api/admin/display/templates` GET (`{ templates }`). Since **LTV-038** the
 > three built-ins are ordinary seeded templates, so the separate built-ins group
 > is gone and the PATCH no longer accepts `templateKey`: picking a template
-> PATCHes `templateId` (clearing the vestigial key), the club default clears the
-> binding with `templateId: null`. The `templateKey` resolution path is retired
-> for devices — see the §3 "Built-ins are seeded v2 rows" callout.
+> PATCHes `templateId`, the club default clears the binding with
+> `templateId: null`. The vestigial `templateKey` device column was removed in
+> #86 (LTV-040) — see the §3 "Built-ins are seeded v2 rows" callout.
 
 > **Reference (LTV-034, #80).** The **Reference** entry
 > (`/admin/display/reference`) is live: one read-only page, three Cards, backed
@@ -586,7 +587,7 @@ Modelled on the kiosk account management surface (`/admin/lodge`):
   session. A direct full-screen preview (`/display?preview=1&templateId=<id>`)
   stays available for an admin's own session.
 - **Admin preview** (implemented in LTV-013): the display state API honours
-  `?previewDevice=<id>` / `?preview=1[&templateKey=…]` only for a
+  `?previewDevice=<id>` / `?preview=1` only for a
   signed-in full admin; anyone else gets the normal 401 and the page shows
   a sign-in prompt instead of a pairing code. Previews render through the
   same privacy-reduced serialiser, never stamp `lastSeenAt`, and show no

@@ -38,7 +38,6 @@ const DEVICE_ROW = {
   name: "Lobby TV",
   lodgeId: "lodge-a",
   lodge: { name: "Silverpeak Lodge" },
-  templateKey: null,
   templateId: null,
   template: null,
   tokenHash: "hash",
@@ -73,7 +72,6 @@ beforeEach(() => {
   mockPrisma.lodgeDisplayDevice.update.mockResolvedValue({
     id: "dev-1",
     name: "Lobby TV",
-    templateKey: "whole-lodge",
     templateId: null,
   });
   mockPrisma.displayTemplate.findUnique.mockResolvedValue(null);
@@ -132,13 +130,14 @@ describe("GET/POST /api/admin/display/devices", () => {
 describe("PATCH /api/admin/display/devices/[id] (template assignment, AC7)", () => {
   const routeParams = { params: Promise.resolve({ id: "dev-1" }) };
 
-  it("rejects a retired templateKey binding without persisting (LTV-038)", async () => {
+  it("rejects a retired templateKey binding without persisting (LTV-038/040)", async () => {
     mockPrisma.lodgeDisplayDevice.findUnique.mockResolvedValue({ id: "dev-1" });
     const { PATCH } = await import(
       "@/app/api/admin/display/devices/[id]/route"
     );
-    // The built-ins are seeded v2 rows now; a stale client sending templateKey
-    // must be refused (strict schema), never silently no-op.
+    // The built-ins are seeded v2 rows and the templateKey column is gone (#86);
+    // a stale client sending templateKey must be refused (strict schema), never
+    // silently no-op.
     const res = await PATCH(
       await jsonRequest("http://localhost/x", "PATCH", { templateKey: "whole-lodge" }),
       routeParams
@@ -147,7 +146,7 @@ describe("PATCH /api/admin/display/devices/[id] (template assignment, AC7)", () 
     expect(mockPrisma.lodgeDisplayDevice.update).not.toHaveBeenCalled();
   });
 
-  it("assigns a v2 templateId after validating it exists, clearing the vestigial key", async () => {
+  it("assigns a v2 templateId after validating it exists", async () => {
     mockPrisma.lodgeDisplayDevice.findUnique.mockResolvedValue({ id: "dev-1" });
     mockPrisma.displayTemplate.findUnique.mockResolvedValue({ id: "tpl-1" });
     const { PATCH } = await import(
@@ -158,9 +157,8 @@ describe("PATCH /api/admin/display/devices/[id] (template assignment, AC7)", () 
       routeParams
     );
     expect(res.status).toBe(200);
-    // v2 binding clears the built-in key.
     expect(mockPrisma.lodgeDisplayDevice.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: { templateId: "tpl-1", templateKey: null } })
+      expect.objectContaining({ data: { templateId: "tpl-1" } })
     );
   });
 
@@ -178,7 +176,7 @@ describe("PATCH /api/admin/display/devices/[id] (template assignment, AC7)", () 
     expect(mockPrisma.lodgeDisplayDevice.update).not.toHaveBeenCalled();
   });
 
-  it("clears a binding back to the club default with templateId null (also clears the key)", async () => {
+  it("clears a binding back to the club default with templateId null", async () => {
     mockPrisma.lodgeDisplayDevice.findUnique.mockResolvedValue({ id: "dev-1" });
     const { PATCH } = await import(
       "@/app/api/admin/display/devices/[id]/route"
@@ -189,7 +187,7 @@ describe("PATCH /api/admin/display/devices/[id] (template assignment, AC7)", () 
     );
     expect(res.status).toBe(200);
     expect(mockPrisma.lodgeDisplayDevice.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: { templateId: null, templateKey: null } })
+      expect.objectContaining({ data: { templateId: null } })
     );
   });
 
