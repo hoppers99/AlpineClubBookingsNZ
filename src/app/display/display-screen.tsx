@@ -11,11 +11,13 @@ import {
   eligibleDisplayPanels,
 } from "@/lib/lodge-display/template-registry";
 import {
+  splitHtmlOnModuleTokens,
   splitLayoutBody,
   type DisplayAreaDefinition,
   type LayoutRenderPayload,
   type SlotContent,
 } from "@/lib/lodge-display/layout-registry";
+import type { DisplayModuleName } from "@/lib/lodge-display/template-registry";
 import { evaluateDisplayCondition } from "@/lib/lodge-display/conditions";
 import { resolveDisplayText } from "@/lib/lodge-display/display-text";
 import {
@@ -311,9 +313,56 @@ function NeutralPlaceholder({ module }: { module?: string }) {
   return <div className="display-module-placeholder" data-module={module} />;
 }
 
-/** Render one slot's content: authored HTML (already sanitised server-side) or
- * an embedded module. An unknown module → the neutral placeholder. A missing
- * slot (no content, no default) → nothing. */
+/** Mount a module referenced by a `{{module:<name>}}` embed token in authored
+ * html (LTV-028). Embed tokens carry no options in v1 (module options belong to
+ * `{module, options}` slot content), so none are passed. An unknown module name
+ * → the neutral placeholder, exactly like an unknown area — the same
+ * graceful-degrade stance the rest of the engine takes. */
+function ModuleMount({ name, state }: { name: string; state: DisplayState }) {
+  const Module = DISPLAY_MODULE_COMPONENTS[name as DisplayModuleName];
+  if (!Module) return <NeutralPlaceholder module={name} />;
+  return <Module state={state} />;
+}
+
+/** Render an authored html surface (already server-sanitised AND value-token
+ * resolved at serve time — layout-render.ts) that may embed `{{module:<name>}}`
+ * tokens: split on the tokens, render html fragments verbatim and mount modules
+ * between them. The common no-module case renders a single node identical to the
+ * pre-LTV-028 output, so non-module slots/footers are byte-for-byte unchanged. */
+function AuthoredHtml({
+  html,
+  state,
+  className,
+}: {
+  html: string;
+  state: DisplayState;
+  className?: string;
+}) {
+  const segments = splitHtmlOnModuleTokens(html);
+  if (segments.length === 1 && segments[0].type === "html") {
+    return (
+      <div className={className} dangerouslySetInnerHTML={{ __html: segments[0].html }} />
+    );
+  }
+  return (
+    <div className={className}>
+      {segments.map((segment, index) =>
+        segment.type === "html" ? (
+          segment.html ? (
+            <div key={index} dangerouslySetInnerHTML={{ __html: segment.html }} />
+          ) : null
+        ) : (
+          <ModuleMount key={index} name={segment.name} state={state} />
+        )
+      )}
+    </div>
+  );
+}
+
+/** Render one slot's content: authored HTML (already sanitised + token-resolved
+ * server-side, and split here on any {{module:…}} embeds) or an embedded module.
+ * An unknown module → the neutral placeholder. A missing slot (no content, no
+ * default) → nothing. */
 function SlotRender({
   content,
   state,
@@ -327,8 +376,7 @@ function SlotRender({
     if (!Module) return <NeutralPlaceholder module={content.module} />;
     return <Module state={state} options={content.options} />;
   }
-  // Server-sanitised via sanitizePageContentHtml at serve time (layout-render).
-  return <div dangerouslySetInnerHTML={{ __html: content.html }} />;
+  return <AuthoredHtml html={content.html} state={state} />;
 }
 
 /** A rotator area: cycle only among children whose condition currently holds,
@@ -447,9 +495,10 @@ function LayoutScreen({
         )}
       </div>
       {layoutRender.footerHtml ? (
-        <div
+        <AuthoredHtml
+          html={layoutRender.footerHtml}
+          state={state}
           className="display-info-footer"
-          dangerouslySetInnerHTML={{ __html: layoutRender.footerHtml }}
         />
       ) : (
         <InfoFooter state={state} />

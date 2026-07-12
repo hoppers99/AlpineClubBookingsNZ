@@ -426,3 +426,68 @@ describe("DisplayScreen layout engine (LTV-027)", () => {
     ).not.toBeNull();
   });
 });
+
+describe("DisplayScreen layout engine — embedded module tokens (LTV-028)", () => {
+  it("mounts a module embedded in slot html via {{module:…}} between html fragments", async () => {
+    const { container } = await renderLayout({
+      bodyHtml: "{{area:main}}",
+      defaultCss: "",
+      cssOverrides: "",
+      areas: [{ key: "main", description: "Main", kind: "static" }],
+      slotContent: {
+        // Server-resolved html: an html fragment, then a module embed token.
+        main: { html: "<h3>Board</h3>{{module:arrivals-board}}" },
+      },
+      footerHtml: "",
+    });
+    // The html fragment renders...
+    expect(screen.getByText("Board")).toBeDefined();
+    // ...and the embedded module mounts as a real component.
+    expect(container.querySelector(".display-arrivals-board")).not.toBeNull();
+  });
+
+  it("renders a server-escaped config value in slot html as literal text, never an element", async () => {
+    const { container } = await renderLayout({
+      bodyHtml: "{{area:main}}",
+      defaultCss: "",
+      cssOverrides: "",
+      areas: [{ key: "main", description: "Main", kind: "static" }],
+      slotContent: {
+        // buildLayoutRender escapes an injected config value to this before it
+        // ever reaches the client (see lodge-display-layout-render.test.ts).
+        main: { html: "<p>&lt;img src=x onerror=alert(1)&gt;</p>" },
+      },
+      footerHtml: "",
+    });
+    // The browser decodes the entities to visible text — but no live element.
+    expect(screen.getByText("<img src=x onerror=alert(1)>")).toBeDefined();
+    expect(container.querySelector("img")).toBeNull();
+  });
+
+  it("mounts a module embedded in the footer html", async () => {
+    const { container } = await renderLayout({
+      bodyHtml: "{{area:main}}",
+      defaultCss: "",
+      cssOverrides: "",
+      areas: [{ key: "main", description: "Main", kind: "static" }],
+      slotContent: { main: { html: "<p>Body</p>" } },
+      footerHtml: "<span>Info</span>{{module:welcome}}",
+    });
+    expect(screen.getByText("Info")).toBeDefined();
+    expect(container.querySelector(".display-welcome")).not.toBeNull();
+  });
+
+  it("degrades an unknown module embed to the neutral placeholder (defensive)", async () => {
+    const { container } = await renderLayout({
+      bodyHtml: "{{area:main}}",
+      defaultCss: "",
+      cssOverrides: "",
+      areas: [{ key: "main", description: "Main", kind: "static" }],
+      slotContent: { main: { html: "{{module:future-thing}}" } },
+      footerHtml: "",
+    });
+    expect(
+      container.querySelector('.display-module-placeholder[data-module="future-thing"]')
+    ).not.toBeNull();
+  });
+});

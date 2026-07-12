@@ -287,7 +287,32 @@ flag is off), the stable `cssHooks` class names admins target, the conditions it
 modules reference screen (LTV-034), the render-boundary dependency fallback (a
 `hides` module is replaced with an empty `data-module-disabled` placeholder so
 the rail keeps its shape), and the CSS-hook stability contract (a test fails CI
-if a declared hook is renamed). Token resolution of `embedToken` is LTV-028.
+if a declared hook is renamed).
+
+**Token + content resolution (LTV-028, ADR-003 §4).** Two kinds of token resolve
+inside admin-authored content, both scoped strictly to the display's OWN token
+set — never the site-wide `token-catalogue.ts`, so a wall can never surface a
+site token beyond the privacy-reduced payload:
+
+- **Value tokens** (`{{config:<key>}}`, `{{lodge-name}}`, `{{display-date}}`)
+  resolve **server-side** in `buildLayoutRender` (`layout-render.ts`) against the
+  bound lodge's `DisplayState`, running AFTER the CMS sanitiser over every
+  authored html surface (body, slot html, `defaultContent`, footer). Each
+  injected value is **HTML-escaped** (and its braces neutralised) so a config
+  value renders as inert text even inside html — an `<img onerror=…>` value
+  appears literally, never as an element, and cannot form a second token. An
+  unset key keeps the visible `⟨config:key?⟩` marker. The shared grammar lives in
+  `display-text.ts` (`resolveDisplayText` for React text nodes,
+  `resolveDisplayHtml` for html surfaces).
+- **Module embed tokens** (`{{module:<name>}}`) mount the real React module
+  **client-side**: `splitHtmlOnModuleTokens` (`layout-registry.ts`) splits the
+  sanitised html and `SlotRender`/the footer render mount components between
+  fragments (unknown name → neutral placeholder). The bare name only — options
+  belong to `{module, options}` slot content; `validateHtmlModuleEmbeds` rejects
+  unknown names and any `{{module:name(...)}}` argument form at authoring time.
+- **Token scope is the security line:** any `{{…}}` outside the display token
+  set (including a real site token such as `{{club-name}}`) is left VERBATIM as
+  literal text.
 
 ## 8. Admin UI
 

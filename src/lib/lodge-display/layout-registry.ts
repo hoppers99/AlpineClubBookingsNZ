@@ -122,6 +122,80 @@ function isModuleName(name: string): name is DisplayModuleName {
   return (DISPLAY_MODULE_NAMES as readonly string[]).includes(name);
 }
 
+// `{{module:<name>}}` embed tokens inside authored html (LTV-028, ADR-003 §4).
+// The STRICT form is the only shape the client splitter mounts, so validation
+// must accept exactly it — no leading/inner whitespace, no arguments — and the
+// splitter matches exactly it, keeping "what was validated is what is split".
+// Options are NOT supported inside an embed token in v1: module options belong
+// to `{module, options}` slot content, not to `{{module:name(...)}}`.
+const MODULE_EMBED_STRICT_REGEX = /\{\{module:([a-z0-9][a-z0-9-]{0,63})\}\}/g;
+// A loose DETECTOR that also catches malformed embeds (spaces, arguments, bad
+// names) so the validator can reject them rather than silently rendering them
+// as literal text.
+const MODULE_EMBED_DETECT_REGEX = /\{\{\s*module\s*:[^{}]*\}\}/gi;
+
+/** A parsed authored-html segment: literal HTML, or a `{{module:name}}` embed. */
+export type HtmlModuleSegment =
+  | { type: "html"; html: string }
+  | { type: "module"; name: string };
+
+/**
+ * Split authored html into ordered html/module segments on `{{module:<name>}}`
+ * embed tokens (client-safe, pure — the mirror of splitLayoutBody for slot and
+ * footer html). Only the STRICT `{{module:name}}` shape splits; anything else
+ * stays inside an html segment (and the validator rejects it up front). An
+ * unknown-but-well-formed module name still splits — the renderer degrades it
+ * to the neutral placeholder, exactly like an unknown area.
+ */
+export function splitHtmlOnModuleTokens(html: string): HtmlModuleSegment[] {
+  const segments: HtmlModuleSegment[] = [];
+  let lastIndex = 0;
+  // Fresh regex per call — a shared /g regex carries lastIndex between calls.
+  const regex = new RegExp(MODULE_EMBED_STRICT_REGEX.source, "g");
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(html)) !== null) {
+    if (match.index > lastIndex) {
+      segments.push({ type: "html", html: html.slice(lastIndex, match.index) });
+    }
+    segments.push({ type: "module", name: match[1] });
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex < html.length) {
+    segments.push({ type: "html", html: html.slice(lastIndex) });
+  }
+  return segments;
+}
+
+/**
+ * Reject any malformed or unknown `{{module:…}}` embed in an authored html
+ * surface (slot html, defaultContent html, footer html) so authoring fails fast
+ * rather than the wall rendering a placeholder for a typo. A well-formed embed
+ * of a KNOWN module name passes; a spaced/argument form or an unknown name
+ * throws. Exported so layout-render can guard the footer html (which has no
+ * slot-content validator of its own).
+ */
+export function validateHtmlModuleEmbeds(html: string, where: string): void {
+  const detector = new RegExp(MODULE_EMBED_DETECT_REGEX.source, "gi");
+  let match: RegExpExecArray | null;
+  while ((match = detector.exec(html)) !== null) {
+    const token = match[0];
+    const strict = new RegExp(`^${MODULE_EMBED_STRICT_REGEX.source}$`).exec(token);
+    if (!strict) {
+      throw new InvalidDisplayLayoutError(
+        `${where} has a malformed module embed "${token}" — use the bare form ` +
+          `{{module:<name>}} with no spaces or arguments (module options belong ` +
+          `to {module, options} slot content, not embed tokens)`
+      );
+    }
+    if (!isModuleName(strict[1])) {
+      throw new InvalidDisplayLayoutError(
+        `${where} embeds unknown module "${strict[1]}" ` +
+          `(known: ${DISPLAY_MODULE_NAMES.join(", ")})`
+      );
+    }
+  }
+}
+
 /**
  * Validate one slot content value (authored HTML or a module embed). `module`
  * wins when both keys appear; options must be a flat scalar object (no code
@@ -164,6 +238,9 @@ function validateSlotContent(value: unknown, where: string): SlotContent {
     };
   }
   if (typeof record.html === "string") {
+    // Reject typo'd/unknown module embeds inside authored html so authoring
+    // fails fast (LTV-028); the client splitter mounts the rest.
+    validateHtmlModuleEmbeds(record.html, where);
     return { html: record.html };
   }
   throw new InvalidDisplayLayoutError(
