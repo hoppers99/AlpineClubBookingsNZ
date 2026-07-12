@@ -224,7 +224,7 @@ const navSections: NavSection[] = [
       { href: "/admin/display", label: "Lobby Display", icon: Tv },
       {
         href: "/admin/display/templates",
-        label: "Display Templates",
+        label: "Display Settings",
         icon: LayoutTemplate,
       },
       { href: "/admin/work-parties", label: "Work Parties", icon: Hammer },

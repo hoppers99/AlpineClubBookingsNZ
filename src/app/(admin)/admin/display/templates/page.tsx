@@ -1,28 +1,16 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import type { DisplayState } from "@/lib/lodge-display-state";
-import type { DisplayTemplateDefinition } from "@/lib/lodge-display/template-registry";
-import { eligibleDisplayPanels } from "@/lib/lodge-display/template-registry";
-import { DISPLAY_MODULE_COMPONENTS } from "@/components/lodge-display/modules";
 
-// Display templates + per-lodge display settings (fork issue #34, epic #25).
-// Templates: list the registry, copy a template to a CUSTOM row, edit the
-// definition as JSON (validated server-side against the closed registries —
-// ADR-002), preview with live data through the SAME privacy-reduced
-// serialiser the real display uses. Settings: the {{config:<key>}} glob and
-// the name-granularity override per lodge.
-
-interface TemplateOption {
-  key: string;
-  name: string;
-  source: string;
-}
+// Per-lodge display settings (fork epic #25). The template authoring surface
+// moved out with the v2 rebuild (LTV-024): the template list / JSON editor /
+// copy-to-custom / preview are gone, replaced by the Layout/Template editors in
+// LTV-032/033. This settings card (granularity, committee notice, {{config:key}}
+// glob) stays here until LTV-035 relocates it.
 
 const GRANULARITY_OPTIONS = [
   { value: "", label: "Club default (first name + surname initial)" },
@@ -32,71 +20,12 @@ const GRANULARITY_OPTIONS = [
   { value: "COUNTS_ONLY", label: "Counts only (no names)" },
 ];
 
-function PreviewPane({
-  template,
-  state,
-}: {
-  template: DisplayTemplateDefinition;
-  state: DisplayState;
-}) {
-  return (
-    <div className="rounded-md border bg-black/90 p-3 text-white">
-      {template.regions.map((region) => {
-        const panels = eligibleDisplayPanels(region, state);
-        const panel = panels[0];
-        const Module = panel
-          ? DISPLAY_MODULE_COMPONENTS[
-              panel.module as keyof typeof DISPLAY_MODULE_COMPONENTS
-            ]
-          : undefined;
-        return (
-          <div key={region.key} className="mb-2 border-b border-white/10 pb-2 last:border-b-0">
-            <p className="text-xs uppercase tracking-wide text-white/50">
-              {region.key}
-              {panels.length > 1 ? ` · rotates ${panels.length} panels` : ""}
-            </p>
-            {panel ? (
-              Module ? (
-                <div className="display-preview-scope text-sm">
-                  <Module state={state} options={panel.options} />
-                </div>
-              ) : (
-                <p className="text-sm text-white/60">[{panel.module}]</p>
-              )
-            ) : (
-              <p className="text-sm text-white/40">No eligible panel for current data</p>
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-export default function AdminDisplayTemplatesPage() {
-  const [templates, setTemplates] = useState<TemplateOption[]>([]);
-  const [selectedKey, setSelectedKey] = useState<string>("");
-  const [selectedSource, setSelectedSource] = useState<string>("");
-  const [editorJson, setEditorJson] = useState<string>("");
-  const [preview, setPreview] = useState<{
-    template: DisplayTemplateDefinition;
-    state: DisplayState;
-  } | null>(null);
-  const [copyKey, setCopyKey] = useState("");
-  const [copyName, setCopyName] = useState("");
+export default function AdminDisplaySettingsPage() {
   const [config, setConfig] = useState<Array<{ key: string; value: string }>>([]);
   const [granularity, setGranularity] = useState<string>("");
   const [notice, setNotice] = useState<string>("");
   const [lodgeName, setLodgeName] = useState<string>("");
   const [message, setMessage] = useState<string | null>(null);
-
-  const refreshTemplates = useCallback(async () => {
-    const response = await fetch("/api/admin/display/templates");
-    if (response.ok) {
-      const body = (await response.json()) as { templates: TemplateOption[] };
-      setTemplates(body.templates);
-    }
-  }, []);
 
   const loadSettings = useCallback(async () => {
     const response = await fetch("/api/admin/display/lodge-config");
@@ -117,92 +46,8 @@ export default function AdminDisplayTemplatesPage() {
   }, []);
 
   useEffect(() => {
-    void refreshTemplates();
     void loadSettings();
-  }, [refreshTemplates, loadSettings]);
-
-  async function selectTemplate(key: string) {
-    setMessage(null);
-    setSelectedKey(key);
-    setPreview(null);
-    const response = await fetch(`/api/admin/display/templates/${key}`);
-    if (response.ok) {
-      const body = (await response.json()) as {
-        template: DisplayTemplateDefinition;
-        source: string;
-      };
-      setSelectedSource(body.source);
-      setEditorJson(JSON.stringify(body.template, null, 2));
-    }
-  }
-
-  async function saveTemplate() {
-    setMessage(null);
-    let definition: unknown;
-    try {
-      definition = JSON.parse(editorJson);
-    } catch {
-      setMessage("The definition is not valid JSON.");
-      return;
-    }
-    const response = await fetch(`/api/admin/display/templates/${selectedKey}`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ definition }),
-    });
-    const body = (await response.json().catch(() => null)) as { error?: string } | null;
-    setMessage(response.ok ? "Template saved." : body?.error ?? "Save failed");
-    if (response.ok) await refreshTemplates();
-  }
-
-  async function deleteStored() {
-    setMessage(null);
-    const response = await fetch(`/api/admin/display/templates/${selectedKey}`, {
-      method: "DELETE",
-    });
-    setMessage(
-      response.ok
-        ? "Stored template removed (built-ins revert to the code default)."
-        : "Delete failed"
-    );
-    if (response.ok) {
-      await refreshTemplates();
-      await selectTemplate(selectedKey).catch(() => setSelectedKey(""));
-    }
-  }
-
-  async function copyToCustom() {
-    setMessage(null);
-    const response = await fetch("/api/admin/display/templates", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ fromKey: selectedKey, key: copyKey, name: copyName }),
-    });
-    const body = (await response.json().catch(() => null)) as { error?: string } | null;
-    setMessage(response.ok ? "Custom template created." : body?.error ?? "Copy failed");
-    if (response.ok) {
-      setCopyKey("");
-      setCopyName("");
-      await refreshTemplates();
-    }
-  }
-
-  async function loadPreview() {
-    setMessage(null);
-    const response = await fetch(
-      `/api/admin/display/preview?templateKey=${encodeURIComponent(selectedKey)}`
-    );
-    if (response.ok) {
-      setPreview(
-        (await response.json()) as {
-          template: DisplayTemplateDefinition;
-          state: DisplayState;
-        }
-      );
-    } else {
-      setMessage("Preview failed");
-    }
-  }
+  }, [loadSettings]);
 
   async function saveSettings() {
     setMessage(null);
@@ -228,105 +73,15 @@ export default function AdminDisplayTemplatesPage() {
   return (
     <div className="space-y-6 p-6">
       <div>
-        <h1 className="text-2xl font-bold">Display Templates</h1>
+        <h1 className="text-2xl font-bold">Display Settings</h1>
         <p className="text-muted-foreground">
-          Built-in templates ship with the software; copy one to customise it,
-          or edit a custom template directly. Definitions are validated — an
-          unknown module or condition is rejected, never rendered broken.
+          Per-lodge lobby display settings. Guest name granularity is enforced in
+          the display data feed itself, so no template can show more than it
+          allows.
         </p>
       </div>
 
       {message && <p className="text-sm font-medium">{message}</p>}
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Templates</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex flex-wrap gap-2">
-            {templates.map((template) => (
-              <Button
-                key={template.key}
-                variant={template.key === selectedKey ? "default" : "outline"}
-                onClick={() => void selectTemplate(template.key)}
-              >
-                {template.name}
-                <Badge variant="secondary" className="ml-2">
-                  {template.source}
-                </Badge>
-              </Button>
-            ))}
-          </div>
-
-          {selectedKey && (
-            <div className="space-y-3">
-              <Label htmlFor="template-editor">
-                Definition ({selectedKey} · {selectedSource})
-              </Label>
-              <textarea
-                id="template-editor"
-                className="border-input bg-background min-h-64 w-full rounded-md border p-3 font-mono text-xs"
-                value={editorJson}
-                onChange={(event) => setEditorJson(event.target.value)}
-              />
-              <div className="flex flex-wrap gap-2">
-                <Button onClick={() => void saveTemplate()}>Save</Button>
-                {selectedSource !== "built-in" && (
-                  <Button variant="destructive" onClick={() => void deleteStored()}>
-                    {selectedSource === "override" ? "Remove override" : "Delete custom"}
-                  </Button>
-                )}
-                <Button variant="outline" onClick={() => void loadPreview()}>
-                  Preview with live data
-                </Button>
-                <Button variant="outline" asChild>
-                  <a
-                    href={`/display?preview=1&templateKey=${encodeURIComponent(selectedKey)}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    Full-screen preview
-                  </a>
-                </Button>
-                <div className="flex items-end gap-2">
-                  <div>
-                    <Label htmlFor="copy-key" className="text-xs">
-                      New key
-                    </Label>
-                    <Input
-                      id="copy-key"
-                      className="w-40"
-                      placeholder="our-foyer"
-                      value={copyKey}
-                      onChange={(event) => setCopyKey(event.target.value)}
-                    />
-                  </div>
-                  <div>
-                    <Label htmlFor="copy-name" className="text-xs">
-                      New name
-                    </Label>
-                    <Input
-                      id="copy-name"
-                      className="w-40"
-                      placeholder="Our foyer"
-                      value={copyName}
-                      onChange={(event) => setCopyName(event.target.value)}
-                    />
-                  </div>
-                  <Button
-                    variant="outline"
-                    disabled={!copyKey || !copyName}
-                    onClick={() => void copyToCustom()}
-                  >
-                    Copy to custom
-                  </Button>
-                </div>
-              </div>
-              {preview && <PreviewPane template={preview.template} state={preview.state} />}
-            </div>
-          )}
-        </CardContent>
-      </Card>
 
       <Card>
         <CardHeader>

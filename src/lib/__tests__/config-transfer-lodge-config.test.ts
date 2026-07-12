@@ -66,19 +66,6 @@ function sourceDb(): ReadDb {
     },
     lodgeInstruction: { findMany: vi.fn().mockResolvedValue([]) },
     choreTemplate: { findMany: vi.fn().mockResolvedValue([]) },
-    displayTemplate: {
-      findMany: vi.fn().mockResolvedValue([
-        {
-          key: "our-foyer",
-          name: "Our foyer",
-          definition: {
-            key: "our-foyer",
-            name: "Our foyer",
-            regions: [{ key: "main", panels: [{ module: "arrivals-board", options: { days: 3 } }] }],
-          },
-        },
-      ]),
-    },
   } as unknown as ReadDb;
 }
 
@@ -92,7 +79,6 @@ function emptyTargetDb(): ReadDb {
     lodgeInstruction: { findMany: vi.fn().mockResolvedValue([]) },
     choreTemplate: { findMany: vi.fn().mockResolvedValue([]) },
     xeroToken: { findFirst: vi.fn().mockResolvedValue(null) },
-    displayTemplate: { findMany: vi.fn().mockResolvedValue([]) },
   } as unknown as ReadDb;
 }
 
@@ -171,7 +157,7 @@ describe("config-transfer lodge-config (per-lodge folders)", () => {
 });
 
 describe("config-transfer lobby display (issue #50)", () => {
-  it("exports display settings in lodge.json and templates in display-templates.json", async () => {
+  it("exports display settings in lodge.json (templates dropped in LTV-024)", async () => {
     const { zip } = await exportLodges(false);
     const { files } = readBundle(zip);
 
@@ -180,44 +166,20 @@ describe("config-transfer lobby display (issue #50)", () => {
     expect(lodge.displayNameGranularity).toBe("FULL_NAME");
     expect(lodge.displayNotice).toBe("Working bee Sunday");
 
-    const templates = JSON.parse(
-      strFromU8(files.get("lodge-config/display-templates.json")!),
-    ) as Array<{ key: string; definition: { regions: unknown[] } }>;
-    expect(templates).toHaveLength(1);
-    expect(templates[0].key).toBe("our-foyer");
-    expect(templates[0].definition.regions).toHaveLength(1);
+    // The retired club-wide template file is no longer emitted (LTV-024).
+    expect(files.get("lodge-config/display-templates.json")).toBeUndefined();
   });
 
-  it("plans display settings + template creates against an empty target", async () => {
+  it("plans lodge display settings on the lodge entity against an empty target", async () => {
     const { zip } = await exportLodges(false);
     const plan = await buildImportPlan(emptyTargetDb(), zip, { mode: "merge" });
     const cat = plan.categories.find((c) => c.category === "lodge-config")!;
     expect(cat.errors).toEqual([]);
-    const template = cat.items.find((i) => i.entity === "display-template");
-    expect(template).toMatchObject({ key: "our-foyer", action: "create" });
-  });
-
-  it("BLOCKS a bundle template referencing an unknown module (ADR-002 gate)", async () => {
-    const { zip } = await exportLodges(false);
-    const unzipped = unzipSync(zip);
-    unzipped["lodge-config/display-templates.json"] = strToU8(
-      JSON.stringify([
-        {
-          key: "evil",
-          name: "Evil",
-          definition: {
-            key: "evil",
-            name: "Evil",
-            regions: [{ key: "main", panels: [{ module: "crypto-miner" }] }],
-          },
-        },
-      ]),
-    );
-    const rezipped = zipSync(unzipped); // integrity is warn-only by design
-    const plan = await buildImportPlan(emptyTargetDb(), rezipped, { mode: "merge" });
-    const cat = plan.categories.find((c) => c.category === "lodge-config")!;
-    expect(cat.errors.join("\n")).toMatch(/unknown module "crypto-miner"/);
+    // Display settings travel on the lodge descriptor, not a separate entity.
     expect(cat.items.find((i) => i.entity === "display-template")).toBeUndefined();
+    expect(cat.items.find((i) => i.entity === "lodge")).toMatchObject({
+      action: "create",
+    });
   });
 
   it("rejects invalid display settings in lodge.json with explicit errors", async () => {
@@ -240,29 +202,5 @@ describe("config-transfer lobby display (issue #50)", () => {
     expect(joined).toMatch(/displayNameGranularity/);
     expect(joined).toMatch(/displayConfig key "Bad Key!"/);
     expect(joined).toMatch(/displayNotice/);
-  });
-
-  it("diffs Json fields structurally (same template re-imported = unchanged)", async () => {
-    const { zip } = await exportLodges(false);
-    const db = emptyTargetDb() as unknown as {
-      displayTemplate: { findMany: ReturnType<typeof vi.fn> };
-    };
-    db.displayTemplate.findMany.mockResolvedValue([
-      {
-        key: "our-foyer",
-        name: "Our foyer",
-        definition: {
-          // Key order deliberately DIFFERENT from the export — a structural
-          // diff must still see equality.
-          regions: [{ panels: [{ options: { days: 3 }, module: "arrivals-board" }], key: "main" }],
-          name: "Our foyer",
-          key: "our-foyer",
-        },
-      },
-    ]);
-    const plan = await buildImportPlan(db as unknown as ReadDb, zip, { mode: "merge" });
-    const cat = plan.categories.find((c) => c.category === "lodge-config")!;
-    const template = cat.items.find((i) => i.entity === "display-template");
-    expect(template?.action).toBe("unchanged");
   });
 });

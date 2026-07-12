@@ -1,70 +1,40 @@
-import { prisma } from "../prisma";
 import {
   DEFAULT_DISPLAY_TEMPLATE_KEY,
   listBuiltInDisplayTemplates,
-  validateDisplayTemplateDefinition,
   type ResolvedDisplayTemplate,
 } from "./template-registry";
 
-// SERVER-ONLY template resolution (fork issues #29/#32): DB rows shadow
-// built-ins (ADR-002 §2) and are revalidated on every load. Kept separate
-// from template-registry.ts, which must stay client-safe (the display page's
-// client bundle imports the pure registry; bundling prisma/pg client-side
-// breaks the build).
+// Interim template resolution during the v2 rebuild (LTV-024): the old
+// DisplayTemplate model is gone, so resolution reads ONLY the code built-ins in
+// template-registry.ts. Screens keep rendering the LTV-015/016 boards until the
+// authoring layer (LTV-027/033) lands. Kept server-side (the state route imports
+// it) though it no longer touches the database.
 
 /**
- * Resolve a template key: a DB row (override of a built-in key, or a custom
- * template) wins over the code default (ADR-002 §2, issue #29 AC2). Returns
- * null for an unknown key; throws InvalidDisplayTemplateError if a stored
- * definition fails validation.
+ * Resolve a template key to its code built-in, or null for an unknown key.
  */
-export async function resolveDisplayTemplate(
+export function resolveDisplayTemplate(
   key: string
-): Promise<ResolvedDisplayTemplate | null> {
-  const row = await prisma.displayTemplate.findUnique({ where: { key } });
+): ResolvedDisplayTemplate | null {
   const builtIn = listBuiltInDisplayTemplates().find(
     (definition) => definition.key === key
   );
-
-  if (row) {
-    return {
-      definition: validateDisplayTemplateDefinition(row.definition),
-      source: builtIn ? "override" : "custom",
-    };
-  }
-  if (builtIn) {
-    return { definition: builtIn, source: "built-in" };
-  }
-  return null;
+  return builtIn ? { definition: builtIn } : null;
 }
 
 /**
- * Resolve the template a device should render (fork issues #32/#33), in
- * order: templateKey (a registry key — built-in or custom row, the binding
- * the admin UI writes), then a legacy templateId row, then the club default.
+ * Resolve the template a device should render: its templateKey built-in, else
+ * the club default built-in (everyday-board).
  */
-export async function resolveDisplayTemplateForDevice(device: {
+export function resolveDisplayTemplateForDevice(device: {
   templateKey: string | null;
-  templateId: string | null;
-}): Promise<ResolvedDisplayTemplate> {
-  const { templateKey, templateId } = device;
-  if (templateKey) {
-    const byKey = await resolveDisplayTemplate(templateKey);
+}): ResolvedDisplayTemplate {
+  if (device.templateKey) {
+    const byKey = resolveDisplayTemplate(device.templateKey);
     if (byKey) return byKey;
-  }
-  if (templateId) {
-    const row = await prisma.displayTemplate.findUnique({
-      where: { id: templateId },
-    });
-    if (row) {
-      return {
-        definition: validateDisplayTemplateDefinition(row.definition),
-        source: "custom",
-      };
-    }
   }
   const fallback = listBuiltInDisplayTemplates().find(
     (definition) => definition.key === DEFAULT_DISPLAY_TEMPLATE_KEY
   )!;
-  return { definition: fallback, source: "built-in" };
+  return { definition: fallback };
 }

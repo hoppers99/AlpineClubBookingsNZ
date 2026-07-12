@@ -6,8 +6,8 @@ import { resolveDisplayTemplate } from "@/lib/lodge-display/template-resolution"
 import { nameField } from "@/lib/zod-helpers";
 
 // Admin device update (fork issue #33): rename and template assignment.
-// templateKey binds any REGISTRY template — built-in or custom — and is
-// validated against the registry before persisting (never a dangling key).
+// templateKey binds a code built-in and is validated against the registry
+// before persisting (never a dangling key).
 
 const patchSchema = z
   .object({
@@ -42,7 +42,7 @@ export async function PATCH(
   }
 
   if (typeof body.templateKey === "string") {
-    const resolved = await resolveDisplayTemplate(body.templateKey);
+    const resolved = resolveDisplayTemplate(body.templateKey);
     if (!resolved) {
       return NextResponse.json(
         { error: "Unknown display template" },

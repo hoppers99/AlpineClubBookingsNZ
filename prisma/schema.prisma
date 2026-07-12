@@ -3857,31 +3857,52 @@ model MembershipLockoutSettings {
 // Lobby TV Display (docs/lobby-display/design.md, fork epic #25)
 // ---------------------------------------------------------------------------
 
-// Where a display template definition came from: an admin override of a
-// built-in (code-registry) template, or a fully custom template. Built-in
-// templates ship in code; rows exist only for overrides and custom templates
-// (the EmailTemplateOverride pattern).
-enum DisplayTemplateSource {
-  BUILT_IN_OVERRIDE
-  CUSTOM
+// A page layout (ADR-003 §1, LTV-024): the structural HTML body with named
+// areas/slots, a default CSS block, and per-slot metadata. All layouts share a
+// fixed header and an editable footer (page furniture, not part of the body).
+// `areas` is an ordered list of slot descriptors
+// ({ key, description, kind: static|conditional|rotator, condition?,
+// rotateSeconds?, children?, defaultContent }) validated app-side (LTV-027/030),
+// exactly as the retired definition Json was.
+model DisplayLayout {
+  id          String   @id @default(cuid())
+  key         String   @unique @db.VarChar(80)
+  name        String   @db.VarChar(120)
+  description String?
+  bodyHtml    String   @db.Text
+  defaultCss  String   @db.Text
+  areas       Json
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  templates DisplayTemplate[]
 }
 
+// A selectable display design (ADR-003 §1, LTV-024): built on a DisplayLayout,
+// it fills each declared slot with content or an embedded module, layers CSS
+// overrides on the layout default, and carries the footer content. It renders
+// dynamically against whichever lodge its display is bound to; `slotContent`
+// maps areaKey -> { html } or { module, options? }. A layout still referenced
+// by a template cannot be deleted (Restrict).
 model DisplayTemplate {
-  id         String                @id @default(cuid())
-  key        String                @unique @db.VarChar(80)
-  name       String                @db.VarChar(120)
-  source     DisplayTemplateSource
-  // Region layout + per-region module/option configuration (data-only; the
-  // template engine rejects unknown module/condition names at load time).
-  definition Json
-  createdAt  DateTime              @default(now())
-  updatedAt  DateTime              @updatedAt
+  id           String   @id @default(cuid())
+  key          String   @unique @db.VarChar(80)
+  name         String   @db.VarChar(120)
+  layoutId     String
+  slotContent  Json
+  cssOverrides String   @db.Text
+  footerHtml   String   @db.Text
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
+  layout  DisplayLayout        @relation(fields: [layoutId], references: [id], onDelete: Restrict)
   devices LodgeDisplayDevice[]
+
+  @@index([layoutId])
 }
 
 // A physical lobby display (TV/browser) paired to exactly one lodge. The raw
-// display token is never stored — only its hash (docs/TOKEN_HASHING.md);
+// display credential is never stored — only its hash (docs/TOKEN_HASHING.md);
 // pairing codes are short-lived and single-use. Lifecycle: created → pairing
 // (code active) → paired → revoked (docs/lobby-display/design.md §4).
 // Deleting a bound template falls the device back to the club default
@@ -3894,12 +3915,10 @@ model LodgeDisplayDevice {
   pairingCodeExpiresAt DateTime?
   tokenHash            String?   @unique
   templateId           String?
-  // Registry template binding (fork issue #33): a built-in OR custom template
-  // key resolved via resolveDisplayTemplate(). Preferred over templateId
-  // (which can only reference DB rows and so cannot bind a built-in).
-  // Resolution order: templateKey -> templateId row -> club default.
+  // Interim binding (LTV-024): a code built-in key resolved via
+  // resolveDisplayTemplateForDevice(). Resolution order:
+  // templateKey -> built-in -> club default.
   templateKey          String?   @db.VarChar(80)
-  regionConfig         Json?
   lastSeenAt           DateTime?
   revokedAt            DateTime?
   createdAt            DateTime  @default(now())

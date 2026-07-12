@@ -57,6 +57,19 @@ Per lodge:
 
 ## 3. Data model
 
+> **Superseded by v2** (LTV-024, migration `20260712100000_display_authoring_v2`):
+> ADR-003's authoring model landed. The data-only `DisplayTemplate`
+> region/panel model and its `DisplayTemplateSource` enum are **removed**, and
+> `LodgeDisplayDevice.regionConfig` is dropped (per-display content now lives on
+> the Template). The new entities in `prisma/schema.prisma` are **`DisplayLayout`**
+> (`key`, `name`, `description?`, `bodyHtml`, `defaultCss`, `areas` Json) and a
+> fresh **`DisplayTemplate`** (`key`, `name`, `layoutId` FK → DisplayLayout
+> [Restrict], `slotContent` Json, `cssOverrides`, `footerHtml`). The device keeps
+> `templateId` (FK → the new DisplayTemplate, SetNull) and `templateKey`
+> (interim resolution against the code built-ins until LTV-027/033). The Lodge
+> display columns (`displayConfig`, `displayNameGranularity`, `displayNotice`)
+> are unchanged. The sketch below is the retired MVP shape, kept for history.
+
 > **Implemented** (fork issue #26, migration `20260711000100_add_lobby_display_schema`):
 > `prisma/schema.prisma` is now the source of truth for these shapes. The
 > sketch below is retained for rationale; the implemented schema differs only

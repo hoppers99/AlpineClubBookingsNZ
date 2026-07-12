@@ -182,7 +182,7 @@ describe("checkDisplayAuth (the display guard)", () => {
     lodgeId: "lodge-a",
     name: "Lobby TV",
     templateId: null,
-    regionConfig: null,
+    templateKey: null,
     revokedAt: null,
     lodge: { active: true },
   };
@@ -198,7 +198,7 @@ describe("checkDisplayAuth (the display guard)", () => {
       lodgeId: "lodge-a",
       name: "Lobby TV",
       templateId: null,
-      regionConfig: null,
+      templateKey: null,
     });
     // Lookup is by HASH, never the raw token (hash-at-rest).
     expect(mockPrisma.lodgeDisplayDevice.findUnique).toHaveBeenCalledWith(

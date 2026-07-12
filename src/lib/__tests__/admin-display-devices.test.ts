@@ -12,7 +12,6 @@ const { mockPrisma, mockRequireAdmin } = vi.hoisted(() => ({
       create: vi.fn(),
       update: vi.fn(),
     },
-    displayTemplate: { findMany: vi.fn(), findUnique: vi.fn() },
     lodge: { findUnique: vi.fn(), findFirst: vi.fn() },
   },
   mockRequireAdmin: vi.fn(),
@@ -70,8 +69,6 @@ beforeEach(() => {
     name: "Lobby TV",
     templateKey: "whole-lodge",
   });
-  mockPrisma.displayTemplate.findMany.mockResolvedValue([]);
-  mockPrisma.displayTemplate.findUnique.mockResolvedValue(null);
   mockPrisma.lodge.findUnique.mockResolvedValue({ id: "lodge-default", active: true });
 });
 
@@ -214,21 +211,12 @@ describe("POST /api/admin/display/devices/[id]/revoke (AC5)", () => {
   });
 });
 
-describe("GET /api/admin/display/templates", () => {
-  it("merges built-ins with DB rows (override keeps the built-in key)", async () => {
-    mockPrisma.displayTemplate.findMany.mockResolvedValue([
-      { key: "everyday-board", name: "Everyday (club edit)", source: "BUILT_IN_OVERRIDE" },
-      { key: "our-foyer", name: "Our foyer", source: "CUSTOM" },
-    ]);
+describe("GET /api/admin/display/templates (built-ins only, LTV-024)", () => {
+  it("lists the code built-ins for the device picker", async () => {
     const { GET } = await import("@/app/api/admin/display/templates/route");
     const res = await GET();
     const body = await res.json();
-    const byKey = Object.fromEntries(
-      body.templates.map((t: { key: string; source: string }) => [t.key, t.source])
-    );
-    expect(byKey["everyday-board"]).toBe("override");
-    expect(byKey["whole-lodge"]).toBe("built-in");
-    expect(byKey["singles-house"]).toBe("built-in");
-    expect(byKey["our-foyer"]).toBe("custom");
+    const keys = body.templates.map((t: { key: string }) => t.key);
+    expect(keys).toEqual(["everyday-board", "whole-lodge", "singles-house"]);
   });
 });

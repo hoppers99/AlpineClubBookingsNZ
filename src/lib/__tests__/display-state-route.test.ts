@@ -58,7 +58,6 @@ const DEVICE_AUTH = {
     name: "Lobby TV",
     templateId: null,
     templateKey: null,
-    regionConfig: null,
   },
 };
 
@@ -78,8 +77,9 @@ beforeEach(() => {
   mockPrisma.lodgeDisplayDevice.findUnique.mockResolvedValue(null);
   mockPrisma.lodgeDisplayDevice.update.mockResolvedValue({});
   mockBuildDisplayState.mockResolvedValue(STATE);
-  mockResolveTemplate.mockResolvedValue(TEMPLATE);
-  mockResolveForDevice.mockResolvedValue(TEMPLATE);
+  // Template resolution is synchronous (LTV-024 — code built-ins, no DB).
+  mockResolveTemplate.mockReturnValue(TEMPLATE);
+  mockResolveForDevice.mockReturnValue(TEMPLATE);
   mockGetDefaultLodgeId.mockResolvedValue("lodge-default");
 });
 
@@ -172,7 +172,7 @@ describe("GET /api/display/state — admin preview (issue #52)", () => {
 
   it("falls back to default resolution when the requested templateKey is unknown", async () => {
     loginAs(ADMIN_MEMBER);
-    mockResolveTemplate.mockResolvedValue(null);
+    mockResolveTemplate.mockReturnValue(null);
     const { GET } = await import("@/app/api/display/state/route");
 
     const res = await GET(await stateRequest("?preview=1&templateKey=nope"));
