@@ -71,12 +71,13 @@ function slotHtml(
 }
 
 describe("buildLayoutRender — LTV-028 value-token resolution", () => {
-  it("resolves value tokens in bodyHtml and keeps area/module tokens intact", () => {
+  it("resolves value tokens in bodyHtml and swaps area tokens for inert markers", () => {
     const render = buildLayoutRender(input(), state());
     expect(render.bodyHtml).toContain("Silverpeak Lodge");
     expect(render.bodyHtml).toContain("alpine1234");
-    // Area placeholders survive for the client body splitter.
-    expect(render.bodyHtml).toContain("{{area:main}}");
+    // Area placeholders become inert markers the client portals into (LTV-041).
+    expect(render.bodyHtml).toContain('<div data-display-area="main"></div>');
+    expect(render.bodyHtml).not.toContain("{{area:main}}");
     // A site-catalogue token is left VERBATIM (token-scope boundary).
     expect(render.bodyHtml).toContain("{{club-name}}");
   });
@@ -99,10 +100,16 @@ describe("buildLayoutRender — LTV-028 value-token resolution", () => {
     });
   });
 
-  it("passes module embed tokens through untouched for the client splitter", () => {
+  it("swaps module embed tokens for inert markers on slot and footer html", () => {
     const render = buildLayoutRender(input(), state());
-    expect(slotHtml(render, "main")).toContain("{{module:arrivals-board}}");
-    expect(render.footerHtml).toContain("{{module:chores-board}}");
+    expect(slotHtml(render, "main")).toContain(
+      '<div data-display-module="arrivals-board"></div>'
+    );
+    expect(slotHtml(render, "main")).not.toContain("{{module:arrivals-board}}");
+    expect(render.footerHtml).toContain(
+      '<div data-display-module="chores-board"></div>'
+    );
+    expect(render.footerHtml).not.toContain("{{module:chores-board}}");
   });
 
   it("leaves site-catalogue tokens verbatim on slot and footer surfaces", () => {
@@ -125,6 +132,90 @@ describe("buildLayoutRender — LTV-028 value-token resolution", () => {
       state()
     );
     expect(render.footerHtml).not.toMatch(/<script/i);
+  });
+});
+
+describe("buildLayoutRender — LTV-041 marker replacement (issue #96)", () => {
+  it("keeps an area marker INSIDE an authored container (nesting preserved)", () => {
+    // The 2+1 case: two placeholders nested two containers deep. The marker must
+    // land inside .main-col / .side-col, not break out to a sibling.
+    const render = buildLayoutRender(
+      input({
+        bodyHtml:
+          '<div class="two-plus-one">' +
+          '<div class="main-col">{{area:main}}</div>' +
+          '<div class="side-col">{{area:rail}}</div></div>',
+        areas: [
+          { key: "main", description: "Main", kind: "static" },
+          { key: "rail", description: "Rail", kind: "static" },
+        ],
+        slotContent: { main: { html: "<p>x</p>" } },
+      }),
+      state()
+    );
+    expect(render.bodyHtml).toContain(
+      '<div class="main-col"><div data-display-area="main"></div></div>'
+    );
+    expect(render.bodyHtml).toContain(
+      '<div class="side-col"><div data-display-area="rail"></div></div>'
+    );
+    // The grid container survives whole (its children were never auto-closed).
+    expect(render.bodyHtml).toContain('<div class="two-plus-one">');
+  });
+
+  it("strips an author-typed marker div so only generated markers survive (spoof defence)", () => {
+    // An author types a real placeholder AND a spoof marker div for the same key.
+    // Sanitisation drops the hand-typed data-display-area attribute (only class/
+    // aria-hidden are allowlisted), so exactly one genuine marker remains.
+    const render = buildLayoutRender(
+      input({
+        bodyHtml:
+          '<div data-display-area="main" class="spoof">hi</div>{{area:main}}',
+        areas: [{ key: "main", description: "Main", kind: "static" }],
+        slotContent: { main: { html: "<p>x</p>" } },
+      }),
+      state()
+    );
+    const markerCount = (
+      render.bodyHtml.match(/data-display-area="main"/g) ?? []
+    ).length;
+    expect(markerCount).toBe(1);
+    // The spoof div lost its attribute but kept its allowlisted class.
+    expect(render.bodyHtml).toContain('<div class="spoof">hi</div>');
+  });
+
+  it("strips an author-typed module marker div too (spoof defence)", () => {
+    const render = buildLayoutRender(
+      input({
+        slotContent: {
+          main: {
+            html: '<div data-display-module="welcome" class="spoof"></div>{{module:arrivals-board}}',
+          },
+        },
+      }),
+      state()
+    );
+    const html = slotHtml(render, "main");
+    // Only the generated arrivals-board marker survives; the hand-typed welcome
+    // marker lost its data attribute during sanitisation.
+    expect(html).toContain('<div data-display-module="arrivals-board"></div>');
+    expect(html).not.toContain('data-display-module="welcome"');
+  });
+
+  it("keeps a module marker INSIDE a nested slot-html container (nesting preserved)", () => {
+    const render = buildLayoutRender(
+      input({
+        slotContent: {
+          main: {
+            html: '<div class="wrap"><section>{{module:arrivals-board}}</section></div>',
+          },
+        },
+      }),
+      state()
+    );
+    expect(slotHtml(render, "main")).toContain(
+      '<section><div data-display-module="arrivals-board"></div></section>'
+    );
   });
 });
 

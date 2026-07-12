@@ -96,6 +96,15 @@ const SLUG_REGEX = /^[a-z0-9][a-z0-9-]{0,63}$/;
 // exactly what the renderer splits on.
 const AREA_PLACEHOLDER_REGEX = /\{\{area:([^{}]*?)\}\}/g;
 
+// Marker attributes (LTV-041, issue #96). After sanitisation, the server swaps
+// each `{{area:key}}` / `{{module:name}}` token for an inert `<div>` carrying one
+// of these attributes; the client locates the divs and portals its Area/module
+// component into them. Declared here (client-safe) so both the server assembler
+// (layout-render.ts) and the client renderer (display-screen.tsx) share one
+// source of truth — the client cannot import the server-only assembler.
+export const DISPLAY_AREA_MARKER_ATTR = "data-display-area";
+export const DISPLAY_MODULE_MARKER_ATTR = "data-display-module";
+
 /** A parsed body segment: literal HTML, or a reference to an area by key. */
 export type LayoutBodySegment =
   | { type: "html"; html: string }
@@ -141,37 +150,13 @@ const MODULE_EMBED_STRICT_REGEX = /\{\{module:([a-z0-9][a-z0-9-]{0,63})\}\}/g;
 // as literal text.
 const MODULE_EMBED_DETECT_REGEX = /\{\{\s*module\s*:[^{}]*\}\}/gi;
 
-/** A parsed authored-html segment: literal HTML, or a `{{module:name}}` embed. */
-export type HtmlModuleSegment =
-  | { type: "html"; html: string }
-  | { type: "module"; name: string };
-
-/**
- * Split authored html into ordered html/module segments on `{{module:<name>}}`
- * embed tokens (client-safe, pure — the mirror of splitLayoutBody for slot and
- * footer html). Only the STRICT `{{module:name}}` shape splits; anything else
- * stays inside an html segment (and the validator rejects it up front). An
- * unknown-but-well-formed module name still splits — the renderer degrades it
- * to the neutral placeholder, exactly like an unknown area.
- */
-export function splitHtmlOnModuleTokens(html: string): HtmlModuleSegment[] {
-  const segments: HtmlModuleSegment[] = [];
-  let lastIndex = 0;
-  // Fresh regex per call — a shared /g regex carries lastIndex between calls.
-  const regex = new RegExp(MODULE_EMBED_STRICT_REGEX.source, "g");
-  let match: RegExpExecArray | null;
-  while ((match = regex.exec(html)) !== null) {
-    if (match.index > lastIndex) {
-      segments.push({ type: "html", html: html.slice(lastIndex, match.index) });
-    }
-    segments.push({ type: "module", name: match[1] });
-    lastIndex = match.index + match[0].length;
-  }
-  if (lastIndex < html.length) {
-    segments.push({ type: "html", html: html.slice(lastIndex) });
-  }
-  return segments;
-}
+// NOTE (LTV-041, issue #96): there is no `{{module:…}}` splitter here any more.
+// Both area and module tokens are swapped for inert marker elements server-side
+// (layout-render.ts) after sanitisation, and the client portals its Area/module
+// components into those markers — so a token nested inside an authored container
+// stays put instead of being auto-closed into a sibling. The STRICT regex below
+// is still the single source of truth for what a valid embed looks like, used by
+// the validator (and mirrored by the server's marker replacement).
 
 /**
  * Reject any malformed or unknown `{{module:…}}` embed in an authored html

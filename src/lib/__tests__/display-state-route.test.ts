@@ -287,7 +287,10 @@ describe("GET /api/display/state — v2 layoutRender path (LTV-027)", () => {
     expect(body.layoutRender).toBeDefined();
     // Script tags stripped from every admin HTML field at serve time.
     expect(body.layoutRender.bodyHtml).not.toMatch(/<script/i);
-    expect(body.layoutRender.bodyHtml).toContain("{{area:main}}");
+    // LTV-041: the `{{area:main}}` placeholder is swapped for an inert marker the
+    // client portals its Area into (the token itself never reaches the wire).
+    expect(body.layoutRender.bodyHtml).toContain('<div data-display-area="main"></div>');
+    expect(body.layoutRender.bodyHtml).not.toContain("{{area:main}}");
     expect(body.layoutRender.slotContent.main.html).not.toMatch(/<script/i);
     expect(body.layoutRender.footerHtml).not.toMatch(/<script/i);
     // `</style` stripped from CSS so authored CSS cannot break out of <style>.

@@ -256,12 +256,55 @@ describe("DisplayScreen lifecycle", () => {
   });
 });
 
-// LTV-027: the layout engine. A device bound to a v2 Layout+Template arrives as
-// a `layoutRender` payload (already validated + sanitised server-side); the
-// client splits the body on {{area:key}} and renders the fixed header/footer
-// shell around static/conditional/rotator areas.
+// LTV-027/LTV-041: the layout engine. A device bound to a v2 Layout+Template
+// arrives as a `layoutRender` payload (already validated + sanitised server-side).
+// Since LTV-041 (issue #96) the SERVER swaps each `{{area:key}}`/`{{module:name}}`
+// token for an inert `<div data-display-*>` marker; the client renders the html
+// whole and portals its Area/module into each marker. These tests author the
+// readable token form and `markerize` mimics that final server step, so the
+// payload matches what the client actually receives.
+function markerize(html: string): string {
+  return html
+    .replace(
+      /\{\{area:([a-z0-9][a-z0-9-]{0,63})\}\}/g,
+      (_m, key: string) => `<div data-display-area="${key}"></div>`
+    )
+    .replace(
+      /\{\{module:([a-z0-9][a-z0-9-]{0,63})\}\}/g,
+      (_m, name: string) => `<div data-display-module="${name}"></div>`
+    );
+}
+
+function markerizeSlot(value: unknown): unknown {
+  if (value && typeof value === "object" && "html" in value) {
+    return { ...value, html: markerize(String((value as { html: unknown }).html)) };
+  }
+  return value;
+}
+
+function markerizeLayout(layoutRender: Record<string, unknown>): Record<string, unknown> {
+  const out = { ...layoutRender };
+  if (typeof out.bodyHtml === "string") out.bodyHtml = markerize(out.bodyHtml);
+  if (typeof out.footerHtml === "string") out.footerHtml = markerize(out.footerHtml);
+  if (out.slotContent && typeof out.slotContent === "object") {
+    const slots: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(out.slotContent as Record<string, unknown>)) {
+      slots[key] = markerizeSlot(value);
+    }
+    out.slotContent = slots;
+  }
+  if (Array.isArray(out.areas)) {
+    out.areas = out.areas.map((area) =>
+      area && typeof area === "object" && "defaultContent" in area
+        ? { ...area, defaultContent: markerizeSlot((area as { defaultContent: unknown }).defaultContent) }
+        : area
+    );
+  }
+  return out;
+}
+
 function layoutPayload(layoutRender: Record<string, unknown>) {
-  return { ...PAYLOAD, layoutRender };
+  return { ...PAYLOAD, layoutRender: markerizeLayout(layoutRender) };
 }
 
 async function renderLayout(layoutRender: Record<string, unknown>) {
@@ -424,6 +467,44 @@ describe("DisplayScreen layout engine (LTV-027)", () => {
     expect(
       container.querySelector('.display-module-placeholder[data-module="future-module"]')
     ).not.toBeNull();
+  });
+
+  it("mounts areas INSIDE authored container elements — the 2+1 grid case (issue #96)", async () => {
+    // The regression: two placeholders nested two containers deep. Before the
+    // marker+portal fix the areas broke out to siblings and the grid was empty.
+    const { container } = await renderLayout({
+      bodyHtml:
+        '<div class="two-plus-one">' +
+        '<div class="main-col">{{area:main}}</div>' +
+        '<div class="side-col">{{area:rail}}</div></div>',
+      defaultCss: "",
+      cssOverrides: "",
+      areas: [
+        { key: "main", description: "Main", kind: "static" },
+        { key: "rail", description: "Rail", kind: "static" },
+      ],
+      slotContent: {
+        main: { html: "<p>Main column body</p>" },
+        rail: { html: "<p>Side rail body</p>" },
+      },
+      footerHtml: "",
+    });
+
+    const grid = container.querySelector(".two-plus-one");
+    expect(grid).not.toBeNull();
+    // The grid container is NOT empty — it holds the two authored columns.
+    expect(grid?.childElementCount).toBe(2);
+
+    // Each slot's content renders INSIDE its column (parentElement chain), not
+    // as a sibling of the grid.
+    const mainText = screen.getByText("Main column body");
+    const sideText = screen.getByText("Side rail body");
+    expect(mainText.closest(".main-col")).not.toBeNull();
+    expect(mainText.closest(".two-plus-one")).not.toBeNull();
+    expect(sideText.closest(".side-col")).not.toBeNull();
+    expect(sideText.closest(".two-plus-one")).not.toBeNull();
+    // The main-col content never leaked into the side-col.
+    expect(sideText.closest(".main-col")).toBeNull();
   });
 });
 
