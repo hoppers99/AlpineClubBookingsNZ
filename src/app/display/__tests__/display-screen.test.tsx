@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DisplayScreen } from "@/app/display/display-screen";
 
@@ -213,8 +213,58 @@ describe("DisplayScreen lifecycle", () => {
       expect(container.querySelector('input[type="date"]')).not.toBeNull();
       // Accessible-only hint, but no visible layout-shifting marker element.
       expect(screen.getByText(/Simulating/)).toBeDefined();
+      // LTV-036: the preview makes its lodge explicit near the clock.
+      expect(screen.getByText(/Previewing against Silverpeak Lodge/)).toBeDefined();
     } finally {
       window.history.pushState({}, "", "/display");
+    }
+  });
+
+  it("applies a selected date via the sibling input (the #65 picker fix)", async () => {
+    // #65: the date input used to be nested inside the <button>, where a native
+    // date selection did not reliably fire change, so picking a date never
+    // applied. It is now a SIBLING of the button; selecting a date must rewrite
+    // ?previewDate on the URL. jsdom cannot navigate on a location write, so we
+    // stub window.location with a plain, writable `search`.
+    const originalLocation = window.location;
+    const locationStub = {
+      ...originalLocation,
+      search: "?previewDevice=dev-9",
+    } as unknown as Location;
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: locationStub,
+    });
+    try {
+      const isPreviewState = (url: string) =>
+        url.includes("/api/display/state?previewDevice=dev-9");
+      enqueue(isPreviewState, { status: 200, body: PAYLOAD });
+      const { container } = render(<DisplayScreen />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10);
+      });
+      const input = container.querySelector(
+        'input[type="date"]'
+      ) as HTMLInputElement | null;
+      expect(input).not.toBeNull();
+      // The input is a sibling of the picker button, never its descendant.
+      expect(input?.closest("button")).toBeNull();
+
+      await act(async () => {
+        fireEvent.change(input as HTMLInputElement, {
+          target: { value: "2026-09-01" },
+        });
+      });
+
+      // The apply path wrote the simulated date onto the URL (the reload path a
+      // real browser would then follow).
+      expect(window.location.search).toContain("previewDate=2026-09-01");
+      expect(window.location.search).toContain("previewDevice=dev-9");
+    } finally {
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        value: originalLocation,
+      });
     }
   });
 
@@ -230,6 +280,8 @@ describe("DisplayScreen lifecycle", () => {
       container.querySelector(".display-header-clock[data-simulated]")
     ).toBeNull();
     expect(screen.queryByText(/Simulating/)).toBeNull();
+    // No "previewing against" line on a real, unattended wall (LTV-036).
+    expect(screen.queryByText(/Previewing against/)).toBeNull();
   });
 
   it("renders a neutral placeholder for a module with no renderer yet", async () => {

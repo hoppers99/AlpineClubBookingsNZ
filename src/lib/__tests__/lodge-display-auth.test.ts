@@ -86,6 +86,84 @@ describe("pairing codes and blobs (ADR-001 §2)", () => {
   });
 });
 
+describe("preview grants (LTV-036, ADR-003 §5)", () => {
+  it("round-trips a signed grant (template + lodge + optional window start)", async () => {
+    const { encodePreviewGrant, decodePreviewGrant } = await import(
+      "@/lib/lodge-display-auth"
+    );
+    const exp = Math.floor(Date.now() / 1000) + 300;
+    const token = encodePreviewGrant({
+      templateId: "tpl-1",
+      lodgeId: "lodge-b",
+      windowStart: "2026-08-01",
+      exp,
+    });
+    expect(decodePreviewGrant(token)).toEqual({
+      templateId: "tpl-1",
+      lodgeId: "lodge-b",
+      windowStart: "2026-08-01",
+      exp,
+    });
+
+    // A template-less grant (legacy board for a lodge) round-trips too.
+    const bare = encodePreviewGrant({ templateId: null, lodgeId: "lodge-c", exp });
+    expect(decodePreviewGrant(bare)).toEqual({
+      templateId: null,
+      lodgeId: "lodge-c",
+      exp,
+    });
+  });
+
+  it("rejects a tampered or forged grant", async () => {
+    const { encodePreviewGrant, decodePreviewGrant } = await import(
+      "@/lib/lodge-display-auth"
+    );
+    const exp = Math.floor(Date.now() / 1000) + 300;
+    const token = encodePreviewGrant({
+      templateId: "tpl-1",
+      lodgeId: "lodge-b",
+      exp,
+    });
+    const [part, sig] = token.split(".");
+
+    // Swap the lodge in the payload but keep the original signature.
+    const forgedPart = Buffer.from(
+      JSON.stringify({ templateId: "tpl-1", lodgeId: "lodge-evil", exp }),
+      "utf8"
+    ).toString("base64url");
+    expect(decodePreviewGrant(`${forgedPart}.${sig}`)).toBeNull();
+    // Corrupt the signature.
+    expect(decodePreviewGrant(`${part}.AAAA${sig!.slice(4)}`)).toBeNull();
+    expect(decodePreviewGrant("garbage")).toBeNull();
+    expect(decodePreviewGrant("")).toBeNull();
+  });
+
+  it("rejects an expired grant even with a valid signature", async () => {
+    const { encodePreviewGrant, decodePreviewGrant } = await import(
+      "@/lib/lodge-display-auth"
+    );
+    const token = encodePreviewGrant({
+      templateId: "tpl-1",
+      lodgeId: "lodge-b",
+      exp: Math.floor(Date.now() / 1000) - 1,
+    });
+    expect(decodePreviewGrant(token)).toBeNull();
+  });
+
+  it("does not accept a pairing blob as a grant (distinct HMAC domain)", async () => {
+    // The two blobs share the signing secret but use different domain-separation
+    // prefixes, so a pairing blob can never be replayed as a preview grant.
+    const { encodePairingBlob, decodePreviewGrant } = await import(
+      "@/lib/lodge-display-auth"
+    );
+    const pairing = encodePairingBlob({
+      code: "ABCDEF",
+      exp: Math.floor(Date.now() / 1000) + 300,
+    });
+    expect(decodePreviewGrant(pairing)).toBeNull();
+  });
+});
+
 describe("confirmDevicePairing (admin bind)", () => {
   it("persists the normalised code and expiry on the device", async () => {
     mockPrisma.lodgeDisplayDevice.findUnique.mockResolvedValue({

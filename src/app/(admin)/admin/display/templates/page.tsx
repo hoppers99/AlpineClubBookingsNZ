@@ -36,6 +36,11 @@ interface LayoutOption {
   name: string;
 }
 
+interface LodgeOption {
+  id: string;
+  name: string;
+}
+
 interface AreaChild {
   key: string;
   description?: string;
@@ -194,6 +199,8 @@ function buildSlotContentPayload(slots: SlotDraft[]): Record<string, unknown> {
 export default function AdminDisplayTemplatesPage() {
   const [templates, setTemplates] = useState<TemplateListItem[]>([]);
   const [layouts, setLayouts] = useState<LayoutOption[]>([]);
+  const [lodges, setLodges] = useState<LodgeOption[]>([]);
+  const [previewLodgeId, setPreviewLodgeId] = useState("");
   const [loading, setLoading] = useState(true);
   const [draft, setDraft] = useState<TemplateDraft>(emptyDraft);
   const [message, setMessage] = useState<string | null>(null);
@@ -206,9 +213,13 @@ export default function AdminDisplayTemplatesPage() {
   const cssTokens = useMemo(() => listDisplayCssTokens(), []);
 
   const refresh = useCallback(async () => {
-    const [templatesRes, layoutsRes] = await Promise.all([
+    const [templatesRes, layoutsRes, lodgesRes] = await Promise.all([
       fetch("/api/admin/display/templates"),
       fetch("/api/admin/display/layouts"),
+      // Same source the Devices page uses: the admin lodges list. More than one
+      // active lodge ⇒ multiLodge, so the preview lodge selector appears (a
+      // template is lodge-agnostic, so its preview lodge must be chosen).
+      fetch("/api/admin/lodges").catch(() => null),
     ]);
     if (templatesRes.ok) {
       const body = (await templatesRes.json()) as { templates: TemplateListItem[] };
@@ -217,6 +228,14 @@ export default function AdminDisplayTemplatesPage() {
     if (layoutsRes.ok) {
       const body = (await layoutsRes.json()) as { layouts: LayoutOption[] };
       setLayouts(body.layouts ?? []);
+    }
+    if (lodgesRes?.ok) {
+      const body = (await lodgesRes.json()) as {
+        lodges?: Array<{ id: string; name: string; active?: boolean }>;
+      };
+      const active = (body.lodges ?? []).filter((lodge) => lodge.active !== false);
+      setLodges(active.map((lodge) => ({ id: lodge.id, name: lodge.name })));
+      setPreviewLodgeId((current) => current || active[0]?.id || "");
     }
     setLoading(false);
   }, []);
@@ -297,6 +316,26 @@ export default function AdminDisplayTemplatesPage() {
       cssOverrides: body.template.cssOverrides,
       footerHtml: body.template.footerHtml,
     });
+  }
+
+  // Preview opens the sandboxed host page (LTV-036, ADR-003 §5), NOT /display
+  // directly: the host mints a signed grant and renders the authored template in
+  // an `sandbox="allow-scripts"` iframe, so it can never execute against this
+  // admin session. The lodge is passed explicitly (multiLodge) so the preview is
+  // never a silent default (#64).
+  function previewTemplate(item: TemplateListItem) {
+    const params = new URLSearchParams({
+      templateId: item.id,
+      templateName: item.name,
+    });
+    if (lodges.length > 1 && previewLodgeId) {
+      params.set("previewLodge", previewLodgeId);
+    }
+    window.open(
+      `/admin/display/preview?${params.toString()}`,
+      "_blank",
+      "noopener,noreferrer"
+    );
   }
 
   async function deleteTemplate(item: TemplateListItem) {
@@ -470,7 +509,25 @@ export default function AdminDisplayTemplatesPage() {
                         : `${item.deviceCount} devices use this template`}
                   </p>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  {lodges.length > 1 && (
+                    <select
+                      className={selectClass}
+                      aria-label="Preview lodge"
+                      title="Lodge to preview this template against"
+                      value={previewLodgeId}
+                      onChange={(event) => setPreviewLodgeId(event.target.value)}
+                    >
+                      {lodges.map((lodge) => (
+                        <option key={lodge.id} value={lodge.id}>
+                          {lodge.name}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  <Button variant="outline" onClick={() => previewTemplate(item)}>
+                    Preview
+                  </Button>
                   <Button variant="outline" onClick={() => void editTemplate(item.id)}>
                     Edit
                   </Button>

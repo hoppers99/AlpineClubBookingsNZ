@@ -143,6 +143,24 @@ is retained; its **picker markup is fixed** (backlog #65). Because previews now
 render admin HTML/CSS, preview renders in a **sandboxed iframe** so a template
 authored by one admin cannot run against another admin's session.
 
+*(Implemented in LTV-036.)* The Templates page **Preview** opens a minimal host
+(`/admin/display/preview`) that mints a **short-lived (5-minute), HMAC-signed,
+single-purpose preview grant** and renders `/display` inside an
+`sandbox="allow-scripts"` iframe (**no** `allow-same-origin`, so the framed
+document runs at an opaque origin — no cookies, no same-origin DOM). The framed
+page sends the grant (`?previewGrant=<token>`) in place of a session; the state
+route verifies signature + expiry and serves exactly that template/lodge preview
+— the grant is **not** a display token, stamps no `lastSeenAt`, and authorises no
+other route. The lodge is **explicit** (`?previewLodge=<id>`, validated active;
+club default when omitted) and shown as a "previewing against <lodge>" line, and
+the simulated-date input is now a **sibling** of the picker button so a selection
+applies. Direct-navigation previews (`?preview=1&templateId=…` with the admin's
+own session, and `?previewDevice=…`) keep working for an admin's personal use.
+The opaque-origin frame's cross-origin fetch is made readable with a permissive
+CORS header on the grant response only (no credentials are sent), and `/display`
+carries a scoped `frame-ancestors 'self'` / `X-Frame-Options: SAMEORIGIN` so only
+our own admin host may frame it.
+
 ## Consequences
 
 **Replaced:** the `DisplayTemplate` JSON-region model; the raw-JSON editor; the
@@ -187,7 +205,11 @@ multi-lodge), so the upstream diff reflects the end-state.
   confines it to `.display-authored-root`; a CSP `img-src`/`font-src` tightening
   remains available as defence-in-depth)* and stored-content lateral risk between
   admins — mitigated by the **sandboxed-iframe preview**, so one admin's template
-  cannot execute against another admin's authenticated session.
+  cannot execute against another admin's authenticated session *(implemented in
+  LTV-036: an `sandbox="allow-scripts"` iframe at an opaque origin, authorised by
+  a short-lived signed preview grant rather than the admin session — the grant
+  authorises only the state route's preview path, stamps no `lastSeenAt`, and is
+  domain-separated from the pairing blob)*.
 - **Unattended surface.** A lobby wall has nobody watching, so unlike a CMS page
   a broken template is not noticed. Mandatory **preview-before-save**,
   server-side **validation**, and a runtime **safe-fallback render** (a throwing

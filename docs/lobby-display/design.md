@@ -176,6 +176,19 @@ Auth behaviour:
 `GET /api/display/state` (display-token auth; window parameters
 validated server-side against configured bounds).
 
+> **Preview callers (LTV-013/017/036).** Besides a paired device (cookie), the
+> route serves three admin previews, all read-only (never stamp `lastSeenAt`):
+> `?previewDevice=<id>` (the device's lodge + template), `?preview=1&templateId=<id>[&previewLodge=<id>]`
+> (an authored v2 template against an **explicit** lodge — validated active,
+> club default when omitted; the old silent default is gone, #64), and
+> `?preview=1[&templateKey=…]` (legacy built-in, default lodge). These honour a
+> full-admin session. A fourth caller, `?previewGrant=<token>`, is a signed
+> preview grant (LTV-036, ADR-003 §5): it authorises one template/lodge preview
+> **without** a session so the authoring page can embed it in a sandboxed
+> (opaque-origin) iframe; its cross-origin response carries a permissive CORS
+> header (no credentials sent). All previews may add `?previewDate=YYYY-MM-DD`
+> to simulate the window start (device fetches ignore it).
+
 One JSON payload per request covering the display window — every module is
 a pure function of this payload:
 
@@ -477,6 +490,31 @@ client-safe `css-tokens.ts` before they ship in the payload:
 > relocation itself follows the issue/ADR direction (config lives in the lodge
 > configuration UI); the two dev lodges exercised here both run multi-lodge.
 
+> **Preview v2 (LTV-036, #82, ADR-003 §5).** The Templates page **Preview**
+> button opens a minimal sandbox host, `/admin/display/preview`, rather than
+> `/display` directly. The host mints a **short-lived (5-minute), HMAC-signed,
+> single-purpose preview grant** (`POST /api/admin/display/preview-grant`,
+> `requireAdmin`; the grant reuses the pairing-blob HMAC idiom with a distinct
+> domain-separation prefix and is **stateless** — no DB row) and renders
+> `/display?previewGrant=<token>` inside an `sandbox="allow-scripts"` iframe with
+> **no** `allow-same-origin`. The framed authored HTML/CSS therefore runs at an
+> **opaque origin** — no cookies, no same-origin DOM — so one admin's template can
+> never execute against another admin's session. The grant is **not** a display
+> token: it authorises only the state route's preview path, stamps no
+> `lastSeenAt`, and works on no other route. The lodge is **explicit**
+> (`?previewLodge`, validated active; club default when omitted; a selector
+> appears next to Preview when multi-lodge is on) and the board shows a
+> "previewing against <lodge>" line near the clock — the old silent default (#64)
+> is gone. The **simulated-date** input (LTV-017) is now a **sibling** of the
+> picker button (it was nested inside it — invalid HTML that stopped a native
+> selection applying, #65). CSP is relaxed **only** for these two same-origin
+> paths: `/display` gains `frame-ancestors 'self'` / `X-Frame-Options: SAMEORIGIN`
+> and its own origin in `connect-src` (so the opaque-origin frame can still fetch
+> the state API); `/admin/display/preview` gains `frame-src 'self'`. The layouts
+> page carries a muted note that a layout is previewed via a Template.
+> Direct-navigation previews (`?preview=1&templateId=…` / `?previewDevice=…` with
+> the admin's own session) still work for personal use.
+
 Modelled on the kiosk account management surface (`/admin/lodge`):
 
 - **Devices**: list per lodge (name, paired state, last seen), create,
@@ -484,10 +522,11 @@ Modelled on the kiosk account management surface (`/admin/lodge`):
   region configuration. The page opens with setup instructions showing the
   concrete display URL (copyable), and each device offers a **Preview**
   link opening `/display?previewDevice=<id>` in a new tab.
-- **Templates**: list built-ins, copy-to-custom, edit region config,
-  **preview** rendered with live data (reusing the read-only preview
-  pattern from the kiosk per-account preview, upstream PR #1721), plus a
-  **full-screen preview** link (`/display?preview=1&templateKey=<key>`).
+- **Templates**: list built-ins, copy-to-custom, edit region config, and a
+  per-row **Preview** that opens the sandboxed host (LTV-036 note above) —
+  rendered with live data against a chosen lodge, isolated from the admin
+  session. A direct full-screen preview (`/display?preview=1&templateId=<id>`)
+  stays available for an admin's own session.
 - **Admin preview** (implemented in LTV-013): the display state API honours
   `?previewDevice=<id>` / `?preview=1[&templateKey=…]` only for a
   signed-in full admin; anyone else gets the normal 401 and the page shows

@@ -9,10 +9,12 @@ const {
   mockPrisma,
   mockAuth,
   mockCheckDisplayAuth,
+  mockDecodeGrant,
   mockBuildDisplayState,
   mockResolveTemplate,
   mockResolveForDevice,
   mockGetDefaultLodgeId,
+  mockResolveOptionalLodge,
   mockGetWebsiteTheme,
   mockLogger,
 } = vi.hoisted(() => ({
@@ -27,10 +29,12 @@ const {
   },
   mockAuth: vi.fn(),
   mockCheckDisplayAuth: vi.fn(),
+  mockDecodeGrant: vi.fn(),
   mockBuildDisplayState: vi.fn(),
   mockResolveTemplate: vi.fn(),
   mockResolveForDevice: vi.fn(),
   mockGetDefaultLodgeId: vi.fn(),
+  mockResolveOptionalLodge: vi.fn(),
   mockGetWebsiteTheme: vi.fn(),
   mockLogger: { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
@@ -43,6 +47,7 @@ vi.mock("@/lib/prisma", () => ({ prisma: mockPrisma }));
 vi.mock("@/lib/auth", () => ({ auth: () => mockAuth() }));
 vi.mock("@/lib/lodge-display-auth", () => ({
   checkDisplayAuth: (...args: unknown[]) => mockCheckDisplayAuth(...args),
+  decodePreviewGrant: (...args: unknown[]) => mockDecodeGrant(...args),
 }));
 vi.mock("@/lib/lodge-display-state", () => ({
   buildDisplayState: (...args: unknown[]) => mockBuildDisplayState(...args),
@@ -54,6 +59,8 @@ vi.mock("@/lib/lodge-display/template-resolution", () => ({
 }));
 vi.mock("@/lib/lodges", () => ({
   getDefaultLodgeId: (...args: unknown[]) => mockGetDefaultLodgeId(...args),
+  resolveOptionalActiveLodgeId: (...args: unknown[]) =>
+    mockResolveOptionalLodge(...args),
 }));
 // The v2 layoutRender path (LTV-029) reads the club theme for the read-only
 // `themeCss` variable block; mock it so no DB is touched.
@@ -88,6 +95,8 @@ async function stateRequest(query = "") {
 beforeEach(() => {
   vi.clearAllMocks();
   mockCheckDisplayAuth.mockResolvedValue(null);
+  mockDecodeGrant.mockReturnValue(null);
+  mockResolveOptionalLodge.mockResolvedValue("lodge-default");
   mockAuth.mockResolvedValue(null);
   mockPrisma.member.findUnique.mockResolvedValue(null);
   mockPrisma.lodgeDisplayDevice.findUnique.mockResolvedValue(null);
@@ -246,6 +255,159 @@ describe("GET /api/display/state — admin preview (issue #52)", () => {
     expect(lodgeId).toBe("lodge-a");
     expect(options.windowStart ?? null).toBeNull();
     expect(mockPrisma.lodgeDisplayDevice.update).toHaveBeenCalled();
+  });
+});
+
+describe("GET /api/display/state — authored template preview (LTV-036)", () => {
+  function loginAsAdmin() {
+    mockAuth.mockResolvedValue({ user: { id: ADMIN_MEMBER.id } });
+    mockPrisma.member.findUnique.mockResolvedValue(ADMIN_MEMBER);
+  }
+
+  it("?preview=1&templateId renders that template against the EXPLICIT previewLodge", async () => {
+    loginAsAdmin();
+    mockResolveOptionalLodge.mockResolvedValue("lodge-b");
+    mockPrisma.displayTemplate.findUnique.mockResolvedValue(null);
+    const { GET } = await import("@/app/api/display/state/route");
+
+    const res = await GET(
+      await stateRequest("?preview=1&templateId=tpl-7&previewLodge=lodge-b")
+    );
+    expect(res.status).toBe(200);
+    // The lodge is validated, never a silent default (#64).
+    expect(mockResolveOptionalLodge).toHaveBeenCalledWith(
+      expect.anything(),
+      "lodge-b"
+    );
+    expect(mockBuildDisplayState).toHaveBeenCalledWith("lodge-b", {
+      days: null,
+      windowStart: null,
+    });
+    // A templateId preview loads the v2 layout render (broken binding here → flag).
+    expect(mockPrisma.displayTemplate.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "tpl-7" } })
+    );
+    // Read-only: still never stamps lastSeenAt.
+    expect(mockPrisma.lodgeDisplayDevice.update).not.toHaveBeenCalled();
+  });
+
+  it("defaults the preview lodge when previewLodge is omitted", async () => {
+    loginAsAdmin();
+    mockResolveOptionalLodge.mockResolvedValue("lodge-default");
+    const { GET } = await import("@/app/api/display/state/route");
+
+    const res = await GET(await stateRequest("?preview=1&templateId=tpl-7"));
+    expect(res.status).toBe(200);
+    expect(mockResolveOptionalLodge).toHaveBeenCalledWith(expect.anything(), null);
+    expect(mockBuildDisplayState).toHaveBeenCalledWith("lodge-default", {
+      days: null,
+      windowStart: null,
+    });
+  });
+
+  it("rejects a template preview against an unknown/inactive previewLodge", async () => {
+    loginAsAdmin();
+    mockResolveOptionalLodge.mockResolvedValue(null);
+    const { GET } = await import("@/app/api/display/state/route");
+
+    const res = await GET(
+      await stateRequest("?preview=1&templateId=tpl-7&previewLodge=ghost")
+    );
+    expect(res.status).toBe(401);
+    expect(mockBuildDisplayState).not.toHaveBeenCalled();
+  });
+
+  it("a bare templateId (no session) is denied", async () => {
+    const { GET } = await import("@/app/api/display/state/route");
+    const res = await GET(await stateRequest("?templateId=tpl-7"));
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("GET /api/display/state — sandboxed preview grant (LTV-036, ADR-003 §5)", () => {
+  it("a valid grant renders its template/lodge WITHOUT a session and never stamps lastSeenAt", async () => {
+    // No session, no device cookie — exactly the sandboxed iframe's context.
+    mockDecodeGrant.mockReturnValue({
+      templateId: "tpl-9",
+      lodgeId: "lodge-grant",
+      exp: Math.floor(Date.now() / 1000) + 300,
+    });
+    const { GET } = await import("@/app/api/display/state/route");
+
+    const res = await GET(await stateRequest("?previewGrant=signed.blob"));
+    expect(res.status).toBe(200);
+    expect(mockDecodeGrant).toHaveBeenCalledWith("signed.blob");
+    expect(mockBuildDisplayState).toHaveBeenCalledWith("lodge-grant", {
+      days: null,
+      windowStart: null,
+    });
+    expect(mockPrisma.displayTemplate.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "tpl-9" } })
+    );
+    // A grant is not a device credential: no session lookup, no heartbeat stamp.
+    expect(mockAuth).not.toHaveBeenCalled();
+    expect(mockPrisma.lodgeDisplayDevice.update).not.toHaveBeenCalled();
+    // Cross-origin (opaque) frame fetch needs the permissive CORS header.
+    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+  });
+
+  it("honours a grant's windowStart, and lets a ?previewDate override it", async () => {
+    mockDecodeGrant.mockReturnValue({
+      templateId: null,
+      lodgeId: "lodge-grant",
+      windowStart: "2026-08-01",
+      exp: Math.floor(Date.now() / 1000) + 300,
+    });
+    const { GET } = await import("@/app/api/display/state/route");
+
+    let res = await GET(await stateRequest("?previewGrant=signed.blob"));
+    expect(res.status).toBe(200);
+    let [, options] = mockBuildDisplayState.mock.calls[0];
+    expect((options.windowStart as Date).toISOString().slice(0, 10)).toBe(
+      "2026-08-01"
+    );
+
+    mockBuildDisplayState.mockClear();
+    // The in-frame picker reloads with ?previewDate, which wins over the grant's.
+    res = await GET(
+      await stateRequest("?previewGrant=signed.blob&previewDate=2026-09-15")
+    );
+    [, options] = mockBuildDisplayState.mock.calls[0];
+    expect((options.windowStart as Date).toISOString().slice(0, 10)).toBe(
+      "2026-09-15"
+    );
+  });
+
+  it("rejects an invalid/expired/tampered grant with 401 and does not fall through to the session path", async () => {
+    mockDecodeGrant.mockReturnValue(null);
+    const { GET } = await import("@/app/api/display/state/route");
+
+    const res = await GET(await stateRequest("?previewGrant=bad"));
+    expect(res.status).toBe(401);
+    expect(mockBuildDisplayState).not.toHaveBeenCalled();
+    // A bad grant never consults the admin session (the iframe has none).
+    expect(mockAuth).not.toHaveBeenCalled();
+    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+  });
+
+  it("a genuine device token still wins over a grant only when the grant is absent (grant checked first)", async () => {
+    // With BOTH a device cookie and a grant, the grant path runs first and does
+    // not stamp lastSeenAt — the grant is a read-only preview capability.
+    mockCheckDisplayAuth.mockResolvedValue(DEVICE_AUTH);
+    mockDecodeGrant.mockReturnValue({
+      templateId: null,
+      lodgeId: "lodge-grant",
+      exp: Math.floor(Date.now() / 1000) + 300,
+    });
+    const { GET } = await import("@/app/api/display/state/route");
+
+    const res = await GET(await stateRequest("?previewGrant=signed.blob"));
+    expect(res.status).toBe(200);
+    expect(mockBuildDisplayState).toHaveBeenCalledWith("lodge-grant", {
+      days: null,
+      windowStart: null,
+    });
+    expect(mockPrisma.lodgeDisplayDevice.update).not.toHaveBeenCalled();
   });
 });
 

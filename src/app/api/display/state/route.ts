@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { hasAdminAccess } from "@/lib/access-roles";
-import { checkDisplayAuth } from "@/lib/lodge-display-auth";
+import { checkDisplayAuth, decodePreviewGrant } from "@/lib/lodge-display-auth";
 import { buildDisplayState, type DisplayState } from "@/lib/lodge-display-state";
 import {
   resolveDisplayTemplate,
@@ -10,7 +10,7 @@ import {
 import { buildLayoutRender } from "@/lib/lodge-display/layout-render";
 import type { LayoutRenderPayload } from "@/lib/lodge-display/layout-registry";
 import { getWebsiteThemeRenderState } from "@/lib/club-theme";
-import { getDefaultLodgeId } from "@/lib/lodges";
+import { getDefaultLodgeId, resolveOptionalActiveLodgeId } from "@/lib/lodges";
 import { isDateOnlyString, parseDateOnly } from "@/lib/date-only";
 import { prisma } from "@/lib/prisma";
 import { applyRateLimit, rateLimiters } from "@/lib/rate-limit";
@@ -24,17 +24,42 @@ import logger from "@/lib/logger";
 //    screen (the page polls this — no separate heartbeat needed).
 //  - an ADMIN PREVIEW (issue #52; the kiosk per-account preview pattern,
 //    upstream #1721): a full admin passes ?previewDevice=<id> (that device's
-//    lodge + template) or ?preview=1[&templateKey=…] (default lodge). Preview
-//    is read-only by construction — it never stamps lastSeenAt — and renders
+//    lodge + template), ?preview=1&templateId=<id>[&previewLodge=<id>] (an
+//    AUTHORED v2 template against an explicit lodge — LTV-036, ADR-003 §5), or
+//    ?preview=1[&templateKey=…] (default lodge, legacy built-in). Preview is
+//    read-only by construction — it never stamps lastSeenAt — and renders
 //    through the SAME privacy-reduced serialiser, so a preview can never show
 //    more than a lobby wall would. The parameter is honoured ONLY for a full
 //    admin; anyone else gets the normal 401. A preview may also carry
 //    ?previewDate=YYYY-MM-DD (issue #60) to start the window on a simulated
 //    date instead of today — preview-only; device fetches never honour it.
+//  - a SANDBOXED PREVIEW GRANT (LTV-036, ADR-003 §5): ?previewGrant=<token> —
+//    an HMAC-signed, 5-minute, single-purpose blob minted by the admin-only
+//    grant endpoint. It is how the authoring pages embed a preview inside a
+//    `sandbox="allow-scripts"` iframe (opaque origin, no cookies): the framed
+//    /display sends the grant instead of a session, and the route serves THAT
+//    template/lodge preview only. The grant is not a display token — it never
+//    stamps lastSeenAt and authorises nothing else. Its (cross-origin, opaque)
+//    fetch needs a permissive CORS header to be readable by the frame.
 //
 // The serialiser (lodge-display-state.ts) is the privacy enforcement point;
 // nothing here shapes or filters names. Window size is clamped server-side
 // (default 3 days, max 7). Module flag off → proxy-level 404.
+
+// The sandboxed preview iframe runs with an OPAQUE origin (sandbox without
+// allow-same-origin), so its fetch to this same-site route is treated as
+// cross-origin and its response is only readable with a permissive
+// Access-Control-Allow-Origin. Safe here: the grant path sends no credentials
+// (opaque origin → no cookies) and the payload is already the privacy-reduced
+// wall feed, so "*" exposes nothing a valid grant-holder could not already see.
+const GRANT_CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Cache-Control": "no-store",
+} as const;
+
+function grantJson(body: unknown, status = 200) {
+  return NextResponse.json(body, { status, headers: GRANT_CORS_HEADERS });
+}
 
 async function resolvePreview(
   req: NextRequest
@@ -50,7 +75,10 @@ async function resolvePreview(
 > {
   const previewDeviceId = req.nextUrl.searchParams.get("previewDevice");
   const previewFlag = req.nextUrl.searchParams.get("preview");
-  if (!previewDeviceId && !previewFlag) return "not-a-preview";
+  const previewTemplateId = req.nextUrl.searchParams.get("templateId");
+  if (!previewDeviceId && !previewFlag && !previewTemplateId) {
+    return "not-a-preview";
+  }
 
   const session = await auth();
   if (!session?.user?.id) return "denied";
@@ -67,6 +95,20 @@ async function resolvePreview(
     });
     if (!device) return "denied";
     return { ...device, deviceId: previewDeviceId };
+  }
+
+  // Authored v2 template preview (LTV-036, ADR-003 §5, shrinks #64). Templates
+  // are lodge-agnostic, so the lodge is EXPLICIT: ?previewLodge=<id> (validated
+  // to exist and be active) or the club default when omitted — never a silent
+  // default. This is the admin-session/direct-navigation form; the sandboxed
+  // authoring-page embed uses ?previewGrant instead.
+  if (previewTemplateId) {
+    const lodgeId = await resolveOptionalActiveLodgeId(
+      prisma,
+      req.nextUrl.searchParams.get("previewLodge")
+    );
+    if (!lodgeId) return "denied";
+    return { lodgeId, templateId: previewTemplateId, templateKey: null };
   }
 
   return {
@@ -181,6 +223,39 @@ export async function GET(req: NextRequest) {
 
   const daysParam = req.nextUrl.searchParams.get("days");
   const days = daysParam === null ? null : Number(daysParam);
+
+  // Sandboxed preview grant (LTV-036): checked before any cookie/session — the
+  // opaque-origin iframe carries neither. A verified grant renders exactly its
+  // signed template/lodge, never stamps lastSeenAt, and responds with the CORS
+  // header the framed (opaque-origin) fetch needs. Anything wrong with the grant
+  // (bad shape, forged signature, expired) → 401, and does NOT fall through to
+  // the session paths (the iframe has no session to try).
+  const grantParam = req.nextUrl.searchParams.get("previewGrant");
+  if (grantParam) {
+    const grant = decodePreviewGrant(grantParam);
+    if (!grant) {
+      return grantJson({ error: "Unauthorised" }, 401);
+    }
+    const grantWindowStart =
+      parsePreviewDate(req) ??
+      (grant.windowStart ? parseDateOnly(grant.windowStart) : null);
+    const state = await buildDisplayState(grant.lodgeId, {
+      days,
+      windowStart: grantWindowStart,
+    });
+    if (!state) {
+      return grantJson({ error: "Unauthorised" }, 401);
+    }
+    const template = resolveDisplayTemplateForDevice({ templateKey: null });
+    const layoutResult = grant.templateId
+      ? await loadLayoutRender(grant.templateId, state)
+      : null;
+    return grantJson({
+      ...state,
+      template: template.definition,
+      ...layoutFields(layoutResult),
+    });
+  }
 
   const deviceAuth = await checkDisplayAuth(req);
   if (deviceAuth) {
