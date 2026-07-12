@@ -344,6 +344,18 @@ client-safe `css-tokens.ts` before they ship in the payload:
 
 ## 8. Admin UI
 
+> **Navigation (LTV-031, ADR-003).** The display admin lives under one **Lobby
+> Display** sidebar parent instead of scattered Lodge Operations entries. Today
+> the group holds **Devices** (`/admin/display`, heading "Display Devices") and
+> **Display Settings** (`/admin/display/settings`). The settings card was
+> renamed off the `/admin/display/templates` path (which now redirects to
+> `/admin/display/settings`) so LTV-033's Template authoring can claim
+> `/admin/display/templates`; **Layouts, Templates, Modules,** and the
+> **Conditions/Modules Reference** entries mount into the same group as their
+> authoring UIs land (#78/#79/#80), and LTV-035/#81 relocates the Display
+> Settings content into the lodge configuration hub. Terminology follows
+> ADR-003: **Layout / Template / Module / Conditions**.
+
 Modelled on the kiosk account management surface (`/admin/lodge`):
 
 - **Devices**: list per lodge (name, paired state, last seen), create,

@@ -149,7 +149,7 @@ export default function AdminDisplayPage() {
   return (
     <div className="space-y-6 p-6">
       <div>
-        <h1 className="text-2xl font-bold">Lobby Display</h1>
+        <h1 className="text-2xl font-bold">Display Devices</h1>
         <p className="text-muted-foreground">
           Paired lobby screens per lodge. Create a device, open the display URL
           on the TV, then enter the code it shows to pair. Devices are
