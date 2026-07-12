@@ -30,7 +30,6 @@ import {
   House,
   Tablet,
   Tv,
-  LayoutTemplate,
   UsersRound,
   Bell,
   Bug,
@@ -266,34 +265,15 @@ const navSections: NavSection[] = [
     ],
   },
   {
-    // Lobby Display (ADR-003 "Navigation & terminology"): one parent grouping
-    // the display surfaces instead of scattering them through Lodge Operations.
-    // Layouts, Templates, Modules, and the Conditions/Modules Reference entries
-    // arrive with their authoring UIs (#78/#79/#80); this group exists now so
-    // they mount cleanly. The old "Display Settings" entry was removed by
-    // LTV-035/#81: the per-lodge display config (glob, name granularity,
-    // committee notice) now lives on each lodge in the lodge configuration hub
-    // (/admin/lodges/[id]), so it edits the lodge being viewed rather than the
-    // club default. /admin/display/settings redirects here to Devices.
-    label: "Lobby Display",
-    items: [
-      { href: "/admin/display", label: "Devices", icon: Tv },
-      {
-        href: "/admin/display/layouts",
-        label: "Layouts",
-        icon: LayoutTemplate,
-      },
-      {
-        href: "/admin/display/templates",
-        label: "Templates",
-        icon: LayoutTemplate,
-      },
-      {
-        href: "/admin/display/reference",
-        label: "Reference",
-        icon: BookOpen,
-      },
-    ],
+    // Lobby Display (fork issue #109): one sidebar entry opens the hub landing
+    // page (/admin/display), which lays out cards for Devices, Layouts,
+    // Templates, and Reference — mirroring the "Site Appearance & Content" hub
+    // rather than scattering four items through the sidebar. The Devices
+    // management page moved to /admin/display/devices; /admin/display/settings
+    // redirects there. Per-lodge display config (glob, name granularity,
+    // committee notice) lives on each lodge in the lodge configuration hub
+    // (/admin/lodges/[id]) since LTV-035/#81.
+    items: [{ href: "/admin/display", label: "Lobby Display", icon: Tv }],
   },
   {
     label: "Monitoring & Support",
