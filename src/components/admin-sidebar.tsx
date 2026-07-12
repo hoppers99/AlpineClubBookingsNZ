@@ -246,6 +246,11 @@ const navSections: NavSection[] = [
         icon: LayoutTemplate,
       },
       {
+        href: "/admin/display/templates",
+        label: "Templates",
+        icon: LayoutTemplate,
+      },
+      {
         href: "/admin/display/settings",
         label: "Display Settings",
         icon: Sliders,

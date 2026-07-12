@@ -14,10 +14,14 @@ const { mockPrisma, mockRequireAdmin } = vi.hoisted(() => ({
     lodgeRoom: { findMany: vi.fn() },
     booking: { findMany: vi.fn() },
     choreAssignment: { findMany: vi.fn() },
+    displayTemplate: { findMany: vi.fn().mockResolvedValue([]) },
   },
   mockRequireAdmin: vi.fn(),
 }));
 
+// The templates GET now pairs the built-ins with v2 rows via the server-only
+// save-contract import chain; neutralise the boundary guard for node.
+vi.mock("server-only", () => ({}));
 vi.mock("@/lib/prisma", () => ({ prisma: mockPrisma }));
 vi.mock("@/lib/session-guards", () => ({
   requireAdmin: (...args: unknown[]) => mockRequireAdmin(...args),
@@ -61,14 +65,15 @@ beforeEach(() => {
   mockPrisma.lodge.update.mockResolvedValue({});
 });
 
-describe("GET /api/admin/display/templates (built-ins list, LTV-024)", () => {
-  it("returns the code built-ins with no DB read", async () => {
+describe("GET /api/admin/display/templates (dual shape, LTV-033)", () => {
+  it("returns the code built-ins plus the v2 template rows", async () => {
     const { GET } = await import("@/app/api/admin/display/templates/route");
     const res = await GET();
     expect(res.status).toBe(200);
     const body = await res.json();
-    const keys = body.templates.map((t: { key: string }) => t.key);
+    const keys = body.builtIns.map((t: { key: string }) => t.key);
     expect(keys).toEqual(["everyday-board", "whole-lodge", "singles-house"]);
+    expect(Array.isArray(body.templates)).toBe(true);
     // The retired source concept is gone from the payload.
     expect(JSON.stringify(body)).not.toMatch(/override|custom|BUILT_IN/);
   });

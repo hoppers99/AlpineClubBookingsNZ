@@ -18,16 +18,33 @@ interface ClientDevice {
   lodgeId: string;
   lodgeName: string;
   templateKey: string | null;
+  templateId: string | null;
+  templateName: string | null;
   paired: boolean;
   pairingArmedUntil: string | null;
   lastSeenAt: string | null;
   revoked: boolean;
 }
 
-interface TemplateOption {
+interface BuiltInOption {
   key: string;
   name: string;
 }
+
+interface TemplateOption {
+  id: string;
+  key: string;
+  name: string;
+  layout: { id: string; key: string; name: string };
+  deviceCount: number;
+  updatedAt: string;
+}
+
+// The picker mixes built-ins (bound by key) and v2 templates (bound by id) in
+// one <select>, so option values are prefixed to say which binding to PATCH.
+const CLUB_DEFAULT = "";
+const builtInValue = (key: string) => `builtin:${key}`;
+const templateValue = (id: string) => `template:${id}`;
 
 interface LodgeOption {
   id: string;
@@ -36,6 +53,7 @@ interface LodgeOption {
 
 export default function AdminDisplayPage() {
   const [devices, setDevices] = useState<ClientDevice[]>([]);
+  const [builtIns, setBuiltIns] = useState<BuiltInOption[]>([]);
   const [templates, setTemplates] = useState<TemplateOption[]>([]);
   const [lodges, setLodges] = useState<LodgeOption[]>([]);
   const [newName, setNewName] = useState("");
@@ -61,8 +79,12 @@ export default function AdminDisplayPage() {
       setDevices(body.devices);
     }
     if (templatesRes.ok) {
-      const body = (await templatesRes.json()) as { templates: TemplateOption[] };
-      setTemplates(body.templates);
+      const body = (await templatesRes.json()) as {
+        builtIns: BuiltInOption[];
+        templates: TemplateOption[];
+      };
+      setBuiltIns(body.builtIns ?? []);
+      setTemplates(body.templates ?? []);
     }
     if (lodgesRes?.ok) {
       const body = (await lodgesRes.json()) as {
@@ -119,12 +141,22 @@ export default function AdminDisplayPage() {
     }
   }
 
-  async function assignTemplate(deviceId: string, templateKey: string) {
+  async function assignTemplate(deviceId: string, selection: string) {
     setMessage(null);
+    // Decode the prefixed picker value into the binding field to PATCH. Club
+    // default clears the built-in binding (the route clears templateId with it).
+    let patch: { templateKey: string | null } | { templateId: string };
+    if (selection.startsWith("template:")) {
+      patch = { templateId: selection.slice("template:".length) };
+    } else if (selection.startsWith("builtin:")) {
+      patch = { templateKey: selection.slice("builtin:".length) };
+    } else {
+      patch = { templateKey: null };
+    }
     const response = await fetch(`/api/admin/display/devices/${deviceId}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ templateKey: templateKey || null }),
+      body: JSON.stringify(patch),
     });
     if (!response.ok) {
       const body = (await response.json().catch(() => null)) as { error?: string } | null;
@@ -292,17 +324,40 @@ export default function AdminDisplayPage() {
                       <select
                         id={`template-${device.id}`}
                         className="border-input bg-background h-9 rounded-md border px-3 text-sm"
-                        value={device.templateKey ?? ""}
+                        value={
+                          device.templateId
+                            ? templateValue(device.templateId)
+                            : device.templateKey
+                              ? builtInValue(device.templateKey)
+                              : CLUB_DEFAULT
+                        }
                         onChange={(event) =>
                           void assignTemplate(device.id, event.target.value)
                         }
                       >
-                        <option value="">Club default</option>
-                        {templates.map((template) => (
-                          <option key={template.key} value={template.key}>
-                            {template.name}
-                          </option>
-                        ))}
+                        <option value={CLUB_DEFAULT}>Club default</option>
+                        {templates.length > 0 && (
+                          <optgroup label="Templates">
+                            {templates.map((template) => (
+                              <option
+                                key={template.id}
+                                value={templateValue(template.id)}
+                              >
+                                {template.name}
+                              </option>
+                            ))}
+                          </optgroup>
+                        )}
+                        <optgroup label="Built-ins">
+                          {builtIns.map((builtIn) => (
+                            <option
+                              key={builtIn.key}
+                              value={builtInValue(builtIn.key)}
+                            >
+                              {builtIn.name}
+                            </option>
+                          ))}
+                        </optgroup>
                       </select>
                     </div>
                     <Button variant="outline" asChild>

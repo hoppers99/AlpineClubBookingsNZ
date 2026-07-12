@@ -345,16 +345,19 @@ client-safe `css-tokens.ts` before they ship in the payload:
 ## 8. Admin UI
 
 > **Navigation (LTV-031, ADR-003).** The display admin lives under one **Lobby
-> Display** sidebar parent instead of scattered Lodge Operations entries. Today
-> the group holds **Devices** (`/admin/display`, heading "Display Devices") and
-> **Display Settings** (`/admin/display/settings`). The settings card was
-> renamed off the `/admin/display/templates` path (which now redirects to
-> `/admin/display/settings`) so LTV-033's Template authoring can claim
-> `/admin/display/templates`; **Layouts, Templates, Modules,** and the
-> **Conditions/Modules Reference** entries mount into the same group as their
-> authoring UIs land (#78/#79/#80), and LTV-035/#81 relocates the Display
-> Settings content into the lodge configuration hub. Terminology follows
-> ADR-003: **Layout / Template / Module / Conditions**.
+> Display** sidebar parent instead of scattered Lodge Operations entries. The
+> group holds **Devices** (`/admin/display`, heading "Display Devices"),
+> **Layouts** (`/admin/display/layouts`), **Templates**
+> (`/admin/display/templates`), and **Display Settings**
+> (`/admin/display/settings`). The settings card was renamed off the
+> `/admin/display/templates` path so LTV-033's Template authoring could claim
+> it: LTV-031 parked the path on a temporary redirect to
+> `/admin/display/settings`, and **LTV-033 replaced that redirect with the real
+> Template manager** (the redirect page and its test are gone). The remaining
+> **Modules** and **Conditions/Modules Reference** entries mount as their
+> reference UIs land (#80), and LTV-035/#81 relocates the Display Settings
+> content into the lodge configuration hub. Terminology follows ADR-003:
+> **Layout / Template / Module / Conditions**.
 
 > **Layouts (LTV-032, #78).** The **Layouts** entry
 > (`/admin/display/layouts`) is live: a Layout CRUD list (name, key,
@@ -378,6 +381,48 @@ client-safe `css-tokens.ts` before they ship in the payload:
 > Preview-before-save arrives with the sandboxed/template preview (#82/#79); the
 > editor draft is structured so `{ bodyHtml, defaultCss, areas }` can be handed
 > to that future preview call.
+
+> **Templates (LTV-033, #79).** The **Templates** entry
+> (`/admin/display/templates`) is live: a Template CRUD list (name, key, bound
+> layout, device-usage count, edit/delete — delete is blocked with a clear 409
+> while any device is still bound) plus an authoring editor. A Template is built
+> on a **Layout**, chosen from a dropdown (the layouts API) and **locked after
+> creation** — changing the layout would orphan slot content authored against the
+> original areas, and the key is likewise immutable once devices bind to it. The
+> editor **generates one content box per declared slot** of the bound layout:
+> static/conditional areas key off the area, a rotator gets one box per child
+> (labelled `area / child`), each seeded from the layout's `defaultContent` when
+> present. Each slot box toggles between **HTML** (a monospace `<textarea>`;
+> `{{config:key}}`, `{{lodge-name}}`, `{{display-date}}`, `{{module:name}}` tokens
+> resolve at serve time) and **Module** (a dropdown from `listDisplayModules()`
+> with descriptions, plus a small scalar key/value options editor). A **CSS
+> overrides** box (layered after the layout default; the theme tokens from
+> `listDisplayCssTokens()` surface as copy-ready `var(--…)` hints) and a **Footer
+> HTML** box complete the form. Saving runs the shared `validateTemplateForSave`
+> contract **server-side** (`/api/admin/display/templates` GET/POST,
+> `/api/admin/display/templates/[id]` GET/PUT/DELETE — all `requireAdmin`,
+> audit-logged, admin boundary): structural errors block the save and render
+> inline (path + message); CSS-sanitiser warnings ride along on an accepted save
+> as amber notices. A muted hint reminds the author that templates render against
+> whichever lodge their display is bound to, so lodge-specific values come from
+> `{{config:…}}` tokens (ADR-003 §1).
+>
+> *Slot-content editor deviation.* ADR-003 §1 calls for the **website
+> page-content rich editor** on each slot. That editor (`page-content-panel.tsx`)
+> is a heavyweight surface coupled to `EditablePageRecord` CRUD, uploads, and page
+> save endpoints — not a reusable rich-text field — so v1 ships a plain monospace
+> `<textarea>` for slot HTML instead, matching the Layouts editor. Safety is
+> unchanged: all authored HTML is sanitised at serve time (LTV-029) and validated
+> by the save contract regardless of the authoring surface. Noted for the owner to
+> revisit if a reusable rich editor is later extracted.
+>
+> *Device binding (the point of a Template).* The **Devices** picker now offers
+> **both** built-ins (bound by `templateKey`) and v2 templates (bound by
+> `templateId`) from the dual-shape `/api/admin/display/templates` GET
+> (`{ builtIns, templates }`); picking a v2 template PATCHes `templateId` and
+> clears `templateKey`, picking a built-in does the reverse, so the resolution
+> order (`templateId → templateKey → club default`) stays unambiguous. Built-ins
+> remain pickable until LTV-038 retires them.
 
 Modelled on the kiosk account management surface (`/admin/lodge`):
 
