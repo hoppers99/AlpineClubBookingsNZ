@@ -739,7 +739,13 @@ export default async function BookingDetailPage({
   return (
     <div className="lg:flex lg:gap-8">
       <SectionNav sections={BOOKING_SECTIONS} className="mb-6 lg:mb-0" />
-      <div className="min-w-0 max-w-2xl flex-1 space-y-6">
+      {/* data-testid scopes content-only queries away from the SectionNav rail,
+          whose anchor labels (e.g. "Payment") would otherwise be matched by
+          loose getByText(...).first() locators. */}
+      <div
+        data-testid="booking-detail-content"
+        className="min-w-0 max-w-2xl flex-1 space-y-6"
+      >
       <ScrollToHash />
       <div className="flex items-center justify-between">
         <h1 className="text-3xl font-bold">Booking Details</h1>

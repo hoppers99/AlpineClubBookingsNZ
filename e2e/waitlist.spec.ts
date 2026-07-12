@@ -135,14 +135,14 @@ test("a member accepts a waitlist offer and owes payment", async () => {
   // PAYMENT_PENDING, the "A Spot Has Opened Up!" offer card is gone, and payment
   // is owed (#1371 F28). Asserted against the freshly reloaded DOM.
   await expect(offerCard).toHaveCount(0, { timeout: 30_000 });
-  // Target the payment ACTION card, not a loose /payment/i match: the #1818
-  // long-page SectionNav rail now renders an "#payment" anchor labelled
-  // "Payment" ahead of the content, so `.first()` would resolve to a
-  // (collapsed, hidden) nav link. The Complete Payment / Internet Banking
-  // Payment card titles are unambiguous and only render when payment is owed.
+  // Scope to the content column: the #1818 long-page SectionNav rail renders a
+  // "Payment" anchor ahead of the content, so an unscoped getByText(/payment/i)
+  // .first() would resolve to a (collapsed, hidden) nav link. The testid excludes
+  // the rail while preserving the original loose "payment is owed" assertion.
   await expect(
     memberPage
-      .getByText(/complete payment|internet banking payment/i)
+      .getByTestId("booking-detail-content")
+      .getByText(/payment/i)
       .first(),
   ).toBeVisible();
   await memberPage.close();
