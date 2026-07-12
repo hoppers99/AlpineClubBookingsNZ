@@ -63,8 +63,8 @@ export function BoardCell({
         BED_ALLOCATION_COLUMN_WIDTH_CLASS,
         "overflow-hidden border p-1 align-top",
         activeDragLane && "bg-accent/40",
-        highlighted && !isOver && "bg-amber-50",
-        isOver && "bg-blue-50 ring-2 ring-blue-300",
+        highlighted && !isOver && "bg-warning-muted",
+        isOver && "bg-info-muted ring-2 ring-info",
       )}
     >
       {allocations.length > 0 ? (
@@ -89,7 +89,12 @@ export function BoardCell({
           ))}
         </div>
       ) : (
-        <div className="flex h-12 items-center justify-center rounded-md border border-dashed border-transparent text-[10px] text-muted-foreground/50">
+        <div
+          className={cn(
+            "flex h-12 items-center justify-center rounded-md border border-dashed border-transparent text-[10px] text-muted-foreground/50",
+            isOver && "border-info/60 text-info",
+          )}
+        >
           {isOver ? "Drop here" : ""}
         </div>
       )}
