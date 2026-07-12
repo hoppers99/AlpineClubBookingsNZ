@@ -182,9 +182,12 @@ multi-lodge), so the upstream diff reflects the end-state.
 - **Admin HTML/CSS = CMS trust model.** Reuse the website's sanitiser (strips
   `<script>`/event handlers). Authoring is **full-admin only**. Residual risks to
   hold: CSS `url()` exfiltration (tighten the display CSP's `img-src`/`font-src`
-  for authored CSS) and stored-content lateral risk between admins — mitigated by
-  the **sandboxed-iframe preview**, so one admin's template cannot execute
-  against another admin's authenticated session.
+  for authored CSS) *(addressed in LTV-029: `sanitiseDisplayCss` removes any
+  non-relative/non-`data:` `url()` from authored CSS, and `scopeDisplayCss`
+  confines it to `.display-authored-root`; a CSP `img-src`/`font-src` tightening
+  remains available as defence-in-depth)* and stored-content lateral risk between
+  admins — mitigated by the **sandboxed-iframe preview**, so one admin's template
+  cannot execute against another admin's authenticated session.
 - **Unattended surface.** A lobby wall has nobody watching, so unlike a CMS page
   a broken template is not noticed. Mandatory **preview-before-save**,
   server-side **validation**, and a runtime **safe-fallback render** (a throwing

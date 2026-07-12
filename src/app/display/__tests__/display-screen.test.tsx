@@ -427,6 +427,66 @@ describe("DisplayScreen layout engine (LTV-027)", () => {
   });
 });
 
+describe("DisplayScreen layout engine — CSS scoping + theme (LTV-029)", () => {
+  const CSS_LAYOUT = {
+    bodyHtml: "{{area:main}}",
+    // Server ships these already sanitised + scoped; the client only injects.
+    themeCss: ":root{--brand-gold:#8fa87c}",
+    defaultCss: ".display-authored-root .board{gap:1rem}",
+    cssOverrides: ".display-authored-root .board{color:red}",
+    areas: [{ key: "main", description: "Main", kind: "static" }],
+    slotContent: { main: { html: '<div class="board">Body</div>' } },
+    footerHtml: "<span>Authored footer</span>",
+  };
+
+  it("injects three ordered style tags: theme → layout → overrides", async () => {
+    const { container } = await renderLayout(CSS_LAYOUT);
+    const styles = Array.from(
+      container.querySelectorAll("style[data-display-style]")
+    );
+    expect(styles.map((s) => s.getAttribute("data-display-style"))).toEqual([
+      "theme",
+      "layout",
+      "overrides",
+    ]);
+    // The non-authored theme variables ship in the first tag.
+    expect(styles[0].innerHTML).toContain("--brand-gold");
+    // The authored (scoped) CSS ships after it.
+    expect(styles[2].innerHTML).toContain(".display-authored-root .board");
+  });
+
+  it("wraps the editable body in .display-authored-root but keeps the header outside", async () => {
+    const { container } = await renderLayout(CSS_LAYOUT);
+    // The body is a descendant of the authored root...
+    expect(
+      container.querySelector(".display-authored-root .display-layout-body")
+    ).not.toBeNull();
+    // ...but the fixed header chrome is NOT — authored CSS can never reach it.
+    expect(container.querySelector(".display-lodge-header")).not.toBeNull();
+    expect(
+      container.querySelector(".display-authored-root .display-lodge-header")
+    ).toBeNull();
+  });
+
+  it("renders the authored footer INSIDE the authored root", async () => {
+    const { container } = await renderLayout(CSS_LAYOUT);
+    expect(screen.getByText("Authored footer")).toBeDefined();
+    expect(
+      container.querySelector(".display-authored-root .display-info-footer")
+    ).not.toBeNull();
+  });
+
+  it("keeps the built-in InfoFooter fallback OUTSIDE the authored root", async () => {
+    const { container } = await renderLayout({ ...CSS_LAYOUT, footerHtml: "" });
+    // The fallback footer surfaces the wifi code (chrome), and stays outside.
+    expect(screen.getByText("alpine1234")).toBeDefined();
+    expect(container.querySelector(".display-info-footer")).not.toBeNull();
+    expect(
+      container.querySelector(".display-authored-root .display-info-footer")
+    ).toBeNull();
+  });
+});
+
 describe("DisplayScreen layout engine — embedded module tokens (LTV-028)", () => {
   it("mounts a module embedded in slot html via {{module:…}} between html fragments", async () => {
     const { container } = await renderLayout({

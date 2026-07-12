@@ -314,6 +314,34 @@ site token beyond the privacy-reduced payload:
   set (including a real site token such as `{{club-name}}`) is left VERBATIM as
   literal text.
 
+**Authored CSS handling + theme tokens (LTV-029, ADR-003 §4).** A Layout's
+`defaultCss` and a Template's `cssOverrides` are admin-authored but reach an
+unattended wall, so `layout-render.ts` hardens both server-side via the
+client-safe `css-tokens.ts` before they ship in the payload:
+
+- **Sanitisation** (`sanitiseDisplayCss`) — targeted lexical neutralisation, not
+  a full parser: strips `</style` and any stray `<`, strips `@import`/`@charset`,
+  neutralises the legacy `expression(`/`-moz-binding` vectors, and — the ADR's
+  named residual — removes any `url()` whose target is not a relative/root path
+  or a `data:` URI (external http(s), protocol-relative `//host`, and other
+  schemes are replaced with a `/* blocked: external url */` marker). Each field
+  is capped at 20k chars (`/* truncated */` marker). Benign CSS passes through
+  unchanged.
+- **Scoping** (`scopeDisplayCss`) — every top-level selector is prefixed with
+  `.display-authored-root ` so authored CSS only styles the editable body/footer.
+  `@media`/`@supports` have their inner selectors prefixed; `@keyframes` passes
+  through unchanged (names are global); other at-rules are stripped. The fixed
+  header (clock/brand) renders OUTSIDE `.display-authored-root` (a
+  `display:contents` wrapper) so a template can never restyle the chrome; the
+  authored footer renders inside it, the built-in fallback footer outside.
+- **Theme tokens** — the club theme's `buildClubThemeCss` output ships as a
+  non-authored, unscoped `themeCss` injected BEFORE the authored CSS (order:
+  theme → layout → overrides), so `:root { --brand-* }` cascades and a Template
+  can `var(--brand-gold)`/`var(--display-accent)` to match the website by
+  default, without any change to the site CSS structure. The stable token set
+  (the `--display-*` palette + the `--brand-*`/font tokens) is exported for the
+  authoring UI and reference screen via `listDisplayCssTokens()`.
+
 ## 8. Admin UI
 
 Modelled on the kiosk account management surface (`/admin/lodge`):

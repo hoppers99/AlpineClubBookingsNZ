@@ -17,6 +17,7 @@ import {
   type LayoutRenderPayload,
   type SlotContent,
 } from "@/lib/lodge-display/layout-registry";
+import { DISPLAY_AUTHORED_ROOT_CLASS } from "@/lib/lodge-display/css-tokens";
 import type { DisplayModuleName } from "@/lib/lodge-display/template-registry";
 import { evaluateDisplayCondition } from "@/lib/lodge-display/conditions";
 import { resolveDisplayText } from "@/lib/lodge-display/display-text";
@@ -466,43 +467,62 @@ function LayoutScreen({
   const { layoutRender, ...state } = payload;
   const segments = splitLayoutBody(layoutRender.bodyHtml);
   const areasByKey = new Map(layoutRender.areas.map((area) => [area.key, area]));
+  const authoredFooter = layoutRender.footerHtml;
 
+  // Three ordered <style> tags — theme → layout → overrides (LTV-029, #75). The
+  // club-theme variables are non-authored and unscoped (they define `--brand-*`
+  // on :root); the layout default and template overrides are already sanitised
+  // AND selector-scoped to `.display-authored-root` server-side, so they only
+  // reach the editable body/footer, never the fixed header chrome.
   return (
     <div className="display-screen display-layout-screen">
-      {/* Server already stripped `</style`; scoping/theming is #75's job. */}
       <style
-        dangerouslySetInnerHTML={{
-          __html: `${layoutRender.defaultCss}\n${layoutRender.cssOverrides}`,
-        }}
+        data-display-style="theme"
+        dangerouslySetInnerHTML={{ __html: layoutRender.themeCss ?? "" }}
       />
+      <style
+        data-display-style="layout"
+        dangerouslySetInnerHTML={{ __html: layoutRender.defaultCss }}
+      />
+      <style
+        data-display-style="overrides"
+        dangerouslySetInnerHTML={{ __html: layoutRender.cssOverrides }}
+      />
+      {/* Fixed header chrome lives OUTSIDE the authored root so authored CSS
+          can never restyle the clock/brand. */}
       <LodgeHeader state={state} />
-      <div className="display-layout-body">
-        {segments.map((segment, segmentIndex) =>
-          segment.type === "html" ? (
-            <div
-              key={segmentIndex}
-              dangerouslySetInnerHTML={{ __html: segment.html }}
-            />
-          ) : (
-            <AreaErrorBoundary key={segmentIndex}>
-              <Area
-                area={areasByKey.get(segment.key)}
-                slotContent={layoutRender.slotContent}
-                state={state}
+      {/* The authored root is a layout-invisible wrapper (display:contents) that
+          anchors the scoped authored CSS to the editable body + authored footer. */}
+      <div className={DISPLAY_AUTHORED_ROOT_CLASS}>
+        <div className="display-layout-body">
+          {segments.map((segment, segmentIndex) =>
+            segment.type === "html" ? (
+              <div
+                key={segmentIndex}
+                dangerouslySetInnerHTML={{ __html: segment.html }}
               />
-            </AreaErrorBoundary>
-          )
-        )}
+            ) : (
+              <AreaErrorBoundary key={segmentIndex}>
+                <Area
+                  area={areasByKey.get(segment.key)}
+                  slotContent={layoutRender.slotContent}
+                  state={state}
+                />
+              </AreaErrorBoundary>
+            )
+          )}
+        </div>
+        {authoredFooter ? (
+          <AuthoredHtml
+            html={authoredFooter}
+            state={state}
+            className="display-info-footer"
+          />
+        ) : null}
       </div>
-      {layoutRender.footerHtml ? (
-        <AuthoredHtml
-          html={layoutRender.footerHtml}
-          state={state}
-          className="display-info-footer"
-        />
-      ) : (
-        <InfoFooter state={state} />
-      )}
+      {/* The built-in InfoFooter is page chrome — kept outside the authored
+          root, exactly like the header. */}
+      {authoredFooter ? null : <InfoFooter state={state} />}
       {stale && <span className="display-stale-badge">Data may be out of date</span>}
     </div>
   );
