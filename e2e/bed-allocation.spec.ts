@@ -1,5 +1,5 @@
 import { type BrowserContext, expect, test } from "@playwright/test";
-import { loginPersona } from "./helpers/auth";
+import { storageStatePath } from "./helpers/auth";
 import { E2E_ADMIN } from "./helpers/fixtures";
 
 // High row (docs/END_TO_END_TEST_MATRIX.md): "Approve a review-flagged booking,
@@ -20,11 +20,11 @@ test.describe.configure({ mode: "serial" });
 let adminContext: BrowserContext;
 
 test.beforeAll(async ({ browser }) => {
-  // A fresh E2E_ADMIN login may enroll TOTP on a clean database.
-  test.setTimeout(180_000);
-  adminContext = await browser.newContext();
-  const adminPage = await adminContext.newPage();
-  await loginPersona(adminPage, E2E_ADMIN.email);
+  // Reuse the E2E admin session saved once in auth.setup.ts instead of a fresh
+  // per-spec login (#1779).
+  adminContext = await browser.newContext({
+    storageState: storageStatePath(E2E_ADMIN.email),
+  });
 
   // Disable auto-allocation so approval parks Ken in the manual bucket.
   const disabled = await adminContext.request.put(
@@ -35,7 +35,6 @@ test.beforeAll(async ({ browser }) => {
     disabled.ok(),
     `disable auto-allocation (${disabled.status()})`,
   ).toBeTruthy();
-  await adminPage.close();
 });
 
 test.afterAll(async () => {
@@ -65,6 +64,11 @@ test("an admin approves a review-flagged booking then allocates a bed to its gue
 
   // "Approve" (exact) so it never matches the "Approved" status-filter button.
   await page.getByRole("button", { name: "Approve", exact: true }).click();
+  // #1790: the approve action now opens a notify-choice dialog; confirm the
+  // default notify path ("Approve and email member") to complete the approval.
+  await page
+    .getByRole("button", { name: "Approve and email member" })
+    .click();
   await expect(page.getByText("Booking approved.")).toBeVisible();
 
   // ── Allocate Ken's guest to Bunk Room A / A1 via Select + Allocate ──

@@ -40,6 +40,12 @@ import {
   startOfDateOnlyForTimeZone,
 } from "@/lib/date-only";
 import { getUnassignedHutLeaderDates } from "@/lib/hut-leader-coverage";
+import {
+  buildUnpaidFinishedStaysHref,
+  buildUnpaidFinishedStaysWhere,
+  buildUnsettledAdditionalFinishedStaysHref,
+  buildUnsettledAdditionalFinishedStaysWhere,
+} from "@/lib/unpaid-finished-stays";
 
 async function getStats() {
   const today = getTodayDateOnly();
@@ -63,6 +69,7 @@ async function getStats() {
     revenueResult,
     upcomingCheckIns,
     unpaidFinishedStays,
+    unsettledAdditionalFinishedStays,
     recentBookings,
     pendingRefundAppeals,
     pendingCreditApprovals,
@@ -95,15 +102,18 @@ async function getStats() {
       },
     }),
     // Unpaid finished stays (#1709): PAYMENT_PENDING with check-out on or
-    // before NZ today — the stay is over but payment is still owing.
-    // Retroactive card creates (#1704) match from the moment of creation;
-    // organic bookings that cross check-out unpaid surface here too.
+    // before NZ today — the stay is over but payment is still owing. The
+    // predicate is shared with the sidebar Needs Attention badge (#1731) via
+    // src/lib/unpaid-finished-stays.ts so the two surfaces can never drift.
     prisma.booking.count({
-      where: {
-        deletedAt: null,
-        status: "PAYMENT_PENDING",
-        checkOut: { lte: today },
-      },
+      where: buildUnpaidFinishedStaysWhere(today),
+    }),
+    // Unsettled finished-stay additions (#1723 path 2): a settled (PAID /
+    // COMPLETED) stay that ended with an upward modification delta still
+    // uncollected — never PAYMENT_PENDING, so the card above can't see it.
+    // Predicate shared with the sidebar badge via unpaid-finished-stays.ts.
+    prisma.booking.count({
+      where: buildUnsettledAdditionalFinishedStaysWhere(today),
     }),
     prisma.booking.findMany({
       where: { deletedAt: null },
@@ -167,6 +177,7 @@ async function getStats() {
     revenueThisMonth,
     upcomingCheckIns,
     unpaidFinishedStays,
+    unsettledAdditionalFinishedStays,
     recentBookings,
     unassignedDatesWithBookings: unassignedHutLeaderDates.map(
       (item) => item.date,
@@ -267,9 +278,7 @@ export default async function AdminDashboardPage() {
       {/* Unpaid finished stays (#1709): a stay that already ended but is
           still PAYMENT_PENDING — flagged so it cannot silently linger. */}
       {stats.unpaidFinishedStays > 0 && (
-        <Link
-          href={`/admin/bookings?status=PAYMENT_PENDING&checkOutTo=${stats.todayKey}`}
-        >
+        <Link href={buildUnpaidFinishedStaysHref(stats.todayKey)}>
           <Card className="border-amber-200 bg-amber-50 hover:shadow-md transition-shadow cursor-pointer">
             <CardContent className="flex items-start gap-3 pt-5">
               <DollarSign className="h-5 w-5 text-amber-700 flex-shrink-0 mt-0.5" />
@@ -282,6 +291,33 @@ export default async function AdminDashboardPage() {
                   {stats.unpaidFinishedStays === 1 ? "" : "s"} still payment
                   pending after check-out. Follow up on payment or settle the
                   booking.
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        </Link>
+      )}
+
+      {/* Unsettled finished-stay additions (#1723 path 2): a settled past
+          stay whose upward modification delta (admin recalculate / guest add)
+          was never collected on the card additional-payment flow. The booking
+          is not PAYMENT_PENDING, so the card above cannot count it. */}
+      {stats.unsettledAdditionalFinishedStays > 0 && (
+        <Link
+          href={buildUnsettledAdditionalFinishedStaysHref(stats.todayKey)}
+        >
+          <Card className="border-amber-200 bg-amber-50 hover:shadow-md transition-shadow cursor-pointer">
+            <CardContent className="flex items-start gap-3 pt-5">
+              <DollarSign className="h-5 w-5 text-amber-700 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="font-medium text-amber-950">
+                  Finished Stays With Unpaid Additions
+                </p>
+                <p className="text-sm text-amber-800 mt-1">
+                  {stats.unsettledAdditionalFinishedStays} paid booking
+                  {stats.unsettledAdditionalFinishedStays === 1 ? "" : "s"}{" "}
+                  with an additional payment still owing after check-out.
+                  Collect the outstanding amount or adjust the booking.
                 </p>
               </div>
             </CardContent>

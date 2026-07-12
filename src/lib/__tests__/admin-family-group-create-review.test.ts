@@ -114,6 +114,8 @@ function mockGroupCreateTransaction() {
   const txRequestCreate = vi.fn().mockResolvedValue({ id: "inv-1" });
   const txRequestFindMany = vi.fn().mockResolvedValue([]);
   const txRequestUpdateMany = vi.fn();
+  const txTokenFindMany = vi.fn().mockResolvedValue([]);
+  const txTokenDeleteMany = vi.fn().mockResolvedValue({ count: 0 });
   mockedPrisma.$transaction.mockImplementation(async (fn: any) =>
     fn({
       familyGroupMember: { create: txMembershipCreate },
@@ -123,6 +125,10 @@ function mockGroupCreateTransaction() {
         findMany: txRequestFindMany,
         updateMany: txRequestUpdateMany,
       },
+      partnerInviteToken: {
+        findMany: txTokenFindMany,
+        deleteMany: txTokenDeleteMany,
+      },
     })
   );
   return {
@@ -131,6 +137,8 @@ function mockGroupCreateTransaction() {
     txRequestCreate,
     txRequestFindMany,
     txRequestUpdateMany,
+    txTokenFindMany,
+    txTokenDeleteMany,
   };
 }
 
@@ -445,6 +453,162 @@ describe("reviewAdminFamilyGroupRequest — GROUP_CREATE", () => {
       "Smith Family",
       "Duplicate of an existing family"
     );
+  });
+
+  it("reject revokes any outstanding partner-invite token for the group (#1682)", async () => {
+    mockedPrisma.familyGroupJoinRequest.findUnique.mockResolvedValue(
+      groupCreateRequest() as any
+    );
+    const { txTokenFindMany, txTokenDeleteMany } = mockGroupCreateTransaction();
+    txTokenFindMany.mockResolvedValue([
+      { id: "pit-1", invitedEmail: "ghost@test.com" },
+    ]);
+
+    const result = await reviewAdminFamilyGroupRequest({
+      adminMemberId: ADMIN_ID,
+      data: { requestId: "req-gc", action: "reject" },
+    });
+
+    expect(result.body).toEqual({ success: true, action: "reject" });
+    expect(txTokenFindMany).toHaveBeenCalledWith({
+      where: { familyGroupId: "fg-new", confirmedAt: null },
+      select: { id: true, invitedEmail: true },
+    });
+    expect(txTokenDeleteMany).toHaveBeenCalledWith({
+      where: { familyGroupId: "fg-new", confirmedAt: null },
+    });
+    expect(logAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "FAMILY_GROUP_PARTNER_INVITE_REVOKED",
+        entityId: "pit-1",
+        metadata: expect.objectContaining({ cause: "group_create_rejected" }),
+      })
+    );
+  });
+
+  it("reject leaves a claimed token untouched (none outstanding to revoke)", async () => {
+    mockedPrisma.familyGroupJoinRequest.findUnique.mockResolvedValue(
+      groupCreateRequest() as any
+    );
+    const { txTokenFindMany, txTokenDeleteMany } = mockGroupCreateTransaction();
+    // A claimed token has confirmedAt set, so the confirmedAt:null query returns
+    // nothing and no delete/revoke-audit happens.
+    txTokenFindMany.mockResolvedValue([]);
+
+    const result = await reviewAdminFamilyGroupRequest({
+      adminMemberId: ADMIN_ID,
+      data: { requestId: "req-gc", action: "reject" },
+    });
+
+    expect(result.body).toEqual({ success: true, action: "reject" });
+    expect(txTokenDeleteMany).not.toHaveBeenCalled();
+    expect(logAudit).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: "FAMILY_GROUP_PARTNER_INVITE_REVOKED" })
+    );
+  });
+
+  // #1789: admin per-decision email choice. The requester's approval/rejection
+  // email is suppressible; the token-bearing partner invite is always sent.
+  it("approve with notifyMember false suppresses the requester email but still creates the group, files the invite, sends the partner invitation, and audits the choice", async () => {
+    mockedPrisma.familyGroupJoinRequest.findUnique.mockResolvedValue(
+      groupCreateRequest({ invitedMemberId: "partner-1" }) as any
+    );
+    mockedPrisma.familyGroupMember.findFirst.mockResolvedValue(null);
+    mockedPrisma.member.findUnique.mockResolvedValue(eligiblePartner() as any);
+    mockedPrisma.familyGroupJoinRequest.findFirst.mockResolvedValue(null);
+    const { txMembershipCreate, txRequestCreate } = mockGroupCreateTransaction();
+
+    const result = await reviewAdminFamilyGroupRequest({
+      adminMemberId: ADMIN_ID,
+      data: { requestId: "req-gc", action: "approve", notifyMember: false },
+    });
+
+    expect(result.body).toEqual({ success: true, action: "approve" });
+    // Group/membership state change is still applied.
+    expect(txMembershipCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({ role: "ADMIN" }),
+    });
+    expect(txRequestCreate).toHaveBeenCalled();
+    // Requester notice suppressed...
+    expect(sendGroupCreateApprovedEmail).not.toHaveBeenCalled();
+    // ...but the partner invitation is ALWAYS sent (carve-out).
+    expect(sendFamilyGroupInvitationEmail).toHaveBeenCalledWith(
+      "bob@test.com",
+      "Alice Smith",
+      "Smith Family"
+    );
+    // Suppression is audited on the create-approved record.
+    const approvedAudit = vi
+      .mocked(logAudit)
+      .mock.calls.find((c) => c[0].action === "FAMILY_GROUP_CREATE_APPROVED")?.[0];
+    expect(approvedAudit?.metadata).toMatchObject({ notifyMember: false });
+  });
+
+  it("approve with notifyMember true emails the requester and records no notify field", async () => {
+    mockedPrisma.familyGroupJoinRequest.findUnique.mockResolvedValue(
+      groupCreateRequest() as any
+    );
+    mockedPrisma.familyGroupMember.findFirst.mockResolvedValue(null);
+    mockGroupCreateTransaction();
+
+    const result = await reviewAdminFamilyGroupRequest({
+      adminMemberId: ADMIN_ID,
+      data: { requestId: "req-gc", action: "approve", notifyMember: true },
+    });
+
+    expect(result.body).toEqual({ success: true, action: "approve" });
+    expect(sendGroupCreateApprovedEmail).toHaveBeenCalledWith(
+      "alice@test.com",
+      "Alice",
+      "Smith Family"
+    );
+    const approvedAudit = vi
+      .mocked(logAudit)
+      .mock.calls.find((c) => c[0].action === "FAMILY_GROUP_CREATE_APPROVED")?.[0];
+    expect(approvedAudit?.metadata).not.toHaveProperty("notifyMember");
+  });
+
+  it("reject with notifyMember false suppresses the requester email but still rejects and audits the choice", async () => {
+    mockedPrisma.familyGroupJoinRequest.findUnique.mockResolvedValue(
+      groupCreateRequest() as any
+    );
+    const { txRequestUpdate } = mockGroupCreateTransaction();
+
+    const result = await reviewAdminFamilyGroupRequest({
+      adminMemberId: ADMIN_ID,
+      data: { requestId: "req-gc", action: "reject", notifyMember: false },
+    });
+
+    expect(result.body).toEqual({ success: true, action: "reject" });
+    // Reject state change still applied.
+    expect(txRequestUpdate).toHaveBeenCalledWith({
+      where: { id: "req-gc" },
+      data: expect.objectContaining({ status: "REJECTED", reviewedBy: ADMIN_ID }),
+    });
+    expect(sendGroupCreateRejectedEmail).not.toHaveBeenCalled();
+    const rejectedAudit = vi
+      .mocked(logAudit)
+      .mock.calls.find((c) => c[0].action === "FAMILY_GROUP_CREATE_REJECTED")?.[0];
+    expect(rejectedAudit?.metadata).toMatchObject({ notifyMember: false });
+  });
+
+  it("reject with notifyMember true emails the requester and records no notify field", async () => {
+    mockedPrisma.familyGroupJoinRequest.findUnique.mockResolvedValue(
+      groupCreateRequest() as any
+    );
+    mockGroupCreateTransaction();
+
+    const result = await reviewAdminFamilyGroupRequest({
+      adminMemberId: ADMIN_ID,
+      data: { requestId: "req-gc", action: "reject", notifyMember: true },
+    });
+
+    expect(result.body).toEqual({ success: true, action: "reject" });
+    expect(sendGroupCreateRejectedEmail).toHaveBeenCalled();
+    const rejectedAudit = vi
+      .mocked(logAudit)
+      .mock.calls.find((c) => c[0].action === "FAMILY_GROUP_CREATE_REJECTED")?.[0];
+    expect(rejectedAudit?.metadata).not.toHaveProperty("notifyMember");
   });
 });
 

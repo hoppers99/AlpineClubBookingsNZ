@@ -2,6 +2,7 @@ import { readFileSync } from "fs";
 import path from "path";
 import { Prisma } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
+import { canonicalPartnerPair } from "@/lib/member-partner-link-shared";
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {},
@@ -15,6 +16,15 @@ vi.mock("@/lib/lodge-capacity", () => ({
     activeBedCount: 0,
     fallbackCapacity: 29,
   }),
+  getLodgePartnerSharedCapacityStatus: vi.fn().mockResolvedValue({
+    capacity: 29,
+    source: "club_config",
+    bedAllocationEnabled: false,
+    activeBedCount: 0,
+    fallbackCapacity: 29,
+    activeDoubleBedCount: 0,
+    partnerSharedHeadroom: 0,
+  }),
 }));
 
 import {
@@ -24,16 +34,18 @@ import {
   createBedAllocationBed,
   createBedAllocationRoom,
   createBedAllocationRoomsBulk,
+  deleteBedAllocation,
   deleteBedAllocationRoom,
   approveBedAllocations,
   getBedAllocationDashboard,
   getRoomsAndBedsConfiguration,
   listBedAllocationRooms,
+  manuallyAllocateBed,
   manuallyAllocateBedForNights,
   parseBedAllocationDateRange,
   updateBedAllocationBed,
 } from "@/lib/admin-bed-allocation";
-import { getLodgeCapacityStatus } from "@/lib/lodge-capacity";
+import { getLodgePartnerSharedCapacityStatus } from "@/lib/lodge-capacity";
 import { parseDateOnly } from "@/lib/date-only";
 import { prisma } from "@/lib/prisma";
 
@@ -114,6 +126,104 @@ describe("admin bed allocation", () => {
       "BOOKING_SPLIT",
       "MINOR_WITHOUT_BOOKING_ADULT",
     ]);
+  });
+
+  it("warns when a room-night mixes one booking's minors with another booking's adults (MINOR_ADULT_MIX, #1768)", () => {
+    const base = {
+      guestName: "Guest",
+      roomId: "room-a",
+      roomName: "Room A",
+      bedName: "A1",
+      stayDate: "2026-07-01",
+      source: "MANUAL" as const,
+      approvedAt: null,
+      approvedByName: null,
+      bookingStatus: "CONFIRMED",
+      holdsCapacity: true,
+    };
+    const warnings = buildBedAllocationWarnings({
+      allocations: [
+        {
+          ...base,
+          id: "allocation-1",
+          bookingId: "booking-kids",
+          bookingGuestId: "child-1",
+          guestAgeTier: "CHILD",
+          bedId: "bed-a1",
+        },
+        {
+          ...base,
+          id: "allocation-2",
+          bookingId: "booking-kids",
+          bookingGuestId: "adult-own",
+          guestAgeTier: "ADULT",
+          bedId: "bed-a2",
+        },
+        {
+          ...base,
+          id: "allocation-3",
+          bookingId: "booking-stranger",
+          bookingGuestId: "adult-stranger",
+          guestAgeTier: "ADULT",
+          bedId: "bed-a3",
+        },
+      ],
+    });
+
+    const mixWarnings = warnings.filter(
+      (warning) => warning.type === "MINOR_ADULT_MIX",
+    );
+    expect(mixWarnings).toEqual([
+      {
+        id: "MINOR_ADULT_MIX:room-a:2026-07-01",
+        type: "MINOR_ADULT_MIX",
+        severity: "warning",
+        bookingId: "booking-kids",
+        stayDate: "2026-07-01",
+        roomId: "room-a",
+        message:
+          "Room A on 2026-07-01 mixes minors with adults from a different booking.",
+      },
+    ]);
+  });
+
+  it("raises no MINOR_ADULT_MIX when the only adults in the room-night belong to the minors' own booking", () => {
+    const base = {
+      guestName: "Guest",
+      roomId: "room-a",
+      roomName: "Room A",
+      bedName: "A1",
+      stayDate: "2026-07-01",
+      source: "AUTO" as const,
+      approvedAt: null,
+      approvedByName: null,
+      bookingStatus: "CONFIRMED",
+      holdsCapacity: true,
+    };
+    const warnings = buildBedAllocationWarnings({
+      allocations: [
+        {
+          ...base,
+          id: "allocation-1",
+          bookingId: "booking-family",
+          bookingGuestId: "child-1",
+          guestAgeTier: "CHILD",
+          bedId: "bed-a1",
+        },
+        {
+          ...base,
+          id: "allocation-2",
+          bookingId: "booking-family",
+          bookingGuestId: "adult-1",
+          guestAgeTier: "ADULT",
+          bedId: "bed-a2",
+        },
+      ],
+    });
+
+    expect(
+      warnings.filter((warning) => warning.type === "MINOR_ADULT_MIX"),
+    ).toEqual([]);
   });
 
   it("warns once, stay-level, when a booking's rooms change between nights (ROOM_SWITCH, #1677)", () => {
@@ -251,12 +361,14 @@ describe("manuallyAllocateBedForNights", () => {
     stayEnd: Date;
     bookingStatus: string;
     bookingDeletedAt: Date | null;
+    memberId: string | null;
   }> = {}) {
     return {
       id: overrides.id ?? "guest-1",
       bookingId: overrides.bookingId ?? "booking-1",
       stayStart: overrides.stayStart ?? parseDateOnly("2026-07-01"),
       stayEnd: overrides.stayEnd ?? parseDateOnly("2026-07-04"),
+      memberId: overrides.memberId ?? null,
       booking: {
         id: overrides.bookingId ?? "booking-1",
         status: overrides.bookingStatus ?? "CONFIRMED",
@@ -270,11 +382,13 @@ describe("manuallyAllocateBedForNights", () => {
     roomId: string;
     active: boolean;
     roomActive: boolean;
+    bedType: string;
   }> = {}) {
     return {
       id: overrides.id ?? "bed-1",
       roomId: overrides.roomId ?? "room-1",
       active: overrides.active ?? true,
+      bedType: overrides.bedType ?? "SINGLE",
       room: { id: overrides.roomId ?? "room-1", active: overrides.roomActive ?? true },
     };
   }
@@ -283,6 +397,21 @@ describe("manuallyAllocateBedForNights", () => {
     guest: ReturnType<typeof buildGuest> | null;
     bed: ReturnType<typeof buildBed> | null;
     upsert: ReturnType<typeof vi.fn>;
+    existingOccupants?: ReturnType<typeof vi.fn>;
+    // #1750 move-path orphan promotion seams.
+    previous?: ReturnType<typeof vi.fn>;
+    partner?: ReturnType<typeof vi.fn>;
+    update?: ReturnType<typeof vi.fn>;
+    members?: Array<{
+      id: string;
+      ageTier: string;
+      active: boolean;
+    }>;
+    partnerLinks?: Array<{
+      memberAId: string;
+      memberBId: string;
+      status: string;
+    }>;
   }) {
     return {
       bookingGuest: {
@@ -291,7 +420,45 @@ describe("manuallyAllocateBedForNights", () => {
       lodgeBed: {
         findUnique: vi.fn().mockResolvedValue(input.bed),
       },
+      // #1701/#1744: mayShareDoubleBed() resolves both members' age tier and
+      // looks up the pair's partner link; findMany filters the seeded members
+      // by the queried ids, findUnique matches a seeded link by the canonical
+      // pair.
+      member: {
+        findMany: vi.fn(async (args: { where: { id: { in: string[] } } }) =>
+          (input.members ?? []).filter((member) =>
+            args.where.id.in.includes(member.id),
+          ),
+        ),
+      },
+      memberPartnerLink: {
+        findUnique: vi.fn(
+          async (args: {
+            where: {
+              memberAId_memberBId: { memberAId: string; memberBId: string };
+            };
+          }) => {
+            const pair = args.where.memberAId_memberBId;
+            return (
+              (input.partnerLinks ?? []).find(
+                (partnerLink) =>
+                  partnerLink.memberAId === pair.memberAId &&
+                  partnerLink.memberBId === pair.memberBId,
+              ) ?? null
+            );
+          },
+        ),
+      },
       bedAllocation: {
+        // #1701: resolveSecondOccupant checks the target bed-night's existing
+        // occupants; default to empty (a free bed-night → primary allocation).
+        findMany: input.existingOccupants ?? vi.fn().mockResolvedValue([]),
+        // #1750: allocateBedNight reads the guest's pre-move row (null = fresh
+        // CREATE, so no old bed-night to repair) and the orphan-promote helper
+        // looks up + flips a surviving partner. Defaults leave promotion inert.
+        findUnique: input.previous ?? vi.fn().mockResolvedValue(null),
+        findFirst: input.partner ?? vi.fn().mockResolvedValue(null),
+        update: input.update ?? vi.fn(),
         upsert: input.upsert,
       },
     };
@@ -442,6 +609,384 @@ describe("manuallyAllocateBedForNights", () => {
       }),
     ).rejects.toThrow("Booking status is not allocatable");
   });
+
+  // #1701 double-bed shared occupancy (#1744: eligibility = CONFIRMED partner link).
+  const adultMember = (id: string) => ({ id, ageTier: "ADULT", active: true });
+
+  // Seed a link the way the service stores it: as the canonical ordered pair.
+  const confirmedPartners = (memberOneId: string, memberTwoId: string) => [
+    { ...canonicalPartnerPair(memberOneId, memberTwoId), status: "CONFIRMED" },
+  ];
+
+  function primaryOccupant(overrides: Partial<{
+    isSecondOccupant: boolean;
+    memberId: string | null;
+    bookingStatus: string;
+  }> = {}) {
+    return {
+      isSecondOccupant: overrides.isSecondOccupant ?? false,
+      bookingGuest: {
+        memberId: overrides.memberId ?? "m-primary",
+        booking: { status: overrides.bookingStatus ?? "CONFIRMED" },
+      },
+    };
+  }
+
+  it("places the primary's confirmed partner as a second occupant on a double", async () => {
+    const upsert = vi.fn().mockImplementation(({ create }) => ({ id: "alloc", ...create }));
+    const db = buildDb({
+      guest: buildGuest({ id: "guest-2", memberId: "m-new" }),
+      bed: buildBed({ bedType: "DOUBLE" }),
+      upsert,
+      existingOccupants: vi.fn().mockResolvedValue([primaryOccupant()]),
+      members: [adultMember("m-primary"), adultMember("m-new")],
+      partnerLinks: confirmedPartners("m-primary", "m-new"),
+    });
+
+    const result = await manuallyAllocateBedForNights({
+      bookingGuestId: "guest-2",
+      bedId: "bed-1",
+      stayDates: ["2026-07-02"],
+      db: db as never,
+    });
+
+    expect(result.conflicts).toEqual([]);
+    expect(result.allocations).toHaveLength(1);
+    expect(upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({ isSecondOccupant: true, bedType: "DOUBLE" }),
+      }),
+    );
+  });
+
+  it("rejects a second occupant on a non-double bed (conflict, not sharing)", async () => {
+    const upsert = vi.fn();
+    const db = buildDb({
+      guest: buildGuest({ id: "guest-2", memberId: "m-new" }),
+      bed: buildBed({ bedType: "SINGLE" }),
+      upsert,
+      existingOccupants: vi.fn().mockResolvedValue([primaryOccupant()]),
+      members: [adultMember("m-primary"), adultMember("m-new")],
+      partnerLinks: confirmedPartners("m-primary", "m-new"),
+    });
+
+    const result = await manuallyAllocateBedForNights({
+      bookingGuestId: "guest-2",
+      bedId: "bed-1",
+      stayDates: ["2026-07-02"],
+      db: db as never,
+    });
+
+    expect(result.allocations).toEqual([]);
+    expect(result.conflicts).toEqual([{ stayDate: "2026-07-02", reason: "BED_TAKEN" }]);
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it("rejects a second occupant without a confirmed partner link (family-group co-membership is not enough)", async () => {
+    const db = buildDb({
+      guest: buildGuest({ id: "guest-2", memberId: "m-new" }),
+      bed: buildBed({ bedType: "DOUBLE" }),
+      upsert: vi.fn(),
+      existingOccupants: vi.fn().mockResolvedValue([primaryOccupant()]),
+      members: [adultMember("m-primary"), adultMember("m-new")],
+    });
+
+    const result = await manuallyAllocateBedForNights({
+      bookingGuestId: "guest-2",
+      bedId: "bed-1",
+      stayDates: ["2026-07-02"],
+      db: db as never,
+    });
+
+    expect(result.conflicts).toEqual([{ stayDate: "2026-07-02", reason: "BED_TAKEN" }]);
+  });
+
+  it("rejects a second occupant when the primary booking is not capacity-holding (displacement pin)", async () => {
+    const db = buildDb({
+      guest: buildGuest({ id: "guest-2", memberId: "m-new" }),
+      bed: buildBed({ bedType: "DOUBLE" }),
+      upsert: vi.fn(),
+      // PENDING is bed-allocatable but not capacity-holding, so the primary is
+      // not pinned from displacement — pairing must be refused.
+      existingOccupants: vi.fn().mockResolvedValue([primaryOccupant({ bookingStatus: "PENDING" })]),
+      members: [adultMember("m-primary"), adultMember("m-new")],
+      partnerLinks: confirmedPartners("m-primary", "m-new"),
+    });
+
+    const result = await manuallyAllocateBedForNights({
+      bookingGuestId: "guest-2",
+      bedId: "bed-1",
+      stayDates: ["2026-07-02"],
+      db: db as never,
+    });
+
+    expect(result.conflicts).toEqual([{ stayDate: "2026-07-02", reason: "BED_TAKEN" }]);
+  });
+
+  it("rejects a third occupant when the double already has two", async () => {
+    const db = buildDb({
+      guest: buildGuest({ id: "guest-3", memberId: "m-third" }),
+      bed: buildBed({ bedType: "DOUBLE" }),
+      upsert: vi.fn(),
+      existingOccupants: vi
+        .fn()
+        .mockResolvedValue([primaryOccupant(), primaryOccupant({ isSecondOccupant: true, memberId: "m-new" })]),
+      members: [adultMember("m-primary"), adultMember("m-third")],
+      partnerLinks: confirmedPartners("m-primary", "m-third"),
+    });
+
+    const result = await manuallyAllocateBedForNights({
+      bookingGuestId: "guest-3",
+      bedId: "bed-1",
+      stayDates: ["2026-07-02"],
+      db: db as never,
+    });
+
+    expect(result.conflicts).toEqual([{ stayDate: "2026-07-02", reason: "BED_TAKEN" }]);
+  });
+
+  // #1750 move-path orphan promotion.
+  it("promotes the partner stranded on the old bed when a shared double's primary moves to another bed", async () => {
+    const upsert = vi.fn().mockImplementation(({ create }) => ({ id: "alloc", ...create }));
+    const db = buildDb({
+      guest: buildGuest(),
+      bed: buildBed({ id: "new-bed", roomId: "room-2" }),
+      upsert,
+      // The guest was the PRIMARY on the old bed on this night.
+      previous: vi
+        .fn()
+        .mockResolvedValue({ bedId: "old-bed", isSecondOccupant: false }),
+      // A surviving partner (a DIFFERENT booking) sits on the old bed-night.
+      partner: vi.fn().mockResolvedValue({
+        id: "alloc-partner",
+        bookingId: "booking-2",
+        bedId: "old-bed",
+        stayDate: parseDateOnly("2026-07-02"),
+        isSecondOccupant: true,
+        bedType: "DOUBLE",
+      }),
+      update: vi.fn().mockImplementation(({ where, data }) => ({
+        id: where.id,
+        bookingId: "booking-2",
+        ...data,
+      })),
+    });
+
+    const result = await manuallyAllocateBedForNights({
+      bookingGuestId: "guest-1",
+      bedId: "new-bed",
+      stayDates: ["2026-07-02"],
+      db: db as never,
+    });
+
+    expect(result.allocations).toHaveLength(1);
+    // Promotion is pinned to the OLD bed-night, not the new one.
+    expect(db.bedAllocation.findFirst).toHaveBeenCalledWith({
+      where: {
+        bedId: "old-bed",
+        stayDate: parseDateOnly("2026-07-02"),
+        isSecondOccupant: true,
+      },
+    });
+    expect(db.bedAllocation.update).toHaveBeenCalledWith({
+      where: { id: "alloc-partner" },
+      data: { isSecondOccupant: false },
+    });
+    expect(result.promotedPartners).toHaveLength(1);
+    expect(result.promotedPartners[0]).toMatchObject({
+      id: "alloc-partner",
+      isSecondOccupant: false,
+    });
+  });
+
+  it("does not promote when the moved row was itself a second occupant", async () => {
+    const upsert = vi.fn().mockImplementation(({ create }) => ({ id: "alloc", ...create }));
+    const db = buildDb({
+      guest: buildGuest(),
+      bed: buildBed({ id: "new-bed", roomId: "room-2" }),
+      upsert,
+      // Moving a second occupant leaves the old bed's primary in place.
+      previous: vi
+        .fn()
+        .mockResolvedValue({ bedId: "old-bed", isSecondOccupant: true }),
+      partner: vi.fn(),
+      update: vi.fn(),
+    });
+
+    const result = await manuallyAllocateBedForNights({
+      bookingGuestId: "guest-1",
+      bedId: "new-bed",
+      stayDates: ["2026-07-02"],
+      db: db as never,
+    });
+
+    expect(result.allocations).toHaveLength(1);
+    expect(db.bedAllocation.findFirst).not.toHaveBeenCalled();
+    expect(db.bedAllocation.update).not.toHaveBeenCalled();
+    expect(result.promotedPartners).toEqual([]);
+  });
+
+  it("does not promote on a same-bed re-upsert (bed unchanged)", async () => {
+    const upsert = vi.fn().mockImplementation(({ create }) => ({ id: "alloc", ...create }));
+    const db = buildDb({
+      guest: buildGuest(),
+      bed: buildBed({ id: "bed-1" }),
+      upsert,
+      // Re-upserting onto the SAME bed never vacates an old bed-night.
+      previous: vi
+        .fn()
+        .mockResolvedValue({ bedId: "bed-1", isSecondOccupant: false }),
+      partner: vi.fn(),
+      update: vi.fn(),
+    });
+
+    const result = await manuallyAllocateBedForNights({
+      bookingGuestId: "guest-1",
+      bedId: "bed-1",
+      stayDates: ["2026-07-02"],
+      db: db as never,
+    });
+
+    expect(result.allocations).toHaveLength(1);
+    expect(db.bedAllocation.findFirst).not.toHaveBeenCalled();
+    expect(db.bedAllocation.update).not.toHaveBeenCalled();
+    expect(result.promotedPartners).toEqual([]);
+  });
+
+  // #1750 move-path atomicity: manuallyAllocateBed (single night) self-wraps the
+  // pre-move read + upsert + partner promotion so a moved primary can't strand
+  // its partner between writes. Asserted on the tx client because every other
+  // move-path test injects `db` and so never enters the self-wrap branch.
+  it("self-wraps the move + promotion in one transaction when no db is injected (single path)", async () => {
+    // The mocked prisma singleton is otherwise `{}` (see the #1675 self-wrap
+    // suite): a path that skipped the wrap and reached for prisma.bedAllocation
+    // would throw here rather than silently pass.
+    const prismaMock = prisma as unknown as { $transaction?: unknown };
+    const upsert = vi
+      .fn()
+      .mockImplementation(({ create }) => ({ id: "alloc", ...create }));
+    const tx = buildDb({
+      guest: buildGuest(),
+      bed: buildBed({ id: "new-bed", roomId: "room-2" }),
+      upsert,
+      // The guest was the PRIMARY on the old bed on this night.
+      previous: vi
+        .fn()
+        .mockResolvedValue({ bedId: "old-bed", isSecondOccupant: false }),
+      // A surviving partner (a DIFFERENT booking) sits on the old bed-night.
+      partner: vi.fn().mockResolvedValue({
+        id: "alloc-partner",
+        bookingId: "booking-2",
+        bedId: "old-bed",
+        stayDate: parseDateOnly("2026-07-02"),
+        isSecondOccupant: true,
+        bedType: "DOUBLE",
+      }),
+      update: vi.fn().mockImplementation(({ where, data }) => ({
+        id: where.id,
+        bookingId: "booking-2",
+        ...data,
+      })),
+    });
+    const txnMock = vi.fn(async (cb: (client: typeof tx) => unknown) => cb(tx));
+    prismaMock.$transaction = txnMock;
+    try {
+      const result = await manuallyAllocateBed({
+        bookingGuestId: "guest-1",
+        bedId: "new-bed",
+        stayDate: "2026-07-02",
+      });
+
+      expect(txnMock).toHaveBeenCalledTimes(1);
+      // The move (upsert) AND the promotion (findFirst + update) all ran on the
+      // tx client — inside the wrap, not on the bare prisma singleton. The
+      // promotion is pinned to the OLD bed-night.
+      expect(tx.bedAllocation.upsert).toHaveBeenCalledTimes(1);
+      expect(tx.bedAllocation.findFirst).toHaveBeenCalledWith({
+        where: {
+          bedId: "old-bed",
+          stayDate: parseDateOnly("2026-07-02"),
+          isSecondOccupant: true,
+        },
+      });
+      expect(tx.bedAllocation.update).toHaveBeenCalledWith({
+        where: { id: "alloc-partner" },
+        data: { isSecondOccupant: false },
+      });
+      expect(result.promotedPartner).toMatchObject({
+        id: "alloc-partner",
+        isSecondOccupant: false,
+      });
+    } finally {
+      delete prismaMock.$transaction;
+    }
+  });
+
+  // #1750 bulk atomicity: manuallyAllocateBedForNights self-wraps EACH night's
+  // read + upsert + promotion in its OWN transaction (not one outer wrap), so a
+  // late night's rollback never undoes a committed earlier night. Every bulk test
+  // above injects `db` and so never enters the per-night self-wrap branch.
+  it("self-wraps each night's move + promotion in its own transaction when no db is injected (bulk path)", async () => {
+    // The pre-loop guest/bed assertion reads the bare prisma singleton; each
+    // night's write + promotion must then run inside its own $transaction on the
+    // tx client, never on the singleton (whose bedAllocation is undefined).
+    const prismaMock = prisma as unknown as {
+      $transaction?: unknown;
+      bookingGuest?: unknown;
+      lodgeBed?: unknown;
+    };
+    const guest = buildGuest();
+    const bed = buildBed({ id: "new-bed", roomId: "room-2" });
+    const upsert = vi
+      .fn()
+      .mockImplementation(({ create }) => ({ id: "alloc", ...create }));
+    const tx = buildDb({
+      guest,
+      bed,
+      upsert,
+      previous: vi
+        .fn()
+        .mockResolvedValue({ bedId: "old-bed", isSecondOccupant: false }),
+      partner: vi.fn().mockResolvedValue({
+        id: "alloc-partner",
+        bookingId: "booking-2",
+        bedId: "old-bed",
+        stayDate: parseDateOnly("2026-07-02"),
+        isSecondOccupant: true,
+        bedType: "DOUBLE",
+      }),
+      update: vi.fn().mockImplementation(({ where, data }) => ({
+        id: where.id,
+        bookingId: "booking-2",
+        ...data,
+      })),
+    });
+    prismaMock.bookingGuest = { findUnique: vi.fn().mockResolvedValue(guest) };
+    prismaMock.lodgeBed = { findUnique: vi.fn().mockResolvedValue(bed) };
+    const txnMock = vi.fn(async (cb: (client: typeof tx) => unknown) => cb(tx));
+    prismaMock.$transaction = txnMock;
+    try {
+      const result = await manuallyAllocateBedForNights({
+        bookingGuestId: "guest-1",
+        bedId: "new-bed",
+        stayDates: ["2026-07-02", "2026-07-03"],
+      });
+
+      // One transaction PER NIGHT — the per-night self-wrap, not a single outer
+      // wrap around the whole loop.
+      expect(txnMock).toHaveBeenCalledTimes(2);
+      // Every night's upsert + promotion (findFirst + update) ran on the tx
+      // client, inside the wrap.
+      expect(tx.bedAllocation.upsert).toHaveBeenCalledTimes(2);
+      expect(tx.bedAllocation.findFirst).toHaveBeenCalledTimes(2);
+      expect(tx.bedAllocation.update).toHaveBeenCalledTimes(2);
+      expect(result.promotedPartners).toHaveLength(2);
+    } finally {
+      delete prismaMock.$transaction;
+      delete prismaMock.bookingGuest;
+      delete prismaMock.lodgeBed;
+    }
+  });
 });
 
 describe("bed type + bunk pairing (#1675)", () => {
@@ -460,6 +1005,9 @@ describe("bed type + bunk pairing (#1675)", () => {
         bedType: string;
         bunkGroup: string | null;
       } | null;
+      // #1701: mock for bedAllocation.count (shared second-occupant rows on the
+      // bed) so the DOUBLE→non-DOUBLE retype guard can be exercised.
+      sharedOccupantCount?: ReturnType<typeof vi.fn>;
     } = {},
   ) {
     const create = vi
@@ -480,7 +1028,13 @@ describe("bed type + bunk pairing (#1675)", () => {
       db: {
         $queryRaw: queryRaw,
         lodgeBed: { create, update, findMany, findUnique },
-        bedAllocation: { findMany: vi.fn().mockResolvedValue([]) },
+        bedAllocation: {
+          findMany: vi.fn().mockResolvedValue([]),
+          // #1701: a bedType change syncs the denormalized copy and (from a
+          // DOUBLE) checks for shared second-occupant rows first.
+          count: overrides.sharedOccupantCount ?? vi.fn().mockResolvedValue(0),
+          updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+        },
       },
       create,
       update,
@@ -882,6 +1436,41 @@ describe("bed type + bunk pairing (#1675)", () => {
     });
     expect(update.mock.calls[0][0].data.bunkGroup).toBeUndefined();
   });
+
+  // #1701: retyping a bed keeps the denormalized BedAllocation.bedType in sync,
+  // and a DOUBLE that currently shares (has a second occupant) cannot be retyped
+  // to a non-double until the second occupant is removed.
+  it("blocks changing a shared double to a non-double bed type", async () => {
+    const { db, update } = buildBunkDb({
+      existingBed: { roomId: "room-1", bedType: "DOUBLE", bunkGroup: null },
+      sharedOccupantCount: vi.fn().mockResolvedValue(1),
+    });
+
+    await expect(
+      updateBedAllocationBed({ id: "bed-1", bedType: "SINGLE", db: db as never }),
+    ).rejects.toThrow("shared (two-occupant)");
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("retypes a double with no shared occupant and syncs the denormalized bedType", async () => {
+    const { db, update } = buildBunkDb({
+      existingBed: { roomId: "room-1", bedType: "DOUBLE", bunkGroup: null },
+    });
+
+    await updateBedAllocationBed({ id: "bed-1", bedType: "SINGLE", db: db as never });
+
+    expect(update).toHaveBeenCalledWith({
+      where: { id: "bed-1" },
+      data: expect.objectContaining({ bedType: "SINGLE" }),
+    });
+    const bedAllocation = (db as unknown as {
+      bedAllocation: { updateMany: ReturnType<typeof vi.fn> };
+    }).bedAllocation;
+    expect(bedAllocation.updateMany).toHaveBeenCalledWith({
+      where: { bedId: "bed-1" },
+      data: { bedType: "SINGLE" },
+    });
+  });
 });
 
 describe("bunk write transaction self-wrap (#1675)", () => {
@@ -949,6 +1538,11 @@ describe("bunk write transaction self-wrap (#1675)", () => {
         update: vi
           .fn()
           .mockImplementation(({ data }) => ({ id: "bed-1", ...data })),
+      },
+      // #1701: the bedType change syncs the denormalized BedAllocation.bedType.
+      bedAllocation: {
+        count: vi.fn().mockResolvedValue(0),
+        updateMany: vi.fn().mockResolvedValue({ count: 0 }),
       },
     };
     const txnMock = vi.fn(async (cb: (client: typeof tx) => unknown) => cb(tx));
@@ -1108,7 +1702,10 @@ describe("multi-lodge room scoping (phase 7)", () => {
 
     const payload = await getRoomsAndBedsConfiguration(db as never, "lodge-2");
 
-    expect(getLodgeCapacityStatus).toHaveBeenCalledWith("lodge-2", db);
+    expect(getLodgePartnerSharedCapacityStatus).toHaveBeenCalledWith("lodge-2", db);
+    // The card reads the headroom straight off this payload (#1745).
+    expect(payload.capacity.partnerSharedHeadroom).toBe(0);
+    expect(payload.capacity.activeDoubleBedCount).toBe(0);
     // Rooms exist elsewhere in the club, so the empty selected lodge must
     // not offer the config import (it only seeds the first lodge).
     expect(payload.canImportFromConfig).toBe(false);
@@ -1393,6 +1990,101 @@ describe("bed allocation board lodge scope (ADR-003)", () => {
       }),
     ).rejects.toThrow("Bed belongs to a different lodge than the booking");
     expect(upsert).not.toHaveBeenCalled();
+  });
+});
+
+describe("getBedAllocationDashboard school-group threading (#1768)", () => {
+  it("suggests teachers together and students separately for a SCHOOL-request booking", async () => {
+    const range = parseBedAllocationDateRange({
+      from: "2026-07-01",
+      to: "2026-07-02",
+    });
+    const room = (id: string, sortOrder: number) => ({
+      id,
+      name: `Room ${id}`,
+      sortOrder,
+      active: true,
+      notes: null,
+      lodgeId: null,
+      beds: [1, 2, 3, 4].map((n) => ({
+        id: `bed-${id}-${n}`,
+        roomId: id,
+        name: `${id}${n}`,
+        sortOrder: n,
+        active: true,
+        bedType: "SINGLE",
+        bunkGroup: null,
+      })),
+    });
+    const guest = (id: string, ageTier: string) => ({
+      id,
+      bookingId: "booking-school",
+      firstName: id,
+      lastName: "Test",
+      ageTier,
+      stayStart: parseDateOnly("2026-07-01"),
+      stayEnd: parseDateOnly("2026-07-02"),
+    });
+    const db = {
+      bedAllocationSettings: {
+        findUnique: vi.fn().mockResolvedValue({
+          autoAllocationEnabled: true,
+          updatedByMemberId: null,
+          updatedAt: parseDateOnly("2026-06-30"),
+        }),
+      },
+      lodgeRoom: {
+        findMany: vi.fn().mockResolvedValue([room("ra", 1), room("rb", 2)]),
+      },
+      booking: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: "booking-school",
+            status: "PAID",
+            createdAt: new Date("2026-06-01T00:00:00.000Z"),
+            checkIn: parseDateOnly("2026-07-01"),
+            checkOut: parseDateOnly("2026-07-02"),
+            lodgeId: null,
+            requestedRoomId: null,
+            parentBookingId: null,
+            originBookingRequest: { id: "req-1", type: "SCHOOL" },
+            heldForBookingRequest: null,
+            requestedRoom: null,
+            member: { firstName: "Org", lastName: "Contact", email: "s@x.nz" },
+            guests: [
+              guest("teacher-1", "ADULT"),
+              guest("teacher-2", "ADULT"),
+              guest("student-1", "YOUTH"),
+              guest("student-2", "YOUTH"),
+              guest("student-3", "CHILD"),
+            ],
+          },
+        ]),
+      },
+      bedAllocation: { findMany: vi.fn().mockResolvedValue([]) },
+    };
+
+    const dashboard = await getBedAllocationDashboard({
+      range,
+      db: db as never,
+    });
+
+    const teacherRooms = new Set(
+      dashboard.suggestedAllocations
+        .filter((a) => a.bookingGuestId.startsWith("teacher-"))
+        .map((a) => a.roomId),
+    );
+    const studentRooms = new Set(
+      dashboard.suggestedAllocations
+        .filter((a) => a.bookingGuestId.startsWith("student-"))
+        .map((a) => a.roomId),
+    );
+    expect(dashboard.suggestedAllocations).toHaveLength(5);
+    expect(dashboard.suggestedUnallocatedGuestNights).toEqual([]);
+    expect(teacherRooms.size).toBe(1);
+    for (const roomId of studentRooms) {
+      expect(teacherRooms.has(roomId)).toBe(false);
+    }
   });
 });
 
@@ -1730,5 +2422,169 @@ describe("deleteBedAllocationRoom (#1674 guarded hard delete)", () => {
     await expect(
       deleteBedAllocationRoom({ id: "room-1", db: db as never }),
     ).rejects.toBe(boom);
+  });
+});
+
+describe("deleteBedAllocation orphan auto-promote (#1743)", () => {
+  function allocationRow(overrides: Partial<{
+    id: string;
+    bookingId: string;
+    bedId: string;
+    stayDate: Date;
+    isSecondOccupant: boolean;
+    bedType: string;
+  }> = {}) {
+    return {
+      id: overrides.id ?? "alloc-1",
+      bookingId: overrides.bookingId ?? "booking-1",
+      bookingGuestId: "guest-1",
+      roomId: "room-1",
+      bedId: overrides.bedId ?? "bed-1",
+      stayDate: overrides.stayDate ?? parseDateOnly("2026-07-02"),
+      isSecondOccupant: overrides.isSecondOccupant ?? false,
+      bedType: overrides.bedType ?? "DOUBLE",
+    };
+  }
+
+  function buildDeleteDb(input: {
+    deleted: ReturnType<typeof allocationRow>;
+    partner?: ReturnType<typeof allocationRow> | null;
+  }) {
+    return {
+      bedAllocation: {
+        delete: vi.fn().mockResolvedValue(input.deleted),
+        findFirst: vi.fn().mockResolvedValue(input.partner ?? null),
+        update: vi
+          .fn()
+          .mockImplementation(({ where, data }) => ({
+            ...(input.partner ?? {}),
+            ...where,
+            ...data,
+          })),
+      },
+    };
+  }
+
+  it("promotes the surviving partner when the primary of a shared double is removed", async () => {
+    const deleted = allocationRow();
+    const partner = allocationRow({
+      id: "alloc-partner",
+      bookingId: "booking-2",
+      isSecondOccupant: true,
+    });
+    const db = buildDeleteDb({ deleted, partner });
+
+    const result = await deleteBedAllocation({ id: "alloc-1", db: db as never });
+
+    expect(result.deleted).toBe(deleted);
+    expect(db.bedAllocation.delete).toHaveBeenCalledWith({
+      where: { id: "alloc-1" },
+    });
+    // The partner lookup is pinned to the deleted row's own bed-night.
+    expect(db.bedAllocation.findFirst).toHaveBeenCalledWith({
+      where: {
+        bedId: "bed-1",
+        stayDate: parseDateOnly("2026-07-02"),
+        isSecondOccupant: true,
+      },
+    });
+    expect(db.bedAllocation.update).toHaveBeenCalledWith({
+      where: { id: "alloc-partner" },
+      data: { isSecondOccupant: false },
+    });
+    // The promoted row (possibly a different booking) is surfaced for auditing.
+    expect(result.promotedPartner).toMatchObject({
+      id: "alloc-partner",
+      isSecondOccupant: false,
+    });
+  });
+
+  it("still promotes when the deleted primary carries a stale non-DOUBLE denormalized bedType (AUTO row on a double)", async () => {
+    // AUTO allocation (replaceBedAllocationsForBooking) never sets bedType, so
+    // an auto-placed primary on a real DOUBLE has the SINGLE default. The
+    // promotion gate must not trust the deleted row's denormalized bedType.
+    const deleted = allocationRow({ bedType: "SINGLE" });
+    const partner = allocationRow({
+      id: "alloc-partner",
+      isSecondOccupant: true,
+    });
+    const db = buildDeleteDb({ deleted, partner });
+
+    const result = await deleteBedAllocation({ id: "alloc-1", db: db as never });
+
+    expect(db.bedAllocation.update).toHaveBeenCalledWith({
+      where: { id: "alloc-partner" },
+      data: { isSecondOccupant: false },
+    });
+    expect(result.promotedPartner).toMatchObject({ id: "alloc-partner" });
+  });
+
+  it("leaves the primary untouched when the second occupant is removed", async () => {
+    const db = buildDeleteDb({
+      deleted: allocationRow({ isSecondOccupant: true }),
+    });
+
+    const result = await deleteBedAllocation({ id: "alloc-1", db: db as never });
+
+    expect(db.bedAllocation.findFirst).not.toHaveBeenCalled();
+    expect(db.bedAllocation.update).not.toHaveBeenCalled();
+    expect(result.promotedPartner).toBeNull();
+  });
+
+  it("is a no-op when the deleted primary has no partner on the bed-night", async () => {
+    const db = buildDeleteDb({ deleted: allocationRow(), partner: null });
+
+    const result = await deleteBedAllocation({ id: "alloc-1", db: db as never });
+
+    expect(db.bedAllocation.findFirst).toHaveBeenCalledTimes(1);
+    expect(db.bedAllocation.update).not.toHaveBeenCalled();
+    expect(result.promotedPartner).toBeNull();
+  });
+
+  it("applies promotion per night: each delete pins its own bed-night", async () => {
+    const night1 = allocationRow({ id: "alloc-1", stayDate: parseDateOnly("2026-07-01") });
+    const night2 = allocationRow({ id: "alloc-2", stayDate: parseDateOnly("2026-07-02") });
+    const db = {
+      bedAllocation: {
+        delete: vi
+          .fn()
+          .mockResolvedValueOnce(night1)
+          .mockResolvedValueOnce(night2),
+        findFirst: vi.fn().mockResolvedValue(null),
+        update: vi.fn(),
+      },
+    };
+
+    await deleteBedAllocation({ id: "alloc-1", db: db as never });
+    await deleteBedAllocation({ id: "alloc-2", db: db as never });
+
+    expect(db.bedAllocation.findFirst.mock.calls.map((call) => call[0].where.stayDate)).toEqual([
+      parseDateOnly("2026-07-01"),
+      parseDateOnly("2026-07-02"),
+    ]);
+  });
+
+  it("self-wraps delete + promotion in one transaction when no db is injected", async () => {
+    // The mocked prisma singleton is otherwise `{}` (see the #1675 self-wrap
+    // suite): a path that skips the wrap and reaches for prisma.bedAllocation
+    // would throw here rather than silently pass.
+    const prismaMock = prisma as unknown as { $transaction?: unknown };
+    const tx = buildDeleteDb({
+      deleted: allocationRow(),
+      partner: allocationRow({ id: "alloc-partner", isSecondOccupant: true }),
+    });
+    const txnMock = vi.fn(async (cb: (client: typeof tx) => unknown) => cb(tx));
+    prismaMock.$transaction = txnMock;
+    try {
+      await deleteBedAllocation({ id: "alloc-1" });
+
+      expect(txnMock).toHaveBeenCalledTimes(1);
+      // All three statements ran on the tx client.
+      expect(tx.bedAllocation.delete).toHaveBeenCalledTimes(1);
+      expect(tx.bedAllocation.findFirst).toHaveBeenCalledTimes(1);
+      expect(tx.bedAllocation.update).toHaveBeenCalledTimes(1);
+    } finally {
+      delete prismaMock.$transaction;
+    }
   });
 });

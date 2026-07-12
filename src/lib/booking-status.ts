@@ -99,23 +99,65 @@ export function isOperationalStayBookingStatus(status: string) {
  * below): does THIS booking consume lodge capacity? (issue #1254). A booking
  * holds when its status is capacity-holding, OR it is PENDING and is the
  * converted booking of a BookingRequest (accepted-but-unpaid quote / approved
- * request). Pass `isRequestConverted` = whether the booking has an
- * `originBookingRequest`. Generic PENDING stays non-holding (#737 preserved).
+ * request), OR it is PAYMENT_PENDING and carries an admin capacity hold
+ * (#1764). Pass `isRequestConverted` = whether the booking has an
+ * `originBookingRequest`, and `hasAdminCapacityHold` = whether
+ * `adminCapacityHoldAt` is set. Generic PENDING stays non-holding (#737
+ * preserved).
  *
  * Use this wherever a display or decision needs a per-row holding answer (e.g.
  * the bed board's Held vs Provisional tag) instead of the pure status check —
- * `isCapacityHoldingBookingStatus` alone would mislabel a held quote booking.
+ * `isCapacityHoldingBookingStatus` alone would mislabel a held quote booking
+ * or an admin-held payment-pending booking.
  */
 export function bookingHoldsCapacity(booking: {
   status: string;
   isRequestConverted?: boolean;
+  hasAdminCapacityHold?: boolean;
 }): boolean {
   if (isCapacityHoldingBookingStatus(booking.status)) return true;
-  return (
+  if (
     booking.status === BookingStatus.PENDING &&
     Boolean(booking.isRequestConverted)
+  ) {
+    return true;
+  }
+  // Admin capacity hold (#1764) is status-scoped to PAYMENT_PENDING (the v1
+  // scope): a stale flag on a cancelled/expired booking can never hold, and a
+  // booking that later reaches a naturally-holding status is already counted
+  // by the status check above — OR semantics, counted exactly once.
+  return (
+    booking.status === BookingStatus.PAYMENT_PENDING &&
+    Boolean(booking.hasAdminCapacityHold)
   );
 }
+
+/**
+ * Does THIS booking carry a persisted capacity override (#1771)? When true, a
+ * payment-time / settlement capacity re-check must NOT cancel/refund, 409, or
+ * bump the booking — it was deliberately admitted above the lodge ceiling by an
+ * admin. Set at every over-capacity admission site (create/modify/force-confirm/
+ * capacity-hold); read at every re-check site.
+ */
+export function bookingHasCapacityOverride(booking: {
+  capacityOverriddenAt: Date | null;
+}): boolean {
+  return booking.capacityOverriddenAt != null;
+}
+
+/**
+ * Prisma update-data fragment that releases an admin capacity hold (#1764).
+ * Spread into every terminal status flip (the cancel paths and cancel-like
+ * cron transitions) so no cancelled/expired booking keeps a stale hold record.
+ * Capacity correctness never depends on this — the filter's admin-hold
+ * disjunct is scoped to PAYMENT_PENDING, so a booking that left that status
+ * stopped holding the moment it transitioned — but the shared release keeps
+ * rows honest and the audit story simple ("cancel releases the hold").
+ */
+export const RELEASE_ADMIN_CAPACITY_HOLD_UPDATE = {
+  adminCapacityHoldAt: null,
+  adminCapacityHoldByMemberId: null,
+} as const;
 
 /**
  * The single source of truth for "which bookings consume lodge capacity" as a
@@ -124,14 +166,22 @@ export function bookingHoldsCapacity(booking: {
  *
  * Capacity is held by:
  *   1. Any booking in a capacity-holding status (PAID/COMPLETED/CONFIRMED/
- *      AWAITING_REVIEW), and
+ *      AWAITING_REVIEW),
  *   2. PENDING bookings that were converted from a BookingRequest — i.e. an
  *      accepted-but-unpaid quote or a directly-approved request (issue #1254,
- *      refining #737). These reserve the bed until payment, expiry, or cancel.
+ *      refining #737). These reserve the bed until payment, expiry, or cancel,
+ *      and
+ *   3. PAYMENT_PENDING bookings carrying an admin capacity hold (issue #1764):
+ *      an admin reserved the beds while the member sorts out payment. The
+ *      disjunct is deliberately status-scoped — a cancelled/expired booking
+ *      with a stale hold flag can never hold, and a booking that pays (moving
+ *      to a status in clause 1) is counted once via that clause, keeping the
+ *      claim path idempotent with an existing admin hold.
  *
  * Generic PENDING bookings (split-booking non-member children #738, member
  * "only-if-my-guests-come" holds) have no `originBookingRequest`, so they stay
- * non-holding and bumpable — #737 is preserved.
+ * non-holding and bumpable — #737 is preserved. PAYMENT_PENDING without an
+ * admin hold stays non-holding exactly as before (#737).
  *
  * The result is a self-contained `AND`-able fragment (its top level is `OR`);
  * spread it into a larger `where` alongside date/exclusion clauses.
@@ -143,6 +193,10 @@ export function capacityHoldingBookingFilter(): Prisma.BookingWhereInput {
       {
         status: BookingStatus.PENDING,
         originBookingRequest: { isNot: null },
+      },
+      {
+        status: BookingStatus.PAYMENT_PENDING,
+        adminCapacityHoldAt: { not: null },
       },
     ],
   };

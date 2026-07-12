@@ -42,6 +42,18 @@
   --color-brand-mist: var(--brand-mist);
   --color-brand-snow: var(--brand-snow);
   --color-brand-safety: var(--brand-safety);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-success-muted: var(--success-muted);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-warning-muted: var(--warning-muted);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-info-muted: var(--info-muted);
+  --color-danger: var(--danger);
+  --color-danger-foreground: var(--danger-foreground);
+  --color-danger-muted: var(--danger-muted);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -55,13 +67,18 @@
 
 :root {
   --radius: 0.625rem;
-  --brand-gold: #ffcb05;
-  --brand-charcoal: #4d4d46;
-  --brand-deep: #2f2f2b;
-  --brand-ridge: #6a6a63;
-  --brand-mist: #d9d5c2;
-  --brand-snow: #f7f5ed;
-  --brand-safety: #ff7c12;
+  /* Generic "Aotearoa" default brand palette (#1807): glacial-teal primary,
+     deep bush-green cool-stone neutrals, terracotta safety. These must stay in
+     lockstep with DEFAULT_CLUB_THEME_VALUES in src/lib/club-theme-schema.ts so
+     the static app chrome and the DB default agree for a fresh fork. Tokoroa
+     gold lives only in TOKOROA_CLUB_THEME_VALUES + the seed flag path. */
+  --brand-gold: #57b3ab;
+  --brand-charcoal: #21362b;
+  --brand-deep: #17231c;
+  --brand-ridge: #5c6f66;
+  --brand-mist: #d4ddd7;
+  --brand-snow: #f5f8f6;
+  --brand-safety: #b04d28;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
@@ -94,6 +111,38 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+  /* Semantic status tokens (#1801). `--success` / `--warning` are the accessible
+     text/accent colours; `-muted` are the subtle tinted backgrounds; `-foreground`
+     is text ON the solid accent. Light values equal the previous badge Tailwind
+     pairings (green-100/800, yellow-100/800) so light mode is unchanged; the `.dark`
+     block re-tints them to match the dark colored-callout remap. These are NEW,
+     additive tokens — they do NOT alter the default palette (a separate #1807). */
+  --success: #166534;
+  --success-foreground: #ffffff;
+  --success-muted: #dcfce7;
+  --warning: #854d0e;
+  --warning-foreground: #ffffff;
+  --warning-muted: #fef9c3;
+  /* Semantic status tokens continued (#1804 StatusChip). `--info` is the calm
+     blue used for in-progress / neutral-informational states (waitlisted,
+     processing, review, finance viewer); `--danger` is a dark-adaptable red for
+     terminal-negative states (cancelled, failed, overdue). Both follow the #1801
+     structure (accent text / -foreground on solid / -muted tinted background) so
+     the StatusChip renders one uniform muted-chip family across all five tones.
+     `--danger` is added rather than reusing the solid `--destructive` pair because
+     that pair is only 2.63:1 in dark mode (red-on-red) and would fail WCAG AA in a
+     status chip. Light values equal the previous red/blue badge Tailwind pairings
+     (blue-800/100, red-800/100); the `.dark` block re-tints to the existing
+     colored-callout dark tones (hue 250 / 27). All pairs clear WCAG AA (measured
+     with club-theme-schema.ts contrastRatio: info 7.15/7.37, danger 6.80/7.06,
+     -foreground on solid >= 8.3). NEW, additive tokens — no default palette hex is
+     altered. */
+  --info: #1e40af;
+  --info-foreground: #ffffff;
+  --info-muted: #dbeafe;
+  --danger: #991b1b;
+  --danger-foreground: #ffffff;
+  --danger-muted: #fee2e2;
 }
 
 .dark {
@@ -138,6 +187,31 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(0.55 0 0);
   --sidebar-ring: oklch(0.55 0 0);
+  /* Semantic status tokens (#1801) — dark re-tint mirrors the colored-callout
+     remap tones (green hue 150, amber hue 75): muted bg oklch(0.33 0.05 h) and
+     accent/text oklch(0.84 0.11 h), which clears >= 5.8:1 text-on-muted (the same
+     ratio documented for the family-text remap below); solid-accent foreground is
+     near-black. */
+  --success: oklch(0.84 0.11 150);
+  --success-foreground: oklch(0.2 0 0);
+  --success-muted: oklch(0.33 0.05 150);
+  --warning: oklch(0.84 0.11 75);
+  --warning-foreground: oklch(0.2 0 0);
+  --warning-muted: oklch(0.33 0.05 75);
+  /* Semantic status tokens continued (#1804) — dark re-tint follows the
+     colored-callout remap structure (muted bg oklch(0.33 0.05 h), accent/text
+     oklch(0.84 0.11 h), near-black solid foreground), matching the same ratios
+     documented for the family-text remap. `--danger` hue 27 mirrors the existing
+     red callout tone; `--info` hue 250 is NOT an existing callout tone (blue
+     callout is 262) — it is held byte-identical to the sibling Alert lane (#1802)
+     so the two lanes' additive `--info*` blocks de-dupe trivially at merge.
+     info 7.37:1, danger 7.06:1 text-on-muted. */
+  --info: oklch(0.84 0.11 250);
+  --info-foreground: oklch(0.2 0 0);
+  --info-muted: oklch(0.33 0.05 250);
+  --danger: oklch(0.84 0.11 27);
+  --danger-foreground: oklch(0.2 0 0);
+  --danger-muted: oklch(0.33 0.05 27);
 }
 
 .website-theme {
@@ -247,29 +321,45 @@
   }
 }
 
+/* A11y baseline (#1801): honour the OS "reduce motion" preference by collapsing
+   animations/transitions to near-instant and disabling smooth scroll for users
+   who opt out. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 @layer components {
   .app-brand-mark {
-    @apply inline-flex items-center justify-center rounded-full bg-brand-gold/20 text-brand-charcoal dark:bg-brand-gold/15 dark:text-brand-gold;
+    @apply inline-flex items-center justify-center rounded-full bg-brand-gold text-brand-charcoal;
   }
 
   .app-nav-link-active {
-    @apply bg-brand-gold/20 text-brand-charcoal dark:bg-brand-gold/15 dark:text-brand-gold;
+    @apply bg-brand-gold text-brand-charcoal;
   }
 
   .app-step-active {
-    @apply rounded-full bg-brand-gold/20 px-2 py-0.5 font-semibold text-brand-charcoal dark:bg-brand-gold/15 dark:text-brand-gold;
+    @apply rounded-full bg-brand-gold px-2 py-0.5 font-semibold text-brand-charcoal;
   }
 
   .app-button-brand {
-    @apply inline-flex items-center justify-center rounded-md bg-brand-gold px-4 py-2 text-sm font-medium text-brand-charcoal shadow-sm transition-colors hover:bg-brand-gold/90;
+    @apply inline-flex items-center justify-center rounded-md bg-brand-gold px-4 py-2 text-sm font-medium text-brand-charcoal shadow-sm transition-shadow hover:shadow-md;
   }
 
   .app-callout-brand {
-    @apply rounded-md border border-brand-gold/35 bg-brand-gold/10;
+    @apply rounded-md border border-brand-gold bg-card text-card-foreground;
   }
 
   .app-chip-brand {
-    @apply inline-flex items-center gap-1.5 rounded-md bg-brand-gold/15 px-3 py-1.5 text-sm font-medium text-brand-charcoal transition-colors hover:bg-brand-gold/25 dark:text-brand-gold;
+    @apply inline-flex items-center gap-1.5 rounded-md bg-brand-gold px-3 py-1.5 text-sm font-medium text-brand-charcoal transition-shadow hover:shadow-md;
   }
 
   /* Charcoal-on-snow keeps AA contrast under both shipped theme presets;
@@ -350,8 +440,182 @@
 }
 
 .app-theme-scope {
+  /* The public utility, authenticated, and admin layouts inject the saved
+     app-safe ClubTheme stylesheet.
+     Existing brand fields deliberately supply both the public website and app:
+     gold is the app accent, and deep/ridge/mist/snow form the neutral ramp. The
+     semantic success/warning/info/danger tokens remain the curated values declared
+     on :root/.dark above and are intentionally not overridden here (#1808). */
+  --background: var(--brand-snow);
+  --foreground: var(--brand-deep);
+  --card: var(--brand-snow);
+  --card-foreground: var(--brand-deep);
+  --popover: var(--brand-snow);
+  --popover-foreground: var(--brand-deep);
+  --primary: var(--brand-gold);
+  --primary-foreground: var(--brand-charcoal);
+  --secondary: var(--brand-mist);
+  --secondary-foreground: var(--brand-deep);
+  --muted: var(--brand-mist);
+  --muted-foreground: var(--brand-deep);
+  --accent: var(--brand-mist);
+  --accent-foreground: var(--brand-deep);
+  --app-accent-text: var(--brand-deep);
+  /* These remaining mixes are non-text structural boundaries only; no text
+     foreground is paired with a mixed endpoint. */
+  --border: color-mix(in srgb, var(--brand-ridge) 30%, var(--brand-snow));
+  --input: color-mix(in srgb, var(--brand-ridge) 30%, var(--brand-snow));
+  --ring: var(--brand-deep);
+  --chart-1: var(--brand-gold);
+  --chart-2: var(--brand-safety);
+  --chart-3: var(--brand-ridge);
+  --chart-4: var(--brand-mist);
+  --chart-5: var(--brand-charcoal);
+  --sidebar: var(--brand-charcoal);
+  --sidebar-foreground: var(--brand-snow);
+  --sidebar-primary: var(--brand-gold);
+  --sidebar-primary-foreground: var(--brand-charcoal);
+  --sidebar-accent: var(--brand-deep);
+  --sidebar-accent-foreground: var(--brand-snow);
+  --sidebar-border: color-mix(
+    in srgb,
+    var(--brand-ridge) 35%,
+    var(--brand-charcoal)
+  );
+  --sidebar-ring: var(--brand-snow);
+  --font-sans: var(
+    --font-website-body,
+    var(
+      --font-theme-inter,
+      ui-sans-serif,
+      system-ui,
+      sans-serif,
+      "Apple Color Emoji",
+      "Segoe UI Emoji"
+    )
+  );
+  --font-heading: var(
+    --font-website-heading,
+    var(--font-theme-league-spartan, var(--font-sans))
+  );
   background: var(--background);
   color: var(--foreground);
+  font-family: var(--font-sans);
+}
+
+.dark .app-theme-scope {
+  --background: var(--brand-deep);
+  --foreground: var(--brand-snow);
+  --card: var(--brand-charcoal);
+  --card-foreground: var(--brand-snow);
+  --popover: var(--brand-charcoal);
+  --popover-foreground: var(--brand-snow);
+  --primary: var(--brand-gold);
+  --primary-foreground: var(--brand-charcoal);
+  --secondary: var(--brand-charcoal);
+  --secondary-foreground: var(--brand-snow);
+  --muted: var(--brand-charcoal);
+  --muted-foreground: var(--brand-snow);
+  --accent: var(--brand-charcoal);
+  --accent-foreground: var(--brand-snow);
+  --app-accent-text: var(--brand-snow);
+  --border: color-mix(in srgb, var(--brand-mist) 28%, var(--brand-deep));
+  --input: color-mix(in srgb, var(--brand-mist) 28%, var(--brand-deep));
+  --ring: var(--brand-snow);
+  --sidebar: var(--brand-charcoal);
+  --sidebar-foreground: var(--brand-snow);
+  --sidebar-primary: var(--brand-gold);
+  --sidebar-primary-foreground: var(--brand-charcoal);
+  --sidebar-accent: var(--brand-deep);
+  --sidebar-accent-foreground: var(--brand-snow);
+  --sidebar-border: color-mix(in srgb, var(--brand-mist) 25%, var(--brand-deep));
+  --sidebar-ring: var(--brand-snow);
+}
+
+/* Filled brand controls keep the editable accent with its gated charcoal
+   foreground. Light-mode text-primary and focus rings use the dedicated dark
+   accent role instead of placing a mid-luminance accent directly on snow. A
+   charcoal inset boundary keeps solid accent controls/occupancy fills distinct
+   from the light surface; dark mode can rely on the gated gold-on-deep pair. */
+.app-theme-scope
+  :is(
+    .text-primary,
+    .text-brand-gold,
+    [class~="hover:text-primary"]:hover,
+    .group:hover [class~="group-hover:text-primary"]
+  ):not(.website-theme *) {
+  color: var(--app-accent-text);
+}
+
+.app-theme-scope :is(.bg-primary, .bg-brand-gold):not(.website-theme *) {
+  outline: 1px solid var(--brand-charcoal);
+  outline-offset: -1px;
+}
+
+.dark
+  .app-theme-scope
+  :is(.bg-primary, .bg-brand-gold):not(.website-theme *) {
+  outline: none;
+}
+
+/* A native outline is independent of Tailwind's ring opacity and component
+   opacity, so filled Button/Checkbox variants retain a visible keyboard focus
+   boundary. The ring token is a gated page-foreground endpoint in each mode. */
+.app-theme-scope
+  :where(
+    a,
+    button,
+    input,
+    select,
+    textarea,
+    [role="button"],
+    [role="checkbox"],
+    [role="link"],
+    [tabindex]
+  ):focus-visible:not(.website-theme *) {
+  outline: 2px solid var(--ring) !important;
+  outline-offset: 2px !important;
+}
+
+/* App headings pick up --font-heading (League Spartan when loaded). Specificity is
+   (0,1,1); the earlier .website-theme heading rule is (0,2,0), so a website-themed
+   subtree nested in an app scope (e.g. the site-style preview) keeps its own
+   heading font regardless of source order. */
+.app-theme-scope :is(h1, h2, h3, h4) {
+  font-family: var(--font-heading);
+}
+
+/* Tabular figures for aligned numeric/data contexts (#1801): tables get them by
+   default, and .tabular-figures opts any money/count/date cell in. */
+.app-theme-scope table {
+  font-variant-numeric: tabular-nums;
+}
+
+.tabular-figures {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Recharts draws gridlines/axes/ticks as SVG presentation attributes, where CSS
+   var() does not resolve — so the finance TrendChart's structural lines and tick
+   labels are themed here with real CSS rules that follow the light/dark tokens
+   (#1801). CSS declarations override the component's literal fallback attrs. Kept
+   scoped to .finance-trend-chart to match the single named file; a broader
+   `.app-theme-scope .recharts-*` sweep for every chart is a follow-up. */
+.finance-trend-chart .recharts-cartesian-grid line {
+  stroke: var(--border);
+}
+
+.finance-trend-chart
+  :is(.recharts-cartesian-axis-line, .recharts-cartesian-axis-tick-line) {
+  stroke: var(--border);
+}
+
+.finance-trend-chart
+  :is(
+    .recharts-cartesian-axis-tick-value,
+    .recharts-cartesian-axis-tick-value tspan
+  ) {
+  fill: var(--muted-foreground);
 }
 
 /* White + neutral -50/-100/-200 surfaces are remapped to dark tokens so they
@@ -867,7 +1131,10 @@ html:not(.dark)
 }
 
 .pswp__thumbnail-carousel-item.is-active {
-  border-color: #ffcb05;
+  /* Track the brand accent instead of a hardcoded Tokoroa gold (#1807). The
+     PhotoSwipe lightbox portals to <body>, so this inherits :root's
+     --brand-gold (the generic default teal), not the .website-theme override. */
+  border-color: var(--brand-gold);
   opacity: 1;
 }
 

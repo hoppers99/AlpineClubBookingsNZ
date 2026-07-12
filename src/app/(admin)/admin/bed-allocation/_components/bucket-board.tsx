@@ -1,7 +1,8 @@
 "use client";
 
 import { useDroppable } from "@dnd-kit/core";
-import { CircleDashed, Lock } from "lucide-react";
+import { CircleDashed, Focus, Inbox, Lock } from "lucide-react";
+import { EmptyState } from "@/components/ui/empty-state";
 import { cn } from "@/lib/utils";
 import { getBookingAccent } from "./booking-accent";
 import { GuestChip } from "./guest-chip";
@@ -62,14 +63,20 @@ export function BucketBoard({
       ref={setNodeRef}
       className={cn(
         "space-y-3 rounded-md border border-dashed p-3 transition-colors",
-        isOver && "border-blue-300 bg-blue-50",
+        isOver && "border-info bg-info-muted",
       )}
     >
       {bookingsWithGroups.length === 0 ? (
-        <div className="p-4 text-center text-sm text-muted-foreground">
-          No bookings awaiting allocation in this range.
-          {isOver ? " Drop here to unallocate a bed." : ""}
-        </div>
+        <EmptyState
+          icon={Inbox}
+          title="No bookings awaiting allocation"
+          description={
+            isOver
+              ? "Drop here to unallocate a bed."
+              : "Approved bookings still needing a bed in this range appear here."
+          }
+          className="py-8"
+        />
       ) : (
         bookingsWithGroups.map((booking) => {
           const groups = groupsByBooking.get(booking.id) ?? [];
@@ -80,6 +87,7 @@ export function BucketBoard({
           const holdsCapacity = booking.holdsCapacity;
           const accent = getBookingAccent(booking.id);
           const bookingTitle = `Booking ${booking.id}`;
+          const highlighted = booking.id === highlightedBookingId;
           return (
             <div
               key={booking.id}
@@ -87,9 +95,8 @@ export function BucketBoard({
               className={cn(
                 "relative overflow-hidden rounded-md border bg-card p-2 pl-3 text-card-foreground ring-1 ring-inset",
                 accent.ringClassName,
-                accent.tintClassName,
-                booking.id === highlightedBookingId &&
-                  "border-amber-300 bg-amber-50 dark:bg-amber-950/30",
+                highlighted &&
+                  "border-2 border-dashed border-warning bg-warning-muted dark:bg-warning-muted",
               )}
             >
               <span
@@ -97,6 +104,12 @@ export function BucketBoard({
                 className={cn("absolute inset-y-0 left-0 w-1", accent.stripClassName)}
               />
               <div className="mb-2 flex flex-wrap items-baseline gap-2 px-1">
+                {highlighted ? (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-warning-muted px-2 py-0.5 text-xs font-semibold text-warning">
+                    <Focus aria-hidden className="h-3 w-3" />
+                    Focused
+                  </span>
+                ) : null}
                 <span className="text-sm font-semibold">{booking.memberName}</span>
                 <span className="font-mono text-xs text-muted-foreground">
                   {booking.id}
@@ -108,7 +121,7 @@ export function BucketBoard({
                   className={cn(
                     "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium",
                     holdsCapacity
-                      ? "bg-foreground/10 text-foreground"
+                      ? "bg-secondary text-secondary-foreground"
                       : "border border-dashed border-muted-foreground/60 text-muted-foreground",
                   )}
                   title={
@@ -125,21 +138,21 @@ export function BucketBoard({
                   {holdsCapacity ? "Held" : "Provisional"}
                 </span>
                 {booking.parentBookingId ? (
-                  <span className="rounded-full bg-sky-100 px-2 py-0.5 text-xs font-medium text-sky-800">
+                  <span className="rounded-full bg-info-muted px-2 py-0.5 text-xs font-medium text-info">
                     Linked party · provisional non-member guests
                   </span>
                 ) : memberBookingIdsWithChildren.has(booking.id) ? (
-                  <span className="rounded-full bg-sky-100 px-2 py-0.5 text-xs font-medium text-sky-800">
+                  <span className="rounded-full bg-info-muted px-2 py-0.5 text-xs font-medium text-info">
                     Linked party · member booking
                   </span>
                 ) : null}
                 {booking.requestedRoom &&
                   (booking.requestedRoom.active ? (
-                    <span className="rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-800">
+                    <span className="rounded-full bg-secondary px-2 py-0.5 text-xs font-medium text-secondary-foreground">
                       Requested: {booking.requestedRoom.name}
                     </span>
                   ) : (
-                    <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">
+                    <span className="rounded-full bg-warning-muted px-2 py-0.5 text-xs font-medium text-warning">
                       Requested room no longer active: {booking.requestedRoom.name}
                     </span>
                   ))}
@@ -155,7 +168,7 @@ export function BucketBoard({
                     onSelectBed={(bedId) => onSelectBed(group.bookingGuestId, bedId)}
                     onAllocate={() => onAllocate(group)}
                     pending={pendingGuestIds.has(group.bookingGuestId)}
-                    highlighted={booking.id === highlightedBookingId}
+                    highlighted={highlighted}
                     canEdit={canEdit}
                   />
                 ))}

@@ -507,13 +507,18 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
   );
 
   // Retroactive booking (#1695). Honoured only for on-behalf creates whose
-  // resolved envelope actually starts in the past — a future-dated create
-  // carrying the flag keeps standard behaviour (hard capacity block, normal
-  // guards); when unset, every code path below stays byte-identical to the
-  // member flow.
+  // resolved envelope actually starts in the past; when unset, every code
+  // path below stays byte-identical to the member flow.
   const allowPastDates = Boolean(input.allowPastDates) && isOnBehalf;
   const todayDateOnly = getTodayDateOnly();
   const retroactiveOverride = allowPastDates && checkIn < todayDateOnly;
+  // Over-capacity warn-and-confirm (#1668/#1695, widened by #1767): every
+  // on-behalf create may overbook behind an explicit admin confirmation —
+  // except when the caller opted into the waitlist fallback, which needs the
+  // capacityExceeded outcome to fall through. Member self-creates
+  // (isOnBehalf false) always keep the hard capacity block.
+  const overCapacityWarnAndConfirm =
+    retroactiveOverride || (isOnBehalf && input.waitlistIntent !== true);
   // The member email is a per-create choice only for on-behalf bookings; a
   // member booking for themselves is always emailed.
   const notifyMember = !isOnBehalf || input.notifyMember !== false;
@@ -793,10 +798,17 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
         !capacityCheck.available &&
         (requestedStatus === BookingStatus.PENDING || effectivePriceCents > 0 || review.blockForReview)
       ) {
-        if (retroactiveOverride) {
-          // Retroactive over-capacity is warn-and-confirm (#1695): the lodge
-          // capacity lock is still held, only the availability decision defers
-          // to the admin's explicit confirmation.
+        if (overCapacityWarnAndConfirm) {
+          // The v1 PENDING carve-out (#1767) is retired by #1771: the persisted
+          // capacity override is now stamped on the booking below and honoured
+          // by cron-confirm-pending's hold-window re-check, so a hold-eligible
+          // PENDING on-behalf overbook no longer silently self-destructs (bump
+          // email included). Members never overbook — overCapacityWarnAndConfirm
+          // is already false for member self-creates — so the members-never-
+          // overbook block is untouched.
+          // On-behalf over-capacity is warn-and-confirm (#1695/#1767): the
+          // lodge capacity lock is still held, only the availability decision
+          // defers to the admin's explicit confirmation.
           if (input.confirmOverCapacity !== true) {
             throw new OverCapacityConfirmationRequiredError(
               overCapacityNights(capacityCheck),
@@ -842,6 +854,15 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
           requestedRoomId: requestedRoomId || null,
           cancelIfGuestsBumped: effectiveCancelIfGuestsBumped,
           createdById: isOnBehalf ? sessionUserId : null,
+          // Persisted capacity override (#1771): stamp the admitting admin when
+          // this create deliberately overbooked (pre-create branch). Omitted
+          // entirely on the in-capacity path so the columns default to null.
+          ...(capacityOverridden
+            ? {
+                capacityOverriddenAt: new Date(),
+                capacityOverriddenByMemberId: sessionUserId,
+              }
+            : {}),
           requiresAdminReview: review.requiresAdminReview,
           adminReviewReason: review.adminReviewReason,
           memberReviewJustification: review.memberReviewJustification,
@@ -892,8 +913,9 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
           tx
         );
         if (!finalCapacityCheck.available) {
-          if (retroactiveOverride) {
-            // Retroactive $0 booking over capacity: warn-and-confirm (#1695).
+          if (overCapacityWarnAndConfirm) {
+            // On-behalf $0 booking over capacity: warn-and-confirm
+            // (#1695/#1767).
             if (input.confirmOverCapacity !== true) {
               throw new OverCapacityConfirmationRequiredError(
                 overCapacityNights(finalCapacityCheck),
@@ -922,7 +944,18 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
         });
         await tx.booking.update({
           where: { id: newBooking.id },
-          data: { status: BookingStatus.PAID },
+          data: {
+            status: BookingStatus.PAID,
+            // Persisted capacity override (#1771): the $0/credit-covered branch
+            // decides the overbook AFTER the create, so stamp the admitting
+            // admin on this settling update. Guarded — never set in-capacity.
+            ...(capacityOverridden
+              ? {
+                  capacityOverriddenAt: new Date(),
+                  capacityOverriddenByMemberId: sessionUserId,
+                }
+              : {}),
+          },
         });
         newBooking.status = BookingStatus.PAID;
       } else if (
@@ -997,6 +1030,21 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
             requestedRoomId: requestedRoomId || null,
             cancelIfGuestsBumped: false,
             createdById: isOnBehalf ? sessionUserId : null,
+            // Persisted capacity override (#1771): a mixed-party overbook admits
+            // the WHOLE party over the ceiling behind the admin's confirm, so the
+            // provisional non-member child inherits the same override as its
+            // parent. Without this the parent (stamped) survives payment while the
+            // hold cron bumps the unstamped child days later — the exact silent
+            // partial-drop this feature exists to prevent. capacityOverridden is
+            // true here only when the member guests alone overflowed (the split
+            // gate checks member guests); if only the non-members overflow it stays
+            // false and the child keeps ordinary #738 hold-window behaviour.
+            ...(capacityOverridden
+              ? {
+                  capacityOverriddenAt: new Date(),
+                  capacityOverriddenByMemberId: sessionUserId,
+                }
+              : {}),
             guests: {
               create: buildGuestCreateData(
                 nonMemberGuests,
@@ -1095,11 +1143,13 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
       zeroDollarConfirmed: isZeroDollarConfirmed,
       paymentMethod,
       split: splitBooking,
-      // Retroactive-create audit fields (#1695), only when the override is
-      // active — a normal create records nothing new.
-      ...(retroactiveOverride
+      // Override audit fields (#1695/#1767), only when an override was in
+      // play — a normal create records nothing new. allowPastDates stays
+      // true exactly for the retroactive shape, so #1695 audits are
+      // byte-identical.
+      ...(retroactiveOverride || capacityOverridden
         ? {
-            allowPastDates: true,
+            allowPastDates: retroactiveOverride,
             confirmOverCapacity: input.confirmOverCapacity === true,
             capacityOverridden,
           }
@@ -1130,9 +1180,9 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
         split: splitBooking,
         // The admin's email choice is recorded on every on-behalf create.
         notifyMember,
-        ...(retroactiveOverride
+        ...(retroactiveOverride || capacityOverridden
           ? {
-              allowPastDates: true,
+              allowPastDates: retroactiveOverride,
               confirmOverCapacity: input.confirmOverCapacity === true,
               capacityOverridden,
             }

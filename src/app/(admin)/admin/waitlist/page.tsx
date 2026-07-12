@@ -3,11 +3,21 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { AlertTriangle } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { AdminPageHeader } from "@/components/admin/admin-page-header";
+import { AdminDataTable } from "@/components/admin/admin-data-table";
+import {
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { bookingStatusClass, bookingStatusLabel } from "@/lib/status-colors";
 import { buildHrefWithReturnTo, buildPathWithSearch } from "@/lib/internal-return-path";
 
@@ -43,6 +53,10 @@ interface WaitlistEntry {
   waitlistOfferExpiresAt: string | null;
   requiresAdminReview: boolean;
   adminReviewReason: string | null;
+  // #1769b: the review outcome disambiguates whether a force-confirm lands PAID
+  // (and emails the member). A $0 no-adult booking that is APPROVED lands PAID
+  // even though requiresAdminReview is still set, so the notify dialog must show.
+  adminReviewStatus: string | null;
   finalPriceCents: number;
   createdAt: string;
   offerEmailDelivery: OfferEmailDelivery | null;
@@ -54,6 +68,14 @@ interface ForceConfirmReport {
   overbooked: boolean;
   overbookDates: string[];
   auditAction: string | null;
+  // #1723 path 1: the force-confirm landed PAYMENT_PENDING on a stay whose
+  // check-out has already passed — the admin just created an unpaid finished
+  // stay and should hear about it at creation, not discover it on the queue.
+  unpaidFinishedStay: boolean;
+  // #1769b: the admin's per-action email choice, when one was offered. null
+  // means no choice was made (the force-confirm never sends an email, e.g. a
+  // priced or parked-for-review outcome). false = the member was not emailed.
+  notifiedMember: boolean | null;
 }
 
 function parsePositiveInteger(value: string | null, fallback: number) {
@@ -137,14 +159,14 @@ function getOfferEmailSummary(delivery: OfferEmailDelivery) {
 
 function getOfferEmailBadgeClass(delivery: OfferEmailDelivery) {
   if (delivery.needsOperatorAction) {
-    return "bg-red-100 text-red-800";
+    return "bg-danger-muted text-danger";
   }
 
   if (delivery.retryState === "retrying" || delivery.retryState === "queued") {
-    return "bg-amber-100 text-amber-800";
+    return "bg-warning-muted text-warning";
   }
 
-  return "bg-emerald-100 text-emerald-800";
+  return "bg-success-muted text-success";
 }
 
 function formatOfferEmailDetail(delivery: OfferEmailDelivery) {
@@ -195,7 +217,15 @@ export default function AdminWaitlistPage() {
   const [overbookDialog, setOverbookDialog] = useState<{
     bookingId: string;
     dates: string[];
+    // #1769b: carry the admin's email choice through a capacity-exceeded retry
+    // so the overbook confirm preserves it.
+    notifyMember?: boolean;
   } | null>(null);
+  // #1769b: the per-action email-choice dialog, shown before a force-confirm
+  // that would actually send the member a confirmation email.
+  const [notifyDialog, setNotifyDialog] = useState<{ bookingId: string } | null>(
+    null
+  );
   const [forceConfirmReport, setForceConfirmReport] =
     useState<ForceConfirmReport | null>(null);
   const [error, setError] = useState("");
@@ -327,31 +357,43 @@ export default function AdminWaitlistPage() {
     });
   }
 
-  async function handleForceConfirm(bookingId: string, allowOverbook = false) {
+  async function handleForceConfirm(
+    bookingId: string,
+    allowOverbook = false,
+    notifyMember?: boolean
+  ) {
     setForceConfirming(bookingId);
     setError("");
 
     const res = await fetch(`/api/admin/bookings/${bookingId}/force-confirm`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ allowOverbook }),
+      body: JSON.stringify({
+        allowOverbook,
+        ...(notifyMember !== undefined ? { notifyMember } : {}),
+      }),
     });
 
     const data = await res.json();
 
     if (res.ok && data.success) {
       setOverbookDialog(null);
+      setNotifyDialog(null);
       setForceConfirmReport({
         bookingId,
         status: readString(data.status),
         overbooked: data.overbooked === true,
         overbookDates: readStringArray(data.overbookDates),
         auditAction: readString(data.auditAction),
+        unpaidFinishedStay: data.unpaidFinishedStay === true,
+        notifiedMember: notifyMember ?? null,
       });
       await loadEntries();
     } else if (data.error === "CAPACITY_EXCEEDED" && data.overbookDates) {
       setForceConfirmReport(null);
-      setOverbookDialog({ bookingId, dates: data.overbookDates });
+      setNotifyDialog(null);
+      // Preserve the admin's email choice into the overbook retry (#1769b).
+      setOverbookDialog({ bookingId, dates: data.overbookDates, notifyMember });
     } else {
       setForceConfirmReport(null);
       setError(data.error || "Failed to force-confirm booking");
@@ -366,30 +408,66 @@ export default function AdminWaitlistPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <h1 className="text-2xl font-bold">Waitlist</h1>
-        <Badge variant="secondary">{pagination.total} total</Badge>
-      </div>
+      <AdminPageHeader
+        title="Waitlist"
+        actions={<Badge variant="secondary">{pagination.total} total</Badge>}
+      />
 
       {error && (
-        <div className="rounded-md bg-red-50 p-3 text-sm text-red-700">{error}</div>
+        <div className="rounded-md border border-danger/20 bg-danger-muted p-3 text-sm text-danger">{error}</div>
+      )}
+
+      {/* #1723 path 1 (owner decision B): allowed, but the admin is told at
+          creation that this booking is already an unpaid finished stay. */}
+      {forceConfirmReport?.unpaidFinishedStay && (
+        <Card className="border-warning/20 bg-warning-muted">
+          <CardContent className="pt-6 space-y-2">
+            <p className="font-medium text-warning">
+              Unpaid finished stay created
+            </p>
+            <p className="text-sm text-warning">
+              This booking&apos;s check-out date has already passed, so
+              force-confirming it created a payment-pending stay that is
+              already finished. It now appears on the{" "}
+              <span className="font-medium">Unpaid Finished Stays</span> queue
+              — follow up on payment or settle the booking.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* #1769b: honest post-action copy when the admin suppressed the
+          confirmation email. The booking still landed PAID; only the member
+          email was skipped, and the choice is in the audit log. */}
+      {forceConfirmReport?.notifiedMember === false && (
+        <Card className="border-success/20 bg-success-muted">
+          <CardContent className="pt-6 space-y-1">
+            <p className="font-medium text-success">
+              Booking force-confirmed
+            </p>
+            <p className="text-sm text-success">
+              The member was not emailed — your choice is recorded in the audit
+              log.
+            </p>
+          </CardContent>
+        </Card>
       )}
 
       {forceConfirmReport?.overbooked && (
-        <Card className="border-red-200 bg-red-50">
+        <Card className="border-danger/20 bg-danger-muted">
           <CardContent className="pt-6 space-y-3">
             <div>
-              <p className="font-medium text-red-900">
+              <p className="font-medium text-danger">
                 Force-confirmed overbooked booking
               </p>
               {forceConfirmReport.status && (
-                <p className="text-sm text-red-800">
+                <p className="text-sm text-danger">
                   New status: {bookingStatusLabel(forceConfirmReport.status)}
                 </p>
               )}
             </div>
             {forceConfirmReport.overbookDates.length > 0 && (
-              <ul className="list-disc list-inside text-sm text-red-800">
+              <ul className="list-inside list-disc text-sm text-danger">
                 {forceConfirmReport.overbookDates.map((date) => (
                   <li key={date}>{date}</li>
                 ))}
@@ -397,7 +475,7 @@ export default function AdminWaitlistPage() {
             )}
             <Link
               href={buildForceConfirmAuditPath(forceConfirmReport)}
-              className="text-sm text-blue-700 hover:underline"
+              className="text-sm text-primary hover:underline"
             >
               View critical audit record
             </Link>
@@ -455,17 +533,17 @@ export default function AdminWaitlistPage() {
       </Card>
 
       {overbookDialog && (
-        <Card className="border-amber-200 bg-amber-50">
+        <Card className="border-warning/20 bg-warning-muted">
           <CardContent className="pt-6 space-y-3">
-            <p className="font-medium text-amber-900">
+            <p className="font-medium text-warning">
               This will overbook the lodge on the following dates:
             </p>
-            <ul className="list-disc list-inside text-sm text-amber-800">
+            <ul className="list-inside list-disc text-sm text-warning">
               {overbookDialog.dates.map((d) => (
                 <li key={d}>{d}</li>
               ))}
             </ul>
-            <div className="flex gap-3">
+            <div className="flex flex-col gap-3 sm:flex-row">
               <Button
                 variant="outline"
                 onClick={() => setOverbookDialog(null)}
@@ -474,9 +552,16 @@ export default function AdminWaitlistPage() {
               </Button>
               <Button
                 variant="destructive"
-                onClick={() => handleForceConfirm(overbookDialog.bookingId, true)}
+                onClick={() =>
+                  handleForceConfirm(
+                    overbookDialog.bookingId,
+                    true,
+                    overbookDialog.notifyMember
+                  )
+                }
                 disabled={forceConfirming === overbookDialog.bookingId}
               >
+                <AlertTriangle aria-hidden className="h-4 w-4" />
                 {forceConfirming === overbookDialog.bookingId
                   ? "Confirming..."
                   : "Confirm Anyway (Overbook)"}
@@ -486,127 +571,180 @@ export default function AdminWaitlistPage() {
         </Card>
       )}
 
+      {/* #1769b (#1705 pattern): a force-confirm that lands PAID ($0 + review
+          resolved) sends the member a confirmation email. The admin chooses,
+          per action, whether that email is sent; both choices confirm the
+          booking identically and the choice is recorded in the audit log.
+          Shown only when an email would actually be sent. */}
+      {notifyDialog && (
+        <Card className="border-warning/20 bg-warning-muted">
+          <CardContent className="pt-6 space-y-3">
+            <p className="font-medium text-warning">
+              Email the member about this confirmation?
+            </p>
+            <p className="text-sm text-warning">
+              Force-confirming this booking confirms it as paid. Choose whether
+              the member receives the standard booking confirmation email — your
+              choice is recorded in the audit log.
+            </p>
+            <div className="flex flex-wrap gap-3">
+              <Button variant="outline" onClick={() => setNotifyDialog(null)}>
+                Cancel
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() =>
+                  handleForceConfirm(notifyDialog.bookingId, false, false)
+                }
+                disabled={forceConfirming === notifyDialog.bookingId}
+              >
+                Confirm without emailing
+              </Button>
+              <Button
+                onClick={() =>
+                  handleForceConfirm(notifyDialog.bookingId, false, true)
+                }
+                disabled={forceConfirming === notifyDialog.bookingId}
+              >
+                Confirm and email member
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {entries.length === 0 ? (
         <Card>
-          <CardContent className="py-8 text-center text-gray-500">
+          <CardContent className="py-8 text-center text-muted-foreground">
             No waitlisted bookings match the current filters
           </CardContent>
         </Card>
       ) : (
         <div className="space-y-3">
-          <p className="text-sm text-gray-500">
+          <p className="text-sm text-muted-foreground">
             Showing {resultStart}-{resultEnd} of {pagination.total}
           </p>
-          <div className="overflow-x-auto">
-            <table className="w-full border-collapse text-sm">
-              <thead>
-                <tr className="border-b bg-gray-50 text-left">
-                  <th className="px-3 py-2 font-medium">#</th>
-                  <th className="px-3 py-2 font-medium">Member</th>
-                  <th className="px-3 py-2 font-medium">Stay</th>
-                  <th className="px-3 py-2 font-medium">Guests</th>
-                  <th className="px-3 py-2 font-medium">Price</th>
-                  <th className="px-3 py-2 font-medium">Status</th>
-                  <th className="px-3 py-2 font-medium">Source</th>
-                  <th className="px-3 py-2 font-medium">Created</th>
-                  <th className="px-3 py-2 font-medium">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {entries.map((entry) => (
-                  <tr key={entry.id} className="border-b hover:bg-gray-50">
-                    <td className="px-3 py-2">{entry.waitlistPosition ?? "-"}</td>
-                    <td className="px-3 py-2">
-                      <Link
-                        href={buildHrefWithReturnTo(
-                          `/admin/members/${entry.memberId}`,
-                          currentWaitlistPath
-                        )}
-                        className="hover:underline"
-                      >
-                        <div className="font-medium text-blue-600">{entry.memberName}</div>
-                        <div className="text-xs text-gray-500">{entry.memberEmail}</div>
-                      </Link>
-                    </td>
-                    <td className="px-3 py-2">
-                      <div>{entry.checkIn}</div>
-                      <div className="text-xs text-gray-500">to {entry.checkOut}</div>
-                    </td>
-                    <td className="px-3 py-2">{entry.guestCount}</td>
-                    <td className="px-3 py-2">
-                      ${(entry.finalPriceCents / 100).toFixed(2)}
-                    </td>
-                    <td className="px-3 py-2">
-                      <div className="space-y-1">
-                        <Badge variant="secondary" className={bookingStatusClass(entry.status)}>
-                          {bookingStatusLabel(entry.status)}
+          <AdminDataTable>
+            <TableHeader>
+              <TableRow>
+                <TableHead>#</TableHead>
+                <TableHead>Member</TableHead>
+                <TableHead>Stay</TableHead>
+                <TableHead>Guests</TableHead>
+                <TableHead>Price</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Source</TableHead>
+                <TableHead>Created</TableHead>
+                <TableHead>Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {entries.map((entry) => (
+                <TableRow key={entry.id}>
+                  <TableCell>{entry.waitlistPosition ?? "-"}</TableCell>
+                  <TableCell>
+                    <Link
+                      href={buildHrefWithReturnTo(
+                        `/admin/members/${entry.memberId}`,
+                        currentWaitlistPath
+                      )}
+                      className="hover:underline"
+                    >
+                      <div className="font-medium text-primary">{entry.memberName}</div>
+                      <div className="text-xs text-muted-foreground">{entry.memberEmail}</div>
+                    </Link>
+                  </TableCell>
+                  <TableCell>
+                    <div>{entry.checkIn}</div>
+                    <div className="text-xs text-muted-foreground">to {entry.checkOut}</div>
+                  </TableCell>
+                  <TableCell>{entry.guestCount}</TableCell>
+                  <TableCell>
+                    ${(entry.finalPriceCents / 100).toFixed(2)}
+                  </TableCell>
+                  <TableCell>
+                    <div className="space-y-1">
+                      <Badge variant="secondary" className={bookingStatusClass(entry.status)}>
+                        {bookingStatusLabel(entry.status)}
+                      </Badge>
+                      {entry.requiresAdminReview && (
+                        <p className="text-xs text-warning">
+                          {entry.adminReviewReason || "Admin review required"}
+                        </p>
+                      )}
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <Link
+                      href={buildHrefWithReturnTo(
+                        `/bookings/${entry.id}`,
+                        currentWaitlistPath
+                      )}
+                      className="text-primary hover:underline"
+                    >
+                      View booking
+                    </Link>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {getWaitlistActionContext(entry)}
+                    </p>
+                    {entry.offerEmailDelivery && (
+                      <div className="mt-2 space-y-1">
+                        <Badge
+                          variant="secondary"
+                          className={getOfferEmailBadgeClass(entry.offerEmailDelivery)}
+                        >
+                          {getOfferEmailSummary(entry.offerEmailDelivery)}
                         </Badge>
-                        {entry.requiresAdminReview && (
-                          <p className="text-xs text-amber-800">
-                            {entry.adminReviewReason || "Admin review required"}
+                        {formatOfferEmailDetail(entry.offerEmailDelivery) && (
+                          <p className="max-w-xs text-xs text-muted-foreground">
+                            {formatOfferEmailDetail(entry.offerEmailDelivery)}
                           </p>
                         )}
-                      </div>
-                    </td>
-                    <td className="px-3 py-2">
-                      <Link
-                        href={buildHrefWithReturnTo(
-                          `/bookings/${entry.id}`,
-                          currentWaitlistPath
-                        )}
-                        className="text-blue-600 hover:underline"
-                      >
-                        View booking
-                      </Link>
-                      <p className="mt-1 text-xs text-gray-500">
-                        {getWaitlistActionContext(entry)}
-                      </p>
-                      {entry.offerEmailDelivery && (
-                        <div className="mt-2 space-y-1">
-                          <Badge
-                            variant="secondary"
-                            className={getOfferEmailBadgeClass(entry.offerEmailDelivery)}
+                        {entry.offerEmailDelivery.needsOperatorAction && (
+                          <Link
+                            href="/admin/email-deliverability"
+                            className="block text-xs text-primary hover:underline"
                           >
-                            {getOfferEmailSummary(entry.offerEmailDelivery)}
-                          </Badge>
-                          {formatOfferEmailDetail(entry.offerEmailDelivery) && (
-                            <p className="max-w-xs text-xs text-gray-500">
-                              {formatOfferEmailDetail(entry.offerEmailDelivery)}
-                            </p>
-                          )}
-                          {entry.offerEmailDelivery.needsOperatorAction && (
-                            <Link
-                              href="/admin/email-deliverability"
-                              className="block text-xs text-blue-600 hover:underline"
-                            >
-                              Review email recovery
-                            </Link>
-                          )}
-                        </div>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 text-xs">{formatDateTime(entry.createdAt)}</td>
-                    <td className="px-3 py-2">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => handleForceConfirm(entry.id)}
-                        disabled={forceConfirming === entry.id}
-                      >
-                        {forceConfirming === entry.id ? "..." : "Force Confirm"}
-                      </Button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                            Review email recovery
+                          </Link>
+                        )}
+                      </div>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-xs">{formatDateTime(entry.createdAt)}</TableCell>
+                  <TableCell>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() =>
+                        // #1769b: a force-confirm only emails the member when
+                        // it lands PAID ($0 stay with admin review resolved).
+                        // Offer the email choice only then; otherwise
+                        // force-confirm proceeds directly, exactly as before.
+                        // A no-adult booking that is already APPROVED still
+                        // carries requiresAdminReview but lands PAID, so treat
+                        // APPROVED as resolved (matches the route's gate).
+                        entry.finalPriceCents === 0 &&
+                        (!entry.requiresAdminReview ||
+                          entry.adminReviewStatus === "APPROVED")
+                          ? setNotifyDialog({ bookingId: entry.id })
+                          : handleForceConfirm(entry.id)
+                      }
+                      disabled={forceConfirming === entry.id}
+                    >
+                      {forceConfirming === entry.id ? "..." : "Force Confirm"}
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </AdminDataTable>
         </div>
       )}
 
       {pagination.total > 0 && (
         <div className="flex flex-col gap-3 border-t pt-4 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-sm text-gray-500">
+          <p className="text-sm text-muted-foreground">
             Page {pagination.page} of {totalPages}
           </p>
           <div className="flex gap-2">

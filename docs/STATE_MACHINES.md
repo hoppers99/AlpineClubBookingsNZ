@@ -19,12 +19,33 @@ AWAITING_REVIEW -> PENDING (quote accepted, #1254) or CONFIRMED/PAID or CANCELLE
 
 Capacity-holding is not a pure function of status (#1254, refining #737). A
 booking holds beds when its status is capacity-holding (PAID, COMPLETED,
-CONFIRMED, AWAITING_REVIEW) **or** it is PENDING and is the converted booking of
-a `BookingRequest` (an accepted-but-unpaid quote / approved request). Generic
-PENDING (split-booking children #738, member "only-if-my-guests-come" holds)
-still does not hold and stays bumpable. The single source of truth is
-`capacityHoldingBookingFilter()` in `src/lib/booking-status.ts`; every
-availability query uses it. Consequence: an accepted-but-unpaid quote booking
+CONFIRMED, AWAITING_REVIEW), **or** it is PENDING and is the converted booking
+of a `BookingRequest` (an accepted-but-unpaid quote / approved request), **or**
+it is PAYMENT_PENDING and carries an **admin capacity hold** (#1764,
+`adminCapacityHoldAt` set — an orthogonal flag, NOT a status: the lifecycle
+status keeps meaning what it means). Generic PENDING (split-booking children
+#738, member "only-if-my-guests-come" holds) still does not hold and stays
+bumpable, and PAYMENT_PENDING without an admin hold stays non-holding. The
+single source of truth is `capacityHoldingBookingFilter()` in
+`src/lib/booking-status.ts`; every availability query uses it.
+
+Admin capacity hold interaction (#1764): Hold is admin-only
+(`POST /api/admin/bookings/[id]/capacity-hold`), allowed only on a
+PAYMENT_PENDING booking that does not already hold capacity, taken under the
+per-lodge advisory lock with a capacity re-check (409 CAPACITY_EXCEEDED unless
+an explicit overbook is confirmed, mirroring force-confirm). Unhold (`DELETE`
+on the same route) releases the beds and is refused (409) once the booking
+holds capacity naturally — releasing a paid/confirmed booking's capacity stays
+impossible. A natural transition (payment success -> PAID etc.) needs no hold
+handshake: the filter's clauses are OR'd, so capacity is counted exactly once
+and the hold record simply becomes inert; if a settlement failure later
+reverts the booking to PAYMENT_PENDING (group-settlement reaper), the still-set
+hold re-engages seamlessly — capacity was continuously held either way. Every
+cancel-shaped transition (cancel routes, group-child cancel, settlement
+reaper expiry, Internet Banking hold release, capacity-failed settlement)
+clears the hold fields via the shared `RELEASE_ADMIN_CAPACITY_HOLD_UPDATE`
+fragment — no orphaned holds. Both actions write audit rows
+(`booking.admin_capacity_hold.placed[_overbook]` / `.released`). Consequence: an accepted-but-unpaid quote booking
 keeps its bed until it is paid, expires, or is cancelled, and a later member
 booking can no longer bump it. One deliberate exception (owner-ratified, #1317):
 an accepted-but-unpaid hold is NOT protected against a *capacity reduction* — if
@@ -259,11 +280,33 @@ with zero deltas) or `recalculate` (the standard reprice with locked-period
 clamps lifted). An over-capacity override is warn-and-confirm: the first apply
 raises `OverCapacityConfirmationRequiredError` (409,
 `OVER_CAPACITY_CONFIRM_REQUIRED`) and only proceeds when resubmitted with
-`confirmOverCapacity: true`, recording `capacityOverridden`. Every override move
-is audited as `booking.modify.admin_override` (including the admin's explicit
-member-notification choice, `notifyMember`) and linked, best-effort, to the
-booking's most recent APPROVED-but-unlinked change request that the move
-fulfils (date-only request whose named dates equal the applied values).
+`confirmOverCapacity: true`, recording `capacityOverridden`. The same
+warn-and-confirm contract covers **every admin on-behalf create** — past-dated
+(#1695) and future-dated (#1767) — except a create that opted into the
+waitlist fallback (which keeps the capacity-exceeded outcome so the
+WAITLISTED booking is created instead); a member self-create keeps the hard
+capacity block and can never overbook. (The former v1 hard block on a
+non-member hold-eligible (PENDING) party was retired by #1771 — the persisted
+override now lets the hold cron confirm rather than bump the overbook.) Every
+override move is audited as `booking.modify.admin_override` (including the
+admin's explicit member-notification choice, `notifyMember`) and linked,
+best-effort, to the booking's most recent APPROVED-but-unlinked change request
+that the move fulfils (date-only request whose named dates equal the applied
+values).
+
+**Persisted capacity override (#1771).** Every over-capacity admission stamps
+`Booking.capacityOverriddenAt` + `capacityOverriddenByMemberId` (immutable, set
+only when the override fires, never cleared on cancel). The payment-time and
+settlement capacity re-checks — `markBookingPaymentSucceeded`, payment links,
+`cron-confirm-pending`, `charge-saved-method`, `switch-to-internet-banking`, the
+Internet Banking invoice-paid reconcile, and group settlement — now consult
+`bookingHasCapacityOverride` and, when set, settle/advance the booking to its
+correct terminal state (PAID / CONFIRMED / payment proceeds) instead of
+cancelling+refunding, 409ing, or bumping it. Previously a *priced* overridden
+booking self-destructed when payment landed over capacity; $0/credit-covered
+overridden creates settled at create time and were never affected. The
+DRAFT-scoped re-checks (`create-payment-intent`, `confirm-draft`) are exempt (a
+DRAFT can never carry an override).
 
 To verify: failed post-transaction refund recovery, Xero credit-note creation,
 additional-payment cleanup, and bed-allocation reconciliation.
@@ -470,6 +513,8 @@ Known statuses: `PENDING`, `PROCESSING`, `SUCCEEDED`, `FAILED`, `REFUNDED`,
 PENDING -> PROCESSING -> SUCCEEDED
 PENDING/PROCESSING -> FAILED
 SUCCEEDED -> PARTIALLY_REFUNDED -> REFUNDED
+REFUNDED/PARTIALLY_REFUNDED -> (repay, #1765) fresh PRIMARY transaction on the
+  same Payment: PENDING/PROCESSING -> SUCCEEDED
 ```
 
 Booking cancellation honors these transitions (#1473): only a never-captured
@@ -478,7 +523,29 @@ evidence — the aggregate mirror alone can lie, because inbound reconciliation
 folds modification credit notes into `refundedAmountCents` /
 `PARTIALLY_REFUNDED` on never-captured Internet Banking payments (see
 `docs/DOMAIN_INVARIANTS.md`). Genuinely captured payments survive the cancel
-unchanged — there is no transition out of the refunded states.
+unchanged — no *transaction* ever leaves the refunded states.
+
+Repay-after-refund (#1765): a booking that was paid, then deliberately
+refunded, then left (or re-put) in a payable status legitimately owes a fresh
+payment — refund + promo reprice can produce this. The model is a **fresh
+`PRIMARY` `PaymentTransaction` on the same `Payment` row**; the refunded
+transaction is immutable history. Because a fully refunded Stripe
+PaymentIntent keeps `status: "succeeded"` forever (refunds hang off the
+charge), every reconciliation entry point discriminates *refund history* from
+*crashed-webhook recovery* on the local transaction ledger, never on the
+intent status: a transaction in `REFUNDED`/`PARTIALLY_REFUNDED` is history and
+is never re-admitted as settlement (`markBookingPaymentSucceeded` throws;
+`create-payment-intent` supersedes the stale pointer and mints a fresh
+card-entry intent at the current effective price under a per-repay-generation
+idempotency key `pi_<bookingId>_repay_<supersededIntentId>`), while a
+transaction still `PENDING`/`PROCESSING` against a succeeded intent is genuine
+recovery and reconciles exactly as before. After a repay settles, the Payment
+AGGREGATE returns to `PARTIALLY_REFUNDED` (gross captured across generations
+minus what was refunded), so the mirror invariant is net-based —
+`(amountCents − refundedAmountCents) + creditAppliedCents = finalPriceCents`
+at repay settlement (see `docs/DOMAIN_INVARIANTS.md`). The repay path assumes
+no saved card: it always goes through the immediate card-entry PaymentIntent
+flow.
 
 To verify: whether Internet Banking uses the same `PaymentStatus` transitions
 or Xero invoice state as the effective settlement state.
@@ -585,7 +652,32 @@ reported `NO_BOOKING_ADULT` and removed from demand):
 3. **Per-night split fallback** — the legacy whole-night/split logic for
    bookings no single room can host, reported in
    `BedAllocationPlan.roomContinuityFallbackBookingIds`; held-booking
-   displacement here still uses the whole-booking primitive.
+   displacement here still uses the whole-booking primitive. Within a night
+   (#1768): minors join rooms already holding the booking's adults, one adult
+   then heads each further room with minors while adults last (family
+   pairing), leftover adults spread first-fit, and remaining minors **overflow
+   into rooms of their own** — the booking's adult count no longer caps how
+   many rooms its minors may fill (pre-#1768 a school group with two teachers
+   got exactly two rooms and stranded the rest as `NO_BED_AVAILABLE`). A
+   booking created from a SCHOOL request (`isSchoolGroup`, derived from the
+   origin or held `BookingRequest.type`) inverts the pairing preference:
+   its adults room together (one room when they fit) and its students take
+   their own rooms.
+
+**Cross-booking age-mix invariant (#1768, all phases and both placement
+directions):** a room-night holding minors from booking X never also holds an
+adult from a DIFFERENT booking — the planner neither places a minor beside
+another booking's adult nor an adult beside another booking's minor,
+displacement evicts a conflicting provisional booking whole (or deems the room
+infeasible when it cannot), a relocated booking is never MOVEd into a
+conflicting room-night (it is wholly UNALLOCATEd instead), and an occupant row
+with no booking attribution conservatively blocks minors but not adults.
+Persisted rows that already violate the invariant (manual moves, pre-#1768
+plans) surface on the board as `MINOR_ADULT_MIX` warnings rather than being
+rewritten — warning-only on the manual board is the intended function (owner
+decision 2026-07-11), not a pending hard-block. Same-booking mixing is unrestricted — Phase 0 remains the
+night-level adult-coverage rule, and minors-only ROOMS are allowed whenever
+the booking has an adult on-site that night.
 
 Reconciliation widens its loads to the envelope of every booking overlapping
 the reconcile range (`min(checkIn) .. max(checkOut)` union the range) so the
@@ -597,7 +689,9 @@ allocated night for a guest reassigns that guest's visible allocated nights to
 the target bed while preserving each date-only lodge night. Later-night moves
 remain single-night adjustments. The board's "Run Auto Allocation" uses the
 same whole-stay planner without displacement, and the board raises a
-stay-level `ROOM_SWITCH` warning when a booking's rooms change between nights.
+stay-level `ROOM_SWITCH` warning when a booking's rooms change between nights,
+plus a `MINOR_ADULT_MIX` warning on any persisted room-night that mixes one
+booking's minors with another booking's adults (#1768).
 
 To verify: approval status representation, conflict handling, per-night guest
 uniqueness, room continuity and whole-booking displacement behavior, and
@@ -666,6 +760,56 @@ token expired/invalid/wrong user/replaced -> safe error and retry/admin path
 To verify: token fields, expiry, reminder counters, ownership checks, replaced
 token rejection, and duplicate nomination prevention.
 
+## Partner Invite Token Lifecycle (unregistered partner)
+
+```text
+create-group names an unregistered partner email -> single-use PartnerInviteToken minted (hashed at rest) + invite email
+invitee opens claim link, not signed in -> routed to /join/apply (normal membership process), then back to the link
+invitee signed in with a different email -> refused (invitation was sent to invitedEmail)
+GROUP_CREATE not yet approved (group memberless) -> claim refused (group not available yet)
+invitee signed in with the invited email, group approved -> ADULT_INVITE filed + accepted, token confirmedAt set (single use)
+token expired -> claim refused; daily cron sweep hard-deletes expired rows
+admin revokes -> token hard-deleted, claim link stops working
+inviter cancels own declared-partner invitation from the profile Partner card (#1754) -> token hard-deleted (own createPartnerLink tokens, unclaimed only, audited)
+```
+
+To verify: hash-at-rest, single-use `confirmedAt` guard, email-match ownership
+check, memberless-group refusal, expiry sweep idempotency, admin revocation,
+and the member-side cancel scope (own, unclaimed, `createPartnerLink` only).
+
+A token minted with `createPartnerLink` (#1742) additionally forms the
+CONFIRMED `MemberPartnerLink` between inviter and claimer inside the claim
+transaction — see Partner Link Lifecycle below. A business conflict skips the
+link (audited) without failing the family-group join.
+
+## Partner Link Lifecycle (declared Partner/Husband/Wife, #1742)
+
+Known statuses: `PENDING`, `CONFIRMED`. Declined, withdrawn, and dissolved
+links are hard-deleted (audit log keeps history), so the pair can re-form.
+
+```text
+member requests partner by email (registered login adult) -> PENDING + email to target
+target confirms from profile -> CONFIRMED (one-confirmed-partner invariant re-checked under advisory lock; other PENDING requests involving either member pruned)
+target declines -> row hard-deleted (no email), initiator may re-request
+initiator withdraws own PENDING -> row hard-deleted
+family-group ADMIN declares a NO-LOGIN adult member of their group -> CONFIRMED in one step (no consent round-trip; "one login manages the family")
+admin assigns directly (admin member-detail card) -> CONFIRMED immediately, assignedByAdminId recorded; an existing PENDING for the pair is promoted; both members emailed unless the admin chose not to notify (#1769a)
+unregistered partner claims a createPartnerLink invite token -> CONFIRMED inside the claim transaction (claim = consent)
+either CONFIRMED partner removes the link -> row hard-deleted, other partner emailed
+admin removes any link -> row hard-deleted, both partners emailed when it was CONFIRMED unless the admin chose not to notify (#1769a); a PENDING removal emails no one
+CONFIRMED link deleted (either dissolve path) -> pair's FUTURE shared double-bed second-occupant allocations swept back to the awaiting-allocation queue in the same transaction (#1756; both bookings audited, admins alerted post-commit)
+member deactivated / anonymised / re-tiered off ADULT -> same sweep, single-member scope (either side of the shared bed)
+```
+
+To verify: canonical pair ordering (`memberAId < memberBId` CHECK), the
+one-CONFIRMED-partner-per-member invariant (advisory locks + partial unique
+indexes), ADULT-only + no-self-partner guards, pending pruning on confirm,
+one outstanding outgoing request per member, the memberId-target
+shared-family-group guard on the member API, and the stale-share sweep
+invariant (#1756): no future `isSecondOccupant` allocation may outlive its
+partner link or the active-adult precondition (see
+docs/DOMAIN_INVARIANTS.md, "Double-bed shared occupancy").
+
 ## Lodge Induction Lifecycle
 
 Known induction statuses: `DRAFT`, `IN_PROGRESS`, `COMPLETED`, `VOIDED`.
@@ -711,6 +855,8 @@ group/archive behavior, and email visibility.
 family group created -> dependents/adults linked
 adult invitation/request -> pending -> accepted/rejected
 member creates group -> memberless FamilyGroup + PENDING GROUP_CREATE (+ bundled child requests) -> admin approve (ADMIN membership created, partner ADULT_INVITE auto-filed) | reject (bundle cascade-rejected, group stays inert)
+create-group names an unregistered partner email -> single-use PartnerInviteToken minted + emailed (see Partner Invite Token Lifecycle) instead of an invitedMemberId
+create-group marks the named partner as a declared partner (#1742) -> registered partner gets a PENDING MemberPartnerLink request; unregistered partner's token carries createPartnerLink (see Partner Link Lifecycle)
 dependent inherits email or has explicit email inheritance source
 family removal/cancellation/delete -> relationship cleanup while preserving history
 ```

@@ -389,7 +389,11 @@ describe("expiry of reaped organiser-pays children (#1094)", () => {
     expect(mocks.bookingUpdate).toHaveBeenCalledTimes(2);
     expect(mocks.bookingUpdate).toHaveBeenCalledWith({
       where: { id: "child-1" },
-      data: { status: BookingStatus.CANCELLED },
+      data: {
+        status: BookingStatus.CANCELLED,
+        adminCapacityHoldAt: null,
+        adminCapacityHoldByMemberId: null,
+      },
     });
     // Terminal event and joiner notification, exactly once per child.
     expect(mocks.recordBookingEvent).toHaveBeenCalledTimes(2);

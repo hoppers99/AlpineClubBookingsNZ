@@ -85,6 +85,103 @@ Future reviews and issues should cite this file when proposing changes.
   envelope. Existing allocation rows are never rewritten by planning — only
   provisional displacement moves rows — and re-planning a fully-allocated
   state is a no-op.
+- **Cross-booking age mix (#1768, owner-set):** a room-night containing minors
+  from booking X must never also contain an adult from a DIFFERENT booking —
+  planner-enforced in both placement directions on every path (whole-stay,
+  per-night split, adult spread, displacement eviction/relocation), including
+  against pre-existing `occupiedBedNights`; an occupant row with no booking
+  attribution conservatively blocks minors (counted as an unknown adult) but
+  not adults. Same-booking mixing is unrestricted, and minors-only ROOMS are
+  allowed: the booking-level rule stays night-scoped (Phase 0
+  `NO_BOOKING_ADULT` — a minor needs a same-booking adult on-site that night,
+  not in the same room), so a large group's minors overflow into rooms of
+  their own instead of being capped at one room per adult. SCHOOL-request
+  bookings (`isSchoolGroup`, from the origin/held `BookingRequest.type`)
+  prefer adults together and students separate. The planner never rewrites
+  persisted violations (manual/legacy rows) — the board surfaces them as
+  `MINOR_ADULT_MIX` warnings; the manual board itself is warned, not blocked,
+  **by design** (owner decision, 2026-07-11, closing the deferral from
+  #1768/PR #1775): the invariant binds every automated placement path, while
+  the manual board deliberately stays an admin-judgment escape hatch with the
+  warning as its guard. Do not add a hard block without a fresh owner
+  decision.
+- **Double-bed shared occupancy (#1701):** a `DOUBLE` bed may hold two occupants
+  on a night — one primary and one second occupant — when they are declared
+  partners: two `ADULT` members holding a **CONFIRMED** `MemberPartnerLink`
+  (#1742), the single-source `mayShareDoubleBed()` rule in
+  `double-bed-sharing.ts`. A PENDING link grants nothing; both members must
+  also still be ACTIVE adults at placement time. (#1744 swapped this signal in
+  for the interim same-`FamilyGroup` rule, which wrongly permitted e.g. a
+  parent and an adult child.) The precondition is enforced at placement time
+  AND swept when it later breaks (#1756): **no future `isSecondOccupant`
+  allocation may outlive its partner link or the active-adult precondition**.
+  Dissolving a CONFIRMED link (`removeOwnPartnerLink` /
+  `adminRemovePartnerLink`), deactivating a member (member edit, bulk update,
+  or account-deletion anonymisation), or correcting an ADULT to a minor/N-A
+  tier runs `sweepFuturePartnerSharedAllocations`
+  (`bed-allocation-lifecycle.ts`) in the SAME transaction as the breaking
+  event: the pair's future (tonight onwards, NZ date-only) second-occupant
+  rows are deleted back to the awaiting-allocation queue — never the primary,
+  so the sweep cannot orphan anyone and needs no promotion pass — with a
+  `BED_ALLOCATION_PARTNER_SHARE_SWEPT` audit row against BOTH bookings and a
+  post-commit admin alert (`admin-partner-share-swept`, "Booking review
+  required" preference). A dissolve sweeps only bed-nights whose two occupants
+  are exactly the dissolved pair; deactivation/tier change sweeps any future
+  shared bed-night involving the member on either side. Past lodge nights are
+  history and stay untouched, and the sweep is idempotent (a second run finds
+  nothing). Membership cancellation and archive need no sweep call: approval
+  is blocked while ANY future booking or member guest appearance exists, so a
+  cancellable member cannot occupy a future shared bed-night. Only an admin adds the second occupant on the board,
+  and only onto a bed whose primary already **holds capacity** — so displacement
+  can never move the primary out from under the partner. Auto-allocation never
+  creates a second occupant; every other bed type stays exactly one occupant per
+  night. DB-enforced without CHECK constraints:
+  `@@unique([bedId, stayDate, isSecondOccupant])` caps a bed-night at ≤2 rows and
+  a raw-SQL partial unique index (`WHERE "bedType" <> 'DOUBLE'`, recorded in
+  `prisma/partial-unique-indexes.tsv`) caps every non-DOUBLE bed at exactly one;
+  `BedAllocation.bedType` is a denormalized copy the partial index reads (a
+  partial index cannot join to `LodgeBed`). The **base** capacity figure is
+  unchanged — a shared double is still ONE bed of `activeBedCount` and each
+  occupant is a full person-night (pricing/settlement untouched) — but each
+  active DOUBLE adds one **partner-shared slot** of admission headroom above
+  it (#1745): reserved (only `checkCapacityForPartnerSharedAdmission` on the
+  admin-initiated partner flow may use it — every public/member/system path
+  reads the unchanged base `getLodgeCapacity`), bounded (≤ active DOUBLE
+  count per night, with the sharer's partner required to hold an ordinary
+  base-backed place — a sharer can never anchor another sharer — so a
+  feasible pairing always exists, modulo the documented #1668 forced-overbook
+  residual), and capped by an explicit `LodgeSettings.capacity`, which limits
+  *people*, so a `capped_beds` lodge gets no headroom (see
+  docs/CAPACITY_MODEL.md, "Partner-shared double-bed headroom"). Initiation
+  is admin-only (#1746): the `partnerSharedGuests` flags on the booking
+  modify routes are rejected for non-admin actors at BOTH route and service,
+  the edit panel's quick-add candidates are server-computed
+  (`listBookingPartnerSharingCandidates`), and the public wizard carries no
+  shared-slot affordance. A DOUBLE
+  holding a second occupant
+  cannot be retyped to a non-double until that occupant is removed. Whenever a
+  shared double loses its primary — a board delete (#1743), a board move of the
+  primary onto another bed, or a cross-booking cancellation / reconcile prune
+  (#1750) — the surviving partner is **auto-promoted** to primary on the vacated
+  bed-night atomically with the removal on transactional paths, each with its own audit entry
+  (`BED_ALLOCATION_PARTNER_PROMOTED`) because the partner may belong to a
+  different booking (sharing eligibility is member-level). Promotion is gated on
+  `isSecondOccupant` alone, never the denormalized `bedType` of the removed row or
+  the survivor: an AUTO-allocated row on a real DOUBLE carries the SINGLE default,
+  so trusting that type would strand the partner it needs to promote. The
+  bed-night is
+  therefore never left dead-ended behind the orphaned-second-occupant guard in
+  `resolveSecondOccupant`, and re-pairing follows the normal sharing rules (in
+  particular the promoted primary's booking must hold capacity before a new
+  partner may join). The two atomicity shapes differ by path: the board
+  delete/move helpers self-wrap their read + write + promote in a transaction,
+  while the lifecycle prune captures-before / flips-after on the caller's own
+  client. Reconcile is usually already inside a transaction, but a few callers
+  reconcile on the bare `prisma` singleton (e.g. `cron-complete-bookings`, the
+  confirm-pending-guests route); on those a crash between the delete and the flip
+  regresses to the pre-#1750 state — a recoverable orphaned second occupant,
+  visible on the board and cleared by the next successful reconcile or a manual
+  move, never a capacity or double-booking violation.
 - Waitlisted and offered bookings do not consume capacity until confirmed.
 - A waitlist offer reprices the booking at current season rates,
   membership-type policy, group discount, and promo validity at the moment the
@@ -262,7 +359,8 @@ Future reviews and issues should cite this file when proposing changes.
   `MemberCreditNoteAllocation` (remaining = the positive lot's `amountCents` minus
   the sum of its allocation rows); lot order is conservation-neutral. The
   `payment` mirror holds `amountCents + creditAppliedCents = finalPriceCents`
-  (the switch path derives the applied amount from the `BOOKING_APPLIED` ledger,
+  (net of `refundedAmountCents` once a #1765 repay generation exists; the
+  switch path derives the applied amount from the `BOOKING_APPLIED` ledger,
   since the card-origin mirror is 0). The engine STAMPS the booking's
   `BOOKING_APPLIED` rows with a representative allocated note id LAST — only once
   the full applied amount is covered — so the #1597 clearing term above is exact;
@@ -301,7 +399,11 @@ Future reviews and issues should cite this file when proposing changes.
   the card flow — it is confirmed at $0 by the create-time zero-dollar path — so
   the intent route guards `effective > 0` rather than minting a $0 intent). The
   `Payment` mirror carries `amountCents = effective`, `creditAppliedCents = applied`
-  (invariant `amountCents + creditAppliedCents = finalPriceCents`). Every
+  (invariant `amountCents + creditAppliedCents = finalPriceCents`; once a repay
+  generation exists — #1765, pay → refund → reprice → repay on the same Payment —
+  the mirror aggregates gross captures across generations and the invariant is
+  NET-based: `(amountCents − refundedAmountCents) + creditAppliedCents =
+  finalPriceCents` at repay settlement). Every
   capture/reconciliation guard accepts EITHER the effective price OR the full
   `finalPriceCents` (legacy in-flight intents minted before the fix) and rejects any
   other amount (create-payment-intent reuse, `stripe-webhook-service`,
@@ -310,9 +412,13 @@ Future reviews and issues should cite this file when proposing changes.
   intents, so the leniency cannot re-open the double-charge. Because a card invoice
   is raised-and-paid near-instantly at capture (`queueXeroInvoiceForPaidBooking` →
   `createXeroInvoiceForBooking`), the #1620 fire-after-invoice outbox op is NOT used
-  on card; instead `createXeroInvoiceForBooking` records the EFFECTIVE Stripe payment
-  and then SYNCHRONOUSLY re-drives the same allocation engine (gated to a card cash
-  capture with `creditAppliedCents > 0`) so the invoice settles to PAID via
+  on card; instead `createXeroInvoiceForBooking` records the NET captured Stripe
+  cash — gross captures − refunds, i.e. the effective amount, capped at the
+  invoice's amount due (#1765: settlement evidence is captured-status + positive
+  net cash, never `status === "SUCCEEDED"` alone, which misreads a repay-settled
+  PARTIALLY_REFUNDED aggregate; every skip logs a populated reason) — and then
+  SYNCHRONOUSLY re-drives the same allocation engine (gated the same way, plus
+  `creditAppliedCents > 0`) so the invoice settles to PAID via
   (effective cash + credit-note allocation) and is never left with the applied slice
   outstanding. The allocation throws on failure (the invoice op fails and the retry
   short-circuits on the persisted `xeroInvoiceId`, re-driving the idempotent engine
@@ -591,14 +697,42 @@ override requires an explicit `pricingMode`:
   and email member" / "Cancel without emailing" — the suppression also covers
   the linked provisional split children cancelled with the parent). Both routes
   403 the flag from any non-(booking-management)-ADMIN caller, force notify for
-  non-admin actors at the service, default to notify when the flag is absent,
-  and record a suppressed send as `notifyMember: false` in the audit metadata;
+  non-admin actors (cancellation at the service — `cancelBooking` — and guest
+  removal in the route handler itself), default to notify when the flag is
+  absent, and record a suppressed send as `notifyMember: false` in the audit
+  metadata;
   refund/credit settlement, audit, booking events, waitlist processing, and the
   admin-facing alerts are never affected by the choice. **The Xero invoice
   email on the Internet Banking path is deliberately outside this choice and is
   ALWAYS sent** — it is the member's payment instruction (invoice number + bank
   details), so suppressing it could strand an unpaid invoice the member was
-  never told about (owner decision on #1705).
+  never told about (owner decision on #1705). Three further cancellation
+  emails are **deliberately always-notify** and outside the choice (owner
+  decision 2026-07-10, #1730): the joiner emails when a **group organiser
+  cancels** the group, the member email on an **admin review-rejection**
+  cancel, and the cancellation emails sent by **deletion-request cleanup** —
+  in each, the recipient is losing a booking they own, and a missed email
+  risks a member arriving for a stay that no longer exists.
+  The #1780/#1769b sweep extends this same per-action choice to every remaining
+  admin-initiated member email — membership application approve/reject (#1786),
+  membership cancellation review (#1787), member archive review and
+  account-deletion reject (#1788), family-group child-request and group-create
+  approve/reject (#1789), booking review approve/reject (#1790), booking-request
+  decline (#1791), and refund-appeal approve/reject (#1792) — each
+  default-notify, admin-only (all `requireAdmin()` routes, so no non-admin can
+  carry the flag), and audited `notifyMember: false` only when a send is truly
+  suppressed (a would-not-send path — e.g. a member with no email on file, or a
+  refund appellant with no address — records no notify field). Five further
+  sends stay **deliberately always-notify** and outside the choice for the same
+  not-strandable-communication reason: the membership-application **induction
+  sign-off requests** (token-bearing signer requests), the family group-create
+  **partner invitation** (token-bearing; the partner cannot join without it),
+  the **account-deletion approval** privacy receipt (the member requested
+  deletion and cannot log in afterward), and the booking-request
+  **approved/quote** emails (they carry the payment/quote link). On a
+  booking-review **rejection** the shared cancellation email above (#1730) is
+  the always-notify send, so a suppressed reject still emails the member the
+  cancellation and withholds only the review-declined explainer.
 - **recalculate** — the existing full-reprice machinery with the locked-period
   clamps lifted, so locked-night pricing semantics are otherwise preserved
   (a night the guest already bought keeps its stored `BookingGuestNight` price).
@@ -640,8 +774,8 @@ waitlist confirm (a 48-hour offer accepted after NZ midnight) — the marker
 skips only the past-date rejection, never the retroactive semantics, and is
 not exposed via the API. Any of the three flags (`allowPastDates`,
 `confirmOverCapacity`, `notifyMember`) present without the ADMIN role is a
-403; the flag combination is validated (flag without `forMemberId` → 400,
-`confirmOverCapacity` without `allowPastDates` → 400, retroactive
+403; the flag combination is validated (any flag without `forMemberId` → 400,
+`confirmOverCapacity` combined with `draft`/`waitlist` → 400, retroactive
 `draft`/`waitlist` → 400). Because a
 retroactive booking invoices at its check-in (the invoice **issue date stays =
 checkIn**, no clamp), a create-time **Xero lock-date guard** protects it: when
@@ -651,29 +785,135 @@ effective lock date (409 `XERO_PERIOD_LOCKED`, with unlock instructions). The
 guard is **skipped when Xero is not connected** and **fails closed** (retryable
 503 `XERO_LOCK_DATE_CHECK_FAILED`) when the lock dates cannot be read; the Xero
 call is made outside any DB transaction and its result is cached ~5 minutes.
-The same guard protects the **admin override modify paths** (#1697,
-`xero-period-lock-guard`): a **recalculate** override can queue a
-**check-in-dated primary-invoice write** — the invoice date/narration update
-on a booking whose payment is not yet settled, or the invoice create a
-zero-dollar recalculate performs — and is rejected (same 409/503 contract, at
-the modify-quote preview and at apply in both modify services, before their
-transactions) when the check-in the booking would end up with lands on or
-before the effective lock date; a check-out-only recalculate is guarded via
-the unchanged past check-in. Supplementary invoices and modification credit
-notes are dated at the day they are raised (not check-in), so on an
-already-paid booking a recalculate writes no check-in-dated document — the
-guard **still fires there by design** (deliberately conservative, recorded on
-#1697; narrowing it to the actual check-in-dated writes is tracked as a
-follow-up). **Shift overrides are exempt**: a shift writes no Xero documents.
+The same guard protects the **booking modify paths**
+(`xero-period-lock-guard`), with two deliberately asymmetric scopes:
+- **Admin override** (#1697): a **recalculate** override can queue a
+  **check-in-dated primary-invoice write** — the invoice date/narration update
+  on a booking whose payment is not yet settled, or the invoice create a
+  zero-dollar recalculate performs — and is rejected (same 409/503 contract, at
+  the modify-quote preview and at apply in both modify services, before their
+  transactions) when the check-in the booking would end up with lands on or
+  before the effective lock date; a check-out-only recalculate is guarded via
+  the unchanged past check-in. Supplementary invoices and modification credit
+  notes are dated at the day they are raised (not check-in), so on an
+  already-paid booking a recalculate writes no check-in-dated document — the
+  override guard **still fires there by design**: **deliberately conservative,
+  a settled owner decision** (#1697, re-affirmed and closed on #1718 —
+  workarounds for the over-block on paid bookings are shift mode or briefly
+  unlocking the period).
+- **Ordinary (non-override) date edits** (#1729) get a **NARROW guard** at the
+  same pre-transaction points (both modify services and the modify-quote
+  preview): it fires only when the edit would **actually queue the
+  check-in-dated invoice update** — issued Xero invoice, dates changing,
+  payment not settled — via the settlement classifier's own predicate
+  (`wouldQueueCheckInDatedInvoiceUpdate`, shared so guard and
+  `queueXeroBookingEditSettlement` can never drift). Error text is
+  **actor-appropriate**: admins get the unlock instructions, members get a
+  "contact an administrator" 409 (and a softer fail-closed 503) — same codes
+  either way; a member's request against a booking they do not own skips the
+  guard silently (the transaction's 403 answers it — no lock-date disclosure
+  to non-owners). **Identity-only edits (guest name fixes) are never guarded**
+  (owner decision, #1729): the outbox backstop covers that rare strand rather
+  than blocking a typo fix. Also outbox-backstopped, not guarded: the
+  check-in-dated invoice CREATE a $0-collapsing ordinary edit can queue for a
+  never-invoiced booking, and guest-range edits that move the stay envelope
+  without date fields in the request.
+
+**Shift overrides are exempt**: a shift writes no Xero documents.
 As at create, only past check-ins are guarded.
-Over-capacity past nights are **warn-and-confirm** (the same
+Over-capacity nights on **any on-behalf create** — past (#1695) or
+future-dated (#1767) — are **warn-and-confirm** (the same
 `OverCapacityConfirmationRequiredError` → 409 `OVER_CAPACITY_CONFIRM_REQUIRED`
-contract as #1668, capacity lock still taken, `capacityOverridden` recorded).
+contract as #1668, capacity lock still taken, `capacityOverridden` recorded),
+with one carve-out: an on-behalf create that opted into the **waitlist
+fallback** keeps the capacity-exceeded outcome so the route can create the
+WAITLISTED booking instead of prompting. (The former v1 carve-out that
+hard-blocked a **non-member hold-eligible (PENDING) party** was retired by
+#1771: the persisted override is now honoured by `cron-confirm-pending`, so the
+hold re-check confirms rather than bumps the overbook.) A **member self-create
+can never overbook**: without `isOnBehalf` the service keeps the hard capacity
+block regardless of any flag, and the route rejects the flags outright (403
+non-admin, 400 without `forMemberId`).
 The member confirmation / hold email is an **explicit per-create choice**
 (`notifyMember`, honoured only for on-behalf creates) recorded in the
 `booking.created_on_behalf` audit metadata alongside `allowPastDates`,
 `confirmOverCapacity`, and `capacityOverridden`; `sendAdminNewBookingAlert` and
 the Xero invoice email are unaffected by the choice.
+
+A **deliberately over-capacity booking is never destroyed by a later capacity
+re-check** (#1771). Every over-capacity admission — on-behalf create
+(#1668/#1695/#1767), date/batch modification (#1668), waitlist force-confirm,
+confirm-pending-guests overbook (#1366), and admin capacity-hold (#1764) —
+**persists** the decision on the booking as `Booking.capacityOverriddenAt` +
+`capacityOverriddenByMemberId`. The marker records "a deliberate overbook on the
+booking's **current** nights": one-shot admissions stamp it once, while the date
+and batch modification services **reconcile** it (re-stamp if the new range is
+still an admin-confirmed overbook, **clear** it if the change moved the booking
+back within capacity) because they re-evaluate capacity on the new nights — so a
+stale flag can never suppress a legitimate cancel after a booking is modified
+from an over-capacity range into a fitting one. It is not cleared on cancel (a
+cancelled booking never re-enters a re-check). Every payment-time / settlement
+capacity
+re-check — `markBookingPaymentSucceeded`, payment links, `cron-confirm-pending`,
+`charge-saved-method`, `switch-to-internet-banking`, the Internet Banking
+invoice-paid reconcile, and group settlement — **must** consult
+`bookingHasCapacityOverride(booking)` and, when set, settle/advance the booking
+to its correct terminal state instead of cancelling+refunding, 409ing, or
+bumping it. The DRAFT-scoped re-checks (`create-payment-intent`,
+`confirm-draft`) are exempt because #1767 prevents a DRAFT from ever carrying an
+override. Members can never overbook, so this marker only ever appears behind an
+explicit, audited admin act.
+
+A **finished stay's card obligation never lingers unseen** (#1709, #1723). Two
+**disjoint** admin queues surface every uncollected card obligation on a stay
+whose check-out is on or before NZ today, both driven by the shared
+predicate/href helpers in `src/lib/unpaid-finished-stays.ts` (the dashboard
+attention cards, the sidebar Needs Attention badges via
+`admin-pending-counts`, and the bookings-list deep links all consume the same
+helpers so the surfaces can never drift):
+
+- **Unpaid finished stays** (#1709/#1731): `deletedAt` null +
+  `status = PAYMENT_PENDING` + `checkOut ≤ today` — the whole booking price is
+  still owed (a retroactive card create qualifies from the moment of
+  creation). Deep link:
+  `/admin/bookings?status=PAYMENT_PENDING&checkOutTo=<today>`.
+- **Unsettled finished-stay additions** (#1723 path 2, owner decision B — the
+  card additional-payment flow stays): `deletedAt` null + `checkOut ≤ today` +
+  `status ∈ {CONFIRMED, PAID, COMPLETED}` + payment
+  `additionalAmountCents > 0` with `additionalPaymentStatus` null or not
+  `SUCCEEDED` — a settled stay whose upward modification delta (admin
+  recalculate, guest add, date change) was never collected. The payment
+  summary columns mirror the LATEST ADDITIONAL payment transaction, and the
+  predicate mirrors the member-facing owed test (member dashboard / booking
+  detail), so admin and member agree on what is owed; `PAYMENT_PENDING` is
+  deliberately excluded so the two queue counts can be summed without
+  double-counting a booking. Deep link:
+  `/admin/bookings?additionalOwed=owed&checkOutTo=<today>` via the bookings
+  list's `additionalOwed` filter (AND-composed, so explicit status/date
+  filters in the same URL still narrow).
+
+Three side doors into the finished-unpaid state are closed at the door
+(owner decisions 2026-07-11, #1723):
+
+- **Past-dated waitlist force-confirm** (path 1, decision B — allow, flag at
+  creation): a force-confirm that lands `PAYMENT_PENDING` on a booking whose
+  check-out has already passed is allowed but flagged at creation —
+  `createdUnpaidFinishedStay` in the audit details/metadata, an
+  `unpaidFinishedStay` field in the route response, and an amber "Unpaid
+  finished stay created" card on the admin waitlist page. $0 force-confirms
+  (land `PAID`) and parked-for-review outcomes carry no obligation and are
+  not flagged.
+- **Upward modification of a settled past stay** (path 2, decision B): kept
+  on the card additional-payment flow rather than blocked; the uncollected
+  delta counts on the second queue above.
+- **Stale group join** (path 3, decision A — exclude): a group whose
+  organiser booking's stay has fully ended (`checkOut ≤ NZ today`, the same
+  cutoff as the queues — a stay checking out today has fully ended) leaves
+  the joinable set entirely: `hasGroupStayFullyEnded` gates the public
+  summary's `isJoinable`, the member join (409), the non-member join request
+  (409 `GROUP_STAY_ENDED`), and the emailed-token verify (`not_joinable`),
+  sitting directly after the open/deadline check and ahead of the
+  payment-mode/active-booking gates.
 
 A booking left with only non-adults (YOUTH/CHILD/INFANT) requires admin
 approval regardless of how it got there or whether it was already paid: every
@@ -1189,6 +1429,74 @@ request (which creates the requester's membership with role `ADMIN` and
 auto-files any partner `ADULT_INVITE`) or the legacy target-anchored join flow.
 A `CHILD_REQUEST` targeting a group with zero memberships must not be
 approvable (422) until that group's creation request is approved.
+
+When a `GROUP_CREATE` request names a partner by an email that matches no
+registered member, that partner is invited with a single-use, hash-at-rest
+`PartnerInviteToken` (#1682) instead of an `invitedMemberId`, modelled on
+`NominationToken` (sha256 hash at rest, single use via `confirmedAt`, expiry,
+reminder fields). The token carries `familyGroupId`, `invitedEmail`, and
+`createdById`. The invitee registers through the normal membership process and
+then claims the token, which files an already-accepted `ADULT_INVITE` into the
+group — but only once the group is membered (approved); a claim against a
+still-memberless group is refused. The claim is only honoured for a signed-in
+member whose own email matches `invitedEmail`, so a forwarded link cannot join
+a stranger's group. The create-group route returns the same success response
+whether the partner email is a registered member or not, so it cannot be used
+to probe membership. Outstanding tokens are visible and revocable to admins;
+the inviter of a declared partner may also cancel their own outstanding
+invitation from the profile Partner card (#1754) — own `createPartnerLink`
+tokens only, unclaimed only, audited — and an idempotent daily cron sweep
+hard-deletes expired tokens (TTL 30 days, longer than the 7-day nomination
+TTL because the invitee must complete the membership process first).
+
+The declared Partner/Husband/Wife relationship (#1742) is a `MemberPartnerLink`
+row: a symmetric, consent-based link between two ADULT members, stored as a
+canonical ordered pair (`memberAId < memberBId`, DB CHECK constraint — which
+also makes self-partnering unrepresentable) with a `PENDING -> CONFIRMED`
+lifecycle. It is independent of family groups and is the eligibility signal for
+double-bed shared occupancy (#1741). Invariants: **at most one CONFIRMED
+partner per member at a time**, enforced in `src/lib/member-partner-link.ts`
+under `pg_advisory_xact_lock` on both member ids (sorted order, so pair
+transactions cannot deadlock) and backstopped by two raw partial unique indexes
+(`MemberPartnerLink_memberA/B_confirmed_unique WHERE status = 'CONFIRMED'`,
+documented in `prisma/partial-unique-indexes.tsv`); both members must be ADULT
+and active; consent is required from the other member unless (a) an admin
+assigns the link directly (`assignedByAdminId` recorded, CONFIRMED
+immediately; both members are then emailed unless the assigning admin chose
+not to notify — the suppression is audited `notifyMember: false`, #1769a),
+(b) the target has **no login** and the initiator is a
+family-group ADMIN of a group containing the target ("one login manages the
+family" — a login-holding target always consents personally, and the no-login
+target's address is emailed that the link was recorded), or (c) the link
+forms on a `PartnerInviteToken` claim minted with `createPartnerLink` — the
+claim itself is the consent, so the claim page discloses the partnership
+before the claimer accepts, and both parties' eligibility (including the
+inviter's login standing) is re-validated inside the claim transaction.
+Confirming a stale request re-validates the initiator too — a link is never
+confirmed that a fresh request could not create. Declined, withdrawn, and
+dissolved links are
+hard-deleted — history lives in the audit log — so the same pair can re-form
+later without tripping the pair-unique constraint; either partner may dissolve
+a CONFIRMED link unilaterally (the other is emailed); an admin removing a
+CONFIRMED link likewise emails both members unless the admin chose not to
+notify (suppression audited `notifyMember: false`, #1769a), while a
+still-PENDING admin removal emails no one. When a link becomes
+CONFIRMED, all other PENDING requests involving either member are pruned in the
+same transaction. A member may have at most one outstanding outgoing PENDING
+request. The member-facing request API accepts an arbitrary target only by
+email (mirroring the family ADULT_INVITE flow); a memberId target must share a
+family group with the requester so the endpoint cannot probe foreign member
+ids. A by-email request must not disclose the target's confirmed-partner
+status (D9, owner decision 2026-07-11): whether or not the target is already
+partnered, the reply is the same generic "request sent if eligible" body —
+same message, no link id or status — with the suppressed attempt audited
+(`MEMBER_PARTNER_LINK_REQUEST_SUPPRESSED`) and no email sent; the target's
+confirmed-partner check runs only after every requester-side conflict so no
+error ordering re-opens the probe. Unknown-email (404) and
+not-adult (422) feedback stays distinguishable, and the family memberId path
+keeps its specific conflict errors. A link claim conflict on token claim (either side already has a confirmed
+partner, inviter no longer eligible) skips the link without failing the
+family-group join, and the skip is audited.
 
 Pending nomination states must have an expiry, reminder, admin refresh,
 replacement, rejection, or other documented recovery path so applications do

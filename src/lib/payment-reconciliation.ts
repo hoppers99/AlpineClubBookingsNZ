@@ -7,6 +7,7 @@ import {
   Prisma,
 } from "@prisma/client";
 import {
+  findPaymentTransactionByIntentId,
   refundPaymentTransactions,
   upsertPaymentIntentTransaction,
 } from "@/lib/payment-transactions";
@@ -20,6 +21,10 @@ import { sendAdminPaymentFailureAlert } from "@/lib/email";
 import logger from "@/lib/logger";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 import { getDefaultLodgeId } from "@/lib/lodges";
+import {
+  bookingHasCapacityOverride,
+  RELEASE_ADMIN_CAPACITY_HOLD_UPDATE,
+} from "@/lib/booking-status";
 
 type ReconciliationBooking = Prisma.BookingGetPayload<{
   include: {
@@ -138,15 +143,36 @@ export async function markBookingPaymentSucceeded({
       update: {},
     });
 
-    await upsertPaymentIntentTransaction({
-      paymentId: payment.id,
-      kind: PaymentTransactionKind.PRIMARY,
+    // #1765 — refund history is immutable: an intent whose transaction was
+    // refunded (fully or partially) must never be re-admitted as settlement,
+    // whichever path (intent-route recovery, confirm-payment, webhook
+    // redelivery, payment link) carries the succeeded intent back here.
+    // Without this guard a redelivered success event for a refunded intent
+    // would clobber the transaction row back to SUCCEEDED and, when the
+    // booking price never changed, settle the booking at zero net cash. The
+    // lookup backfills pre-ledger payments so legacy refund history is caught
+    // too. Crashed-webhook recovery is untouched: its transaction is still
+    // PENDING/PROCESSING (success was never recorded locally).
+    const priorTransaction = await findPaymentTransactionByIntentId({
       paymentIntentId,
-      amountCents,
-      status: PaymentStatus.SUCCEEDED,
-      paymentMethodId,
       store: tx,
     });
+    const refundedIntentHistory =
+      priorTransaction !== null &&
+      (priorTransaction.status === PaymentStatus.REFUNDED ||
+        priorTransaction.status === PaymentStatus.PARTIALLY_REFUNDED);
+
+    if (!refundedIntentHistory) {
+      await upsertPaymentIntentTransaction({
+        paymentId: payment.id,
+        kind: PaymentTransactionKind.PRIMARY,
+        paymentIntentId,
+        amountCents,
+        status: PaymentStatus.SUCCEEDED,
+        paymentMethodId,
+        store: tx,
+      });
+    }
 
     if (booking.status === BookingStatus.PAID) {
       await reconcileBedAllocationsForBooking({
@@ -157,12 +183,25 @@ export async function markBookingPaymentSucceeded({
           checkOut: booking.checkOut,
         },
       });
+      // A refunded-history redelivery on an already-PAID booking (e.g. a
+      // Stripe event replay after a partial goodwill refund) stays benign —
+      // and, with the guard above, no longer clobbers the refund marker.
       return {
         outcome: "already_paid" as const,
         booking,
         paymentId: payment.id,
         bumpedBookingIds: [] as string[],
       };
+    }
+
+    if (refundedIntentHistory) {
+      // #1765 — the booking is not settled and the carried intent's money was
+      // handed back. Re-admitting it would settle the booking at zero net
+      // cash; the member owes a fresh payment (the create-payment-intent
+      // route mints the repay intent at the current effective price).
+      throw new Error(
+        "Refunded payment intent cannot be re-admitted as settlement; the booking needs a fresh payment (#1765)"
+      );
     }
 
     if (!PAYABLE_SUCCESS_STATUSES.has(booking.status)) {
@@ -201,12 +240,22 @@ export async function markBookingPaymentSucceeded({
     // does not fit against committed bookings is cancelled-and-refunded here,
     // never bumped into a full lodge (issue #738, carried over from R1). The
     // non-member portion of a mixed party is now its own provisional booking.
-    if (!capacity.available) {
+    if (!capacity.available && bookingHasCapacityOverride(booking)) {
+      // Persisted capacity override (#1771): this booking was deliberately
+      // admitted above the ceiling by an admin. Settle it instead of cancelling
+      // — fall through to the PAID update below.
+      logger.info(
+        { bookingId: booking.id },
+        "Settling an over-capacity booking with a persisted capacity override (#1771); skipping the capacity cancel"
+      );
+    }
+    if (!capacity.available && !bookingHasCapacityOverride(booking)) {
       await tx.booking.update({
         where: { id: booking.id },
         data: {
           status: BookingStatus.CANCELLED,
           draftExpiresAt: null,
+          ...RELEASE_ADMIN_CAPACITY_HOLD_UPDATE,
         },
       });
       await reconcileBedAllocationsForBooking({

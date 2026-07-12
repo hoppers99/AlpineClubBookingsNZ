@@ -4,6 +4,195 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **11 previously-hardcoded emails are now admin-editable in
+  `/admin/notifications` (#1797).** Booking review approved/rejected, induction
+  sign-off request, school attendee confirmation, the school manual-invoice
+  admin alert, and the six group-booking settlement/join notices gained
+  `EMAIL_TEMPLATE_DEFINITIONS` entries, so admins can reword them like the rest
+  of the registry. Delivery stays **locked to always-send** for all 11 (they are
+  member- or admin-facing and several carry action links or are operationally
+  required, so they can never be content-only'd or disabled), and absent an override the shipped wording is
+  unchanged. The school-attendee confirmation's `{{token}}` is now threaded into
+  its template data so an override renders the confirm link. `two-factor-code`
+  stays hardcoded by design (auth-critical). No money, booking capacity, or
+  delivery-timing behaviour changes.
+
+- **Admin email-notify choice extended across the remaining admin-initiated
+  member emails (#1780 / #1769b, completing the sweep).** The canonical
+  `notifyMember` two-button pattern (#1705/#1769a) now covers: membership
+  application approve/reject (#1786), membership cancellation review
+  approve/reject (#1787), member archive review + account-deletion reject
+  (#1788), family-group child-request & group-create approve/reject (#1789),
+  booking review (minors) approve/reject (#1790), public booking-request
+  decline (#1791), and refund-appeal approve/reject (#1792). Each admin decision
+  now asks, per action, whether the affected member/applicant/requester receives
+  the standard outcome email — default is to notify; "without emailing" skips
+  the send and records `notifyMember: false` in the audit metadata, recorded
+  only on paths that would truly have emailed (honesty rule). Token-bearing and
+  pipeline-critical sends keep always-send: membership-application induction
+  sign-off requests, the family group-create partner invite, booking-request
+  approve/quote links, and the account-deletion approval receipt. Member
+  self-service flows and admin-facing alerts are untouched. No money, booking
+  capacity, or provider (Stripe/Xero) behaviour changes.
+
+- **Manual-board `MINOR_ADULT_MIX` warning-only behaviour documented as
+  intended.** The deferred owner decision from #1768/PR #1775 is closed:
+  automated placement paths enforce the cross-booking minor/adult invariant
+  hard, while the manual allocation board deliberately stays warn-not-block as
+  an admin-judgment escape hatch. `docs/DOMAIN_INVARIANTS.md` and
+  `docs/STATE_MACHINES.md` now record this as the intended function
+  (docs-only; no behaviour change).
+
+- **Admin can choose whether to email members on force-confirm,
+  confirm-pending-guests, and admin guest-add (#1769b).** Part of #1780 /
+  #1769b, extending the #1705 cancel notify pattern to three more admin
+  booking actions. The waitlist "Force Confirm" and the "Confirm pending guests
+  now" tool now ask, per action, whether the member receives the standard
+  booking-confirmation email — a two-button dialog ("Confirm and email member"
+  vs "Confirm without emailing") shown only when an email would actually be
+  sent (a force-confirm that lands PAID, i.e. a $0 stay with review resolved;
+  and the confirm-pending zero-amount or charged-card outcomes). The
+  admin-actor guest-add route (`POST /api/bookings/[id]/guests`) honours the
+  same `notifyMember` flag at the route level (no admin UI caller). The default
+  is to notify; "without emailing" skips the email and records
+  `notifyMember: false` in the audit metadata (recorded only on the outcomes
+  that truly send, per the honesty rule). A non-admin caller carrying the flag
+  on the guest-add route is refused with a 403, so a member can never suppress
+  their own booking email; member self-service behaviour is otherwise
+  unchanged. Booking capacity, charges, and settlement are identical either
+  way — only the member email differs.
+
+- **Admin can choose whether to email guests when sending the chore roster
+  (#1785, part of the #1769b sweep).** The "Email Roster to Guests" action on
+  `/admin/roster` now asks, per send, whether to email — a two-button dialog
+  ("Email guests the roster" vs "Don’t email — keep existing links"), reusing
+  the retroactive-create / cancel / partner-link notify pattern
+  (#1695/#1705/#1769a). The default is to notify: every affected guest is
+  emailed a fresh 48-hour chore link, reissuing tokens exactly as before.
+  Suppressing skips the whole send **and** leaves existing guest chore
+  tokens/links intact — no token deletion, no new tokens, no email — so
+  previously-emailed links keep working; the suppression is recorded in the
+  audit log as `notifyMember: false` (`ADMIN_CHORE_ROSTER_EMAIL_SUPPRESSED`).
+  The per-member `choreRoster` opt-out still applies on top of the notify path.
+
+- **Email message catalogue completeness pass (#1780 docs child).** The audit
+  documented the 12 live templates that had been missing from the catalogue:
+  `two-factor-code`, `booking-review-approved` /
+  `booking-review-rejected`, `induction-sign-off-request`,
+  `school-attendee-confirmation`, `admin-school-manual-invoice`, and the six
+  group-booking settlement/join messages (`group-booking-join-verification`,
+  `group-settlement-receipt`, `group-join-settled`,
+  `group-settlement-expired`, `group-join-released`, `group-join-cancelled`).
+  These senders are hardcoded (no admin-editable template). Docs-only; no
+  behaviour change. The temporary Markdown audit was subsequently retired by
+  #1796; the TypeScript registry is authoritative for editable templates.
+
+- **A deliberately over-capacity booking is no longer destroyed when payment
+  lands (#1771).** Every admin over-capacity admission — on-behalf create
+  (#1668/#1695/#1767), date/batch modification (#1668), waitlist force-confirm,
+  confirm-pending-guests overbook (#1366), and admin capacity-hold (#1764) —
+  now persists the decision on the booking (`capacityOverriddenAt` +
+  `capacityOverriddenByMemberId`). Every payment-time / settlement capacity
+  re-check (`markBookingPaymentSucceeded`, payment links, the non-member-hold
+  cron, saved-card charge, switch-to-Internet-Banking, the Internet Banking
+  invoice-paid reconcile, and group settlement) now honours that marker and
+  settles the booking to its correct terminal state instead of
+  cancelling+refunding, 409ing, or bumping it. This retires the #1767 v1
+  carve-out that hard-blocked a non-member hold-eligible (PENDING) on-behalf
+  overbook — the hold cron now confirms rather than bumps it. Members can never
+  overbook; the marker only ever appears behind an explicit, audited admin act.
+
+- **Admin can choose whether to email members when assigning or removing a
+  partner link (#1769a).** The Partner card on `/admin/members/[id]` now asks,
+  per action, whether the members receive the standard partner-relationship
+  email — a two-button dialog ("Assign/Remove and email members" vs "…without
+  emailing"), reusing the retroactive-create / cancel notify pattern
+  (#1695/#1705). The default is to notify; suppressing is recorded in the audit
+  log as `notifyMember: false`. The dialog appears only when an email would
+  otherwise be sent: assign always, remove only for a CONFIRMED link — removing
+  a still-pending link emails no one, so it removes directly and records no
+  notify field. Member-facing partner flows (request/confirm/dissolve/invite
+  claim, and the family one-step declare) keep their existing always-notify
+  behaviour; the broader admin-email sweep is tracked separately as #1769b.
+
+- **Admin book-on-behalf can overbook with an explicit confirmation (#1767).**
+  A forward-dated on-behalf create that exceeds lodge capacity now follows the
+  same warn-and-confirm contract as retroactive creates and admin date edits
+  (#1668/#1695): full days stay selectable on the admin calendar, the guest
+  step warns, and submitting prompts "Confirm over-capacity and create"
+  (audited as `capacityOverridden`). An on-behalf create that opted into the
+  waitlist fallback still waitlists instead of prompting. (#1771 persists and
+  honours the override, so a priced overridden booking is no longer cancelled
+  when payment lands over capacity, and the former non-member hold-eligible
+  (PENDING) carve-out is retired.) The admin guest caps now follow the selected
+  lodge's resolved capacity, and over-capacity parties cannot be saved as
+  drafts. Member self-books are unchanged — members can never overbook.
+
+- **Auto bed allocation no longer strands large groups (#1768).** The split
+  fallback used to cap rooms-with-minors at the booking's adult count — a
+  school group with two teachers filled exactly two rooms and reported the
+  remaining students `NO_BED_AVAILABLE` with rooms empty. Minors now overflow
+  into rooms of their own once the booking has an adult on-site that night
+  (the Phase-0 night-level rule is unchanged), SCHOOL-request bookings room
+  their teachers together and students separately, and a new hard invariant
+  is enforced on every placement path in both directions: a room-night
+  holding one booking's minors never also holds another booking's adult —
+  displacement evicts a conflicting provisional booking whole or backs off,
+  relocation falls back to unallocating rather than moving anyone beside a
+  stranger, and persisted violations surface as a `MINOR_ADULT_MIX` board
+  warning.
+
+- **Admins can add a confirmed partner to a full lodge (#1746, completing the
+  double-bed epic #1741).** The admin edit-booking panel now offers the
+  confirmed partners of a booking's member guests as "partner (shares a
+  double bed)" quick-adds; the added partner is admitted through the reserved
+  partner-shared slots (#1745) even when the lodge is full by beds — bounded
+  per night by the double count — and is then placed as the double's second
+  occupant on the allocation board as before. Admin-only end to end: the
+  `partnerSharedGuests` flags are rejected for non-admin callers at both the
+  modify routes and the service, the public wizard is unchanged, and a
+  rejected admission shows the capacity check's reason rather than the
+  over-capacity overbook confirm.
+
+- **Lodge capacity gains reserved partner-shared headroom (#1745, part of the
+  double-bed epic #1741).** Each active shareable `DOUBLE` bed now contributes
+  one admission slot **above** the base lodge capacity — reserved for a guest
+  whose CONFIRMED partner (#1742/#1744) holds an ordinary place on the same
+  nights, bounded by the double count per night, and never past an explicit
+  per-lodge capacity (a fire/licence people-ceiling zeroes the headroom, so a
+  capped lodge is unaffected). Public and member booking paths are untouched:
+  the base figure they read is unchanged, and only the admin-initiated
+  partner-shared admission check (`checkCapacityForPartnerSharedAdmission`;
+  initiation surface lands with #1746) can use the extra slots. The admin
+  lodge Capacity card breaks the figure out ("10 beds + up to 1 partner
+  spot") rather than showing a combined number.
+
+- Added the declared **Partner/Husband/Wife relationship** (#1742, part of the
+  double-bed shared-occupancy epic #1741): a symmetric, consent-based
+  `MemberPartnerLink` between two adult members with a request→confirm flow
+  mirroring family invitations. Members declare a partner from the profile
+  Partner card (the partner confirms or declines from their own profile); a
+  family-group admin can declare a no-login adult member of their group in one
+  step; admins can assign or remove a partnership directly from the member
+  detail page (recorded as admin-assigned); and the family create-group form
+  can mark the named partner so an unregistered partner's invite token (#1682)
+  forms the link when claimed — the claim page discloses the partnership
+  before the invitee accepts. Invariants: at most one confirmed partner per
+  member (advisory-locked, with DB partial-unique backstops), adults only, no
+  self-partnering; removed/declined links are hard-deleted with full audit
+  history, and the affected partner is emailed on removal. New emails:
+  `partner-link-request`, `partner-link-confirmed`, `partner-link-removed`.
+  Expand-only migration (`MemberPartnerLink` table +
+  `PartnerInviteToken.createPartnerLink`). This link is the eligibility signal
+  the bed-share children consume: double-bed placement eligibility (#1744)
+  and the partner-shared capacity headroom (#1745) both read it via
+  `mayShareDoubleBed`. A by-email partner request always answers with the generic
+  "If they're eligible, we've sent them a partner request." so a member cannot
+  probe whether someone already has a confirmed partner (D9 owner decision);
+  and the inviter of an unregistered declared partner can cancel their own
+  outstanding invitation from the profile Partner card before it is claimed
+  (#1754).
+
 - **Behaviour change — lodge capacity now honours a max-sleeping-capacity
   ceiling (#1653).** A per-lodge `LodgeSettings.capacity` value now caps the bed
   count when Bed Allocation is on: effective capacity is the lower of the

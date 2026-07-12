@@ -179,6 +179,59 @@ describe("AdminBookingsPage", () => {
     expect(callArgs.where.checkOut.lte).toEqual(parseDateOnly(todayKey));
   });
 
+  it("expresses the unsettled-additions deep link (#1723): additionalOwed=owed and checkOutTo=today", async () => {
+    const todayKey = formatDateOnly(getTodayDateOnly());
+
+    await AdminBookingsPage({
+      searchParams: Promise.resolve({
+        additionalOwed: "owed",
+        checkOutTo: todayKey,
+      }),
+    });
+
+    const callArgs = vi.mocked(prisma.booking.findMany).mock.calls[0][0] as any;
+    // The owed fragment is AND-composed (shared with the dashboard card and
+    // sidebar badge via unpaid-finished-stays.ts) so the default status
+    // filter and the check-out cutoff still apply alongside it.
+    expect(callArgs.where.AND).toEqual([
+      {
+        status: { in: ["CONFIRMED", "PAID", "COMPLETED"] },
+        payment: {
+          is: {
+            additionalAmountCents: { gt: 0 },
+            OR: [
+              { additionalPaymentStatus: null },
+              { additionalPaymentStatus: { not: "SUCCEEDED" } },
+            ],
+          },
+        },
+      },
+    ]);
+    expect(callArgs.where.checkOut.lte).toEqual(parseDateOnly(todayKey));
+  });
+
+  it("composes additionalOwed=owed with an explicit status filter and omits it by default", async () => {
+    await AdminBookingsPage({
+      searchParams: Promise.resolve({
+        status: "PAID",
+        additionalOwed: "owed",
+      }),
+    });
+
+    let callArgs = vi.mocked(prisma.booking.findMany).mock.calls[0][0] as any;
+    // The explicit choice narrows (top-level status) while the AND fragment
+    // keeps the owed predicate — neither overwrites the other.
+    expect(callArgs.where.status).toBe("PAID");
+    expect(callArgs.where.AND).toHaveLength(1);
+
+    vi.mocked(prisma.booking.findMany).mockClear();
+    vi.mocked(prisma.booking.findMany).mockResolvedValue([]);
+    await AdminBookingsPage({ searchParams: Promise.resolve({}) });
+
+    callArgs = vi.mocked(prisma.booking.findMany).mock.calls[0][0] as any;
+    expect(callArgs.where.AND).toBeUndefined();
+  });
+
   it("prefers explicit checkOutTo over the legacy to param", async () => {
     const legacyTo = formatDateOnly(addDaysDateOnly(getTodayDateOnly(), 30));
     const checkOutTo = formatDateOnly(getTodayDateOnly());
@@ -476,7 +529,9 @@ describe("AdminBookingsPage", () => {
 
     expect(html).toContain("All Bookings");
     expect(html).toContain("Aroha Ngata");
-    expect(html).toContain("Changes");
+    // The redesigned table (#1810) keeps a Payment column; the operational
+    // Beds/Xero/Changes columns moved to the booking detail view.
+    expect(html).toContain("Payment");
     expect(html).not.toContain("/admin/bed-allocation");
     expect(html).not.toContain("bedState=unallocated");
     expect(html).not.toContain(">Beds<");
@@ -500,6 +555,59 @@ describe("AdminBookingsPage", () => {
     expect(html).toContain("disabled");
     expect(html).toContain(ADMIN_VIEW_ONLY_ACTION_REASON);
     expect(html).not.toContain('href="/admin/book"');
+  });
+
+  it("does not render pagination controls when everything fits on one page", async () => {
+    vi.mocked(prisma.booking.findMany).mockResolvedValue([
+      makeBooking({ id: "booking-1" }),
+      makeBooking({ id: "booking-2" }),
+    ] as any);
+
+    const element = await AdminBookingsPage({
+      searchParams: Promise.resolve({}),
+    });
+    const html = renderToStaticMarkup(element);
+
+    expect(html).not.toContain("Bookings pagination");
+  });
+
+  it("renders pagination controls and preserves the page on sort links (#1738)", async () => {
+    const fixtures = Array.from({ length: 101 }, (_, i) =>
+      makeBooking({ id: `b${String(i).padStart(3, "0")}` })
+    );
+    vi.mocked(prisma.booking.findMany).mockResolvedValue(fixtures as any);
+
+    const element = await AdminBookingsPage({
+      searchParams: Promise.resolve({ page: "2" }),
+    });
+    const html = renderToStaticMarkup(element);
+
+    // Accessible pagination nav with the current-of-total position.
+    expect(html).toContain('aria-label="Bookings pagination"');
+    expect(html).toContain("Page 2 of 2");
+    expect(html).toContain("101 bookings found");
+    // Sort-header links keep the current page (sort reorders the same set).
+    expect(html).toContain("sortBy=member");
+    expect(html).toContain("page=2");
+  });
+
+  it("clamps an out-of-range page and its sort/pagination links to the last page (#1738)", async () => {
+    const fixtures = Array.from({ length: 101 }, (_, i) =>
+      makeBooking({ id: `b${String(i).padStart(3, "0")}` })
+    );
+    vi.mocked(prisma.booking.findMany).mockResolvedValue(fixtures as any);
+
+    const element = await AdminBookingsPage({
+      searchParams: Promise.resolve({ page: "99" }),
+    });
+    const html = renderToStaticMarkup(element);
+
+    // Service clamps page 99 → 2; the page must render the clamped position and
+    // every generated link (sort headers + pagination) must carry the clamped
+    // page, never the raw out-of-range 99.
+    expect(html).toContain("Page 2 of 2");
+    expect(html).toContain("page=2");
+    expect(html).not.toContain("page=99");
   });
 
   it("formats total guests with non-member guests in brackets", () => {

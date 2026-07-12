@@ -54,7 +54,10 @@ import logger from "@/lib/logger";
 import { createBookingModificationCredit } from "@/lib/member-credit";
 import { prisma } from "@/lib/prisma";
 import { queueXeroBookingEditSettlement } from "@/lib/xero-booking-edit-settlement";
-import { assertProposedCheckInClearsXeroLockDate } from "@/lib/xero-period-lock-guard";
+import {
+  assertProposedCheckInClearsXeroLockDate,
+  assertProposedDateEditClearsXeroLockDate,
+} from "@/lib/xero-period-lock-guard";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 
 type ModifiedBooking = Booking & {
@@ -160,6 +163,15 @@ export async function modifyBookingBatch({
     throw new ApiError("Admin override is not available for this account", 403);
   }
   const adminOverride = Boolean(input.adminOverride) && actor.role === "ADMIN";
+  // #1746: partner-shared admission is admin-initiated by owner decision —
+  // the reserved slots (#1745) must be unreachable from member self-service
+  // however the service is called.
+  if (input.partnerSharedGuests?.length && actor.role !== "ADMIN") {
+    throw new ApiError(
+      "Partner-shared placement is not available for this account",
+      403,
+    );
+  }
   // Owner decision (#1668/#1696): an admin chooses per edit whether the member is
   // emailed — on override AND plain edits — with absent meaning notify. A
   // non-admin actor can never suppress (the route 403s any notify flag), so they
@@ -197,14 +209,32 @@ export async function modifyBookingBatch({
     // clear the effective lock date — same semantics as the retroactive
     // create (#1695). Deliberately conservative: it fires on every recalculate
     // override even when the settlement would only write today-dated documents
-    // (decision on #1697). Shift mode writes no Xero documents and is never
-    // guarded. Runs before the transaction: the Xero call must stay outside
-    // it, and the pre-read is only advisory (the outbox still fails safely if
-    // the lock dates change mid-flight).
+    // (decision on #1697, re-affirmed on #1718). Shift mode writes no Xero
+    // documents and is never guarded. Runs before the transaction: the Xero
+    // call must stay outside it, and the pre-read is only advisory (the outbox
+    // still fails safely if the lock dates change mid-flight).
     await assertProposedCheckInClearsXeroLockDate(
       prisma,
       bookingId,
       input.checkIn,
+    );
+  } else {
+    // Ordinary edits (#1729) get the NARROW guard instead, also before the
+    // transaction: it consults the lock dates only when this edit would
+    // actually queue the check-in-dated invoice update (issued Xero invoice +
+    // dates changing + payment not settled — the settlement classifier's own
+    // predicate), with member-appropriate error text for non-admin actors.
+    // Identity-only edits (guest name fixes, no date fields) never trigger
+    // it — the outbox backstop covers that rare strand instead of blocking a
+    // typo fix.
+    await assertProposedDateEditClearsXeroLockDate(
+      prisma,
+      bookingId,
+      { checkIn: input.checkIn, checkOut: input.checkOut },
+      {
+        audience: actor.role === "ADMIN" ? "admin" : "member",
+        actorMemberId: actor.id,
+      },
     );
   }
 
@@ -328,6 +358,9 @@ export async function modifyBookingBatch({
           // Issue #1668: over-capacity warns-and-confirms under admin override.
           adminOverride,
           confirmOverCapacity: input.confirmOverCapacity,
+          // #1746: admin-flagged partner-sharers route capacity through the
+          // #1745 reserved-slot check (gated to ADMIN actors above).
+          partnerSharedGuests: input.partnerSharedGuests,
         });
 
     const promo = identityOnlyModification
@@ -422,6 +455,17 @@ export async function modifyBookingBatch({
         adminReviewNotes: guestPlan.reviewUpdate.adminReviewNotes,
         adminReviewedById: guestPlan.reviewUpdate.adminReviewedById,
         adminReviewedAt: guestPlan.reviewUpdate.adminReviewedAt,
+        // Persisted capacity override (#1771): this batch modification
+        // re-evaluates capacity against the new nights/guests
+        // (pricing.capacityOverridden from calculateModifiedPricing), so
+        // RECONCILE the marker — stamp when admitted over capacity behind a
+        // confirm, and CLEAR any prior stamp when the change moved the booking
+        // back within capacity, so a stale flag can't suppress a legitimate
+        // cancel on the new nights later.
+        capacityOverriddenAt: pricing.capacityOverridden ? new Date() : null,
+        capacityOverriddenByMemberId: pricing.capacityOverridden
+          ? actor.id
+          : null,
       },
       include: { guests: true, payment: true },
     });

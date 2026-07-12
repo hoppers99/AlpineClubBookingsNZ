@@ -1,8 +1,10 @@
 "use client";
 
 import Link from "next/link";
+import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { ExternalLink, UserMinus } from "lucide-react";
 import { buildProfilePathWithReturnTo } from "@/lib/internal-return-path";
 import { DatesStep } from "./_components/dates-step";
@@ -135,7 +137,7 @@ export default function BookPage() {
 
       {/* Subscription warning banner */}
       {!subscriptionLoading && subscriptionUnpaid && (
-        <div className="rounded-md bg-amber-50 border border-amber-200 p-4 text-sm text-amber-800">
+        <Alert variant="warning">
           <p>
             <strong>Subscription unpaid:</strong> Your subscription for the{" "}
             {subscriptionStatus!.seasonDisplay} season is unpaid.{" "}
@@ -169,7 +171,7 @@ export default function BookPage() {
               Invoice reference: <strong>{subscriptionInvoiceNumber}</strong> — check your email from Xero for the payment link.
             </p>
           ) : null}
-        </div>
+        </Alert>
       )}
 
       {error && (
@@ -326,17 +328,16 @@ export default function BookPage() {
                       key={lodge.id}
                       className="flex items-center gap-2 text-sm text-purple-800 cursor-pointer"
                     >
-                      <input
-                        type="checkbox"
+                      <Checkbox
                         checked={waitlistAlternateLodgeIds.includes(lodge.id)}
-                        onChange={(e) =>
+                        onCheckedChange={(checked) =>
                           setWaitlistAlternateLodgeIds((current) =>
-                            e.target.checked
+                            checked
                               ? [...current, lodge.id]
                               : current.filter((id) => id !== lodge.id)
                           )
                         }
-                        className="rounded border-purple-300"
+                        className="border-purple-300"
                         disabled={joiningWaitlist}
                       />
                       Also waitlist me for {lodge.name}

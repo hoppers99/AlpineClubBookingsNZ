@@ -29,6 +29,11 @@ import logger from "@/lib/logger";
 
 const confirmPendingGuestsSchema = z.object({
   allowOverbook: z.boolean().optional(),
+  // #1769b (#1705 semantics): per-action member-email choice. This route is
+  // requireAdmin()-only, so no actor gate is needed. Absent = notify (default);
+  // false suppresses the confirmation email (only sent on the zero-amount and
+  // charged-card outcomes). A non-boolean value is rejected with 400.
+  notifyMember: z.boolean().optional(),
 });
 
 function getOverbookedNightDates(nightDetails: NightAvailability[]): string[] {
@@ -66,9 +71,14 @@ export async function POST(
 
   const body = await request.json().catch(() => ({}));
   const parsedBody = confirmPendingGuestsSchema.safeParse(body);
-  const allowOverbook = parsedBody.success
-    ? parsedBody.data.allowOverbook ?? false
-    : false;
+  if (!parsedBody.success) {
+    return NextResponse.json(
+      { error: "Invalid input", details: parsedBody.error.flatten() },
+      { status: 400 }
+    );
+  }
+  const allowOverbook = parsedBody.data.allowOverbook ?? false;
+  const notifyMember = parsedBody.data.notifyMember;
 
   const booking = await prisma.booking.findUnique({
     where: { id: bookingId },
@@ -131,6 +141,14 @@ export async function POST(
         charged,
         guestCount: booking.guests.length,
         finalPriceCents: booking.finalPriceCents,
+        // #1769b honesty rule: record the notify choice only for the two
+        // outcomes that actually send a member email (zero-amount and charged
+        // card). The payment-owed and failure outcomes send none, so a
+        // suppression there is not real and no field is recorded.
+        ...((outcome === "paid_zero" || outcome === "paid_charged") &&
+        notifyMember === false
+          ? { notifyMember: false }
+          : {}),
       },
       request: auditRequest,
     }).catch((err) =>
@@ -193,7 +211,19 @@ export async function POST(
 
         const claimed = await tx.booking.updateMany({
           where: { id: bookingId, status: BookingStatus.PENDING },
-          data: { status: BookingStatus.PAID, nonMemberHoldUntil: null },
+          data: {
+            status: BookingStatus.PAID,
+            nonMemberHoldUntil: null,
+            // Persisted capacity override (#1771): an admin "confirm now" that
+            // advances a $0 booking over the ceiling (allowOverbook past the
+            // gate) stamps the acting admin. Guarded — never set in-capacity.
+            ...(!available
+              ? {
+                  capacityOverriddenAt: new Date(),
+                  capacityOverriddenByMemberId: session.user.id,
+                }
+              : {}),
+          },
         });
         if (claimed.count === 0) {
           return { error: "Booking is no longer pending" as const, status: 409 };
@@ -222,17 +252,19 @@ export async function POST(
       });
       await queueXeroInvoice();
       await audit("paid_zero", false);
-      sendBookingConfirmedEmail(
-        booking.member.email,
-        booking.member.firstName,
-        booking.checkIn,
-        booking.checkOut,
-        booking.guests.length,
-        booking.finalPriceCents,
-        promoEmailOptions
-      ).catch((err) =>
-        logger.error({ err, bookingId }, "Failed to send confirmation email")
-      );
+      if (notifyMember !== false) {
+        sendBookingConfirmedEmail(
+          booking.member.email,
+          booking.member.firstName,
+          booking.checkIn,
+          booking.checkOut,
+          booking.guests.length,
+          booking.finalPriceCents,
+          promoEmailOptions
+        ).catch((err) =>
+          logger.error({ err, bookingId }, "Failed to send confirmation email")
+        );
+      }
       return NextResponse.json({ success: true, status: "PAID", charged: false });
     }
 
@@ -298,7 +330,21 @@ export async function POST(
 
       const claimed = await tx.booking.updateMany({
         where: { id: bookingId, status: BookingStatus.PENDING },
-        data: { status: BookingStatus.CONFIRMED, nonMemberHoldUntil: null },
+        data: {
+          status: BookingStatus.CONFIRMED,
+          nonMemberHoldUntil: null,
+          // Persisted capacity override (#1771): an admin "confirm now" that
+          // claims a priced booking CONFIRMED over the ceiling (allowOverbook
+          // past the gate) stamps the acting admin so the later charge's
+          // markBookingPaymentSucceeded re-check honours it. Guarded — never
+          // set in-capacity.
+          ...(!available
+            ? {
+                capacityOverriddenAt: new Date(),
+                capacityOverriddenByMemberId: session.user.id,
+              }
+            : {}),
+        },
       });
       if (claimed.count === 0) {
         return { error: "Booking is no longer pending" as const, status: 409 };
@@ -544,17 +590,19 @@ export async function POST(
 
     await queueXeroInvoice();
     await audit("paid_charged", true);
-    sendBookingConfirmedEmail(
-      booking.member.email,
-      booking.member.firstName,
-      booking.checkIn,
-      booking.checkOut,
-      booking.guests.length,
-      booking.finalPriceCents,
-      promoEmailOptions
-    ).catch((err) =>
-      logger.error({ err, bookingId }, "Failed to send confirmation email")
-    );
+    if (notifyMember !== false) {
+      sendBookingConfirmedEmail(
+        booking.member.email,
+        booking.member.firstName,
+        booking.checkIn,
+        booking.checkOut,
+        booking.guests.length,
+        booking.finalPriceCents,
+        promoEmailOptions
+      ).catch((err) =>
+        logger.error({ err, bookingId }, "Failed to send confirmation email")
+      );
+    }
     return NextResponse.json({ success: true, status: "PAID", charged: true });
   } catch (err) {
     logger.error({ err, bookingId }, "Failed to confirm pending guests");

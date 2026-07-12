@@ -69,6 +69,7 @@ vi.mock("@/lib/logger", () => ({
 }));
 
 import { POST } from "@/app/api/admin/bookings/[id]/force-confirm/route";
+import { addDaysDateOnly, getTodayDateOnly } from "@/lib/date-only";
 
 function forceConfirmRequest(body: Record<string, unknown>) {
   return new NextRequest("http://localhost/api/admin/bookings/booking-1/force-confirm", {
@@ -224,6 +225,253 @@ describe("POST /api/admin/bookings/[id]/force-confirm", () => {
           parkedForAdminReview: false,
         }),
       }),
+    });
+  });
+
+  // #1771 — an overbook force-confirm stamps the persisted capacity override on
+  // the booking (who + when), so every downstream payment-time re-check honours
+  // it and never cancels the deliberately-admitted booking.
+  it("stamps the persisted capacity override on an overbook force-confirm (#1771)", async () => {
+    const response = await POST(
+      forceConfirmRequest({ allowOverbook: true }),
+      routeParams(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.tx.booking.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          capacityOverriddenAt: expect.any(Date),
+          capacityOverriddenByMemberId: "admin-1",
+        }),
+      }),
+    );
+  });
+
+  it("does NOT stamp the capacity override when the force-confirm fits within capacity (#1771)", async () => {
+    mocks.checkCapacityForGuestRanges.mockResolvedValue({
+      available: true,
+      nightDetails: [],
+    });
+
+    const response = await POST(forceConfirmRequest({}), routeParams());
+
+    expect(response.status).toBe(200);
+    const updateData = mocks.tx.booking.update.mock.calls[0][0].data;
+    expect(updateData).not.toHaveProperty("capacityOverriddenAt");
+    expect(updateData).not.toHaveProperty("capacityOverriddenByMemberId");
+  });
+
+  // #1723 path 1 (owner decision B): a past-dated force-confirm that lands
+  // PAYMENT_PENDING is allowed but flagged at creation — in the response and
+  // in the audit trail — because it creates an unpaid finished stay. Stay
+  // dates are derived from the real clock (the route compares against NZ
+  // today), never hardcoded calendar dates that would rot.
+  describe("unpaid finished stay flagging (#1723 path 1)", () => {
+    function bookingWithStay(
+      days: { checkIn: number; checkOut: number },
+      overrides: Record<string, unknown> = {},
+    ) {
+      return {
+        ...waitlistBooking(),
+        checkIn: addDaysDateOnly(getTodayDateOnly(), days.checkIn),
+        checkOut: addDaysDateOnly(getTodayDateOnly(), days.checkOut),
+        ...overrides,
+      };
+    }
+
+    beforeEach(() => {
+      // These tests pin the finished-stay flag, not capacity: leave capacity
+      // clear so no overbook override is involved.
+      mocks.checkCapacityForGuestRanges.mockResolvedValue({
+        available: true,
+        minAvailable: 3,
+        nightDetails: [],
+      });
+      mocks.sendBookingConfirmedEmail.mockResolvedValue(undefined);
+    });
+
+    it("flags a past-dated force-confirm that lands PAYMENT_PENDING", async () => {
+      mocks.tx.booking.findUnique.mockResolvedValue(
+        bookingWithStay({ checkIn: -10, checkOut: -8 }),
+      );
+
+      const response = await POST(forceConfirmRequest({}), routeParams());
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(body).toMatchObject({
+        success: true,
+        status: "PAYMENT_PENDING",
+        unpaidFinishedStay: true,
+      });
+      expect(mocks.tx.auditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          details: expect.stringContaining("created an unpaid finished stay"),
+          metadata: expect.objectContaining({
+            createdUnpaidFinishedStay: true,
+            nextStatus: "PAYMENT_PENDING",
+          }),
+        }),
+      });
+    });
+
+    it("treats a stay checking out today as already finished (matches the queue cutoff)", async () => {
+      mocks.tx.booking.findUnique.mockResolvedValue(
+        bookingWithStay({ checkIn: -2, checkOut: 0 }),
+      );
+
+      const response = await POST(forceConfirmRequest({}), routeParams());
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(body).toMatchObject({ unpaidFinishedStay: true });
+    });
+
+    it("does not flag a future-dated stay", async () => {
+      mocks.tx.booking.findUnique.mockResolvedValue(
+        bookingWithStay({ checkIn: 5, checkOut: 7 }),
+      );
+
+      const response = await POST(forceConfirmRequest({}), routeParams());
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(body).toMatchObject({
+        status: "PAYMENT_PENDING",
+        unpaidFinishedStay: false,
+      });
+      expect(mocks.tx.auditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          metadata: expect.objectContaining({
+            createdUnpaidFinishedStay: false,
+          }),
+        }),
+      });
+    });
+
+    it("does not flag a past-dated $0 force-confirm (lands PAID with no card obligation)", async () => {
+      mocks.tx.booking.findUnique.mockResolvedValue(
+        bookingWithStay({ checkIn: -10, checkOut: -8 }, { finalPriceCents: 0 }),
+      );
+      mocks.tx.payment.upsert.mockResolvedValue({});
+
+      const response = await POST(forceConfirmRequest({}), routeParams());
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(body).toMatchObject({
+        status: "PAID",
+        unpaidFinishedStay: false,
+      });
+    });
+
+    it("does not flag a past-dated stay parked for admin review", async () => {
+      mocks.tx.booking.findUnique.mockResolvedValue(
+        bookingWithStay(
+          { checkIn: -10, checkOut: -8 },
+          { adminReviewStatus: "PENDING" },
+        ),
+      );
+      mocks.requiresAdultSupervisionReview.mockReturnValue(true);
+
+      const response = await POST(forceConfirmRequest({}), routeParams());
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(body).toMatchObject({
+        status: "AWAITING_REVIEW",
+        unpaidFinishedStay: false,
+      });
+    });
+  });
+
+  // #1769b (#1705 semantics): the admin's per-action member-email choice. The
+  // confirmation email only sends when the force-confirm lands PAID (a $0 stay
+  // with review resolved and capacity available), so that is the only outcome a
+  // suppression is real — the audit records `notifyMember: false` only there.
+  describe("member-email notify choice (#1769b)", () => {
+    function zeroDollarBooking(overrides: Record<string, unknown> = {}) {
+      return { ...waitlistBooking(), finalPriceCents: 0, ...overrides };
+    }
+
+    beforeEach(() => {
+      mocks.checkCapacityForGuestRanges.mockResolvedValue({
+        available: true,
+        minAvailable: 3,
+        nightDetails: [],
+      });
+      mocks.tx.booking.findUnique.mockResolvedValue(zeroDollarBooking());
+      mocks.tx.payment.upsert.mockResolvedValue({});
+      mocks.sendBookingConfirmedEmail.mockResolvedValue(undefined);
+    });
+
+    it("emails the member and records no notify field by default (lands PAID)", async () => {
+      const response = await POST(forceConfirmRequest({}), routeParams());
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(body.status).toBe("PAID");
+      expect(mocks.sendBookingConfirmedEmail).toHaveBeenCalledTimes(1);
+      const metadata =
+        mocks.tx.auditLog.create.mock.calls[0][0].data.metadata;
+      expect(metadata).not.toHaveProperty("notifyMember");
+    });
+
+    it("suppresses the email and records notifyMember:false when notifyMember is false", async () => {
+      const response = await POST(
+        forceConfirmRequest({ notifyMember: false }),
+        routeParams(),
+      );
+
+      expect(response.status).toBe(200);
+      expect(mocks.sendBookingConfirmedEmail).not.toHaveBeenCalled();
+      const metadata =
+        mocks.tx.auditLog.create.mock.calls[0][0].data.metadata;
+      expect(metadata).toMatchObject({ notifyMember: false });
+    });
+
+    it("emails and records no notify field when notifyMember is true", async () => {
+      const response = await POST(
+        forceConfirmRequest({ notifyMember: true }),
+        routeParams(),
+      );
+
+      expect(response.status).toBe(200);
+      expect(mocks.sendBookingConfirmedEmail).toHaveBeenCalledTimes(1);
+      const metadata =
+        mocks.tx.auditLog.create.mock.calls[0][0].data.metadata;
+      expect(metadata).not.toHaveProperty("notifyMember");
+    });
+
+    it("rejects a non-boolean notifyMember with 400 and runs no transaction", async () => {
+      const response = await POST(
+        forceConfirmRequest({ notifyMember: "false" }),
+        routeParams(),
+      );
+
+      expect(response.status).toBe(400);
+      expect(mocks.transaction).not.toHaveBeenCalled();
+      expect(mocks.sendBookingConfirmedEmail).not.toHaveBeenCalled();
+    });
+
+    it("records NO notify field on a priced force-confirm that lands PAYMENT_PENDING even with notifyMember:false", async () => {
+      // Priced booking never lands PAID, so no confirmation email is sent and a
+      // suppression there is not real — the honesty rule records no field.
+      mocks.tx.booking.findUnique.mockResolvedValue(waitlistBooking());
+
+      const response = await POST(
+        forceConfirmRequest({ notifyMember: false }),
+        routeParams(),
+      );
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(body.status).toBe("PAYMENT_PENDING");
+      expect(mocks.sendBookingConfirmedEmail).not.toHaveBeenCalled();
+      const metadata =
+        mocks.tx.auditLog.create.mock.calls[0][0].data.metadata;
+      expect(metadata).not.toHaveProperty("notifyMember");
     });
   });
 });

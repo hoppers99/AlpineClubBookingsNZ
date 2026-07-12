@@ -20,12 +20,25 @@ import { MEMBER_ACCESS_ROLE_SELECT } from "@/lib/access-role-definitions";
 import {
   sendAccountDeletionApprovedEmail,
   sendAccountDeletionRejectedEmail,
+  sendAdminPartnerShareSweptAlert,
 } from "@/lib/email";
+import {
+  describePartnerSharedSweepReason,
+  partnerShareSweepCounterpartNames,
+  partnerShareSweepNights,
+  sweepFuturePartnerSharedAllocations,
+  type SweptPartnerSharedAllocation,
+} from "@/lib/bed-allocation-lifecycle";
 import logger from "@/lib/logger";
 
 const actionSchema = z.object({
   action: z.enum(["approve", "reject"]),
   note: z.string().max(1000).optional(),
+  // #1788: absent/undefined = notify (default), false = suppress the member
+  // email. Only honoured on the REJECT path; the APPROVE path's final privacy
+  // receipt (sendAccountDeletionApprovedEmail) always sends regardless. A
+  // non-boolean value fails the parse below and returns 400.
+  notifyMember: z.boolean().optional(),
 });
 
 const CANCELLABLE_DELETION_BOOKING_STATUSES = [
@@ -43,7 +56,7 @@ export async function POST(
   const session = guard.session;
   const { id } = await params;
 
-  let body: { action: "approve" | "reject"; note?: string };
+  let body: { action: "approve" | "reject"; note?: string; notifyMember?: boolean };
   try {
     const raw = await request.json();
     body = actionSchema.parse(raw);
@@ -97,21 +110,34 @@ export async function POST(
         },
       });
 
+      // #1788 honesty rule — record the suppression in the audit ONLY on a path
+      // that truly would have sent. The member is emailed unless they have no
+      // address on file (member.email is a required field, so in practice this
+      // is always present) or the admin opted out.
+      const suppressedNotifyAudit =
+        member.email && body.notifyMember === false
+          ? { notifyMember: false }
+          : undefined;
+
       logAudit({
         action: "member.deletion_rejected",
         memberId: session.user.id,
         targetId: member.id,
         details: body.note ? `Note: ${body.note}` : "No note",
         ipAddress: ip,
+        ...(suppressedNotifyAudit ? { metadata: suppressedNotifyAudit } : {}),
       });
 
-      sendAccountDeletionRejectedEmail(
-        member.email,
-        member.firstName,
-        body.note ?? ""
-      ).catch((err) =>
-        logger.error({ err, memberId: member.id }, "Failed to send deletion rejected email")
-      );
+      // #1788: email the member unless the admin opted out (default = notify).
+      if (body.notifyMember !== false) {
+        sendAccountDeletionRejectedEmail(
+          member.email,
+          member.firstName,
+          body.note ?? ""
+        ).catch((err) =>
+          logger.error({ err, memberId: member.id }, "Failed to send deletion rejected email")
+        );
+      }
 
       return NextResponse.json({ message: "Deletion request rejected." });
     }
@@ -241,6 +267,7 @@ export async function POST(
 
     // 4-7: Anonymise atomically in a single transaction
     const anonymisedEmail = `deleted-${member.id.substring(0, 8)}@deleted.invalid`;
+    let sweptShares: SweptPartnerSharedAllocation[] = [];
     await prisma.$transaction(async (tx) => {
       // Race-safe re-check of the last-admin invariant inside the mutation
       // transaction (issue #1604): the fail-fast check above ran before the
@@ -248,6 +275,18 @@ export async function POST(
       if (await wouldRemoveLastFullAdmin(tx, member.id)) {
         throw new AdminAccountGuardError(LAST_FULL_ADMIN_GUARD_MESSAGE);
       }
+
+      // #1756: anonymisation deactivates the member and unlinks their guest
+      // rows, breaking the double-bed sharing precondition. Sweep their future
+      // shared-double placements now, while bookingGuest.memberId (nulled in
+      // step 5 below) still identifies them. Second-occupant appearances on
+      // OTHER members' bookings survive the own-booking cancellation above, so
+      // this is not vacuously empty.
+      sweptShares = await sweepFuturePartnerSharedAllocations({
+        memberId: member.id,
+        reason: "member_deactivated",
+        db: tx,
+      });
 
       // 3. Anonymise the member record
       await tx.member.update({
@@ -305,6 +344,23 @@ export async function POST(
         },
       });
     });
+
+    if (sweptShares.length > 0) {
+      // Post-commit, fire-and-forget (#1756). Uses the pre-anonymisation name
+      // captured above — admins keep an actionable reference, consistent with
+      // the audit trail this route already retains.
+      sendAdminPartnerShareSweptAlert({
+        memberName: `${member.firstName} ${member.lastName}`.trim(),
+        partnerName: partnerShareSweepCounterpartNames(sweptShares, member.id),
+        reason: describePartnerSharedSweepReason("member_deactivated"),
+        nights: partnerShareSweepNights(sweptShares),
+      }).catch((alertErr) => {
+        logger.error(
+          { err: alertErr, memberId: member.id, sweptCount: sweptShares.length },
+          "Failed to send partner share sweep alert"
+        );
+      });
+    }
 
     logAudit({
       action: "member.deletion_approved",

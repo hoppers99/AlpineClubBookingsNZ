@@ -4,6 +4,11 @@ import { getPendingMembershipCancellationReviewCount } from "@/lib/membership-ca
 import { getPendingMemberArchiveReviewCount } from "@/lib/member-lifecycle-actions";
 import { getUnassignedHutLeaderDates } from "@/lib/hut-leader-coverage";
 import { REVIEWED_REQUEST_TYPES } from "@/lib/admin-family-group-requests-service";
+import {
+  buildUnpaidFinishedStaysWhere,
+  buildUnsettledAdditionalFinishedStaysWhere,
+} from "@/lib/unpaid-finished-stays";
+import { getTodayDateOnly } from "@/lib/date-only";
 
 export type AdminPendingCounts = {
   familyRequests: number;
@@ -13,6 +18,8 @@ export type AdminPendingCounts = {
   bookingReviews: number;
   bookingChangeRequests: number;
   publicBookingRequests: number;
+  unpaidFinishedStays: number;
+  unsettledAdditionalFinishedStays: number;
   membershipCancellations: number;
   archiveRequests: number;
   deletionRequests: number;
@@ -26,7 +33,9 @@ export type AdminPendingCounts = {
  * ponytail: each count mirrors the where-clause of its queue route/service
  * (family-groups/requests, member-applications, refund-requests,
  * credit-approvals, booking-reviews, booking-change-requests,
- * booking-requests, membership-cancellation-requests,
+ * booking-requests, unpaid-finished-stays and unsettled finished-stay
+ * additions (shared helpers with the dashboard cards, #1709/#1731/#1723),
+ * membership-cancellation-requests,
  * member-lifecycle-action-requests, deletion-requests, issue-reports,
  * hut-leaders/unassigned-dates); update both together if a queue definition
  * changes.
@@ -40,6 +49,8 @@ export async function getAdminPendingCounts(): Promise<AdminPendingCounts> {
     bookingReviews,
     bookingChangeRequests,
     publicBookingRequests,
+    unpaidFinishedStays,
+    unsettledAdditionalFinishedStays,
     membershipCancellations,
     archiveRequests,
     deletionRequests,
@@ -59,6 +70,12 @@ export async function getAdminPendingCounts(): Promise<AdminPendingCounts> {
     prisma.bookingRequest.count({
       where: buildBookingRequestListWhere("QUEUE"),
     }),
+    prisma.booking.count({
+      where: buildUnpaidFinishedStaysWhere(getTodayDateOnly()),
+    }),
+    prisma.booking.count({
+      where: buildUnsettledAdditionalFinishedStaysWhere(getTodayDateOnly()),
+    }),
     getPendingMembershipCancellationReviewCount(),
     getPendingMemberArchiveReviewCount(),
     prisma.deletionRequest.count({ where: { status: "PENDING" } }),
@@ -74,6 +91,8 @@ export async function getAdminPendingCounts(): Promise<AdminPendingCounts> {
     bookingReviews,
     bookingChangeRequests,
     publicBookingRequests,
+    unpaidFinishedStays,
+    unsettledAdditionalFinishedStays,
     membershipCancellations,
     archiveRequests,
     deletionRequests,

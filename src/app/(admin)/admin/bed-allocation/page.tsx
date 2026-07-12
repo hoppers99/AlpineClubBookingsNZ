@@ -15,17 +15,18 @@ import {
   type DragStartEvent,
 } from "@dnd-kit/core";
 import {
-  AlertTriangle,
   BedDouble,
   Check,
-  LoaderCircle,
   RefreshCw,
   Save,
   Wand2,
 } from "lucide-react";
 import { toast } from "sonner";
+import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
+import { Spinner } from "@/components/ui/spinner";
 import {
   AdminViewOnlyNotice,
   ViewOnlyActionButton,
@@ -187,6 +188,9 @@ function addOptimisticAllocations(
       approvedByName: null,
       bookingStatus,
       holdsCapacity,
+      // Optimistic drops render as a primary occupant; the server decides
+      // second-occupant sharing and the next loadDashboard() corrects it (#1701).
+      isSecondOccupant: false,
     }));
 
   return {
@@ -338,9 +342,22 @@ export default function AdminBedAllocationPage() {
   );
 
   const allocationByBedAndDate = useMemo(() => {
-    const map = new Map<string, DashboardAllocation>();
+    // #1701: a DOUBLE bed-night may hold two occupants (declared partners), so
+    // each cell key maps to an array. Keep the primary occupant first so a
+    // shared double renders predictably.
+    const map = new Map<string, DashboardAllocation[]>();
     for (const allocation of payload?.allocations ?? []) {
-      map.set(`${allocation.bedId}:${allocation.stayDate}`, allocation);
+      const key = `${allocation.bedId}:${allocation.stayDate}`;
+      const existing = map.get(key);
+      if (existing) {
+        existing.push(allocation);
+        existing.sort(
+          (left, right) =>
+            Number(left.isSecondOccupant) - Number(right.isSecondOccupant),
+        );
+      } else {
+        map.set(key, [allocation]);
+      }
     }
     return map;
   }, [payload]);
@@ -935,7 +952,7 @@ export default function AdminBedAllocationPage() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">Bed Allocation</h1>
+          <h1 className="text-2xl font-bold text-foreground">Bed Allocation</h1>
           <div className="mt-2 flex flex-wrap gap-2">
             <Badge variant={autoAllocationEnabled ? "success" : "outline"}>
               {autoAllocationEnabled ? "Auto allocation" : "Admin only"}
@@ -1011,13 +1028,10 @@ export default function AdminBedAllocationPage() {
       ) : null}
 
       {showFocusedBookingUnavailable ? (
-        <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-          <span>
-            Focused booking is not on the board — it may be cancelled or removed.
-            Adjust Date In / Date Out to browse the board.
-          </span>
-        </div>
+        <Alert variant="warning">
+          Focused booking is not on the board — it may be cancelled or removed.
+          Adjust Date In / Date Out to browse the board.
+        </Alert>
       ) : null}
 
       <Card>
@@ -1060,9 +1074,9 @@ export default function AdminBedAllocationPage() {
       </Card>
 
       {loading ? (
-        <div className="flex items-center gap-2 rounded-md border bg-white p-6 text-sm text-muted-foreground">
-          <LoaderCircle className="h-4 w-4 animate-spin" />
-          Loading bed allocation
+        <div className="flex items-center gap-2 rounded-md border bg-card p-6 text-sm text-muted-foreground">
+          <Spinner size="sm" label="Loading bed allocation" />
+          <span aria-hidden="true">Loading bed allocation</span>
         </div>
       ) : null}
 
@@ -1117,17 +1131,13 @@ export default function AdminBedAllocationPage() {
               </div>
 
               {payload.warnings.length > 0 ? (
-                <div className="rounded-md border border-amber-200 bg-amber-50 p-4">
-                  <div className="mb-2 flex items-center gap-2 font-medium text-amber-900">
-                    <AlertTriangle className="h-4 w-4" />
-                    Warnings
-                  </div>
-                  <ul className="space-y-1 text-sm text-amber-900">
+                <Alert variant="warning" title="Warnings">
+                  <ul className="space-y-1">
                     {payload.warnings.map((warning) => (
                       <li key={warning.id}>{warning.message}</li>
                     ))}
                   </ul>
-                </div>
+                </Alert>
               ) : null}
 
               <BucketBoard
@@ -1163,15 +1173,16 @@ export default function AdminBedAllocationPage() {
             </CardHeader>
             <CardContent className="space-y-4">
               {payload.rooms.length === 0 ? (
-                <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">
-                  No rooms available.
-                </div>
+                <EmptyState
+                  icon={BedDouble}
+                  title="No rooms available"
+                  description="Set up rooms and beds before allocating."
+                  className="rounded-md border border-dashed"
+                />
               ) : null}
 
               {activeBedCount === 0 && payload.rooms.length > 0 ? (
-                <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-                  No active beds available.
-                </div>
+                <Alert variant="warning">No active beds available.</Alert>
               ) : null}
 
               {activeRooms.map((room) => (
@@ -1202,7 +1213,7 @@ export default function AdminBedAllocationPage() {
 
           <DragOverlay>
             {activeDragLabel ? (
-              <div className="rounded-md border bg-white px-3 py-2 text-sm font-medium shadow-lg">
+              <div className="rounded-md border bg-card px-3 py-2 text-sm font-medium text-card-foreground shadow-lg">
                 {activeDragLabel}
               </div>
             ) : null}

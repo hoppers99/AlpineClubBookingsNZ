@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { CalendarDays } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -9,6 +10,17 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { EmptyState } from "@/components/ui/empty-state";
+import { Spinner } from "@/components/ui/spinner";
+import { AdminPageHeader } from "@/components/admin/admin-page-header";
+import { AdminDataTable } from "@/components/admin/admin-data-table";
+import {
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
@@ -248,18 +260,14 @@ export default function AdminWorkPartiesPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Work Parties</h1>
-          <p className="text-muted-foreground">
-            Working bee events with an automatic discount for attending bookings
-          </p>
-        </div>
-        <Button onClick={startCreate}>New Event</Button>
-      </div>
+      <AdminPageHeader
+        title="Work Parties"
+        description="Working bee events with an automatic discount for attending bookings"
+        actions={<Button onClick={startCreate}>New Event</Button>}
+      />
 
       {error && (
-        <div className="rounded-md bg-red-50 p-3 text-sm text-red-700">{error}</div>
+        <div className="rounded-md border border-danger/20 bg-danger-muted p-3 text-sm text-danger">{error}</div>
       )}
 
       {showForm && (
@@ -369,13 +377,16 @@ export default function AdminWorkPartiesPage() {
       )}
 
       {loading ? (
-        <p className="text-sm text-muted-foreground">Loading work party events...</p>
+        <div className="flex justify-center py-8">
+          <Spinner label="Loading work party events…" />
+        </div>
       ) : events.length === 0 ? (
         <Card>
-          <CardContent className="py-8 text-center text-sm text-muted-foreground">
-            No work party events yet. Create one to offer an automatic working
-            bee discount.
-          </CardContent>
+          <EmptyState
+            icon={CalendarDays}
+            title="No work party events yet"
+            description="Create one to offer an automatic working bee discount on nights in the window."
+          />
         </Card>
       ) : (
         <div className="space-y-4">
@@ -434,41 +445,40 @@ export default function AdminWorkPartiesPage() {
                     </Button>
                   )}
                 </div>
-                {expandedId === event.id && (
-                  <div className="rounded-md border">
-                    {details[event.id] ? (
-                      <table className="w-full text-sm">
-                        <thead>
-                          <tr className="border-b bg-muted/50 text-left">
-                            <th className="p-2 font-medium">Member</th>
-                            <th className="p-2 font-medium">Stay</th>
-                            <th className="p-2 font-medium">Status</th>
-                            <th className="p-2 font-medium text-right">Discount</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {details[event.id].attendingBookings.map((row) => (
-                            <tr key={row.id} className="border-b last:border-0">
-                              <td className="p-2">
-                                {row.member.firstName} {row.member.lastName}
-                              </td>
-                              <td className="p-2">
-                                {formatStoredDate(row.booking.checkIn)} to{" "}
-                                {formatStoredDate(row.booking.checkOut)}
-                              </td>
-                              <td className="p-2">{row.booking.status}</td>
-                              <td className="p-2 text-right">
-                                {formatCents(row.discountCents)}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    ) : (
-                      <p className="p-3 text-sm text-muted-foreground">Loading bookings...</p>
-                    )}
-                  </div>
-                )}
+                {expandedId === event.id &&
+                  (details[event.id] ? (
+                    <AdminDataTable showDensityToggle={false}>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Member</TableHead>
+                          <TableHead>Stay</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead className="text-right">Discount</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {details[event.id].attendingBookings.map((row) => (
+                          <TableRow key={row.id}>
+                            <TableCell>
+                              {row.member.firstName} {row.member.lastName}
+                            </TableCell>
+                            <TableCell>
+                              {formatStoredDate(row.booking.checkIn)} to{" "}
+                              {formatStoredDate(row.booking.checkOut)}
+                            </TableCell>
+                            <TableCell>{row.booking.status}</TableCell>
+                            <TableCell className="text-right">
+                              {formatCents(row.discountCents)}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </AdminDataTable>
+                  ) : (
+                    <div className="rounded-md border p-3 text-sm text-muted-foreground">
+                      Loading bookings...
+                    </div>
+                  ))}
               </CardContent>
             </Card>
           ))}

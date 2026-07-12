@@ -2,9 +2,9 @@
 
 import { useState } from "react";
 import { signIn } from "next-auth/react";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useClubIdentity } from "@/components/club-identity-provider";
+import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader } from "@/components/ui/card";
 import { WebsiteLogo } from "@/components/website-logo";
@@ -32,7 +32,6 @@ export function LoginForm({
   authBounceRef?: string;
 }) {
   const club = useClubIdentity();
-  const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -89,12 +88,19 @@ export function LoginForm({
         } else {
           setError("Invalid email or password. Please try again.");
         }
+        setLoading(false);
       } else {
-        router.push((await resolveTwoFactorPath()) ?? redirectTo);
+        // Full document navigation, never router.push: the client router's
+        // cache can hold the logged-out RSC entry for the destination (the
+        // very bounce that brought us here), and replaying it returns the
+        // user to /login with no error — the silent login loop (#1669).
+        // A hard load always sends the fresh session cookie and starts the
+        // authenticated app from a clean router state. `loading` stays true
+        // so the button cannot be re-submitted while the page unloads.
+        window.location.assign((await resolveTwoFactorPath()) ?? redirectTo);
       }
     } catch {
       setError("Something went wrong. Please try again.");
-    } finally {
       setLoading(false);
     }
   }
@@ -135,41 +141,38 @@ export function LoginForm({
       <form onSubmit={handleSubmit}>
         <CardContent className="space-y-4">
           {verified && (
-            <div className="rounded-md bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800">
+            <Alert variant="success">
               Your email has been verified. You can now sign in.
-            </div>
+            </Alert>
           )}
 
           {emailChanged && (
-            <div className="rounded-md bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800">
+            <Alert variant="success">
               Your email has been changed successfully.
-            </div>
+            </Alert>
           )}
 
           {verifyError && (
-            <div className="rounded-md bg-destructive/10 border border-destructive/20 px-4 py-3 text-sm text-destructive">
+            <Alert variant="error">
               {verifyError === "expired"
                 ? "Your verification link has expired. Please request a new one."
                 : verifyError === "invalid"
                 ? "Invalid verification link."
                 : "An error occurred during email verification."}
-            </div>
+            </Alert>
           )}
 
           {error && (
-            <div className="rounded-md bg-destructive/10 border border-destructive/20 px-4 py-3 text-sm text-destructive">
-              {error}
-            </div>
+            <Alert variant="error">{error}</Alert>
           )}
 
           {emailNotVerified && (
-            <div className="rounded-md bg-yellow-50 border border-yellow-200 px-4 py-3 text-sm space-y-2">
-              <p className="text-yellow-800 font-medium">Please verify your email</p>
-              <p className="text-yellow-700">
+            <Alert variant="warning" title="Please verify your email">
+              <p>
                 Check your inbox for a verification email. Click the link to verify your account.
               </p>
               {resendSuccess ? (
-                <p className="text-green-700 font-medium">Verification email sent!</p>
+                <p className="font-medium text-success">Verification email sent!</p>
               ) : (
                 <Button
                   type="button"
@@ -181,7 +184,7 @@ export function LoginForm({
                   {resendLoading ? "Sending..." : "Resend verification email"}
                 </Button>
               )}
-            </div>
+            </Alert>
           )}
 
           {authBounceRef && (

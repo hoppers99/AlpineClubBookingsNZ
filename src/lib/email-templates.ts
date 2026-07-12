@@ -766,6 +766,36 @@ export function adminMinorsReviewRequiredTemplate(data: {
   `);
 }
 
+// ---- #1756: Admin Alert — stale partner-share swept from the board ----
+// A partner link dissolved (or a member was deactivated / re-tiered off ADULT)
+// while the pair still held future shared double-bed placements; the second
+// occupant was returned to the awaiting-allocation queue and the board may
+// need re-planning.
+
+export function adminPartnerShareSweptTemplate(data: {
+  memberName: string;
+  partnerName: string;
+  reason: string;
+  nights: Date[];
+}): string {
+  return layout(`
+    ${heading("Shared Double-Bed Placements Removed")}
+    ${paragraph(
+      "A partner pair no longer qualifies for double-bed sharing, so their future shared placements were removed. The affected guest nights are back in the awaiting-allocation queue and may need re-planning on the allocation board.",
+    )}
+    ${infoTable([
+      { label: "Member", value: escapeHtml(data.memberName) },
+      { label: "Partner", value: escapeHtml(data.partnerName) },
+      { label: "Reason", value: escapeHtml(data.reason) },
+      {
+        label: `Removed night${data.nights.length === 1 ? "" : "s"}`,
+        value: data.nights.map((night) => formatNZDate(night)).join(", "),
+      },
+    ])}
+    ${button("Review Bed Allocation", BASE_URL + "/admin/bed-allocation")}
+  `);
+}
+
 // ---- F20 / #1377: Admin Alert — booking-request owner substitution ----
 // A held owner failed re-validation at conversion, so a fresh non-login contact
 // was minted and the invoice will bill THAT contact instead of the intended
@@ -1690,6 +1720,78 @@ export function groupCreateRejectedTemplate(
     ${paragraph("Your request to create the family group <strong>" + escapeHtml(groupName) + "</strong> was not approved.")}
     ${reasonHtml}
     ${paragraph("If you have questions, please contact the club.")}
+    ${supportContactMuted()}
+  `);
+}
+
+/**
+ * Sent to a partner who has no account yet, inviting them to join a family
+ * group (#1682). The claim link carries a single-use bearer token; the claim
+ * page routes an unregistered recipient through the membership application
+ * first, then lets them accept once their login is active.
+ */
+export function partnerInviteTemplate(params: {
+  inviterName: string;
+  groupName: string;
+  claimUrl: string;
+  expiresAt: Date;
+}): string {
+  return layout(`
+    ${heading("Family Group Invitation")}
+    ${paragraph("<strong>" + escapeHtml(params.inviterName) + "</strong> has invited you to join the family group <strong>" + escapeHtml(params.groupName) + "</strong>.")}
+    ${paragraph("Use the button below to get started. If you don't have a member account yet, you'll be guided through joining first, then you can accept this invitation once your login is active.")}
+    ${button("Accept Invitation", params.claimUrl, { sameOrigin: true })}
+    ${paragraph("This link expires on <strong>" + escapeHtml(formatNZDateTime(params.expiresAt)) + "</strong>.")}
+    ${muted("If you weren't expecting this invitation, you can safely ignore it.")}
+  `);
+}
+
+/** Sent to the newly-registered partner once they claim their invitation. */
+export function partnerInviteClaimedTemplate(
+  firstName: string,
+  groupName: string
+): string {
+  return layout(`
+    ${heading("Family Group Joined")}
+    ${paragraph("Hi " + escapeHtml(firstName) + ",")}
+    ${paragraph("You've joined the family group <strong>" + escapeHtml(groupName) + "</strong>.")}
+    ${alertBox("You can now be included when your family makes bookings. Manage your family group from your profile page.", "success")}
+    ${supportContactMuted()}
+  `);
+}
+
+// ---- Partner link (declared Partner/Husband/Wife relationship, #1742) ----
+
+/** Sent to the member being asked to confirm a partner relationship. */
+export function partnerLinkRequestTemplate(
+  requesterName: string,
+  profileUrl: string
+): string {
+  return layout(`
+    ${heading("Partner Confirmation Request")}
+    ${paragraph("<strong>" + escapeHtml(requesterName) + "</strong> has asked to record you as their partner (husband, wife, or partner).")}
+    ${paragraph("Confirming records the relationship with the club. You can confirm or decline from your profile page.")}
+    ${button("Respond to Request", profileUrl)}
+    ${muted("If you weren't expecting this request, you can decline it or safely ignore this email.")}
+  `);
+}
+
+/** Sent when a partner relationship is confirmed (accepted or admin-recorded). */
+export function partnerLinkConfirmedTemplate(partnerName: string): string {
+  return layout(`
+    ${heading("Partner Relationship Recorded")}
+    ${paragraph("Your partner relationship with <strong>" + escapeHtml(partnerName) + "</strong> has been recorded with the club.")}
+    ${alertBox("You can view or remove this relationship from your profile page.", "info")}
+    ${supportContactMuted()}
+  `);
+}
+
+/** Sent to the other partner when a confirmed relationship is removed. */
+export function partnerLinkRemovedTemplate(partnerName: string): string {
+  return layout(`
+    ${heading("Partner Relationship Removed")}
+    ${paragraph("Your recorded partner relationship with <strong>" + escapeHtml(partnerName) + "</strong> has been removed.")}
+    ${paragraph("If you weren't expecting this change, please contact the club.")}
     ${supportContactMuted()}
   `);
 }

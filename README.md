@@ -17,12 +17,15 @@ recommended reading paths.
 
 ## What It Does
 
-- Member registration, profile management, family/dependent relationships, and
-  membership nomination workflows with reminder and admin recovery paths
+- Member registration, profile management, family/dependent relationships,
+  declared partner relationships (request→confirm consent with admin
+  assignment), and membership nomination workflows with reminder and admin
+  recovery paths
 - Bed-capacity booking flow with date-only New Zealand lodge nights, per-guest
-  stay ranges, waitlist, non-member holds, booking changes, cancellation rules,
-  refunds, credits, promo codes, Stripe payments, and Xero-backed Internet
-  Banking invoice payments
+  stay ranges, admin-placed partner second-occupants sharing a double bed (a
+  reserved capacity slot per double, admin-only), waitlist, non-member holds,
+  booking changes, cancellation rules, refunds, credits, promo codes, Stripe
+  payments, and Xero-backed Internet Banking invoice payments
 - Admin tools for members, shared-email-aware CSV import, bookings, bed
   allocation, payments, seasons, policies, reports, email, audit logs, issue
   reports, waitlist, lodge settings, Xero operations, and hut leaders, with
@@ -86,8 +89,10 @@ recommended reading paths.
    name, contact emails, public URL, beds, age tiers, and integer-cent rates.
    If `config/club.json` is absent, the app falls back to
    `config/club.example.json`.
-3. Complete `/admin/site-style` after first sign-in to set public colours,
-   fonts, and the database-stored logo. Replace the remaining images in
+3. Complete `/admin/site-style` after first sign-in to set the shared public,
+   member, and admin brand colours and fonts, plus the database-stored public
+   logo. Operational success, warning, information, and danger colours remain
+   curated rather than editable. Replace the remaining images in
    `public/branding/` with your own favicon, Open Graph image, and public
    website photos. Keep the `*.example.*` files as reusable placeholders for
    forks.
@@ -234,6 +239,13 @@ npm run build
 
 Browser E2E tests for the Critical journeys run separately against the staging
 compose stack: `npm run test:e2e` (see `docs/E2E_PLAYWRIGHT.md`).
+
+The member and admin shells use the Restrained Alpine accessibility baseline:
+semantic light/dark status tokens, icon-or-text redundancy for colour-coded
+states, responsive overflow for data tables, focusable skip-link targets, a
+visible keyboard outline, and a global reduced-motion guard. Run
+`npm run review:staging:a11y` only with an explicit non-production
+`STAGING_APP_URL`; the command refuses to guess a target.
 
 `npm test` includes property-based tests (fast-check) for the pure money math —
 pricing, promo discounts, refund tiers, change fees, member credit, and the

@@ -2,7 +2,7 @@ export const CLUB_THEME_ID = "default";
 export const MAX_LOGO_DATA_URL_BYTES = 900_000;
 
 export const CLUB_THEME_COLOUR_FIELDS = [
-  { key: "brandGold", label: "Gold" },
+  { key: "brandGold", label: "Primary accent" },
   { key: "brandCharcoal", label: "Charcoal" },
   { key: "brandDeep", label: "Deep" },
   { key: "brandRidge", label: "Ridge" },
@@ -70,17 +70,22 @@ export type ClubThemeValues = Record<ClubThemeColourKey, string> & {
 };
 
 export const DEFAULT_CLUB_THEME_VALUES: ClubThemeValues = {
-  // brandGold is the primary-action colour with brand-charcoal button text
-  // (see .website-theme --primary/--primary-foreground). It must clear WCAG AA
-  // 4.5:1 against brand-charcoal; #8fa87c gives 4.8:1 (the earlier #7a8f6a was
-  // 3.55:1 and failed getBlockingContrastWarnings, blocking first-run save).
-  brandGold: "#8fa87c",
-  brandCharcoal: "#30343b",
-  brandDeep: "#1f2933",
-  brandRidge: "#65717b",
-  brandMist: "#d7dde1",
-  brandSnow: "#f8faf8",
-  brandSafety: "#c2562c",
+  // Generic "Aotearoa" default palette (#1807): a glacial-teal primary accent on
+  // a deep bush-green cool-stone neutral ramp, with a terracotta safety accent.
+  // Reads as generic New Zealand alpine, not any specific club (Tokoroa gold now
+  // lives only in TOKOROA_CLUB_THEME_VALUES). brandGold is the primary-action
+  // colour with brand-charcoal button text (see .website-theme
+  // --primary/--primary-foreground); it must clear WCAG AA 4.5:1 against
+  // brand-charcoal — teal #57b3ab on #21362b gives 5.19:1. Every gated pair
+  // passes getBlockingContrastWarnings (regression-pinned in
+  // club-theme-schema.test.ts).
+  brandGold: "#57b3ab",
+  brandCharcoal: "#21362b",
+  brandDeep: "#17231c",
+  brandRidge: "#5c6f66",
+  brandMist: "#d4ddd7",
+  brandSnow: "#f5f8f6",
+  brandSafety: "#b04d28",
   headingFontKey: "LEAGUE_SPARTAN",
   bodyFontKey: "INTER",
   logoDataUrl: null,
@@ -215,8 +220,21 @@ export function buildClubThemeCss(
   value: Partial<Record<keyof ClubThemeValues, unknown>> | null | undefined,
 ): string {
   const theme = normaliseThemeValues(value);
-  const base = `:root,.website-theme{--brand-gold:${theme.brandGold};--brand-charcoal:${theme.brandCharcoal};--brand-deep:${theme.brandDeep};--brand-ridge:${theme.brandRidge};--brand-mist:${theme.brandMist};--brand-snow:${theme.brandSnow};--brand-safety:${theme.brandSafety};--font-website-heading:var(${fontCssVariable(theme.headingFontKey)});--font-website-body:var(${fontCssVariable(theme.bodyFontKey)});}`;
+  const base = `:root,.website-theme{${buildClubThemeDeclarations(theme)}}`;
   return theme.rawCss ? `${base}\n${theme.rawCss}` : base;
+}
+
+/** Brand/font variables for app shells. Deliberately excludes rawCss so an
+ * administrator's public-site CSS cannot override app or semantic tokens. */
+export function buildClubThemeAppCss(
+  value: Partial<Record<keyof ClubThemeValues, unknown>> | null | undefined,
+): string {
+  const theme = normaliseThemeValues(value);
+  return `.app-theme-scope{${buildClubThemeDeclarations(theme)}}`;
+}
+
+function buildClubThemeDeclarations(theme: ClubThemeValues): string {
+  return `--brand-gold:${theme.brandGold};--brand-charcoal:${theme.brandCharcoal};--brand-deep:${theme.brandDeep};--brand-ridge:${theme.brandRidge};--brand-mist:${theme.brandMist};--brand-snow:${theme.brandSnow};--brand-safety:${theme.brandSafety};--font-website-heading:var(${fontCssVariable(theme.headingFontKey)});--font-website-body:var(${fontCssVariable(theme.bodyFontKey)});`;
 }
 
 export type ContrastWarning = {
@@ -347,6 +365,30 @@ export function getContrastWarnings(
       label: "Button text on primary action",
       foreground: theme.brandCharcoal,
       background: theme.brandGold,
+    },
+    {
+      id: "app-accent-on-deep",
+      label: "App accent on dark app chrome",
+      foreground: theme.brandGold,
+      background: theme.brandDeep,
+    },
+    {
+      id: "app-accent-on-snow",
+      label: "App accent foreground on light app background",
+      foreground: theme.brandCharcoal,
+      background: theme.brandSnow,
+    },
+    {
+      id: "app-muted-on-snow",
+      label: "App muted text on light app background",
+      foreground: theme.brandDeep,
+      background: theme.brandSnow,
+    },
+    {
+      id: "app-secondary-on-mist",
+      label: "App text on secondary surface",
+      foreground: theme.brandDeep,
+      background: theme.brandMist,
     },
   ];
 

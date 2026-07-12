@@ -20,6 +20,131 @@ crammed into a room, but a lower whole-lodge cap for fire / consent / licence
 reasons (#1653). Booking availability must respect the **ceiling**, while
 bed allocation still places people across the **larger** physical bed set.
 
+Double-bed shared occupancy (#1701) does **not** change the base figure. A
+shared `DOUBLE` counts as **one** bed of `activeBedCount`, and availability
+(`checkCapacityForGuestRanges`) counts guests against `getLodgeCapacity`,
+never `BedAllocation` rows. What a shareable double adds is **partner-shared
+headroom** on top of that base figure — see the dedicated section below
+(#1745): extra admissions only the admin-initiated partner flow can use, so a
+second occupant still cannot inflate what ordinary bookings see.
+
+## Partner-shared double-bed headroom (#1745)
+
+A shareable `DOUBLE` can sleep a second occupant (the primary's CONFIRMED
+partner, #1742/#1744), so each active DOUBLE contributes one **partner-shared
+slot** above the base capacity — **reserved and bounded**, not a blanket
+ceiling bump:
+
+- **Reserved:** only the admin-initiated partner-shared admission
+  (`checkCapacityForPartnerSharedAdmission`, `src/lib/capacity.ts`) can use
+  the slots; every public/member/system path keeps reading the unchanged
+  base `getLodgeCapacity`. An ordinary guest can never be admitted into
+  partner headroom. Initiation is admin-only (#1746): the admin edit-booking
+  panel offers the confirmed partners of the booking's member guests as
+  "partner (shares a double bed)" quick-adds (server-computed,
+  `listBookingPartnerSharingCandidates` in `double-bed-sharing.ts`), and the
+  modify/modify-quote routes accept the matching `partnerSharedGuests` flags
+  from admins only — gated at route AND service, so the reserved slots are
+  unreachable from member self-service. A rejected flag surfaces the check's
+  reason verbatim and never falls back into the #1668 overbook confirm.
+- **Bounded:** at most `activeDoubleBedCount` shared admissions per night.
+  Each admitted sharer must hold a CONFIRMED partner link with a member
+  staying every requested night (`mayShareDoubleBed` stays the single source
+  of truth for the pair rule), and the partner must hold an ordinary,
+  base-backed place: a sharer can never anchor another sharer, coverage from
+  the same proposal must come from a non-sharing guest row carrying the
+  partner's memberId, and otherwise coverage is read from the partner's
+  capacity-holding bookings. Under those guards every shared admission maps
+  to a distinct double, so a feasible placement always exists — though
+  producing it stays the allocation board's job and may mean moving unlocked
+  allocations. Known residual: a partner admitted above base via the #1668
+  over-capacity override can anchor a sharer; combining the two admin
+  overrides can exceed pairing feasibility (both are explicit admin acts,
+  and forced overage otherwise only *shrinks* headroom — it counts as
+  consumed shared slots).
+- **Ceiling interplay (#1653):** an explicit `LodgeSettings.capacity` is a
+  maximum *sleeping* capacity (fire/consent/licence) and binds people, not
+  beds. Headroom is therefore
+  `max(0, min(activeDoubleBedCount, capacity − activeBedCount))` when a
+  capacity is set: a `capped_beds` lodge gets **no** partner headroom, and a
+  capacity between `beds` and `beds + doubles` allows only the gap. With no
+  explicit capacity, headroom = `activeDoubleBedCount`.
+- **Resolution:** `getLodgePartnerSharedCapacityStatus`
+  (`src/lib/lodge-capacity.ts`) returns the base status plus
+  `activeDoubleBedCount` and `partnerSharedHeadroom`. It is a separate
+  resolver so ordinary availability checks pay no extra query.
+
+Per-night admission rule (owner decision, #1745): admit if a base slot is
+free, OR the guest is an eligible partner-sharer **and**
+`sharedSlotsUsed < partnerSharedHeadroom` for that night. Occupancy already
+above the base ceiling counts as used shared slots.
+
+**Stale-pair sweep interplay (#1756):** when a pair breaks (partner link
+dissolved, member deactivated, ADULT→minor tier correction),
+`sweepFuturePartnerSharedAllocations` removes the pair's future
+`isSecondOccupant` *placements* — deliberately NOT the second occupant's
+`BookingGuest` row, which stays on its booking in the awaiting-allocation
+queue for an admin to resolve. Shared-slot accounting is occupancy-derived
+(guest-nights above base), never `BedAllocation`-derived, so the sweep cannot
+corrupt it: the swept guest keeps conservatively consuming their shared slot
+(the same treatment as #1668 forced overage) until the admin removes them
+from the booking or re-admits them. The reserved slot is therefore never
+silently double-granted — a new couple's admission is refused while the
+stale guest still occupies the headroom, and frees the moment the guest
+leaves the booking — and `getLodgePartnerSharedCapacityStatus` (bed
+inventory + ceiling) is untouched by the sweep by construction.
+
+Two conservative implementation choices sit on top of that decided rule
+(ratified via the #1745 PR review rather than the issue text): the ceiling
+interplay above (an explicit capacity always wins, so a capped lodge gets no
+headroom), and fail-loud sharers — a proposed sharer whose pair is not
+CONFIRMED-linked, or whose partner misses any requested night, rejects the
+whole proposal outright instead of silently falling back to an ordinary
+slot the admin did not intend.
+
+| Active beds | of which DOUBLE | Capacity set | Base figure | Partner headroom |
+|---|---|---|---|---|
+| 10 | 1 | unset | 10 (`configured_beds`) | 1 |
+| 10 | 2 | 11 | 10 (`configured_beds`) | 1 |
+| 10 | 2 | 10 | 10 (`configured_beds`) | 0 |
+| 10 | 2 | 8 | 8 (`capped_beds`) | 0 |
+| 0 (module off) | — | 30 | 30 (`capacity_override`) | 0 |
+
+The admin lodge **Capacity** card shows the figure broken out — e.g.
+"10 beds + up to 1 partner spot" — never a single combined number, so an
+admin can see the extra is partner-only.
+
+## Which bookings consume capacity (the holding population)
+
+Orthogonal to *how much* capacity a lodge has is *which bookings consume it*.
+The single source of truth is `capacityHoldingBookingFilter()` (per-row form:
+`bookingHoldsCapacity()`) in `src/lib/booking-status.ts`; every availability,
+occupancy, waitlist, bed-allocation, and stats query reads through it. A
+booking holds capacity when:
+
+1. Its status is naturally capacity-holding: `PAID`, `COMPLETED`, `CONFIRMED`,
+   or `AWAITING_REVIEW`.
+2. It is `PENDING` **and** is the converted booking of a `BookingRequest`
+   (accepted-but-unpaid quote / directly-approved request, #1254 refining
+   #737). Generic `PENDING` stays non-holding and bumpable.
+3. It is `PAYMENT_PENDING` **and** carries an **admin capacity hold**
+   (#1764): `Booking.adminCapacityHoldAt` is set. A Full Admin / Booking
+   Officer reserved the beds while the member arranges payment, without
+   faking a payment or changing the booking's real status.
+
+The admin hold (clause 3) is deliberately **status-scoped**: a cancelled or
+expired booking with a stale hold flag can never hold beds, and when the
+booking pays (moving into clause 1) it is counted exactly once — the clauses
+are OR'd, never summed. Placing a hold runs under the per-lodge advisory
+capacity lock with a capacity re-check (the #1366 pattern); an over-capacity
+hold requires the explicit overbook confirm, mirroring force-confirm. The
+hold is released by Admin Unhold (only until the booking holds naturally),
+and every cancel path — member/admin cancel, group-child cancel, settlement
+reaper, Internet Banking hold expiry, capacity-failed settlement — clears the
+hold fields via the shared `RELEASE_ADMIN_CAPACITY_HOLD_UPDATE` fragment, so
+no orphaned hold records survive a cancellation. Both hold and unhold write
+audit rows (`booking.admin_capacity_hold.*`).
+
 ## Resolution
 
 Effective capacity is decided in this order:
@@ -59,10 +184,91 @@ keeps using the bed count unless a capacity is set.
 ## Admin surface
 
 On the lodge admin page (`/admin/lodges/[id]`) the **Capacity** card shows the
-resolved figure and its `source`, and the capacity field warns live when the
-value entered is below the active bed count (it will cap the lodge). The
-allocation board still shows all physical beds; a capped lodge simply leaves
-some beds unbooked.
+resolved figure and its `source` — with any partner-shared headroom broken
+out (`"10 beds + up to 1 partner spot"`, plus a short partner-only
+explainer; #1745) — and the capacity field warns live when the value entered
+is below the active bed count (it will cap the lodge). The allocation board
+still shows all physical beds; a capped lodge simply leaves some beds
+unbooked.
+
+## Exceeding the ceiling (admin overbook overrides)
+
+The resolved figure is a hard block for members: no member-facing path can
+create or grow a booking past it. Admins can exceed it only through an
+explicit, audited confirmation, via two distinct contracts:
+
+The **warn-and-confirm contract** (`OverCapacityConfirmationRequiredError` →
+409 `OVER_CAPACITY_CONFIRM_REQUIRED` → resubmit with
+`confirmOverCapacity: true`, `capacityOverridden` audited):
+
+- **admin date-edit override** (#1668) — `booking-modify-plan` /
+  date-modification service under `adminOverride`;
+- **admin on-behalf create** — retroactive (#1695) and forward-dated
+  (#1767) creates on `/admin/book`, with one carve-out: a create that
+  opted into the waitlist fallback keeps the capacity-exceeded outcome and
+  waitlists instead. (The former v1 carve-out that hard-blocked a non-member
+  hold-eligible (PENDING) party was retired by #1771 — the persisted override
+  is now honoured by the hold cron, so that overbook is admitted and marked.)
+
+The **explicit-overbook-flag contract** (409 `CAPACITY_EXCEEDED` +
+`overbookDates`, resubmit with the overbook flag; separate audit actions):
+
+- **confirm-pending-guests** on the booking detail page (#1366, flag under
+  the advisory-locked re-check);
+- **waitlist force-confirm** — "Confirm Anyway (Overbook)" on
+  `/admin/waitlist` (`allowOverbook`, audited as
+  `waitlist.force_confirmed_overbook`);
+- **admin capacity-hold** — placing a hold over the ceiling (#1764,
+  `allowOverbook`, audited as `booking.admin_capacity_hold.placed_overbook`).
+
+Partner-shared admissions (#1745/#1746) are *not* overrides — they consume
+reserved headroom and reject rather than falling back into a confirm.
+
+### Persisted capacity override (#1771)
+
+Every over-capacity admission above **persists** the decision on the booking:
+`Booking.capacityOverriddenAt` (when) and `capacityOverriddenByMemberId` (the
+acting admin). The marker records "this booking is a deliberate overbook on its
+**current** nights", so it is set when the override fires and **reconciled**
+wherever a booking's capacity is re-evaluated against a new footprint. The
+predicate `bookingHasCapacityOverride(booking)` reads it.
+
+**Set-sites** (stamp on the over-capacity path only): `booking-create`
+(#1668/#1695/#1767 pre-create + $0/credit-covered branches), waitlist
+force-confirm (#1668/waitlist), confirm-pending-guests ($0 and priced gates,
+#1366), and admin capacity-hold (#1764). These are **one-shot admissions** — the
+booking's nights are fixed at the moment they run, so the stamp is set once and
+never needs clearing. The date and batch modification services (#1668) instead
+**reconcile** the marker: they re-run the capacity check against the new range,
+so they re-stamp when the new nights are still an admin-confirmed overbook and
+**clear** any prior stamp when the modification moved the booking back within
+capacity. Without that clear, a booking overbooked on its old nights and then
+modified to an in-capacity range would keep a stale flag that wrongly suppressed
+a legitimate cancel once the new nights filled. The marker is **not** cleared on
+cancel — a cancelled booking never re-enters a re-check, so the audit fact is
+preserved. For a **mixed-party split** create whose member guests alone overflow,
+the provisional non-member child booking (#738) inherits the same override as
+its member parent — otherwise the parent would survive payment while the
+hold cron silently bumped the unstamped child, a partial-drop against an
+explicit admin overbook.
+
+**Read-sites** (honour it → settle/proceed instead of cancel/refund/409/bump):
+`markBookingPaymentSucceeded` (settlement), `createPaymentIntentForPaymentLink`,
+the non-member-hold cron (`cron-confirm-pending`), `charge-saved-method`,
+`switch-to-internet-banking`, the Internet Banking invoice-paid reconcile
+(`xero-inbound/invoice-paid-effects`), and group settlement (defensive). Each
+falls through to the booking's correct terminal state (PAID / CONFIRMED /
+payment proceeds) and logs the skip.
+
+**DRAFT-scoped exemptions** (documented, no code): the capacity re-checks in
+`create-payment-intent` and `confirm-draft` run only while the booking is DRAFT,
+and #1767 blocks saving a DRAFT over capacity, so a DRAFT can never carry an
+override — honouring it there would be dead code.
+
+This fixes the former limitation where a *priced* overridden booking
+self-destructed (cancel + refund / 409 / bump) when payment landed while the
+lodge was still over capacity on its nights. ($0 and credit-covered overridden
+creates always settled at create time and were never affected.)
 
 ## Behaviour change (introduced with #1653)
 

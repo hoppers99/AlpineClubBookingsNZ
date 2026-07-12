@@ -35,7 +35,15 @@ admins at **Admin → Setup & Configuration → Export & Import**
   shared `PAGE_CONTENT_LIMITS`) and its system-page protections: a bundle
   cannot hide a page the editor refuses to unpublish (system and built-in
   pages), and cannot move a system page's fixed menu order (re-importing the
-  page's current order — an instance's own export — stays clean).
+  page's current order — an instance's own export — stays clean). A
+  cross-instance transfer therefore errors on a system page (e.g. `home`) whose
+  bundled sort order is neither the fixed order nor the target's current
+  order — normalise the system pages' sort order on both instances first.
+  Keyed site-content rows (the footer sections) enforce the same content-HTML
+  size cap as their admin route (the shared `SITE_CONTENT_LIMITS`), and their
+  key must be one of the recognised site-content keys (the shared
+  `SITE_CONTENT_KEYS`, matching the admin route's enum) — an unknown key is a
+  clean row error, never a Prisma enum exception.
 - **Door codes:** the dry-run prominently names each lodge whose door code the
   import would set or change, and the audit records which lodges' codes were
   actually written (never the values). Reseal recomputes the bundle's

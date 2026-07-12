@@ -36,6 +36,7 @@ import {
   recordBookingCancellationRefundRecoveryInlineError,
 } from "@/lib/payment-recovery";
 import { deletePromoRedemptionAndAdjustCount } from "@/lib/promo";
+import { RELEASE_ADMIN_CAPACITY_HOLD_UPDATE } from "@/lib/booking-status";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 import { revokePaymentLinksForBooking } from "@/lib/payment-link";
 import { settleGroupBookingOnOrganiserCancel } from "@/lib/group-cancel";
@@ -234,7 +235,7 @@ async function cancelLinkedProvisionalChildBookings(
     await prisma.$transaction(async (tx) => {
       await tx.booking.update({
         where: { id: child.id },
-        data: { status: "CANCELLED" },
+        data: { status: "CANCELLED", ...RELEASE_ADMIN_CAPACITY_HOLD_UPDATE },
       });
       await reconcileCancelledBookingBedAllocations(child, tx);
       await revokePaymentLinksForBooking(child.id, tx);
@@ -432,6 +433,7 @@ async function performBookingCancellation(
         where: { id: bookingId },
         data: {
           status: "CANCELLED",
+          ...RELEASE_ADMIN_CAPACITY_HOLD_UPDATE,
           waitlistOfferedAt: null,
           waitlistOfferExpiresAt: null,
           waitlistPosition: null,
@@ -601,7 +603,7 @@ async function performBookingCancellation(
       }
       await tx.booking.update({
         where: { id: bookingId },
-        data: { status: "CANCELLED" },
+        data: { status: "CANCELLED", ...RELEASE_ADMIN_CAPACITY_HOLD_UPDATE },
       });
       await reconcileCancelledBookingBedAllocations(fresh, tx);
       await revokePaymentLinksForBooking(bookingId, tx);
@@ -772,7 +774,7 @@ async function performBookingCancellation(
       }
       await tx.booking.update({
         where: { id: bookingId },
-        data: { status: "CANCELLED" },
+        data: { status: "CANCELLED", ...RELEASE_ADMIN_CAPACITY_HOLD_UPDATE },
       });
       await reconcileCancelledBookingBedAllocations(fresh, tx);
 
@@ -1142,7 +1144,7 @@ async function performBookingCancellation(
     // CLAIM: the atomic single-flight commit.
     await tx.booking.update({
       where: { id: bookingId },
-      data: { status: "CANCELLED" },
+      data: { status: "CANCELLED", ...RELEASE_ADMIN_CAPACITY_HOLD_UPDATE },
     });
 
     // Fail the additional-payment DB state in-tx; the Stripe cancellation of

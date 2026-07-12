@@ -7,6 +7,8 @@ import {
   isReservedPageSlug,
   isValidPageSlug,
   PAGE_CONTENT_LIMITS,
+  SITE_CONTENT_KEYS,
+  SITE_CONTENT_LIMITS,
   SYSTEM_PAGE_SLUGS,
   toPagePath,
 } from "@/lib/page-content";
@@ -269,7 +271,10 @@ function strictPageSlug(value: unknown): Valid<string> {
  * Field-cap parity with the admin route's zod schemas: the same
  * PAGE_CONTENT_LIMITS values, measured the same way (`trimmed` mirrors the
  * schema's .trim(); headerText/contentHtml are capped untrimmed, exactly like
- * the route, and BEFORE sanitisation, exactly like the route).
+ * the route, and BEFORE sanitisation, exactly like the route). The returned
+ * value is the MEASURED form — trimmed fields come back trimmed, mirroring
+ * zod's .trim() transform, so the import stores exactly what the admin route
+ * would store (#1732).
  */
 function withinCap(
   value: unknown,
@@ -280,7 +285,7 @@ function withinCap(
   if (s.length > max) {
     return { ok: false, message: `must be at most ${max} characters` };
   }
-  return { ok: true, value: asStr(value) };
+  return { ok: true, value: s };
 }
 
 /** Title parity: required (unless merge keeps the existing one) and capped. */
@@ -361,18 +366,23 @@ function parsePageRow(
   // Field caps + system-page protections: parity with the admin route's zod
   // schemas and PUT/PATCH guards (src/app/api/admin/page-content/route.ts),
   // through the shared PAGE_CONTENT_LIMITS / SYSTEM_PAGE_SLUGS /
-  // canUnpublishPage. Violations are row errors that block apply.
-  v.custom(
+  // canUnpublishPage. Violations are row errors that block apply. The trimmed
+  // fields (caption/menuTitle/title) keep the validator's TRIMMED value — the
+  // admin route stores the zod-trimmed form, so the import must too. parsePageRow
+  // feeds plan and apply alike, so the change preview diffs against the trimmed
+  // value apply would write: a legacy row whose stored value is untrimmed plans
+  // as one update, then converges to "unchanged" on re-import (#1732).
+  const caption = v.custom(
     "caption",
     withinCap(raw.caption, PAGE_CONTENT_LIMITS.captionMax, true),
     "",
   );
-  v.custom(
+  const menuTitle = v.custom(
     "menuTitle",
     withinCap(raw.menuTitle, PAGE_CONTENT_LIMITS.menuTitleMax, true),
     "",
   );
-  v.custom("title", strictPageTitle(raw.title, blankOk), "");
+  const title = v.custom("title", strictPageTitle(raw.title, blankOk), "");
   v.custom(
     "headerText",
     withinCap(raw.headerText, PAGE_CONTENT_LIMITS.headerTextMax, false),
@@ -409,9 +419,9 @@ function parsePageRow(
       // Derived from the slug, never trusted from the file — a crafted path
       // cell could otherwise disagree with the slug (mirrors the admin route).
       path: toPagePath(slug),
-      caption: raw.caption ?? "",
-      menuTitle: raw.menuTitle ?? "",
-      title: raw.title ?? "",
+      caption,
+      menuTitle,
+      title,
       // Stored sanitised, exactly like the admin write path. Both plan and
       // apply consume this value, so the change preview diffs against what
       // apply would actually write.
@@ -459,6 +469,30 @@ interface SiteContentBatch {
   pages: Map<string, Record<string, unknown> & { id?: string }>;
   siteContent: Map<string, { id: string; key: string; contentHtml: string }>;
   theme: Record<string, unknown> | null;
+}
+
+/** O(1) membership for the recognised keyed site-content keys. */
+const SITE_CONTENT_KEY_SET: ReadonlySet<string> = new Set(SITE_CONTENT_KEYS);
+
+/**
+ * Strict site-content key cell: parity with the admin keyed site-content
+ * route's `z.enum(SITE_CONTENT_KEYS)` (src/app/api/admin/site-content/route.ts).
+ * We validate against that write allowlist — not the wider Prisma enum via
+ * strictEnum — because the DB `key` column is an enum: an unrecognised key from
+ * a hand-edited bundle must fail here as a clean row error, before it reaches
+ * the batch `findMany`, where Prisma would otherwise throw a validation error
+ * against the enum column instead of surfacing the row.
+ */
+function strictSiteContentKey(value: unknown): Valid<string> {
+  const s = asStr(value).trim();
+  if (s === "") return { ok: false, message: "must not be blank" };
+  if (!SITE_CONTENT_KEY_SET.has(s)) {
+    return {
+      ok: false,
+      message: `"${s}" is not a recognised site-content key`,
+    };
+  }
+  return { ok: true, value: s };
 }
 
 async function loadSiteContentBatch(
@@ -515,7 +549,12 @@ async function planSiteContent(ctx: PlanContext): Promise<CategoryPlanResult> {
   const batch = await loadSiteContentBatch(
     ctx.db,
     rawPages.map((r) => r.slug?.trim() ?? "").filter(Boolean),
-    rawSite.map((r) => r.key?.trim() ?? "").filter(Boolean),
+    // Only recognised keys reach the batch findMany: the DB key column is a
+    // Prisma enum, so an unknown key would throw there instead of surfacing as
+    // a clean row error (validated below via strictSiteContentKey).
+    rawSite
+      .map((r) => r.key?.trim() ?? "")
+      .filter((k) => SITE_CONTENT_KEY_SET.has(k)),
   );
 
   // Pages (by slug).
@@ -552,7 +591,17 @@ async function planSiteContent(ctx: PlanContext): Promise<CategoryPlanResult> {
   // Site content (by key).
   rawSite.forEach((raw, i) => {
     const v = new RowValidator(SITE_CONTENT_FILE, i, errors);
-    const key = v.required("key", raw.key);
+    // Key parity with the admin route's z.enum(SITE_CONTENT_KEYS): an
+    // unrecognised key is a clean row error, never a create against the enum.
+    const key = v.custom("key", strictSiteContentKey(raw.key), "");
+    // Field-cap parity with the keyed site-content route's zod schema
+    // (src/app/api/admin/site-content/route.ts): the shared SITE_CONTENT_LIMITS,
+    // measured untrimmed and BEFORE sanitisation, exactly like the route.
+    v.custom(
+      "contentHtml",
+      withinCap(raw.contentHtml, SITE_CONTENT_LIMITS.contentHtmlMax, false),
+      "",
+    );
     if (!v.ok) return;
     const current = batch.siteContent.get(key) ?? null;
     fingerprintParts.push(
@@ -608,7 +657,11 @@ async function applySiteContent(ctx: ApplyContext): Promise<CategoryApplyResult>
   const batch = await loadSiteContentBatch(
     ctx.tx,
     rawPages.map((r) => r.slug?.trim() ?? "").filter(Boolean),
-    rawSite.map((r) => r.key?.trim() ?? "").filter(Boolean),
+    // Same enum-safe key filter as plan: an unknown key must never reach the
+    // batch findMany (plan already blocked it; defensive for direct callers).
+    rawSite
+      .map((r) => r.key?.trim() ?? "")
+      .filter((k) => SITE_CONTENT_KEY_SET.has(k)),
   );
 
   // Pages.
@@ -644,7 +697,16 @@ async function applySiteContent(ctx: ApplyContext): Promise<CategoryApplyResult>
   // Site content.
   for (const [i, raw] of rawSite.entries()) {
     const v = new RowValidator(SITE_CONTENT_FILE, i, errors);
-    const key = v.required("key", raw.key);
+    // Key parity with the admin route (plan already blocked an unknown key;
+    // defensive, mirroring the page path).
+    const key = v.custom("key", strictSiteContentKey(raw.key), "");
+    // Cap parity with the keyed site-content route (plan already blocked this;
+    // defensive, mirroring the page path).
+    v.custom(
+      "contentHtml",
+      withinCap(raw.contentHtml, SITE_CONTENT_LIMITS.contentHtmlMax, false),
+      "",
+    );
     if (!v.ok) { result.skipped += 1; continue; }
     const current = batch.siteContent.get(key) ?? null;
     const html = sanitizePageContentHtml(

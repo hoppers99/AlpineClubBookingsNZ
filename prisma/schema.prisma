@@ -191,9 +191,11 @@ enum BedAllocationSource {
   MANUAL
 }
 
-// Descriptive/visual bed type (#1675). v1 is display-only: capacity stays 1
-// person per bed per night regardless of type (double-bed shared occupancy is
-// out of scope). BUNK_TOP / BUNK_BOTTOM pair up via LodgeBed.bunkGroup.
+// Bed type (#1675). A DOUBLE may hold a declared-partner second occupant
+// (#1701) and contributes one partner-shared admission slot above the base
+// capacity (#1745, docs/CAPACITY_MODEL.md); every other type stays exactly
+// one occupant per night. BUNK_TOP / BUNK_BOTTOM pair up via
+// LodgeBed.bunkGroup.
 enum BedType {
   SINGLE
   BUNK_TOP
@@ -511,6 +513,12 @@ model Member {
   familyGroupInvitations                     FamilyGroupJoinRequest[]                   @relation("FamilyGroupInvitedMember")
   familyGroupLinkedRequests                  FamilyGroupJoinRequest[]                   @relation("FamilyGroupLinkedMember")
   familyGroupSubjectRequests                 FamilyGroupJoinRequest[]                   @relation("FamilyGroupSubjectMember")
+  partnerInviteTokensCreated                 PartnerInviteToken[]                       @relation("PartnerInviteTokenCreatedBy")
+  partnerLinksAsMemberA                      MemberPartnerLink[]                        @relation("PartnerLinkMemberA")
+  partnerLinksAsMemberB                      MemberPartnerLink[]                        @relation("PartnerLinkMemberB")
+  partnerLinksInitiated                      MemberPartnerLink[]                        @relation("PartnerLinkInitiatedBy")
+  partnerLinksConfirmed                      MemberPartnerLink[]                        @relation("PartnerLinkConfirmedBy")
+  partnerLinksAdminAssigned                  MemberPartnerLink[]                        @relation("PartnerLinkAssignedByAdmin")
   deletionRequests                           DeletionRequest[]
   credits                                    MemberCredit[]
   requestedCreditAdjustments                 MemberCredit[]                             @relation("RequestedAdminCredits")
@@ -519,6 +527,8 @@ model Member {
   adminCreditAdjustmentRequestsReviewed      AdminCreditAdjustmentRequest[]             @relation("AdminCreditAdjustmentRequestsReviewed")
   bookingsCreatedOnBehalf                    Booking[]                                  @relation("BookingsCreatedBy")
   bookingsAdminReviewed                      Booking[]                                  @relation("BookingsAdminReviewed")
+  bookingsAdminCapacityHeld                  Booking[]                                  @relation("BookingsAdminCapacityHeld")
+  bookingsCapacityOverridden                 Booking[]                                  @relation("BookingsCapacityOverridden")
   approvedBedAllocations                     BedAllocation[]                            @relation("BedAllocationApprover")
   refundRequests                             RefundRequest[]
   issueReports                               IssueReport[]
@@ -743,6 +753,38 @@ model NominationToken {
   @@index([tokenHash])
   @@index([expiresAt])
   @@index([confirmedAt, expiresAt])
+}
+
+// Single-use, hash-at-rest bearer token that invites a partner who has no
+// account yet to join a family group by email (#1682). Modelled on
+// NominationToken: only the sha256 hash of the raw token is stored, the raw
+// token travels once in the invite email, and the row is single-use via
+// confirmedAt. The invitee registers through the normal membership process and
+// then claims this token to be auto-filed/accepted as an ADULT_INVITE into the
+// (approved) family group.
+model PartnerInviteToken {
+  id            String    @id @default(cuid())
+  tokenHash     String    @unique
+  familyGroupId String
+  invitedEmail  String
+  createdById   String
+  expiresAt     DateTime
+  confirmedAt   DateTime?
+  reminderCount Int       @default(0)
+  lastSentAt    DateTime?
+  createdAt     DateTime  @default(now())
+  // Opt-in (#1742): when true, claiming this token also forms a CONFIRMED
+  // MemberPartnerLink between createdBy and the claimer — the claim is the
+  // partner's consent. Never set retroactively; the inviter opts in at mint.
+  createPartnerLink Boolean @default(false)
+
+  familyGroup FamilyGroup @relation(fields: [familyGroupId], references: [id], onDelete: Cascade)
+  createdBy   Member      @relation("PartnerInviteTokenCreatedBy", fields: [createdById], references: [id], onDelete: Cascade)
+
+  @@index([familyGroupId])
+  @@index([createdById])
+  @@index([expiresAt])
+  @@index([invitedEmail])
 }
 
 // ---------------------------------------------------------------------------
@@ -1039,6 +1081,29 @@ model Booking {
   // fills omitted-column writes so enforcement was outage-free. One booking
   // belongs to exactly one lodge (ADR-001 resolved question 1).
   lodgeId                   String             @default(dbgenerated("default_lodge_id()"))
+  // Admin capacity hold (#1764): while set AND the booking is PAYMENT_PENDING,
+  // the booking consumes lodge capacity exactly as if it were in a naturally
+  // capacity-holding status (see capacityHoldingBookingFilter). Orthogonal to
+  // the lifecycle status — the status keeps meaning what it means. Cleared by
+  // Admin Unhold and by every cancel path; left set-but-inert once the booking
+  // reaches a naturally-holding status (the status disjunct then holds the
+  // beds, so capacity is never double-counted).
+  adminCapacityHoldAt         DateTime?
+  adminCapacityHoldByMemberId String?
+  // Persisted capacity override (#1771): set when this booking was deliberately
+  // admitted ABOVE the lodge ceiling via an explicit admin over-capacity confirm
+  // (#1668/#1695/#1767 create, date/batch modify, waitlist force-confirm, #1764
+  // admin capacity-hold). Read by every payment-time / settlement capacity
+  // re-check (see bookingHasCapacityOverride) so a *priced* overridden booking is
+  // never cancelled/refunded, 409'd, or bumped when payment lands over capacity.
+  // Reflects "is this a deliberate overbook on its CURRENT nights": one-shot
+  // admissions (create, force-confirm, capacity-hold) stamp it; date/batch
+  // modification RECONCILES it (re-stamps if the new range is still over
+  // capacity, clears it if the change moved back within capacity) since those
+  // paths re-evaluate capacity on the new nights. Not cleared on cancel — a
+  // cancelled booking never re-enters a re-check, so the audit fact is kept.
+  capacityOverriddenAt         DateTime?
+  capacityOverriddenByMemberId String?
   createdAt                 DateTime           @default(now())
   updatedAt                 DateTime           @updatedAt
 
@@ -1049,6 +1114,8 @@ model Booking {
   createdBy                   Member?                         @relation("BookingsCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
   deletedBy                   Member?                         @relation("BookingsDeletedBy", fields: [deletedById], references: [id], onDelete: SetNull)
   adminReviewedBy             Member?                         @relation("BookingsAdminReviewed", fields: [adminReviewedById], references: [id], onDelete: SetNull)
+  adminCapacityHoldBy         Member?                         @relation("BookingsAdminCapacityHeld", fields: [adminCapacityHoldByMemberId], references: [id], onDelete: SetNull)
+  capacityOverriddenBy        Member?                         @relation("BookingsCapacityOverridden", fields: [capacityOverriddenByMemberId], references: [id], onDelete: SetNull)
   requestedRoom               LodgeRoom?                      @relation("BookingRequestedRoom", fields: [requestedRoomId], references: [id], onDelete: SetNull)
   parentBooking               Booking?                        @relation("BookingGroup", fields: [parentBookingId], references: [id], onDelete: SetNull, onUpdate: Cascade)
   linkedBookings              Booking[]                       @relation("BookingGroup")
@@ -1095,6 +1162,8 @@ model Booking {
   @@index([status, preArrivalReminderSentAt, checkIn])
   @@index([adminReviewStatus, createdAt])
   @@index([adminReviewedById])
+  @@index([adminCapacityHoldByMemberId])
+  @@index([capacityOverriddenByMemberId])
   @@index([requestedRoomId])
   @@index([parentBookingId])
   @@index([lodgeId])
@@ -1519,7 +1588,8 @@ model LodgeBed {
   name      String   @db.VarChar(100)
   sortOrder Int      @default(0)
   active    Boolean  @default(true)
-  // Descriptive bed type (#1675); does not affect capacity (still 1/bed/night).
+  // Bed type (#1675). Base capacity stays 1/bed/night; an active DOUBLE also
+  // adds one partner-shared admission slot above the base figure (#1745).
   bedType   BedType  @default(SINGLE)
   // Optional pairing label within a room: at most two beds share a bunkGroup,
   // one BUNK_TOP and one BUNK_BOTTOM. Enforced in admin-bed-allocation.ts, not
@@ -1547,6 +1617,19 @@ model BedAllocation {
   source             BedAllocationSource @default(AUTO)
   approvedByMemberId String?
   approvedAt         DateTime?
+  // Double-bed sharing (#1701): a DOUBLE bed may hold two occupants for a night
+  // — one primary (isSecondOccupant=false) and one second occupant. All other
+  // bed types stay 1/night. isSecondOccupant is part of the relaxed
+  // @@unique([bedId, stayDate, isSecondOccupant]); the second-occupant row is
+  // only ever created by an admin on the allocation board (auto never sets it).
+  isSecondOccupant   Boolean             @default(false)
+  // Denormalized copy of LodgeBed.bedType, set at allocation-create. A partial
+  // unique index predicate cannot join to LodgeBed, so the "non-double beds are
+  // capped at 1/night" guard needs the type on this row. Default SINGLE is a
+  // safe failsafe: an unset/wrong value makes the partial index treat the row as
+  // non-double and REJECT a second occupant — erring toward under-, never
+  // over-occupancy. updateBedAllocationBed keeps it in sync on bed-type changes.
+  bedType            BedType             @default(SINGLE)
   createdAt          DateTime            @default(now())
   updatedAt          DateTime            @updatedAt
 
@@ -1556,7 +1639,13 @@ model BedAllocation {
   bed          LodgeBed     @relation(fields: [bedId, roomId], references: [id, roomId], onDelete: Restrict)
   approvedBy   Member?      @relation("BedAllocationApprover", fields: [approvedByMemberId], references: [id], onDelete: SetNull)
 
-  @@unique([bedId, stayDate])
+  // Relaxed from @@unique([bedId, stayDate]) for #1701: two rows may share a
+  // bed-night only when they differ on isSecondOccupant (≤1 primary + ≤1 second
+  // ⇒ ≤2 rows/bed-night). Non-DOUBLE beds are additionally capped at exactly 1
+  // by the raw-SQL partial index in the same migration (see
+  // prisma/partial-unique-indexes.tsv). Old code inserts isSecondOccupant=false,
+  // so it still cannot double-book a bed.
+  @@unique([bedId, stayDate, isSecondOccupant])
   @@unique([bookingGuestId, stayDate])
   @@index([bookingId])
   @@index([bookingGuestId])
@@ -3207,6 +3296,7 @@ model FamilyGroup {
   legacyMembers Member[]                 @relation("FamilyGroupLegacy")
   memberships   FamilyGroupMember[]
   joinRequests  FamilyGroupJoinRequest[]
+  partnerInviteTokens PartnerInviteToken[]
 }
 
 model FamilyGroupMember {
@@ -3281,6 +3371,49 @@ model FamilyGroupJoinRequest {
   @@index([requestedEmail])
   @@index([status])
   @@index([type])
+}
+
+// Declared Partner/Husband/Wife relationship between two ADULT members
+// (#1742). Symmetric and consent-based: stored as a canonical ordered pair
+// (memberAId < memberBId, DB CHECK constraint — which also blocks
+// self-partnering). Lifecycle is PENDING -> CONFIRMED; a declined, withdrawn,
+// or dissolved link is hard-deleted (history lives in the audit log) so the
+// pair can re-form later without tripping the pair-unique constraint.
+// At most one CONFIRMED partner per member: enforced in the service layer
+// under pg_advisory_xact_lock and backstopped by two raw partial unique
+// indexes (MemberPartnerLink_memberA/B_confirmed_unique — see
+// prisma/partial-unique-indexes.tsv; Prisma cannot express partial indexes).
+// This link is the eligibility signal for double-bed shared occupancy (#1741).
+model MemberPartnerLink {
+  id                  String    @id @default(cuid())
+  memberAId           String
+  memberBId           String
+  status              String    @default("PENDING") // PENDING | CONFIRMED
+  // Member who initiated the request; null when an admin assigned the link
+  // directly. For one-step family-admin creation this is the family admin.
+  initiatedByMemberId String?
+  // Member who consented (accepted the request or claimed the invite token);
+  // null while PENDING and for admin-assigned links.
+  confirmedByMemberId String?
+  // Admin who directly assigned the link (CONFIRMED immediately, no consent
+  // round-trip); null for member-initiated links.
+  assignedByAdminId   String?
+  confirmedAt         DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  memberA         Member  @relation("PartnerLinkMemberA", fields: [memberAId], references: [id], onDelete: Cascade)
+  memberB         Member  @relation("PartnerLinkMemberB", fields: [memberBId], references: [id], onDelete: Cascade)
+  initiatedBy     Member? @relation("PartnerLinkInitiatedBy", fields: [initiatedByMemberId], references: [id], onDelete: SetNull)
+  confirmedBy     Member? @relation("PartnerLinkConfirmedBy", fields: [confirmedByMemberId], references: [id], onDelete: SetNull)
+  assignedByAdmin Member? @relation("PartnerLinkAssignedByAdmin", fields: [assignedByAdminId], references: [id], onDelete: SetNull)
+
+  @@unique([memberAId, memberBId])
+  @@index([memberBId])
+  @@index([status])
+  @@index([initiatedByMemberId])
+  @@index([confirmedByMemberId])
+  @@index([assignedByAdminId])
 }
 
 // ---------------------------------------------------------------------------

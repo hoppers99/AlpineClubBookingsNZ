@@ -16,6 +16,15 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { AdminPageHeader } from "@/components/admin/admin-page-header";
+import { AdminDataTable } from "@/components/admin/admin-data-table";
+import {
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -118,7 +127,7 @@ function assignmentEffectiveEmail(assignment: CommitteeAssignment) {
 
 function VisibilityBadge({ visible }: { visible: boolean }) {
   return visible ? (
-    <Badge className="border-green-200 bg-green-100 text-green-800">
+    <Badge className="border-success/20 bg-success-muted text-success">
       <Eye className="mr-1 h-3 w-3" />
       Published
     </Badge>
@@ -496,29 +505,26 @@ export default function CommitteePage() {
 
   return (
     <div ref={pageRef} className="space-y-6">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-900">Committee</h1>
-          <p className="mt-1 text-sm text-slate-500">
-            Manage public committee records, master roles, and member-linked
-            assignment metadata.
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2 text-xs text-slate-600">
-          <Badge variant="secondary">{roles.length} master roles</Badge>
-          <Badge variant="secondary">{activeAssignmentCount} assignments</Badge>
-          <Badge variant="secondary">
-            {publishedAssignmentCount} marked published
-          </Badge>
-        </div>
-      </div>
+      <AdminPageHeader
+        title="Committee"
+        description="Manage public committee records, master roles, and member-linked assignment metadata."
+        actions={
+          <>
+            <Badge variant="secondary">{roles.length} master roles</Badge>
+            <Badge variant="secondary">{activeAssignmentCount} assignments</Badge>
+            <Badge variant="secondary">
+              {publishedAssignmentCount} marked published
+            </Badge>
+          </>
+        }
+      />
 
       {error ? (
         <div
           ref={errorRef}
           role="alert"
           tabIndex={-1}
-          className="scroll-mt-20 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700 focus:outline-none"
+          className="scroll-mt-20 rounded-md border border-danger/20 bg-danger-muted p-3 text-sm text-danger focus:outline-none"
         >
           {error}
         </div>
@@ -528,7 +534,7 @@ export default function CommitteePage() {
         <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <CardTitle className="text-lg">Committee Settings</CardTitle>
-            <p className="mt-1 text-sm text-slate-500">
+            <p className="mt-1 text-sm text-muted-foreground">
               Master roles are reusable positions for member-linked committee
               assignments. Role email aliases route contact-form messages;
               linked member emails are used only when a role email is blank.
@@ -543,10 +549,10 @@ export default function CommitteePage() {
           {showRoleForm ? (
             <form
               onSubmit={handleRoleSubmit}
-              className="rounded-md border border-slate-200 p-4"
+              className="rounded-md border border-border bg-card p-4 text-card-foreground"
             >
               <div className="mb-4 flex items-center justify-between">
-                <h2 className="font-medium text-slate-900">
+                <h2 className="font-medium text-foreground">
                   {editingRoleId ? "Edit Role" : "Add Role"}
                 </h2>
                 <Button
@@ -626,7 +632,7 @@ export default function CommitteePage() {
                       isActive: event.target.checked,
                     })
                   }
-                  className="h-4 w-4 rounded border-slate-300"
+                  className="h-4 w-4 rounded border-border"
                 />
                 Active
               </label>
@@ -642,88 +648,72 @@ export default function CommitteePage() {
             </form>
           ) : null}
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b bg-slate-50">
-                  <th className="px-4 py-3 text-left font-medium text-slate-600">
-                    Role
-                  </th>
-                  <th className="px-4 py-3 text-left font-medium text-slate-600">
-                    Key
-                  </th>
-                  <th className="px-4 py-3 text-left font-medium text-slate-600">
-                    Role Email
-                  </th>
-                  <th className="px-4 py-3 text-left font-medium text-slate-600">
-                    Assignments
-                  </th>
-                  <th className="px-4 py-3 text-left font-medium text-slate-600">
-                    Status
-                  </th>
-                  <th className="px-4 py-3 text-right font-medium text-slate-600">
-                    Actions
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {roles.map((role) => (
-                  <tr
-                    key={role.id}
-                    className={`border-b ${role.isActive ? "" : "opacity-60"}`}
-                  >
-                    <td className="px-4 py-3">
-                      <div className="font-medium text-slate-900">
-                        {role.name}
+          <AdminDataTable>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Role</TableHead>
+                <TableHead>Key</TableHead>
+                <TableHead>Role Email</TableHead>
+                <TableHead>Assignments</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {roles.map((role) => (
+                <TableRow
+                  key={role.id}
+                  className={role.isActive ? "" : "opacity-60"}
+                >
+                  <TableCell>
+                    <div className="font-medium">{role.name}</div>
+                    {role.description ? (
+                      <div className="mt-1 max-w-xl text-xs text-muted-foreground">
+                        {role.description}
                       </div>
-                      {role.description ? (
-                        <div className="mt-1 max-w-xl text-xs text-slate-500">
-                          {role.description}
-                        </div>
-                      ) : null}
-                    </td>
-                    <td className="px-4 py-3 text-slate-500">{role.key}</td>
-                    <td className="px-4 py-3 text-slate-600">
-                      {role.contactEmail ?? "-"}
-                    </td>
-                    <td className="px-4 py-3 text-slate-600">
-                      {role.assignmentCount}
-                    </td>
-                    <td className="px-4 py-3">
-                      {role.isActive ? (
-                        <Badge className="border-green-200 bg-green-100 text-green-800">
-                          Active
-                        </Badge>
-                      ) : (
-                        <Badge variant="secondary">Archived</Badge>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => openEditRoleForm(role)}
-                      >
-                        <Pencil className="h-4 w-4" />
-                      </Button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {roles.length === 0 && !loading ? (
-              <div className="p-6 text-center text-sm text-slate-500">
-                No committee roles yet.
-              </div>
-            ) : null}
-          </div>
+                    ) : null}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">{role.key}</TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {role.contactEmail ?? "-"}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {role.assignmentCount}
+                  </TableCell>
+                  <TableCell>
+                    {role.isActive ? (
+                      <Badge className="border-success/20 bg-success-muted text-success">
+                        Active
+                      </Badge>
+                    ) : (
+                      <Badge variant="secondary">Archived</Badge>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => openEditRoleForm(role)}
+                    >
+                      <Pencil className="h-4 w-4" />
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </AdminDataTable>
+          {roles.length === 0 && !loading ? (
+            <div className="p-6 text-center text-sm text-muted-foreground">
+              No committee roles yet.
+            </div>
+          ) : null}
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader>
           <CardTitle className="text-lg">Member-Linked Assignments</CardTitle>
-          <p className="mt-1 text-sm text-slate-500">
+          <p className="mt-1 text-sm text-muted-foreground">
             Assign members from their member detail page. Published assignments
             now power the public committee and contact-form recipient lists;
             contact-form messages use the role email alias or the linked
@@ -731,119 +721,105 @@ export default function CommitteePage() {
           </p>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b bg-slate-50">
-                  <th className="px-4 py-3 text-left font-medium text-slate-600">
-                    Member
-                  </th>
-                  <th className="px-4 py-3 text-left font-medium text-slate-600">
-                    Role
-                  </th>
-                  <th className="px-4 py-3 text-left font-medium text-slate-600">
-                    Presentation
-                  </th>
-                  <th className="px-4 py-3 text-left font-medium text-slate-600">
-                    Status
-                  </th>
-                  <th className="px-4 py-3 text-right font-medium text-slate-600">
-                    Actions
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {assignments.map((assignment) => {
-                  const effectiveEmail = assignmentEffectiveEmail(assignment);
-                  const usesPersonalEmail =
-                    !assignment.committeeRole.contactEmail;
+          <AdminDataTable>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Member</TableHead>
+                <TableHead>Role</TableHead>
+                <TableHead>Presentation</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {assignments.map((assignment) => {
+                const effectiveEmail = assignmentEffectiveEmail(assignment);
+                const usesPersonalEmail =
+                  !assignment.committeeRole.contactEmail;
 
-                  return (
-                    <tr
-                      key={assignment.id}
-                      className={`border-b ${
-                        assignment.isActive ? "" : "opacity-60"
-                      }`}
-                    >
-                      <td className="px-4 py-3">
-                        <div className="font-medium text-slate-900">
-                          {assignment.member.displayName}
-                        </div>
-                        <div className="text-xs text-slate-500">
-                          {effectiveEmail}
-                          {usesPersonalEmail ? (
-                            <span className="ml-1">(personal)</span>
-                          ) : null}
-                        </div>
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="font-medium text-blue-600">
-                          {assignment.committeeRole.name}
-                        </div>
-                        {assignment.blurb ? (
-                          <div className="mt-1 max-w-md text-xs text-slate-500">
-                            {assignment.blurb}
-                          </div>
+                return (
+                  <TableRow
+                    key={assignment.id}
+                    className={assignment.isActive ? "" : "opacity-60"}
+                  >
+                    <TableCell>
+                      <div className="font-medium">
+                        {assignment.member.displayName}
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        {effectiveEmail}
+                        {usesPersonalEmail ? (
+                          <span className="ml-1">(personal)</span>
                         ) : null}
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex flex-wrap gap-1">
-                          <VisibilityBadge visible={assignment.published} />
-                          {assignment.showPhone ? (
-                            <Badge variant="secondary">Phone allowed</Badge>
-                          ) : null}
-                          {assignment.contactable ? (
-                            <Badge variant="secondary">Contactable</Badge>
-                          ) : null}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <div className="font-medium text-primary">
+                        {assignment.committeeRole.name}
+                      </div>
+                      {assignment.blurb ? (
+                        <div className="mt-1 max-w-md text-xs text-muted-foreground">
+                          {assignment.blurb}
                         </div>
-                      </td>
-                      <td className="px-4 py-3">
-                        {assignment.isActive ? (
-                          <Badge className="border-green-200 bg-green-100 text-green-800">
-                            Active
-                          </Badge>
-                        ) : (
-                          <Badge variant="secondary">Inactive</Badge>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <div className="flex justify-end gap-1">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => openAssignmentForm(assignment)}
-                          >
-                            <Pencil className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="text-red-600 hover:bg-red-50 hover:text-red-700"
-                            onClick={() => handleDeactivateAssignment(assignment)}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-            {assignments.length === 0 && !loading ? (
-              <div className="p-6 text-center text-sm text-slate-500">
-                No member-linked committee assignments yet.
-              </div>
-            ) : null}
-          </div>
+                      ) : null}
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex flex-wrap gap-1">
+                        <VisibilityBadge visible={assignment.published} />
+                        {assignment.showPhone ? (
+                          <Badge variant="secondary">Phone allowed</Badge>
+                        ) : null}
+                        {assignment.contactable ? (
+                          <Badge variant="secondary">Contactable</Badge>
+                        ) : null}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      {assignment.isActive ? (
+                        <Badge className="border-success/20 bg-success-muted text-success">
+                          Active
+                        </Badge>
+                      ) : (
+                        <Badge variant="secondary">Inactive</Badge>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex justify-end gap-1">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => openAssignmentForm(assignment)}
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-danger hover:bg-danger-muted hover:text-danger"
+                          onClick={() => handleDeactivateAssignment(assignment)}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </AdminDataTable>
+          {assignments.length === 0 && !loading ? (
+            <div className="p-6 text-center text-sm text-muted-foreground">
+              No member-linked committee assignments yet.
+            </div>
+          ) : null}
 
           {editingAssignmentId ? (
             <form
               onSubmit={handleAssignmentSubmit}
-              className="rounded-md border border-slate-200 p-4"
+              className="rounded-md border border-border bg-card p-4 text-card-foreground"
             >
               <div className="mb-4 flex items-center justify-between">
-                <h2 className="font-medium text-slate-900">
+                <h2 className="font-medium text-foreground">
                   Edit Assignment
                 </h2>
                 <Button
@@ -906,7 +882,7 @@ export default function CommitteePage() {
                           [key]: event.target.checked,
                         })
                       }
-                      className="h-4 w-4 rounded border-slate-300"
+                      className="h-4 w-4 rounded border-border"
                     />
                     {label}
                   </label>
@@ -934,7 +910,7 @@ export default function CommitteePage() {
         <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <CardTitle className="text-lg">Legacy Public Committee</CardTitle>
-            <p className="mt-1 text-sm text-slate-500">
+            <p className="mt-1 text-sm text-muted-foreground">
               These historical records are retained for migration reference.
               Public committee cards and contact recipients now come from
               member-linked assignments.
@@ -949,10 +925,10 @@ export default function CommitteePage() {
           {showLegacyForm ? (
             <form
               onSubmit={handleLegacySubmit}
-              className="rounded-md border border-slate-200 p-4"
+              className="rounded-md border border-border bg-card p-4 text-card-foreground"
             >
               <div className="mb-4 flex items-center justify-between">
-                <h2 className="font-medium text-slate-900">
+                <h2 className="font-medium text-foreground">
                   {editingLegacyId
                     ? "Edit Public Committee Entry"
                     : "Add Public Committee Entry"}
@@ -1072,7 +1048,7 @@ export default function CommitteePage() {
                       active: event.target.checked,
                     })
                   }
-                  className="h-4 w-4 rounded border-slate-300"
+                  className="h-4 w-4 rounded border-border"
                 />
                 Active on public committee page
               </label>
@@ -1093,133 +1069,117 @@ export default function CommitteePage() {
           ) : null}
 
           {loading ? (
-            <div className="p-6 text-center text-sm text-slate-500">
+            <div className="p-6 text-center text-sm text-muted-foreground">
               Loading...
             </div>
           ) : legacyMembers.length === 0 ? (
-            <div className="p-6 text-center text-slate-500">
-              <Users className="mx-auto mb-2 h-8 w-8 text-slate-300" />
+            <div className="p-6 text-center text-muted-foreground">
+              <Users className="mx-auto mb-2 h-8 w-8 text-muted-foreground" />
               <p>No public committee entries yet.</p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b bg-slate-50">
-                    <th className="w-10 px-4 py-3 text-left font-medium text-slate-600">
-                      #
-                    </th>
-                    <th className="px-4 py-3 text-left font-medium text-slate-600">
-                      Role
-                    </th>
-                    <th className="px-4 py-3 text-left font-medium text-slate-600">
-                      Name
-                    </th>
-                    <th className="px-4 py-3 text-left font-medium text-slate-600">
-                      Phone
-                    </th>
-                    <th className="px-4 py-3 text-left font-medium text-slate-600">
-                      Status
-                    </th>
-                    <th className="px-4 py-3 text-right font-medium text-slate-600">
-                      Actions
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {legacyMembers.map((member, index) => (
-                    <tr
-                      key={member.id}
-                      className={`border-b hover:bg-slate-50 ${
-                        member.active ? "" : "opacity-60"
-                      }`}
-                    >
-                      <td className="px-4 py-3">
-                        <div className="flex flex-col gap-0.5">
-                          <button
-                            onClick={() =>
-                              handleReorderLegacy(member.id, "up")
-                            }
-                            disabled={index === 0}
-                            className="text-slate-400 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-30"
-                            title="Move up"
-                          >
-                            <ArrowUp className="h-3 w-3" />
-                          </button>
-                          <GripVertical className="mx-auto h-3 w-3 text-slate-300" />
-                          <button
-                            onClick={() =>
-                              handleReorderLegacy(member.id, "down")
-                            }
-                            disabled={index === legacyMembers.length - 1}
-                            className="text-slate-400 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-30"
-                            title="Move down"
-                          >
-                            <ArrowDown className="h-3 w-3" />
-                          </button>
-                        </div>
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className="font-medium text-blue-600">
-                          {member.role}
-                        </span>
-                        {member.contactKey ? (
-                          <p className="mt-0.5 text-xs text-slate-400">
-                            key: {member.contactKey}
-                          </p>
-                        ) : null}
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="font-medium">{member.name}</div>
-                        {member.email ? (
-                          <div className="text-xs text-slate-500">
-                            {member.email}
-                          </div>
-                        ) : null}
-                      </td>
-                      <td className="px-4 py-3 text-slate-600">
-                        {member.phone}
-                      </td>
-                      <td className="px-4 py-3">
-                        <button onClick={() => handleToggleLegacyActive(member)}>
-                          {member.active ? (
-                            <Badge className="cursor-pointer border-green-200 bg-green-100 text-green-800">
-                              Active
-                            </Badge>
-                          ) : (
-                            <Badge variant="secondary" className="cursor-pointer">
-                              Inactive
-                            </Badge>
-                          )}
+            <AdminDataTable>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-10">#</TableHead>
+                  <TableHead>Role</TableHead>
+                  <TableHead>Name</TableHead>
+                  <TableHead>Phone</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {legacyMembers.map((member, index) => (
+                  <TableRow
+                    key={member.id}
+                    className={member.active ? "" : "opacity-60"}
+                  >
+                    <TableCell>
+                      <div className="flex flex-col gap-0.5">
+                        <button
+                          onClick={() =>
+                            handleReorderLegacy(member.id, "up")
+                          }
+                          disabled={index === 0}
+                          className="text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30"
+                          title="Move up"
+                        >
+                          <ArrowUp className="h-3 w-3" />
                         </button>
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <div className="flex items-center justify-end gap-1">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => openEditLegacyForm(member)}
-                            className="text-slate-600 hover:text-blue-600"
-                          >
-                            <Pencil className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() =>
-                              handleDeleteLegacy(member.id, member.name)
-                            }
-                            className="text-red-600 hover:bg-red-50 hover:text-red-700"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
+                        <GripVertical className="mx-auto h-3 w-3 text-muted-foreground" />
+                        <button
+                          onClick={() =>
+                            handleReorderLegacy(member.id, "down")
+                          }
+                          disabled={index === legacyMembers.length - 1}
+                          className="text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30"
+                          title="Move down"
+                        >
+                          <ArrowDown className="h-3 w-3" />
+                        </button>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <span className="font-medium text-primary">
+                        {member.role}
+                      </span>
+                      {member.contactKey ? (
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          key: {member.contactKey}
+                        </p>
+                      ) : null}
+                    </TableCell>
+                    <TableCell>
+                      <div className="font-medium">{member.name}</div>
+                      {member.email ? (
+                        <div className="text-xs text-muted-foreground">
+                          {member.email}
                         </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                      ) : null}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {member.phone}
+                    </TableCell>
+                    <TableCell>
+                      <button onClick={() => handleToggleLegacyActive(member)}>
+                        {member.active ? (
+                          <Badge className="cursor-pointer border-success/20 bg-success-muted text-success">
+                            Active
+                          </Badge>
+                        ) : (
+                          <Badge variant="secondary" className="cursor-pointer">
+                            Inactive
+                          </Badge>
+                        )}
+                      </button>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex items-center justify-end gap-1">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => openEditLegacyForm(member)}
+                          className="text-muted-foreground hover:text-foreground"
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() =>
+                            handleDeleteLegacy(member.id, member.name)
+                          }
+                          className="text-danger hover:bg-danger-muted hover:text-danger"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </AdminDataTable>
           )}
         </CardContent>
       </Card>

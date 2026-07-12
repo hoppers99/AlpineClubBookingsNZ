@@ -46,6 +46,7 @@ vi.mock("@/lib/hut-leader-coverage", () => ({
 }));
 
 import { getAdminPendingCounts } from "@/lib/admin-pending-counts";
+import { getTodayDateOnly } from "@/lib/date-only";
 
 describe("getAdminPendingCounts", () => {
   beforeEach(() => {
@@ -54,7 +55,15 @@ describe("getAdminPendingCounts", () => {
     mocks.memberApplicationCount.mockResolvedValue(2);
     mocks.refundRequestCount.mockResolvedValue(3);
     mocks.adminCreditAdjustmentRequestCount.mockResolvedValue(4);
-    mocks.bookingCount.mockResolvedValue(5);
+    // prisma.booking.count backs three queues: pending admin booking reviews,
+    // unpaid finished stays (#1731), and unsettled finished-stay additions
+    // (#1723); discriminate on the where-clause.
+    mocks.bookingCount.mockImplementation(
+      async ({ where }: { where: { status?: unknown; payment?: unknown } }) => {
+        if (where.payment) return 13;
+        return where.status === "PAYMENT_PENDING" ? 12 : 5;
+      },
+    );
     mocks.bookingChangeRequestCount.mockResolvedValue(6);
     mocks.bookingRequestCount.mockResolvedValue(7);
     mocks.getPendingMembershipCancellationReviewCount.mockResolvedValue(8);
@@ -76,6 +85,8 @@ describe("getAdminPendingCounts", () => {
       bookingReviews: 5,
       bookingChangeRequests: 6,
       publicBookingRequests: 7,
+      unpaidFinishedStays: 12,
+      unsettledAdditionalFinishedStays: 13,
       membershipCancellations: 8,
       archiveRequests: 9,
       deletionRequests: 10,
@@ -115,6 +126,34 @@ describe("getAdminPendingCounts", () => {
     });
     expect(mocks.bookingCount).toHaveBeenCalledWith({
       where: { deletedAt: null, adminReviewStatus: "PENDING" },
+    });
+    // Unpaid finished stays (#1709/#1731): mirrors the dashboard attention
+    // card via the shared src/lib/unpaid-finished-stays.ts predicate.
+    expect(mocks.bookingCount).toHaveBeenCalledWith({
+      where: {
+        deletedAt: null,
+        status: "PAYMENT_PENDING",
+        checkOut: { lte: getTodayDateOnly() },
+      },
+    });
+    // Unsettled finished-stay additions (#1723 path 2): mirrors the sibling
+    // dashboard card via the same shared module. Statuses deliberately
+    // exclude PAYMENT_PENDING so the two booking queues stay disjoint.
+    expect(mocks.bookingCount).toHaveBeenCalledWith({
+      where: {
+        deletedAt: null,
+        checkOut: { lte: getTodayDateOnly() },
+        status: { in: ["CONFIRMED", "PAID", "COMPLETED"] },
+        payment: {
+          is: {
+            additionalAmountCents: { gt: 0 },
+            OR: [
+              { additionalPaymentStatus: null },
+              { additionalPaymentStatus: { not: "SUCCEEDED" } },
+            ],
+          },
+        },
+      },
     });
     expect(mocks.bookingChangeRequestCount).toHaveBeenCalledWith({
       where: { status: "REQUESTED" },

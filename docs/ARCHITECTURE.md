@@ -78,7 +78,7 @@ Use these ownership boundaries when adding new code:
 | Route-private page UI | `src/app/(admin)/admin/xero/_components`, `src/app/(admin)/admin/xero/_hooks`, `src/app/(admin)/admin/members/**/_components`, `src/app/(admin)/admin/members/**/_hooks`, `src/app/(authenticated)/book/_components` | Large routes should be route shells plus local components/hooks before moving anything to shared UI. |
 | Shared UI | `src/components/` | Reusable view pieces live here; route-specific view state can stay beside the page until it is reused. |
 | Booking lifecycle | `src/lib/booking-create.ts`, `src/lib/booking-create-types.ts`, `src/lib/booking-create-promo.ts`, `src/lib/booking-create-guests.ts`, `src/lib/booking-modify.ts` (barrel over `booking-modify-validation` / `booking-modify-plan` / `booking-modify-settlement`), `src/lib/booking-payment-cleanup.ts`, `src/lib/payment-recovery.ts` | Keep route handlers thin; booking orchestration and durable payment recovery live behind these services. |
-| Bed allocation | `src/lib/bed-allocation.ts`, `src/lib/bed-allocation-lifecycle.ts`, `src/lib/admin-bed-allocation.ts` | Room/bed inventory, family-aware allocation planning, lifecycle reconciliation, manual admin allocation, and approval state live behind focused services. Each `LodgeBed` carries a descriptive **bed type** (`SINGLE` / `BUNK_TOP` / `BUNK_BOTTOM` / `DOUBLE`) and an optional `bunkGroup` label; a group holds at most two beds — one top and one bottom — enforced in `admin-bed-allocation.ts` (serialised by a room-row lock, no partial index) and shown as an icon on the setup list and allocation board (#1675). Bed type is display-only in v1: capacity stays one person per bed per night (`@@unique([bedId, stayDate])` unchanged). Beds may be pre-assigned on provisional statuses (`BED_ALLOCATABLE_BOOKING_STATUSES`) before a booking holds capacity, so the admin board tags each bed **Held** vs **Provisional** (#1251). The state is a server-computed flag from `bookingHoldsCapacity` (booking-status.ts) — not a per-row status check — because holding is no longer purely status-based: an accepted-but-unpaid quote is `PENDING` but holds (#1254). In the AUTOMATIC on-payment/confirmation reconcile (`bed-allocation-lifecycle.ts` → the planner's `prioritizeCapacityHolding` mode), **capacity-holding bookings get first claim**: they are allocated before provisional ones, and a held booking blocked only by a **Provisional** allocation moves that provisional aside (to a free bed) — or, if the night is otherwise full, unallocates it back to the awaiting-allocation queue — then takes the freed bed. A **Held** or admin-**approved** (#776 lock) allocation is never displaced, and displacement never strands a same-booking minor; each displacement is applied atomically and writes a `lodge` audit row on the displaced provisional booking (#1387). That automatic reconcile auto-places **only the reconciled booking's own** guests on its current nights (#1686): editing, confirming, promoting, or cancelling one booking never opportunistically drafts *other* bookings' guests into idle or freed beds — a cancellation's freed beds stay in the awaiting-allocation queue rather than being auto-refilled. It still loads lodge-wide occupancy so it can seat that booking whole-stay and displace blocking provisionals to seat a held booking (#1387/#1677); opportunistic lodge-wide re-planning of *everyone* is exclusively the explicit board action below. The manual board **Run auto-allocation** button (`runAutoBedAllocation`) runs pure first-fit and does NOT displace — only the automatic reconcile does. |
+| Bed allocation | `src/lib/bed-allocation.ts`, `src/lib/bed-allocation-lifecycle.ts`, `src/lib/admin-bed-allocation.ts` | Room/bed inventory, family-aware allocation planning, lifecycle reconciliation, manual admin allocation, and approval state live behind focused services. Each `LodgeBed` carries a descriptive **bed type** (`SINGLE` / `BUNK_TOP` / `BUNK_BOTTOM` / `DOUBLE`) and an optional `bunkGroup` label; a group holds at most two beds — one top and one bottom — enforced in `admin-bed-allocation.ts` (serialised by a room-row lock, no partial index) and shown as an icon on the setup list and allocation board (#1675). Bed type is mostly descriptive, with one capacity exception (#1701): a **DOUBLE** bed may hold **two** occupants for a night when they are declared partners (two `ADULT` members holding a **CONFIRMED** `MemberPartnerLink` (#1742/#1744), the single-source `mayShareDoubleBed()` rule in `double-bed-sharing.ts`), added by an admin on the board onto a bed whose primary already holds capacity. Every other bed type stays one person per night. The bed-night uniqueness is `@@unique([bedId, stayDate, isSecondOccupant])` (≤1 primary + ≤1 second occupant) plus a raw-SQL partial unique index capping non-DOUBLE beds at exactly one (`WHERE "bedType" <> 'DOUBLE'`, in `prisma/partial-unique-indexes.tsv`); `BedAllocation.bedType` is a denormalized copy the partial index reads. The **base** capacity figure is unchanged — a shared double is still **one bed** of `activeBedCount` and each occupant is a full person-night — but each active DOUBLE adds one reserved, bounded **partner-shared admission slot** above it (#1745: `getLodgePartnerSharedCapacityStatus` + `checkCapacityForPartnerSharedAdmission`, admin-initiated only, never visible to public availability; see docs/CAPACITY_MODEL.md); auto-allocation never creates a second occupant. Beds may be pre-assigned on provisional statuses (`BED_ALLOCATABLE_BOOKING_STATUSES`) before a booking holds capacity, so the admin board tags each bed **Held** vs **Provisional** (#1251). The state is a server-computed flag from `bookingHoldsCapacity` (booking-status.ts) — not a per-row status check — because holding is no longer purely status-based: an accepted-but-unpaid quote is `PENDING` but holds (#1254). In the AUTOMATIC on-payment/confirmation reconcile (`bed-allocation-lifecycle.ts` → the planner's `prioritizeCapacityHolding` mode), **capacity-holding bookings get first claim**: they are allocated before provisional ones, and a held booking blocked only by a **Provisional** allocation moves that provisional aside (to a free bed) — or, if the night is otherwise full, unallocates it back to the awaiting-allocation queue — then takes the freed bed. A **Held** or admin-**approved** (#776 lock) allocation is never displaced, and displacement never strands a same-booking minor; each displacement is applied atomically and writes a `lodge` audit row on the displaced provisional booking (#1387). The planner enforces the cross-booking age-mix invariant on every placement path (#1768): a room-night holding one booking's minors never also holds another booking's adult (in either direction), minors may fill rooms of their own once the booking has an adult on-site that night (the adult count no longer caps the rooms a large group fills), a SCHOOL-request booking rooms its adults together and its students separately (`isSchoolGroup`), and persisted violations surface as `MINOR_ADULT_MIX` board warnings. That automatic reconcile auto-places **only the reconciled booking's own** guests on its current nights (#1686): editing, confirming, promoting, or cancelling one booking never opportunistically drafts *other* bookings' guests into idle or freed beds — a cancellation's freed beds stay in the awaiting-allocation queue rather than being auto-refilled. It still loads lodge-wide occupancy so it can seat that booking whole-stay and displace blocking provisionals to seat a held booking (#1387/#1677); opportunistic lodge-wide re-planning of *everyone* is exclusively the explicit board action below. The manual board **Run auto-allocation** button (`runAutoBedAllocation`) runs pure first-fit and does NOT displace — only the automatic reconcile does. |
 | Policy rules | `src/lib/policies/` | Pricing, age-tier, cancellation, change-fee, minimum-stay, member-credit, and booking-route decisions live as testable policy helpers. |
 | Operational Xero | `src/lib/xero-*.ts`, `src/lib/xero.ts` | `src/lib/xero.ts` is a compatibility facade. New code should import from the focused module that owns the behavior, not from the facade. |
 | Admin/member services | `src/lib/admin-member-xero-actions.ts`, `src/lib/member-serialization.ts`, `src/lib/member-lifecycle-actions.ts`, `src/lib/membership-cancellation-*.ts` | Shared admin/member request wrappers, DTO shape, lifecycle actions, and cancellation workflows live outside page files. |
@@ -165,10 +165,11 @@ approval, Xero, settings, and status-label flow.
 The source of truth is `prisma/schema.prisma`. Key domains are:
 
 - Members, family groups, hidden family-suggestion member sets, dependent
-  relationships, nominations, membership cancellation requests, setup invites,
-  password/email tokens, two-factor enrollment state, hashed email
-  OTP/recovery-code rows, notification preferences, deletion requests, and
-  audit logs.
+  relationships, declared partner links (consent-based member↔member
+  Partner/Husband/Wife pairs, #1742), nominations, membership cancellation
+  requests, setup invites, password/email tokens, two-factor enrollment state,
+  hashed email OTP/recovery-code rows, notification preferences, deletion
+  requests, and audit logs.
 - Seasons, season rates, booking periods, minimum-stay policies, group
   discounts, age-tier settings, promo codes, fixed-nightly promo adjustments,
   and promo redemptions.
@@ -302,7 +303,19 @@ row (ADR-002); additional lodges get their own keyed by lodge id.
 The sidebar's Needs Attention Booking Requests badge sums pending internal
 booking reviews, requested change requests, and queued public booking requests.
 Pending self-service account deletion requests are also counted there and link
-admins to the deletion request queue.
+admins to the deletion request queue. Unpaid finished stays (#1709/#1731) —
+`PAYMENT_PENDING` bookings whose check-out is on or before NZ today — badge an
+"Unpaid Finished Stays" entry deep-linking to the pre-filtered bookings list;
+its predicate and href live in `src/lib/unpaid-finished-stays.ts`, shared with
+the admin dashboard attention card so the two surfaces never drift. The
+sibling queue "Unpaid Stay Additions" (#1723) — settled
+(`CONFIRMED`/`PAID`/`COMPLETED`, deliberately never `PAYMENT_PENDING` so the
+two queues stay disjoint) finished stays whose upward-modification delta was
+never collected (`additionalAmountCents > 0`, `additionalPaymentStatus` null
+or not `SUCCEEDED`) — follows the same pattern: its predicate/href helpers
+live in the same module, badge the sidebar, drive a second dashboard
+attention card, and deep-link to the bookings list's `additionalOwed=owed`
+filter.
 All sidebar badge counts come from the single `GET /api/admin/pending-counts`
 endpoint (`src/lib/admin-pending-counts.ts`), whose per-queue where-clauses
 mirror the individual queue routes. Sidebar sections render expanded by
@@ -702,6 +715,16 @@ and complaint suppression. Email templates should avoid embedding secrets and
 should use effective recipient logic for dependents where required. Editable
 templates and admin/system delivery policies are registered in the email
 message registry and surfaced in Admin Setup and Admin Notifications.
+Rendered HTML is not retained in `EmailLog` (or emitted to development HTML
+logs) for bearer-token, one-time-code, lodge-access, and other sensitive
+templates. This includes every registry template whose required data contains a
+`token`, plus the optional tokenized `chore-roster` link; SMTP still receives
+the complete rendered message. Keep `SENSITIVE_EMAIL_LOG_TEMPLATES` aligned
+whenever a template starts carrying a credential or action token.
+Editable subjects reject secret-bearing tokens (including nomination, quote
+response, and optional chore links), and the render path strips bearer-link
+aliases from legacy stored overrides before SMTP, `EmailLog`, or application
+logging receives the subject.
 If an admin/system alert cannot be delivered to any opted-in admin recipient
 because every send is suppressed or fails, the app records a critical
 communication audit event and surfaces it in Admin Email Deliverability.
@@ -813,6 +836,20 @@ operators: rotating `AUTH_SECRET` turns every live session cookie into a
 `cookie-present-no-session` bounce until those cookies expire (≤8h) — a
 row-per-bounce burst in the audit trail and at most one Sentry event per
 cooldown per container is expected then, not a regression.
+
+Two front-of-house guarantees close the loop the diagnostics observe. The
+login page is session-aware: an already-authenticated visit to `/login`
+never renders the sign-in form — it redirects through the same gates as
+`login/verify` (forced password change, then the two-factor funnel, then the
+sanitised `callbackUrl`), so a tab bounced to `/login` while actually
+holding a live session self-heals on its next load instead of stranding on
+the form with no error. And a successful password sign-in leaves `/login`
+with a full document navigation rather than a client-router push: the soft
+push could replay the router's cached logged-out entry for the destination
+(the very bounce that produced the `/login` visit), which resurfaced as the
+silent login loop investigated in #1669 — the bounced replay carries no
+session cookie, so it lands in the deliberately quiet `no-cookie` bucket
+above.
 
 ## Security and Privacy Boundaries
 

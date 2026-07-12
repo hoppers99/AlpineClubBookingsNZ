@@ -36,8 +36,9 @@ AlpineClubBookingsNZ.
 - `MAINTENANCE.md` records the public validation and release checklist.
 - `E2E_PLAYWRIGHT.md` covers the Playwright browser E2E suite that drives the
   Critical journeys against the staging compose stack.
-- `EMAIL_MESSAGE_REGISTRY.md` records the current outbound email templates,
-  approved tokens, and subject/body safety rules.
+- The TypeScript registry in `../src/lib/email-message-registry.ts` is the
+  authoritative catalogue of admin-editable outbound email templates, approved
+  tokens, and subject/body safety rules.
 - `xero/ARCHITECTURE.md` maps the operational Xero subsystem: module map,
   reconciliation-ledger data model, and sequence diagrams for the outbound,
   inbound, and repair flows.

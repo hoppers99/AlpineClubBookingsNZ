@@ -68,21 +68,43 @@ Keep all money values in integer cents.
 
 ## Branding Assets
 
-Public website colours, fonts, and the logo are managed by administrators at
-`/admin/site-style`. Fresh deployments show a neutral setup holding page until
-an admin finishes that wizard. The logo is stored in the database as a validated
+Shared public-website, member-area, and admin-area brand colours and fonts are
+managed by administrators at `/admin/site-style`. The existing primary accent
+and neutral-ramp fields theme all three surfaces; the app does not maintain a
+second accent setting. The occupancy meter follows the primary accent. Semantic
+success, warning, information, danger/error, and waitlist colours stay curated,
+contrast-locked light/dark pairs and are not editable brand fields. Fresh
+deployments show a neutral public-site holding page until an admin finishes that
+wizard. The logo is public-site only and is stored in the database as a validated
 image data URL; there is no runtime upload directory to preserve.
 
 Saved palettes must meet the **WCAG AA 4.5:1** minimum text-contrast ratio on
-the three key public-site pairs — body text on the page background, header text
-on the navigation bar, and button text on the primary-action colour. The wizard
+the key public/app pairs — body and muted text on the page background, app text
+on the secondary/mist surface, header text on the navigation bar, button text on
+the primary-action colour, the app
+accent on dark app chrome, and the contrast-safe dark accent-text role on the
+light app background. App text-bearing surfaces use only the directly gated
+snow/mist/deep/charcoal endpoints rather than interpolated colour mixes. The
+editable primary accent remains visible as filled controls, decorative borders,
+and the occupancy meter; it is not used directly for app text or focus rings.
+App controls keep those text/background endpoints opaque on hover and selected
+states; shadows or direct semantic endpoints provide interaction feedback rather
+than `/NN` transparency utilities that could cross between accepted endpoints.
+Bed-allocation booking colours are likewise confined to decorative strips and
+rings; their text-bearing cards and Held badges use the gated card/secondary
+pairs.
+App keyboard focus uses deep on light surfaces and snow in dark mode, with a
+two-pixel offset outline that remains visible on opacity-reduced controls. The wizard
 disables its Save/Finish buttons and the `/admin/site-style` API rejects the
 request (`400`) while any pair falls short, so an admin cannot ship an unreadable
 theme. Both accepted colour formats are measured — hex directly, and `oklch()`
 values via an oklch→linear-sRGB conversion — so pasting a low-contrast oklch
-colour into the value field is blocked the same as a hex one. The shipped default
-gold is `#8fa87c` (4.8:1 against the default charcoal button text); the earlier
-`#7a8f6a` was 3.55:1 and would now block first-run setup.
+colour into the value field is blocked the same as a hex one. The current render
+fallback uses glacial teal `#57b3ab`; the fresh-seed colour choice remains
+unresolved and separately tracked in issue #1832. Site Style raw CSS is appended
+to the public website stylesheet only. Authenticated/admin shells receive only
+generated, validated brand/font variables, so raw CSS cannot override their
+curated semantic status tokens.
 
 Transactional and admin **emails** derive their brand palette from the same club
 theme, so a colour change in `/admin/site-style` also restyles the emails

@@ -18,6 +18,15 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { AdminPageHeader } from "@/components/admin/admin-page-header";
+import { AdminDataTable } from "@/components/admin/admin-data-table";
+import {
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
 import {
   getStuckStateDashboard,
@@ -60,10 +69,10 @@ function severityBadgeVariant(severity: StuckStateSeverity) {
 }
 
 function severityRing(severity: StuckStateSeverity | null) {
-  if (severity === "critical") return "border-red-300 bg-red-50";
-  if (severity === "warning") return "border-amber-300 bg-amber-50";
-  if (severity === "info") return "border-slate-200 bg-slate-50";
-  return "border-slate-200 bg-white";
+  if (severity === "critical") return "border-danger/30 bg-danger-muted";
+  if (severity === "warning") return "border-warning/30 bg-warning-muted";
+  if (severity === "info") return "border-info/30 bg-info-muted";
+  return "border-border bg-card";
 }
 
 function SummaryCard({
@@ -76,10 +85,10 @@ function SummaryCard({
   tone: "critical" | "warning" | "info" | "neutral";
 }) {
   const toneClasses = {
-    critical: "border-red-300 bg-red-50 text-red-950",
-    warning: "border-amber-300 bg-amber-50 text-amber-950",
-    info: "border-slate-200 bg-slate-50 text-slate-900",
-    neutral: "border-slate-200 bg-white text-slate-900",
+    critical: "border-danger/30 bg-danger-muted text-danger",
+    warning: "border-warning/30 bg-warning-muted text-warning",
+    info: "border-info/30 bg-info-muted text-info",
+    neutral: "border-border bg-card text-card-foreground",
   };
 
   return (
@@ -96,39 +105,37 @@ function ItemRow({ item }: { item: StuckStateItem }) {
   const Icon = domainIcons[item.domain];
 
   return (
-    <tr className="border-t align-top">
-      <td className="px-4 py-4">
+    <TableRow className="align-top">
+      <TableCell>
         <div className="flex items-center gap-2">
-          <Icon className="h-4 w-4 shrink-0 text-slate-500" />
-          <span className="text-sm font-medium text-slate-900">
-            {item.domainLabel}
-          </span>
+          <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
+          <span className="text-sm font-medium">{item.domainLabel}</span>
         </div>
-      </td>
-      <td className="px-4 py-4">
-        <div className="font-medium text-slate-950">{item.title}</div>
-        <div className="mt-1 max-w-2xl text-sm text-slate-600">
+      </TableCell>
+      <TableCell>
+        <div className="font-medium">{item.title}</div>
+        <div className="mt-1 max-w-2xl text-sm text-muted-foreground">
           {item.summary}
         </div>
-      </td>
-      <td className="px-4 py-4">
+      </TableCell>
+      <TableCell>
         <Badge variant={severityBadgeVariant(item.severity)}>
           {severityLabels[item.severity]}
         </Badge>
-      </td>
-      <td className="px-4 py-4 text-sm text-slate-700">{item.owner}</td>
-      <td className="px-4 py-4 text-right text-sm font-semibold text-slate-950">
+      </TableCell>
+      <TableCell className="text-sm">{item.owner}</TableCell>
+      <TableCell className="text-right text-sm font-semibold">
         {item.count}
-      </td>
-      <td className="px-4 py-4 text-right">
+      </TableCell>
+      <TableCell className="text-right">
         <Button asChild variant="outline" size="sm">
           <Link href={item.href}>
             Open
             <ArrowRight className="ml-2 h-4 w-4" />
           </Link>
         </Button>
-      </td>
-    </tr>
+      </TableCell>
+    </TableRow>
   );
 }
 
@@ -137,17 +144,15 @@ export default async function AdminStuckStatesPage() {
 
   return (
     <div className="space-y-8">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-900">Stuck States</h1>
-          <p className="mt-1 text-sm text-slate-500">
-            Generated {formatGeneratedAt(dashboard.generatedAt)}
-          </p>
-        </div>
-        <Button asChild variant="outline" size="sm">
-          <Link href="/admin/health">System Health</Link>
-        </Button>
-      </div>
+      <AdminPageHeader
+        title="Stuck States"
+        description={`Generated ${formatGeneratedAt(dashboard.generatedAt)}`}
+        actions={
+          <Button asChild variant="outline" size="sm">
+            <Link href="/admin/health">System Health</Link>
+          </Button>
+        }
+      />
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <SummaryCard
@@ -182,19 +187,19 @@ export default async function AdminStuckStatesPage() {
             >
               <CardContent className="flex items-center justify-between gap-4 pt-5">
                 <div className="flex min-w-0 items-center gap-3">
-                  <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-white/80 text-slate-700">
+                  <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-card text-foreground">
                     <Icon className="h-5 w-5" />
                   </span>
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-semibold text-slate-950">
+                    <p className="truncate text-sm font-semibold text-foreground">
                       {domain.label}
                     </p>
-                    <p className="text-xs text-slate-600">
+                    <p className="text-xs text-muted-foreground">
                       {domain.itemCount} signal{domain.itemCount === 1 ? "" : "s"}
                     </p>
                   </div>
                 </div>
-                <div className="text-right text-2xl font-bold text-slate-950">
+                <div className="text-right text-2xl font-bold text-foreground">
                   {domain.count}
                 </div>
               </CardContent>
@@ -206,38 +211,36 @@ export default async function AdminStuckStatesPage() {
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-3">
           <CardTitle className="flex items-center gap-2 text-lg">
-            <ShieldAlert className="h-5 w-5 text-slate-600" />
+            <ShieldAlert className="h-5 w-5 text-muted-foreground" />
             Operator Queue
           </CardTitle>
         </CardHeader>
         <CardContent className="p-0">
           {dashboard.items.length === 0 ? (
             <div className="flex flex-col items-center justify-center gap-3 px-6 py-14 text-center">
-              <ShieldAlert className="h-10 w-10 text-green-600" />
-              <p className="text-sm font-medium text-slate-700">
+              <ShieldAlert className="h-10 w-10 text-success" />
+              <p className="text-sm font-medium text-muted-foreground">
                 No stuck states found.
               </p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[840px] text-left">
-                <thead>
-                  <tr className="border-t bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
-                    <th className="px-4 py-3 font-semibold">Domain</th>
-                    <th className="px-4 py-3 font-semibold">Signal</th>
-                    <th className="px-4 py-3 font-semibold">Severity</th>
-                    <th className="px-4 py-3 font-semibold">Owner</th>
-                    <th className="px-4 py-3 text-right font-semibold">Count</th>
-                    <th className="px-4 py-3 text-right font-semibold">Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {dashboard.items.map((item) => (
-                    <ItemRow key={item.id} item={item} />
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <AdminDataTable className="min-w-[840px]">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Domain</TableHead>
+                  <TableHead>Signal</TableHead>
+                  <TableHead>Severity</TableHead>
+                  <TableHead>Owner</TableHead>
+                  <TableHead className="text-right">Count</TableHead>
+                  <TableHead className="text-right">Action</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {dashboard.items.map((item) => (
+                  <ItemRow key={item.id} item={item} />
+                ))}
+              </TableBody>
+            </AdminDataTable>
           )}
         </CardContent>
       </Card>
