@@ -89,7 +89,7 @@ export function GuestChip({
         accent.ringClassName,
         accent.tintClassName,
         isDragging && "opacity-50",
-        highlighted && "border-amber-300 bg-amber-50 dark:bg-amber-950/30",
+        highlighted && "border-warning bg-warning-muted dark:bg-warning-muted",
       )}
     >
       <span
