@@ -30,6 +30,7 @@ import {
   House,
   Tablet,
   Tv,
+  LayoutTemplate,
   UsersRound,
   Bell,
   Bug,
@@ -239,6 +240,11 @@ const navSections: NavSection[] = [
     label: "Lobby Display",
     items: [
       { href: "/admin/display", label: "Devices", icon: Tv },
+      {
+        href: "/admin/display/layouts",
+        label: "Layouts",
+        icon: LayoutTemplate,
+      },
       {
         href: "/admin/display/settings",
         label: "Display Settings",
