@@ -66,6 +66,10 @@ function sourceDb(): ReadDb {
     },
     lodgeInstruction: { findMany: vi.fn().mockResolvedValue([]) },
     choreTemplate: { findMany: vi.fn().mockResolvedValue([]) },
+    // The club-wide display library (LTV-037) rides with lodge-config; an export
+    // reads both tables even when empty.
+    displayLayout: { findMany: vi.fn().mockResolvedValue([]) },
+    displayTemplate: { findMany: vi.fn().mockResolvedValue([]) },
   } as unknown as ReadDb;
 }
 
@@ -78,6 +82,8 @@ function emptyTargetDb(): ReadDb {
     seasonRate: { findMany: vi.fn().mockResolvedValue([]) },
     lodgeInstruction: { findMany: vi.fn().mockResolvedValue([]) },
     choreTemplate: { findMany: vi.fn().mockResolvedValue([]) },
+    displayLayout: { findMany: vi.fn().mockResolvedValue([]) },
+    displayTemplate: { findMany: vi.fn().mockResolvedValue([]) },
     xeroToken: { findFirst: vi.fn().mockResolvedValue(null) },
   } as unknown as ReadDb;
 }
