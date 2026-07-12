@@ -353,9 +353,10 @@ client-safe `css-tokens.ts` before they ship in the payload:
 > `/admin/display/templates` path so LTV-033's Template authoring could claim
 > it: LTV-031 parked the path on a temporary redirect to
 > `/admin/display/settings`, and **LTV-033 replaced that redirect with the real
-> Template manager** (the redirect page and its test are gone). The remaining
-> **Modules** and **Conditions/Modules Reference** entries mount as their
-> reference UIs land (#80), and LTV-035/#81 relocates the Display Settings
+> Template manager** (the redirect page and its test are gone). The
+> **Reference** entry (`/admin/display/reference`) — the combined
+> Modules/Conditions/CSS-tokens reference — landed with LTV-034 (#80), and
+> LTV-035/#81 relocates the Display Settings
 > content into the lodge configuration hub. Terminology follows ADR-003:
 > **Layout / Template / Module / Conditions**.
 
@@ -423,6 +424,29 @@ client-safe `css-tokens.ts` before they ship in the payload:
 > clears `templateKey`, picking a built-in does the reverse, so the resolution
 > order (`templateId → templateKey → club default`) stays unambiguous. Built-ins
 > remain pickable until LTV-038 retires them.
+
+> **Reference (LTV-034, #80).** The **Reference** entry
+> (`/admin/display/reference`) is live: one read-only page, three Cards, backed
+> by the closed registries so a new module/condition/token surfaces with no
+> hand-maintained duplication (ADR-003 §3). **Modules** lists each
+> `listDisplayModules()` entry — label, name, description, copyable embed token,
+> the dependency phrasing derived from the module labels ("needs Chores — hides
+> without it"), contributed conditions, and the CSS hooks as inline code.
+> **Conditions** groups `listDisplayConditions()` by family (core / occupancy /
+> content / capability) with the name as code and description, plus a **live
+> indicator** — a "true now" / "false now" badge per condition for the chosen
+> lodge. That indicator is a **point-in-time snapshot**: it is computed by the
+> admin-guarded status endpoint
+> (`GET /api/admin/display/reference/conditions?lodgeId=…`, `requireAdmin`, lodge
+> boundary, GET-only, no write) which builds the lodge's DisplayState through the
+> same privacy-reduced serialiser the wall uses and evaluates every registry
+> condition against it — **refreshed by a button, never polled**. **CSS tokens**
+> lists `listDisplayCssTokens()` split into the display palette (with a colour
+> swatch each, read from the `.display-shell` palette constants — `display.css`
+> is not loaded in the admin bundle, so the swatch reads a static value rather
+> than resolving `var(--display-*)`) and the club-brand tokens (per-club, shown
+> without a swatch). The page imports only the client-safe registries; the status
+> endpoint owns the server side.
 
 Modelled on the kiosk account management surface (`/admin/lodge`):
 
