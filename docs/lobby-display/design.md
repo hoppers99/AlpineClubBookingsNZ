@@ -277,6 +277,18 @@ Module design rules: sensible zero-parameter defaults; parameters tune
 behaviour; a small options-based styling set (row colouring rules, accent
 side, corner radius) rather than free CSS.
 
+**Module metadata (LTV-026).** Each module declares its contract in a
+client-safe registry (`src/lib/lodge-display/module-registry.ts`, ADR-003 §1):
+`label`, `description`, its club-module `dependencies` and a `dependencyMode`
+(`degrades` — renders a reduced form, e.g. per-booking rows when bed allocation
+is off; or `hides` — renders nothing, as `chores-board` does when the Chores
+flag is off), the stable `cssHooks` class names admins target, the conditions it
+`contributes`, and its `embedToken`. This one registry drives the Conditions/
+modules reference screen (LTV-034), the render-boundary dependency fallback (a
+`hides` module is replaced with an empty `data-module-disabled` placeholder so
+the rail keeps its shape), and the CSS-hook stability contract (a test fails CI
+if a declared hook is renamed). Token resolution of `embedToken` is LTV-028.
+
 ## 8. Admin UI
 
 Modelled on the kiosk account management surface (`/admin/lodge`):
