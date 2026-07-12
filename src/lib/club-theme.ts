@@ -87,14 +87,3 @@ export async function getWebsiteThemeRenderState() {
     isComplete: Boolean(theme?.completedAt),
   };
 }
-
-export async function isClubThemeComplete() {
-  const theme = await prisma.clubTheme
-    .findUnique({
-      where: { id: CLUB_THEME_ID },
-      select: { completedAt: true },
-    })
-    .catch(() => null);
-
-  return Boolean(theme?.completedAt);
-}

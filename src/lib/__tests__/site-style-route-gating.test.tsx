@@ -8,7 +8,6 @@ const mocks = vi.hoisted(() => ({
   auth: vi.fn(),
   headers: vi.fn(),
   getWebsiteThemeRenderState: vi.fn(),
-  isClubThemeComplete: vi.fn(),
   memberFindUnique: vi.fn(),
   loadEffectiveModuleFlags: vi.fn(),
   redirect: vi.fn(),
@@ -28,7 +27,6 @@ vi.mock("next/navigation", () => ({
 
 vi.mock("@/lib/club-theme", () => ({
   getWebsiteThemeRenderState: mocks.getWebsiteThemeRenderState,
-  isClubThemeComplete: mocks.isClubThemeComplete,
 }));
 
 vi.mock("@/lib/club-theme-fonts", () => ({
@@ -114,7 +112,6 @@ describe("site style route-group gating", () => {
       isComplete: false,
       values: {},
     });
-    mocks.isClubThemeComplete.mockResolvedValue(false);
     mocks.memberFindUnique.mockResolvedValue({
       active: true,
       forcePasswordChange: false,
