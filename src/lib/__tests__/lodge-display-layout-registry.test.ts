@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   InvalidDisplayLayoutError,
+  splitHtmlOnModuleTokens,
   splitLayoutBody,
   validateDisplayLayoutDefinition,
   validateDisplaySlotContent,
+  validateHtmlModuleEmbeds,
   type DisplayAreaDefinition,
 } from "@/lib/lodge-display/layout-registry";
 
@@ -256,5 +258,81 @@ describe("validateDisplaySlotContent", () => {
     expect(() =>
       validateDisplaySlotContent(areas, { main: { nonsense: true } })
     ).toThrow(/needs either "html" or "module"/);
+  });
+});
+
+describe("splitHtmlOnModuleTokens (LTV-028)", () => {
+  it("splits authored html into ordered html and module segments", () => {
+    expect(
+      splitHtmlOnModuleTokens("<p>Intro</p>{{module:arrivals-board}}<hr/>")
+    ).toEqual([
+      { type: "html", html: "<p>Intro</p>" },
+      { type: "module", name: "arrivals-board" },
+      { type: "html", html: "<hr/>" },
+    ]);
+  });
+
+  it("returns a single html segment when there is no embed", () => {
+    expect(splitHtmlOnModuleTokens("<p>Just copy</p>")).toEqual([
+      { type: "html", html: "<p>Just copy</p>" },
+    ]);
+  });
+
+  it("only splits the strict {{module:name}} shape (spaces/args stay literal)", () => {
+    // A spaced/argument form is NOT a valid embed — it stays inside an html
+    // segment (the validator rejects it up front so this is defensive).
+    expect(splitHtmlOnModuleTokens("{{module: welcome }}")).toEqual([
+      { type: "html", html: "{{module: welcome }}" },
+    ]);
+    expect(splitHtmlOnModuleTokens("{{module:welcome(x)}}")).toEqual([
+      { type: "html", html: "{{module:welcome(x)}}" },
+    ]);
+  });
+
+  it("splits a well-formed but unknown module name (renderer degrades it)", () => {
+    expect(splitHtmlOnModuleTokens("{{module:future-thing}}")).toEqual([
+      { type: "module", name: "future-thing" },
+    ]);
+  });
+});
+
+describe("validateHtmlModuleEmbeds (LTV-028)", () => {
+  it("accepts a well-formed embed of a known module", () => {
+    expect(() =>
+      validateHtmlModuleEmbeds("<p>x</p>{{module:chores-board}}", "slot")
+    ).not.toThrow();
+  });
+
+  it("accepts html with no embed at all", () => {
+    expect(() => validateHtmlModuleEmbeds("<p>no tokens</p>", "slot")).not.toThrow();
+  });
+
+  it("rejects an unknown module name (fail fast on a typo)", () => {
+    expect(() =>
+      validateHtmlModuleEmbeds("{{module:not-a-module}}", "slot")
+    ).toThrow(/unknown module/);
+  });
+
+  it("rejects a spaced form and an arguments form (no options in embeds)", () => {
+    expect(() =>
+      validateHtmlModuleEmbeds("{{module: welcome }}", "slot")
+    ).toThrow(/malformed module embed/);
+    expect(() =>
+      validateHtmlModuleEmbeds("{{module:welcome(days:3)}}", "slot")
+    ).toThrow(/malformed module embed/);
+  });
+
+  it("is reached through validateDisplaySlotContent for slot html", () => {
+    const one = validateDisplayLayoutDefinition("{{area:main}}", [
+      { key: "main", description: "Main", kind: "static" },
+    ]);
+    expect(() =>
+      validateDisplaySlotContent(one, { main: { html: "{{module:nope}}" } })
+    ).toThrow(/unknown module/);
+    expect(() =>
+      validateDisplaySlotContent(one, {
+        main: { html: "{{module:arrivals-board}}" },
+      })
+    ).not.toThrow();
   });
 });

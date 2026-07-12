@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { hasAdminAccess } from "@/lib/access-roles";
 import { checkDisplayAuth } from "@/lib/lodge-display-auth";
-import { buildDisplayState } from "@/lib/lodge-display-state";
+import { buildDisplayState, type DisplayState } from "@/lib/lodge-display-state";
 import {
   resolveDisplayTemplate,
   resolveDisplayTemplateForDevice,
@@ -76,7 +76,10 @@ async function resolvePreview(
 // (LTV-030 formalises the fallback; this is the simple safe version). Devices
 // without templateId never reach here and keep the legacy behaviour unchanged.
 async function loadLayoutRender(
-  templateId: string
+  templateId: string,
+  // LTV-028: value tokens ({{config:…}}/{{lodge-name}}/{{display-date}}) resolve
+  // against the bound lodge's DisplayState at serve time, so the render needs it.
+  state: DisplayState
 ): Promise<LayoutRenderPayload | null> {
   try {
     const template = await prisma.displayTemplate.findUnique({
@@ -91,14 +94,17 @@ async function loadLayoutRender(
       },
     });
     if (!template) return null;
-    return buildLayoutRender({
-      bodyHtml: template.layout.bodyHtml,
-      defaultCss: template.layout.defaultCss,
-      areas: template.layout.areas,
-      slotContent: template.slotContent,
-      cssOverrides: template.cssOverrides,
-      footerHtml: template.footerHtml,
-    });
+    return buildLayoutRender(
+      {
+        bodyHtml: template.layout.bodyHtml,
+        defaultCss: template.layout.defaultCss,
+        areas: template.layout.areas,
+        slotContent: template.slotContent,
+        cssOverrides: template.cssOverrides,
+        footerHtml: template.footerHtml,
+      },
+      state
+    );
   } catch {
     return null;
   }
@@ -142,7 +148,7 @@ export async function GET(req: NextRequest) {
     // engine; the legacy `template` field always ships too, as the safe
     // fallback the client uses when layoutRender is absent (LTV-027/030).
     const layoutRender = deviceAuth.device.templateId
-      ? await loadLayoutRender(deviceAuth.device.templateId)
+      ? await loadLayoutRender(deviceAuth.device.templateId, state)
       : null;
     return NextResponse.json({
       ...state,
@@ -170,7 +176,7 @@ export async function GET(req: NextRequest) {
   // ?previewDevice of a v2-bound device renders the layout engine; ?preview=1
   // (templateId null, e.g. &templateKey=…) stays on the legacy path.
   const layoutRender = preview.templateId
-    ? await loadLayoutRender(preview.templateId)
+    ? await loadLayoutRender(preview.templateId, state)
     : null;
   return NextResponse.json({
     ...state,
