@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { Component, useEffect, useRef, useState, type ReactNode } from "react";
 import type { DisplayState } from "@/lib/lodge-display-state";
 import type {
   DisplayRegionDefinition,
@@ -10,6 +10,13 @@ import {
   DEFAULT_ROTATE_SECONDS,
   eligibleDisplayPanels,
 } from "@/lib/lodge-display/template-registry";
+import {
+  splitLayoutBody,
+  type DisplayAreaDefinition,
+  type LayoutRenderPayload,
+  type SlotContent,
+} from "@/lib/lodge-display/layout-registry";
+import { evaluateDisplayCondition } from "@/lib/lodge-display/conditions";
 import { resolveDisplayText } from "@/lib/lodge-display/display-text";
 import {
   DISPLAY_MODULE_COMPONENTS,
@@ -290,6 +297,168 @@ function ActiveScreen({
   );
 }
 
+// ---------------------------------------------------------------------------
+// Layout engine (LTV-027, ADR-003 §1/§2): renders a v2 Layout+Template. The
+// fixed shell (header + editable footer) stays out of the editable body; the
+// body is `bodyHtml` split on {{area:key}} placeholders, HTML segments rendered
+// verbatim (already server-sanitised) and each placeholder rendering its Area.
+// ---------------------------------------------------------------------------
+
+/** The neutral, never-crash placeholder — the same graceful-degrade stance as
+ * the legacy Panel path: a broken/unknown slot leaves a quiet gap on the wall,
+ * not an error. */
+function NeutralPlaceholder({ module }: { module?: string }) {
+  return <div className="display-module-placeholder" data-module={module} />;
+}
+
+/** Render one slot's content: authored HTML (already sanitised server-side) or
+ * an embedded module. An unknown module → the neutral placeholder. A missing
+ * slot (no content, no default) → nothing. */
+function SlotRender({
+  content,
+  state,
+}: {
+  content: SlotContent | undefined;
+  state: DisplayState;
+}) {
+  if (!content) return null;
+  if ("module" in content) {
+    const Module = DISPLAY_MODULE_COMPONENTS[content.module];
+    if (!Module) return <NeutralPlaceholder module={content.module} />;
+    return <Module state={state} options={content.options} />;
+  }
+  // Server-sanitised via sanitizePageContentHtml at serve time (layout-render).
+  return <div dangerouslySetInnerHTML={{ __html: content.html }} />;
+}
+
+/** A rotator area: cycle only among children whose condition currently holds,
+ * on the area's rotateSeconds timer — the same pattern as the legacy Region.
+ * Zero eligible children renders nothing. */
+function RotatorArea({
+  area,
+  slotContent,
+  state,
+}: {
+  area: DisplayAreaDefinition;
+  slotContent: LayoutRenderPayload["slotContent"];
+  state: DisplayState;
+}) {
+  const eligible = (area.children ?? []).filter((child) =>
+    evaluateDisplayCondition(child.condition ?? "always", state)
+  );
+  const [index, setIndex] = useState(0);
+
+  useEffect(() => {
+    if (eligible.length <= 1) return;
+    const seconds = area.rotateSeconds ?? DEFAULT_ROTATE_SECONDS;
+    const timer = setInterval(
+      () => setIndex((current) => current + 1),
+      seconds * 1000
+    );
+    return () => clearInterval(timer);
+  }, [eligible.length, area.rotateSeconds]);
+
+  if (eligible.length === 0) return null;
+  const child = eligible[index % eligible.length];
+  return (
+    <SlotRender content={slotContent[`${area.key}/${child.key}`]} state={state} />
+  );
+}
+
+/** One named area: static (always), conditional (only while its condition
+ * holds), or rotator (cycles its eligible children). */
+function Area({
+  area,
+  slotContent,
+  state,
+}: {
+  area: DisplayAreaDefinition | undefined;
+  slotContent: LayoutRenderPayload["slotContent"];
+  state: DisplayState;
+}) {
+  // Server validation guarantees every placeholder has an area; stay defensive
+  // for the unattended wall regardless.
+  if (!area) return <NeutralPlaceholder />;
+  if (area.kind === "rotator") {
+    return <RotatorArea area={area} slotContent={slotContent} state={state} />;
+  }
+  if (area.kind === "conditional") {
+    if (!evaluateDisplayCondition(area.condition ?? "always", state)) return null;
+  }
+  const content = slotContent[area.key] ?? area.defaultContent;
+  return <SlotRender content={content} state={state} />;
+}
+
+/** Render boundary around each body segment: a throwing module/area drops to
+ * the neutral placeholder instead of blanking the whole wall (LTV-030 hardens
+ * this further). */
+class AreaErrorBoundary extends Component<
+  { children: ReactNode },
+  { failed: boolean }
+> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  render() {
+    if (this.state.failed) return <NeutralPlaceholder />;
+    return this.props.children;
+  }
+}
+
+function LayoutScreen({
+  payload,
+  stale,
+}: {
+  payload: DisplayPayload & { layoutRender: LayoutRenderPayload };
+  stale: boolean;
+}) {
+  // Strip layoutRender; the rest (incl. the legacy `template` fallback field)
+  // is a superset of DisplayState and safe to pass to the shell/modules.
+  const { layoutRender, ...state } = payload;
+  const segments = splitLayoutBody(layoutRender.bodyHtml);
+  const areasByKey = new Map(layoutRender.areas.map((area) => [area.key, area]));
+
+  return (
+    <div className="display-screen display-layout-screen">
+      {/* Server already stripped `</style`; scoping/theming is #75's job. */}
+      <style
+        dangerouslySetInnerHTML={{
+          __html: `${layoutRender.defaultCss}\n${layoutRender.cssOverrides}`,
+        }}
+      />
+      <LodgeHeader state={state} />
+      <div className="display-layout-body">
+        {segments.map((segment, segmentIndex) =>
+          segment.type === "html" ? (
+            <div
+              key={segmentIndex}
+              dangerouslySetInnerHTML={{ __html: segment.html }}
+            />
+          ) : (
+            <AreaErrorBoundary key={segmentIndex}>
+              <Area
+                area={areasByKey.get(segment.key)}
+                slotContent={layoutRender.slotContent}
+                state={state}
+              />
+            </AreaErrorBoundary>
+          )
+        )}
+      </div>
+      {layoutRender.footerHtml ? (
+        <div
+          className="display-info-footer"
+          dangerouslySetInnerHTML={{ __html: layoutRender.footerHtml }}
+        />
+      ) : (
+        <InfoFooter state={state} />
+      )}
+      {stale && <span className="display-stale-badge">Data may be out of date</span>}
+    </div>
+  );
+}
+
 export function DisplayScreen() {
   const lifecycle = useDisplayState();
 
@@ -329,9 +498,20 @@ export function DisplayScreen() {
     );
   }
 
+  // A v2 layout render wins when present (device bound to a Layout+Template);
+  // otherwise the legacy built-in board path renders unchanged (LTV-038 retires
+  // it). Walls on built-ins keep working exactly as before.
+  const { payload, stale } = lifecycle;
   return (
     <div className="display-shell">
-      <ActiveScreen payload={lifecycle.payload} stale={lifecycle.stale} />
+      {payload.layoutRender ? (
+        <LayoutScreen
+          payload={{ ...payload, layoutRender: payload.layoutRender }}
+          stale={stale}
+        />
+      ) : (
+        <ActiveScreen payload={payload} stale={stale} />
+      )}
     </div>
   );
 }

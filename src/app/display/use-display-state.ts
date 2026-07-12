@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { DisplayState } from "@/lib/lodge-display-state";
 import type { DisplayTemplateDefinition } from "@/lib/lodge-display/template-registry";
+import type { LayoutRenderPayload } from "@/lib/lodge-display/layout-registry";
 
 // Client lifecycle for the lobby display page (fork issues #32/#52):
 //
@@ -24,7 +25,12 @@ export const DISPLAY_CLAIM_POLL_SECONDS = 4;
 export const DISPLAY_STALE_AFTER_MS = 3 * DISPLAY_POLL_SECONDS * 1000;
 
 export interface DisplayPayload extends DisplayState {
+  /** Legacy code-built-in template — always present as the safe fallback. */
   template: DisplayTemplateDefinition;
+  /** Present only for a device bound to a v2 Layout+Template (LTV-027): the
+   * server-sanitised layout render payload. When set, the client renders the
+   * layout engine instead of the legacy built-in board. */
+  layoutRender?: LayoutRenderPayload;
 }
 
 export type DisplayLifecycle =

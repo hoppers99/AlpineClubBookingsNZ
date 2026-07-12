@@ -7,6 +7,8 @@ import {
   resolveDisplayTemplate,
   resolveDisplayTemplateForDevice,
 } from "@/lib/lodge-display/template-resolution";
+import { buildLayoutRender } from "@/lib/lodge-display/layout-render";
+import type { LayoutRenderPayload } from "@/lib/lodge-display/layout-registry";
 import { getDefaultLodgeId } from "@/lib/lodges";
 import { isDateOnlyString, parseDateOnly } from "@/lib/date-only";
 import { prisma } from "@/lib/prisma";
@@ -67,6 +69,41 @@ async function resolvePreview(
   };
 }
 
+// Load a device's bound v2 Template + its Layout and assemble the sanitised,
+// validated `layoutRender` payload (LTV-027). Returns null on any failure — a
+// missing row, a validation/sanitise error, or a DB error — so the caller keeps
+// the legacy code-built-in `template` field and never serves a broken payload
+// (LTV-030 formalises the fallback; this is the simple safe version). Devices
+// without templateId never reach here and keep the legacy behaviour unchanged.
+async function loadLayoutRender(
+  templateId: string
+): Promise<LayoutRenderPayload | null> {
+  try {
+    const template = await prisma.displayTemplate.findUnique({
+      where: { id: templateId },
+      select: {
+        slotContent: true,
+        cssOverrides: true,
+        footerHtml: true,
+        layout: {
+          select: { bodyHtml: true, defaultCss: true, areas: true },
+        },
+      },
+    });
+    if (!template) return null;
+    return buildLayoutRender({
+      bodyHtml: template.layout.bodyHtml,
+      defaultCss: template.layout.defaultCss,
+      areas: template.layout.areas,
+      slotContent: template.slotContent,
+      cssOverrides: template.cssOverrides,
+      footerHtml: template.footerHtml,
+    });
+  } catch {
+    return null;
+  }
+}
+
 // The simulated preview start date (issue #60): strict date-only shape plus a
 // real-calendar validity check. Malformed values fall back to today silently
 // (null → the serialiser starts from today). Preview-only; the caller must
@@ -101,7 +138,17 @@ export async function GET(req: NextRequest) {
       where: { id: deviceAuth.device.id },
       data: { lastSeenAt: new Date() },
     });
-    return NextResponse.json({ ...state, template: template.definition });
+    // A device bound to a v2 Template (templateId) renders through the layout
+    // engine; the legacy `template` field always ships too, as the safe
+    // fallback the client uses when layoutRender is absent (LTV-027/030).
+    const layoutRender = deviceAuth.device.templateId
+      ? await loadLayoutRender(deviceAuth.device.templateId)
+      : null;
+    return NextResponse.json({
+      ...state,
+      template: template.definition,
+      ...(layoutRender ? { layoutRender } : {}),
+    });
   }
 
   const preview = await resolvePreview(req);
@@ -120,5 +167,14 @@ export async function GET(req: NextRequest) {
     ? (resolveDisplayTemplate(preview.templateKey) ??
       resolveDisplayTemplateForDevice(preview))
     : resolveDisplayTemplateForDevice(preview);
-  return NextResponse.json({ ...state, template: template.definition });
+  // ?previewDevice of a v2-bound device renders the layout engine; ?preview=1
+  // (templateId null, e.g. &templateKey=…) stays on the legacy path.
+  const layoutRender = preview.templateId
+    ? await loadLayoutRender(preview.templateId)
+    : null;
+  return NextResponse.json({
+    ...state,
+    template: template.definition,
+    ...(layoutRender ? { layoutRender } : {}),
+  });
 }

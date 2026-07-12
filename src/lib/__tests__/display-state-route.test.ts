@@ -17,6 +17,7 @@ const {
   mockPrisma: {
     member: { findUnique: vi.fn() },
     lodgeDisplayDevice: { findUnique: vi.fn(), update: vi.fn() },
+    displayTemplate: { findUnique: vi.fn() },
     $queryRaw: vi.fn().mockRejectedValue(new Error("no shared store in tests")),
     $executeRaw: vi
       .fn()
@@ -30,6 +31,10 @@ const {
   mockGetDefaultLodgeId: vi.fn(),
 }));
 
+// The layoutRender path (LTV-027) exercises the REAL layout validator +
+// sanitiser (page-content-html), so it is not mocked — but page-content-html
+// pulls in `server-only`, which throws outside an RSC context; stub it.
+vi.mock("server-only", () => ({}));
 vi.mock("@/lib/prisma", () => ({ prisma: mockPrisma }));
 vi.mock("@/lib/auth", () => ({ auth: () => mockAuth() }));
 vi.mock("@/lib/lodge-display-auth", () => ({
@@ -76,6 +81,7 @@ beforeEach(() => {
   mockPrisma.member.findUnique.mockResolvedValue(null);
   mockPrisma.lodgeDisplayDevice.findUnique.mockResolvedValue(null);
   mockPrisma.lodgeDisplayDevice.update.mockResolvedValue({});
+  mockPrisma.displayTemplate.findUnique.mockResolvedValue(null);
   mockBuildDisplayState.mockResolvedValue(STATE);
   // Template resolution is synchronous (LTV-024 — code built-ins, no DB).
   mockResolveTemplate.mockReturnValue(TEMPLATE);
@@ -226,5 +232,106 @@ describe("GET /api/display/state — admin preview (issue #52)", () => {
     expect(lodgeId).toBe("lodge-a");
     expect(options.windowStart ?? null).toBeNull();
     expect(mockPrisma.lodgeDisplayDevice.update).toHaveBeenCalled();
+  });
+});
+
+describe("GET /api/display/state — v2 layoutRender path (LTV-027)", () => {
+  const DEVICE_AUTH_V2 = {
+    device: {
+      id: "dev-2",
+      lodgeId: "lodge-a",
+      name: "Lobby TV",
+      templateId: "tpl-42",
+      templateKey: null,
+    },
+  };
+
+  // A valid stored Layout+Template with hostile HTML/CSS to prove serve-time
+  // sanitisation + `</style` stripping.
+  const VALID_TEMPLATE = {
+    slotContent: { main: { html: "<p>Hi</p><script>steal()</script>" } },
+    cssOverrides: ".x{color:blue}",
+    footerHtml: "<b>Wi-Fi</b><script>evil()</script>",
+    layout: {
+      bodyHtml: "<h1>Wall</h1><script>alert(1)</script>{{area:main}}",
+      defaultCss: "body{color:red}</style><script>y()</script>",
+      areas: [{ key: "main", description: "Main", kind: "static" }],
+    },
+  };
+
+  it("attaches a sanitised layoutRender for a device bound to a v2 template", async () => {
+    mockCheckDisplayAuth.mockResolvedValue(DEVICE_AUTH_V2);
+    mockPrisma.displayTemplate.findUnique.mockResolvedValue(VALID_TEMPLATE);
+    const { GET } = await import("@/app/api/display/state/route");
+
+    const res = await GET(await stateRequest());
+    expect(res.status).toBe(200);
+    expect(mockPrisma.displayTemplate.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "tpl-42" } })
+    );
+    const body = await res.json();
+    expect(body.layoutRender).toBeDefined();
+    // Script tags stripped from every admin HTML field at serve time.
+    expect(body.layoutRender.bodyHtml).not.toMatch(/<script/i);
+    expect(body.layoutRender.bodyHtml).toContain("{{area:main}}");
+    expect(body.layoutRender.slotContent.main.html).not.toMatch(/<script/i);
+    expect(body.layoutRender.footerHtml).not.toMatch(/<script/i);
+    // `</style` stripped from CSS so authored CSS cannot break out of <style>.
+    expect(body.layoutRender.defaultCss).not.toMatch(/<\/style/i);
+    // The legacy template still ships as the safe fallback.
+    expect(body.template).toBeDefined();
+    // The device heartbeat still stamps on the v2 path.
+    expect(mockPrisma.lodgeDisplayDevice.update).toHaveBeenCalled();
+  });
+
+  it("falls back to the legacy template when the stored layout is invalid", async () => {
+    mockCheckDisplayAuth.mockResolvedValue(DEVICE_AUTH_V2);
+    // areas do not match the body placeholder → buildLayoutRender throws.
+    mockPrisma.displayTemplate.findUnique.mockResolvedValue({
+      ...VALID_TEMPLATE,
+      layout: { ...VALID_TEMPLATE.layout, areas: [] },
+    });
+    const { GET } = await import("@/app/api/display/state/route");
+
+    const res = await GET(await stateRequest());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.layoutRender).toBeUndefined();
+    expect(body.template).toBeDefined();
+  });
+
+  it("falls back to the legacy template when the template row is missing", async () => {
+    mockCheckDisplayAuth.mockResolvedValue(DEVICE_AUTH_V2);
+    mockPrisma.displayTemplate.findUnique.mockResolvedValue(null);
+    const { GET } = await import("@/app/api/display/state/route");
+
+    const res = await GET(await stateRequest());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.layoutRender).toBeUndefined();
+    expect(body.template).toBeDefined();
+  });
+
+  it("a device without templateId never loads a layout (legacy unchanged)", async () => {
+    mockCheckDisplayAuth.mockResolvedValue(DEVICE_AUTH);
+    const { GET } = await import("@/app/api/display/state/route");
+
+    const res = await GET(await stateRequest());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.layoutRender).toBeUndefined();
+    expect(mockPrisma.displayTemplate.findUnique).not.toHaveBeenCalled();
+  });
+
+  it("?preview=1 (no templateId) never loads a layout", async () => {
+    mockAuth.mockResolvedValue({ user: { id: ADMIN_MEMBER.id } });
+    mockPrisma.member.findUnique.mockResolvedValue(ADMIN_MEMBER);
+    const { GET } = await import("@/app/api/display/state/route");
+
+    const res = await GET(await stateRequest("?preview=1&templateKey=everyday-board"));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.layoutRender).toBeUndefined();
+    expect(mockPrisma.displayTemplate.findUnique).not.toHaveBeenCalled();
   });
 });
