@@ -166,6 +166,50 @@ describe("DisplayScreen lifecycle", () => {
     expect(screen.queryByText("Silverpeak Lodge")).toBeNull();
   });
 
+  it("drives the active-board tick and staleness from the payload's pollSeconds (LTV-039)", async () => {
+    // First good payload advertises a fast 20s cadence.
+    enqueue(isState, { status: 200, body: { ...PAYLOAD, pollSeconds: 20 } });
+    render(<DisplayScreen />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    expect(screen.getByText("Silverpeak Lodge")).toBeDefined();
+
+    // A default 60s tick would not re-fetch at 20s; a 20s tick must. Queue a
+    // distinct next payload: it stays unconsumed at 19s, then arrives just past 20s.
+    enqueue(isState, {
+      status: 200,
+      body: { ...PAYLOAD, lodge: { name: "Second Lodge" }, pollSeconds: 20 },
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(19_000);
+    });
+    expect(screen.queryByText("Second Lodge")).toBeNull();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_500);
+    });
+    expect(screen.getByText("Second Lodge")).toBeDefined();
+
+    // Staleness scales to 3× the interval (= 60s). Three failed 20s polls reach
+    // exactly 60s — not yet past the threshold, so no stale badge.
+    for (let i = 0; i < 3; i++) {
+      enqueue(isState, { reject: true });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20_000);
+      });
+    }
+    expect(screen.queryByText(/out of date/)).toBeNull();
+    expect(screen.getByText("Second Lodge")).toBeDefined();
+
+    // A fourth failed poll pushes past 60s → the stale badge appears, board stays.
+    enqueue(isState, { reject: true });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20_000);
+    });
+    expect(screen.getByText(/out of date/)).toBeDefined();
+    expect(screen.getByText("Second Lodge")).toBeDefined();
+  });
+
   it("preview mode never pairs: denied shows the admin-login prompt, an admin session renders the board (issue #52)", async () => {
     window.history.pushState({}, "", "/display?previewDevice=dev-9");
     try {

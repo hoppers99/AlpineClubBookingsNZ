@@ -285,6 +285,9 @@ export interface DisplayAuthResult {
     name: string;
     templateId: string | null;
     templateKey: string | null;
+    // Per-device state-poll cadence override in seconds (LTV-039); null = the
+    // client default. The state route clamps it before serving it to the client.
+    pollSeconds: number | null;
   };
 }
 
@@ -308,6 +311,7 @@ export async function checkDisplayAuth(
       name: true,
       templateId: true,
       templateKey: true,
+      pollSeconds: true,
       revokedAt: true,
       lodge: { select: { active: true } },
     },
@@ -322,6 +326,7 @@ export async function checkDisplayAuth(
       name: device.name,
       templateId: device.templateId,
       templateKey: device.templateKey,
+      pollSeconds: device.pollSeconds,
     },
   };
 }

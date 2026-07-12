@@ -9,6 +9,10 @@ import {
 } from "@/lib/lodge-display/template-resolution";
 import { buildLayoutRender } from "@/lib/lodge-display/layout-render";
 import type { LayoutRenderPayload } from "@/lib/lodge-display/layout-registry";
+import {
+  clampPollSeconds,
+  DISPLAY_DEFAULT_POLL_SECONDS,
+} from "@/lib/lodge-display/poll-interval";
 import { getWebsiteThemeRenderState } from "@/lib/club-theme";
 import { getDefaultLodgeId, resolveOptionalActiveLodgeId } from "@/lib/lodges";
 import { isDateOnlyString, parseDateOnly } from "@/lib/date-only";
@@ -253,6 +257,9 @@ export async function GET(req: NextRequest) {
     return grantJson({
       ...state,
       template: template.definition,
+      // Previews (grant/session) don't need a custom cadence — the default keeps
+      // the admin's preview refreshing without touching a device's setting.
+      pollSeconds: DISPLAY_DEFAULT_POLL_SECONDS,
       ...layoutFields(layoutResult),
     });
   }
@@ -283,6 +290,10 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       ...state,
       template: template.definition,
+      // The device's effective poll cadence (LTV-039): the client drives its
+      // active-board tick from this. Clamped 15–600 here (null → default), so an
+      // out-of-range legacy value can never make the wall hammer or starve the API.
+      pollSeconds: clampPollSeconds(deviceAuth.device.pollSeconds),
       ...layoutFields(layoutResult),
     });
   }
@@ -313,6 +324,9 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     ...state,
     template: template.definition,
+    // A preview (?previewDevice/?preview) always gets the default cadence — the
+    // admin is watching a board, not driving a device's own heartbeat.
+    pollSeconds: DISPLAY_DEFAULT_POLL_SECONDS,
     ...layoutFields(layoutResult),
   });
 }

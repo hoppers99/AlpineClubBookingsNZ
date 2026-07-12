@@ -267,9 +267,22 @@ interface DisplayState {
   primary unit-test surface for privacy rules.
 - Data sourcing reuses the kiosk queries (`LODGE_VISIBLE_BOOKING_STATUSES`,
   stay-range helpers, `lodgeNullTolerantScope`) — no parallel query logic.
-- Client polls on an interval (config, default ~60s); the page shows a
-  stale indicator when `generatedAt` ages past a threshold and keeps the
-  last good render on transient failures.
+- Client polls on an interval; the page shows a stale indicator when the
+  render ages past a threshold and keeps the last good render on transient
+  failures.
+- **Per-device poll cadence** (LTV-039, issue #85; consolidates #66):
+  `LodgeDisplayDevice.pollSeconds` (nullable) sets a device's refresh cadence.
+  The response body carries the effective `pollSeconds` — a device fetch serves
+  its configured value, a preview always serves the default — clamped
+  server-side to **15–600s** (null → the ~60s default) so an out-of-range value
+  can never make a wall hammer or starve the API. The client drives its
+  active-board tick from that value (falling back to the default before the
+  first payload) and scales the staleness threshold to **3× the effective
+  interval**. Admins set it per device on `/admin/display` ("Refresh every",
+  blank = default). Because the poll doubles as the heartbeat, the cadence also
+  governs how often the device's **"last seen"** refreshes — a slow cadence
+  means a slower-updating last-seen. Writes clamp/validate to the same 15–600
+  range (out-of-range → 400) and are audit-logged.
 
 ## 6. Template model
 

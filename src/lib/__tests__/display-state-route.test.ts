@@ -81,6 +81,7 @@ const DEVICE_AUTH = {
     name: "Lobby TV",
     templateId: null,
     templateKey: null,
+    pollSeconds: null,
   },
 };
 
@@ -134,6 +135,38 @@ describe("GET /api/display/state — device path", () => {
     expect(res.status).toBe(401);
     expect(mockPrisma.lodgeDisplayDevice.update).not.toHaveBeenCalled();
   });
+
+  it("serves the device's configured pollSeconds on the payload (LTV-039)", async () => {
+    mockCheckDisplayAuth.mockResolvedValue({
+      device: { ...DEVICE_AUTH.device, pollSeconds: 20 },
+    });
+    const { GET } = await import("@/app/api/display/state/route");
+    const body = await (await GET(await stateRequest())).json();
+    expect(body.pollSeconds).toBe(20);
+  });
+
+  it("defaults pollSeconds to 60 when the device has none", async () => {
+    mockCheckDisplayAuth.mockResolvedValue({
+      device: { ...DEVICE_AUTH.device, pollSeconds: null },
+    });
+    const { GET } = await import("@/app/api/display/state/route");
+    const body = await (await GET(await stateRequest())).json();
+    expect(body.pollSeconds).toBe(60);
+  });
+
+  it("clamps an out-of-range persisted pollSeconds into 15–600", async () => {
+    const { GET } = await import("@/app/api/display/state/route");
+
+    mockCheckDisplayAuth.mockResolvedValue({
+      device: { ...DEVICE_AUTH.device, pollSeconds: 5 },
+    });
+    expect((await (await GET(await stateRequest())).json()).pollSeconds).toBe(15);
+
+    mockCheckDisplayAuth.mockResolvedValue({
+      device: { ...DEVICE_AUTH.device, pollSeconds: 9999 },
+    });
+    expect((await (await GET(await stateRequest())).json()).pollSeconds).toBe(600);
+  });
 });
 
 describe("GET /api/display/state — admin preview (issue #52)", () => {
@@ -174,6 +207,9 @@ describe("GET /api/display/state — admin preview (issue #52)", () => {
     expect(mockResolveTemplate).toHaveBeenCalledWith("occupancy-rotating");
     // Read-only by construction: a preview must never look like a live screen.
     expect(mockPrisma.lodgeDisplayDevice.update).not.toHaveBeenCalled();
+    // A preview always gets the default cadence, never a device's custom one.
+    const body = await res.json();
+    expect(body.pollSeconds).toBe(60);
   });
 
   it("rejects a preview of an unknown device", async () => {

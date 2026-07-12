@@ -17,6 +17,7 @@ const DEVICE_SELECT = {
   templateKey: true,
   templateId: true,
   template: { select: { name: true } },
+  pollSeconds: true,
   tokenHash: true,
   pairingCodeExpiresAt: true,
   lastSeenAt: true,
@@ -32,6 +33,7 @@ type DeviceRow = {
   templateKey: string | null;
   templateId: string | null;
   template: { name: string } | null;
+  pollSeconds: number | null;
   tokenHash: string | null;
   pairingCodeExpiresAt: Date | null;
   lastSeenAt: Date | null;
@@ -50,6 +52,8 @@ function toClientDevice(device: DeviceRow) {
     templateKey: device.templateKey,
     templateId: device.templateId,
     templateName: device.template?.name ?? null,
+    // null = the device uses the default refresh cadence (LTV-039).
+    pollSeconds: device.pollSeconds,
     paired: device.tokenHash !== null,
     pairingArmedUntil:
       device.pairingCodeExpiresAt && device.pairingCodeExpiresAt > new Date()
