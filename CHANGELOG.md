@@ -75,18 +75,17 @@ All notable public reference-release changes should be recorded here.
   audit log as `notifyMember: false` (`ADMIN_CHORE_ROSTER_EMAIL_SUPPRESSED`).
   The per-member `choreRoster` opt-out still applies on top of the notify path.
 
-- **Email message registry completeness pass (#1780 docs child).**
-  `docs/EMAIL_MESSAGE_REGISTRY.md` now documents the 12 live templates it was
-  missing: `two-factor-code`, `booking-review-approved` /
+- **Email message catalogue completeness pass (#1780 docs child).** The audit
+  documented the 12 live templates that had been missing from the catalogue:
+  `two-factor-code`, `booking-review-approved` /
   `booking-review-rejected`, `induction-sign-off-request`,
   `school-attendee-confirmation`, `admin-school-manual-invoice`, and the six
   group-booking settlement/join messages (`group-booking-join-verification`,
   `group-settlement-receipt`, `group-join-settled`,
   `group-settlement-expired`, `group-join-released`, `group-join-cancelled`).
-  These senders are hardcoded (no admin-editable template), so they live in a
-  new "Hardcoded Messages" section outside the `###` sections that the
-  registry contract test keeps in sync with `EMAIL_TEMPLATE_DEFINITIONS`.
-  Docs-only; no behaviour change.
+  These senders are hardcoded (no admin-editable template). Docs-only; no
+  behaviour change. The temporary Markdown audit was subsequently retired by
+  #1796; the TypeScript registry is authoritative for editable templates.
 
 - **A deliberately over-capacity booking is no longer destroyed when payment
   lands (#1771).** Every admin over-capacity admission — on-behalf create

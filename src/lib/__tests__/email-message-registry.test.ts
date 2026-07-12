@@ -1,5 +1,3 @@
-import fs from "node:fs";
-import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   EMAIL_TEMPLATE_DEFINITIONS,
@@ -16,22 +14,6 @@ import {
 } from "@/lib/email-message-renderer";
 
 describe("email message registry", () => {
-  it("covers every template section in the email registry", () => {
-    const audit = fs.readFileSync(
-      path.join(process.cwd(), "docs/EMAIL_MESSAGE_REGISTRY.md"),
-      "utf8",
-    );
-    const auditTemplateNames = Array.from(
-      audit.matchAll(/^### ([^\n]+)$/gm),
-      (match) => match[1],
-    ).sort();
-    const registryTemplateNames = EMAIL_TEMPLATE_DEFINITIONS.map(
-      (definition) => definition.key,
-    ).sort();
-
-    expect(registryTemplateNames).toEqual(auditTemplateNames);
-  });
-
   it("uses content-only defaults for noisy scheduled report emails", () => {
     expect(getDefaultDeliveryMode("admin-daily-digest")).toBe("content_only");
     expect(getDefaultDeliveryMode("admin-xero-reconciliation-report")).toBe(
