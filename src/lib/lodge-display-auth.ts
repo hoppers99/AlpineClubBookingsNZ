@@ -137,6 +137,106 @@ export async function confirmDevicePairing(
   return { ok: true, expiresAt };
 }
 
+// ---------------------------------------------------------------------------
+// Preview grant (LTV-036, ADR-003 §5): a short-lived, signed, single-purpose
+// capability that lets a SANDBOXED preview iframe authorise exactly one
+// display-state preview WITHOUT a session cookie. The authoring pages render
+// authored admin HTML/CSS inside an `sandbox="allow-scripts"` iframe (opaque
+// origin, no cookies sent), so the framed /display cannot ride the admin's
+// session; instead the admin page mints a grant
+// (POST /api/admin/display/preview-grant, requireAdmin) and the frame passes it
+// as ?previewGrant=<token>. The state route verifies the HMAC + expiry and
+// serves exactly that template/lodge preview — nothing else.
+//
+// A grant is NOT a display token: it is a query-param blob, shares NO code path
+// with checkDisplayAuth (which reads the httpOnly cookie and resolves a device),
+// never resolves to a device credential, never stamps lastSeenAt, and is
+// honoured ONLY on the state route's preview path — it cannot authorise the
+// heartbeat or any admin route. A distinct HMAC domain-separation prefix means
+// a pairing blob can never be replayed as a grant and vice versa.
+export const PREVIEW_GRANT_TTL_SECONDS = 5 * 60;
+
+const PREVIEW_GRANT_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+export interface PreviewGrantPayload {
+  /** The authored v2 template to preview (null → the lodge's legacy board). */
+  templateId: string | null;
+  /** The lodge to render against — explicit, never silently the default. */
+  lodgeId: string;
+  /** Optional simulated window start (LTV-017), date-only YYYY-MM-DD. */
+  windowStart?: string;
+  /** Unix seconds; a grant past its expiry no longer decodes. */
+  exp: number;
+}
+
+function signGrantPart(payloadPart: string): string {
+  return createHmac("sha256", getDisplaySecret())
+    .update(`lodge-display-preview-grant:${payloadPart}`)
+    .digest("base64url");
+}
+
+/**
+ * Encode a signed preview grant (ADR-003 §5). Stateless: nothing is persisted,
+ * the signature is the whole authority, and the 5-minute expiry lives inside the
+ * signed payload so it cannot be extended by tampering.
+ */
+export function encodePreviewGrant(payload: PreviewGrantPayload): string {
+  const part = Buffer.from(JSON.stringify(payload), "utf8").toString(
+    "base64url"
+  );
+  return `${part}.${signGrantPart(part)}`;
+}
+
+/**
+ * Verify and decode a preview grant. Returns null on any failure — bad shape,
+ * a tampered/forged signature (timing-safe compare), or an expired grant — so
+ * the state route can treat every non-null result as a genuine, unexpired,
+ * admin-minted capability.
+ */
+export function decodePreviewGrant(raw: string): PreviewGrantPayload | null {
+  const [part, signature] = raw.split(".");
+  if (!part || !signature) return null;
+
+  const expected = Buffer.from(signGrantPart(part), "utf8");
+  const presented = Buffer.from(signature, "utf8");
+  if (
+    expected.length !== presented.length ||
+    !timingSafeEqual(expected, presented)
+  ) {
+    return null;
+  }
+
+  try {
+    const payload = JSON.parse(
+      Buffer.from(part, "base64url").toString("utf8")
+    ) as Partial<PreviewGrantPayload>;
+    if (
+      typeof payload.lodgeId !== "string" ||
+      payload.lodgeId.length === 0 ||
+      typeof payload.exp !== "number" ||
+      (payload.templateId != null && typeof payload.templateId !== "string") ||
+      (payload.windowStart != null &&
+        !(
+          typeof payload.windowStart === "string" &&
+          PREVIEW_GRANT_DATE_PATTERN.test(payload.windowStart)
+        ))
+    ) {
+      return null;
+    }
+    if (payload.exp <= Math.floor(Date.now() / 1000)) {
+      return null;
+    }
+    return {
+      templateId: payload.templateId ?? null,
+      lodgeId: payload.lodgeId,
+      ...(payload.windowStart ? { windowStart: payload.windowStart } : {}),
+      exp: payload.exp,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export interface ClaimedDisplayToken {
   token: string;
   device: { id: string; lodgeId: string; name: string };

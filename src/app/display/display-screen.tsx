@@ -58,7 +58,13 @@ const DATE_ONLY_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 function readPreviewState(): { isPreview: boolean; previewDate: string | null } {
   if (typeof window === "undefined") return { isPreview: false, previewDate: null };
   const params = new URLSearchParams(window.location.search);
-  const isPreview = params.has("preview") || params.has("previewDevice");
+  // A sandboxed authoring-page embed carries ?previewGrant (LTV-036) instead of
+  // ?preview/?previewDevice, but it is still a preview: the clock's simulate
+  // affordance and the "previewing against" line belong there too.
+  const isPreview =
+    params.has("preview") ||
+    params.has("previewDevice") ||
+    params.has("previewGrant");
   const raw = params.get("previewDate");
   const previewDate = raw && DATE_ONLY_REGEX.test(raw) ? raw : null;
   return { isPreview, previewDate };
@@ -83,13 +89,16 @@ function formatSimulatedDate(dateStr: string): string {
  * ?previewDate and reloads — a testing tool, so a full reload is fine. While a
  * previewDate is active the clock recolours amber (data-simulated) and its date
  * line shows the simulated window start instead of today; the layout never
- * shifts. */
+ * shifts. In any preview mode (LTV-036) a small "previewing against <lodge>"
+ * line sits under the clock so the rendered lodge is never a silent guess. */
 function HeaderClock({
   generatedAt,
   windowStart,
+  lodgeName,
 }: {
   generatedAt: string;
   windowStart: string;
+  lodgeName: string;
 }) {
   const [now, setNow] = useState<Date | null>(null);
   const [preview, setPreview] = useState(() => ({
@@ -146,12 +155,19 @@ function HeaderClock({
     >
       <span className="display-clock-time">{formatClock(now)}</span>
       {preview.isPreview ? (
-        <button
-          type="button"
-          className="display-clock-date display-clock-date-picker"
-          onClick={openPicker}
-        >
-          {dateLine}
+        // #65 fix: the date <input> is a SIBLING of the button, not its child.
+        // A native date input nested inside a <button> is invalid HTML and its
+        // selection does not reliably fire `change`, so picking a date never
+        // applied; as siblings the picker fires normally and the button just
+        // opens it via showPicker() on the shared ref (focus/click fallback).
+        <>
+          <button
+            type="button"
+            className="display-clock-date display-clock-date-picker"
+            onClick={openPicker}
+          >
+            {dateLine}
+          </button>
           <input
             ref={dateInputRef}
             type="date"
@@ -160,9 +176,15 @@ function HeaderClock({
             onChange={(event) => applyPreviewDate(event.target.value)}
             aria-label="Simulate a date"
           />
-        </button>
+        </>
       ) : (
         <span className="display-clock-date">{dateLine}</span>
+      )}
+      {preview.isPreview && (
+        // Reuses the fallback-marker idiom: absolutely positioned under the
+        // clock, so a real unattended wall (never in preview) shows nothing and
+        // there is no layout shift.
+        <span className="display-preview-lodge">Previewing against {lodgeName}</span>
       )}
       {simulated && (
         <span className="display-visually-hidden">
@@ -192,7 +214,11 @@ function LodgeHeader({ state }: DisplayModuleProps) {
           )}
         </div>
       </div>
-      <HeaderClock generatedAt={state.generatedAt} windowStart={state.window.start} />
+      <HeaderClock
+        generatedAt={state.generatedAt}
+        windowStart={state.window.start}
+        lodgeName={state.lodge.name}
+      />
     </div>
   );
 }

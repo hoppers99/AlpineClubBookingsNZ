@@ -381,9 +381,13 @@ export default function AdminDisplayLayoutsPage() {
           will fill.
         </p>
         <p className="text-muted-foreground mt-1 text-sm">
-          A finished layout is chosen and filled in by a <strong>Template</strong>{" "}
-          (coming with LTV-033). Layouts define the shape; Templates supply the
-          content.
+          A finished layout is chosen and filled in by a <strong>Template</strong>.
+          Layouts define the shape; Templates supply the content.
+        </p>
+        <p className="text-muted-foreground mt-1 text-sm">
+          Layouts are previewed through a Template: build a Template on this
+          layout, then use its <strong>Preview</strong> on the Templates page
+          (which renders it in a sandboxed frame against a chosen lodge).
         </p>
       </div>
 

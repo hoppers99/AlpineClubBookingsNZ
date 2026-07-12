@@ -48,7 +48,12 @@ export type DisplayLifecycle =
 function previewSearch(): string | null {
   if (typeof window === "undefined") return null;
   const params = new URLSearchParams(window.location.search);
-  return params.has("previewDevice") || params.has("preview")
+  // ?previewGrant (LTV-036) is the sandboxed-iframe embed's credential — a
+  // signed capability in place of a session — so it is forwarded verbatim to
+  // the state API just like ?previewDevice/?preview.
+  return params.has("previewDevice") ||
+    params.has("preview") ||
+    params.has("previewGrant")
     ? window.location.search
     : null;
 }
