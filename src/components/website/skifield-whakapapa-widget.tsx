@@ -67,13 +67,17 @@ function FacilityGroup({
     >
       <h3 className="text-sm font-semibold text-slate-900">{title}</h3>
       {items.length > 0 ? (
-        <div className="mt-2 flex flex-wrap gap-2">
+        <div
+          className={`mt-2 flex flex-wrap gap-2 ${title.replace(/\s+/g, "-").toLowerCase()}-status-container`}
+        >
           {items.map((item) => (
             <div
               key={`${item.name}-${item.status}`}
-              className="flex flex-col gap-1 rounded-md border border-slate-200 bg-white p-2"
+              className={`flex flex-col gap-1 rounded-md border border-slate-200 bg-white p-2 ${title.replace(/\s+/g, "-").toLowerCase()}-status-item`}
             >
-              <span className="text-xs font-medium text-slate-800">
+              <span
+                className={`text-xs font-medium text-slate-800 ${title.replace(/\s+/g, "-").toLowerCase()}-status-description`}
+              >
                 {item.name || "Unknown"}
               </span>
               <StatusCell status={item.status} />
