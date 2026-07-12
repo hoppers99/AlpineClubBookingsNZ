@@ -23,44 +23,143 @@ function stateWith(overrides: Partial<DisplayState>): DisplayState {
     rules: null,
     notice: null,
     config: {},
+    capabilities: { bedAllocation: false, chores: false },
     ...overrides,
   };
 }
 
-describe("condition engine (pure functions of DisplayState)", () => {
-  it("evaluates each named v1 condition", async () => {
+const WHOLE_LODGE_ROW = {
+  key: "row-1-0",
+  label: "Harakeke College",
+  wholeLodge: true,
+  roomId: null,
+  guests: null,
+  guestCount: 14,
+  stayStart: "2026-04-13",
+  stayEnd: "2026-04-15",
+} as const;
+
+describe("condition engine (namespaced registry — ADR-003 §3)", () => {
+  it("evaluates the core + occupancy + content conditions", async () => {
     const { evaluateDisplayCondition } = await import(
       "@/lib/lodge-display/conditions"
     );
 
     const empty = stateWith({});
     expect(evaluateDisplayCondition("always", empty)).toBe(true);
-    expect(evaluateDisplayCondition("no-guests", empty)).toBe(true);
-    expect(evaluateDisplayCondition("arrivals-today", empty)).toBe(false);
-    expect(evaluateDisplayCondition("whole-lodge-booking-in-window", empty)).toBe(false);
+    expect(evaluateDisplayCondition("occupancy:empty-today", empty)).toBe(true);
+    expect(evaluateDisplayCondition("occupancy:arrivals-today", empty)).toBe(false);
+    expect(evaluateDisplayCondition("occupancy:departures-today", empty)).toBe(false);
+    expect(evaluateDisplayCondition("occupancy:whole-lodge-today", empty)).toBe(false);
+    expect(evaluateDisplayCondition("occupancy:whole-lodge-in-window", empty)).toBe(false);
+    expect(evaluateDisplayCondition("content:notice", empty)).toBe(false);
+    expect(evaluateDisplayCondition("content:instructions", empty)).toBe(false);
 
     const busy = stateWith({
-      bookings: [
-        {
-          key: "row-1-0",
-          label: "Harakeke College",
-          wholeLodge: true,
-          roomId: null,
-          guests: null,
-          guestCount: 14,
-          stayStart: "2026-04-13",
-          stayEnd: "2026-04-15",
-        },
-      ],
+      bookings: [{ ...WHOLE_LODGE_ROW }],
       occupancy: [
         { date: "2026-04-13", arriving: 14, departing: 0, staying: 14 },
         { date: "2026-04-14", arriving: 0, departing: 0, staying: 14 },
         { date: "2026-04-15", arriving: 0, departing: 14, staying: 14 },
       ],
+      notice: "Working bee Sunday",
+      rules: [{ title: "House rules", html: "<p>Boots off</p>" }],
     });
-    expect(evaluateDisplayCondition("whole-lodge-booking-in-window", busy)).toBe(true);
-    expect(evaluateDisplayCondition("arrivals-today", busy)).toBe(true);
-    expect(evaluateDisplayCondition("no-guests", busy)).toBe(false);
+    // Today (window.start = 2026-04-13) is a NIGHT of the whole-lodge booking.
+    expect(evaluateDisplayCondition("occupancy:whole-lodge-today", busy)).toBe(true);
+    expect(evaluateDisplayCondition("occupancy:whole-lodge-in-window", busy)).toBe(true);
+    expect(evaluateDisplayCondition("occupancy:arrivals-today", busy)).toBe(true);
+    expect(evaluateDisplayCondition("occupancy:empty-today", busy)).toBe(false);
+    expect(evaluateDisplayCondition("content:notice", busy)).toBe(true);
+    expect(evaluateDisplayCondition("content:instructions", busy)).toBe(true);
+  });
+
+  it("distinguishes whole-lodge TODAY from whole-lodge IN WINDOW on the departure day", async () => {
+    const { evaluateDisplayCondition } = await import(
+      "@/lib/lodge-display/conditions"
+    );
+    // The booking's only night is 2026-04-14; today (window.start) is its
+    // departure day, so it is in the window but not occupying tonight.
+    const departingToday = stateWith({
+      bookings: [
+        { ...WHOLE_LODGE_ROW, stayStart: "2026-04-12", stayEnd: "2026-04-13" },
+      ],
+      occupancy: [
+        { date: "2026-04-13", arriving: 0, departing: 14, staying: 14 },
+        { date: "2026-04-14", arriving: 0, departing: 0, staying: 0 },
+        { date: "2026-04-15", arriving: 0, departing: 0, staying: 0 },
+      ],
+    });
+    expect(evaluateDisplayCondition("occupancy:whole-lodge-in-window", departingToday)).toBe(true);
+    expect(evaluateDisplayCondition("occupancy:whole-lodge-today", departingToday)).toBe(false);
+    expect(evaluateDisplayCondition("occupancy:departures-today", departingToday)).toBe(true);
+  });
+
+  it("gates capability + chores:today conditions on the payload's module flags", async () => {
+    const { evaluateDisplayCondition } = await import(
+      "@/lib/lodge-display/conditions"
+    );
+
+    const off = stateWith({});
+    expect(evaluateDisplayCondition("bed-allocation:enabled", off)).toBe(false);
+    expect(evaluateDisplayCondition("chores:enabled", off)).toBe(false);
+    expect(evaluateDisplayCondition("chores:today", off)).toBe(false);
+
+    const on = stateWith({
+      capabilities: { bedAllocation: true, chores: true },
+      chores: [
+        { date: "2026-04-13", title: "Dishes", assigneeLabels: ["Jane S"] },
+      ],
+    });
+    expect(evaluateDisplayCondition("bed-allocation:enabled", on)).toBe(true);
+    expect(evaluateDisplayCondition("chores:enabled", on)).toBe(true);
+    expect(evaluateDisplayCondition("chores:today", on)).toBe(true);
+
+    // Chores enabled but none dated today → chores:today is false.
+    const enabledNoneToday = stateWith({
+      capabilities: { bedAllocation: false, chores: true },
+      chores: [
+        { date: "2026-04-20", title: "Dishes", assigneeLabels: ["Jane S"] },
+      ],
+    });
+    expect(evaluateDisplayCondition("chores:today", enabledNoneToday)).toBe(false);
+  });
+
+  it("exposes the full registry with families + descriptions and rejects unknown names", async () => {
+    const { listDisplayConditions, isDisplayConditionName } = await import(
+      "@/lib/lodge-display/conditions"
+    );
+    const byName = new Map(listDisplayConditions().map((c) => [c.name, c]));
+
+    // Every ADR-003 §3 agreed condition is present with a non-empty description.
+    for (const name of [
+      "always",
+      "occupancy:whole-lodge-today",
+      "occupancy:whole-lodge-in-window",
+      "occupancy:empty-today",
+      "occupancy:arrivals-today",
+      "occupancy:departures-today",
+      "content:notice",
+      "content:instructions",
+      "bed-allocation:enabled",
+      "chores:enabled",
+      "chores:today",
+    ]) {
+      expect(byName.get(name)?.description.length ?? 0).toBeGreaterThan(0);
+      expect(isDisplayConditionName(name)).toBe(true);
+    }
+
+    // Capability conditions inherit the module label from MODULE_DEFINITIONS.
+    expect(byName.get("bed-allocation:enabled")?.family).toBe("capability");
+    expect(byName.get("bed-allocation:enabled")?.description).toContain(
+      "Bed allocation"
+    );
+    expect(byName.get("chores:enabled")?.description).toContain("Chores and roster");
+
+    // The closed registry rejects free-form / reserved names.
+    expect(isDisplayConditionName("skifield:available")).toBe(false);
+    expect(isDisplayConditionName("if(true)")).toBe(false);
+    expect(isDisplayConditionName("notice-set")).toBe(false);
   });
 });
 

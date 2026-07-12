@@ -213,7 +213,7 @@ const BUILT_IN_DEFINITIONS: DisplayTemplateDefinition[] = [
         panels: [
           { module: "chores-board" },
           { module: "lodge-rules" },
-          { module: "notice-board", condition: "notice-set" },
+          { module: "notice-board", condition: "content:notice" },
         ],
       },
       { key: "footer", panels: [{ module: "info-footer" }] },
@@ -228,9 +228,9 @@ const BUILT_IN_DEFINITIONS: DisplayTemplateDefinition[] = [
         key: "main",
         rotateSeconds: DEFAULT_ROTATE_SECONDS,
         panels: [
-          { module: "occupancy-grid", condition: "whole-lodge-booking-in-window" },
+          { module: "occupancy-grid", condition: "occupancy:whole-lodge-in-window" },
           { module: "welcome" },
-          { module: "notice-board", condition: "notice-set" },
+          { module: "notice-board", condition: "content:notice" },
         ],
       },
       { key: "footer", panels: [{ module: "info-footer" }] },
@@ -245,7 +245,7 @@ const BUILT_IN_DEFINITIONS: DisplayTemplateDefinition[] = [
         key: "main",
         panels: [
           { module: "singles-board" },
-          { module: "notice-board", condition: "notice-set" },
+          { module: "notice-board", condition: "content:notice" },
         ],
       },
       { key: "footer", panels: [{ module: "info-footer" }] },

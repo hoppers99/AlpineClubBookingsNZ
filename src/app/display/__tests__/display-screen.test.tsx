@@ -36,6 +36,7 @@ const PAYLOAD = {
   rules: null,
   notice: null,
   config: { "wifi-code": "alpine1234" },
+  capabilities: { bedAllocation: false, chores: false },
   template: {
     key: "everyday-board",
     name: "Everyday board",

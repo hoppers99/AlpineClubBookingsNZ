@@ -6,7 +6,7 @@ import type { DisplayPanelOptions } from "./module-options";
 // display surface — free text posted by permitted admins, rendered strictly
 // as React text nodes (never HTML), so a notice can never inject markup.
 // {{config:<key>}} / {{lodge-name}} / {{display-date}} placeholders resolve
-// inside it. Empty notice renders nothing; the "notice-set" rotation
+// inside it. Empty notice renders nothing; the "content:notice" rotation
 // condition lets templates skip the panel entirely.
 
 export function NoticeBoard({

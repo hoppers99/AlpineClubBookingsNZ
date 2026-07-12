@@ -9,7 +9,7 @@ import { evaluateDisplayCondition } from "@/lib/lodge-display/conditions";
 
 // Issue #36 (LTV-011): the committee notice board — text-node-only rendering
 // (a notice can never inject markup), config placeholder resolution inside
-// the notice, empty-notice skippability via the notice-set condition.
+// the notice, empty-notice skippability via the content:notice condition.
 
 function state(overrides: Partial<DisplayState>): DisplayState {
   return {
@@ -24,6 +24,7 @@ function state(overrides: Partial<DisplayState>): DisplayState {
     rules: null,
     notice: null,
     config: { "wifi-code": "alpine1234" },
+    capabilities: { bedAllocation: false, chores: false },
     ...overrides,
   };
 }
@@ -59,11 +60,11 @@ describe("NoticeBoard (issue #36)", () => {
     expect(container.textContent).toBe("");
   });
 
-  it("is registered in the module map and skippable via notice-set (AC3)", () => {
+  it("is registered in the module map and skippable via content:notice (AC3)", () => {
     expect(DISPLAY_MODULE_COMPONENTS["notice-board"]).toBeDefined();
-    expect(evaluateDisplayCondition("notice-set", state({}))).toBe(false);
+    expect(evaluateDisplayCondition("content:notice", state({}))).toBe(false);
     expect(
-      evaluateDisplayCondition("notice-set", state({ notice: "Hello" }))
+      evaluateDisplayCondition("content:notice", state({ notice: "Hello" }))
     ).toBe(true);
   });
 });
