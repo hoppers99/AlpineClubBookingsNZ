@@ -255,3 +255,174 @@ describe("DisplayScreen lifecycle", () => {
     ).not.toBeNull();
   });
 });
+
+// LTV-027: the layout engine. A device bound to a v2 Layout+Template arrives as
+// a `layoutRender` payload (already validated + sanitised server-side); the
+// client splits the body on {{area:key}} and renders the fixed header/footer
+// shell around static/conditional/rotator areas.
+function layoutPayload(layoutRender: Record<string, unknown>) {
+  return { ...PAYLOAD, layoutRender };
+}
+
+async function renderLayout(layoutRender: Record<string, unknown>) {
+  enqueue(isState, { status: 200, body: layoutPayload(layoutRender) });
+  const result = render(<DisplayScreen />);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(10);
+  });
+  return result;
+}
+
+describe("DisplayScreen layout engine (LTV-027)", () => {
+  it("renders html body segments, an html slot, and a module slot inside the fixed shell", async () => {
+    const { container } = await renderLayout({
+      bodyHtml: "<h2>Board Heading</h2>{{area:info}}{{area:mod}}",
+      defaultCss: ".display-layout-body{gap:1rem}",
+      cssOverrides: "",
+      areas: [
+        { key: "info", description: "Intro", kind: "static" },
+        { key: "mod", description: "Module", kind: "static" },
+      ],
+      slotContent: {
+        info: { html: "<p>Intro copy here</p>" },
+        mod: { module: "welcome" },
+      },
+      footerHtml: "<span>Footer 5G wifi</span>",
+    });
+
+    // Fixed header furniture stays around the editable body.
+    expect(screen.getByText("Silverpeak Lodge")).toBeDefined();
+    // Literal body html segment.
+    expect(screen.getByText("Board Heading")).toBeDefined();
+    // An html slot renders its (server-sanitised) content.
+    expect(screen.getByText("Intro copy here")).toBeDefined();
+    // A module slot renders its component.
+    expect(container.querySelector(".display-welcome")).not.toBeNull();
+    expect(screen.getByText(/Welcome to Silverpeak Lodge/)).toBeDefined();
+    // The editable footer renders the authored footerHtml.
+    expect(screen.getByText("Footer 5G wifi")).toBeDefined();
+  });
+
+  it("falls back to the built-in InfoFooter when footerHtml is empty", async () => {
+    await renderLayout({
+      bodyHtml: "{{area:main}}",
+      defaultCss: "",
+      cssOverrides: "",
+      areas: [{ key: "main", description: "Main", kind: "static" }],
+      slotContent: { main: { html: "<p>Body</p>" } },
+      footerHtml: "",
+    });
+    // The InfoFooter surfaces the wifi code from config.
+    expect(screen.getByText("alpine1234")).toBeDefined();
+  });
+
+  it("renders a conditional area only while its condition holds", async () => {
+    const layout = {
+      bodyHtml: "{{area:notice}}",
+      defaultCss: "",
+      cssOverrides: "",
+      areas: [
+        {
+          key: "notice",
+          description: "Notice",
+          kind: "conditional",
+          condition: "content:notice",
+        },
+      ],
+      slotContent: { notice: { html: "<p>Committee notice slot</p>" } },
+      footerHtml: "",
+    };
+
+    // notice === null → the condition is false → the area is omitted.
+    await renderLayout(layout);
+    expect(screen.queryByText("Committee notice slot")).toBeNull();
+
+    // With a notice set, the same area renders.
+    enqueue(isState, {
+      status: 200,
+      body: { ...layoutPayload(layout), notice: "Meeting Friday" },
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(screen.getByText("Committee notice slot")).toBeDefined();
+  });
+
+  it("rotates a rotator among eligible children on its timer and skips ineligible ones", async () => {
+    const { container } = await renderLayout({
+      bodyHtml: "{{area:roto}}",
+      defaultCss: "",
+      cssOverrides: "",
+      areas: [
+        {
+          key: "roto",
+          description: "Rotator",
+          kind: "rotator",
+          rotateSeconds: 5,
+          children: [
+            { key: "a", description: "A" },
+            { key: "b", description: "B", condition: "content:notice" },
+            { key: "c", description: "C" },
+          ],
+        },
+      ],
+      slotContent: {
+        "roto/a": { html: "<p>Slide Alpha</p>" },
+        "roto/b": { html: "<p>Slide Bravo</p>" },
+        "roto/c": { html: "<p>Slide Charlie</p>" },
+      },
+      footerHtml: "",
+    });
+
+    // First eligible child (Bravo is skipped — its condition is false).
+    expect(screen.getByText("Slide Alpha")).toBeDefined();
+    expect(screen.queryByText("Slide Bravo")).toBeNull();
+
+    // Advance one rotation → the next eligible child (Charlie, not Bravo).
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(screen.queryByText("Slide Alpha")).toBeNull();
+    expect(screen.getByText("Slide Charlie")).toBeDefined();
+    expect(screen.queryByText("Slide Bravo")).toBeNull();
+    // The shell survives the rotation.
+    expect(container.querySelector(".display-lodge-header")).not.toBeNull();
+  });
+
+  it("renders nothing for a rotator with zero eligible children, without breaking the shell", async () => {
+    const { container } = await renderLayout({
+      bodyHtml: "{{area:roto}}",
+      defaultCss: "",
+      cssOverrides: "",
+      areas: [
+        {
+          key: "roto",
+          description: "Rotator",
+          kind: "rotator",
+          rotateSeconds: 5,
+          children: [{ key: "a", description: "A", condition: "content:notice" }],
+        },
+      ],
+      slotContent: { "roto/a": { html: "<p>Never eligible</p>" } },
+      footerHtml: "",
+    });
+    expect(screen.queryByText("Never eligible")).toBeNull();
+    // Header/footer shell still renders.
+    expect(container.querySelector(".display-lodge-header")).not.toBeNull();
+    expect(screen.getByText("Silverpeak Lodge")).toBeDefined();
+  });
+
+  it("renders the neutral placeholder for a slot naming an unknown module", async () => {
+    const { container } = await renderLayout({
+      bodyHtml: "{{area:main}}",
+      defaultCss: "",
+      cssOverrides: "",
+      areas: [{ key: "main", description: "Main", kind: "static" }],
+      slotContent: { main: { module: "future-module" } },
+      footerHtml: "",
+    });
+    expect(
+      container.querySelector('.display-module-placeholder[data-module="future-module"]')
+    ).not.toBeNull();
+  });
+});
