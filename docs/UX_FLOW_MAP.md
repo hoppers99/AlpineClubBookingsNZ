@@ -80,7 +80,10 @@ shadcn neutral (epic #1800). `/admin/site-style` now supplies the same saved
 brand accent, neutral ramp, and font choices to the website and both app shells
 (#1808); the occupancy meter follows that accent. Semantic success, warning,
 information, danger/error, and waitlist tones remain curated, contrast-locked
-light/dark pairs rather than editable brand fields. The foundation (#1801)
+light/dark pairs rather than editable brand fields; public-site Raw CSS is never
+injected into either app shell. Light app text/focus roles use contrast-safe
+charcoal/deep neutrals while the editable accent remains visible in filled and
+tinted treatments. The foundation (#1801)
 establishes:
 
 - **Type:** Inter (body) + League Spartan (headings) load on the app-scope

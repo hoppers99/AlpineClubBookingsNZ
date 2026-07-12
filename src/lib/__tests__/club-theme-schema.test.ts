@@ -3,6 +3,7 @@ import {
   CLUB_THEME_COLOUR_FIELDS,
   DEFAULT_CLUB_THEME_VALUES,
   TOKOROA_CLUB_THEME_VALUES,
+  buildClubThemeAppCss,
   buildClubThemeCss,
   contrastRatio,
   getBlockingContrastWarnings,
@@ -37,7 +38,8 @@ describe("club theme validation", () => {
     expect(css).toContain(
       `--brand-gold:${DEFAULT_CLUB_THEME_VALUES.brandGold}`,
     );
-    expect(css).toContain(":root,.website-theme,.app-theme-scope{");
+    expect(css).toContain(":root,.website-theme{");
+    expect(css).not.toContain(".app-theme-scope");
     expect(css).toContain("--font-website-body:var(--font-theme-inter)");
     expect(css).not.toContain("example.test");
     expect(css).not.toContain("NOT_A_FONT");
@@ -104,6 +106,8 @@ describe("getBlockingContrastWarnings", () => {
       "header-on-charcoal",
       "button-on-gold",
       "app-accent-on-deep",
+      "app-accent-on-snow",
+      "app-muted-on-snow",
     ]);
   });
 
@@ -119,6 +123,36 @@ describe("getBlockingContrastWarnings", () => {
         expect.objectContaining({ id: "app-accent-on-deep" }),
       ]),
     );
+  });
+
+  it("blocks the contrast-safe light app accent and muted roles when their neutrals drift", () => {
+    const blocking = getBlockingContrastWarnings({
+      ...DEFAULT_CLUB_THEME_VALUES,
+      brandCharcoal: "#f4f4f4",
+      brandDeep: "#f3f3f3",
+      brandSnow: "#f5f5f5",
+    });
+
+    expect(blocking).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "app-accent-on-snow" }),
+        expect.objectContaining({ id: "app-muted-on-snow" }),
+      ]),
+    );
+  });
+
+  it("builds app brand CSS without raw or semantic overrides", () => {
+    const appCss = buildClubThemeAppCss({
+      ...DEFAULT_CLUB_THEME_VALUES,
+      rawCss:
+        ".app-theme-scope{--success:red;--warning:red;--info:red;--danger:red}",
+    });
+
+    expect(appCss).toContain(".app-theme-scope{");
+    expect(appCss).toContain(
+      `--brand-gold:${DEFAULT_CLUB_THEME_VALUES.brandGold}`,
+    );
+    expect(appCss).not.toMatch(/--(?:success|warning|info|danger)/);
   });
 
   it("measures oklch() colours and blocks a low-contrast oklch pair", () => {

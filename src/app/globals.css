@@ -456,12 +456,13 @@
   --secondary: var(--brand-mist);
   --secondary-foreground: var(--brand-deep);
   --muted: color-mix(in srgb, var(--brand-mist) 72%, var(--brand-snow));
-  --muted-foreground: var(--brand-ridge);
+  --muted-foreground: var(--brand-deep);
   --accent: color-mix(in srgb, var(--brand-gold) 16%, var(--brand-snow));
   --accent-foreground: var(--brand-deep);
+  --app-accent-text: var(--brand-charcoal);
   --border: color-mix(in srgb, var(--brand-ridge) 30%, var(--brand-snow));
   --input: color-mix(in srgb, var(--brand-ridge) 30%, var(--brand-snow));
-  --ring: var(--brand-gold);
+  --ring: var(--brand-charcoal);
   --chart-1: var(--brand-gold);
   --chart-2: var(--brand-safety);
   --chart-3: var(--brand-ridge);
@@ -511,11 +512,7 @@
   --secondary: color-mix(in srgb, var(--brand-mist) 14%, var(--brand-deep));
   --secondary-foreground: var(--brand-snow);
   --muted: color-mix(in srgb, var(--brand-mist) 14%, var(--brand-deep));
-  --muted-foreground: color-mix(
-    in srgb,
-    var(--brand-ridge) 55%,
-    var(--brand-snow)
-  );
+  --muted-foreground: var(--brand-snow);
   --accent: color-mix(in srgb, var(--brand-gold) 18%, var(--brand-deep));
   --accent-foreground: var(--brand-snow);
   --border: color-mix(in srgb, var(--brand-mist) 28%, var(--brand-deep));
@@ -529,6 +526,43 @@
   --sidebar-accent-foreground: var(--brand-snow);
   --sidebar-border: color-mix(in srgb, var(--brand-mist) 25%, var(--brand-deep));
   --sidebar-ring: var(--brand-gold);
+}
+
+/* Filled brand controls keep the editable accent with its gated charcoal
+   foreground. Light-mode text-primary and focus rings use the dedicated dark
+   accent role instead of placing a mid-luminance accent directly on snow. A
+   charcoal inset boundary keeps solid accent controls/occupancy fills distinct
+   from the light surface; dark mode can rely on the gated gold-on-deep pair. */
+.app-theme-scope
+  :is(
+    .text-primary,
+    .text-brand-gold,
+    [class~="hover:text-primary"]:hover,
+    .group:hover [class~="group-hover:text-primary"]
+  ):not(.website-theme *) {
+  color: var(--app-accent-text);
+}
+
+.app-theme-scope :is(.bg-primary, .bg-brand-gold):not(.website-theme *) {
+  outline: 1px solid var(--brand-charcoal);
+  outline-offset: -1px;
+}
+
+.dark
+  .app-theme-scope
+  :is(
+    .text-primary,
+    .text-brand-gold,
+    [class~="hover:text-primary"]:hover,
+    .group:hover [class~="group-hover:text-primary"]
+  ):not(.website-theme *) {
+  color: var(--brand-gold);
+}
+
+.dark
+  .app-theme-scope
+  :is(.bg-primary, .bg-brand-gold):not(.website-theme *) {
+  outline: none;
 }
 
 /* App headings pick up --font-heading (League Spartan when loaded). Specificity is

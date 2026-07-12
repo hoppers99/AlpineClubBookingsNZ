@@ -158,7 +158,7 @@ export default async function AuthenticatedLayout({
         className={`${clubThemeFontVariableClassName} app-theme-scope min-h-screen flex flex-col bg-background text-foreground`}
       >
         <style
-          dangerouslySetInnerHTML={{ __html: theme.css }}
+          dangerouslySetInnerHTML={{ __html: theme.appCss }}
           data-site-style="club-theme"
         />
         <a

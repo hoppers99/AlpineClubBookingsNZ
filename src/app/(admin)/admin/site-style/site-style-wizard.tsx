@@ -2,6 +2,7 @@
 
 import type { CSSProperties } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -108,6 +109,7 @@ function previewStyle(values: ClubThemeValues): CSSProperties {
 }
 
 export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
+  const router = useRouter();
   const [values, setValues] = useState<ClubThemeValues>({
     brandGold: initialTheme.brandGold,
     brandCharcoal: initialTheme.brandCharcoal,
@@ -228,6 +230,7 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
       setSavedMessage(
         completeSetup ? "Site style is complete." : "Site style saved.",
       );
+      router.refresh();
       return true;
     } catch (saveError) {
       setError(
@@ -445,9 +448,10 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
               <div className="space-y-3">
                 <p className="text-sm text-slate-600">
                   Add custom CSS rules that will be appended to the generated
-                  theme stylesheet on the public website, member area, and admin
-                  area. Use sparingly — prefer colour and font settings above
-                  where possible.
+                  theme stylesheet on the public website only. Member and admin
+                  areas receive the validated brand variables above, never raw
+                  CSS. Use sparingly — prefer colour and font settings where
+                  possible.
                 </p>
                 <textarea
                   value={values.rawCss}

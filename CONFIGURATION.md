@@ -79,16 +79,22 @@ wizard. The logo is public-site only and is stored in the database as a validate
 image data URL; there is no runtime upload directory to preserve.
 
 Saved palettes must meet the **WCAG AA 4.5:1** minimum text-contrast ratio on
-the key public/app pairs — body text on the page background, header text on the
-navigation bar, button text on the primary-action colour, and the app accent on
-dark app chrome. The wizard
+the key public/app pairs — body and muted text on the page background, header
+text on the navigation bar, button text on the primary-action colour, the app
+accent on dark app chrome, and the contrast-safe dark accent-text/focus role on
+the light app background. The editable primary accent remains visible as filled
+controls, tints, and the occupancy meter; it is not used directly for light-mode
+text or focus rings. The wizard
 disables its Save/Finish buttons and the `/admin/site-style` API rejects the
 request (`400`) while any pair falls short, so an admin cannot ship an unreadable
 theme. Both accepted colour formats are measured — hex directly, and `oklch()`
 values via an oklch→linear-sRGB conversion — so pasting a low-contrast oklch
-colour into the value field is blocked the same as a hex one. The shipped default
-gold is `#8fa87c` (4.8:1 against the default charcoal button text); the earlier
-`#7a8f6a` was 3.55:1 and would now block first-run setup.
+colour into the value field is blocked the same as a hex one. The current render
+fallback uses glacial teal `#57b3ab`; the fresh-seed colour choice remains
+unresolved and separately tracked in issue #1832. Site Style raw CSS is appended
+to the public website stylesheet only. Authenticated/admin shells receive only
+generated, validated brand/font variables, so raw CSS cannot override their
+curated semantic status tokens.
 
 Transactional and admin **emails** derive their brand palette from the same club
 theme, so a colour change in `/admin/site-style` also restyles the emails

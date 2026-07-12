@@ -15,7 +15,7 @@ describe("database theme app-shell contract", () => {
       expect(layout).toContain("getWebsiteThemeRenderState()");
       expect(layout).toContain('data-site-style="club-theme"');
       expect(layout).toContain(
-        "dangerouslySetInnerHTML={{ __html: theme.css }}",
+        "dangerouslySetInnerHTML={{ __html: theme.appCss }}",
       );
     },
   );
@@ -29,6 +29,15 @@ describe("database theme app-shell contract", () => {
     expect(appThemeRules).toContain("--primary: var(--brand-gold)");
     expect(appThemeRules).toContain("--background: var(--brand-snow)");
     expect(appThemeRules).toContain("--background: var(--brand-deep)");
+    expect(appThemeRules).toContain("--muted-foreground: var(--brand-deep)");
+    expect(appThemeRules).toContain("--muted-foreground: var(--brand-snow)");
+    expect(appThemeRules).toContain("--app-accent-text: var(--brand-charcoal)");
+    expect(appThemeRules).toContain("--ring: var(--brand-charcoal)");
+    expect(appThemeRules).toContain('[class~="hover:text-primary"]:hover');
+    expect(appThemeRules).toContain(
+      '.group:hover [class~="group-hover:text-primary"]',
+    );
+    expect(appThemeRules.match(/:not\(\.website-theme \*\)/g)).toHaveLength(4);
     expect(appThemeRules).toContain("--font-website-body");
     expect(appThemeRules).toContain("--font-website-heading");
     expect(appThemeRules).not.toMatch(

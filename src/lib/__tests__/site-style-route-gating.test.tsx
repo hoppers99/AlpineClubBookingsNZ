@@ -109,6 +109,7 @@ describe("site style route-group gating", () => {
     mocks.headers.mockResolvedValue(new Headers());
     mocks.getWebsiteThemeRenderState.mockResolvedValue({
       css: ":root{}",
+      appCss: ".app-theme-scope{}",
       logoDataUrl: null,
       isComplete: false,
       values: {},
@@ -135,6 +136,7 @@ describe("site style route-group gating", () => {
   it("renders website children after setup is complete", async () => {
     mocks.getWebsiteThemeRenderState.mockResolvedValue({
       css: ":root{}",
+      appCss: ".app-theme-scope{}",
       logoDataUrl: null,
       isComplete: true,
       values: {},
@@ -148,7 +150,8 @@ describe("site style route-group gating", () => {
 
   it("does not block the admin route group when setup is incomplete", async () => {
     mocks.getWebsiteThemeRenderState.mockResolvedValue({
-      css: ":root{--brand-gold:#123456}",
+      css: ":root{--success:red}",
+      appCss: ".app-theme-scope{--brand-gold:#123456}",
       logoDataUrl: null,
       isComplete: false,
       values: {},
@@ -163,6 +166,7 @@ describe("site style route-group gating", () => {
       'style[data-site-style="club-theme"]',
     );
     expect(style?.textContent).toContain("--brand-gold:#123456");
+    expect(style?.textContent).not.toContain("--success:red");
     expect(mocks.getWebsiteThemeRenderState).toHaveBeenCalled();
   });
 });

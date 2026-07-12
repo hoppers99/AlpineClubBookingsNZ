@@ -9,6 +9,11 @@ import {
 } from "@/lib/club-theme-schema";
 
 const fetchMock = vi.fn();
+const refreshMock = vi.fn();
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ refresh: refreshMock }),
+}));
 
 function responseTheme(values: ClubThemeValues, completedAt: string | null) {
   return {
@@ -88,6 +93,7 @@ describe("site style wizard", () => {
     );
     expect(lastCallBody.completeSetup).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect(refreshMock).toHaveBeenCalledTimes(5);
   }, 15_000);
 
   it("explains and previews the editable brand and fixed semantic layers", () => {
