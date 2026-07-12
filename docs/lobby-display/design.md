@@ -356,6 +356,29 @@ client-safe `css-tokens.ts` before they ship in the payload:
 > Settings content into the lodge configuration hub. Terminology follows
 > ADR-003: **Layout / Template / Module / Conditions**.
 
+> **Layouts (LTV-032, #78).** The **Layouts** entry
+> (`/admin/display/layouts`) is live: a Layout CRUD list (name, key,
+> description, template-usage count, edit/delete — delete is blocked with a
+> clear 409 while any Template still uses the layout) plus an authoring editor.
+> The editor exposes the **Body HTML** and **Default CSS** as plain monospace
+> `<textarea>`s — layout HTML is *structural* (the `{{area:key}}` skeleton), so
+> the website page-content rich editor is deliberately not used here; slot
+> *content* gets the rich editor per Template (LTV-033). **Areas** are edited as
+> rows: key, description, kind (static / conditional / rotator), a **condition**
+> chosen only from the closed registry dropdown (`listDisplayConditions()`, with
+> the description as hover help), rotator `rotateSeconds` + child slots, and an
+> optional default-content HTML box. The CSS field surfaces the theme tokens
+> from `listDisplayCssTokens()` as copy-ready `var(--…)` hints. Saving runs the
+> shared `validateLayoutForSave` contract **server-side** in the API route
+> (`/api/admin/display/layouts` GET/POST, `/api/admin/display/layouts/[id]`
+> GET/PUT/DELETE — all `requireAdmin`, audit-logged, admin boundary): structural
+> errors block the save and render inline (path + message); CSS-sanitiser
+> warnings ride along on an accepted save as amber notices. The layout **key is
+> immutable** after creation so Template bindings and seeds stay stable.
+> Preview-before-save arrives with the sandboxed/template preview (#82/#79); the
+> editor draft is structured so `{ bodyHtml, defaultCss, areas }` can be handed
+> to that future preview call.
+
 Modelled on the kiosk account management surface (`/admin/lodge`):
 
 - **Devices**: list per lodge (name, paired state, last seen), create,
