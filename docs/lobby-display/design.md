@@ -348,16 +348,17 @@ client-safe `css-tokens.ts` before they ship in the payload:
 > Display** sidebar parent instead of scattered Lodge Operations entries. The
 > group holds **Devices** (`/admin/display`, heading "Display Devices"),
 > **Layouts** (`/admin/display/layouts`), **Templates**
-> (`/admin/display/templates`), and **Display Settings**
-> (`/admin/display/settings`). The settings card was renamed off the
+> (`/admin/display/templates`), and **Reference**
+> (`/admin/display/reference`). The settings card was renamed off the
 > `/admin/display/templates` path so LTV-033's Template authoring could claim
 > it: LTV-031 parked the path on a temporary redirect to
 > `/admin/display/settings`, and **LTV-033 replaced that redirect with the real
 > Template manager** (the redirect page and its test are gone). The
 > **Reference** entry (`/admin/display/reference`) — the combined
-> Modules/Conditions/CSS-tokens reference — landed with LTV-034 (#80), and
-> LTV-035/#81 relocates the Display Settings
-> content into the lodge configuration hub. Terminology follows ADR-003:
+> Modules/Conditions/CSS-tokens reference — landed with LTV-034 (#80). **LTV-035
+> (#81) then removed the Display Settings entry**: its per-lodge content moved
+> into the lodge configuration hub (see the LTV-035 note below), and
+> `/admin/display/settings` redirects to Devices. Terminology follows ADR-003:
 > **Layout / Template / Module / Conditions**.
 
 > **Layouts (LTV-032, #78).** The **Layouts** entry
@@ -448,6 +449,34 @@ client-safe `css-tokens.ts` before they ship in the payload:
 > without a swatch). The page imports only the client-safe registries; the status
 > endpoint owns the server side.
 
+> **Per-lodge settings relocated (LTV-035, #81).** The three per-lodge display
+> controls — the `{{config:key}}` config-value glob (`Lodge.displayConfig`), the
+> guest-name **granularity** override (`Lodge.displayNameGranularity`), and the
+> **committee notice** (`Lodge.displayNotice`) — moved out of the standalone
+> `/admin/display/settings` page into the **lodge configuration hub**
+> (`/admin/lodges/[id]`) as a self-contained `LodgeDisplaySettingsCard`, mounted
+> below the Capacity card and gated on the `lobbyDisplay` module. This makes the
+> controls **per-lodge by construction**: the card passes the hub's `lodgeId`
+> straight to the existing `/api/admin/display/lodge-config` GET/PUT route (which
+> always accepted a `lodgeId` — the old page just never sent it), so the surface
+> now edits the lodge being viewed rather than always the club default lodge.
+> That closes the MVP bug (old backlog #64) where a second lodge's config
+> silently edited the default lodge, and consolidates old backlog #62 ("config
+> belongs in the lodge configuration UI"). The route, its validation (bad
+> keys/values → 400), and token resolution at serve time are unchanged. The old
+> `/admin/display/settings` path redirects to Devices, whose header carries a
+> muted pointer to the new per-lodge home (Admin → Lodges). *Known consequence
+> (owner decision):* the hub is `multiLodge`-gated (ADR-003, multi-lodge), so a
+> club running Lobby Display **without** multi-lodge no longer has a UI to edit
+> these per-lodge values — the old `/admin/display/settings` page (gated only by
+> `lobbyDisplay`) was their surface. Since the values are per-lodge by
+> construction and a single-lodge club *is* its default lodge, surfacing the same
+> `LodgeDisplaySettingsCard` on a non-`multiLodge` lodge surface (e.g. the
+> singular `/admin/lodge` page, or a minimally ungated lodge-config view) is a
+> recorded follow-up if a single-lodge lobby-display deployment needs it. The
+> relocation itself follows the issue/ADR direction (config lives in the lodge
+> configuration UI); the two dev lodges exercised here both run multi-lodge.
+
 Modelled on the kiosk account management surface (`/admin/lodge`):
 
 - **Devices**: list per lodge (name, paired state, last seen), create,
@@ -471,9 +500,11 @@ Modelled on the kiosk account management surface (`/admin/lodge`):
   device-token fetches ignore it (malformed values fall back to today). While
   active the header clock recolours amber in place (the date line shows the
   simulated date) so the layout never shifts.
-- **Lodge config glob**: JSON editor with key validation and token-help
-  copy derived from the catalogue.
-- Name-granularity setting surfaced alongside (home per the privacy task).
+- **Lodge config glob** and **name-granularity / committee-notice settings**:
+  now edited per lodge in the lodge configuration hub, not here — see the
+  LTV-035 (#81) note above. The key/value editor keeps its slug key validation
+  (bad keys/values → 400 from the shared `/api/admin/display/lodge-config`
+  route); the granularity control keeps its privacy explainer.
 
 ## 9. Display page
 

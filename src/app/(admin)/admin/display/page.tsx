@@ -187,6 +187,15 @@ export default function AdminDisplayPage() {
           on the TV, then enter the code it shows to pair. Devices are
           read-only and individually revocable.
         </p>
+        {/* LTV-035 (#81): the per-lodge display config (name granularity,
+            committee notice, {{config:key}} values) moved to each lodge's own
+            configuration page. Point admins arriving from the old Display
+            Settings location at the new home. */}
+        <p className="text-muted-foreground mt-2 text-sm">
+          Per-lodge display values (guest name granularity, committee notice,
+          and {"{{config:key}}"} values) are edited on each lodge — Admin →
+          Lodges.
+        </p>
       </div>
 
       {message && <p className="text-sm font-medium">{message}</p>}
