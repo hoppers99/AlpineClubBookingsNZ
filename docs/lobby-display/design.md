@@ -70,6 +70,20 @@ Per lodge:
 > display columns (`displayConfig`, `displayNameGranularity`, `displayNotice`)
 > are unchanged. The sketch below is the retired MVP shape, kept for history.
 
+> **Config-transfer v2** (LTV-037): the club-wide Layout/Template library is
+> portable through **Admin → Export & Import Setup** in the `lodge-config`
+> category — two key-strong entities, `display-layout` (`display/layouts.json`)
+> and `display-template` (`display/templates.json`), in
+> `src/lib/config-transfer/categories/display.ts`. Templates serialise their
+> Layout by **key** (`layoutKey`, never id, resolved to `layoutId` at apply);
+> layouts apply before templates. Every imported Layout/Template is judged by
+> the same save contract the authoring routes use (`validateLayoutForSave` /
+> `validateTemplateForSave`), so a bundle can never install a structurally
+> broken display (ADR-003 §5). The retired MVP `DisplayTemplate` region/panel
+> config-transfer surface (LTV-012) is replaced. The regenerated
+> room-occupancy starter bundle lives at
+> `docs/lobby-display/seeds/room-occupancy-templates.bundle.zip`.
+
 > **Implemented** (fork issue #26, migration `20260711000100_add_lobby_display_schema`):
 > `prisma/schema.prisma` is now the source of truth for these shapes. The
 > sketch below is retained for rationale; the implemented schema differs only
