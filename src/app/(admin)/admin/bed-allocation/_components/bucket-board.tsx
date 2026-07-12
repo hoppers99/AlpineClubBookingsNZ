@@ -1,7 +1,8 @@
 "use client";
 
 import { useDroppable } from "@dnd-kit/core";
-import { CircleDashed, Lock } from "lucide-react";
+import { CircleDashed, Inbox, Lock } from "lucide-react";
+import { EmptyState } from "@/components/ui/empty-state";
 import { cn } from "@/lib/utils";
 import { getBookingAccent } from "./booking-accent";
 import { GuestChip } from "./guest-chip";
@@ -62,14 +63,20 @@ export function BucketBoard({
       ref={setNodeRef}
       className={cn(
         "space-y-3 rounded-md border border-dashed p-3 transition-colors",
-        isOver && "border-blue-300 bg-blue-50",
+        isOver && "border-info bg-info-muted",
       )}
     >
       {bookingsWithGroups.length === 0 ? (
-        <div className="p-4 text-center text-sm text-muted-foreground">
-          No bookings awaiting allocation in this range.
-          {isOver ? " Drop here to unallocate a bed." : ""}
-        </div>
+        <EmptyState
+          icon={Inbox}
+          title="No bookings awaiting allocation"
+          description={
+            isOver
+              ? "Drop here to unallocate a bed."
+              : "Approved bookings still needing a bed in this range appear here."
+          }
+          className="py-8"
+        />
       ) : (
         bookingsWithGroups.map((booking) => {
           const groups = groupsByBooking.get(booking.id) ?? [];
@@ -89,7 +96,7 @@ export function BucketBoard({
                 accent.ringClassName,
                 accent.tintClassName,
                 booking.id === highlightedBookingId &&
-                  "border-amber-300 bg-amber-50 dark:bg-amber-950/30",
+                  "border-warning bg-warning-muted dark:bg-warning-muted",
               )}
             >
               <span
@@ -125,21 +132,21 @@ export function BucketBoard({
                   {holdsCapacity ? "Held" : "Provisional"}
                 </span>
                 {booking.parentBookingId ? (
-                  <span className="rounded-full bg-sky-100 px-2 py-0.5 text-xs font-medium text-sky-800">
+                  <span className="rounded-full bg-info-muted px-2 py-0.5 text-xs font-medium text-info">
                     Linked party · provisional non-member guests
                   </span>
                 ) : memberBookingIdsWithChildren.has(booking.id) ? (
-                  <span className="rounded-full bg-sky-100 px-2 py-0.5 text-xs font-medium text-sky-800">
+                  <span className="rounded-full bg-info-muted px-2 py-0.5 text-xs font-medium text-info">
                     Linked party · member booking
                   </span>
                 ) : null}
                 {booking.requestedRoom &&
                   (booking.requestedRoom.active ? (
-                    <span className="rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-800">
+                    <span className="rounded-full bg-secondary px-2 py-0.5 text-xs font-medium text-secondary-foreground">
                       Requested: {booking.requestedRoom.name}
                     </span>
                   ) : (
-                    <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">
+                    <span className="rounded-full bg-warning-muted px-2 py-0.5 text-xs font-medium text-warning">
                       Requested room no longer active: {booking.requestedRoom.name}
                     </span>
                   ))}
