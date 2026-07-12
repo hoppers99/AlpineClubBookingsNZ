@@ -4,6 +4,10 @@ import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import { logAudit } from "@/lib/audit";
 import { nameField } from "@/lib/zod-helpers";
+import {
+  DISPLAY_POLL_MAX_SECONDS,
+  DISPLAY_POLL_MIN_SECONDS,
+} from "@/lib/lodge-display/poll-interval";
 
 // Admin device update (fork issue #33; v2-only binding since LTV-038): rename
 // and template assignment. A device binds to a v2 DisplayTemplate (`templateId`,
@@ -18,13 +22,27 @@ const patchSchema = z
   .object({
     name: nameField().optional(),
     templateId: z.string().max(80).nullable().optional(),
+    // Per-device state-poll cadence override (LTV-039): whole seconds in
+    // [15, 600], or null to reset to the client default (~60s). Out-of-range
+    // values are REJECTED with a 400 (not silently clamped) so the admin learns
+    // the bound; the state route still clamps defensively on read.
+    pollSeconds: z
+      .number()
+      .int()
+      .min(DISPLAY_POLL_MIN_SECONDS)
+      .max(DISPLAY_POLL_MAX_SECONDS)
+      .nullable()
+      .optional(),
   })
   // Reject any unexpected field — notably the retired `templateKey`, which a
   // stale client might still send (LTV-038): it must fail rather than silently
   // no-op, so the caller learns the binding surface changed.
   .strict()
   .refine(
-    (value) => value.name !== undefined || value.templateId !== undefined,
+    (value) =>
+      value.name !== undefined ||
+      value.templateId !== undefined ||
+      value.pollSeconds !== undefined,
     { message: "Nothing to update" }
   );
 
@@ -72,17 +90,25 @@ export async function PATCH(
     name?: string;
     templateKey?: string | null;
     templateId?: string | null;
+    pollSeconds?: number | null;
   } = {};
   if (body.name !== undefined) data.name = body.name;
   if (body.templateId !== undefined) {
     data.templateId = body.templateId;
     data.templateKey = null;
   }
+  if (body.pollSeconds !== undefined) data.pollSeconds = body.pollSeconds;
 
   const updated = await prisma.lodgeDisplayDevice.update({
     where: { id },
     data,
-    select: { id: true, name: true, templateKey: true, templateId: true },
+    select: {
+      id: true,
+      name: true,
+      templateKey: true,
+      templateId: true,
+      pollSeconds: true,
+    },
   });
 
   if (body.templateId !== undefined) {
@@ -97,6 +123,20 @@ export async function PATCH(
       targetId: updated.id,
       actorMemberId: guard.session.user.id,
       details: `Bound lobby display device "${updated.name}" to ${binding}`,
+    });
+  }
+
+  if (body.pollSeconds !== undefined) {
+    logAudit({
+      action: "DISPLAY_DEVICE_POLL_INTERVAL_SET",
+      entityType: "LodgeDisplayDevice",
+      entityId: updated.id,
+      targetId: updated.id,
+      actorMemberId: guard.session.user.id,
+      details:
+        body.pollSeconds === null
+          ? `Reset lobby display device "${updated.name}" refresh interval to the default`
+          : `Set lobby display device "${updated.name}" refresh interval to ${body.pollSeconds}s`,
     });
   }
 

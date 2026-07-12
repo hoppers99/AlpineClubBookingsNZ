@@ -20,6 +20,8 @@ interface ClientDevice {
   templateKey: string | null;
   templateId: string | null;
   templateName: string | null;
+  // Per-device refresh cadence in seconds (LTV-039); null = the default (~60s).
+  pollSeconds: number | null;
   paired: boolean;
   pairingArmedUntil: string | null;
   lastSeenAt: string | null;
@@ -150,6 +152,39 @@ export default function AdminDisplayPage() {
     if (!response.ok) {
       const body = (await response.json().catch(() => null)) as { error?: string } | null;
       setMessage(body?.error ?? "Could not assign the template");
+      return;
+    }
+    await refresh();
+  }
+
+  // Per-device refresh cadence (LTV-039). Blank resets to the default; a value
+  // is validated to the 15–600s range client-side before the PATCH (the route
+  // rejects out-of-range too). The poll doubles as the heartbeat, so this is
+  // also how often the device's "last seen" refreshes.
+  async function savePollSeconds(deviceId: string, raw: string) {
+    setMessage(null);
+    const trimmed = raw.trim();
+    let pollSeconds: number | null;
+    if (trimmed === "") {
+      pollSeconds = null;
+    } else {
+      const parsed = Number(trimmed);
+      if (!Number.isInteger(parsed) || parsed < 15 || parsed > 600) {
+        setMessage(
+          "Refresh interval must be a whole number of seconds between 15 and 600."
+        );
+        return;
+      }
+      pollSeconds = parsed;
+    }
+    const response = await fetch(`/api/admin/display/devices/${deviceId}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pollSeconds }),
+    });
+    if (!response.ok) {
+      const body = (await response.json().catch(() => null)) as { error?: string } | null;
+      setMessage(body?.error ?? "Could not update the refresh interval");
       return;
     }
     await refresh();
@@ -345,6 +380,33 @@ export default function AdminDisplayPage() {
                           </optgroup>
                         )}
                       </select>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <Label className="text-xs" htmlFor={`poll-${device.id}`}>
+                          Refresh every
+                        </Label>
+                        <Input
+                          id={`poll-${device.id}`}
+                          className="w-20"
+                          type="number"
+                          min={15}
+                          max={600}
+                          placeholder="60"
+                          // Uncontrolled: re-key on the saved value so a refresh
+                          // reflows the input to the persisted (or default) state.
+                          key={`poll-${device.id}-${device.pollSeconds ?? "default"}`}
+                          defaultValue={device.pollSeconds ?? ""}
+                          onBlur={(event) =>
+                            void savePollSeconds(device.id, event.target.value)
+                          }
+                        />
+                        <span className="text-muted-foreground text-xs">seconds</span>
+                      </div>
+                      <p className="text-muted-foreground text-xs">
+                        Blank uses the default (~60s). This is also how often the
+                        screen&apos;s &ldquo;last seen&rdquo; updates.
+                      </p>
                     </div>
                     <Button variant="outline" asChild>
                       <a

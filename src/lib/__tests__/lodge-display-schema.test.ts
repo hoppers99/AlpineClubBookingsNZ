@@ -128,6 +128,28 @@ describe("display authoring v2 Prisma models (LTV-024)", () => {
     expect(deviceBlock).toMatch(/onDelete: SetNull/);
   });
 
+  it("adds the per-device pollSeconds override column (LTV-039)", () => {
+    const deviceBlock = SCHEMA.slice(
+      SCHEMA.indexOf("model LodgeDisplayDevice {"),
+    );
+    // Nullable Int override; null = the client default cadence.
+    expect(deviceBlock).toMatch(/pollSeconds\s+Int\?/);
+
+    // The Prisma client accepts the new optional column on create.
+    const device: Prisma.LodgeDisplayDeviceUncheckedCreateInput = {
+      lodgeId: "lodge-1",
+      name: "Lobby TV",
+      pollSeconds: 30,
+    };
+    const defaulted: Prisma.LodgeDisplayDeviceUncheckedCreateInput = {
+      lodgeId: "lodge-1",
+      name: "Lobby TV",
+      pollSeconds: null,
+    };
+    expect(device.pollSeconds).toBe(30);
+    expect(defaulted.pollSeconds).toBeNull();
+  });
+
   it("leaves the Lodge display columns unchanged", () => {
     expect(SCHEMA).toMatch(/displayConfig\s+Json\?/);
     expect(SCHEMA).toMatch(/displayNameGranularity\s+DisplayNameGranularity\?/);

@@ -3921,6 +3921,11 @@ model LodgeDisplayDevice {
   // PATCH no longer writes it. The column is retained (the #86 re-layer owns
   // schema consolidation) but is dead — nothing reads it for device rendering.
   templateKey          String?   @db.VarChar(80)
+  // Per-device state-poll cadence in seconds (LTV-039, issue #85; consolidates
+  // #66). null = the client default (~60s). Clamped server-side to 15–600 on
+  // read and write. The poll doubles as the device heartbeat, so this also
+  // governs how often lastSeenAt refreshes.
+  pollSeconds          Int?
   lastSeenAt           DateTime?
   revokedAt            DateTime?
   createdAt            DateTime  @default(now())

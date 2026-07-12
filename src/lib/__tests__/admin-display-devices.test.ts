@@ -192,6 +192,52 @@ describe("PATCH /api/admin/display/devices/[id] (template assignment, AC7)", () 
       expect.objectContaining({ data: { templateId: null, templateKey: null } })
     );
   });
+
+  it("sets an in-range pollSeconds override (LTV-039)", async () => {
+    mockPrisma.lodgeDisplayDevice.findUnique.mockResolvedValue({ id: "dev-1" });
+    const { PATCH } = await import(
+      "@/app/api/admin/display/devices/[id]/route"
+    );
+    const res = await PATCH(
+      await jsonRequest("http://localhost/x", "PATCH", { pollSeconds: 20 }),
+      routeParams
+    );
+    expect(res.status).toBe(200);
+    expect(mockPrisma.lodgeDisplayDevice.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { pollSeconds: 20 } })
+    );
+  });
+
+  it("resets the cadence to the default with pollSeconds null", async () => {
+    mockPrisma.lodgeDisplayDevice.findUnique.mockResolvedValue({ id: "dev-1" });
+    const { PATCH } = await import(
+      "@/app/api/admin/display/devices/[id]/route"
+    );
+    const res = await PATCH(
+      await jsonRequest("http://localhost/x", "PATCH", { pollSeconds: null }),
+      routeParams
+    );
+    expect(res.status).toBe(200);
+    expect(mockPrisma.lodgeDisplayDevice.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { pollSeconds: null } })
+    );
+  });
+
+  it("rejects an out-of-range pollSeconds with 400 and persists nothing", async () => {
+    mockPrisma.lodgeDisplayDevice.findUnique.mockResolvedValue({ id: "dev-1" });
+    const { PATCH } = await import(
+      "@/app/api/admin/display/devices/[id]/route"
+    );
+    for (const bad of [5, 601, 30.5]) {
+      mockPrisma.lodgeDisplayDevice.update.mockClear();
+      const res = await PATCH(
+        await jsonRequest("http://localhost/x", "PATCH", { pollSeconds: bad }),
+        routeParams
+      );
+      expect(res.status).toBe(400);
+      expect(mockPrisma.lodgeDisplayDevice.update).not.toHaveBeenCalled();
+    }
+  });
 });
 
 describe("POST /api/admin/display/devices/[id]/revoke (AC5)", () => {
