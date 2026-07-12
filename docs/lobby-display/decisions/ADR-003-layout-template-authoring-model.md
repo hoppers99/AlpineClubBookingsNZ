@@ -192,6 +192,12 @@ multi-lodge), so the upstream diff reflects the end-state.
   a broken template is not noticed. Mandatory **preview-before-save**,
   server-side **validation**, and a runtime **safe-fallback render** (a throwing
   template drops to a known-good minimal board) are required, not optional.
+  *(Fallback board + server-side save-validation contract landed in LTV-030: a
+  page-level error boundary drops any whole-screen throw to the `everyday-board`
+  built-in, the state route flags a broken binding (`layoutRenderError`) and logs
+  it, and `authoring-validation.ts` is the shared save contract — structural
+  invalidity refuses the save, sanitiser-blocked content warns. Preview-before-
+  save **enforcement** lives in the authoring UIs, #78/#79.)*
 - **Token scope.** Authored content resolves only the display's own token set,
   never the full site token catalogue — a wall must not surface data beyond the
   privacy-reduced payload the serialiser already guards.

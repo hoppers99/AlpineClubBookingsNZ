@@ -7,8 +7,10 @@ import type {
   DisplayTemplateDefinition,
 } from "@/lib/lodge-display/template-registry";
 import {
+  DEFAULT_DISPLAY_TEMPLATE_KEY,
   DEFAULT_ROTATE_SECONDS,
   eligibleDisplayPanels,
+  listBuiltInDisplayTemplates,
 } from "@/lib/lodge-display/template-registry";
 import {
   splitHtmlOnModuleTokens,
@@ -528,6 +530,78 @@ function LayoutScreen({
   );
 }
 
+// ---------------------------------------------------------------------------
+// Page-level safe fallback (LTV-030, ADR-003 §5 "Unattended surface"): a WHOLE-
+// LayoutScreen failure must never blank a wall. The everyday-board built-in is
+// the deterministic known-good minimal board; rendering it through the proven
+// legacy Region path (its own header/footer regions carry the fixed LodgeHeader
+// and standard InfoFooter) means the fallback leans only on code that predates
+// the authoring engine. Two triggers land here: a client-side LayoutScreen throw
+// (caught by LayoutErrorBoundary) and a server-signalled broken binding
+// (payload.layoutRenderError — the template row/layout is gone or failed
+// serve-time validation, so no layoutRender shipped).
+// ---------------------------------------------------------------------------
+
+const FALLBACK_TEMPLATE: DisplayTemplateDefinition =
+  listBuiltInDisplayTemplates().find(
+    (template) => template.key === DEFAULT_DISPLAY_TEMPLATE_KEY
+  ) ?? listBuiltInDisplayTemplates()[0];
+
+function FallbackBoard({
+  payload,
+  stale,
+}: {
+  payload: DisplayPayload;
+  stale: boolean;
+}) {
+  // DisplayPayload is a superset of DisplayState; the legacy modules read only
+  // DisplayState keys, so passing the payload straight through is safe (and any
+  // broken layoutRender field is simply never read by this path).
+  const state = payload;
+  // A real wall shows no error text; an admin previewing sees why the board
+  // changed. Computed from the URL (client-only — this component only ever
+  // renders after mount, downstream of an error/flag, so there is no SSR of it).
+  const isPreview =
+    typeof window !== "undefined" && readPreviewState().isPreview;
+  return (
+    <div
+      className="display-screen display-fallback-board"
+      data-template={FALLBACK_TEMPLATE.key}
+      data-display-fallback=""
+    >
+      {FALLBACK_TEMPLATE.regions.map((region) => (
+        <Region key={region.key} region={region} state={state} />
+      ))}
+      {isPreview && (
+        <span className="display-fallback-marker">
+          Template failed — showing fallback board
+        </span>
+      )}
+      {stale && <span className="display-stale-badge">Data may be out of date</span>}
+    </div>
+  );
+}
+
+/** Page-level render boundary around the whole layout screen: any throw inside
+ * LayoutScreen (a malformed payload that slipped past serve-time validation, a
+ * module crashing outside an AreaErrorBoundary, …) drops the ENTIRE board to the
+ * known-good FallbackBoard rather than blanking the wall. Like AreaErrorBoundary
+ * it does not auto-reset — a persistently broken payload stays on the fallback
+ * until the page reloads, which is the safe stance for an unattended screen. */
+class LayoutErrorBoundary extends Component<
+  { children: ReactNode; fallback: ReactNode },
+  { failed: boolean }
+> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  render() {
+    if (this.state.failed) return this.props.fallback;
+    return this.props.children;
+  }
+}
+
 export function DisplayScreen() {
   const lifecycle = useDisplayState();
 
@@ -567,20 +641,28 @@ export function DisplayScreen() {
     );
   }
 
-  // A v2 layout render wins when present (device bound to a Layout+Template);
-  // otherwise the legacy built-in board path renders unchanged (LTV-038 retires
-  // it). Walls on built-ins keep working exactly as before.
+  // A v2 layout render wins when present (device bound to a Layout+Template),
+  // wrapped in the page-level boundary so a render-time throw drops to the
+  // known-good FallbackBoard (LTV-030). A broken binding the server already
+  // caught (layoutRenderError, no layoutRender) renders the same FallbackBoard
+  // directly — silent on a real wall, marked in preview. Otherwise the legacy
+  // built-in board path renders unchanged (LTV-038 retires it); walls on
+  // built-ins keep working exactly as before.
   const { payload, stale } = lifecycle;
-  return (
-    <div className="display-shell">
-      {payload.layoutRender ? (
+  let board: ReactNode;
+  if (payload.layoutRender) {
+    board = (
+      <LayoutErrorBoundary fallback={<FallbackBoard payload={payload} stale={stale} />}>
         <LayoutScreen
           payload={{ ...payload, layoutRender: payload.layoutRender }}
           stale={stale}
         />
-      ) : (
-        <ActiveScreen payload={payload} stale={stale} />
-      )}
-    </div>
-  );
+      </LayoutErrorBoundary>
+    );
+  } else if (payload.layoutRenderError) {
+    board = <FallbackBoard payload={payload} stale={stale} />;
+  } else {
+    board = <ActiveScreen payload={payload} stale={stale} />;
+  }
+  return <div className="display-shell">{board}</div>;
 }

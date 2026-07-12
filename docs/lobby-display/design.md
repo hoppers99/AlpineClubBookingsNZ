@@ -381,6 +381,30 @@ Modelled on the kiosk account management surface (`/admin/lodge`):
 - States: unpaired (pairing code), active (bound template), stale-data
   indicator, revoked/expired (back to pairing), module-flag-off (404 via
   proxy).
+- **Unattended safety net (LTV-030, ADR-003 §5).** A lobby wall has nobody
+  watching, so a broken v2 template must never blank it:
+  - **Page-level fallback board.** The layout screen renders inside a top-level
+    error boundary; any whole-screen throw drops to a `FallbackBoard` — the
+    `everyday-board` built-in rendered through the proven legacy region path
+    (carrying the fixed header and standard footer). It is tagged
+    `data-display-fallback` for diagnosis and shows a muted marker
+    ("Template failed — showing fallback board") **only** in an admin preview
+    (`readPreviewState().isPreview`); a real wall shows no error text.
+  - **Render-health flag.** The state route distinguishes *no binding*
+    (`templateId` null — the expected legacy path, silent) from a *broken
+    binding* (template row/layout missing, or serve-time validation/sanitise
+    failure). A broken binding logs at **warn** with the device/template ids and
+    attaches `layoutRenderError: true` to the payload (no `layoutRender`); the
+    wall silently gets the legacy `template`, while a preview renders the same
+    `FallbackBoard` with the marker. The legacy `template` field is **always**
+    attached to the payload, so the client always has fallback material.
+  - **Save-path validation contract.** `authoring-validation.ts` exposes
+    `validateLayoutForSave` / `validateTemplateForSave` — the single server-side
+    contract the authoring UIs (#78/#79) call before persisting. Structural
+    invalidity is an **error** (save refused); anything the CSS sanitiser would
+    strip is a **warning** (save allowed — serve time re-sanitises identically —
+    but the author is told what was neutralised). Preview-before-save
+    **enforcement** lives in those authoring UI flows, not here.
 
 ## 10. Privacy and security
 
