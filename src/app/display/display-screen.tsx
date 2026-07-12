@@ -1,6 +1,15 @@
 "use client";
 
-import { Component, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  Component,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefObject,
+} from "react";
+import { createPortal } from "react-dom";
 import type { DisplayState } from "@/lib/lodge-display-state";
 import type {
   DisplayRegionDefinition,
@@ -13,8 +22,8 @@ import {
   listBuiltInDisplayTemplates,
 } from "@/lib/lodge-display/template-registry";
 import {
-  splitHtmlOnModuleTokens,
-  splitLayoutBody,
+  DISPLAY_AREA_MARKER_ATTR,
+  DISPLAY_MODULE_MARKER_ATTR,
   type DisplayAreaDefinition,
   type LayoutRenderPayload,
   type SlotContent,
@@ -327,11 +336,49 @@ function ModuleMount({ name, state }: { name: string; state: DisplayState }) {
   return <Module state={state} />;
 }
 
+/**
+ * Fill a container with server-sanitised html and return the inert marker
+ * elements to portal Area/module components into (LTV-041, issue #96).
+ *
+ * The html is written IMPERATIVELY (`root.innerHTML = html`), NOT via React's
+ * `dangerouslySetInnerHTML`: React refuses to mount a portal into a DOM node it
+ * wrote itself as innerHTML, but it mounts happily into DOM it does not manage.
+ * The container is an empty `<div>` in JSX, so React never touches the children
+ * we inject — and each `<div data-display-*>` marker becomes a valid portal
+ * target. Runs client-only (useEffect), matching the page's force-dynamic,
+ * blank-first-frame pattern, so markers resolve the frame after mount (never
+ * during SSR). Re-runs when `html` changes (a payload refresh rewrites the
+ * innerHTML), re-resolving markers against the fresh DOM nodes.
+ */
+function useMarkerPortals(
+  containerRef: RefObject<HTMLDivElement | null>,
+  markerAttr: string,
+  html: string
+): Array<{ key: string; element: Element }> {
+  const [markers, setMarkers] = useState<Array<{ key: string; element: Element }>>([]);
+  useEffect(() => {
+    const root = containerRef.current;
+    if (!root) {
+      setMarkers([]);
+      return;
+    }
+    root.innerHTML = html;
+    setMarkers(
+      Array.from(root.querySelectorAll(`[${markerAttr}]`)).map((element) => ({
+        key: element.getAttribute(markerAttr) ?? "",
+        element,
+      }))
+    );
+  }, [containerRef, markerAttr, html]);
+  return markers;
+}
+
 /** Render an authored html surface (already server-sanitised AND value-token
- * resolved at serve time — layout-render.ts) that may embed `{{module:<name>}}`
- * tokens: split on the tokens, render html fragments verbatim and mount modules
- * between them. The common no-module case renders a single node identical to the
- * pre-LTV-028 output, so non-module slots/footers are byte-for-byte unchanged. */
+ * resolved at serve time, with `{{module:<name>}}` embeds swapped for inert
+ * `<div data-display-module>` markers — layout-render.ts). The whole html is set
+ * as ONE innerHTML block so nesting is preserved, then each module component is
+ * portalled into its marker (LTV-041). A surface with no embed simply mounts no
+ * portals — byte-for-byte the same DOM as a plain html slot/footer. */
 function AuthoredHtml({
   html,
   state,
@@ -341,24 +388,19 @@ function AuthoredHtml({
   state: DisplayState;
   className?: string;
 }) {
-  const segments = splitHtmlOnModuleTokens(html);
-  if (segments.length === 1 && segments[0].type === "html") {
-    return (
-      <div className={className} dangerouslySetInnerHTML={{ __html: segments[0].html }} />
-    );
-  }
+  const containerRef = useRef<HTMLDivElement>(null);
+  const markers = useMarkerPortals(containerRef, DISPLAY_MODULE_MARKER_ATTR, html);
   return (
-    <div className={className}>
-      {segments.map((segment, index) =>
-        segment.type === "html" ? (
-          segment.html ? (
-            <div key={index} dangerouslySetInnerHTML={{ __html: segment.html }} />
-          ) : null
-        ) : (
-          <ModuleMount key={index} name={segment.name} state={state} />
+    <>
+      <div ref={containerRef} className={className} />
+      {markers.map(({ key, element }, index) =>
+        createPortal(
+          <ModuleMount name={key} state={state} />,
+          element,
+          `module-${key}-${index}`
         )
       )}
-    </div>
+    </>
   );
 }
 
@@ -457,6 +499,45 @@ class AreaErrorBoundary extends Component<
   }
 }
 
+/**
+ * The editable body: the whole (server-sanitised, value-resolved) bodyHtml set as
+ * ONE innerHTML block, with each `<div data-display-area>` marker portalling its
+ * Area (LTV-041, issue #96). Rendering the body whole — instead of splitting it
+ * into sibling fragments — is what lets an area sit INSIDE an authored container
+ * (`<div class="two-plus-one"><div class="main-col">{{area:main}}</div>…`): the
+ * grid keeps its children, the areas mount inside them. Each Area stays wrapped
+ * in its own error boundary so a throwing slot drops to the neutral placeholder,
+ * never blanking the wall.
+ */
+function LayoutBody({
+  bodyHtml,
+  areasByKey,
+  slotContent,
+  state,
+}: {
+  bodyHtml: string;
+  areasByKey: Map<string, DisplayAreaDefinition>;
+  slotContent: LayoutRenderPayload["slotContent"];
+  state: DisplayState;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const markers = useMarkerPortals(containerRef, DISPLAY_AREA_MARKER_ATTR, bodyHtml);
+  return (
+    <>
+      <div ref={containerRef} className="display-layout-body" />
+      {markers.map(({ key, element }, index) =>
+        createPortal(
+          <AreaErrorBoundary>
+            <Area area={areasByKey.get(key)} slotContent={slotContent} state={state} />
+          </AreaErrorBoundary>,
+          element,
+          `area-${key}-${index}`
+        )
+      )}
+    </>
+  );
+}
+
 function LayoutScreen({
   payload,
   stale,
@@ -467,8 +548,10 @@ function LayoutScreen({
   // Strip layoutRender; the rest (incl. the legacy `template` fallback field)
   // is a superset of DisplayState and safe to pass to the shell/modules.
   const { layoutRender, ...state } = payload;
-  const segments = splitLayoutBody(layoutRender.bodyHtml);
-  const areasByKey = new Map(layoutRender.areas.map((area) => [area.key, area]));
+  const areasByKey = useMemo(
+    () => new Map(layoutRender.areas.map((area) => [area.key, area])),
+    [layoutRender.areas]
+  );
   const authoredFooter = layoutRender.footerHtml;
 
   // Three ordered <style> tags — theme → layout → overrides (LTV-029, #75). The
@@ -496,24 +579,12 @@ function LayoutScreen({
       {/* The authored root is a layout-invisible wrapper (display:contents) that
           anchors the scoped authored CSS to the editable body + authored footer. */}
       <div className={DISPLAY_AUTHORED_ROOT_CLASS}>
-        <div className="display-layout-body">
-          {segments.map((segment, segmentIndex) =>
-            segment.type === "html" ? (
-              <div
-                key={segmentIndex}
-                dangerouslySetInnerHTML={{ __html: segment.html }}
-              />
-            ) : (
-              <AreaErrorBoundary key={segmentIndex}>
-                <Area
-                  area={areasByKey.get(segment.key)}
-                  slotContent={layoutRender.slotContent}
-                  state={state}
-                />
-              </AreaErrorBoundary>
-            )
-          )}
-        </div>
+        <LayoutBody
+          bodyHtml={layoutRender.bodyHtml}
+          areasByKey={areasByKey}
+          slotContent={layoutRender.slotContent}
+          state={state}
+        />
         {authoredFooter ? (
           <AuthoredHtml
             html={authoredFooter}

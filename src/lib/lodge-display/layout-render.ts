@@ -5,6 +5,8 @@ import { sanitizePageContentHtml } from "@/lib/page-content-html";
 import { resolveDisplayHtml } from "./display-text";
 import { sanitiseDisplayCss, scopeDisplayCss } from "./css-tokens";
 import {
+  DISPLAY_AREA_MARKER_ATTR,
+  DISPLAY_MODULE_MARKER_ATTR,
   validateDisplayLayoutDefinition,
   validateDisplaySlotContent,
   validateHtmlModuleEmbeds,
@@ -57,23 +59,64 @@ function prepareAuthoredCss(css: string): string {
   return scopeDisplayCss(sanitiseDisplayCss(css));
 }
 
+// Marker replacement (LTV-041, issue #96): once an authored surface has been
+// sanitised AND value-resolved, each `{{area:key}}` / `{{module:name}}` token is
+// swapped for an INERT marker element the client portals its Area/module into.
+// The token syntax never reaches the client, so a placeholder nested inside an
+// authored container (`<div class="cols"><div>{{area:main}}</div>…`) stays put —
+// the previous split-into-siblings renderer broke out of the container and
+// mounted areas outside it. Keys/names are validated slugs by the time we get
+// here (validateDisplayLayoutDefinition / validateHtmlModuleEmbeds ran first), so
+// the strict slug shape below can never inject markup.
+//
+// SPOOF DEFENCE: an author cannot hand-type a marker div to fake an area/module.
+// `sanitizePageContentHtml` allowlists only `class`/`aria-hidden` globally, so a
+// literal `<div data-display-area="…">` in authored html loses its data attribute
+// during sanitisation (which runs BEFORE this replacement) — only the markers we
+// generate here survive to be portalled into.
+const AREA_MARKER_REGEX = /\{\{area:([a-z0-9][a-z0-9-]{0,63})\}\}/g;
+const MODULE_MARKER_REGEX = /\{\{module:([a-z0-9][a-z0-9-]{0,63})\}\}/g;
+
+function replaceAreaPlaceholders(html: string): string {
+  return html.replace(
+    AREA_MARKER_REGEX,
+    (_match, key: string) => `<div ${DISPLAY_AREA_MARKER_ATTR}="${key}"></div>`
+  );
+}
+
+function replaceModuleEmbeds(html: string): string {
+  return html.replace(
+    MODULE_MARKER_REGEX,
+    (_match, name: string) => `<div ${DISPLAY_MODULE_MARKER_ATTR}="${name}"></div>`
+  );
+}
+
 /**
  * Sanitise then token-resolve one authored html surface. Order matters:
  * sanitise the AUTHORED template first (CMS trust model — strips script/handlers),
  * THEN resolve the display's value tokens escaping each injected value, so an
- * injected config value can only ever be inert text. Module embed tokens survive
- * both steps for the client splitter.
+ * injected config value can only ever be inert text. Area/module tokens survive
+ * both steps; the caller swaps them for inert markers as the final step.
  */
 function renderAuthoredHtml(html: string, state: DisplayState): string {
   return resolveDisplayHtml(sanitizePageContentHtml(html), state);
 }
 
-/** Sanitise + token-resolve the HTML fields inside one slot's content (module
- * embeds carry no HTML — only their scalar options, already validated — so pass
- * through). */
+/**
+ * As renderAuthoredHtml, then swap `{{module:name}}` embed tokens for inert
+ * markers (LTV-041). Used for every authored surface that can carry an embedded
+ * module — slot html, defaultContent html, footer html.
+ */
+function renderAuthoredHtmlWithModuleMarkers(html: string, state: DisplayState): string {
+  return replaceModuleEmbeds(renderAuthoredHtml(html, state));
+}
+
+/** Sanitise + token-resolve the HTML fields inside one slot's content, then
+ * swap module embed tokens for markers (module slot content carries no HTML —
+ * only its scalar options, already validated — so it passes through). */
 function renderSlotContent(content: SlotContent, state: DisplayState): SlotContent {
   if ("module" in content) return content;
-  return { html: renderAuthoredHtml(content.html, state) };
+  return { html: renderAuthoredHtmlWithModuleMarkers(content.html, state) };
 }
 
 function renderAreas(
@@ -129,10 +172,12 @@ export function buildLayoutRender(
   validateHtmlModuleEmbeds(input.footerHtml, "footerHtml");
 
   return {
-    // Sanitise the body AFTER validation — placeholders survive sanitisation
-    // (they carry no angle brackets), so the client splits on the same keys —
-    // then resolve the display's value tokens (escaped).
-    bodyHtml: renderAuthoredHtml(input.bodyHtml, state),
+    // Sanitise + value-resolve the body AFTER validation (placeholders survive
+    // both — they carry no angle brackets), THEN swap each `{{area:key}}` for an
+    // inert `<div data-display-area="key">` marker the client portals its Area
+    // into. Shipping the body WHOLE (not split into sibling fragments) keeps an
+    // area nested inside an authored container in place (LTV-041, issue #96).
+    bodyHtml: replaceAreaPlaceholders(renderAuthoredHtml(input.bodyHtml, state)),
     // Non-authored club-theme variables, unscoped so `:root { --brand-* }`
     // cascades to the whole page; injected BEFORE the authored CSS.
     themeCss: input.themeCss ?? "",
@@ -140,6 +185,8 @@ export function buildLayoutRender(
     areas: renderAreas(areas, state),
     slotContent: renderSlotContentMap(slotContent, state),
     cssOverrides: prepareAuthoredCss(input.cssOverrides),
-    footerHtml: renderAuthoredHtml(input.footerHtml, state),
+    // The footer html can embed `{{module:name}}` tokens — swap them for markers
+    // too, the same mechanism the client mounts everywhere (LTV-041).
+    footerHtml: renderAuthoredHtmlWithModuleMarkers(input.footerHtml, state),
   };
 }

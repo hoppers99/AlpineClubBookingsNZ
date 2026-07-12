@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   InvalidDisplayLayoutError,
-  splitHtmlOnModuleTokens,
   splitLayoutBody,
   validateDisplayLayoutDefinition,
   validateDisplaySlotContent,
@@ -258,41 +257,6 @@ describe("validateDisplaySlotContent", () => {
     expect(() =>
       validateDisplaySlotContent(areas, { main: { nonsense: true } })
     ).toThrow(/needs either "html" or "module"/);
-  });
-});
-
-describe("splitHtmlOnModuleTokens (LTV-028)", () => {
-  it("splits authored html into ordered html and module segments", () => {
-    expect(
-      splitHtmlOnModuleTokens("<p>Intro</p>{{module:arrivals-board}}<hr/>")
-    ).toEqual([
-      { type: "html", html: "<p>Intro</p>" },
-      { type: "module", name: "arrivals-board" },
-      { type: "html", html: "<hr/>" },
-    ]);
-  });
-
-  it("returns a single html segment when there is no embed", () => {
-    expect(splitHtmlOnModuleTokens("<p>Just copy</p>")).toEqual([
-      { type: "html", html: "<p>Just copy</p>" },
-    ]);
-  });
-
-  it("only splits the strict {{module:name}} shape (spaces/args stay literal)", () => {
-    // A spaced/argument form is NOT a valid embed — it stays inside an html
-    // segment (the validator rejects it up front so this is defensive).
-    expect(splitHtmlOnModuleTokens("{{module: welcome }}")).toEqual([
-      { type: "html", html: "{{module: welcome }}" },
-    ]);
-    expect(splitHtmlOnModuleTokens("{{module:welcome(x)}}")).toEqual([
-      { type: "html", html: "{{module:welcome(x)}}" },
-    ]);
-  });
-
-  it("splits a well-formed but unknown module name (renderer degrades it)", () => {
-    expect(splitHtmlOnModuleTokens("{{module:future-thing}}")).toEqual([
-      { type: "module", name: "future-thing" },
-    ]);
   });
 });
 

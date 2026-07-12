@@ -67,15 +67,19 @@ const PAYLOAD = {
 };
 
 // A layoutRender that renders a distinctive custom body, but whose footer embeds
-// the (now-throwing) welcome module so LayoutScreen throws at render.
+// the (now-throwing) welcome module so LayoutScreen throws at render. Since
+// LTV-041 the server ships inert markers (not `{{…}}` tokens); the client portals
+// the welcome module into the footer's module marker, and its throw propagates up
+// the React tree (the footer sits OUTSIDE the per-area AreaErrorBoundary) to the
+// LayoutErrorBoundary.
 const THROWING_LAYOUT_RENDER = {
-  bodyHtml: "<h2>Custom Board Heading</h2>{{area:main}}",
+  bodyHtml: '<h2>Custom Board Heading</h2><div data-display-area="main"></div>',
   themeCss: "",
   defaultCss: "",
   cssOverrides: "",
   areas: [{ key: "main", description: "Main", kind: "static" }],
   slotContent: { main: { html: "<p>custom body copy</p>" } },
-  footerHtml: "<span>Footer</span>{{module:welcome}}",
+  footerHtml: '<span>Footer</span><div data-display-module="welcome"></div>',
 };
 
 function enqueueState(body: unknown) {
