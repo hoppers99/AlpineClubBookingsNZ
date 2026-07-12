@@ -767,3 +767,21 @@
   padding: 0.4vmin 1.2vmin;
   font-weight: 700;
 }
+
+/* --- fallback board marker (LTV-030) --------------------------------------- */
+
+/* Shown ONLY in an admin preview (readPreviewState().isPreview) when the layout
+   engine has dropped to the known-good FallbackBoard. A real, unattended wall
+   never renders this element, so the board looks intact to a passer-by. */
+.display-fallback-marker {
+  position: absolute;
+  bottom: 2vmin;
+  left: 3vmin;
+  font-size: 1.6vmin;
+  color: var(--display-muted);
+  background: var(--display-panel);
+  border: 1px solid var(--display-line);
+  border-radius: 0.6vmin;
+  padding: 0.4vmin 1.2vmin;
+  font-weight: 600;
+}

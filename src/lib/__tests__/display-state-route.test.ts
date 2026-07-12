@@ -14,6 +14,7 @@ const {
   mockResolveForDevice,
   mockGetDefaultLodgeId,
   mockGetWebsiteTheme,
+  mockLogger,
 } = vi.hoisted(() => ({
   mockPrisma: {
     member: { findUnique: vi.fn() },
@@ -31,6 +32,7 @@ const {
   mockResolveForDevice: vi.fn(),
   mockGetDefaultLodgeId: vi.fn(),
   mockGetWebsiteTheme: vi.fn(),
+  mockLogger: { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
 // The layoutRender path (LTV-027) exercises the REAL layout validator +
@@ -58,6 +60,8 @@ vi.mock("@/lib/lodges", () => ({
 vi.mock("@/lib/club-theme", () => ({
   getWebsiteThemeRenderState: () => mockGetWebsiteTheme(),
 }));
+// LTV-030: a broken v2 binding logs at warn level; assert against the mock.
+vi.mock("@/lib/logger", () => ({ default: mockLogger }));
 
 const STATE = { lodge: { name: "Silverpeak Lodge" }, rooms: [] };
 const TEMPLATE = { key: "everyday-board", definition: { regions: [] } };
@@ -297,11 +301,14 @@ describe("GET /api/display/state — v2 layoutRender path (LTV-027)", () => {
     expect(body.layoutRender.themeCss).toContain("--brand-gold");
     // The legacy template still ships as the safe fallback.
     expect(body.template).toBeDefined();
+    // A CLEAN render is never flagged as a broken binding, and never warns.
+    expect(body.layoutRenderError).toBeUndefined();
+    expect(mockLogger.warn).not.toHaveBeenCalled();
     // The device heartbeat still stamps on the v2 path.
     expect(mockPrisma.lodgeDisplayDevice.update).toHaveBeenCalled();
   });
 
-  it("falls back to the legacy template when the stored layout is invalid", async () => {
+  it("falls back to the legacy template when the stored layout is invalid (broken binding: flag + warn)", async () => {
     mockCheckDisplayAuth.mockResolvedValue(DEVICE_AUTH_V2);
     // areas do not match the body placeholder → buildLayoutRender throws.
     mockPrisma.displayTemplate.findUnique.mockResolvedValue({
@@ -313,11 +320,19 @@ describe("GET /api/display/state — v2 layoutRender path (LTV-027)", () => {
     const res = await GET(await stateRequest());
     expect(res.status).toBe(200);
     const body = await res.json();
+    // Silent legacy fallback for the wall, but flagged for the preview UI.
     expect(body.layoutRender).toBeUndefined();
     expect(body.template).toBeDefined();
+    expect(body.layoutRenderError).toBe(true);
+    // Logged at warn with the device/template ids so an operator can see it.
+    expect(mockLogger.warn).toHaveBeenCalledTimes(1);
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ templateId: "tpl-42", deviceId: "dev-2" }),
+      expect.stringContaining("failed to build")
+    );
   });
 
-  it("falls back to the legacy template when the template row is missing", async () => {
+  it("falls back to the legacy template when the template row is missing (broken binding: flag + warn)", async () => {
     mockCheckDisplayAuth.mockResolvedValue(DEVICE_AUTH_V2);
     mockPrisma.displayTemplate.findUnique.mockResolvedValue(null);
     const { GET } = await import("@/app/api/display/state/route");
@@ -327,9 +342,14 @@ describe("GET /api/display/state — v2 layoutRender path (LTV-027)", () => {
     const body = await res.json();
     expect(body.layoutRender).toBeUndefined();
     expect(body.template).toBeDefined();
+    expect(body.layoutRenderError).toBe(true);
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ templateId: "tpl-42", deviceId: "dev-2" }),
+      expect.stringContaining("missing")
+    );
   });
 
-  it("a device without templateId never loads a layout (legacy unchanged)", async () => {
+  it("a device without templateId never loads a layout (no binding: silent, no flag, no warn)", async () => {
     mockCheckDisplayAuth.mockResolvedValue(DEVICE_AUTH);
     const { GET } = await import("@/app/api/display/state/route");
 
@@ -337,6 +357,9 @@ describe("GET /api/display/state — v2 layoutRender path (LTV-027)", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.layoutRender).toBeUndefined();
+    // "No binding" is expected, not broken: no error flag and no warn log.
+    expect(body.layoutRenderError).toBeUndefined();
+    expect(mockLogger.warn).not.toHaveBeenCalled();
     expect(mockPrisma.displayTemplate.findUnique).not.toHaveBeenCalled();
   });
 

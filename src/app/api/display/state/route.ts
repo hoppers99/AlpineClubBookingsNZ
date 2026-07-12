@@ -14,6 +14,7 @@ import { getDefaultLodgeId } from "@/lib/lodges";
 import { isDateOnlyString, parseDateOnly } from "@/lib/date-only";
 import { prisma } from "@/lib/prisma";
 import { applyRateLimit, rateLimiters } from "@/lib/rate-limit";
+import logger from "@/lib/logger";
 
 // GET /api/display/state?days=N — the lobby display's single data feed
 // (fork issues #28/#32/#52, design.md §5). Two callers:
@@ -38,7 +39,12 @@ import { applyRateLimit, rateLimiters } from "@/lib/rate-limit";
 async function resolvePreview(
   req: NextRequest
 ): Promise<
-  | { lodgeId: string; templateId: string | null; templateKey: string | null }
+  | {
+      lodgeId: string;
+      templateId: string | null;
+      templateKey: string | null;
+      deviceId?: string;
+    }
   | "not-a-preview"
   | "denied"
 > {
@@ -60,7 +66,7 @@ async function resolvePreview(
       select: { lodgeId: true, templateId: true, templateKey: true },
     });
     if (!device) return "denied";
-    return device;
+    return { ...device, deviceId: previewDeviceId };
   }
 
   return {
@@ -70,18 +76,33 @@ async function resolvePreview(
   };
 }
 
+// A device bound to a v2 Template loads through here. The result distinguishes
+// the two shapes the caller must treat differently (LTV-030, ADR-003 §5 render
+// health): a clean render, or a BROKEN BINDING — a device points at a Template
+// that is missing, whose Layout is gone, or that fails validation/sanitisation.
+// (The third shape, "no binding" — templateId null — never reaches here; the
+// caller stays on the legacy path for it.)
+type LoadLayoutRenderResult =
+  | { ok: true; render: LayoutRenderPayload }
+  | { ok: false };
+
 // Load a device's bound v2 Template + its Layout and assemble the sanitised,
-// validated `layoutRender` payload (LTV-027). Returns null on any failure — a
-// missing row, a validation/sanitise error, or a DB error — so the caller keeps
-// the legacy code-built-in `template` field and never serves a broken payload
-// (LTV-030 formalises the fallback; this is the simple safe version). Devices
-// without templateId never reach here and keep the legacy behaviour unchanged.
+// validated `layoutRender` payload (LTV-027). A broken binding — a missing row,
+// a validation/sanitise error, or a DB error — returns `{ ok: false }` and logs
+// at warn level (a device is silently pointing at content that can never render,
+// which an operator should see); the caller then keeps the legacy code-built-in
+// `template` field and flags `layoutRenderError` so a preview can distinguish
+// the silent fallback a real wall gets. Devices without templateId never reach
+// here and keep the legacy behaviour unchanged.
 async function loadLayoutRender(
   templateId: string,
   // LTV-028: value tokens ({{config:…}}/{{lodge-name}}/{{display-date}}) resolve
   // against the bound lodge's DisplayState at serve time, so the render needs it.
-  state: DisplayState
-): Promise<LayoutRenderPayload | null> {
+  state: DisplayState,
+  // Diagnostic context for the broken-binding warn log (LTV-030). The device id
+  // is absent for a default-lodge `?preview=1` render (no device involved).
+  context: { deviceId?: string } = {}
+): Promise<LoadLayoutRenderResult> {
   try {
     // The club theme provides the read-only `themeCss` variable block so an
     // authored template can `var(--brand-*)` (LTV-029). getWebsiteThemeRenderState
@@ -101,8 +122,14 @@ async function loadLayoutRender(
       }),
       getWebsiteThemeRenderState(),
     ]);
-    if (!template) return null;
-    return buildLayoutRender(
+    if (!template) {
+      logger.warn(
+        { templateId, deviceId: context.deviceId },
+        "display layout render: bound template row is missing — falling back to legacy board"
+      );
+      return { ok: false };
+    }
+    const render = buildLayoutRender(
       {
         bodyHtml: template.layout.bodyHtml,
         defaultCss: template.layout.defaultCss,
@@ -114,9 +141,26 @@ async function loadLayoutRender(
       },
       state
     );
-  } catch {
-    return null;
+    return { ok: true, render };
+  } catch (error) {
+    logger.warn(
+      { err: error, templateId, deviceId: context.deviceId },
+      "display layout render: bound template failed to build — falling back to legacy board"
+    );
+    return { ok: false };
   }
+}
+
+/** Fold a load result into the response body's layout fields (LTV-030). A clean
+ * render attaches `layoutRender`; a broken binding attaches `layoutRenderError`
+ * (so a preview can surface it) but never `layoutRender` — a real wall silently
+ * gets the legacy `template` already on the body. `null` means no binding: no
+ * layout fields at all. */
+function layoutFields(
+  result: LoadLayoutRenderResult | null
+): { layoutRender: LayoutRenderPayload } | { layoutRenderError: true } | Record<string, never> {
+  if (!result) return {};
+  return result.ok ? { layoutRender: result.render } : { layoutRenderError: true };
 }
 
 // The simulated preview start date (issue #60): strict date-only shape plus a
@@ -155,14 +199,16 @@ export async function GET(req: NextRequest) {
     });
     // A device bound to a v2 Template (templateId) renders through the layout
     // engine; the legacy `template` field always ships too, as the safe
-    // fallback the client uses when layoutRender is absent (LTV-027/030).
-    const layoutRender = deviceAuth.device.templateId
-      ? await loadLayoutRender(deviceAuth.device.templateId, state)
+    // fallback the client uses when layoutRender is absent or broken (LTV-027/030).
+    const layoutResult = deviceAuth.device.templateId
+      ? await loadLayoutRender(deviceAuth.device.templateId, state, {
+          deviceId: deviceAuth.device.id,
+        })
       : null;
     return NextResponse.json({
       ...state,
       template: template.definition,
-      ...(layoutRender ? { layoutRender } : {}),
+      ...layoutFields(layoutResult),
     });
   }
 
@@ -184,12 +230,14 @@ export async function GET(req: NextRequest) {
     : resolveDisplayTemplateForDevice(preview);
   // ?previewDevice of a v2-bound device renders the layout engine; ?preview=1
   // (templateId null, e.g. &templateKey=…) stays on the legacy path.
-  const layoutRender = preview.templateId
-    ? await loadLayoutRender(preview.templateId, state)
+  const layoutResult = preview.templateId
+    ? await loadLayoutRender(preview.templateId, state, {
+        deviceId: preview.deviceId,
+      })
     : null;
   return NextResponse.json({
     ...state,
     template: template.definition,
-    ...(layoutRender ? { layoutRender } : {}),
+    ...layoutFields(layoutResult),
   });
 }

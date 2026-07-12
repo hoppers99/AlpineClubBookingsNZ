@@ -31,6 +31,12 @@ export interface DisplayPayload extends DisplayState {
    * server-sanitised layout render payload. When set, the client renders the
    * layout engine instead of the legacy built-in board. */
   layoutRender?: LayoutRenderPayload;
+  /** Set by the state route (LTV-030) when a device IS bound to a v2 Template
+   * but that binding is broken (missing row/layout, or a validation/sanitise
+   * failure): the server drops back to the legacy `template` silently, and this
+   * flag lets an admin preview surface "template failed" while a real wall shows
+   * nothing but the working fallback board. Never set for an unbound device. */
+  layoutRenderError?: boolean;
 }
 
 export type DisplayLifecycle =
