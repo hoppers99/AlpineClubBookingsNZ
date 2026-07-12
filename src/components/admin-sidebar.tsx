@@ -28,7 +28,6 @@ import {
   Trash2,
   Sliders,
   House,
-  LayoutTemplate,
   Tablet,
   Tv,
   UsersRound,
@@ -221,17 +220,29 @@ const navSections: NavSection[] = [
       { href: "/admin/hut-leaders", label: "Hut Leaders", icon: UserCheck },
       { href: "/admin/roster", label: "Roster", icon: ClipboardList },
       { href: "/admin/lodge", label: "Lodge Kiosk", icon: Tablet },
-      { href: "/admin/display", label: "Lobby Display", icon: Tv },
-      {
-        href: "/admin/display/templates",
-        label: "Display Settings",
-        icon: LayoutTemplate,
-      },
       { href: "/admin/work-parties", label: "Work Parties", icon: Hammer },
       {
         href: "/admin/lodge-instructions",
         label: "Lodge Instructions",
         icon: BookOpen,
+      },
+    ],
+  },
+  {
+    // Lobby Display (ADR-003 "Navigation & terminology"): one parent grouping
+    // the display surfaces instead of scattering them through Lodge Operations.
+    // Layouts, Templates, Modules, and the Conditions/Modules Reference entries
+    // arrive with their authoring UIs (#78/#79/#80); this group exists now so
+    // they mount cleanly. "Display Settings" is the LTV-024-reduced per-lodge
+    // settings card at /admin/display/settings — LTV-035/#81 relocates that
+    // content (and this entry) into the lodge configuration hub.
+    label: "Lobby Display",
+    items: [
+      { href: "/admin/display", label: "Devices", icon: Tv },
+      {
+        href: "/admin/display/settings",
+        label: "Display Settings",
+        icon: Sliders,
       },
     ],
   },
