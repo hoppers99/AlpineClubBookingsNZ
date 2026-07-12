@@ -158,7 +158,7 @@ describe("POST /api/display/heartbeat", () => {
     lodgeId: "lodge-a",
     name: "Lobby TV",
     templateId: null,
-    regionConfig: null,
+    templateKey: null,
     revokedAt: null,
     lodge: { active: true },
   };

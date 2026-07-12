@@ -27,7 +27,6 @@ interface ClientDevice {
 interface TemplateOption {
   key: string;
   name: string;
-  source: string;
 }
 
 interface LodgeOption {
@@ -302,7 +301,6 @@ export default function AdminDisplayPage() {
                         {templates.map((template) => (
                           <option key={template.key} value={template.key}>
                             {template.name}
-                            {template.source === "custom" ? " (custom)" : ""}
                           </option>
                         ))}
                       </select>

@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { Prisma } from "@prisma/client";
 import {
@@ -7,6 +9,11 @@ import {
 } from "@/config/modules";
 import { featureFlagsSchema } from "@/config/schema";
 import { SINGLETONS } from "@/lib/config-transfer/categories/club-settings";
+
+const SCHEMA = readFileSync(
+  path.join(process.cwd(), "prisma/schema.prisma"),
+  "utf8",
+);
 
 // Issue #26 (LTV-001): the lobby-display data model and module flag exist and
 // the key is registered at every module-key enumeration point, defaulting OFF
@@ -30,29 +37,100 @@ describe("lobbyDisplay module registration (issue #26)", () => {
   });
 });
 
-describe("lobby-display Prisma models (issue #26)", () => {
-  it("generates client types for the new models (type-level smoke)", () => {
+describe("display authoring v2 Prisma models (LTV-024)", () => {
+  it("generates client types for DisplayLayout and the v2 DisplayTemplate", () => {
     const device: Prisma.LodgeDisplayDeviceUncheckedCreateInput = {
       lodgeId: "lodge-1",
       name: "Lobby TV",
     };
-    const template: Prisma.DisplayTemplateCreateInput = {
+    const layout: Prisma.DisplayLayoutUncheckedCreateInput = {
+      key: "everyday",
+      name: "Everyday",
+      bodyHtml: "<main></main>",
+      defaultCss: "",
+      areas: [],
+    };
+    const template: Prisma.DisplayTemplateUncheckedCreateInput = {
       key: "everyday-board",
       name: "Everyday board",
-      source: "CUSTOM",
-      definition: {},
+      layoutId: "layout-1",
+      slotContent: {},
+      cssOverrides: "",
+      footerHtml: "",
     };
 
     expect(device.name).toBe("Lobby TV");
-    expect(template.source).toBe("CUSTOM");
+    expect(layout.key).toBe("everyday");
+    expect(template.layoutId).toBe("layout-1");
 
-    // AC7: no plaintext token column exists — only tokenHash.
-    const bad: Prisma.LodgeDisplayDeviceUncheckedCreateInput = {
+    // No plaintext token column exists — only tokenHash.
+    const badTokenDevice: Prisma.LodgeDisplayDeviceUncheckedCreateInput = {
       lodgeId: "lodge-1",
       name: "Lobby TV",
       // @ts-expect-error — a plaintext `token` column must not exist
       token: "raw-token-value",
     };
-    expect(bad).toBeDefined();
+    // The old per-device content column is gone.
+    const badRegionDevice: Prisma.LodgeDisplayDeviceUncheckedCreateInput = {
+      lodgeId: "lodge-1",
+      name: "Lobby TV",
+      // @ts-expect-error — regionConfig was dropped in the v2 rebuild
+      regionConfig: {},
+    };
+    // The retired region/panel columns are gone from DisplayTemplate.
+    const badTemplate: Prisma.DisplayTemplateUncheckedCreateInput = {
+      ...template,
+      // @ts-expect-error — the retired `source` column must not exist
+      source: "CUSTOM",
+    };
+    const badDefinitionTemplate: Prisma.DisplayTemplateUncheckedCreateInput = {
+      ...template,
+      // @ts-expect-error — the retired `definition` column must not exist
+      definition: {},
+    };
+    expect(badTokenDevice).toBeDefined();
+    expect(badRegionDevice).toBeDefined();
+    expect(badTemplate).toBeDefined();
+    expect(badDefinitionTemplate).toBeDefined();
+  });
+
+  it("exposes the v2 entities and removes the old shape in schema.prisma", () => {
+    expect(SCHEMA).toMatch(/model DisplayLayout \{/);
+    expect(SCHEMA).toMatch(/model DisplayTemplate \{/);
+    // Layout carries the structural fields (ADR-003 §1).
+    const layoutBlock = SCHEMA.slice(
+      SCHEMA.indexOf("model DisplayLayout {"),
+      SCHEMA.indexOf("model DisplayTemplate {"),
+    );
+    expect(layoutBlock).toMatch(/bodyHtml\s+String\s+@db\.Text/);
+    expect(layoutBlock).toMatch(/defaultCss\s+String\s+@db\.Text/);
+    expect(layoutBlock).toMatch(/areas\s+Json/);
+    // v2 Template references a Layout and drops the old JSON definition/source.
+    const templateBlock = SCHEMA.slice(
+      SCHEMA.indexOf("model DisplayTemplate {"),
+      SCHEMA.indexOf("model LodgeDisplayDevice {"),
+    );
+    expect(templateBlock).toMatch(/layoutId\s+String/);
+    expect(templateBlock).toMatch(/slotContent\s+Json/);
+    expect(templateBlock).toMatch(/cssOverrides\s+String\s+@db\.Text/);
+    expect(templateBlock).toMatch(/footerHtml\s+String\s+@db\.Text/);
+    expect(templateBlock).not.toContain("definition");
+    expect(templateBlock).not.toContain("source");
+    expect(templateBlock).toMatch(/onDelete: Restrict/);
+    // The old data-only model and its enum are gone.
+    expect(SCHEMA).not.toContain("enum DisplayTemplateSource");
+    // The device drops regionConfig but keeps templateKey + a SetNull FK.
+    const deviceBlock = SCHEMA.slice(
+      SCHEMA.indexOf("model LodgeDisplayDevice {"),
+    );
+    expect(deviceBlock).not.toContain("regionConfig");
+    expect(deviceBlock).toMatch(/templateKey\s+String\?/);
+    expect(deviceBlock).toMatch(/onDelete: SetNull/);
+  });
+
+  it("leaves the Lodge display columns unchanged", () => {
+    expect(SCHEMA).toMatch(/displayConfig\s+Json\?/);
+    expect(SCHEMA).toMatch(/displayNameGranularity\s+DisplayNameGranularity\?/);
+    expect(SCHEMA).toMatch(/displayNotice\s+String\?\s+@db\.VarChar\(2000\)/);
   });
 });

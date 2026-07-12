@@ -20,12 +20,6 @@ import {
   type ReadDb,
 } from "../import-types";
 import { RowValidator, asStr, coerceBool, nz, readCsvRows } from "../values";
-import {
-  InvalidDisplayTemplateError,
-  listBuiltInDisplayTemplates,
-  validateDisplayTemplateDefinition,
-  type DisplayTemplateDefinition,
-} from "../../lodge-display/template-registry";
 
 // lodge-config category (part 1): lodges + their rooms + beds + seasons + rates
 // — the structural "multi-lodge" core. Each lodge is a self-contained folder,
@@ -61,11 +55,6 @@ const LODGE_FIELDS = [
   "displayConfig", "displayNameGranularity", "displayNotice",
 ] as const;
 
-/** Club-wide lobby display templates (issue #50): one JSON file of
- * DisplayTemplate rows. `source` is NOT transferred — it is derived on apply
- * (a built-in key imports as BUILT_IN_OVERRIDE, anything else as CUSTOM). */
-export const DISPLAY_TEMPLATES_FILE = "lodge-config/display-templates.json";
-const DISPLAY_TEMPLATE_FIELDS = ["key", "name", "definition"] as const;
 const DISPLAY_GRANULARITIES = [
   "FULL_NAME", "FIRST_NAME_SURNAME_INITIAL", "FIRST_NAME_ONLY", "COUNTS_ONLY",
 ] as const;
@@ -154,16 +143,6 @@ registerEntity({
   singleton: false,
   fields: [...LODGE_FIELDS],
   optInFields: ["doorCode"],
-});
-registerEntity({
-  entity: "display-template",
-  category: "lodge-config",
-  tier: "key-strong",
-  format: "json",
-  file: DISPLAY_TEMPLATES_FILE,
-  naturalKey: ["key"],
-  singleton: false,
-  fields: [...DISPLAY_TEMPLATE_FIELDS],
 });
 registerEntity({
   entity: "lodge-room",
@@ -362,10 +341,6 @@ export const lodgeConfigExporter: CategoryExporter = {
         displayConfig: true, displayNameGranularity: true, displayNotice: true,
       },
     });
-    const displayTemplates = await ctx.db.displayTemplate.findMany({
-      orderBy: { key: "asc" },
-      select: { key: true, name: true, definition: true },
-    });
     const rooms = await ctx.db.lodgeRoom.findMany({
       orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
       select: { name: true, sortOrder: true, active: true, notes: true, lodge: { select: { slug: true } } },
@@ -431,20 +406,6 @@ export const lodgeConfigExporter: CategoryExporter = {
       emit(paths.rates, RATE_FIELDS, ratesBy.get(lodge.slug) ?? []);
     }
 
-    // Club-wide display templates: always emitted (empty array when none) so
-    // the file documents the format for hand-authoring.
-    entries.push({
-      path: DISPLAY_TEMPLATES_FILE,
-      category: "lodge-config",
-      rowCount: displayTemplates.length,
-      bytes: strToU8(
-        JSON.stringify(
-          displayTemplates.map((t) => ({ key: t.key, name: t.name, definition: t.definition })),
-          null,
-          2,
-        ),
-      ),
-    });
     return entries;
   },
 };
@@ -587,66 +548,6 @@ function parseLodgeFolder(
   return out;
 }
 
-// ---- Display templates (club-wide; shared by plan + apply) -------------------
-
-interface ParsedDisplayTemplate {
-  key: string;
-  name: string;
-  definition: DisplayTemplateDefinition;
-}
-
-/** Parse + validate the club-wide display-templates file. Every definition
- * passes the ADR-002 registry validator — a bundle can never install a
- * template referencing unknown modules/conditions or non-scalar options. */
-function parseDisplayTemplates(
-  files: Map<string, Uint8Array>,
-  errors: string[],
-): ParsedDisplayTemplate[] {
-  const bytes = files.get(DISPLAY_TEMPLATES_FILE);
-  if (!bytes) return [];
-  let raw: unknown;
-  try {
-    raw = JSON.parse(strFromU8(bytes));
-  } catch {
-    errors.push(`${DISPLAY_TEMPLATES_FILE}: not valid JSON`);
-    return [];
-  }
-  if (!Array.isArray(raw)) {
-    errors.push(`${DISPLAY_TEMPLATES_FILE}: must be a JSON array of templates`);
-    return [];
-  }
-  const out: ParsedDisplayTemplate[] = [];
-  raw.forEach((item, index) => {
-    const record =
-      item && typeof item === "object" && !Array.isArray(item)
-        ? (item as Record<string, unknown>)
-        : null;
-    try {
-      const definition = validateDisplayTemplateDefinition(record?.definition);
-      const key = asStr(record?.key) || definition.key;
-      if (key !== definition.key) {
-        errors.push(
-          `${DISPLAY_TEMPLATES_FILE}[${index}]: key "${key}" must match definition.key "${definition.key}"`,
-        );
-        return;
-      }
-      out.push({ key, name: asStr(record?.name) || definition.name, definition });
-    } catch (error) {
-      const detail =
-        error instanceof InvalidDisplayTemplateError ? error.message : "invalid definition";
-      errors.push(`${DISPLAY_TEMPLATES_FILE}[${index}]: ${detail}`);
-    }
-  });
-  return out;
-}
-
-async function loadCurrentDisplayTemplates(db: ReadDb) {
-  const rows = await db.displayTemplate.findMany({
-    select: { key: true, name: true, definition: true },
-  });
-  return new Map(rows.map((row) => [row.key, row]));
-}
-
 // ---- Plan ------------------------------------------------------------------
 
 async function planLodgeConfig(ctx: PlanContext): Promise<CategoryPlanResult> {
@@ -773,26 +674,6 @@ async function planLodgeConfig(ctx: PlanContext): Promise<CategoryPlanResult> {
   const desiredDefault = bundleDesignatedDefaultSlug(ctx.files);
   if (desiredDefault && desiredDefault !== batch.currentDefaultSlug) {
     warnings.push(`The default lodge will be set to "${desiredDefault}".`);
-  }
-
-  // Club-wide display templates (issue #50).
-  const bundleTemplates = parseDisplayTemplates(ctx.files, errors);
-  if (bundleTemplates.length > 0) {
-    const currentByKey = await loadCurrentDisplayTemplates(ctx.db);
-    for (const template of bundleTemplates) {
-      const current = currentByKey.get(template.key) ?? null;
-      fingerprintParts.push(
-        `display-template:${template.key}:${current ? hashRow(["name", "definition"], current) : "absent"}`,
-      );
-      const write = { name: template.name, definition: template.definition };
-      const changed = changedFields(write, current);
-      items.push({
-        entity: "display-template",
-        key: template.key,
-        action: planActionFor(current, changed),
-        changedFields: changed.length ? changed : undefined,
-      });
-    }
   }
 
   return { items, warnings, errors, fingerprintParts, doorCodeChanges };
@@ -954,44 +835,6 @@ async function applyLodgeConfig(ctx: ApplyContext): Promise<CategoryApplyResult>
     if (target && !target.isDefault) {
       await ctx.tx.lodge.updateMany({ where: { isDefault: true }, data: { isDefault: false } });
       await ctx.tx.lodge.update({ where: { slug: desiredDefault }, data: { isDefault: true } });
-    }
-  }
-
-  // Club-wide display templates (issue #50). `source` is derived, never
-  // trusted from the bundle: a built-in key imports as its override, any
-  // other key as a custom template (ADR-002 §2).
-  {
-    const applyErrors: string[] = [];
-    const bundleTemplates = parseDisplayTemplates(ctx.files, applyErrors);
-    if (bundleTemplates.length > 0) {
-      const builtInKeys = new Set(listBuiltInDisplayTemplates().map((t) => t.key));
-      const currentByKey = await loadCurrentDisplayTemplates(ctx.tx);
-      for (const template of bundleTemplates) {
-        const current = currentByKey.get(template.key) ?? null;
-        if (!current) {
-          await ctx.tx.displayTemplate.create({
-            data: {
-              key: template.key,
-              name: template.name,
-              source: builtInKeys.has(template.key) ? "BUILT_IN_OVERRIDE" : "CUSTOM",
-              definition: template.definition as object,
-            },
-          });
-          result.created += 1;
-          continue;
-        }
-        const write = { name: template.name, definition: template.definition };
-        const changed = changedFields(write, current);
-        if (changed.length > 0) {
-          await ctx.tx.displayTemplate.update({
-            where: { key: template.key },
-            data: { name: template.name, definition: template.definition as object },
-          });
-          result.updated += 1;
-        } else {
-          result.unchanged += 1;
-        }
-      }
     }
   }
 

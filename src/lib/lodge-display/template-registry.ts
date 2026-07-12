@@ -13,11 +13,10 @@ import {
 
 // Lobby display template registry (fork issue #29, ADR-002): data-only
 // template definitions validated against closed module/condition name
-// registries. Built-in templates ship here in code; DisplayTemplate rows are
-// admin overrides (BUILT_IN_OVERRIDE shadows a built-in key) or custom
-// templates (CUSTOM), revalidated on every load exactly like code defaults —
-// an invalid definition is rejected with the offending detail, never
-// rendered partially broken.
+// registries. During the v2 rebuild (LTV-024) only these code built-ins are
+// resolved — the DB override/custom rows were retired with the old
+// DisplayTemplate model. An invalid definition is rejected with the offending
+// detail, never rendered partially broken.
 
 /**
  * The closed set of module names a template may place in a region. The
@@ -266,7 +265,6 @@ export function listBuiltInDisplayTemplates(): DisplayTemplateDefinition[] {
 
 export interface ResolvedDisplayTemplate {
   definition: DisplayTemplateDefinition;
-  source: "built-in" | "override" | "custom";
 }
 
 /** The club-wide default template for a device with no explicit binding. */

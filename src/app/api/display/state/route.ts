@@ -94,7 +94,7 @@ export async function GET(req: NextRequest) {
       // like a failed auth rather than serving a partial payload (AC8).
       return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
     }
-    const template = await resolveDisplayTemplateForDevice(deviceAuth.device);
+    const template = resolveDisplayTemplateForDevice(deviceAuth.device);
     // The poll doubles as the device heartbeat (issue #52): only genuine
     // device-token fetches stamp lastSeenAt — previews never do.
     await prisma.lodgeDisplayDevice.update({
@@ -117,8 +117,8 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
   }
   const template = preview.templateKey
-    ? (await resolveDisplayTemplate(preview.templateKey)) ??
-      (await resolveDisplayTemplateForDevice(preview))
-    : await resolveDisplayTemplateForDevice(preview);
+    ? (resolveDisplayTemplate(preview.templateKey) ??
+      resolveDisplayTemplateForDevice(preview))
+    : resolveDisplayTemplateForDevice(preview);
   return NextResponse.json({ ...state, template: template.definition });
 }

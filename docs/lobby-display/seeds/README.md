@@ -1,5 +1,11 @@
 # Lobby display seed bundles
 
+> **Superseded (LTV-024).** These bundles target the retired MVP template model.
+> The config-transfer surface for the v2 Layout/Template entities is regenerated
+> under LTV-037/038 (epic #69); the zip below is kept for reference only and no
+> longer imports.
+
+
 Importable config-transfer bundles for the lobby display. Upload through
 **Admin → Export & Import Setup → Import** (select the *Lodge configuration*
 category), review the plan, and apply.

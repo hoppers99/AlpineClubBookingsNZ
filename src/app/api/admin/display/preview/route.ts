@@ -2,9 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import { buildDisplayState } from "@/lib/lodge-display-state";
-import {
-  InvalidDisplayTemplateError,
-} from "@/lib/lodge-display/template-registry";
 import { resolveDisplayTemplate } from "@/lib/lodge-display/template-resolution";
 import { getDefaultLodgeId } from "@/lib/lodges";
 
@@ -12,7 +9,7 @@ import { getDefaultLodgeId } from "@/lib/lodges";
 // the kiosk per-account preview (upstream #1721) — GET-only, admin-only, and
 // it renders from the SAME privacy-reduced serialiser the real display uses,
 // so a preview can never show more than a lobby wall would (AC3). No write
-// occurs on this path.
+// occurs on this path. Resolves the code built-ins only (LTV-024).
 
 export async function GET(req: NextRequest) {
   const guard = await requireAdmin();
@@ -23,15 +20,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "templateKey is required" }, { status: 400 });
   }
 
-  let resolved;
-  try {
-    resolved = await resolveDisplayTemplate(templateKey);
-  } catch (error) {
-    if (error instanceof InvalidDisplayTemplateError) {
-      return NextResponse.json({ error: error.message }, { status: 400 });
-    }
-    throw error;
-  }
+  const resolved = resolveDisplayTemplate(templateKey);
   if (!resolved) {
     return NextResponse.json({ error: "Template not found" }, { status: 404 });
   }

@@ -1,18 +1,10 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { DisplayState } from "@/lib/lodge-display-state";
 
-// Issue #29 (LTV-004, ADR-002): the template registry and condition engine —
-// built-in resolution vs DB overrides, load-time rejection of unknown
-// modules/conditions (never a partially-broken template), pure condition
-// evaluation, and eligibility filtering for rotation.
-
-const { mockPrisma } = vi.hoisted(() => ({
-  mockPrisma: {
-    displayTemplate: { findUnique: vi.fn() },
-  },
-}));
-
-vi.mock("@/lib/prisma", () => ({ prisma: mockPrisma }));
+// Issue #29 (LTV-004, ADR-002) + LTV-024: the template registry and condition
+// engine — built-in resolution (DB overrides retired with the v2 rebuild),
+// load-time rejection of unknown modules/conditions (never a partially-broken
+// template), pure condition evaluation, and eligibility filtering for rotation.
 
 function stateWith(overrides: Partial<DisplayState>): DisplayState {
   return {
@@ -34,11 +26,6 @@ function stateWith(overrides: Partial<DisplayState>): DisplayState {
     ...overrides,
   };
 }
-
-beforeEach(() => {
-  vi.clearAllMocks();
-  mockPrisma.displayTemplate.findUnique.mockResolvedValue(null);
-});
 
 describe("condition engine (pure functions of DisplayState)", () => {
   it("evaluates each named v1 condition", async () => {
@@ -183,78 +170,36 @@ describe("registry resolution (AC1/AC2/AC3)", () => {
     }
   });
 
-  it("resolves a built-in when no DB row exists", async () => {
+  it("resolves a built-in by key", async () => {
     const { resolveDisplayTemplate } = await import(
       "@/lib/lodge-display/template-resolution"
     );
-    const resolved = await resolveDisplayTemplate("everyday-board");
-    expect(resolved?.source).toBe("built-in");
+    const resolved = resolveDisplayTemplate("everyday-board");
     expect(resolved?.definition.name).toBe("Everyday board");
-  });
-
-  it("prefers a DB override over the code default for the same key", async () => {
-    mockPrisma.displayTemplate.findUnique.mockResolvedValue({
-      key: "everyday-board",
-      source: "BUILT_IN_OVERRIDE",
-      definition: {
-        key: "everyday-board",
-        name: "Everyday board (club edit)",
-        regions: [{ key: "main", panels: [{ module: "arrivals-board" }] }],
-      },
-    });
-    const { resolveDisplayTemplate } = await import(
-      "@/lib/lodge-display/template-resolution"
-    );
-    const resolved = await resolveDisplayTemplate("everyday-board");
-    expect(resolved?.source).toBe("override");
-    expect(resolved?.definition.name).toBe("Everyday board (club edit)");
-  });
-
-  it("resolves a CUSTOM row with the same uniform schema", async () => {
-    mockPrisma.displayTemplate.findUnique.mockResolvedValue({
-      key: "our-foyer",
-      source: "CUSTOM",
-      definition: {
-        key: "our-foyer",
-        name: "Our foyer",
-        regions: [
-          { key: "main", panels: [{ module: "welcome" }, { module: "chores-board" }] },
-        ],
-      },
-    });
-    const { resolveDisplayTemplate } = await import(
-      "@/lib/lodge-display/template-resolution"
-    );
-    const resolved = await resolveDisplayTemplate("our-foyer");
-    expect(resolved?.source).toBe("custom");
-  });
-
-  it("rejects an invalid STORED definition at load rather than rendering it", async () => {
-    mockPrisma.displayTemplate.findUnique.mockResolvedValue({
-      key: "everyday-board",
-      source: "BUILT_IN_OVERRIDE",
-      definition: {
-        key: "everyday-board",
-        name: "Broken edit",
-        regions: [{ key: "main", panels: [{ module: "not-a-module" }] }],
-      },
-    });
-    const { resolveDisplayTemplate } = await import(
-      "@/lib/lodge-display/template-resolution"
-    );
-    const { InvalidDisplayTemplateError } = await import(
-      "@/lib/lodge-display/template-registry"
-    );
-    await expect(resolveDisplayTemplate("everyday-board")).rejects.toThrow(
-      InvalidDisplayTemplateError
-    );
   });
 
   it("returns null for an unknown key", async () => {
     const { resolveDisplayTemplate } = await import(
       "@/lib/lodge-display/template-resolution"
     );
-    expect(await resolveDisplayTemplate("nope")).toBeNull();
+    expect(resolveDisplayTemplate("nope")).toBeNull();
+  });
+
+  it("resolves a device to its templateKey built-in, else the club default", async () => {
+    const { resolveDisplayTemplateForDevice } = await import(
+      "@/lib/lodge-display/template-resolution"
+    );
+    expect(
+      resolveDisplayTemplateForDevice({ templateKey: "whole-lodge" }).definition
+        .key
+    ).toBe("whole-lodge");
+    // Unknown or unset key falls back to the everyday-board default.
+    expect(
+      resolveDisplayTemplateForDevice({ templateKey: null }).definition.key
+    ).toBe("everyday-board");
+    expect(
+      resolveDisplayTemplateForDevice({ templateKey: "gone" }).definition.key
+    ).toBe("everyday-board");
   });
 });
 
