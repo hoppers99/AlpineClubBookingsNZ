@@ -140,16 +140,17 @@ export default async function AdminLayout({
           Skip to main content
         </a>
         <NavBar user={user} features={effectiveModules} />
-        <div className="flex flex-1">
+        <div className="flex flex-1 flex-col md:flex-row">
           <AdminSidebar
             features={effectiveModules}
             permissionMatrix={permissionMatrix}
             isFullAdmin={actorIsFullAdmin}
             hutLeaderLabel={liveClubIdentity.hutLeaderLabel}
           />
-          <div className="flex flex-1 flex-col md:overflow-hidden">
+          <div className="flex min-w-0 flex-1 flex-col md:overflow-hidden">
             <main
               id="main-content"
+              tabIndex={-1}
               className="flex-1 overflow-y-auto p-6 pb-24 print:overflow-visible print:p-0 md:p-8 md:pb-28"
             >
               <div className="mb-4 flex justify-end print:hidden">
