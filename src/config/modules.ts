@@ -20,6 +20,7 @@ export const MODULE_KEYS = [
   "multiLodge",
   "twoFactor",
   "analytics",
+  "lobbyDisplay",
 ] as const;
 
 export type ModuleKey = (typeof MODULE_KEYS)[number];
@@ -51,6 +52,7 @@ export const DEFAULT_MODULE_SETTINGS: ModuleSettingsValues = {
   multiLodge: false,
   twoFactor: false,
   analytics: false,
+  lobbyDisplay: false,
 };
 
 export interface ModuleDefinition {
@@ -206,6 +208,15 @@ export const MODULE_DEFINITIONS: Record<ModuleKey, ModuleDefinition> = {
       "Consent-gated GA4 tracking on public website and public account pages.",
     dependencies: [
       "NEXT_PUBLIC_GA_MEASUREMENT_ID must be configured before visitors can opt in.",
+    ],
+  },
+  lobbyDisplay: {
+    key: "lobbyDisplay",
+    label: "Lobby TV display",
+    description:
+      "Read-only paired lobby screens showing per-lodge arrivals, departures, chores, and lodge information.",
+    dependencies: [
+      "Display devices are paired from the lodge admin pages once the module is on.",
     ],
   },
 };
