@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { LodgeDisplaySettingsCard } from "./_components/lodge-display-settings-card";
 
 // Lodge configuration hub (ADR-003): one place to see a lodge's setup state,
 // with links into the existing per-area pages pre-filtered via ?lodgeId=.
@@ -475,6 +476,14 @@ export default function LodgeConfigurationHubPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* Lobby display: per-lodge display config (LTV-035, #81). Relocated here
+          from the retired /admin/display/settings so the controls edit THIS
+          lodge, not the club default. Gated on the lobbyDisplay module, matching
+          the module gating the area cards below use. */}
+      {modules.lobbyDisplay === true && (
+        <LodgeDisplaySettingsCard lodgeId={lodgeId} />
+      )}
 
       <div className="grid gap-4 md:grid-cols-2">
         {areas.map((area) => {
