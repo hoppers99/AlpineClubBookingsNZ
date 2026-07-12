@@ -279,8 +279,8 @@ interface DisplayState {
   can never make a wall hammer or starve the API. The client drives its
   active-board tick from that value (falling back to the default before the
   first payload) and scales the staleness threshold to **3× the effective
-  interval**. Admins set it per device on `/admin/display` ("Refresh every",
-  blank = default). Because the poll doubles as the heartbeat, the cadence also
+  interval**. Admins set it per device on `/admin/display/devices` ("Refresh
+  every", blank = default). Because the poll doubles as the heartbeat, the cadence also
   governs how often the device's **"last seen"** refreshes — a slow cadence
   means a slower-updating last-seen. Writes clamp/validate to the same 15–600
   range (out-of-range → 400) and are audit-logged.
@@ -415,12 +415,16 @@ client-safe `css-tokens.ts` before they ship in the payload:
 
 ## 8. Admin UI
 
-> **Navigation (LTV-031, ADR-003).** The display admin lives under one **Lobby
-> Display** sidebar parent instead of scattered Lodge Operations entries. The
-> group holds **Devices** (`/admin/display`, heading "Display Devices"),
+> **Navigation (LTV-031, ADR-003; fork issue #109).** The display admin is
+> reached from **one** sidebar entry — **Lobby Display** (`/admin/display`) —
+> which opens a **hub landing page of cards** rather than a four-item sidebar
+> group, mirroring the "Site Appearance & Content" hub. The hub cards are
+> **Devices** (`/admin/display/devices`, heading "Display Devices"),
 > **Layouts** (`/admin/display/layouts`), **Templates**
 > (`/admin/display/templates`), and **Reference**
-> (`/admin/display/reference`). The settings card was renamed off the
+> (`/admin/display/reference`). The Devices management page moved from
+> `/admin/display` to `/admin/display/devices` when `/admin/display` became the
+> hub (#109); its behaviour is unchanged. The settings card was renamed off the
 > `/admin/display/templates` path so LTV-033's Template authoring could claim
 > it: LTV-031 parked the path on a temporary redirect to
 > `/admin/display/settings`, and **LTV-033 replaced that redirect with the real
@@ -429,7 +433,8 @@ client-safe `css-tokens.ts` before they ship in the payload:
 > Modules/Conditions/CSS-tokens reference — landed with LTV-034 (#80). **LTV-035
 > (#81) then removed the Display Settings entry**: its per-lodge content moved
 > into the lodge configuration hub (see the LTV-035 note below), and
-> `/admin/display/settings` redirects to Devices. Terminology follows ADR-003:
+> `/admin/display/settings` redirects to Devices (`/admin/display/devices`).
+> Terminology follows ADR-003:
 > **Layout / Template / Module / Conditions**.
 
 > **Layouts (LTV-032, #78).** The **Layouts** entry
@@ -536,7 +541,8 @@ client-safe `css-tokens.ts` before they ship in the payload:
 > silently edited the default lodge, and consolidates old backlog #62 ("config
 > belongs in the lodge configuration UI"). The route, its validation (bad
 > keys/values → 400), and token resolution at serve time are unchanged. The old
-> `/admin/display/settings` path redirects to Devices, whose header carries a
+> `/admin/display/settings` path redirects to Devices
+> (`/admin/display/devices`), whose header carries a
 > muted pointer to the new per-lodge home (Admin → Lodges). *Known consequence
 > (owner decision):* the hub is `multiLodge`-gated (ADR-003, multi-lodge), so a
 > club running Lobby Display **without** multi-lodge no longer has a UI to edit
