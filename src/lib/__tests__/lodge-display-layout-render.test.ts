@@ -127,3 +127,46 @@ describe("buildLayoutRender — LTV-028 value-token resolution", () => {
     expect(render.footerHtml).not.toMatch(/<script/i);
   });
 });
+
+describe("buildLayoutRender — LTV-029 CSS hardening + theme", () => {
+  it("sanitises AND scopes defaultCss and cssOverrides", () => {
+    const render = buildLayoutRender(
+      input({
+        defaultCss: ".board{color:red}",
+        cssOverrides:
+          ".x{background:url(https://evil.example/x.png)}.display-header-clock{display:none}",
+      }),
+      state()
+    );
+    // Every authored selector is prefixed with the authored-root scope so it
+    // can only style the editable body/footer, never the chrome.
+    expect(render.defaultCss).toContain(".display-authored-root .board");
+    expect(render.cssOverrides).toContain(".display-authored-root .x");
+    expect(render.cssOverrides).toContain(
+      ".display-authored-root .display-header-clock"
+    );
+    // The external url() exfiltration vector is removed.
+    expect(render.cssOverrides).not.toContain("evil.example");
+    expect(render.cssOverrides).toContain("/* blocked: external url */");
+  });
+
+  it("still neutralises the </style breakout in CSS (now via sanitiseDisplayCss)", () => {
+    const render = buildLayoutRender(
+      input({ defaultCss: "body{color:red}</style><script>y()</script>" }),
+      state()
+    );
+    expect(render.defaultCss).not.toMatch(/<\/style/i);
+    expect(render.defaultCss).not.toContain("<");
+  });
+
+  it("passes the club themeCss through verbatim and unscoped", () => {
+    const themeCss = ":root,.website-theme{--brand-gold:#8fa87c;}";
+    const render = buildLayoutRender(input({ themeCss }), state());
+    expect(render.themeCss).toBe(themeCss);
+  });
+
+  it("defaults themeCss to an empty string when none is supplied", () => {
+    const render = buildLayoutRender(input(), state());
+    expect(render.themeCss).toBe("");
+  });
+});

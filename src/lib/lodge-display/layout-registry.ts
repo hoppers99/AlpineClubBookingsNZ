@@ -58,15 +58,22 @@ export type DisplaySlotContentMap = Record<string, SlotContent>;
 /**
  * The fully-assembled render payload attached to the display-state response
  * when a device is bound to a v2 Template (its HTML fields already sanitised
- * server-side, its CSS already `</style`-stripped — see layout-render.ts).
- * Declared here (a type, erased at build) so the client lifecycle can consume
- * it without importing the server-only assembler.
+ * server-side, its CSS already sanitised + scoped — see layout-render.ts and
+ * css-tokens.ts, LTV-029). Declared here (a type, erased at build) so the client
+ * lifecycle can consume it without importing the server-only assembler.
  */
 export interface LayoutRenderPayload {
   bodyHtml: string;
+  /** Club-theme CSS variables (`--brand-*`, font families) injected read-only
+   * and UNscoped before the authored CSS, so a Template can `var(--brand-gold)`
+   * to match the website by default (ADR-003 §4, LTV-029). Non-authored: the
+   * site's own theme CSS, reused verbatim. */
+  themeCss: string;
+  /** Layout default CSS — sanitised + scoped to the display's authored root. */
   defaultCss: string;
   areas: DisplayAreaDefinition[];
   slotContent: DisplaySlotContentMap;
+  /** Template CSS overrides — sanitised + scoped, layered after defaultCss. */
   cssOverrides: string;
   footerHtml: string;
 }

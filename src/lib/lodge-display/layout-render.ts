@@ -3,6 +3,7 @@ import "server-only";
 import type { DisplayState } from "@/lib/lodge-display-state";
 import { sanitizePageContentHtml } from "@/lib/page-content-html";
 import { resolveDisplayHtml } from "./display-text";
+import { sanitiseDisplayCss, scopeDisplayCss } from "./css-tokens";
 import {
   validateDisplayLayoutDefinition,
   validateDisplaySlotContent,
@@ -19,8 +20,13 @@ import {
 //
 //  1. Every admin-authored HTML field (the layout body, each authored slot's
 //     html, the footer) passes through the website content sanitiser, and the
-//     CSS blocks have any `</style` sequence stripped so authored CSS cannot
-//     break out of the injected <style> element.
+//     CSS blocks (defaultCss + cssOverrides) are hardened by sanitiseDisplayCss
+//     (external url()/@import/@charset/</style/</expression/-moz-binding
+//     neutralised, length-capped — ADR-003 §4, LTV-029) then scopeDisplayCss
+//     (every selector prefixed with the display's authored-root scope so a
+//     template can only style the editable body/footer, never the fixed header
+//     clock/brand chrome). The club-theme CSS variables ship separately as the
+//     non-authored, unscoped `themeCss` so `var(--brand-*)` matches the website.
 //  2. AFTER sanitisation, the display's own VALUE tokens ({{config:…}},
 //     {{lodge-name}}, {{display-date}}) are resolved against the bound lodge's
 //     DisplayState, with each injected value HTML-escaped (see resolveDisplayHtml)
@@ -41,15 +47,14 @@ import {
 // is server-only.
 
 /**
- * Remove any `</style` sequence (case-insensitive) from authored CSS so it
- * cannot terminate the injected <style> element and inject markup. This is the
- * minimal guard for now; real CSS hardening (theme scoping, url()/import
- * limits, tightened img-src/font-src) is LTV-029 — see #75.
+ * Harden one authored CSS field for the unattended wall (LTV-029, #75):
+ * lexically neutralise the exfiltration/injection vectors, THEN scope every
+ * selector to the display's authored root so it can only style the editable
+ * body/footer. Order matters — scoping runs over the already-sanitised text so
+ * the blocked-marker comments it inserts are never treated as selectors.
  */
-export function stripStyleClose(css: string): string {
-  // TODO(#75, LTV-029): full authored-CSS hardening lives here; today we only
-  // neutralise the </style breakout.
-  return css.replace(/<\/style/gi, "");
+function prepareAuthoredCss(css: string): string {
+  return scopeDisplayCss(sanitiseDisplayCss(css));
 }
 
 /**
@@ -100,6 +105,10 @@ export interface LayoutRenderInput {
   slotContent: unknown;
   cssOverrides: string;
   footerHtml: string;
+  /** The club-theme CSS variable block (`buildClubThemeCss` output) to ship as
+   * the non-authored, unscoped `themeCss`. Optional so unit tests need not
+   * thread a theme; the state route always supplies the live value. */
+  themeCss?: string;
 }
 
 /**
@@ -124,10 +133,13 @@ export function buildLayoutRender(
     // (they carry no angle brackets), so the client splits on the same keys —
     // then resolve the display's value tokens (escaped).
     bodyHtml: renderAuthoredHtml(input.bodyHtml, state),
-    defaultCss: stripStyleClose(input.defaultCss),
+    // Non-authored club-theme variables, unscoped so `:root { --brand-* }`
+    // cascades to the whole page; injected BEFORE the authored CSS.
+    themeCss: input.themeCss ?? "",
+    defaultCss: prepareAuthoredCss(input.defaultCss),
     areas: renderAreas(areas, state),
     slotContent: renderSlotContentMap(slotContent, state),
-    cssOverrides: stripStyleClose(input.cssOverrides),
+    cssOverrides: prepareAuthoredCss(input.cssOverrides),
     footerHtml: renderAuthoredHtml(input.footerHtml, state),
   };
 }

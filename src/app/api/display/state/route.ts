@@ -9,6 +9,7 @@ import {
 } from "@/lib/lodge-display/template-resolution";
 import { buildLayoutRender } from "@/lib/lodge-display/layout-render";
 import type { LayoutRenderPayload } from "@/lib/lodge-display/layout-registry";
+import { getWebsiteThemeRenderState } from "@/lib/club-theme";
 import { getDefaultLodgeId } from "@/lib/lodges";
 import { isDateOnlyString, parseDateOnly } from "@/lib/date-only";
 import { prisma } from "@/lib/prisma";
@@ -82,17 +83,24 @@ async function loadLayoutRender(
   state: DisplayState
 ): Promise<LayoutRenderPayload | null> {
   try {
-    const template = await prisma.displayTemplate.findUnique({
-      where: { id: templateId },
-      select: {
-        slotContent: true,
-        cssOverrides: true,
-        footerHtml: true,
-        layout: {
-          select: { bodyHtml: true, defaultCss: true, areas: true },
+    // The club theme provides the read-only `themeCss` variable block so an
+    // authored template can `var(--brand-*)` (LTV-029). getWebsiteThemeRenderState
+    // is best-effort (it swallows its own DB error and falls back to defaults),
+    // so it never takes the layout render down.
+    const [template, theme] = await Promise.all([
+      prisma.displayTemplate.findUnique({
+        where: { id: templateId },
+        select: {
+          slotContent: true,
+          cssOverrides: true,
+          footerHtml: true,
+          layout: {
+            select: { bodyHtml: true, defaultCss: true, areas: true },
+          },
         },
-      },
-    });
+      }),
+      getWebsiteThemeRenderState(),
+    ]);
     if (!template) return null;
     return buildLayoutRender(
       {
@@ -102,6 +110,7 @@ async function loadLayoutRender(
         slotContent: template.slotContent,
         cssOverrides: template.cssOverrides,
         footerHtml: template.footerHtml,
+        themeCss: theme.css,
       },
       state
     );

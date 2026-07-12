@@ -13,6 +13,7 @@ const {
   mockResolveTemplate,
   mockResolveForDevice,
   mockGetDefaultLodgeId,
+  mockGetWebsiteTheme,
 } = vi.hoisted(() => ({
   mockPrisma: {
     member: { findUnique: vi.fn() },
@@ -29,6 +30,7 @@ const {
   mockResolveTemplate: vi.fn(),
   mockResolveForDevice: vi.fn(),
   mockGetDefaultLodgeId: vi.fn(),
+  mockGetWebsiteTheme: vi.fn(),
 }));
 
 // The layoutRender path (LTV-027) exercises the REAL layout validator +
@@ -50,6 +52,11 @@ vi.mock("@/lib/lodge-display/template-resolution", () => ({
 }));
 vi.mock("@/lib/lodges", () => ({
   getDefaultLodgeId: (...args: unknown[]) => mockGetDefaultLodgeId(...args),
+}));
+// The v2 layoutRender path (LTV-029) reads the club theme for the read-only
+// `themeCss` variable block; mock it so no DB is touched.
+vi.mock("@/lib/club-theme", () => ({
+  getWebsiteThemeRenderState: () => mockGetWebsiteTheme(),
 }));
 
 const STATE = { lodge: { name: "Silverpeak Lodge" }, rooms: [] };
@@ -87,6 +94,9 @@ beforeEach(() => {
   mockResolveTemplate.mockReturnValue(TEMPLATE);
   mockResolveForDevice.mockReturnValue(TEMPLATE);
   mockGetDefaultLodgeId.mockResolvedValue("lodge-default");
+  mockGetWebsiteTheme.mockResolvedValue({
+    css: ":root,.website-theme{--brand-gold:#8fa87c;}",
+  });
 });
 
 describe("GET /api/display/state — device path", () => {
@@ -250,7 +260,7 @@ describe("GET /api/display/state — v2 layoutRender path (LTV-027)", () => {
   // sanitisation + `</style` stripping.
   const VALID_TEMPLATE = {
     slotContent: { main: { html: "<p>Hi</p><script>steal()</script>" } },
-    cssOverrides: ".x{color:blue}",
+    cssOverrides: ".x{color:blue;background:url(https://evil.example/x.png)}",
     footerHtml: "<b>Wi-Fi</b><script>evil()</script>",
     layout: {
       bodyHtml: "<h1>Wall</h1><script>alert(1)</script>{{area:main}}",
@@ -278,6 +288,13 @@ describe("GET /api/display/state — v2 layoutRender path (LTV-027)", () => {
     expect(body.layoutRender.footerHtml).not.toMatch(/<script/i);
     // `</style` stripped from CSS so authored CSS cannot break out of <style>.
     expect(body.layoutRender.defaultCss).not.toMatch(/<\/style/i);
+    // LTV-029: authored CSS is scoped to the display authored root...
+    expect(body.layoutRender.cssOverrides).toContain(".display-authored-root .x");
+    // ...and the external url() exfiltration vector is removed.
+    expect(body.layoutRender.cssOverrides).not.toContain("evil.example");
+    expect(body.layoutRender.cssOverrides).toContain("/* blocked: external url */");
+    // The read-only club theme variables ride along as non-authored themeCss.
+    expect(body.layoutRender.themeCss).toContain("--brand-gold");
     // The legacy template still ships as the safe fallback.
     expect(body.template).toBeDefined();
     // The device heartbeat still stamps on the v2 path.

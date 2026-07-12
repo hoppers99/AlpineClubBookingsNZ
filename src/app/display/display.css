@@ -99,6 +99,15 @@
   gap: 1.8vmin;
 }
 
+/* --- authored template scope (issue #75, LTV-029) ----------------------- */
+
+/* Authored template CSS is server-prefixed with `.display-authored-root ` so it
+ * only styles the editable body/footer, never the fixed header clock/brand.
+ * `display: contents` keeps this wrapper out of the layout so the body and
+ * authored footer place into the `.display-screen` grid exactly as before — the
+ * wrapper is a CSS-scoping anchor only, with no box of its own. */
+.display-authored-root { display: contents; }
+
 /* --- header ------------------------------------------------------------- */
 
 .display-lodge-header {
