@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { prismaMock, emailMock, xeroMock, xeroOutboxMock } = vi.hoisted(() => ({
+const { prismaMock, emailMock, xeroMock, xeroOutboxMock, subscriptionBillingMock } = vi.hoisted(() => ({
   prismaMock: {
     member: {
       findFirst: vi.fn(),
@@ -63,6 +63,9 @@ const { prismaMock, emailMock, xeroMock, xeroOutboxMock } = vi.hoisted(() => ({
       skipped: 0,
     }),
   },
+  subscriptionBillingMock: {
+    queueApprovedMembershipSubscriptionCharges: vi.fn().mockResolvedValue({ chargeIds: ["charge-1"], exceptionCount: 0 }),
+  },
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -83,6 +86,7 @@ vi.mock("@/lib/email", () => emailMock);
 vi.mock("@/lib/xero", () => xeroMock);
 
 vi.mock("@/lib/xero-operation-outbox", () => xeroOutboxMock);
+vi.mock("@/lib/membership-subscription-billing", () => subscriptionBillingMock);
 
 vi.mock("@/lib/logger", () => ({
   default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },

@@ -221,6 +221,7 @@ export async function flushMemberSubscriptionHistory(memberId: string): Promise<
       select: {
         id: true,
         seasonYear: true,
+        chargeCoverage: { select: { id: true } },
       },
     });
 
@@ -232,12 +233,16 @@ export async function flushMemberSubscriptionHistory(memberId: string): Promise<
       };
     }
 
-    const subscriptionIds = subscriptions.map((subscription) => subscription.id);
+    // Durable charge coverage is financial history and must never be flushed
+    // by a contact resync/unlink. Only legacy/unbilled derived rows are reset.
+    const subscriptionIds = subscriptions
+      .filter((subscription) => !subscription.chargeCoverage)
+      .map((subscription) => subscription.id);
     const seasonYears = Array.from(
       new Set(subscriptions.map((subscription) => subscription.seasonYear))
     ).sort((left, right) => right - left);
 
-    const deactivatedLinks = await tx.xeroObjectLink.updateMany({
+    const deactivatedLinks = subscriptionIds.length > 0 ? await tx.xeroObjectLink.updateMany({
       where: {
         localModel: "MemberSubscription",
         localId: { in: subscriptionIds },
@@ -246,12 +251,12 @@ export async function flushMemberSubscriptionHistory(memberId: string): Promise<
       data: {
         active: false,
       },
-    });
-    const deletedSubscriptions = await tx.memberSubscription.deleteMany({
+    }) : { count: 0 };
+    const deletedSubscriptions = subscriptionIds.length > 0 ? await tx.memberSubscription.deleteMany({
       where: {
         id: { in: subscriptionIds },
       },
-    });
+    }) : { count: 0 };
 
     return {
       seasonYears,
@@ -378,11 +383,6 @@ export async function checkMembershipStatus(
     return { status: "NOT_REQUIRED" };
   }
 
-  if (!member.xeroContactId) {
-    return { status: "NOT_INVOICED" };
-  }
-
-  const { xero, tenantId } = await getAuthenticatedXeroClient();
   const existingSubscription = await prisma.memberSubscription.findUnique({
     where: {
       memberId_seasonYear: { memberId, seasonYear: year },
@@ -394,8 +394,29 @@ export async function checkMembershipStatus(
       xeroInvoiceNumber: true,
       xeroOnlineInvoiceUrl: true,
       paidAt: true,
+      chargeCoverage: {
+        select: {
+          charge: {
+            select: {
+              xeroInvoiceId: true,
+            },
+          },
+        },
+      },
     },
   });
+  const immutableChargeInvoiceId =
+    existingSubscription?.chargeCoverage?.charge.xeroInvoiceId ?? null;
+
+  // Family-billed subscriptions can be covered by an invoice issued to another
+  // member. In that case the covered member does not need their own Xero contact,
+  // and contact-scoped discovery would fail to find (and then clear) the durable
+  // invoice identity persisted by the subscription billing workflow.
+  if (!member.xeroContactId && !immutableChargeInvoiceId) {
+    return { status: "NOT_INVOICED" };
+  }
+
+  const { xero, tenantId } = await getAuthenticatedXeroClient();
   const correlationKey = buildXeroIdempotencyKey(
     "member",
     memberId,
@@ -415,6 +436,7 @@ export async function checkMembershipStatus(
       memberId,
       seasonYear: year,
       xeroContactId: member.xeroContactId,
+      immutableChargeInvoiceId,
       changedInvoiceIds: options?.changedInvoiceIds
         ? Array.from(options.changedInvoiceIds)
         : [],
@@ -422,45 +444,67 @@ export async function checkMembershipStatus(
   });
 
   try {
-    // Fetch invoices for this contact, filtered to the season year to avoid pagination issues.
-    // Season year runs April to March, so filter invoices from season start to end.
-    const response = await callXeroApi(
-      () =>
-        xero.accountingApi.getInvoices(
-          tenantId,
-          undefined, // ifModifiedSince
-          buildMembershipInvoiceWhereClause(
-            year,
-            member.xeroContactId ?? undefined
-          ), // where
-          undefined, // order
-          undefined, // iDs
-          undefined, // invoiceNumbers
-          undefined, // contactIDs
-          undefined, // statuses
-          1, // page
-          false // includeArchived
-        ),
-      {
-        operation: "getInvoices",
-        resourceType: "INVOICE",
-        workflow: "checkMembershipStatus",
-        context: `checkMembershipStatus(${memberId})`,
-      }
-    );
+    // A charge snapshot owns an immutable invoice identity. Fetch that invoice
+    // directly, including for non-recipient family members. Legacy subscriptions
+    // without charge coverage retain contact-scoped discovery.
+    const response = immutableChargeInvoiceId
+      ? await callXeroApi(
+          () =>
+            xero.accountingApi.getInvoice(
+              tenantId,
+              immutableChargeInvoiceId
+            ),
+          {
+            operation: "getInvoice",
+            resourceType: "INVOICE",
+            workflow: "checkMembershipStatus",
+            context: `checkMembershipStatus(${memberId}, immutable charge invoice)`,
+          }
+        )
+      : await callXeroApi(
+          () =>
+            xero.accountingApi.getInvoices(
+              tenantId,
+              undefined, // ifModifiedSince
+              buildMembershipInvoiceWhereClause(
+                year,
+                member.xeroContactId ?? undefined
+              ), // where
+              undefined, // order
+              undefined, // iDs
+              undefined, // invoiceNumbers
+              undefined, // contactIDs
+              undefined, // statuses
+              1, // page
+              false // includeArchived
+            ),
+          {
+            operation: "getInvoices",
+            resourceType: "INVOICE",
+            workflow: "checkMembershipStatus",
+            context: `checkMembershipStatus(${memberId})`,
+          }
+        );
 
     const invoices = response.body.invoices ?? [];
 
     // Look for subscription invoices matching the season year. Detection
     // criteria (account code, item code, text fallback) are admin-configurable.
-    const subscriptionMapping =
-      await getResolvedAccountMapping("subscriptionIncome");
-    const lockoutSettings = await loadMembershipLockoutSettings();
-    const subscriptionInvoice = findSubscriptionInvoice(invoices, year, {
-      accountCode: subscriptionMapping.code ?? "203",
-      itemCode: subscriptionMapping.itemCode,
-      textFallbackEnabled: lockoutSettings.textFallbackEnabled,
-    });
+    let subscriptionInvoice: Invoice | undefined | null;
+    if (immutableChargeInvoiceId) {
+      subscriptionInvoice = invoices.find(
+        (invoice) => invoice.invoiceID === immutableChargeInvoiceId
+      );
+    } else {
+      const subscriptionMapping =
+        await getResolvedAccountMapping("subscriptionIncome");
+      const lockoutSettings = await loadMembershipLockoutSettings();
+      subscriptionInvoice = findSubscriptionInvoice(invoices, year, {
+        accountCode: subscriptionMapping.code ?? "203",
+        itemCode: subscriptionMapping.itemCode,
+        textFallbackEnabled: lockoutSettings.textFallbackEnabled,
+      });
+    }
 
     if (!subscriptionInvoice) {
       await prisma.memberSubscription.upsert({

@@ -1,0 +1,170 @@
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
+import { AlertTriangle, CheckCircle2, MailWarning, ReceiptText, RefreshCw } from "lucide-react";
+import { Alert } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Spinner } from "@/components/ui/spinner";
+import { useConfirm } from "@/components/confirm-dialog";
+import { formatCents } from "@/lib/utils";
+import { todayDateOnlyForTimeZone } from "@/lib/date-only";
+
+type BillingData = {
+  preview: {
+    seasonYear: number;
+    decisionDate: string;
+    dueDays: number;
+    totalCents: number;
+    confirmationToken: string;
+    entries: Array<{
+      key: string;
+      membershipTypeName: string;
+      billingBasis: string;
+      prorationRule: string;
+      chargedAmountCents: number;
+      coveredMonths: number;
+      recipient: { name: string };
+      coveredMembers: Array<{ id: string; name: string }>;
+    }>;
+    exceptions: Array<{ fingerprint: string; message: string }>;
+  };
+  charges: Array<{
+    id: string;
+    status: string;
+    membershipTypeName: string;
+    chargedAmountCents: number;
+    recipientName: string;
+    xeroInvoiceNumber: string | null;
+    lastErrorMessage: string | null;
+    coverage: Array<{ memberName: string }>;
+  }>;
+  exceptions: Array<{ id: string; message: string }>;
+  settings: { invoiceDueDays: number };
+};
+
+export function SubscriptionBillingPanel({ seasonYear }: { seasonYear: number }) {
+  const { confirm, confirmDialog } = useConfirm();
+  const [decisionDate, setDecisionDate] = useState(() => todayDateOnlyForTimeZone());
+  const [data, setData] = useState<BillingData | null>(null);
+  const [dueDays, setDueDays] = useState("30");
+  const [loading, setLoading] = useState(true);
+  const [working, setWorking] = useState(false);
+  const [feedback, setFeedback] = useState<{ kind: "success" | "error"; text: string } | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const response = await fetch(`/api/admin/subscription-billing?seasonYear=${seasonYear}&decisionDate=${decisionDate}`);
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || "Could not load billing preview.");
+      setData(body);
+      setDueDays(String(body.settings.invoiceDueDays));
+    } catch (error) {
+      setFeedback({ kind: "error", text: error instanceof Error ? error.message : "Could not load billing preview." });
+    } finally {
+      setLoading(false);
+    }
+  }, [decisionDate, seasonYear]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  async function post(body: Record<string, unknown>) {
+    setWorking(true);
+    setFeedback(null);
+    try {
+      const response = await fetch("/api/admin/subscription-billing", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Billing action failed.");
+      setFeedback({ kind: "success", text: result.message || "Billing action completed." });
+      await load();
+    } catch (error) {
+      setFeedback({ kind: "error", text: error instanceof Error ? error.message : "Billing action failed." });
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function confirmBatch() {
+    if (!data) return;
+    const accepted = await confirm({
+      title: `Create ${data.preview.entries.length} annual membership charge${data.preview.entries.length === 1 ? "" : "s"}?`,
+      description: `${formatCents(data.preview.totalCents)} will be snapshotted. This creates durable Xero invoice work and cannot be undone by later fee or family changes. ${data.preview.exceptions.length} exception${data.preview.exceptions.length === 1 ? "" : "s"} will be recorded without invoicing.`,
+      confirmLabel: "Confirm annual batch",
+    });
+    if (!accepted) return;
+    await post({
+      action: "CONFIRM_ANNUAL_BATCH",
+      seasonYear,
+      decisionDate,
+      confirmationToken: data.preview.confirmationToken,
+      confirmed: true,
+    });
+  }
+
+  return (
+    <Card>
+      {confirmDialog}
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2"><ReceiptText className="h-5 w-5" /> Annual subscription billing</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <p className="text-sm text-muted-foreground">
+          Preview first, then explicitly confirm. Confirmation freezes fee, proration, recipient, family coverage, due days, and amount before Xero work is queued.
+        </p>
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="space-y-1"><Label htmlFor="subscription-decision-date">Decision date</Label><Input id="subscription-decision-date" type="date" value={decisionDate} onChange={(event) => setDecisionDate(event.target.value)} /></div>
+          <Button type="button" variant="outline" onClick={() => void load()} disabled={loading || working}><RefreshCw className="mr-1 h-4 w-4" /> Refresh preview</Button>
+          <div className="space-y-1"><Label htmlFor="subscription-due-days">Invoice due days</Label><Input id="subscription-due-days" className="w-28" type="number" min={1} max={365} value={dueDays} onChange={(event) => setDueDays(event.target.value)} /></div>
+          <Button type="button" variant="outline" disabled={working || Number(dueDays) < 1 || Number(dueDays) > 365} onClick={() => void post({ action: "UPDATE_SETTINGS", invoiceDueDays: Number(dueDays) })}>Save due days</Button>
+        </div>
+        {feedback ? <Alert variant={feedback.kind === "success" ? "success" : "error"}>{feedback.text}</Alert> : null}
+        {loading ? <Spinner label="Building subscription billing preview…" /> : data ? (
+          <>
+            <div className="grid gap-3 sm:grid-cols-4">
+              <div><p className="text-xs text-muted-foreground">Charges</p><p className="text-xl font-semibold tabular-nums">{data.preview.entries.length}</p></div>
+              <div><p className="text-xs text-muted-foreground">Preview total</p><p className="text-xl font-semibold tabular-nums">{formatCents(data.preview.totalCents)}</p></div>
+              <div><p className="text-xs text-muted-foreground">Open exceptions</p><p className="text-xl font-semibold tabular-nums">{data.exceptions.length + data.preview.exceptions.length}</p></div>
+              <div><p className="text-xs text-muted-foreground">Due</p><p className="text-xl font-semibold tabular-nums">{data.preview.dueDays} days</p></div>
+            </div>
+            {data.preview.entries.length > 0 ? (
+              <div className="space-y-2">
+                {data.preview.entries.map((entry) => (
+                  <div key={entry.key} className="rounded-md border p-3 text-sm">
+                    <div className="flex flex-wrap items-center justify-between gap-2"><span className="font-medium">{entry.membershipTypeName} · {entry.recipient.name}</span><span className="tabular-nums">{formatCents(entry.chargedAmountCents)}</span></div>
+                    <p className="text-muted-foreground">{entry.billingBasis.replaceAll("_", " ")} · {entry.coveredMonths}/12 months · covers {entry.coveredMembers.map((member) => member.name).join(", ")}</p>
+                  </div>
+                ))}
+                <Button type="button" onClick={() => void confirmBatch()} disabled={working}>Confirm and queue annual batch</Button>
+              </div>
+            ) : <Alert variant="info">No new charges are available for this preview. Existing immutable coverage is not regenerated.</Alert>}
+            {data.preview.exceptions.length > 0 || data.exceptions.length > 0 ? (
+              <Alert variant="warning"><div className="space-y-1"><p className="font-medium">Billing exceptions — no invoice created</p>{[...data.preview.exceptions, ...data.exceptions].map((item) => <p key={("fingerprint" in item ? item.fingerprint : item.id)}>{item.message}</p>)}</div></Alert>
+            ) : null}
+            {data.charges.length > 0 ? (
+              <div className="space-y-2">
+                <h3 className="font-medium">Durable charge queue</h3>
+                {data.charges.map((charge) => (
+                  <div key={charge.id} className="flex flex-wrap items-center justify-between gap-3 rounded-md border p-3 text-sm">
+                    <div><p className="font-medium">{charge.membershipTypeName} · {charge.recipientName} · {formatCents(charge.chargedAmountCents)}</p><p className="text-muted-foreground">{charge.coverage.map((row) => row.memberName).join(", ")} · {charge.xeroInvoiceNumber ?? "No Xero number yet"}</p>{charge.lastErrorMessage ? <p className="text-danger">{charge.lastErrorMessage}</p> : null}</div>
+                    <div className="flex items-center gap-2">
+                      <Badge variant="secondary">{charge.status.replaceAll("_", " ")}</Badge>
+                      {charge.status === "EMAIL_FAILED" || charge.status === "CONFLICT" || charge.status === "QUEUED" || charge.status === "INVOICE_CREATED" ? <Button size="sm" variant="outline" disabled={working} onClick={() => void post({ action: "RETRY_CHARGE", chargeId: charge.id })}>{charge.status === "EMAIL_FAILED" ? <MailWarning className="mr-1 h-4 w-4" /> : charge.status === "CONFLICT" ? <AlertTriangle className="mr-1 h-4 w-4" /> : <CheckCircle2 className="mr-1 h-4 w-4" />} Retry</Button> : null}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}

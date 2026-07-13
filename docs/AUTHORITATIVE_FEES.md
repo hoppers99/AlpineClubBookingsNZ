@@ -19,8 +19,31 @@ records managed under **Admin > Hut Fees & Seasons**.
    public page caches.
 
 `NO_INVOICE` is explicit configuration, requires zero cents, and differs from a
-missing schedule. `REMAINING_MONTHS_INCLUSIVE` records later billing policy;
-this workflow does not create or send invoices.
+missing schedule. `REMAINING_MONTHS_INCLUSIVE` is consumed by the subscription
+billing workflow below.
+
+## Subscription invoice workflow
+
+1. Open **Admin > Subscriptions**, choose the membership year and decision date,
+   and refresh the preview. The preview is read-only and makes no provider call.
+2. Resolve every listed fee, assignment, family, and recipient exception. A
+   per-family recipient must be active, unarchived, and a member of that exact
+   family; login holder and family admin are never inferred.
+3. Review each recipient, covered member, billing basis, inclusive month count,
+   GST-inclusive integer-cent amount, total, and current due-days setting.
+4. Explicitly confirm the unchanged preview. Confirmation snapshots those
+   values and creates durable outbox work. A later fee, family, or recipient
+   change affects future previews only and never rewrites existing charges.
+5. Watch the durable charge queue. `EMAIL_FAILED` can be retried safely because
+   the Xero invoice identifier is persisted before email. `CONFLICT` means an
+   invoice with the immutable reference exists but its contact, account, amount,
+   type, or state does not match; inspect Xero and the local snapshot. The app
+   never silently rewrites that provider invoice.
+
+Annual invoice runs are never implicit: production operators must review and
+confirm the preview. Newly approved members are the exception to the annual-batch
+trigger only: their configured charge is queued automatically after approval;
+incomplete setup records a visible exception without blocking membership.
 
 ## Entrance-fee compatibility window
 

@@ -584,7 +584,27 @@ displays and booking lockout also resolve the seasonal type: `NOT_REQUIRED` is
 an effective status layered over the raw `MemberSubscription`/Xero history,
 which remains stored and visible for audit. Seasonal type changes do not
 automatically reprice existing future bookings. Committee assignments remain
-separate public/contact metadata. `CommitteeRole` stores reusable master positions
+separate public/contact metadata.
+
+Membership subscription creation is snapshot-first. The planner in
+`membership-subscription-billing.ts` reads effective fee schedules and seasonal
+assignments, groups `PER_FAMILY` coverage only under an explicit active
+same-family recipient, calculates integer-cent inclusive-month proration, and
+returns a digest-bound preview. Explicit annual confirmation (or the
+post-approval new-member hook) writes `MembershipSubscriptionCharge`, immutable
+coverage joins, and visible `MembershipBillingException` rows under one
+season-scoped advisory transaction lock. Provider calls happen later through a
+`MEMBERSHIP_SUBSCRIPTION_INVOICE` Xero outbox operation.
+
+`xero-subscription-invoices.ts` queries by the charge's immutable reference,
+adopts only an exact contact/account/amount/ACCREC match, or creates one
+AUTHORISED GST-inclusive invoice with the `subscriptionIncome` mapping. It
+persists invoice identity to the charge and every covered subscription before
+calling Xero email. A retry therefore emails the persisted invoice rather than
+creating another. Provider mismatches become local `CONFLICT` state and are
+never corrected by an automatic Xero update.
+
+`CommitteeRole` stores reusable master positions
 and their role email aliases, and `CommitteeAssignment` links members to those
 positions with blurb, sort order, published, show-phone, contactable, and active
 flags. The public committee API reads only active, published assignments with
