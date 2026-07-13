@@ -174,7 +174,7 @@ const EVERYDAY_TEMPLATE: BuiltInTemplateSeed = {
     notice: { module: "notice-board" },
   },
   cssOverrides: "",
-  footerHtml: "",
+  footerHtml: "<p>Have a nice day 👋</p>",
 };
 
 // ---------------------------------------------------------------------------
@@ -231,7 +231,7 @@ const WHOLE_LODGE_TEMPLATE: BuiltInTemplateSeed = {
     "main/notice": { module: "notice-board" },
   },
   cssOverrides: "",
-  footerHtml: "",
+  footerHtml: "<p>Have a nice day 👋</p>",
 };
 
 // ---------------------------------------------------------------------------
@@ -282,7 +282,7 @@ const SINGLES_TEMPLATE: BuiltInTemplateSeed = {
     "main/notice": { module: "notice-board" },
   },
   cssOverrides: "",
-  footerHtml: "",
+  footerHtml: "<p>Have a nice day 👋</p>",
 };
 
 /** The three built-in Layouts, in seed order (a Template's Layout must exist
