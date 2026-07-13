@@ -42,6 +42,14 @@ type PlanItem = {
   changedFields?: string[];
   candidates?: Array<{ id: string; label: string }>;
 };
+
+// Per-action styling so anything that will actually change stands out against
+// the (usually long) list of unchanged rows.
+const ACTION_BADGE: Record<PlanItem["action"], { label: string; badge: string }> = {
+  create: { label: "New", badge: "bg-emerald-100 text-emerald-800" },
+  update: { label: "Updated", badge: "bg-amber-100 text-amber-900" },
+  unchanged: { label: "Unchanged", badge: "bg-slate-100 text-slate-500" },
+};
 type CategoryPlan = {
   category: ConfigTransferCategory;
   items: PlanItem[];
@@ -383,8 +391,13 @@ export default function ConfigTransferPage() {
           {plan && (
             <div className="space-y-3 rounded-md border p-4 text-sm">
               <p className="font-medium">
-                Plan: {plan.summary.create} new, {plan.summary.update} updated,{" "}
-                {plan.summary.unchanged} unchanged.
+                Plan:{" "}
+                <span className="text-emerald-700">{plan.summary.create} new</span>,{" "}
+                <span className="text-amber-800">{plan.summary.update} updated</span>,{" "}
+                <span className="text-muted-foreground">
+                  {plan.summary.unchanged} unchanged
+                </span>
+                .
               </p>
 
               {plan.errors.length > 0 && (
@@ -512,13 +525,28 @@ export default function ConfigTransferPage() {
               {plan.categories.map((cat) => (
                 <div key={cat.category}>
                   <p className="font-medium">{CATEGORY_LABELS[cat.category]}</p>
-                  <ul className="ml-4 list-disc text-muted-foreground">
-                    {cat.items.slice(0, 50).map((item) => (
-                      <li key={`${item.entity}:${item.key}`}>
-                        {item.action} — {item.entity} “{item.key}”
-                        {item.changedFields?.length
-                          ? ` (${item.changedFields.join(", ")})`
-                          : ""}
+                  <ul className="ml-1 space-y-1">
+                    {cat.items.slice(0, 50).map((item) => {
+                      const changed = item.action !== "unchanged";
+                      const badge = ACTION_BADGE[item.action];
+                      return (
+                      <li
+                        key={`${item.entity}:${item.key}`}
+                        className={`flex flex-wrap items-center gap-x-2 gap-y-1 ${
+                          changed ? "text-slate-900" : "text-muted-foreground opacity-70"
+                        }`}
+                      >
+                        <span
+                          className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${badge.badge}`}
+                        >
+                          {badge.label}
+                        </span>
+                        <span className={changed ? "font-medium" : ""}>
+                          {item.entity} “{item.key}”
+                          {item.changedFields?.length
+                            ? ` (${item.changedFields.join(", ")})`
+                            : ""}
+                        </span>
                         {item.candidates?.length ? (
                           <span className="ml-2">
                             <select
@@ -543,7 +571,8 @@ export default function ConfigTransferPage() {
                           </span>
                         ) : null}
                       </li>
-                    ))}
+                      );
+                    })}
                   </ul>
                   {cat.warnings.map((w) => (
                     <p key={w} className="text-amber-800">
