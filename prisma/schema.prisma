@@ -145,6 +145,17 @@ enum MembershipTypeSubscriptionBehavior {
   NOT_REQUIRED
 }
 
+enum MembershipFeeBillingBasis {
+  PER_MEMBER
+  PER_FAMILY
+  NO_INVOICE
+}
+
+enum MembershipFeeProrationRule {
+  NONE
+  REMAINING_MONTHS_INCLUSIVE
+}
+
 enum MembershipAssignmentSource {
   ADMIN
   /// retired (2026-07 audit, #1525 S4): never written in code (`source` always defaults to ADMIN); kept because Postgres enum-value removal requires a type rebuild.
@@ -823,6 +834,8 @@ model MembershipType {
   key                  String                             @unique
   name                 String
   description          String?                            @db.Text
+  publicDescription    String?                            @db.Text
+  publiclyListed       Boolean                            @default(false)
   isActive             Boolean                            @default(true)
   isBuiltIn            Boolean                            @default(false)
   bookingBehavior      MembershipTypeBookingBehavior      @default(MEMBER_RATE)
@@ -834,9 +847,40 @@ model MembershipType {
   assignments           SeasonalMembershipAssignment[]
   allowedAgeTiers       MembershipTypeAgeTier[]
   xeroContactGroupRules XeroContactGroupRule[]
+  annualFees            MembershipAnnualFee[]
 
   @@index([isActive, sortOrder])
   @@index([sortOrder])
+}
+
+model MembershipAnnualFee {
+  id               String                       @id @default(cuid())
+  membershipTypeId String
+  amountCents      Int
+  billingBasis     MembershipFeeBillingBasis
+  prorationRule    MembershipFeeProrationRule   @default(NONE)
+  effectiveFrom    DateTime                     @db.Date
+  effectiveTo      DateTime?                    @db.Date
+  createdAt        DateTime                     @default(now())
+  updatedAt        DateTime                     @updatedAt
+
+  membershipType MembershipType @relation(fields: [membershipTypeId], references: [id], onDelete: Restrict)
+
+  @@unique([membershipTypeId, effectiveFrom])
+  @@index([membershipTypeId, effectiveFrom, effectiveTo], map: "MembershipAnnualFee_effective_lookup_idx")
+}
+
+model EntranceFee {
+  id            String              @id @default(cuid())
+  category      EntranceFeeCategory
+  amountCents   Int
+  effectiveFrom DateTime            @db.Date
+  effectiveTo   DateTime?           @db.Date
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  @@unique([category, effectiveFrom])
+  @@index([category, effectiveFrom, effectiveTo])
 }
 
 model MembershipTypeAgeTier {
@@ -3280,6 +3324,8 @@ model FamilyGroup {
   memberships   FamilyGroupMember[]
   joinRequests  FamilyGroupJoinRequest[]
   partnerInviteTokens PartnerInviteToken[]
+  billingMembershipId String?            @unique
+  billingMembership   FamilyGroupMember? @relation("FamilyBillingMembership", fields: [billingMembershipId], references: [id], onDelete: SetNull)
 }
 
 model FamilyGroupMember {
@@ -3291,6 +3337,7 @@ model FamilyGroupMember {
 
   familyGroup FamilyGroup @relation(fields: [familyGroupId], references: [id], onDelete: Cascade)
   member      Member      @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  billedFamilyGroup FamilyGroup? @relation("FamilyBillingMembership")
 
   @@unique([familyGroupId, memberId])
   @@index([memberId])
