@@ -43,7 +43,6 @@ async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot> {
         hutLeaders: true,
         communications: true,
         skifieldConditions: true,
-        multiLodge: true,
         twoFactor: true,
         analytics: true,
         lobbyDisplay: true,

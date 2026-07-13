@@ -7,8 +7,7 @@ import { redirect } from "next/navigation";
 // to the Display Devices page (/admin/display/devices, moved off /admin/display
 // by fork issue #109 when that path became the Lobby Display hub) so old
 // bookmarks / links keep working; a pointer on that page directs admins to the
-// new per-lodge home. Devices is the closest surviving Lobby Display surface
-// (the lodge list is multiLodge-gated, so it is not a reliable landing spot).
+// new per-lodge home. Devices is the closest surviving Lobby Display surface.
 export default function AdminDisplaySettingsRedirect() {
   redirect("/admin/display/devices");
 }

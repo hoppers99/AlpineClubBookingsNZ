@@ -88,8 +88,8 @@ export default function AdminDisplayDevicesPage() {
       setLodges(active.map((lodge) => ({ id: lodge.id, name: lodge.name })));
       setNewLodgeId((current) => current || active[0]?.id || "");
     }
-    // A single-lodge club (multiLodge off) has no lodges endpoint: creation
-    // falls back to the club's default lodge server-side.
+    // When no lodge is selected (e.g. a single-lodge club shows no picker),
+    // creation falls back to the club's default lodge server-side.
     setLoading(false);
   }, []);
 

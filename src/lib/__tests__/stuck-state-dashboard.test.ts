@@ -25,7 +25,6 @@ const modulesOn: FeatureFlags = {
   twoFactor: false,
   analytics: false,
   lobbyDisplay: false,
-  multiLodge: false,
 };
 
 function emptyEmailResponses() {

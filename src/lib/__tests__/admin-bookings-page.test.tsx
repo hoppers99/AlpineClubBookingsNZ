@@ -82,7 +82,6 @@ const effectiveModulesOn = {
   twoFactor: false,
   analytics: false,
   lobbyDisplay: false,
-  multiLodge: false,
 };
 
 describe("AdminBookingsPage", () => {

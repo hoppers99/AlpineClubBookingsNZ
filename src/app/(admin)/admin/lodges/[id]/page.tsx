@@ -27,8 +27,8 @@ import { Label } from "@/components/ui/label";
 
 // Lodge configuration hub (ADR-003): one place to see a lodge's setup state,
 // with links into the existing per-area pages pre-filtered via ?lodgeId=.
-// Lives inside the multiLodge-gated /admin/lodges route family, so
-// single-lodge clubs never see it.
+// Lives inside the /admin/lodges route family (admin-gated); every club can
+// reach it to configure its lodge(s).
 
 interface LodgeRecord {
   id: string;
