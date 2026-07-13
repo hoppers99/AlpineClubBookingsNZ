@@ -51,7 +51,7 @@ export const SINGLETONS: SingletonSpec[] = [
       "kiosk", "chores", "financeDashboard", "waitlist", "xeroIntegration",
       "bedAllocation", "internetBankingPayments", "addressAutocomplete",
       "groupBookings", "lockers", "induction", "workParties", "promoCodes",
-      "hutLeaders", "communications", "skifieldConditions", "multiLodge",
+      "hutLeaders", "communications", "skifieldConditions",
       "twoFactor", "analytics", "lobbyDisplay",
     ],
   },

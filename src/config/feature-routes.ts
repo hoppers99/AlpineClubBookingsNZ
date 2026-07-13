@@ -126,10 +126,6 @@ export const FEATURE_ROUTE_RULES: FeatureRouteRule[] = [
     ],
   },
   {
-    flag: "multiLodge",
-    prefixes: ["/admin/lodges", "/api/admin/lodges"],
-  },
-  {
     // Deliberately OUTSIDE /lodge and /api/lodge: those prefixes are gated by
     // the kiosk flag, and the display module must work without the kiosk
     // (ADR-001 §1, docs/lobby-display/decisions/).

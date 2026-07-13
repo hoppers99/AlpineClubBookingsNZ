@@ -75,8 +75,8 @@ export async function GET() {
 
 const createSchema = z.object({
   name: nameField(),
-  // Optional: a single-lodge club (multiLodge off) has no lodge picker —
-  // the device binds to the club's default lodge.
+  // Optional: when a club runs a single lodge the UI shows no lodge picker,
+  // so the device binds to the club's default lodge.
   lodgeId: z.string().min(1).optional(),
 });
 

@@ -2736,10 +2736,11 @@ model ClubModuleSettings {
 }
 
 // A physical lodge property. Every deployment has at least one row (seeded by
-// migration/seed). Lodge management UI is gated by the multiLodge Admin Module,
-// but this table is core: booking data will scope to it from phase 2 of
-// docs/multi-lodge/implementation-plan.md onward. While exactly one active
-// lodge exists the UI shows no lodge concept (ADR-002 presentation rule).
+// migration/seed). Multi-lodge is core (ADR-005): the Lodges admin UI is always
+// available (no module flag), and booking data scopes to this table. While
+// exactly one active lodge exists the per-page lodge selectors auto-resolve to
+// it (ADR-002 presentation rule); the vestigial ClubModuleSettings.multiLodge
+// column is retired in a follow-up (#129).
 model Lodge {
   id         String   @id @default(cuid())
   name       String

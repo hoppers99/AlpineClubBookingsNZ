@@ -44,7 +44,7 @@ const MODULES = {
   xeroIntegration: false, bedAllocation: true, internetBankingPayments: false,
   addressAutocomplete: false, groupBookings: true, lockers: true,
   induction: true, workParties: true, promoCodes: true, hutLeaders: true,
-  communications: true, skifieldConditions: true, multiLodge: true,
+  communications: true, skifieldConditions: true,
   twoFactor: false, analytics: false,
 };
 const EMAIL = {
@@ -87,14 +87,14 @@ describe("config-transfer club-settings", () => {
     const { zip } = await exportBundle(false);
     // Target: module settings differ (update); email settings absent (create).
     const target = stubDb({
-      clubModuleSettings: { ...MODULES, multiLodge: false },
+      clubModuleSettings: { ...MODULES, bedAllocation: false },
     });
     const plan = await buildImportPlan(target, zip, { mode: "merge" });
     const items = plan.categories[0].items;
     const modules = items.find((i) => i.entity === "club-module-settings");
     const email = items.find((i) => i.entity === "email-message-setting");
     expect(modules?.action).toBe("update");
-    expect(modules?.changedFields).toContain("multiLodge");
+    expect(modules?.changedFields).toContain("bedAllocation");
     expect(email?.action).toBe("create");
   });
 });

@@ -108,8 +108,8 @@ export default function AdminDisplayTemplatesPage() {
     const [templatesRes, layoutsRes, lodgesRes] = await Promise.all([
       fetch("/api/admin/display/templates"),
       fetch("/api/admin/display/layouts"),
-      // Same source the Devices page uses: the admin lodges list. More than one
-      // active lodge ⇒ multiLodge, so the preview lodge selector appears (a
+      // Same source the Devices page uses: the admin lodges list. When more
+      // than one active lodge exists the preview lodge selector appears (a
       // template is lodge-agnostic, so its preview lodge must be chosen).
       fetch("/api/admin/lodges").catch(() => null),
     ]);
@@ -213,7 +213,7 @@ export default function AdminDisplayTemplatesPage() {
   // Preview opens the sandboxed host page (LTV-036, ADR-003 §5), NOT /display
   // directly: the host mints a signed grant and renders the authored template in
   // an `sandbox="allow-scripts"` iframe, so it can never execute against this
-  // admin session. The lodge is passed explicitly (multiLodge) so the preview is
+  // admin session. The lodge is passed explicitly so the preview is
   // never a silent default (#64).
   function previewTemplate(item: TemplateListItem) {
     const params = new URLSearchParams({
