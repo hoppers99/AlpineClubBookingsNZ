@@ -158,9 +158,11 @@ describe("LTV-038 everyday-board built-in — visual parity", () => {
     expect(notice?.classList.contains("display-notice-empty")).toBe(false);
     expect(screen.getByText(/Committee meeting Friday/)).toBeDefined();
 
-    // Footer chrome: footerHtml is empty, so the built-in InfoFooter renders the
-    // wifi code, and stays OUTSIDE the authored root (like the header).
-    expect(screen.getByText("alpine1234")).toBeDefined();
+    // Footer chrome (#112): the built-in ships a friendly static footer default
+    // (no forced wifi/config tokens), rendered in the footer container. The
+    // config-driven InfoFooter wifi is only the fallback for an empty footerHtml.
+    expect(screen.getByText(/Have a nice day/)).toBeDefined();
+    expect(screen.queryByText("alpine1234")).toBeNull();
     expect(container.querySelector(".display-info-footer")).not.toBeNull();
     expect(
       container.querySelector(".display-authored-root .display-lodge-header")
