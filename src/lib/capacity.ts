@@ -369,7 +369,13 @@ export async function checkCapacity(
 
     return {
       date: night,
-      occupiedBeds,
+      // A held night's occupiedBeds is pinned to lodgeCapacity, mirroring
+      // getMonthAvailability's pinning (ADR-001 decision 6, issue #118): to a
+      // member reading this result (e.g. the raw availability/check payload,
+      // issue #155) a held-but-not-full night must be indistinguishable from
+      // a genuinely full lodge, and occupiedBeds + availableBeds must equal
+      // lodgeCapacity on every night, not just full ones.
+      occupiedBeds: wholeLodgeHeld ? lodgeCapacity : occupiedBeds,
       // A held night is hard-blocked at 0 — never negative, so it stays out of
       // the over-capacity confirm set and cannot be bypassed by an admin
       // override (ADR-001 decision 5, issue #118).
@@ -389,6 +395,17 @@ export async function checkCapacity(
     nightDetails,
   };
 }
+
+// NOTE (issue #155): checkCapacityForGuestRanges deliberately does NOT get the
+// same occupiedBeds pin. Its nightDetails feed ~25 call sites across booking
+// creation, payment, modify-quote, and cron paths; none of them read
+// `.occupiedBeds` (verified by grep — they only use `.available`,
+// `.minAvailable`, and `.availableBeds`/`.wholeLodgeHeld` via
+// overCapacityNights/wholeLodgeBlockedNights), so pinning would be safe today,
+// but re-verifying every consumer each time a new one is added is a bigger
+// surface than this fix needs. checkCapacity has exactly three consumers
+// (availability/check route, the dashboard's next-stay occupancy widget, and
+// a plain availability boolean check) and all three were checked directly.
 
 export async function checkCapacityForGuestRanges(
   lodgeId: string,
