@@ -85,6 +85,7 @@ const SANITIZE_OPTIONS: sanitizeHtml.IOptions = {
       "stroke-linecap",
       "stroke-linejoin",
     ],
+    polygon: ["points", "style", "fill", "stroke"],
     path: [
       "d",
       "fill",
