@@ -366,6 +366,19 @@ const MEMBER_DELETE_BLOCKER_SPECS: readonly BlockerSpec[] = [
       }),
   },
   {
+    // MembershipSubscriptionCharge.recipientMemberId is a RESTRICT FK, so a
+    // member who is only the billing recipient of a family charge (e.g. after
+    // a group dissolves) would otherwise pass every blocker and then fail
+    // member.delete with an unhandled P2003 (issue #1886).
+    code: "subscription_charge_recipient",
+    label:
+      "Membership subscription charges name this member as invoice recipient.",
+    query: (db, memberId) =>
+      db.membershipSubscriptionCharge.count({
+        where: { recipientMemberId: memberId },
+      }),
+  },
+  {
     code: "promo_redemptions",
     label: "Promo redemptions exist.",
     query: (db, memberId) => {

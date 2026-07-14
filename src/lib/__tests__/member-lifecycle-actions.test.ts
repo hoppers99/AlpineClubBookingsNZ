@@ -34,6 +34,7 @@ const mockPrisma = vi.hoisted(() => {
     adminCreditAdjustmentRequest: countDelegate(),
     refundRequest: countDelegate(),
     memberSubscription: countDelegate(),
+    membershipSubscriptionCharge: countDelegate(),
     promoRedemption: countDelegate(),
     promoRedemptionAllocation: countDelegate(),
     promoCodeAssignment: countDelegate(),
@@ -304,6 +305,7 @@ const countDelegates = [
   mockPrisma.adminCreditAdjustmentRequest,
   mockPrisma.refundRequest,
   mockPrisma.memberSubscription,
+  mockPrisma.membershipSubscriptionCharge,
   mockPrisma.promoRedemptionAllocation,
   mockPrisma.promoCodeAssignment,
   mockPrisma.nominationToken,
@@ -439,6 +441,52 @@ describe("member delete lifecycle actions", () => {
         OR: expect.arrayContaining([{ chargeCoverage: { isNot: null } }]),
       }),
     });
+  });
+
+  it("blocks delete eligibility when subscription charges name the member as invoice recipient (#1886 F34)", async () => {
+    // recipientMemberId is a RESTRICT FK: a member who is only the billing
+    // recipient of a family subscription charge (e.g. after a group
+    // dissolves) must surface as a 409 blocker instead of an unhandled
+    // P2003 at member.delete time.
+    mockPrisma.membershipSubscriptionCharge.count.mockResolvedValue(2);
+
+    const eligibility = await getMemberDeleteEligibility({
+      memberId: "member-1",
+      currentAdminMemberId: "admin-2",
+    });
+
+    expect(eligibility.eligible).toBe(false);
+    expect(eligibility.blockers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "subscription_charge_recipient",
+          label:
+            "Membership subscription charges name this member as invoice recipient.",
+          count: 2,
+        }),
+      ]),
+    );
+    expect(mockPrisma.membershipSubscriptionCharge.count).toHaveBeenCalledWith({
+      where: { recipientMemberId: "member-1" },
+    });
+  });
+
+  it("rejects delete approval with 409 before member.delete when the member is a subscription charge recipient (#1886 F34)", async () => {
+    mockPrisma.membershipSubscriptionCharge.count.mockResolvedValue(1);
+
+    await expect(
+      reviewMemberDeleteRequest({
+        requestId: "request-1",
+        reviewedByMemberId: "admin-2",
+        action: "approve",
+      }),
+    ).rejects.toMatchObject({
+      name: "MemberLifecycleActionError",
+      statusCode: 409,
+      message: "This member cannot be deleted while blockers exist.",
+    } satisfies Partial<MemberLifecycleActionError>);
+
+    expect(mockPrisma.member.delete).not.toHaveBeenCalled();
   });
 
   it("creates a delete request only when the member is eligible", async () => {
