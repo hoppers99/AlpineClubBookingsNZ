@@ -3,6 +3,8 @@ import {
   BUILT_IN_DISPLAY_LAYOUTS,
   BUILT_IN_DISPLAY_TEMPLATES,
   ensureBuiltInDisplays,
+  isBuiltInDisplayLayoutKey,
+  isBuiltInDisplayTemplateKey,
   type EnsureBuiltInDisplaysClient,
 } from "@/lib/lodge-display/built-in-seeds";
 
@@ -167,5 +169,25 @@ describe("ensureBuiltInDisplays — seed contract", () => {
     for (const call of [...layoutUpserts, ...templateUpserts]) {
       expect(call.update).not.toEqual({});
     }
+  });
+});
+
+describe("built-in key detection (#156)", () => {
+  // The authoring editors warn + confirm before an in-place built-in edit; the
+  // signal is the reserved KEY, because `ensureBuiltInDisplays` matches on key
+  // (the deterministic `builtin-*` id is only for a fresh create).
+  it("recognises every seeded layout/template key as a built-in", () => {
+    for (const layout of BUILT_IN_DISPLAY_LAYOUTS) {
+      expect(isBuiltInDisplayLayoutKey(layout.key)).toBe(true);
+    }
+    for (const template of BUILT_IN_DISPLAY_TEMPLATES) {
+      expect(isBuiltInDisplayTemplateKey(template.key)).toBe(true);
+    }
+  });
+
+  it("treats a custom (non-reserved) key as not built-in", () => {
+    expect(isBuiltInDisplayLayoutKey("foyer-board")).toBe(false);
+    expect(isBuiltInDisplayTemplateKey("foyer-board")).toBe(false);
+    expect(isBuiltInDisplayLayoutKey("")).toBe(false);
   });
 });

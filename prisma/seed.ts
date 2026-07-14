@@ -594,8 +594,15 @@ async function main() {
   await seedInductionChecklistTemplate();
 
   // Seed the three built-in lobby-display designs as v2 Layout + Template rows
-  // (LTV-038) create-if-missing. Admin-customised built-ins are never clobbered
-  // (upsert with empty update); devices bind to them by `templateId`.
+  // (LTV-038). DELIBERATE EXCEPTION to this file's "never overwrite" contract
+  // (see the header): the built-ins are code-managed scaffolding, so
+  // `ensureBuiltInDisplays` upserts each by `key` and REFRESHES its definition
+  // from code on every re-seed — shipped-design improvements reach already-seeded
+  // installs (owner decision A, issue #111). Only the reserved `builtin-*` keys
+  // are touched; an admin customises by DUPLICATING a built-in into a new
+  // (non-built-in) row, so an in-place edit to a built-in is intentionally
+  // overwritten here (the authoring editors warn + confirm before such an edit,
+  // issue #156). Devices bind to these rows by `templateId`.
   await ensureBuiltInDisplays(prisma);
   console.log("Built-in display layouts/templates seeded");
 

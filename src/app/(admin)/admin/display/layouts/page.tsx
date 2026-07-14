@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { listDisplayConditions } from "@/lib/lodge-display/conditions";
 import { listDisplayCssTokens } from "@/lib/lodge-display/css-tokens";
+import { isBuiltInDisplayLayoutKey } from "@/lib/lodge-display/built-in-seeds";
 
 // Lobby display LAYOUT authoring (fork issue #78, LTV-032, ADR-003 §1). An
 // admin authors the structural template: an HTML body with `{{area:key}}`
@@ -208,6 +209,14 @@ export default function AdminDisplayLayoutsPage() {
   const conditions = useMemo(() => listDisplayConditions(), []);
   const cssTokens = useMemo(() => listDisplayCssTokens(), []);
 
+  // A built-in layout is code-managed scaffolding: `ensureBuiltInDisplays`
+  // refreshes it from code on every re-seed/upgrade (owner decision A, #111), so
+  // an in-place edit does not survive. Detected by the reserved KEY (the seed
+  // matches on key). Only an EXISTING row can be a built-in — a new draft never
+  // is. Drives the persistent notice + the not-upgrade-safe save confirm (#156).
+  const editingBuiltIn =
+    draft.id !== null && isBuiltInDisplayLayoutKey(draft.key);
+
   const refresh = useCallback(async () => {
     const response = await fetch("/api/admin/display/layouts");
     if (response.ok) {
@@ -226,6 +235,25 @@ export default function AdminDisplayLayoutsPage() {
     setErrors([]);
     setWarnings([]);
     setMessage(null);
+  }
+
+  // Fork the opened built-in into a NEW custom layout (id cleared → a create),
+  // carrying its body/CSS/areas but a fresh key/name so the admin customises the
+  // copy instead of the upgrade-clobbered original (#156, design.md §3/§8). The
+  // built-in itself is untouched until the admin saves the copy.
+  function duplicateLayout() {
+    setErrors([]);
+    setWarnings([]);
+    setDraft((current) => ({
+      ...current,
+      id: null,
+      key: current.key ? `${current.key}-copy` : "",
+      name: current.name ? `${current.name} (copy)` : "",
+    }));
+    setMessage(
+      "Duplicated to a new custom layout — adjust the key and name, then " +
+        "Create it. The built-in is unchanged."
+    );
   }
 
   async function editLayout(id: string) {
@@ -276,6 +304,22 @@ export default function AdminDisplayLayoutsPage() {
   }
 
   async function save() {
+    // Saving an in-place edit to a built-in is not upgrade-safe (it is
+    // overwritten on the next re-seed/upgrade, #111); require an explicit
+    // acknowledgement before persisting (#156).
+    if (
+      draft.id !== null &&
+      isBuiltInDisplayLayoutKey(draft.key) &&
+      !window.confirm(
+        `"${draft.name || draft.key}" is a built-in layout. Saving this ` +
+          "in-place edit is NOT upgrade-safe — it will be overwritten the next " +
+          "time the built-in designs are re-seeded or the app is upgraded. " +
+          "Duplicate it to customise safely instead.\n\nSave the in-place edit anyway?"
+      )
+    ) {
+      return;
+    }
+
     setSaving(true);
     setErrors([]);
     setWarnings([]);
@@ -459,6 +503,23 @@ export default function AdminDisplayLayoutsPage() {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-5">
+          {editingBuiltIn && (
+            <div
+              role="note"
+              className="space-y-2 rounded-md border border-amber-400/50 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/40 dark:text-amber-200"
+            >
+              <p className="font-medium">This is a built-in layout.</p>
+              <p>
+                In-place edits to a built-in are{" "}
+                <strong>overwritten</strong> the next time the built-in designs
+                are re-seeded or the app is upgraded. To keep your changes,
+                duplicate this layout and customise the copy instead.
+              </p>
+              <Button variant="outline" className="h-9" onClick={duplicateLayout}>
+                Duplicate to customise
+              </Button>
+            </div>
+          )}
           <div className="flex flex-wrap gap-4">
             <div className="space-y-1">
               <Label htmlFor="layout-key">Key</Label>
