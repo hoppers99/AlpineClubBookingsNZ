@@ -729,6 +729,46 @@ describe("whole-lodge exclusive hold — capacity engine (issue #118)", () => {
     expect(result.nightDetails.map((n) => n.availableBeds)).toEqual([0, 0]);
   });
 
+  it("issue #155: checkCapacity pins occupiedBeds to lodgeCapacity on a held-but-not-full night, so occupiedBeds + availableBeds === lodgeCapacity", async () => {
+    // Only one guest occupies the held nights — numerically 19 of 20 beds are
+    // free — but the real headcount must not leak through occupiedBeds either
+    // (mirrors getMonthAvailability's pin, ADR-001 decision 6).
+    mocks.bookingFindMany.mockResolvedValue([heldBooking()]);
+
+    const result = await checkCapacity(LODGE_A, HELD_IN, HELD_OUT, 1);
+
+    expect(result.nightDetails.map((n) => n.occupiedBeds)).toEqual([
+      TEST_LODGE_CAPACITY,
+      TEST_LODGE_CAPACITY,
+    ]);
+    expect(result.nightDetails.map((n) => n.availableBeds)).toEqual([0, 0]);
+    for (const night of result.nightDetails) {
+      expect(night.occupiedBeds + night.availableBeds).toBe(TEST_LODGE_CAPACITY);
+    }
+  });
+
+  it("issue #155: an unheld night's occupiedBeds is unchanged (real headcount, not pinned)", async () => {
+    // Two guests, no hold: occupiedBeds must stay the real count, not capacity.
+    mocks.bookingFindMany.mockResolvedValue([
+      {
+        status: BookingStatus.CONFIRMED,
+        checkIn: HELD_IN,
+        checkOut: HELD_OUT,
+        wholeLodgeHold: false,
+        guests: [{ id: "g1" }, { id: "g2" }],
+      },
+    ]);
+
+    const result = await checkCapacity(LODGE_A, HELD_IN, HELD_OUT, 1);
+
+    expect(result.nightDetails.every((n) => !n.wholeLodgeHeld)).toBe(true);
+    expect(result.nightDetails.map((n) => n.occupiedBeds)).toEqual([2, 2]);
+    expect(result.nightDetails.map((n) => n.availableBeds)).toEqual([
+      TEST_LODGE_CAPACITY - 2,
+      TEST_LODGE_CAPACITY - 2,
+    ]);
+  });
+
   it("member parity: held nights are NOT in overCapacityNights, so members get the ordinary no-space path", async () => {
     mocks.bookingFindMany.mockResolvedValue([heldBooking()]);
 
