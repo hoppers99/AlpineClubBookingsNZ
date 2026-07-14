@@ -104,4 +104,19 @@ describe("membership subscription confirmation", () => {
     expect(mocks.chargeUpsert).toHaveBeenCalledTimes(1);
     expect(mocks.operationCreate).toHaveBeenCalledTimes(1);
   });
+
+  it("raises the interactive transaction timeout above Prisma's 5s default for whole-club batch runs (#1886)", async () => {
+    const preview = await buildSubscriptionBillingPreview({
+      seasonYear: 2026,
+      decisionDate: new Date("2026-07-13T00:00:00.000Z"),
+    });
+    await confirmSubscriptionBillingPreview({
+      preview,
+      expectedConfirmationToken: preview.confirmationToken,
+      source: "ANNUAL_BATCH",
+    });
+    expect(mocks.transaction).toHaveBeenCalledTimes(1);
+    const options = mocks.transaction.mock.calls[0][1] as { timeout?: number } | undefined;
+    expect(options?.timeout).toBeGreaterThanOrEqual(60_000);
+  });
 });

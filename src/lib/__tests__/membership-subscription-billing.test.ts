@@ -336,6 +336,33 @@ describe("membership subscription billing", () => {
     expect(preview.entries[0]).toMatchObject({ billingBasis: "NO_INVOICE", annualAmountCents: 0, chargedAmountCents: 0 });
   });
 
+  it("looks up the effective annual fee once per distinct membership type, not once per member (#1886)", async () => {
+    const lifeAssignment = {
+      membershipType: {
+        id: "type-2", key: "LIFE", name: "Life", subscriptionBehavior: "REQUIRED", annualFees: [],
+      },
+    };
+    mocks.members.findMany.mockResolvedValue([
+      member("m1"),
+      member("m2"),
+      member("m3", { seasonalMembershipAssignments: [lifeAssignment] }),
+    ]);
+    mocks.effectiveFee.mockImplementation(async (membershipTypeId: string) =>
+      membershipTypeId === "type-2" ? fee({ id: "fee-2", amountCents: 6_000 }) : fee());
+    const preview = await buildSubscriptionBillingPreview({
+      seasonYear: 2026,
+      decisionDate: new Date("2026-07-13T00:00:00.000Z"),
+    });
+    expect(preview.entries).toHaveLength(3);
+    // Deduplicating identical lookups must not change any fee value.
+    expect(preview.entries.filter((entry) => entry.membershipTypeId === "type-1")
+      .map((entry) => entry.annualAmountCents)).toEqual([12_001, 12_001]);
+    expect(preview.entries.find((entry) => entry.membershipTypeId === "type-2"))
+      .toMatchObject({ annualAmountCents: 6_000 });
+    expect(mocks.effectiveFee).toHaveBeenCalledTimes(2);
+    expect(mocks.effectiveFee.mock.calls.map((call) => call[0]).sort()).toEqual(["type-1", "type-2"]);
+  });
+
   it("does not regenerate already-covered subscriptions and future fee changes alter only future previews", async () => {
     mocks.coverage.findMany.mockResolvedValue([{ memberId: "covered" }]);
     const originalMember = member("future", { seasonalMembershipAssignments: [{ membershipType: { id: "type-1", key: "FULL", name: "Full", subscriptionBehavior: "REQUIRED", annualFees: [fee()] } }] });
