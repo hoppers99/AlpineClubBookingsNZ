@@ -148,3 +148,24 @@ concept (not display-only); the display reads it.
 5. Request path (requester asks) + admin toggle (set on any booking) — API + UI.
 6. Display: `wholeLodge` from the flag; heuristic → fallback.
 7. Tests (capacity crown-jewel coverage), docs, full gate.
+
+## Post-implementation decisions (owner, 2026-07-14)
+
+Recorded as the children landed, to keep the design of record accurate:
+
+- **Routing: fork-only.** The exclusive whole-lodge hold is a fork-specific
+  feature and is **not** contributed upstream. It rides `feature/lobby-display-v2`
+  with the other work but is excluded from any upstream PR.
+- **Requester surface: school booking path only.** The member-facing
+  "request exclusive use" control is exposed **only** on the school
+  booking-request path (`BookingRequest.exclusivityRequested`), not on the
+  general booking-request or ordinary member booking flows. Admins can still
+  set/clear `Booking.wholeLodgeHold` on **any** booking (the flag is
+  booking-generic; only the request front-door is school-scoped for now).
+- **Group B (pre-existing overridden settlements) — left proceeding, revisitable.**
+  #118 deliberately does not hard-block the payment-settlement paths for a
+  booking that was admitted over-capacity *before* a hold was later placed over
+  it (decision 1: pre-existing conflicts are surfaced and resolved manually, not
+  auto-displaced). This is the current behaviour by choice; revisit with
+  operator feedback if a hold should also block those settlements. Documented in
+  `src/lib/payment-reconciliation.ts` and `docs/CAPACITY_MODEL.md`.
