@@ -301,6 +301,31 @@ export const BUILT_IN_DISPLAY_TEMPLATES: BuiltInTemplateSeed[] = [
   SINGLES_TEMPLATE,
 ];
 
+// The reserved built-in keys. `ensureBuiltInDisplays` upserts the Layout/Template
+// rows keyed here and REFRESHES their definitions from code on every re-seed
+// (owner decision A, issue #111), so an in-place admin edit to a row with one of
+// these keys is overwritten on the next re-seed/upgrade. The authoring editors
+// use these to warn before an in-place built-in edit and to offer "duplicate to
+// customise" (fork issue #156). Detection is by KEY because the seed matches on
+// key — the deterministic `builtin-*` id is only assigned on a fresh create, so a
+// row pre-created under a different id but the reserved key is still a built-in.
+export const BUILT_IN_DISPLAY_LAYOUT_KEYS: readonly string[] =
+  BUILT_IN_DISPLAY_LAYOUTS.map((layout) => layout.key);
+export const BUILT_IN_DISPLAY_TEMPLATE_KEYS: readonly string[] =
+  BUILT_IN_DISPLAY_TEMPLATES.map((template) => template.key);
+
+/** True when `key` names a built-in Layout (re-seed refreshes it from code, so
+ * in-place edits are not upgrade-safe). */
+export function isBuiltInDisplayLayoutKey(key: string): boolean {
+  return BUILT_IN_DISPLAY_LAYOUT_KEYS.includes(key);
+}
+
+/** True when `key` names a built-in Template (re-seed refreshes it from code, so
+ * in-place edits are not upgrade-safe). */
+export function isBuiltInDisplayTemplateKey(key: string): boolean {
+  return BUILT_IN_DISPLAY_TEMPLATE_KEYS.includes(key);
+}
+
 // Validate every built-in at module load: a broken seed is a programming error
 // and must fail fast in tests/build, never at serve time on a lobby wall. This
 // runs the SAME structural contract the authoring routes and the state route's

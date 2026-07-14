@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { listDisplayCssTokens } from "@/lib/lodge-display/css-tokens";
 import { listDisplayModules } from "@/lib/lodge-display/module-registry";
+import { isBuiltInDisplayTemplateKey } from "@/lib/lodge-display/built-in-seeds";
 import {
   buildSlots,
   buildSlotContentPayload,
@@ -104,6 +105,14 @@ export default function AdminDisplayTemplatesPage() {
   const modules = useMemo(() => listDisplayModules(), []);
   const cssTokens = useMemo(() => listDisplayCssTokens(), []);
 
+  // A built-in template is code-managed scaffolding: `ensureBuiltInDisplays`
+  // refreshes it from code on every re-seed/upgrade (owner decision A, #111), so
+  // an in-place edit does not survive. Detected by the reserved KEY (the seed
+  // matches on key). Only an EXISTING row can be a built-in. Drives the
+  // persistent notice + the not-upgrade-safe save confirm (#156).
+  const editingBuiltIn =
+    draft.id !== null && isBuiltInDisplayTemplateKey(draft.key);
+
   const refresh = useCallback(async () => {
     const [templatesRes, layoutsRes, lodgesRes] = await Promise.all([
       fetch("/api/admin/display/templates"),
@@ -141,6 +150,26 @@ export default function AdminDisplayTemplatesPage() {
     setErrors([]);
     setWarnings([]);
     setMessage(null);
+  }
+
+  // Fork the opened built-in into a NEW custom template (id cleared → a create),
+  // carrying its layout binding, slots, CSS, and footer but a fresh key/name so
+  // the admin customises the copy instead of the upgrade-clobbered original
+  // (#156, design.md §3/§8). The built-in itself is untouched until the copy is
+  // saved; with the id cleared the layout binding becomes editable again.
+  function duplicateTemplate() {
+    setErrors([]);
+    setWarnings([]);
+    setDraft((current) => ({
+      ...current,
+      id: null,
+      key: current.key ? `${current.key}-copy` : "",
+      name: current.name ? `${current.name} (copy)` : "",
+    }));
+    setMessage(
+      "Duplicated to a new custom template — adjust the key and name, then " +
+        "Create it. The built-in is unchanged."
+    );
   }
 
   // Choosing a layout (create mode only) loads its areas and generates the slot
@@ -255,6 +284,22 @@ export default function AdminDisplayTemplatesPage() {
   }
 
   async function save() {
+    // Saving an in-place edit to a built-in is not upgrade-safe (it is
+    // overwritten on the next re-seed/upgrade, #111); require an explicit
+    // acknowledgement before persisting (#156).
+    if (
+      draft.id !== null &&
+      isBuiltInDisplayTemplateKey(draft.key) &&
+      !window.confirm(
+        `"${draft.name || draft.key}" is a built-in template. Saving this ` +
+          "in-place edit is NOT upgrade-safe — it will be overwritten the next " +
+          "time the built-in designs are re-seeded or the app is upgraded. " +
+          "Duplicate it to customise safely instead.\n\nSave the in-place edit anyway?"
+      )
+    ) {
+      return;
+    }
+
     setSaving(true);
     setErrors([]);
     setWarnings([]);
@@ -460,6 +505,27 @@ export default function AdminDisplayTemplatesPage() {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-5">
+          {editingBuiltIn && (
+            <div
+              role="note"
+              className="space-y-2 rounded-md border border-amber-400/50 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/40 dark:text-amber-200"
+            >
+              <p className="font-medium">This is a built-in template.</p>
+              <p>
+                In-place edits to a built-in are{" "}
+                <strong>overwritten</strong> the next time the built-in designs
+                are re-seeded or the app is upgraded. To keep your changes,
+                duplicate this template and customise the copy instead.
+              </p>
+              <Button
+                variant="outline"
+                className="h-9"
+                onClick={duplicateTemplate}
+              >
+                Duplicate to customise
+              </Button>
+            </div>
+          )}
           <div className="flex flex-wrap gap-4">
             <div className="space-y-1">
               <Label htmlFor="template-key">Key</Label>

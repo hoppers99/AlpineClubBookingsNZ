@@ -268,6 +268,131 @@ describe("config-transfer display — plan (round-trip + diff)", () => {
   });
 });
 
+describe("config-transfer display — overwrites a differing built-in (#156)", () => {
+  // AC3: when an import plan would overwrite a built-in whose CURRENT content
+  // differs from the incoming definition, the plan must mark that row distinctly
+  // (not "unchanged") so the operator sees the overwrite before applying. The
+  // plan is identity-by-key and agnostic to built-in status, so a differing
+  // built-in (keyed `everyday-board`, id `builtin-*`, edited in place) already
+  // plans as "update" with a field diff — proven here, no code change needed.
+  const BUILTIN_LAYOUT = {
+    key: "everyday-board",
+    name: "Everyday board",
+    description: "The daily arrivals board.",
+    bodyHtml: '<div class="eb">{{area:board}}</div>',
+    defaultCss: ".eb { width: 100%; }",
+    areas: [{ key: "board", description: "The arrivals board", kind: "static" }],
+  };
+  const BUILTIN_TEMPLATE = {
+    key: "everyday-board",
+    name: "Everyday board",
+    layoutKey: "everyday-board",
+    slotContent: { board: { module: "arrivals-board", options: { days: 3 } } },
+    cssOverrides: "",
+    footerHtml: "",
+  };
+
+  async function builtInBundle(): Promise<Uint8Array> {
+    let zip = withFile(await exportBundle(), LAYOUTS_FILE, [BUILTIN_LAYOUT]);
+    zip = withFile(zip, TEMPLATES_FILE, [BUILTIN_TEMPLATE]);
+    return zip;
+  }
+
+  it("marks a built-in whose stored content was edited in place as 'update', not 'unchanged'", async () => {
+    // The DB holds the built-in row (deterministic builtin-* id) but its stored
+    // bodyHtml/name were customised in place — differing from the incoming code
+    // definition the bundle carries.
+    const target = emptyTargetDb({
+      displayLayout: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: "builtin-layout-everyday-board",
+            key: "everyday-board",
+            name: "Everyday board (my edit)",
+            description: "The daily arrivals board.",
+            bodyHtml: '<div class="eb">{{area:board}}<!-- customised --></div>',
+            defaultCss: ".eb { width: 100%; }",
+            areas: BUILTIN_LAYOUT.areas,
+          },
+        ]),
+      },
+      displayTemplate: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: "builtin-template-everyday-board",
+            key: "everyday-board",
+            name: "Everyday board",
+            slotContent: { board: { module: "arrivals-board", options: { days: 3 } } },
+            cssOverrides: "",
+            footerHtml: "",
+            layout: {
+              key: "everyday-board",
+              bodyHtml: BUILTIN_LAYOUT.bodyHtml,
+              areas: BUILTIN_LAYOUT.areas,
+            },
+          },
+        ]),
+      },
+    });
+
+    const plan = await buildImportPlan(target, await builtInBundle(), {
+      mode: "overwrite",
+    });
+    const cat = plan.categories.find((c) => c.category === "lodge-config")!;
+    expect(cat.errors).toEqual([]);
+
+    const layout = cat.items.find(
+      (i) => i.entity === "display-layout" && i.key === "everyday-board",
+    )!;
+    // Distinct from "unchanged": a differing built-in is an overwrite the operator
+    // must see (the plan UI sorts non-unchanged rows first, #04b56a1c/#24864e27).
+    expect(layout.action).toBe("update");
+    expect(layout.action).not.toBe("unchanged");
+    expect(layout.changedFields).toEqual(
+      expect.arrayContaining(["name", "bodyHtml"]),
+    );
+  });
+
+  it("still plans an identical built-in as 'unchanged' (no spurious overwrite flag)", async () => {
+    // Control: when the stored built-in already matches the incoming definition,
+    // the row is genuinely unchanged — the marking is content-driven, not a blunt
+    // "always flag built-ins".
+    const target = emptyTargetDb({
+      displayLayout: {
+        findMany: vi.fn().mockResolvedValue([
+          { id: "builtin-layout-everyday-board", ...BUILTIN_LAYOUT },
+        ]),
+      },
+      displayTemplate: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: "builtin-template-everyday-board",
+            key: "everyday-board",
+            name: BUILTIN_TEMPLATE.name,
+            slotContent: BUILTIN_TEMPLATE.slotContent,
+            cssOverrides: "",
+            footerHtml: "",
+            layout: {
+              key: "everyday-board",
+              bodyHtml: BUILTIN_LAYOUT.bodyHtml,
+              areas: BUILTIN_LAYOUT.areas,
+            },
+          },
+        ]),
+      },
+    });
+
+    const plan = await buildImportPlan(target, await builtInBundle(), {
+      mode: "overwrite",
+    });
+    const cat = plan.categories.find((c) => c.category === "lodge-config")!;
+    const layout = cat.items.find(
+      (i) => i.entity === "display-layout" && i.key === "everyday-board",
+    )!;
+    expect(layout.action).toBe("unchanged");
+  });
+});
+
 describe("config-transfer display — plan errors (save contract)", () => {
   it("blocks an invalid layout (bodyHtml references an undeclared area)", async () => {
     const zip = withFile(await exportBundle(), LAYOUTS_FILE, [
