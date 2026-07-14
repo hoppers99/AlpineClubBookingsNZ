@@ -258,8 +258,8 @@ pairing/auth model; (2) template model + storage.
   own pairing/last-seen bookkeeping).
 - Docs in lockstep; full validation gate; migration drift check for schema
   changes.
-- Fork delivery on integration branch `feature/lobby-display`; single upstream
-  PR at the end (owner approval before raising; merge-commit only).
+- Fork delivery on integration branch `feature/lobby-display-v2`; single
+  upstream PR at the end (owner approval before raising; merge-commit only).
 
 ## Risks
 

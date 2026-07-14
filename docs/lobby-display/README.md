@@ -9,9 +9,12 @@ wifi details and check-in reminders. Everything on screen is driven by data the
 system already holds — nothing to manually update, safe to hang on a public
 wall and forget.
 
-> **Status:** feature-complete on the `feature/lobby-display` branch —
-> all eleven delivery tasks are merged and awaiting the end-to-end owner
-> review before the single upstream PR.
+> **Status:** built and integrated on the `feature/lobby-display-v2` branch,
+> awaiting the end-to-end owner review before the single upstream PR. The
+> authoring model was rebuilt to the Layout / Template / Module design
+> ([ADR-003](decisions/ADR-003-layout-template-authoring-model.md)); the v2
+> rebuild spans the schema, render pipeline, admin hub, previews, seeds, and
+> config-transfer — far more than the original MVP task list.
 > Delivery is tracked in [epic hoppers99#25](https://github.com/hoppers99/AlpineClubBookingsNZ/issues/25);
 > the feature was proposed and discussed in
 > [upstream discussion #964](https://github.com/thatskiff33/AlpineClubBookingsNZ/discussions/964#discussioncomment-17602129).
@@ -100,7 +103,8 @@ keeping their own check-out date.
 | Document | What it covers |
 |---|---|
 | [`brief.md`](brief.md) | The feature brief: goals, non-goals, settled decisions, open questions, success criteria |
-| [`design.md`](design.md) | Technical design: data model, pairing/auth, display-state API, template model, testing strategy |
+| [`design.md`](design.md) | Technical design: data model, pairing/auth, display-state API, Layout/Template/Module model (with diagrams + a worked example), testing strategy |
+| [`operating.md`](operating.md) | Runbook to set up a screen (pair, assign a template, per-lodge config) and a developer guide to extending (add a module / condition) |
 | [`phone-visibility.md`](phone-visibility.md) | Member phone-number opt-in (#37): the two-sided consent gate, the staff-kiosk exemption, and where each control lives |
 | [`config-transfer-workflow.md`](config-transfer-workflow.md) | Moving display config between environments as bundles |
 | `decisions/` | ADRs (pairing/auth model; template model + storage) — authored with their keystone tasks |
@@ -110,7 +114,7 @@ keeping their own check-out date.
 
 Built and validated end-to-end on this fork: child tasks (see the
 [epic](https://github.com/hoppers99/AlpineClubBookingsNZ/issues/25)) branch from
-and merge into `feature/lobby-display`, each passing the full validation gate.
+and merge into `feature/lobby-display-v2`, each passing the full validation gate.
 When the feature is complete and proven, it is proposed upstream as a single
 PR. Feedback is welcome at any stage — the epic and the
 [upstream discussion](https://github.com/thatskiff33/AlpineClubBookingsNZ/discussions/964#discussioncomment-17602129)

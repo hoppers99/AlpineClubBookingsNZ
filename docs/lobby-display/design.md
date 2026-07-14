@@ -1,16 +1,25 @@
 # Lobby TV Display — Design Specification
 
-**Status:** Implemented on the `feature/lobby-display` integration branch
-(epic hoppers99#25, all tasks merged). Not yet proposed upstream as code;
-heads-up posted in
+**Status:** Implemented on the `feature/lobby-display-v2` integration branch.
+The authoring model was rebuilt to the **Layout / Template / Module** design in
+[ADR-003](decisions/ADR-003-layout-template-authoring-model.md); this document
+describes that current model, not the superseded MVP. Not yet proposed upstream
+as code; heads-up posted in
 [upstream discussion #964](https://github.com/thatskiff33/AlpineClubBookingsNZ/discussions/964#discussioncomment-17602129).
 
 This document expands the [feature brief](brief.md) into a technical design —
-see [`README.md`](README.md) for the feature overview and design gallery, and
-[`mockups/`](mockups/) for the design-exploration catalogue. Structural
-decisions with real trade-offs get ADRs in `docs/lobby-display/decisions/`
-(same pattern as `docs/finance-dashboard/decisions/`), authored with the
-keystone tasks that implement them.
+see [`README.md`](README.md) for the feature overview and design gallery,
+[`operating.md`](operating.md) for the set-up runbook and the developer
+"extending" guide, and [`mockups/`](mockups/) for the design-exploration
+catalogue. Structural decisions with real trade-offs get ADRs in
+`docs/lobby-display/decisions/`, authored with the keystone tasks that implement
+them.
+
+> **Reading the provenance notes.** Internal tracker ids (`LTV-0xx`, `#nn`) are
+> collected in the [History and provenance](#13-history-and-provenance) appendix
+> rather than woven through the body. The section prose below describes the
+> current, shipped behaviour; reach for the appendix and the ADRs only when you
+> need the "why" or the change history.
 
 ---
 
@@ -57,123 +66,72 @@ Per lodge:
 
 ## 3. Data model
 
-> **Superseded by v2** (LTV-024; consolidated into migration
-> `20260712130000_add_lobby_display`): ADR-003's authoring model landed. The
-> data-only `DisplayTemplate` region/panel model and its `DisplayTemplateSource`
-> enum are **removed**, and `LodgeDisplayDevice.regionConfig` is dropped
-> (per-display content now lives on the Template). The new entities in
-> `prisma/schema.prisma` are **`DisplayLayout`** (`key`, `name`, `description?`,
-> `bodyHtml`, `defaultCss`, `areas` Json) and a fresh **`DisplayTemplate`**
-> (`key`, `name`, `layoutId` FK → DisplayLayout [Restrict], `slotContent` Json,
-> `cssOverrides`, `footerHtml`). The device keeps `templateId` (FK → the new
-> DisplayTemplate, SetNull); the interim `templateKey` device column was removed
-> in #86 (LTV-040). The Lodge display columns (`displayConfig`,
-> `displayNameGranularity`, `displayNotice`) are unchanged. The sketch below is
-> the retired MVP shape, kept for history.
+The authoring model is three database entities plus a small set of per-lodge
+`Lodge` columns. `prisma/schema.prisma` is the source of truth; the shapes below
+are the real columns (elided: `createdAt`/`updatedAt` timestamps and back
+relations).
 
-> **Config-transfer v2** (LTV-037): the club-wide Layout/Template library is
-> portable through **Admin → Export & Import Setup** in the `lodge-config`
-> category — two key-strong entities, `display-layout` (`display/layouts.json`)
-> and `display-template` (`display/templates.json`), in
-> `src/lib/config-transfer/categories/display.ts`. Templates serialise their
-> Layout by **key** (`layoutKey`, never id, resolved to `layoutId` at apply);
-> layouts apply before templates. Every imported Layout/Template is judged by
-> the same save contract the authoring routes use (`validateLayoutForSave` /
-> `validateTemplateForSave`), so a bundle can never install a structurally
-> broken display (ADR-003 §5). The retired MVP `DisplayTemplate` region/panel
-> config-transfer surface (LTV-012) is replaced. The regenerated
-> room-occupancy starter bundle lives at
-> `docs/lobby-display/seeds/room-occupancy-templates.bundle.zip`.
+- **`DisplayLayout`** — the structural template. `key` (unique slug), `name`,
+  `description?`, `bodyHtml` (the HTML skeleton carrying `{{area:key}}` slots),
+  `defaultCss`, and `areas` (Json — the ordered area/slot descriptors validated
+  against `bodyHtml`).
+- **`DisplayTemplate`** — a selectable design built on one Layout. `key`
+  (unique slug), `name`, `layoutId` (FK → `DisplayLayout`, `onDelete: Restrict`
+  — a Layout still used by a Template cannot be deleted), `slotContent` (Json —
+  maps each slot key to `{ html }` or `{ module, options? }`), `cssOverrides`,
+  and `footerHtml`.
+- **`LodgeDisplayDevice`** — one physical screen paired to exactly one lodge.
+  `lodgeId` (FK → `Lodge`, `Restrict`), `name`, the pairing lifecycle fields
+  (`pairingCode`, `pairingCodeExpiresAt`, `tokenHash` — the display credential
+  is stored **hashed**, per `docs/TOKEN_HASHING.md`), `templateId` (FK →
+  `DisplayTemplate`, `onDelete: SetNull` — deleting a bound Template drops the
+  device to the club default rather than breaking it; `null` = club default),
+  `pollSeconds?` (per-device refresh cadence, clamped 15–600s server-side),
+  `lastSeenAt`, and `revokedAt`. Indexed on `lodgeId` and `templateId`.
 
-> **Built-ins are seeded v2 rows** (LTV-038, ADR-003 §1 Consequences "Redone").
-> The three built-ins — **everyday-board**, **whole-lodge**, **singles-house** —
-> are re-expressed as v2 `DisplayLayout` + `DisplayTemplate` definitions in
-> `src/lib/lodge-display/built-in-seeds.ts` and **seeded create-if-missing** by
-> `ensureBuiltInDisplays(prisma)`, wired into `prisma/seed.ts` (the formal seed
-> entry point; admins can also import them via the config-transfer bundle). The
-> upsert-by-`key` **refreshes the built-in's definition from code on every
-> re-seed** (owner decision A, #111): built-ins are code-managed scaffolding, so
-> improvements to the shipped designs propagate to already-seeded installs, and
-> an admin customises by **duplicating** a built-in into a new row (editing one
-> in place is overwritten on the next re-seed). Visual
-> parity with the LTV-015/016 mocks is preserved by re-creating the legacy page
-> grid (the `.display-screen:has(.display-region-side)` two-column board+rail, the
-> `.display-region-stack` side rail, and the compact notice card) inside each
-> **Layout's `defaultCss`** in the authored-CSS scoped world — the module
-> components and their hooks in `display.css` are untouched. The everyday-board
-> side rail becomes three adjacent areas (chores, rules, a `content:notice`-gated
-> notice) inside a rail container div in the layout body (nesting works since
-> LTV-041); whole-lodge and singles keep their rotation as **rotator areas**.
->
-> **Legacy device path retired.** Devices bind to the seeded built-ins by
-> `templateId`. The devices **PATCH no longer accepts `templateKey`** (a stale
-> client is rejected by the strict schema), the device picker **drops the
-> built-ins group** (the built-ins appear as ordinary templates), and the
-> vestigial `LodgeDisplayDevice.templateKey` column — along with its one-shot
-> seed migration — was **removed in #86 (LTV-040)** before the feature shipped.
-> The code built-in definition (`template-registry.ts`) and the legacy region
-> renderer survive **only** as the zero-DB known-good design the
-> unattended-safety fallback board renders (LTV-030) and the club-default board
-> for a device with no binding, plus the `/api/admin/display/preview` admin
-> testing path (which previews a built-in by its registry key).
+Per-lodge columns on `Lodge` (unchanged across the rebuild):
 
-> **Implemented** (fork issue #26; consolidated into migration
-> `20260712130000_add_lobby_display`): `prisma/schema.prisma` is now the source
-> of truth for these shapes. The sketch below is retained for rationale; the
-> implemented schema differs only in detail — length caps on name/key/pairing-code
-> columns, explicit `onDelete: Restrict` (lodge) / `SetNull` (template)
-> referential actions, and indexes on `lodgeId`/`templateId`.
+| Column | Purpose |
+|---|---|
+| `displayConfig` (Json) | The `{{config:<key>}}` value glob — e.g. `{"wifi-code": "…"}`. Sanitised to a flat string map by the serialiser. |
+| `displayNameGranularity` (`DisplayNameGranularity?`) | Per-lodge name-granularity override (null = club default; §10). |
+| `displayNotice` (`String?`, ≤2000) | The committee notice free text (§10). |
+| `showGuestPhonesOnScreens` (Boolean, default `false`) | Lodge side of the two-sided phone-visibility gate ([`phone-visibility.md`](phone-visibility.md)). |
 
-```prisma
-model LodgeDisplayDevice {
-  id            String    @id @default(cuid())
-  lodgeId       String
-  name          String                    // "Lobby TV", admin-assigned
-  // Pairing lifecycle: created → pairing (code active) → paired → revoked
-  pairingCode   String?                   // short-lived, single-use
-  pairingCodeExpiresAt DateTime?
-  tokenHash     String?   @unique         // hashed long-lived display token
-  templateId    String?                   // bound DisplayTemplate (null = club default)
-  regionConfig  Json?                     // per-device region/module configuration
-  lastSeenAt    DateTime?
-  revokedAt     DateTime?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
-  lodge         Lodge     @relation(...)
-}
+Config keys the built-in **furniture** reads (any other key is available to a
+Template through `{{config:<key>}}`):
 
-model DisplayTemplate {
-  id          String   @id @default(cuid())
-  key         String   @unique            // built-in key or custom slug
-  name        String
-  source      DisplayTemplateSource       // BUILT_IN_OVERRIDE | CUSTOM
-  definition  Json                        // regions, default modules, options
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-}
+| Key | Consumed by |
+|---|---|
+| `wifi-name` / `wifi-code` | the info-footer Wi-Fi item |
+| `contact-email` | the info-footer email item |
+| `footer-note` | the info-footer accent note (token-resolved) |
 
-// Per-lodge config glob (probably a field, not a model):
-// Lodge.displayConfig Json?  — {"wifi-code": "...", "checkin-note": "..."}
-//
-// Keys the built-in furniture reads (LTV-015/016; any other key is
-// available to templates via {{config:<key>}}):
-//   wifi-name / wifi-code  — the footer Wi-Fi item
-//   contact-email          — the footer email item
-//   footer-note            — right-aligned accent note in the footer
-//   whole-lodge-note       — note pill on the blockout panel + welcome tile
-//   checkin-note           — message line on the welcome panel
-```
+The whole surface is **additive** to the schema; run `npm run db:check-drift`
+against a shadow DB after any change to these models.
 
-Notes:
+**The three built-in designs are ordinary seeded rows, not a code registry.**
+`ensureBuiltInDisplays(prisma)` (`src/lib/lodge-display/built-in-seeds.ts`,
+wired into `prisma/seed.ts`) upserts the `everyday-board`, `whole-lodge`, and
+`singles-house` Layout+Template pairs by `key`, create-if-missing, and
+**refreshes their definitions from code on every re-seed** — they are
+code-managed scaffolding, so shipped-design improvements reach already-seeded
+installs. An admin customises by **duplicating** a built-in into a new
+(non-`builtin-`) row; editing a built-in in place is overwritten on the next
+re-seed. Devices bind to these rows by `templateId` like any other Template. The
+club-wide Layout/Template library is also portable between environments as a
+bundle — see [`config-transfer-workflow.md`](config-transfer-workflow.md).
 
-- Built-in templates ship as a **code registry** (like the token catalogue);
-  `DisplayTemplate` rows exist only for admin overrides/custom templates —
-  the `EmailTemplateOverride` pattern.
-- Token storage follows `docs/TOKEN_HASHING.md` conventions (hash at rest).
-- Migrations are additive; run `npm run db:check-drift` against a shadow DB.
-- The name-granularity setting's home (club-wide default + per-lodge
-  override) is decided in the privacy task — exact naming rules are an
-  **open design question** (see §10).
+> **MVP (superseded).** The first MVP shipped a single data-only
+> `DisplayTemplate` model (a `definition` JSON of regions → panels, a
+> `DisplayTemplateSource` enum) plus a `LodgeDisplayDevice.regionConfig` column
+> and an interim `templateKey` device column. [ADR-003](decisions/ADR-003-layout-template-authoring-model.md)
+> replaced that authoring layer; because nothing had shipped to production, the
+> branch migrations were consolidated into one clean
+> `20260712130000_add_lobby_display` migration and the interim columns removed.
+> The old region/panel *code* registry (`template-registry.ts`) survives only as
+> the zero-DB engine the unattended-safety fallback board leans on (§9). See the
+> [History appendix](#13-history-and-provenance).
 
 ## 4. Device pairing and display auth
 
@@ -237,38 +195,62 @@ validated server-side against configured bounds).
 > header (no credentials sent). All previews may add `?previewDate=YYYY-MM-DD`
 > to simulate the window start (device fetches ignore it).
 
-One JSON payload per request covering the display window — every module is
-a pure function of this payload:
+One JSON payload per request covering the display window — every module is a
+pure function of this payload. The contract below is copied verbatim from
+`src/lib/lodge-display-state.ts`, **the single privacy-enforcement point**:
+names leave here already reduced to the configured granularity, minors are never
+individually named, and no monetary or member-id field is ever selected. No
+template, module, or authored markup can reach past it.
 
 ```ts
+interface DisplayStateGuest {
+  label: string;              // privacy-reduced name (per granularity)
+  stayStart: string;          // NZ date-only
+  stayEnd: string;            // NZ date-only (check-out)
+  /** Adult member phone — present ONLY under the two-sided consent gate
+   *  (phone-visibility.md); omitted otherwise. */
+  phone?: string;
+}
+
+interface DisplayStateBooking {
+  key: string;                // opaque per-row key — never the real booking id
+  label: string;              // privacy-reduced booking/group label
+  wholeLodge: boolean;
+  roomId: string | null;      // null when bed allocation is off
+  /** null when names are withheld (counts-only, family, org, whole-lodge). */
+  guests: DisplayStateGuest[] | null;
+  guestCount: number;
+  stayStart: string;          // earliest guest stay-start on the row
+  stayEnd: string;            // latest guest stay-end on the row
+}
+
 interface DisplayState {
   lodge: { name: string };
-  generatedAt: string;            // ISO instant, for stale detection
-  window: { start: string; days: number };   // NZ date-only strings
-  rooms: Array<{ id: string; name: string }> | null;  // null = allocation off
-  bookings: Array<{
-    id: string;                   // opaque, not the real booking id
-    label: string;                // privacy-reduced booking/group label
-    wholeLodge: boolean;
-    roomId: string | null;
-    guests: Array<{
-      label: string;              // privacy-reduced name per granularity
-      stayStart: string;          // date-only
-      stayEnd: string;            // date-only (check-out)
-      arriving: boolean;          // relative to each window day client-side
-    }> | null;                    // null when counts-only granularity
-    guestCount: number;
-  }>;
+  /** Header brand block: club name + club-theme logo (presentation-only,
+   *  already public on every website page). */
+  club: { name: string; logoDataUrl: string | null };
+  generatedAt: string;        // ISO instant, for stale detection
+  window: { start: string; days: number };            // NZ date-only start + clamped length
+  rooms: Array<{ id: string; name: string }> | null;  // null = bed allocation off
+  bookings: DisplayStateBooking[];                     // rows split per (booking, room)
   occupancy: Array<{ date: string; arriving: number; departing: number; staying: number }>;
   chores: Array<{ date: string; title: string; assigneeLabels: string[] }>;
-  rules: { html: string } | null; // sanitised lodge-instructions content
-  config: Record<string, string>; // per-lodge glob, values escaped
+  rules: Array<{ title: string; html: string }> | null;  // sanitised lodge-instruction docs
+  /** Committee notice free text; rendered as text nodes only, {{config:…}}
+   *  placeholders resolve at render. */
+  notice: string | null;
+  config: Record<string, string>;         // per-lodge {{config:key}} glob, sanitised
+  /** Display-relevant module flags only (bed-allocation, chores) — the
+   *  capability conditions read these; the full club flag map never ships. */
+  capabilities: Record<string, boolean>;
 }
 ```
 
 - **Privacy reduction happens here** (labels, counts-only mode, group
-  labelling) — the serialiser is the single enforcement point and the
-  primary unit-test surface for privacy rules.
+  labelling, minors-as-family, the phone gate) — the serialiser is the single
+  enforcement point and the primary unit-test surface for privacy rules. Booking
+  rows are split per (booking, room) and carry an opaque `key`, never the real
+  booking id.
 - Data sourcing reuses the kiosk queries (`LODGE_VISIBLE_BOOKING_STATUSES`,
   stay-range helpers, `lodgeNullTolerantScope`) — no parallel query logic.
 - Client polls on an interval; the page shows a stale indicator when the
@@ -288,113 +270,254 @@ interface DisplayState {
   means a slower-updating last-seen. Writes clamp/validate to the same 15–600
   range (out-of-range → 400) and are audit-logged.
 
-## 6. Template model
+## 6. Layout / Template / Module model
 
-> **Implemented** (fork issue #29, [ADR-002](decisions/ADR-002-template-model-and-storage.md)):
-> `src/lib/lodge-display/template-registry.ts` (definition schema, validator,
-> built-in starter templates, DB-override resolution) and
-> `src/lib/lodge-display/conditions.ts` (named condition engine). Definitions
-> are data-only and revalidated on every load; unknown module/condition names
-> are rejected with the offending detail.
+The authoring model has three parts, decided in
+[ADR-003](decisions/ADR-003-layout-template-authoring-model.md) §1 and
+implemented across `src/lib/lodge-display/`. It is closer to the website CMS
+than to a JSON definition: admins compose a display from an HTML **Layout**,
+fill its named areas with content or embedded **Modules**, and style it with
+CSS.
 
-Two layers (settled in the brief):
+- **Layout** (`DisplayLayout`, admin-authored) — the structure. Its `bodyHtml`
+  is an HTML skeleton that names **areas/slots** with `{{area:<key>}}`
+  placeholders; a companion `areas` descriptor list (validated to agree exactly
+  with the placeholders, both directions) declares each area's `kind`:
+  - *static* — always rendered;
+  - *conditional* — rendered only while its assigned condition holds;
+  - *rotator* — cycles among its child slots on a `rotateSeconds` timer, each
+    child optionally condition-gated, so it rotates only among currently-eligible
+    children.
 
-- **Templates define structure**: a named set of regions plus the config
-  options each region exposes. Provided templates ship in the code registry
-  (the approved mockups become the starter set); technical operators can
-  author custom templates, which still declare regions, so the admin
-  configuration surface stays uniform.
-- **Region configuration populates a template**: per region, admins place
-  modules/tokens and set options. The device binding stores template +
-  region config.
+  A Layout also carries a `defaultCss` block and, per static/conditional area,
+  an optional `defaultContent` fallback. All Layouts share a **fixed header**
+  (logo, lodge name, club name, live clock) and an **editable footer** — only
+  the body differs.
+- **Template** (`DisplayTemplate`, admin-authored, the selectable design) —
+  built on exactly one Layout (locked after creation). Its `slotContent` maps
+  each declared slot key to either authored `{ html }` or an embedded
+  `{ module, options? }`; a static/conditional area's slot key is its area key,
+  a rotator child's is `"<areaKey>/<childKey>"`. A Template adds `cssOverrides`
+  (layered after the Layout default) and `footerHtml`. It renders **dynamically
+  against whichever lodge its display is bound to** — lodge-specific values come
+  from `{{config:…}}` tokens, so one Template serves every lodge.
+- **Module** (developer code — like the website's weather widget) — a React
+  component in `src/components/lodge-display/modules/`, referenced from a
+  Layout/Template by a `{{module:<name>}}` embed token or a `{ module }` slot
+  fill. Admins **style** modules via their stable CSS hooks but never author
+  module code or JavaScript. See §7 for the full library.
 
-Rotation is **template-level and condition-aware**: a region may hold a
-rotation of panels; each panel declares an eligibility condition evaluated
-against the display-state payload. Conditions are a closed, namespaced
-`namespace:name` registry (ADR-003 §3, LTV-025): the default `always`, the
-`occupancy:*` states (`whole-lodge-today`, `whole-lodge-in-window`,
-`empty-today`, `arrivals-today`, `departures-today`), the `content:*` states
-(`notice`, `instructions`), and the `<module>:*` capability/data conditions
-(`bed-allocation:enabled`, `chores:enabled`, `chores:today`) generated from the
-module registry. Ineligible panels are skipped so a screen
-never rotates into a view that is wrong for the current data. Device-level
-playlists are out of v1 scope. A region may alternatively declare
-`layout: "stack"` (LTV-015) to render all eligible panels at once — the
-everyday board's side rail uses this for its chores/instructions/notice
-cards, matching the approved mockup's rail treatment.
+A **DisplayDevice** (`LodgeDisplayDevice`) points one physical screen at one
+Template via `templateId` (null = the club-default board). The bound Template
+names its Layout; the Layout names its areas; the Template's slot content binds
+Modules into those areas:
 
-Starter templates (from the approved mockups in the design exploration):
+```mermaid
+erDiagram
+    LodgeDisplayDevice }o--o| DisplayTemplate : "templateId (SetNull, null = club default)"
+    DisplayTemplate }o--|| DisplayLayout : "layoutId (Restrict)"
+    DisplayLayout ||--o{ DisplayArea : "areas[] (Json, validated vs bodyHtml)"
+    DisplayTemplate ||--o{ DisplaySlotFill : "slotContent (Json)"
+    DisplaySlotFill }o--o| Module : "{ module, options } binds a code module"
+    DisplayArea ||--o{ DisplaySlotFill : "slot key = areaKey or areaKey/childKey"
 
-| Template | Main region content |
-|---|---|
-| Everyday board | `{{display-arrivals-board}}` bar board |
-| Whole-lodge | `{{display-occupancy-grid}}` blockout, rotating with welcome panel |
-| Singles house | `{{display-singles-board}}` by-booking rows |
+    LodgeDisplayDevice {
+        string lodgeId "FK Lodge (Restrict)"
+        string templateId "FK DisplayTemplate (SetNull)"
+        int    pollSeconds "15-600s, null = default"
+    }
+    DisplayLayout {
+        string key  "unique slug"
+        string bodyHtml "HTML with {{area:key}} slots"
+        string defaultCss
+        json   areas "static | conditional | rotator"
+    }
+    DisplayTemplate {
+        string key "unique slug"
+        string layoutId "FK DisplayLayout (Restrict)"
+        json   slotContent "slotKey -> {html} | {module, options}"
+        string cssOverrides
+        string footerHtml
+    }
+    Module {
+        string name "code component, not a table"
+        string embedToken "{{module:name}}"
+    }
+```
 
-## 7. Token catalogue and modules
+`Module` is drawn as a related node for clarity, but it is **library code, not a
+table** — a slot fill references a module by name; there is no module row.
 
-Extends `src/lib/token-catalogue.ts` with a **`lodge-display` context** and
-new embed modules (the `{{skifield-conditions}}` pattern):
+**Rotation and gating are condition-driven.** Any area gates on a condition,
+and a rotator cycles only among eligible children, so a screen never rotates
+into a view that is wrong for the current data (e.g. the whole-lodge blockout
+only while a whole-lodge booking is in the window). Conditions are a **closed,
+namespaced `namespace:name` registry** (`src/lib/lodge-display/conditions.ts`,
+ADR-003 §3) — admins pick from a dropdown, never write expressions. Each
+condition is a pure function of the `DisplayState` payload. The full set is
+enumerated in the [ADR-003 §3 conditions table](decisions/ADR-003-layout-template-authoring-model.md#3-conditions-one-namespaced-vocabulary)
+and surfaced live in the admin Conditions reference screen; the families are
+`always` (the bare default), `occupancy:*`, `content:*`, and the generated
+`<module>:*` capability/data conditions.
 
-- `{{display-arrivals-board:days=3}}` — arrivals/departures/staying bars.
-- `{{display-occupancy-grid}}` — whole-lodge blockout grid.
-- `{{display-welcome}}` — welcome panel.
-- `{{display-singles-board}}` — by-booking Room | Guest rows.
-- `{{display-room-cards}}` — tonight's rooms: a card per room with who sleeps
-  there tonight (needs bed allocation; degrades to a note when off).
-- `{{display-night-columns:days=3}}` — next-N-nights look-ahead; annotates each
-  row with its room when allocation is on and `show-rooms` holds.
-- `{{display-status-board}}` — allocation-off Arriving / Staying / Leaving
-  columns for tonight (room-agnostic; closes #114).
-- `{{display-chores-board}}` — the day's chore assignments.
-- `{{display-lodge-rules}}` — lodge rules / arrival information.
-- Text tokens: `{{lodge-name}}`, `{{display-date}}`, and **config tokens**
-  `{{config:<key>}}` resolving from the lodge's config glob (reuses the
-  existing `{{token:parameter}}` grammar; keys validated, values escaped,
-  unresolved keys render a visible placeholder).
+### Render pipeline
 
-Module design rules: sensible zero-parameter defaults; parameters tune
-behaviour; a small options-based styling set (row colouring rules, accent
-side, corner radius) rather than free CSS.
+At serve time the state route builds the payload and, for a device bound to a
+Template, assembles a `layoutRender` block; the client mounts it. Sanitisation
+runs **server-side, before** value-token resolution and before anything reaches
+the wall:
 
-**Module metadata (LTV-026).** Each module declares its contract in a
-client-safe registry (`src/lib/lodge-display/module-registry.ts`, ADR-003 §1):
-`label`, `description`, its club-module `dependencies` and a `dependencyMode`
-(`degrades` — renders a reduced form, e.g. per-booking rows when bed allocation
-is off; or `hides` — renders nothing, as `chores-board` does when the Chores
-flag is off), the stable `cssHooks` class names admins target, the conditions it
-`contributes`, and its `embedToken`. This one registry drives the Conditions/
-modules reference screen (LTV-034), the render-boundary dependency fallback (a
-`hides` module is replaced with an empty `data-module-disabled` placeholder so
-the rail keeps its shape), and the CSS-hook stability contract (a test fails CI
-if a declared hook is renamed).
+```mermaid
+sequenceDiagram
+    autonumber
+    participant DB as DB (Layout + Template)
+    participant SR as buildDisplayState<br/>(privacy serialiser)
+    participant LR as buildLayoutRender<br/>(server assembly)
+    participant Net as /api/display/state
+    participant CL as display-screen (client)
+    participant TV as Lobby screen
 
-**Token + content resolution (LTV-028, ADR-003 §4).** Two kinds of token resolve
-inside admin-authored content, both scoped strictly to the display's OWN token
-set — never the site-wide `token-catalogue.ts`, so a wall can never surface a
-site token beyond the privacy-reduced payload:
+    SR->>SR: reduce names, minors→family,<br/>drop money/member-id, phone gate
+    Note over SR: DisplayState — the privacy boundary
+    SR->>LR: DisplayState (bound lodge)
+    LR->>LR: 1. sanitise authored HTML (CMS sanitiser)<br/>+ harden & scope CSS
+    LR->>LR: 2. resolve value tokens {{config:…}} {{lodge-name}}<br/>{{display-date}} — each HTML-escaped
+    LR->>LR: 3. swap {{area:key}} / {{module:name}}<br/>for inert marker <div>s
+    LR->>Net: layoutRender { bodyHtml, themeCss,<br/>defaultCss, areas, slotContent, cssOverrides, footerHtml }
+    Net->>CL: DisplayState + layoutRender (+ legacy template fallback)
+    CL->>CL: set bodyHtml as innerHTML,<br/>portal Area/Module components into markers
+    CL->>TV: rendered board (rotators tick client-side)
+```
 
-- **Value tokens** (`{{config:<key>}}`, `{{lodge-name}}`, `{{display-date}}`)
-  resolve **server-side** in `buildLayoutRender` (`layout-render.ts`) against the
-  bound lodge's `DisplayState`, running AFTER the CMS sanitiser over every
-  authored html surface (body, slot html, `defaultContent`, footer). Each
-  injected value is **HTML-escaped** (and its braces neutralised) so a config
-  value renders as inert text even inside html — an `<img onerror=…>` value
-  appears literally, never as an element, and cannot form a second token. An
-  unset key keeps the visible `⟨config:key?⟩` marker. The shared grammar lives in
-  `display-text.ts` (`resolveDisplayText` for React text nodes,
-  `resolveDisplayHtml` for html surfaces).
-- **Module embed tokens** (`{{module:<name>}}`) mount the real React module
-  **client-side**: `splitHtmlOnModuleTokens` (`layout-registry.ts`) splits the
-  sanitised html and `SlotRender`/the footer render mount components between
-  fragments (unknown name → neutral placeholder). The bare name only — options
-  belong to `{module, options}` slot content; `validateHtmlModuleEmbeds` rejects
-  unknown names and any `{{module:name(...)}}` argument form at authoring time.
-- **Token scope is the security line:** any `{{…}}` outside the display token
-  set (including a real site token such as `{{club-name}}`) is left VERBATIM as
-  literal text.
+Sanitisation is step 1 in `buildLayoutRender` (`layout-render.ts`): the website
+content sanitiser strips `<script>`/event handlers from every authored HTML
+surface, and `css-tokens.ts` neutralises CSS exfiltration vectors then scopes
+every selector to `.display-authored-root` so authored CSS can only touch the
+editable body/footer, never the fixed header chrome. Value tokens resolve
+**only** against the display's own token set (never the site-wide token
+catalogue), and each injected value is HTML-escaped, so a config value is always
+inert text. `{{module:<name>}}` embeds survive as text and become inert
+`data-display-module` marker divs; the client portals the real React component
+into each marker (rather than `dangerouslySetInnerHTML`), which keeps a module
+nested inside an authored container in place.
 
-**Authored CSS handling + theme tokens (LTV-029, ADR-003 §4).** A Layout's
+### Worked example — the `everyday-board` built-in
+
+`ensureBuiltInDisplays` seeds this from `built-in-seeds.ts`. It shows how a
+Layout's areas, a Template's slot content, and the modules combine.
+
+**1. Layout `everyday-board`** — a two-column body: the board on the left, a
+side rail of three stacked areas on the right.
+
+```html
+<!-- bodyHtml -->
+<div class="eb-grid">
+  <div class="eb-board">{{area:board}}</div>
+  <div class="eb-rail">{{area:chores}}{{area:rules}}{{area:notice}}</div>
+</div>
+```
+
+```jsonc
+// areas (with defaultContent, elided here to the essentials)
+[
+  { "key": "board",  "kind": "static",      "defaultContent": { "module": "arrivals-board", "options": { "days": 3 } } },
+  { "key": "chores", "kind": "static",      "defaultContent": { "module": "chores-board" } },
+  { "key": "rules",  "kind": "static",      "defaultContent": { "module": "lodge-rules" } },
+  { "key": "notice", "kind": "conditional", "condition": "content:notice",
+    "defaultContent": { "module": "notice-board" } }
+]
+```
+
+The `defaultCss` re-creates the approved mockup's grid (a `1fr 27vw` two-column
+board+rail) scoped under `.display-authored-root`.
+
+**2. Template `everyday-board`** — built on that Layout, it fills each slot with
+the module it is designed to show, and sets a footer:
+
+```jsonc
+// slotContent
+{
+  "board":  { "module": "arrivals-board", "options": { "days": 3 } },
+  "chores": { "module": "chores-board" },
+  "rules":  { "module": "lodge-rules" },
+  "notice": { "module": "notice-board" }   // area is content:notice-gated
+}
+// footerHtml: "<p>Have a nice day 👋</p>"
+```
+
+**3. Rendered board.** The `board` area always renders the arrivals bar board.
+`chores` and `rules` render their cards (chores hides itself if the Chores
+module is off — §7). The `notice` area is *conditional* on `content:notice`, so
+the committee notice appears only when the lodge has one set — otherwise the
+rail is just chores + rules. Lodge-specific values (Wi-Fi, contact) surface
+through the info-footer furniture from `{{config:…}}`. Because the Template
+carries no lodge data itself, the same `everyday-board` renders correctly for
+any lodge a device is bound to.
+
+## 7. Module library
+
+The Module library is a **closed set of code components**, one per name in
+`DISPLAY_MODULE_NAMES` (`src/lib/lodge-display/template-registry.ts`). Ten are
+content modules; two — `lodge-header` and `info-footer` — are page furniture
+(the fixed header and the editable footer). Each declares its contract in the
+client-safe metadata registry
+(`src/lib/lodge-display/module-registry.ts`): a `label`, an admin-facing
+`description`, its club-module `dependencies` and a `dependencyMode`, the stable
+`cssHooks` admins may target, any conditions it `contributes`, and its
+`embedToken`. That one registry drives the admin **Reference** screen, the
+render-boundary dependency guard, and the CSS-hook stability contract (a test
+fails CI if a declared hook is renamed).
+
+**`dependencyMode`** is how a module behaves when a club-module flag it needs is
+off:
+
+- **`degrades`** — still renders, in a documented reduced form (e.g.
+  `arrivals-board` drops room lanes for per-booking rows when Bed Allocation is
+  off). The component handles this itself.
+- **`hides`** — renders nothing; the guard substitutes an empty
+  `data-module-disabled` placeholder so a rail keeps its shape rather than
+  showing an empty card. Only `chores-board` is a `hides` module today.
+
+The twelve modules (descriptions mirror the registry):
+
+| Module (`name`) | Embed token | Dependency / behaviour | Renders |
+|---|---|---|---|
+| `lodge-header` *(furniture)* | `{{module:lodge-header}}` | none | Fixed page furniture: club logo, lodge name, club name, and the live clock (with the preview simulated-date affordance). Present on every template. |
+| `arrivals-board` | `{{module:arrivals-board}}` | Bed Allocation — degrades | The everyday bar board: one bar per booking across the nights it covers, with names and check-out day; groups bars into room rows with allocation on, per-booking rows with it off. |
+| `occupancy-grid` | `{{module:occupancy-grid}}` | Bed Allocation — degrades | The whole-lodge blockout: room-grid **board** variant with rooms configured; **statement** variant (full-width block + week occupancy strip) with allocation off. |
+| `welcome` | `{{module:welcome}}` | none | A warm counterpart to the operational boards: greets the current whole-lodge group (label, size, stay dates, nights, optional bunks note) or the lodge generally when no group holds it. |
+| `singles-board` | `{{module:singles-board}}` | Bed Allocation — degrades | By-booking Room \| Guest \| night rows, one per guest with their own check-out; the room label spans its guests' rows with allocation on, a single guest column with it off. |
+| `room-cards` | `{{module:room-cards}}` | Bed Allocation — degrades | Tonight's rooms: a card per room showing who sleeps there tonight with their stay span and an arrive/stay/depart dot; unoccupied rooms show a dashed free card. Degrades to a short note without allocation. |
+| `night-columns` | `{{module:night-columns}}` | Bed Allocation — degrades | Next-N-nights look-ahead: a column per upcoming night listing that night's active bookings, marked arriving/staying/departing with check-out; annotates each row with its room when allocation + the `show-rooms` option are on. |
+| `status-board` | `{{module:status-board}}` | none | Allocation-off status board: three columns for tonight — Arriving, Staying, Leaving today — with no room boxes. Room-agnostic; the natural rotation target when rooms are off. |
+| `chores-board` | `{{module:chores-board}}` | Chores — **hides**; contributes `chores:enabled`, `chores:today` | The day's chore assignments. With the Chores flag off it hides entirely rather than showing an empty rail card. |
+| `lodge-rules` | `{{module:lodge-rules}}` | none | Lodge rules / arrival information: renders the sanitised lodge-instruction documents; only documents with content earn a card. |
+| `notice-board` | `{{module:notice-board}}` | none | The committee notice: free text posted by permitted admins, rendered as plain text nodes (never HTML). An empty notice renders nothing. |
+| `info-footer` *(furniture)* | `{{module:info-footer}}` | none | Editable page furniture: Wi-Fi, contact email, and a footer note. Each item is shown only when its `{{config:…}}` value is set. |
+
+**Embed grammar.** A module is embedded by the **bare token
+`{{module:<name>}}`** — no whitespace, no arguments. Module options (e.g.
+`arrivals-board`'s `days`) live in the `{ module, options }` slot content, not
+in the token. The `{{module:name(...)}}` argument form does **not** exist:
+`validateHtmlModuleEmbeds` (`layout-registry.ts`) rejects both a
+spaced/argument form and an unknown module name at authoring time, so a typo
+fails the save rather than rendering a placeholder on the wall. (There is no
+`{{display-arrivals-board:days=3}}`-style token anywhere — that was an early
+sketch and never shipped.)
+
+**Value tokens and token scope.** Alongside module embeds, three **value
+tokens** resolve inside authored HTML: `{{config:<key>}}`, `{{lodge-name}}`, and
+`{{display-date}}`. They resolve **server-side** in `buildLayoutRender`, after
+the CMS sanitiser, against the bound lodge's `DisplayState`; each injected value
+is HTML-escaped so it is always inert text (an `<img onerror=…>` config value
+appears literally). An unset config key keeps a visible `⟨config:key?⟩` marker.
+Resolution is scoped strictly to **the display's own token set** — never the
+site-wide `token-catalogue.ts` — so any other `{{…}}` (including a real site
+token such as `{{club-name}}`) is left verbatim as literal text and a wall can
+never surface data beyond the privacy-reduced payload. This token scope is the
+security line (ADR-003 §4).
+
+**Authored CSS handling + theme tokens (ADR-003 §4).** A Layout's
 `defaultCss` and a Template's `cssOverrides` are admin-authored but reach an
 unattended wall, so `layout-render.ts` hardens both server-side via the
 client-safe `css-tokens.ts` before they ship in the payload:
@@ -722,11 +845,8 @@ upstream owner's input on discussion #964):
 **Window**: default 3 days, hard cap 7 (`DISPLAY_WINDOW_MAX_DAYS`) — an
 out-of-range request clamps rather than erroring.
 
-**Payload deltas from the §5 sketch** (implemented shape in
-`lodge-display-state.ts`): booking rows are split per (booking, room) with
-an opaque `key` (never the real booking id); per-guest `arriving` dropped
-(derivable from dates client-side); `rules` is an array of instruction
-documents; a `notice` field ships null until LTV-011.
+The exact serialised shape is the `DisplayState` contract in §5 (copied from
+`lodge-display-state.ts`).
 
 ### Standing security properties
 
@@ -768,11 +888,49 @@ documents; a `notice` field ships null until LTV-011.
 
 ## 12. Delivery model
 
-- All work on the fork. Child issues (fork tracker) → child PRs targeting
-  `feature/lobby-display` → merged there as they pass the gate.
+- All work on the fork. Child issues (fork tracker) → child PRs targeting the
+  `feature/lobby-display-v2` integration branch → merged there as they pass the
+  gate.
 - Dependency order: schema → pairing/auth → display-state API → template
   engine/modules → display page → admin UI → privacy serialiser rules →
   docs/E2E hardening. (Exact task list lives in the fork epic.)
 - One upstream PR at the end (`thatskiff33 main` ← the completed feature),
   raised only after end-to-end validation and **express owner approval on
   the fork side**; upstream review per upstream conventions.
+
+## 13. History and provenance
+
+The body above describes the current, shipped model. This appendix collects the
+change history and the internal tracker ids referenced by the ADRs and code
+comments, so a reader can follow the "why" without the ids cluttering the design
+prose.
+
+- **MVP → v2 rebuild.** The first MVP (tracker `LTV-001…017`) shipped a
+  data-only region/panel template model
+  ([ADR-002](decisions/ADR-002-template-model-and-storage.md)) to the owner's
+  staging box only — never to production, never upstream. Owner review produced
+  the Layout / Template / Module authoring vision, recorded in
+  [ADR-003](decisions/ADR-003-layout-template-authoring-model.md), which
+  **replaced** the ADR-002 storage/editing layer. Because nothing had shipped,
+  it was a clean redesign, not a migration.
+- **v2 delivery** was decomposed as `LTV-024…041`: `LTV-024` the new schema
+  (`DisplayLayout` / `DisplayTemplate`); `LTV-025` the namespaced conditions
+  registry; `LTV-026` module metadata; `LTV-027` layout render; `LTV-028` token
+  + content resolution; `LTV-029` authored-CSS hardening + theme tokens;
+  `LTV-030` the unattended-safety fallback board + save-validation contract;
+  `LTV-031…035` the admin hub (Devices, Layouts, Templates, Reference, and the
+  relocation of per-lodge settings into the lodge configuration hub); `LTV-036`
+  the sandboxed-iframe preview; `LTV-037` config-transfer for the new entities;
+  `LTV-038` the built-ins re-expressed as seeded rows; `LTV-039` per-device poll
+  cadence; `LTV-040` the migration consolidation + removal of the interim
+  `templateKey` column; `LTV-041` the marker-portal renderer (so an area nested
+  inside an authored container stays in place).
+- **Migration consolidation.** The branch's display migrations were consolidated
+  into the single `20260712130000_add_lobby_display` migration; staging/dev
+  databases that applied the superseded migrations are reset with a fresh
+  `migrate deploy` (ADR-003 "Data strategy").
+- **Carried over unchanged** from the MVP: pairing/auth
+  ([ADR-001](decisions/ADR-001-device-pairing-auth-model.md),
+  `LodgeDisplayDevice`); the privacy serialiser (`buildDisplayState`); the
+  display page shell + CSP fix; the module React components and their CSS; the
+  simulated-date preview.
