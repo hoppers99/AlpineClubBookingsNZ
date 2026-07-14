@@ -373,6 +373,7 @@ enum ClubThemeFont {
   LORA
   SOURCE_SERIF_4
   NUNITO_SANS
+  OSWALD
 }
 
 // ---------------------------------------------------------------------------
