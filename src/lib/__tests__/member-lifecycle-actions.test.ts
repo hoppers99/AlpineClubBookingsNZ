@@ -18,10 +18,12 @@ const mockPrisma = vi.hoisted(() => {
     memberLifecycleActionRequest: {
       count: vi.fn().mockResolvedValue(0),
       findUnique: vi.fn(),
+      findUniqueOrThrow: vi.fn(),
       findFirst: vi.fn(),
       findMany: vi.fn().mockResolvedValue([]),
       create: vi.fn(),
       update: vi.fn(),
+      updateMany: vi.fn(),
     },
     booking: countDelegate(),
     bookingGuest: countDelegate(),
@@ -272,6 +274,25 @@ function archiveRequest(overrides: Record<string, unknown> = {}) {
   };
 }
 
+// #1886 F23: the review paths claim the request via a guarded updateMany and
+// then re-load it for the include/return payload. Mirror that by deriving the
+// re-loaded row from the data of the most recent claim, the same way the
+// update mock derives its return value from args.data.
+function lifecycleRequestFromLastClaim(
+  base: (overrides?: Record<string, unknown>) => Record<string, unknown>,
+) {
+  return async () => {
+    const lastClaim = mockPrisma.memberLifecycleActionRequest.updateMany.mock.calls.at(
+      -1,
+    )?.[0] as { data: Record<string, unknown> } | undefined;
+    return base({
+      ...(lastClaim?.data ?? {}),
+      requestedBy: requestedBy(),
+      reviewedBy: lastClaim?.data.reviewedByMemberId ? reviewedBy() : null,
+    });
+  };
+}
+
 const countDelegates = [
   mockPrisma.memberLifecycleActionRequest,
   mockPrisma.booking,
@@ -334,6 +355,12 @@ describe("member delete lifecycle actions", () => {
           requestedBy: requestedBy(),
           reviewedBy: args.data.reviewedByMemberId ? reviewedBy() : null,
         }),
+    );
+    mockPrisma.memberLifecycleActionRequest.updateMany.mockResolvedValue({
+      count: 1,
+    });
+    mockPrisma.memberLifecycleActionRequest.findUniqueOrThrow.mockImplementation(
+      lifecycleRequestFromLastClaim(deleteRequest),
     );
     mockPrisma.$transaction.mockImplementation(
       async (callback: (tx: typeof mockPrisma) => Promise<unknown>) =>
@@ -469,8 +496,13 @@ describe("member delete lifecycle actions", () => {
       where: { id: "member-1" },
       data: { xeroContactId: null },
     });
-    expect(mockPrisma.memberLifecycleActionRequest.update).toHaveBeenCalledWith(
+    // #1886 F23: the approval is written through a status-guarded claim so a
+    // concurrently-reviewed request can never be overwritten.
+    expect(
+      mockPrisma.memberLifecycleActionRequest.updateMany,
+    ).toHaveBeenCalledWith(
       expect.objectContaining({
+        where: { id: "request-1", status: "REQUESTED" },
         data: expect.objectContaining({
           status: "APPROVED",
           reviewNote: "Checked",
@@ -487,6 +519,52 @@ describe("member delete lifecycle actions", () => {
     expect(mockPrisma.member.delete).toHaveBeenCalledWith({
       where: { id: "member-1" },
     });
+  });
+
+  it("bails with 409 and performs no destructive work when the delete approve claim race-loses (#1886 F23)", async () => {
+    // Simulate a concurrent reviewer (e.g. a reject) committing after our
+    // pre-transaction status read: the guarded review claim matches zero rows.
+    mockPrisma.memberLifecycleActionRequest.updateMany.mockResolvedValue({
+      count: 0,
+    });
+
+    await expect(
+      reviewMemberDeleteRequest({
+        requestId: "request-1",
+        reviewedByMemberId: "admin-2",
+        action: "approve",
+      }),
+    ).rejects.toMatchObject({
+      name: "MemberLifecycleActionError",
+      statusCode: 409,
+      message: "This delete request has already been reviewed.",
+    } satisfies Partial<MemberLifecycleActionError>);
+
+    // The losing racer must bail before any destructive write.
+    expect(mockPrisma.member.delete).not.toHaveBeenCalled();
+    expect(mockPrisma.xeroObjectLink.updateMany).not.toHaveBeenCalled();
+    expect(mockPrisma.member.update).not.toHaveBeenCalled();
+  });
+
+  it("bails with 409 when the delete reject claim race-loses (#1886 F23)", async () => {
+    mockPrisma.memberLifecycleActionRequest.updateMany.mockResolvedValue({
+      count: 0,
+    });
+
+    await expect(
+      reviewMemberDeleteRequest({
+        requestId: "request-1",
+        reviewedByMemberId: "admin-2",
+        action: "reject",
+      }),
+    ).rejects.toMatchObject({
+      name: "MemberLifecycleActionError",
+      statusCode: 409,
+      message: "This delete request has already been reviewed.",
+    } satisfies Partial<MemberLifecycleActionError>);
+
+    expect(mockCreateAuditLog).not.toHaveBeenCalled();
+    expect(mockSendAdminDeleteRejected).not.toHaveBeenCalled();
   });
 
   it("still emails the requesting admin on a delete reject when notifyMember is false (#1788 carve-out)", async () => {
@@ -546,6 +624,12 @@ describe("member archive lifecycle actions", () => {
           requestedBy: requestedBy(),
           reviewedBy: args.data.reviewedByMemberId ? reviewedBy() : null,
         }),
+    );
+    mockPrisma.memberLifecycleActionRequest.updateMany.mockResolvedValue({
+      count: 1,
+    });
+    mockPrisma.memberLifecycleActionRequest.findUniqueOrThrow.mockImplementation(
+      lifecycleRequestFromLastClaim(archiveRequest),
     );
     mockPrisma.$transaction.mockImplementation(
       async (callback: (tx: typeof mockPrisma) => Promise<unknown>) =>
@@ -661,6 +745,15 @@ describe("member archive lifecycle actions", () => {
     });
 
     expect(result.request.status).toBe("APPROVED");
+    // #1886 F23: the approval claims the request row guarded on status.
+    expect(
+      mockPrisma.memberLifecycleActionRequest.updateMany,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "archive-request-1", status: "REQUESTED" },
+        data: expect.objectContaining({ status: "APPROVED" }),
+      }),
+    );
     expect(mockPrisma.familyGroupMember.deleteMany).toHaveBeenCalledWith({
       where: { memberId: "member-1" },
     });
@@ -709,6 +802,50 @@ describe("member archive lifecycle actions", () => {
     ).rejects.toMatchObject({
       statusCode: 409,
     } satisfies Partial<MemberLifecycleActionError>);
+  });
+
+  it("bails with 409 and performs no archive writes when the archive approve review claim race-loses (#1886 F23)", async () => {
+    // Simulate a concurrent reviewer committing first: the guarded review
+    // claim on the request row matches zero rows.
+    mockPrisma.memberLifecycleActionRequest.updateMany.mockResolvedValue({
+      count: 0,
+    });
+
+    await expect(
+      reviewMemberArchiveRequest({
+        requestId: "archive-request-1",
+        reviewedByMemberId: "admin-2",
+        action: "approve",
+      }),
+    ).rejects.toMatchObject({
+      name: "MemberLifecycleActionError",
+      statusCode: 409,
+      message: "This archive request has already been reviewed.",
+    } satisfies Partial<MemberLifecycleActionError>);
+
+    // The losing racer must bail before any link cleanup or member write.
+    expect(mockPrisma.familyGroupMember.deleteMany).not.toHaveBeenCalled();
+    expect(mockPrisma.member.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("bails with 409 when the archive reject claim race-loses (#1886 F23)", async () => {
+    mockPrisma.memberLifecycleActionRequest.updateMany.mockResolvedValue({
+      count: 0,
+    });
+
+    await expect(
+      reviewMemberArchiveRequest({
+        requestId: "archive-request-1",
+        reviewedByMemberId: "admin-2",
+        action: "reject",
+      }),
+    ).rejects.toMatchObject({
+      name: "MemberLifecycleActionError",
+      statusCode: 409,
+      message: "This archive request has already been reviewed.",
+    } satisfies Partial<MemberLifecycleActionError>);
+
+    expect(mockSendArchiveRejected).not.toHaveBeenCalled();
   });
 
   it("records cleanup link counts in the archive_approved audit log metadata", async () => {
@@ -876,6 +1013,12 @@ describe("member archive admin-account guards (#1604)", () => {
           requestedBy: requestedBy(),
           reviewedBy: reviewedBy(),
         }),
+    );
+    mockPrisma.memberLifecycleActionRequest.updateMany.mockResolvedValue({
+      count: 1,
+    });
+    mockPrisma.memberLifecycleActionRequest.findUniqueOrThrow.mockImplementation(
+      lifecycleRequestFromLastClaim(archiveRequest),
     );
     mockPrisma.member.updateMany.mockResolvedValue({ count: 1 });
     mockPrisma.familyGroupMember.deleteMany.mockResolvedValue({ count: 0 });

@@ -1001,14 +1001,33 @@ export async function reviewMemberDeleteRequest({
 
   if (action === "reject") {
     const rejected = await prisma.$transaction(async (tx) => {
-      const reviewed = await tx.memberLifecycleActionRequest.update({
-        where: { id: request.id },
+      // Claim the review atomically (issue #1886). The pre-transaction status
+      // check above reads stale data under concurrency: another admin's
+      // review can commit between that read and this transaction. Guarding
+      // the update on status ensures the losing reviewer matches zero rows
+      // and bails with the 409 instead of silently overwriting the earlier
+      // decision. Mirrors the archiveClaim guarded-updateMany pattern below.
+      const reviewClaim = await tx.memberLifecycleActionRequest.updateMany({
+        where: {
+          id: request.id,
+          status: MemberLifecycleActionRequestStatus.REQUESTED,
+        },
         data: {
           status: MemberLifecycleActionRequestStatus.REJECTED,
           reviewNote: note,
           reviewedByMemberId,
           reviewedAt: new Date(),
         },
+      });
+      if (reviewClaim.count !== 1) {
+        throw new MemberLifecycleActionError(
+          "This delete request has already been reviewed.",
+          409,
+        );
+      }
+
+      const reviewed = await tx.memberLifecycleActionRequest.findUniqueOrThrow({
+        where: { id: request.id },
         include: lifecycleActionRequestInclude,
       });
 
@@ -1077,6 +1096,35 @@ export async function reviewMemberDeleteRequest({
     const snapshot = await buildMemberSnapshot(request.memberId, tx, eligibility);
     const now = new Date();
 
+    // Claim the review atomically as the first write of this transaction
+    // (issue #1886). The advisory lock serializes lifecycle work per member,
+    // but the request row itself can be reviewed concurrently (e.g. admin B
+    // rejects while admin A approves): without this status guard the losing
+    // approver would overwrite the committed rejection and hard-delete the
+    // member anyway. Guarding on REQUESTED means the loser matches zero rows
+    // and bails with the 409 before any destructive write. Mirrors the
+    // archiveClaim guarded-updateMany pattern below.
+    const reviewClaim = await tx.memberLifecycleActionRequest.updateMany({
+      where: {
+        id: request.id,
+        status: MemberLifecycleActionRequestStatus.REQUESTED,
+      },
+      data: {
+        status: MemberLifecycleActionRequestStatus.APPROVED,
+        reviewNote: note,
+        reviewedByMemberId,
+        reviewedAt: now,
+        processedAt: now,
+        memberSnapshot: snapshot,
+      },
+    });
+    if (reviewClaim.count !== 1) {
+      throw new MemberLifecycleActionError(
+        "This delete request has already been reviewed.",
+        409,
+      );
+    }
+
     await tx.xeroObjectLink.updateMany({
       where: {
         localModel: "Member",
@@ -1091,16 +1139,8 @@ export async function reviewMemberDeleteRequest({
       data: { xeroContactId: null },
     });
 
-    const reviewed = await tx.memberLifecycleActionRequest.update({
+    const reviewed = await tx.memberLifecycleActionRequest.findUniqueOrThrow({
       where: { id: request.id },
-      data: {
-        status: MemberLifecycleActionRequestStatus.APPROVED,
-        reviewNote: note,
-        reviewedByMemberId,
-        reviewedAt: now,
-        processedAt: now,
-        memberSnapshot: snapshot,
-      },
       include: lifecycleActionRequestInclude,
     });
 
@@ -1199,14 +1239,29 @@ export async function reviewMemberArchiveRequest({
 
   if (action === "reject") {
     const rejected = await prisma.$transaction(async (tx) => {
-      const reviewed = await tx.memberLifecycleActionRequest.update({
-        where: { id: request.id },
+      // Claim the review atomically (issue #1886) — see the delete-reject
+      // transaction for the race this guards against.
+      const reviewClaim = await tx.memberLifecycleActionRequest.updateMany({
+        where: {
+          id: request.id,
+          status: MemberLifecycleActionRequestStatus.REQUESTED,
+        },
         data: {
           status: MemberLifecycleActionRequestStatus.REJECTED,
           reviewNote: note,
           reviewedByMemberId,
           reviewedAt: new Date(),
         },
+      });
+      if (reviewClaim.count !== 1) {
+        throw new MemberLifecycleActionError(
+          "This archive request has already been reviewed.",
+          409,
+        );
+      }
+
+      const reviewed = await tx.memberLifecycleActionRequest.findUniqueOrThrow({
+        where: { id: request.id },
         include: lifecycleActionRequestInclude,
       });
 
@@ -1289,6 +1344,30 @@ export async function reviewMemberArchiveRequest({
 
     const now = new Date();
 
+    // Claim the review atomically as the first write of this transaction
+    // (issue #1886) — see the delete-approve transaction for the concurrent
+    // approve/reject race this guards against. Bailing here means a losing
+    // reviewer performs no link cleanup or member writes.
+    const reviewClaim = await tx.memberLifecycleActionRequest.updateMany({
+      where: {
+        id: request.id,
+        status: MemberLifecycleActionRequestStatus.REQUESTED,
+      },
+      data: {
+        status: MemberLifecycleActionRequestStatus.APPROVED,
+        reviewNote: note,
+        reviewedByMemberId,
+        reviewedAt: now,
+        processedAt: now,
+      },
+    });
+    if (reviewClaim.count !== 1) {
+      throw new MemberLifecycleActionError(
+        "This archive request has already been reviewed.",
+        409,
+      );
+    }
+
     const linkCleanupCounts = await cleanupArchivedMemberLinks(
       tx,
       request.memberId,
@@ -1316,15 +1395,8 @@ export async function reviewMemberArchiveRequest({
       );
     }
 
-    const reviewed = await tx.memberLifecycleActionRequest.update({
+    const reviewed = await tx.memberLifecycleActionRequest.findUniqueOrThrow({
       where: { id: request.id },
-      data: {
-        status: MemberLifecycleActionRequestStatus.APPROVED,
-        reviewNote: note,
-        reviewedByMemberId,
-        reviewedAt: now,
-        processedAt: now,
-      },
       include: lifecycleActionRequestInclude,
     });
 
