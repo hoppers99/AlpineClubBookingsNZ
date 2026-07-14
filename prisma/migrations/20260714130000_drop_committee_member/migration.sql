@@ -4,10 +4,15 @@
 -- the member-linked committee system (CommitteeRole + CommitteeAssignment, added
 -- 20260629130000) fully superseded. Since that release the public committee
 -- (/api/committee, the {{committee-members-cards}} embed) and contact recipient
--- routing read only from published, active assignments; nothing at the code
--- level has read or written CommitteeMember since its admin CRUD was retired in
--- this release (issue #1864). The table was free-standing with no foreign keys
--- in or out, so this drop loses no referential integrity.
+-- routing read only from published, active assignments. The last remaining
+-- reader/writer, the admin committee CRUD, is retired in THIS release (issue
+-- #1864). Old-code caveat: the previously deployed colour still models the table
+-- and its admin committee routes read and write it, so between migrate and
+-- cutover those admin-only routes error until cutover; the public committee and
+-- contact surfaces are unaffected. Ship this drop only with old traffic idle or
+-- routed to the new runtime (see the BLUE_GREEN_MIGRATION_SAFETY.tsv row). The
+-- table was free-standing with no foreign keys in or out, so this drop loses no
+-- referential integrity.
 --
 -- Deploy ordering: the code that stopped using the table ships in this same
 -- release. Drop after cutover to the runtime that no longer references it. The
