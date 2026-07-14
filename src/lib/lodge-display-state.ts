@@ -251,6 +251,11 @@ export async function buildDisplayState(
         id: true,
         checkIn: true,
         checkOut: true,
+        // Authoritative whole-lodge treatment (#122 / epic #116, ADR-001
+        // decision 4): an explicit exclusive hold drives the blockout board,
+        // with the sole-occupancy heuristic as the fallback for un-flagged
+        // bookings.
+        wholeLodgeHold: true,
         member: {
           select: { firstName: true, lastName: true, ageTier: true },
         },
@@ -377,10 +382,18 @@ export async function buildDisplayState(
     return { date: dateKey, arriving, departing, staying };
   });
 
-  // --- whole-lodge detection (design.md §10): sole occupancy on every NIGHT
-  // the booking covers, and a genuine group (organisation or >= threshold).
+  // --- whole-lodge detection: an explicit exclusive hold is AUTHORITATIVE
+  // (#122 / epic #116, ADR-001 decision 4) — a flagged booking always gets the
+  // blockout treatment regardless of headcount. The sole-occupancy heuristic
+  // (design.md §10: sole occupancy on every NIGHT the booking covers AND a
+  // genuine group — organisation or >= threshold) is the fallback for
+  // un-flagged bookings.
   const wholeLodgeBookingIds = new Set<string>();
   for (const booking of bookings) {
+    if (booking.wholeLodgeHold) {
+      wholeLodgeBookingIds.add(booking.id);
+      continue;
+    }
     const nightMap = perBookingNightCounts.get(booking.id);
     if (!nightMap || nightMap.size === 0) continue;
     const isSoleOnAllNights = [...nightMap.entries()].every(

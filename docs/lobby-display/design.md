@@ -700,13 +700,16 @@ upstream owner's input on discussion #964):
 1. **Organisations** (organiser member `ageTier = NOT_APPLICABLE` — schools,
    clubs): the booking shows the organisation's full name at every level;
    its guests are never listed individually.
-2. **Whole-lodge blockout**: a booking that is the sole occupant on every
+2. **Whole-lodge blockout**: an explicit exclusive hold
+   (`Booking.wholeLodgeHold`) is **authoritative** (#122 / epic #116, ADR-001
+   decision 4) — a flagged booking always collapses to its label only,
+   regardless of headcount. For **un-flagged** bookings the sole-occupancy
+   heuristic is the fallback: a booking that is the sole occupant on every
    NIGHT it covers in the window AND is a genuine group (organisation, or
    ≥ `WHOLE_LODGE_MIN_GUESTS` = 8 guests) collapses to its label only. Sole
    occupancy is measured on nights, not departure-day visibility (LTV-016):
    a group leaving in the morning keeps its blockout even when the next
-   booking arrives that evening. The guest-count heuristic is a v1
-   constant — review-flagged on epic #25.
+   booking arrives that evening.
 3. **Bookings containing minors** (`ageTier` INFANT/CHILD/YOUTH): collapse
    to a family label — "«Surname» family" at the two fuller levels,
    "Family of N" at `FIRST_NAME_ONLY` — and guests are never listed.
