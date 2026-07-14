@@ -134,6 +134,8 @@ export default async function BookingDetailPage({
       member: { select: { firstName: true, lastName: true } },
       // Admin capacity hold (#1764): who placed it, for the admin tools card.
       adminCapacityHoldBy: { select: { firstName: true, lastName: true } },
+      // Exclusive whole-lodge hold (#121): who set it, for the admin tools card.
+      wholeLodgeHoldBy: { select: { firstName: true, lastName: true } },
       // Request-converted PENDING holds capacity (#1254); the admin hold
       // controls need the natural-holding answer to hide Release correctly.
       originBookingRequest: { select: { id: true } },
@@ -799,6 +801,13 @@ export default async function BookingDetailPage({
               isRequestConverted: Boolean(booking.originBookingRequest),
             }),
             canPlaceHold: booking.status === "PAYMENT_PENDING",
+          }}
+          exclusiveHold={{
+            wholeLodgeHold: booking.wholeLodgeHold,
+            wholeLodgeHoldAt: booking.wholeLodgeHoldAt?.toISOString() ?? null,
+            heldByName: booking.wholeLodgeHoldBy
+              ? `${booking.wholeLodgeHoldBy.firstName} ${booking.wholeLodgeHoldBy.lastName}`
+              : null,
           }}
         />
       )}

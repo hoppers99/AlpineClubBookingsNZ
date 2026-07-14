@@ -124,6 +124,14 @@ interface CreateSchoolBookingRequestInput {
   cateringPreference: SchoolCateringPreference;
   message?: string | null;
   /**
+   * The requester asked for sole (whole-lodge) occupancy for their group
+   * (issue #121, ADR-001). Persisted to BookingRequest.exclusivityRequested;
+   * an admin approving the request may set Booking.wholeLodgeHold from it. It
+   * is a request, not a guarantee — the school booking-request path is the only
+   * requester front-door for exclusivity (owner decision, 2026-07-14).
+   */
+  exclusivityRequested?: boolean;
+  /**
    * Lodge the stay is requested at. Callers must validate it names an ACTIVE
    * lodge (assertRequestedLodgeActive). Null/omitted means the club's default
    * lodge (BookingRequest.lodgeId null semantics).
@@ -332,6 +340,9 @@ export async function createSchoolBookingRequest(
       message: cleanNullableString(input.message),
       indicativePriceCents,
       lodgeId: requestedLodgeId,
+      // Whole-lodge exclusivity request (issue #121). Only ever set on the
+      // school front-door; approval may translate it into a Booking.wholeLodgeHold.
+      exclusivityRequested: Boolean(input.exclusivityRequested),
       verificationTokenHash: tokenHash,
       verificationTokenExpiresAt,
     },
@@ -371,6 +382,7 @@ export async function createSchoolBookingRequest(
       teacherCount: teachers.length,
       indicativePriceCents,
       lodgeId: requestedLodgeId,
+      exclusivityRequested: Boolean(input.exclusivityRequested),
     },
   });
 
@@ -524,6 +536,22 @@ export async function approveSchoolBookingRequest(input: {
   );
 
   const reviewedAt = new Date();
+
+  // Whole-lodge exclusivity (issue #121, ADR-001): when the request asked for
+  // sole occupancy, stamp the resulting booking's authoritative hold flag at
+  // approval. Stamped by the approving admin, since the admin is the actor who
+  // grants exclusivity (a member request only records the ASK). ADR-001
+  // decision 1: NO empty-lodge precondition — the hold is set regardless of any
+  // existing overlapping bookings; conflicts are surfaced/resolved by the
+  // officer, not auto-displaced. Spread into both the fresh-create and
+  // held-booking conversion branches below.
+  const exclusiveHoldData = request.exclusivityRequested
+    ? {
+        wholeLodgeHold: true,
+        wholeLodgeHoldAt: reviewedAt,
+        wholeLodgeHoldByMemberId: input.adminMemberId,
+      }
+    : {};
 
   let capacityFullNights: string[] | null = null;
   let conversion: {
@@ -704,6 +732,8 @@ export async function approveSchoolBookingRequest(input: {
             // no-substitution path this rewrites the same id (a no-op); bed
             // allocations live on guest rows and are unaffected by ownership.
             memberId: ownerId,
+            // Exclusive whole-lodge hold when the request asked for it (#121).
+            ...exclusiveHoldData,
           },
           select: { id: true },
         });
@@ -772,6 +802,8 @@ export async function approveSchoolBookingRequest(input: {
             hasNonMembers: true,
             notes: request.message,
             createdById: input.adminMemberId,
+            // Exclusive whole-lodge hold when the request asked for it (#121).
+            ...exclusiveHoldData,
             guests: {
               create: guestCreates,
             },
@@ -960,10 +992,39 @@ export async function approveSchoolBookingRequest(input: {
         guestCount: guests.length,
         teacherCount: conversion.teacherAssignments.length,
         invoiceMode,
+        exclusivityRequested: Boolean(request.exclusivityRequested),
+        wholeLodgeHold: Boolean(request.exclusivityRequested),
         checkIn: request.checkIn.toISOString(),
         checkOut: request.checkOut.toISOString(),
       },
     });
+
+    // Exclusive whole-lodge hold set at approval (issue #121, ADR-001): record
+    // a dedicated, durable audit row for the capacity-affecting flag, mirroring
+    // the admin exclusive-hold route's action name so both entry points share
+    // one audit vocabulary. Only fires when the request asked for exclusivity
+    // and the conversion actually ran (not on the idempotent replay path).
+    if (request.exclusivityRequested) {
+      logAudit({
+        action: "booking.exclusiveHold.set",
+        memberId: input.adminMemberId,
+        actorMemberId: input.adminMemberId,
+        subjectMemberId: conversion.schoolMemberId,
+        targetId: conversion.bookingId,
+        entityType: "Booking",
+        entityId: conversion.bookingId,
+        category: "booking",
+        severity: "important",
+        outcome: "success",
+        summary: "Exclusive whole-lodge hold set from an approved school request",
+        metadata: {
+          bookingId: conversion.bookingId,
+          requestId: request.id,
+          source: "school_request_approval",
+          setByMemberId: input.adminMemberId,
+        },
+      });
+    }
 
     // The held school owner failed re-validation and a fresh contact was
     // substituted (issue #1255 residual-risk decision 1). Surface it for admin
