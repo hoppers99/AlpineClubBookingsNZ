@@ -63,7 +63,7 @@ function FacilityGroup({
   return (
     <article
       id={id}
-      className="rounded-md border border-slate-200 bg-slate-50 p-3"
+      className="rounded-md border border-slate-200 bg-slate-50 p-2"
     >
       <h3 className="text-sm font-semibold text-slate-900">{title}</h3>
       {items.length > 0 ? (
@@ -187,7 +187,7 @@ export function SkifieldWhakapapaWidget() {
   return (
     <section
       id="conditions"
-      className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm sm:p-4"
+      className="rounded-lg border border-slate-200 bg-white p-2 shadow-sm sm:p-4"
     >
       <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
         <div>
@@ -214,7 +214,7 @@ export function SkifieldWhakapapaWidget() {
           {data.visibility.roadStatus ? (
             <article
               id="whakapapa-road-status"
-              className="rounded-md border border-slate-200 bg-slate-50 p-3"
+              className="rounded-md border border-slate-200 bg-slate-50 p-2"
             >
               <h3 className="text-sm font-semibold text-slate-900">
                 Road Status
@@ -223,8 +223,6 @@ export function SkifieldWhakapapaWidget() {
                 <div className="sm:flex-1">
                   <p className="text-xs text-slate-700">
                     {data.roadStatus.name || "Unknown road"}
-                  </p>
-                  <p className="mt-2">
                     <span
                       className={`inline-flex rounded-full px-2 py-1 text-xs font-medium ${roadStatusTone}`}
                     >
@@ -289,7 +287,7 @@ export function SkifieldWhakapapaWidget() {
       {data.visibility.conditions ? (
         <article
           id="whakapapa-mountain-conditions"
-          className="mt-3 rounded-md border border-slate-200 bg-slate-50 p-3"
+          className="mt-3 rounded-md border border-slate-200 bg-slate-50 p-2"
         >
           <h3 className="text-sm font-semibold text-slate-900">
             Mountain Conditions
