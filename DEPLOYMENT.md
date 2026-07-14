@@ -266,6 +266,11 @@ not configured, the job no longer reports healthy: the dump is marked
 check-in is sent as an error. A healthy scheduled backup requires S3 upload and
 readback verification.
 
+`BACKUP_RETENTION_DAYS` prunes only the local backup files; it does not delete
+objects already uploaded to S3. Enforce S3 retention with a bucket lifecycle
+policy (or equivalent object-expiry rule) so uploaded dumps do not accumulate
+indefinitely.
+
 Operators should also keep provider-level snapshots or equivalent independent
 backups. Test restore procedures before relying on backups.
 
@@ -327,9 +332,10 @@ truth. The public POST endpoints are:
 
 Without `/api/cron/payments?task=recovery` running on a regular schedule,
 abandoned zero-dollar batch edits leave PaymentIntents held in Stripe
-indefinitely. The `/api/health` detailed report surfaces a stale recovery
-queue when any `PaymentRecoveryOperation` row has been `PENDING` for more
-than 15 minutes. Each cron tick also sends an admin alert (re-using
+indefinitely. The admin `/api/admin/health` detailed report surfaces a stale
+recovery queue when any `PaymentRecoveryOperation` row has been `PENDING` for
+more than 15 minutes (the public `/api/health` report does not include this
+signal). Each cron tick also sends an admin alert (re-using
 `sendAdminPaymentFailureAlert`) when the queue contains a row that has
 been pending for more than 30 minutes, with a one-hour cooldown to avoid
 storming the inbox.
