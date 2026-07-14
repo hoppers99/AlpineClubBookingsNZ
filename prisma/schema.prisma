@@ -534,6 +534,7 @@ model Member {
   bookingsAdminReviewed                      Booking[]                                  @relation("BookingsAdminReviewed")
   bookingsAdminCapacityHeld                  Booking[]                                  @relation("BookingsAdminCapacityHeld")
   bookingsCapacityOverridden                 Booking[]                                  @relation("BookingsCapacityOverridden")
+  bookingsWholeLodgeHeld                     Booking[]                                  @relation("BookingsWholeLodgeHeld")
   approvedBedAllocations                     BedAllocation[]                            @relation("BedAllocationApprover")
   refundRequests                             RefundRequest[]
   issueReports                               IssueReport[]
@@ -1109,6 +1110,17 @@ model Booking {
   // cancelled booking never re-enters a re-check, so the audit fact is kept.
   capacityOverriddenAt         DateTime?
   capacityOverriddenByMemberId String?
+  // Exclusive whole-lodge hold (#117 / epic #116, ADR-001): when true this
+  // booking reserves SOLE OCCUPANCY of the lodge for its nights. The capacity
+  // engine (#118) hard-blocks any other admission on a held night — independent
+  // of headcount and bed allocation, and NOT bypassable by the admin
+  // over-capacity override. Set by an admin (audited via the two fields below,
+  // mirroring the capacity-override audit pattern) or by approving a
+  // BookingRequest whose exclusivityRequested is set. Additive/expand-only;
+  // default false keeps every existing booking non-exclusive.
+  wholeLodgeHold               Boolean            @default(false)
+  wholeLodgeHoldAt             DateTime?
+  wholeLodgeHoldByMemberId     String?
   createdAt                 DateTime           @default(now())
   updatedAt                 DateTime           @updatedAt
 
@@ -1121,6 +1133,7 @@ model Booking {
   adminReviewedBy             Member?                         @relation("BookingsAdminReviewed", fields: [adminReviewedById], references: [id], onDelete: SetNull)
   adminCapacityHoldBy         Member?                         @relation("BookingsAdminCapacityHeld", fields: [adminCapacityHoldByMemberId], references: [id], onDelete: SetNull)
   capacityOverriddenBy        Member?                         @relation("BookingsCapacityOverridden", fields: [capacityOverriddenByMemberId], references: [id], onDelete: SetNull)
+  wholeLodgeHoldBy            Member?                         @relation("BookingsWholeLodgeHeld", fields: [wholeLodgeHoldByMemberId], references: [id], onDelete: SetNull)
   requestedRoom               LodgeRoom?                      @relation("BookingRequestedRoom", fields: [requestedRoomId], references: [id], onDelete: SetNull)
   parentBooking               Booking?                        @relation("BookingGroup", fields: [parentBookingId], references: [id], onDelete: SetNull, onUpdate: Cascade)
   linkedBookings              Booking[]                       @relation("BookingGroup")
@@ -1169,6 +1182,7 @@ model Booking {
   @@index([adminReviewedById])
   @@index([adminCapacityHoldByMemberId])
   @@index([capacityOverriddenByMemberId])
+  @@index([wholeLodgeHoldByMemberId])
   @@index([requestedRoomId])
   @@index([parentBookingId])
   @@index([lodgeId])
@@ -1397,6 +1411,14 @@ model BookingRequest {
   // named ADULT guests plus "School Child 1..N" rows at the requested tiers.
   guests           Json
   message          String?              @db.VarChar(1000)
+
+  // Exclusive whole-lodge hold — request path (#117 / epic #116, ADR-001). A
+  // requester (school/group front-door) can ask for sole occupancy of the
+  // lodge. This is only the REQUEST signal; an admin approving the request may
+  // set Booking.wholeLodgeHold on the resulting booking (the flag itself is the
+  // admin capacity action). Booking-generic; "school" is just the wording.
+  // Additive/expand-only; default false.
+  exclusivityRequested Boolean            @default(false)
 
   // SCHOOL variant only. The school is the invoiced party / Xero contact.
   schoolName         String?                   @db.VarChar(200)
