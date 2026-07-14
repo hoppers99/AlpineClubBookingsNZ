@@ -22,8 +22,16 @@ and decline**. The cancellation-with-refund spec
 (`e2e/booking-cancel-refund.spec.ts`) covers the cancel → **account-credit**
 money outcome; **card-refund** (a real Stripe refund), saved-card, and
 member-credit paths still have no browser coverage (Vitest/service only). The
-deliberate, ratified browser-coverage gaps (email-code 2FA, cron-driven waitlist
-offer/expiry, webhook signature classes) are listed in `E2E_PLAYWRIGHT.md`.
+deliberate, ratified browser-coverage gaps (cron-driven waitlist offer/expiry,
+webhook signature classes) are listed in `E2E_PLAYWRIGHT.md`. Email-code 2FA is
+covered by `e2e/two-factor-email.spec.ts`.
+
+Concurrency-under-load coverage (the "stable at 100+ concurrent users"
+target) lives outside this matrix in the k6 harness under `load/` — public
+browse, login, member-dashboard reads, and the booking-hold contention
+stampede over the per-lodge advisory lock. See
+[`LOAD_TESTING.md`](LOAD_TESTING.md); runs are owner-gated and target only
+the throwaway staging stack.
 
 | Area                       | Persona or actor                     | Journey or behavior                                                                                                                                                                                                                                                                                                                                                                              | Risk     | Test type                                                                                                           | Suggested validation                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | -------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------- | ------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

@@ -85,7 +85,7 @@ for (const { rawPath, resolverPath } of routes) {
 const OVERVIEW_ALLOWLIST = ["/api/admin/pending-counts"] as const;
 
 // Frozen snapshot of the COMPLETE /api/admin route -> area assignment, derived
-// from getAdminRouteRequirement() over the working tree (214 routes). See the
+// from getAdminRouteRequirement() over the working tree. See the
 // header comment: a mismatch is a real change to effective role access — verify
 // intent before repasting. Several groupings are deliberate and adjudicated as
 // intended (issue #1548), NOT bugs to "fix" by remapping:
@@ -154,8 +154,6 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   "/api/admin/bookings/search": "bookings",
   "/api/admin/chores": "lodge",
   "/api/admin/chores/[id]": "lodge",
-  "/api/admin/committee": "membership",
-  "/api/admin/committee/[id]": "membership",
   "/api/admin/committee/assignments": "membership",
   "/api/admin/committee/assignments/[id]": "membership",
   "/api/admin/config-transfer/apply": "support",

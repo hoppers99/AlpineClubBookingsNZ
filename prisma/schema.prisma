@@ -176,6 +176,11 @@ enum MembershipBillingExceptionStatus {
   RESOLVED
 }
 
+enum FamilyBillingMode {
+  BILL_FAMILY_VIA_BILLING_MEMBER
+  BILL_MEMBERS_INDIVIDUALLY
+}
+
 enum MembershipAssignmentSource {
   ADMIN
   /// retired (2026-07 audit, #1525 S4): never written in code (`source` always defaults to ADMIN); kept because Postgres enum-value removal requires a type rebuild.
@@ -404,6 +409,7 @@ enum ClubThemeFont {
   LORA
   SOURCE_SERIF_4
   NUNITO_SANS
+  OSWALD
 }
 
 // ---------------------------------------------------------------------------
@@ -949,11 +955,17 @@ model MembershipBillingException {
 }
 
 model MembershipSubscriptionBillingSettings {
-  id                String   @id @default("default")
-  invoiceDueDays    Int      @default(30)
+  id                String            @id @default("default")
+  invoiceDueDays    Int               @default(30)
+  // Club billing model. BILL_FAMILY_VIA_BILLING_MEMBER (the default, preserving
+  // pre-#159 behaviour) invoices each family once via its nominated billing
+  // member and allows PER_FAMILY fee schedules. BILL_MEMBERS_INDIVIDUALLY
+  // invoices every member directly, hides the family-billing surface, and
+  // disallows PER_FAMILY schedules.
+  familyBillingMode FamilyBillingMode @default(BILL_FAMILY_VIA_BILLING_MEMBER)
   updatedByMemberId String?
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
 }
 
 // ---------------------------------------------------------------------------
@@ -2564,10 +2576,12 @@ model XeroSyncOperation {
   // BEFORE handlers may overwrite `requestPayload` -- so after dispatch this
   // column can diverge from the payload (some handlers, e.g. the booking-invoice
   // create/update, rewrite requestPayload wholesale and drop queueType). That is
-  // expected and safe: nothing reads this column yet (added for #1272), and for
-  // every row still awaiting dispatch (PENDING / WAITING_PAYMENT -- the set #1272
-  // will scan) the column faithfully mirrors the enqueue-time queueType. Null for
-  // REQUEUE, BACKFILL, inbound, and any other row enqueued with no queueType.
+  // expected and safe: the pending-outbox scan (processQueuedXeroOutboxOperations,
+  // #1272) filters on this column only for rows still awaiting dispatch (PENDING /
+  // WAITING_PAYMENT), where it faithfully mirrors the enqueue-time queueType, so
+  // post-dispatch divergence is never observed. Because that scan depends on it,
+  // the column MUST remain immutable after enqueue. Null for REQUEUE, BACKFILL,
+  // inbound, and any other row enqueued with no queueType.
   queueType              String?
   responsePayload        Json?
   xeroObjectType         String?
@@ -3830,7 +3844,10 @@ model MemberCreditNoteAllocation {
   // The Xero credit note carrying the slice: the lot's existing floating note,
   // or a freshly minted note for an admin-adjustment (noteless) lot.
   xeroCreditNoteId   String
-  // The booking whose Xero invoice the note is allocated against.
+  // The booking whose Xero invoice the note is allocated against. Deliberately a
+  // bare scalar with no FK to Booking (mirrors MemberCredit.restoredFromBookingId):
+  // allocation ledger rows are an immutable audit trail and must survive a booking
+  // hard-delete rather than cascade or block it.
   appliedToBookingId String
   // Positive cents drawn from the lot for this booking (never exceeds the lot's
   // remaining balance).
@@ -3954,22 +3971,8 @@ model RefundRequest {
 }
 
 // ---------------------------------------------------------------------------
-// Committee Members (public-facing committee page, admin-managed)
+// Committee (member-linked roles and assignments)
 // ---------------------------------------------------------------------------
-
-model CommitteeMember {
-  id          String   @id @default(cuid())
-  role        String // Position title (e.g. "President")
-  name        String // Display name
-  phone       String // Contact phone number
-  email       String? // Optional email address
-  contactKey  String?  @unique // Maps to /contact?recipient=key
-  description String // Role description
-  sortOrder   Int      @default(0) // Display order on public page
-  active      Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-}
 
 model CommitteeRole {
   id           String   @id @default(cuid())
