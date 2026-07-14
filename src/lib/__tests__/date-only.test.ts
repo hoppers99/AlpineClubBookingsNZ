@@ -76,8 +76,8 @@ describe("date-only helpers", () => {
   });
 });
 
-// Regression coverage for issue #1878 (finding F8): the removed
-// getNZSTToday()/getNZSTTomorrow() helpers built `new Date(`${y}-${m}-${d}T00:00:00`)`
+// Regression coverage for issue #1878 (finding F8): the removed NZST
+// "today"/"tomorrow" helpers built `new Date(`${y}-${m}-${d}T00:00:00`)`
 // — no timezone suffix, so the string parsed in the server's LOCAL zone. Under
 // the production TZ=Pacific/Auckland pin that instant is NZ-local midnight,
 // which is still the PREVIOUS calendar day in UTC — the value every Prisma
