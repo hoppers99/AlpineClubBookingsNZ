@@ -153,6 +153,20 @@ export async function POST(
     });
 
     if (!flip.ok) {
+      // #1881 (F11) — recovery note for a $0 booking parked in PAYMENT_PENDING.
+      // confirmWaitlistOffer above already committed the WAITLIST_OFFERED ->
+      // PAYMENT_PENDING flip in a SEPARATE transaction, so on a genuine 409 here
+      // the booking stays PAYMENT_PENDING (still holding its bed — capacity is
+      // parked, never silently lost). There is NO automatic retry for this state:
+      // - the member cannot re-drive, because confirmWaitlistOffer status-guards
+      //   on WAITLIST_OFFERED (a PAYMENT_PENDING re-POST returns 400);
+      // - cron-confirm-pending only advances PENDING bookings, not PAYMENT_PENDING;
+      // - admin force-confirm only accepts WAITLISTED/WAITLIST_OFFERED.
+      // Operator recovery: cancel the booking (PAYMENT_PENDING is in
+      // CANCELLABLE_BOOKING_STATUSES, so admin cancel releases the held bed with
+      // no refund — no money was taken for a $0 booking), after which the member
+      // can be re-offered / re-join the waitlist. This 409 is only reachable on a
+      // true capacity race in the brief window between the two transactions.
       return NextResponse.json(
         { error: "Capacity is no longer available for this booking." },
         { status: flip.status }
