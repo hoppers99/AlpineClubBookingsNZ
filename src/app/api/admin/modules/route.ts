@@ -95,6 +95,7 @@ export async function PUT(request: Request) {
       ...after,
       updatedByMemberId: session.user.id,
     },
+    select: CLUB_MODULE_SETTINGS_COLUMN_SELECT,
   });
 
   const record =
