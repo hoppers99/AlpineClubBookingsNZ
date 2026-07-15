@@ -223,10 +223,22 @@ applied the superseded migrations are reset with a fresh `migrate deploy`.)*
   built-in, the state route flags a broken binding (`layoutRenderError`) and logs
   it, and `authoring-validation.ts` is the shared save contract — structural
   invalidity refuses the save, sanitiser-blocked content warns. Preview-before-
-  save **enforcement** lives in the authoring UIs, #78/#79.)*
+  save **enforcement** lives in the authoring UIs, #78/#79. Hardened in issue
+  #176: **every** render branch is now wrapped, not just the authored one — the
+  legacy `ActiveScreen` and the already-degraded `FallbackBoard` branches drop to
+  a minimal, zero-data shell if they throw, and a route-segment `error.tsx` is the
+  framework-level last resort for a throw that escapes the React tree entirely, so
+  a throwing module/board can never blank the wall.)*
 - **Token scope.** Authored content resolves only the display's own token set,
   never the full site token catalogue — a wall must not surface data beyond the
-  privacy-reduced payload the serialiser already guards.
+  privacy-reduced payload the serialiser already guards. *(Value resolution runs
+  AFTER the sanitiser, so issue #176 adds a URL-scheme guard: a resolved token
+  value that OPENS an authored `href`/`src` is scheme-validated — http/https/
+  mailto/tel and relative/anchor pass, anything else (javascript:, data:,
+  protocol-relative) collapses to an inert `#`, so a config value can never
+  smuggle a live scheme past the gate. Only resolved token values are checked;
+  literal authored URLs keep the sanitiser's verdict, and CMS/page-content
+  behaviour is untouched.)*
 - **Privacy unchanged.** All name reduction / minors / no-sensitive-field rules
   remain solely in `buildDisplayState`; the authoring layer only arranges what
   that serialiser already permits and can never widen it.

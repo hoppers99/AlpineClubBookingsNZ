@@ -193,7 +193,14 @@ validated server-side against configured bounds).
 > **without** a session so the authoring page can embed it in a sandboxed
 > (opaque-origin) iframe; its cross-origin response carries a permissive CORS
 > header (no credentials sent). All previews may add `?previewDate=YYYY-MM-DD`
-> to simulate the window start (device fetches ignore it).
+> to simulate the window start (device fetches ignore it) — except that when a
+> signed grant already carries a `windowStart`, that signed value is
+> authoritative and a conflicting `?previewDate` on the sandbox-rewritable iframe
+> URL cannot shift the served window beyond it (issue #176); the in-frame date
+> picker still drives the window when the grant carries no signed date. Every
+> payload response also sets `Cache-Control: no-store` so the privacy-reduced
+> feed — which can include guest names and opted-in phone numbers — is never held
+> in a shared or browser cache.
 
 One JSON payload per request covering the display window — every module is a
 pure function of this payload. The contract below is copied verbatim from

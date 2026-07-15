@@ -182,6 +182,34 @@ describe("buildLayoutRender — display img-src restriction (issue #161)", () =>
   });
 });
 
+// Issue #176: a resolved token value that opens an authored href/src must not
+// smuggle a dangerous scheme past the sanitiser (which ran BEFORE resolution).
+describe("buildLayoutRender — URL-scheme guard for resolved tokens (issue #176)", () => {
+  it("neutralises a javascript: config value resolved into an authored href", () => {
+    const render = buildLayoutRender(
+      input({
+        slotContent: { main: { html: '<a href="{{config:evil}}">Book</a>' } },
+      }),
+      state({ config: { "wifi-code": "alpine1234", evil: "javascript:alert(1)" } })
+    );
+    const html = slotHtml(render, "main");
+    expect(html).not.toContain("javascript:");
+    expect(html).toContain('href="#"');
+  });
+
+  it("preserves a benign https config value resolved into an authored href", () => {
+    const render = buildLayoutRender(
+      input({
+        slotContent: { main: { html: '<a href="{{config:book-url}}">Book</a>' } },
+      }),
+      state({
+        config: { "wifi-code": "alpine1234", "book-url": "https://club.nz/book" },
+      })
+    );
+    expect(slotHtml(render, "main")).toContain('href="https://club.nz/book"');
+  });
+});
+
 describe("buildLayoutRender — LTV-041 marker replacement (issue #96)", () => {
   it("keeps an area marker INSIDE an authored container (nesting preserved)", () => {
     // The 2+1 case: two placeholders nested two containers deep. The marker must
