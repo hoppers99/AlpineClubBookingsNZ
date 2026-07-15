@@ -2,15 +2,18 @@ import fs from "fs";
 import path from "path";
 import { describe, expect, it } from "vitest";
 
-// #153 / #150 guard: every read of the ClubModuleSettings singleton must use
-// an explicit column `select` (CLUB_MODULE_SETTINGS_COLUMN_SELECT in
-// src/config/modules.ts). A bare findUnique/findMany has no select, so Prisma
-// names EVERY schema column — including a retired-but-not-yet-dropped one
-// (the former multiLodge flag was the trigger; see #139) — which breaks
-// blue/green safety for the eventual DROP. This is a static source scan
-// (rather than only per-call-site unit tests) so a future call site that
-// forgets the select fails CI immediately instead of relying on someone
-// remembering to add a matching mock assertion.
+// #153 / #150 / #175 guard: every read AND write of the ClubModuleSettings
+// singleton must use an explicit column `select`
+// (CLUB_MODULE_SETTINGS_COLUMN_SELECT in src/config/modules.ts). A bare
+// findUnique/findMany/upsert/create/update has no select, so Prisma names
+// EVERY schema column — including a retired-but-not-yet-dropped one (the
+// former multiLodge flag was the trigger; see #139) — which breaks
+// blue/green safety for the eventual DROP. upsert/create/update matter just
+// as much as reads: Prisma's implicit RETURNING on a write names every
+// column too (#175). This is a static source scan (rather than only
+// per-call-site unit tests) so a future call site that forgets the select
+// fails CI immediately instead of relying on someone remembering to add a
+// matching mock assertion.
 
 const SRC_DIR = path.join(process.cwd(), "src");
 
@@ -41,8 +44,9 @@ function extractCallArgs(source: string, openParenIndex: number): string {
 }
 
 describe("ClubModuleSettings reads use an explicit column select", () => {
-  it("has no bare clubModuleSettings.findUnique/findMany call anywhere in src/", () => {
-    const callPattern = /clubModuleSettings\??\.(findUnique|findMany)\(/g;
+  it("has no bare clubModuleSettings.findUnique/findMany/upsert/create/update call anywhere in src/", () => {
+    const callPattern =
+      /clubModuleSettings\??\.(findUnique|findMany|upsert|create|update)\(/g;
     const offenders: string[] = [];
     for (const file of walk(SRC_DIR)) {
       const source = fs.readFileSync(file, "utf8");
@@ -59,20 +63,25 @@ describe("ClubModuleSettings reads use an explicit column select", () => {
     expect(offenders).toEqual([]);
   });
 
-  // The config-transfer club-settings category reads the singleton through a
-  // generic `delegateOf(...).findUnique(...)` helper, so the literal model
-  // name never appears at the call site and the scan above cannot see it.
-  // Guard it directly: every findUnique call in that file must thread the
-  // per-spec select (only populated for club-module-settings) through.
-  it("config-transfer club-settings.ts threads the per-spec select through every findUnique", () => {
+  // The config-transfer club-settings category reads and writes the singleton
+  // through generic `delegateOf(...).findUnique(...)` / `.upsert(...)`
+  // helpers, so the literal model name never appears at the call site and the
+  // scan above cannot see it. Guard it directly: every findUnique and upsert
+  // call in that file must thread the per-spec select (only populated for
+  // club-module-settings) through.
+  it("config-transfer club-settings.ts threads the per-spec select through every findUnique and upsert", () => {
     const file = path.join(
       SRC_DIR,
       "lib/config-transfer/categories/club-settings.ts",
     );
     const source = fs.readFileSync(file, "utf8");
     const findUniqueCalls = source.match(/\.findUnique\(/g) ?? [];
+    const upsertCalls = source.match(/\.upsert\(/g) ?? [];
     const selectedCalls = source.match(/select:\s*spec\.select/g) ?? [];
     expect(findUniqueCalls.length).toBeGreaterThan(0);
-    expect(selectedCalls.length).toBe(findUniqueCalls.length);
+    expect(upsertCalls.length).toBeGreaterThan(0);
+    expect(selectedCalls.length).toBe(
+      findUniqueCalls.length + upsertCalls.length,
+    );
   });
 });

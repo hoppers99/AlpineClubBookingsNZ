@@ -145,12 +145,13 @@ describe("club-module-settings singleton reads use the explicit column select", 
     });
   });
 
-  it("passes the select through on apply", async () => {
+  it("passes the select through on apply (create branch, no existing row)", async () => {
     const findUnique = vi.fn().mockResolvedValue(null);
+    const upsert = vi.fn().mockResolvedValue(null);
     const tx = {
       clubModuleSettings: {
         findUnique,
-        upsert: vi.fn().mockResolvedValue(null),
+        upsert,
       },
     } as unknown as TxDb;
     const files = new Map<string, Uint8Array>();
@@ -173,6 +174,47 @@ describe("club-module-settings singleton reads use the explicit column select", 
       where: { id: "default" },
       select: CLUB_MODULE_SETTINGS_COLUMN_SELECT,
     });
+    expect(upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "default" },
+        select: CLUB_MODULE_SETTINGS_COLUMN_SELECT,
+      }),
+    );
+  });
+
+  it("passes the select through on apply (update branch, existing row changed)", async () => {
+    const findUnique = vi
+      .fn()
+      .mockResolvedValue({ ...MODULES, bedAllocation: false });
+    const upsert = vi.fn().mockResolvedValue(null);
+    const tx = {
+      clubModuleSettings: {
+        findUnique,
+        upsert,
+      },
+    } as unknown as TxDb;
+    const files = new Map<string, Uint8Array>();
+    files.set(
+      "club-settings/club-module-settings.json",
+      strToU8(JSON.stringify(MODULES)),
+    );
+    const ctx: ApplyContext = {
+      tx,
+      files,
+      manifest: {} as unknown as ApplyContext["manifest"],
+      mode: "merge",
+      resolutions: new Map(),
+      actorMemberId: "test-actor",
+      imageRemap: new Map(),
+      notes: { doorCodesWritten: [] },
+    };
+    await clubSettingsImporter.apply(ctx);
+    expect(upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "default" },
+        select: CLUB_MODULE_SETTINGS_COLUMN_SELECT,
+      }),
+    );
   });
 });
 

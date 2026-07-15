@@ -34,6 +34,7 @@ interface SingletonDelegate {
     where: { id: string };
     create: Record<string, unknown>;
     update: Record<string, unknown>;
+    select?: Record<string, boolean>;
   }): Promise<unknown>;
 }
 
@@ -307,6 +308,7 @@ async function applyClubSettings(
         where: { id: "default" },
         create: { id: "default", ...data },
         update: {},
+        select: spec.select,
       });
       result.created += 1;
       continue;
@@ -321,6 +323,7 @@ async function applyClubSettings(
       where: { id: "default" },
       create: { id: "default", ...data },
       update: write,
+      select: spec.select,
     });
     result.updated += 1;
   }
