@@ -308,6 +308,83 @@ export async function deriveBookingAppliedCreditCents(
   return Math.max(0, -(agg._sum.amountCents ?? 0));
 }
 
+/**
+ * F20 (#1887): reconcile the account credit already applied to a booking against
+ * a modification's new (repriced) final price. A pre-payment reduction can drop
+ * `finalPriceCents` BELOW the credit consumed at booking-create, which would
+ * otherwise leave the booking unpayable — the card intent guard rejects
+ * `effectivePriceCents = finalPriceCents − appliedCredit <= 0` — with the
+ * member's credit over-consumed. Refund the over-consumed slice back to the
+ * member and clamp the net applied credit to the new price. Money integer cents.
+ *
+ * The refund is an append-only positive `BOOKING_APPLIED` offset row against the
+ * same booking, so `deriveBookingAppliedCreditCents` nets to exactly
+ * `newFinalPriceCents` and `getMemberCreditBalance` regains the excess. Because
+ * the clamp only fires when `applied > newFinalPriceCents`, it always lands the
+ * booking fully credit-covered (effective price 0); the caller then advances it
+ * to PAID through the shared zero-dollar path.
+ *
+ * Must run inside the caller's transaction; takes the member-credit ledger lock
+ * so it cannot interleave with `applyCreditToBooking` or restores. Idempotent
+ * under transaction re-drive: a re-run re-derives the now-clamped applied total,
+ * finds no excess, and writes nothing.
+ *
+ * Returns the post-clamp applied credit (what the effective-price and $0 auto-pay
+ * decisions must use) and the excess refunded on THIS call.
+ *
+ * F3 (#1887) — KNOWN, BOUNDED Xero residual on Internet-Banking bookings (owner
+ * decision to leave un-reversed; Xero territory). An unpaid IB booking allocates
+ * its applied credit to the Xero invoice as ACCRECCREDIT notes at booking-create
+ * (booking-create.ts, via enqueueXeroAppliedCreditAllocationOperation), unlike a
+ * card booking whose allocation waits for cash capture and is skipped for IB in
+ * xero-booking-invoices. When this clamp returns the excess to the LOCAL ledger
+ * on a pre-payment IB reprice, that Xero allocation is NOT re-derived, so the
+ * invoice keeps up to `refundedExcessCents` MORE credit allocated than the local
+ * ledger now shows. The residual is strictly one-directional and bounded by the
+ * refunded excess: the member is never under-credited locally (balance is
+ * conserved), and the IB invoice only ever appears fully- or over-covered, never
+ * underpaid, so no member is over-charged and no invoice is stranded outstanding.
+ * The daily credit reconciliation (`cron-credit-reconciliation.ts`) checks LOCAL
+ * consistency only (negative balances + orphaned applied credit) and does not
+ * compare per-invoice Xero allocation to the local applied total, so it tolerates
+ * this residual without false alerts. This matches the documented #1620 IB Xero
+ * divergences (operator-reconciled). Reversing the Xero allocation would need an
+ * out-of-transaction Xero call (no provider calls under this lock — F7/#1355) and
+ * is left as an owner decision; see docs/DOMAIN_INVARIANTS.md.
+ */
+export async function clampAppliedCreditToBookingPrice(
+  {
+    memberId,
+    bookingId,
+    newFinalPriceCents,
+  }: { memberId: string; bookingId: string; newFinalPriceCents: number },
+  tx: Prisma.TransactionClient
+): Promise<{ appliedCreditCents: number; refundedExcessCents: number }> {
+  await lockMemberCreditLedger(memberId, tx);
+
+  const appliedCreditCents = await deriveBookingAppliedCreditCents(bookingId, tx);
+  const excessCents = appliedCreditCents - Math.max(0, newFinalPriceCents);
+
+  if (excessCents <= 0) {
+    return { appliedCreditCents, refundedExcessCents: 0 };
+  }
+
+  await tx.memberCredit.create({
+    data: {
+      memberId,
+      amountCents: excessCents,
+      type: CreditType.BOOKING_APPLIED,
+      description: `Applied credit returned after booking ${bookingId.slice(0, 8)} reprice`,
+      appliedToBookingId: bookingId,
+    },
+  });
+
+  return {
+    appliedCreditCents: appliedCreditCents - excessCents,
+    refundedExcessCents: excessCents,
+  };
+}
+
 export async function applyCreditToBooking(
   memberId: string,
   amountCents: number,
@@ -383,13 +460,17 @@ export async function restoreCreditFromBooking(
     return 0;
   }
 
+  // The credit still applied = the SIGNED net of the BOOKING_APPLIED rows, not
+  // Σ|amount| (F20 F2, #1887): the clamp appends a positive offset row, so the
+  // abs-sum would over-restore by 2×excess. calculateRestoredCreditAmount nets.
   const totalApplied = calculateRestoredCreditAmount(appliedCredits);
 
   // Cap the override at what was actually applied. INVARIANT the cap relies on:
-  // payment.creditAppliedCents (the mirror the cancel path tiers) == Σ
-  // BOOKING_APPLIED (this ledger sum). If the mirror ever exceeds the ledger,
-  // the cap makes actual < preview — the SAFE direction (never over-restore).
-  // Do NOT remove the cap as "dead code".
+  // payment.creditAppliedCents (the mirror the cancel path tiers) == the SIGNED
+  // net of BOOKING_APPLIED (this ledger total, post-clamp). The clamp updates the
+  // mirror to the clamped net whenever it fires, so mirror == net still holds; if
+  // the mirror ever exceeds the ledger net, the cap makes actual < preview — the
+  // SAFE direction (never over-restore). Do NOT remove the cap as "dead code".
   const amount =
     restoreAmountCentsOverride === undefined
       ? totalApplied

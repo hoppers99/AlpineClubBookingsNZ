@@ -29,6 +29,8 @@ const mockChoreAssignDeleteMany = vi.fn();
 const mockProcessedWebhookCreate = vi.fn();
 const mockProcessedWebhookDeleteMany = vi.fn();
 const mockProcessedWebhookFindUnique = vi.fn();
+const mockProcessedWebhookFindFirst = vi.fn();
+const mockProcessedWebhookUpdateMany = vi.fn();
 const mockMemberCount = vi.fn();
 const mockMemberFindUnique = vi.fn();
 const mockAuditCreate = vi.fn();
@@ -72,8 +74,10 @@ vi.mock("@/lib/prisma", () => ({
     choreAssignment: { findMany: mockChoreAssignFindMany, deleteMany: mockChoreAssignDeleteMany },
     processedWebhookEvent: {
       findUnique: mockProcessedWebhookFindUnique,
+      findFirst: mockProcessedWebhookFindFirst,
       create: mockProcessedWebhookCreate,
       deleteMany: mockProcessedWebhookDeleteMany,
+      updateMany: mockProcessedWebhookUpdateMany,
     },
     member: { count: mockMemberCount, findUnique: mockMemberFindUnique },
     auditLog: { create: mockAuditCreate },
@@ -273,6 +277,16 @@ function makeBooking(overrides: Record<string, unknown> = {}) {
 function makeTx(booking: ReturnType<typeof makeBooking>) {
   return {
     $executeRawUnsafe: vi.fn().mockResolvedValue(undefined),
+    // F1 (#1887): the date path now reads the applied-credit ledger for every
+    // pre-payment modification (gated on status, not the payment mirror) so the
+    // clamp also fires for a card booking with no payment row. These fixtures
+    // carry no applied credit, so the aggregate nets to 0 and the clamp is a
+    // no-op (never taking the ledger lock or writing a row).
+    $executeRaw: vi.fn().mockResolvedValue(undefined),
+    memberCredit: {
+      aggregate: vi.fn().mockResolvedValue({ _sum: { amountCents: 0 } }),
+      create: vi.fn().mockResolvedValue({}),
+    },
     lodge: {
       findFirst: vi.fn().mockResolvedValue({ id: "lodge-1" }),
     },
@@ -1065,8 +1079,14 @@ describe("Stripe webhook — additional modification payment succeeded", () => {
 
     expect(res.status).toBe(500);
     expect(mockMarkPaymentIntentTransactionSucceeded).not.toHaveBeenCalled();
+    // F16 fence (#1887): the claim release keys on status + the lease token.
     expect(mockProcessedWebhookDeleteMany).toHaveBeenCalledWith({
-      where: { eventId: "evt_mismatch", source: "stripe" },
+      where: {
+        eventId: "evt_mismatch",
+        source: "stripe",
+        status: "PROCESSING",
+        processingStartedAt: expect.any(Date),
+      },
     });
   });
 
@@ -1085,6 +1105,11 @@ describe("Stripe webhook — additional modification payment succeeded", () => {
     } as any);
 
     mockProcessedWebhookCreate.mockRejectedValueOnce({ code: "P2002" });
+    // F16 (#1887): the existing claim is COMPLETED, so the redelivery ACKs 200.
+    mockProcessedWebhookFindFirst.mockResolvedValue({
+      status: "COMPLETED",
+      processingStartedAt: new Date("2020-01-01T00:00:00.000Z"),
+    });
 
     const req = makeWebhookRequest();
     const res = await POST(req);

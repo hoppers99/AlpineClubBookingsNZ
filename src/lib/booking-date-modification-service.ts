@@ -4,7 +4,7 @@ import {
   type BookingGuest,
   type Payment,
   PaymentSource,
-  type PaymentStatus,
+  PaymentStatus,
   type Role,
 } from "@prisma/client";
 
@@ -46,7 +46,11 @@ import {
   type LoadedBookingForModify,
 } from "@/lib/booking-modify";
 import { assertNoBookingMemberNightConflicts } from "@/lib/booking-member-night-conflicts";
-import { createBookingModificationCredit } from "@/lib/member-credit";
+import {
+  clampAppliedCreditToBookingPrice,
+  createBookingModificationCredit,
+  deriveBookingAppliedCreditCents,
+} from "@/lib/member-credit";
 import {
   daysUntilDate,
   getNonMemberHoldPolicy,
@@ -139,6 +143,9 @@ type DateModificationTransactionResult =
     xeroInvoiceNumber: string | null;
     xeroRefundAmountCents: number;
     xeroAdditionalAmountCents: number;
+    // F20 (#1887): the reprice landed the booking fully credit-covered and it
+    // was auto-confirmed at $0, so the primary Xero invoice must be created.
+    zeroDollarAutoPaid: boolean;
   };
 
 type PromoRedemptionWithTargets = {
@@ -665,6 +672,59 @@ export async function modifyBookingDates({
       newNonMemberHoldUntil = null;
     }
 
+    // F20 (#1887): a date change that reduces the price can drop finalPriceCents
+    // below the account credit applied at booking-create. Refund the
+    // over-consumed slice and take the EFFECTIVE (credit-reduced) price: a now
+    // fully-credit-covered booking auto-confirms at $0 (mirroring both the batch
+    // modify path and booking-create) instead of dead-ending at the card-intent
+    // guard, which rejects effective <= 0.
+    // F1 (#1887): gate on the LEDGER + a pre-payment status, NOT the payment's
+    // creditAppliedCents mirror. A CARD booking has no Payment row until it
+    // requests a card intent, so the mirror gate missed the card booking whose
+    // dates are changed in PAYMENT_PENDING — the exact surface that would then
+    // dead-end unpayable at the card-intent guard with credit over-consumed. A
+    // cheap UNLOCKED ledger read keeps a no-credit date change byte-for-byte
+    // unchanged (no lock, no $0 path). Restricted to PENDING/PAYMENT_PENDING so a
+    // date change on a booking under review does not refund credit pre-approval
+    // (F4, #1887); the clamp runs once the booking is released to PAYMENT_PENDING.
+    let zeroDollarAutoPaid = false;
+    const isRepriceablePrePayment =
+      newStatus === "PENDING" || newStatus === "PAYMENT_PENDING";
+    const appliedBeforeClamp = isRepriceablePrePayment
+      ? await deriveBookingAppliedCreditCents(bookingId, tx)
+      : 0;
+    if (appliedBeforeClamp > 0) {
+      const clampedCredit = await clampAppliedCreditToBookingPrice(
+        { memberId: booking.memberId, bookingId, newFinalPriceCents },
+        tx,
+      );
+      const effectivePriceCents =
+        newFinalPriceCents - clampedCredit.appliedCreditCents;
+      if (effectivePriceCents === 0 && newStatus === "PAYMENT_PENDING") {
+        newStatus = "PAID";
+        zeroDollarAutoPaid = true;
+        await tx.payment.upsert({
+          where: { bookingId },
+          create: {
+            bookingId,
+            amountCents: 0,
+            creditAppliedCents: clampedCredit.appliedCreditCents,
+            status: PaymentStatus.SUCCEEDED,
+          },
+          update: {
+            amountCents: 0,
+            creditAppliedCents: clampedCredit.appliedCreditCents,
+            status: PaymentStatus.SUCCEEDED,
+            stripePaymentIntentId: null,
+            stripePaymentMethodId: null,
+            additionalPaymentIntentId: null,
+            additionalAmountCents: 0,
+            additionalPaymentStatus: null,
+          },
+        });
+      }
+    }
+
     // Re-sync each guest's BookingGuestNight rows to the priced nights of the
     // new range (#1093). Leaving the old rows in place would hand a later edit
     // a stale night set — it would price the guest over nights the booking no
@@ -752,7 +812,10 @@ export async function modifyBookingDates({
       await queueSupersededPrimaryIntentCancellations(tx, {
         bookingId,
         paymentId: updatedBooking.payment.id,
-        newFinalPriceCents,
+        // A credit-covered $0 auto-pay sweeps every positive pending intent
+        // (effective price 0); otherwise supersede only the intents stranded at
+        // the old amount (#1161).
+        newFinalPriceCents: zeroDollarAutoPaid ? 0 : newFinalPriceCents,
       });
     }
 
@@ -830,6 +893,7 @@ export async function modifyBookingDates({
       xeroInvoiceNumber: booking.payment?.xeroInvoiceNumber ?? null,
       xeroRefundAmountCents,
       xeroAdditionalAmountCents,
+      zeroDollarAutoPaid,
       paymentId: booking.payment?.id ?? null,
       paymentCustomerId: booking.payment?.stripeCustomerId ?? null,
       memberEmail: booking.member.email,
@@ -988,6 +1052,11 @@ async function dispatchDatePostTransactionSideEffects({
     // issued invoice falls back to the full delta inside classify when null.
     settlementAmountCents: result.xeroRefundAmountCents,
     settlementMethod: result.settlementMethod,
+    // F20 (#1887): a reprice that landed the booking fully credit-covered
+    // auto-confirmed it at $0, so create the primary invoice if none was issued
+    // (mirrors the batch modify path).
+    createPrimaryInvoiceWhenMissing:
+      result.zeroDollarAutoPaid && !result.hasIssuedXeroInvoice,
     requiresAdditionalStripePayment:
       result.xeroAdditionalAmountCents > 0 && result.hasSucceededPayment,
     additionalPaymentIntentId,

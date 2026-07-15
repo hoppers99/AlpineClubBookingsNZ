@@ -377,6 +377,11 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
       findUnique: vi.fn().mockResolvedValue(null),
       create: vi.fn().mockResolvedValue({ id: "credit_1" }),
       update: vi.fn().mockResolvedValue({ id: "credit_1" }),
+      // F1 (#1887): applyLifecycleTransitions now reads the applied-credit
+      // ledger for every pre-payment modification (status-gated, not the payment
+      // mirror). These fixtures carry no applied credit, so the aggregate nets to
+      // 0 and the clamp stays a no-op.
+      aggregate: vi.fn().mockResolvedValue({ _sum: { amountCents: 0 } }),
     },
     paymentTransaction: {
       findMany: vi.fn().mockResolvedValue([]),
@@ -1424,15 +1429,19 @@ describe("PUT /api/bookings/[id]/modify", () => {
     expect(data.booking.status).toBe("PAID");
     expect(data.booking.finalPriceCents).toBe(0);
 
+    // F20 (#1887): the $0 payment mirror now stamps creditAppliedCents (0 here,
+    // no credit) so amountCents + creditAppliedCents = finalPriceCents holds.
     expect(tx.payment.upsert).toHaveBeenCalledWith({
       where: { bookingId: "bk1" },
       create: {
         bookingId: "bk1",
         amountCents: 0,
+        creditAppliedCents: 0,
         status: "SUCCEEDED",
       },
       update: {
         amountCents: 0,
+        creditAppliedCents: 0,
         status: "SUCCEEDED",
         stripePaymentIntentId: null,
         stripePaymentMethodId: null,
