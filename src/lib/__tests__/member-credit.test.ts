@@ -601,6 +601,109 @@ describe("member-credit helpers", () => {
     });
   });
 
+  // F20 (#1887): a pre-payment reduction can drop finalPriceCents below the
+  // credit applied at create; the clamp refunds the excess and nets the applied
+  // credit down to the new price so the booking can never dead-end unpayable
+  // with credit over-consumed.
+  describe("clampAppliedCreditToBookingPrice", () => {
+    function makeTx(appliedNetCents: number) {
+      return {
+        $executeRaw: vi.fn().mockResolvedValue(undefined),
+        memberCredit: {
+          // deriveBookingAppliedCreditCents reads Σ BOOKING_APPLIED (negative);
+          // magnitude is the applied credit.
+          aggregate: vi
+            .fn()
+            .mockResolvedValue({ _sum: { amountCents: appliedNetCents } }),
+          create: vi.fn().mockResolvedValue({} as any),
+        },
+      };
+    }
+
+    it("refunds the over-consumed slice and clamps applied credit to the new price", async () => {
+      // Applied 4000, reprice to 3000 -> return 1000, net applied 3000.
+      const tx = makeTx(-4000);
+      const { clampAppliedCreditToBookingPrice } = await import(
+        "@/lib/member-credit"
+      );
+
+      const result = await clampAppliedCreditToBookingPrice(
+        { memberId: "member-1", bookingId: "booking-x", newFinalPriceCents: 3000 },
+        tx as any,
+      );
+
+      expect(result).toEqual({
+        appliedCreditCents: 3000,
+        refundedExcessCents: 1000,
+      });
+      // A positive BOOKING_APPLIED offset returns the excess to the member's
+      // balance and nets the applied credit down to the new price.
+      expect(tx.memberCredit.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          memberId: "member-1",
+          amountCents: 1000,
+          type: "BOOKING_APPLIED",
+          appliedToBookingId: "booking-x",
+        }),
+      });
+      // It serialises on the member-credit ledger lock first.
+      expect(tx.$executeRaw).toHaveBeenCalled();
+    });
+
+    it("is a no-op when applied credit still fits the new price", async () => {
+      const tx = makeTx(-3000);
+      const { clampAppliedCreditToBookingPrice } = await import(
+        "@/lib/member-credit"
+      );
+
+      const result = await clampAppliedCreditToBookingPrice(
+        { memberId: "member-1", bookingId: "booking-y", newFinalPriceCents: 5000 },
+        tx as any,
+      );
+
+      expect(result).toEqual({
+        appliedCreditCents: 3000,
+        refundedExcessCents: 0,
+      });
+      expect(tx.memberCredit.create).not.toHaveBeenCalled();
+    });
+
+    it("is a no-op when applied credit exactly equals the new price (fully covered, nothing over-consumed)", async () => {
+      const tx = makeTx(-3000);
+      const { clampAppliedCreditToBookingPrice } = await import(
+        "@/lib/member-credit"
+      );
+
+      const result = await clampAppliedCreditToBookingPrice(
+        { memberId: "member-1", bookingId: "booking-z", newFinalPriceCents: 3000 },
+        tx as any,
+      );
+
+      expect(result).toEqual({
+        appliedCreditCents: 3000,
+        refundedExcessCents: 0,
+      });
+      expect(tx.memberCredit.create).not.toHaveBeenCalled();
+    });
+
+    it("is idempotent under re-drive: a re-run over the already-clamped ledger writes nothing", async () => {
+      // After the first clamp the net applied is exactly newFinalPriceCents, so a
+      // retry (transaction re-drive) sees no excess.
+      const tx = makeTx(-3000);
+      const { clampAppliedCreditToBookingPrice } = await import(
+        "@/lib/member-credit"
+      );
+
+      const result = await clampAppliedCreditToBookingPrice(
+        { memberId: "member-1", bookingId: "booking-x", newFinalPriceCents: 3000 },
+        tx as any,
+      );
+
+      expect(result.refundedExcessCents).toBe(0);
+      expect(tx.memberCredit.create).not.toHaveBeenCalled();
+    });
+  });
+
   describe("createAdminAdjustment", () => {
     it("creates a pending admin adjustment request", async () => {
       const { prisma } = await import("@/lib/prisma");

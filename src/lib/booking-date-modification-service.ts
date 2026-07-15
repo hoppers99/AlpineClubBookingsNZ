@@ -4,7 +4,7 @@ import {
   type BookingGuest,
   type Payment,
   PaymentSource,
-  type PaymentStatus,
+  PaymentStatus,
   type Role,
 } from "@prisma/client";
 
@@ -46,7 +46,10 @@ import {
   type LoadedBookingForModify,
 } from "@/lib/booking-modify";
 import { assertNoBookingMemberNightConflicts } from "@/lib/booking-member-night-conflicts";
-import { createBookingModificationCredit } from "@/lib/member-credit";
+import {
+  clampAppliedCreditToBookingPrice,
+  createBookingModificationCredit,
+} from "@/lib/member-credit";
 import {
   daysUntilDate,
   getNonMemberHoldPolicy,
@@ -139,6 +142,9 @@ type DateModificationTransactionResult =
     xeroInvoiceNumber: string | null;
     xeroRefundAmountCents: number;
     xeroAdditionalAmountCents: number;
+    // F20 (#1887): the reprice landed the booking fully credit-covered and it
+    // was auto-confirmed at $0, so the primary Xero invoice must be created.
+    zeroDollarAutoPaid: boolean;
   };
 
 type PromoRedemptionWithTargets = {
@@ -665,6 +671,50 @@ export async function modifyBookingDates({
       newNonMemberHoldUntil = null;
     }
 
+    // F20 (#1887): a date change that reduces the price can drop finalPriceCents
+    // below the account credit applied at booking-create. Refund the
+    // over-consumed slice and take the EFFECTIVE (credit-reduced) price: a now
+    // fully-credit-covered booking auto-confirms at $0 (mirroring both the batch
+    // modify path and booking-create) instead of dead-ending at the card-intent
+    // guard, which rejects effective <= 0.
+    // Gated on the payment's applied-credit mirror so a no-credit date change is
+    // byte-for-byte unchanged (no ledger read, no new $0 path); the clamp
+    // re-derives the authoritative applied total from the ledger when credit is
+    // present. When the reprice lands the booking fully credit-covered it
+    // auto-confirms at $0, matching the batch path and booking-create.
+    let zeroDollarAutoPaid = false;
+    if ((booking.payment?.creditAppliedCents ?? 0) > 0) {
+      const clampedCredit = await clampAppliedCreditToBookingPrice(
+        { memberId: booking.memberId, bookingId, newFinalPriceCents },
+        tx,
+      );
+      const effectivePriceCents =
+        newFinalPriceCents - clampedCredit.appliedCreditCents;
+      if (effectivePriceCents === 0 && newStatus === "PAYMENT_PENDING") {
+        newStatus = "PAID";
+        zeroDollarAutoPaid = true;
+        await tx.payment.upsert({
+          where: { bookingId },
+          create: {
+            bookingId,
+            amountCents: 0,
+            creditAppliedCents: clampedCredit.appliedCreditCents,
+            status: PaymentStatus.SUCCEEDED,
+          },
+          update: {
+            amountCents: 0,
+            creditAppliedCents: clampedCredit.appliedCreditCents,
+            status: PaymentStatus.SUCCEEDED,
+            stripePaymentIntentId: null,
+            stripePaymentMethodId: null,
+            additionalPaymentIntentId: null,
+            additionalAmountCents: 0,
+            additionalPaymentStatus: null,
+          },
+        });
+      }
+    }
+
     // Re-sync each guest's BookingGuestNight rows to the priced nights of the
     // new range (#1093). Leaving the old rows in place would hand a later edit
     // a stale night set — it would price the guest over nights the booking no
@@ -752,7 +802,10 @@ export async function modifyBookingDates({
       await queueSupersededPrimaryIntentCancellations(tx, {
         bookingId,
         paymentId: updatedBooking.payment.id,
-        newFinalPriceCents,
+        // A credit-covered $0 auto-pay sweeps every positive pending intent
+        // (effective price 0); otherwise supersede only the intents stranded at
+        // the old amount (#1161).
+        newFinalPriceCents: zeroDollarAutoPaid ? 0 : newFinalPriceCents,
       });
     }
 
@@ -830,6 +883,7 @@ export async function modifyBookingDates({
       xeroInvoiceNumber: booking.payment?.xeroInvoiceNumber ?? null,
       xeroRefundAmountCents,
       xeroAdditionalAmountCents,
+      zeroDollarAutoPaid,
       paymentId: booking.payment?.id ?? null,
       paymentCustomerId: booking.payment?.stripeCustomerId ?? null,
       memberEmail: booking.member.email,
@@ -988,6 +1042,11 @@ async function dispatchDatePostTransactionSideEffects({
     // issued invoice falls back to the full delta inside classify when null.
     settlementAmountCents: result.xeroRefundAmountCents,
     settlementMethod: result.settlementMethod,
+    // F20 (#1887): a reprice that landed the booking fully credit-covered
+    // auto-confirmed it at $0, so create the primary invoice if none was issued
+    // (mirrors the batch modify path).
+    createPrimaryInvoiceWhenMissing:
+      result.zeroDollarAutoPaid && !result.hasIssuedXeroInvoice,
     requiresAdditionalStripePayment:
       result.xeroAdditionalAmountCents > 0 && result.hasSucceededPayment,
     additionalPaymentIntentId,

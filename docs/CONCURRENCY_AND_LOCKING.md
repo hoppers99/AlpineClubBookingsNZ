@@ -28,7 +28,7 @@ use `(namespace, subject)`; single-argument keys hash a descriptive string.
 | --- | --- | --- | --- |
 | **Global booking** | `1` (literal) | inline `tx.$executeRaw` | Legacy club-wide capacity/credit critical section; still the sole serialiser for several cancel/claim paths (see below). |
 | **Per-lodge capacity** | `hashtextextended(<lodgeId>, 0)` | `acquireLodgeCapacityLock(tx, lodgeId)` (`capacity.ts`) | Capacity claims/checks for one lodge, so bookings at different lodges never contend. |
-| **Per-member credit ledger** | `hashtext("member-credit-ledger"), hashtext(<memberId>)` | `lockMemberCreditLedger(memberId, tx)` (`member-credit.ts`) | A member's credit-ledger balance operations (negative-adjustment validation, orphan-restore repair). |
+| **Per-member credit ledger** | `hashtext("member-credit-ledger"), hashtext(<memberId>)` | `lockMemberCreditLedger(memberId, tx)` (`member-credit.ts`) | A member's credit-ledger balance operations (negative-adjustment validation, orphan-restore repair, and the F20 pre-payment-reduction applied-credit clamp `clampAppliedCreditToBookingPrice`, taken inside the modification transaction only when the booking carries applied credit). |
 | **Member lifecycle** | `hashtext("member-lifecycle:<memberId>")` | inline (`member-lifecycle-actions.ts`) | Archive/delete of one member. |
 | **Membership application** | `hashtext(<application key>)` | `membershipApplicationLockKey` (`nomination.ts`) | State transitions of one membership application. |
 | **Membership applicant** | `hashtext(<applicant-email key>)` | `membershipApplicationApplicantLockKey` (`nomination.ts`) | Per-email applicant dedup at submit time. |

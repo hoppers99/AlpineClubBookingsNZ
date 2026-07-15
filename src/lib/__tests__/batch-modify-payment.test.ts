@@ -1424,15 +1424,19 @@ describe("PUT /api/bookings/[id]/modify", () => {
     expect(data.booking.status).toBe("PAID");
     expect(data.booking.finalPriceCents).toBe(0);
 
+    // F20 (#1887): the $0 payment mirror now stamps creditAppliedCents (0 here,
+    // no credit) so amountCents + creditAppliedCents = finalPriceCents holds.
     expect(tx.payment.upsert).toHaveBeenCalledWith({
       where: { bookingId: "bk1" },
       create: {
         bookingId: "bk1",
         amountCents: 0,
+        creditAppliedCents: 0,
         status: "SUCCEEDED",
       },
       update: {
         amountCents: 0,
+        creditAppliedCents: 0,
         status: "SUCCEEDED",
         stripePaymentIntentId: null,
         stripePaymentMethodId: null,

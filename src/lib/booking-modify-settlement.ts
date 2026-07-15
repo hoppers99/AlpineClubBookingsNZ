@@ -33,6 +33,7 @@ import {
 } from "@/lib/booking-modify-validation";
 import { type GuestPlan } from "@/lib/booking-modify-plan";
 import { calculateBookingHoldDecision } from "@/lib/policies/booking-route-decisions";
+import { clampAppliedCreditToBookingPrice } from "@/lib/member-credit";
 
 export type BookingModificationSettlementOptions = {
   basisAmountCents: number;
@@ -243,6 +244,10 @@ export type LifecycleTransitionResult = {
   newStatus: BookingStatus;
   zeroDollarAutoPaid: boolean;
   supersededPrimaryPaymentIntents: SupersededPrimaryPaymentIntent[];
+  // F20 (#1887): account credit still applied to the booking after the reprice,
+  // and any over-consumed slice refunded to the member on this modification.
+  appliedCreditCents: number;
+  refundedExcessCreditCents: number;
 };
 
 export async function applyLifecycleTransitions(
@@ -270,6 +275,8 @@ export async function applyLifecycleTransitions(
   let newStatus = booking.status;
   let zeroDollarAutoPaid = false;
   let supersededPrimaryPaymentIntents: SupersededPrimaryPaymentIntent[] = [];
+  let appliedCreditCents = 0;
+  let refundedExcessCreditCents = 0;
 
   // Parking moves a booking to AWAITING_REVIEW only from the pre-payment
   // statuses that state was built for: approval releases AWAITING_REVIEW to
@@ -308,9 +315,32 @@ export async function applyLifecycleTransitions(
     newNonMemberHoldUntil = null;
   }
 
+  // F20 (#1887): a pre-payment reduction can drop finalPriceCents below the
+  // account credit applied at booking-create. Refund the over-consumed slice and
+  // take the EFFECTIVE (credit-reduced) price for the zero-dollar decision, so a
+  // now-fully-credit-covered booking auto-confirms at $0 instead of dead-ending
+  // at the card-intent guard (effective <= 0). Skipped when lifecycle rules are
+  // skipped (admin date shift freezes money).
+  // Gate on the payment's applied-credit mirror so a no-credit booking keeps
+  // byte-for-byte the pre-#1887 behaviour (effective == newFinalPriceCents) and
+  // never touches the credit ledger. The clamp itself re-derives the
+  // authoritative applied total from the ledger.
   if (
     !skipBookingLifecycleRules &&
-    newFinalPriceCents === 0 &&
+    (booking.payment?.creditAppliedCents ?? 0) > 0
+  ) {
+    const clamp = await clampAppliedCreditToBookingPrice(
+      { memberId: booking.memberId, bookingId, newFinalPriceCents },
+      tx,
+    );
+    appliedCreditCents = clamp.appliedCreditCents;
+    refundedExcessCreditCents = clamp.refundedExcessCents;
+  }
+  const effectivePriceCents = newFinalPriceCents - appliedCreditCents;
+
+  if (
+    !skipBookingLifecycleRules &&
+    effectivePriceCents === 0 &&
     newStatus === BookingStatus.PAYMENT_PENDING
   ) {
     newStatus = BookingStatus.PAID;
@@ -320,10 +350,12 @@ export async function applyLifecycleTransitions(
       create: {
         bookingId,
         amountCents: 0,
+        creditAppliedCents: appliedCreditCents,
         status: PaymentStatus.SUCCEEDED,
       },
       update: {
         amountCents: 0,
+        creditAppliedCents: appliedCreditCents,
         status: PaymentStatus.SUCCEEDED,
         stripePaymentIntentId: null,
         stripePaymentMethodId: null,
@@ -332,11 +364,13 @@ export async function applyLifecycleTransitions(
         additionalPaymentStatus: null,
       },
     });
+    // effectivePriceCents (0 here) sweeps every positive pending primary intent,
+    // matching the pre-#1887 price-to-zero behaviour for a credit-covered booking.
     supersededPrimaryPaymentIntents =
       await queueSupersededPrimaryIntentCancellations(tx, {
         bookingId,
         paymentId: zeroDollarPayment.id,
-        newFinalPriceCents,
+        newFinalPriceCents: effectivePriceCents,
       });
   } else if (booking.payment) {
     // Nonzero price changes strand any pending primary intent at the old
@@ -357,5 +391,7 @@ export async function applyLifecycleTransitions(
     newStatus,
     zeroDollarAutoPaid,
     supersededPrimaryPaymentIntents,
+    appliedCreditCents,
+    refundedExcessCreditCents,
   };
 }

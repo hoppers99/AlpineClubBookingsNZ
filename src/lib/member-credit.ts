@@ -308,6 +308,63 @@ export async function deriveBookingAppliedCreditCents(
   return Math.max(0, -(agg._sum.amountCents ?? 0));
 }
 
+/**
+ * F20 (#1887): reconcile the account credit already applied to a booking against
+ * a modification's new (repriced) final price. A pre-payment reduction can drop
+ * `finalPriceCents` BELOW the credit consumed at booking-create, which would
+ * otherwise leave the booking unpayable — the card intent guard rejects
+ * `effectivePriceCents = finalPriceCents − appliedCredit <= 0` — with the
+ * member's credit over-consumed. Refund the over-consumed slice back to the
+ * member and clamp the net applied credit to the new price. Money integer cents.
+ *
+ * The refund is an append-only positive `BOOKING_APPLIED` offset row against the
+ * same booking, so `deriveBookingAppliedCreditCents` nets to exactly
+ * `newFinalPriceCents` and `getMemberCreditBalance` regains the excess. Because
+ * the clamp only fires when `applied > newFinalPriceCents`, it always lands the
+ * booking fully credit-covered (effective price 0); the caller then advances it
+ * to PAID through the shared zero-dollar path.
+ *
+ * Must run inside the caller's transaction; takes the member-credit ledger lock
+ * so it cannot interleave with `applyCreditToBooking` or restores. Idempotent
+ * under transaction re-drive: a re-run re-derives the now-clamped applied total,
+ * finds no excess, and writes nothing.
+ *
+ * Returns the post-clamp applied credit (what the effective-price and $0 auto-pay
+ * decisions must use) and the excess refunded on THIS call.
+ */
+export async function clampAppliedCreditToBookingPrice(
+  {
+    memberId,
+    bookingId,
+    newFinalPriceCents,
+  }: { memberId: string; bookingId: string; newFinalPriceCents: number },
+  tx: Prisma.TransactionClient
+): Promise<{ appliedCreditCents: number; refundedExcessCents: number }> {
+  await lockMemberCreditLedger(memberId, tx);
+
+  const appliedCreditCents = await deriveBookingAppliedCreditCents(bookingId, tx);
+  const excessCents = appliedCreditCents - Math.max(0, newFinalPriceCents);
+
+  if (excessCents <= 0) {
+    return { appliedCreditCents, refundedExcessCents: 0 };
+  }
+
+  await tx.memberCredit.create({
+    data: {
+      memberId,
+      amountCents: excessCents,
+      type: CreditType.BOOKING_APPLIED,
+      description: `Applied credit returned after booking ${bookingId.slice(0, 8)} reprice`,
+      appliedToBookingId: bookingId,
+    },
+  });
+
+  return {
+    appliedCreditCents: appliedCreditCents - excessCents,
+    refundedExcessCents: excessCents,
+  };
+}
+
 export async function applyCreditToBooking(
   memberId: string,
   amountCents: number,
