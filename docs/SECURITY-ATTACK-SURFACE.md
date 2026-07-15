@@ -507,6 +507,18 @@ Hardening applied in #617:
 - Operational Xero callback redirects now show only safe local error messages;
   provider callback exception details are logged through the shared redaction
   layer and are not reflected into browser redirect URLs.
+- Browser-facing API fallback catches return fixed route-specific errors and
+  keep unexpected Prisma, provider, and runtime messages in structured logs.
+  Intentional validation/domain copy is admitted only through explicit error
+  types. A source contract scans the client-facing API tree to prevent direct
+  or locally-aliased catch messages from being serialized; machine-facing
+  cron/webhook routes and explicit provider-diagnostic endpoints keep their
+  distinct response contracts.
+- The shared Xero API error classifier exposes separate `clientMessage` and
+  `diagnosticMessage` fields. Admin browser routes serialize only the fixed
+  client field; provider body text and correlation identifiers remain in
+  structured server logs. The source contract treats helper-derived diagnostic
+  fields as tainted so they cannot bypass the direct-catch guard.
 
 Verified controls already present and intentionally preserved:
 

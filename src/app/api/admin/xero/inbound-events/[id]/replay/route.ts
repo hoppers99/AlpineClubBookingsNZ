@@ -41,10 +41,13 @@ export async function POST(
       error,
       "Failed to replay Xero inbound event"
     );
-    logger.error({ err: error, inboundEventId: id }, "Failed to replay Xero inbound event");
+    logger.error(
+      { err: error, inboundEventId: id, xeroDiagnosticMessage: xeroError.diagnosticMessage },
+      "Failed to replay Xero inbound event"
+    );
 
     return NextResponse.json(
-      { error: xeroError.message },
+      { error: xeroError.clientMessage },
       { status: xeroError.handled ? xeroError.status : 500 }
     );
   }

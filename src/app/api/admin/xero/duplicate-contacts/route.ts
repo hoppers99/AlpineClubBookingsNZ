@@ -18,8 +18,11 @@ export async function GET() {
   } catch (error) {
     const xeroError = getXeroApiErrorInfo(error, "Duplicate scan failed");
     if (!xeroError.handled) {
-      logger.error({ err: error }, "Failed to scan Xero contacts for duplicates");
+      logger.error(
+        { err: error, xeroDiagnosticMessage: xeroError.diagnosticMessage },
+        "Failed to scan Xero contacts for duplicates"
+      );
     }
-    return NextResponse.json({ error: xeroError.message }, { status: xeroError.status });
+    return NextResponse.json({ error: xeroError.clientMessage }, { status: xeroError.status });
   }
 }

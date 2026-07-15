@@ -9,7 +9,8 @@ describe("getXeroApiErrorInfo", () => {
     expect(getXeroApiErrorInfo(error, "Fallback failure")).toEqual({
       handled: true,
       status: 429,
-      message: "Xero daily API limit reached. Please try again tomorrow.",
+      clientMessage: "Xero daily API limit reached. Please try again tomorrow.",
+      diagnosticMessage: "Xero daily API limit reached. Retry after 86400 seconds.",
     });
   });
 
@@ -29,7 +30,8 @@ describe("getXeroApiErrorInfo", () => {
     ).toEqual({
       handled: true,
       status: 429,
-      message: "Xero rate limit hit. Please wait a moment and try again.",
+      clientMessage: "Xero rate limit hit. Please wait a moment and try again.",
+      diagnosticMessage: "Fallback failure",
     });
   });
 
@@ -49,7 +51,8 @@ describe("getXeroApiErrorInfo", () => {
     expect(getXeroApiErrorInfo(error, "Fallback failure")).toEqual({
       handled: true,
       status: 429,
-      message: "Xero daily API limit reached. Please try again tomorrow.",
+      clientMessage: "Xero daily API limit reached. Please try again tomorrow.",
+      diagnosticMessage: error.message,
     });
   });
 
@@ -66,7 +69,8 @@ describe("getXeroApiErrorInfo", () => {
     ).toEqual({
       handled: true,
       status: 401,
-      message: "Xero connection expired. Please reconnect Xero from the admin panel.",
+      clientMessage: "Xero connection expired. Please reconnect Xero from the admin panel.",
+      diagnosticMessage: "Fallback failure",
     });
 
     expect(
@@ -81,7 +85,8 @@ describe("getXeroApiErrorInfo", () => {
     ).toEqual({
       handled: true,
       status: 401,
-      message: "Xero connection expired. Please reconnect Xero from the admin panel.",
+      clientMessage: "Xero connection expired. Please reconnect Xero from the admin panel.",
+      diagnosticMessage: "Fallback failure",
     });
   });
 
@@ -103,7 +108,8 @@ describe("getXeroApiErrorInfo", () => {
     expect(getXeroApiErrorInfo(error, "Fallback failure")).toEqual({
       handled: false,
       status: 502,
-      message:
+      clientMessage: "Xero is temporarily unavailable. Please try again in a few minutes.",
+      diagnosticMessage:
         "Xero is temporarily unavailable (HTTP 500). An error occurred in Xero. Please try again in a few minutes. Xero correlation ID: correlation-123.",
     });
   });
@@ -117,7 +123,8 @@ describe("getXeroApiErrorInfo", () => {
     expect(getXeroApiErrorInfo(error, "Fallback failure")).toEqual({
       handled: true,
       status: 503,
-      message:
+      clientMessage: "Xero is temporarily unavailable. Please try again shortly.",
+      diagnosticMessage:
         "Xero is temporarily unavailable. Suppressing further Xero calls for 120 seconds to protect API quota.",
     });
   });
@@ -126,7 +133,8 @@ describe("getXeroApiErrorInfo", () => {
     expect(getXeroApiErrorInfo(new Error("Boom"), "Fallback failure")).toEqual({
       handled: false,
       status: 500,
-      message: "Boom",
+      clientMessage: "Fallback failure",
+      diagnosticMessage: "Boom",
     });
   });
 });

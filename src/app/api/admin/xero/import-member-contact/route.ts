@@ -276,8 +276,11 @@ export async function POST(request: NextRequest) {
   } catch (err) {
     const xeroError = getXeroApiErrorInfo(err, "Failed to import Xero contact as member");
     if (!xeroError.handled) {
-      logger.error({ err, xeroContactId }, "Error importing Xero contact as member");
+      logger.error(
+        { err, xeroContactId, xeroDiagnosticMessage: xeroError.diagnosticMessage },
+        "Error importing Xero contact as member"
+      );
     }
-    return NextResponse.json({ error: xeroError.message }, { status: xeroError.status });
+    return NextResponse.json({ error: xeroError.clientMessage }, { status: xeroError.status });
   }
 }

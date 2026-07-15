@@ -43,7 +43,8 @@ vi.mock("@/lib/xero", () => ({
 vi.mock("@/lib/xero-api-errors", () => ({
   getXeroApiErrorInfo: vi.fn((error: unknown, fallback: string) => ({
     handled: false,
-    message: error instanceof Error ? error.message : fallback,
+    clientMessage: fallback,
+    diagnosticMessage: error instanceof Error ? error.message : fallback,
     status: 500,
   })),
 }));
@@ -206,6 +207,28 @@ describe("Phase 4 Xero admin routes", () => {
       refreshed: false,
       lastRefreshedAt: null,
     });
+  });
+
+  it("keeps provider detail out of browser-facing Xero errors", async () => {
+    mocks.getXeroContactGroups.mockRejectedValue(
+      new Error(
+        "Provider Detail exposed tenant secret-tenant and correlation-id-123"
+      )
+    );
+
+    const { GET } = await import("@/app/api/admin/xero/contact-groups/route");
+    const response = await GET(
+      new NextRequest("http://localhost/api/admin/xero/contact-groups?refresh=1")
+    );
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({
+      error: "Failed to fetch contact groups",
+    });
+    expect(mocks.logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.any(Error) }),
+      "Failed to fetch Xero contact groups"
+    );
   });
 
   it("returns the contact group mismatch snapshot", async () => {

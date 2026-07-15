@@ -158,8 +158,11 @@ export async function GET(request: NextRequest) {
   } catch (err) {
     const xeroError = getXeroApiErrorInfo(err, "Failed to search Xero contacts");
     if (!xeroError.handled) {
-      logger.error({ err }, "Error searching Xero contacts");
+      logger.error(
+        { err, xeroDiagnosticMessage: xeroError.diagnosticMessage },
+        "Error searching Xero contacts"
+      );
     }
-    return NextResponse.json({ error: xeroError.message }, { status: xeroError.status });
+    return NextResponse.json({ error: xeroError.clientMessage }, { status: xeroError.status });
   }
 }

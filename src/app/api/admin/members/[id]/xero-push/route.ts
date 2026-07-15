@@ -204,9 +204,8 @@ export async function POST(
           { err: xeroErr, memberId: id },
           "Failed to queue entrance fee invoice after contact creation"
         );
-        const entranceFeeWarning = `Xero contact created, but entrance fee invoice could not be queued: ${
-          xeroErr instanceof Error ? xeroErr.message : String(xeroErr)
-        }`;
+        const entranceFeeWarning =
+          "Xero contact created, but entrance fee invoice could not be queued. Retry from the member's Xero actions.";
         warning = warning ? `${warning} ${entranceFeeWarning}` : entranceFeeWarning;
       }
     } else if (entranceFeeSkipReason) {
@@ -271,8 +270,11 @@ export async function POST(
 
     const xeroError = getXeroApiErrorInfo(err, "Failed to create Xero contact");
     if (!xeroError.handled) {
-      logger.error({ err, memberId: id }, "Error pushing member to Xero");
+      logger.error(
+        { err, memberId: id, xeroDiagnosticMessage: xeroError.diagnosticMessage },
+        "Error pushing member to Xero"
+      );
     }
-    return NextResponse.json({ error: xeroError.message }, { status: xeroError.status });
+    return NextResponse.json({ error: xeroError.clientMessage }, { status: xeroError.status });
   }
 }
