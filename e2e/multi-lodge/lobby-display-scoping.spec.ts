@@ -62,7 +62,10 @@ test("a device bound to lodge B renders lodge B's board and never lodge A's cont
 
   await page.getByPlaceholder("TV code").fill(code);
   await page.getByRole("button", { name: "Pair", exact: true }).click();
-  await expect(page.getByText(/Pairing armed/)).toBeVisible();
+  // Match the confirmation notice specifically, not a bare /Pairing armed/ —
+  // the device row's status badge can also say "Pairing armed" once the list
+  // refreshes, tripping Playwright strict mode (2 elements) on slower runners.
+  await expect(page.getByText(/Pairing armed — the display/)).toBeVisible();
 
   // The board renders LODGE B: its name in the header, and lodge A's
   // seeded guest never present anywhere in the page.

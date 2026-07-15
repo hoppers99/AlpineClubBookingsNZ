@@ -62,7 +62,11 @@ test("a display pairs through the real admin flow and a revoke sends it back to 
   // ── Admin binds the code; the TV flips itself to the active board ──
   await page.getByPlaceholder("TV code").fill(code);
   await page.getByRole("button", { name: "Pair", exact: true }).click();
-  await expect(page.getByText(/Pairing armed/)).toBeVisible();
+  // Match the confirmation notice specifically: once the device list refreshes,
+  // a "Pairing armed" status badge appears too, and a bare /Pairing armed/
+  // match then trips Playwright strict mode (2 elements) — timing-dependent,
+  // seen on slower CI runners.
+  await expect(page.getByText(/Pairing armed — the display/)).toBeVisible();
 
   await expect(tv.locator(".display-lodge-header")).toBeVisible({
     timeout: 30_000, // one 4s claim poll + state fetch, with headroom
