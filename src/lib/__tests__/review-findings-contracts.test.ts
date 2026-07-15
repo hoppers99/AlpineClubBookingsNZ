@@ -757,7 +757,7 @@ describe("review finding source/schema contracts", () => {
     const expireStaleOffersBlock = sliceFrom(
       source,
       "export async function expireStaleOffers",
-      "/**\n * Recalculate and update waitlistPosition"
+      "// test seam"
     );
 
     expect(expireStaleOffersBlock).toContain("prisma.$transaction");
