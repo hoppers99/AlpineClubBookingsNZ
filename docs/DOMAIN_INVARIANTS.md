@@ -76,7 +76,12 @@ Future reviews and issues should cite this file when proposing changes.
   unique index `XeroObjectLink_entrance_fee_active_unique` guaranteeing at most
   one ACTIVE entrance-fee link per member. Residual: a same-day re-issue after a
   void can be returned the voided invoice by the idempotency key within Xero's
-  key-retention window — acceptable for a one-time charge.
+  key-retention window — acceptable for a one-time charge. Second residual: the
+  member-scoped mint key makes convergence Xero's responsibility, so if Xero ever
+  failed to collapse a concurrent duplicate, a second invoice could mint and its
+  link upsert would then fail on the partial unique index — leaving an orphan
+  invoice in Xero (no local double-link, so no local double-charge) that needs
+  operator reconciliation.
 
 ## Booking Dates And Capacity
 

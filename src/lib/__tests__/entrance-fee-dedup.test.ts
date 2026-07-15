@@ -71,6 +71,15 @@ vi.mock("@/lib/logger", () => ({
   default: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
+// F21 (#1886) observability: the conflict branches complete the op as SUCCEEDED
+// and mint nothing, so the unbilled member is otherwise invisible. They must
+// raise the existing money-anomaly alert primitive so an operator can find them.
+const mockNotifyXeroSyncError = vi.fn();
+vi.mock("@/lib/xero-error-alert", () => ({
+  notifyXeroSyncError: (...args: unknown[]) => mockNotifyXeroSyncError(...args),
+}));
+
+import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 import { createXeroEntranceFeeInvoice } from "@/lib/xero-entrance-fee-invoices";
 import { buildEntranceFeeInvoiceMintIdempotencyKey } from "@/lib/xero-mappings";
@@ -318,6 +327,27 @@ describe("createXeroEntranceFeeInvoice double-mint guard (F21)", () => {
         }),
       }),
     );
+
+    // MED (#1886): the op completes green, so the unbilled member must be made
+    // operator-visible. A structured ERROR log names the member, reference,
+    // conflict code, and the offending invoice ids...
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        memberId: "member-1",
+        reference: "Entrance fee (Adult) - member-1",
+        conflict: "DUPLICATE_REFERENCE",
+        invoiceIds: ["inv-a", "inv-b"],
+      }),
+      expect.any(String),
+    );
+    // ...and the existing money-anomaly alert primitive is raised.
+    expect(mockNotifyXeroSyncError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        errorType: "entrance-fee-duplicate-reference",
+        operation: expect.stringContaining("member-1"),
+        errorMessage: expect.stringContaining("inv-a"),
+      }),
+    );
   });
 
   it("surfaces a PROVIDER_MISMATCH conflict for a same-member wrong-amount invoice", async () => {
@@ -350,6 +380,26 @@ describe("createXeroEntranceFeeInvoice double-mint guard (F21)", () => {
           conflict: "PROVIDER_MISMATCH",
           expectedAmountCents: 10000,
         }),
+      }),
+    );
+
+    // MED (#1886): make the unbilled member operator-visible behind the green op.
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        memberId: "member-1",
+        reference: "Entrance fee (Adult) - member-1",
+        conflict: "PROVIDER_MISMATCH",
+        invoiceId: "inv-xero",
+        expectedAmountCents: 10000,
+        providerAmountCents: 20000,
+      }),
+      expect.any(String),
+    );
+    expect(mockNotifyXeroSyncError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        errorType: "entrance-fee-provider-mismatch",
+        operation: expect.stringContaining("member-1"),
+        errorMessage: expect.stringContaining("inv-xero"),
       }),
     );
   });

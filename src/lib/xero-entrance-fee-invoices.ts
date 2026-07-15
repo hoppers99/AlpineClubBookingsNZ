@@ -15,6 +15,7 @@ import {
 } from "xero-node";
 import { prisma } from "./prisma";
 import logger from "@/lib/logger";
+import { notifyXeroSyncError } from "@/lib/xero-error-alert";
 import { buildXeroInvoiceUrl } from "@/lib/xero-links";
 import {
   completeXeroSyncOperation,
@@ -352,15 +353,33 @@ export async function createXeroEntranceFeeInvoice(
     // needs human reconciliation. Surface a conflict and mint nothing (mirrors
     // the subscription DUPLICATE_REFERENCE path) rather than adopt-first.
     if (adoptableCandidates.length > 1) {
-      logger.warn(
+      // The op completes as SUCCEEDED (it genuinely succeeded at "don't
+      // double-mint"), so the unbilled member is otherwise discoverable only by
+      // querying responsePayload.conflict. Emit a structured ERROR log naming
+      // the member/reference/conflict/invoice ids, and raise the existing
+      // money-anomaly alert primitive (deduped one-per-hour, self-contained) so
+      // an operator can find and reconcile the member. There is no per-member
+      // charge row to flag CONFLICT (unlike the subscription path), so the log +
+      // alert are the signal.
+      const conflictInvoiceIds = adoptableCandidates.map(
+        (invoice) => invoice.invoiceID ?? null,
+      );
+      logger.error(
         {
           memberId,
           category,
           reference,
+          conflict: "DUPLICATE_REFERENCE",
+          invoiceIds: conflictInvoiceIds,
           invoiceCount: adoptableCandidates.length,
         },
-        "Multiple AUTHORISED Xero invoices share this entrance fee reference; surfacing a conflict and minting none",
+        "Multiple AUTHORISED Xero invoices share this entrance fee reference; member left unbilled, no invoice minted, manual reconciliation required",
       );
+      await notifyXeroSyncError({
+        errorType: "entrance-fee-duplicate-reference",
+        operation: `createXeroEntranceFeeInvoice:${memberId}`,
+        errorMessage: `Entrance fee for member ${memberId} was NOT billed: ${adoptableCandidates.length} AUTHORISED Xero invoices share reference "${reference}" (invoice ids ${conflictInvoiceIds.join(", ")}). No invoice was minted; manual reconciliation required.`,
+      });
       await completeXeroSyncOperation(operationId!, {
         status: "SUCCEEDED",
         responsePayload: {
@@ -385,16 +404,30 @@ export async function createXeroEntranceFeeInvoice(
         entranceFeeInvoiceCents(invoice) !== feeAmountCents,
     );
     if (adoptableCandidates.length === 0 && referenceMatchesWrongAmount) {
-      logger.warn(
+      // Same operator-visibility rationale as the DUPLICATE_REFERENCE branch:
+      // the op completes green with nothing minted, so surface the unbilled
+      // member via an ERROR log and the shared money-anomaly alert primitive.
+      const providerAmountCents = entranceFeeInvoiceCents(
+        referenceMatchesWrongAmount,
+      );
+      const conflictInvoiceId = referenceMatchesWrongAmount.invoiceID ?? null;
+      logger.error(
         {
           memberId,
           category,
           reference,
+          conflict: "PROVIDER_MISMATCH",
+          invoiceId: conflictInvoiceId,
           expectedAmountCents: feeAmountCents,
-          providerAmountCents: entranceFeeInvoiceCents(referenceMatchesWrongAmount),
+          providerAmountCents,
         },
-        "Existing Xero entrance fee invoice does not match the expected amount; surfacing a conflict and minting none",
+        "Existing Xero entrance fee invoice does not match the expected amount; member left unbilled, no invoice minted, manual reconciliation required",
       );
+      await notifyXeroSyncError({
+        errorType: "entrance-fee-provider-mismatch",
+        operation: `createXeroEntranceFeeInvoice:${memberId}`,
+        errorMessage: `Entrance fee for member ${memberId} was NOT billed: existing AUTHORISED Xero invoice ${conflictInvoiceId} on reference "${reference}" is ${providerAmountCents}c but the expected fee is ${feeAmountCents}c. No invoice was minted; manual reconciliation required.`,
+      });
       await completeXeroSyncOperation(operationId!, {
         status: "SUCCEEDED",
         responsePayload: {
