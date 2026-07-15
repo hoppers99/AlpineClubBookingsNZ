@@ -112,7 +112,37 @@ describe("sanitizePageContentHtml", () => {
       '<img src="/api/images/abc123" alt="Hut" width="320" height="180" />',
     );
   });
+
+  it("keeps safe svg polygon geometry/presentation and strips handlers, styles, and disallowed attributes", () => {
+    const input =
+      '<svg viewBox="0 0 100 100" width="100" height="100">' +
+      '<polygon points="50,0 100,100 0,100" fill="red" stroke="black" ' +
+      'stroke-width="2" onclick="alert(1)" style="fill:blue" id="p1" />' +
+      "</svg>";
+
+    const sanitized = sanitizePageContentHtml(input);
+
+    // Geometry + presentation attributes survive.
+    expect(sanitized).toContain("<polygon");
+    expect(sanitized).toContain('points="50,0 100,100 0,100"');
+    expect(sanitized).toContain('fill="red"');
+    expect(sanitized).toContain('stroke="black"');
+    expect(sanitized).toContain('stroke-width="2"');
+
+    // The svg wrapper (with its lower-cased viewbox) is preserved.
+    expect(sanitized).toContain('<svg viewbox="0 0 100 100"');
+
+    // Event handlers, inline styles, and other disallowed attributes go.
+    expect(sanitized).not.toContain("onclick");
+    expect(sanitized).not.toContain("alert(1)");
+    expect(sanitized).not.toContain("style=");
+    expect(sanitized).not.toContain('id="p1"');
+
+    // Sanitizing an already-sanitized value is a no-op (idempotent).
+    expect(sanitizePageContentHtml(sanitized)).toBe(sanitized);
+  });
 });
+
 
 describe("pageContentHtmlToPlainText", () => {
   it("strips markup and collapses whitespace", () => {
