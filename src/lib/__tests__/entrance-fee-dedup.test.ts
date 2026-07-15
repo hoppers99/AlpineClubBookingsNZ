@@ -73,11 +73,26 @@ vi.mock("@/lib/logger", () => ({
 
 import { prisma } from "@/lib/prisma";
 import { createXeroEntranceFeeInvoice } from "@/lib/xero-entrance-fee-invoices";
+import { buildEntranceFeeInvoiceMintIdempotencyKey } from "@/lib/xero-mappings";
 
 const ADULT_FEE = {
   category: "ADULT" as const,
   feeMapping: { itemCode: null, amountCents: 10000 },
 };
+
+// A full provider-detail invoice the adopt-by-reference path will accept: this
+// member's contact, AUTHORISED, ACCREC, matching amount. Overridable per test.
+function providerInvoice(overrides: Record<string, unknown> = {}) {
+  return {
+    invoiceID: "inv-xero",
+    invoiceNumber: "INV-XERO",
+    status: "AUTHORISED",
+    type: "ACCREC",
+    contact: { contactID: "contact-1" },
+    total: 100, // 10000 cents, matches ADULT_FEE
+    ...overrides,
+  };
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -127,9 +142,7 @@ describe("createXeroEntranceFeeInvoice double-mint guard (F21)", () => {
     mockFindOrCreateXeroContact.mockResolvedValue("contact-1");
 
     const getInvoices = vi.fn().mockResolvedValue({
-      body: {
-        invoices: [{ invoiceID: "inv-xero", invoiceNumber: "INV-XERO" }],
-      },
+      body: { invoices: [providerInvoice()] },
     });
     const createInvoices = vi.fn();
     mockGetAuthenticatedXeroClient.mockResolvedValue({
@@ -157,7 +170,8 @@ describe("createXeroEntranceFeeInvoice double-mint guard (F21)", () => {
       1,
       false,
     );
-    expect(createInvoices).not.toHaveBeenCalled();
+    // The mint runs inside the mocked retry wrapper, so asserting on the raw
+    // createInvoices mock is vacuous (finding #5); assert the wrapper instead.
     expect(mockRetryXeroWriteWithContactRepair).not.toHaveBeenCalled();
     // Adoption backfills the durable ENTRANCE_FEE_INVOICE link.
     expect(mockCompleteXeroSyncOperation).toHaveBeenCalledWith(
@@ -203,5 +217,187 @@ describe("createXeroEntranceFeeInvoice double-mint guard (F21)", () => {
       "op-first",
       expect.objectContaining({ xeroObjectId: "inv-new" }),
     );
+  });
+
+  it("does NOT adopt an invoice whose contact is a different member (reference collision)", async () => {
+    // Finding #1: the Reference field alone is not proof of ownership. An
+    // invoice found by reference but belonging to another member's contact must
+    // never be adopted (that would leave the victim unbilled and cross-wire the
+    // link). We mint our own instead.
+    vi.mocked(prisma.xeroObjectLink.findFirst).mockResolvedValue(null);
+    mockFindOrCreateXeroContact.mockResolvedValue("contact-1");
+
+    const getInvoices = vi.fn().mockResolvedValue({
+      body: {
+        invoices: [providerInvoice({ contact: { contactID: "other-contact" } })],
+      },
+    });
+    mockGetAuthenticatedXeroClient.mockResolvedValue({
+      xero: { accountingApi: { getInvoices, createInvoices: vi.fn() } },
+      tenantId: "tenant-1",
+    });
+    mockRetryXeroWriteWithContactRepair.mockResolvedValue({
+      body: { invoices: [{ invoiceID: "inv-new", invoiceNumber: "INV-NEW" }] },
+    });
+
+    const result = await createXeroEntranceFeeInvoice("member-1", {
+      syncOperationId: "op-second",
+      precomputedEntranceFee: ADULT_FEE,
+    });
+
+    // Minted our own; did not adopt the other member's invoice.
+    expect(result).toBe("inv-new");
+    expect(mockRetryXeroWriteWithContactRepair).toHaveBeenCalledTimes(1);
+    expect(mockCompleteXeroSyncOperation).toHaveBeenCalledWith(
+      "op-second",
+      expect.objectContaining({ xeroObjectId: "inv-new" }),
+    );
+  });
+
+  it("does NOT adopt a VOIDED invoice; re-issues instead", async () => {
+    // Finding #3: guard 2 must ignore non-AUTHORISED invoices so a VOIDED (or
+    // DELETED/DRAFT) invoice cannot suppress a legitimate re-issue.
+    vi.mocked(prisma.xeroObjectLink.findFirst).mockResolvedValue(null);
+    mockFindOrCreateXeroContact.mockResolvedValue("contact-1");
+
+    const getInvoices = vi.fn().mockResolvedValue({
+      body: { invoices: [providerInvoice({ status: "VOIDED" })] },
+    });
+    mockGetAuthenticatedXeroClient.mockResolvedValue({
+      xero: { accountingApi: { getInvoices, createInvoices: vi.fn() } },
+      tenantId: "tenant-1",
+    });
+    mockRetryXeroWriteWithContactRepair.mockResolvedValue({
+      body: { invoices: [{ invoiceID: "inv-new", invoiceNumber: "INV-NEW" }] },
+    });
+
+    const result = await createXeroEntranceFeeInvoice("member-1", {
+      syncOperationId: "op-second",
+      precomputedEntranceFee: ADULT_FEE,
+    });
+
+    expect(result).toBe("inv-new");
+    expect(mockRetryXeroWriteWithContactRepair).toHaveBeenCalledTimes(1);
+  });
+
+  it("surfaces a DUPLICATE_REFERENCE conflict when >1 AUTHORISED invoice shares the reference", async () => {
+    // Finding #4: mirror the subscription path — a real duplicate needs human
+    // reconciliation, not a silent adopt-first.
+    vi.mocked(prisma.xeroObjectLink.findFirst).mockResolvedValue(null);
+    mockFindOrCreateXeroContact.mockResolvedValue("contact-1");
+
+    const createInvoices = vi.fn();
+    const getInvoices = vi.fn().mockResolvedValue({
+      body: {
+        invoices: [
+          providerInvoice({ invoiceID: "inv-a", invoiceNumber: "INV-A" }),
+          providerInvoice({ invoiceID: "inv-b", invoiceNumber: "INV-B" }),
+        ],
+      },
+    });
+    mockGetAuthenticatedXeroClient.mockResolvedValue({
+      xero: { accountingApi: { getInvoices, createInvoices } },
+      tenantId: "tenant-1",
+    });
+
+    const result = await createXeroEntranceFeeInvoice("member-1", {
+      syncOperationId: "op-second",
+      precomputedEntranceFee: ADULT_FEE,
+    });
+
+    expect(result).toBeNull();
+    // No mint, and a conflict is surfaced for reconciliation.
+    expect(mockRetryXeroWriteWithContactRepair).not.toHaveBeenCalled();
+    expect(mockCompleteXeroSyncOperation).toHaveBeenCalledWith(
+      "op-second",
+      expect.objectContaining({
+        status: "SUCCEEDED",
+        responsePayload: expect.objectContaining({
+          conflict: "DUPLICATE_REFERENCE",
+          invoiceCount: 2,
+        }),
+      }),
+    );
+  });
+
+  it("surfaces a PROVIDER_MISMATCH conflict for a same-member wrong-amount invoice", async () => {
+    // Finding #3/#1: a same-member AUTHORISED invoice on this reference but with
+    // the wrong amount is ambiguous — surface a conflict rather than adopt a
+    // wrong-amount invoice or mint a duplicate.
+    vi.mocked(prisma.xeroObjectLink.findFirst).mockResolvedValue(null);
+    mockFindOrCreateXeroContact.mockResolvedValue("contact-1");
+
+    const getInvoices = vi.fn().mockResolvedValue({
+      body: { invoices: [providerInvoice({ total: 200 })] }, // 20000 cents ≠ 10000
+    });
+    mockGetAuthenticatedXeroClient.mockResolvedValue({
+      xero: { accountingApi: { getInvoices, createInvoices: vi.fn() } },
+      tenantId: "tenant-1",
+    });
+
+    const result = await createXeroEntranceFeeInvoice("member-1", {
+      syncOperationId: "op-second",
+      precomputedEntranceFee: ADULT_FEE,
+    });
+
+    expect(result).toBeNull();
+    expect(mockRetryXeroWriteWithContactRepair).not.toHaveBeenCalled();
+    expect(mockCompleteXeroSyncOperation).toHaveBeenCalledWith(
+      "op-second",
+      expect.objectContaining({
+        status: "SUCCEEDED",
+        responsePayload: expect.objectContaining({
+          conflict: "PROVIDER_MISMATCH",
+          expectedAmountCents: 10000,
+        }),
+      }),
+    );
+  });
+
+  it("uses a member-scoped Xero mint idempotency key that does not vary with amount (concurrent double-mint convergence)", async () => {
+    // Finding #2: two operations racing for one member (different amounts, so
+    // distinct correlation keys) must converge on ONE Xero invoice. The
+    // mechanism is a member-scoped createInvoices idempotency key — Xero returns
+    // the first invoice for the second request. Prove the key is member-scoped
+    // and identical across differing amounts (mirrors the F7/#1355 contact
+    // idempotency-key convergence, without holding a DB lock across the mint).
+    vi.mocked(prisma.xeroObjectLink.findFirst).mockResolvedValue(null);
+    mockFindOrCreateXeroContact.mockResolvedValue("contact-1");
+
+    const capturedKeys: unknown[] = [];
+    const createInvoices = vi.fn((..._args: unknown[]) => {
+      capturedKeys.push(_args[4]);
+      return Promise.resolve({
+        body: { invoices: [{ invoiceID: "inv-new", invoiceNumber: "INV-NEW" }] },
+      });
+    });
+    const getInvoices = vi.fn().mockResolvedValue({ body: { invoices: [] } });
+    mockGetAuthenticatedXeroClient.mockResolvedValue({
+      xero: { accountingApi: { getInvoices, createInvoices } },
+      tenantId: "tenant-1",
+    });
+    // Drive the real mint closure so the idempotency key reaches createInvoices.
+    mockRetryXeroWriteWithContactRepair.mockImplementation((opts: never) =>
+      (opts as { run: (i: { contactId: string }) => unknown }).run({
+        contactId: "contact-1",
+      }),
+    );
+
+    await createXeroEntranceFeeInvoice("member-1", {
+      syncOperationId: "op-a",
+      precomputedEntranceFee: ADULT_FEE,
+    });
+    await createXeroEntranceFeeInvoice("member-1", {
+      syncOperationId: "op-b",
+      // A different amount override — the enqueue-time dedupe would NOT catch
+      // this, but the mint key must still be identical.
+      precomputedEntranceFee: {
+        category: "ADULT" as const,
+        feeMapping: { itemCode: null, amountCents: 15000 },
+      },
+    });
+
+    const expectedKey = buildEntranceFeeInvoiceMintIdempotencyKey("member-1");
+    expect(capturedKeys).toEqual([expectedKey, expectedKey]);
   });
 });
