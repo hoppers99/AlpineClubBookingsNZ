@@ -722,7 +722,7 @@ describe("confirmWaitlistOffer", () => {
 
     expect(result.success).toBe(true);
     expect(result.newStatus).toBe("PAYMENT_PENDING");
-    expect(mockTx.booking.update).toHaveBeenCalledWith(
+    expect(mockTx.booking.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           status: "PAYMENT_PENDING",
@@ -749,6 +749,33 @@ describe("confirmWaitlistOffer", () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain("expired");
+  });
+
+  it("does not resurrect an offer that expiry reverted while confirm waited for the lodge lock (#1881)", async () => {
+    const { confirmWaitlistOffer } = await import("@/lib/waitlist");
+
+    mockTx.booking.findUnique
+      // Pre-lock read resolves only the immutable lock key.
+      .mockResolvedValueOnce({ lodgeId: "lodge-1" })
+      // Expiry won the lock and committed before confirm's post-lock re-read.
+      .mockResolvedValueOnce({
+        id: "booking1",
+        lodgeId: "lodge-1",
+        memberId: "m1",
+        status: "WAITLISTED",
+        waitlistOfferExpiresAt: null,
+        checkIn: new Date("2026-07-01"),
+        checkOut: new Date("2026-07-03"),
+        guests: [{ id: "g1", isMember: true }],
+      });
+
+    const result = await confirmWaitlistOffer("booking1", "m1");
+
+    expect(result).toEqual({
+      success: false,
+      error: "Booking is not in WAITLIST_OFFERED status",
+    });
+    expect(mockTx.booking.updateMany).not.toHaveBeenCalled();
   });
 
   it("rejects non-owner", async () => {

@@ -187,6 +187,19 @@ export async function settleGroupBookingOnOrganiserCancel(
     return;
   }
 
+  // Durable cancellation fence: settle/reaper/cancel all serialize on lock(1).
+  // Once CANCELLED commits, a later settlement apply must refuse to promote
+  // children. If settle won first, the post-fence reads below observe its
+  // SUCCEEDED/PAID state and run the refund path. No provider call occurs while
+  // this transaction is open.
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+    await tx.groupBooking.update({
+      where: { id: group.id },
+      data: { status: GroupBookingStatus.CANCELLED },
+    });
+  });
+
   const children = await prisma.booking.findMany({
     where: {
       parentBookingId: organiserBookingId,
@@ -462,10 +475,11 @@ export async function settleGroupBookingOnOrganiserCancel(
     // Captured from inside the per-child tx so the best-effort outbox worker
     // kick can run POST-commit (the enqueue itself is now durable — below).
     let queuedCreditNoteOperationId: string | null = null;
+    let childClaimed = false;
     try {
       queuedCreditNoteOperationId = await prisma.$transaction(async (tx) => {
-        await tx.booking.update({
-          where: { id: child.id },
+        const cancelled = await tx.booking.updateMany({
+          where: { id: child.id, status: { in: [...ACTIVE_CHILD_STATUSES] } },
           data: {
             status: BookingStatus.CANCELLED,
             ...RELEASE_ADMIN_CAPACITY_HOLD_UPDATE,
@@ -475,6 +489,8 @@ export async function settleGroupBookingOnOrganiserCancel(
             ...RELEASE_WHOLE_LODGE_HOLD_UPDATE,
           },
         });
+        if (cancelled.count === 0) return null;
+        childClaimed = true;
         await reconcileBedAllocationsForBooking({
           bookingId: child.id,
           db: tx,
@@ -533,6 +549,8 @@ export async function settleGroupBookingOnOrganiserCancel(
       );
       continue;
     }
+
+    if (!childClaimed) continue;
 
     // Best-effort outbox worker kick, kept POST-commit (the outbox cron drains
     // the row regardless). Never inside the tx: that would put a Xero provider
@@ -616,7 +634,7 @@ export async function settleGroupBookingOnOrganiserCancel(
     );
   }
 
-  await markGroupCancelled(group.id);
+  // The group was fenced CANCELLED before provider calls and child cleanup.
 
   logger.info(
     {

@@ -42,7 +42,8 @@ const mocks = vi.hoisted(() => ({
 
 const txClient = {
   $executeRaw: mocks.txExecuteRaw,
-  booking: { update: mocks.bookingUpdate },
+  groupBooking: { update: mocks.groupBookingUpdate },
+  booking: { update: mocks.bookingUpdate, updateMany: mocks.bookingUpdate },
   payment: { update: mocks.paymentUpdate },
   groupBookingSettlement: { updateMany: mocks.settlementUpdateMany },
 };
@@ -140,7 +141,7 @@ beforeEach(() => {
   mocks.transaction.mockImplementation(async (cb: (tx: typeof txClient) => unknown) =>
     cb(txClient)
   );
-  mocks.bookingUpdate.mockResolvedValue(undefined);
+  mocks.bookingUpdate.mockResolvedValue({ count: 1 });
   mocks.paymentUpdate.mockResolvedValue(undefined);
   mocks.groupBookingUpdate.mockResolvedValue(undefined);
   mocks.settlementUpdate.mockResolvedValue(undefined);
@@ -217,7 +218,7 @@ describe("settleGroupBookingOnOrganiserCancel", () => {
     expect(mocks.cancelPaymentIntentIfCancellable).not.toHaveBeenCalled();
     expect(mocks.bookingUpdate).toHaveBeenCalledTimes(2);
     expect(mocks.bookingUpdate).toHaveBeenCalledWith({
-      where: { id: "child-1" },
+      where: { id: "child-1", status: { in: [BookingStatus.PAYMENT_PENDING, BookingStatus.CONFIRMED, BookingStatus.PAID] } },
       data: {
         status: BookingStatus.CANCELLED,
         adminCapacityHoldAt: null,
@@ -297,7 +298,7 @@ describe("settleGroupBookingOnOrganiserCancel", () => {
       data: { refundedAmountCents: 4500, status: PaymentStatus.REFUNDED },
     });
     expect(mocks.bookingUpdate).toHaveBeenCalledWith({
-      where: { id: "child-1" },
+      where: { id: "child-1", status: { in: [BookingStatus.PAYMENT_PENDING, BookingStatus.CONFIRMED, BookingStatus.PAID] } },
       data: {
         status: BookingStatus.CANCELLED,
         adminCapacityHoldAt: null,
@@ -388,7 +389,7 @@ describe("settleGroupBookingOnOrganiserCancel", () => {
     });
     expect(mocks.processRefund).not.toHaveBeenCalled();
     expect(mocks.bookingUpdate).toHaveBeenCalledWith({
-      where: { id: "child-1" },
+      where: { id: "child-1", status: { in: [BookingStatus.PAYMENT_PENDING, BookingStatus.CONFIRMED, BookingStatus.PAID] } },
       data: {
         status: BookingStatus.CANCELLED,
         adminCapacityHoldAt: null,
@@ -407,6 +408,38 @@ describe("settleGroupBookingOnOrganiserCancel", () => {
       "card",
       0,
       undefined
+    );
+  });
+
+  it("persists the CANCELLED fence before releasing lock(1) for the provider void (#1881)", async () => {
+    mocks.groupBookingFindUnique.mockResolvedValue({
+      id: GROUP_ID,
+      paymentMode: GroupBookingPaymentMode.ORGANISER_PAYS,
+      settlement: {
+        id: "settle-1",
+        status: PaymentStatus.PENDING,
+        amountCents: 9000,
+        stripePaymentIntentId: "pi_settle_1",
+        refundPlan: null,
+      },
+    });
+    mocks.settlementFindUnique.mockResolvedValue({
+      id: "settle-1",
+      status: PaymentStatus.FAILED,
+      amountCents: 9000,
+      stripePaymentIntentId: "pi_settle_1",
+      refundPlan: null,
+    });
+    mocks.bookingFindMany.mockResolvedValue([]);
+
+    await settleGroupBookingOnOrganiserCancel(ORG_BOOKING, ORGANISER, "1.2.3.4");
+
+    expect(mocks.groupBookingUpdate).toHaveBeenCalledWith({
+      where: { id: GROUP_ID },
+      data: { status: GroupBookingStatus.CANCELLED },
+    });
+    expect(mocks.groupBookingUpdate.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.cancelPaymentIntentIfCancellable.mock.invocationCallOrder[0]
     );
   });
 
@@ -656,7 +689,7 @@ describe("settleGroupBookingOnOrganiserCancel", () => {
     expect(mocks.enqueueXeroRefund).not.toHaveBeenCalled();
     // The child is still cancelled and its bed released.
     expect(mocks.bookingUpdate).toHaveBeenCalledWith({
-      where: { id: "child-1" },
+      where: { id: "child-1", status: { in: [BookingStatus.PAYMENT_PENDING, BookingStatus.CONFIRMED, BookingStatus.PAID] } },
       data: {
         status: BookingStatus.CANCELLED,
         adminCapacityHoldAt: null,
@@ -744,7 +777,7 @@ describe("settleGroupBookingOnOrganiserCancel re-drivability (#1236)", () => {
       data: { refundedAmountCents: 4500, status: PaymentStatus.REFUNDED },
     });
     expect(mocks.bookingUpdate).toHaveBeenCalledWith({
-      where: { id: "child-1" },
+      where: { id: "child-1", status: { in: [BookingStatus.PAYMENT_PENDING, BookingStatus.CONFIRMED, BookingStatus.PAID] } },
       data: {
         status: BookingStatus.CANCELLED,
         adminCapacityHoldAt: null,
@@ -856,7 +889,7 @@ describe("settleGroupBookingOnOrganiserCancel re-drivability (#1236)", () => {
     // The child is still cancelled and its bed released, but with no refund
     // mirror yet — the replay writes it after the money actually moves.
     expect(mocks.bookingUpdate).toHaveBeenCalledWith({
-      where: { id: "child-1" },
+      where: { id: "child-1", status: { in: [BookingStatus.PAYMENT_PENDING, BookingStatus.CONFIRMED, BookingStatus.PAID] } },
       data: {
         status: BookingStatus.CANCELLED,
         adminCapacityHoldAt: null,
@@ -965,7 +998,7 @@ describe("settleGroupBookingOnOrganiserCancel re-drivability (#1236)", () => {
     expect(mocks.processRefund).not.toHaveBeenCalled();
     expect(mocks.paymentUpdate).not.toHaveBeenCalled();
     expect(mocks.bookingUpdate).toHaveBeenCalledWith({
-      where: { id: "child-1" },
+      where: { id: "child-1", status: { in: [BookingStatus.PAYMENT_PENDING, BookingStatus.CONFIRMED, BookingStatus.PAID] } },
       data: {
         status: BookingStatus.CANCELLED,
         adminCapacityHoldAt: null,

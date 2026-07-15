@@ -13,7 +13,7 @@
  *
  * Run locally against a scratch database, e.g.:
  *   RUN_CONCURRENCY_RACE_TESTS=1 \
- *   DATABASE_URL=postgresql://user:pass@127.0.0.1:55442/racedb \
+ *   CONCURRENCY_RACE_DATABASE_URL=postgresql://user:pass@127.0.0.1:55442/concurrency_race_1881 \
  *   npx vitest run src/lib/__tests__/concurrency-lock-races.realdb.test.ts
  *
  * The app's prisma singleton connects via DATABASE_URL (driver adapter), so the
@@ -30,13 +30,13 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 let prisma: typeof import("@/lib/prisma")["prisma"];
 
 const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
-const RACE_DB_URL = process.env.DATABASE_URL ?? "";
+const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
 
 /**
  * Guard: never run against a default/production Postgres. Require a non-5432
  * port at or above 55442 (a deliberately unusual throwaway range).
  */
-function assertSafeRaceDbUrl(url: string): void {
+export function assertSafeRaceDbUrl(url: string): void {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -56,9 +56,37 @@ function assertSafeRaceDbUrl(url: string): void {
       `Refusing to run concurrency race tests against port ${port}: use a throwaway Postgres on 55442+ (never the default 5432).`
     );
   }
+  const host = parsed.hostname.toLowerCase();
+  if (!["localhost", "127.0.0.1", "::1", "[::1]"].includes(host)) {
+    throw new Error("Concurrency race DB must be loopback-only.");
+  }
+  const databaseName = decodeURIComponent(parsed.pathname.replace(/^\//, ""));
+  if (!databaseName.includes("concurrency_race_1881")) {
+    throw new Error(
+      "Concurrency race DB name must contain the dedicated marker 'concurrency_race_1881'."
+    );
+  }
 }
 
 const PROBE_TABLE = "_concurrency_race_probe_1881";
+
+describe("concurrency race DB safety guard (#1881)", () => {
+  it("accepts only a dedicated loopback scratch database", () => {
+    expect(() =>
+      assertSafeRaceDbUrl(
+        "postgresql://user:pass@127.0.0.1:55442/concurrency_race_1881"
+      )
+    ).not.toThrow();
+  });
+
+  it.each([
+    "postgresql://user:pass@db.example.org:55442/concurrency_race_1881",
+    "postgresql://user:pass@127.0.0.1:5432/concurrency_race_1881",
+    "postgresql://user:pass@127.0.0.1:55442/app",
+  ])("rejects unsafe target %s", (url) => {
+    expect(() => assertSafeRaceDbUrl(url)).toThrow();
+  });
+});
 
 // Run only when explicitly enabled; otherwise this is a pure no-op.
 (RUN ? describe : describe.skip)(
@@ -66,10 +94,11 @@ const PROBE_TABLE = "_concurrency_race_probe_1881";
   () => {
     beforeAll(async () => {
       // Never touch a default/production DB: the singleton connects via
-      // DATABASE_URL, so guard THAT before importing Prisma or creating any
+      // dedicated URL, so guard THAT before importing Prisma or creating any
       // scratch state. Keeping the import behind the opt-in hook makes the
-      // skipped suite a true no-op when DATABASE_URL is absent.
+      // skipped suite a true no-op when the dedicated URL is absent.
       assertSafeRaceDbUrl(RACE_DB_URL);
+      process.env.DATABASE_URL = RACE_DB_URL;
       ({ prisma } = await import("@/lib/prisma"));
       await prisma.$executeRawUnsafe(
         `CREATE TABLE IF NOT EXISTS "${PROBE_TABLE}" (id text PRIMARY KEY, status text NOT NULL)`

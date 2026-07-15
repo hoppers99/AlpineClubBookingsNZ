@@ -552,6 +552,19 @@ export async function confirmWaitlistOffer(
 
   try {
     result = await prisma.$transaction(async (tx) => {
+      const lockTarget = await tx.booking.findUnique({
+        where: { id: bookingId },
+        select: { lodgeId: true },
+      });
+      if (!lockTarget) {
+        return { success: false, error: "Booking not found" };
+      }
+      const bookingLodgeId = lockTarget.lodgeId ?? (await getDefaultLodgeId(tx));
+      await acquireLodgeCapacityLock(tx, bookingLodgeId);
+
+      // Expiry takes the same lodge lock. Re-read all transition inputs only
+      // after the lock so a completed expiry cannot be resurrected from a stale
+      // WAITLIST_OFFERED snapshot.
       const booking = await tx.booking.findUnique({
         where: { id: bookingId },
         include: { guests: { include: { nights: true } } }, // per-night sets (issue #713)
@@ -569,12 +582,10 @@ export async function confirmWaitlistOffer(
         return { success: false, error: "Booking is not in WAITLIST_OFFERED status" };
       }
 
-      if (booking.waitlistOfferExpiresAt && booking.waitlistOfferExpiresAt < new Date()) {
+      const confirmedAt = new Date();
+      if (booking.waitlistOfferExpiresAt && booking.waitlistOfferExpiresAt < confirmedAt) {
         return { success: false, error: "Waitlist offer has expired" };
       }
-
-      const bookingLodgeId = booking.lodgeId ?? (await getDefaultLodgeId(tx));
-      await acquireLodgeCapacityLock(tx, bookingLodgeId);
 
       // Re-check capacity
       const { available } = await checkCapacityForGuestRanges(
@@ -588,8 +599,8 @@ export async function confirmWaitlistOffer(
 
       if (!available) {
         // Revert to WAITLISTED
-        await tx.booking.update({
-          where: { id: bookingId },
+        await tx.booking.updateMany({
+          where: { id: bookingId, status: BookingStatus.WAITLIST_OFFERED },
           data: {
             status: BookingStatus.WAITLISTED,
             waitlistOfferedAt: null,
@@ -638,10 +649,20 @@ export async function confirmWaitlistOffer(
         updateData.nonMemberHoldUntil = holdDate;
       }
 
-      await tx.booking.update({
-        where: { id: bookingId },
+      const claimed = await tx.booking.updateMany({
+        where: {
+          id: bookingId,
+          status: BookingStatus.WAITLIST_OFFERED,
+          OR: [
+            { waitlistOfferExpiresAt: null },
+            { waitlistOfferExpiresAt: { gte: confirmedAt } },
+          ],
+        },
         data: updateData,
       });
+      if (claimed.count === 0) {
+        return { success: false, error: "Waitlist offer has expired or is no longer available" };
+      }
       await reconcileBedAllocationsForBooking({
         bookingId,
         db: tx,

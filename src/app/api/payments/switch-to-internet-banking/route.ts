@@ -174,15 +174,6 @@ export async function POST(request: NextRequest) {
   // mirror) and set the IB payment to the effective amount the member now owes.
   // The invoice is reduced to this effective amount by the applied-credit
   // allocation op enqueued below (Option A: member pays effective).
-  const appliedCreditAgg = await prisma.memberCredit.aggregate({
-    where: { appliedToBookingId: booking.id, type: CreditType.BOOKING_APPLIED },
-    _sum: { amountCents: true },
-  });
-  const creditAppliedCents = Math.max(
-    0,
-    -(appliedCreditAgg._sum.amountCents ?? 0),
-  );
-  const amountCents = Math.max(0, booking.finalPriceCents - creditAppliedCents);
   const holdBedSlots = internetBankingSettings.holdBedSlots;
   const holdUntil = buildInternetBankingHoldUntil(internetBankingSettings);
   const paymentResult = await prisma.$transaction(async (tx) => {
@@ -208,6 +199,19 @@ export async function POST(request: NextRequest) {
     if (!locked || locked.status !== BookingStatus.PAYMENT_PENDING) {
       return { type: "notSwitchable" as const };
     }
+
+    // Recompute the payment mirror under lock(1): repricing and credit-ledger
+    // writers share this lock, so a pre-lock price/credit pair cannot be
+    // persisted after either side changes while this request waits.
+    const appliedCreditAgg = await tx.memberCredit.aggregate({
+      where: { appliedToBookingId: locked.id, type: CreditType.BOOKING_APPLIED },
+      _sum: { amountCents: true },
+    });
+    const creditAppliedCents = Math.max(
+      0,
+      -(appliedCreditAgg._sum.amountCents ?? 0),
+    );
+    const amountCents = Math.max(0, locked.finalPriceCents - creditAppliedCents);
 
     if (holdBedSlots) {
       const capacity = await checkCapacityForGuestRanges(

@@ -551,6 +551,25 @@ describe("review finding source/schema contracts", () => {
     expect(memberCredit).toContain('"member-credit-ledger"');
   });
 
+  it("restores a failed second-stage zero-dollar waitlist claim to a retryable state (#1881 F11)", () => {
+    const source = stripComments(
+      readRepoFile("src/app/api/bookings/[id]/waitlist-confirm/route.ts")
+    );
+    const zeroDollar = sliceFrom(
+      source,
+      "if (booking.finalPriceCents === 0 && result.newStatus === BookingStatus.PAYMENT_PENDING)",
+      "if (result.newStatus === BookingStatus.PENDING"
+    );
+    const capacityFailure = sliceFrom(
+      zeroDollar,
+      "if (!available)",
+      "await tx.payment.create"
+    );
+    expect(capacityFailure).toContain("tx.booking.updateMany");
+    expect(capacityFailure).toContain("status: BookingStatus.WAITLISTED");
+    expect(capacityFailure).toContain("status: BookingStatus.PAYMENT_PENDING");
+  });
+
   it("wraps age-up membership upgrades and token issuance in a transaction", () => {
     const source = readRepoFile("src/lib/cron-age-up.ts");
 

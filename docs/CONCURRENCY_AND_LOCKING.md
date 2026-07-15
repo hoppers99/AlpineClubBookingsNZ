@@ -148,6 +148,18 @@ captured (`payment_intent.succeeded` → settle) must still become `SUCCEEDED`, 
 settle legitimately overwrites `FAILED` → `SUCCEEDED`. `lock(1)` guarantees the
 two run whole-before-whole; it is not a veto on that transition.
 
+Organiser cancellation adds a durable veto before it releases the lock:
+`group-cancel.ts` writes `GroupBooking.status = CANCELLED` under `lock(1)`
+before voiding/refunding Stripe or cancelling children. Settlement apply
+re-reads that group status under the same lock and returns `cancelled` without
+writing Payments or promoting children. Therefore either settlement wins first
+and cancellation observes `SUCCEEDED`/`PAID` and refunds it, or cancellation
+wins first and every later capture is refused; a late Stripe capture follows
+the deterministic superseded-intent refund path, while a paid Xero invoice is
+left unapplied and raises an operator refund alert. Provider calls remain
+outside the transaction. Per-child cancellation is also a status-guarded claim,
+so a stale child snapshot can never overwrite a terminal transition.
+
 ### Writer doing both → `lock(1)` first, then per-lodge
 
 The Stripe capture (`markBookingPaymentSucceeded`), the confirm-pending-guests
@@ -157,6 +169,14 @@ switch-to-internet-banking hold, the quote-accept conversion
 (batch/date/guest-removal) take **`lock(1)` first, then the per-lodge lock**.
 `xero-inbound/invoice-paid-effects.ts` is the in-tree precedent for this
 composition.
+
+`switch-to-internet-banking` also recomputes both the locked booking price and
+the authoritative `BOOKING_APPLIED` credit aggregate after acquiring `lock(1)`;
+the IB payment mirror must never mix a pre-lock price with post-lock credit (or
+vice versa). Waitlist offer confirmation resolves only the immutable lodge key
+before locking, then re-reads status and expiry under the lodge lock and fuses
+those checks with its update. The expiry reaper returns side effects only for
+rows whose guarded revert/cancel actually claimed one row.
 
 ### Member-night guard → per-member lock, ACROSS lodges
 

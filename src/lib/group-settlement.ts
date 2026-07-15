@@ -28,6 +28,7 @@ import {
   BookingEventType,
   BookingStatus,
   GroupBookingPaymentMode,
+  GroupBookingStatus,
   PaymentSource,
   PaymentStatus,
 } from "@prisma/client";
@@ -77,6 +78,7 @@ type GroupSettlementOutcome =
   // A succeeded intent could not be applied (#1883): the settle route surfaces
   // the real apply outcome instead of masking it as "already_settled".
   | "refunded"
+  | "cancelled"
   | "amount_mismatch"
   | "not_found";
 
@@ -530,6 +532,7 @@ export interface GroupSettlementAppliedResult {
     | "already_settled"
     | "not_found"
     | "amount_mismatch"
+    | "cancelled"
     // #1883 — the settlement carries refund history; the (still "succeeded")
     // intent's money was handed back, so it must never settle the children.
     | "refunded";
@@ -544,6 +547,7 @@ interface LoadedSettlementForApply {
   groupBookingId: string;
   groupBooking: {
     organiserBookingId: string;
+    status: GroupBookingStatus;
     organiserMember: { email: string; firstName: string; lastName: string };
     organiserBooking: { checkIn: Date; checkOut: Date };
   };
@@ -554,6 +558,7 @@ const APPLY_SETTLEMENT_INCLUDE = {
   groupBooking: {
     select: {
       organiserBookingId: true,
+      status: true,
       organiserMember: { select: { email: true, firstName: true, lastName: true } },
       organiserBooking: { select: { checkIn: true, checkOut: true } },
     },
@@ -596,8 +601,14 @@ async function settleConfirmedChildrenAndNotify(
     // Re-confirm the settlement is still unpaid inside the lock (idempotency).
     const current = await tx.groupBookingSettlement.findUnique({
       where: { id: settlement.id },
-      select: { status: true },
+      select: {
+        status: true,
+        groupBooking: { select: { status: true } },
+      },
     });
+    if (current?.groupBooking?.status === GroupBookingStatus.CANCELLED) {
+      return "cancelled" as const;
+    }
     if (current?.status === PaymentStatus.SUCCEEDED) {
       return [] as string[];
     }
@@ -713,6 +724,14 @@ async function settleConfirmedChildrenAndNotify(
       "Group settlement was refunded before the settle transaction ran - refusing to settle (#1883)"
     );
     return { outcome: "refunded", settledBookingIds: [] };
+  }
+
+  if (settled === "cancelled") {
+    logger.warn(
+      { groupBookingId: settlement.groupBookingId, settlementId: settlement.id },
+      "Group cancellation fenced settlement apply - refusing to settle children (#1881)"
+    );
+    return { outcome: "cancelled", settledBookingIds: [] };
   }
 
   if (settled === null) {

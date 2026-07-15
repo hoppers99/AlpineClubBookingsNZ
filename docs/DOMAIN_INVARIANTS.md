@@ -646,6 +646,15 @@ Future reviews and issues should cite this file when proposing changes.
   in a different cancellation tier, so recomputing the mirror amount would be
   unsafe. The plan is written before the Stripe refund and before the
   settlement flips, so the refund fires at most once across re-drives.
+- Organiser cancellation is a durable settlement fence (#1881). It writes the
+  group `CANCELLED` under global `lock(1)` before any provider call or child
+  cleanup. Settlement apply re-reads that fence under the same lock and cannot
+  promote children afterward. If settlement won first, cancellation observes
+  the paid state and arms/refunds the frozen plan; if cancellation won first, a
+  late Stripe capture is auto-refunded as superseded and a late paid Xero invoice
+  is left unapplied with an operator alert. Child cancellation is status-guarded.
+  The resume cron finds fenced groups by remaining active organiser-settled
+  children, not by requiring the group status to remain open.
 - The group-cancel refund credit-note enqueue is **durable** (#1257/#1377).
   Each child's Xero refund credit-note outbox row (integer cents) is enqueued
   **inside the same transaction** as that child's cancel + `refundedAmountCents`

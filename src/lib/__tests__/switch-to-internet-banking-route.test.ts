@@ -130,6 +130,7 @@ beforeEach(() => {
         $queryRaw: vi.fn().mockResolvedValue([]),
         lodge: { findFirst: vi.fn().mockResolvedValue({ id: "lodge-1" }) },
         payment: { upsert: mocks.upsert },
+        memberCredit: { aggregate: mocks.creditAggregate },
         booking: {
           findUnique: mocks.txBookingFindUnique,
           update: mocks.bookingUpdate,
@@ -370,6 +371,32 @@ describe("POST /api/payments/switch-to-internet-banking", () => {
     );
     expect(mocks.recordInternetBankingPaymentTransaction).toHaveBeenCalledWith(
       expect.objectContaining({ amountCents: 3000 })
+    );
+  });
+
+  it("uses the repriced booking and credit ledger observed under lock(1) (#1881)", async () => {
+    // The unlocked request snapshot was $45 with no credit. While it waited for
+    // lock(1), a valid reprice raised the booking to $60 and the member applied
+    // $20 credit. The persisted IB mirror must use the locked pair: 4000+2000.
+    mocks.txBookingFindUnique.mockResolvedValue({
+      ...stripeBooking({ finalPriceCents: 6000 }),
+      guests: [],
+    });
+    mocks.creditAggregate.mockResolvedValue({ _sum: { amountCents: -2000 } });
+
+    const res = await POST(postRequest());
+
+    expect(res.status).toBe(200);
+    expect(mocks.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          amountCents: 4000,
+          creditAppliedCents: 2000,
+        }),
+      })
+    );
+    expect(mocks.recordInternetBankingPaymentTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ amountCents: 4000 })
     );
   });
 

@@ -3,7 +3,6 @@ import {
   BookingEventType,
   BookingStatus,
   GroupBookingPaymentMode,
-  GroupBookingStatus,
   PaymentStatus,
 } from "@prisma/client";
 
@@ -362,6 +361,24 @@ describe("reapStaleGroupSettlements", () => {
     expect(mocks.sendJoinCancelled).not.toHaveBeenCalled();
   });
 
+  it("does not emit release side effects for a child whose status CAS lost (#1881)", async () => {
+    mocks.settlementFindMany.mockResolvedValue([staleSettlement()]);
+    mocks.settlementFindUnique.mockResolvedValue({
+      status: PaymentStatus.PENDING,
+      updatedAt: new Date(NOW.getTime() - 49 * HOUR),
+    });
+    mocks.bookingFindMany.mockResolvedValue([confirmedChild("child-1")]);
+    mocks.bookingUpdateMany.mockResolvedValueOnce({ count: 0 });
+
+    const result = await reapStaleGroupSettlements(NOW);
+
+    expect(result.releasedChildBookings).toBe(0);
+    expect(result.reaped).toBe(0);
+    expect(mocks.reconcileBedAllocations).not.toHaveBeenCalled();
+    expect(mocks.sendJoinReleased).not.toHaveBeenCalled();
+    expect(mocks.recordBookingEvent).not.toHaveBeenCalled();
+  });
+
   it("keeps reaping the rest when one settlement fails", async () => {
     mocks.settlementFindMany.mockResolvedValue([
       staleSettlement({ id: "settle-bad" }),
@@ -538,23 +555,34 @@ describe("resume of interrupted organiser-cancel cleanups (#1236)", () => {
     expect(result.resumedInterruptedCancels).toBe(1);
   });
 
-  it("scans only ORGANISER_PAYS groups still open under a cancelled organiser booking older than the grace window", async () => {
+  it("scans fenced ORGANISER_PAYS groups only when active cleanup children remain past grace", async () => {
     mocks.settlementFindMany.mockResolvedValue([]);
 
     await reapStaleGroupSettlements(NOW);
 
-    // The DB query is the whole filter: EACH_PAYS_OWN (paymentMode),
-    // already-CANCELLED groups (status), and just-started/within-grace cleanups
-    // (organiser booking updatedAt < now - 15m default) are all excluded here.
+    // Group status is deliberately not a filter: CANCELLED is now the durable
+    // fence written first. Remaining active children identify interrupted work.
     expect(mocks.groupBookingFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
           paymentMode: GroupBookingPaymentMode.ORGANISER_PAYS,
-          status: { not: GroupBookingStatus.CANCELLED },
           organiserBooking: {
             status: BookingStatus.CANCELLED,
             deletedAt: null,
             updatedAt: { lt: new Date(NOW.getTime() - 15 * 60 * 1000) },
+            linkedBookings: {
+              some: {
+                organiserSettled: true,
+                deletedAt: null,
+                status: {
+                  in: [
+                    BookingStatus.PAYMENT_PENDING,
+                    BookingStatus.CONFIRMED,
+                    BookingStatus.PAID,
+                  ],
+                },
+              },
+            },
           },
         },
         select: { organiserBookingId: true, organiserMemberId: true },

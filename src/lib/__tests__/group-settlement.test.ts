@@ -951,6 +951,41 @@ describe("applyGroupSettlementSucceeded", () => {
     expect(mocks.sendSettlementReceipt).not.toHaveBeenCalled();
   });
 
+  it("honours the durable group-cancellation fence under lock(1) (#1881)", async () => {
+    const loaded = {
+      id: "s1",
+      status: PaymentStatus.PENDING,
+      amountCents: 9000,
+      stripeCustomerId: "cus_123",
+      groupBookingId: GROUP_ID,
+      groupBooking: {
+        organiserBookingId: ORG_BOOKING,
+        status: "CANCELLED",
+        organiserMember: {
+          email: "org@example.com",
+          firstName: "Olive",
+          lastName: "Organiser",
+        },
+        organiserBooking: { checkIn: new Date(), checkOut: new Date() },
+      },
+    };
+    mocks.settlementFindUnique
+      .mockResolvedValueOnce(loaded)
+      .mockResolvedValueOnce({
+        status: PaymentStatus.PENDING,
+        groupBooking: { status: "CANCELLED" },
+      });
+
+    const result = await applyGroupSettlementSucceeded({ id: "pi_1", amount: 9000 });
+
+    expect(result).toEqual({ outcome: "cancelled", settledBookingIds: [] });
+    expect(mocks.txExecuteRaw).toHaveBeenCalled();
+    expect(mocks.bookingFindMany).not.toHaveBeenCalled();
+    expect(mocks.paymentUpsert).not.toHaveBeenCalled();
+    expect(mocks.bookingUpdateMany).not.toHaveBeenCalled();
+    expect(mocks.settlementUpdateMany).not.toHaveBeenCalled();
+  });
+
   it("refuses to apply when the paid amount does not match the recorded total", async () => {
     mocks.settlementFindUnique.mockResolvedValue({
       id: "s1",
