@@ -974,8 +974,14 @@ describe("Stripe webhook Xero alerting", () => {
     const response = await POST(makeRequest());
 
     expect(response.status).toBe(500);
+    // F16 fence (#1887): the release is keyed on status + the claimed lease token.
     expect(mockProcessedWebhookDeleteMany).toHaveBeenCalledWith({
-      where: { eventId: "evt_fail", source: "stripe" },
+      where: {
+        eventId: "evt_fail",
+        source: "stripe",
+        status: "PROCESSING",
+        processingStartedAt: expect.any(Date),
+      },
     });
   });
 
@@ -1172,8 +1178,14 @@ describe("Stripe webhook Xero alerting", () => {
         errorMessage: expect.stringContaining("automatic refund failed"),
       }),
     );
+    // F16 fence (#1887): release keyed on status + the claimed lease token.
     expect(mockProcessedWebhookDeleteMany).toHaveBeenCalledWith({
-      where: { eventId: "evt_group_refund_fail", source: "stripe" },
+      where: {
+        eventId: "evt_group_refund_fail",
+        source: "stripe",
+        status: "PROCESSING",
+        processingStartedAt: expect.any(Date),
+      },
     });
   });
 
@@ -1449,11 +1461,42 @@ describe("Stripe webhook Xero alerting", () => {
         },
       });
       // On success it flips to COMPLETED so a later redelivery is a true dup.
+      // Fenced (F16 fence, #1887) on status + the claimed processingStartedAt.
       expect(mockProcessedWebhookUpdateMany).toHaveBeenCalledWith({
-        where: { source: "stripe", eventId: "evt_fresh" },
+        where: {
+          source: "stripe",
+          eventId: "evt_fresh",
+          status: "PROCESSING",
+          processingStartedAt: expect.any(Date),
+        },
         data: { status: "COMPLETED", processedAt: expect.any(Date) },
       });
       expect(mockMarkBookingPaymentSucceeded).toHaveBeenCalled();
+    });
+
+    it("fences the COMPLETED stamp to the exact lease it claimed (interleaving, #1887)", async () => {
+      // A slow original that outlived its lease must not flip a takeover
+      // successor's fresh claim to COMPLETED. The fence keys the COMPLETED stamp
+      // on the SAME processingStartedAt written at claim time, so it can only
+      // ever complete the lease this attempt owns.
+      mockConstructWebhookEvent.mockReturnValue(succeededEvent("evt_fence"));
+      armPaidBooking();
+
+      const response = await POST(makeRequest());
+
+      expect(response.status).toBe(200);
+      const claimToken =
+        mockProcessedWebhookCreate.mock.calls[0]![0].data.processingStartedAt;
+      expect(claimToken).toBeInstanceOf(Date);
+      expect(mockProcessedWebhookUpdateMany).toHaveBeenCalledWith({
+        where: {
+          source: "stripe",
+          eventId: "evt_fence",
+          status: "PROCESSING",
+          processingStartedAt: claimToken,
+        },
+        data: { status: "COMPLETED", processedAt: expect.any(Date) },
+      });
     });
 
     it("ACKs a redelivery of a COMPLETED event without re-running handlers", async () => {
@@ -1525,10 +1568,16 @@ describe("Stripe webhook Xero alerting", () => {
         },
         data: { processingStartedAt: expect.any(Date), eventType: "payment_intent.succeeded" },
       });
-      // The handler runs on takeover, then the claim is marked COMPLETED.
+      // The handler runs on takeover, then the claim is marked COMPLETED —
+      // fenced on the takeover's own processingStartedAt (F16 fence, #1887).
       expect(mockMarkBookingPaymentSucceeded).toHaveBeenCalled();
       expect(mockProcessedWebhookUpdateMany).toHaveBeenCalledWith({
-        where: { source: "stripe", eventId: "evt_expired" },
+        where: {
+          source: "stripe",
+          eventId: "evt_expired",
+          status: "PROCESSING",
+          processingStartedAt: expect.any(Date),
+        },
         data: { status: "COMPLETED", processedAt: expect.any(Date) },
       });
     });
@@ -1576,11 +1625,46 @@ describe("Stripe webhook Xero alerting", () => {
       const response = await POST(makeRequest());
 
       expect(response.status).toBe(500);
+      // Fenced (F16 fence, #1887): the release keys on status + the claimed
+      // processingStartedAt, so it only removes the lease this attempt owns.
+      const claimToken =
+        mockProcessedWebhookCreate.mock.calls[0]![0].data.processingStartedAt;
+      expect(claimToken).toBeInstanceOf(Date);
       expect(mockProcessedWebhookDeleteMany).toHaveBeenCalledWith({
-        where: { eventId: "evt_throw", source: "stripe" },
+        where: {
+          eventId: "evt_throw",
+          source: "stripe",
+          status: "PROCESSING",
+          processingStartedAt: claimToken,
+        },
       });
       // A failed attempt must never leave a COMPLETED marker behind.
       expect(mockProcessedWebhookUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("records the in-progress lease contention 500 for telemetry (F16 LOW, #1887)", async () => {
+      mockConstructWebhookEvent.mockReturnValue(succeededEvent("evt_busy"));
+      mockProcessedWebhookCreate.mockRejectedValue(
+        Object.assign(new Error("Unique constraint failed"), { code: "P2002" }),
+      );
+      // A sibling attempt holds a live lease.
+      mockProcessedWebhookFindFirst.mockResolvedValue({
+        status: "PROCESSING",
+        processingStartedAt: new Date(Date.now() - 60 * 1000),
+      });
+
+      const response = await POST(makeRequest());
+
+      expect(response.status).toBe(500);
+      // The otherwise-invisible concurrent-redelivery 500 is logged.
+      expect(mockRecordWebhookLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source: "stripe",
+          eventId: "evt_busy",
+          status: "failure",
+          error: expect.stringContaining("in progress"),
+        }),
+      );
     });
   });
 });

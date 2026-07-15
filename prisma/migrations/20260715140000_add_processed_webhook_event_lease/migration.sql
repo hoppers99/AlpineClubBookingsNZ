@@ -15,4 +15,13 @@ ALTER TABLE "ProcessedWebhookEvent"
 -- mark them COMPLETED. New inserts (new-colour code) set "PROCESSING" explicitly
 -- and flip to "COMPLETED" on success; the column default only ever covers an
 -- old-colour insert mid-deploy, which must reprocess rather than drop.
-UPDATE "ProcessedWebhookEvent" SET "status" = 'COMPLETED';
+--
+-- Scoped to rows that existed when this migration ran (`processedAt <
+-- CURRENT_TIMESTAMP`, the transaction start): (1) it never rewrites the whole
+-- unbounded table blindly (no pruning job exists), and (2) it leaves any
+-- concurrent old-colour insert during a blue/green deploy at the "PROCESSING"
+-- default so the new colour reprocesses it on redelivery rather than ACKing it
+-- as done. This is a data statement only — no schema effect, drift-clean.
+UPDATE "ProcessedWebhookEvent"
+  SET "status" = 'COMPLETED'
+  WHERE "processedAt" < CURRENT_TIMESTAMP;
