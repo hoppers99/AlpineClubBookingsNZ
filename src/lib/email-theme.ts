@@ -8,6 +8,13 @@
  * self-warming, module-level cache: `emailPalette()` returns the last-known
  * palette immediately and refreshes it in the background when the TTL lapses.
  *
+ * To keep that background cache from lagging behind a colour-scheme change, two
+ * explicit warm points call `primeEmailPalette()` (an unconditional, awaited
+ * refresh): the server-boot instrumentation hook and the Site Style save API.
+ * The boot prime means the first email after a cold start uses the stored theme,
+ * and the save prime means an admin's colour change reaches emails immediately
+ * rather than after the TTL lapses (#1912).
+ *
  * The fallback is the SITE default theme (not the legacy hard-coded email
  * gold), so a cold process or a DB read failure still renders emails that look
  * like the site. Colours are consumed as-is with one guard: Site Style accepts
@@ -106,9 +113,28 @@ export function emailPalette(): EmailPalette {
   return cached;
 }
 
-/** Test hook: await a synchronous refresh so assertions see the loaded palette. */
+/**
+ * Await an unconditional refresh of the email palette from the persisted Site
+ * Style theme. Unlike the TTL-gated background refresh `emailPalette()` uses,
+ * this always reads the current theme and updates the cache, so an explicit warm
+ * point sees the latest colours immediately:
+ *   - server boot (instrumentation), so the first email uses the stored theme
+ *     rather than the built-in default;
+ *   - a Site Style save (admin API), so a colour-scheme change reaches emails
+ *     right away instead of only after the TTL lapses (#1912);
+ *   - tests, so assertions see the loaded palette.
+ * Never throws — a read failure keeps the last-good/default palette. It does not
+ * consult the `refreshing` guard, so a save-time prime cannot be silently
+ * skipped by an in-flight background refresh.
+ */
 export async function primeEmailPalette(): Promise<void> {
-  await refreshEmailPalette();
+  try {
+    const { values } = await getWebsiteThemeRenderState();
+    cached = toEmailPalette(values);
+    cachedAt = Date.now();
+  } catch {
+    // Keep the last-good/default palette; never throw from priming.
+  }
 }
 
 /** Test hook: reset the module-level cache to its initial cold state. */
