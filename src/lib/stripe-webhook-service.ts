@@ -63,8 +63,6 @@ export const STRIPE_WEBHOOK_PROCESSING_LEASE_MINUTES = 15;
 const PROCESSED_WEBHOOK_STATUS_PROCESSING = "PROCESSING";
 const PROCESSED_WEBHOOK_STATUS_COMPLETED = "COMPLETED";
 
-type WebhookClaimOutcome = "claimed" | "duplicate_completed" | "in_progress";
-
 /**
  * The result of a claim attempt. When `outcome === "claimed"`, `leaseToken` is
  * the `processingStartedAt` we wrote for THIS attempt (fresh insert or takeover)
@@ -74,7 +72,8 @@ type WebhookClaimOutcome = "claimed" | "duplicate_completed" | "in_progress";
  */
 type WebhookClaimResult =
   | { outcome: "claimed"; leaseToken: Date }
-  | { outcome: "duplicate_completed" | "in_progress" };
+  | { outcome: "duplicate_completed" }
+  | { outcome: "in_progress" };
 
 /**
  * Claim the event for processing under a lease (F16, #1887).
@@ -310,7 +309,10 @@ export async function processStripeWebhookEvent(
 
     return jsonResult({ received: true });
   } catch (error) {
-    if (claimedEvent) {
+    // `leaseToken` is set iff we claimed (claimedEvent), so guarding on it both
+    // satisfies the type narrowing and preserves the "only release what we
+    // claimed" contract.
+    if (claimedEvent && leaseToken) {
       try {
         // Fenced (F16 fence, #1887) on status + our leaseToken: release ONLY the
         // lease we still own. If a successor took over our expired lease (fresh

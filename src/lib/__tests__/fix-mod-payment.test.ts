@@ -1079,8 +1079,14 @@ describe("Stripe webhook — additional modification payment succeeded", () => {
 
     expect(res.status).toBe(500);
     expect(mockMarkPaymentIntentTransactionSucceeded).not.toHaveBeenCalled();
+    // F16 fence (#1887): the claim release keys on status + the lease token.
     expect(mockProcessedWebhookDeleteMany).toHaveBeenCalledWith({
-      where: { eventId: "evt_mismatch", source: "stripe" },
+      where: {
+        eventId: "evt_mismatch",
+        source: "stripe",
+        status: "PROCESSING",
+        processingStartedAt: expect.any(Date),
+      },
     });
   });
 
