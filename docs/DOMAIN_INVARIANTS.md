@@ -65,6 +65,14 @@ Future reviews and issues should cite this file when proposing changes.
   unless a feature explicitly requires time-of-day semantics.
 - `BookingGuest.stayStart` and `BookingGuest.stayEnd` represent each guest's
   date-only occupancy inside the booking envelope.
+- `@db.Date` columns (e.g. `Booking.checkIn`/`checkOut`,
+  `BookingGuest.stayStart`/`stayEnd`, `HutLeaderAssignment.endDate`) store an NZ
+  calendar date at UTC midnight. Compare them only against date-only values
+  (`getTodayDateOnly()` / `normalizeDateOnlyForTimeZone()` from
+  `src/lib/date-only.ts`), never a raw `new Date()` or a local-midnight
+  (`setHours(0,0,0,0)`) instant: under the `TZ=Pacific/Auckland` server pin the
+  latter resolves to `(D-1)T12:00Z` and shifts the boundary by a day for the
+  first ~13h of each NZ day (F8/F32, #1888).
 - Capacity is per lodge. A booking belongs to exactly one lodge
   (`Booking.lodgeId`); capacity is "beds available on date D at lodge L", and
   no code path may sum beds across lodges into a single club-wide number. Two
