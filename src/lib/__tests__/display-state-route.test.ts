@@ -377,7 +377,11 @@ describe("GET /api/display/state — sandboxed preview grant (LTV-036, ADR-003 �
     expect(res.headers.get("access-control-allow-origin")).toBe("*");
   });
 
-  it("honours a grant's windowStart, and lets a ?previewDate override it", async () => {
+  it("a signed windowStart wins: a conflicting ?previewDate does NOT shift the served window (issue #176)", async () => {
+    // The grant is a signed, single-purpose, per-preview capability. When it
+    // carries a windowStart, that signed value is authoritative — an unsigned
+    // ?previewDate on the (sandbox-rewritable) iframe URL must not widen/shift
+    // the served window beyond it.
     mockDecodeGrant.mockReturnValue({
       templateId: null,
       lodgeId: "lodge-grant",
@@ -394,11 +398,31 @@ describe("GET /api/display/state — sandboxed preview grant (LTV-036, ADR-003 �
     );
 
     mockBuildDisplayState.mockClear();
-    // The in-frame picker reloads with ?previewDate, which wins over the grant's.
+    // A conflicting ?previewDate is ignored — the signed value still wins.
     res = await GET(
       await stateRequest("?previewGrant=signed.blob&previewDate=2026-09-15")
     );
     [, options] = mockBuildDisplayState.mock.calls[0];
+    expect((options.windowStart as Date).toISOString().slice(0, 10)).toBe(
+      "2026-08-01"
+    );
+  });
+
+  it("with NO signed windowStart, ?previewDate drives the window (in-frame picker UX kept working)", async () => {
+    // No signed date on the grant → the in-frame date picker's ?previewDate is
+    // free to drive the simulated window; only a SIGNED windowStart is locked.
+    mockDecodeGrant.mockReturnValue({
+      templateId: null,
+      lodgeId: "lodge-grant",
+      exp: Math.floor(Date.now() / 1000) + 300,
+    });
+    const { GET } = await import("@/app/api/display/state/route");
+
+    const res = await GET(
+      await stateRequest("?previewGrant=signed.blob&previewDate=2026-09-15")
+    );
+    expect(res.status).toBe(200);
+    const [, options] = mockBuildDisplayState.mock.calls[0];
     expect((options.windowStart as Date).toISOString().slice(0, 10)).toBe(
       "2026-09-15"
     );
@@ -434,6 +458,40 @@ describe("GET /api/display/state — sandboxed preview grant (LTV-036, ADR-003 �
       windowStart: null,
     });
     expect(mockPrisma.lodgeDisplayDevice.update).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET /api/display/state — Cache-Control: no-store on every payload path (issue #176)", () => {
+  // The payload is the privacy-reduced wall feed but can still carry guest names
+  // and opted-in phone numbers, so no shared/browser cache may hold it.
+  it("the device path sets no-store", async () => {
+    mockCheckDisplayAuth.mockResolvedValue(DEVICE_AUTH);
+    const { GET } = await import("@/app/api/display/state/route");
+    const res = await GET(await stateRequest());
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("the admin-preview path sets no-store", async () => {
+    mockAuth.mockResolvedValue({ user: { id: ADMIN_MEMBER.id } });
+    mockPrisma.member.findUnique.mockResolvedValue(ADMIN_MEMBER);
+    const { GET } = await import("@/app/api/display/state/route");
+    const res = await GET(await stateRequest("?preview=1"));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("the sandboxed grant path sets no-store (alongside the CORS header)", async () => {
+    mockDecodeGrant.mockReturnValue({
+      templateId: null,
+      lodgeId: "lodge-grant",
+      exp: Math.floor(Date.now() / 1000) + 300,
+    });
+    const { GET } = await import("@/app/api/display/state/route");
+    const res = await GET(await stateRequest("?previewGrant=signed.blob"));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(res.headers.get("access-control-allow-origin")).toBe("*");
   });
 });
 

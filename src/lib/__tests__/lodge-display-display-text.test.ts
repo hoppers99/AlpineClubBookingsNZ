@@ -94,6 +94,77 @@ describe("resolveDisplayHtml — value tokens inside authored html", () => {
   });
 });
 
+// Issue #176: value resolution runs AFTER the CMS sanitiser, so a config value
+// that OPENS a URL attribute brings its own scheme past the sanitiser's scheme
+// allowlist. The scheme guard neutralises anything but http/https/mailto/tel and
+// relative/anchor references — but ONLY when the resolved value determines the
+// scheme (token at the start of an href/src), never for ordinary copy.
+describe("resolveDisplayHtml — URL-scheme guard for resolved tokens (issue #176)", () => {
+  it("neutralises a javascript: config value resolved at the start of an href", () => {
+    const s = state({ config: { link: "javascript:alert(1)" } });
+    const html = resolveDisplayHtml('<a href="{{config:link}}">x</a>', s);
+    expect(html).toBe('<a href="#">x</a>');
+    expect(html).not.toContain("javascript:");
+  });
+
+  it("neutralises a data:text/html config value resolved into an href", () => {
+    const s = state({ config: { link: "data:text/html,<script>alert(1)</script>" } });
+    const html = resolveDisplayHtml('<a href="{{config:link}}">x</a>', s);
+    expect(html).toContain('href="#"');
+    expect(html).not.toContain("data:");
+  });
+
+  it("neutralises a data: value resolved into an <img> src too", () => {
+    const s = state({ config: { logo: "data:text/html,evil" } });
+    const html = resolveDisplayHtml('<img src="{{config:logo}}" />', s);
+    expect(html).toContain('src="#"');
+    expect(html).not.toContain("data:");
+  });
+
+  it("preserves benign http/https/mailto/tel and relative/anchor href values", () => {
+    const href = (link: string) =>
+      resolveDisplayHtml('<a href="{{config:link}}">x</a>', state({ config: { link } }));
+    expect(href("https://example.org/page")).toBe('<a href="https://example.org/page">x</a>');
+    expect(href("http://example.org")).toBe('<a href="http://example.org">x</a>');
+    expect(href("mailto:hut@club.nz")).toBe('<a href="mailto:hut@club.nz">x</a>');
+    expect(href("tel:+64211234567")).toBe('<a href="tel:+64211234567">x</a>');
+    expect(href("/lodge/info")).toBe('<a href="/lodge/info">x</a>');
+    expect(href("#section")).toBe('<a href="#section">x</a>');
+  });
+
+  it("neutralises a protocol-relative //host value in an href", () => {
+    const s = state({ config: { link: "//evil.example/x" } });
+    expect(resolveDisplayHtml('<a href="{{config:link}}">x</a>', s)).toBe(
+      '<a href="#">x</a>'
+    );
+  });
+
+  it("neutralises a scheme smuggled behind leading whitespace/control chars", () => {
+    const s = state({ config: { link: "\t javascript:alert(1)" } });
+    const html = resolveDisplayHtml('<a href="{{config:link}}">x</a>', s);
+    expect(html).not.toMatch(/javascript:/);
+    expect(html).toContain('href="#"');
+  });
+
+  it("does NOT scheme-check a token that only forms a PATH after a literal scheme", () => {
+    // The scheme is the literal https://; the token is a trailing segment, so a
+    // colon in its value is not a scheme and the value is kept verbatim (escaped).
+    const s = state({ config: { path: "a:b" } });
+    expect(
+      resolveDisplayHtml('<a href="https://x.test/{{config:path}}">x</a>', s)
+    ).toBe('<a href="https://x.test/a:b">x</a>');
+  });
+
+  it("does NOT scheme-check a token in ordinary body copy (only URL attributes)", () => {
+    // A javascript: string in text is inert copy: rendered verbatim (escaped),
+    // never rewritten to '#'.
+    const s = state({ config: { note: "javascript:alert(1)" } });
+    expect(resolveDisplayHtml("<p>{{config:note}}</p>", s)).toBe(
+      "<p>javascript:alert(1)</p>"
+    );
+  });
+});
+
 describe("resolveDisplayText — unchanged text-path behaviour", () => {
   it("still returns raw (unescaped) text for React text nodes", () => {
     const s = state({ config: { note: "<img onerror=x>" } });

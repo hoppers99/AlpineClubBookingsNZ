@@ -729,3 +729,91 @@ describe("DisplayScreen layout engine — embedded module tokens (LTV-028)", () 
     ).not.toBeNull();
   });
 });
+
+// Issue #176 (ADR-003 §5 "Unattended surface"): a throwing module/board must
+// NEVER blank the wall. Every render branch (authored LayoutScreen, legacy
+// ActiveScreen, layoutRenderError→FallbackBoard) is wrapped so a render-time
+// throw drops to a fallback shell, and `error.tsx` is the framework-level last
+// resort. React logs a caught render error to console.error; that is expected
+// here, so silence it to keep the run readable.
+describe("DisplayScreen render-branch error boundaries (issue #176)", () => {
+  beforeEach(() => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  it("authored branch: a throwing LayoutScreen drops to the known-good FallbackBoard, never blank", async () => {
+    // areas:null forces LayoutScreen's `layoutRender.areas.map` to throw during
+    // render (bypassing markerize, which would coerce a valid shape).
+    enqueue(isState, {
+      status: 200,
+      body: {
+        ...PAYLOAD,
+        layoutRender: {
+          bodyHtml: '<div data-display-area="main"></div>',
+          themeCss: "",
+          defaultCss: "",
+          cssOverrides: "",
+          areas: null,
+          slotContent: {},
+          footerHtml: "",
+        },
+      },
+    });
+    const { container } = render(<DisplayScreen />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    // The degraded FallbackBoard renders (its own boundary caught the throw)...
+    expect(container.querySelector(".display-fallback-board")).not.toBeNull();
+    // ...with real chrome, proving the wall is not blank.
+    expect(screen.getByText("Silverpeak Lodge")).toBeDefined();
+    // It did NOT fall all the way to the minimal shell.
+    expect(
+      container.querySelector('[data-display-fallback="minimal"]')
+    ).toBeNull();
+  });
+
+  it("legacy branch: a throwing ActiveScreen drops to the minimal zero-data shell, never blank", async () => {
+    // regions:null forces ActiveScreen's `definition.regions.map` to throw; no
+    // layoutRender and no layoutRenderError → the legacy branch renders it.
+    enqueue(isState, {
+      status: 200,
+      body: {
+        ...PAYLOAD,
+        template: { key: "legacy", name: "Legacy", regions: null },
+      },
+    });
+    const { container } = render(<DisplayScreen />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    const shell = container.querySelector('[data-display-fallback="minimal"]');
+    expect(shell).not.toBeNull();
+    // Not blank: the shell element is actually mounted as the render root.
+    expect(container.firstElementChild).toBe(shell);
+  });
+
+  it("fallback branch: a FallbackBoard that itself throws drops to the minimal shell, never blank", async () => {
+    // window:null makes the fallback board's LodgeHeader throw on
+    // `state.window.start`; layoutRenderError routes straight to FallbackBoard,
+    // so the outer boundary is the only net left.
+    enqueue(isState, {
+      status: 200,
+      body: { ...PAYLOAD, window: null, layoutRenderError: true },
+    });
+    const { container } = render(<DisplayScreen />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    expect(
+      container.querySelector('[data-display-fallback="minimal"]')
+    ).not.toBeNull();
+  });
+
+  it("ships a route-segment error.tsx as the framework-level last-resort shell", async () => {
+    // The unattended-safety contract requires a segment error boundary beyond
+    // the in-tree React boundaries; assert it exists and is a client component.
+    const mod = await import("@/app/display/error");
+    expect(typeof mod.default).toBe("function");
+  });
+});

@@ -692,6 +692,22 @@ class LayoutErrorBoundary extends Component<
   }
 }
 
+/** The last-resort board (issue #176, ADR-003 §5 "Unattended surface"): the
+ * fallback when even the FallbackBoard or the legacy ActiveScreen throws. It has
+ * ZERO data dependencies — no payload, no template, no modules — so it can never
+ * itself throw, and it keeps the wall on the branded dark shell rather than a
+ * blank page (the route-segment `error.tsx` renders the same quiet shell for a
+ * throw that escapes the React tree entirely). Silent on a real wall by design:
+ * an unattended screen shows no error text, just an intentionally-on background. */
+function MinimalDisplayShell() {
+  return (
+    <div
+      className="display-screen display-loading"
+      data-display-fallback="minimal"
+    />
+  );
+}
+
 export function DisplayScreen() {
   const lifecycle = useDisplayState();
 
@@ -740,6 +756,13 @@ export function DisplayScreen() {
   // built-ins as v2 rows (devices now bind them by templateId → LayoutScreen), so
   // this ActiveScreen path serves only a device with NO binding, plus it and the
   // Region renderer remain the zero-DB engine the FallbackBoard leans on.
+  // Unattended-safety contract (issue #176, ADR-003 §5): a throwing module/board
+  // must NEVER blank the wall, so EVERY render branch is wrapped. The authored
+  // branch degrades to the known-good FallbackBoard (its own boundary, as
+  // before). The legacy ActiveScreen and the already-degraded FallbackBoard
+  // branch — and a FallbackBoard that itself throws — drop to the minimal,
+  // zero-data shell via the OUTER boundary. `error.tsx` is the framework-level
+  // backstop beyond even this, for a throw that escapes the React tree.
   const { payload, stale } = lifecycle;
   let board: ReactNode;
   if (payload.layoutRender) {
@@ -756,5 +779,9 @@ export function DisplayScreen() {
   } else {
     board = <ActiveScreen payload={payload} stale={stale} />;
   }
-  return <div className="display-shell">{board}</div>;
+  return (
+    <LayoutErrorBoundary fallback={<MinimalDisplayShell />}>
+      <div className="display-shell">{board}</div>
+    </LayoutErrorBoundary>
+  );
 }

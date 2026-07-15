@@ -82,6 +82,55 @@ function escapeHtmlValue(value: string): string {
     .replace(/\}/g, "&#125;");
 }
 
+// URL-scheme guard for resolved values (issue #176, ADR-003 §4). Value-token
+// resolution runs AFTER the CMS sanitiser (see layout-render.ts), so the
+// sanitiser's scheme allowlist never sees a resolved value: a config value like
+// `javascript:alert(1)` or `data:text/html,…` resolved at the START of an
+// authored `href`/`src` brings its OWN scheme past that gate. The escaping above
+// stops a value BREAKING OUT of the attribute (quotes/brackets), but a scheme
+// sits happily INSIDE the quotes, so escaping alone does not close this.
+//
+// DESIGN CHOICE — scheme check INSIDE resolution, gated on URL-attribute
+// context (over a post-resolution HTML re-parse): the fix stays entirely on the
+// display token path and touches only RESOLVED TOKEN VALUES. Literal authored
+// URLs keep the sanitiser's own verdict (a re-parse would also have to re-decide
+// them, and would wrongly strip the display's legitimately-allowed `data:` <img>
+// srcs — issue #161); CMS/page-content behaviour is untouched. The check fires
+// only when the token opens a URL attribute value, i.e. the resolved value is
+// what determines the scheme.
+
+/** True when the html up to `offset` ends with a URL-bearing attribute opener
+ * (`href="`/`src="`), so the token that follows is the START of that URL and its
+ * resolved value determines the scheme. A token AFTER a literal scheme prefix
+ * (`href="https://{{config:path}}"`) does not match — the scheme is already the
+ * vetted literal and the value is only a path segment. */
+const URL_ATTR_OPENER = /\b(?:href|src)\s*=\s*["']?\s*$/i;
+function opensUrlAttributeValue(html: string, offset: number): boolean {
+  // Only the short run of text immediately before the token can hold the
+  // attribute opener, so inspect a bounded tail rather than the whole prefix.
+  const tail = html.slice(Math.max(0, offset - 64), offset);
+  return URL_ATTR_OPENER.test(tail);
+}
+
+/** Neutralise a resolved value whose scheme is not one of the vetted URL
+ * schemes. Allows http/https/mailto/tel and any relative/anchor/query reference
+ * (no scheme); everything else — javascript:, data:, vbscript:, protocol-
+ * relative `//host`, … — collapses to an inert `#` so the attribute stays valid
+ * but dead. */
+const ALLOWED_URL_SCHEME = /^(?:https?|mailto|tel)$/i;
+function neutraliseUrlScheme(value: string): string {
+  // Browsers ignore leading whitespace and C0 control chars when resolving a
+  // URL, so trim them before inspecting the scheme (a value cannot smuggle
+  // `\tjavascript:` past the check).
+  const trimmed = value.replace(/^[\u0000-\u0020]+/, "");
+  // Protocol-relative (`//host`) inherits the page scheme — treat it as unsafe.
+  if (trimmed.startsWith("//")) return "#";
+  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(trimmed);
+  // No scheme → a relative path or `#anchor`/`?query`: always safe.
+  if (!scheme) return value;
+  return ALLOWED_URL_SCHEME.test(scheme[1]) ? value : "#";
+}
+
 /**
  * Resolve the display's value tokens inside an authored html surface, with each
  * injected value HTML-escaped. The template's own markup and any non-display
@@ -90,11 +139,20 @@ function escapeHtmlValue(value: string): string {
  * substituted value is escaped. Run this AFTER the CMS sanitiser (see
  * layout-render.ts): the sanitiser trusts the authored template, and escaping
  * the injected value is what keeps a config value from being markup.
+ *
+ * A resolved value that OPENS a URL attribute (`href="{{config:link}}"`) also
+ * runs through the URL-scheme guard (issue #176) so it can never smuggle a
+ * `javascript:`/`data:` scheme past the sanitiser that ran before it.
  */
 export function resolveDisplayHtml(template: string, state: DisplayState): string {
   return template.replace(
     PLACEHOLDER_PATTERN,
-    (_whole, token: string, configKey?: string) =>
-      escapeHtmlValue(resolveToken(token, configKey, state))
+    (_whole: string, token: string, configKey: string | undefined, offset: number, full: string) => {
+      const resolved = resolveToken(token, configKey, state);
+      const guarded = opensUrlAttributeValue(full, offset)
+        ? neutraliseUrlScheme(resolved)
+        : resolved;
+      return escapeHtmlValue(guarded);
+    }
   );
 }

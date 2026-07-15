@@ -62,6 +62,18 @@ function grantJson(body: unknown, status = 200) {
   return NextResponse.json(body, { status, headers: GRANT_CORS_HEADERS });
 }
 
+// Every display-state payload can carry guest names and opted-in phone numbers
+// (the privacy-reduced wall feed), so no shared/browser cache may ever hold one
+// (issue #176). All three response paths set Cache-Control: no-store — the grant
+// path via GRANT_CORS_HEADERS above (which also carries the opaque-origin CORS
+// header the sandboxed iframe needs), and the device + session-preview paths via
+// this shared header.
+const NO_STORE_HEADERS = { "Cache-Control": "no-store" } as const;
+
+function stateJson(body: unknown, status = 200) {
+  return NextResponse.json(body, { status, headers: NO_STORE_HEADERS });
+}
+
 async function resolvePreview(
   req: NextRequest
 ): Promise<
@@ -235,9 +247,17 @@ export async function GET(req: NextRequest) {
     if (!grant) {
       return grantJson({ error: "Unauthorised" }, 401);
     }
-    const grantWindowStart =
-      parsePreviewDate(req) ??
-      (grant.windowStart ? parseDateOnly(grant.windowStart) : null);
+    // Window start for the grant render (issue #176). The grant is a signed,
+    // single-purpose, per-preview capability: when it carries a windowStart, that
+    // SIGNED value is authoritative and an unsigned `?previewDate` on the
+    // (sandbox-rewritable) iframe URL must not shift or widen the served window
+    // beyond it — the signed value wins. Only when the grant carries NO signed
+    // windowStart does the in-frame date picker's `?previewDate` drive the window
+    // (the admin re-mints the grant on the outer preview page to change a signed
+    // date), which keeps the date-simulation UX working for the common case.
+    const grantWindowStart = grant.windowStart
+      ? parseDateOnly(grant.windowStart)
+      : parsePreviewDate(req);
     const state = await buildDisplayState(grant.lodgeId, {
       days,
       windowStart: grantWindowStart,
@@ -282,7 +302,7 @@ export async function GET(req: NextRequest) {
           deviceId: deviceAuth.device.id,
         })
       : null;
-    return NextResponse.json({
+    return stateJson({
       ...state,
       template: template.definition,
       // The device's effective poll cadence (LTV-039): the client drives its
@@ -313,7 +333,7 @@ export async function GET(req: NextRequest) {
         deviceId: preview.deviceId,
       })
     : null;
-  return NextResponse.json({
+  return stateJson({
     ...state,
     template: template.definition,
     // A preview (?previewDevice/?preview) always gets the default cadence — the
