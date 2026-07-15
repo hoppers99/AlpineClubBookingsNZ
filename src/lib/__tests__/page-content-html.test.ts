@@ -30,7 +30,8 @@ describe("sanitizePageContentHtml", () => {
   });
 
   it("keeps details/summary accordions, including the open state (#992)", () => {
-    const closed = "<details><summary>How do I book?</summary><p>A</p></details>";
+    const closed =
+      "<details><summary>How do I book?</summary><p>A</p></details>";
     expect(sanitizePageContentHtml(closed)).toBe(closed);
 
     const open =
@@ -142,7 +143,6 @@ describe("sanitizePageContentHtml", () => {
     expect(sanitizePageContentHtml(sanitized)).toBe(sanitized);
   });
 });
-
 
 describe("pageContentHtmlToPlainText", () => {
   it("strips markup and collapses whitespace", () => {
