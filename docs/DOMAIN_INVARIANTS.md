@@ -578,8 +578,12 @@ Future reviews and issues should cite this file when proposing changes.
   is about to succeed, capturing money with no Xero invoice. A retry that
   already succeeded flips the same row to SUCCEEDED and is excluded by the status
   filter; the grace only guards the narrow FAILED→about-to-SUCCEED race. The
-  intent-agnostic 14-day `createdAt` sweep is the separate backstop for ops whose
-  intent never resolved at all.
+  grace is measured on the transaction's `updatedAt`, which is NOT immutable in
+  the FAILED state: a redelivered `payment_intent.payment_failed` re-writes
+  status=FAILED unconditionally, so `@updatedAt` bumps and the grace restarts.
+  This can only DELAY a reap, never trigger one early, and the intent-agnostic
+  14-day `createdAt` sweep is the hard backstop that bounds it (and covers ops
+  whose intent never resolved at all).
 - External provider side effects require clear retry and idempotency behavior.
 - An organiser-pays group settlement applies only when the payment matches the
   sum of the settleable children **at apply time**, re-verified under the lock
