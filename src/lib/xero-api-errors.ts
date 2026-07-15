@@ -8,7 +8,10 @@ import {
 export interface XeroApiErrorInfo {
   handled: boolean;
   status: number;
-  message: string;
+  /** Fixed copy safe to return to an authenticated browser client. */
+  clientMessage: string;
+  /** Provider/runtime detail for structured server-side diagnostics only. */
+  diagnosticMessage: string;
 }
 
 function getFallbackMessage(error: unknown, fallbackMessage: string): string {
@@ -50,12 +53,14 @@ export function getXeroApiErrorInfo(
     (statusCode === 429 && rateLimitProblem === "day");
   const isTransientOutage =
     error instanceof Error && error.name === "XeroTransientOutageError";
+  const diagnosticMessage = getFallbackMessage(error, fallbackMessage);
 
   if (isDailyLimit) {
     return {
       handled: true,
       status: 429,
-      message: "Xero daily API limit reached. Please try again tomorrow.",
+      clientMessage: "Xero daily API limit reached. Please try again tomorrow.",
+      diagnosticMessage,
     };
   }
 
@@ -63,7 +68,8 @@ export function getXeroApiErrorInfo(
     return {
       handled: true,
       status: 429,
-      message: "Xero rate limit hit. Please wait a moment and try again.",
+      clientMessage: "Xero rate limit hit. Please wait a moment and try again.",
+      diagnosticMessage,
     };
   }
 
@@ -71,7 +77,8 @@ export function getXeroApiErrorInfo(
     return {
       handled: true,
       status: 401,
-      message: "Xero connection expired. Please reconnect Xero from the admin panel.",
+      clientMessage: "Xero connection expired. Please reconnect Xero from the admin panel.",
+      diagnosticMessage,
     };
   }
 
@@ -79,7 +86,8 @@ export function getXeroApiErrorInfo(
     return {
       handled: true,
       status: 503,
-      message: getFallbackMessage(error, "Xero is temporarily unavailable. Please try again shortly."),
+      clientMessage: "Xero is temporarily unavailable. Please try again shortly.",
+      diagnosticMessage,
     };
   }
 
@@ -94,13 +102,15 @@ export function getXeroApiErrorInfo(
     return {
       handled: false,
       status: 502,
-      message: retryMessage,
+      clientMessage: "Xero is temporarily unavailable. Please try again in a few minutes.",
+      diagnosticMessage: retryMessage,
     };
   }
 
   return {
     handled: false,
     status: 500,
-    message: getFallbackMessage(error, fallbackMessage),
+    clientMessage: fallbackMessage,
+    diagnosticMessage,
   };
 }

@@ -51,8 +51,11 @@ export async function POST(request?: Request) {
   } catch (error) {
     const xeroError = getXeroApiErrorInfo(error, "Contact sync failed");
     if (!xeroError.handled) {
-      logger.error({ err: error }, "Failed to sync contacts from Xero");
+      logger.error(
+        { err: error, xeroDiagnosticMessage: xeroError.diagnosticMessage },
+        "Failed to sync contacts from Xero"
+      );
     }
-    return NextResponse.json({ error: xeroError.message }, { status: xeroError.status });
+    return NextResponse.json({ error: xeroError.clientMessage }, { status: xeroError.status });
   }
 }

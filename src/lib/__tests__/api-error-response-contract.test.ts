@@ -116,12 +116,34 @@ function rawCatchMessagesInResponse(
 
   const raw: ts.PropertyAccessExpression[] = [];
   const resolving = new Set<string>();
+  const isXeroErrorInfo = (node: ts.Expression): boolean => {
+    if (
+      ts.isCallExpression(node) &&
+      node.expression.getText() === "getXeroApiErrorInfo"
+    ) {
+      return true;
+    }
+    if (ts.isIdentifier(node)) {
+      const declaration = findDeclaration(catchClause.block, node.text);
+      return Boolean(
+        declaration?.initializer && isXeroErrorInfo(declaration.initializer)
+      );
+    }
+    return false;
+  };
   const visit = (node: ts.Node) => {
     if (
       ts.isPropertyAccessExpression(node) &&
       node.expression.getText() === catchName &&
       node.name.text === "message" &&
       !isTypedMessageBranch(node, catchName, catchClause.block)
+    ) {
+      raw.push(node);
+    }
+    if (
+      ts.isPropertyAccessExpression(node) &&
+      (node.name.text === "message" || node.name.text === "diagnosticMessage") &&
+      isXeroErrorInfo(node.expression)
     ) {
       raw.push(node);
     }
@@ -152,6 +174,14 @@ function rawMessageViolations(sourceText: string, fileName: string): string[] {
   );
   const violations: string[] = [];
   const visit = (node: ts.Node) => {
+    if (
+      ts.isCallExpression(node) &&
+      node.expression.getText() === "getXeroApiErrorInfo" &&
+      (!node.arguments[1] || !ts.isStringLiteral(node.arguments[1]))
+    ) {
+      const line = source.getLineAndCharacterOfPosition(node.getStart()).line + 1;
+      violations.push(`${fileName}:${line}`);
+    }
     if (ts.isCatchClause(node)) {
       const visitCatch = (child: ts.Node) => {
         if (ts.isCallExpression(child) && isJsonResponseCall(child) && child.arguments[0]) {
@@ -186,6 +216,33 @@ describe("client-facing API error response contract (#1888 F31)", () => {
           return NextResponse.json({ error: message });
         }
       }
+      async function unsafeHelperMessage() {
+        try { await work(); } catch (error) {
+          const xeroError = getXeroApiErrorInfo(error, "failed");
+          return NextResponse.json({ error: xeroError.message });
+        }
+      }
+      async function unsafeHelperDiagnostic() {
+        try { await work(); } catch (error) {
+          const xeroError = getXeroApiErrorInfo(error, "failed");
+          return NextResponse.json({ error: xeroError.diagnosticMessage });
+        }
+      }
+      async function safeHelperClientCopy() {
+        try { await work(); } catch (error) {
+          const xeroError = getXeroApiErrorInfo(error, "failed");
+          return NextResponse.json({ error: xeroError.clientMessage });
+        }
+      }
+      async function unsafeDynamicHelperFallback() {
+        try { await work(); } catch (error) {
+          const xeroError = getXeroApiErrorInfo(
+            error,
+            error instanceof Error ? error.message : "failed"
+          );
+          return NextResponse.json({ error: xeroError.clientMessage });
+        }
+      }
       async function safeTyped() {
         try { await work(); } catch (error) {
           if (error instanceof ApiError) {
@@ -196,7 +253,7 @@ describe("client-facing API error response contract (#1888 F31)", () => {
       }
     `;
 
-    expect(rawMessageViolations(source, "fixture-route.ts")).toHaveLength(2);
+    expect(rawMessageViolations(source, "fixture-route.ts")).toHaveLength(6);
   });
 
   it("never serializes an unexpected catch Error.message", () => {

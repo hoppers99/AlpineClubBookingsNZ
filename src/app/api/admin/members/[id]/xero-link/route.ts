@@ -174,8 +174,11 @@ export async function POST(
   } catch (err) {
     const xeroError = getXeroApiErrorInfo(err, "Failed to link to Xero contact");
     if (!xeroError.handled) {
-      logger.error({ err, memberId: id }, "Error linking member to Xero contact");
+      logger.error(
+        { err, memberId: id, xeroDiagnosticMessage: xeroError.diagnosticMessage },
+        "Error linking member to Xero contact"
+      );
     }
-    return NextResponse.json({ error: xeroError.message }, { status: xeroError.status });
+    return NextResponse.json({ error: xeroError.clientMessage }, { status: xeroError.status });
   }
 }

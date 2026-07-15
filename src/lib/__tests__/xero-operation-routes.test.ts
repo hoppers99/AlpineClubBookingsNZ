@@ -130,7 +130,8 @@ describe("Xero operation admin retry routes", () => {
     mocks.getXeroApiErrorInfo.mockReturnValue({
       handled: true,
       status: 503,
-      message: "Xero unavailable",
+      clientMessage: "Xero unavailable",
+      diagnosticMessage: "provider diagnostic",
     });
     mocks.getXeroOperationRetryMeta.mockReturnValue({
       supported: true,

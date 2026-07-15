@@ -270,8 +270,11 @@ export async function POST(
 
     const xeroError = getXeroApiErrorInfo(err, "Failed to create Xero contact");
     if (!xeroError.handled) {
-      logger.error({ err, memberId: id }, "Error pushing member to Xero");
+      logger.error(
+        { err, memberId: id, xeroDiagnosticMessage: xeroError.diagnosticMessage },
+        "Error pushing member to Xero"
+      );
     }
-    return NextResponse.json({ error: xeroError.message }, { status: xeroError.status });
+    return NextResponse.json({ error: xeroError.clientMessage }, { status: xeroError.status });
   }
 }

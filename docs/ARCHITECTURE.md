@@ -174,7 +174,10 @@ guidance may reach the browser only through an explicit error type (for example
 cannot become public merely because it was thrown inside a route. Authenticated
 cron/webhook clients and the explicit Admin provider-test / finance-sync
 diagnostic endpoints retain their separate machine/diagnostic response
-contracts.
+contracts. Xero's shared error classifier makes that boundary structural:
+`clientMessage` is fixed browser-safe copy, while `diagnosticMessage` may hold
+provider Detail/Message/Title fields, raw runtime text, HTTP status, or a Xero
+correlation ID and is restricted to structured server logs.
 
 ## Core Data Model
 

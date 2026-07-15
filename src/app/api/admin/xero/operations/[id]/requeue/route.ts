@@ -68,10 +68,13 @@ export async function POST(
       error,
       "Failed to queue Xero operation retry"
     );
-    logger.error({ err: error, operationId: id }, "Failed to queue Xero retry");
+    logger.error(
+      { err: error, operationId: id, xeroDiagnosticMessage: xeroError.diagnosticMessage },
+      "Failed to queue Xero retry"
+    );
 
     return NextResponse.json(
-      { error: xeroError.message },
+      { error: xeroError.clientMessage },
       { status: xeroError.handled ? xeroError.status : 500 }
     );
   }

@@ -34,8 +34,11 @@ export async function GET(request: NextRequest) {
   } catch (error) {
     const xeroError = getXeroApiErrorInfo(error, "Failed to fetch contact groups");
     if (!xeroError.handled) {
-      logger.error({ err: error }, "Failed to fetch Xero contact groups");
+      logger.error(
+        { err: error, xeroDiagnosticMessage: xeroError.diagnosticMessage },
+        "Failed to fetch Xero contact groups"
+      );
     }
-    return NextResponse.json({ error: xeroError.message }, { status: xeroError.status });
+    return NextResponse.json({ error: xeroError.clientMessage }, { status: xeroError.status });
   }
 }
