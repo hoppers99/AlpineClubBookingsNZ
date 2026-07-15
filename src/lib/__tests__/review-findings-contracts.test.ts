@@ -36,19 +36,19 @@ function sliceFrom(source: string, startMarker: string, endMarker?: string) {
 // each writer was separately confirmed to run both markers under one
 // prisma.$transaction, so source order reflects execution order.
 function assertLockBeforeGuard(block: string, label: string) {
-  // The lock is either the per-lodge capacity lock (multi-lodge:
-  // acquireLodgeCapacityLock, which runs pg_advisory_xact_lock on a per-lodge
-  // key) or a raw advisory lock. Either satisfies the lock-before-guard
-  // contract; take whichever appears first.
-  const lockMarkers = ["acquireLodgeCapacityLock", "pg_advisory_xact_lock"]
-    .map((marker) => block.indexOf(marker))
-    .filter((idx) => idx >= 0);
-  const lockIdx = lockMarkers.length > 0 ? Math.min(...lockMarkers) : -1;
+  // #1881 — tightened from "either lock marker" to the SPECIFIC per-lodge
+  // capacity lock. Every member-linked guest writer claims beds for a lodge, so
+  // it must hold `acquireLodgeCapacityLock` before the guard. (The cross-lodge
+  // half of the person-night invariant is enforced separately: the guard itself
+  // self-takes the per-member `booking-member-night` lock — pinned by the
+  // two-tier-protocol test. Accepting a bare `pg_advisory_xact_lock` here was
+  // the laxity that masked money/status writers drifting off the shared key.)
+  const lockIdx = block.indexOf("acquireLodgeCapacityLock");
   const guardIdx = block.indexOf("assertNoBookingMemberNightConflicts");
-  expect(lockIdx, `${label}: advisory lock present`).toBeGreaterThanOrEqual(0);
+  expect(lockIdx, `${label}: per-lodge capacity lock present`).toBeGreaterThanOrEqual(0);
   expect(
     guardIdx,
-    `${label}: person-night guard runs after the advisory lock`
+    `${label}: person-night guard runs after the per-lodge lock`
   ).toBeGreaterThan(lockIdx);
 }
 
@@ -61,12 +61,10 @@ function assertLockBeforeDelegatedGuard(
   delegateMarker: string,
   label: string
 ) {
-  const lockMarkers = ["acquireLodgeCapacityLock", "pg_advisory_xact_lock"]
-    .map((marker) => block.indexOf(marker))
-    .filter((idx) => idx >= 0);
-  const lockIdx = lockMarkers.length > 0 ? Math.min(...lockMarkers) : -1;
+  // #1881 — require the specific per-lodge capacity lock (see assertLockBeforeGuard).
+  const lockIdx = block.indexOf("acquireLodgeCapacityLock");
   const delegateIdx = block.indexOf(delegateMarker);
-  expect(lockIdx, `${label}: advisory lock present`).toBeGreaterThanOrEqual(0);
+  expect(lockIdx, `${label}: per-lodge capacity lock present`).toBeGreaterThanOrEqual(0);
   expect(
     delegateIdx,
     `${label}: ${delegateMarker} delegated after the advisory lock`
@@ -313,6 +311,101 @@ describe("review finding source/schema contracts", () => {
       "export async function loadActiveSeasonRates"
     );
     expect(prepareBlock).toContain("assertNoBookingMemberNightConflicts");
+  });
+
+  it("pins the specific advisory-lock key per writer class (two-tier protocol, #1881)", () => {
+    // The pre-#1881 lock-before-guard checks accepted EITHER lock marker, which
+    // masked the real defect: money/status writers stayed on the global lock(1)
+    // while their capacity-claiming counterparties moved to the per-lodge key,
+    // so they no longer mutually excluded. Pin the SPECIFIC key(s) each writer
+    // class must hold.
+    const GLOBAL = "pg_advisory_xact_lock(1)";
+    const PER_LODGE = "acquireLodgeCapacityLock";
+
+    // (1) Money / booking-status transitions MUST take the global lock(1) so
+    // they mutually exclude across the whole booking/settlement regardless of
+    // lodge. Each entry is [file, startMarker, endMarker?].
+    const globalLockBlocks: Array<[string, string, string?]> = [
+      // Stripe capture + capacity-failed void.
+      [
+        "src/lib/payment-reconciliation.ts",
+        "export async function markBookingPaymentSucceeded",
+        "export async function markBookingSetupIntentSucceeded",
+      ],
+      // Group settle, refund-mark, and reaper share lock(1) with each other.
+      [
+        "src/lib/group-settlement.ts",
+        "async function settleConfirmedChildrenAndNotify",
+        "export async function applyGroupSettlementSucceeded",
+      ],
+      [
+        "src/lib/group-settlement.ts",
+        "export async function markGroupSettlementIntentRefunded",
+      ],
+      ["src/lib/cron-group-settlement-reaper.ts", "async function releaseSettlementChildren"],
+      ["src/lib/group-cancel.ts", "export async function settleGroupBookingOnOrganiserCancel"],
+      // Cancel + quote hold-release crons.
+      ["src/lib/booking-cancel.ts", "export async function cancelBooking"],
+      ["src/lib/cron-quote-expiry-reminders.ts", "async function releaseExpiredQuoteHolds"],
+    ];
+    for (const [file, start, end] of globalLockBlocks) {
+      const block = sliceFrom(readRepoFile(file), start, end);
+      expect(block, `${start}: takes the global lock(1)`).toContain(GLOBAL);
+    }
+
+    // (2) Writers that do BOTH tiers (money/status + capacity claim) MUST take
+    // the global lock(1) BEFORE the per-lodge lock (consistent global→per-lodge
+    // order, deadlock-safe).
+    const twoLockBlocks: Array<[string, string, string?]> = [
+      [
+        "src/lib/payment-reconciliation.ts",
+        "export async function markBookingPaymentSucceeded",
+        "export async function markBookingSetupIntentSucceeded",
+      ],
+      [
+        "src/lib/booking-request.ts",
+        "export async function approveBookingRequest",
+        "export async function purgeExpiredBookingRequests",
+      ],
+      [
+        "src/app/api/payments/switch-to-internet-banking/route.ts",
+        "const paymentResult = await prisma.$transaction",
+      ],
+      [
+        "src/lib/booking-batch-modification-service.ts",
+        "export async function modifyBookingBatch",
+      ],
+    ];
+    for (const [file, start, end] of twoLockBlocks) {
+      const block = sliceFrom(readRepoFile(file), start, end);
+      const globalIdx = block.indexOf(GLOBAL);
+      const lodgeIdx = block.indexOf(PER_LODGE);
+      expect(globalIdx, `${start}: takes the global lock(1)`).toBeGreaterThanOrEqual(0);
+      expect(lodgeIdx, `${start}: takes the per-lodge lock`).toBeGreaterThanOrEqual(0);
+      expect(
+        globalIdx,
+        `${start}: global lock(1) is acquired BEFORE the per-lodge lock`
+      ).toBeLessThan(lodgeIdx);
+    }
+
+    // (3) confirm-pending-guests: both capacity-claiming branches take BOTH
+    // locks (the whole handler is scanned; it contains lock(1) and the per-lodge
+    // lock, each ahead of its status-guarded claim).
+    const confirmPending = readRepoFile(
+      "src/app/api/admin/bookings/[id]/confirm-pending-guests/route.ts"
+    );
+    expect(confirmPending).toContain(GLOBAL);
+    expect(confirmPending).toContain(`${PER_LODGE}(tx, booking.lodgeId)`);
+
+    // (4) The member-night guard self-takes the PER-MEMBER lock across lodges,
+    // since capacity locks are per-lodge only and the invariant spans lodges.
+    const memberNight = readRepoFile("src/lib/booking-member-night-conflicts.ts");
+    const assertBlock = sliceFrom(
+      memberNight,
+      "export async function assertNoBookingMemberNightConflicts"
+    );
+    expect(assertBlock).toContain("lockBookingMemberNights");
+    expect(memberNight).toContain('"booking-member-night"');
   });
 
   it("wraps age-up membership upgrades and token issuance in a transaction", () => {
