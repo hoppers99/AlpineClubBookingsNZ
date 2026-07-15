@@ -411,7 +411,39 @@ describe("createGroupSettlementIntent", () => {
       })
     );
     // One combined invoice enqueued; never a Stripe PaymentIntent.
-    expect(mocks.enqueueSettlementInvoice).toHaveBeenCalledWith("settle-1");
+    expect(mocks.enqueueSettlementInvoice).toHaveBeenCalledWith("settle-1", {
+      store: txClient,
+    });
+    expect(mocks.createPaymentIntent).not.toHaveBeenCalled();
+  });
+
+  it("commits the Internet Banking settlement and outbox row in one transaction", async () => {
+    mocks.groupBookingFindUnique.mockResolvedValue(organiserPaysGroup());
+    mocks.bookingFindMany.mockResolvedValue([
+      { id: "child-1", finalPriceCents: 4500, status: BookingStatus.CONFIRMED },
+    ]);
+    mocks.bookingFindUnique.mockResolvedValue({
+      id: "child-1",
+      finalPriceCents: 4500,
+      lodgeId: "lodge-1",
+      status: BookingStatus.CONFIRMED,
+      checkIn: new Date("2026-07-01"),
+      checkOut: new Date("2026-07-03"),
+      guests: [],
+    });
+    mocks.enqueueSettlementInvoice.mockRejectedValueOnce(
+      new Error("outbox insert failed")
+    );
+
+    await expect(
+      createGroupSettlementIntent("ABCD2345", ORGANISER, "internet_banking")
+    ).rejects.toThrow("outbox insert failed");
+
+    expect(mocks.settlementUpsert).toHaveBeenCalled();
+    expect(mocks.enqueueSettlementInvoice).toHaveBeenCalledWith("settle-1", {
+      store: txClient,
+    });
+    expect(mocks.kickXero).not.toHaveBeenCalled();
     expect(mocks.createPaymentIntent).not.toHaveBeenCalled();
   });
 
@@ -952,6 +984,42 @@ describe("applyGroupSettlementSucceeded", () => {
     expect(mocks.bookingUpdate).not.toHaveBeenCalled();
     expect(mocks.settlementUpdate).not.toHaveBeenCalled();
     expect(mocks.sendSettlementReceipt).not.toHaveBeenCalled();
+  });
+
+  it("charges the price re-read under the settlement lock, not the stale pre-lock total", async () => {
+    mocks.groupBookingFindUnique.mockResolvedValue(organiserPaysGroup());
+    mocks.bookingFindMany.mockResolvedValue([
+      {
+        id: "child-1",
+        finalPriceCents: 4500,
+        status: BookingStatus.PAYMENT_PENDING,
+      },
+    ]);
+    // A concurrent repricing writer completed before this settlement acquired
+    // lock(1). The provider request and settlement row must use 6000, never the
+    // stale 4500 loaded before the lock.
+    mocks.bookingFindUnique.mockResolvedValue({
+      id: "child-1",
+      finalPriceCents: 6000,
+      lodgeId: "lodge-1",
+      status: BookingStatus.PAYMENT_PENDING,
+      checkIn: new Date("2026-07-01"),
+      checkOut: new Date("2026-07-03"),
+      guests: [],
+    });
+    mocks.checkCapacity.mockResolvedValue({ available: true, nightDetails: [] });
+
+    const result = await createGroupSettlementIntent("ABCD2345", ORGANISER);
+
+    expect(result.amountCents).toBe(6000);
+    expect(mocks.createPaymentIntent).toHaveBeenCalledWith(
+      expect.objectContaining({ amountCents: 6000 })
+    );
+    expect(mocks.settlementUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({ amountCents: 6000 }),
+      })
+    );
   });
 
   it.each(["stripe", "internet_banking"] as const)(

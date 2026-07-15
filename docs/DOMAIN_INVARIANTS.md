@@ -657,7 +657,13 @@ Future reviews and issues should cite this file when proposing changes.
   children, not by requiring the group status to remain open.
   Settlement initiation checks the fence both at entry and again under global
   `lock(1)` before child-lodge locks; neither Stripe nor Internet Banking may
-  create fresh provider work for a cancelled group.
+  create fresh provider work for a cancelled group. Internet Banking settlement
+  creation commits its settlement row and Xero outbox row atomically. The Xero
+  worker also shares `lock(1)`: it skips provider work when cancellation was
+  already fenced, and if cancellation commits while `createInvoices` is outside
+  the transaction, it durably records the returned invoice identity, voids that
+  invoice with a stable idempotency key, suppresses invoice email, and leaves a
+  failed outbox operation retryable when compensation fails.
 - The group-cancel refund credit-note enqueue is **durable** (#1257/#1377).
   Each child's Xero refund credit-note outbox row (integer cents) is enqueued
   **inside the same transaction** as that child's cancel + `refundedAmountCents`

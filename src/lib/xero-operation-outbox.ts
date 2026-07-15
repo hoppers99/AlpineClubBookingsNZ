@@ -425,9 +425,13 @@ export async function enqueueXeroAppliedCreditAllocationOperation(
 
 export async function enqueueXeroGroupSettlementInvoiceOperation(
   settlementId: string,
-  options?: { createdByMemberId?: string }
+  options?: {
+    createdByMemberId?: string;
+    store?: Prisma.TransactionClient;
+  }
 ) {
-  const settlement = await prisma.groupBookingSettlement.findUnique({
+  const db = options?.store ?? prisma;
+  const settlement = await db.groupBookingSettlement.findUnique({
     where: { id: settlementId },
     select: {
       id: true,
@@ -446,7 +450,7 @@ export async function enqueueXeroGroupSettlementInvoiceOperation(
     };
   }
 
-  const existingLink = await prisma.xeroObjectLink.findFirst({
+  const existingLink = await db.xeroObjectLink.findFirst({
     where: {
       localModel: "GroupBookingSettlement",
       localId: settlement.id,
@@ -471,7 +475,7 @@ export async function enqueueXeroGroupSettlementInvoiceOperation(
     "v1"
   );
 
-  const existingQueuedOperation = await prisma.xeroSyncOperation.findFirst({
+  const existingQueuedOperation = await db.xeroSyncOperation.findFirst({
     where: {
       correlationKey,
       direction: "OUTBOUND",
@@ -509,6 +513,7 @@ export async function enqueueXeroGroupSettlementInvoiceOperation(
       settlementId,
     },
     createdByMemberId: options?.createdByMemberId ?? null,
+    store: options?.store,
   });
 
   return {

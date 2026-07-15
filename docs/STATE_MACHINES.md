@@ -125,6 +125,14 @@ written but no credit-note operation queued — durable for every source,
 including Internet-Banking children the #1354 self-heal cannot recover. Only the
 outbox worker kick stays best-effort and post-commit.
 
+Internet Banking settlement initiation writes `GroupBookingSettlement.PENDING`
+and its Xero invoice outbox operation in the same transaction. The worker checks
+the group fence under `lock(1)` before calling Xero. If cancellation is already
+durable it completes without creating an invoice; if cancellation commits while
+`createInvoices` is in flight, the worker persists the returned Xero identity,
+voids it under a stable idempotency key, suppresses invoice email, and leaves a
+failed compensation retryable through the same outbox row.
+
 A transient Stripe failure during that settlement refund no longer abandons it
 (#1351, owner-decided durable auto-retry). A recovery operation is persisted
 **before** the inline refund (closed on the happy path) and the frozen plan is

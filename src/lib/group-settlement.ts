@@ -188,13 +188,6 @@ export async function createGroupSettlementIntent(
     return { outcome: "nothing_to_settle", amountCents: 0, childCount: 0 };
   }
 
-  const amountCents = children.reduce((sum, c) => sum + c.finalPriceCents, 0);
-  if (amountCents <= 0) {
-    // Zero-dollar joiners auto-confirm at creation and never reach here; guard
-    // anyway so we never open a Stripe intent for nothing.
-    return { outcome: "nothing_to_settle", amountCents: 0, childCount: 0 };
-  }
-
   // Internet Banking: raise one combined Xero invoice to the organiser instead
   // of charging a card. Reconciliation flips the children to PAID on payment.
   if (paymentMethod === "internet_banking") {
@@ -202,9 +195,56 @@ export async function createGroupSettlementIntent(
       group.id,
       group.organiserBooking.checkIn,
       children,
-      amountCents,
       group.settlement?.stripePaymentIntentId ?? null,
     );
+  }
+
+  const settlementHasRefundHistory =
+    group.settlement?.status === PaymentStatus.REFUNDED ||
+    group.settlement?.status === PaymentStatus.PARTIALLY_REFUNDED;
+  const preLockAmountCents = children.reduce(
+    (sum, child) => sum + child.finalPriceCents,
+    0
+  );
+  let existingIntent: Awaited<ReturnType<typeof getPaymentIntent>> | null = null;
+
+  // Captured money is reconciled before attempting a new capacity claim. The
+  // pre-lock total is not sent to a provider here; the apply path revalidates
+  // the capture, settlement, children and total under its own lock.
+  if (
+    group.settlement?.stripePaymentIntentId &&
+    group.settlement.amountCents === preLockAmountCents &&
+    !settlementHasRefundHistory
+  ) {
+    existingIntent = await getPaymentIntent(
+      group.settlement.stripePaymentIntentId
+    );
+    if (existingIntent.status === "succeeded") {
+      const applied = await applyGroupSettlementSucceeded({
+        id: existingIntent.id,
+        amount: existingIntent.amount,
+      });
+      return {
+        outcome:
+          applied.outcome === "settled" ||
+          applied.outcome === "already_settled"
+            ? "already_settled"
+            : applied.outcome,
+        amountCents: group.settlement.amountCents,
+        childCount: children.length,
+      };
+    }
+  }
+
+  // Lock, re-read and claim before deriving provider amount. Repricing writers
+  // share lock(1), so this returned snapshot is authoritative for this attempt.
+  const committedChildren = await commitChildrenToConfirmed(group.id, children);
+  const amountCents = committedChildren.reduce(
+    (sum, child) => sum + child.finalPriceCents,
+    0
+  );
+  if (amountCents <= 0) {
+    return { outcome: "nothing_to_settle", amountCents: 0, childCount: 0 };
   }
 
   // Reuse an outstanding intent for the same total before creating a new one,
@@ -215,15 +255,14 @@ export async function createGroupSettlementIntent(
   // re-admitting it would settle the children with money already handed back.
   // Skipping the branch mints a FRESH intent whose idempotency key is
   // discriminated by the refunded intent id, so Stripe cannot replay it either.
-  const settlementHasRefundHistory =
-    group.settlement?.status === PaymentStatus.REFUNDED ||
-    group.settlement?.status === PaymentStatus.PARTIALLY_REFUNDED;
   if (
     group.settlement?.stripePaymentIntentId &&
     group.settlement.amountCents === amountCents &&
     !settlementHasRefundHistory
   ) {
-    const existing = await getPaymentIntent(group.settlement.stripePaymentIntentId);
+    const existing =
+      existingIntent ??
+      (await getPaymentIntent(group.settlement.stripePaymentIntentId));
     if (existing.status === "succeeded") {
       const applied = await applyGroupSettlementSucceeded({
         id: existing.id,
@@ -233,7 +272,7 @@ export async function createGroupSettlementIntent(
         applied.outcome === "settled" ||
         applied.outcome === "already_settled"
       ) {
-        return { outcome: "already_settled", amountCents, childCount: children.length };
+        return { outcome: "already_settled", amountCents, childCount: committedChildren.length };
       }
       // The capture did NOT settle anything (refund history, drifted total, or
       // a vanished settlement row). Never report it settled (#1883): surface
@@ -243,24 +282,19 @@ export async function createGroupSettlementIntent(
       return {
         outcome: applied.outcome,
         amountCents,
-        childCount: children.length,
+        childCount: committedChildren.length,
       };
     }
     if (existing.client_secret && existing.status !== "canceled") {
-      // Make sure the children are committed even when we reuse the intent.
-      await commitChildrenToConfirmed(group.id, children);
       return {
         outcome: "ready",
         amountCents,
-        childCount: children.length,
+        childCount: committedChildren.length,
         clientSecret: existing.client_secret,
         paymentIntentId: existing.id,
       };
     }
   }
-
-  // Commit the beds (all-or-nothing) before charging anything.
-  await commitChildrenToConfirmed(group.id, children);
 
   const customer = await findOrCreateCustomer({
     email: group.organiserMember.email,
@@ -337,7 +371,7 @@ export async function createGroupSettlementIntent(
   return {
     outcome: "ready",
     amountCents,
-    childCount: children.length,
+    childCount: committedChildren.length,
     clientSecret: paymentIntent.client_secret,
     paymentIntentId: paymentIntent.id,
   };
@@ -356,7 +390,6 @@ async function createGroupSettlementInvoice(
   groupBookingId: string,
   checkIn: Date,
   children: SettleableChild[],
-  amountCents: number,
   staleStripePaymentIntentId: string | null
 ): Promise<GroupSettlementIntentResult> {
   const modules = await loadEffectiveModuleFlags();
@@ -386,10 +419,19 @@ async function createGroupSettlementInvoice(
     );
   }
 
-  // Hold the beds (all-or-nothing) before raising any invoice.
-  await commitChildrenToConfirmed(groupBookingId, children);
+  const committedChildren = await commitChildrenToConfirmed(
+    groupBookingId,
+    children
+  );
+  const amountCents = committedChildren.reduce(
+    (sum, child) => sum + child.finalPriceCents,
+    0
+  );
+  if (amountCents <= 0) {
+    return { outcome: "nothing_to_settle", amountCents: 0, childCount: 0 };
+  }
 
-  const settlement = await prisma.$transaction(async (tx) => {
+  const { settlement, queued } = await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
     const currentGroup = await tx.groupBooking.findUnique({
       where: { id: groupBookingId },
@@ -398,7 +440,7 @@ async function createGroupSettlementInvoice(
     if (!currentGroup || currentGroup.status === GroupBookingStatus.CANCELLED) {
       throw new GroupBookingError("This group booking has been cancelled", 409);
     }
-    return tx.groupBookingSettlement.upsert({
+    const settlement = await tx.groupBookingSettlement.upsert({
       where: { groupBookingId },
       create: {
         groupBookingId,
@@ -413,6 +455,11 @@ async function createGroupSettlementInvoice(
         status: PaymentStatus.PENDING,
       },
     });
+    const queued = await enqueueXeroGroupSettlementInvoiceOperation(
+      settlement.id,
+      { store: tx }
+    );
+    return { settlement, queued };
   });
 
   // Void the dropped card intent in Stripe so a retained client_secret in a
@@ -423,24 +470,24 @@ async function createGroupSettlementInvoice(
     groupBookingId,
   );
 
-  // Enqueue the combined invoice. A failure here is logged, not thrown: the beds
-  // are held and the settlement is recorded, and the outbox can be re-driven.
+  // The outbox row was committed atomically with the settlement above. Only the
+  // opportunistic worker kick is best-effort; the cron will drain the durable
+  // row if this process stops or the kick fails.
   try {
-    const queued = await enqueueXeroGroupSettlementInvoiceOperation(settlement.id);
     if (queued.queueOperationId) {
       await kickQueuedXeroOutboxOperationsIfConnected({ limit: 1 });
     }
   } catch (xeroErr) {
     logger.error(
       { err: xeroErr, groupBookingId, settlementId: settlement.id },
-      "Failed to queue combined Xero invoice for group settlement"
+      "Failed to kick combined Xero invoice worker for group settlement"
     );
   }
 
   return {
     outcome: "invoice_sent",
     amountCents,
-    childCount: children.length,
+    childCount: committedChildren.length,
     reference: buildGroupSettlementPaymentReference(groupBookingId),
   };
 }
@@ -480,12 +527,8 @@ async function cancelSupersededSettlementIntent(
 async function commitChildrenToConfirmed(
   groupBookingId: string,
   children: SettleableChild[]
-) {
-  const pending = children.filter(
-    (c) => c.status === BookingStatus.PAYMENT_PENDING
-  );
-
-  await prisma.$transaction(async (tx) => {
+): Promise<SettleableChild[]> {
+  return prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
     const currentGroup = await tx.groupBooking.findUnique({
       where: { id: groupBookingId },
@@ -494,7 +537,6 @@ async function commitChildrenToConfirmed(
     if (!currentGroup || currentGroup.status === GroupBookingStatus.CANCELLED) {
       throw new GroupBookingError("This group booking has been cancelled", 409);
     }
-    if (pending.length === 0) return;
 
     // Flipping PAYMENT_PENDING -> CONFIRMED is a net-new capacity claim, so it
     // must serialize under the lodge whose beds are being claimed: the child's
@@ -507,7 +549,7 @@ async function commitChildrenToConfirmed(
     // Group joins cannot cross lodges, so this is normally a single lodge; the
     // multi-lock loop is defensive.
     const pendingLodgeRows = await tx.booking.findMany({
-      where: { id: { in: pending.map((c) => c.id) } },
+      where: { id: { in: children.map((c) => c.id) } },
       select: { lodgeId: true },
     });
     const lodgeIds = Array.from(
@@ -517,13 +559,28 @@ async function commitChildrenToConfirmed(
       await acquireLodgeCapacityLock(tx, lodgeId);
     }
 
-    for (const child of pending) {
+    const committed: SettleableChild[] = [];
+    for (const child of children) {
       // Re-read inside the lock; another path may have already moved it.
       const fresh = await tx.booking.findUnique({
         where: { id: child.id },
         include: { guests: { include: { nights: true } } },
       });
-      if (!fresh || fresh.status !== BookingStatus.PAYMENT_PENDING) {
+      if (
+        !fresh ||
+        !SETTLEABLE_CHILD_STATUSES.includes(
+          fresh.status as (typeof SETTLEABLE_CHILD_STATUSES)[number]
+        )
+      ) {
+        continue;
+      }
+
+      if (fresh.status === BookingStatus.CONFIRMED) {
+        committed.push({
+          id: fresh.id,
+          finalPriceCents: fresh.finalPriceCents ?? child.finalPriceCents,
+          status: fresh.status,
+        });
         continue;
       }
 
@@ -566,7 +623,13 @@ async function commitChildrenToConfirmed(
         db: tx,
         previousRange: { checkIn: fresh.checkIn, checkOut: fresh.checkOut },
       });
+      committed.push({
+        id: fresh.id,
+        finalPriceCents: fresh.finalPriceCents ?? child.finalPriceCents,
+        status: BookingStatus.CONFIRMED,
+      });
     }
+    return committed;
   });
 }
 
