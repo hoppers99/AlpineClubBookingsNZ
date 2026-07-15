@@ -16,12 +16,13 @@ ALTER TABLE "ProcessedWebhookEvent"
 -- and flip to "COMPLETED" on success; the column default only ever covers an
 -- old-colour insert mid-deploy, which must reprocess rather than drop.
 --
--- Scoped to rows that existed when this migration ran (`processedAt <
--- CURRENT_TIMESTAMP`, the transaction start): (1) it never rewrites the whole
--- unbounded table blindly (no pruning job exists), and (2) it leaves any
--- concurrent old-colour insert during a blue/green deploy at the "PROCESSING"
--- default so the new colour reprocesses it on redelivery rather than ACKing it
--- as done. This is a data statement only — no schema effect, drift-clean.
+-- Scoped to rows that predate this migration's authored release window. The
+-- explicit UTC cutoff avoids a session-clock-dependent data migration and is
+-- deliberately conservative: rows processed after the cutoff remain at the
+-- "PROCESSING" default and are safely reprocessed if redelivered. This both
+-- avoids rewriting newer rows and ensures a concurrent old-colour insert during
+-- blue/green deploy can never be mistaken for a completed new-colour claim.
+-- This is a data statement only — no schema effect, drift-clean.
 UPDATE "ProcessedWebhookEvent"
   SET "status" = 'COMPLETED'
-  WHERE "processedAt" < CURRENT_TIMESTAMP;
+  WHERE "processedAt" < TIMESTAMP '2026-07-15 00:00:00'; -- UTC
