@@ -64,6 +64,11 @@ export interface SyncManagedMemberXeroContactGroupResult {
   expectedGroupName: string | null;
   addedGroupIds: string[];
   removedGroupIds: string[];
+  /**
+   * Planned removes that 404'd — the contact was already out of the group
+   * (idempotent success), so they are NOT counted as removals.
+   */
+  alreadyAbsentGroupIds: string[];
   skippedReason: string | null;
 }
 
@@ -476,6 +481,7 @@ export async function syncManagedXeroContactGroupForMember(
       expectedGroupName: null,
       addedGroupIds: [],
       removedGroupIds: [],
+      alreadyAbsentGroupIds: [],
       skippedReason: "member_has_no_xero_contact",
     };
   }
@@ -497,6 +503,7 @@ export async function syncManagedXeroContactGroupForMember(
       expectedGroupName: null,
       addedGroupIds: [],
       removedGroupIds: [],
+      alreadyAbsentGroupIds: [],
       skippedReason: "grouping_mode_none",
     };
   }
@@ -541,6 +548,7 @@ export async function syncManagedXeroContactGroupForMember(
       expectedGroupName: null,
       addedGroupIds: [],
       removedGroupIds: [],
+      alreadyAbsentGroupIds: [],
       skippedReason: "no_matching_rule",
     };
   }
@@ -554,6 +562,7 @@ export async function syncManagedXeroContactGroupForMember(
       expectedGroupName: managedGroup?.name ?? null,
       addedGroupIds: [],
       removedGroupIds: [],
+      alreadyAbsentGroupIds: [],
       skippedReason: null,
     };
   }
@@ -596,6 +605,7 @@ export async function syncManagedXeroContactGroupForMember(
 
   const addedGroupIds: string[] = [];
   const removedGroupIds: string[] = [];
+  const alreadyAbsentGroupIds: string[] = [];
   try {
     // Add before remove (unchanged ordering). An add failure (incl. HTTP 404 —
     // e.g. the target group was deleted in Xero) is a ledgered failure that
@@ -605,11 +615,15 @@ export async function syncManagedXeroContactGroupForMember(
       const contacts: Contacts = {
         contacts: [{ contactID: member.xeroContactId }],
       };
+      // Include the operation id as a per-operation nonce: retries inside
+      // this operation share the key, but a legitimate later re-add (e.g.
+      // tier flips back within Xero's 24h idempotency window) gets a fresh
+      // key instead of being silently swallowed by Xero.
       const addIdempotencyKey = buildXeroIdempotencyKey(
         "contact",
         member.xeroContactId,
         "contact-group-add",
-        groupToAdd.id,
+        `${groupToAdd.id}:${operation.id}`,
         "v2"
       );
       await callXeroApi(
@@ -649,13 +663,14 @@ export async function syncManagedXeroContactGroupForMember(
         removedGroupIds.push(groupId);
       } catch (removeError) {
         // A remove-404 means the contact is already out of the group — treat as
-        // success (idempotent) rather than failing the whole operation.
+        // idempotent success rather than failing the whole operation, but
+        // record it separately so it is never counted as a removal.
         if (getXeroErrorStatusCode(removeError) === 404) {
           logger.info(
             { memberId, xeroContactId: member.xeroContactId, groupId },
             "Xero contact already absent from managed group (404 on remove) — treated as success"
           );
-          removedGroupIds.push(groupId);
+          alreadyAbsentGroupIds.push(groupId);
           continue;
         }
         throw removeError;
@@ -669,6 +684,7 @@ export async function syncManagedXeroContactGroupForMember(
       responsePayload: {
         addedGroupIds,
         removedGroupIds,
+        alreadyAbsentGroupIds,
         resultingGroups: (
           extractActiveXeroContactGroups(refreshedContact) ?? []
         ).map((group) => ({
@@ -698,6 +714,7 @@ export async function syncManagedXeroContactGroupForMember(
       expectedGroupName: managedGroup?.name ?? null,
       addedGroupIds,
       removedGroupIds,
+      alreadyAbsentGroupIds,
       skippedReason: null,
     };
   } catch (error) {

@@ -104,7 +104,12 @@ export default function XeroMemberGroupingPage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
-  const [resyncStatus, setResyncStatus] = useState<string | null>(null);
+  const [resyncState, setResyncState] = useState<{
+    status: string;
+    nextCursorMemberId: string | null;
+    haltedByDailyLimit: boolean;
+    failures: Array<{ memberId: string; error: string }>;
+  } | null>(null);
 
   // New-rule draft
   const [draftTypeId, setDraftTypeId] = useState<string>(ANY);
@@ -147,6 +152,40 @@ export default function XeroMemberGroupingPage() {
   const groupName = useCallback(
     (id: string) => config?.groups.find((g) => g.id === id)?.name ?? id,
     [config],
+  );
+
+  type BulkResult = {
+    processed: number;
+    added: number;
+    removed: number;
+    failed: number;
+    done: boolean;
+    haltedByDailyLimit: boolean;
+    nextCursorMemberId: string | null;
+    failures: Array<{ memberId: string; error: string }>;
+  };
+
+  const runBulkResync = useCallback(
+    (afterMemberId?: string) => {
+      void run(
+        {
+          action: "bulk-resync",
+          confirmDryRunReviewed: true,
+          ...(afterMemberId ? { afterMemberId } : {}),
+        },
+        (json) => {
+          const r = (json as { result: BulkResult }).result;
+          setResyncState({
+            status: `Processed ${r.processed} (added ${r.added}, removed ${r.removed}, failed ${r.failed}).`,
+            nextCursorMemberId: r.done ? null : r.nextCursorMemberId,
+            haltedByDailyLimit: r.haltedByDailyLimit,
+            failures: r.failures,
+          });
+          void load();
+        },
+      );
+    },
+    [load, run],
   );
 
   if (!config) {
@@ -379,23 +418,52 @@ export default function XeroMemberGroupingPage() {
                     `Re-sync ${snapshot?.mismatchCount ?? 0} member(s) to Xero? You have reviewed the dry-run diff.`,
                   )
                 ) {
-                  void run(
-                    { action: "bulk-resync", confirmDryRunReviewed: true },
-                    (json) => {
-                      const r = (json as { result: { processed: number; added: number; removed: number; failed: number; done: boolean } }).result;
-                      setResyncStatus(
-                        `Processed ${r.processed} (added ${r.added}, removed ${r.removed}, failed ${r.failed})${r.done ? "" : " — more remaining"}.`,
-                      );
-                      void load();
-                    },
-                  );
+                  runBulkResync();
                 }
               }}
             >
               Run bulk re-sync
             </ViewOnlyActionButton>
+            {resyncState?.nextCursorMemberId ? (
+              <ViewOnlyActionButton
+                canEdit={canEdit}
+                variant="outline"
+                size="sm"
+                disabled={busy}
+                onClick={() => runBulkResync(resyncState.nextCursorMemberId ?? undefined)}
+              >
+                Resume re-sync
+              </ViewOnlyActionButton>
+            ) : null}
           </div>
-          {resyncStatus ? <p className="text-sm text-success">{resyncStatus}</p> : null}
+          {resyncState ? (
+            <div className="space-y-1">
+              <p className="text-sm text-success">{resyncState.status}</p>
+              {resyncState.haltedByDailyLimit ? (
+                <p className="text-sm text-danger">
+                  Halted by the Xero daily API limit — resume tomorrow with the button above.
+                </p>
+              ) : resyncState.nextCursorMemberId ? (
+                <p className="text-sm text-muted-foreground">
+                  More members remain — use “Resume re-sync” to continue from where this chunk
+                  stopped.
+                </p>
+              ) : null}
+              {resyncState.failures.length > 0 ? (
+                <div className="space-y-1">
+                  <p className="text-xs text-danger">
+                    {resyncState.failures.length} member(s) failed (details are ledgered in Xero
+                    sync operations):
+                  </p>
+                  {resyncState.failures.slice(0, 20).map((f) => (
+                    <p key={f.memberId} className="text-xs text-muted-foreground">
+                      {f.memberId}: {f.error}
+                    </p>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
 
           {snapshot ? (
             <div className="space-y-2">

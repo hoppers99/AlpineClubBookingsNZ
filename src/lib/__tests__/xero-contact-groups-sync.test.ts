@@ -174,10 +174,19 @@ describe("syncManagedXeroContactGroupForMember (mode-driven engine)", () => {
     );
     mocks.getContact.mockResolvedValue(contactWithGroups([{ contactGroupID: "g_youth", name: "Youth" }]));
     const result = await syncManagedXeroContactGroupForMember("member_1");
-    expect(mocks.createContactGroupContacts).toHaveBeenCalledWith("t1", "g_adult", expect.anything(), expect.any(String));
+    expect(mocks.createContactGroupContacts).toHaveBeenCalledWith(
+      "t1",
+      "g_adult",
+      expect.anything(),
+      // Per-operation nonce (#1934 review): the add key embeds the ledger
+      // operation id so a legitimate later re-add within Xero's 24h
+      // idempotency window is not swallowed.
+      "contact:contact_1:contact-group-add:g_adult:op_1:v2",
+    );
     expect(mocks.deleteContactGroupContact).toHaveBeenCalledWith("t1", "g_youth", "contact_1");
     expect(result.addedGroupIds).toEqual(["g_adult"]);
     expect(result.removedGroupIds).toEqual(["g_youth"]);
+    expect(result.alreadyAbsentGroupIds).toEqual([]);
     expect(mocks.completeXeroSyncOperation).toHaveBeenCalled();
   });
 
@@ -199,7 +208,7 @@ describe("syncManagedXeroContactGroupForMember (mode-driven engine)", () => {
     expect(result.addedGroupIds).toEqual([]);
   });
 
-  it("treats a remove-404 as success (idempotent)", async () => {
+  it("treats a remove-404 as already-absent success, not a removal", async () => {
     mocks.resolveMemberGroupingForMember.mockResolvedValue(
       resolution({
         managedGroup: { id: "g_adult", name: "Adults" },
@@ -212,8 +221,18 @@ describe("syncManagedXeroContactGroupForMember (mode-driven engine)", () => {
       Object.assign(new Error("not found"), { statusCode: 404 }),
     );
     const result = await syncManagedXeroContactGroupForMember("member_1");
-    expect(result.removedGroupIds).toEqual(["g_youth"]);
-    expect(mocks.completeXeroSyncOperation).toHaveBeenCalled();
+    // The 404 is idempotent success but must not be counted as a removal.
+    expect(result.removedGroupIds).toEqual([]);
+    expect(result.alreadyAbsentGroupIds).toEqual(["g_youth"]);
+    expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
+      "op_1",
+      expect.objectContaining({
+        responsePayload: expect.objectContaining({
+          removedGroupIds: [],
+          alreadyAbsentGroupIds: ["g_youth"],
+        }),
+      }),
+    );
     expect(mocks.failXeroSyncOperation).not.toHaveBeenCalled();
   });
 

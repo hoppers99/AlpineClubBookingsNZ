@@ -7,6 +7,7 @@ import { prisma } from "@/lib/prisma";
 import { logAudit } from "@/lib/audit";
 import { ageTierEnum } from "@/lib/age-tier-schema";
 import { getXeroContactGroups, getXeroContactGroupCacheLastRefreshedAt } from "@/lib/xero";
+import { isXeroConnected } from "@/lib/xero-token-store";
 import { getXeroGroupingMode } from "@/lib/xero-member-grouping";
 import {
   getXeroMemberGroupingSnapshot,
@@ -56,7 +57,9 @@ const postSchema = z.discriminatedUnion("action", [
     // Ships code-only this wave: the run cannot fire unless the admin has seen
     // the dry-run and explicitly confirms it.
     confirmDryRunReviewed: z.literal(true),
-    limit: z.number().int().min(1).max(500).optional(),
+    // Capped low: each mismatched member costs ~4 Xero calls, so 100 members
+    // is already ~400 calls of the ~5k/day budget in one request.
+    limit: z.number().int().min(1).max(100).optional(),
     afterMemberId: z.string().min(1).optional(),
   }),
 ]);
@@ -257,9 +260,16 @@ export async function POST(request: NextRequest) {
       }
 
       case "bulk-resync": {
-        // Admin-triggered, dry-run-gated. Ships as code + runbook this wave; the
-        // per-member sync inside is a no-op when the mode is NONE or Xero is
-        // not connected, so it is safe to invoke here.
+        // Admin-triggered, dry-run-gated. Ships as code + runbook this wave.
+        // The chunk itself is a no-op under NONE mode, but the per-member sync
+        // does NOT check Xero connectivity — without a connection every member
+        // would fail individually — so pre-check here and fail cleanly.
+        if (!(await isXeroConnected())) {
+          return NextResponse.json(
+            { error: "Xero is not connected. Connect Xero before running a bulk re-sync." },
+            { status: 409 },
+          );
+        }
         const result = await runXeroMemberGroupingBulkResyncChunk({
           limit: data.limit,
           afterMemberId: data.afterMemberId,
@@ -274,6 +284,8 @@ export async function POST(request: NextRequest) {
             removed: result.removed,
             failed: result.failed,
             done: result.done,
+            haltedByDailyLimit: result.haltedByDailyLimit,
+            nextCursorMemberId: result.nextCursorMemberId,
             afterMemberId: data.afterMemberId ?? null,
           }),
         });

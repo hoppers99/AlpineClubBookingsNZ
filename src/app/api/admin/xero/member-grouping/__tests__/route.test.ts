@@ -152,6 +152,57 @@ describe("admin Xero member-grouping route (view/edit gating, #1934)", () => {
     expect(mocks.runXeroMemberGroupingBulkResyncChunk).not.toHaveBeenCalled();
   });
 
+  it("returns a clean 409 for bulk-resync when Xero is not connected", async () => {
+    mocks.isXeroConnected.mockResolvedValue(false);
+    const res = await POST(
+      postRequest({ action: "bulk-resync", confirmDryRunReviewed: true }),
+    );
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toEqual({
+      error: "Xero is not connected. Connect Xero before running a bulk re-sync.",
+    });
+    expect(mocks.runXeroMemberGroupingBulkResyncChunk).not.toHaveBeenCalled();
+  });
+
+  it("caps the bulk-resync chunk limit at 100", async () => {
+    const res = await POST(
+      postRequest({ action: "bulk-resync", confirmDryRunReviewed: true, limit: 500 }),
+    );
+    expect(res.status).toBe(400);
+    expect(mocks.runXeroMemberGroupingBulkResyncChunk).not.toHaveBeenCalled();
+  });
+
+  it("runs bulk-resync with the resume cursor and returns the chunk result", async () => {
+    const result = {
+      mode: "MEMBERSHIP_TYPE_AND_AGE",
+      processed: 1,
+      added: 1,
+      removed: 0,
+      noop: 0,
+      failed: 0,
+      failures: [],
+      nextCursorMemberId: "m9",
+      done: false,
+      haltedByDailyLimit: false,
+    };
+    mocks.runXeroMemberGroupingBulkResyncChunk.mockResolvedValue(result);
+    const res = await POST(
+      postRequest({
+        action: "bulk-resync",
+        confirmDryRunReviewed: true,
+        limit: 25,
+        afterMemberId: "m5",
+      }),
+    );
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ result });
+    expect(mocks.runXeroMemberGroupingBulkResyncChunk).toHaveBeenCalledWith({
+      limit: 25,
+      afterMemberId: "m5",
+      createdByMemberId: "admin_edit",
+    });
+  });
+
   it("allows set-mode for a finance:edit admin", async () => {
     const res = await POST(postRequest({ action: "set-mode", mode: "NONE" }));
     expect(res.status).toBe(200);

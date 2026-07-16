@@ -314,7 +314,10 @@ export interface BulkResyncRunResult {
   haltedByDailyLimit: boolean;
 }
 
-const DEFAULT_BULK_CHUNK = 100;
+// Conservative default: ~4 Xero calls per mismatched member means a chunk of
+// 25 stays well inside the per-minute budget and gives the admin frequent
+// resume checkpoints. The route caps explicit limits at 100.
+const DEFAULT_BULK_CHUNK = 25;
 
 /**
  * Execute one chunk of a bulk re-sync. Cache-first pre-filtered to the members
