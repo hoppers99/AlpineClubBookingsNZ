@@ -85,6 +85,35 @@ async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot> {
     }),
   ]);
 
+  // Missing-rate readiness (#1930, E4): every MEMBER_RATE membership type must
+  // carry rate rows for every active or future season, or bookings for that
+  // type × those dates hard-throw at pricing time.
+  const [memberRateTypes, currentAndFutureSeasons, existingTypeSeasonRates] =
+    await Promise.all([
+      prisma.membershipType.findMany({
+        where: { isActive: true, bookingBehavior: "MEMBER_RATE" },
+        select: { id: true, name: true },
+      }),
+      prisma.season.findMany({
+        where: { OR: [{ active: true }, { endDate: { gte: now } }] },
+        select: { id: true, name: true },
+      }),
+      prisma.membershipTypeSeasonRate.findMany({
+        select: { seasonId: true, membershipTypeId: true },
+      }),
+    ]);
+  const coveredPairs = new Set(
+    existingTypeSeasonRates.map((row) => `${row.membershipTypeId}::${row.seasonId}`),
+  );
+  const membershipTypeRateGaps: string[] = [];
+  for (const type of memberRateTypes) {
+    for (const season of currentAndFutureSeasons) {
+      if (!coveredPairs.has(`${type.id}::${season.id}`)) {
+        membershipTypeRateGaps.push(`${type.name} — ${season.name}`);
+      }
+    }
+  }
+
   return {
     adminCount,
     adminModuleSettings,
@@ -107,6 +136,7 @@ async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot> {
     xeroAccountMappingCount,
     xeroHutFeeItemMappingCount,
     xeroEntranceFeeMappingCount,
+    membershipTypeRateGaps,
   };
 }
 

@@ -66,6 +66,11 @@ export interface SetupDatabaseSnapshot {
   xeroAccountMappingCount: number;
   xeroHutFeeItemMappingCount: number;
   xeroEntranceFeeMappingCount: number;
+  // Per-membership-type rate gaps (#1930, E4): "TypeName — SeasonName" entries
+  // for every MEMBER_RATE type × active/future season that has no rate rows.
+  // Any entry means bookings for that type on those dates hard-throw at
+  // pricing, so the Seasons And Rates step drops to a warning.
+  membershipTypeRateGaps?: string[];
 }
 
 interface SetupStepCheck {
@@ -669,19 +674,37 @@ function buildSeasonRateCheck(
   }
 
   const seasonCount = db?.seasonCount ?? 0;
+  const rateGaps = db?.membershipTypeRateGaps ?? [];
+  const hasGaps = rateGaps.length > 0;
+  const status: SetupStatus =
+    seasonCount === 0 ? "blocked" : hasGaps ? "warning" : "complete";
+  const MAX_LISTED_GAPS = 8;
+  const gapDetails = hasGaps
+    ? [
+        `Membership types missing hut rates for an active or future season: ${rateGaps.length}`,
+        ...rateGaps
+          .slice(0, MAX_LISTED_GAPS)
+          .map((gap) => `Missing rates: ${gap}`),
+        ...(rateGaps.length > MAX_LISTED_GAPS
+          ? [`…and ${rateGaps.length - MAX_LISTED_GAPS} more`]
+          : []),
+      ]
+    : [];
   return applyProgress(
     {
       id: "seasons-rates",
       title: "Seasons And Rates",
       description:
-        "Season windows and member/non-member nightly rates in integer cents.",
-      status: seasonCount > 0 ? "complete" : "blocked",
+        "Season windows and per-membership-type nightly rates in integer cents.",
+      status,
       required: true,
       message:
-        seasonCount > 0
-          ? `${seasonCount} season${seasonCount === 1 ? "" : "s"} configured.`
-          : "At least one active season with rates is needed before bookings can price correctly.",
-      details: [`Configured seasons: ${seasonCount}`],
+        seasonCount === 0
+          ? "At least one active season with rates is needed before bookings can price correctly."
+          : hasGaps
+            ? "Some membership types have no hut rates for an active or future season; bookings for them will fail at pricing until rates are set."
+            : `${seasonCount} season${seasonCount === 1 ? "" : "s"} configured.`,
+      details: [`Configured seasons: ${seasonCount}`, ...gapDetails],
       href: "/admin/seasons",
     },
     progress,
