@@ -166,6 +166,26 @@ describe("buildMemberMergePreview warnings", () => {
     expect(collision?.count).toBe(1);
   });
 
+  it("warns that the loser's own outbound self-relation links are discarded (m4)", async () => {
+    const result = await preview({
+      loser: makeMember(LOSER_ID, {
+        parentMemberId: "someone-else",
+        inheritEmailFromId: "someone-else",
+      }),
+    });
+    const warning = result.warnings.find((w) => w.includes("discarded"));
+    expect(warning).toBeDefined();
+    expect(warning).toContain("parent");
+    expect(warning).toContain("inheritEmailFrom");
+  });
+
+  it("does not warn about a loser self-relation that points at the master (deleted self-cycle)", async () => {
+    const result = await preview({
+      loser: makeMember(LOSER_ID, { parentMemberId: MASTER_ID }),
+    });
+    expect(result.warnings.some((w) => w.includes("discarded"))).toBe(false);
+  });
+
   it("adds a specific note when duplicate promo-money allocation rows will be dropped (m5)", async () => {
     const promoRedemptionAllocation = {
       ...defaultDelegate(),
@@ -201,6 +221,13 @@ describe("buildMemberMergePreview warnings", () => {
       result.warnings.some((w) =>
         w.includes("group-booking join row(s) will be dropped"),
       ),
+    ).toBe(true);
+  });
+
+  it("always warns about manual Xero cleanup timing loser sign-out", async () => {
+    const result = await preview({});
+    expect(
+      result.warnings.some((w) => w.includes("signed out on their next request")),
     ).toBe(true);
   });
 });

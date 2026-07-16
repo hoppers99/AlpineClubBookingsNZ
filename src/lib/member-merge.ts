@@ -240,6 +240,15 @@ export const MEMBER_MERGE_RELATION_SPECS: readonly MemberMergeRelationSpec[] = [
  * loser as immutable history. Documented here so the cross-check test and
  * reviewers can see they were considered, not missed. NOT relations, so never
  * part of the DMMF/schema relation walk.
+ *
+ * ILLUSTRATIVE, not exhaustive: the schema carries ~48 FK-less member-id
+ * scalars (audit actor/subject columns, reviewedBy snapshots, denormalised
+ * name+id pairs like MembershipSubscriptionChargeCoverage.memberId, ...).
+ * None of them can silently land in a move/resolve bucket: the completeness
+ * test asserts the spec table equals EXACTLY the set of `@relation(fields:)`
+ * owner keys, so an FK-less column is structurally excluded from
+ * classification (and a test asserts no documented snapshot column overlaps a
+ * classified relation column).
  */
 export const MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS: readonly string[] = [
   "MemberLifecycleActionRequest.memberId",
@@ -253,6 +262,7 @@ export const MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS: readonly string[] = [
   "FamilyGroupJoinRequest.reviewedBy",
   "DeletionRequest.reviewedBy",
   "MembershipSubscriptionBillingSettings.updatedByMemberId",
+  "MembershipSubscriptionChargeCoverage.memberId",
   "AuditLog.actorMemberId",
   "AuditLog.subjectMemberId",
   "AuditLog.memberId",
@@ -922,12 +932,29 @@ export async function buildMemberMergePreview(params: {
 
   // Relation move counts (loser rows that will re-point). Resolve models are
   // reported as collisions with their resolution.
-  for (const s of MEMBER_MERGE_RELATION_SPECS) {
-    if (s.bucket === "cascade") continue;
-    if (s.bucket === "move") {
-      const count = await countLoserRows(db, s.delegate, s.column, loserId);
-      if (count > 0) relationMoves.push({ model: s.key, count });
-    }
+  const moveSpecs = MEMBER_MERGE_RELATION_SPECS.filter((s) => s.bucket === "move");
+  const moveCounts = await Promise.all(
+    moveSpecs.map((s) => countLoserRows(db, s.delegate, s.column, loserId)),
+  );
+  moveSpecs.forEach((s, i) => {
+    if (moveCounts[i] > 0) relationMoves.push({ model: s.key, count: moveCounts[i] });
+  });
+
+  // The loser's own OUTBOUND self-relation columns (parent, inheritEmailFrom,
+  // ...) die with the loser: the master keeps its own values and only INBOUND
+  // references to the loser are re-pointed. Surface the discard explicitly.
+  const discardedSelfRefs = MEMBER_MERGE_RELATION_SPECS.filter(
+    (s) => s.selfRelation,
+  )
+    .filter((s) => {
+      const v = (loserFull as unknown as Record<string, unknown>)[s.column];
+      return v != null && v !== masterId;
+    })
+    .map((s) => s.field);
+  if (discardedSelfRefs.length > 0) {
+    warnings.push(
+      `The duplicate's own ${discardedSelfRefs.join(", ")} link(s) are discarded — the master keeps its own (inbound references to the duplicate are still re-pointed).`,
+    );
   }
 
   // Collision previews per resolve model (best-effort counts).
@@ -1335,6 +1362,14 @@ export async function executeMemberMerge(params: {
       collisions: resolveResults.collisions,
       fieldsChanged,
     };
+  }, {
+    // A merge does hundreds of sequential round-trips (per-relation counts,
+    // collision resolvers, moves) over 70+ relations; the 5s default would
+    // P2028 exactly on the heavy members most likely to need merging. The dual
+    // advisory lock serialises concurrent lifecycle writers, so a long window
+    // is safe here.
+    timeout: 120_000,
+    maxWait: 10_000,
   });
 }
 
@@ -1367,11 +1402,13 @@ async function previewRelationCountsForToken(
   loserId: string,
 ): Promise<{ model: string; count: number }[]> {
   const out: { model: string; count: number }[] = [];
-  for (const s of MEMBER_MERGE_RELATION_SPECS) {
-    if (s.bucket !== "move") continue;
-    const count = await countLoserRows(db, s.delegate, s.column, loserId);
-    if (count > 0) out.push({ model: s.key, count });
-  }
+  const moveSpecs = MEMBER_MERGE_RELATION_SPECS.filter((s) => s.bucket === "move");
+  const counts = await Promise.all(
+    moveSpecs.map((s) => countLoserRows(db, s.delegate, s.column, loserId)),
+  );
+  moveSpecs.forEach((s, i) => {
+    if (counts[i] > 0) out.push({ model: s.key, count: counts[i] });
+  });
   return out;
 }
 

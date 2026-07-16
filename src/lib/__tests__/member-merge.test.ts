@@ -361,4 +361,16 @@ describe("spec bucket integrity", () => {
       "BookingModification.memberId",
     );
   });
+  it("no documented snapshot scalar column is silently classified in a move/resolve/cascade bucket", () => {
+    // The completeness test already guarantees the spec table covers EXACTLY
+    // the @relation(fields:) owner keys, so an FK-less scalar is structurally
+    // excluded; this asserts the documented list and the spec table never
+    // overlap on a Model.column.
+    const specColumns = new Set(
+      MEMBER_MERGE_RELATION_SPECS.map((s) => `${s.model}.${s.column}`),
+    );
+    for (const col of MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS) {
+      expect(specColumns.has(col), `${col} is classified AND documented as snapshot`).toBe(false);
+    }
+  });
 });

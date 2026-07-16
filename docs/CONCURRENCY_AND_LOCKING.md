@@ -177,6 +177,12 @@ contact-identity `XeroObjectLink` rows and re-point the active
 `ENTRANCE_FEE_INVOICE` link to the master); the loser's Xero contact is left for
 manual clean-up.
 
+The merge transaction runs with an extended interactive-transaction window
+(`timeout: 120s`, `maxWait: 10s`): re-pointing 70+ relations takes hundreds of
+sequential round-trips on a heavy member, and the dual advisory lock already
+serialises every competing lifecycle writer, so the long window cannot admit a
+concurrent conflicting write.
+
 ## The disciplines, by writer class
 
 ### Capacity claim → per-lodge lock, read-key → lock → re-read
