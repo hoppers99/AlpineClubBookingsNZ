@@ -6,7 +6,7 @@ import { type XeroObjectLinkInput, upsertXeroObjectLink } from "@/lib/xero-sync"
 import { buildCreditNoteAllocationTargets, buildSyntheticAllocationLinkId, buildXeroPaymentDisplayNumber, getCreditNoteAmountCents } from "./amounts";
 import { dedupeResolvedXeroObjectLinks, dedupeXeroObjectLinks, findActiveXeroObjectLinks, getDerivedInboundAllocationRole, recoverBookingScopedLinksFromOutboundOperations } from "./object-links";
 import { writeXeroInboundAuditLogs } from "./audit";
-import { repairAccountCreditAllocationBusinessState, repairRefundedPaymentBusinessState, resolveAccountCreditPaymentsFromMemberCredits, resolvePaymentIdsByInvoiceTargets } from "./credit-note-repairs";
+import { repairAccountCreditAllocationBusinessState, repairRefundedPaymentBusinessState, resolveAccountCreditPaymentsFromMemberCredits, resolveAppliedCreditPaymentsFromLocalProvenance, resolvePaymentIdsByInvoiceTargets } from "./credit-note-repairs";
 
 export async function reconcileXeroCreditNote(creditNoteId: string) {
   const { xero, tenantId } = await getAuthenticatedXeroClient();
@@ -43,6 +43,19 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
     }),
     resolveAccountCreditPaymentsFromMemberCredits(creditNote.creditNoteID),
   ]);
+  // #1925: applied-credit notes without CANCELLATION_REFUND provenance (e.g. an
+  // admin-adjustment-minted remainder note) resolve to no account-credit payment
+  // above. Fall back to unambiguous LOCAL provenance (precise slices + active
+  // allocation links) so their deletion/allocation changes are repaired too. The
+  // fallback fails closed (returns []) on any ambiguity, preserving the existing
+  // skip-with-no-write behaviour. Notes WITH CANCELLATION_REFUND provenance keep
+  // the existing resolver unchanged — the fallback only runs when it is empty.
+  const resolvedAccountCreditPayments =
+    canonicalAccountCreditPayments.length > 0
+      ? canonicalAccountCreditPayments
+      : await resolveAppliedCreditPaymentsFromLocalProvenance(
+          creditNote.creditNoteID
+        );
   const relatedLinks = dedupeResolvedXeroObjectLinks([
     ...existingCreditNoteLinks,
     ...recoveredBookingScopedLinks,
@@ -104,7 +117,7 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
             mergeMetadata: true,
           }) satisfies XeroObjectLinkInput
       ),
-    ...canonicalAccountCreditPayments
+    ...resolvedAccountCreditPayments
       .filter((payment) => !existingAccountCreditPaymentIds.has(payment.id))
       .map(
         (payment) =>

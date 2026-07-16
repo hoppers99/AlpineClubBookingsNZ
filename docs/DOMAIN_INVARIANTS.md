@@ -885,6 +885,18 @@ superseded allocation links are deactivated, not erased.
 Because Xero omits zero allocations from credit-note responses, inbound repair
 also diffs active applied-credit allocation links and treats a previously linked
 invoice that is now absent as a provider-observed zero target.
+Inbound applied-credit reconciliation resolves its payment/member context first
+from `CANCELLATION_REFUND` `MemberCredit` rows stamped with the note; when a note
+has no such provenance — e.g. an admin-adjustment-minted remainder note — it
+falls back to unambiguous LOCAL provenance instead (#1925): the precise
+`MemberCreditNoteAllocation` slices stamped with the note joined to their funding
+lots, cross-checked against the note's ACTIVE allocation links. That fallback
+fails closed (no write, identical to the pre-#1925 skip) whenever the member is
+not uniquely identifiable, a slice is missing its funding lot or booking, an
+active link references a slice/payment outside the stamped set, or no active link
+proves the allocation existed; tombstoned links never resurrect a repair. Every
+repaired amount is still derived downstream from the provider targets and precise
+slices, so the fallback introduces no amount guess of its own.
 Applied-credit provider allocation child operations retain their parent booking,
 payment, and operation context. They are never manually replayed inline; retry is
 performed only through the serialized parent/outbox workflow so a stale child

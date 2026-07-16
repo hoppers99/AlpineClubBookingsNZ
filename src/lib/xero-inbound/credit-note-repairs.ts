@@ -478,6 +478,155 @@ export async function resolveAccountCreditPaymentsFromMemberCredits(creditNoteId
   });
 }
 
+/**
+ * Fallback resolver (#1925) for applied-credit notes that carry no
+ * `CANCELLATION_REFUND` provenance — e.g. an admin-adjustment-minted remainder
+ * note (schema: a "freshly minted note for an admin-adjustment (noteless) lot").
+ * `resolveAccountCreditPaymentsFromMemberCredits` only recognises
+ * `CANCELLATION_REFUND` rows, so such a note whose allocations change or are
+ * deleted in Xero would silently skip inbound repair, leaving local slices
+ * claiming an allocation Xero no longer has.
+ *
+ * This derives the payment/member context from unambiguous LOCAL provenance:
+ * the precise `MemberCreditNoteAllocation` slices stamped with the note joined
+ * to their funding lots, cross-checked against the note's ACTIVE
+ * `XeroObjectLink` allocation provenance. It is used ONLY when the
+ * `CANCELLATION_REFUND` resolver returns empty and it FAILS CLOSED (returns
+ * `[]`, causing the caller to skip repair exactly as today, with a visible
+ * warn log) whenever the evidence is missing or ambiguous. The downstream
+ * repair (`repairAccountCreditAllocationBusinessState`) still derives every
+ * amount from the provider targets and precise slices, so this resolver never
+ * introduces an amount guess of its own.
+ *
+ * Unambiguity conditions — repair proceeds ONLY when ALL hold:
+ *  - at least one `MemberCreditNoteAllocation` slice is stamped with this note;
+ *  - at least one ACTIVE applied-credit allocation `XeroObjectLink` references
+ *    this note (tombstoned/inactive links never resurrect a repair);
+ *  - every stamped slice resolves to a funding lot and a booking;
+ *  - the funding lots resolve to exactly ONE member;
+ *  - every active MemberCreditNoteAllocation link points at a slice stamped for
+ *    this note (a link to a foreign slice is conflicting evidence);
+ *  - every active Payment (remainder) link points at a payment inside the
+ *    resolved member/booking set;
+ *  - the stamped bookings resolve to at least one local payment for the member.
+ * Any failure => `[]` (no write).
+ */
+export async function resolveAppliedCreditPaymentsFromLocalProvenance(
+  creditNoteId: string,
+): Promise<{ id: string; bookingId: string }[]> {
+  // Query slices FIRST and short-circuit on none, so the common no-provenance
+  // path adds no extra XeroObjectLink read (keeps ordered link mocks stable).
+  const slices = await prisma.memberCreditNoteAllocation.findMany({
+    where: { xeroCreditNoteId: creditNoteId },
+    select: {
+      id: true,
+      appliedToBookingId: true,
+      memberCredit: { select: { memberId: true } },
+    },
+  });
+  if (slices.length === 0) {
+    // No non-refund provenance to prove — skip silently, as the
+    // CANCELLATION_REFUND resolver does when it finds nothing.
+    return [];
+  }
+
+  const activeAllocationLinks = await prisma.xeroObjectLink.findMany({
+    where: {
+      xeroObjectType: "ALLOCATION",
+      role: { in: [...APPLIED_CREDIT_ALLOCATION_ROLES] },
+      active: true,
+      metadata: { path: ["creditNoteId"], equals: creditNoteId },
+    },
+    select: { localModel: true, localId: true },
+  });
+  if (activeAllocationLinks.length === 0) {
+    // Precise slices exist but no ACTIVE link proves Xero ever carried this
+    // allocation. A note whose links are all tombstoned must never be
+    // resurrected into a repair.
+    logger.warn(
+      { creditNoteId, slices: slices.length },
+      "Skipping non-refund applied-credit repair: no active allocation link proves the note was allocated (fail-closed, #1925)",
+    );
+    return [];
+  }
+
+  const memberIds = new Set<string>();
+  const bookingIds = new Set<string>();
+  const sliceIds = new Set<string>();
+  for (const slice of slices) {
+    const memberId = slice.memberCredit?.memberId;
+    if (!memberId || !slice.appliedToBookingId) {
+      logger.warn(
+        { creditNoteId, sliceId: slice.id },
+        "Skipping non-refund applied-credit repair: a stamped slice is missing its funding lot or booking (fail-closed, #1925)",
+      );
+      return [];
+    }
+    memberIds.add(memberId);
+    bookingIds.add(slice.appliedToBookingId);
+    sliceIds.add(slice.id);
+  }
+
+  if (memberIds.size !== 1) {
+    logger.warn(
+      { creditNoteId, candidateMembers: memberIds.size },
+      "Skipping non-refund applied-credit repair: stamped slices resolve to multiple members (fail-closed, #1925)",
+    );
+    return [];
+  }
+  const memberId = [...memberIds][0];
+
+  // Cross-check active links against the stamped slices. A link to a
+  // MemberCreditNoteAllocation outside this note's stamped set is conflicting
+  // slice-vs-link evidence; remainder (Payment) links are verified below.
+  const linkPaymentIds = new Set<string>();
+  for (const link of activeAllocationLinks) {
+    if (link.localModel === "MemberCreditNoteAllocation") {
+      if (!sliceIds.has(link.localId)) {
+        logger.warn(
+          { creditNoteId, linkLocalId: link.localId },
+          "Skipping non-refund applied-credit repair: an active allocation link references a slice not stamped for this note (fail-closed, #1925)",
+        );
+        return [];
+      }
+    } else if (link.localModel === "Payment") {
+      linkPaymentIds.add(link.localId);
+    }
+  }
+
+  const payments = await prisma.payment.findMany({
+    where: {
+      bookingId: { in: [...bookingIds] },
+      booking: { memberId },
+    },
+    select: { id: true, bookingId: true },
+  });
+  const resolvedPaymentIds = new Set(payments.map((payment) => payment.id));
+
+  for (const paymentId of linkPaymentIds) {
+    if (!resolvedPaymentIds.has(paymentId)) {
+      logger.warn(
+        { creditNoteId, paymentId },
+        "Skipping non-refund applied-credit repair: an active remainder link points at a payment outside the stamped member/booking set (fail-closed, #1925)",
+      );
+      return [];
+    }
+  }
+
+  if (payments.length === 0) {
+    logger.warn(
+      { creditNoteId, memberId, bookings: bookingIds.size },
+      "Skipping non-refund applied-credit repair: stamped bookings resolve to no local payment for the member (fail-closed, #1925)",
+    );
+    return [];
+  }
+
+  return payments.map((payment) => ({
+    id: payment.id,
+    bookingId: payment.bookingId,
+  }));
+}
+
 export async function repairAccountCreditAllocationBusinessState(
   creditNoteId: string,
   allocationTargets: AccountCreditAllocationTarget[]

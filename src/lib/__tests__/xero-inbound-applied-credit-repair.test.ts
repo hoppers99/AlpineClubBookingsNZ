@@ -11,6 +11,8 @@ const h = vi.hoisted(() => {
   const paymentUpdate = vi.fn();
   const operationFindMany = vi.fn();
   const linkFindMany = vi.fn();
+  const sliceFindMany = vi.fn();
+  const paymentFindMany = vi.fn();
   const repairPrecise = vi.fn();
   const lockLedger = vi.fn();
   const tx = {
@@ -26,8 +28,9 @@ const h = vi.hoisted(() => {
     xeroSyncOperation: { findMany: operationFindMany },
   };
   const prisma = {
-    payment: { findMany: vi.fn() },
+    payment: { findMany: paymentFindMany },
     xeroObjectLink: { findMany: linkFindMany },
+    memberCreditNoteAllocation: { findMany: sliceFindMany },
     $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
   };
   return {
@@ -43,6 +46,8 @@ const h = vi.hoisted(() => {
     paymentUpdate,
     operationFindMany,
     linkFindMany,
+    sliceFindMany,
+    paymentFindMany,
     repairPrecise,
     lockLedger,
   };
@@ -61,7 +66,10 @@ vi.mock("@/lib/logger", () => ({
   default: { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
-import { repairAccountCreditAllocationBusinessState } from "@/lib/xero-inbound/credit-note-repairs";
+import {
+  repairAccountCreditAllocationBusinessState,
+  resolveAppliedCreditPaymentsFromLocalProvenance,
+} from "@/lib/xero-inbound/credit-note-repairs";
 
 describe("provider-aware inbound applied-credit repair", () => {
   beforeEach(() => {
@@ -240,5 +248,193 @@ describe("provider-aware inbound applied-credit repair", () => {
     await repairAccountCreditAllocationBusinessState("cn-1", []);
 
     expect(h.memberCreditCreate).not.toHaveBeenCalled();
+  });
+});
+
+describe("resolveAppliedCreditPaymentsFromLocalProvenance (#1925)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.sliceFindMany.mockResolvedValue([]);
+    h.linkFindMany.mockResolvedValue([]);
+    h.paymentFindMany.mockResolvedValue([]);
+  });
+
+  it("resolves an admin-adjustment-minted note from precise slice + active link", async () => {
+    // No CANCELLATION_REFUND provenance exists; the note is proven by a precise
+    // slice stamped with it plus an ACTIVE allocation link (localModel Payment,
+    // the minted-remainder shape).
+    h.sliceFindMany.mockResolvedValue([
+      {
+        id: "slice-1",
+        appliedToBookingId: "booking-1",
+        memberCredit: { memberId: "member-1" },
+      },
+    ]);
+    h.linkFindMany.mockResolvedValue([
+      { localModel: "Payment", localId: "payment-1" },
+    ]);
+    h.paymentFindMany.mockResolvedValue([
+      { id: "payment-1", bookingId: "booking-1" },
+    ]);
+
+    const result = await resolveAppliedCreditPaymentsFromLocalProvenance("cn-1");
+
+    expect(result).toEqual([{ id: "payment-1", bookingId: "booking-1" }]);
+    // Slice query runs before any link read so the no-provenance path stays cheap.
+    expect(h.sliceFindMany).toHaveBeenCalledWith({
+      where: { xeroCreditNoteId: "cn-1" },
+      select: {
+        id: true,
+        appliedToBookingId: true,
+        memberCredit: { select: { memberId: true } },
+      },
+    });
+    expect(h.linkFindMany).toHaveBeenCalledWith({
+      where: {
+        xeroObjectType: "ALLOCATION",
+        role: {
+          in: [
+            "APPLIED_CREDIT_ALLOCATION",
+            "APPLIED_CREDIT_REMAINDER_ALLOCATION",
+          ],
+        },
+        active: true,
+        metadata: { path: ["creditNoteId"], equals: "cn-1" },
+      },
+      select: { localModel: true, localId: true },
+    });
+    expect(h.paymentFindMany).toHaveBeenCalledWith({
+      where: {
+        bookingId: { in: ["booking-1"] },
+        booking: { memberId: "member-1" },
+      },
+      select: { id: true, bookingId: true },
+    });
+  });
+
+  it("returns [] and does not read links when no slice is stamped with the note", async () => {
+    h.sliceFindMany.mockResolvedValue([]);
+
+    const result = await resolveAppliedCreditPaymentsFromLocalProvenance("cn-1");
+
+    expect(result).toEqual([]);
+    expect(h.linkFindMany).not.toHaveBeenCalled();
+    expect(h.paymentFindMany).not.toHaveBeenCalled();
+  });
+
+  it("fails closed (no resurrection) when only a tombstoned inactive link exists", async () => {
+    h.sliceFindMany.mockResolvedValue([
+      {
+        id: "slice-1",
+        appliedToBookingId: "booking-1",
+        memberCredit: { memberId: "member-1" },
+      },
+    ]);
+    // The active-only link query returns nothing (the sole link is inactive).
+    h.linkFindMany.mockResolvedValue([]);
+
+    const result = await resolveAppliedCreditPaymentsFromLocalProvenance("cn-1");
+
+    expect(result).toEqual([]);
+    expect(h.paymentFindMany).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when slices resolve to two candidate members", async () => {
+    h.sliceFindMany.mockResolvedValue([
+      {
+        id: "slice-1",
+        appliedToBookingId: "booking-1",
+        memberCredit: { memberId: "member-1" },
+      },
+      {
+        id: "slice-2",
+        appliedToBookingId: "booking-2",
+        memberCredit: { memberId: "member-2" },
+      },
+    ]);
+    h.linkFindMany.mockResolvedValue([
+      { localModel: "MemberCreditNoteAllocation", localId: "slice-1" },
+    ]);
+
+    const result = await resolveAppliedCreditPaymentsFromLocalProvenance("cn-1");
+
+    expect(result).toEqual([]);
+    expect(h.paymentFindMany).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when a stamped slice is missing its funding lot", async () => {
+    h.sliceFindMany.mockResolvedValue([
+      {
+        id: "slice-1",
+        appliedToBookingId: "booking-1",
+        memberCredit: null,
+      },
+    ]);
+    h.linkFindMany.mockResolvedValue([
+      { localModel: "MemberCreditNoteAllocation", localId: "slice-1" },
+    ]);
+
+    const result = await resolveAppliedCreditPaymentsFromLocalProvenance("cn-1");
+
+    expect(result).toEqual([]);
+    expect(h.paymentFindMany).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when an active link references a slice not stamped for this note", async () => {
+    h.sliceFindMany.mockResolvedValue([
+      {
+        id: "slice-1",
+        appliedToBookingId: "booking-1",
+        memberCredit: { memberId: "member-1" },
+      },
+    ]);
+    // Conflicting slice-vs-link evidence: the link points at a foreign slice.
+    h.linkFindMany.mockResolvedValue([
+      { localModel: "MemberCreditNoteAllocation", localId: "slice-foreign" },
+    ]);
+
+    const result = await resolveAppliedCreditPaymentsFromLocalProvenance("cn-1");
+
+    expect(result).toEqual([]);
+    expect(h.paymentFindMany).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when an active remainder link points outside the stamped member/booking set", async () => {
+    h.sliceFindMany.mockResolvedValue([
+      {
+        id: "slice-1",
+        appliedToBookingId: "booking-1",
+        memberCredit: { memberId: "member-1" },
+      },
+    ]);
+    h.linkFindMany.mockResolvedValue([
+      { localModel: "Payment", localId: "payment-foreign" },
+    ]);
+    // Only the in-set payment resolves; the foreign remainder link has no match.
+    h.paymentFindMany.mockResolvedValue([
+      { id: "payment-1", bookingId: "booking-1" },
+    ]);
+
+    const result = await resolveAppliedCreditPaymentsFromLocalProvenance("cn-1");
+
+    expect(result).toEqual([]);
+  });
+
+  it("fails closed when the stamped booking resolves to no local payment", async () => {
+    h.sliceFindMany.mockResolvedValue([
+      {
+        id: "slice-1",
+        appliedToBookingId: "booking-1",
+        memberCredit: { memberId: "member-1" },
+      },
+    ]);
+    h.linkFindMany.mockResolvedValue([
+      { localModel: "MemberCreditNoteAllocation", localId: "slice-1" },
+    ]);
+    h.paymentFindMany.mockResolvedValue([]);
+
+    const result = await resolveAppliedCreditPaymentsFromLocalProvenance("cn-1");
+
+    expect(result).toEqual([]);
   });
 });
