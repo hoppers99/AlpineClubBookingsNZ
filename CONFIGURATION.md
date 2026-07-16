@@ -748,8 +748,14 @@ action; scoped admins cannot merge.
   taken from the duplicate.
 - **What is blocked.** The merge stops (with a clear reason in the preview) when
   the master is inactive/archived, the duplicate holds an admin role (demote it
-  first), either record has a pending deletion/archive/family request, or both
-  records carry a real membership-subscription for the same season.
+  first), either record has a pending deletion/archive/family request (including
+  a member's own pending account-deletion request), or the duplicate carries a
+  real (invoiced/paid) membership-subscription for a season the master already
+  has a subscription row for — paid history is never silently dropped.
+- **What is warned.** The preview lists every access role the master will gain
+  from the duplicate — including custom (definition-backed) roles — plus any
+  confirmed-partner link, promo allocation, or group-booking join row that will
+  be dropped as a duplicate, so nothing changes silently.
 - **The manual Xero step.** The system does **not** touch Xero over the network
   during a merge. The duplicate's Xero *contact* is left in Xero — the preview
   warns you to **archive or merge it in Xero manually**. The one thing it does
