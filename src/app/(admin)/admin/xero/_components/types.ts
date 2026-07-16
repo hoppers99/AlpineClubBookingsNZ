@@ -210,40 +210,20 @@ export interface MissingInvoicesResponse {
   bookings: MissingInvoiceBooking[]
 }
 
-interface ConfiguredAgeTierContactGroup {
-  tier: AgeTier
-  label: string
-  sortOrder: number
-  groupId: string
-  groupName: string | null
-  isDefault: boolean
-}
-
+// Mode-driven member-grouping mismatch (E8, #1934). Mirrors
+// MemberGroupingDiffEntry from src/lib/xero-member-grouping-resync.ts.
 interface ContactGroupMismatch {
   memberId: string
   memberName: string
   memberEmail: string
   ageTier: AgeTier
   xeroContactId: string
-  defaultGroup: {
+  managedGroup: {
     id: string
     name: string | null
   } | null
-  acceptedGroups: Array<{
-    id: string
-    name: string | null
-    isDefault: boolean
-  }>
-  actualGroups: Array<{
-    id: string
-    name: string
-  }>
-  unexpectedManagedGroups: Array<{
-    id: string
-    name: string
-    tier: AgeTier | null
-  }>
-  missingExpectedGroup: boolean
+  addGroupId: string | null
+  removeGroupIds: string[]
 }
 
 // Summary returned by the POST resync-from-Xero branch of the mismatch
@@ -256,10 +236,16 @@ interface ContactCacheResyncSummary {
 }
 
 export interface ContactGroupMismatchResponse {
+  mode: "NONE" | "MEMBERSHIP_TYPE" | "MEMBERSHIP_TYPE_AND_AGE"
   cacheReady: boolean
   lastRefreshedAt: string | null
-  configuredMappings: ConfiguredAgeTierContactGroup[]
-  count: number
+  activeRuleCount: number
+  membersConsidered: number
+  mismatchCount: number
+  addCount: number
+  removeCount: number
+  estimatedXeroCalls: number
+  skippedNoContact: Array<{ memberId: string; memberName: string }>
   mismatches: ContactGroupMismatch[]
   resync?: ContactCacheResyncSummary
 }

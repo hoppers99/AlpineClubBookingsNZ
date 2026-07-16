@@ -1,5 +1,5 @@
 import type { BookingStatus } from "@prisma/client";
-import { getXeroContactGroupMismatchSnapshot } from "@/lib/age-tier-xero-groups";
+import { getXeroMemberGroupingSnapshot } from "@/lib/xero-member-grouping-resync";
 import { prisma } from "@/lib/prisma";
 import { getFailedXeroOperationOverview } from "@/lib/xero-admin-failures";
 import { getTodaysXeroUsageSummary } from "@/lib/xero-api-usage";
@@ -333,7 +333,7 @@ export async function getXeroAdminHealthSnapshot(): Promise<XeroAdminHealthSnaps
     }),
     getMissingXeroInvoiceBookings({ limit: 1 }),
     getRefundsMissingXeroCreditNotes({ limit: 1 }),
-    getXeroContactGroupMismatchSnapshot({ limit: 1 }),
+    getXeroMemberGroupingSnapshot({ limit: 1 }),
     getXeroContactLinkMismatchSnapshot({ limit: 1 }),
     getTodaysXeroUsageSummary()
       .then((summary) => ({
@@ -383,7 +383,7 @@ export async function getXeroAdminHealthSnapshot(): Promise<XeroAdminHealthSnaps
       graceHours: REFUND_CREDIT_NOTE_GRACE_HOURS,
     },
     contactGroupMismatches: {
-      count: contactGroupMismatches.count,
+      count: contactGroupMismatches.mismatchCount,
       cacheReady: contactGroupMismatches.cacheReady,
     },
     contactLinkMismatches: {
