@@ -301,6 +301,7 @@ export async function createXeroInvoiceForGroupSettlement(
           lastName: g.lastName,
           ageTier: g.ageTier,
           isMember: g.isMember,
+          rateMembershipTypeId: g.rateMembershipTypeId,
           priceCents: g.priceCents,
           nights: (g.nights ?? []).map((n) => ({
             stayDate: n.stayDate,
