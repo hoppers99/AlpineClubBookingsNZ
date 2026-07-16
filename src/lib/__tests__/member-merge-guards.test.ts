@@ -143,3 +143,42 @@ describe("subscription-collision blocker (B1 matrix)", () => {
     expect(blockers).toEqual([]);
   });
 });
+
+describe("pending DeletionRequest blocker (M2)", () => {
+  it("blocks when the LOSER has a PENDING account-deletion request", async () => {
+    const deletionRequest = {
+      ...defaultDelegate(),
+      count: vi.fn(({ where }: { where: { memberId: string; status: string } }) =>
+        Promise.resolve(where.memberId === LOSER_ID && where.status === "PENDING" ? 1 : 0),
+      ),
+    };
+    const blockers = await runGuards({ deletionRequest });
+    expect(blockers.map((b) => b.code)).toContain("loser_pending_requests");
+    expect(blockers.map((b) => b.code)).not.toContain("master_pending_requests");
+  });
+
+  it("blocks when the MASTER has a PENDING account-deletion request", async () => {
+    const deletionRequest = {
+      ...defaultDelegate(),
+      count: vi.fn(({ where }: { where: { memberId: string; status: string } }) =>
+        Promise.resolve(where.memberId === MASTER_ID && where.status === "PENDING" ? 1 : 0),
+      ),
+    };
+    const blockers = await runGuards({ deletionRequest });
+    expect(blockers.map((b) => b.code)).toContain("master_pending_requests");
+    expect(blockers.map((b) => b.code)).not.toContain("loser_pending_requests");
+  });
+
+  it("only PENDING deletion requests block (queries filter on status)", async () => {
+    const deletionRequest = {
+      ...defaultDelegate(),
+      count: vi.fn(({ where }: { where: { status?: string } }) => {
+        expect(where.status).toBe("PENDING");
+        return Promise.resolve(0);
+      }),
+    };
+    const blockers = await runGuards({ deletionRequest });
+    expect(blockers).toEqual([]);
+    expect(deletionRequest.count).toHaveBeenCalledTimes(2); // master AND loser
+  });
+});

@@ -685,7 +685,7 @@ async function countPendingLifecycleOrFamily(
   db: MergeDbClient,
   memberId: string,
 ): Promise<number> {
-  const [lifecycle, family] = await Promise.all([
+  const [lifecycle, family, deletion] = await Promise.all([
     db.memberLifecycleActionRequest.count({
       where: { memberId, status: "REQUESTED" },
     }),
@@ -700,8 +700,16 @@ async function countPendingLifecycleOrFamily(
         ],
       },
     }),
+    // A PENDING self-service account-deletion request must block the merge:
+    // DeletionRequest.member is classified `move`, so without this guard a
+    // loser's pending deletion would silently re-point to the master and a
+    // later approval would anonymise/wipe the MERGED record (cross-check:
+    // MEMBER_DELETE_BLOCKER_SPECS `account_deletion_requests`).
+    db.deletionRequest.count({
+      where: { memberId, status: "PENDING" },
+    }),
   ]);
-  return lifecycle + family;
+  return lifecycle + family + deletion;
 }
 
 /**
