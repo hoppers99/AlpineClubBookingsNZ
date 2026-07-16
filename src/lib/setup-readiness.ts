@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { bookableAgeTierEnum } from "@/lib/age-tier-schema";
 import { clubConfigSchema, type ClubConfig } from "../config/schema";
 import {
   DEFAULT_ADMIN_MODULE_SETTINGS,
@@ -67,10 +68,75 @@ export interface SetupDatabaseSnapshot {
   xeroHutFeeItemMappingCount: number;
   xeroEntranceFeeMappingCount: number;
   // Per-membership-type rate gaps (#1930, E4): "TypeName — SeasonName" entries
-  // for every MEMBER_RATE type × active/future season that has no rate rows.
-  // Any entry means bookings for that type on those dates hard-throw at
-  // pricing, so the Seasons And Rates step drops to a warning.
+  // for every MEMBER_RATE type × active/future season whose rate coverage is
+  // incomplete (see computeMembershipTypeRateGaps). Any entry means a booking
+  // for that type on some (or all) of those dates hard-throws at pricing, so
+  // the Seasons And Rates step drops to a warning.
   membershipTypeRateGaps?: string[];
+}
+
+// One membership type × season pair for the rate-gap check (#1930, E4).
+export interface MembershipTypeRateGapType {
+  id: string;
+  name: string;
+  ageGroupsApply: boolean;
+}
+
+export interface MembershipTypeRateGapSeason {
+  id: string;
+  name: string;
+}
+
+export interface MembershipTypeRateGapRow {
+  seasonId: string;
+  membershipTypeId: string;
+  ageTier: string | null;
+}
+
+/**
+ * Tier-aware missing-rate readiness (#1930, E4). A (type, season) pair is
+ * covered when a booking for ANY bookable age tier can price:
+ *   - ageGroupsApply=true: every bookable tier has an exact row, OR a flat
+ *     (NULL-ageTier) row exists (the engine falls back exact-tier -> flat);
+ *   - ageGroupsApply=false: the single flat row exists (tier rows alone are a
+ *     shape anomaly the write surfaces reject — flag them).
+ * Anything less means some guest hard-throws at pricing. Callers pass ACTIVE
+ * MEMBER_RATE types only — archived types price history and are skipped.
+ */
+export function computeMembershipTypeRateGaps(input: {
+  types: MembershipTypeRateGapType[];
+  seasons: MembershipTypeRateGapSeason[];
+  rateRows: MembershipTypeRateGapRow[];
+  bookableAgeTiers?: readonly string[];
+}): string[] {
+  const bookableTiers = input.bookableAgeTiers ?? bookableAgeTierEnum.options;
+  const tiersByPair = new Map<string, Set<string | null>>();
+  for (const row of input.rateRows) {
+    const key = `${row.membershipTypeId}::${row.seasonId}`;
+    const set = tiersByPair.get(key) ?? new Set<string | null>();
+    set.add(row.ageTier);
+    tiersByPair.set(key, set);
+  }
+
+  const gaps: string[] = [];
+  for (const type of input.types) {
+    for (const season of input.seasons) {
+      const tiers = tiersByPair.get(`${type.id}::${season.id}`);
+      const hasFlat = tiers?.has(null) ?? false;
+      if (type.ageGroupsApply) {
+        if (hasFlat) continue;
+        const missingTiers = bookableTiers.filter((tier) => !tiers?.has(tier));
+        if (missingTiers.length === 0) continue;
+        gaps.push(
+          `${type.name} — ${season.name} (missing ${missingTiers.join(", ")})`,
+        );
+      } else {
+        if (hasFlat) continue;
+        gaps.push(`${type.name} — ${season.name} (missing flat all-ages rate)`);
+      }
+    }
+  }
+  return gaps;
 }
 
 interface SetupStepCheck {
