@@ -174,6 +174,10 @@ export async function getEffectiveMembershipAnnualFee(
       OR: [{ effectiveTo: null }, { effectiveTo: { gte: asOf } }],
     },
     orderBy: { effectiveFrom: "desc" },
+    // Components are the invoice lines (#1932, E6). Order is stable so the
+    // preview digest, the frozen charge-component snapshot, and the Xero line
+    // array all agree byte-for-byte on line order.
+    include: { components: { orderBy: [{ sortOrder: "asc" }, { id: "asc" }] } },
   });
 }
 

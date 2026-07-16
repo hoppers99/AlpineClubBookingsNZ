@@ -27,11 +27,27 @@ export type SubscriptionBillingExceptionCode =
   | "MISSING_FEE_SCHEDULE"
   | "MISSING_FAMILY"
   | "AMBIGUOUS_FAMILY"
+  | "INVALID_BILLING_FAMILY_SELECTION"
   | "MISSING_FAMILY_RECIPIENT"
   | "INVALID_FAMILY_RECIPIENT"
   | "PER_FAMILY_FEE_IN_INDIVIDUAL_MODE"
   | "MISSING_XERO_ACCOUNT_MAPPING"
   | "FAMILY_ALREADY_BILLED";
+
+// One resolved invoice line of an annual fee (#1932, E6). `xeroAccountCode` /
+// `xeroItemCode` carry the per-component override if set, otherwise null until the
+// post-loop mapping pass fills them from the frozen subscriptionIncome mapping.
+// The frozen charge-component snapshot is written verbatim from this at confirm.
+export type SubscriptionBillingComponent = {
+  label: string;
+  description: string;
+  annualAmountCents: number;
+  chargedAmountCents: number;
+  prorated: boolean;
+  xeroAccountCode: string | null;
+  xeroItemCode: string | null;
+  sortOrder: number;
+};
 
 export type SubscriptionBillingPlanEntry = {
   key: string;
@@ -53,6 +69,7 @@ export type SubscriptionBillingPlanEntry = {
   coveredMembers: Array<{ id: string; name: string }>;
   xeroAccountCode: string | null;
   xeroItemCode: string | null;
+  components: SubscriptionBillingComponent[];
 };
 
 export type SubscriptionBillingPlanException = {
@@ -127,6 +144,33 @@ export function calculateMembershipCharge(input: {
     coverageStart: new Date(Date.UTC(decision.getUTCFullYear(), decision.getUTCMonth(), 1)),
     coverageEnd: end,
   };
+}
+
+// The historical single-line invoice description. A single-component fee (every
+// existing fee post-backfill) reproduces this EXACT text — including the
+// `(1 month)` vs `(N months)` pluralization — so a backfilled legacy charge
+// re-driven through the outbox mints a byte-identical line. Multi-component fees
+// append the component label to distinguish their lines.
+export function buildComponentLineDescription(input: {
+  membershipTypeName: string;
+  seasonYear: number;
+  coveredMonths: number;
+  label: string;
+  isSoleComponent: boolean;
+}) {
+  const base = `${input.membershipTypeName} membership ${input.seasonYear}/${input.seasonYear + 1}`
+    + ` (${input.coveredMonths} month${input.coveredMonths === 1 ? "" : "s"})`;
+  return input.isSoleComponent ? base : `${base} — ${input.label}`;
+}
+
+// Per-component charged cents: same half-up cent rounding as the fee-level
+// calculation, applied per line. Σ of per-component floors can diverge from the
+// fee-level floor by up to (n−1) cents for a multi-component prorated fee — this
+// is intended: the charge total is authoritative as Σ components so the invoice
+// (one line per component) always foots to the charge amount (see
+// docs/AUTHORITATIVE_FEES.md). A single-component fee is byte-identical.
+function componentChargedCents(amountCents: number, prorate: boolean, coveredMonths: number) {
+  return prorate ? Math.floor((amountCents * coveredMonths + 6) / 12) : amountCents;
 }
 
 function exception(input: Omit<SubscriptionBillingPlanException, "fingerprint">) {
@@ -382,6 +426,39 @@ export async function buildSubscriptionBillingPreview(input: {
       current.coveredMembers.push({ id: member.id, name: memberName });
       continue;
     }
+    // Component invoice lines (#1932, E6). The lifecycle invariant guarantees a
+    // non-NO_INVOICE fee always has >=1 component; the synthetic default is a
+    // belt-and-suspenders safety net that derives the identical single line the
+    // backfill would have written, so a fee that somehow lost its components
+    // still bills correctly rather than silently charging zero.
+    const definedComponents = fee.components ?? [];
+    const feeComponents = definedComponents.length > 0
+      ? definedComponents
+      : [{ label: "Annual membership fee", amountCents: fee.amountCents, prorate: true, xeroAccountCode: null as string | null, xeroItemCode: null as string | null, sortOrder: 0 }];
+    const isSoleComponent = feeComponents.length === 1;
+    const components: SubscriptionBillingComponent[] = fee.billingBasis === "NO_INVOICE"
+      ? []
+      : feeComponents.map((component) => ({
+          label: component.label,
+          description: buildComponentLineDescription({
+            membershipTypeName: membershipType.name,
+            seasonYear: input.seasonYear,
+            coveredMonths: calculated.coveredMonths,
+            label: component.label,
+            isSoleComponent,
+          }),
+          annualAmountCents: component.amountCents,
+          chargedAmountCents: componentChargedCents(component.amountCents, component.prorate, calculated.coveredMonths),
+          prorated: component.prorate,
+          xeroAccountCode: component.xeroAccountCode ?? null,
+          xeroItemCode: component.xeroItemCode ?? null,
+          sortOrder: component.sortOrder,
+        }));
+    // The charge total is Σ components (see componentChargedCents). For a
+    // single-component fee this equals the fee-level calculation byte-for-byte.
+    const chargedAmountCents = fee.billingBasis === "NO_INVOICE"
+      ? 0
+      : components.reduce((sum, component) => sum + component.chargedAmountCents, 0);
     const entry: SubscriptionBillingPlanEntry = {
       key: groupingKey,
       seasonYear: input.seasonYear,
@@ -392,7 +469,7 @@ export async function buildSubscriptionBillingPreview(input: {
       billingBasis: fee.billingBasis,
       prorationRule: fee.prorationRule,
       annualAmountCents: fee.amountCents,
-      chargedAmountCents: fee.billingBasis === "NO_INVOICE" ? 0 : calculated.amountCents,
+      chargedAmountCents,
       coveredMonths: calculated.coveredMonths,
       decisionDate: decisionDateOnly,
       coverageStart: formatDateOnly(calculated.coverageStart),
@@ -402,6 +479,7 @@ export async function buildSubscriptionBillingPreview(input: {
       coveredMembers: [{ id: member.id, name: memberName }],
       xeroAccountCode: null,
       xeroItemCode: null,
+      components,
     };
     familyGroups.set(groupingKey, entry);
     entries.push(entry);
@@ -431,6 +509,14 @@ export async function buildSubscriptionBillingPreview(input: {
       for (const entry of invoiceEntries) {
         entry.xeroAccountCode = mapping.code;
         entry.xeroItemCode = mapping.itemCode;
+        // Resolve each component's account/item: its own override wins, else the
+        // frozen subscriptionIncome mapping. After this pass every invoiced
+        // component carries a non-null account code, which the charge-component
+        // snapshot column requires.
+        for (const component of entry.components) {
+          component.xeroAccountCode = component.xeroAccountCode ?? mapping.code;
+          component.xeroItemCode = component.xeroItemCode ?? mapping.itemCode;
+        }
       }
     }
   }
@@ -584,6 +670,27 @@ export async function confirmSubscriptionBillingPreview(input: {
               memberName: row.memberName,
             })),
           },
+          // Frozen per-line snapshot (#1932, E6), written in the SAME tx and
+          // batched into the charge create so the 60s interactive-transaction
+          // budget still covers a whole-club run. NO_INVOICE charges have no
+          // components. Every invoiced component's account code was resolved in
+          // the preview mapping pass, so the non-null column is satisfied.
+          ...(entry.billingBasis === "NO_INVOICE" || entry.components.length === 0
+            ? {}
+            : {
+                components: {
+                  create: entry.components.map((component) => ({
+                    label: component.label,
+                    description: component.description,
+                    annualAmountCents: component.annualAmountCents,
+                    chargedAmountCents: component.chargedAmountCents,
+                    prorated: component.prorated,
+                    xeroAccountCode: component.xeroAccountCode ?? entry.xeroAccountCode ?? "",
+                    xeroItemCode: component.xeroItemCode,
+                    sortOrder: component.sortOrder,
+                  })),
+                },
+              }),
         },
         select: { id: true },
       });
