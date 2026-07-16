@@ -27,6 +27,10 @@ export function LodgeDetailsPanel() {
   const [multiLodge, setMultiLodge] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
+  // A content-only admin can reach the Club Identity page but has no lodge:view;
+  // GET /api/admin/lodges then 403s. Distinguish that from a transient failure so
+  // we can explain the missing card rather than show a raw error + Retry.
+  const [accessDenied, setAccessDenied] = useState(false);
   // Gated on the "lodge" area (E1's view-only pattern, area-generic): the save
   // hits the lodge-area /api/admin/lodges/[id] route, so the UI gate must match.
   const canEdit = useAdminAreaEditAccess("lodge");
@@ -34,8 +38,15 @@ export function LodgeDetailsPanel() {
 
   function load() {
     setLoadFailed(false);
+    setAccessDenied(false);
     void fetch("/api/admin/lodges")
       .then(async (response) => {
+        // A cross-area denial (content-only admin without lodge:view) is not a
+        // failure — render a read-only explanation instead of an error + Retry.
+        if (response.status === 403) {
+          setAccessDenied(true);
+          return;
+        }
         if (!response.ok) throw new Error();
         const lodges: Lodge[] = (await response.json()).lodges ?? [];
         if (lodges.length === 1) {
@@ -55,6 +66,13 @@ export function LodgeDetailsPanel() {
     load();
   }, []);
 
+  if (accessDenied)
+    return (
+      <p className="text-sm text-muted-foreground">
+        Your admin role does not include lodge access, so lodge details can only
+        be viewed and edited by an admin with lodge permissions.
+      </p>
+    );
   if (loadFailed)
     return (
       <div className="space-y-3">
