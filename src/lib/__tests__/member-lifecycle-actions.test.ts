@@ -841,6 +841,7 @@ describe("member archive lifecycle actions", () => {
       .mockResolvedValueOnce({ count: 1 }) // parentMemberId cleanup
       .mockResolvedValueOnce({ count: 1 }) // secondaryParentId cleanup
       .mockResolvedValueOnce({ count: 1 }) // inheritEmailFromId cleanup
+      .mockResolvedValueOnce({ count: 1 }) // billingFamilyGroupId cleanup (#1932, E6)
       .mockResolvedValueOnce({ count: 0 }); // archive claim - LOST
 
     await expect(

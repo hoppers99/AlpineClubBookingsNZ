@@ -319,6 +319,9 @@ export async function POST(
           active: false,
           xeroContactId: null,
           inheritEmailFromId: null,
+          // Billing-family removal sweep (#1932, E6): the member is leaving all
+          // families here, so clear any billing-family selection they hold.
+          billingFamilyGroupId: null,
         },
       });
 
