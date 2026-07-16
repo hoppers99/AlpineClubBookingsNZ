@@ -41,7 +41,12 @@ import { Counter, Rate } from "k6/metrics";
 import exec from "k6/execution";
 import { assertSafeTarget } from "../lib/target-guard.js";
 import { loadConfig, requireCredentials } from "../lib/config.js";
-import { clearSession, ensureLoggedIn, vuHeaders } from "../lib/session.js";
+import {
+  clearSession,
+  ensureLoggedIn,
+  SCENARIO_IP_OFFSETS,
+  vuHeaders,
+} from "../lib/session.js";
 import { evaluateContentionOccupancy } from "../lib/contention-invariant.js";
 
 const cfg = loadConfig(__ENV); // init-context guard: aborts unsafe targets
@@ -97,7 +102,13 @@ export function setup() {
   }
   clearSession(cfg);
   if (
-    !ensureLoggedIn(cfg, cfg.userEmail, cfg.userPassword, { loggedIn: false })
+    !ensureLoggedIn(
+      cfg,
+      cfg.userEmail,
+      cfg.userPassword,
+      { loggedIn: false, loginAttempted: false },
+      SCENARIO_IP_OFFSETS.bookingContention
+    )
   ) {
     throw new Error("Capacity baseline login failed");
   }
@@ -125,7 +136,7 @@ function occupiedBedsForCheckIn() {
     month +
     (cfg.lodgeId ? "&lodgeId=" + cfg.lodgeId : "");
   const res = http.get(url, {
-    headers: vuHeaders(9000),
+    headers: vuHeaders(SCENARIO_IP_OFFSETS.capacityProbe),
     responseCallback: http.expectedStatuses(200),
   });
   if (res.status !== 200) {
@@ -148,7 +159,13 @@ function occupiedBedsForCheckIn() {
 export function teardown(data) {
   clearSession(cfg);
   if (
-    !ensureLoggedIn(cfg, cfg.userEmail, cfg.userPassword, { loggedIn: false })
+    !ensureLoggedIn(
+      cfg,
+      cfg.userEmail,
+      cfg.userPassword,
+      { loggedIn: false, loginAttempted: false },
+      SCENARIO_IP_OFFSETS.bookingContention
+    )
   ) {
     capacityInvariant.add(false);
     return;
@@ -166,7 +183,7 @@ export function teardown(data) {
 
 // Per-VU login memo. VUs round-robin across the optional LOAD_USERS pool so
 // runs can spread load over several seeded members; all share LOAD_USER_PASSWORD.
-const vuState = { loggedIn: false };
+const vuState = { loggedIn: false, loginAttempted: false };
 
 function vuEmail() {
   const pool = [cfg.userEmail].concat(cfg.userPool);
@@ -174,7 +191,15 @@ function vuEmail() {
 }
 
 export default function bookingContention() {
-  if (!ensureLoggedIn(cfg, vuEmail(), cfg.userPassword, vuState)) {
+  if (
+    !ensureLoggedIn(
+      cfg,
+      vuEmail(),
+      cfg.userPassword,
+      vuState,
+      SCENARIO_IP_OFFSETS.bookingContention
+    )
+  ) {
     unexpected.add(true);
     return;
   }
@@ -202,7 +227,7 @@ export default function bookingContention() {
   const res = http.post(cfg.baseUrl + "/api/bookings", JSON.stringify(body), {
     headers: Object.assign(
       { "Content-Type": "application/json" },
-      vuHeaders(0)
+      vuHeaders(SCENARIO_IP_OFFSETS.bookingContention)
     ),
     tags: { flow: "booking_contention" },
     timeout: "60s",

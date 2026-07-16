@@ -24,18 +24,40 @@ describe("load harness semantics", () => {
 
   it("scopes dashboard latency separately from bootstrap login", () => {
     const scenario = read("load/scenarios/member-dashboard.js");
+    const session = read("load/lib/session.js");
     expect(scenario).toContain('http_req_duration{flow:member_dashboard}');
     expect(scenario).toContain("dashboard_bootstrap_login_success");
     expect(scenario).toContain("[cfg.userEmail].concat(cfg.userPool)");
     expect(scenario).toContain("exec.vu.idInTest");
     expect(scenario).toContain("ensureLoggedIn(\n    cfg,\n    email,");
+    expect(scenario).toContain("loginAttempted: false");
+    expect(scenario).toContain(
+      "const shouldRecordBootstrap = !vuState.loginAttempted"
+    );
+    expect(scenario).toContain(
+      "if (shouldRecordBootstrap) bootstrapLoginSuccess.add(loggedIn)"
+    );
+    expect(session).toContain("if (state.loginAttempted)");
+    expect(session).toContain("state.loginAttempted = true");
+  });
+
+  it("isolates fixed-window rate limits between load scenarios", () => {
+    const session = read("load/lib/session.js");
+    const login = read("load/scenarios/login.js");
+    const dashboard = read("load/scenarios/member-dashboard.js");
+    const contention = read("load/scenarios/booking-contention.js");
+    expect(session).toContain("SCENARIO_IP_OFFSETS");
+    expect(login).toContain("SCENARIO_IP_OFFSETS.login + __ITER");
+    expect(dashboard).toContain("SCENARIO_IP_OFFSETS.memberDashboard");
+    expect(contention).toContain("SCENARIO_IP_OFFSETS.bookingContention");
   });
 
   it("distributes cold logins over the configured account pool", () => {
     const scenario = read("load/scenarios/login.js");
     expect(scenario).toContain("[cfg.userEmail].concat(cfg.userPool)");
     expect(scenario).toContain("exec.vu.idInTest");
-    expect(scenario).toContain("login(cfg, email");
+    expect(scenario).toContain("const ok = login(");
+    expect(scenario).toContain("    email,");
   });
 
   it("uses one simultaneous cold login per VU as the primary profile", () => {

@@ -24,7 +24,7 @@ import { Rate } from "k6/metrics";
 import exec from "k6/execution";
 import { assertSafeTarget } from "../lib/target-guard.js";
 import { loadConfig, requireCredentials } from "../lib/config.js";
-import { login, clearSession } from "../lib/session.js";
+import { login, clearSession, SCENARIO_IP_OFFSETS } from "../lib/session.js";
 
 const cfg = loadConfig(__ENV); // init-context guard: aborts unsafe targets
 requireCredentials(cfg);
@@ -65,7 +65,12 @@ export default function loginFlow() {
   const accounts = [cfg.userEmail].concat(cfg.userPool);
   const email = accounts[(exec.vu.idInTest - 1) % accounts.length];
   clearSession(cfg); // every iteration is a cold login
-  const ok = login(cfg, email, cfg.userPassword, __ITER);
+  const ok = login(
+    cfg,
+    email,
+    cfg.userPassword,
+    SCENARIO_IP_OFFSETS.login + __ITER
+  );
   loginSuccess.add(ok);
   sleep(cfg.thinkTime);
 }

@@ -203,7 +203,10 @@ reads the calendar the write path is contending on), and
 Dashboard request latency is thresholded only on
 `{flow:member_dashboard}`. The one-time bcrypt bootstrap is reported by the
 separate `dashboard_bootstrap_login_success` gate, so login time cannot make a
-dashboard-read SLO fail while login failures still fail the run.
+dashboard-read SLO fail while login failures still fail the run. A failed
+bootstrap is recorded once and is not retried inside the read loop; otherwise
+an unavailable login path would turn the scenario into an accidental login
+storm and stop measuring dashboard reads.
 
 ```bash
 BASE_URL=http://localhost:3001 LOAD_TEST_CONFIRM_TARGET=1 \
@@ -242,6 +245,12 @@ BASE_URL=http://localhost:3001 LOAD_TEST_CONFIRM_TARGET=1 \
 ```
 
 ## Implementation notes
+
+- Each scenario uses a separate block of synthetic client IPs. This prevents a
+  login run from consuming the dashboard or contention scenario's fixed-window
+  rate-limit budget when the four profiles run back to back on one throwaway
+  stack. Re-running the same scenario still requires a fresh stack or an
+  expired limiter window.
 
 - **Measured baseline and rerun:** the first 100-VU evidence run found public
   p95 2.24 s, cold-login p95 23.01 s, dashboard aggregate p95 12.5 s, and

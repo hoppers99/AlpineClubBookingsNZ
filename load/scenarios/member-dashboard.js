@@ -29,7 +29,11 @@ import {
   requireCredentials,
   rampStages,
 } from "../lib/config.js";
-import { ensureLoggedIn, vuHeaders } from "../lib/session.js";
+import {
+  ensureLoggedIn,
+  SCENARIO_IP_OFFSETS,
+  vuHeaders,
+} from "../lib/session.js";
 
 const cfg = loadConfig(__ENV); // init-context guard: aborts unsafe targets
 requireCredentials(cfg);
@@ -66,7 +70,7 @@ export function setup() {
 }
 
 // Per-VU login memo (init context runs once per VU).
-const vuState = { loggedIn: false };
+const vuState = { loggedIn: false, loginAttempted: false };
 
 // Availability month to read: the contention check-in month, so a mixed
 // run reads the same calendar the write path is contending on.
@@ -76,19 +80,20 @@ const availMonth = parseInt(cfg.contentionCheckIn.slice(5, 7), 10) - 1; // 0-ind
 export default function memberDashboard() {
   const accounts = [cfg.userEmail].concat(cfg.userPool);
   const email = accounts[(exec.vu.idInTest - 1) % accounts.length];
-  const wasLoggedIn = vuState.loggedIn;
+  const shouldRecordBootstrap = !vuState.loginAttempted;
   const loggedIn = ensureLoggedIn(
     cfg,
     email,
     cfg.userPassword,
-    vuState
+    vuState,
+    SCENARIO_IP_OFFSETS.memberDashboard
   );
-  if (!wasLoggedIn) bootstrapLoginSuccess.add(loggedIn);
+  if (shouldRecordBootstrap) bootstrapLoginSuccess.add(loggedIn);
   if (!loggedIn) {
     sleep(cfg.thinkTime);
     return;
   }
-  const headers = vuHeaders(0);
+  const headers = vuHeaders(SCENARIO_IP_OFFSETS.memberDashboard);
   const tags = { flow: "member_dashboard" };
 
   const dashboard = http.get(cfg.baseUrl + "/dashboard", {
