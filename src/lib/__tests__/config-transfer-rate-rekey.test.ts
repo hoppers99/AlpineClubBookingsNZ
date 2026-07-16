@@ -224,8 +224,9 @@ describe("config-transfer D2 + shape import validation (#1930, E4 review F9)", (
         expect.stringContaining('"FULL" uses per-age-tier rates'),
       ]),
     );
-    // Valid rows (incl. ENTRANCE_FEE, which never carries a membership type)
-    // still plan; invalid ones are excluded.
+    // Valid rows still plan; invalid ones are excluded. The old-bundle
+    // ENTRANCE_FEE label (which never carries a membership type) is normalised
+    // to the current JOINING_FEE category on import (#1931, E5).
     const itemKeys = plan.items
       .filter((item) => item.entity === "xero-item-code-mapping")
       .map((item) => item.key);
@@ -233,7 +234,7 @@ describe("config-transfer D2 + shape import validation (#1930, E4 review F9)", (
       expect.arrayContaining([
         "HUT_FEE/FULL/ADULT/WINTER/-",
         "HUT_FEE/SCHOOL_GROUP/-/WINTER/-",
-        "ENTRANCE_FEE/-/-/-/ADULT",
+        "JOINING_FEE/-/-/-/ADULT",
       ]),
     );
     expect(itemKeys).toHaveLength(3);
