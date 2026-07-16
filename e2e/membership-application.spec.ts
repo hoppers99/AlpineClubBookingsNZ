@@ -148,8 +148,14 @@ test("an admin maps a rejoining applicant onto their existing member record (E10
   await expect(card).toHaveCount(1);
 
   // Switch the applicant to Map-to-existing and pick the existing member via
-  // the live search (the exact-email candidate).
-  await card.getByRole("radio", { name: "Map to existing" }).check();
+  // the live search (the exact-email candidate). The radio is a bare
+  // <input type="radio"> wrapped in its <label>; click the label text (a larger,
+  // reliable target that forwards the click to the control) and assert the
+  // controlled radio became checked rather than relying on .check() clicking the
+  // tiny native control.
+  const mapToExisting = card.getByRole("radio", { name: "Map to existing" });
+  await card.getByText("Map to existing", { exact: true }).click();
+  await expect(mapToExisting).toBeChecked();
   await card
     .getByPlaceholder("Search name or email")
     .fill(MAPPING_APPLICANT.email);
