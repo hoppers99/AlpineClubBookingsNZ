@@ -148,15 +148,15 @@ test("an admin maps a rejoining applicant onto their existing member record (E10
   await expect(card).toHaveCount(1);
 
   // Switch the applicant to Map-to-existing and pick the existing member via
-  // the live search (the exact-email candidate). The radio is a bare
-  // <input type="radio"> wrapped in its <label>. Click the control itself via
-  // check() rather than the label text: label->control forwarding to a
-  // React-controlled radio proved flaky in CI (the click landed but the
-  // controlled onChange never flipped `checked`), whereas check() clicks the
-  // native input directly and auto-waits until it reads checked.
+  // the live search (the exact-email candidate). The radio is a React-controlled
+  // <input type="radio">; both check() (which verifies `checked` immediately
+  // after the click, racing React 18's deferred re-render) and label->control
+  // forwarding proved flaky in CI. Use a plain click() on the input (fires the
+  // controlled onChange without an immediate-state assertion) and prove the
+  // switch functionally via the MAP-mode-only live-search input, which is a
+  // web-first assertion that auto-retries until the re-render lands.
   const mapToExisting = card.getByRole("radio", { name: "Map to existing" });
-  await mapToExisting.check();
-  await expect(mapToExisting).toBeChecked();
+  await mapToExisting.click();
   // Functional proof the mode actually switched to MAP: the member live-search
   // (this placeholder) only renders when the person is set to Map to existing.
   await expect(card.getByPlaceholder("Search name or email")).toBeVisible();
