@@ -9,7 +9,10 @@ vi.mock("@/hooks/use-scroll-to-feedback", () => ({
   useScrollToFeedback: () => ({ scrollToError: mocks.scrollToError, scrollToTop: vi.fn() }),
 }));
 
-let FeeConfigurationPage: typeof import("@/app/(admin)/admin/fee-configuration/page").default;
+// The finance fee sections moved to the consolidated /admin/fees console (#1933,
+// E7); /admin/fee-configuration now redirects there. Behaviour is unchanged, so
+// this suite exercises the moved component directly.
+let FeeConfigurationPage: typeof import("@/app/(admin)/admin/fees/_components/finance-fees-sections").FinanceFeesSections;
 
 const editableData = {
   canEdit: true,
@@ -99,7 +102,7 @@ beforeAll(async () => {
   Element.prototype.releasePointerCapture = vi.fn();
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-07-13T12:30:00.000Z")); // 14 July in Pacific/Auckland
-  FeeConfigurationPage = (await import("@/app/(admin)/admin/fee-configuration/page")).default;
+  FeeConfigurationPage = (await import("@/app/(admin)/admin/fees/_components/finance-fees-sections")).FinanceFeesSections;
   vi.useRealTimers();
 });
 
