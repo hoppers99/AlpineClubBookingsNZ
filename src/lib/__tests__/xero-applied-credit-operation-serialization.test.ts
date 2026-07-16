@@ -29,6 +29,23 @@ describe("findUnconvergedAppliedCreditDeallocation", () => {
       select: { id: true, status: true },
     });
   });
+
+  it("still fences an eventual-consistency busy-requeued (PENDING) deallocation so cancellation stays deferred (#1924)", async () => {
+    // A busy/eventual-consistency requeue returns the operation to PENDING,
+    // which the PENDING-inclusive status filter keeps covering — cancellation
+    // and IB-expiry remain deferred until it converges, no fence change needed.
+    const findFirst = vi.fn().mockResolvedValue({
+      id: "op-busy",
+      status: "PENDING",
+    });
+
+    const result = await findUnconvergedAppliedCreditDeallocation(
+      "payment-1",
+      { xeroSyncOperation: { findFirst } } as never,
+    );
+
+    expect(result).toEqual({ id: "op-busy", status: "PENDING" });
+  });
 });
 
 describe("assertNoAppliedCreditDeallocationFence", () => {

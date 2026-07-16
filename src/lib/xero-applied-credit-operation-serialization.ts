@@ -13,6 +13,24 @@ export class XeroAppliedCreditOperationBusyError extends Error {
   }
 }
 
+/**
+ * A deallocation worker read a provider allocation state that is inconsistent
+ * with the durable checkpoints only in a way explainable by Xero's eventual
+ * (non read-after-write) consistency — e.g. a just-deleted allocation still
+ * listed, or a just-created recreate not yet listed. This is transient and
+ * self-heals once Xero converges, so it is a subclass of the busy error: the
+ * outbox catch returns the row to PENDING for a bounded, backed-off retry
+ * instead of stranding it FAILED (which would defer cancellation/IB-expiry
+ * behind the unconverged fence). A mismatch NOT explainable by eventual
+ * consistency stays a genuine, fail-closed terminal error.
+ */
+export class XeroAppliedCreditDeallocationEventualConsistencyError extends XeroAppliedCreditOperationBusyError {
+  constructor(message: string) {
+    super(message);
+    this.name = "XeroAppliedCreditDeallocationEventualConsistencyError";
+  }
+}
+
 export function isXeroAppliedCreditOperationBusyError(
   error: unknown
 ): error is XeroAppliedCreditOperationBusyError {

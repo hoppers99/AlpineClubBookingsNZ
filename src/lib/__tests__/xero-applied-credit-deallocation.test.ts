@@ -132,6 +132,7 @@ import {
   deallocateExcessAppliedCreditForBooking,
   planAppliedCreditDeallocation,
 } from "@/lib/xero-applied-credit-deallocation";
+import { isXeroAppliedCreditOperationBusyError } from "@/lib/xero-applied-credit-operation-serialization";
 
 function providerNote(amountCents: number, allocationID = "alloc-1") {
   return {
@@ -148,6 +149,22 @@ function providerNote(amountCents: number, allocationID = "alloc-1") {
                     invoice: { invoiceID: "inv-1" },
                   },
                 ],
+        },
+      ],
+    },
+  };
+}
+
+function providerNoteMulti(allocations: Array<[number, string]>) {
+  return {
+    body: {
+      creditNotes: [
+        {
+          allocations: allocations.map(([amountCents, allocationID]) => ({
+            allocationID,
+            amount: amountCents / 100,
+            invoice: { invoiceID: "inv-1" },
+          })),
         },
       ],
     },
@@ -635,6 +652,211 @@ describe("deallocateExcessAppliedCreditForBooking (#1887 F3)", () => {
           }),
         },
       })
+    );
+  });
+
+  it("requeues (busy) when the post-recreate re-GET is stale under eventual consistency, advances no PROVIDER_VERIFIED checkpoint, and converges on the next run (#1924)", async () => {
+    h.linkFindMany.mockResolvedValue([regularAllocationLink()]);
+    // Top-of-loop sees the real pre-delete state; the post-recreate re-GET is
+    // stale and still lists the just-deleted allocation (recreate not yet
+    // visible).
+    h.getCreditNote
+      .mockResolvedValueOnce(providerNote(4000, "alloc-1"))
+      .mockResolvedValueOnce(providerNote(4000, "alloc-1"));
+
+    const busyError = await deallocateExcessAppliedCreditForBooking("booking-1", {
+      syncOperationId: "op-1",
+    }).catch((err) => err);
+    expect(isXeroAppliedCreditOperationBusyError(busyError)).toBe(true);
+
+    // The delete + recreate DID happen this run; the busy classification must
+    // add no further provider mutation, advance no PROVIDER_VERIFIED checkpoint,
+    // and touch no local ledger.
+    expect(h.deleteCreditNoteAllocations).toHaveBeenCalledTimes(1);
+    expect(h.createCreditNoteAllocation).toHaveBeenCalledTimes(1);
+    expect(h.allocationUpdate).not.toHaveBeenCalled();
+    expect(h.linkUpsert).not.toHaveBeenCalled();
+    expect(h.complete).not.toHaveBeenCalled();
+    expect(h.operationUpdate).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: {
+          requestPayload: expect.objectContaining({
+            checkpoint: expect.objectContaining({ phase: "PROVIDER_VERIFIED" }),
+          }),
+        },
+      }),
+    );
+    // The durable BEFORE_DELETE checkpoint and a bounded requeue counter persist
+    // for the retry; the ledger snapshot is not advanced.
+    expect(h.operationPayload.current).toEqual(
+      expect.objectContaining({
+        eventualConsistencyRequeues: 1,
+        checkpoint: expect.objectContaining({ phase: "BEFORE_DELETE" }),
+      }),
+    );
+
+    // Next run: Xero has converged. The BEFORE_DELETE checkpoint proves the
+    // provider is already at target, so it links the verified ID and completes.
+    h.getCreditNote.mockReset();
+    h.getCreditNote.mockResolvedValueOnce(providerNote(2500, "alloc-new"));
+
+    await deallocateExcessAppliedCreditForBooking("booking-1", {
+      syncOperationId: "op-1",
+    });
+
+    expect(h.deleteCreditNoteAllocations).toHaveBeenCalledTimes(1); // no new delete
+    expect(h.createCreditNoteAllocation).toHaveBeenCalledTimes(1); // no new recreate
+    expect(h.allocationUpdate).toHaveBeenCalledWith({
+      where: { id: "row-1" },
+      data: { amountCents: 2500 },
+    });
+    expect(h.linkUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({ xeroObjectId: "alloc-new" }),
+      }),
+    );
+    expect(h.complete).toHaveBeenCalledWith(
+      "op-1",
+      expect.objectContaining({
+        responsePayload: expect.objectContaining({ desiredAppliedCents: 2500 }),
+      }),
+    );
+  });
+
+  it("requeues (busy) when the top-of-loop re-GET still lists the just-deleted allocations alongside the recreate, then converges (#1924)", async () => {
+    h.linkFindMany.mockResolvedValue([regularAllocationLink()]);
+    // A prior run already issued delete+recreate (durable BEFORE_DELETE
+    // checkpoint) but crashed/requeued before local apply. Xero is now stale:
+    // the deleted allocation is still visible AND the recreate is visible, so
+    // providerTotal (6500) exceeds currentCents and matches none of the three
+    // provenance branches.
+    h.operationPayload.current = {
+      queueType: "APPLIED_CREDIT_DEALLOCATION",
+      bookingId: "booking-1",
+      ledgerSnapshot: {
+        desiredAppliedCents: 2500,
+        rows: [
+          {
+            id: "row-1",
+            xeroCreditNoteId: "cn-1",
+            amountCents: 4000,
+            createdAt: "2026-01-01T00:00:00.000Z",
+          },
+        ],
+      },
+      checkpoint: {
+        creditNoteId: "cn-1",
+        currentCents: 4000,
+        targetCents: 2500,
+        allocationIds: ["alloc-old"],
+        providerAllocations: [{ allocationID: "alloc-old", amountCents: 4000 }],
+        phase: "BEFORE_DELETE",
+      },
+    };
+    h.getCreditNote.mockResolvedValueOnce(
+      providerNoteMulti([
+        [4000, "alloc-old"],
+        [2500, "alloc-new"],
+      ]),
+    );
+
+    const topOfLoopBusyError = await deallocateExcessAppliedCreditForBooking(
+      "booking-1",
+      { syncOperationId: "op-1" },
+    ).catch((err) => err);
+    expect(isXeroAppliedCreditOperationBusyError(topOfLoopBusyError)).toBe(true);
+
+    // No provider mutation at all — the stale read is classified before any
+    // delete/recreate.
+    expect(h.deleteCreditNoteAllocations).not.toHaveBeenCalled();
+    expect(h.createCreditNoteAllocation).not.toHaveBeenCalled();
+    expect(h.allocationUpdate).not.toHaveBeenCalled();
+    expect(h.complete).not.toHaveBeenCalled();
+    expect(h.operationPayload.current).toEqual(
+      expect.objectContaining({ eventualConsistencyRequeues: 1 }),
+    );
+
+    // Converged retry links the recreate and completes.
+    h.getCreditNote.mockReset();
+    h.getCreditNote.mockResolvedValueOnce(providerNote(2500, "alloc-new"));
+
+    await deallocateExcessAppliedCreditForBooking("booking-1", {
+      syncOperationId: "op-1",
+    });
+
+    expect(h.allocationUpdate).toHaveBeenCalledWith({
+      where: { id: "row-1" },
+      data: { amountCents: 2500 },
+    });
+    expect(h.complete).toHaveBeenCalled();
+  });
+
+  it("stays terminal (not busy) when a foreign allocation makes the post-recreate total unexplainable by eventual consistency (#1924)", async () => {
+    h.linkFindMany.mockResolvedValue([regularAllocationLink()]);
+    h.getCreditNote
+      .mockResolvedValueOnce(providerNote(4000, "alloc-1"))
+      // Recreate (alloc-new, 2500) PLUS a foreign allocation (alloc-foreign,
+      // 2500) that no checkpoint proves: total 5000 is not a stale projection
+      // of the delete+recreate.
+      .mockResolvedValueOnce(
+        providerNoteMulti([
+          [2500, "alloc-new"],
+          [2500, "alloc-foreign"],
+        ]),
+      );
+
+    const error = await deallocateExcessAppliedCreditForBooking("booking-1", {
+      syncOperationId: "op-1",
+    }).catch((err) => err);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(isXeroAppliedCreditOperationBusyError(error)).toBe(false);
+    expect((error as Error).message).toMatch(/verification failed/);
+    expect(h.operationPayload.current.eventualConsistencyRequeues).toBeUndefined();
+  });
+
+  it("lands terminal FAILED once the bounded eventual-consistency requeue cap is exceeded (#1924)", async () => {
+    h.linkFindMany.mockResolvedValue([regularAllocationLink()]);
+    // Already at the cap (10): the next non-convergence must fail terminal
+    // instead of requeuing forever.
+    h.operationPayload.current = {
+      queueType: "APPLIED_CREDIT_DEALLOCATION",
+      bookingId: "booking-1",
+      eventualConsistencyRequeues: 10,
+      ledgerSnapshot: {
+        desiredAppliedCents: 2500,
+        rows: [
+          {
+            id: "row-1",
+            xeroCreditNoteId: "cn-1",
+            amountCents: 4000,
+            createdAt: "2026-01-01T00:00:00.000Z",
+          },
+        ],
+      },
+      checkpoint: {
+        creditNoteId: "cn-1",
+        currentCents: 4000,
+        targetCents: 2500,
+        allocationIds: ["alloc-old"],
+        providerAllocations: [{ allocationID: "alloc-old", amountCents: 4000 }],
+        phase: "BEFORE_DELETE",
+      },
+    };
+    h.getCreditNote.mockResolvedValueOnce(
+      providerNoteMulti([
+        [4000, "alloc-old"],
+        [2500, "alloc-new"],
+      ]),
+    );
+
+    const error = await deallocateExcessAppliedCreditForBooking("booking-1", {
+      syncOperationId: "op-1",
+    }).catch((err) => err);
+
+    expect(isXeroAppliedCreditOperationBusyError(error)).toBe(false);
+    expect((error as Error).message).toMatch(
+      /did not converge after 10 eventual-consistency requeues/,
     );
   });
 });

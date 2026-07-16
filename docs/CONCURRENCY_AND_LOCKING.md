@@ -106,7 +106,13 @@ transaction; ambiguous provider state fails to durable retry/manual review.
 Allocation and deallocation handlers detect another RUNNING operation for the
 same Payment. Separate runners can claim both rows before either check, so this
 contention uses a dedicated transient result: each loser returns to PENDING
-(never FAILED), and a later scan runs them without overlap. Provider-verified
+(never FAILED), and a later scan runs them without overlap. A post-recreate
+verification (or next-run top-of-loop guard) mismatch that is explained purely by
+Xero eventual consistency relative to the durable checkpoints — a just-deleted
+allocation still listed, or a just-created recreate not yet listed — reuses that
+same transient PENDING requeue (bounded, so persistent non-convergence still
+lands FAILED) instead of failing terminal; only a mismatch no eventual-consistency
+projection explains stays terminal. Provider-verified
 local slice/link reconciliation retakes the member ledger lock.
 The deallocation worker's first member-locked transaction records one durable
 snapshot of desired applied cents plus all precise slices. Clamp, inbound repair,

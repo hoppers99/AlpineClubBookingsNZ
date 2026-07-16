@@ -17,6 +17,7 @@ import {
 } from "./xero-operation-outbox-payload";
 import {
   assertNoAppliedCreditDeallocationFence,
+  XeroAppliedCreditDeallocationEventualConsistencyError,
   XeroAppliedCreditOperationBusyError,
 } from "./xero-applied-credit-operation-serialization";
 import { repairLegacyAppliedCreditNoteAllocationsForBooking } from "./xero-applied-credit-allocation-repair";
@@ -24,6 +25,17 @@ import { repairLegacyAppliedCreditNoteAllocationsForBooking } from "./xero-appli
 const APPLIED_CREDIT_ALLOCATION_ROLE = "APPLIED_CREDIT_ALLOCATION";
 const APPLIED_CREDIT_REMAINDER_ALLOCATION_ROLE =
   "APPLIED_CREDIT_REMAINDER_ALLOCATION";
+
+// Bounded backstop for the eventual-consistency requeue path (#1924). Xero's
+// read-after-write is not guaranteed, so a stale re-GET immediately after a
+// delete+recreate — or on the next retry's top-of-loop guard — is classified
+// transient and returned to PENDING (see
+// XeroAppliedCreditDeallocationEventualConsistencyError) rather than terminal
+// FAILED. Convergence normally happens within seconds; this cap ensures a note
+// that never converges still lands FAILED for the operator instead of looping
+// forever. The count is persisted on the operation payload
+// (`eventualConsistencyRequeues`) so it survives each PENDING→RUNNING reclaim.
+const MAX_EVENTUAL_CONSISTENCY_REQUEUES = 10;
 
 interface DeallocationRow {
   id: string;
@@ -245,6 +257,104 @@ async function readInvoiceAllocations(
       }
       return { allocationID: allocation.allocationID, amountCents };
     });
+}
+
+function readCheckpointAllocations(value: unknown): ProviderAllocation[] {
+  if (!Array.isArray(value)) return [];
+  const result: ProviderAllocation[] = [];
+  for (const item of value) {
+    const record = metadataRecord(item);
+    if (
+      typeof record?.allocationID === "string" &&
+      Number.isInteger(record.amountCents)
+    ) {
+      result.push({
+        allocationID: record.allocationID,
+        amountCents: record.amountCents as number,
+      });
+    }
+  }
+  return result;
+}
+
+/**
+ * Whether an observed provider allocation set is explained purely by Xero
+ * eventual consistency relative to a delete+recreate that has already been
+ * issued (or checkpointed). Every visible allocation must be either one of the
+ * `knownIds` (a just-deleted allocation still listed, or a previously-verified
+ * one) or the single recreate of exactly `targetCents` (not yet retired), and
+ * the total must be one of the stale projections of that transition:
+ *   - `preTotal`               pre-delete state still visible, recreate not yet
+ *   - `preTotal + targetCents` pre-delete state visible AND recreate visible
+ *   - `0`                      deletes visible, recreate not yet visible
+ * A foreign allocation (an unknown ID whose amount is not the recreate) or a
+ * total outside these projections is NOT eventual-consistency-shaped and stays
+ * fail-closed terminal.
+ */
+function isEventualConsistencyShapedTotal(params: {
+  observed: ProviderAllocation[];
+  providerTotal: number;
+  knownIds: string[];
+  preTotal: number;
+  targetCents: number;
+}): boolean {
+  const { observed, providerTotal, knownIds, preTotal, targetCents } = params;
+  const unknown = observed.filter(
+    (allocation) => !knownIds.includes(allocation.allocationID),
+  );
+  const unknownIsSoleRecreate =
+    unknown.length === 0 ||
+    (unknown.length === 1 &&
+      targetCents > 0 &&
+      unknown[0].amountCents === targetCents);
+  if (!unknownIsSoleRecreate) return false;
+  return (
+    providerTotal === preTotal ||
+    providerTotal === preTotal + targetCents ||
+    providerTotal === 0
+  );
+}
+
+/**
+ * Persist a bounded eventual-consistency requeue counter WITHOUT advancing any
+ * durable snapshot/checkpoint state, then either raise the transient busy error
+ * (so the outbox returns the row to PENDING for a backed-off retry) or, once the
+ * cap is exceeded, raise a terminal error so the operation lands FAILED for the
+ * operator. Makes no provider calls.
+ */
+async function requeueForEventualConsistency(params: {
+  operationId: string;
+  detail: string;
+}): Promise<never> {
+  const current = await prisma.xeroSyncOperation.findUnique({
+    where: { id: params.operationId },
+    select: { requestPayload: true },
+  });
+  const payload = metadataRecord(current?.requestPayload) ?? {};
+  const prior = Number.isInteger(payload.eventualConsistencyRequeues)
+    ? (payload.eventualConsistencyRequeues as number)
+    : 0;
+  const next = prior + 1;
+  await prisma.xeroSyncOperation.update({
+    where: { id: params.operationId },
+    data: {
+      // Only the counter changes; ledgerSnapshot/checkpoint/history are carried
+      // through untouched so a transient outcome never advances convergence
+      // state.
+      requestPayload: sanitizeForJson({
+        ...payload,
+        eventualConsistencyRequeues: next,
+      }),
+    },
+  });
+  if (next > MAX_EVENTUAL_CONSISTENCY_REQUEUES) {
+    throw new Error(
+      `Applied-credit deallocation ${params.operationId} did not converge after ${MAX_EVENTUAL_CONSISTENCY_REQUEUES} eventual-consistency requeues: ${params.detail}`,
+    );
+  }
+  throw new XeroAppliedCreditDeallocationEventualConsistencyError(
+    `${params.detail}; Xero provider read not yet converged (eventual-consistency requeue ${next}/${MAX_EVENTUAL_CONSISTENCY_REQUEUES})`,
+  );
 }
 
 async function checkpoint(params: {
@@ -634,6 +744,34 @@ export async function deallocateExcessAppliedCreditForBooking(
       !targetTotalHasCheckpointProvenance &&
       !checkpointedPartial
     ) {
+      // Symmetric to the post-recreate verification below (#1924): a durable
+      // checkpoint for THIS group proves we already issued the delete+recreate,
+      // so a top-of-loop re-GET that lists the just-deleted allocations again
+      // alongside the recreate (providerTotal > currentCents) — or any other
+      // stale projection whose IDs are all checkpointed-or-recreate — is Xero
+      // eventual consistency, not a genuine external mutation. Requeue with
+      // backoff instead of throwing the terminal ambiguity error. A total or ID
+      // set NOT explained by that transition stays fail-closed below.
+      const savedProviderTotal = readCheckpointAllocations(
+        saved?.providerAllocations,
+      ).reduce((sum, allocation) => sum + allocation.amountCents, 0);
+      const eventualConsistencyStale =
+        checkpointMatchesGroup &&
+        savedIds.length > 0 &&
+        isEventualConsistencyShapedTotal({
+          observed: provider,
+          providerTotal,
+          knownIds: savedIds,
+          preTotal: savedProviderTotal,
+          targetCents: group.targetCents,
+        }) &&
+        providerTotal !== group.targetCents;
+      if (eventualConsistencyStale) {
+        await requeueForEventualConsistency({
+          operationId: options.syncOperationId,
+          detail: `Stale top-of-loop provider allocations for credit note ${group.xeroCreditNoteId}: provider=${providerTotal}c current=${group.currentCents}c target=${group.targetCents}c`,
+        });
+      }
       throw new Error(
         `Ambiguous Xero allocation total/provenance for credit note ${group.xeroCreditNoteId}: provider=${providerTotal}c local=${group.currentCents}c target=${group.targetCents}c; no matching active local links or durable checkpoint prove these provider allocation IDs`
       );
@@ -706,9 +844,41 @@ export async function deallocateExcessAppliedCreditForBooking(
           }
         );
       }
+      // The allocation set we just deleted (its IDs and total) is the provenance
+      // basis for classifying the post-recreate re-GET under eventual
+      // consistency (#1924).
+      const deletedAllocations = provider;
+      const deletedIds = deletedAllocations.map(
+        (allocation) => allocation.allocationID,
+      );
+      const deletedTotal = deletedAllocations.reduce(
+        (sum, allocation) => sum + allocation.amountCents,
+        0,
+      );
       provider = await readInvoiceAllocations(group.xeroCreditNoteId, booking.payment.xeroInvoiceId);
       providerTotal = provider.reduce((sum, allocation) => sum + allocation.amountCents, 0);
       if (providerTotal !== group.targetCents) {
+        // Xero read-after-write is not guaranteed: an immediate re-GET can still
+        // list the just-deleted allocations (alone → providerTotal===deletedTotal,
+        // or alongside the recreate → deletedTotal+targetCents), or omit the
+        // just-created recreate (→ 0). Every one of those is self-healing, so
+        // requeue with backoff rather than failing terminal and fencing
+        // cancellation/IB-expiry. A total or ID set NOT explained by this
+        // transition (e.g. a foreign allocation) stays fail-closed terminal.
+        if (
+          isEventualConsistencyShapedTotal({
+            observed: provider,
+            providerTotal,
+            knownIds: deletedIds,
+            preTotal: deletedTotal,
+            targetCents: group.targetCents,
+          })
+        ) {
+          await requeueForEventualConsistency({
+            operationId: options.syncOperationId,
+            detail: `Post-recreate verification for ${group.xeroCreditNoteId}: provider=${providerTotal}c target=${group.targetCents}c`,
+          });
+        }
         throw new Error(
           `Xero deallocation verification failed for ${group.xeroCreditNoteId}: provider=${providerTotal}c target=${group.targetCents}c`
         );

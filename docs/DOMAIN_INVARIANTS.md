@@ -839,6 +839,14 @@ them without overlap instead of stranding both FAILED. A provider total that is
 neither exact local state nor a checkpointed
 partial/target is ambiguous (for example, a manual Xero edit): the operation
 fails visibly for operator retry/manual review and never guesses an ID or amount.
+One narrow exception is not a genuine failure: a post-delete+recreate re-GET (or
+the next retry's top-of-loop guard) whose total is explained purely by Xero
+eventual consistency relative to the durable BEFORE_DELETE/PROVIDER_VERIFIED
+checkpoints — a just-deleted allocation still listed, or a just-created recreate
+not yet listed (all visible IDs are checkpointed-or-the-recreate) — is
+classified transient and requeued to PENDING with backoff (bounded; repeated
+non-convergence still lands terminal FAILED for the operator). Only totals or ID
+sets that no eventual-consistency projection explains stay terminal.
 The admin retry action never invokes either multi-call applied-credit handler
 inline: one atomic FAILED/PARTIAL-to-PENDING compare-and-set wins, then the
 outbox's PENDING-to-RUNNING claim remains the sole provider-call authority.
