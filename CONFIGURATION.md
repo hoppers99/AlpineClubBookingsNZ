@@ -958,8 +958,12 @@ Annual membership and joining fee amounts are database configuration, not
 environment variables or provider metadata. Membership editors own public
 descriptions/listing under `/admin/membership-types`; Finance editors own
 effective-dated amounts and family billing members under
-`/admin/fee-configuration`. Hut fees remain lodge season/rate configuration.
-See `docs/AUTHORITATIVE_FEES.md` for operator and compatibility rules.
+`/admin/fee-configuration`. Joining fees (`JoiningFee`, #1931) key on membership
+type × optional age tier, resolved with no legacy mapping fallback; the Family
+fee is strictly type-driven (only members assigned the Family type get it — the
+composition heuristic is removed). Hut fees remain lodge season/rate
+configuration. See `docs/AUTHORITATIVE_FEES.md` for operator rules and the
+frozen Xero idempotency contract.
 
 The `/admin/fee-configuration` page shows annual membership fees, joining fees,
 and (only when `familyBillingMode` is `BILL_FAMILY_VIA_BILLING_MEMBER`) family

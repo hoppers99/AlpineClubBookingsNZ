@@ -126,8 +126,9 @@ recommended reading paths.
    existing future bookings are not automatically repriced by this change.
    Membership editors also maintain the distinct public description and must
    explicitly enable public listing; migrated and new types start hidden.
-   Finance editors use **Admin > Membership & Entrance Fees** for effective-dated
-   amounts and explicit family billing members. See
+   Finance editors use **Admin > Membership & Joining Fees** for effective-dated
+   amounts and explicit family billing members. Joining fees key on membership
+   type and age tier, and the Family fee is strictly type-driven. See
    `docs/AUTHORITATIVE_FEES.md`.
    Treasurers then use **Admin > Subscriptions** to preview an annual billing
    batch, resolve configuration/recipient exceptions, set invoice due days
