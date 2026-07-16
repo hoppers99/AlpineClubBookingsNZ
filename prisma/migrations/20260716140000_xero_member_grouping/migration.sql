@@ -62,7 +62,10 @@ DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM "XeroGroupingSettings" WHERE "id" = 'default') THEN
     UPDATE "XeroContactGroupRule"
-    SET "isActive" = false, "updatedAt" = CURRENT_TIMESTAMP
+    -- Explicit UTC (not session-clock CURRENT_TIMESTAMP) per the #1627/#1656
+    -- session-clock DML gate: naive timestamp columns must not record the
+    -- database session's local wall-clock.
+    SET "isActive" = false, "updatedAt" = timezone('UTC', statement_timestamp())
     WHERE "isActive" = true
       AND "id" NOT LIKE 'xcgr-managed-%'
       AND "id" NOT LIKE 'xcgr-accepted-%';
@@ -104,8 +107,8 @@ SELECT
   s."xeroContactGroupName",
   true,
   s."sortOrder",
-  CURRENT_TIMESTAMP,
-  CURRENT_TIMESTAMP
+  timezone('UTC', statement_timestamp()),
+  timezone('UTC', statement_timestamp())
 FROM "AgeTierSetting" s
 WHERE s."xeroContactGroupId" IS NOT NULL
 ON CONFLICT DO NOTHING;
@@ -122,8 +125,8 @@ SELECT
   a."groupName",
   true,
   s."sortOrder",
-  CURRENT_TIMESTAMP,
-  CURRENT_TIMESTAMP
+  timezone('UTC', statement_timestamp()),
+  timezone('UTC', statement_timestamp())
 FROM "AgeTierXeroAcceptedContactGroup" a
 JOIN "AgeTierSetting" s ON s."id" = a."ageTierSettingId"
 ON CONFLICT DO NOTHING;
@@ -141,6 +144,6 @@ SELECT
     THEN 'MEMBERSHIP_TYPE_AND_AGE'::"XeroMemberGroupingMode"
     ELSE 'NONE'::"XeroMemberGroupingMode"
   END,
-  CURRENT_TIMESTAMP,
-  CURRENT_TIMESTAMP
+  timezone('UTC', statement_timestamp()),
+  timezone('UTC', statement_timestamp())
 ON CONFLICT ("id") DO NOTHING;
