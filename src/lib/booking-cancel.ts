@@ -10,8 +10,12 @@ import {
 import { sendBookingCancelledEmail } from "./email";
 import { logAudit } from "./audit";
 import { recordBookingEvent } from "./booking-events";
-import { BookingEventType, BookingStatus, CreditType, type Prisma } from "@prisma/client";
-import { createCancellationCredit, restoreCreditFromBooking } from "./member-credit";
+import { BookingEventType, BookingStatus, type Prisma } from "@prisma/client";
+import {
+  createCancellationCredit,
+  lockMemberCreditLedger,
+  restoreCreditFromBooking,
+} from "./member-credit";
 import { processWaitlistForDates } from "./waitlist";
 import {
   enqueueXeroAccountCreditNoteOperation,
@@ -43,6 +47,8 @@ import {
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 import { revokePaymentLinksForBooking } from "@/lib/payment-link";
 import { settleGroupBookingOnOrganiserCancel } from "@/lib/group-cancel";
+import { repairLegacyAppliedCreditNoteAllocationsForBooking } from "@/lib/xero-applied-credit-allocation-repair";
+import { findUnconvergedAppliedCreditDeallocation } from "@/lib/xero-applied-credit-operation-serialization";
 import { acquireLodgeCapacityLock } from "@/lib/capacity";
 
 // Statuses a booking may be cancelled from. Shared by the outer validation
@@ -507,7 +513,7 @@ async function performBookingCancellation(
         // defensively, but detaching at the source keeps the pointer honest.
         await tx.bookingRequest.updateMany({
           where: { heldBookingId: bookingId },
-          data: { heldBookingId: null },
+          data: { heldBookingId: null, version: { increment: 1 } },
         });
       }
       // Bed release is now ATOMIC with the status flip under the lock, sourced
@@ -817,6 +823,22 @@ async function performBookingCancellation(
         return { claimed: false as const };
       }
 
+      // #1881 lock topology: this path already holds global lock(1); take the
+      // member-ledger lock second before inspecting deallocation state or
+      // repairing/reading precise allocation slices. Inbound Xero repair and
+      // allocation/deallocation workers use this same member key.
+      await lockMemberCreditLedger(fresh.memberId, tx);
+
+      if (
+        fresh.payment &&
+        (await findUnconvergedAppliedCreditDeallocation(fresh.payment.id, tx))
+      ) {
+        return {
+          claimed: false as const,
+          blockedByAppliedCreditDeallocation: true as const,
+        };
+      }
+
       const freshPaymentCaptured = fresh.payment
         ? await paymentHasCaptureEvidence(fresh.payment, tx)
         : false;
@@ -878,17 +900,25 @@ async function performBookingCancellation(
       // clearing note below must not re-credit them (Xero rejects
       // over-allocation and the outbox op would poison). Read under lock(1) —
       // the inbound reconcile serializes on the same lock.
-      const xeroAllocated = await tx.memberCredit.aggregate({
+      // Use the precise allocation-slice ledger. The MemberCredit Xero-note
+      // stamp is historical and remains on the original row after a partial
+      // deallocation, so it would understate the invoice clearing amount.
+      if (fresh.payment?.xeroInvoiceId) {
+        await repairLegacyAppliedCreditNoteAllocationsForBooking(
+          bookingId,
+          fresh.payment.xeroInvoiceId,
+          tx,
+        );
+      }
+      const xeroAllocated = await tx.memberCreditNoteAllocation.aggregate({
         where: {
           appliedToBookingId: bookingId,
-          type: CreditType.BOOKING_APPLIED,
-          xeroCreditNoteId: { not: null },
         },
         _sum: { amountCents: true },
       });
       const xeroAllocatedAppliedCreditCents = Math.max(
         0,
-        -(xeroAllocated._sum.amountCents ?? 0)
+        xeroAllocated._sum.amountCents ?? 0
       );
 
       return {
@@ -904,6 +934,13 @@ async function performBookingCancellation(
     // concurrent capture / cancel that transitioned the row gets a real 409,
     // never a false 200. A capture win routes the retry into the paid path.
     if (!claim.claimed) {
+      if ("blockedByAppliedCreditDeallocation" in claim) {
+        return {
+          status: 409,
+          error:
+            "Applied credit is still being reconciled with Xero; retry cancellation after it completes",
+        };
+      }
       return {
         status: 409,
         error: "This booking is already being cancelled or has been cancelled",

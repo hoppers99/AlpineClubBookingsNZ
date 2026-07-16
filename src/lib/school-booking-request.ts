@@ -651,12 +651,14 @@ export async function approveSchoolBookingRequest(input: {
       }
 
       // Any edit to the approval snapshot (including attaching/detaching a
-      // hold) advances updatedAt. Refuse this stale attempt so every value used
-      // below was validated under the locks; the caller can retry from the new
-      // request state. The explicit held-id comparison also documents the
-      // global-lock decision instead of relying on timestamp comparison alone.
+      // hold) increments version (#1923). Refuse this stale attempt so every
+      // value used below was validated under the locks; the caller can retry
+      // from the new request state. The explicit held-id comparison also
+      // documents the global-lock decision instead of relying on the counter
+      // alone. Version replaces the former updatedAt comparison, whose
+      // TIMESTAMP(3) precision could collide for two same-millisecond writes.
       if (
-        lockedRequest.updatedAt.getTime() !== request.updatedAt.getTime() ||
+        lockedRequest.version !== request.version ||
         (lockedRequest.heldBookingId ?? null) !== expectedHeldBookingId
       ) {
         throw new BookingRequestError(
@@ -709,10 +711,11 @@ export async function approveSchoolBookingRequest(input: {
       const claimed = await tx.bookingRequest.updateMany({
         where: {
           id: request.id,
-          // Optimistic version fence for mutable price/guest/hold state: a
-          // writer that lands after the locked re-read cannot be silently
-          // overwritten by an approval built from the older snapshot.
-          updatedAt: request.updatedAt,
+          // Optimistic version fence for mutable price/guest/hold state (#1923):
+          // a writer that lands after the locked re-read cannot be silently
+          // overwritten by an approval built from the older snapshot. Fences on
+          // the integer version, not updatedAt (millisecond-collidable).
+          version: request.version,
           status: {
             in: [BookingRequestStatus.VERIFIED, BookingRequestStatus.PRICED],
           },
@@ -721,6 +724,7 @@ export async function approveSchoolBookingRequest(input: {
           status: BookingRequestStatus.APPROVED,
           reviewedByMemberId: input.adminMemberId,
           reviewedAt,
+          version: { increment: 1 },
         },
       });
       if (claimed.count === 0) {
@@ -986,6 +990,7 @@ export async function approveSchoolBookingRequest(input: {
           status: BookingRequestStatus.CONVERTED,
           convertedBookingId: booking.id,
           convertedMemberId: schoolMember.id,
+          version: { increment: 1 },
           // Keep the request snapshot consistent with what was actually booked
           // when the admin varied the quantity.
           ...(input.guestOverride

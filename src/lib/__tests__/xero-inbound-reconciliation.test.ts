@@ -19,6 +19,8 @@ const mocks = vi.hoisted(() => ({
   memberCreditFindMany: vi.fn(),
   memberCreditUpdate: vi.fn(),
   memberCreditUpdateMany: vi.fn(),
+  memberCreditNoteAllocationAggregate: vi.fn(),
+  memberCreditNoteAllocationFindMany: vi.fn(),
   linkFindMany: vi.fn(),
   auditLogCreate: vi.fn(),
   bookingFindMany: vi.fn(),
@@ -53,6 +55,8 @@ const mocks = vi.hoisted(() => ({
   processWaitlist: vi.fn(),
   txLinkFindFirst: vi.fn(),
   txOperationFindFirst: vi.fn(),
+  txOperationFindMany: vi.fn(),
+  repairLegacyAppliedCreditNoteAllocationsForBooking: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -86,6 +90,9 @@ vi.mock("@/lib/prisma", () => ({
       findMany: mocks.memberCreditFindMany,
       update: mocks.memberCreditUpdate,
       updateMany: mocks.memberCreditUpdateMany,
+    },
+    memberCreditNoteAllocation: {
+      findMany: mocks.memberCreditNoteAllocationFindMany,
     },
     xeroObjectLink: {
       findMany: mocks.linkFindMany,
@@ -127,6 +134,11 @@ vi.mock("@/lib/logger", () => ({
     warn: vi.fn(),
     debug: vi.fn(),
   },
+}));
+
+vi.mock("@/lib/xero-applied-credit-allocation-repair", () => ({
+  repairLegacyAppliedCreditNoteAllocationsForBooking:
+    mocks.repairLegacyAppliedCreditNoteAllocationsForBooking,
 }));
 
 vi.mock("@/lib/email", () => ({
@@ -292,6 +304,11 @@ describe("processStoredXeroInboundEvents", () => {
     mocks.processWaitlist.mockResolvedValue(undefined);
     mocks.txLinkFindFirst.mockResolvedValue(null);
     mocks.txOperationFindFirst.mockResolvedValue(null);
+    mocks.txOperationFindMany.mockResolvedValue([]);
+    mocks.memberCreditNoteAllocationAggregate.mockResolvedValue({
+      _sum: { amountCents: 0 },
+    });
+    mocks.memberCreditNoteAllocationFindMany.mockResolvedValue([]);
     mocks.inboundUpdateMany.mockResolvedValue({ count: 1 });
     mocks.xeroSyncOperationFindMany.mockResolvedValue([]);
     mocks.xeroSyncCursorFindUnique.mockResolvedValue(null);
@@ -359,7 +376,14 @@ describe("processStoredXeroInboundEvents", () => {
           findMany: mocks.memberCreditFindMany,
           create: mocks.memberCreditCreate,
           update: mocks.memberCreditUpdate,
+          updateMany: mocks.memberCreditUpdateMany,
           aggregate: mocks.memberCreditAggregate,
+        },
+        memberCreditNoteAllocation: {
+          aggregate: mocks.memberCreditNoteAllocationAggregate,
+        },
+        xeroSyncOperation: {
+          findMany: mocks.txOperationFindMany,
         },
       })
     );
@@ -385,6 +409,7 @@ describe("processStoredXeroInboundEvents", () => {
     });
     mocks.memberCreditCreate.mockResolvedValue({ id: "credit_1" });
     mocks.memberCreditFindMany.mockResolvedValue([]);
+    mocks.linkFindMany.mockResolvedValue([]);
     mocks.memberCreditUpdate.mockResolvedValue({ id: "credit_1" });
     mocks.memberCreditUpdateMany.mockResolvedValue({ count: 0 });
     mocks.auditLogCreate.mockResolvedValue({});
@@ -3791,6 +3816,203 @@ describe("processStoredXeroInboundEvents", () => {
     );
   });
 
+  it("repairs an admin-adjustment-minted note (no CANCELLATION_REFUND provenance) whose final allocation was deleted in Xero (#1925)", async () => {
+    mocks.inboundFindMany.mockResolvedValue([
+      {
+        id: "evt_1925",
+        source: "webhook",
+        eventCategory: "CREDIT_NOTE",
+        eventType: "UPDATE",
+        resourceId: "cn_admin_1",
+        correlationKey: "corr_1925",
+        payload: { resourceId: "cn_admin_1" },
+      },
+    ]);
+    mocks.processedCreate.mockResolvedValue({ id: "processed_1925" });
+
+    // No CANCELLATION_REFUND rows exist for this note; the fallback (#1925)
+    // resolves the applied-credit context from the precise slice + active link.
+    mocks.memberCreditNoteAllocationFindMany.mockResolvedValue([
+      {
+        id: "slice_admin_1",
+        appliedToBookingId: "bk_admin_1",
+        memberCredit: { memberId: "mem_admin_1" },
+      },
+    ]);
+
+    mocks.linkFindMany.mockImplementation(async (args?: { where?: Record<string, unknown> }) => {
+      const where = (args?.where ?? {}) as {
+        xeroObjectType?: string;
+        role?: { in?: string[] } | string;
+      };
+      if (where.xeroObjectType === "CREDIT_NOTE") {
+        // No pre-existing ACCOUNT_CREDIT_NOTE link: the gate must open via the
+        // #1925 local-provenance fallback, not an inherited link.
+        return [];
+      }
+      if (
+        where.xeroObjectType === "ALLOCATION" &&
+        typeof where.role === "object" &&
+        where.role?.in?.includes("APPLIED_CREDIT_ALLOCATION")
+      ) {
+        // Active allocation link proving Xero previously carried the allocation
+        // (used by both the fallback resolver and the deleted-target diff).
+        return [
+          {
+            localModel: "MemberCreditNoteAllocation",
+            localId: "slice_admin_1",
+            metadata: {
+              creditNoteId: "cn_admin_1",
+              invoiceId: "inv_admin_1",
+              amountCents: 3000,
+            },
+          },
+        ];
+      }
+      return [];
+    });
+
+    mocks.memberCreditFindMany.mockImplementation(async (args?: { where?: { type?: string } }) => {
+      const type = args?.where?.type;
+      if (type === "CANCELLATION_REFUND") {
+        return []; // force the #1925 fallback
+      }
+      if (type === "BOOKING_APPLIED") {
+        return [
+          {
+            id: "hist_admin_1",
+            amountCents: -3000,
+            description: "Applied to booking bk_admin_",
+            xeroCreditNoteId: "cn_admin_1",
+          },
+        ];
+      }
+      return [];
+    });
+
+    mocks.paymentFindMany.mockImplementation(
+      async (args?: { where?: Record<string, unknown>; select?: Record<string, unknown> }) => {
+        const where = (args?.where ?? {}) as {
+          id?: { in?: string[] };
+          booking?: { memberId?: string };
+          OR?: Array<Record<string, unknown>>;
+        };
+        if (where.id?.in) {
+          if (args?.select?.refundedAmountCents) {
+            return [
+              {
+                id: "pay_admin_1",
+                amountCents: 12000,
+                refundedAmountCents: 0,
+                status: "SUCCEEDED",
+                source: "INTERNET_BANKING",
+              },
+            ];
+          }
+          return [
+            {
+              id: "pay_admin_1",
+              bookingId: "bk_admin_1",
+              booking: { memberId: "mem_admin_1" },
+            },
+          ];
+        }
+        if (where.booking?.memberId) {
+          return [{ id: "pay_admin_1", bookingId: "bk_admin_1" }];
+        }
+        if (where.OR) {
+          const isDirectRefundLookup = where.OR.some(
+            (clause) => "xeroRefundCreditNoteId" in clause,
+          );
+          if (isDirectRefundLookup) {
+            return [];
+          }
+          return [
+            {
+              id: "pay_admin_1",
+              bookingId: "bk_admin_1",
+              amountCents: 12000,
+              creditAppliedCents: 3000,
+              booking: { memberId: "mem_admin_1" },
+            },
+          ];
+        }
+        return [];
+      },
+    );
+
+    mocks.memberCreditUpdateMany.mockResolvedValue({ count: 0 });
+    mocks.memberCreditNoteAllocationAggregate.mockResolvedValue({
+      _sum: { amountCents: 0 },
+    });
+    mocks.memberCreditAggregate
+      .mockResolvedValueOnce({ _sum: { amountCents: 0 } }) // unstamped
+      .mockResolvedValueOnce({ _sum: { amountCents: -3000 } }) // current ledger
+      .mockResolvedValue({ _sum: { amountCents: 0 } }); // post-offset total
+    mocks.paymentFindUnique.mockResolvedValue({ creditAppliedCents: 3000 });
+    mocks.memberCreditCreate.mockResolvedValue({});
+    mocks.repairLegacyAppliedCreditNoteAllocationsForBooking.mockResolvedValue(0);
+
+    const accountingApi = {
+      getCreditNote: vi.fn().mockResolvedValue({
+        body: {
+          creditNotes: [
+            {
+              creditNoteID: "cn_admin_1",
+              creditNoteNumber: "CN-ADMIN-001",
+              total: 30,
+              appliedAmount: 0,
+              remainingCredit: 30,
+              allocations: [], // final allocation deleted at the provider
+              payments: [],
+            },
+          ],
+        },
+      }),
+    };
+    mocks.getAuthenticatedXeroClient.mockResolvedValue({
+      xero: { accountingApi },
+      tenantId: "tenant_1",
+    });
+
+    const result = await processStoredXeroInboundEvents();
+    expect(result).toEqual({
+      found: 1,
+      processed: 1,
+      succeeded: 1,
+      failed: 0,
+      skipped: 0,
+    });
+
+    // The deleted final allocation is reconciled to zero: a single +3000 offset
+    // is appended (append-only) to net the historical -3000 application.
+    expect(mocks.memberCreditCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        amountCents: 3000,
+        type: "BOOKING_APPLIED",
+        appliedToBookingId: "bk_admin_1",
+        xeroCreditNoteId: "cn_admin_1",
+      }),
+    });
+    expect(mocks.paymentUpdate).toHaveBeenCalledWith({
+      where: { id: "pay_admin_1" },
+      data: { creditAppliedCents: 0 },
+    });
+    expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
+      "op_1",
+      expect.objectContaining({
+        responsePayload: expect.objectContaining({
+          // The fallback opened the applied-credit repair gate for a note with
+          // no CANCELLATION_REFUND provenance, and the deleted-final-allocation
+          // reconciliation ran against the resolved payment.
+          matchedAccountCreditPayments: 1,
+          matchedAllocatedPayments: 1,
+          updatedAppliedPayments: 1,
+        }),
+      }),
+    );
+  });
+
   it("recovers missing account-credit payment links from member credits during credit note reconciliation", async () => {
     mocks.inboundFindMany.mockResolvedValue([
       {
@@ -4281,11 +4503,13 @@ describe("processStoredXeroInboundEvents", () => {
     // The applied-credit repair re-reads the payment's current creditAppliedCents
     // under the advisory lock before comparing against the aggregated total.
     mocks.paymentFindUnique.mockResolvedValue({ creditAppliedCents: 0 });
-    mocks.memberCreditAggregate.mockResolvedValue({
-      _sum: {
-        amountCents: -2500,
-      },
+    mocks.memberCreditNoteAllocationAggregate.mockResolvedValue({
+      _sum: { amountCents: 2500 },
     });
+    mocks.memberCreditAggregate
+      .mockResolvedValueOnce({ _sum: { amountCents: 0 } })
+      .mockResolvedValueOnce({ _sum: { amountCents: -2500 } })
+      .mockResolvedValue({ _sum: { amountCents: -2500 } });
     const accountingApi = {
       getCreditNote: vi.fn().mockResolvedValue({
         body: {
@@ -4359,6 +4583,129 @@ describe("processStoredXeroInboundEvents", () => {
         }),
       })
     );
+  });
+
+  it("reconciles deletion of the final account-credit allocation from the inbound provider response", async () => {
+    mocks.inboundFindMany.mockResolvedValue([{
+      id: "evt_delete_alloc",
+      source: "webhook",
+      eventCategory: "CREDIT_NOTE",
+      eventType: "UPDATE",
+      resourceId: "cn_credit_delete_alloc",
+      correlationKey: "corr_delete_alloc",
+      payload: { resourceId: "cn_credit_delete_alloc" },
+    }]);
+    mocks.processedCreate.mockResolvedValue({ id: "processed_delete_alloc" });
+    mocks.linkFindMany
+      .mockResolvedValueOnce([{
+        localModel: "Payment",
+        localId: "pay_credit_source_1",
+        xeroObjectType: "CREDIT_NOTE",
+        role: "ACCOUNT_CREDIT_NOTE",
+      }])
+      .mockResolvedValueOnce([{
+        localId: "pay_credit_source_1",
+        xeroObjectId: "cn_credit_delete_alloc",
+        metadata: { total: 97, status: "AUTHORISED" },
+      }])
+      .mockResolvedValueOnce([])
+      // Provider allocations are now empty, but this still-active completion
+      // link proves the note previously targeted inv_booking_1.
+      .mockResolvedValueOnce([{
+        metadata: {
+          creditNoteId: "cn_credit_delete_alloc",
+          invoiceId: "inv_booking_1",
+          amountCents: 2500,
+        },
+      }])
+      .mockResolvedValueOnce([]);
+    mocks.paymentFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        id: "pay_credit_source_1",
+        bookingId: "bk123456789",
+        booking: { memberId: "mem_credit_1" },
+      }])
+      .mockResolvedValueOnce([{
+        id: "pay_credit_source_1",
+        amountCents: 12000,
+        refundedAmountCents: 0,
+        status: "SUCCEEDED",
+      }])
+      .mockResolvedValueOnce([{
+        id: "pay_booking_1",
+        bookingId: "bk234567890",
+        xeroInvoiceId: "inv_booking_1",
+        amountCents: 12000,
+        creditAppliedCents: 2500,
+        booking: { memberId: "mem_credit_1" },
+      }]);
+    mocks.memberCreditFindMany.mockResolvedValue([{
+      id: "historical_applied_1",
+      amountCents: -2500,
+      description: "Applied to booking bk234567",
+      xeroCreditNoteId: "cn_credit_delete_alloc",
+    }]);
+    mocks.paymentFindUnique.mockResolvedValue({ creditAppliedCents: 2500 });
+    mocks.memberCreditNoteAllocationAggregate.mockResolvedValue({
+      _sum: { amountCents: 0 },
+    });
+    mocks.memberCreditAggregate
+      .mockResolvedValueOnce({ _sum: { amountCents: 0 } })
+      .mockResolvedValueOnce({ _sum: { amountCents: -2500 } })
+      .mockResolvedValue({ _sum: { amountCents: 0 } });
+    mocks.getAuthenticatedXeroClient.mockResolvedValue({
+      xero: {
+        accountingApi: {
+          getCreditNote: vi.fn().mockResolvedValue({
+            body: {
+              creditNotes: [{
+                creditNoteID: "cn_credit_delete_alloc",
+                creditNoteNumber: "CN-AC-DELETE-001",
+                total: 97,
+                appliedAmount: 0,
+                remainingCredit: 97,
+                allocations: [],
+                payments: [],
+              }],
+            },
+          }),
+        },
+      },
+      tenantId: "tenant_1",
+    });
+
+    await expect(processStoredXeroInboundEvents()).resolves.toEqual({
+      found: 1,
+      processed: 1,
+      succeeded: 1,
+      failed: 0,
+      skipped: 0,
+    });
+    expect(
+      mocks.repairLegacyAppliedCreditNoteAllocationsForBooking,
+    ).toHaveBeenCalledWith(
+      "bk234567890",
+      "inv_booking_1",
+      expect.anything(),
+      {
+        providerTarget: {
+          xeroCreditNoteId: "cn_credit_delete_alloc",
+          amountCents: 0,
+        },
+      },
+    );
+    expect(mocks.memberCreditCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        amountCents: 2500,
+        xeroCreditNoteId: "cn_credit_delete_alloc",
+      }),
+    });
+    expect(mocks.paymentUpdate).toHaveBeenCalledWith({
+      where: { id: "pay_booking_1" },
+      data: { creditAppliedCents: 0 },
+    });
   });
 
   it("repairs applied-credit ledger state atomically under the advisory lock and clamps to the payment amount", async () => {
@@ -4436,11 +4783,13 @@ describe("processStoredXeroInboundEvents", () => {
         },
       ]);
     mocks.paymentFindUnique.mockResolvedValue({ creditAppliedCents: 0 });
-    mocks.memberCreditAggregate.mockResolvedValue({
-      _sum: {
-        amountCents: -5000,
-      },
+    mocks.memberCreditNoteAllocationAggregate.mockResolvedValue({
+      _sum: { amountCents: 5000 },
     });
+    mocks.memberCreditAggregate
+      .mockResolvedValueOnce({ _sum: { amountCents: 0 } })
+      .mockResolvedValueOnce({ _sum: { amountCents: -5000 } })
+      .mockResolvedValue({ _sum: { amountCents: -5000 } });
     const accountingApi = {
       getCreditNote: vi.fn().mockResolvedValue({
         body: {
@@ -4481,6 +4830,19 @@ describe("processStoredXeroInboundEvents", () => {
     // the shared reconcile advisory lock.
     expect(mocks.transaction).toHaveBeenCalled();
     expect(mocks.txExecuteRaw).toHaveBeenCalled();
+    expect(
+      mocks.repairLegacyAppliedCreditNoteAllocationsForBooking,
+    ).toHaveBeenCalledWith(
+      "bk234567890",
+      "inv_booking_1",
+      expect.anything(),
+      {
+        providerTarget: {
+          xeroCreditNoteId: "cn_credit_clamp",
+          amountCents: 2500,
+        },
+      },
+    );
     // Clamped to the payment amount, not the raw 5000 aggregate.
     expect(mocks.paymentUpdate).toHaveBeenCalledWith({
       where: { id: "pay_booking_1" },

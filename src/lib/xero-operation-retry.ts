@@ -3,6 +3,7 @@ import {
   readQueuedOutboxPayload,
   XERO_OUTBOX_ACCOUNT_CREDIT_NOTE_TYPE,
   XERO_OUTBOX_APPLIED_CREDIT_ALLOCATION_TYPE,
+  XERO_OUTBOX_APPLIED_CREDIT_DEALLOCATION_TYPE,
   XERO_OUTBOX_MODIFICATION_ACCOUNT_CREDIT_NOTE_TYPE,
   XERO_OUTBOX_MODIFICATION_CREDIT_NOTE_TYPE,
   XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE,
@@ -54,6 +55,50 @@ export class XeroOperationRetryError extends Error {
 export interface XeroOperationRetryMeta {
   supported: boolean;
   reason: string | null;
+}
+
+function readAppliedCreditAllocationChildContext(payload: unknown): {
+  parentOperationId: string | null;
+  bookingId: string;
+  paymentId: string;
+} | null {
+  const context = asRecord(asRecord(payload)?.appliedCreditContext);
+  const bookingId = readString(context?.bookingId);
+  const paymentId = readString(context?.paymentId);
+  if (!bookingId || !paymentId) return null;
+  return {
+    parentOperationId: readString(context?.parentOperationId),
+    bookingId,
+    paymentId,
+  };
+}
+
+function isLegacyContextlessAppliedCreditAllocationChild(
+  operation: RetryableOperation,
+): boolean {
+  if (
+    operation.entityType !== "ALLOCATION" ||
+    operation.operationType !== "ALLOCATE" ||
+    !parseAllocationRetryInput(operation)
+  ) {
+    return false;
+  }
+
+  if (operation.localModel === "MemberCreditNoteAllocation") {
+    // #1620 existing-note children always used the precise slice as their local
+    // record. No unrelated allocation workflow uses this model.
+    return true;
+  }
+
+  const payload = asRecord(operation.requestPayload);
+  // Before appliedCreditContext was added, the only direct (non-queue-shaped)
+  // Payment allocation emitted by the codebase was the #1620 minted-remainder
+  // child. Explicit queueType payloads remain eligible for their normal repair
+  // path, preserving unrelated CREDIT_NOTE_ALLOCATION retries.
+  return (
+    operation.localModel === "Payment" &&
+    !readString(payload?.queueType)
+  );
 }
 
 const REFUND_CREDIT_NOTE_ALLOCATION_SKIP_REASON =
@@ -507,6 +552,44 @@ export function getXeroOperationRetryMeta(operation: RetryableOperation): XeroOp
     };
   }
 
+  const queuedAppliedCredit = readQueuedOutboxPayload(operation.requestPayload);
+  const isQueuedAppliedCreditOperation =
+    operation.entityType === "ALLOCATION" &&
+    operation.localModel === "Payment" &&
+    ((queuedAppliedCredit?.queueType ===
+      XERO_OUTBOX_APPLIED_CREDIT_ALLOCATION_TYPE &&
+      operation.operationType === "ALLOCATE") ||
+      (queuedAppliedCredit?.queueType ===
+        XERO_OUTBOX_APPLIED_CREDIT_DEALLOCATION_TYPE &&
+        operation.operationType === "UPDATE"));
+  if (
+    isQueuedAppliedCreditOperation &&
+    (operation.status === "FAILED" || operation.status === "PARTIAL")
+  ) {
+    return { supported: true, reason: null };
+  }
+
+  const appliedCreditChild =
+    operation.entityType === "ALLOCATION" &&
+    operation.operationType === "ALLOCATE"
+      ? readAppliedCreditAllocationChildContext(operation.requestPayload)
+      : null;
+  if (appliedCreditChild) {
+    return {
+      supported: false,
+      reason: appliedCreditChild.parentOperationId
+        ? `Retry the serialized parent applied-credit operation ${appliedCreditChild.parentOperationId}; this child allocation cannot run inline.`
+        : "This applied-credit child allocation cannot run inline outside its serialized workflow.",
+    };
+  }
+  if (isLegacyContextlessAppliedCreditAllocationChild(operation)) {
+    return {
+      supported: false,
+      reason:
+        "This legacy applied-credit child allocation must be retried through its serialized parent workflow.",
+    };
+  }
+
   if (operation.status === "PARTIAL") {
     if (operation.entityType === "INVOICE" && operation.operationType === "CREATE") {
       return parsePartialInvoiceRepairInput(operation)
@@ -602,12 +685,9 @@ export function getXeroOperationRetryMeta(operation: RetryableOperation): XeroOp
 
   if (operation.entityType === "ALLOCATION" && operation.operationType === "ALLOCATE") {
     // #1620 applied-credit allocation ops carry a {queueType, bookingId} queued
-    // payload (never the creditNoteId/invoiceId/amountCents shape parsed below),
-    // and there is no auto FAILED->PENDING reaper for outbox ops — so without
-    // this branch a transiently-failed allocation would strand here, leaving the
-    // IB invoice un-reduced and re-manifesting the #1620 double-pay. The engine
-    // replay is idempotent (join-key + per-note completion links + re-plan that
-    // excludes this booking's own rows).
+    // payload (never the generic single-allocation shape parsed below). The
+    // retry action CAS-requeues it; only the outbox may claim and execute the
+    // multi-provider-call engine.
     const queued = readQueuedOutboxPayload(operation.requestPayload);
     if (queued?.queueType === XERO_OUTBOX_APPLIED_CREDIT_ALLOCATION_TYPE) {
       return { supported: true, reason: null };
@@ -615,6 +695,12 @@ export function getXeroOperationRetryMeta(operation: RetryableOperation): XeroOp
     return parseAllocationRetryInput(operation)
       ? { supported: true, reason: null }
       : { supported: false, reason: "Stored allocation payload is incomplete." };
+  }
+  if (operation.entityType === "ALLOCATION" && operation.operationType === "UPDATE") {
+    const queued = readQueuedOutboxPayload(operation.requestPayload);
+    return queued?.queueType === XERO_OUTBOX_APPLIED_CREDIT_DEALLOCATION_TYPE
+      ? { supported: true, reason: null }
+      : { supported: false, reason: "Stored applied-credit deallocation payload is incomplete." };
   }
 
   if (
@@ -678,6 +764,49 @@ export async function retryXeroSyncOperation(
   const retryMeta = getXeroOperationRetryMeta(operation);
   if (!retryMeta.supported) {
     throw new XeroOperationRetryError(retryMeta.reason ?? "This Xero operation cannot be retried.");
+  }
+
+  const queuedAppliedCredit = readQueuedOutboxPayload(operation.requestPayload);
+  const isQueuedAppliedCreditOperation =
+    operation.entityType === "ALLOCATION" &&
+    operation.localModel === "Payment" &&
+    ((queuedAppliedCredit?.queueType ===
+      XERO_OUTBOX_APPLIED_CREDIT_ALLOCATION_TYPE &&
+      operation.operationType === "ALLOCATE") ||
+      (queuedAppliedCredit?.queueType ===
+        XERO_OUTBOX_APPLIED_CREDIT_DEALLOCATION_TYPE &&
+        operation.operationType === "UPDATE"));
+  if (isQueuedAppliedCreditOperation) {
+    // These handlers make multi-step provider calls and have their own durable
+    // checkpoint/fencing protocol. Manual retry must never execute them inline:
+    // atomically return exactly one failed/partial row to the outbox, whose
+    // PENDING -> RUNNING claim is the sole provider-execution authority.
+    const queued = await prisma.xeroSyncOperation.updateMany({
+      where: {
+        id: operation.id,
+        status: { in: ["FAILED", "PARTIAL"] },
+      },
+      data: {
+        status: "PENDING",
+        startedAt: null,
+        completedAt: null,
+        lastErrorCode: null,
+        lastErrorMessage: null,
+      },
+    });
+    if (queued.count !== 1) {
+      throw new XeroOperationRetryError(
+        "This applied-credit operation was already queued or claimed by another retry.",
+        409,
+      );
+    }
+    return {
+      message:
+        queuedAppliedCredit.queueType ===
+        XERO_OUTBOX_APPLIED_CREDIT_ALLOCATION_TYPE
+          ? "Queued applied-credit allocation retry."
+          : "Queued applied-credit deallocation retry.",
+    };
   }
 
   const xero = await import("@/lib/xero");
@@ -1039,19 +1168,23 @@ export async function retryXeroSyncOperation(
   }
 
   if (operation.entityType === "ALLOCATION" && operation.operationType === "ALLOCATE") {
-    // #1620 applied-credit allocation: re-drive the idempotent engine, which
-    // completes (or skips) this op via its syncOperationId. See the matching
-    // note in getXeroOperationRetryMeta.
+    // Applied-credit queue shapes are intercepted by the CAS-requeue branch
+    // above. Keep this guard fail-closed if control flow is ever rearranged.
     const queued = readQueuedOutboxPayload(operation.requestPayload);
     if (queued?.queueType === XERO_OUTBOX_APPLIED_CREDIT_ALLOCATION_TYPE) {
-      const { allocateAppliedCreditForBooking } = await import(
-        "@/lib/xero-applied-credit-allocation"
+      throw new XeroOperationRetryError(
+        "Applied-credit allocation retries must be queued through the outbox.",
       );
-      await allocateAppliedCreditForBooking(queued.bookingId, {
-        createdByMemberId,
-        syncOperationId: operation.id,
-      });
-      return { message: "Retried applied-credit allocation." };
+    }
+    if (readAppliedCreditAllocationChildContext(operation.requestPayload)) {
+      throw new XeroOperationRetryError(
+        "Applied-credit child allocations must be retried through their serialized parent workflow.",
+      );
+    }
+    if (isLegacyContextlessAppliedCreditAllocationChild(operation)) {
+      throw new XeroOperationRetryError(
+        "Legacy applied-credit child allocations must be retried through their serialized parent workflow.",
+      );
     }
 
     const retryInput = parseAllocationRetryInput(operation);
@@ -1071,6 +1204,15 @@ export async function retryXeroSyncOperation(
     );
 
     return { message: "Retried Xero credit note allocation." };
+  }
+  if (operation.entityType === "ALLOCATION" && operation.operationType === "UPDATE") {
+    const queued = readQueuedOutboxPayload(operation.requestPayload);
+    if (queued?.queueType !== XERO_OUTBOX_APPLIED_CREDIT_DEALLOCATION_TYPE) {
+      throw new XeroOperationRetryError("Stored applied-credit deallocation payload is incomplete.");
+    }
+    throw new XeroOperationRetryError(
+      "Applied-credit deallocation retries must be queued through the outbox.",
+    );
   }
 
   if (operation.entityType === "SUBSCRIPTION" && operation.operationType === "FETCH") {

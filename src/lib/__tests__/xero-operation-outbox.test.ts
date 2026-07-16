@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => ({
   createXeroCreditNote: vi.fn(),
   createXeroCreditNoteForModification: vi.fn(),
   allocateAppliedCreditForBooking: vi.fn(),
+  deallocateExcessAppliedCreditForBooking: vi.fn(),
   createXeroEntranceFeeInvoice: vi.fn(),
   createXeroInvoiceForBooking: vi.fn(),
   createXeroInvoiceForGroupSettlement: vi.fn(),
@@ -131,6 +132,9 @@ vi.mock("@/lib/xero-mappings", () => ({
 vi.mock("@/lib/xero-applied-credit-allocation", () => ({
   allocateAppliedCreditForBooking: mocks.allocateAppliedCreditForBooking,
 }));
+vi.mock("@/lib/xero-applied-credit-deallocation", () => ({
+  deallocateExcessAppliedCreditForBooking: mocks.deallocateExcessAppliedCreditForBooking,
+}));
 vi.mock("@/lib/xero-modification-credit-notes", () => ({
   createXeroCreditNoteForModification: mocks.createXeroCreditNoteForModification,
 }));
@@ -167,6 +171,7 @@ import {
   releaseXeroSupplementaryInvoiceOperationsForPaymentIntent,
 } from "@/lib/xero-operation-outbox";
 import { XERO_OUTBOX_QUEUE_TYPES } from "@/lib/xero-operation-outbox-payload";
+import { XeroAppliedCreditOperationBusyError } from "@/lib/xero-applied-credit-operation-serialization";
 
 describe("enqueueXeroEntranceFeeInvoiceOperation", () => {
   beforeEach(() => {
@@ -1252,12 +1257,117 @@ describe("processQueuedXeroOutboxOperations", () => {
       direction: "OUTBOUND",
       queueType: { in: [...XERO_OUTBOX_QUEUE_TYPES] },
     });
-    expect(args.where.queueType.in).toHaveLength(15);
+    expect(args.where.queueType.in).toHaveLength(16);
     // The legacy `requestPayload->>'queueType'` OR predicate is gone.
     expect(args.where.OR).toBeUndefined();
     expect(JSON.stringify(args.where)).not.toContain("requestPayload");
     expect(args.orderBy).toEqual({ createdAt: "asc" });
     expect(args.take).toBe(7);
+  });
+
+  it("returns a simultaneous applied-credit loser to PENDING instead of stranding it FAILED", async () => {
+    mocks.findManyOperations.mockResolvedValue([
+      {
+        id: "op_alloc_busy",
+        localId: "payment_1",
+        localModel: "Payment",
+        createdByMemberId: null,
+        requestPayload: {
+          queueType: "APPLIED_CREDIT_ALLOCATION",
+          bookingId: "booking_1",
+        },
+      },
+      {
+        id: "op_dealloc_busy",
+        localId: "payment_1",
+        localModel: "Payment",
+        createdByMemberId: null,
+        requestPayload: {
+          queueType: "APPLIED_CREDIT_DEALLOCATION",
+          bookingId: "booking_1",
+        },
+      },
+    ]);
+    mocks.deallocateExcessAppliedCreditForBooking.mockRejectedValue(
+      new XeroAppliedCreditOperationBusyError("allocation op is already running")
+    );
+    mocks.allocateAppliedCreditForBooking.mockRejectedValue(
+      new XeroAppliedCreditOperationBusyError("deallocation op is already running")
+    );
+
+    await expect(processQueuedXeroOutboxOperations({ limit: 5 })).resolves.toEqual({
+      found: 2,
+      processed: 2,
+      succeeded: 0,
+      failed: 0,
+      skipped: 2,
+    });
+
+    for (const id of ["op_alloc_busy", "op_dealloc_busy"]) {
+      expect(mocks.updateManyOperation).toHaveBeenCalledWith({
+        where: { id, status: "RUNNING" },
+        data: {
+          status: "PENDING",
+          startedAt: null,
+          lastErrorCode: null,
+          lastErrorMessage: null,
+        },
+      });
+    }
+    expect(mocks.failXeroSyncOperation).not.toHaveBeenCalled();
+  });
+
+  it("busy-requeues a manual retry, then executes its checkpointed deallocation once", async () => {
+    const queued = {
+      id: "op_dealloc_retry",
+      localId: "payment_1",
+      localModel: "Payment",
+      createdByMemberId: null,
+      requestPayload: {
+        queueType: "APPLIED_CREDIT_DEALLOCATION",
+        bookingId: "booking_1",
+        checkpoint: { allocationIds: ["alloc-1"], phase: "BEFORE_DELETE" },
+      },
+    };
+    mocks.findManyOperations.mockResolvedValue([queued]);
+    mocks.deallocateExcessAppliedCreditForBooking
+      .mockRejectedValueOnce(
+        new XeroAppliedCreditOperationBusyError(
+          "same-payment allocation is RUNNING",
+        ),
+      )
+      .mockResolvedValueOnce(undefined);
+
+    await expect(processQueuedXeroOutboxOperations({ limit: 1 })).resolves.toEqual({
+      found: 1,
+      processed: 1,
+      succeeded: 0,
+      failed: 0,
+      skipped: 1,
+    });
+    expect(mocks.updateManyOperation).toHaveBeenCalledWith({
+      where: { id: "op_dealloc_retry", status: "RUNNING" },
+      data: {
+        status: "PENDING",
+        startedAt: null,
+        lastErrorCode: null,
+        lastErrorMessage: null,
+      },
+    });
+
+    await expect(processQueuedXeroOutboxOperations({ limit: 1 })).resolves.toEqual({
+      found: 1,
+      processed: 1,
+      succeeded: 1,
+      failed: 0,
+      skipped: 0,
+    });
+    expect(mocks.deallocateExcessAppliedCreditForBooking).toHaveBeenCalledTimes(2);
+    expect(mocks.deallocateExcessAppliedCreditForBooking).toHaveBeenLastCalledWith(
+      "booking_1",
+      { syncOperationId: "op_dealloc_retry" },
+    );
+    expect(mocks.failXeroSyncOperation).not.toHaveBeenCalled();
   });
 
   it("claims and processes queued entrance fee operations", async () => {
@@ -1885,6 +1995,15 @@ describe("processQueuedXeroOutboxOperations dispatch domain (#1272)", () => {
       },
       handler: mocks.allocateAppliedCreditForBooking,
     },
+    APPLIED_CREDIT_DEALLOCATION: {
+      op: {
+        id: "op_applied_credit_dealloc_1",
+        localId: "payment_1",
+        localModel: "Payment",
+        requestPayload: { queueType: "APPLIED_CREDIT_DEALLOCATION", bookingId: "booking_1" },
+      },
+      handler: mocks.deallocateExcessAppliedCreditForBooking,
+    },
     MEMBERSHIP_CANCELLATION_CREDIT_NOTE: {
       op: {
         id: "op_membership_cancel_credit_1",
@@ -1970,6 +2089,7 @@ describe("processQueuedXeroOutboxOperations dispatch domain (#1272)", () => {
     mocks.createUnappliedXeroCreditNoteForModification.mockResolvedValue("cn");
     mocks.allocateCreditNoteToInvoice.mockResolvedValue(undefined);
     mocks.allocateAppliedCreditForBooking.mockResolvedValue(undefined);
+    mocks.deallocateExcessAppliedCreditForBooking.mockResolvedValue(undefined);
     mocks.createXeroMembershipCancellationCreditNote.mockResolvedValue("cn");
     mocks.syncXeroMembershipCancellationContact.mockResolvedValue({
       memberId: "member_1",

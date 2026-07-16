@@ -809,21 +809,101 @@ AWAITING_REVIEW does NOT refund credit or auto-$0-pay before an admin approves i
 path; the release-from-review transition lands PAYMENT_PENDING, at which point the
 clamp runs.
 
-Xero residual on Internet-Banking bookings (F3, #1887 — bounded, owner-accepted):
-an unpaid IB booking allocates its applied credit to the Xero invoice as
-ACCRECCREDIT notes at booking-create (a card booking's allocation waits for cash
-capture and is skipped for IB). The clamp returns the over-consumed slice to the
-LOCAL ledger but does NOT re-derive that Xero allocation, so the IB invoice keeps
-up to the refunded excess MORE credit allocated than the local ledger shows. The
-residual is one-directional and bounded by the refunded excess: the member's
-local credit is conserved (never under-credited) and the invoice only ever reads
-fully- or over-covered, never underpaid, so no one is over-charged. The daily
-credit reconciliation checks local consistency only (negative balances + orphaned
-applied credit), not per-invoice Xero-vs-local allocation, so it tolerates the
-residual without false alerts. This is consistent with the documented #1620 IB
-Xero divergences. Reversing the allocation needs an out-of-transaction Xero call
-(no provider calls under the ledger lock, F7/#1355) and is left as an owner
-decision rather than implemented here.
+Xero deallocation on Internet-Banking bookings (F3, #1887): the positive clamp
+offset and `APPLIED_CREDIT_DEALLOCATION` outbox operation commit in the SAME
+member-credit-locked transaction. The worker later obtains Xero's real
+allocation IDs, checkpoints them, deletes the invoice allocations, recreates the
+reduced integer-cent target, verifies it, then reduces the local allocation
+slices. Before releasing the member lock it atomically snapshots the desired
+signed-ledger cents and every precise slice into the same durable operation.
+Inbound repair, a later clamp, and allocation planning inspect that RUNNING (or
+provider-ambiguous FAILED/PARTIAL) fence while holding the same member lock, so
+each mutation is wholly before the snapshot or deferred until convergence; no
+stale target can release newly valid credit. Multiple notes and multiple local
+lots per note are supported.
+
+After verification, the same local transaction deactivates the superseded
+synthetic/actual `APPLIED_CREDIT_ALLOCATION` row links (or the Payment-scoped
+`APPLIED_CREDIT_REMAINDER_ALLOCATION` link for a minted remainder) and creates
+active replacements keyed by the actual allocation IDs returned by Xero. A zero
+target has no active allocation link. Durable checkpoint history records every
+row's current/target cents, prior links, Xero-read IDs/amounts, and the provenance
+rule used for an equal-total match, so a crash after provider recreate can heal
+local link truth without another create.
+
+Crash/retry contract: partial deletes resume only checkpointed IDs; a crash after
+provider recreate but before the local update verifies the target and completes
+the local reduction. Simultaneously claimed allocation/deallocation workers for
+one Payment return their transient losers to PENDING; a subsequent scan executes
+them without overlap instead of stranding both FAILED. A provider total that is
+neither exact local state nor a checkpointed
+partial/target is ambiguous (for example, a manual Xero edit): the operation
+fails visibly for operator retry/manual review and never guesses an ID or amount.
+One narrow exception is not a genuine failure: a post-delete+recreate re-GET (or
+the next retry's top-of-loop guard) whose total is explained purely by Xero
+eventual consistency relative to the durable BEFORE_DELETE/PROVIDER_VERIFIED
+checkpoints — a just-deleted allocation still listed, or a just-created recreate
+not yet listed (all visible IDs are checkpointed-or-the-recreate) — is
+classified transient and requeued to PENDING with backoff (bounded; repeated
+non-convergence still lands terminal FAILED for the operator). Only totals or ID
+sets that no eventual-consistency projection explains stay terminal.
+The admin retry action never invokes either multi-call applied-credit handler
+inline: one atomic FAILED/PARTIAL-to-PENDING compare-and-set wins, then the
+outbox's PENDING-to-RUNNING claim remains the sole provider-call authority.
+Never-captured cancellation and Internet-Banking hold expiry derive the
+invoice's allocated credit from the precise positive
+`MemberCreditNoteAllocation.amountCents` aggregate, not the coarse historical
+`MemberCredit.xeroCreditNoteId` stamp, which cannot represent a partial clamp.
+Only those two paths take the member lock and fence: they defer the entire
+transition while an `APPLIED_CREDIT_DEALLOCATION` is PENDING, RUNNING, FAILED,
+PARTIAL, or WAITING_PAYMENT. This prevents either transition from freezing a
+clearing-note amount against the pre-clamp slices; after the worker reaches
+COMPLETE, the retry reads the converged target slices. The paid/captured cancel
+(refund) path does not take this fence: it restores credit from the payment
+mirror (a mirror-based, capped restore) and never sizes any clearing amount
+from slices, so no slice-derived money error is constructible there.
+
+Inbound/legacy repairs that stamped `BOOKING_APPLIED.xeroCreditNoteId` without
+creating a precise slice are upgraded under the same transaction lock before
+clamp, cancel, expiry, or deallocation reads them. Repair requires exactly one
+positive funding lot and enough unallocated cents, creates the
+`MemberCreditNoteAllocation` plus active provenance link, and fails closed on
+missing or ambiguous provenance. Allocation rows are mutable working slices:
+provider-verified deallocation may reduce or delete them. Immutable-equivalent
+audit is retained in the deallocation operation's request checkpoint/history
+(prior and target cents, provider IDs and match rule) and the inactive/active
+`XeroObjectLink` history. Repair validates an existing slice against the signed
+ledger rather than accepting it merely because it exists; net-zero historical
+negative plus positive-clamp rows never recreate a fully deallocated slice.
+When a later unstamped application makes the booking net-negative again, any
+active or inactive allocation-link history for the old note/invoice remains a
+tombstone and still blocks reconstruction; only provider-observed inbound repair
+may recreate working state.
+Inbound provider-observed increases/decreases reconcile the precise slice and
+append a signed offset instead of rewriting the historical negative application;
+superseded allocation links are deactivated, not erased.
+Because Xero omits zero allocations from credit-note responses, inbound repair
+also diffs active applied-credit allocation links and treats a previously linked
+invoice that is now absent as a provider-observed zero target.
+Inbound applied-credit reconciliation resolves its payment/member context first
+from `CANCELLATION_REFUND` `MemberCredit` rows stamped with the note; when a note
+has no such provenance — e.g. an admin-adjustment-minted remainder note — it
+falls back to unambiguous LOCAL provenance instead (#1925): the precise
+`MemberCreditNoteAllocation` slices stamped with the note joined to their funding
+lots, cross-checked against the note's ACTIVE allocation links. That fallback
+fails closed (no write, identical to the pre-#1925 skip) whenever the member is
+not uniquely identifiable, a slice is missing its funding lot or booking, an
+active link references a slice/payment outside the stamped set, or no active link
+proves the allocation existed; tombstoned links never resurrect a repair. Every
+repaired amount is still derived downstream from the provider targets and precise
+slices, so the fallback introduces no amount guess of its own.
+Applied-credit provider allocation child operations retain their parent booking,
+payment, and operation context. They are never manually replayed inline; retry is
+performed only through the serialized parent/outbox workflow so a stale child
+cannot recreate credit after deallocation.
+Legacy contextless children are also fail-closed by their precise-slice or direct
+Payment allocation shape; explicit queued credit-note allocation repairs remain
+separate and retryable.
 
 Every modification path also applies the same lifecycle transitions: a
 PAYMENT_PENDING booking whose EFFECTIVE (credit-reduced) price drops to zero

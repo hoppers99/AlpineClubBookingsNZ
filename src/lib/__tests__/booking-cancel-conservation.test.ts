@@ -35,6 +35,7 @@ const mocks = vi.hoisted(() => ({
   sendBookingCancelledEmail: vi.fn(),
   logAudit: vi.fn(),
   createCancellationCredit: vi.fn(),
+  lockMemberCreditLedger: vi.fn(),
   restoreCreditFromBooking: vi.fn(),
   processWaitlistForDates: vi.fn(),
   isXeroConnected: vi.fn(),
@@ -94,7 +95,12 @@ vi.mock("@/lib/audit", () => ({
 
 vi.mock("@/lib/member-credit", () => ({
   createCancellationCredit: mocks.createCancellationCredit,
+  lockMemberCreditLedger: mocks.lockMemberCreditLedger,
   restoreCreditFromBooking: mocks.restoreCreditFromBooking,
+}));
+
+vi.mock("@/lib/xero-applied-credit-operation-serialization", () => ({
+  findUnconvergedAppliedCreditDeallocation: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock("@/lib/waitlist", () => ({
@@ -271,6 +277,11 @@ describe("cancel-after-reduction conservation matrix (#1031)", () => {
               findFirst: vi.fn().mockResolvedValue(null),
             },
             memberCredit: {
+              aggregate: vi
+                .fn()
+                .mockResolvedValue({ _sum: { amountCents: null } }),
+            },
+            memberCreditNoteAllocation: {
               aggregate: vi
                 .fn()
                 .mockResolvedValue({ _sum: { amountCents: null } }),

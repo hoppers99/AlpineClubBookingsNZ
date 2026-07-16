@@ -207,7 +207,7 @@ async function releaseExpiredQuoteHolds(now: Date): Promise<number> {
         });
         await tx.bookingRequest.update({
           where: { id: quote.bookingRequestId },
-          data: { heldBookingId: null },
+          data: { heldBookingId: null, version: { increment: 1 } },
         });
         return true;
       });
@@ -371,7 +371,7 @@ async function releaseStaleModificationHolds(now: Date): Promise<number> {
         });
         await tx.bookingRequest.update({
           where: { id: request.id },
-          data: { heldBookingId: null },
+          data: { heldBookingId: null, version: { increment: 1 } },
         });
         return true;
       });

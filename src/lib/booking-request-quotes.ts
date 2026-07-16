@@ -475,6 +475,7 @@ export async function createBookingRequestQuote(input: {
         linkedGuestMembers: linkedGuestMembers as unknown as Prisma.InputJsonValue,
         responseMessage: null,
         responseMessageAt: null,
+        version: { increment: 1 },
       },
     });
 
@@ -623,6 +624,7 @@ export async function sendBookingRequestQuote(input: {
         status: BookingRequestStatus.QUOTE_SENT,
         reviewedByMemberId: input.adminMemberId,
         reviewedAt: sentAt,
+        version: { increment: 1 },
       },
     });
     if (claimed.count === 0) {
@@ -799,6 +801,7 @@ export async function respondToBookingRequestQuote(input: {
           status: BookingRequestStatus.CANCELLED,
           responseMessage: message,
           responseMessageAt: respondedAt,
+          version: { increment: 1 },
         },
       });
       if (claimed.count === 0) {
@@ -825,7 +828,7 @@ export async function respondToBookingRequestQuote(input: {
         await reconcileBedAllocationsForBooking({ bookingId: heldBookingId, db: tx });
         await tx.bookingRequest.update({
           where: { id: quote.bookingRequestId },
-          data: { heldBookingId: null },
+          data: { heldBookingId: null, version: { increment: 1 } },
         });
       }
       return { finalised: false as const };
@@ -888,6 +891,7 @@ export async function respondToBookingRequestQuote(input: {
               : BookingRequestStatus.QUERY_PENDING,
           responseMessage: message,
           responseMessageAt: respondedAt,
+          version: { increment: 1 },
         },
       });
       if (restated.count === 0) {
@@ -976,6 +980,7 @@ export async function respondToBookingRequestQuote(input: {
       acceptedAt: respondedAt,
       responseMessage: message,
       responseMessageAt: message ? respondedAt : null,
+      version: { increment: 1 },
     },
   });
   if (rearmed.count === 0) {
@@ -1016,6 +1021,7 @@ export async function respondToBookingRequestQuote(input: {
         acceptedQuoteSnapshot: Prisma.JsonNull,
         acceptedPriceCents: null,
         acceptedAt: null,
+        version: { increment: 1 },
       },
     });
     logAudit({
@@ -1136,7 +1142,7 @@ export async function holdBookingRequestSlots(input: {
     }
     await prisma.bookingRequest.updateMany({
       where: { id: request.id, heldBookingId: request.heldBookingId },
-      data: { heldBookingId: null },
+      data: { heldBookingId: null, version: { increment: 1 } },
     });
     request.heldBookingId = null;
   }
@@ -1194,7 +1200,10 @@ export async function holdBookingRequestSlots(input: {
           heldBookingId: null,
           status: { in: [...holdableStatuses] },
         },
-        data: { updatedAt: new Date() },
+        // Claim marker (#1923): bumping version records the mutating write and
+        // keeps this row's optimistic counter monotonic. @updatedAt still
+        // auto-advances updatedAt on the same write.
+        data: { version: { increment: 1 } },
       });
       if (claimed.count === 0) {
         const current = await tx.bookingRequest.findUnique({
@@ -1296,7 +1305,7 @@ export async function holdBookingRequestSlots(input: {
 
       await tx.bookingRequest.update({
         where: { id: request.id },
-        data: { heldBookingId: held.id },
+        data: { heldBookingId: held.id, version: { increment: 1 } },
       });
 
       return { id: held.id, reused: false };

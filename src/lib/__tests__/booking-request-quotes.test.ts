@@ -762,7 +762,9 @@ describe("public quote response", () => {
     );
     // ...and the pointer is detached so a future re-hold can never reuse it.
     expect(prisma.bookingRequest.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: { heldBookingId: null } })
+      expect.objectContaining({
+        data: { heldBookingId: null, version: { increment: 1 } },
+      })
     );
   });
 
@@ -1450,7 +1452,7 @@ describe("holdBookingRequestSlots owner role", () => {
     expect(prisma.bookingRequest.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: "req-1", heldBookingId: "dead-hold" },
-        data: { heldBookingId: null },
+        data: { heldBookingId: null, version: { increment: 1 } },
       })
     );
     // ...and a brand-new hold is created rather than reusing the dead row.

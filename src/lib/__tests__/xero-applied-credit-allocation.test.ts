@@ -38,6 +38,7 @@ const h = vi.hoisted(() => {
     lots: [] as Lot[],
     links: [] as Link[],
     allocCalls: 0,
+    deallocationFence: null as { id: string; status: string } | null,
   };
 
   const matchesApplied = (
@@ -49,6 +50,11 @@ const h = vi.hoisted(() => {
     (where.xeroCreditNoteId === null ? r.xeroCreditNoteId === null : true);
 
   const prismaStub = {
+    xeroSyncOperation: {
+      findMany: async () => state.deallocationFence
+        ? [{ ...state.deallocationFence, requestPayload: { ledgerSnapshot: {} } }]
+        : [],
+    },
     booking: {
       findUnique: async () => ({
         id: "b1",
@@ -295,6 +301,7 @@ describe("allocateAppliedCreditForBooking (#1620 handler retry idempotency)", ()
     h.state.joinRows = [];
     h.state.links = [];
     h.state.allocCalls = 0;
+    h.state.deallocationFence = null;
     h.state.appliedRows = [
       {
         appliedToBookingId: "b1",
@@ -351,12 +358,34 @@ describe("allocateAppliedCreditForBooking (#1620 handler retry idempotency)", ()
     // Allocated exactly once more (2 calls total: 1 failed + 1 success) — no
     // duplicate allocation, no plan explosion.
     expect(allocateCreditNoteToInvoice).toHaveBeenCalledTimes(2);
+    expect(allocateCreditNoteToInvoice).toHaveBeenLastCalledWith(
+      "cn1",
+      "inv1",
+      3000,
+      expect.objectContaining({
+        appliedCreditContext: {
+          parentOperationId: "op1",
+          bookingId: "b1",
+          paymentId: "p1",
+        },
+      }),
+    );
     // Still a single join row (upsert stayed a no-op on replay).
     expect(h.state.joinRows).toHaveLength(1);
     // The BOOKING_APPLIED row is now stamped (invoice reduced, #1597-fed).
     expect(h.state.appliedRows[0].xeroCreditNoteId).toBe("cn1");
     // The op completed exactly once (attempt 1 threw before completion).
     expect(completeXeroSyncOperation).toHaveBeenCalledTimes(1);
+  });
+
+  it("fences allocation planning under the member lock before any local/provider mutation", async () => {
+    h.state.deallocationFence = { id: "dealloc-1", status: "RUNNING" };
+
+    await expect(
+      allocateAppliedCreditForBooking("b1", { syncOperationId: "allocation-1" }),
+    ).rejects.toThrow("dealloc-1 is RUNNING");
+    expect(h.state.joinRows).toHaveLength(0);
+    expect(allocateCreditNoteToInvoice).not.toHaveBeenCalled();
   });
 
   it("is a no-op skip when replayed after a fully-completed allocation", async () => {

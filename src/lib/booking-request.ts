@@ -482,7 +482,7 @@ export async function verifyBookingRequest(
   // Status-claim: only one concurrent verification can flip NEW -> VERIFIED.
   const claimed = await prisma.bookingRequest.updateMany({
     where: { id: request.id, status: BookingRequestStatus.NEW },
-    data: { status: BookingRequestStatus.VERIFIED, verifiedAt },
+    data: { status: BookingRequestStatus.VERIFIED, verifiedAt, version: { increment: 1 } },
   });
 
   if (claimed.count === 0) {
@@ -555,6 +555,7 @@ export async function priceBookingRequest(input: {
       priceCents: input.priceCents,
       pricedByMemberId: input.adminMemberId,
       pricedAt,
+      version: { increment: 1 },
     },
   });
 
@@ -637,6 +638,7 @@ export async function declineBookingRequest(input: {
         reviewedByMemberId: input.adminMemberId,
         reviewedAt,
         declineReason,
+        version: { increment: 1 },
       },
     });
     if (claimed.count === 0) {
@@ -792,7 +794,7 @@ export async function declineBookingRequest(input: {
       // pointer so the declined request stops referencing a dead hold.
       await prisma.bookingRequest.updateMany({
         where: { id: request.id, heldBookingId: request.heldBookingId },
-        data: { heldBookingId: null },
+        data: { heldBookingId: null, version: { increment: 1 } },
       });
     }
   }
@@ -1111,12 +1113,14 @@ export async function approveBookingRequest(input: {
       }
 
       // Any edit to the approval snapshot (including attaching/detaching a
-      // hold) advances updatedAt. Refuse this stale attempt so every value used
-      // below was validated under the locks; the caller can retry from the new
-      // request state. The explicit held-id comparison also documents the
-      // global-lock decision instead of relying on timestamp comparison alone.
+      // hold) increments version (#1923). Refuse this stale attempt so every
+      // value used below was validated under the locks; the caller can retry
+      // from the new request state. The explicit held-id comparison also
+      // documents the global-lock decision instead of relying on the counter
+      // alone. Version replaces the former updatedAt comparison, whose
+      // TIMESTAMP(3) precision could collide for two same-millisecond writes.
       if (
-        lockedRequest.updatedAt.getTime() !== request.updatedAt.getTime() ||
+        lockedRequest.version !== request.version ||
         (lockedRequest.heldBookingId ?? null) !== expectedHeldBookingId
       ) {
         throw new BookingRequestError(
@@ -1165,16 +1169,18 @@ export async function approveBookingRequest(input: {
       const claimed = await tx.bookingRequest.updateMany({
         where: {
           id: request.id,
-          // Optimistic version fence for mutable price/guest/hold state: a
-          // writer that lands after the locked re-read cannot be silently
-          // overwritten by an approval built from the older snapshot.
-          updatedAt: request.updatedAt,
+          // Optimistic version fence for mutable price/guest/hold state (#1923):
+          // a writer that lands after the locked re-read cannot be silently
+          // overwritten by an approval built from the older snapshot. Fences on
+          // the integer version, not updatedAt (millisecond-collidable).
+          version: request.version,
           status: BookingRequestStatus.PRICED,
         },
         data: {
           status: BookingRequestStatus.APPROVED,
           reviewedByMemberId: input.adminMemberId,
           reviewedAt,
+          version: { increment: 1 },
         },
       });
       if (claimed.count === 0) {
@@ -1373,6 +1379,7 @@ export async function approveBookingRequest(input: {
           status: BookingRequestStatus.CONVERTED,
           convertedBookingId: booking.id,
           convertedMemberId: member.id,
+          version: { increment: 1 },
         },
       });
 

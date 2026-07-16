@@ -33,6 +33,7 @@ const mocks = vi.hoisted(() => {
   logAudit: vi.fn(),
   createCancellationCredit: vi.fn(),
   restoreCreditFromBooking: vi.fn(),
+  lockMemberCreditLedger: vi.fn(),
   // #1547: the CANCELLED narrative event, so the credit-restore sentence in the
   // event reason can be asserted. booking-events is fire-and-swallow in prod.
   recordBookingEvent: vi.fn(),
@@ -61,6 +62,8 @@ const mocks = vi.hoisted(() => {
   // #1547: the under-lock Xero-linked applied-credit aggregate in the
   // never-captured claim tx (A1).
   txMemberCreditAggregate: vi.fn(),
+  findUnconvergedAppliedCreditDeallocation: vi.fn(),
+  repairLegacyAppliedCreditNoteAllocationsForBooking: vi.fn(),
   // #1406: spy on the payment-link revoke so the guard test can prove a
   // just-accepted booking's brand-new payment links are NEVER revoked.
   revokePaymentLinksForBooking: vi.fn(),
@@ -119,6 +122,7 @@ vi.mock("@/lib/audit", () => ({
 
 vi.mock("@/lib/member-credit", () => ({
   createCancellationCredit: mocks.createCancellationCredit,
+  lockMemberCreditLedger: mocks.lockMemberCreditLedger,
   restoreCreditFromBooking: mocks.restoreCreditFromBooking,
 }));
 
@@ -193,6 +197,16 @@ vi.mock("@/lib/promo", () => ({
   deletePromoRedemptionAndAdjustCount: mocks.deletePromoRedemptionAndAdjustCount,
 }));
 
+vi.mock("@/lib/xero-applied-credit-operation-serialization", () => ({
+  findUnconvergedAppliedCreditDeallocation:
+    mocks.findUnconvergedAppliedCreditDeallocation,
+}));
+
+vi.mock("@/lib/xero-applied-credit-allocation-repair", () => ({
+  repairLegacyAppliedCreditNoteAllocationsForBooking:
+    mocks.repairLegacyAppliedCreditNoteAllocationsForBooking,
+}));
+
 import { cancelBooking } from "@/lib/booking-cancel";
 import { addDaysDateOnly, getTodayDateOnly } from "@/lib/date-only";
 
@@ -252,7 +266,7 @@ describe("cancelBooking credit refunds", () => {
             },
             // #1547: the never-captured claim (A1) reads Xero-linked applied
             // credit under the lock to floor the invoice-clearing amount.
-            memberCredit: {
+            memberCreditNoteAllocation: {
               aggregate: mocks.txMemberCreditAggregate,
             },
           };
@@ -269,6 +283,8 @@ describe("cancelBooking credit refunds", () => {
     mocks.paymentTransactionFindFirst.mockResolvedValue(null);
     // #1547: default = no Xero-linked applied-credit allocations under the lock.
     mocks.txMemberCreditAggregate.mockResolvedValue({ _sum: { amountCents: null } });
+    mocks.findUnconvergedAppliedCreditDeallocation.mockResolvedValue(null);
+    mocks.repairLegacyAppliedCreditNoteAllocationsForBooking.mockResolvedValue(0);
     // #1491: fold materialization defaults — no captured rows to attribute to.
     mocks.txPaymentTransactionFindMany.mockResolvedValue([]);
     mocks.txPaymentTransactionUpdate.mockResolvedValue({});
@@ -291,6 +307,7 @@ describe("cancelBooking credit refunds", () => {
       creditRestorePercentage: 50,
     });
     mocks.restoreCreditFromBooking.mockResolvedValue(0);
+    mocks.lockMemberCreditLedger.mockResolvedValue(undefined);
     mocks.recordBookingEvent.mockResolvedValue(undefined);
     mocks.createCancellationCredit.mockResolvedValue(undefined);
     mocks.sendBookingCancelledEmail.mockResolvedValue(undefined);
@@ -2342,7 +2359,7 @@ describe("cancelBooking credit refunds", () => {
       mocks.bookingFindUnique.mockResolvedValueOnce(bookingB);
       mocks.txBookingFindUnique.mockResolvedValueOnce(bookingB);
       mocks.txMemberCreditAggregate.mockResolvedValueOnce({
-        _sum: { amountCents: -1500 },
+        _sum: { amountCents: 1500 },
       });
 
       const resultB = await cancelBooking(
@@ -2359,6 +2376,59 @@ describe("cancelBooking credit refunds", () => {
         { bookingId: "bk_ib2", refundAmountCents: 7000 },
         { createdByMemberId: "member_1" }
       );
+      expect(
+        mocks.repairLegacyAppliedCreditNoteAllocationsForBooking
+      ).toHaveBeenCalledWith("bk_ib2", "inv_ib2", mocks.lastTx);
+      expect(mocks.lockMemberCreditLedger).toHaveBeenCalledWith(
+        "member_1",
+        mocks.lastTx,
+      );
+      expect(
+        mocks.lockMemberCreditLedger.mock.invocationCallOrder[0],
+      ).toBeLessThan(
+        mocks.repairLegacyAppliedCreditNoteAllocationsForBooking.mock
+          .invocationCallOrder[0],
+      );
+    });
+
+    it("defers cancellation before any write when clamp deallocation has not converged", async () => {
+      const booking = neverCapturedBooking(
+        { id: "bk_dealloc", finalPriceCents: 8000 },
+        {
+          id: "payment_dealloc",
+          bookingId: "bk_dealloc",
+          source: "INTERNET_BANKING",
+          status: "PROCESSING",
+          stripePaymentIntentId: null,
+          xeroInvoiceId: "inv_dealloc",
+        },
+      );
+      mocks.bookingFindUnique.mockResolvedValueOnce(booking);
+      mocks.txBookingFindUnique.mockResolvedValueOnce(booking);
+      mocks.findUnconvergedAppliedCreditDeallocation.mockResolvedValueOnce({
+        id: "op_dealloc",
+        status: "PENDING",
+      });
+
+      const result = await cancelBooking(
+        "bk_dealloc",
+        "member_1",
+        "MEMBER",
+        "127.0.0.1",
+        "card",
+      );
+
+      expect(result).toEqual({
+        status: 409,
+        error:
+          "Applied credit is still being reconciled with Xero; retry cancellation after it completes",
+      });
+      expect(mocks.bookingUpdate).not.toHaveBeenCalled();
+      expect(mocks.paymentUpdate).not.toHaveBeenCalled();
+      expect(mocks.restoreCreditFromBooking).not.toHaveBeenCalled();
+      expect(
+        mocks.enqueueXeroModificationCreditNoteOperation,
+      ).not.toHaveBeenCalled();
     });
 
     it("runs the restore inside the existing claim on a no-payment WAITLISTED cancel and preserves the response field semantics", async () => {
@@ -2508,7 +2578,7 @@ describe("cancelBooking detaches the held booking-request pointer (issue #1254)"
     // instead of reusing this now-cancelled row.
     expect(mocks.bookingRequestUpdateMany).toHaveBeenCalledWith({
       where: { heldBookingId: "held-1" },
-      data: { heldBookingId: null },
+      data: { heldBookingId: null, version: { increment: 1 } },
     });
   });
 
@@ -2567,7 +2637,7 @@ describe("cancelBooking detaches the held booking-request pointer (issue #1254)"
     // ...but the hold is still released: pointer detached and cancellation audited.
     expect(mocks.bookingRequestUpdateMany).toHaveBeenCalledWith({
       where: { heldBookingId: "held-1" },
-      data: { heldBookingId: null },
+      data: { heldBookingId: null, version: { increment: 1 } },
     });
     expect(mocks.logAudit).toHaveBeenCalled();
   });
@@ -2969,7 +3039,7 @@ describe("cancelBooking requireRequestHold guard (issue #1406)", () => {
     // The booking-request pointer to this hold is detached at the source (#1254).
     expect(mocks.bookingRequestUpdateMany).toHaveBeenCalledWith({
       where: { heldBookingId: "held-1" },
-      data: { heldBookingId: null },
+      data: { heldBookingId: null, version: { increment: 1 } },
     });
   });
 

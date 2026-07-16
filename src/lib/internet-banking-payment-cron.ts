@@ -1,7 +1,6 @@
 import {
   BookingEventType,
   BookingStatus,
-  CreditType,
   PaymentSource,
   PaymentStatus,
 } from "@prisma/client";
@@ -11,7 +10,10 @@ import { recordBookingEvent } from "@/lib/booking-events";
 import { paymentHasCaptureEvidence } from "@/lib/cancel-flattened-payment-backfill";
 import { sendBookingCancelledEmail } from "@/lib/email";
 import logger from "@/lib/logger";
-import { restoreCreditFromBooking } from "@/lib/member-credit";
+import {
+  lockMemberCreditLedger,
+  restoreCreditFromBooking,
+} from "@/lib/member-credit";
 import { revokePaymentLinksForBooking } from "@/lib/payment-link";
 import { prisma } from "@/lib/prisma";
 import {
@@ -23,6 +25,8 @@ import {
   enqueueXeroRefundCreditNoteOperation,
   kickQueuedXeroOutboxOperationsIfConnected,
 } from "@/lib/xero-operation-outbox";
+import { repairLegacyAppliedCreditNoteAllocationsForBooking } from "@/lib/xero-applied-credit-allocation-repair";
+import { findUnconvergedAppliedCreditDeallocation } from "@/lib/xero-applied-credit-operation-serialization";
 
 export interface InternetBankingHoldReleaseResult {
   scanned: number;
@@ -61,6 +65,19 @@ function releaseOneHold(paymentId: string, now: Date) {
         fresh.booking.status !== BookingStatus.CONFIRMED
       ) {
         return { type: "skipped" as const };
+      }
+
+      // Global booking/money first, then the per-member credit ledger (#1881).
+      // Holding both through the transition prevents inbound Xero repair and
+      // allocation/deallocation reconciliation from changing precise slices
+      // between this guard, the local restore, and the clearing aggregate.
+      await lockMemberCreditLedger(fresh.booking.memberId, tx);
+
+      if (await findUnconvergedAppliedCreditDeallocation(fresh.id, tx)) {
+        return {
+          type: "skipped" as const,
+          reason: "applied-credit-deallocation" as const,
+        };
       }
 
       await tx.booking.update({
@@ -151,20 +168,24 @@ function releaseOneHold(paymentId: string, now: Date) {
           transactions: paymentTransactions,
         });
         if (!freshPaymentCaptured) {
-          // Read the Xero-allocated applied credit under the same advisory lock,
-          // matching the cancel path's "read allocated credit under lock(1)"
-          // requirement so the aggregate is consistent.
-          const xeroAllocated = await tx.memberCredit.aggregate({
+          await repairLegacyAppliedCreditNoteAllocationsForBooking(
+            fresh.bookingId,
+            fresh.xeroInvoiceId,
+            tx,
+          );
+          // Read Xero-allocated applied credit while both global lock(1) and
+          // the per-member credit-ledger lock remain held, matching cancel.
+          // Precise post-deallocation truth; the MemberCredit note stamp is a
+          // coarse historical marker and cannot represent a partial target.
+          const xeroAllocated = await tx.memberCreditNoteAllocation.aggregate({
             where: {
               appliedToBookingId: fresh.bookingId,
-              type: CreditType.BOOKING_APPLIED,
-              xeroCreditNoteId: { not: null },
             },
             _sum: { amountCents: true },
           });
           const xeroAllocatedAppliedCreditCents = Math.max(
             0,
-            -(xeroAllocated._sum.amountCents ?? 0),
+            xeroAllocated._sum.amountCents ?? 0,
           );
           xeroClearingAmountCents = Math.max(
             0,

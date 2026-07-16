@@ -224,6 +224,7 @@ function baseRequest(overrides: Partial<Record<string, unknown>> = {}) {
     convertedMemberId: null,
     createdAt: new Date("2026-06-01T00:00:00.000Z"),
     updatedAt: new Date("2026-06-01T00:00:00.000Z"),
+    version: 0,
     ...overrides,
   };
 }
@@ -585,7 +586,11 @@ describe("verifyBookingRequest", () => {
     expect(result.outcome).toBe("verified");
     expect(mockedUpdateMany).toHaveBeenCalledWith({
       where: { id: "req-1", status: BookingRequestStatus.NEW },
-      data: { status: BookingRequestStatus.VERIFIED, verifiedAt: expect.any(Date) },
+      data: {
+        status: BookingRequestStatus.VERIFIED,
+        verifiedAt: expect.any(Date),
+        version: { increment: 1 },
+      },
     });
     expect(mockedSendAdminPending).toHaveBeenCalledTimes(1);
     expect(mockedLogAudit).toHaveBeenCalledWith(
@@ -655,6 +660,7 @@ describe("priceBookingRequest", () => {
         priceCents: 12000,
         pricedByMemberId: "admin-1",
         pricedAt: expect.any(Date),
+        version: { increment: 1 },
       },
     });
   });
@@ -1041,7 +1047,7 @@ describe("declineBookingRequest", () => {
     expect(mockedCancelBooking).not.toHaveBeenCalled();
     expect(mockedUpdateMany).toHaveBeenCalledWith({
       where: { id: "req-1", heldBookingId: "held-1" },
-      data: { heldBookingId: null },
+      data: { heldBookingId: null, version: { increment: 1 } },
     });
     expect(updated?.status).toBe(BookingRequestStatus.DECLINED);
   });
@@ -1073,7 +1079,7 @@ describe("declineBookingRequest", () => {
     expect(mockedCancelBooking).not.toHaveBeenCalled();
     expect(mockedUpdateMany).toHaveBeenCalledWith({
       where: { id: "req-1", heldBookingId: "held-gone" },
-      data: { heldBookingId: null },
+      data: { heldBookingId: null, version: { increment: 1 } },
     });
     expect(updated?.status).toBe(BookingRequestStatus.DECLINED);
   });
@@ -1387,6 +1393,7 @@ describe("approveBookingRequest", () => {
     const initial = baseRequest({
       status: BookingRequestStatus.PRICED,
       priceCents: 12000,
+      version: 3,
     });
     mockedFindUnique
       .mockResolvedValueOnce(initial as never)
@@ -1394,7 +1401,9 @@ describe("approveBookingRequest", () => {
         baseRequest({
           status: BookingRequestStatus.PRICED,
           priceCents: 13000,
-          updatedAt: new Date("2026-06-02T00:00:00.000Z"),
+          // A concurrent write advanced version after the pre-read snapshot
+          // (#1923); the under-lock fence must reject on the version drift.
+          version: 4,
         }) as never
       );
 

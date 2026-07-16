@@ -100,6 +100,43 @@ are the literal `1`.
 | **Member partner link** | sorted `hashtext("member-partner-link:<memberId>")` keys | `lockPartnerMembers` (`member-partner-link.ts`) | — | Serialises partner-link invariants across every member touched by a link; same-family keys are sorted. |
 | **Xero member contact link (legacy key)** | `hashtext(<memberId>)` | short local-link transactions (`xero-contacts.ts`) | — | First-writer-wins local `Member.xeroContactId` linking after provider work. This legacy unnamespaced key is shared by both Xero contact-link writers; do not copy it for new domains. |
 
+The F20 clamp inserts any required Xero deallocation outbox row before releasing
+the member-credit lock. Provider GET/delete/recreate calls run later, outside the
+transaction; ambiguous provider state fails to durable retry/manual review.
+Allocation and deallocation handlers detect another RUNNING operation for the
+same Payment. Separate runners can claim both rows before either check, so this
+contention uses a dedicated transient result: each loser returns to PENDING
+(never FAILED), and a later scan runs them without overlap. A post-recreate
+verification (or next-run top-of-loop guard) mismatch that is explained purely by
+Xero eventual consistency relative to the durable checkpoints — a just-deleted
+allocation still listed, or a just-created recreate not yet listed — reuses that
+same transient PENDING requeue (bounded, so persistent non-convergence still
+lands FAILED) instead of failing terminal; only a mismatch no eventual-consistency
+projection explains stays terminal. Provider-verified
+local slice/link reconciliation retakes the member ledger lock.
+The deallocation worker's first member-locked transaction records one durable
+snapshot of desired applied cents plus all precise slices. Clamp, inbound repair,
+and allocation planning query the deallocation fence under that same lock.
+A fresh PENDING row fences inbound/clamp writers so stale provider truth cannot
+undo the committed local target. Allocation/deallocation workers may pass it to
+preserve queue order only while it has no snapshot/checkpoint; a manually
+requeued checkpointed PENDING row remains fenced, as do RUNNING and any
+provider-ambiguous failure states. Manual retry only CAS-requeues to PENDING;
+the outbox claim is the sole authority that may execute provider calls.
+
+Never-captured cancellation and Internet-Banking hold expiry acquire global
+booking lock(1) first and the per-member credit-ledger lock second. While
+holding both, they query for any non-complete applied-credit deallocation
+before their first write. If one exists they defer the whole transition; a
+later retry computes the clearing amount from provider-converged slices. The
+paid/captured cancel (refund) path does not take the credit-ledger lock or this
+fence: it restores credit from the payment mirror (mirror-based and capped) and
+never sizes clearing from slices. Legacy inbound rows missing
+those slices are repaired under the member-credit lock only when a unique
+positive funding lot proves provenance. Slice reduction/deletion is therefore
+working state, while the operation checkpoint/history and inactive/active
+object-link history preserve the durable audit trail.
+
 The first four are the **booking / capacity / credit cluster** — they interact,
 and are where the ordering discipline matters. The remaining rows are
 independent single-domain locks. Their namespaced keys do not intentionally
@@ -201,6 +238,15 @@ Generic quote acceptance pre-reads only the held booking's immutable concrete
 hold. It rejects an explicit request/hold lodge mismatch and carries the same
 concrete lodge into policy and email context. A null request lodge is never
 re-resolved through a default that may have changed after hold creation.
+
+Both held-conversion claims fence optimistically on the request's integer
+`BookingRequest.version` (`version: request.version` in the claim `updateMany`
+WHERE, mirrored by a JS re-read comparison), not on `updatedAt` (#1923). Every
+mutating write of a `BookingRequest` bumps `version: { increment: 1 }`, so a
+writer that lands after the converter's locked re-read invalidates the stale
+claim. `updatedAt` is `TIMESTAMP(3)` (millisecond precision): two writes in the
+same millisecond share a timestamp and would silently defeat a `updatedAt` CAS,
+which the integer counter cannot.
 
 School approval has two deliberately different branches. Fresh-create is a
 capacity-only admission and takes only the per-lodge lock. Held-reuse converts
