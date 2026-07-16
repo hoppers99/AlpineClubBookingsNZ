@@ -219,6 +219,9 @@ export interface MemberDetail {
     email: string;
   } | null;
   familyGroups: { id: string; name: string | null }[];
+  // Per-member billing family selection + club billing mode (#1932, E6).
+  billingFamilyGroupId: string | null;
+  familyBillingMode: "BILL_FAMILY_VIA_BILLING_MEMBER" | "BILL_MEMBERS_INDIVIDUALLY";
   currentSeasonYear: number;
   seasonalMembershipAssignments: SeasonalMembershipAssignmentSummary[];
   committeeAssignments: CommitteeAssignmentSummary[];
