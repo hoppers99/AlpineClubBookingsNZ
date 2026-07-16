@@ -52,7 +52,7 @@ export async function POST(
     // the picker re-enables, and report success — the hold is effectively gone.
     await prisma.bookingRequest.updateMany({
       where: { id, heldBookingId: request.heldBookingId },
-      data: { heldBookingId: null },
+      data: { heldBookingId: null, version: { increment: 1 } },
     });
     return NextResponse.json({ ok: true, alreadyReleased: true });
   }

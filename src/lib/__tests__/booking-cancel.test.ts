@@ -2578,7 +2578,7 @@ describe("cancelBooking detaches the held booking-request pointer (issue #1254)"
     // instead of reusing this now-cancelled row.
     expect(mocks.bookingRequestUpdateMany).toHaveBeenCalledWith({
       where: { heldBookingId: "held-1" },
-      data: { heldBookingId: null },
+      data: { heldBookingId: null, version: { increment: 1 } },
     });
   });
 
@@ -2637,7 +2637,7 @@ describe("cancelBooking detaches the held booking-request pointer (issue #1254)"
     // ...but the hold is still released: pointer detached and cancellation audited.
     expect(mocks.bookingRequestUpdateMany).toHaveBeenCalledWith({
       where: { heldBookingId: "held-1" },
-      data: { heldBookingId: null },
+      data: { heldBookingId: null, version: { increment: 1 } },
     });
     expect(mocks.logAudit).toHaveBeenCalled();
   });
@@ -3039,7 +3039,7 @@ describe("cancelBooking requireRequestHold guard (issue #1406)", () => {
     // The booking-request pointer to this hold is detached at the source (#1254).
     expect(mocks.bookingRequestUpdateMany).toHaveBeenCalledWith({
       where: { heldBookingId: "held-1" },
-      data: { heldBookingId: null },
+      data: { heldBookingId: null, version: { increment: 1 } },
     });
   });
 

@@ -150,7 +150,7 @@ describe("POST /api/admin/booking-requests/[id]/release-hold", () => {
     expect(body).toMatchObject({ ok: true, alreadyReleased: true });
     expect(mocks.requestUpdateMany).toHaveBeenCalledWith({
       where: { id: "req-1", heldBookingId: "held-1" },
-      data: { heldBookingId: null },
+      data: { heldBookingId: null, version: { increment: 1 } },
     });
     expect(mocks.cancelBooking).not.toHaveBeenCalled();
   });

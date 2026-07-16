@@ -246,7 +246,7 @@ describe("sendQuoteExpiryReminders — expired hold release (issue #1254)", () =
     expect(mocks.tx.bookingRequest.update).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: "req-9" },
-        data: { heldBookingId: null },
+        data: { heldBookingId: null, version: { increment: 1 } },
       }),
     );
   });
@@ -341,7 +341,7 @@ describe("sendQuoteExpiryReminders — stale MODIFY/QUERY hold release (issue #1
     expect(mocks.tx.bookingRequest.update).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: "req-m" },
-        data: { heldBookingId: null },
+        data: { heldBookingId: null, version: { increment: 1 } },
       }),
     );
   });

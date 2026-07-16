@@ -513,7 +513,7 @@ async function performBookingCancellation(
         // defensively, but detaching at the source keeps the pointer honest.
         await tx.bookingRequest.updateMany({
           where: { heldBookingId: bookingId },
-          data: { heldBookingId: null },
+          data: { heldBookingId: null, version: { increment: 1 } },
         });
       }
       // Bed release is now ATOMIC with the status flip under the lock, sourced

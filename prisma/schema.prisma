@@ -1659,6 +1659,14 @@ model BookingRequest {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // Optimistic-concurrency counter for the held-request conversion fences
+  // (#1923). Every mutating write of this row increments it (enforced by the
+  // version-increment source contract), and the conversion claims fence on the
+  // observed value instead of updatedAt. updatedAt is TIMESTAMP(3) (millisecond
+  // precision), so two writes in the same millisecond produce an identical
+  // timestamp and silently defeat the CAS; an integer counter cannot collide.
+  version Int @default(0)
+
   lodge            Lodge?                @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
   convertedBooking Booking?              @relation("BookingRequestConvertedBooking", fields: [convertedBookingId], references: [id], onDelete: SetNull)
   heldBooking      Booking?              @relation("BookingRequestHeldBooking", fields: [heldBookingId], references: [id], onDelete: SetNull)

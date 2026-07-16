@@ -96,6 +96,7 @@ export async function sendSchoolAttendeeConfirmationPrompts(
       data: {
         attendeeConfirmationTokenHash: tokenHash,
         attendeeConfirmationTokenExpiresAt: booking.checkIn,
+        version: { increment: 1 },
       },
     });
 
@@ -113,7 +114,7 @@ export async function sendSchoolAttendeeConfirmationPrompts(
 
       await prisma.bookingRequest.update({
         where: { id: request.id },
-        data: { attendeeConfirmationLastSentAt: now },
+        data: { attendeeConfirmationLastSentAt: now, version: { increment: 1 } },
       });
 
       result.sent += 1;
@@ -365,7 +366,7 @@ export async function applySchoolAttendeeConfirmation({
     if (confirmed) {
       await tx.bookingRequest.update({
         where: { id: request.id },
-        data: { attendeesConfirmedAt: now },
+        data: { attendeesConfirmedAt: now, version: { increment: 1 } },
       });
     }
   });
@@ -493,6 +494,7 @@ export async function resendSchoolAttendeeConfirmation({
     data: {
       attendeeConfirmationTokenHash: tokenHash,
       attendeeConfirmationTokenExpiresAt: expiresAt,
+      version: { increment: 1 },
     },
   });
 
@@ -509,7 +511,7 @@ export async function resendSchoolAttendeeConfirmation({
 
   await prisma.bookingRequest.update({
     where: { id: request.id },
-    data: { attendeeConfirmationLastSentAt: now },
+    data: { attendeeConfirmationLastSentAt: now, version: { increment: 1 } },
   });
 
   logAudit({

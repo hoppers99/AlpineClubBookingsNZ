@@ -188,6 +188,7 @@ function schoolRequest(overrides: Partial<Record<string, unknown>> = {}) {
     priceCents: null,
     createdAt: new Date("2026-06-01T00:00:00.000Z"),
     updatedAt: new Date("2026-06-01T00:00:00.000Z"),
+    version: 0,
     ...overrides,
   };
 }
@@ -568,7 +569,10 @@ describe("approveSchoolBookingRequest", () => {
     );
     expect(mockedUpdateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ updatedAt: schoolRequest().updatedAt }),
+        // The approval claim fences on the observed integer version (#1923),
+        // not the millisecond-collidable updatedAt.
+        where: expect.objectContaining({ version: schoolRequest().version }),
+        data: expect.objectContaining({ version: { increment: 1 } }),
       })
     );
   });
@@ -651,6 +655,74 @@ describe("approveSchoolBookingRequest", () => {
     expect(mockedSendPin).not.toHaveBeenCalled();
     expect(mockedSendManualInvoice).not.toHaveBeenCalled();
     expect(mockedLogAudit).not.toHaveBeenCalled();
+  });
+
+  it("aborts with 409 before any write when the held pointer is detached (lock-set decision flips) while the conversion waits for its locks (#1923)", async () => {
+    // Pre-read: the request carries a hold, so the approval decides on the
+    // global -> lodge lock set and takes the global lock. While it waits for the
+    // locks, a concurrent release detaches the hold and bumps version. The
+    // under-lock re-read must see the flipped lock-set decision and abort on the
+    // integer version fence (and the explicit held-pointer comparison) BEFORE
+    // any claim, held CAS, or side effect runs. Without the version bump two
+    // same-millisecond writes could share updatedAt and slip the old fence.
+    const order: string[] = [];
+    const outer = schoolRequest({
+      status: BookingRequestStatus.PRICED,
+      heldBookingId: "held-1",
+      version: 1,
+    });
+    // Detached under the locks: hold gone, version advanced, still unconverted.
+    const detached = schoolRequest({
+      status: BookingRequestStatus.PRICED,
+      heldBookingId: null,
+      version: 2,
+    });
+    let requestReads = 0;
+    mockedFindUnique.mockImplementation((async () => {
+      requestReads += 1;
+      order.push(requestReads === 1 ? "outer-request" : `locked-request-${requestReads}`);
+      return (requestReads === 1 ? outer : detached) as never;
+    }) as never);
+    vi.mocked(prisma.$executeRaw).mockImplementation((async () => {
+      order.push("global-lock");
+      return 1 as never;
+    }) as never);
+    mockedAcquireLodgeLock.mockImplementation(async () => {
+      order.push("lodge-lock");
+    });
+    // Only the pre-transaction held-lodge locator read happens; the post-lock
+    // held re-read must never be reached because the fence throws first.
+    vi.mocked(prisma.booking.findUnique).mockResolvedValue({
+      lodgeId: "lodge-1",
+    } as never);
+
+    await expect(
+      approveSchoolBookingRequest({
+        requestId: "req-school",
+        adminMemberId: "admin-1",
+      })
+    ).rejects.toMatchObject({ status: 409 });
+
+    // The pre-read lock-set decision still took the global lock first.
+    expect(order.indexOf("global-lock")).toBeGreaterThan(
+      order.indexOf("outer-request")
+    );
+    expect(order.indexOf("lodge-lock")).toBeGreaterThan(
+      order.indexOf("global-lock")
+    );
+    expect(order.indexOf("locked-request-2")).toBeGreaterThan(
+      order.indexOf("lodge-lock")
+    );
+
+    // No claim, no held CAS, no held re-read, and no side effect ran.
+    expect(mockedUpdateMany).not.toHaveBeenCalled();
+    expect(prisma.booking.updateMany).not.toHaveBeenCalled();
+    expect(prisma.booking.findUnique).toHaveBeenCalledTimes(1);
+    expect(mockedCheckCapacity).not.toHaveBeenCalled();
+    expect(prisma.member.create).not.toHaveBeenCalled();
+    expect(prisma.payment.create).not.toHaveBeenCalled();
+    expect(mockedEnqueueInvoice).not.toHaveBeenCalled();
+    expect(mockedSendPin).not.toHaveBeenCalled();
   });
 
   it("sets the exclusive whole-lodge hold on the booking when the request asked for exclusivity (#121)", async () => {
@@ -892,16 +964,16 @@ describe("approveSchoolBookingRequest", () => {
     expect(lastUpdate.status).toBe(BookingRequestStatus.CONVERTED);
   });
 
-  it("returns a committed held conversion before rejecting updatedAt or held-pointer drift (#1881)", async () => {
+  it("returns a committed held conversion before rejecting version or held-pointer drift (#1881)", async () => {
     const outer = schoolRequest({
       status: BookingRequestStatus.PRICED,
       heldBookingId: "held-1",
-      updatedAt: new Date("2026-06-01T00:00:00.000Z"),
+      version: 1,
     });
     const committed = schoolRequest({
       status: BookingRequestStatus.PRICED,
       heldBookingId: "held-2",
-      updatedAt: new Date("2026-06-02T00:00:00.000Z"),
+      version: 2,
       convertedBookingId: "booking-existing",
       convertedMemberId: "school-existing",
     });
@@ -912,7 +984,7 @@ describe("approveSchoolBookingRequest", () => {
     }) as never);
     // The old held pointer supplies the immutable lock key. Because the full
     // locked request exposes durable converted ids, replay returns before the
-    // stale updatedAt/pointer fence or a mutable held-booking re-read.
+    // stale version/pointer fence or a mutable held-booking re-read.
     vi.mocked(prisma.booking.findUnique).mockResolvedValue({
       lodgeId: "lodge-1",
     } as never);

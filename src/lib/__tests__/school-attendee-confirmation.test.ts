@@ -142,6 +142,7 @@ describe("sendSchoolAttendeeConfirmationPrompts", () => {
       data: {
         attendeeConfirmationTokenHash: "hashed-token",
         attendeeConfirmationTokenExpiresAt: CHECK_IN,
+        version: { increment: 1 },
       },
     });
     expect(mocks.sendConfirmationEmail).toHaveBeenCalledWith(
@@ -154,7 +155,7 @@ describe("sendSchoolAttendeeConfirmationPrompts", () => {
     );
     expect(mocks.requestUpdate).toHaveBeenCalledWith({
       where: { id: "req-1" },
-      data: { attendeeConfirmationLastSentAt: NOW },
+      data: { attendeeConfirmationLastSentAt: NOW, version: { increment: 1 } },
     });
   });
 
@@ -209,7 +210,7 @@ describe("sendSchoolAttendeeConfirmationPrompts", () => {
     expect(mocks.requestUpdate).toHaveBeenCalledTimes(1); // token rotation only
     expect(mocks.requestUpdate).not.toHaveBeenCalledWith(
       expect.objectContaining({
-        data: { attendeeConfirmationLastSentAt: NOW },
+        data: { attendeeConfirmationLastSentAt: NOW, version: { increment: 1 } },
       }),
     );
   });
@@ -292,7 +293,7 @@ describe("applySchoolAttendeeConfirmation", () => {
     });
     expect(mocks.requestUpdate).toHaveBeenCalledWith({
       where: { id: "req-1" },
-      data: { attendeesConfirmedAt: NOW },
+      data: { attendeesConfirmedAt: NOW, version: { increment: 1 } },
     });
   });
 
@@ -364,6 +365,7 @@ describe("resendSchoolAttendeeConfirmation (#1153)", () => {
       data: {
         attendeeConfirmationTokenHash: "hashed-token",
         attendeeConfirmationTokenExpiresAt: CHECK_IN,
+        version: { increment: 1 },
       },
     });
     expect(mocks.sendConfirmationEmail).toHaveBeenCalledWith(
@@ -371,7 +373,7 @@ describe("resendSchoolAttendeeConfirmation (#1153)", () => {
     );
     expect(mocks.requestUpdate).toHaveBeenCalledWith({
       where: { id: "req-1" },
-      data: { attendeeConfirmationLastSentAt: NOW },
+      data: { attendeeConfirmationLastSentAt: NOW, version: { increment: 1 } },
     });
   });
 
@@ -395,6 +397,7 @@ describe("resendSchoolAttendeeConfirmation (#1153)", () => {
         attendeeConfirmationTokenExpiresAt: new Date(
           NOW.getTime() + 3 * DAY_MS,
         ),
+        version: { increment: 1 },
       },
     });
   });

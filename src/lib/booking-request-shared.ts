@@ -84,7 +84,7 @@ export async function claimAlreadyConvertedBookingRequest(
     if (existing.status !== BookingRequestStatus.CONVERTED) {
       await tx.bookingRequest.update({
         where: { id: requestId },
-        data: { status: BookingRequestStatus.CONVERTED },
+        data: { status: BookingRequestStatus.CONVERTED, version: { increment: 1 } },
       });
     }
     return {

@@ -239,6 +239,15 @@ hold. It rejects an explicit request/hold lodge mismatch and carries the same
 concrete lodge into policy and email context. A null request lodge is never
 re-resolved through a default that may have changed after hold creation.
 
+Both held-conversion claims fence optimistically on the request's integer
+`BookingRequest.version` (`version: request.version` in the claim `updateMany`
+WHERE, mirrored by a JS re-read comparison), not on `updatedAt` (#1923). Every
+mutating write of a `BookingRequest` bumps `version: { increment: 1 }`, so a
+writer that lands after the converter's locked re-read invalidates the stale
+claim. `updatedAt` is `TIMESTAMP(3)` (millisecond precision): two writes in the
+same millisecond share a timestamp and would silently defeat a `updatedAt` CAS,
+which the integer counter cannot.
+
 School approval has two deliberately different branches. Fresh-create is a
 capacity-only admission and takes only the per-lodge lock. Held-reuse converts
 an existing AWAITING_REVIEW booking that cancellation/release may claim, so it
