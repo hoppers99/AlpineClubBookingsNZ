@@ -638,6 +638,32 @@ before email; email retry never calls create for a persisted invoice; exact
 existing invoices are adopted; amount/contact/account mismatch becomes visible
 `CONFLICT`; automatic post-approval failures never roll back approval.
 
+## Member Subscription Status Transitions
+
+`MemberSubscription.status` is one of `NOT_INVOICED`, `NOT_REQUIRED`, `UNPAID`,
+`PAID`, `OVERDUE`.
+
+```text
+(no row) -> NOT_REQUIRED            role/policy never owes (ensureNotRequiredSubscriptionForRole, billing NO_INVOICE)
+(no row) -> NOT_INVOICED            billing sweep creates a billable-but-uninvoiced row
+NOT_INVOICED -> UNPAID              Xero subscription invoice created (xero-subscription-invoices)
+UNPAID/OVERDUE <-> PAID             Xero discovery/webhook reflects the invoice's real payment state
+NOT_INVOICED/UNPAID/OVERDUE -> PAID manual mark-paid (finance:edit) — sets manuallyMarkedPaidAt/By/Note, never calls Xero
+PAID (manual) -> UNPAID            manual reversal when a Xero invoice link exists (clears provenance)
+PAID (manual) -> NOT_INVOICED      manual reversal when no Xero invoice link exists (clears provenance)
+```
+
+Guards: the annual-invoice sweep never invoices a row already `PAID` (manual or
+Xero); `checkMembershipStatus` never downgrades a manually marked-paid row that
+carries no Xero invoice link. Manual mark-paid is blocked when the row is
+already `PAID`; manual reversal is allowed only on a row with
+`manuallyMarkedPaidAt` set. Every manual transition is audited with the acting
+admin.
+
+To verify: manual mark-paid sets PAID + provenance and never calls Xero; the
+sweep skips a manual-PAID member; a Xero force-sync leaves a manual-PAID row
+untouched; reversal restores UNPAID vs NOT_INVOICED by invoice-link presence.
+
 ## Committee Assignment Lifecycle
 
 ```text

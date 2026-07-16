@@ -53,6 +53,28 @@ Future reviews and issues should cite this file when proposing changes.
 - Membership approval remains authoritative when billing setup is incomplete:
   billing records a visible post-approval exception/warning and never rolls the
   member transaction back.
+- **Paid-up semantics (three sources, one meaning).** A member counts as
+  paid-up when EITHER their membership-type policy `subscriptionBehavior` is
+  `NOT_REQUIRED` (Life/honorary/operational — no subscription row needed) OR
+  their current-season `MemberSubscription.status` is `PAID`. Booking
+  (`findUnpaidMemberGuests`), nomination eligibility (`verifyNominator`), and the
+  member-facing `/api/member/subscription-status` all resolve paid-up from these
+  same two facts. Nomination deliberately honours ONLY the membership-type
+  `NOT_REQUIRED` rule, NOT the booking side's junior age-tier subscription
+  exemption (`requiresPaidSubscriptionForAgeTier`): nominating is an adult-member
+  act and widening it to un-subscribed junior tiers is an owner policy decision.
+- **Manual mark-paid provenance (non-Xero clubs / cash).** `status = "PAID"` can
+  be set outside the Xero pipeline by an audited finance:edit action, recorded by
+  `manuallyMarkedPaidAt` / `manuallyMarkedPaidByMemberId` / `manualPaymentNote`.
+  This path never calls Xero and never creates or voids an invoice. Two writers
+  must never clobber a manual PAID: the annual-invoice sweep never invoices a
+  subscription already `PAID` (a manual PAID has no charge-coverage row, so the
+  guard keys off status, not coverage), and Xero discovery/reconciliation
+  (`checkMembershipStatus`) never downgrades a manually marked-paid row that
+  carries no Xero invoice link. Once a real Xero subscription invoice links to
+  the row, Xero is authoritative again. Reversal (finance:edit) restores `UNPAID`
+  when a Xero invoice link exists, `NOT_INVOICED` otherwise, and clears the
+  provenance columns; both directions are audited with the acting admin.
 - Xero invoice identity is persisted before Xero email. Email retries reuse it.
   Existing invoices are adopted only on an exact `AUTHORISED` snapshot match;
   conflicts are visible and never trigger a silent provider rewrite. Xero

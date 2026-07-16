@@ -705,6 +705,26 @@ New-member approval runs the same planner after the membership transaction;
 failure or incomplete configuration is a warning/exception and cannot undo the
 approval.
 
+### Manual mark-paid (clubs that do not use Xero, or cash payments)
+
+Finance editors can mark a member's current-season subscription paid without the
+Xero pipeline, from the row actions on `/admin/subscriptions` (finance-view users
+see no action). "Mark as paid (manual)" sets the subscription to `PAID`, records
+`manuallyMarkedPaidAt`, the acting admin, and an optional free-text note, and is
+audited. It never calls Xero and never creates or voids an invoice. A manually
+marked-paid member is then paid-up everywhere the app enforces it: lodge booking,
+membership nomination, and the member's own subscription status. The status chip
+shows a `(manual)` suffix and a provenance tooltip.
+
+"Mark as unpaid" reverses a manual payment: it restores `UNPAID` when the row
+still carries a Xero invoice link, `NOT_INVOICED` otherwise, clears the
+provenance columns, and is audited. Marking paid is blocked when the row is
+already `PAID`, and reversal is available only on a row that was manually marked
+paid — a Xero-owned `PAID` is never overwritten here. The annual-invoice sweep
+never re-invoices a subscription that is already `PAID`, and Xero
+sync/reconciliation never downgrades a manual-PAID row that has no Xero invoice
+link.
+
 ## Member Import And Addresses
 
 Admin member CSV import treats a member identity as the normalized email plus
