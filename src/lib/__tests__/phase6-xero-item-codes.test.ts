@@ -203,6 +203,27 @@ describe("buildInvoiceLineItems with per-guest membership-type item codes (#1930
     expect(items[2].itemCode).toBe("HUTFEE-CHILD-WIN-MEM");
   });
 
+  it("gives a TYPE_POLICY_FORCED member the NON_MEMBER item code, not the member code (#1930, E4)", () => {
+    // A member whose type forces the non-member rate is priced from NON_MEMBER,
+    // so its snapshot is NON_MEMBER and its Xero line uses the NON_MEMBER item
+    // code — a deliberate byte-difference correcting the old latent mismatch
+    // (stored isMember=true previously yielded the MEMBER item code on a
+    // non-member-priced line). This test pins the new consistent behavior.
+    const forcedMember = {
+      firstName: "Pat",
+      lastName: "Policy",
+      ageTier: "ADULT",
+      isMember: true, // a real member...
+      rateMembershipTypeId: NONMEMBER_TYPE, // ...forced onto the NON_MEMBER rows
+      priceCents: 7200,
+    };
+    const items = buildInvoiceLineItems(
+      [forcedMember], checkIn, checkOut, 2, "200", null, false, makeResolver(), "WINTER"
+    );
+    expect(items[0].itemCode).toBe("HUTFEE-ADULT-WIN-NON");
+    expect(items[0].itemCode).not.toBe("HUTFEE-ADULT-WIN-MEM");
+  });
+
   it("omits itemCode when no mapping exists for that combination", () => {
     const items = buildInvoiceLineItems(
       mixedGuests, checkIn, checkOut, 2, "200", null, false, makeResolver(), "SUMMER"
