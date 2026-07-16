@@ -9,7 +9,7 @@ import { MemberOnboardingWizard } from "@/components/member-onboarding-wizard";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import { hasActiveHutLeaderAssignment } from "@/lib/hut-leader";
 import { ReportIssueWidget } from "@/components/report-issue-widget";
-import { getClubIdentity } from "@/lib/club-identity-settings";
+import { getCachedClubIdentity } from "@/lib/public-layout-config";
 import { clubThemeFontVariableClassName } from "@/lib/club-theme-fonts";
 import {
   hasAdminPortalAccess,
@@ -148,7 +148,7 @@ export default async function AuthenticatedLayout({
     getDefaultLodgeCapacity(),
     getCurrentSiteBanners(),
     getWebsiteThemeRenderState(),
-    getClubIdentity(),
+    getCachedClubIdentity(),
   ]);
   const liveClubIdentity = { ...clubIdentity, lodgeCapacity };
   const nonce = requestHeaders.get(CSP_NONCE_HEADER) ?? undefined;

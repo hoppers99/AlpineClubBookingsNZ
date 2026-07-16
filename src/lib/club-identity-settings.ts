@@ -29,6 +29,10 @@ import type { ClubIdentity } from "@/config/club-identity-types";
 import { lodgeOrderBy } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 
+// The ClubIdentitySettings singleton row id. Its own constant (distinct from
+// EmailMessageSetting's id, which happens to share the value "default").
+export const CLUB_IDENTITY_SETTINGS_ID = "default";
+
 export interface PersistedClubIdentity {
   name: string | null;
   shortName: string | null;
@@ -91,7 +95,7 @@ export async function loadPersistedClubIdentity(): Promise<PersistedClubIdentity
   if (!delegate) return null;
   try {
     return await delegate.findUnique({
-      where: { id: "default" },
+      where: { id: CLUB_IDENTITY_SETTINGS_ID },
       select: { name: true, shortName: true, hutLeaderLabel: true },
     });
   } catch {

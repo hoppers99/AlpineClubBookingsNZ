@@ -4,6 +4,12 @@ import { lodgeOrderBy } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 
 export const EMAIL_MESSAGE_SETTINGS_ID = "default";
+// The ClubIdentitySettings singleton is a DISTINCT table from EmailMessageSetting
+// and owns its own id (they merely share the value "default"). Kept as its own
+// constant so the club-name lookup below never silently depends on the email
+// settings id coinciding. Mirrors club-identity-settings.ts's CLUB_IDENTITY_SETTINGS_ID
+// (not imported: that module is server-only and would change this import graph).
+const CLUB_IDENTITY_SETTINGS_ID = "default";
 const FALLBACK_PUBLIC_URL = "http://localhost:3000";
 
 // STABLE SEARCH-REPLACE KEY INVARIANT (E3 #1929): email template FILE defaults
@@ -38,7 +44,7 @@ async function loadClubIdentityName(): Promise<string | null> {
   if (!delegate) return null;
   try {
     const row = await delegate.findUnique({
-      where: { id: EMAIL_MESSAGE_SETTINGS_ID },
+      where: { id: CLUB_IDENTITY_SETTINGS_ID },
       select: { name: true },
     });
     return trimOptional(row?.name);

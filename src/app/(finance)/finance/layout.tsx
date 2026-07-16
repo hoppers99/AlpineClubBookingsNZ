@@ -4,7 +4,7 @@ import { ContextualHelpButton } from "@/components/contextual-help-button";
 import { Badge } from "@/components/ui/badge";
 import { NavBar } from "@/components/nav-bar";
 import { ReportIssueWidget } from "@/components/report-issue-widget";
-import { getClubIdentity } from "@/lib/club-identity-settings";
+import { getCachedClubIdentity } from "@/lib/public-layout-config";
 import { CSP_NONCE_HEADER } from "@/lib/csp";
 import { getDefaultLodgeCapacity } from "@/lib/lodge-capacity";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
@@ -25,7 +25,7 @@ export default async function FinanceLayout({
   const [effectiveModules, lodgeCapacity, clubIdentity] = await Promise.all([
     loadEffectiveModuleFlags(),
     getDefaultLodgeCapacity(),
-    getClubIdentity(),
+    getCachedClubIdentity(),
   ]);
   const liveClubIdentity = { ...clubIdentity, lodgeCapacity };
   const nonce = (await headers()).get(CSP_NONCE_HEADER) ?? undefined;

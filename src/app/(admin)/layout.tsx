@@ -9,7 +9,7 @@ import { ContextualHelpButton } from "@/components/contextual-help-button";
 import { NavBar } from "@/components/nav-bar";
 import { MemberOnboardingWizard } from "@/components/member-onboarding-wizard";
 import { ReportIssueWidget } from "@/components/report-issue-widget";
-import { getClubIdentity } from "@/lib/club-identity-settings";
+import { getCachedClubIdentity } from "@/lib/public-layout-config";
 import { clubThemeFontVariableClassName } from "@/lib/club-theme-fonts";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import { isFullAdmin } from "@/lib/access-roles";
@@ -120,7 +120,7 @@ export default async function AdminLayout({
       loadEffectiveModuleFlags(),
       getWebsiteThemeRenderState(),
       getDefaultLodgeCapacity(),
-      getClubIdentity(),
+      getCachedClubIdentity(),
     ]);
   const liveClubIdentity = { ...clubIdentity, lodgeCapacity };
   const nonce = requestHeaders.get(CSP_NONCE_HEADER) ?? undefined;

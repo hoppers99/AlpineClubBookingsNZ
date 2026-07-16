@@ -2,7 +2,7 @@ import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { AppProviders } from "@/components/app-providers";
 import { auth } from "@/lib/auth";
-import { getClubIdentity } from "@/lib/club-identity-settings";
+import { getCachedClubIdentity } from "@/lib/public-layout-config";
 import { CSP_NONCE_HEADER } from "@/lib/csp";
 import { getDefaultLodgeCapacity } from "@/lib/lodge-capacity";
 import { prisma } from "@/lib/prisma";
@@ -60,7 +60,7 @@ export default async function LodgeLayout({
 
   const [lodgeCapacity, clubIdentity] = await Promise.all([
     getDefaultLodgeCapacity(),
-    getClubIdentity(),
+    getCachedClubIdentity(),
   ]);
   const liveClubIdentity = { ...clubIdentity, lodgeCapacity };
   const nonce = requestHeaders.get(CSP_NONCE_HEADER) ?? undefined;
