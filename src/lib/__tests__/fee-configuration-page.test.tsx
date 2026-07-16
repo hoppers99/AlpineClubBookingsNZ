@@ -171,6 +171,9 @@ describe("fee configuration page", () => {
     expect(postBody(fetchMock)).toEqual({
       action: "UPDATE_MEMBERSHIP_FEE", id: "fee-1", amountCents: 10000,
       billingBasis: "PER_MEMBER", prorationRule: "NONE", effectiveFrom: "2026-01-01", effectiveTo: null,
+      // A fee with no stored components defaults to the single reconciled
+      // component (#1932, E6); editing always sends the reconciled array.
+      components: [{ label: "Annual membership fee", amountCents: 10000, prorate: true, xeroAccountCode: null, xeroItemCode: null, sortOrder: 0 }],
     });
   });
 
