@@ -151,12 +151,22 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v6.4.0
         with:
           node-version: 24
           cache: npm
+
+      - name: Validate PR concurrency declaration
+        if: github.event_name == 'pull_request'
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/ci/check-pr-concurrency-declaration.mjs
 
       - name: Install dependencies
         run: npm ci

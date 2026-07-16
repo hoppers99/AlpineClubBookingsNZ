@@ -60,9 +60,8 @@
 - Writer class(es), canonical lock key(s), and acquisition order:
 - Immutable pre-lock key source and mutable under-lock re-read:
 - Status-guarded claim and proof that a lost claim runs no side effect:
-- Counterpart writers/tests checked (including recent overlapping PRs):
-- Provider calls inside a transaction (write `None`, or justify the bounded
-  exception from `docs/CONCURRENCY_AND_LOCKING.md`):
+- Relevant open/last-10 PR numbers, counterpart writers/tests, and compatibility evidence:
+- Provider calls inside a transaction (write `None`, or justify the bounded exception from `docs/CONCURRENCY_AND_LOCKING.md`):
 
 ## Payment Or Accounting Impact
 

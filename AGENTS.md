@@ -70,10 +70,14 @@ Before changing a transaction, booking lifecycle, capacity check, settlement,
 credit writer, webhook, or cron, read `docs/CONCURRENCY_AND_LOCKING.md` and
 classify every mutation it composes:
 
-- booking status or money uses global `pg_advisory_xact_lock(1)`;
+- global-cohort lifecycle and settlement-money transitions that must exclude
+  cancel/capture/refund/hold-release counterparts use global
+  `pg_advisory_xact_lock(1)`; capacity-only admission/status claims do not join
+  that cohort unless the locking guide's writer matrix says they compose it;
 - capacity uses `acquireLodgeCapacityLock` for the immutable lodge key;
-- member-night and credit-ledger invariants use their canonical per-member
-  helpers, with same-family keys sorted;
+- member-night and credit-ledger-only invariants use their canonical per-member
+  helpers, with same-family keys sorted; a writer that also changes booking
+  status or settlement money takes both applicable tiers;
 - when tiers compose, acquire global -> lodge -> member, re-read mutable state
   after the locks, and use a status-guarded claim (`updateMany`) before any side
   effect; a lost claim runs no side effect;

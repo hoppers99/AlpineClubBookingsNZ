@@ -1170,8 +1170,10 @@ this exposure.
 
 School approval re-checks per-night capacity for the FINAL guest list on both
 branches — fresh-create and held-reuse (excluding the held booking's own
-guests) — under the global booking advisory lock, before anything flips to a
-capacity-holding status (#1352). A hold reserves only the originally held
+guests) — under the canonical per-lodge capacity lock, before anything flips
+to a capacity-holding status (#1352, #1911). This path is a capacity-only new
+booking admission, so it does not take the disjoint global booking/money lock.
+A hold reserves only the originally held
 guest count, so an admin child-count override at approval can never confirm
 more beds than actually remain on any night; the admin sees the same
 capacityExceeded outcome as the fresh path.
