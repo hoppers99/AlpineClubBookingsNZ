@@ -726,7 +726,24 @@ mapped for two people at once, is a nominator on this application, is an admin
 mapped as a dependent, or when the application email belongs to a *different*
 login-capable member. A target that already has this season's membership
 coverage is kept as-is and excluded from new subscription billing (SKIP with a
-note), so nobody is double-charged.
+note, repeated in the post-approval warnings), so nobody is double-charged.
+
+Mapping also refuses (BLOCK) when a **scoped** admin's mapping would overwrite
+the login email of a member who holds a privileged access role — the same
+Full-Admin gate as direct member edit (issue #1026), because an email change
+plus a public forgot-password request hands the account and its roles to the
+new address. A Full Admin can approve such a mapping, and a mapping that leaves
+the email unchanged is unaffected. The acting admin's roles are recomputed
+inside the approval transaction, so a preview minted by a Full Admin cannot be
+replayed by a scoped admin — that approval fails closed with a 409 token
+mismatch.
+
+A mapped target that is already linked to a Xero contact keeps that link: the
+post-approval contact sync reuses the existing `xeroContactId` and does **not**
+re-push the member's details to Xero after the overwrite. If the mapping
+changed the member's name or email, the Xero contact keeps its old values
+(stale-name caveat) until an operator edits the contact in Xero manually. Only
+a member without an existing link gets a Xero contact found-or-created.
 
 Auth is never silently rewritten: mapping a family member never touches a
 login-capable target's password/login/2FA or email; mapping the applicant onto

@@ -1609,6 +1609,14 @@ never double-charges or overrides an existing coverage arrangement. Confirmation
 timestamps on a mapped target are set only when currently null and are never
 regressed, and the overwrite is bound to a previewed HMAC token so any drift in
 the computed outcome refuses the approval.
+The applicant MAP path also carries the #1026 privileged-email gate: when the
+mapping would change the login email of a login-capable target holding a
+privileged access role, only a Full Admin may approve it — a scoped admin's
+preview shows a blocking error, and because the acting admin's roles are
+recomputed inside the approval transaction (part of the tokenized outcome), a
+Full-Admin-minted preview replayed by a scoped admin fails closed with a 409
+token mismatch. Same-email mappings and the non-login promotion path (where
+`hasPrivilegedAccess` is canLogin-aware and therefore false) are unaffected.
 On-behalf booking must not depend on `membership:view`: a Booking Officer
 (`bookings:edit`) reaches the booking owner's or target member's family group
 through the bookings-scoped pickers
