@@ -421,6 +421,49 @@ async function decideJoiningFeeMaterialisation(
   return decision;
 }
 
+/**
+ * The legacy-amount fill windows for one fan-out cell: the complement, within
+ * [today, +infinity), of the cell's existing JoiningFee windows (#1931 F1). The
+ * removed runtime fallback billed the legacy amount on EVERY uncovered date, so
+ * every gap must be filled — the leading gap before the earliest window, each
+ * inter-window gap, and the open tail after a bounded last window. An existing
+ * window's effectiveTo === null covers to infinity (no tail); windows ending
+ * before today are irrelevant. Returned windows never overlap an existing one.
+ */
+function joiningFeeLegacyFillWindows(
+  existing: Array<{ effectiveFrom: Date; effectiveTo: Date | null }>,
+  today: Date,
+): Array<{ effectiveFrom: Date; effectiveTo: Date | null }> {
+  const relevant = existing
+    .filter((w) => w.effectiveTo === null || w.effectiveTo.getTime() >= today.getTime())
+    .sort((a, b) => a.effectiveFrom.getTime() - b.effectiveFrom.getTime());
+  const fills: Array<{ effectiveFrom: Date; effectiveTo: Date | null }> = [];
+  // `cursor` is the first still-uncovered day, sweeping forward from today.
+  let cursor = today;
+  let coveredToInfinity = false;
+  for (const window of relevant) {
+    // Clip a window that started before today to today, so the leading gap is
+    // measured from today (nothing joins in the past).
+    const start =
+      window.effectiveFrom.getTime() > today.getTime() ? window.effectiveFrom : today;
+    if (start.getTime() > cursor.getTime()) {
+      fills.push({ effectiveFrom: cursor, effectiveTo: addDaysDateOnly(start, -1) });
+    }
+    if (window.effectiveTo === null) {
+      coveredToInfinity = true;
+      break; // an open window covers the rest of the line — no later gaps
+    }
+    const next = addDaysDateOnly(window.effectiveTo, 1);
+    if (next.getTime() > cursor.getTime()) cursor = next;
+  }
+  if (!coveredToInfinity) {
+    // Open tail after the last bounded window (or the whole line when there were
+    // no relevant windows at all).
+    fills.push({ effectiveFrom: cursor, effectiveTo: null });
+  }
+  return fills;
+}
+
 /** The (membershipTypeId, ageTier) cells one category's amount fans out to. */
 function joiningFeeFanOutCells(
   category: string,
@@ -461,30 +504,26 @@ async function applyJoiningFeeMaterialisation(
   let created = 0;
   for (const { category, amountCents } of decision.materialise) {
     for (const cell of joiningFeeFanOutCells(category, membershipTypesByKey)) {
-      // Bound the open window to the day before this cell's earliest FUTURE
-      // window, so materialisation never overlaps a scheduled future fee.
-      const futureFroms = windows
-        .filter(
-          (w) =>
-            w.membershipTypeId === cell.membershipTypeId &&
-            w.ageTier === cell.ageTier &&
-            w.effectiveFrom.getTime() > today.getTime(),
-        )
-        .map((w) => w.effectiveFrom.getTime());
-      const effectiveTo =
-        futureFroms.length > 0
-          ? addDaysDateOnly(new Date(Math.min(...futureFroms)), -1)
-          : null;
-      await tx.joiningFee.create({
-        data: {
-          membershipTypeId: cell.membershipTypeId,
-          ageTier: cell.ageTier as never,
-          amountCents,
-          effectiveFrom: today,
-          effectiveTo,
-        },
-      });
-      created += 1;
+      // Fill EVERY gap this cell leaves uncovered on the today-onward date line
+      // with the legacy amount (leading gap, inter-window gaps, and the open
+      // tail), never overlapping an existing window — reproducing the removed
+      // uncovered-date runtime fallback (#1931 F1).
+      const cellWindows = windows.filter(
+        (w) =>
+          w.membershipTypeId === cell.membershipTypeId && w.ageTier === cell.ageTier,
+      );
+      for (const fill of joiningFeeLegacyFillWindows(cellWindows, today)) {
+        await tx.joiningFee.create({
+          data: {
+            membershipTypeId: cell.membershipTypeId,
+            ageTier: cell.ageTier as never,
+            amountCents,
+            effectiveFrom: fill.effectiveFrom,
+            effectiveTo: fill.effectiveTo,
+          },
+        });
+        created += 1;
+      }
     }
   }
   return created;

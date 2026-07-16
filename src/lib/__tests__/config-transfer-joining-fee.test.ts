@@ -88,6 +88,42 @@ function planCtx(files: Map<string, Uint8Array>, db: TxDb) {
   };
 }
 
+/**
+ * A read store for getEffectiveJoiningFee that honours effective windows exactly
+ * like the real resolver query: filter to the (membershipTypeId, ageTier) cell,
+ * keep windows covering asOf, and return the latest-starting one.
+ */
+function joiningFeeStore(created: JoiningFeeRow[], existing: JoiningFeeRow[]) {
+  const all = [...existing, ...created];
+  return {
+    joiningFee: {
+      findFirst: async ({
+        where,
+      }: {
+        where: {
+          membershipTypeId: string;
+          ageTier: string | null;
+          effectiveFrom: { lte: Date };
+        };
+      }) => {
+        const asOf = where.effectiveFrom.lte;
+        const matches = all
+          .filter(
+            (row) =>
+              row.membershipTypeId === where.membershipTypeId &&
+              row.ageTier === (where.ageTier ?? null) &&
+              row.effectiveFrom.getTime() <= asOf.getTime() &&
+              (row.effectiveTo === null || row.effectiveTo.getTime() >= asOf.getTime()),
+          )
+          .sort((a, b) => b.effectiveFrom.getTime() - a.effectiveFrom.getTime());
+        return matches[0]
+          ? { amountCents: matches[0].amountCents, effectiveFrom: matches[0].effectiveFrom }
+          : null;
+      },
+    },
+  };
+}
+
 /** Old-bundle CSV: pre-#1931 ENTRANCE_FEE label, amounts in amountCents. */
 function oldBundle(rows: string[]): Map<string, Uint8Array> {
   return new Map<string, Uint8Array>([
@@ -198,6 +234,101 @@ describe("config-transfer joining-fee materialisation (#1931, E5)", () => {
     );
     expect(fullAdult?.effectiveTo).toEqual(addDaysDateOnly(futureStart, -1));
     expect(associateAdult?.effectiveTo).toBeNull();
+  });
+
+  it("fills an INTER-WINDOW gap between two future windows (#1931 F1: not billed $0 mid-gap)", async () => {
+    const today = getTodayDateOnly();
+    const gapStart = addDaysDateOnly(today, 10); // window A: [today+10, today+20]
+    const gapEnd = addDaysDateOnly(today, 20);
+    const tailStart = addDaysDateOnly(today, 40); // window B: [today+40, null]
+    const captures = {
+      joiningFeeCreates: [] as JoiningFeeRow[],
+      existingWindows: [
+        // Two mt-full/ADULT windows leaving today..today+9, today+21..today+39
+        // uncovered. Neither covers today, so ADULT materialises.
+        { membershipTypeId: "mt-full", ageTier: "ADULT", amountCents: 9900, effectiveFrom: gapStart, effectiveTo: gapEnd },
+        { membershipTypeId: "mt-full", ageTier: "ADULT", amountCents: 9900, effectiveFrom: tailStart, effectiveTo: null },
+      ],
+    };
+    await xeroConfigImporter.apply(
+      applyCtx(oldBundle(["ENTRANCE_FEE,,,,ADULT,ENT-AD,10000"]), makeTx(captures)) as never,
+    );
+
+    const fullAdultFills = captures.joiningFeeCreates
+      .filter((r) => r.membershipTypeId === "mt-full" && r.ageTier === "ADULT")
+      .sort((a, b) => a.effectiveFrom.getTime() - b.effectiveFrom.getTime());
+    // Leading gap + inter-window gap (no tail — window B is open-ended).
+    expect(fullAdultFills).toHaveLength(2);
+    expect(fullAdultFills[0]).toMatchObject({
+      amountCents: 10000,
+      effectiveFrom: today,
+      effectiveTo: addDaysDateOnly(gapStart, -1),
+    });
+    expect(fullAdultFills[1]).toMatchObject({
+      amountCents: 10000,
+      effectiveFrom: addDaysDateOnly(gapEnd, 1),
+      effectiveTo: addDaysDateOnly(tailStart, -1),
+    });
+
+    // The previously-uncovered mid-gap date today+25 now resolves the legacy
+    // amount (10000), not a silent $0.
+    const store = joiningFeeStore(captures.joiningFeeCreates, captures.existingWindows);
+    const midGap = await getEffectiveJoiningFee(
+      { membershipTypeId: "mt-full", ageTier: "ADULT" }, addDaysDateOnly(today, 25), store as never,
+    );
+    expect(midGap).toMatchObject({ amountCents: 10000, source: "SCHEDULE" });
+  });
+
+  it("fills the open TAIL after a bounded last window (#1931 F1: not billed $0 after it lapses)", async () => {
+    const today = getTodayDateOnly();
+    const boundedStart = addDaysDateOnly(today, 10);
+    const boundedEnd = addDaysDateOnly(today, 50); // window: [today+10, today+50]
+    const captures = {
+      joiningFeeCreates: [] as JoiningFeeRow[],
+      existingWindows: [
+        { membershipTypeId: "mt-full", ageTier: "ADULT", amountCents: 9900, effectiveFrom: boundedStart, effectiveTo: boundedEnd },
+      ],
+    };
+    await xeroConfigImporter.apply(
+      applyCtx(oldBundle(["ENTRANCE_FEE,,,,ADULT,ENT-AD,10000"]), makeTx(captures)) as never,
+    );
+
+    const fullAdultFills = captures.joiningFeeCreates
+      .filter((r) => r.membershipTypeId === "mt-full" && r.ageTier === "ADULT")
+      .sort((a, b) => a.effectiveFrom.getTime() - b.effectiveFrom.getTime());
+    // Leading gap [today, today+9] + open tail [today+51, null].
+    expect(fullAdultFills).toHaveLength(2);
+    expect(fullAdultFills[0]).toMatchObject({
+      effectiveFrom: today,
+      effectiveTo: addDaysDateOnly(boundedStart, -1),
+    });
+    expect(fullAdultFills[1]).toMatchObject({
+      amountCents: 10000,
+      effectiveFrom: addDaysDateOnly(boundedEnd, 1),
+      effectiveTo: null,
+    });
+
+    // A date past the bounded window (today+100) now resolves the legacy amount,
+    // not a silent $0.
+    const store = joiningFeeStore(captures.joiningFeeCreates, captures.existingWindows);
+    const afterLapse = await getEffectiveJoiningFee(
+      { membershipTypeId: "mt-full", ageTier: "ADULT" }, addDaysDateOnly(today, 100), store as never,
+    );
+    expect(afterLapse).toMatchObject({ amountCents: 10000, source: "SCHEDULE" });
+  });
+
+  it("a genuinely fee-free install (no legacy amount) still resolves NONE (regression)", async () => {
+    const captures = { joiningFeeCreates: [] as JoiningFeeRow[] };
+    await xeroConfigImporter.apply(
+      applyCtx(oldBundle(["ENTRANCE_FEE,,,,ADULT,ENT-AD,"]), makeTx(captures)) as never,
+    );
+    expect(captures.joiningFeeCreates).toHaveLength(0);
+
+    const store = joiningFeeStore([], []);
+    const fee = await getEffectiveJoiningFee(
+      { membershipTypeId: "mt-full", ageTier: "ADULT" }, getTodayDateOnly(), store as never,
+    );
+    expect(fee).toMatchObject({ amountCents: null, source: "NONE" });
   });
 
   it("ignores zero/absent amounts (no windows materialised from item-code-only rows)", async () => {

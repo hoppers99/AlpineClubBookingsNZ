@@ -21,16 +21,22 @@
 -- amount is byte-identical on day one (the family fee becoming strictly
 -- type-driven is the one deliberate behaviour change, surfaced in code/docs).
 --
--- Migration pre-check (coverage-based): where an install still depends on a
--- legacy mapping amount for a category with NO EntranceFee window COVERING the
--- migration day (none at all, all lapsed, or all future), that amount is
--- MATERIALISED here into JoiningFee rather than left to a runtime fallback
--- (the runtime fallback is removed in this release). The removed fallback
--- applied whenever no window was ACTIVE as-of today — so a lapsed-window-plus-
--- legacy-amount install must keep billing, not just a row-less one. The
--- materialised window opens on the migration day and is bounded to the day
--- before the category's earliest FUTURE window (if any) so it never overlaps a
--- scheduled fee. Categories that legitimately have no fee produce no rows.
+-- Migration pre-check (gap-fill, #1931 F1): the removed runtime fallback
+-- (getEffectiveEntranceFee) billed the legacy mapping amount on EVERY date no
+-- EntranceFee window covered — an UNCONDITIONAL uncovered-date fallback, not
+-- merely a fallback for row-less installs. To preserve that behaviour exactly
+-- now the fallback is gone, where a legacy amount exists this materialises a
+-- legacy-amount JoiningFee window over EVERY gap in the migration-day-onward
+-- date line that no explicit EntranceFee window covers:
+--   * the LEADING gap before the earliest relevant window,
+--   * each INTER-WINDOW gap between two scheduled windows, and
+--   * the open TAIL after a bounded last window (and the whole open line when no
+--     relevant window exists at all).
+-- Materialised windows are the complement of the schedule windows, so they never
+-- overlap a scheduled fee; the resolved joining fee for any date >= the
+-- migration day therefore equals what getEffectiveEntranceFee returned on the
+-- old runtime. Categories with no legacy amount produce no rows (they stay
+-- fee-free and resolve NONE, unchanged).
 
 -- ---------------------------------------------------------------------------
 -- 1. JoiningFee table
@@ -72,8 +78,9 @@ ALTER TABLE "JoiningFee"
 -- 2. Fan-out backfill (D-R1)
 -- ---------------------------------------------------------------------------
 -- Source windows: every EntranceFee schedule row verbatim, plus (for any
--- category with NO schedule row) one open window materialised from the legacy
--- mapping amount (per-category XeroItemCodeMapping amount first, then the global
+-- category with a legacy mapping amount) one legacy-amount window PER uncovered
+-- gap in the migration-day-onward date line — the complement of the schedule
+-- windows (per-category XeroItemCodeMapping amount first, then the global
 -- XeroAccountMapping 'entranceFeeAmountCents' flat amount). All INSERTs write an
 -- explicit UTC updatedAt via timezone('UTC', statement_timestamp()); the only
 -- session-derived value is the honest Pacific/Auckland boundary date used for a
@@ -103,8 +110,69 @@ legacy_global AS (
   FROM legacy_global_text
   WHERE "code"::bigint <= 2147483647
 ),
+-- The single legacy amount for a category: per-category XeroItemCodeMapping
+-- amount first, then the global flat XeroAccountMapping amount. NULL when the
+-- install never carried a legacy amount for that category (then it stays
+-- fee-free — no gap windows are generated below).
+legacy_amount AS (
+  SELECT c.category, COALESCE(lm.amount, lg.amount)::integer AS amount
+  FROM cats c
+  LEFT JOIN legacy_mapping lm ON lm.category = c.category
+  LEFT JOIN legacy_global lg ON TRUE
+),
+-- EntranceFee windows still relevant to the migration-day-onward date line:
+-- open-ended, or ending on/after the migration day. Purely past windows are
+-- irrelevant (nothing joins in the past) and are ignored.
+rel AS (
+  SELECT
+    e."category" AS category,
+    e."effectiveFrom" AS "effectiveFrom",
+    e."effectiveTo" AS "effectiveTo"
+  FROM "EntranceFee" e
+  WHERE e."effectiveTo" IS NULL
+     OR e."effectiveTo" >= timezone('Pacific/Auckland', statement_timestamp())::date
+),
+-- Complement of the relevant windows within [migration-day, +infinity): one row
+-- per gap no explicit window covers.
+--   (a) leading gap  [migration-day, earliest relevant window start - 1],
+--   (b) inter-window gap [bounded window end + 1, next window start - 1],
+--   (c) open tail    [bounded last window end + 1, +infinity),
+--   (d) whole line   [migration-day, +infinity) when no relevant window exists.
+gaps AS (
+  -- (a) leading gap, only when the earliest relevant window starts after the
+  -- migration day (i.e. no window covers the migration day itself).
+  SELECT
+    r.category,
+    timezone('Pacific/Auckland', statement_timestamp())::date AS gap_from,
+    MIN(GREATEST(r."effectiveFrom", timezone('Pacific/Auckland', statement_timestamp())::date)) - 1 AS gap_to
+  FROM rel r
+  GROUP BY r.category
+  HAVING MIN(GREATEST(r."effectiveFrom", timezone('Pacific/Auckland', statement_timestamp())::date))
+         > timezone('Pacific/Auckland', statement_timestamp())::date
+  UNION ALL
+  -- (b) inter-window gap and (c) open tail: for each bounded relevant window, the
+  -- span from the day after it ends up to the day before the NEXT relevant
+  -- window (or +infinity when it is the last). NULL gap_to encodes the open tail.
+  SELECT
+    r.category,
+    r."effectiveTo" + 1 AS gap_from,
+    (SELECT MIN(r2."effectiveFrom")
+       FROM rel r2
+      WHERE r2.category = r.category
+        AND r2."effectiveFrom" > r."effectiveTo") - 1 AS gap_to
+  FROM rel r
+  WHERE r."effectiveTo" IS NOT NULL
+  UNION ALL
+  -- (d) whole open line for a category with no relevant window at all.
+  SELECT
+    c.category,
+    timezone('Pacific/Auckland', statement_timestamp())::date AS gap_from,
+    NULL::date AS gap_to
+  FROM cats c
+  WHERE NOT EXISTS (SELECT 1 FROM rel r WHERE r.category = c.category)
+),
 src AS (
-  -- Schedule rows verbatim (windows preserved).
+  -- Schedule rows verbatim (windows preserved; day-one amounts byte-identical).
   SELECT
     e."category" AS category,
     e."amountCents" AS amount,
@@ -112,33 +180,19 @@ src AS (
     e."effectiveTo" AS "effectiveTo"
   FROM "EntranceFee" e
   UNION ALL
-  -- Legacy materialisation for categories with no window COVERING the
-  -- migration day (none, all lapsed, or all future) — the removed runtime
-  -- fallback applied whenever no window was ACTIVE as-of today, so this keeps
-  -- a lapsed-window-plus-legacy-amount install billing. The new open window
-  -- is bounded to the day before the category's earliest FUTURE window so it
-  -- never overlaps a scheduled fee.
+  -- Legacy materialisation: fill EVERY uncovered gap with the category's legacy
+  -- amount, reproducing the removed uncovered-date runtime fallback. Empty gaps
+  -- between adjacent windows are dropped; open tails (gap_to NULL) are kept.
   SELECT
-    c.category,
-    COALESCE(lm.amount, lg.amount)::integer AS amount,
-    timezone('Pacific/Auckland', statement_timestamp())::date AS "effectiveFrom",
-    (SELECT MIN(e3."effectiveFrom") - 1
-       FROM "EntranceFee" e3
-      WHERE e3."category" = c.category
-        AND e3."effectiveFrom" > timezone('Pacific/Auckland', statement_timestamp())::date
-    ) AS "effectiveTo"
-  FROM cats c
-  LEFT JOIN legacy_mapping lm ON lm.category = c.category
-  LEFT JOIN legacy_global lg ON TRUE
-  WHERE NOT EXISTS (
-      SELECT 1 FROM "EntranceFee" e2
-      WHERE e2."category" = c.category
-        AND e2."effectiveFrom" <= timezone('Pacific/Auckland', statement_timestamp())::date
-        AND (e2."effectiveTo" IS NULL
-             OR e2."effectiveTo" >= timezone('Pacific/Auckland', statement_timestamp())::date)
-    )
-    AND COALESCE(lm.amount, lg.amount) IS NOT NULL
-    AND COALESCE(lm.amount, lg.amount) > 0
+    g.category,
+    la.amount AS amount,
+    g.gap_from AS "effectiveFrom",
+    g.gap_to AS "effectiveTo"
+  FROM gaps g
+  JOIN legacy_amount la ON la.category = g.category
+  WHERE la.amount IS NOT NULL
+    AND la.amount > 0
+    AND (g.gap_to IS NULL OR g.gap_to >= g.gap_from)
 ),
 -- Per-tier fan-out targets: every joining-fee-liable membership type except the
 -- built-in Family type (which carries only the flat family fee below). Archived
@@ -200,6 +254,50 @@ legacy_global AS (
   FROM legacy_global_text
   WHERE "code"::bigint <= 2147483647
 ),
+legacy_amount AS (
+  SELECT c.category, COALESCE(lm.amount, lg.amount)::integer AS amount
+  FROM cats c
+  LEFT JOIN legacy_mapping lm ON lm.category = c.category
+  LEFT JOIN legacy_global lg ON TRUE
+),
+rel AS (
+  SELECT
+    e."category" AS category,
+    e."effectiveFrom" AS "effectiveFrom",
+    e."effectiveTo" AS "effectiveTo"
+  FROM "EntranceFee" e
+  WHERE e."effectiveTo" IS NULL
+     OR e."effectiveTo" >= timezone('Pacific/Auckland', statement_timestamp())::date
+),
+-- Same gap complement as the per-tier statement above (see that comment for the
+-- leading / inter-window / open-tail / whole-line rationale).
+gaps AS (
+  SELECT
+    r.category,
+    timezone('Pacific/Auckland', statement_timestamp())::date AS gap_from,
+    MIN(GREATEST(r."effectiveFrom", timezone('Pacific/Auckland', statement_timestamp())::date)) - 1 AS gap_to
+  FROM rel r
+  GROUP BY r.category
+  HAVING MIN(GREATEST(r."effectiveFrom", timezone('Pacific/Auckland', statement_timestamp())::date))
+         > timezone('Pacific/Auckland', statement_timestamp())::date
+  UNION ALL
+  SELECT
+    r.category,
+    r."effectiveTo" + 1 AS gap_from,
+    (SELECT MIN(r2."effectiveFrom")
+       FROM rel r2
+      WHERE r2.category = r.category
+        AND r2."effectiveFrom" > r."effectiveTo") - 1 AS gap_to
+  FROM rel r
+  WHERE r."effectiveTo" IS NOT NULL
+  UNION ALL
+  SELECT
+    c.category,
+    timezone('Pacific/Auckland', statement_timestamp())::date AS gap_from,
+    NULL::date AS gap_to
+  FROM cats c
+  WHERE NOT EXISTS (SELECT 1 FROM rel r WHERE r.category = c.category)
+),
 src AS (
   SELECT
     e."category" AS category,
@@ -208,29 +306,16 @@ src AS (
     e."effectiveTo" AS "effectiveTo"
   FROM "EntranceFee" e
   UNION ALL
-  -- Same coverage-based legacy materialisation as the per-tier statement
-  -- above (see that comment for the rationale).
   SELECT
-    c.category,
-    COALESCE(lm.amount, lg.amount)::integer AS amount,
-    timezone('Pacific/Auckland', statement_timestamp())::date AS "effectiveFrom",
-    (SELECT MIN(e3."effectiveFrom") - 1
-       FROM "EntranceFee" e3
-      WHERE e3."category" = c.category
-        AND e3."effectiveFrom" > timezone('Pacific/Auckland', statement_timestamp())::date
-    ) AS "effectiveTo"
-  FROM cats c
-  LEFT JOIN legacy_mapping lm ON lm.category = c.category
-  LEFT JOIN legacy_global lg ON TRUE
-  WHERE NOT EXISTS (
-      SELECT 1 FROM "EntranceFee" e2
-      WHERE e2."category" = c.category
-        AND e2."effectiveFrom" <= timezone('Pacific/Auckland', statement_timestamp())::date
-        AND (e2."effectiveTo" IS NULL
-             OR e2."effectiveTo" >= timezone('Pacific/Auckland', statement_timestamp())::date)
-    )
-    AND COALESCE(lm.amount, lg.amount) IS NOT NULL
-    AND COALESCE(lm.amount, lg.amount) > 0
+    g.category,
+    la.amount AS amount,
+    g.gap_from AS "effectiveFrom",
+    g.gap_to AS "effectiveTo"
+  FROM gaps g
+  JOIN legacy_amount la ON la.category = g.category
+  WHERE la.amount IS NOT NULL
+    AND la.amount > 0
+    AND (g.gap_to IS NULL OR g.gap_to >= g.gap_from)
 )
 INSERT INTO "JoiningFee"
   ("id", "membershipTypeId", "ageTier", "amountCents", "effectiveFrom", "effectiveTo", "createdAt", "updatedAt")
