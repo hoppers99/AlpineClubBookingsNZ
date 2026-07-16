@@ -3,19 +3,29 @@
 -- This migration is DB-only and idempotent. It performs ZERO Xero calls.
 --
 -- 1. New enum XeroMemberGroupingMode and singleton XeroGroupingSettings.
--- 2. A raw-SQL partial unique index deduping rule shapes. Prisma cannot express
+-- 2. Safety pass over pre-existing XeroContactGroupRule rows (first run only):
+--    a. Deactivate every rule NOT created by this migration's backfill. Rows
+--       written by the retired membership-types editor were never read by the
+--       live sync; left active they would join the managed universe at deploy
+--       and (being type-keyed, hence more specific) outrank the tier-only
+--       backfill rules — live re-grouping before the runbook dry-run. Admins
+--       can deliberately re-enable them later via the new grouping UI.
+--    b. Defensive shape-dedupe (keep the earliest row per
+--       (membershipTypeId, ageTier, mode, groupId), NULLs comparing equal) so
+--       the unique-index creation below cannot fail on legacy duplicates.
+-- 3. A raw-SQL partial unique index deduping rule shapes. Prisma cannot express
 --    NULLS NOT DISTINCT, so it is recorded in prisma/partial-unique-indexes.tsv
 --    and enforced by scripts/check-partial-indexes.sh. The WHERE predicate
 --    ("groupId" IS NOT NULL — always true) keeps the index invisible to
 --    prisma migrate diff / db:check-drift (same trick as the other partial
 --    unique indexes), while NULLS NOT DISTINCT makes tier-only rows (NULL
 --    membershipTypeId) dedupe correctly.
--- 3. Backfill the age-tier Xero group config (Tokoroa's live setup) onto
+-- 4. Backfill the age-tier Xero group config (Tokoroa's live setup) onto
 --    XeroContactGroupRule as tier-only rules — each AgeTierSetting primary group
 --    becomes a MANAGED tier-only rule; each accepted group becomes an ACCEPTED
 --    tier-only rule. Ids are deterministic so re-running the migration is a
 --    no-op; ON CONFLICT DO NOTHING guards against the shape-unique index.
--- 4. Seed the grouping mode: MEMBERSHIP_TYPE_AND_AGE when ANY age-tier group
+-- 5. Seed the grouping mode: MEMBERSHIP_TYPE_AND_AGE when ANY age-tier group
 --    config existed (tier-only rules resolve identically to the retired
 --    age-only sync, so Tokoroa keeps its behaviour with zero re-grouping),
 --    otherwise NONE.
@@ -41,7 +51,39 @@ CREATE TABLE IF NOT EXISTS "XeroGroupingSettings" (
 CREATE INDEX IF NOT EXISTS "XeroGroupingSettings_updatedByMemberId_idx"
   ON "XeroGroupingSettings"("updatedByMemberId");
 
--- 2b. Rule-shape partial unique index (dedupe) -------------------------------
+-- 2b. Deactivate dormant pre-existing rules (BEFORE the backfill) --------------
+-- Rows written by the old membership-types editor carried isActive = true but
+-- were never read by the live sync. From this migration on, isActive rules ARE
+-- the managed universe, so any pre-existing rule must go dormant until an admin
+-- deliberately re-enables it via the new grouping UI. Guarded on the settings
+-- singleton not existing yet (created in section 4 below) so a re-run after
+-- go-live never deactivates rules admins created through the new UI.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM "XeroGroupingSettings" WHERE "id" = 'default') THEN
+    UPDATE "XeroContactGroupRule"
+    SET "isActive" = false, "updatedAt" = CURRENT_TIMESTAMP
+    WHERE "isActive" = true
+      AND "id" NOT LIKE 'xcgr-managed-%'
+      AND "id" NOT LIKE 'xcgr-accepted-%';
+  END IF;
+END $$;
+
+-- 2c. Defensive shape-dedupe (BEFORE the unique index) -------------------------
+-- Legacy writers enforced no shape uniqueness, so duplicates may exist and
+-- would make the CREATE UNIQUE INDEX below fail. Keep the earliest row per
+-- (membershipTypeId, ageTier, mode, groupId) — NULLs compare equal via
+-- IS NOT DISTINCT FROM, matching the index's NULLS NOT DISTINCT semantics —
+-- and delete the rest. Idempotent: an already-deduped table deletes nothing.
+DELETE FROM "XeroContactGroupRule" AS dup
+USING "XeroContactGroupRule" AS keeper
+WHERE dup."membershipTypeId" IS NOT DISTINCT FROM keeper."membershipTypeId"
+  AND dup."ageTier" IS NOT DISTINCT FROM keeper."ageTier"
+  AND dup."mode" = keeper."mode"
+  AND dup."groupId" = keeper."groupId"
+  AND (keeper."createdAt", keeper."id") < (dup."createdAt", dup."id");
+
+-- 2d. Rule-shape partial unique index (dedupe) -------------------------------
 -- NULLS NOT DISTINCT (PostgreSQL 15+) so two tier-only rows with NULL
 -- membershipTypeId collide on (ageTier, mode, groupId). Recorded in
 -- prisma/partial-unique-indexes.tsv.

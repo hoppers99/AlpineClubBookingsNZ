@@ -35,7 +35,13 @@ scheduled maintenance window.
    - the mode is **Membership Type + Age**;
    - there is one **MANAGED tier-only** rule per age tier that previously had a
      primary Xero group, pointing at the same group;
-   - one **ACCEPTED tier-only** rule per previously-accepted group.
+   - one **ACCEPTED tier-only** rule per previously-accepted group;
+   - **no other rule is active.** The migration deactivates every pre-existing
+     `XeroContactGroupRule` row (written by the retired membership-types
+     editor and never read by the live sync) so nothing but the tier-only
+     backfill goes live at deploy. Deactivated legacy rules stay visible on
+     the surface and can be re-enabled deliberately via the new UI — but only
+     after this dry-run cutover has been reviewed.
 3. **Run the dry-run diff.** It must show **≈ zero add/remove** for an install
    whose members were already correctly grouped. Investigate any non-zero diff
    before proceeding — the expected residue is only members who were genuinely
