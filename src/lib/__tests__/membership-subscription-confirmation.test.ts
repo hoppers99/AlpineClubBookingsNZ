@@ -105,6 +105,34 @@ describe("membership subscription confirmation", () => {
     expect(mocks.operationCreate).toHaveBeenCalledTimes(1);
   });
 
+  it("freezes one component snapshot per line in the same transaction (#1932, E6)", async () => {
+    mocks.fee.mockResolvedValue({
+      id: "fee-1", amountCents: 12_000, billingBasis: "PER_MEMBER", prorationRule: "NONE",
+      components: [
+        { label: "Base membership", amountCents: 9_000, prorate: true, xeroAccountCode: null, xeroItemCode: null, sortOrder: 0 },
+        { label: "Work party fee", amountCents: 3_000, prorate: false, xeroAccountCode: "260", xeroItemCode: null, sortOrder: 1 },
+      ],
+    });
+    const preview = await buildSubscriptionBillingPreview({
+      seasonYear: 2026,
+      decisionDate: new Date("2026-04-01T00:00:00.000Z"),
+    });
+    await confirmSubscriptionBillingPreview({
+      preview,
+      expectedConfirmationToken: preview.confirmationToken,
+      source: "ANNUAL_BATCH",
+    });
+    expect(mocks.chargeUpsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({
+        chargedAmountCents: 12_000,
+        components: { create: [
+          expect.objectContaining({ label: "Base membership", annualAmountCents: 9_000, chargedAmountCents: 9_000, prorated: true, xeroAccountCode: "203", xeroItemCode: "SUB", sortOrder: 0 }),
+          expect.objectContaining({ label: "Work party fee", annualAmountCents: 3_000, chargedAmountCents: 3_000, prorated: false, xeroAccountCode: "260", sortOrder: 1 }),
+        ] },
+      }),
+    }));
+  });
+
   it("raises the interactive transaction timeout above Prisma's 5s default for whole-club batch runs (#1886)", async () => {
     const preview = await buildSubscriptionBillingPreview({
       seasonYear: 2026,
