@@ -66,12 +66,3 @@ export const MAX_MEMBER_PHOTO_REQUEST_BYTES =
  * than rejected, and only a parsed dimension over this cap is refused.
  */
 export const MAX_MEMBER_PHOTO_DIMENSION = 4096;
-
-/**
- * Scoped serving URL for a member's photo. Keyed by member id (not image id)
- * so the committee fan-out (MP5) and the member's own profile (MP3) render a
- * stable `<img src>` and so authorisation resolves from the target member.
- */
-export function memberPhotoServingUrl(memberId: string): string {
-  return `/api/members/${memberId}/photo`;
-}
