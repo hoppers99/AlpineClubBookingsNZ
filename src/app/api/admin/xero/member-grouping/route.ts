@@ -10,8 +10,9 @@ import { getXeroContactGroups, getXeroContactGroupCacheLastRefreshedAt } from "@
 import { isXeroConnected } from "@/lib/xero-token-store";
 import { getXeroGroupingMode } from "@/lib/xero-member-grouping";
 import {
-  getXeroMemberGroupingSnapshot,
+  recordXeroMemberGroupingDryRun,
   runXeroMemberGroupingBulkResyncChunk,
+  StaleDryRunError,
 } from "@/lib/xero-member-grouping-resync";
 
 function requireFinanceEdit(
@@ -54,8 +55,12 @@ const postSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("dry-run"), limit: z.number().int().min(1).max(1000).optional() }),
   z.object({
     action: z.literal("bulk-resync"),
-    // Ships code-only this wave: the run cannot fire unless the admin has seen
-    // the dry-run and explicitly confirms it.
+    // Server-enforced anchor (#1961): the run must reference a persisted dry-run
+    // (`dryRunId`), whose freshness — recent, and still matching the
+    // CONTACT_GROUP_FULL_REFRESH cache cursor + active rules — the engine
+    // re-validates at execution start. This is the enforcing check; the
+    // client-asserted `confirmDryRunReviewed` below is only a UI confirmation.
+    dryRunId: z.string().min(1),
     confirmDryRunReviewed: z.literal(true),
     // Capped low: each mismatched member costs ~4 Xero calls, so 100 members
     // is already ~400 calls of the ~5k/day budget in one request.
@@ -255,8 +260,15 @@ export async function POST(request: NextRequest) {
       }
 
       case "dry-run": {
-        const snapshot = await getXeroMemberGroupingSnapshot({ limit: data.limit ?? 500 });
-        return NextResponse.json({ snapshot });
+        // Persist the dry-run's provenance (cache cursor + rules fingerprint +
+        // planned digest) so a later bulk re-sync can prove server-side that a
+        // recent, still-matching reviewed diff exists (#1961). Returns the id
+        // the client threads back into the bulk re-sync.
+        const { snapshot, dryRunId } = await recordXeroMemberGroupingDryRun({
+          limit: data.limit ?? 500,
+          createdByMemberId: session.user.id,
+        });
+        return NextResponse.json({ snapshot, dryRunId });
       }
 
       case "bulk-resync": {
@@ -270,15 +282,41 @@ export async function POST(request: NextRequest) {
             { status: 409 },
           );
         }
-        const result = await runXeroMemberGroupingBulkResyncChunk({
-          limit: data.limit,
-          afterMemberId: data.afterMemberId,
-          createdByMemberId: session.user.id,
-        });
+        let result;
+        try {
+          result = await runXeroMemberGroupingBulkResyncChunk({
+            dryRunId: data.dryRunId,
+            limit: data.limit,
+            afterMemberId: data.afterMemberId,
+            createdByMemberId: session.user.id,
+          });
+        } catch (resyncError) {
+          // Server-side dry-run freshness rejection (#1961): audit the refusal
+          // and tell the admin to re-run the dry-run. `not_found` -> 422 (the
+          // referenced dry-run does not exist), everything else -> 409 (a
+          // conflict developed since the reviewed diff).
+          if (resyncError instanceof StaleDryRunError) {
+            await logAudit({
+              action: "XERO_GROUPING_BULK_RESYNC_REJECTED",
+              memberId: session.user.id,
+              details: JSON.stringify({
+                dryRunId: data.dryRunId,
+                reason: resyncError.reason,
+                afterMemberId: data.afterMemberId ?? null,
+              }),
+            });
+            return NextResponse.json(
+              { error: resyncError.message, reason: resyncError.reason },
+              { status: resyncError.reason === "not_found" ? 422 : 409 },
+            );
+          }
+          throw resyncError;
+        }
         await logAudit({
           action: "XERO_GROUPING_BULK_RESYNC",
           memberId: session.user.id,
           details: JSON.stringify({
+            dryRunId: data.dryRunId,
             processed: result.processed,
             added: result.added,
             removed: result.removed,
