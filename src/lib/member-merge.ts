@@ -267,6 +267,14 @@ export const MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS: readonly string[] = [
   "AuditLog.actorMemberId",
   "AuditLog.subjectMemberId",
   "AuditLog.memberId",
+  // MP1 (#189): FK-less member-id audit snapshots. MediaImage.uploadedByMemberId
+  // carries no @relation (so a loser-uploaded image is never cascaded/moved);
+  // any loser MEMBER_PHOTO blob is instead cleaned up by
+  // reconcileLoserMemberPhotos. Member.photoUpdatedByMemberId records who last
+  // set the photo and, like every other snapshot column, keeps the loser's id as
+  // immutable history when a loser's photo group is absorbed by the master.
+  "MediaImage.uploadedByMemberId",
+  "Member.photoUpdatedByMemberId",
 ];
 
 // ---------------------------------------------------------------------------
@@ -361,6 +369,18 @@ const GROUP_FILL_SPECS: { name: string; key: string; fields: string[] }[] = [
     name: "phone",
     key: "phoneNumber",
     fields: ["phoneCountryCode", "phoneAreaCode", "phoneNumber"],
+  },
+  {
+    // Member profile photo (MP1, #189). photoImageId is an OUTBOUND scalar FK
+    // (Member -> MediaImage), so it is merged here, master-wins: the master
+    // keeps its own photo (and photoUpdatedAt/photoUpdatedByMemberId audit
+    // snapshot); the loser's whole group is absorbed ONLY when the master has no
+    // photo. The loser's now-unreferenced MEMBER_PHOTO blob is cleaned up at
+    // execute time (reconcileLoserMemberPhotos) so it can never survive as a
+    // dangling public asset.
+    name: "photo",
+    key: "photoImageId",
+    fields: ["photoImageId", "photoUpdatedAt", "photoUpdatedByMemberId"],
   },
   {
     name: "streetAddress",
@@ -1324,6 +1344,16 @@ export async function executeMemberMerge(params: {
       await tx.member.update({ where: { id: masterId }, data: fieldOutcome.patch });
     }
 
+    // 5b) Member-photo reconciliation (MP1, #189). The master's final photo is
+    // its own when it had one, else the loser's absorbed one (in the patch). Any
+    // OTHER loser MEMBER_PHOTO blob — the loser's discarded photo and anything it
+    // uploaded — is hard-deleted so it cannot linger as a dangling public asset.
+    const keepPhotoImageId =
+      ((fieldOutcome.patch.photoImageId as string | null | undefined) ??
+        (masterFull as unknown as { photoImageId: string | null }).photoImageId) ??
+      null;
+    const photoReconcile = await reconcileLoserMemberPhotos(tx, loserFull, keepPhotoImageId);
+
     // 6) One critical audit.
     const loserSnapshot = buildLoserSnapshot(loserFull);
     await tx.auditLog.create(
@@ -1346,6 +1376,7 @@ export async function executeMemberMerge(params: {
           collisions: resolveResults.collisions,
           resolutionWarnings: resolveResults.warnings,
           xeroTeardown,
+          photoReconcile,
           movedIdSample: movedIdSample.sample,
           movedIdSampleTruncated: movedIdSample.truncated,
         },
@@ -1440,6 +1471,36 @@ async function collectMovedIdSample(
     if (rows.length > remaining) truncated = true;
   }
   return { sample, truncated };
+}
+
+/**
+ * MP1 (#189) — member-photo cleanup on merge. `Member.photoImageId` is an
+ * outbound scalar FK handled by the master-wins field merge; this deletes every
+ * MEMBER_PHOTO `MediaImage` that BELONGED to the loser (its discarded photo, and
+ * anything it uploaded) EXCEPT the one the master now keeps, so no member-photo
+ * blob survives unreferenced as a dangling public asset. Deleting a blob the
+ * loser still points to is safe: the `Member.photoImage` FK is `onDelete:
+ * SetNull`, so the pointer is nulled rather than the delete blocked. CONTENT
+ * images the loser uploaded are untouched (the `kind` filter); their
+ * `uploadedByMemberId` is left as an immutable snapshot like every other actor
+ * column. Runs BEFORE the loser hard-delete.
+ */
+async function reconcileLoserMemberPhotos(
+  tx: Prisma.TransactionClient,
+  loser: Member,
+  keepPhotoImageId: string | null,
+): Promise<{ deleted: number }> {
+  const loserPhotoId =
+    (loser as unknown as { photoImageId: string | null }).photoImageId ?? null;
+  const orClauses: Prisma.MediaImageWhereInput[] = [{ uploadedByMemberId: loser.id }];
+  if (loserPhotoId) orClauses.push({ id: loserPhotoId });
+  const where: Prisma.MediaImageWhereInput = {
+    kind: "MEMBER_PHOTO",
+    OR: orClauses,
+  };
+  if (keepPhotoImageId) where.NOT = { id: keepPhotoImageId };
+  const { count } = await tx.mediaImage.deleteMany({ where });
+  return { deleted: count };
 }
 
 async function nullSelfRelationCycles(
