@@ -37,7 +37,12 @@ import {
   type XeroGroupRef,
 } from "@/lib/xero-member-grouping";
 
-const CONTACT_GROUP_CACHE_CURSOR_RESOURCE = "CONTACT_GROUP_CACHE";
+// Staleness authority for the snapshot: the FULL rebuild cursor. The shared
+// CONTACT_GROUP_CACHE cursor is also bumped by per-contact reconciliation
+// (member link/import, inbound webhooks, post-sync refreshes), so it almost
+// always looks fresh and would under-report how stale the whole cached
+// group-membership snapshot is (#1443).
+const CONTACT_GROUP_FULL_REFRESH_CURSOR_RESOURCE = "CONTACT_GROUP_FULL_REFRESH";
 const DEFAULT_XERO_SYNC_SCOPE = "default";
 
 export interface MemberGroupingDiffEntry {
@@ -49,6 +54,23 @@ export interface MemberGroupingDiffEntry {
   managedGroup: XeroGroupRef | null;
   addGroupId: string | null;
   removeGroupIds: string[];
+}
+
+/**
+ * Information-only residue: a member no rule matches (e.g. a NOT_APPLICABLE
+ * organisation) who nevertheless sits in managed-universe group(s). The sync
+ * and bulk re-sync NEVER write to these members — the entry exists so the
+ * admin can see them (parity with the retired age-tier snapshot) and clean
+ * them up in Xero deliberately.
+ */
+export interface MemberGroupingInformationalEntry {
+  memberId: string;
+  memberName: string;
+  memberEmail: string;
+  ageTier: AgeTier;
+  xeroContactId: string;
+  /** Managed-universe groups the member sits in although no rule matches. */
+  unexpectedManagedGroupIds: string[];
 }
 
 export interface MemberGroupingSnapshot {
@@ -64,6 +86,10 @@ export interface MemberGroupingSnapshot {
   estimatedXeroCalls: number;
   skippedNoContact: Array<{ memberId: string; memberName: string }>;
   mismatches: MemberGroupingDiffEntry[];
+  /** Count of {@link informational} entries (before any limit slicing). */
+  informationalCount: number;
+  /** Parked members in managed groups — surfaced, never written to. */
+  informational: MemberGroupingInformationalEntry[];
 }
 
 function memberName(member: { firstName: string; lastName: string; email: string }): string {
@@ -89,7 +115,7 @@ export async function getXeroMemberGroupingSnapshot(options?: {
     prisma.xeroSyncCursor.findUnique({
       where: {
         resourceType_scope: {
-          resourceType: CONTACT_GROUP_CACHE_CURSOR_RESOURCE,
+          resourceType: CONTACT_GROUP_FULL_REFRESH_CURSOR_RESOURCE,
           scope: DEFAULT_XERO_SYNC_SCOPE,
         },
       },
@@ -102,6 +128,10 @@ export async function getXeroMemberGroupingSnapshot(options?: {
     activeRuleCount: context.activeRules.length,
   };
 
+  // cacheReady tracks the same FULL-refresh cursor: the snapshot enumerates
+  // EVERY linked member against the membership cache, which only a full
+  // "Refresh Xero Groups" rebuild fully populates — per-contact reconciliation
+  // alone is not enough to trust a population-wide diff.
   if (!cursor?.lastSuccessfulSyncAt) {
     return {
       ...base,
@@ -114,6 +144,8 @@ export async function getXeroMemberGroupingSnapshot(options?: {
       estimatedXeroCalls: 0,
       skippedNoContact: [],
       mismatches: [],
+      informationalCount: 0,
+      informational: [],
     };
   }
 
@@ -132,6 +164,8 @@ export async function getXeroMemberGroupingSnapshot(options?: {
       estimatedXeroCalls: 0,
       skippedNoContact: [],
       mismatches: [],
+      informationalCount: 0,
+      informational: [],
     };
   }
 
@@ -176,6 +210,7 @@ export async function getXeroMemberGroupingSnapshot(options?: {
   });
 
   const mismatches: MemberGroupingDiffEntry[] = [];
+  const informational: MemberGroupingInformationalEntry[] = [];
   let addCount = 0;
   let removeCount = 0;
   let estimatedXeroCalls = 0;
@@ -183,9 +218,34 @@ export async function getXeroMemberGroupingSnapshot(options?: {
   for (const member of withContact) {
     const resolution = resolutions.get(member.id);
     if (!resolution) continue;
+    const currentGroupIds = groupIdsByContactId.get(member.xeroContactId) ?? [];
+
+    // Parked members (no matching rule, e.g. NOT_APPLICABLE organisations)
+    // get no add/remove plan — but when they sit in managed-universe groups
+    // they are surfaced informationally, matching the retired age-tier
+    // snapshot and the runbook's "expected residue". The bulk re-sync never
+    // touches them (it iterates `mismatches` only).
+    if (resolution.skippedReason) {
+      const universe = new Set(resolution.managedUniverse);
+      const unexpectedManagedGroupIds = currentGroupIds.filter((id) =>
+        universe.has(id),
+      );
+      if (unexpectedManagedGroupIds.length > 0) {
+        informational.push({
+          memberId: member.id,
+          memberName: memberName(member),
+          memberEmail: member.email,
+          ageTier: member.ageTier,
+          xeroContactId: member.xeroContactId,
+          unexpectedManagedGroupIds,
+        });
+      }
+      continue;
+    }
+
     const plan = planMemberGroupingSync({
       resolution,
-      currentGroupIds: groupIdsByContactId.get(member.xeroContactId) ?? [],
+      currentGroupIds,
     });
     if (plan.isNoop) continue;
 
@@ -219,6 +279,11 @@ export async function getXeroMemberGroupingSnapshot(options?: {
       typeof options?.limit === "number"
         ? mismatches.slice(0, Math.max(1, options.limit))
         : mismatches,
+    informationalCount: informational.length,
+    informational:
+      typeof options?.limit === "number"
+        ? informational.slice(0, Math.max(1, options.limit))
+        : informational,
   };
 }
 
@@ -284,7 +349,9 @@ export async function runXeroMemberGroupingBulkResyncChunk(
 
   // Cache-first pre-filter: recompute the full mismatch set, then window it by
   // the resume cursor + chunk size. This keeps the run touching ONLY mismatched
-  // members, never the whole population.
+  // members, never the whole population. Information-only entries (parked
+  // members no rule matches) live in `snapshot.informational` and are
+  // deliberately NOT iterated — the bulk run never writes to them.
   const snapshot = await getXeroMemberGroupingSnapshot();
   const ordered = snapshot.mismatches
     .slice()

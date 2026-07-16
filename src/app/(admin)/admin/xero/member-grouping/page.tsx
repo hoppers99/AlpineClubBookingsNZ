@@ -53,6 +53,13 @@ type DiffEntry = {
   removeGroupIds: string[];
 };
 
+type InformationalEntry = {
+  memberId: string;
+  memberName: string;
+  ageTier: AgeTier;
+  unexpectedManagedGroupIds: string[];
+};
+
 type Snapshot = {
   mode: GroupingMode;
   cacheReady: boolean;
@@ -64,6 +71,8 @@ type Snapshot = {
   membersConsidered: number;
   skippedNoContact: Array<{ memberId: string; memberName: string }>;
   mismatches: DiffEntry[];
+  informationalCount: number;
+  informational: InformationalEntry[];
 };
 
 const MODE_HELP: Record<GroupingMode, string> = {
@@ -400,6 +409,21 @@ export default function XeroMemberGroupingPage() {
                     <p className="text-xs text-muted-foreground">
                       {snapshot.skippedNoContact.length} member(s) without a Xero contact were skipped.
                     </p>
+                  ) : null}
+                  {snapshot.informationalCount > 0 ? (
+                    <div className="space-y-1">
+                      <p className="text-xs text-muted-foreground">
+                        {snapshot.informationalCount} member(s) match no rule but currently sit in
+                        managed group(s) — shown for information only. The bulk re-sync never
+                        touches them; remove them in Xero manually if desired.
+                      </p>
+                      {snapshot.informational.slice(0, 50).map((m) => (
+                        <div key={m.memberId} className="rounded border border-dashed p-2 text-xs text-muted-foreground">
+                          <span className="font-medium">{m.memberName}</span> ({formatAgeTierName(m.ageTier)}) — in:{" "}
+                          {m.unexpectedManagedGroupIds.map(groupName).join(", ")}
+                        </div>
+                      ))}
+                    </div>
                   ) : null}
                   {snapshot.mismatches.length > 0 ? (
                     <div className="space-y-1">

@@ -431,6 +431,9 @@ function ContactGroupMismatchPanel({
               {data.skippedNoContact.length > 0 ? (
                 <p className="text-xs text-muted-foreground">{data.skippedNoContact.length} member{data.skippedNoContact.length === 1 ? "" : "s"} without a Xero contact skipped.</p>
               ) : null}
+              {data.informationalCount > 0 ? (
+                <p className="text-xs text-muted-foreground">{data.informationalCount} member{data.informationalCount === 1 ? "" : "s"} match no rule but sit in managed group{data.informationalCount === 1 ? "" : "s"} — information only, never re-synced automatically.</p>
+              ) : null}
               <p className="text-xs text-muted-foreground">
                 {data.cacheReady && data.lastRefreshedAt ? `Cache last refreshed ${new Date(data.lastRefreshedAt).toLocaleString("en-NZ")}.` : "The shared Xero contact-group cache has not been refreshed yet."}
               </p>

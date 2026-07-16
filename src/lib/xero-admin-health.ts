@@ -383,7 +383,12 @@ export async function getXeroAdminHealthSnapshot(): Promise<XeroAdminHealthSnaps
       graceHours: REFUND_CREDIT_NOTE_GRACE_HOURS,
     },
     contactGroupMismatches: {
-      count: contactGroupMismatches.mismatchCount,
+      // Parity with the retired age-tier snapshot: information-only entries
+      // (parked members in managed groups, never written to) count toward the
+      // surfaced total so the operator still sees them.
+      count:
+        contactGroupMismatches.mismatchCount +
+        contactGroupMismatches.informationalCount,
       cacheReady: contactGroupMismatches.cacheReady,
     },
     contactLinkMismatches: {

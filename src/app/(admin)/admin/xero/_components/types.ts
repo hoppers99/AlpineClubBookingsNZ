@@ -235,6 +235,17 @@ interface ContactCacheResyncSummary {
   resyncedAt: string
 }
 
+// Information-only residue: a member no rule matches who still sits in
+// managed-universe group(s). Never written to by any sync path.
+interface ContactGroupInformationalEntry {
+  memberId: string
+  memberName: string
+  memberEmail: string
+  ageTier: AgeTier
+  xeroContactId: string
+  unexpectedManagedGroupIds: string[]
+}
+
 export interface ContactGroupMismatchResponse {
   mode: "NONE" | "MEMBERSHIP_TYPE" | "MEMBERSHIP_TYPE_AND_AGE"
   cacheReady: boolean
@@ -247,6 +258,8 @@ export interface ContactGroupMismatchResponse {
   estimatedXeroCalls: number
   skippedNoContact: Array<{ memberId: string; memberName: string }>
   mismatches: ContactGroupMismatch[]
+  informationalCount: number
+  informational: ContactGroupInformationalEntry[]
   resync?: ContactCacheResyncSummary
 }
 

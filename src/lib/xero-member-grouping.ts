@@ -204,8 +204,10 @@ export function planMemberGroupingSync(params: {
   const { resolution, currentGroupIds } = params;
 
   // Any skip reason (NONE mode, or member matches no rule) means zero Xero
-  // writes — never a removal. Stale memberships surface in the mismatch
-  // snapshot for admin-driven cleanup, never auto-removed.
+  // writes — never a removal. Stale managed-group memberships of skipped
+  // members surface as information-only entries in the dry-run snapshot
+  // (getXeroMemberGroupingSnapshot().informational) for admin-driven cleanup,
+  // never auto-removed.
   if (resolution.skippedReason) {
     return {
       managedGroup: resolution.managedGroup,

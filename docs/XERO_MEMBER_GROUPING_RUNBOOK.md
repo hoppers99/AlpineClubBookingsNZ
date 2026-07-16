@@ -45,9 +45,11 @@ scheduled maintenance window.
 3. **Run the dry-run diff.** It must show **≈ zero add/remove** for an install
    whose members were already correctly grouped. Investigate any non-zero diff
    before proceeding — the expected residue is only members who were genuinely
-   mis-grouped in Xero before the cutover (and `NOT_APPLICABLE`
-   organisations/schools left in an age-tier group, which are surfaced but
-   never auto-removed).
+   mis-grouped in Xero before the cutover, plus the **information-only**
+   section: members no rule matches (e.g. `NOT_APPLICABLE`
+   organisations/schools) still sitting in managed groups. Those are surfaced
+   with the group(s) they sit in but are **never written to** by any sync or
+   bulk run — clean them up manually in Xero if desired.
 
 ## Cutover (scheduled window, owner-run)
 
@@ -65,9 +67,9 @@ scheduled maintenance window.
    cursor to continue the next day. The job never advances the CONTACT
    delta-sync watermark.
 7. **Post-check.** Re-refresh the group cache and re-run the dry-run — it should
-   now report an **empty** diff (only the intentional residue, e.g.
-   `NOT_APPLICABLE` members you choose to leave). Spot-check a few contacts in
-   Xero.
+   now report an **empty** add/remove diff (the information-only section may
+   still list `NOT_APPLICABLE` members you choose to leave parked in managed
+   groups). Spot-check a few contacts in Xero.
 8. **Optional manual cleanup.** Any Xero group the club no longer wants is
    removed **by the owner directly in Xero** — the system never deletes a Xero
    group. Members left in a now-unreferenced group are not touched by the

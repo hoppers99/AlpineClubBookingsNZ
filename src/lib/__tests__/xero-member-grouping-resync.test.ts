@@ -49,6 +49,16 @@ const adultResolution: MemberGroupingResolution = {
   skippedReason: null,
 };
 
+// A parked member: no rule matches (e.g. NOT_APPLICABLE organisation), so the
+// sync never writes — but the managed universe is still known.
+const parkedResolution: MemberGroupingResolution = {
+  mode: "MEMBERSHIP_TYPE_AND_AGE",
+  managedGroup: null,
+  acceptedGroupIds: [],
+  managedUniverse: ["g_adult", "g_youth"],
+  skippedReason: "no_matching_rule",
+};
+
 function seedTwoMismatchesOneCorrectOneNoContact() {
   mocks.loadXeroGroupingContext.mockResolvedValue({
     mode: "MEMBERSHIP_TYPE_AND_AGE",
@@ -60,18 +70,27 @@ function seedTwoMismatchesOneCorrectOneNoContact() {
     { id: "m2", firstName: "B", lastName: "B", email: "b@x", ageTier: "ADULT", xeroContactId: "c2" },
     { id: "m3", firstName: "C", lastName: "C", email: "c@x", ageTier: "ADULT", xeroContactId: "c3" },
     { id: "m4", firstName: "D", lastName: "D", email: "d@x", ageTier: "ADULT", xeroContactId: null },
+    // Parked: no matching rule, sitting in a MANAGED group -> information only.
+    { id: "m5", firstName: "E", lastName: "E", email: "e@x", ageTier: "NOT_APPLICABLE", xeroContactId: "c5" },
+    // Parked: no matching rule, only in an unmanaged group -> invisible.
+    { id: "m6", firstName: "F", lastName: "F", email: "f@x", ageTier: "NOT_APPLICABLE", xeroContactId: "c6" },
   ]);
   // c1, c3 are mis-grouped (in youth); c2 is correct (in adult).
   mocks.membershipCacheFindMany.mockResolvedValue([
     { contactId: "c1", contactGroupId: "g_youth" },
     { contactId: "c2", contactGroupId: "g_adult" },
     { contactId: "c3", contactGroupId: "g_youth" },
+    { contactId: "c5", contactGroupId: "g_adult" },
+    { contactId: "c5", contactGroupId: "g_unrelated" },
+    { contactId: "c6", contactGroupId: "g_unrelated" },
   ]);
   mocks.resolveMemberGroupingsForMembers.mockResolvedValue(
     new Map([
       ["m1", adultResolution],
       ["m2", adultResolution],
       ["m3", adultResolution],
+      ["m5", parkedResolution],
+      ["m6", parkedResolution],
     ]),
   );
 }
@@ -103,10 +122,48 @@ describe("getXeroMemberGroupingSnapshot", () => {
     expect(snap.addCount).toBe(2);
     expect(snap.removeCount).toBe(2);
     expect(snap.skippedNoContact).toEqual([{ memberId: "m4", memberName: "D D" }]);
-    // per mismatch: getContact + add + remove + refresh = 4; x2 = 8
+    // per mismatch: getContact + add + remove + refresh = 4; x2 = 8.
+    // Information-only entries cost zero calls.
     expect(snap.estimatedXeroCalls).toBe(8);
     const ids = snap.mismatches.map((m) => m.memberId).sort();
     expect(ids).toEqual(["m1", "m3"]);
+  });
+
+  it("reads staleness from the CONTACT_GROUP_FULL_REFRESH cursor, not the per-contact cache cursor", async () => {
+    seedTwoMismatchesOneCorrectOneNoContact();
+    const snap = await getXeroMemberGroupingSnapshot();
+    expect(snap.lastRefreshedAt).toBe("2026-07-16T00:00:00.000Z");
+    expect(mocks.cursorFindUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          resourceType_scope: {
+            resourceType: "CONTACT_GROUP_FULL_REFRESH",
+            scope: "default",
+          },
+        },
+      }),
+    );
+  });
+
+  it("surfaces parked members in managed groups as information-only entries (no add/remove)", async () => {
+    seedTwoMismatchesOneCorrectOneNoContact();
+    const snap = await getXeroMemberGroupingSnapshot();
+    expect(snap.informationalCount).toBe(1);
+    expect(snap.informational).toEqual([
+      {
+        memberId: "m5",
+        memberName: "E E",
+        memberEmail: "e@x",
+        ageTier: "NOT_APPLICABLE",
+        xeroContactId: "c5",
+        // Only the managed-universe intersection — g_unrelated is not listed.
+        unexpectedManagedGroupIds: ["g_adult"],
+      },
+    ]);
+    // Never in the actionable mismatch list...
+    expect(snap.mismatches.map((m) => m.memberId)).not.toContain("m5");
+    // ...and a parked member outside the managed universe is invisible.
+    expect(snap.informational.map((m) => m.memberId)).not.toContain("m6");
   });
 });
 
@@ -127,7 +184,7 @@ describe("runXeroMemberGroupingBulkResyncChunk", () => {
     expect(mocks.syncManagedXeroContactGroupForMember).not.toHaveBeenCalled();
   });
 
-  it("only touches mismatched members (cache-first pre-filter), never the correct one", async () => {
+  it("only touches mismatched members (cache-first pre-filter), never the correct or parked ones", async () => {
     seedTwoMismatchesOneCorrectOneNoContact();
     const res = await runXeroMemberGroupingBulkResyncChunk();
     expect(res.processed).toBe(2);
@@ -137,6 +194,8 @@ describe("runXeroMemberGroupingBulkResyncChunk", () => {
     const calledIds = mocks.syncManagedXeroContactGroupForMember.mock.calls.map((c) => c[0]).sort();
     expect(calledIds).toEqual(["m1", "m3"]);
     expect(calledIds).not.toContain("m2");
+    // m5 is information-only (parked in a managed group): bulk never writes it.
+    expect(calledIds).not.toContain("m5");
   });
 
   it("chunks and resumes via the member-id cursor", async () => {
