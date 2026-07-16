@@ -18,8 +18,10 @@ import {
   type PlanContext,
   type PlanItem,
   type ReadDb,
+  type TxDb,
 } from "../import-types";
 import { RowValidator, nz, readCsvRows } from "../values";
+import { addDaysDateOnly, getTodayDateOnly } from "@/lib/date-only";
 
 // xero-config category: the accounting mappings — GL account/item-code mappings
 // and per-category item codes. Contact-group rules/accepted-groups are excluded
@@ -284,6 +286,210 @@ async function loadXeroBatch(db: ReadDb): Promise<XeroBatch> {
   };
 }
 
+// ---- Joining-fee materialisation from legacy bundle amounts (#1931, E5) -----
+//
+// Old (pre-#1931) bundles carry joining-fee AMOUNTS only as the amountCents
+// column of xero-config/item-code-mappings.csv — a column the runtime no
+// longer reads (authoritative amounts live in the JoiningFee schedule).
+// Importing such a bundle into a fresh install would therefore configure item
+// codes but ZERO fee amounts: every member would join with no joining fee,
+// silently. Mirror the migration's D-R1 fan-out at apply time: for each
+// imported JOINING_FEE row with a positive amount whose category has no
+// JoiningFee window covering today on the target, materialise open windows —
+// the per-tier amounts (ADULT / YOUTH / CHILD folding onto CHILD+INFANT) onto
+// every joining-fee-liable membership type (all types except the built-in
+// NON_MEMBER and SCHOOL and the Family type), and the FAMILY amount as a
+// single flat NULL-tier row on the built-in Family type. A materialised row's
+// effectiveTo is bounded to the day before that cell's earliest future window
+// so it never overlaps a deliberately scheduled future fee. A category that
+// already has a covering window is left entirely alone (deliberate target
+// config wins). First-class fee-schedule transfer is follow-up #1941.
+
+const JOINING_FEE_PER_TIER_TARGETS: Record<string, string[]> = {
+  ADULT: ["ADULT"],
+  YOUTH: ["YOUTH"],
+  CHILD: ["CHILD", "INFANT"],
+};
+const JOINING_FEE_EXCLUDED_TYPE_KEYS = new Set(["NON_MEMBER", "SCHOOL", "FAMILY"]);
+const FAMILY_MEMBERSHIP_TYPE_KEY = "FAMILY";
+
+interface JoiningFeeWindow {
+  membershipTypeId: string;
+  ageTier: string | null;
+  effectiveFrom: Date;
+  effectiveTo: Date | null;
+}
+
+function joiningFeeWindowCovers(
+  window: { effectiveFrom: Date; effectiveTo: Date | null },
+  day: Date,
+): boolean {
+  return (
+    window.effectiveFrom.getTime() <= day.getTime() &&
+    (window.effectiveTo === null || window.effectiveTo.getTime() >= day.getTime())
+  );
+}
+
+/** Positive imported JOINING_FEE amounts by entrance-fee category. */
+function importedJoiningFeeAmounts(rows: ParsedItemRow[]): Map<string, number> {
+  const amounts = new Map<string, number>();
+  for (const row of rows) {
+    if (row.identity.category !== JOINING_FEE_CATEGORY) continue;
+    const category = row.identity.entranceFeeCategory;
+    const amount = row.data.amountCents;
+    if (!category || amount === null || amount <= 0) continue;
+    if (!amounts.has(category)) amounts.set(category, amount); // first wins
+  }
+  return amounts;
+}
+
+interface JoiningFeeMaterialisationDecision {
+  /** Categories (with amounts) that will materialise: no covering window. */
+  materialise: Array<{ category: string; amountCents: number }>;
+  warnings: string[];
+  /** Coverage state per amount-bearing category, bound into the fingerprint. */
+  fingerprintParts: string[];
+}
+
+/**
+ * Decide which imported joining-fee categories need materialisation. Shared by
+ * plan (dry-run visibility + fingerprint) and apply (re-derived in-lock on the
+ * same inputs), so what was previewed is exactly what is applied.
+ */
+async function decideJoiningFeeMaterialisation(
+  db: ReadDb,
+  rows: ParsedItemRow[],
+  membershipTypesByKey: Map<string, { id: string }>,
+  today: Date,
+): Promise<JoiningFeeMaterialisationDecision> {
+  const decision: JoiningFeeMaterialisationDecision = {
+    materialise: [],
+    warnings: [],
+    fingerprintParts: [],
+  };
+  const amounts = importedJoiningFeeAmounts(rows);
+  if (amounts.size === 0) return decision;
+
+  const windows: JoiningFeeWindow[] = await db.joiningFee.findMany({
+    select: {
+      membershipTypeId: true,
+      ageTier: true,
+      effectiveFrom: true,
+      effectiveTo: true,
+    },
+  });
+  const familyTypeId =
+    membershipTypesByKey.get(FAMILY_MEMBERSHIP_TYPE_KEY)?.id ?? null;
+
+  for (const [category, amountCents] of [...amounts.entries()].sort(([a], [b]) =>
+    a.localeCompare(b),
+  )) {
+    const covered =
+      category === "FAMILY"
+        ? windows.some(
+            (w) =>
+              w.membershipTypeId === familyTypeId &&
+              w.ageTier === null &&
+              joiningFeeWindowCovers(w, today),
+          )
+        : windows.some(
+            (w) =>
+              w.ageTier !== null &&
+              (JOINING_FEE_PER_TIER_TARGETS[category] ?? []).includes(w.ageTier) &&
+              joiningFeeWindowCovers(w, today),
+          );
+    decision.fingerprintParts.push(
+      `joining-fee-coverage:${category}:${covered ? "covered" : "absent"}`,
+    );
+    if (covered) continue;
+    if (category === "FAMILY" && !familyTypeId) {
+      decision.warnings.push(
+        "The bundle carries a FAMILY joining-fee amount but this install has no built-in Family membership type; the family amount was not materialised.",
+      );
+      continue;
+    }
+    decision.materialise.push({ category, amountCents });
+  }
+
+  if (decision.materialise.length > 0) {
+    decision.warnings.push(
+      `Joining-fee windows will be created from the bundle's legacy amounts for: ${decision.materialise
+        .map((m) => m.category)
+        .join(", ")} (no covering JoiningFee window exists on this install). Review the amounts on the fee configuration page after importing.`,
+    );
+  }
+  return decision;
+}
+
+/** The (membershipTypeId, ageTier) cells one category's amount fans out to. */
+function joiningFeeFanOutCells(
+  category: string,
+  membershipTypesByKey: Map<string, { id: string }>,
+): Array<{ membershipTypeId: string; ageTier: string | null }> {
+  if (category === "FAMILY") {
+    const familyTypeId = membershipTypesByKey.get(FAMILY_MEMBERSHIP_TYPE_KEY)?.id;
+    return familyTypeId ? [{ membershipTypeId: familyTypeId, ageTier: null }] : [];
+  }
+  const tiers = JOINING_FEE_PER_TIER_TARGETS[category] ?? [];
+  const cells: Array<{ membershipTypeId: string; ageTier: string | null }> = [];
+  for (const [key, type] of membershipTypesByKey) {
+    if (JOINING_FEE_EXCLUDED_TYPE_KEYS.has(key)) continue;
+    for (const tier of tiers) cells.push({ membershipTypeId: type.id, ageTier: tier });
+  }
+  return cells;
+}
+
+/**
+ * Materialise the decided categories into JoiningFee windows. Runs inside the
+ * apply transaction. Returns the number of rows created.
+ */
+async function applyJoiningFeeMaterialisation(
+  tx: TxDb,
+  decision: JoiningFeeMaterialisationDecision,
+  membershipTypesByKey: Map<string, { id: string }>,
+  today: Date,
+): Promise<number> {
+  if (decision.materialise.length === 0) return 0;
+  const windows: JoiningFeeWindow[] = await tx.joiningFee.findMany({
+    select: {
+      membershipTypeId: true,
+      ageTier: true,
+      effectiveFrom: true,
+      effectiveTo: true,
+    },
+  });
+  let created = 0;
+  for (const { category, amountCents } of decision.materialise) {
+    for (const cell of joiningFeeFanOutCells(category, membershipTypesByKey)) {
+      // Bound the open window to the day before this cell's earliest FUTURE
+      // window, so materialisation never overlaps a scheduled future fee.
+      const futureFroms = windows
+        .filter(
+          (w) =>
+            w.membershipTypeId === cell.membershipTypeId &&
+            w.ageTier === cell.ageTier &&
+            w.effectiveFrom.getTime() > today.getTime(),
+        )
+        .map((w) => w.effectiveFrom.getTime());
+      const effectiveTo =
+        futureFroms.length > 0
+          ? addDaysDateOnly(new Date(Math.min(...futureFroms)), -1)
+          : null;
+      await tx.joiningFee.create({
+        data: {
+          membershipTypeId: cell.membershipTypeId,
+          ageTier: cell.ageTier as never,
+          amountCents,
+          effectiveFrom: today,
+          effectiveTo,
+        },
+      });
+      created += 1;
+    }
+  }
+  return created;
+}
+
 // ---- Export ----------------------------------------------------------------
 
 export const xeroConfigExporter: CategoryExporter = {
@@ -365,9 +571,11 @@ async function planXeroConfig(ctx: PlanContext): Promise<CategoryPlanResult> {
     items.push({ entity: "xero-account-mapping", key, action: planActionFor(current, changed), changedFields: changed.length ? changed : undefined });
   });
 
+  const parsedItemRows: ParsedItemRow[] = [];
   readCsvRows(ctx.files, ITEM_FILE).forEach((raw, i) => {
     const parsed = parseItemRow(i, raw, errors, batch.membershipTypesByKey);
     if (!parsed) return;
+    parsedItemRows.push(parsed);
     const current = batch.items.get(parsed.key) ?? null;
     fingerprintParts.push(
       `xero-item-code-mapping:${parsed.key}:${current ? hashRow(["itemCode", "amountCents"], current) : "absent"}`,
@@ -376,6 +584,21 @@ async function planXeroConfig(ctx: PlanContext): Promise<CategoryPlanResult> {
     const changed = changedFields(write, current);
     items.push({ entity: "xero-item-code-mapping", key: parsed.key, action: planActionFor(current, changed), changedFields: changed.length ? changed : undefined });
   });
+
+  // Joining-fee materialisation preview (#1931, E5): surface which categories
+  // will fan out into JoiningFee windows, and bind the coverage state into the
+  // fingerprint so a concurrent fee-configuration change forces a re-plan.
+  const materialisation = await decideJoiningFeeMaterialisation(
+    ctx.db,
+    parsedItemRows,
+    batch.membershipTypesByKey,
+    getTodayDateOnly(),
+  );
+  warnings.push(...materialisation.warnings);
+  fingerprintParts.push(...materialisation.fingerprintParts);
+  for (const m of materialisation.materialise) {
+    items.push({ entity: "joining-fee-window", key: m.category, action: "create" });
+  }
 
   if (items.length > 0) {
     warnings.push("Xero codes are only valid for the connected Xero org — verify after importing.");
@@ -406,9 +629,11 @@ async function applyXeroConfig(ctx: ApplyContext): Promise<CategoryApplyResult> 
     });
   }
 
+  const parsedItemRows: ParsedItemRow[] = [];
   for (const [i, raw] of readCsvRows(ctx.files, ITEM_FILE).entries()) {
     const parsed = parseItemRow(i, raw, errors, batch.membershipTypesByKey);
     if (!parsed) { result.skipped += 1; continue; }
+    parsedItemRows.push(parsed);
     const current = batch.items.get(parsed.key) ?? null;
     const membershipTypeId = parsed.identity.membershipTypeKey
       ? batch.membershipTypesByKey.get(parsed.identity.membershipTypeKey)?.id ?? null
@@ -435,6 +660,24 @@ async function applyXeroConfig(ctx: ApplyContext): Promise<CategoryApplyResult> 
       result,
     });
   }
+
+  // Materialise JoiningFee windows from the bundle's legacy amounts (#1931,
+  // E5): re-derive the same decision the plan previewed (the fingerprint
+  // guarantees the coverage state has not drifted) and fan the amounts out
+  // per D-R1 inside this transaction.
+  const today = getTodayDateOnly();
+  const materialisation = await decideJoiningFeeMaterialisation(
+    ctx.tx,
+    parsedItemRows,
+    batch.membershipTypesByKey,
+    today,
+  );
+  result.created += await applyJoiningFeeMaterialisation(
+    ctx.tx,
+    materialisation,
+    batch.membershipTypesByKey,
+    today,
+  );
 
   return result;
 }
