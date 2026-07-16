@@ -164,9 +164,6 @@ export const MEMBER_MERGE_RELATION_SPECS: readonly MemberMergeRelationSpec[] = [
   spec("BedAllocation", "approvedBy", "approvedByMemberId", "move"),
   spec("BookingChangeRequest", "requestedBy", "requestedByMemberId", "move"),
   spec("BookingChangeRequest", "reviewedBy", "reviewedByMemberId", "move"),
-  spec("BookingModification", "member", "memberId", "move", {
-    note: "no member unique; guarded to exist by DMMF test if added",
-  }),
 
   // --- Promos ---
   spec("PromoRedemption", "member", "memberId", "move"),
@@ -250,6 +247,7 @@ export const MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS: readonly string[] = [
   "MemberApplication.nominator2Id",
   "MemberApplication.reviewedBy",
   "NominationToken.nominatorMemberId",
+  "BookingModification.memberId",
   "IssueReport.resolvedById",
   "IssueReport.screenshotDeletedById",
   "FamilyGroupJoinRequest.reviewedBy",
@@ -1404,31 +1402,52 @@ async function resolveKeyedCollisions(
   ]);
   if (loserRows.length === 0) return { moved: 0, dropped: 0 };
 
-  const masterKeySets = args.keySpecs.map(
-    (fields) => new Set(masterRows.map((r) => keyOf(r, fields))),
+  const { dropIds, moveIds } = partitionKeyedCollisions(
+    loserRows,
+    masterRows,
+    args.keySpecs,
   );
-
-  const dropIds: string[] = [];
-  for (const row of loserRows) {
-    const collides = args.keySpecs.some((fields, i) =>
-      masterKeySets[i].has(keyOf(row, fields)),
-    );
-    if (collides) dropIds.push(row.id as string);
-  }
 
   if (dropIds.length > 0) {
     await delegate.deleteMany({ where: { id: { in: dropIds } } });
   }
-  const moved = await delegate.updateMany({
+  await delegate.updateMany({
     where: { [args.memberColumn]: args.loserId },
     data: { [args.memberColumn]: args.masterId },
   });
 
-  return { moved: moved.count, dropped: dropIds.length };
+  return { moved: moveIds.length, dropped: dropIds.length };
 }
 
-function keyOf(row: Record<string, unknown>, fields: string[]): string {
-  return fields.map((f) => String(row[f])).join(" ");
+function keyOf(row: Record<string, unknown>, fields: readonly string[]): string {
+  return fields.map((f) => String(row[f])).join("\u0000");
+}
+
+/**
+ * Pure keep-master collision partition: a loser row is dropped when it collides
+ * with a master row on ANY of the model unique keys (the member column is
+ * excluded from the key because it becomes the master's after re-point). Every
+ * other loser row is moved. Covers the collision matrix: both-have (drop),
+ * loser-only (move), neither (nothing to do).
+ */
+export function partitionKeyedCollisions(
+  loserRows: readonly Record<string, unknown>[],
+  masterRows: readonly Record<string, unknown>[],
+  keySpecs: readonly (readonly string[])[],
+): { dropIds: string[]; moveIds: string[] } {
+  const masterKeySets = keySpecs.map(
+    (fields) => new Set(masterRows.map((r) => keyOf(r, fields))),
+  );
+  const dropIds: string[] = [];
+  const moveIds: string[] = [];
+  for (const row of loserRows) {
+    const collides = keySpecs.some((fields, i) =>
+      masterKeySets[i].has(keyOf(row, fields)),
+    );
+    if (collides) dropIds.push(row.id as string);
+    else moveIds.push(row.id as string);
+  }
+  return { dropIds, moveIds };
 }
 
 async function resolveFamilyGroupMembers(
