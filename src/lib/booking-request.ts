@@ -960,6 +960,7 @@ export async function reassignHeldBookingGuests(
           stayStart: guest.stayStart,
           stayEnd: guest.stayEnd,
           priceCents: guest.priceCents,
+          rateMembershipTypeId: guest.rateMembershipTypeId ?? null,
         })),
       });
     }
@@ -979,6 +980,11 @@ export async function reassignHeldBookingGuests(
         stayStart: guest.stayStart,
         stayEnd: guest.stayEnd,
         priceCents: guest.priceCents,
+        // Rate-membership-type snapshot (#1930, E4): the approval-time guest
+        // list (with its admin member links) is authoritative for the swapped
+        // rows, so overwrite the hold-time snapshot with the other identity
+        // fields. Prices stay the admin-set split.
+        rateMembershipTypeId: guest.rateMembershipTypeId ?? null,
       },
     });
   }
