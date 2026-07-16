@@ -7,17 +7,23 @@ Future reviews and issues should cite this file when proposing changes.
 
 - Fee/policy PageContent blocks are explicitly enabled and server-rendered; a
   token alone publishes nothing.
-- Public fees use current effective-dated schedules. Entrance fees never use
-  legacy Xero mapping fallbacks.
+- Public fees use current effective-dated schedules. Joining fees resolve from
+  the `JoiningFee` schedule (membership type × age tier) only — no legacy Xero
+  mapping-amount fallback.
 - Named lodge tokens resolve exactly one active lodge or no data, never the
   default lodge. Public view models exclude ids, provider codes, and secrets.
 
 ## Money
 
 - Store and calculate money as integer cents.
-- Annual membership and entrance fee authorities store non-negative integer
-  cents in inclusive, non-overlapping effective-date ranges. `NO_INVOICE`
-  annual rows are zero cents. Fee changes affect future resolution only.
+- Annual membership and joining fee authorities store non-negative integer
+  cents in inclusive, non-overlapping effective-date ranges. Annual fees key on
+  membership type; joining fees (`JoiningFee`, #1931) key on membership type ×
+  optional age tier, with the flat NULL-tier row reserved for whole-type
+  (Family) fees. `NO_INVOICE` annual rows are zero cents. The joining fee is
+  strictly type-driven — the Family fee applies only to members assigned the
+  Family type (the composition heuristic is removed). Fee changes affect future
+  resolution only.
 - Do not introduce floating point money arithmetic.
 - Refunds, credits, discounts, Stripe amounts, Xero invoice amounts, and
   membership fees must reconcile back to cent-based ledger records.
@@ -53,12 +59,49 @@ Future reviews and issues should cite this file when proposing changes.
 - Membership approval remains authoritative when billing setup is incomplete:
   billing records a visible post-approval exception/warning and never rolls the
   member transaction back.
+- **Paid-up semantics (three sources, one meaning).** A member counts as
+  paid-up when EITHER their membership-type policy `subscriptionBehavior` is
+  `NOT_REQUIRED` (Life/honorary/operational — no subscription row needed) OR
+  their current-season `MemberSubscription.status` is `PAID`. Booking
+  (`findUnpaidMemberGuests`), nomination eligibility (`verifyNominator`), and the
+  member-facing `/api/member/subscription-status` all resolve paid-up from these
+  same two facts. Nomination deliberately honours ONLY the membership-type
+  `NOT_REQUIRED` rule, NOT the booking side's junior age-tier subscription
+  exemption (`requiresPaidSubscriptionForAgeTier`): nominating is an adult-member
+  act and widening it to un-subscribed junior tiers is an owner policy decision.
+- **Manual mark-paid provenance (non-Xero clubs / cash).** `status = "PAID"` can
+  be set outside the Xero pipeline by an audited finance:edit action, recorded by
+  `manuallyMarkedPaidAt` / `manuallyMarkedPaidByMemberId` / `manualPaymentNote`.
+  This path never calls Xero and never creates or voids an invoice, and it exists
+  only for cash payments where NO Xero invoice exists: marking paid is rejected
+  when the row carries a Xero invoice link (record the payment against the
+  invoice in Xero instead) or is `NOT_REQUIRED`, and both manual writes are
+  status-fenced conditional updates so concurrent actions cannot double-apply.
+  No writer may clobber a manual PAID: the annual-invoice sweep never invoices a
+  subscription already `PAID` (a manual PAID has no charge-coverage row, so the
+  guard keys off status, not coverage); a queued/retrying invoice charge
+  conflicts (`SUBSCRIPTION_ALREADY_PAID`) instead of minting an invoice for a
+  covered subscription that became `PAID`, and its coverage write never
+  downgrades a `PAID` row; Xero discovery/reconciliation
+  (`checkMembershipStatus`) never downgrades a manually marked-paid row that
+  carries no Xero invoice link (a write-time fence, so a manual mark-paid
+  landing mid-sync is also safe); and `flushMemberSubscriptionHistory` treats a
+  manual-PAID row as financial history and never deletes it on contact
+  link/push/unlink. Once a real Xero subscription invoice links to the row,
+  Xero is authoritative again and the linking write clears the manual
+  provenance columns (a row can never read "UNPAID (manual)"). Reversal
+  (finance:edit) restores `NOT_INVOICED` (or `UNPAID` on a legacy row with an
+  invoice link) and clears the provenance columns; both directions are audited
+  with the acting admin, including the previous status.
 - Xero invoice identity is persisted before Xero email. Email retries reuse it.
   Existing invoices are adopted only on an exact `AUTHORISED` snapshot match;
   conflicts are visible and never trigger a silent provider rewrite. Xero
   delivery resolves the snapshotted recipient member's current contact/email;
   frozen name/email remain audit evidence rather than a stale delivery target.
-- A member has at most one entrance-fee invoice (#1886, F21). The worker mints
+- A member has at most one joining-fee invoice (#1886, F21; formerly
+  "entrance-fee" — the Xero reference `` `Entrance fee (<Label>) - <memberId>` ``,
+  the `ENTRANCE_FEE_INVOICE` link role, and the member-scoped v1 mint key stay
+  frozen so the rename never re-invoices, #1931). The worker mints
   only after re-checking the durable `ENTRANCE_FEE_INVOICE` link and, failing
   that, looking the member-unique invoice reference (full member id, not a
   truncated prefix) up in Xero. A found invoice is adopted only when it is THIS
