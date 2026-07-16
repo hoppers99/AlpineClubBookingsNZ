@@ -12,7 +12,10 @@ import {
   normalizeAgeTierSettings,
   type AgeTierSettingData,
 } from "@/lib/policies/age-tier";
-import { hasPrivilegedAccess } from "@/lib/access-roles";
+import {
+  hasPrivilegedAccess,
+  memberHoldsPrivilegedRole,
+} from "@/lib/access-roles";
 import { prisma } from "@/lib/prisma";
 import {
   resolvePersonDecisions,
@@ -73,6 +76,19 @@ export type MappingActorContext = {
  */
 export const PRIVILEGED_MAPPING_EMAIL_GUARD_MESSAGE =
   "Only a Full Admin can change a privileged member's email; mapping this applicant would overwrite this member's login email with the application email.";
+
+/**
+ * #1604 parity (E10 verification blocker): the applicant-MAP promotion path
+ * (canLogin false → true) sets email + emailVerified and sends a set-password
+ * link to the application email. When the non-login target dormantly stores a
+ * privileged role (e.g. a cancelled ex-admin whose canLogin is already false),
+ * that is a full account takeover with the dormant role reactivated, so it
+ * takes the same canLogin-BLIND Full-Admin gate as every other activation
+ * surface (memberHoldsPrivilegedRole, never the canLogin-aware
+ * hasPrivilegedAccess — which is false for exactly these targets).
+ */
+export const PRIVILEGED_MAPPING_PROMOTION_GUARD_MESSAGE =
+  "Only a Full Admin can activate login on a member who holds a privileged role; mapping this applicant would promote this member to a login account with the application email.";
 
 export type FieldDiff = {
   field: string;
@@ -198,8 +214,13 @@ export type MappingTargetRecord = {
   familyGroupMemberships: Array<{ familyGroupId: string }>;
   subscriptions: Array<{ id: string }>;
   seasonalMembershipAssignments: Array<{ id: string }>;
+  // Stored finance role, feeding the #1604 promotion gate via the
+  // canLogin-BLIND memberHoldsPrivilegedRole (which reads accessRoles + role +
+  // financeAccessLevel) so a legacy dormant Treasurer is caught too.
+  financeAccessLevel: string | null;
   // Access-role assignment rows (role token or definition id), feeding the
-  // #1026 privileged-email gate via hasPrivilegedAccess (canLogin-aware).
+  // #1026 privileged-email gate via hasPrivilegedAccess (canLogin-aware) and
+  // the #1604 promotion gate via memberHoldsPrivilegedRole (canLogin-blind).
   accessRoles: Array<{ role: string | null; roleDefinitionId: string | null }>;
 };
 
@@ -248,6 +269,7 @@ export async function loadApprovalMappingTargets(
       onboardingConfirmedAt: true,
       xeroContactId: true,
       updatedAt: true,
+      financeAccessLevel: true,
       accessRoles: { select: { role: true, roleDefinitionId: true } },
       familyGroupMemberships: { select: { familyGroupId: true } },
       subscriptions: { where: { seasonYear }, select: { id: true }, take: 1 },
@@ -589,6 +611,23 @@ function buildApplicantMapOutcome(args: {
     actor.id !== target.id
   ) {
     errors.push(PRIVILEGED_MAPPING_EMAIL_GUARD_MESSAGE);
+  }
+  // #1604 parity (verification blocker): the promotion path (canLogin false →
+  // true) is invisible to the canLogin-aware gate above, yet it activates the
+  // account — email set to the publicly-submitted application email,
+  // emailVerified, and a set-password link sent there — with any dormantly
+  // stored privileged role (ex-admin, legacy Treasurer) coming back to life.
+  // Gate it canLogin-BLIND like every sibling activation surface. Being
+  // actor-dependent, this error is part of the tokenized outcome, so a
+  // Full-Admin-minted preview replayed by a scoped admin recomputes
+  // differently and 409s (fail closed), same as the keep-auth gate.
+  if (
+    target.canLogin === false &&
+    memberHoldsPrivilegedRole(target) &&
+    !actor.isFullAdmin &&
+    actor.id !== target.id
+  ) {
+    errors.push(PRIVILEGED_MAPPING_PROMOTION_GUARD_MESSAGE);
   }
 
   const fieldDiffs = buildApplicantDiffs(target, incoming);

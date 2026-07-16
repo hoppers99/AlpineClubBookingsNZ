@@ -40,6 +40,7 @@ import {
   buildApprovalMappingPreviewToken,
   computeApprovalMappingOutcomes,
   PRIVILEGED_MAPPING_EMAIL_GUARD_MESSAGE,
+  PRIVILEGED_MAPPING_PROMOTION_GUARD_MESSAGE,
   verifyApprovalMappingPreviewToken,
   type MappingApplicationInput,
   type MappingTargetRecord,
@@ -114,6 +115,7 @@ function makeTarget(overrides: Partial<MappingTargetRecord> = {}): MappingTarget
     familyGroupMemberships: [],
     subscriptions: [],
     seasonalMembershipAssignments: [],
+    financeAccessLevel: null,
     accessRoles: [],
     ...overrides,
   };
@@ -476,7 +478,10 @@ describe("privileged-email mapping gate (#1026 parity)", () => {
     });
     expect(unprivileged.persons[0].errors).toEqual([]);
 
-    // Non-login target (promotion path): hasPrivilegedAccess is canLogin-aware.
+    // Non-login target (promotion path): hasPrivilegedAccess is canLogin-aware
+    // so the EMAIL gate stays silent — but the target dormantly stores a
+    // privileged role, so the canLogin-BLIND PROMOTION gate (#1604 parity,
+    // dedicated describe below) blocks it instead.
     const nonLogin = await computeApprovalMappingOutcomes({
       application: makeApplication(),
       decisions: applicantMapDecisions("member-x"),
@@ -486,7 +491,12 @@ describe("privileged-email mapping gate (#1026 parity)", () => {
       actor: SCOPED_ADMIN,
       ageTierSettings: DEFAULT_SETTINGS,
     });
-    expect(nonLogin.persons[0].errors).toEqual([]);
+    expect(nonLogin.persons[0].errors).not.toContain(
+      PRIVILEGED_MAPPING_EMAIL_GUARD_MESSAGE,
+    );
+    expect(nonLogin.persons[0].errors).toContain(
+      PRIVILEGED_MAPPING_PROMOTION_GUARD_MESSAGE,
+    );
   });
 
   it("exempts the actor's own record, mirroring direct member edit", async () => {
@@ -502,6 +512,133 @@ describe("privileged-email mapping gate (#1026 parity)", () => {
     expect(persons[0].errors).not.toContain(
       PRIVILEGED_MAPPING_EMAIL_GUARD_MESSAGE,
     );
+  });
+});
+
+describe("privileged promotion mapping gate (#1604 parity, canLogin-blind)", () => {
+  // A cancelled ex-admin: canLogin already false, but the access-role row is
+  // dormantly stored. hasPrivilegedAccess is false for this target — only the
+  // canLogin-BLIND memberHoldsPrivilegedRole sees the dormant role.
+  const dormant = (overrides: Partial<MappingTargetRecord> = {}) =>
+    makeTarget({
+      id: "member-x",
+      canLogin: false,
+      email: "dormant@test.com",
+      accessRoles: [{ role: "ADMIN", roleDefinitionId: null }],
+      ...overrides,
+    });
+
+  const outcomesFor = (target: MappingTargetRecord, actor: { id: string; isFullAdmin: boolean }) =>
+    computeApprovalMappingOutcomes({
+      application: makeApplication(),
+      decisions: applicantMapDecisions("member-x"),
+      targetsById: new Map([["member-x", target]]),
+      loginHolderId: null,
+      seasonYear: 2026,
+      actor,
+      ageTierSettings: DEFAULT_SETTINGS,
+    });
+
+  it("blocks a scoped admin promoting a non-login target with a dormant ADMIN role", async () => {
+    const { persons } = await outcomesFor(dormant(), SCOPED_ADMIN);
+    expect(persons[0].errors).toContain(
+      PRIVILEGED_MAPPING_PROMOTION_GUARD_MESSAGE,
+    );
+    // The canLogin-aware email gate stays silent for a non-login target.
+    expect(persons[0].errors).not.toContain(
+      PRIVILEGED_MAPPING_EMAIL_GUARD_MESSAGE,
+    );
+  });
+
+  it("blocks the FINANCE_ADMIN access-role and legacy financeAccessLevel (dormant Treasurer) variants", async () => {
+    const financeRole = await outcomesFor(
+      dormant({ accessRoles: [{ role: "FINANCE_ADMIN", roleDefinitionId: null }] }),
+      SCOPED_ADMIN,
+    );
+    expect(financeRole.persons[0].errors).toContain(
+      PRIVILEGED_MAPPING_PROMOTION_GUARD_MESSAGE,
+    );
+
+    // Legacy dormant Treasurer: no access-role rows at all, the privilege
+    // lives only in the financeAccessLevel column — which
+    // loadApprovalMappingTargets now selects for exactly this predicate.
+    const legacyTreasurer = await outcomesFor(
+      dormant({ accessRoles: [], financeAccessLevel: "MANAGER" }),
+      SCOPED_ADMIN,
+    );
+    expect(legacyTreasurer.persons[0].errors).toContain(
+      PRIVILEGED_MAPPING_PROMOTION_GUARD_MESSAGE,
+    );
+  });
+
+  it("allows a Full Admin to promote the same dormant-privileged target", async () => {
+    const { persons } = await outcomesFor(dormant(), FULL_ADMIN);
+    expect(persons[0].errors).toEqual([]);
+    expect(persons[0].loginPromoted).toBe(true);
+  });
+
+  it("does not gate a non-privileged non-login promotion by a scoped admin", async () => {
+    const { persons } = await outcomesFor(
+      dormant({ accessRoles: [], role: "USER", financeAccessLevel: null }),
+      SCOPED_ADMIN,
+    );
+    expect(persons[0].errors).toEqual([]);
+    expect(persons[0].loginPromoted).toBe(true);
+  });
+
+  it("exempts the actor's own record, mirroring the sibling #1604 guards", async () => {
+    const { persons } = await outcomesFor(dormant(), {
+      id: "member-x",
+      isFullAdmin: false,
+    });
+    expect(persons[0].errors).not.toContain(
+      PRIVILEGED_MAPPING_PROMOTION_GUARD_MESSAGE,
+    );
+  });
+
+  it("fails closed on replay: a Full-Admin-minted token is refused for the scoped-admin recompute", async () => {
+    const application = makeApplication();
+    const decisions = applicantMapDecisions("member-x");
+    const target = dormant();
+
+    const fullAdminOutcome = await computeApprovalMappingOutcomes({
+      application,
+      decisions,
+      targetsById: new Map([["member-x", target]]),
+      loginHolderId: null,
+      seasonYear: 2026,
+      actor: FULL_ADMIN,
+      ageTierSettings: DEFAULT_SETTINGS,
+    });
+    expect(fullAdminOutcome.persons[0].errors).toEqual([]);
+    const fullAdminToken = buildApprovalMappingPreviewToken({
+      application,
+      persons: fullAdminOutcome.persons,
+      blockingErrors: fullAdminOutcome.blockingErrors,
+    });
+
+    const scopedRecompute = await computeApprovalMappingOutcomes({
+      application,
+      decisions,
+      targetsById: new Map([["member-x", target]]),
+      loginHolderId: null,
+      seasonYear: 2026,
+      actor: SCOPED_ADMIN,
+      ageTierSettings: DEFAULT_SETTINGS,
+    });
+    expect(scopedRecompute.persons[0].errors).toContain(
+      PRIVILEGED_MAPPING_PROMOTION_GUARD_MESSAGE,
+    );
+    expect(
+      verifyApprovalMappingPreviewToken(
+        {
+          application,
+          persons: scopedRecompute.persons,
+          blockingErrors: scopedRecompute.blockingErrors,
+        },
+        fullAdminToken,
+      ),
+    ).toBe(false);
   });
 });
 

@@ -124,6 +124,7 @@ function targetRow(overrides: Record<string, unknown> = {}) {
     familyGroupMemberships: [],
     subscriptions: [],
     seasonalMembershipAssignments: [],
+    financeAccessLevel: null,
     accessRoles: [],
     ...overrides,
   };
@@ -579,6 +580,166 @@ describe("privileged-email gate at the approve layer (#1026 parity)", () => {
       "app-1", "admin-1", null, null, undefined, APPLICANT_MAP, token,
     );
     expect(result.mappedMemberIds).toEqual(["member-x"]);
+  });
+});
+
+describe("privileged promotion gate at the approve layer (#1604 parity)", () => {
+  // A cancelled ex-admin: canLogin already false, access-role row dormantly
+  // stored. Invisible to the canLogin-aware email gate — only the
+  // canLogin-BLIND promotion gate sees it.
+  const dormantTargets = (overrides: Record<string, unknown> = {}) => [
+    targetRow({
+      canLogin: false,
+      email: "dormant@test.com",
+      accessRoles: [{ role: "ADMIN", roleDefinitionId: null }],
+      ...overrides,
+    }),
+  ];
+
+  function expectZeroSideEffects(tx: ReturnType<typeof makeTx>["tx"], update: ReturnType<typeof vi.fn>) {
+    expect(update).not.toHaveBeenCalled();
+    expect(tx.member.create).not.toHaveBeenCalled();
+    expect(tx.passwordResetToken.deleteMany).not.toHaveBeenCalled();
+    expect(tx.passwordResetToken.create).not.toHaveBeenCalled();
+    expect(tx.memberApplication.update).not.toHaveBeenCalled();
+    expect(xeroOutboxMock.enqueueXeroEntranceFeeInvoiceOperation).not.toHaveBeenCalled();
+    expect(auditMock.logAudit).not.toHaveBeenCalled();
+    expect(billingMock.queueApprovedMembershipSubscriptionCharges).not.toHaveBeenCalled();
+    expect(emailMock.sendMembershipApplicationApprovedEmail).not.toHaveBeenCalled();
+  }
+
+  it("blocks a scoped admin promoting a dormant ex-ADMIN, with ZERO side effects", async () => {
+    const targets = dormantTargets();
+    const token = await tokenFor(APPLICANT_MAP, targets, null, {
+      id: "admin-1",
+      isFullAdmin: false,
+    });
+
+    prismaMock.memberApplication.findUnique.mockResolvedValue(applicationRow() as never);
+    const { tx, update } = makeTx({
+      targets,
+      loginHolder: null,
+      actingAdmin: SCOPED_ADMIN_ROW,
+    });
+    prismaMock.$transaction.mockImplementation(async (cb: any) => cb(tx));
+
+    // Token matches (same scoped actor previewed), but the blocking error
+    // refuses the approval before any write.
+    await expect(
+      approveMemberApplication("app-1", "admin-1", null, null, undefined, APPLICANT_MAP, token),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining(
+        "Only a Full Admin can activate login on a member who holds a privileged role",
+      ),
+    });
+    expectZeroSideEffects(tx, update);
+  });
+
+  it("blocks a scoped admin promoting a legacy dormant Treasurer (financeAccessLevel, no access-role rows)", async () => {
+    const targets = dormantTargets({ accessRoles: [], financeAccessLevel: "MANAGER" });
+    const token = await tokenFor(APPLICANT_MAP, targets, null, {
+      id: "admin-1",
+      isFullAdmin: false,
+    });
+
+    prismaMock.memberApplication.findUnique.mockResolvedValue(applicationRow() as never);
+    const { tx, update } = makeTx({
+      targets,
+      loginHolder: null,
+      actingAdmin: SCOPED_ADMIN_ROW,
+    });
+    prismaMock.$transaction.mockImplementation(async (cb: any) => cb(tx));
+
+    await expect(
+      approveMemberApplication("app-1", "admin-1", null, null, undefined, APPLICANT_MAP, token),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining(
+        "Only a Full Admin can activate login on a member who holds a privileged role",
+      ),
+    });
+    expectZeroSideEffects(tx, update);
+  });
+
+  it("fails CLOSED when a Full-Admin preview token is replayed by a scoped-admin PUT (409 token drift, zero side effects)", async () => {
+    const targets = dormantTargets();
+    // Preview minted by a Full Admin: no blocking error in the payload.
+    const token = await tokenFor(APPLICANT_MAP, targets, null, {
+      id: "admin-9",
+      isFullAdmin: true,
+    });
+
+    // The PUT actor re-read in-tx is a scoped admin: the recompute adds the
+    // promotion blocking error, the payload diverges, the token mismatches.
+    prismaMock.memberApplication.findUnique.mockResolvedValue(applicationRow() as never);
+    const { tx, update } = makeTx({
+      targets,
+      loginHolder: null,
+      actingAdmin: SCOPED_ADMIN_ROW,
+    });
+    prismaMock.$transaction.mockImplementation(async (cb: any) => cb(tx));
+
+    await expect(
+      approveMemberApplication("app-1", "admin-1", null, null, undefined, APPLICANT_MAP, token),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining("changed since it was previewed"),
+    });
+    expectZeroSideEffects(tx, update);
+  });
+
+  it("allows a Full Admin to promote the same dormant-privileged target", async () => {
+    const targets = dormantTargets();
+    const token = await tokenFor(APPLICANT_MAP, targets, null, {
+      id: "admin-1",
+      isFullAdmin: true,
+    });
+
+    prismaMock.memberApplication.findUnique.mockResolvedValue(applicationRow() as never);
+    const { tx, update } = makeTx({
+      targets,
+      loginHolder: null,
+      actingAdmin: FULL_ADMIN_ROW,
+    });
+    prismaMock.$transaction.mockImplementation(async (cb: any) => cb(tx));
+
+    const result = await approveMemberApplication(
+      "app-1", "admin-1", null, null, undefined, APPLICANT_MAP, token,
+    );
+
+    expect(result.mappedMemberIds).toEqual(["member-x"]);
+    const data = update.mock.calls[0][0].data;
+    expect(data).toMatchObject({
+      canLogin: true,
+      emailVerified: true,
+      email: "jane@test.com",
+    });
+    expect(tx.passwordResetToken.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves a non-privileged promotion by a scoped admin ungated (no false positive)", async () => {
+    const targets = [targetRow({ canLogin: false })]; // plain USER, no roles
+    const token = await tokenFor(APPLICANT_MAP, targets, null, {
+      id: "admin-1",
+      isFullAdmin: false,
+    });
+
+    prismaMock.memberApplication.findUnique.mockResolvedValue(applicationRow() as never);
+    const { tx, update } = makeTx({
+      targets,
+      loginHolder: null,
+      actingAdmin: SCOPED_ADMIN_ROW,
+    });
+    prismaMock.$transaction.mockImplementation(async (cb: any) => cb(tx));
+
+    const result = await approveMemberApplication(
+      "app-1", "admin-1", null, null, undefined, APPLICANT_MAP, token,
+    );
+
+    expect(result.mappedMemberIds).toEqual(["member-x"]);
+    const data = update.mock.calls[0][0].data;
+    expect(data.canLogin).toBe(true);
   });
 });
 
