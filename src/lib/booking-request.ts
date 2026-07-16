@@ -56,6 +56,8 @@ import {
   priceBookingGuests,
   toSeasonRateData,
 } from "@/lib/policies/booking-route-decisions";
+import { resolveGuestRateMembershipTypes } from "@/lib/membership-type-policy";
+import { getSeasonYear } from "@/lib/utils";
 import {
   getDefaultLodgeId,
   lodgeNullTolerantScope,
@@ -315,20 +317,27 @@ export async function calculateIndicativeNonMemberPriceCents(input: {
       endDate: { gte: input.checkIn },
       ...lodgeNullTolerantScope(pricingLodgeId),
     },
-    include: { rates: true },
+    include: { membershipTypeRates: true },
   });
 
   if (seasons.length === 0) {
     return null;
   }
 
-  const price = priceBookingGuests({
-    checkIn: input.checkIn,
-    checkOut: input.checkOut,
+  // Non-member request estimate: resolve each guest's rate membership type
+  // (all NON_MEMBER_DEFAULT here) so pricing keys on the NON_MEMBER type
+  // (#1930, E4).
+  const ratedGuests = await resolveGuestRateMembershipTypes(prisma, {
+    seasonYear: getSeasonYear(input.checkIn),
     guests: input.guests.map((guest) => ({
       ageTier: guest.ageTier,
       isMember: false,
     })),
+  });
+  const price = priceBookingGuests({
+    checkIn: input.checkIn,
+    checkOut: input.checkOut,
+    guests: ratedGuests,
     seasons: toSeasonRateData(seasons),
   });
 

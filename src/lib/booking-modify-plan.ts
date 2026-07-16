@@ -45,7 +45,7 @@ import {
   type SeasonRateData,
 } from "@/lib/pricing";
 import {
-  applyMembershipTypeRatePolicyToGuests,
+  resolveGuestRateMembershipTypes,
   assertMembershipTypeBookingAllowed,
   MembershipTypeBookingPolicyError,
   priceBookingGuestsWithMembershipTypePolicy,
@@ -571,15 +571,15 @@ export async function loadActiveSeasonRates(
 ): Promise<SeasonRateData[]> {
   const seasons = await tx.season.findMany({
     where: { active: true, ...lodgeNullTolerantScope(lodgeId) },
-    include: { rates: true },
+    include: { membershipTypeRates: true },
   });
   return seasons.map((s) => ({
     seasonId: s.id,
     startDate: s.startDate,
     endDate: s.endDate,
-    rates: s.rates.map((r) => ({
+    rates: s.membershipTypeRates.map((r) => ({
+      membershipTypeId: r.membershipTypeId,
       ageTier: r.ageTier,
-      isMember: r.isMember,
       pricePerNightCents: r.pricePerNightCents,
     })),
   }));
@@ -772,17 +772,17 @@ export async function calculateModifiedPricing(
     seasonYear,
   });
 
-  const policyAdjustedGuestsForPricing = await applyMembershipTypeRatePolicyToGuests(tx, {
+  const policyAdjustedGuestsForPricing = await resolveGuestRateMembershipTypes(tx, {
     seasonYear,
     guests: guestsForPricing,
   });
   const policyAdjustedAddGuests = normalizedAddGuests
-    ? await applyMembershipTypeRatePolicyToGuests(tx, {
+    ? await resolveGuestRateMembershipTypes(tx, {
         seasonYear,
         guests: normalizedAddGuests,
       })
     : undefined;
-  const policyAdjustedExistingGuests = await applyMembershipTypeRatePolicyToGuests(tx, {
+  const policyAdjustedExistingGuests = await resolveGuestRateMembershipTypes(tx, {
     seasonYear,
     guests: booking.guests.map((guest) => ({
       ...guest,

@@ -376,16 +376,16 @@ export async function POST(
       // Load seasons for pricing
       const seasons = await tx.season.findMany({
         where: { active: true, ...lodgeNullTolerantScope(bookingLodgeId) },
-        include: { rates: true },
+        include: { membershipTypeRates: true },
       });
 
       const seasonRateData: SeasonRateData[] = seasons.map((s) => ({
         seasonId: s.id,
         startDate: s.startDate,
         endDate: s.endDate,
-        rates: s.rates.map((r) => ({
+        rates: s.membershipTypeRates.map((r) => ({
+          membershipTypeId: r.membershipTypeId,
           ageTier: r.ageTier,
-          isMember: r.isMember,
           pricePerNightCents: r.pricePerNightCents,
         })),
       }));

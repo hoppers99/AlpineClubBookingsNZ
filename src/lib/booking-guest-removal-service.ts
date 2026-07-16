@@ -642,16 +642,16 @@ export async function loadSeasonRateData(
 ): Promise<SeasonRateData[]> {
   const seasons = await tx.season.findMany({
     where: { active: true, ...(lodgeId ? lodgeNullTolerantScope(lodgeId) : {}) },
-    include: { rates: true },
+    include: { membershipTypeRates: true },
   });
 
   return seasons.map((season) => ({
     seasonId: season.id,
     startDate: season.startDate,
     endDate: season.endDate,
-    rates: season.rates.map((rate) => ({
+    rates: season.membershipTypeRates.map((rate) => ({
+      membershipTypeId: rate.membershipTypeId,
       ageTier: rate.ageTier,
-      isMember: rate.isMember,
       pricePerNightCents: rate.pricePerNightCents,
     })),
   }));
