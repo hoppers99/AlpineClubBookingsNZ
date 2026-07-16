@@ -221,6 +221,7 @@ export async function flushMemberSubscriptionHistory(memberId: string): Promise<
       select: {
         id: true,
         seasonYear: true,
+        manuallyMarkedPaidAt: true,
         chargeCoverage: { select: { id: true } },
       },
     });
@@ -234,9 +235,16 @@ export async function flushMemberSubscriptionHistory(memberId: string): Promise<
     }
 
     // Durable charge coverage is financial history and must never be flushed
-    // by a contact resync/unlink. Only legacy/unbilled derived rows are reset.
+    // by a contact resync/unlink. The same holds for a manual mark-paid row
+    // (#1944): it records a real cash payment taken outside Xero, so deleting
+    // it on link/push/unlink would let a later re-sync recreate NOT_INVOICED
+    // and the billing sweep re-invoice a member who already paid. Only
+    // legacy/unbilled derived rows are reset.
     const subscriptionIds = subscriptions
-      .filter((subscription) => !subscription.chargeCoverage)
+      .filter(
+        (subscription) =>
+          !subscription.chargeCoverage && !subscription.manuallyMarkedPaidAt
+      )
       .map((subscription) => subscription.id);
     const seasonYears = Array.from(
       new Set(subscriptions.map((subscription) => subscription.seasonYear))
