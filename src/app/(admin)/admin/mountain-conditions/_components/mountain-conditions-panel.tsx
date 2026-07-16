@@ -133,6 +133,7 @@ export function MountainConditionsPanel() {
   async function saveRecord() {
     setSaving(true);
     setError("");
+    setForbidden(false);
     try {
       const response = await fetch("/api/admin/mountain-conditions", {
         method: "PUT",
@@ -167,6 +168,7 @@ export function MountainConditionsPanel() {
   async function refreshFromUpstream() {
     setRefreshing(true);
     setError("");
+    setForbidden(false);
     try {
       const response = await fetch("/api/admin/mountain-conditions", {
         method: "POST",
@@ -199,6 +201,7 @@ export function MountainConditionsPanel() {
   async function saveVisibility() {
     setSavingVisibility(true);
     setError("");
+    setForbidden(false);
     try {
       const response = await fetch("/api/admin/mountain-conditions", {
         method: "PATCH",

@@ -256,6 +256,7 @@ export function SiteBannersPanel() {
 
   async function toggleActive(banner: ApiBanner) {
     setBusyBannerId(banner.id);
+    setForbidden(false);
     try {
       const res = await fetch(`/api/admin/site-banners/${banner.id}`, {
         method: "PATCH",

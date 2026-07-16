@@ -215,6 +215,7 @@ export function LodgeInstructionsPanel() {
       return;
     }
     setSavingKey(key);
+    setForbidden(false);
     try {
       const res = await fetch("/api/admin/lodge-instructions", {
         method: "PUT",

@@ -1482,6 +1482,7 @@ export function PageContentPanel() {
 
   async function togglePublished(page: EditablePageRecord) {
     const nextPublished = !page.published;
+    setForbidden(false);
     try {
       const response = await fetch("/api/admin/page-content", {
         method: "PATCH",
@@ -1491,7 +1492,11 @@ export function PageContentPanel() {
       });
       const body = await response.json().catch(() => null);
       if (!response.ok) {
-        if (response.status === 403) setForbidden(true);
+        // The page-content routes' custom forbiddenResponse replies 401
+        // ("Unauthorized") on permission denial, so treat 401 as forbidden
+        // too — only authenticated admins can reach this panel.
+        if (response.status === 403 || response.status === 401)
+          setForbidden(true);
         throw new Error(body?.error ?? "Failed to update page visibility");
       }
       setPages((current) =>
@@ -1558,7 +1563,11 @@ export function PageContentPanel() {
 
       const body = await response.json().catch(() => null);
       if (!response.ok) {
-        if (response.status === 403) setForbidden(true);
+        // The page-content routes' custom forbiddenResponse replies 401
+        // ("Unauthorized") on permission denial, so treat 401 as forbidden
+        // too — only authenticated admins can reach this panel.
+        if (response.status === 403 || response.status === 401)
+          setForbidden(true);
         throw new Error(body?.error ?? "Failed to save page content");
       }
 
@@ -1629,7 +1638,11 @@ export function PageContentPanel() {
 
       const body = await response.json().catch(() => null);
       if (!response.ok) {
-        if (response.status === 403) setForbidden(true);
+        // The page-content routes' custom forbiddenResponse replies 401
+        // ("Unauthorized") on permission denial, so treat 401 as forbidden
+        // too — only authenticated admins can reach this panel.
+        if (response.status === 403 || response.status === 401)
+          setForbidden(true);
         throw new Error(body?.error ?? "Failed to create page");
       }
 
