@@ -39,6 +39,12 @@ import {
   SITE_BANNER_PRIORITY_LABELS,
   type SiteBannerPriorityValue,
 } from "@/lib/site-banner-shared";
+import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
+import {
+  AdminForbiddenSaveNotice,
+  AdminViewOnlyNotice,
+  ViewOnlyActionButton,
+} from "@/components/admin/view-only-action";
 
 type ApiBanner = {
   id: string;
@@ -147,9 +153,11 @@ function BannerPreview({
 }
 
 export function SiteBannersPanel() {
+  const canEdit = useAdminAreaEditAccess("content");
   const [groups, setGroups] = useState<ApiGroups | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [forbidden, setForbidden] = useState(false);
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -213,6 +221,7 @@ export function SiteBannersPanel() {
     }
 
     setSaving(true);
+    setForbidden(false);
     try {
       const url = editingId
         ? `/api/admin/site-banners/${editingId}`
@@ -230,6 +239,7 @@ export function SiteBannersPanel() {
         }),
       });
       if (!res.ok) {
+        if (res.status === 403) setForbidden(true);
         const body = await res.json().catch(() => null);
         toast.error(body?.error ?? "Failed to save banner");
         return;
@@ -254,6 +264,7 @@ export function SiteBannersPanel() {
         body: JSON.stringify({ active: !banner.active }),
       });
       if (!res.ok) {
+        if (res.status === 403) setForbidden(true);
         const body = await res.json().catch(() => null);
         toast.error(body?.error ?? "Failed to update banner");
         return;
@@ -279,12 +290,14 @@ export function SiteBannersPanel() {
       return;
     }
     setBusyBannerId(banner.id);
+    setForbidden(false);
     try {
       const res = await fetch(`/api/admin/site-banners/${banner.id}`, {
         method: "DELETE",
         credentials: "same-origin",
       });
       if (!res.ok) {
+        if (res.status === 403) setForbidden(true);
         const body = await res.json().catch(() => null);
         toast.error(body?.error ?? "Failed to delete banner");
         return;
@@ -318,11 +331,21 @@ export function SiteBannersPanel() {
   return (
     <div className="space-y-6">
       {confirmDialog}
+      {!canEdit ? (
+        <AdminViewOnlyNotice>
+          Your admin role can view site banners but cannot change them.
+        </AdminViewOnlyNotice>
+      ) : null}
+      {forbidden ? <AdminForbiddenSaveNotice /> : null}
       <div className="flex justify-end">
-        <Button type="button" onClick={openCreateDialog}>
+        <ViewOnlyActionButton
+          canEdit={canEdit}
+          type="button"
+          onClick={openCreateDialog}
+        >
           <Plus className="mr-2 h-4 w-4" />
           Add banner
-        </Button>
+        </ViewOnlyActionButton>
       </div>
 
       {GROUPS.map((group) => {
@@ -368,7 +391,8 @@ export function SiteBannersPanel() {
                         </p>
                       </div>
                       <div className="flex shrink-0 items-center gap-2">
-                        <Button
+                        <ViewOnlyActionButton
+                          canEdit={canEdit}
                           type="button"
                           variant="outline"
                           size="sm"
@@ -376,7 +400,7 @@ export function SiteBannersPanel() {
                           onClick={() => toggleActive(banner)}
                         >
                           {banner.active ? "Deactivate" : "Activate"}
-                        </Button>
+                        </ViewOnlyActionButton>
                         <Button
                           type="button"
                           variant="outline"
@@ -385,9 +409,10 @@ export function SiteBannersPanel() {
                           onClick={() => openEditDialog(banner)}
                         >
                           <Pencil className="mr-1 h-4 w-4" />
-                          Edit
+                          {canEdit ? "Edit" : "View"}
                         </Button>
-                        <Button
+                        <ViewOnlyActionButton
+                          canEdit={canEdit}
                           type="button"
                           variant="outline"
                           size="sm"
@@ -396,7 +421,7 @@ export function SiteBannersPanel() {
                         >
                           <Trash2 className="mr-1 h-4 w-4" />
                           Delete
-                        </Button>
+                        </ViewOnlyActionButton>
                       </div>
                     </li>
                   ))}
@@ -426,6 +451,7 @@ export function SiteBannersPanel() {
                 maxLength={SITE_BANNER_MESSAGE_MAX_LENGTH}
                 rows={3}
                 placeholder="e.g. The mountain is closed due to volcanic activity."
+                readOnly={!canEdit}
                 onChange={(event) =>
                   setForm((prev) => ({ ...prev, message: event.target.value }))
                 }
@@ -439,6 +465,7 @@ export function SiteBannersPanel() {
               <Label htmlFor="site-banner-priority">Priority</Label>
               <Select
                 value={form.priority}
+                disabled={!canEdit}
                 onValueChange={(value) =>
                   setForm((prev) => ({
                     ...prev,
@@ -466,6 +493,7 @@ export function SiteBannersPanel() {
                   id="site-banner-start-date"
                   type="date"
                   value={form.startDate}
+                  readOnly={!canEdit}
                   onChange={(event) =>
                     setForm((prev) => ({
                       ...prev,
@@ -480,6 +508,7 @@ export function SiteBannersPanel() {
                   id="site-banner-end-date"
                   type="date"
                   value={form.endDate}
+                  readOnly={!canEdit}
                   onChange={(event) =>
                     setForm((prev) => ({
                       ...prev,
@@ -494,6 +523,7 @@ export function SiteBannersPanel() {
               <Checkbox
                 id="site-banner-active"
                 checked={form.active}
+                disabled={!canEdit}
                 onCheckedChange={(checked) =>
                   setForm((prev) => ({ ...prev, active: checked === true }))
                 }
@@ -516,13 +546,18 @@ export function SiteBannersPanel() {
             >
               Cancel
             </Button>
-            <Button type="button" disabled={saving} onClick={saveBanner}>
+            <ViewOnlyActionButton
+              canEdit={canEdit}
+              type="button"
+              disabled={saving}
+              onClick={saveBanner}
+            >
               {saving
                 ? "Saving..."
                 : editingId
                   ? "Save changes"
                   : "Create banner"}
-            </Button>
+            </ViewOnlyActionButton>
           </DialogFooter>
         </DialogContent>
       </Dialog>

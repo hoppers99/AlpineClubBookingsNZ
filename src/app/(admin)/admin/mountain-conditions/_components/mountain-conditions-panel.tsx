@@ -27,6 +27,12 @@ import {
   type WhakapapaCurlData,
   type WhakapapaSectionVisibility,
 } from "@/lib/whakapapa-report";
+import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
+import {
+  AdminForbiddenSaveNotice,
+  AdminViewOnlyNotice,
+  ViewOnlyActionButton,
+} from "@/components/admin/view-only-action";
 
 const VISIBILITY_SECTIONS: {
   key: keyof WhakapapaSectionVisibility;
@@ -69,6 +75,8 @@ function prettyJson(value: WhakapapaCurlData) {
 }
 
 export function MountainConditionsPanel() {
+  const canEdit = useAdminAreaEditAccess("content");
+  const [forbidden, setForbidden] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [rawJson, setRawJson] = useState("");
   const [record, setRecord] = useState<AdminMountainConditionsRecord | null>(
@@ -133,6 +141,7 @@ export function MountainConditionsPanel() {
       });
       const body = (await response.json()) as ApiResponse;
       if (!response.ok) {
+        if (response.status === 403) setForbidden(true);
         throw new Error(body.error || "Failed to save mountain conditions");
       }
 
@@ -164,6 +173,7 @@ export function MountainConditionsPanel() {
       });
       const body = (await response.json()) as ApiResponse;
       if (!response.ok) {
+        if (response.status === 403) setForbidden(true);
         throw new Error(body.error || "Failed to refresh mountain conditions");
       }
 
@@ -197,6 +207,7 @@ export function MountainConditionsPanel() {
       });
       const body = (await response.json()) as ApiResponse;
       if (!response.ok) {
+        if (response.status === 403) setForbidden(true);
         throw new Error(body.error || "Failed to save section visibility");
       }
 
@@ -232,6 +243,12 @@ export function MountainConditionsPanel() {
 
   return (
     <>
+      {!canEdit ? (
+        <AdminViewOnlyNotice className="mb-4">
+          Your admin role can view mountain conditions but cannot change them.
+        </AdminViewOnlyNotice>
+      ) : null}
+      {forbidden ? <AdminForbiddenSaveNotice className="mb-4" /> : null}
       <div className="mb-4 flex items-center justify-end gap-2">
         <Button
           type="button"
@@ -243,7 +260,8 @@ export function MountainConditionsPanel() {
         >
           <CircleHelp className="h-4 w-4" />
         </Button>
-        <Button
+        <ViewOnlyActionButton
+          canEdit={canEdit}
           type="button"
           variant="outline"
           onClick={refreshFromUpstream}
@@ -255,7 +273,7 @@ export function MountainConditionsPanel() {
             <RotateCcw className="h-4 w-4" />
           )}
           {refreshing ? "Refreshing..." : "Update from upstream"}
-        </Button>
+        </ViewOnlyActionButton>
       </div>
 
       {error ? (
@@ -289,7 +307,7 @@ export function MountainConditionsPanel() {
                       [section.key]: checked,
                     }))
                   }
-                  disabled={savingVisibility}
+                  disabled={savingVisibility || !canEdit}
                 />
                 {section.label}
               </label>
@@ -297,7 +315,8 @@ export function MountainConditionsPanel() {
           </div>
 
           <div className="flex justify-end">
-            <Button
+            <ViewOnlyActionButton
+              canEdit={canEdit}
               type="button"
               onClick={saveVisibility}
               disabled={savingVisibility}
@@ -308,7 +327,7 @@ export function MountainConditionsPanel() {
                 <Save className="h-4 w-4" />
               )}
               {savingVisibility ? "Saving..." : "Save visibility"}
-            </Button>
+            </ViewOnlyActionButton>
           </div>
         </CardContent>
       </Card>
@@ -343,6 +362,7 @@ export function MountainConditionsPanel() {
             onChange={(event) => setRawJson(event.target.value)}
             className="min-h-[520px] font-mono text-xs"
             spellCheck={false}
+            readOnly={!canEdit}
           />
 
           <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-slate-500">
@@ -350,7 +370,8 @@ export function MountainConditionsPanel() {
               <p>Frozen until: {formatDateTime(frozenUntil)}</p>
               <p>Last updated in DB: {formatDateTime(record?.updatedAt)}</p>
             </div>
-            <Button
+            <ViewOnlyActionButton
+              canEdit={canEdit}
               type="button"
               onClick={saveRecord}
               disabled={saving || refreshing}
@@ -361,7 +382,7 @@ export function MountainConditionsPanel() {
                 <Save className="h-4 w-4" />
               )}
               {saving ? "Saving..." : "Save"}
-            </Button>
+            </ViewOnlyActionButton>
           </div>
         </CardContent>
       </Card>
