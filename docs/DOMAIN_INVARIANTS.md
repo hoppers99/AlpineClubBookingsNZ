@@ -856,9 +856,20 @@ audit is retained in the deallocation operation's request checkpoint/history
 `XeroObjectLink` history. Repair validates an existing slice against the signed
 ledger rather than accepting it merely because it exists; net-zero historical
 negative plus positive-clamp rows never recreate a fully deallocated slice.
+When a later unstamped application makes the booking net-negative again, any
+active or inactive allocation-link history for the old note/invoice remains a
+tombstone and still blocks reconstruction; only provider-observed inbound repair
+may recreate working state.
 Inbound provider-observed increases/decreases reconcile the precise slice and
 append a signed offset instead of rewriting the historical negative application;
 superseded allocation links are deactivated, not erased.
+Because Xero omits zero allocations from credit-note responses, inbound repair
+also diffs active applied-credit allocation links and treats a previously linked
+invoice that is now absent as a provider-observed zero target.
+Applied-credit provider allocation child operations retain their parent booking,
+payment, and operation context. They are never manually replayed inline; retry is
+performed only through the serialized parent/outbox workflow so a stale child
+cannot recreate credit after deallocation.
 
 Every modification path also applies the same lifecycle transitions: a
 PAYMENT_PENDING booking whose EFFECTIVE (credit-reduced) price drops to zero

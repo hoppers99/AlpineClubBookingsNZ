@@ -265,6 +265,33 @@ describe("getXeroOperationRetryMeta", () => {
 
     expect(result).toEqual({ supported: true, reason: null });
   });
+
+  it("blocks direct retry of an attributable applied-credit child allocation", () => {
+    const result = getXeroOperationRetryMeta(
+      makeOperation({
+        entityType: "ALLOCATION",
+        operationType: "ALLOCATE",
+        localModel: "MemberCreditNoteAllocation",
+        localId: "slice_1",
+        requestPayload: {
+          creditNoteId: "cn_1",
+          invoiceId: "inv_1",
+          amountCents: 2500,
+          appliedCreditContext: {
+            parentOperationId: "parent_op_1",
+            bookingId: "booking_1",
+            paymentId: "payment_1",
+          },
+        },
+      }),
+    );
+
+    expect(result).toEqual({
+      supported: false,
+      reason:
+        "Retry the serialized parent applied-credit operation parent_op_1; this child allocation cannot run inline.",
+    });
+  });
 });
 
 describe("retryXeroSyncOperation", () => {
@@ -1442,6 +1469,36 @@ describe("retryXeroSyncOperation", () => {
     });
     expect(mocks.allocateAppliedCreditForBooking).not.toHaveBeenCalled();
     expect(mocks.allocateCreditNoteToInvoice).not.toHaveBeenCalled();
+  });
+
+  it("never executes a failed applied-credit child inline after its parent can race deallocation", async () => {
+    mocks.findUniqueOperation.mockResolvedValue(
+      makeOperation({
+        entityType: "ALLOCATION",
+        operationType: "ALLOCATE",
+        localModel: "MemberCreditNoteAllocation",
+        localId: "slice_1",
+        requestPayload: {
+          creditNoteId: "cn_1",
+          invoiceId: "inv_1",
+          amountCents: 2500,
+          appliedCreditContext: {
+            parentOperationId: "parent_op_1",
+            bookingId: "booking_1",
+            paymentId: "payment_1",
+          },
+        },
+      }),
+    );
+
+    await expect(
+      Promise.all([
+        retryXeroSyncOperation("child_op_1", { createdByMemberId: "admin_1" }),
+        retryXeroSyncOperation("child_op_1", { createdByMemberId: "admin_2" }),
+      ]),
+    ).rejects.toThrow("Retry the serialized parent applied-credit operation parent_op_1");
+    expect(mocks.allocateCreditNoteToInvoice).not.toHaveBeenCalled();
+    expect(mocks.updateManyOperation).not.toHaveBeenCalled();
   });
   it("queues checkpointed applied-credit deallocation without an inline provider call", async () => {
     mocks.findUniqueOperation.mockResolvedValue(makeOperation({

@@ -358,6 +358,18 @@ describe("allocateAppliedCreditForBooking (#1620 handler retry idempotency)", ()
     // Allocated exactly once more (2 calls total: 1 failed + 1 success) — no
     // duplicate allocation, no plan explosion.
     expect(allocateCreditNoteToInvoice).toHaveBeenCalledTimes(2);
+    expect(allocateCreditNoteToInvoice).toHaveBeenLastCalledWith(
+      "cn1",
+      "inv1",
+      3000,
+      expect.objectContaining({
+        appliedCreditContext: {
+          parentOperationId: "op1",
+          bookingId: "b1",
+          paymentId: "p1",
+        },
+      }),
+    );
     // Still a single join row (upsert stayed a no-op on replay).
     expect(h.state.joinRows).toHaveLength(1);
     // The BOOKING_APPLIED row is now stamped (invoice reduced, #1597-fed).

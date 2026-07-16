@@ -796,6 +796,11 @@ export async function allocateCreditNoteToInvoice(
     role?: string;
     createdByMemberId?: string;
     syncOperationId?: string;
+    appliedCreditContext?: {
+      parentOperationId: string | null;
+      bookingId: string;
+      paymentId: string;
+    };
   }
 ): Promise<void> {
   const { xero, tenantId } = await getAuthenticatedXeroClient();
@@ -813,6 +818,9 @@ export async function allocateCreditNoteToInvoice(
     creditNoteId,
     invoiceId,
     amountCents,
+    ...(options?.appliedCreditContext
+      ? { appliedCreditContext: options.appliedCreditContext }
+      : {}),
   };
 
   if (operationId) {

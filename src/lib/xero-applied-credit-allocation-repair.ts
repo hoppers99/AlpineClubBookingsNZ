@@ -2,6 +2,8 @@ import { CreditType, Prisma } from "@prisma/client";
 import { buildSyntheticAllocationLinkId } from "@/lib/xero-inbound/amounts";
 
 const APPLIED_CREDIT_ALLOCATION_ROLE = "APPLIED_CREDIT_ALLOCATION";
+const APPLIED_CREDIT_REMAINDER_ALLOCATION_ROLE =
+  "APPLIED_CREDIT_REMAINDER_ALLOCATION";
 
 type RepairDb = Prisma.TransactionClient;
 
@@ -402,6 +404,28 @@ export async function repairLegacyAppliedCreditNoteAllocationsForBooking(
     );
   }
   const [xeroCreditNoteId, amountCents] = [...negativeByNote.entries()][0];
+  const historicalLinks = await db.xeroObjectLink.findMany({
+    where: {
+      xeroObjectType: "ALLOCATION",
+      role: {
+        in: [
+          APPLIED_CREDIT_ALLOCATION_ROLE,
+          APPLIED_CREDIT_REMAINDER_ALLOCATION_ROLE,
+        ],
+      },
+      metadata: { path: ["invoiceId"], equals: invoiceId },
+    },
+    select: { id: true, active: true, metadata: true },
+  });
+  const matchingHistory = historicalLinks.filter((link) => {
+    const metadata = metadataRecord(link.metadata);
+    return metadata?.creditNoteId === xeroCreditNoteId;
+  });
+  if (matchingHistory.length > 0) {
+    throw new Error(
+      `Cannot reconstruct applied credit note ${xeroCreditNoteId} for booking ${bookingId}: ${matchingHistory.length} active/inactive allocation-history tombstone(s) prove prior provider handling; require provider-observed repair`,
+    );
+  }
   const lot = await findUniqueFundingLot({
     db,
     memberId: memberIds[0],

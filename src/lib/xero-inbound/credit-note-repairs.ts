@@ -10,6 +10,44 @@ import { lockMemberCreditLedger } from "@/lib/member-credit";
 import { repairLegacyAppliedCreditNoteAllocationsForBooking } from "@/lib/xero-applied-credit-allocation-repair";
 import { assertNoAppliedCreditDeallocationFence } from "@/lib/xero-applied-credit-operation-serialization";
 
+const APPLIED_CREDIT_ALLOCATION_ROLES = [
+  "APPLIED_CREDIT_ALLOCATION",
+  "APPLIED_CREDIT_REMAINDER_ALLOCATION",
+] as const;
+
+async function includeDeletedAppliedCreditAllocationTargets(
+  creditNoteId: string,
+  allocationTargets: AccountCreditAllocationTarget[],
+): Promise<AccountCreditAllocationTarget[]> {
+  const activeHistoricalLinks = await prisma.xeroObjectLink.findMany({
+    where: {
+      xeroObjectType: "ALLOCATION",
+      role: { in: [...APPLIED_CREDIT_ALLOCATION_ROLES] },
+      active: true,
+      metadata: { path: ["creditNoteId"], equals: creditNoteId },
+    },
+    select: { metadata: true },
+  });
+  const targetsByInvoiceId = new Map(
+    allocationTargets.map((target) => [target.invoiceId, target]),
+  );
+
+  for (const link of activeHistoricalLinks) {
+    const metadata = getJsonRecord(link.metadata);
+    const invoiceId = typeof metadata?.invoiceId === "string"
+      ? metadata.invoiceId
+      : null;
+    if (invoiceId && !targetsByInvoiceId.has(invoiceId)) {
+      // Xero omits zero-valued allocations entirely. An active local link proves
+      // this note was previously allocated to the invoice, so absence from the
+      // provider response is an observed target of zero, not "no information".
+      targetsByInvoiceId.set(invoiceId, { invoiceId, amountCents: 0 });
+    }
+  }
+
+  return [...targetsByInvoiceId.values()];
+}
+
 export async function resolvePaymentIdsByInvoiceTargets(
   creditNoteId: string,
   allocationTargets: AccountCreditAllocationTarget[]
@@ -444,7 +482,11 @@ export async function repairAccountCreditAllocationBusinessState(
   creditNoteId: string,
   allocationTargets: AccountCreditAllocationTarget[]
 ): Promise<AccountCreditAllocationRepairResult> {
-  if (allocationTargets.length === 0) {
+  const providerTargets = await includeDeletedAppliedCreditAllocationTargets(
+    creditNoteId,
+    allocationTargets,
+  );
+  if (providerTargets.length === 0) {
     return {
       matchedPayments: 0,
       createdAppliedCredits: 0,
@@ -460,7 +502,7 @@ export async function repairAccountCreditAllocationBusinessState(
   let updatedAppliedPayments = 0;
   let skippedAllocations = 0;
 
-  for (const target of allocationTargets) {
+  for (const target of providerTargets) {
     const linkedPaymentIds = (
       await findActiveXeroObjectLinks("INVOICE", target.invoiceId)
     )

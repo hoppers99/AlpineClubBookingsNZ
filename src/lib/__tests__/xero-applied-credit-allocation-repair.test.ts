@@ -137,6 +137,47 @@ describe("repairLegacyAppliedCreditNoteAllocationsForBooking", () => {
     expect(db.xeroObjectLink.updateMany).not.toHaveBeenCalled();
   });
 
+  it.each([true, false])(
+    "treats %s allocation-link history as a tombstone when a new unstamped application makes net credit positive",
+    async (active) => {
+      db.memberCredit.findMany.mockReset();
+      db.memberCredit.findMany.mockResolvedValueOnce([
+        // Old application was fully deallocated and offset without rewriting
+        // either historical row. The new unstamped -1000 is unrelated provider
+        // work and must not resurrect the old 3000c note slice.
+        { memberId: "member-1", amountCents: -3000, xeroCreditNoteId: "cn-1" },
+        { memberId: "member-1", amountCents: 3000, xeroCreditNoteId: null },
+        { memberId: "member-1", amountCents: -1000, xeroCreditNoteId: null },
+      ]);
+      db.xeroObjectLink.findMany.mockResolvedValueOnce([{
+        id: active ? "active-history" : "inactive-history",
+        active,
+        metadata: { creditNoteId: "cn-1", invoiceId: "invoice-1" },
+      }]);
+
+      await expect(
+        repairLegacyAppliedCreditNoteAllocationsForBooking(
+          "booking-1", "invoice-1", db as never,
+        ),
+      ).rejects.toThrow("allocation-history tombstone(s) prove prior provider handling");
+      expect(db.xeroObjectLink.findMany).toHaveBeenCalledWith({
+        where: {
+          xeroObjectType: "ALLOCATION",
+          role: {
+            in: [
+              "APPLIED_CREDIT_ALLOCATION",
+              "APPLIED_CREDIT_REMAINDER_ALLOCATION",
+            ],
+          },
+          metadata: { path: ["invoiceId"], equals: "invoice-1" },
+        },
+        select: { id: true, active: true, metadata: true },
+      });
+      expect(db.memberCreditNoteAllocation.create).not.toHaveBeenCalled();
+      expect(db.xeroObjectLink.upsert).not.toHaveBeenCalled();
+    },
+  );
+
   it("fails closed instead of silently accepting an existing slice mismatch", async () => {
     db.memberCreditNoteAllocation.findMany.mockResolvedValue([slice(2500)]);
 

@@ -483,6 +483,11 @@ export async function allocateAppliedCreditForBooking(
       localId: joinRow.id,
       role: APPLIED_CREDIT_ALLOCATION_ROLE,
       createdByMemberId,
+      appliedCreditContext: {
+        parentOperationId: syncOperationId ?? null,
+        bookingId,
+        paymentId: payment.id,
+      },
     });
   }
 
@@ -535,6 +540,11 @@ export async function allocateAppliedCreditForBooking(
         localId: payment.id,
         role: APPLIED_CREDIT_REMAINDER_ALLOCATION_ROLE,
         createdByMemberId,
+        appliedCreditContext: {
+          parentOperationId: syncOperationId ?? null,
+          bookingId,
+          paymentId: payment.id,
+        },
       });
     }
   }

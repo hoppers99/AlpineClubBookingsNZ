@@ -57,6 +57,22 @@ export interface XeroOperationRetryMeta {
   reason: string | null;
 }
 
+function readAppliedCreditAllocationChildContext(payload: unknown): {
+  parentOperationId: string | null;
+  bookingId: string;
+  paymentId: string;
+} | null {
+  const context = asRecord(asRecord(payload)?.appliedCreditContext);
+  const bookingId = readString(context?.bookingId);
+  const paymentId = readString(context?.paymentId);
+  if (!bookingId || !paymentId) return null;
+  return {
+    parentOperationId: readString(context?.parentOperationId),
+    bookingId,
+    paymentId,
+  };
+}
+
 const REFUND_CREDIT_NOTE_ALLOCATION_SKIP_REASON =
   "Refund credit notes are settled via a credit-note payment instead of invoice allocation.";
 const REDACTED_SECRET = "[REDACTED]";
@@ -523,6 +539,20 @@ export function getXeroOperationRetryMeta(operation: RetryableOperation): XeroOp
     (operation.status === "FAILED" || operation.status === "PARTIAL")
   ) {
     return { supported: true, reason: null };
+  }
+
+  const appliedCreditChild =
+    operation.entityType === "ALLOCATION" &&
+    operation.operationType === "ALLOCATE"
+      ? readAppliedCreditAllocationChildContext(operation.requestPayload)
+      : null;
+  if (appliedCreditChild) {
+    return {
+      supported: false,
+      reason: appliedCreditChild.parentOperationId
+        ? `Retry the serialized parent applied-credit operation ${appliedCreditChild.parentOperationId}; this child allocation cannot run inline.`
+        : "This applied-credit child allocation cannot run inline outside its serialized workflow.",
+    };
   }
 
   if (operation.status === "PARTIAL") {
@@ -1109,6 +1139,11 @@ export async function retryXeroSyncOperation(
     if (queued?.queueType === XERO_OUTBOX_APPLIED_CREDIT_ALLOCATION_TYPE) {
       throw new XeroOperationRetryError(
         "Applied-credit allocation retries must be queued through the outbox.",
+      );
+    }
+    if (readAppliedCreditAllocationChildContext(operation.requestPayload)) {
+      throw new XeroOperationRetryError(
+        "Applied-credit child allocations must be retried through their serialized parent workflow.",
       );
     }
 

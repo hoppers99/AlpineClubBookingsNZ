@@ -10,6 +10,7 @@ const h = vi.hoisted(() => {
   const paymentFindUnique = vi.fn();
   const paymentUpdate = vi.fn();
   const operationFindMany = vi.fn();
+  const linkFindMany = vi.fn();
   const repairPrecise = vi.fn();
   const lockLedger = vi.fn();
   const tx = {
@@ -26,6 +27,7 @@ const h = vi.hoisted(() => {
   };
   const prisma = {
     payment: { findMany: vi.fn() },
+    xeroObjectLink: { findMany: linkFindMany },
     $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
   };
   return {
@@ -40,6 +42,7 @@ const h = vi.hoisted(() => {
     paymentFindUnique,
     paymentUpdate,
     operationFindMany,
+    linkFindMany,
     repairPrecise,
     lockLedger,
   };
@@ -64,6 +67,7 @@ describe("provider-aware inbound applied-credit repair", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     h.operationFindMany.mockResolvedValue([]);
+    h.linkFindMany.mockResolvedValue([]);
     h.prisma.payment.findMany.mockResolvedValue([{
       id: "payment-1",
       bookingId: "booking-1",
@@ -144,5 +148,51 @@ describe("provider-aware inbound applied-credit repair", () => {
     ).rejects.toThrow("dealloc-pending is PENDING");
     expect(h.repairPrecise).not.toHaveBeenCalled();
     expect(h.memberCreditCreate).not.toHaveBeenCalled();
+  });
+
+  it("reconciles a manually deleted final provider allocation to zero from its active link", async () => {
+    h.linkFindMany.mockResolvedValue([{
+      metadata: { creditNoteId: "cn-1", invoiceId: "invoice-1", amountCents: 3000 },
+    }]);
+    h.allocationAggregate.mockResolvedValue({ _sum: { amountCents: 0 } });
+    h.memberCreditAggregate
+      .mockResolvedValueOnce({ _sum: { amountCents: 0 } })
+      .mockResolvedValueOnce({ _sum: { amountCents: -3000 } })
+      .mockResolvedValue({ _sum: { amountCents: 0 } });
+
+    await repairAccountCreditAllocationBusinessState("cn-1", []);
+
+    expect(h.linkFindMany).toHaveBeenCalledWith({
+      where: {
+        xeroObjectType: "ALLOCATION",
+        role: {
+          in: [
+            "APPLIED_CREDIT_ALLOCATION",
+            "APPLIED_CREDIT_REMAINDER_ALLOCATION",
+          ],
+        },
+        active: true,
+        metadata: { path: ["creditNoteId"], equals: "cn-1" },
+      },
+      select: { metadata: true },
+    });
+    expect(h.repairPrecise).toHaveBeenCalledWith(
+      "booking-1",
+      "invoice-1",
+      h.tx,
+      {
+        providerTarget: { xeroCreditNoteId: "cn-1", amountCents: 0 },
+      },
+    );
+    expect(h.memberCreditCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        amountCents: 3000,
+        xeroCreditNoteId: "cn-1",
+      }),
+    });
+    expect(h.paymentUpdate).toHaveBeenCalledWith({
+      where: { id: "payment-1" },
+      data: { creditAppliedCents: 0 },
+    });
   });
 });
