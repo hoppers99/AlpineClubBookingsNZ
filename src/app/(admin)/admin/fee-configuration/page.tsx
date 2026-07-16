@@ -17,7 +17,12 @@ import { parseDecimalDollarsToCents } from "@/lib/money-input";
 import { formatDateOnly, getTodayDateOnly } from "@/lib/date-only";
 import { useScrollToFeedback } from "@/hooks/use-scroll-to-feedback";
 
-type Fee = { id: string; amountCents: number; effectiveFrom: string; effectiveTo: string | null; billingBasis?: string; prorationRule?: string };
+type FeeComponent = { id: string; label: string; amountCents: number; prorate: boolean; xeroAccountCode: string | null; xeroItemCode: string | null; sortOrder: number };
+type Fee = { id: string; amountCents: number; effectiveFrom: string; effectiveTo: string | null; billingBasis?: string; prorationRule?: string; components?: FeeComponent[] };
+// A draft component row in the fee editor (#1932, E6). Amounts are entered as NZD
+// strings and converted to integer cents on save, exactly like the fee total.
+type ComponentDraft = { label: string; amount: string; prorate: boolean; xeroAccountCode: string; xeroItemCode: string };
+const defaultComponentDraft = (): ComponentDraft => ({ label: "Annual membership fee", amount: "", prorate: true, xeroAccountCode: "", xeroItemCode: "" });
 type JoiningFeeRow = Fee & { ageTier: string | null };
 type Data = {
   canEdit: boolean;
@@ -60,6 +65,9 @@ export default function FeeConfigurationPage() {
   const [entranceFrom, setEntranceFrom] = useState(today);
   const [entranceTo, setEntranceTo] = useState("");
   const [editingMembershipFeeId, setEditingMembershipFeeId] = useState<string | null>(null);
+  // Component rows for the annual-fee editor (#1932, E6). Sent as the reconciled
+  // `components` array on save; a single row mirrors the fee total automatically.
+  const [componentRows, setComponentRows] = useState<ComponentDraft[]>([defaultComponentDraft()]);
   const [editingEntranceFeeId, setEditingEntranceFeeId] = useState<string | null>(null);
   // Per-section edit-mode toggles: each section loads read-only and only exposes
   // its controls once the operator clicks Edit (repo-standard local-boolean +
@@ -121,7 +129,21 @@ export default function FeeConfigurationPage() {
   function resetMembershipForm() {
     setEditingMembershipFeeId(null); setMembershipAmount(""); setBillingBasis("PER_MEMBER");
     setProrationRule("NONE"); setMembershipFrom(today); setMembershipTo("");
+    setComponentRows([defaultComponentDraft()]);
   }
+  const updateComponentRow = (index: number, patch: Partial<ComponentDraft>) =>
+    setComponentRows((rows) => rows.map((row, i) => i === index ? { ...row, ...patch } : row));
+  const addComponentRow = () =>
+    setComponentRows((rows) => [...rows, { label: "", amount: "", prorate: true, xeroAccountCode: "", xeroItemCode: "" }]);
+  const removeComponentRow = (index: number) =>
+    setComponentRows((rows) => rows.length <= 1 ? rows : rows.filter((_, i) => i !== index));
+  // Live reconciliation total for the components editor. Σ of the parsed
+  // component cents; a single row mirrors the fee total, so it always reconciles.
+  const parsedFeeCents = parseDecimalDollarsToCents(membershipAmount);
+  const componentsTotalCents = componentRows.length === 1
+    ? (parsedFeeCents ?? 0)
+    : componentRows.reduce((sum, row) => sum + (parseDecimalDollarsToCents(row.amount) ?? 0), 0);
+  const componentsReconcile = billingBasis === "NO_INVOICE" || parsedFeeCents == null || componentsTotalCents === parsedFeeCents;
   function resetEntranceForm() {
     setEditingEntranceFeeId(null); setJoiningTier("ADULT"); setEntranceAmount(""); setEntranceFrom(today); setEntranceTo("");
   }
@@ -153,10 +175,32 @@ export default function FeeConfigurationPage() {
   function saveMembershipFee() {
     const amountCents = parseDecimalDollarsToCents(membershipAmount);
     if (amountCents == null) { setError("Enter an NZD amount with no more than two decimal places."); return; }
+    // Build the reconciled components array (#1932, E6). NO_INVOICE fees carry no
+    // components. A single component mirrors the fee total; multiple components
+    // are parsed individually (the server is the final Σ==total validator).
+    let components: Array<{ label: string; amountCents: number; prorate: boolean; xeroAccountCode: string | null; xeroItemCode: string | null; sortOrder: number }> = [];
+    if (billingBasis !== "NO_INVOICE") {
+      const built: typeof components = [];
+      for (let index = 0; index < componentRows.length; index += 1) {
+        const row = componentRows[index];
+        const rowCents = componentRows.length === 1 ? amountCents : parseDecimalDollarsToCents(row.amount);
+        if (rowCents == null) { setError("Enter a valid NZD amount for each fee component."); return; }
+        built.push({
+          label: row.label.trim() || "Annual membership fee",
+          amountCents: rowCents,
+          prorate: row.prorate,
+          xeroAccountCode: row.xeroAccountCode.trim() || null,
+          xeroItemCode: row.xeroItemCode.trim() || null,
+          sortOrder: index,
+        });
+      }
+      components = built;
+    }
     void mutate({
       action: editingMembershipFeeId ? "UPDATE_MEMBERSHIP_FEE" : "CREATE_MEMBERSHIP_FEE",
       ...(editingMembershipFeeId ? { id: editingMembershipFeeId } : { membershipTypeId }),
       amountCents, billingBasis, prorationRule, effectiveFrom: membershipFrom, effectiveTo: membershipTo || null,
+      components,
     }).then((saved) => { if (saved) resetMembershipForm(); });
   }
   function saveEntranceFee() {
@@ -193,9 +237,29 @@ export default function FeeConfigurationPage() {
           <div><Label htmlFor="membership-from">Effective from</Label><Input id="membership-from" type="date" value={membershipFrom} onChange={(event) => setMembershipFrom(event.target.value)} /></div>
           <div><Label htmlFor="membership-to">Effective to (optional)</Label><Input id="membership-to" type="date" value={membershipTo} onChange={(event) => setMembershipTo(event.target.value)} /></div>
         </div>
+        {billingBasis === "NO_INVOICE"
+          ? <p className="text-sm text-muted-foreground">A no-invoice fee has no invoice-line components.</p>
+          : <div className="space-y-2 rounded-md border p-3">
+              <div className="flex items-center justify-between">
+                <Label>Invoice-line components</Label>
+                <span className={componentsReconcile ? "text-sm text-muted-foreground" : "text-sm text-amber-700"}>
+                  Components total {dollars(componentsTotalCents)}{componentsReconcile ? "" : ` · must equal the fee amount ${dollars(parsedFeeCents)}`}
+                </span>
+              </div>
+              <p className="text-xs text-muted-foreground">Each component is its own Xero invoice line. A single component uses the fee total. Components must sum to the fee amount.</p>
+              {componentRows.map((row, index) => <div key={index} className="grid items-end gap-2 md:grid-cols-[2fr_1fr_auto_1fr_1fr_auto]">
+                <div><Label htmlFor={`component-label-${index}`} className="text-xs">Label</Label><Input id={`component-label-${index}`} value={row.label} onChange={(event) => updateComponentRow(index, { label: event.target.value })} placeholder="Base membership" /></div>
+                <div><Label htmlFor={`component-amount-${index}`} className="text-xs">Amount (NZD)</Label><Input id={`component-amount-${index}`} inputMode="decimal" value={componentRows.length === 1 ? membershipAmount : row.amount} onChange={(event) => updateComponentRow(index, { amount: event.target.value })} disabled={componentRows.length === 1} placeholder="0.00" /></div>
+                <label className="flex items-center gap-1 pb-2 text-xs"><input type="checkbox" checked={row.prorate} onChange={(event) => updateComponentRow(index, { prorate: event.target.checked })} />Prorate</label>
+                <div><Label htmlFor={`component-account-${index}`} className="text-xs">Account (optional)</Label><Input id={`component-account-${index}`} value={row.xeroAccountCode} onChange={(event) => updateComponentRow(index, { xeroAccountCode: event.target.value })} placeholder="Default" /></div>
+                <div><Label htmlFor={`component-item-${index}`} className="text-xs">Item (optional)</Label><Input id={`component-item-${index}`} value={row.xeroItemCode} onChange={(event) => updateComponentRow(index, { xeroItemCode: event.target.value })} placeholder="Default" /></div>
+                <Button type="button" size="icon" variant="ghost" aria-label={`Remove component ${index + 1}`} disabled={componentRows.length <= 1} onClick={() => removeComponentRow(index)}><Trash2 className="h-4 w-4" /></Button>
+              </div>)}
+              <Button type="button" variant="outline" size="sm" onClick={addComponentRow}>Add component</Button>
+            </div>}
         <div className="flex gap-2"><Button disabled={saving || !membershipTypeId} onClick={saveMembershipFee}><DollarSign className="mr-1 h-4 w-4" />{editingMembershipFeeId ? "Update annual fee" : "Add annual fee"}</Button>{editingMembershipFeeId && <Button variant="outline" onClick={resetMembershipForm}>Cancel edit</Button>}<Button variant="ghost" disabled={saving} onClick={cancelMembershipEditing}>Close section</Button></div>
       </>}
-      <div className="space-y-3">{data?.membershipTypes.map((type) => <div key={type.id} className="rounded-md border p-3"><div className="font-medium">{type.name}</div>{type.annualFees.length === 0 ? <p className="text-sm text-muted-foreground">Not configured</p> : type.annualFees.map((fee) => <div key={fee.id} className="mt-2 flex flex-wrap items-center gap-2 text-sm"><Badge variant="outline">{dollars(fee.amountCents)}</Badge><span>{fee.billingBasis?.replaceAll("_", " ")}</span><span>{fee.effectiveFrom} – {fee.effectiveTo ?? "ongoing"}</span>{membershipEditing && <><Button size="icon" variant="ghost" aria-label={`Edit ${type.name} fee`} disabled={saving} onClick={() => { setEditingMembershipFeeId(fee.id); setMembershipTypeId(type.id); setMembershipAmount((fee.amountCents / 100).toFixed(2)); setBillingBasis(fee.billingBasis ?? "PER_MEMBER"); setProrationRule(fee.prorationRule ?? "NONE"); setMembershipFrom(fee.effectiveFrom); setMembershipTo(fee.effectiveTo ?? ""); }}><Pencil className="h-4 w-4" /></Button><Button size="icon" variant="ghost" aria-label={`Delete ${type.name} fee`} disabled={saving} onClick={() => setDeleteTarget({ action: "DELETE_MEMBERSHIP_FEE", id: fee.id, label: `${type.name} annual fee from ${fee.effectiveFrom}` })}><Trash2 className="h-4 w-4" /></Button></>}</div>)}</div>)}</div>
+      <div className="space-y-3">{data?.membershipTypes.map((type) => <div key={type.id} className="rounded-md border p-3"><div className="font-medium">{type.name}</div>{type.annualFees.length === 0 ? <p className="text-sm text-muted-foreground">Not configured</p> : type.annualFees.map((fee) => <div key={fee.id}><div className="mt-2 flex flex-wrap items-center gap-2 text-sm"><Badge variant="outline">{dollars(fee.amountCents)}</Badge><span>{fee.billingBasis?.replaceAll("_", " ")}</span><span>{fee.effectiveFrom} – {fee.effectiveTo ?? "ongoing"}</span>{membershipEditing && <><Button size="icon" variant="ghost" aria-label={`Edit ${type.name} fee`} disabled={saving} onClick={() => { setEditingMembershipFeeId(fee.id); setMembershipTypeId(type.id); setMembershipAmount((fee.amountCents / 100).toFixed(2)); setBillingBasis(fee.billingBasis ?? "PER_MEMBER"); setProrationRule(fee.prorationRule ?? "NONE"); setMembershipFrom(fee.effectiveFrom); setMembershipTo(fee.effectiveTo ?? ""); setComponentRows(fee.components && fee.components.length > 0 ? fee.components.map((component) => ({ label: component.label, amount: (component.amountCents / 100).toFixed(2), prorate: component.prorate, xeroAccountCode: component.xeroAccountCode ?? "", xeroItemCode: component.xeroItemCode ?? "" })) : [defaultComponentDraft()]); }}><Pencil className="h-4 w-4" /></Button><Button size="icon" variant="ghost" aria-label={`Delete ${type.name} fee`} disabled={saving} onClick={() => setDeleteTarget({ action: "DELETE_MEMBERSHIP_FEE", id: fee.id, label: `${type.name} annual fee from ${fee.effectiveFrom}` })}><Trash2 className="h-4 w-4" /></Button></>}</div>{fee.components && fee.components.length > 0 && <ul className="mt-1 space-y-0.5 pl-3 text-xs text-muted-foreground">{fee.components.map((component) => <li key={component.id}>{component.label} · {dollars(component.amountCents)} · {component.prorate ? "prorated" : "full"}{component.xeroAccountCode ? ` · acct ${component.xeroAccountCode}` : ""}{component.xeroItemCode ? ` · item ${component.xeroItemCode}` : ""}</li>)}</ul>}</div>)}</div>)}</div>
     </CardContent></Card>
 
     <Card><CardHeader className="flex flex-row items-center justify-between"><div className="space-y-1"><CardTitle>Joining fees</CardTitle><CardDescription>the one-off fee a new member pays to join, per membership type and age tier</CardDescription></div>{data?.canEdit && !entranceEditing && <Button variant="outline" size="sm" aria-label="Edit joining fees" onClick={() => setEntranceEditing(true)}>Edit</Button>}</CardHeader><CardContent className="space-y-5">

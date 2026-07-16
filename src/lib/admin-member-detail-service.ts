@@ -25,6 +25,7 @@ import { validateInheritEmailSource } from "@/lib/member-email-inheritance";
 import { buildParentLinks } from "@/lib/member-parent-links";
 import { OPERATIONAL_STAY_BOOKING_STATUSES } from "@/lib/booking-status";
 import { getAssignedPromoCodeSummariesForMember } from "@/lib/promo";
+import { getFamilyBillingMode } from "@/lib/authoritative-fees";
 import {
   buildMemberAuditLogWhere,
   getAuditLogActorMemberId,
@@ -385,6 +386,8 @@ export async function getAdminMemberDetail(params: {
         lifeMemberDate: true,
         occupation: true,
         requiresInduction: true,
+        // Per-member billing family selection (#1932, E6).
+        billingFamilyGroupId: true,
         cancelledAt: true,
         cancelledReason: true,
         comments: true,
@@ -588,8 +591,13 @@ export async function getAdminMemberDetail(params: {
     }
   }
 
+  // Club billing mode drives whether the per-member billing-family selector is
+  // editable on the member detail family card (#1932, E6).
+  const familyBillingMode = await getFamilyBillingMode();
+
   return jsonResult({
     ...member,
+    familyBillingMode,
     accessRoles: resolveAccessRoleTokens(member),
     parentLinks: buildParentLinks(member),
     dependents: [

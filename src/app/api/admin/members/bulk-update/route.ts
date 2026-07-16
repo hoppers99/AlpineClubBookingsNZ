@@ -330,6 +330,12 @@ export async function POST(req: NextRequest) {
         await tx.familyGroupMember.deleteMany({
           where: { memberId: { in: idsToUpdate } },
         });
+        // Billing-family removal sweep (#1932, E6): deactivated members leave all
+        // families in this transaction, so clear any billing-family selection.
+        await tx.member.updateMany({
+          where: { id: { in: idsToUpdate }, billingFamilyGroupId: { not: null } },
+          data: { billingFamilyGroupId: null },
+        });
         // #1756: deactivation breaks the double-bed sharing precondition, so
         // sweep each member's future shared-double placements in the same
         // transaction (idempotent; a member holding no shares is a no-op).

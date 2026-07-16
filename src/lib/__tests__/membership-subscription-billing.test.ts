@@ -32,6 +32,7 @@ vi.mock("@/lib/prisma", () => ({
 }));
 
 import {
+  buildComponentLineDescription,
   buildSubscriptionBillingPreview,
   calculateMembershipCharge,
 } from "@/lib/membership-subscription-billing";
@@ -84,6 +85,30 @@ function familyMembership(recipientOverrides: Record<string, unknown> = {}) {
           firstName: "Bill",
           lastName: "Member",
           email: "bill@example.test",
+          active: true,
+          archivedAt: null,
+          ...recipientOverrides,
+        },
+      },
+    },
+  };
+}
+
+function comp(overrides: Record<string, unknown> = {}) {
+  return { label: "Component", amountCents: 0, prorate: true, xeroAccountCode: null, xeroItemCode: null, sortOrder: 0, ...overrides };
+}
+
+function familyMembershipFor(familyGroupId: string, recipientOverrides: Record<string, unknown> = {}) {
+  return {
+    familyGroupId,
+    familyGroup: {
+      billingMembership: {
+        familyGroupId,
+        member: {
+          id: `billing-${familyGroupId}`,
+          firstName: "Bill",
+          lastName: "Member",
+          email: `bill-${familyGroupId}@example.test`,
           active: true,
           archivedAt: null,
           ...recipientOverrides,
@@ -401,5 +426,142 @@ describe("membership subscription billing", () => {
     expect(frozen.annualAmountCents).toBe(12_001);
     expect(future.entries[0].annualAmountCents).toBe(24_000);
     expect(future.confirmationToken).not.toBe(first.confirmationToken);
+  });
+
+  describe("annual fee components (#1932, E6)", () => {
+    it("charges Σ of per-component proration and exposes the multi-component ±cent divergence", async () => {
+      const annual = fee({ amountCents: 6, components: [comp({ label: "Base", amountCents: 3, sortOrder: 0 }), comp({ label: "Levy", amountCents: 3, sortOrder: 1 })] });
+      mocks.effectiveFee.mockResolvedValue(annual);
+      mocks.members.findMany.mockResolvedValue([member("m1")]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-07-13T00:00:00.000Z") });
+      expect(preview.entries[0].coveredMonths).toBe(9);
+      // Per-component floor: floor((3*9+6)/12) = 2 each -> Σ 4. Fee-level floor
+      // rounds to 5, so the multi-component total is 1 cent lower (n-1 = 1).
+      expect(preview.entries[0].chargedAmountCents).toBe(4);
+      expect(calculateMembershipCharge({ annualAmountCents: 6, prorationRule: "REMAINING_MONTHS_INCLUSIVE", seasonYear: 2026, decisionDate: new Date("2026-07-13T00:00:00.000Z") }).amountCents).toBe(5);
+      expect(preview.entries[0].components).toEqual([
+        expect.objectContaining({ label: "Base", annualAmountCents: 3, chargedAmountCents: 2, prorated: true, xeroAccountCode: "203", xeroItemCode: "SUB", sortOrder: 0 }),
+        expect.objectContaining({ label: "Levy", annualAmountCents: 3, chargedAmountCents: 2, sortOrder: 1 }),
+      ]);
+      expect(preview.totalCents).toBe(4);
+    });
+
+    it("resolves a component's own account/item override, else the frozen mapping; a non-prorated component charges in full", async () => {
+      const annual = fee({ amountCents: 100, prorationRule: "REMAINING_MONTHS_INCLUSIVE", components: [
+        comp({ label: "Base", amountCents: 60, sortOrder: 0, prorate: true }),
+        comp({ label: "Work party", amountCents: 40, sortOrder: 1, prorate: false, xeroAccountCode: "260", xeroItemCode: "WP" }),
+      ] });
+      mocks.effectiveFee.mockResolvedValue(annual);
+      mocks.members.findMany.mockResolvedValue([member("m1")]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-07-13T00:00:00.000Z") });
+      expect(preview.entries[0].coveredMonths).toBe(9);
+      // Base prorated: floor((60*9+6)/12)=45. Work party not prorated: 40.
+      expect(preview.entries[0].components).toEqual([
+        expect.objectContaining({ label: "Base", chargedAmountCents: 45, prorated: true, xeroAccountCode: "203", xeroItemCode: "SUB" }),
+        expect.objectContaining({ label: "Work party", chargedAmountCents: 40, prorated: false, xeroAccountCode: "260", xeroItemCode: "WP" }),
+      ]);
+      expect(preview.entries[0].chargedAmountCents).toBe(85);
+    });
+
+    it("NO_INVOICE carries no components", async () => {
+      const annual = fee({ id: "fee-life", amountCents: 0, billingBasis: "NO_INVOICE", prorationRule: "NONE", components: [] });
+      mocks.effectiveFee.mockResolvedValue(annual);
+      mocks.members.findMany.mockResolvedValue([member("life")]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-04-01T00:00:00.000Z") });
+      expect(preview.entries[0]).toMatchObject({ billingBasis: "NO_INVOICE", chargedAmountCents: 0, components: [] });
+    });
+
+    it("editing components changes the confirmation-token digest (edit-between-preview-and-confirm => 409)", async () => {
+      mocks.members.findMany.mockResolvedValue([member("m1")]);
+      mocks.effectiveFee.mockResolvedValue(fee({ amountCents: 100, prorationRule: "NONE", components: [comp({ label: "Base", amountCents: 100, sortOrder: 0 })] }));
+      const before = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-04-01T00:00:00.000Z") });
+      mocks.effectiveFee.mockResolvedValue(fee({ amountCents: 100, prorationRule: "NONE", components: [comp({ label: "Base", amountCents: 60, sortOrder: 0 }), comp({ label: "Levy", amountCents: 40, sortOrder: 1 })] }));
+      const after = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-04-01T00:00:00.000Z") });
+      expect(after.confirmationToken).not.toBe(before.confirmationToken);
+    });
+  });
+
+  describe("component line description (#1932, E6)", () => {
+    it("reproduces the exact legacy single-line text with pluralization for a sole component", () => {
+      expect(buildComponentLineDescription({ membershipTypeName: "Full", seasonYear: 2026, coveredMonths: 1, label: "Annual membership fee", isSoleComponent: true }))
+        .toBe("Full membership 2026/2027 (1 month)");
+      expect(buildComponentLineDescription({ membershipTypeName: "Full", seasonYear: 2026, coveredMonths: 12, label: "Annual membership fee", isSoleComponent: true }))
+        .toBe("Full membership 2026/2027 (12 months)");
+    });
+    it("appends the label for a multi-component line", () => {
+      expect(buildComponentLineDescription({ membershipTypeName: "Full", seasonYear: 2026, coveredMonths: 9, label: "Work party fee", isSoleComponent: false }))
+        .toBe("Full membership 2026/2027 (9 months) — Work party fee");
+    });
+  });
+
+  describe("per-member billing family (#1932, E6)", () => {
+    const familyFee = () => fee({ billingBasis: "PER_FAMILY", prorationRule: "NONE" });
+    beforeEach(() => { mocks.effectiveFee.mockResolvedValue(familyFee()); });
+
+    it("bills the admin-selected family when a member belongs to more than one", async () => {
+      mocks.members.findMany.mockResolvedValue([
+        member("multi", { billingFamilyGroupId: "family-B", familyGroupMemberships: [familyMembershipFor("family-A"), familyMembershipFor("family-B")] }),
+      ]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-04-01T00:00:00.000Z") });
+      expect(preview.exceptions).toHaveLength(0);
+      expect(preview.entries[0]).toMatchObject({ familyGroupId: "family-B", recipient: { id: "billing-family-B" } });
+    });
+
+    it("raises INVALID_BILLING_FAMILY_SELECTION for a stale selection", async () => {
+      mocks.members.findMany.mockResolvedValue([
+        member("multi", { billingFamilyGroupId: "family-Z", familyGroupMemberships: [familyMembershipFor("family-A"), familyMembershipFor("family-B")] }),
+      ]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-04-01T00:00:00.000Z") });
+      expect(preview.entries).toHaveLength(0);
+      expect(preview.exceptions.map((row) => row.code)).toEqual(["INVALID_BILLING_FAMILY_SELECTION"]);
+    });
+
+    it("raises AMBIGUOUS_FAMILY when the selection is unset", async () => {
+      mocks.members.findMany.mockResolvedValue([
+        member("multi", { billingFamilyGroupId: null, familyGroupMemberships: [familyMembershipFor("family-A"), familyMembershipFor("family-B")] }),
+      ]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-04-01T00:00:00.000Z") });
+      expect(preview.exceptions.map((row) => row.code)).toEqual(["AMBIGUOUS_FAMILY"]);
+    });
+
+    it("ignores the field for a single-group member even if set to another group", async () => {
+      mocks.members.findMany.mockResolvedValue([
+        member("solo", { billingFamilyGroupId: "family-Z", familyGroupMemberships: [familyMembershipFor("family-A")] }),
+      ]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-04-01T00:00:00.000Z") });
+      expect(preview.exceptions).toHaveLength(0);
+      expect(preview.entries[0]).toMatchObject({ familyGroupId: "family-A" });
+    });
+
+    it("still subjects the selected family to the recipient checks", async () => {
+      mocks.members.findMany.mockResolvedValue([
+        member("multi", { billingFamilyGroupId: "family-B", familyGroupMemberships: [
+          familyMembershipFor("family-A"),
+          { familyGroupId: "family-B", familyGroup: { billingMembership: null } },
+        ] }),
+      ]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-04-01T00:00:00.000Z") });
+      expect(preview.entries).toHaveLength(0);
+      expect(preview.exceptions.map((row) => row.code)).toEqual(["MISSING_FAMILY_RECIPIENT"]);
+    });
+
+    it("ignores the selection under individual billing (mode guard fires first)", async () => {
+      mocks.familyMode.mockResolvedValue("BILL_MEMBERS_INDIVIDUALLY");
+      mocks.members.findMany.mockResolvedValue([
+        member("multi", { billingFamilyGroupId: "family-Z", familyGroupMemberships: [familyMembershipFor("family-A"), familyMembershipFor("family-B")] }),
+      ]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-04-01T00:00:00.000Z") });
+      expect(preview.exceptions.map((row) => row.code)).toEqual(["PER_FAMILY_FEE_IN_INDIVIDUAL_MODE"]);
+    });
+
+    it("groups an already-billed selected family under FAMILY_ALREADY_BILLED (never double-covered)", async () => {
+      mocks.charges.findMany.mockResolvedValue([{ id: "charge-B", familyGroupId: "family-B", membershipTypeId: "type-1" }]);
+      mocks.members.findMany.mockResolvedValue([
+        member("multi", { billingFamilyGroupId: "family-B", familyGroupMemberships: [familyMembershipFor("family-A"), familyMembershipFor("family-B")] }),
+      ]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-04-01T00:00:00.000Z") });
+      expect(preview.entries).toHaveLength(0);
+      expect(preview.exceptions[0]).toMatchObject({ code: "FAMILY_ALREADY_BILLED", familyGroupId: "family-B" });
+    });
   });
 });

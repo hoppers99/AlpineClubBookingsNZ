@@ -851,6 +851,12 @@ async function cleanupArchivedMemberLinks(
     where: { inheritEmailFromId: memberId },
     data: { inheritEmailFromId: null },
   });
+  // Billing-family removal sweep (#1932, E6): the archived member is leaving all
+  // families in this transaction, so clear any billing-family selection they hold.
+  await tx.member.updateMany({
+    where: { id: memberId, billingFamilyGroupId: { not: null } },
+    data: { billingFamilyGroupId: null },
+  });
 
   return {
     cleanedFamilyGroupMembers: familyGroupMembers.count,
