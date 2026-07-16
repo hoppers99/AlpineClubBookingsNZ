@@ -78,6 +78,13 @@ const mutationSchema = z.discriminatedUnion("action", [
     familyGroupId: z.string().min(1),
     billingMemberId: z.string().min(1).nullable(),
   }).strict(),
+  // Per-member billing family (#1932, E6): which family's PER_FAMILY fee covers a
+  // member who belongs to more than one. Consulted only in family-billing mode.
+  z.object({
+    action: z.literal("SET_MEMBER_BILLING_FAMILY"),
+    memberId: z.string().min(1),
+    billingFamilyGroupId: z.string().min(1).nullable(),
+  }).strict(),
 ]);
 
 // Reconcile an annual fee's components in the same transaction that writes the
@@ -336,7 +343,7 @@ export async function POST(request: Request) {
         await lockFeeSchedule(tx, "joining", `${existing.membershipTypeId}:${existing.ageTier ?? "FLAT"}`);
         await tx.joiningFee.delete({ where: { id: existing.id } });
         targetId = existing.id;
-      } else {
+      } else if (input.action === "SET_FAMILY_BILLING_MEMBER") {
         const group = await tx.familyGroup.findUnique({ where: { id: input.familyGroupId }, select: { id: true } });
         if (!group) throw new FeeScheduleValidationError("Family group not found.", 404);
         if (input.billingMemberId) {
@@ -352,6 +359,22 @@ export async function POST(request: Request) {
           await tx.familyGroup.update({ where: { id: input.familyGroupId }, data: { billingMembershipId: null } });
         }
         targetId = input.familyGroupId;
+      } else {
+        // SET_MEMBER_BILLING_FAMILY (#1932, E6): the chosen group must be one of
+        // the member's families, so a selection can never point outside them.
+        const member = await tx.member.findUnique({ where: { id: input.memberId }, select: { id: true } });
+        if (!member) throw new FeeScheduleValidationError("Member not found.", 404);
+        if (input.billingFamilyGroupId) {
+          const membership = await tx.familyGroupMember.findUnique({
+            where: { familyGroupId_memberId: { familyGroupId: input.billingFamilyGroupId, memberId: input.memberId } },
+            select: { id: true },
+          });
+          if (!membership) {
+            throw new FeeScheduleValidationError("The billing family must be one of the member's own family groups.");
+          }
+        }
+        await tx.member.update({ where: { id: input.memberId }, data: { billingFamilyGroupId: input.billingFamilyGroupId } });
+        targetId = input.memberId;
       }
       await createAuditLog({
         action: `fee-configuration.${parsed.data.action.toLowerCase()}`,

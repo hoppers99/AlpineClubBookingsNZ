@@ -24,6 +24,8 @@ const mocks = vi.hoisted(() => {
   familyGroupFindUnique: vi.fn(),
   familyGroupUpdate: vi.fn(),
   familyGroupMemberFindUnique: vi.fn(),
+  memberFindUnique: vi.fn(),
+  memberUpdate: vi.fn(),
   itemMappingFindFirst: vi.fn(),
   accountMappingFindUnique: vi.fn(),
   billingSettingsFindUnique: vi.fn(),
@@ -45,6 +47,7 @@ const mocks = vi.hoisted(() => {
   },
   familyGroup: { findMany: values.familyGroupFindMany, findUnique: values.familyGroupFindUnique, update: values.familyGroupUpdate },
   familyGroupMember: { findUnique: values.familyGroupMemberFindUnique },
+  member: { findUnique: values.memberFindUnique, update: values.memberUpdate },
   xeroItemCodeMapping: { findFirst: values.itemMappingFindFirst },
   xeroAccountMapping: { findUnique: values.accountMappingFindUnique },
   membershipSubscriptionBillingSettings: { findUnique: values.billingSettingsFindUnique },
@@ -92,6 +95,8 @@ describe("fee configuration route", () => {
     mocks.familyGroupFindMany.mockResolvedValue([]);
     mocks.familyGroupFindUnique.mockResolvedValue({ id: "family-1" });
     mocks.familyGroupMemberFindUnique.mockResolvedValue({ id: "membership-1", member: { active: true, archivedAt: null } });
+    mocks.memberFindUnique.mockResolvedValue({ id: "member-1" });
+    mocks.memberUpdate.mockResolvedValue({ id: "member-1" });
     mocks.familyGroupUpdate.mockResolvedValue({ id: "family-1" });
     mocks.itemMappingFindFirst.mockResolvedValue(null);
     mocks.accountMappingFindUnique.mockResolvedValue(null);
@@ -236,6 +241,27 @@ describe("fee configuration route", () => {
     expect(mocks.componentCreateMany).toHaveBeenCalledWith({
       data: [expect.objectContaining({ amountCents: 2000 })],
     });
+  });
+
+  it("sets a member's billing family when the chosen group is one of their families (#1932, E6)", async () => {
+    mocks.familyGroupMemberFindUnique.mockResolvedValueOnce({ id: "membership-1" });
+    const response = await post({ action: "SET_MEMBER_BILLING_FAMILY", memberId: "member-1", billingFamilyGroupId: "family-1" });
+    expect(response.status).toBe(200);
+    expect(mocks.memberUpdate).toHaveBeenCalledWith({ where: { id: "member-1" }, data: { billingFamilyGroupId: "family-1" } });
+    expect(mocks.createAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: "fee-configuration.set_member_billing_family", targetId: "member-1" }), mocks.prisma);
+  });
+
+  it("clears a member's billing family without a membership check (#1932, E6)", async () => {
+    const response = await post({ action: "SET_MEMBER_BILLING_FAMILY", memberId: "member-1", billingFamilyGroupId: null });
+    expect(response.status).toBe(200);
+    expect(mocks.memberUpdate).toHaveBeenCalledWith({ where: { id: "member-1" }, data: { billingFamilyGroupId: null } });
+  });
+
+  it("rejects a billing family the member does not belong to (#1932, E6)", async () => {
+    mocks.familyGroupMemberFindUnique.mockResolvedValueOnce(null);
+    const response = await post({ action: "SET_MEMBER_BILLING_FAMILY", memberId: "member-1", billingFamilyGroupId: "family-9" });
+    expect(response.status).toBe(422);
+    expect(mocks.memberUpdate).not.toHaveBeenCalled();
   });
 
   it("returns not found for stale update and delete targets", async () => {
