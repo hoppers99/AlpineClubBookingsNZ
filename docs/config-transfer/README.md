@@ -120,7 +120,15 @@ admins at **Admin → Setup & Configuration → Export & Import**
   itemCode, amountCents` (membershipTypeKey is HUT_FEE-only; blank for
   ENTRANCE_FEE). Frozen legacy `isMember`-keyed HUT_FEE rows are not exported;
   **OLD bundles** with the legacy `isMember` column are still accepted on import
-  (true→FULL, false→NON_MEMBER). The source Xero org id is recorded in a
+  (true→FULL, false→NON_MEMBER). Pre-#1931 `ENTRANCE_FEE` rows are normalised
+  to `JOINING_FEE` on import, and — because the runtime no longer reads
+  item-code-mapping `amountCents` for joining fees — any imported JOINING_FEE
+  amount whose category has **no covering `JoiningFee` window** on the target
+  is **materialised into open JoiningFee windows** using the migration's D-R1
+  fan-out (per-tier to every liable membership type; FAMILY as the Family
+  type's flat fee), bounded to the day before any future window. Categories
+  with a covering window are left alone; first-class fee-schedule transfer is
+  follow-up #1941. The source Xero org id is recorded in a
   category-local `xero-config/source.json` (sealed with the rest of the category,
   not the manifest); the plan warns on an org mismatch so codes are verified
   before applying.

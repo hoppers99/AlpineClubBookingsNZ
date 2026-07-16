@@ -22,15 +22,39 @@ untouched. A `NULL` snapshot (pre-refactor booking) resolves at read time as
 
 > **Terminology.** "Joining fee" is the user-facing name for the one-off fee a
 > new member pays; "Annual Membership Fee" is the recurring fee to stay a
-> paid-up member. The code and schema still model the joining fee as the
-> `EntranceFee` record — that rename ships separately in E5 (#1931), so internal
-> identifiers, Xero references, and migrations retain the old `entrance`/
-> `subscription` names for now.
+> paid-up member. As of E5 (#1931) the joining fee is modelled by the
+> `JoiningFee` schedule, keyed by **membership type × optional age tier** (an
+> age-keyed type carries one row per tier — INFANT folds onto the CHILD amount —
+> and a flat-fee type such as the built-in Family type carries a single
+> NULL-tier row). The legacy category-keyed `EntranceFee` table is retained
+> unused and dropped by the deferred contract issue (E13).
+>
+> **Family is strictly type-driven (behaviour change, E5).** The old composition
+> heuristic (an adult in a household of ≥2 adults + a dependent resolved the
+> family fee) is **removed**: only members assigned the **Family** membership
+> type get the flat family fee. Applicants who previously matched the heuristic
+> are now invoiced their own membership type's joining fee. This is surfaced on
+> the fee-configuration page and flagged in the PR body.
+>
+> **Frozen Xero idempotency (do not change).** The joining-fee invoice's Xero
+> **reference** stays byte-frozen at `` `Entrance fee (<Label>) - <memberId>` ``
+> and the member-scoped **mint** idempotency key stays at v1 — both are
+> load-bearing adopt-by-reference keys (PR #1916) that stop an already-invoiced
+> member being billed twice across the rename. Only the display *description*
+> line says "joining fee", and only the enqueue-time correlation key moved to
+> v2. A pre-rename minted invoice is adopted, never re-minted; a same-reference
+> different-amount invoice hard-stops for manual reconciliation. Because the
+> re-key deliberately flips the display label for two cohorts
+> (composition-family adults FAMILY→ADULT; Family-type dependents
+> CHILD/YOUTH/INFANT→FAMILY), the adopt-by-reference lookup is a **dual-read**:
+> when the label the old classifier would have produced differs, the worker
+> also looks up that legacy-label reference and adopts either match, so a
+> label-flipped pre-rename mint with a missing link is still adopted, never
+> re-minted. New mints always carry the current-label frozen-format reference.
 
 Public PageContent blocks are double opt-in: their family is enabled in Admin >
 Page Content and membership types are individually public. Joining-fee blocks
-omit categories without a current schedule and never expose the compatibility
-Xero fallback. Hut-rate blocks use active seasons/rates plus configured age-tier
+omit tiers without a current schedule. Hut-rate blocks use active seasons/rates plus configured age-tier
 labels. Visibility writes are audited and invalidate public routes.
 
 ## Operator workflow
@@ -39,8 +63,10 @@ labels. Visibility writes are audited and invalidate public routes.
    public description, and explicitly enables public listing only after review.
    Every migrated and newly created type is hidden by default.
 2. A Finance editor opens **Admin > Membership & Joining Fees** and adds an
-   inclusive effective-date range. Ranges for the same type/category cannot
-   overlap. NZD amounts are stored as GST-inclusive integer cents.
+   inclusive effective-date range. Annual-fee ranges for the same type, and
+   joining-fee ranges for the same type × age tier, cannot overlap. NZD amounts
+   are stored as GST-inclusive integer cents. Joining fees are set per
+   membership type and age tier (or a flat "all ages" row for the Family type).
 3. For `PER_FAMILY` fees, choose one active member of every membered family as
    billing member. Login holder and family admin are never inferred. Families
    without one are visible exceptions and omitted from invoice generation.
@@ -104,18 +130,39 @@ all, so it changes the operator and subscription rules above.
   no invoice, and the schedule's basis must be changed to per-member or
   no-invoice before it can be invoiced.
 
-## Entrance-fee compatibility window
+## Joining-fee re-key and day-one fidelity (E5, #1931)
 
-The migration backfills granular Xero mapping amounts, then the old flat
-`entranceFeeAmountCents` for missing categories. Old mappings have no history,
-so the migration date is the honest effective-from boundary.
+The migration copies every effective `EntranceFee` window verbatim into
+`JoiningFee`, **fanned out to every joining-fee-liable membership type** (all
+types except the built-in NON_MEMBER and SCHOOL, including archived liable
+types so history stays resolvable): the ADULT/YOUTH/CHILD (+ INFANT fold) tiers
+land on every per-tier liable type, and the FAMILY amount lands on the built-in
+Family type as a flat NULL-tier row. Every member's resolved amount is therefore
+byte-identical on day one — the only intentional change is the family fee
+becoming type-driven. A coverage-based pre-check materialises any category that
+still depended on a legacy mapping amount into `JoiningFee`: it fires whenever
+**no `EntranceFee` window covers the migration day** (no rows, all lapsed, or
+all future — matching the removed runtime fallback, which applied whenever no
+window was active as-of today), and the materialised open window is bounded to
+the day before the category's earliest future window so it never overlaps a
+scheduled fee. The old runtime mapping-amount fallback is **removed** this
+release. The migration date is the honest effective-from boundary for any
+materialised legacy window. The `ENTRANCE_FEE` Xero item-code rows are re-keyed
+to `JOINING_FEE`, carrying the item codes forward byte-identically; the Xero
+mappings panel is now **item-code-only** for joining fees (the mapping rows'
+`amountCents` is dead at runtime, so amounts are edited solely on the
+fee-configuration page). No live Xero call occurs during migration
+or configuration.
 
-For one compatibility release, reads use the current effective `EntranceFee`
-first and deprecated mapping amounts only when no schedule applies. Xero item
-and account codes remain provider configuration. Existing config-transfer
-bundles still import their old amount columns and work through this fallback;
-operators should create authoritative schedules after importing. No live Xero
-call occurs during migration or configuration.
+Resolution reads `JoiningFee` only: pick the type's row for the member's age
+tier, else the type's flat NULL-tier row; a type with no rows raises no joining
+fee (graceful skip). The N/A age tier (organisations/schools) is exempt, checked
+**before** type resolution. Config-transfer accepts old `ENTRANCE_FEE`-labelled
+item-code bundles (normalised to `JOINING_FEE`), and materialises imported
+legacy amounts into `JoiningFee` windows via the same fan-out whenever the
+target has no covering window for a category — so importing a pre-#1931 club's
+config into a fresh install cannot silently produce a zero joining fee.
+First-class joining-fee schedule transfer is follow-up #1941.
 
 ## Safety checks
 

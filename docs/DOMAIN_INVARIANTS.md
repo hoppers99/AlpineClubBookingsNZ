@@ -7,17 +7,23 @@ Future reviews and issues should cite this file when proposing changes.
 
 - Fee/policy PageContent blocks are explicitly enabled and server-rendered; a
   token alone publishes nothing.
-- Public fees use current effective-dated schedules. Entrance fees never use
-  legacy Xero mapping fallbacks.
+- Public fees use current effective-dated schedules. Joining fees resolve from
+  the `JoiningFee` schedule (membership type × age tier) only — no legacy Xero
+  mapping-amount fallback.
 - Named lodge tokens resolve exactly one active lodge or no data, never the
   default lodge. Public view models exclude ids, provider codes, and secrets.
 
 ## Money
 
 - Store and calculate money as integer cents.
-- Annual membership and entrance fee authorities store non-negative integer
-  cents in inclusive, non-overlapping effective-date ranges. `NO_INVOICE`
-  annual rows are zero cents. Fee changes affect future resolution only.
+- Annual membership and joining fee authorities store non-negative integer
+  cents in inclusive, non-overlapping effective-date ranges. Annual fees key on
+  membership type; joining fees (`JoiningFee`, #1931) key on membership type ×
+  optional age tier, with the flat NULL-tier row reserved for whole-type
+  (Family) fees. `NO_INVOICE` annual rows are zero cents. The joining fee is
+  strictly type-driven — the Family fee applies only to members assigned the
+  Family type (the composition heuristic is removed). Fee changes affect future
+  resolution only.
 - Do not introduce floating point money arithmetic.
 - Refunds, credits, discounts, Stripe amounts, Xero invoice amounts, and
   membership fees must reconcile back to cent-based ledger records.
@@ -92,7 +98,10 @@ Future reviews and issues should cite this file when proposing changes.
   conflicts are visible and never trigger a silent provider rewrite. Xero
   delivery resolves the snapshotted recipient member's current contact/email;
   frozen name/email remain audit evidence rather than a stale delivery target.
-- A member has at most one entrance-fee invoice (#1886, F21). The worker mints
+- A member has at most one joining-fee invoice (#1886, F21; formerly
+  "entrance-fee" — the Xero reference `` `Entrance fee (<Label>) - <memberId>` ``,
+  the `ENTRANCE_FEE_INVOICE` link role, and the member-scoped v1 mint key stay
+  frozen so the rename never re-invoices, #1931). The worker mints
   only after re-checking the durable `ENTRANCE_FEE_INVOICE` link and, failing
   that, looking the member-unique invoice reference (full member id, not a
   truncated prefix) up in Xero. A found invoice is adopted only when it is THIS

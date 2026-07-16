@@ -10,6 +10,7 @@ vi.mock("@/lib/prisma", () => ({
       findFirst: vi.fn(),
       create: vi.fn(),
       update: vi.fn(),
+      updateMany: vi.fn(),
       upsert: vi.fn(),
       deleteMany: vi.fn(),
     },
@@ -44,6 +45,7 @@ const mockPrisma = prisma as unknown as {
     findFirst: ReturnType<typeof vi.fn>;
     create: ReturnType<typeof vi.fn>;
     update: ReturnType<typeof vi.fn>;
+    updateMany: ReturnType<typeof vi.fn>;
     upsert: ReturnType<typeof vi.fn>;
     deleteMany: ReturnType<typeof vi.fn>;
   };
@@ -105,6 +107,7 @@ describe("Xero item-code mappings route", () => {
     mockPrisma.xeroItemCodeMapping.findFirst.mockResolvedValue(null);
     mockPrisma.xeroItemCodeMapping.create.mockResolvedValue({});
     mockPrisma.xeroItemCodeMapping.update.mockResolvedValue({});
+    mockPrisma.xeroItemCodeMapping.updateMany.mockResolvedValue({ count: 1 });
     mockPrisma.xeroItemCodeMapping.deleteMany.mockResolvedValue({ count: 1 });
     mockPrisma.xeroItemCodeMapping.findMany.mockResolvedValue([]);
   });
@@ -112,7 +115,7 @@ describe("Xero item-code mappings route", () => {
   it("returns entrance fee mappings with null item codes", async () => {
     mockPrisma.xeroItemCodeMapping.findMany.mockResolvedValue([
       {
-        category: "ENTRANCE_FEE",
+        category: "JOINING_FEE",
         entranceFeeCategory: "ADULT",
         itemCode: null,
         amountCents: 5000,
@@ -129,7 +132,7 @@ describe("Xero item-code mappings route", () => {
   it("accepts entrance fee updates with a null item code", async () => {
     mockPrisma.xeroItemCodeMapping.findMany.mockResolvedValue([
       {
-        category: "ENTRANCE_FEE",
+        category: "JOINING_FEE",
         entranceFeeCategory: "ADULT",
         itemCode: null,
         amountCents: 5000,
@@ -149,13 +152,61 @@ describe("Xero item-code mappings route", () => {
       expect.objectContaining({
         where: {
           category_entranceFeeCategory: {
-            category: "ENTRANCE_FEE",
+            category: "JOINING_FEE",
             entranceFeeCategory: "ADULT",
           },
         },
         update: { itemCode: null, amountCents: 5000 },
       })
     );
+  });
+
+  it("PUT with an item-code-only entry never writes amountCents (#1931 — amounts live in JoiningFee)", async () => {
+    const res = await putItemCodeMappings(
+      makePutRequest({
+        entranceFees: {
+          ADULT: { itemCode: "ENTFEE-001" },
+        },
+      })
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.xeroItemCodeMapping.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          category_entranceFeeCategory: {
+            category: "JOINING_FEE",
+            entranceFeeCategory: "ADULT",
+          },
+        },
+        // No amountCents key at all: an omitted amount must leave the stored
+        // (frozen, config-transfer-exported) value untouched.
+        update: { itemCode: "ENTFEE-001" },
+        create: {
+          category: "JOINING_FEE",
+          entranceFeeCategory: "ADULT",
+          itemCode: "ENTFEE-001",
+        },
+      })
+    );
+  });
+
+  it("PUT with a null item code and no amount blanks the code but keeps the row", async () => {
+    const res = await putItemCodeMappings(
+      makePutRequest({
+        entranceFees: {
+          ADULT: { itemCode: null },
+        },
+      })
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.xeroItemCodeMapping.updateMany).toHaveBeenCalledWith({
+      where: { category: "JOINING_FEE", entranceFeeCategory: "ADULT" },
+      data: { itemCode: null },
+    });
+    expect(mockPrisma.xeroItemCodeMapping.deleteMany).not.toHaveBeenCalled();
+    expect(mockPrisma.xeroItemCodeMapping.upsert).not.toHaveBeenCalled();
   });
 
   it("deletes an entrance fee row when both item code and amount are cleared", async () => {
@@ -169,7 +220,7 @@ describe("Xero item-code mappings route", () => {
 
     expect(res.status).toBe(200);
     expect(mockPrisma.xeroItemCodeMapping.deleteMany).toHaveBeenCalledWith({
-      where: { category: "ENTRANCE_FEE", entranceFeeCategory: "ADULT" },
+      where: { category: "JOINING_FEE", entranceFeeCategory: "ADULT" },
     });
     expect(mockPrisma.xeroItemCodeMapping.upsert).not.toHaveBeenCalled();
   });
