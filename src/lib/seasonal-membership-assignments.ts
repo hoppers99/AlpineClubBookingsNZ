@@ -783,9 +783,21 @@ export async function rollForwardSeasonalMembershipAssignments(params: {
     // Best-effort Xero contact-group re-sync (E8, #1934). Roll-forward usually
     // targets a future season, which does not change any member's grouping at
     // "now"; only fire when the target IS the current season. Sequential,
-    // non-fatal, and each call is a no-op unless grouping is enabled.
+    // non-fatal, and each call is a no-op unless grouping is enabled. Fire
+    // only for candidates that actually hold a target-season assignment now —
+    // createMany(skipDuplicates) may have skipped rows created concurrently
+    // since the pre-read, and those members' grouping did not change here.
     if (copiedCount > 0 && params.toSeasonYear === getSeasonYear()) {
+      const copiedRows = await db.seasonalMembershipAssignment.findMany({
+        where: {
+          seasonYear: params.toSeasonYear,
+          memberId: { in: copyCandidates.map((candidate) => candidate.memberId) },
+        },
+        select: { memberId: true },
+      });
+      const copiedMemberIds = new Set(copiedRows.map((row) => row.memberId));
       for (const assignment of copyCandidates) {
+        if (!copiedMemberIds.has(assignment.memberId)) continue;
         await triggerMemberXeroContactGroupSync(assignment.memberId, {
           createdByMemberId: params.adminMemberId,
           reason: "seasonal_membership_roll_forward",
