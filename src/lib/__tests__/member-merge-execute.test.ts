@@ -501,6 +501,118 @@ describe("partner-link warnings reach the audit metadata (M3)", () => {
   });
 });
 
+describe("member-photo reconciliation at execute time (MP1, #189)", () => {
+  /** A member delegate whose findUnique returns the supplied photo-bearing pair. */
+  function photoMemberDelegate(masterRow: unknown, loserRow: unknown) {
+    return {
+      ...defaultDelegate(),
+      findUnique: vi.fn(({ where }: { where: { id: string } }) =>
+        Promise.resolve(
+          where.id === MASTER_ID ? masterRow : where.id === LOSER_ID ? loserRow : null,
+        ),
+      ),
+      // actorIsFullAdmin -> 1 for the actor; every other count (e.g.
+      // wouldRemoveLastFullAdmin) -> 0.
+      count: vi.fn(({ where }: { where: { id?: string } }) =>
+        Promise.resolve(where?.id === ACTOR_ID ? 1 : 0),
+      ),
+      update: vi.fn().mockResolvedValue({}),
+      delete: vi.fn().mockResolvedValue({}),
+    };
+  }
+
+  function photoToken(masterRow: Record<string, unknown>, loserRow: Record<string, unknown>) {
+    const core: MemberMergePreviewCore = {
+      fieldMerge: mergeMemberFields(masterRow, loserRow).diff,
+      relationMoves: [],
+      collisions: [],
+      blockers: [],
+      warnings: [],
+    };
+    return buildMemberMergePreviewToken(
+      MASTER_ID,
+      LOSER_ID,
+      masterRow.updatedAt as Date,
+      loserRow.updatedAt as Date,
+      core,
+    );
+  }
+
+  it("keeps the master's photo and deletes the loser's orphaned MEMBER_PHOTO blob", async () => {
+    const masterRow = makeMember(MASTER_ID, { occupation: null, photoImageId: "master-img" });
+    const loserRow = makeMember(LOSER_ID, { occupation: "Engineer", photoImageId: "loser-img" });
+    const mediaImage = { ...defaultDelegate(), deleteMany: vi.fn().mockResolvedValue({ count: 1 }) };
+    const { client, member } = makeClient({
+      member: photoMemberDelegate(masterRow, loserRow),
+      mediaImage,
+    });
+
+    await executeMemberMerge({
+      masterId: MASTER_ID,
+      loserId: LOSER_ID,
+      actorMemberId: ACTOR_ID,
+      previewToken: photoToken(
+        masterRow as unknown as Record<string, unknown>,
+        loserRow as unknown as Record<string, unknown>,
+      ),
+      confirmationText: "MERGE Dup Person",
+      db: client as never,
+    });
+
+    // Master keeps master-img; every loser MEMBER_PHOTO (its discarded photo +
+    // anything it uploaded) is swept, excluding the master's kept photo.
+    expect(mediaImage.deleteMany).toHaveBeenCalledWith({
+      where: {
+        kind: "MEMBER_PHOTO",
+        OR: [{ uploadedByMemberId: LOSER_ID }, { id: "loser-img" }],
+        NOT: { id: "master-img" },
+      },
+    });
+    // The loser is still hard-deleted.
+    const memberSpy = member as { delete: ReturnType<typeof vi.fn> };
+    expect(memberSpy.delete).toHaveBeenCalledWith({ where: { id: LOSER_ID } });
+  });
+
+  it("absorbs the loser's photo when the master has none and never deletes the absorbed blob", async () => {
+    const masterRow = makeMember(MASTER_ID, { occupation: null, photoImageId: null });
+    const loserRow = makeMember(LOSER_ID, { occupation: "Engineer", photoImageId: "loser-img" });
+    const mediaImage = { ...defaultDelegate(), deleteMany: vi.fn().mockResolvedValue({ count: 0 }) };
+    const { client, member } = makeClient({
+      member: photoMemberDelegate(masterRow, loserRow),
+      mediaImage,
+    });
+
+    await executeMemberMerge({
+      masterId: MASTER_ID,
+      loserId: LOSER_ID,
+      actorMemberId: ACTOR_ID,
+      previewToken: photoToken(
+        masterRow as unknown as Record<string, unknown>,
+        loserRow as unknown as Record<string, unknown>,
+      ),
+      confirmationText: "MERGE Dup Person",
+      db: client as never,
+    });
+
+    // Master absorbs loser-img via the field merge...
+    const memberSpy = member as { update: ReturnType<typeof vi.fn> };
+    expect(memberSpy.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: MASTER_ID },
+        data: expect.objectContaining({ photoImageId: "loser-img" }),
+      }),
+    );
+    // ...and the sweep excludes loser-img (now the master's photo) from deletion.
+    expect(mediaImage.deleteMany).toHaveBeenCalledWith({
+      where: {
+        kind: "MEMBER_PHOTO",
+        OR: [{ uploadedByMemberId: LOSER_ID }, { id: "loser-img" }],
+        NOT: { id: "loser-img" },
+      },
+    });
+  });
+});
+
 describe("MemberMergeError", () => {
   it("carries a status code and code", () => {
     const err = new MemberMergeError("nope", 409, "preview_drift", { a: 1 });
