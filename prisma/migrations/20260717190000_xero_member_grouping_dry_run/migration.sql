@@ -15,6 +15,11 @@ CREATE TABLE IF NOT EXISTS "XeroMemberGroupingDryRun" (
   "mismatchCount" INTEGER NOT NULL,
   "addCount" INTEGER NOT NULL,
   "removeCount" INTEGER NOT NULL,
+  -- Server-set claim marker (#1961): stamped once, atomically, when the bulk
+  -- re-sync is INITIATED from this dry-run. NULL = never started. Distinguishes a
+  -- legitimate resume (afterMemberId against a started run) from a forged
+  -- first-call resume, and lets a status-guarded claim reject double-initiates.
+  "startedAt" TIMESTAMP(3),
   "createdByMemberId" TEXT,
   "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT "XeroMemberGroupingDryRun_pkey" PRIMARY KEY ("id")

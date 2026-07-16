@@ -61,8 +61,20 @@ const DEFAULT_XERO_SYNC_SCOPE = "default";
  */
 const DRY_RUN_INITIAL_FRESHNESS_MS = 30 * 60 * 1000;
 
+/**
+ * Self-bounding retention for the {@link recordXeroMemberGroupingDryRun} audit
+ * table (#1961). Recorded dry-runs are only useful within the 30-minute initial
+ * window (and for the lifetime of an in-progress resume), so rows far older than
+ * that are pruned opportunistically on each new dry-run — no dedicated cron,
+ * mirroring `cron-job-run.ts`/`audit-retention.ts`. 7 days is generous headroom
+ * over the freshness window and any realistic multi-day daily-limit resume.
+ */
+const DRY_RUN_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
 export type DryRunFreshnessFailure =
   | "not_found"
+  | "not_started"
+  | "already_started"
   | "expired"
   | "cache_cursor_changed"
   | "rules_changed"
@@ -70,8 +82,9 @@ export type DryRunFreshnessFailure =
 
 /**
  * Thrown by the bulk re-sync engine when the referenced dry-run cannot be
- * confirmed fresh at execution start. The route maps `not_found` to 422 and
- * every other reason to 409, and audit-logs the rejection.
+ * confirmed fresh (or the run cannot be validly initiated/resumed) at execution
+ * start. The route maps `not_found` to 422 and every other reason to 409, and
+ * audit-logs the rejection.
  */
 export class StaleDryRunError extends Error {
   readonly reason: DryRunFreshnessFailure;
@@ -303,6 +316,29 @@ export async function getXeroMemberGroupingSnapshot(options?: {
     groupIdsByContactId.set(row.contactId, list);
   }
 
+  // Re-read the FULL-refresh cursor AFTER the membership-cache read and anchor
+  // the snapshot's freshness to THIS value, not the earlier one (#1961 FIX 2).
+  // The membership rows and the cursor come from two separate queries, so a
+  // refreshXeroContactGroupCache commit can land between them — pairing the old
+  // cursor with post-refresh membership rows. Anchoring to the later cursor read
+  // means such an interleave surfaces as a cursor value that no longer equals the
+  // recorded dry-run's cacheCursorAt, so assertDryRunFresh's cursor-equality
+  // check rejects it (cache_cursor_changed) instead of silently running against
+  // unreviewed membership. If the refresh cursor vanished mid-flight (it should
+  // not), fall back to the initial read.
+  const cursorAfterMembership = await prisma.xeroSyncCursor.findUnique({
+    where: {
+      resourceType_scope: {
+        resourceType: CONTACT_GROUP_FULL_REFRESH_CURSOR_RESOURCE,
+        scope: DEFAULT_XERO_SYNC_SCOPE,
+      },
+    },
+    select: { lastSuccessfulSyncAt: true },
+  });
+  const effectiveRefreshedAt = (
+    cursorAfterMembership?.lastSuccessfulSyncAt ?? cursor.lastSuccessfulSyncAt
+  ).toISOString();
+
   const resolutions = await resolveMemberGroupingsForMembers({
     members: withContact.map((member) => ({ id: member.id, ageTier: member.ageTier })),
     context,
@@ -367,7 +403,7 @@ export async function getXeroMemberGroupingSnapshot(options?: {
   return {
     ...base,
     cacheReady: true,
-    lastRefreshedAt,
+    lastRefreshedAt: effectiveRefreshedAt,
     plannedDigest: computePlannedDigest(mismatches),
     membersConsidered: withContact.length,
     mismatchCount: mismatches.length,
@@ -435,14 +471,40 @@ export async function recordXeroMemberGroupingDryRun(options: {
     select: { id: true },
   });
 
+  // Self-bounding retention (#1961): opportunistically prune dry-run rows far
+  // older than any freshness/resume window so the table never needs a dedicated
+  // cron (mirrors cron-job-run.ts pruneCronRuns / audit-retention.ts). Best
+  // effort — a prune failure must never fail recording the dry-run just made.
+  try {
+    const cutoff = new Date(Date.now() - DRY_RUN_RETENTION_MS);
+    const { count } = await prisma.xeroMemberGroupingDryRun.deleteMany({
+      where: { createdAt: { lt: cutoff } },
+    });
+    if (count > 0) {
+      logger.info(
+        { deletedCount: count },
+        "Pruned old Xero member-grouping dry-run rows",
+      );
+    }
+  } catch (err) {
+    logger.error({ err }, "Failed to prune old Xero member-grouping dry-run rows");
+  }
+
   return { snapshot, dryRunId: record.id };
 }
 
 /**
  * Confirm the referenced dry-run is fresh enough to (start or continue) a bulk
- * re-sync, against a snapshot freshly recomputed from the SAME single read of
- * mode+rules+cursor that produced the plan about to run. Rejections:
+ * re-sync, against a snapshot freshly recomputed at execution start. The
+ * snapshot re-reads the CONTACT_GROUP_FULL_REFRESH cursor AFTER its membership
+ * read (see {@link getXeroMemberGroupingSnapshot}), so the cursor-equality check
+ * below reflects the same (or newer) Xero-cache state as the plan it guards — a
+ * mid-snapshot cache refresh surfaces as a cursor mismatch here rather than a
+ * silent old-cursor/new-membership pairing. Rejections:
  * - `not_found`: no such dry-run (absent / never recorded).
+ * - `not_started`: resume chunk (afterMemberId present) against a dry-run that
+ *   was never initiated (server-set `startedAt` is null) — a forged resume that
+ *   would otherwise skip the initiating-only checks below.
  * - `cache_cursor_changed`: the group cache was refreshed since the dry-run
  *   (its recorded cursor no longer equals the live CONTACT_GROUP_FULL_REFRESH
  *   cursor) — the reviewed diff was computed against different Xero truth.
@@ -453,6 +515,9 @@ export async function recordXeroMemberGroupingDryRun(options: {
  *   skip these two: the plan legitimately shrinks as members are processed and
  *   a daily-limit resume may span days, while the cursor + rules equality above
  *   still forbids resuming across any rule/cache change.
+ * Note: whether a request is a resume is derived SERVER-side — a resume is only
+ * accepted against a `startedAt`-marked run, and an initiate only against an
+ * unmarked one (claimed by the caller). It is never taken on the client's word.
  */
 async function assertDryRunFresh(params: {
   dryRunId: string;
@@ -464,6 +529,7 @@ async function assertDryRunFresh(params: {
     where: { id: params.dryRunId },
     select: {
       createdAt: true,
+      startedAt: true,
       cacheCursorAt: true,
       rulesFingerprint: true,
       plannedDigest: true,
@@ -474,6 +540,17 @@ async function assertDryRunFresh(params: {
     throw new StaleDryRunError(
       "not_found",
       "No matching dry-run was found. Run a dry-run and review the diff before re-syncing.",
+    );
+  }
+
+  // A resume is only legitimate against a run that was actually initiated (its
+  // server-set startedAt is stamped). A resume request (afterMemberId present)
+  // whose dry-run was never started is a forged/hand-crafted cursor trying to
+  // skip the initiating-only expired/plan_changed checks — reject it.
+  if (params.isResume && record.startedAt === null) {
+    throw new StaleDryRunError(
+      "not_started",
+      "This bulk re-sync was never started, so it cannot be resumed. Run a dry-run and start the re-sync from the beginning.",
     );
   }
 
@@ -594,17 +671,50 @@ export async function runXeroMemberGroupingBulkResyncChunk(
   // deliberately NOT iterated — the bulk run never writes to them.
   const snapshot = await getXeroMemberGroupingSnapshot();
 
+  // Whether this is a resume is derived SERVER-side, not from the client-asserted
+  // afterMemberId alone (#1961). afterMemberId present ⇒ the caller intends a
+  // resume, which assertDryRunFresh accepts ONLY against a run whose server-set
+  // startedAt is already stamped (a forged first-call resume is rejected
+  // `not_started`); afterMemberId absent ⇒ an initiating chunk, which must win
+  // the status-guarded claim below before it may run.
+  const isResume = Boolean(options.afterMemberId);
+  const now = options.now ?? new Date();
+
   // Server-side dry-run freshness enforcement (#1961). Re-validate at execution
-  // start, against THIS snapshot — the same single read of mode+rules+cursor
-  // that produced the plan we are about to run — so a rule edit or cache refresh
-  // that races the run is caught here and (for later chunks) on every resume.
-  // Throws StaleDryRunError, which the route maps to 409/422 and audit-logs.
+  // start against THIS snapshot — whose cursor is re-read after its membership
+  // read, so a rule edit or cache refresh that races the run is caught here and
+  // (for later chunks) on every resume. Throws StaleDryRunError, which the route
+  // maps to 409/422 and audit-logs.
   await assertDryRunFresh({
     dryRunId: options.dryRunId,
     snapshot,
-    isResume: Boolean(options.afterMemberId),
-    now: options.now ?? new Date(),
+    isResume,
+    now,
   });
+
+  if (!isResume) {
+    // Initiating chunk: atomically CLAIM the dry-run by stamping startedAt,
+    // guarded on startedAt = null. A lost claim (count 0) means a run was already
+    // initiated from this dry-run (a double-initiate — concurrent, or a retry
+    // after the first chunk already started). Reject it: no chunk executes on a
+    // lost initiate claim, so the status-guarded claim runs zero side effects
+    // before it can fail. The legit UI flow initiates exactly once and then
+    // resumes WITH afterMemberId, so it never re-initiates and never trips this;
+    // an admin who genuinely needs to restart re-runs the dry-run (a fresh,
+    // startedAt-null row). Per-member op-key dedup (#1354 partial unique index)
+    // remains the idempotency backstop for the residual, unserialized case of
+    // concurrent RESUMES sharing one already-started dry-run.
+    const claim = await prisma.xeroMemberGroupingDryRun.updateMany({
+      where: { id: options.dryRunId, startedAt: null },
+      data: { startedAt: now },
+    });
+    if (claim.count === 0) {
+      throw new StaleDryRunError(
+        "already_started",
+        "A bulk re-sync was already started from this dry-run. Run a new dry-run and review the diff before starting again.",
+      );
+    }
+  }
 
   const ordered = snapshot.mismatches
     .slice()

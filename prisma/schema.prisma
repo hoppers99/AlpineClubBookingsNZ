@@ -1120,6 +1120,11 @@ model XeroMemberGroupingDryRun {
   mismatchCount     Int
   addCount          Int
   removeCount       Int
+  // Server-set claim marker (#1961): stamped once, atomically, when the bulk
+  // re-sync is INITIATED from this dry-run. Null = never started. A resume is
+  // valid only against a started run; the status-guarded claim rejects
+  // double-initiates.
+  startedAt         DateTime?
   createdByMemberId String?
   createdAt         DateTime               @default(now())
 

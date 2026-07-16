@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
   syncManagedXeroContactGroupForMember: vi.fn(),
   dryRunFindUnique: vi.fn(),
   dryRunCreate: vi.fn(),
+  dryRunUpdateMany: vi.fn(),
+  dryRunDeleteMany: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -20,6 +22,8 @@ vi.mock("@/lib/prisma", () => ({
     xeroMemberGroupingDryRun: {
       findUnique: mocks.dryRunFindUnique,
       create: mocks.dryRunCreate,
+      updateMany: mocks.dryRunUpdateMany,
+      deleteMany: mocks.dryRunDeleteMany,
     },
   },
 }));
@@ -60,6 +64,7 @@ function freshRecordFor(
   snapshot: MemberGroupingSnapshot,
   overrides: Partial<{
     createdAt: Date;
+    startedAt: Date | null;
     cacheCursorAt: Date;
     rulesFingerprint: string;
     plannedDigest: string;
@@ -67,6 +72,9 @@ function freshRecordFor(
 ) {
   return {
     createdAt: new Date(),
+    // Not yet started by default: an initiating chunk claims it (startedAt=null).
+    // Resume tests pass a Date so the server-side started check accepts them.
+    startedAt: null as Date | null,
     cacheCursorAt: snapshot.lastRefreshedAt
       ? new Date(snapshot.lastRefreshedAt)
       : new Date(),
@@ -180,6 +188,21 @@ describe("getXeroMemberGroupingSnapshot", () => {
     );
   });
 
+  it("anchors freshness to the cursor re-read AFTER the membership read, so a mid-snapshot cache refresh is caught (#1961 FIX 2)", async () => {
+    seedTwoMismatchesOneCorrectOneNoContact();
+    // Simulate a refreshXeroContactGroupCache commit landing between the initial
+    // cursor read and the membership read: the second (post-membership) cursor
+    // read returns a NEWER value, which the snapshot must anchor to so the
+    // recorded dry-run's cursor-equality check later rejects the drift.
+    mocks.cursorFindUnique.mockReset();
+    mocks.cursorFindUnique
+      .mockResolvedValueOnce({ lastSuccessfulSyncAt: new Date("2026-07-16T00:00:00Z") })
+      .mockResolvedValueOnce({ lastSuccessfulSyncAt: new Date("2026-07-17T00:00:00Z") });
+    const snap = await getXeroMemberGroupingSnapshot();
+    expect(mocks.cursorFindUnique).toHaveBeenCalledTimes(2);
+    expect(snap.lastRefreshedAt).toBe("2026-07-17T00:00:00.000Z");
+  });
+
   it("surfaces parked members in managed groups as information-only entries (no add/remove)", async () => {
     seedTwoMismatchesOneCorrectOneNoContact();
     const snap = await getXeroMemberGroupingSnapshot();
@@ -209,6 +232,8 @@ describe("runXeroMemberGroupingBulkResyncChunk", () => {
       addedGroupIds: ["g_adult"],
       removedGroupIds: ["g_youth"],
     });
+    // Default: the initiating claim succeeds (an unstarted dry-run is stamped).
+    mocks.dryRunUpdateMany.mockResolvedValue({ count: 1 });
   });
 
   // Prime prisma.xeroMemberGroupingDryRun.findUnique with a record that is fresh
@@ -254,6 +279,8 @@ describe("runXeroMemberGroupingBulkResyncChunk", () => {
     expect(first.done).toBe(false);
     expect(first.nextCursorMemberId).toBe("m1");
 
+    // The initiating chunk stamped the run; the resume must see it as started.
+    await primeFreshDryRun({ startedAt: new Date() });
     const second = await runXeroMemberGroupingBulkResyncChunk({
       dryRunId: "dr1",
       limit: 1,
@@ -299,6 +326,7 @@ describe("runXeroMemberGroupingBulkResyncChunk — server-side dry-run freshness
       addedGroupIds: ["g_adult"],
       removedGroupIds: ["g_youth"],
     });
+    mocks.dryRunUpdateMany.mockResolvedValue({ count: 1 });
     seedTwoMismatchesOneCorrectOneNoContact();
   });
 
@@ -354,13 +382,15 @@ describe("runXeroMemberGroupingBulkResyncChunk — server-side dry-run freshness
     await expectReject("plan_changed")();
   });
 
-  it("skips the wall-clock window and plan-digest checks on resume, but still enforces cursor + rules", async () => {
+  it("skips the wall-clock window and plan-digest checks on resume of a STARTED run, but still enforces cursor + rules", async () => {
     const snap = await currentSnapshot();
-    // An old, plan-drifted record: on a RESUME (afterMemberId present) only the
-    // cursor + rules equality matter, so this run proceeds.
+    // An old, plan-drifted record that WAS started (startedAt set): on a RESUME
+    // (afterMemberId present) only the cursor + rules equality matter, so this
+    // run proceeds. A resume of an actually-started run is legitimate.
     mocks.dryRunFindUnique.mockResolvedValue(
       freshRecordFor(snap, {
         createdAt: new Date(Date.now() - 24 * 60 * 60 * 1000),
+        startedAt: new Date(Date.now() - 24 * 60 * 60 * 1000),
         plannedDigest: "stale-digest",
       }),
     );
@@ -373,17 +403,83 @@ describe("runXeroMemberGroupingBulkResyncChunk — server-side dry-run freshness
       "m3",
       expect.anything(),
     );
+    // A resume never re-claims (startedAt already set).
+    expect(mocks.dryRunUpdateMany).not.toHaveBeenCalled();
 
     // ...but a cursor change still aborts even a resume.
     vi.clearAllMocks();
+    mocks.dryRunUpdateMany.mockResolvedValue({ count: 1 });
     seedTwoMismatchesOneCorrectOneNoContact();
     const snap2 = await currentSnapshot();
     mocks.dryRunFindUnique.mockResolvedValue(
-      freshRecordFor(snap2, { cacheCursorAt: new Date("2020-01-01T00:00:00Z") }),
+      freshRecordFor(snap2, {
+        startedAt: new Date(),
+        cacheCursorAt: new Date("2020-01-01T00:00:00Z"),
+      }),
     );
     await expect(
       runXeroMemberGroupingBulkResyncChunk({ dryRunId: "dr1", afterMemberId: "m1" }),
     ).rejects.toBeInstanceOf(StaleDryRunError);
+  });
+
+  it("rejects a forged first-call resume (afterMemberId present, run never started) as not_started", async () => {
+    const snap = await currentSnapshot();
+    // startedAt=null (default) but afterMemberId is asserted -> a fabricated
+    // resume that would otherwise skip the expired/plan_changed checks.
+    mocks.dryRunFindUnique.mockResolvedValue(freshRecordFor(snap));
+    await expect(
+      runXeroMemberGroupingBulkResyncChunk({ dryRunId: "dr1", afterMemberId: "m1" }),
+    ).rejects.toMatchObject({ name: "StaleDryRunError", reason: "not_started" });
+    expect(mocks.syncManagedXeroContactGroupForMember).not.toHaveBeenCalled();
+    // A rejected resume never stamps the row.
+    expect(mocks.dryRunUpdateMany).not.toHaveBeenCalled();
+  });
+
+  it("rejects a double-initiate (lost claim) as already_started and runs no side effect", async () => {
+    const snap = await currentSnapshot();
+    mocks.dryRunFindUnique.mockResolvedValue(freshRecordFor(snap));
+    // The status-guarded claim finds startedAt already set (another initiate won
+    // the race), so it updates 0 rows.
+    mocks.dryRunUpdateMany.mockResolvedValue({ count: 0 });
+    await expect(
+      runXeroMemberGroupingBulkResyncChunk({ dryRunId: "dr1" }),
+    ).rejects.toMatchObject({ name: "StaleDryRunError", reason: "already_started" });
+    expect(mocks.syncManagedXeroContactGroupForMember).not.toHaveBeenCalled();
+    expect(mocks.dryRunUpdateMany).toHaveBeenCalledWith({
+      where: { id: "dr1", startedAt: null },
+      data: { startedAt: expect.any(Date) },
+    });
+  });
+
+  it("legit flow: initiate claims the run (startedAt stamped), then resume completes it", async () => {
+    const snap = await currentSnapshot();
+    // First chunk INITIATES (no afterMemberId): the row is unstarted, the claim
+    // stamps it, and one member is processed.
+    mocks.dryRunFindUnique.mockResolvedValue(freshRecordFor(snap));
+    const first = await runXeroMemberGroupingBulkResyncChunk({ dryRunId: "dr1", limit: 1 });
+    expect(first.processed).toBe(1);
+    expect(first.done).toBe(false);
+    expect(first.nextCursorMemberId).toBe("m1");
+    expect(mocks.dryRunUpdateMany).toHaveBeenCalledTimes(1);
+
+    // The row is now started; the resume (afterMemberId) is accepted and never
+    // re-claims.
+    mocks.dryRunUpdateMany.mockClear();
+    mocks.dryRunFindUnique.mockResolvedValue(
+      freshRecordFor(snap, { startedAt: new Date() }),
+    );
+    const second = await runXeroMemberGroupingBulkResyncChunk({
+      dryRunId: "dr1",
+      limit: 1,
+      afterMemberId: first.nextCursorMemberId!,
+    });
+    expect(second.processed).toBe(1);
+    expect(second.done).toBe(true);
+    expect(mocks.dryRunUpdateMany).not.toHaveBeenCalled();
+    expect(mocks.syncManagedXeroContactGroupForMember).toHaveBeenLastCalledWith(
+      "m3",
+      expect.anything(),
+    );
   });
 });
 
@@ -392,6 +488,7 @@ describe("recordXeroMemberGroupingDryRun (#1961)", () => {
     vi.clearAllMocks();
     seedTwoMismatchesOneCorrectOneNoContact();
     mocks.dryRunCreate.mockResolvedValue({ id: "dr_persisted" });
+    mocks.dryRunDeleteMany.mockResolvedValue({ count: 0 });
   });
 
   it("persists provenance (cursor + fingerprint + digest + counts) and returns the id", async () => {
@@ -416,5 +513,27 @@ describe("recordXeroMemberGroupingDryRun (#1961)", () => {
     const { dryRunId } = await recordXeroMemberGroupingDryRun({});
     expect(dryRunId).toBeNull();
     expect(mocks.dryRunCreate).not.toHaveBeenCalled();
+    // No persistence -> no prune either.
+    expect(mocks.dryRunDeleteMany).not.toHaveBeenCalled();
+  });
+
+  it("prunes dry-run rows older than the retention window after recording (self-bounding)", async () => {
+    mocks.dryRunDeleteMany.mockResolvedValue({ count: 3 });
+    await recordXeroMemberGroupingDryRun({ createdByMemberId: "admin_1" });
+    expect(mocks.dryRunDeleteMany).toHaveBeenCalledTimes(1);
+    const where = mocks.dryRunDeleteMany.mock.calls[0][0].where;
+    expect(where.createdAt.lt).toBeInstanceOf(Date);
+    // Cutoff is ~7 days in the past (far beyond the 30-min freshness window).
+    const cutoffAgeMs = Date.now() - (where.createdAt.lt as Date).getTime();
+    expect(cutoffAgeMs).toBeGreaterThan(6 * 24 * 60 * 60 * 1000);
+    expect(cutoffAgeMs).toBeLessThan(8 * 24 * 60 * 60 * 1000);
+  });
+
+  it("a prune failure never fails the dry-run recording", async () => {
+    mocks.dryRunDeleteMany.mockRejectedValue(new Error("prune boom"));
+    const { dryRunId } = await recordXeroMemberGroupingDryRun({
+      createdByMemberId: "admin_1",
+    });
+    expect(dryRunId).toBe("dr_persisted");
   });
 });
