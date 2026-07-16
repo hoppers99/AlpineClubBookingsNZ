@@ -1011,6 +1011,7 @@ model MembershipType {
   xeroContactGroupRules XeroContactGroupRule[]
   annualFees            MembershipAnnualFee[]
   seasonRates           MembershipTypeSeasonRate[]
+  joiningFees           JoiningFee[]
 
   @@index([isActive, sortOrder])
   @@index([sortOrder])
@@ -1033,6 +1034,11 @@ model MembershipAnnualFee {
   @@index([membershipTypeId, effectiveFrom, effectiveTo], map: "MembershipAnnualFee_effective_lookup_idx")
 }
 
+// RETAINED UNUSED (#1931, E5): the joining-fee re-key (JoiningFee, keyed by
+// membership type x optional age tier) supersedes this category-keyed table.
+// The migration copies every EntranceFee window into JoiningFee, and no runtime
+// code reads EntranceFee any more. The deferred contract issue (E13) drops it
+// after a release soak.
 model EntranceFee {
   id            String              @id @default(cuid())
   category      EntranceFeeCategory
@@ -1044,6 +1050,31 @@ model EntranceFee {
 
   @@unique([category, effectiveFrom])
   @@index([category, effectiveFrom, effectiveTo])
+}
+
+// Joining-fee schedule keyed by membership type x optional age tier (#1931,
+// E5). Renames + re-keys the legacy category-keyed EntranceFee: an age-keyed
+// type carries one row per age tier (INFANT folds onto the CHILD amount), while
+// a flat-fee type (the built-in Family type) carries a single NULL-ageTier row.
+// The migration fans the old category amounts out to every joining-fee-liable
+// membership type so day-one resolution stays byte-identical. A companion
+// raw-SQL partial unique index (WHERE "ageTier" IS NULL) enforces one flat row
+// per (type, effectiveFrom) and lives in the migration +
+// prisma/partial-unique-indexes.tsv.
+model JoiningFee {
+  id               String    @id @default(cuid())
+  membershipTypeId String
+  ageTier          AgeTier?
+  amountCents      Int
+  effectiveFrom    DateTime  @db.Date
+  effectiveTo      DateTime? @db.Date
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  membershipType MembershipType @relation(fields: [membershipTypeId], references: [id], onDelete: Restrict)
+
+  @@unique([membershipTypeId, ageTier, effectiveFrom])
+  @@index([membershipTypeId, ageTier, effectiveFrom, effectiveTo], map: "JoiningFee_effective_lookup_idx")
 }
 
 model MembershipTypeAgeTier {
