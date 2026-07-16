@@ -80,6 +80,13 @@ classify every mutation it composes:
 - keep provider calls outside long transactions unless the locking guide
   documents the bounded exception.
 
+Before editing, inspect open PRs plus the last 10 merged PRs and issue threads
+that touch the same subsystem. Reconcile their lock keys, transaction
+boundaries, state-machine changes, and provider/outbox behavior with the
+current branch. Record the relevant PR numbers and compatibility evidence in
+the new PR's concurrency/lock declaration; do not assume a recently landed
+writer follows an older topology description.
+
 Update the lock inventory/source-contract tests and the PR's lock-impact
 declaration whenever a lock participant, key, order, or guarded transition
 changes. Do not introduce a new advisory-lock key or copy an old lock pattern
