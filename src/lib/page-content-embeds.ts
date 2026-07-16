@@ -303,6 +303,34 @@ function parseTokenMatch(match: RegExpMatchArray): ParsedEmbedToken {
   };
 }
 
+/**
+ * Derive a human-readable alt fallback from an image src filename so a
+ * gallery/slideshow image whose author omitted `alt` is still announced by
+ * screen readers (WCAG 1.1.1) instead of rendering an empty alt. Mirrors the
+ * directory-listing branch, which already uses the file name as alt.
+ * `data:` URIs carry no filename — returning "" for them avoids emitting a
+ * massive base64 blob as alt text (#1947); the render component supplies a
+ * positional fallback for those.
+ */
+export function deriveAltFromImageSrc(src: string): string {
+  if (/^data:/i.test(src.trim())) {
+    return "";
+  }
+  const withoutQuery = src.split(/[?#]/)[0];
+  const lastSegment = withoutQuery.split("/").pop() ?? "";
+  let name: string;
+  try {
+    name = decodeURIComponent(lastSegment);
+  } catch {
+    name = lastSegment;
+  }
+  return name
+    .replace(/\.[a-z0-9]+$/i, "")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function extractInlinePhotoGalleryImages(contentHtml: string): {
   cleanedHtml: string;
   images: PhotoGalleryImage[];
@@ -314,9 +342,13 @@ function extractInlinePhotoGalleryImages(contentHtml: string): {
       const altMatch = match.match(/alt=["']([^"']*)["']/i);
       const widthMatch = match.match(/width=["']?(\d+)["']?/i);
       const heightMatch = match.match(/height=["']?(\d+)["']?/i);
+      // A present-but-empty alt="" is an explicit author decorative marker and
+      // is preserved; only a wholly missing alt attribute is backfilled from
+      // the filename so screen readers get a meaningful label (#1947).
+      const alt = altMatch ? altMatch[1] : deriveAltFromImageSrc(src);
       images.push({
         src,
-        alt: altMatch?.[1] ?? "",
+        alt,
         width: widthMatch ? Number.parseInt(widthMatch[1], 10) : null,
         height: heightMatch ? Number.parseInt(heightMatch[1], 10) : null,
       });
