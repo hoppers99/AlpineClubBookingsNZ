@@ -236,6 +236,7 @@ export async function buildSubscriptionBillingPreview(input: {
         lastName: true,
         email: true,
         role: true,
+        billingFamilyGroupId: true,
         seasonalMembershipAssignments: {
           where: { seasonYear: input.seasonYear },
           take: 1,
@@ -370,16 +371,44 @@ export async function buildSubscriptionBillingPreview(input: {
         }));
         continue;
       }
+      // Multi-family resolution (#1932, E6). Only reached in
+      // BILL_FAMILY_VIA_BILLING_MEMBER mode (the individual-mode guard above
+      // already fired). A single-group member ignores the selection entirely.
+      // For a multi-group member the admin-chosen billingFamilyGroupId decides:
+      //   * set and still one of the member's groups -> bill that family;
+      //   * set but no longer a group -> INVALID_BILLING_FAMILY_SELECTION (the
+      //     removal sweep should have NULLed it; a stale pointer degrades to a
+      //     visible exception, never silent misbilling);
+      //   * unset -> AMBIGUOUS_FAMILY (unchanged).
+      // The chosen family then flows through the SAME downstream recipient checks
+      // (MISSING_FAMILY_RECIPIENT / INVALID_FAMILY_RECIPIENT) as an unambiguous
+      // family — no duplicated path.
+      let membership = member.familyGroupMemberships[0];
       if (member.familyGroupMemberships.length > 1) {
-        exceptions.push(exception({
-          code: "AMBIGUOUS_FAMILY", message: `${memberName} belongs to more than one family; choose one before billing.`,
-          seasonYear: input.seasonYear, memberId: member.id, familyGroupId: null,
-          membershipTypeId: membershipType.id,
-          context: { memberName, familyGroupIds: member.familyGroupMemberships.map((row) => row.familyGroupId) },
-        }));
-        continue;
+        if (!member.billingFamilyGroupId) {
+          exceptions.push(exception({
+            code: "AMBIGUOUS_FAMILY", message: `${memberName} belongs to more than one family; choose one before billing.`,
+            seasonYear: input.seasonYear, memberId: member.id, familyGroupId: null,
+            membershipTypeId: membershipType.id,
+            context: { memberName, familyGroupIds: member.familyGroupMemberships.map((row) => row.familyGroupId) },
+          }));
+          continue;
+        }
+        const selected = member.familyGroupMemberships.find(
+          (row) => row.familyGroupId === member.billingFamilyGroupId,
+        );
+        if (!selected) {
+          exceptions.push(exception({
+            code: "INVALID_BILLING_FAMILY_SELECTION",
+            message: `${memberName}'s selected billing family is no longer one of their families; re-select before billing.`,
+            seasonYear: input.seasonYear, memberId: member.id, familyGroupId: member.billingFamilyGroupId,
+            membershipTypeId: membershipType.id,
+            context: { memberName, selectedFamilyGroupId: member.billingFamilyGroupId, familyGroupIds: member.familyGroupMemberships.map((row) => row.familyGroupId) },
+          }));
+          continue;
+        }
+        membership = selected;
       }
-      const membership = member.familyGroupMemberships[0];
       familyGroupId = membership.familyGroupId;
       const billing = membership.familyGroup.billingMembership;
       if (!billing) {
