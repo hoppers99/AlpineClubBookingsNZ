@@ -59,6 +59,13 @@ const ADMIN_SYSTEM_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
   // admin mutes it), so admins keep full delivery-mode control. Still gated by
   // the adminPaymentFailure notification preference at send time (#1422).
   "admin-split-settlement-unpaid",
+  // #1993 Part A: terminal one-off notice when that guest portion is
+  // auto-cancelled past check-in. Its own registry entry (not a variant of the
+  // recurring alert) so an admin override of the noisy recurring alert cannot
+  // rewrite this terminal notice, and muting the recurring alert does not mute
+  // this one. Same admin-alert plumbing: sendToAdmins, adminPaymentFailure
+  // gating, NOT delivery-locked.
+  "admin-split-settlement-cancelled",
 ]);
 
 // Admin/system templates whose delivery mode admins must NOT be able to change.
@@ -232,6 +239,12 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
   "admin-booking-request-pending": ["requesterName", "reviewUrl"],
   "admin-booking-request-hold-expired": ["requesterName", "reviewUrl"],
   "admin-split-settlement-unpaid": ["memberName", "reviewUrl"],
+  // #1993 Part A: terminal notice — memberName identifies the member and
+  // reviewUrl is the admin action link, mirroring the recurring alert.
+  "admin-split-settlement-cancelled": ["memberName", "reviewUrl"],
+  // #1993 Part A: member-facing terminal notice. No bearer token (so NOT
+  // sensitive-log); firstName + the stay dates are the load-bearing content.
+  "split-guest-portion-cancelled": ["firstName", "checkIn", "checkOut"],
   "admin-partner-share-swept": ["memberName", "partnerName", "reason"],
   "booking-review-approved": ["bookingId"],
   "induction-sign-off-request": ["inductionUrl"],
@@ -382,7 +395,18 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
     triggerSummary:
       "Split booking's non-member guest portion reached its hold deadline with no card on file (member paid their own place by internet banking, or their own place is also unpaid)",
     frequency:
-      "Once per hold extension while the guest portion stays unpaid (roughly every two days, matching the request-origin hold-expired cadence)",
+      "On a capped cadence while the guest portion stays unpaid: the first three hold extensions, then every seventh. A terminal cancellation past the check-in day ends the series and sends the separate 'admin-split-settlement-cancelled' notice instead",
+  },
+  "admin-split-settlement-cancelled": {
+    triggerSummary:
+      "Split booking's non-member guest portion was still unpaid with no card on file at the end of its check-in day, so the provisional guest booking was automatically cancelled",
+    frequency:
+      "Once per split guest portion, when it is auto-cancelled past check-in; ends the recurring 'admin-split-settlement-unpaid' alert series",
+  },
+  "split-guest-portion-cancelled": {
+    triggerSummary:
+      "The member's provisional non-member guest portion was auto-cancelled because it stayed unpaid up to the check-in day (nothing was ever charged)",
+    frequency: "Once per split guest portion auto-cancelled past check-in",
   },
   "split-guest-payment-link": {
     triggerSummary:

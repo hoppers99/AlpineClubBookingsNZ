@@ -32,16 +32,51 @@ import {
 import {
   sendAdminBookingRequestHoldExpiredEmail,
   sendAdminPaymentFailureAlert,
+  sendAdminSplitSettlementCancelledAlert,
   sendAdminSplitSettlementUnpaidAlert,
   sendBookingBumpedEmail,
   sendBookingConfirmedEmail,
   sendBookingGuestsCancelledEmail,
   sendSplitGuestPaymentLinkEmail,
+  sendSplitGuestPortionCancelledEmail,
 } from "./email";
+import { getNonMemberHoldDays } from "./cancellation";
 import { processWaitlistForDates } from "./waitlist";
 
 /** How long to extend the hold for request-origin bookings (no saved card) at hold expiry. */
 const REQUEST_HOLD_EXTENSION_MS = 2 * 24 * 60 * 60 * 1000;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * #1993 Part B — derived admin-alert cadence for a split child's unpaid
+ * guest-portion hold. Pure function of elapsed time (NO schema, NO counter):
+ * the returned 1-based number identifies which ~2-day extension window `now`
+ * falls in, measured from the hold's ORIGINAL (first) expiry. Idempotency is
+ * preserved by the extension CAS upstream — exactly one cron run wins per
+ * window, and within a window `now` maps to a stable number, so a rerun in the
+ * same window never re-alerts.
+ */
+export function splitSettlementExtensionNumber(
+  originalHoldExpiry: Date,
+  now: Date
+): number {
+  const elapsed = now.getTime() - originalHoldExpiry.getTime();
+  if (elapsed <= 0) return 1;
+  return Math.floor(elapsed / REQUEST_HOLD_EXTENSION_MS) + 1;
+}
+
+/**
+ * #1993 Part B — alert on extension windows 1, 2, 3, then every 7th window
+ * thereafter (…, 7, 14, 21). Caps the previously-uncapped ~2-daily admin alert
+ * while the guest portion stays unsettled. With Part A's terminal auto-cancel
+ * at check-in, this only governs the bounded pre-check-in window.
+ */
+export function shouldAlertOnSplitSettlementExtension(
+  extensionNumber: number
+): boolean {
+  return extensionNumber <= 3 || extensionNumber % 7 === 0;
+}
 
 /**
  * The ledger `reason` this cron stamps on its own saved-card charge
@@ -132,6 +167,22 @@ type HoldResolution =
       extendedHoldUntil: Date;
     }
   | {
+      // #1993 Part A (owner-selected Option 1) — terminal state for a split
+      // non-member child still PENDING (unsettled, no saved card) once its
+      // check-in day has ended. The child holds no capacity, so this is
+      // bookkeeping + notification, not a capacity change: the guarded
+      // PENDING -> CANCELLED CAS, link revocation and bed reconcile commit
+      // inside the lock transaction; the CANCELLED narrative event, the member
+      // cancellation email and ONE final admin notice fire post-commit (the
+      // event write must not sit in-tx — see booking-events.ts).
+      // A PAID child is never reached (it is not PENDING); the parent is never
+      // touched; there is no Xero void (an unsettled child has no invoice).
+      // `parentUnpaid` only selects the admin-notice wording.
+      type: "split_child_terminal_cancelled";
+      booking: PendingBooking;
+      parentUnpaid: boolean;
+    }
+  | {
       type: "claimed_for_charge";
       booking: PendingBooking;
       payment: SavedPaymentMethod;
@@ -142,11 +193,34 @@ type HoldResolution =
 export interface CronConfirmResult {
   confirmedBookingIds: string[];
   bumpedBookingIds: string[];
+  // #1993 Part A: split non-member children auto-cancelled at end of check-in
+  // day while still unsettled (PENDING, no saved card). Distinct from bumped
+  // (capacity loss) and failed (processing error) — a clean terminal cancel.
+  cancelledBookingIds: string[];
   // Retained for response-shape stability. The cron no longer partial-bumps at
   // hold expiry (issue #737): members pay up front, so there is no reduced
   // members-only amount to settle here. Always empty.
   partialBumpedBookingIds: string[];
   failedBookingIds: string[];
+}
+
+/**
+ * #1993 Part B — the split child's ORIGINAL (first) hold expiry, the anchor for
+ * the derived alert cadence. Derived, not stored: the hold was minted at
+ * `checkIn - holdDays` (booking-create), read back here from the same policy
+ * source (`getNonMemberHoldDays`). Clamped to `createdAt` so a last-minute
+ * child (booked inside the hold window, whose hold was born already expired)
+ * anchors at creation rather than a phantom pre-creation expiry — otherwise its
+ * very first extension run would compute a high index and skip the first alert.
+ * Stable across cron reruns (all inputs are immutable booking/policy values),
+ * which is what keeps the cadence idempotent.
+ */
+async function resolveOriginalHoldExpiry(
+  booking: PendingBooking
+): Promise<Date> {
+  const holdDays = await getNonMemberHoldDays(booking.checkIn, booking.lodgeId);
+  const scheduledFirstExpiry = booking.checkIn.getTime() - holdDays * DAY_MS;
+  return new Date(Math.max(scheduledFirstExpiry, booking.createdAt.getTime()));
 }
 
 function savedPaymentMethodForBooking(
@@ -481,6 +555,60 @@ async function resolveHoldWindowUnderLock(
             parent.status === BookingStatus.PAID ||
             parent.status === BookingStatus.COMPLETED);
 
+        // #1993 Part A (Option 1) — terminal state. Once the child's check-in
+        // day has ended, stop extending/re-minting and auto-cancel the still-
+        // unsettled guest portion. Use the SAME boundary the link-mint stop
+        // uses (payment-link.ts:mintSplitGuestPaymentLinkIfAbsent) so the two
+        // can never disagree about "check-in has passed". The child holds no
+        // capacity, so this is bookkeeping + notification: a guarded
+        // PENDING -> CANCELLED CAS (count 0 => a payment won the lock seconds
+        // earlier: already_processed, safe), then link revocation and bed
+        // reconcile, all in this tx. The CANCELLED narrative event, the member
+        // email and one final admin notice fire post-commit (the event must not
+        // sit in-tx — see booking-events.ts). A PAID child is never here (not
+        // PENDING); the parent is never touched; no Xero void (an unsettled
+        // child has no invoice).
+        const checkInDayEnded =
+          endOfDateOnlyForTimeZone(
+            formatDateOnly(booking.checkIn)
+          ).getTime() <= now.getTime();
+        if (checkInDayEnded) {
+          const cancelled = await tx.booking.updateMany({
+            where: { id: booking.id, status: BookingStatus.PENDING },
+            data: {
+              status: BookingStatus.CANCELLED,
+              nonMemberHoldUntil: null,
+            },
+          });
+          if (cancelled.count === 0) {
+            return { type: "already_processed" };
+          }
+
+          await reconcileBedAllocationsForBooking({
+            bookingId: booking.id,
+            db: tx,
+            previousRange: {
+              checkIn: booking.checkIn,
+              checkOut: booking.checkOut,
+            },
+          });
+
+          await revokePaymentLinksForBooking(booking.id, tx);
+
+          // The CANCELLED narrative event is recorded POST-COMMIT (below), not
+          // here: booking-events.ts documents recordBookingEvent as a
+          // post-commit write on the base client, because a failed INSERT
+          // inside a Postgres transaction aborts the whole transaction — an
+          // in-tx narrative failure would poison this tx and block the cancel.
+          // Every sibling terminal path (bumped/confirmed_zero, the group
+          // settlement reaper) records post-commit; match them.
+          return {
+            type: "split_child_terminal_cancelled",
+            booking,
+            parentUnpaid: !parentSettledWithoutCard,
+          };
+        }
+
         const extendedHoldUntil = new Date(
           now.getTime() + REQUEST_HOLD_EXTENSION_MS
         );
@@ -767,6 +895,7 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
   const result: CronConfirmResult = {
     confirmedBookingIds: [],
     bumpedBookingIds: [],
+    cancelledBookingIds: [],
     partialBumpedBookingIds: [],
     failedBookingIds: [],
   };
@@ -844,6 +973,74 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
         continue;
       }
 
+      if (resolution.type === "split_child_terminal_cancelled") {
+        // #1993 Part A — the guarded cancel, link revocation and bed reconcile
+        // already committed under the lodge lock. Post-commit, outside any
+        // transaction: record the CANCELLED narrative event (kept OUT of the
+        // tx per booking-events.ts — an in-tx INSERT failure would abort the
+        // whole transaction and block the cancel), tell the member the
+        // provisional guest portion was cancelled (nothing ever charged; their
+        // own booking untouched), and send ONE dedicated final admin notice.
+        // None of the three is load-bearing for the transition — a failure is
+        // logged, never retried into a double-cancel.
+        result.cancelledBookingIds.push(resolution.booking.id);
+
+        await recordBookingEvent({
+          bookingId: resolution.booking.id,
+          type: BookingEventType.CANCELLED,
+          reason:
+            "The guest portion was still unpaid at the end of the check-in day, so the provisional guest booking was automatically cancelled. No payment was taken.",
+          snapshot: { autoCancelledPastCheckIn: true },
+        });
+
+        try {
+          await sendSplitGuestPortionCancelledEmail({
+            email: resolution.booking.member.email,
+            firstName: resolution.booking.member.firstName,
+            checkIn: resolution.booking.checkIn,
+            checkOut: resolution.booking.checkOut,
+            // parentUnpaid conflates unpaid/cancelled/bumped parents, so only
+            // promise "your own booking remains confirmed" when the parent is
+            // genuinely settled (parentUnpaid === false).
+            parentConfirmed: !resolution.parentUnpaid,
+            parentBookingReference: resolution.booking.parentBookingId,
+            lodgeId: resolution.booking.lodgeId,
+          });
+        } catch (emailErr) {
+          logger.error(
+            {
+              err: emailErr,
+              bookingId: resolution.booking.id,
+              job: "confirmPendingBookings",
+            },
+            "Failed to send member cancellation email for auto-cancelled split child (#1993)"
+          );
+        }
+
+        try {
+          await sendAdminSplitSettlementCancelledAlert({
+            memberName: `${resolution.booking.member.firstName} ${resolution.booking.member.lastName}`,
+            checkIn: resolution.booking.checkIn,
+            checkOut: resolution.booking.checkOut,
+            guestCount: resolution.booking.guests.length,
+            totalCents: resolution.booking.finalPriceCents,
+            parentUnpaid: resolution.parentUnpaid,
+          });
+        } catch (alertErr) {
+          logger.error(
+            {
+              err: alertErr,
+              bookingId: resolution.booking.id,
+              job: "confirmPendingBookings",
+            },
+            "Failed to send final admin notice for auto-cancelled split child (#1993)"
+          );
+        }
+
+        triggerWaitlistProcessing(resolution.booking);
+        continue;
+      }
+
       if (resolution.type === "split_child_payment_link") {
         // Member email: only the run that minted a fresh link sends one (a
         // null mintedLink means an active link exists and the member was
@@ -908,28 +1105,35 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
           }
         }
 
-        // Admin alert: every extension run while the guest portion remains
-        // unsettled (matching the request-origin extended_request_hold
-        // cadence two branches up), not just the minting run.
-        try {
-          await sendAdminSplitSettlementUnpaidAlert({
-            memberName: `${resolution.booking.member.firstName} ${resolution.booking.member.lastName}`,
-            checkIn: resolution.booking.checkIn,
-            checkOut: resolution.booking.checkOut,
-            guestCount: resolution.booking.guests.length,
-            totalCents: resolution.booking.finalPriceCents,
-            holdUntil: resolution.extendedHoldUntil,
-            parentUnpaid: false,
-          });
-        } catch (alertErr) {
-          logger.error(
-            {
-              err: alertErr,
-              bookingId: resolution.booking.id,
-              job: "confirmPendingBookings",
-            },
-            "Failed to send admin split-settlement unpaid alert"
-          );
+        // Admin alert: #1993 Part B caps the previously-every-run cadence to
+        // extension windows 1, 2, 3, then every 7th. The extension CAS upstream
+        // already fired exactly once for this window, so this decision is
+        // idempotent across cron reruns.
+        const extensionNumber = splitSettlementExtensionNumber(
+          await resolveOriginalHoldExpiry(resolution.booking),
+          now
+        );
+        if (shouldAlertOnSplitSettlementExtension(extensionNumber)) {
+          try {
+            await sendAdminSplitSettlementUnpaidAlert({
+              memberName: `${resolution.booking.member.firstName} ${resolution.booking.member.lastName}`,
+              checkIn: resolution.booking.checkIn,
+              checkOut: resolution.booking.checkOut,
+              guestCount: resolution.booking.guests.length,
+              totalCents: resolution.booking.finalPriceCents,
+              holdUntil: resolution.extendedHoldUntil,
+              parentUnpaid: false,
+            });
+          } catch (alertErr) {
+            logger.error(
+              {
+                err: alertErr,
+                bookingId: resolution.booking.id,
+                job: "confirmPendingBookings",
+              },
+              "Failed to send admin split-settlement unpaid alert"
+            );
+          }
         }
         continue;
       }
@@ -945,25 +1149,33 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
           "Split child booking has no saved payment method and its parent booking is unsettled - cannot auto-confirm or issue a guest payment link"
         );
         result.failedBookingIds.push(resolution.booking.id);
-        try {
-          await sendAdminSplitSettlementUnpaidAlert({
-            memberName: `${resolution.booking.member.firstName} ${resolution.booking.member.lastName}`,
-            checkIn: resolution.booking.checkIn,
-            checkOut: resolution.booking.checkOut,
-            guestCount: resolution.booking.guests.length,
-            totalCents: resolution.booking.finalPriceCents,
-            holdUntil: resolution.extendedHoldUntil,
-            parentUnpaid: true,
-          });
-        } catch (alertErr) {
-          logger.error(
-            {
-              err: alertErr,
-              bookingId: resolution.booking.id,
-              job: "confirmPendingBookings",
-            },
-            "Failed to send admin split-settlement unpaid alert"
-          );
+        // #1993 Part B — same derived cadence as the payment-link branch, so a
+        // parent-unpaid split child no longer alerts admins every extension run.
+        const extensionNumber = splitSettlementExtensionNumber(
+          await resolveOriginalHoldExpiry(resolution.booking),
+          now
+        );
+        if (shouldAlertOnSplitSettlementExtension(extensionNumber)) {
+          try {
+            await sendAdminSplitSettlementUnpaidAlert({
+              memberName: `${resolution.booking.member.firstName} ${resolution.booking.member.lastName}`,
+              checkIn: resolution.booking.checkIn,
+              checkOut: resolution.booking.checkOut,
+              guestCount: resolution.booking.guests.length,
+              totalCents: resolution.booking.finalPriceCents,
+              holdUntil: resolution.extendedHoldUntil,
+              parentUnpaid: true,
+            });
+          } catch (alertErr) {
+            logger.error(
+              {
+                err: alertErr,
+                bookingId: resolution.booking.id,
+                job: "confirmPendingBookings",
+              },
+              "Failed to send admin split-settlement unpaid alert"
+            );
+          }
         }
         continue;
       }
