@@ -22,16 +22,19 @@ vi.mock("@/components/stripe/PaymentForm", () => ({
     onError,
     onSuccess,
     chargedAmountCents,
+    isSplit,
     deferredGuestAmountCents,
   }: {
     onError: (error: string) => void;
     onSuccess: (paymentIntentId: string) => void;
     chargedAmountCents?: number | null;
+    isSplit?: boolean | null;
     deferredGuestAmountCents?: number | null;
   }) => (
     <div>
       <div>payment-form</div>
       <div data-testid="charged-amount">{String(chargedAmountCents)}</div>
+      <div data-testid="is-split">{String(isSplit)}</div>
       <div data-testid="deferred-amount">
         {String(deferredGuestAmountCents)}
       </div>
@@ -150,6 +153,7 @@ describe("BookingPaymentWrapper", () => {
 
     await waitFor(() => expect(screen.queryByText("payment-form")).not.toBeNull());
     expect(screen.getByTestId("charged-amount").textContent).toBe("12000");
+    expect(screen.getByTestId("is-split").textContent).toBe("true");
     expect(screen.getByTestId("deferred-amount").textContent).toBe("8000");
   });
 
@@ -176,6 +180,7 @@ describe("BookingPaymentWrapper", () => {
 
     await waitFor(() => expect(screen.queryByText("payment-form")).not.toBeNull());
     expect(screen.getByTestId("charged-amount").textContent).toBe("12500");
+    expect(screen.getByTestId("is-split").textContent).toBe("false");
     expect(screen.getByTestId("deferred-amount").textContent).toBe("null");
   });
 

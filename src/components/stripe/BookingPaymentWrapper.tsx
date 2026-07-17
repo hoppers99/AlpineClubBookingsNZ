@@ -59,6 +59,10 @@ export default function BookingPaymentWrapper({
   const [chargedAmountCents, setChargedAmountCents] = useState<number | null>(
     null,
   );
+  // #1976 — the SERVER's authoritative split verdict for this intent. Forwarded
+  // to PaymentForm so the split display is driven by the route, not re-derived
+  // client-side from the deferred amount.
+  const [isSplit, setIsSplit] = useState<boolean | null>(null);
   const [deferredGuestAmountCents, setDeferredGuestAmountCents] = useState<
     number | null
   >(null);
@@ -105,6 +109,7 @@ export default function BookingPaymentWrapper({
         if (typeof data.chargedAmountCents === "number") {
           setChargedAmountCents(data.chargedAmountCents);
         }
+        setIsSplit(typeof data.isSplit === "boolean" ? data.isSplit : null);
         setDeferredGuestAmountCents(
           typeof data.deferredGuestAmountCents === "number"
             ? data.deferredGuestAmountCents
@@ -181,6 +186,7 @@ export default function BookingPaymentWrapper({
         <PaymentForm
           amountCents={amountCents}
           chargedAmountCents={chargedAmountCents}
+          isSplit={isSplit}
           deferredGuestAmountCents={deferredGuestAmountCents}
           returnUrl={returnUrl}
           onSuccess={handlePaymentSuccess}

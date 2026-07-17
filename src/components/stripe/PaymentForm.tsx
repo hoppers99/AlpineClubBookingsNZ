@@ -16,6 +16,12 @@ interface PaymentFormProps {
   // amountCents when the server figure is unavailable. For a split booking this
   // is the member portion only.
   chargedAmountCents?: number | null;
+  // #1976 — the server's authoritative split verdict for this booking's payment
+  // intent (`isSplit` from the payment-intent route). When provided it drives the
+  // display; direct PaymentForm consumers that don't pass it (pay/[token],
+  // additional-payment-card, organiser-group-booking-card) fall back to deriving
+  // the split from the deferred amount below.
+  isSplit?: boolean | null;
   // #1976 — for a split parent (#738), the deferred non-member guest portion in
   // cents (the child's server-priced total), charged closer to the stay rather
   // than today. Null/absent for a non-split booking, which keeps the exact
@@ -33,6 +39,7 @@ interface PaymentFormProps {
 export default function PaymentForm({
   amountCents,
   chargedAmountCents,
+  isSplit,
   deferredGuestAmountCents,
   onSuccess,
   onError,
@@ -46,10 +53,25 @@ export default function PaymentForm({
   // #1976 — a split booking charges only the member portion today; show that
   // server figure. A non-split booking has no deferred portion, so it keeps the
   // exact original "Total: {amountCents}" display, byte-for-byte.
-  const isSplit =
+  //
+  // The server's `isSplit` verdict wins when the route provides it; direct
+  // PaymentForm consumers that don't pass it fall back to deriving the split
+  // from the deferred amount. Either way the split DISPLAY additionally requires
+  // both the server charge figure (the "Charged today" headline) and the
+  // deferred guest portion (the secondary line) — a degenerate response
+  // (isSplit=true but a missing amount) falls back to the exact non-split
+  // "Total" display rather than render an undefined amount.
+  const derivedSplit =
     deferredGuestAmountCents != null && deferredGuestAmountCents > 0;
+  const splitRequested = typeof isSplit === "boolean" ? isSplit : derivedSplit;
+  const isSplitDisplay =
+    splitRequested &&
+    chargedAmountCents != null &&
+    deferredGuestAmountCents != null;
   const chargedToday =
-    isSplit && chargedAmountCents != null ? chargedAmountCents : amountCents;
+    isSplitDisplay && chargedAmountCents != null
+      ? chargedAmountCents
+      : amountCents;
   const formattedAmount = formatCents(chargedToday);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -112,7 +134,7 @@ export default function PaymentForm({
 
       <div className="flex items-center justify-between">
         <p className="text-lg font-semibold">
-          {isSplit ? "Charged today: " : "Total: "}
+          {isSplitDisplay ? "Charged today: " : "Total: "}
           {formattedAmount}
         </p>
         <button
@@ -123,7 +145,7 @@ export default function PaymentForm({
           {isProcessing ? "Processing..." : "Pay Now"}
         </button>
       </div>
-      {isSplit && (
+      {isSplitDisplay && (
         <p className="text-sm text-gray-600">
           This covers the member places on your booking. Your non-member
           guests&apos; places (about {formatCents(deferredGuestAmountCents!)})

@@ -28,6 +28,27 @@ does not store API keys, OAuth secrets, SMTP secrets, or bearer tokens.
 
 `config/club.json` is validated by `src/config/schema.ts`.
 
+### Boot-safe config loading
+
+The config loader (`src/config/club.ts`) never throws, so an absent or broken
+`config/club.json` can never crash the app at boot. Resolution rules:
+
+- **Valid `club.json`** → used as-is (no change for healthy installs).
+- **Malformed `club.json`** (present but invalid JSON or failing schema
+  validation) → the app degrades to the built-in `SAFE_DEFAULT_CONFIG` and logs
+  a warning. The `club.example.json` fallback is intentionally **skipped** in
+  this case so a broken primary is not silently masked, and `npm run setup`
+  reports the Club Config step as **blocked**. Fix `config/club.json`.
+- **Absent `club.json`** → falls back to a valid `config/club.example.json`; if
+  the example is also absent or malformed, the app boots on
+  `SAFE_DEFAULT_CONFIG` with a logged warning.
+
+`SAFE_DEFAULT_CONFIG` (`src/config/safe-default-config.ts`) is the single
+canonical "unconfigured club" default; the setup wizard/CLI reference the same
+constant, and it always carries a valid absolute `publicUrl` so the identity
+bootstrap layer (`src/config/club-identity.ts`) cannot throw. It is a safe
+placeholder only — a real deployment must still configure the club.
+
 ### DB-first identity (admin-editable)
 
 The club **name**, **short name**, and **hut-leader label** are DB-first: an
@@ -1203,6 +1224,17 @@ fee is strictly type-driven (only members assigned the Family type get it — th
 composition heuristic is removed). Hut fees remain lodge season/rate
 configuration. See `docs/AUTHORITATIVE_FEES.md` for operator rules and the
 frozen Xero idempotency contract.
+
+These fee schedules are config-transferable (#1941): the `membership-fees`
+category of the configuration transfer tool carries `joining-fees.csv`,
+`annual-fees.csv`, and `annual-fee-components.csv` (money in integer cents), so a
+club can move its joining-fee and annual-fee schedules — with their per-line Xero
+components — between installs. This schedule takes **precedence** over the legacy
+Xero item-code-amount joining-fee materialisation: when a bundle carries the
+joining-fee schedule and the `membership-fees` category is applied, the
+authoritative amounts come from these CSVs and the old item-code fan-out is
+skipped (an import that deselects `membership-fees` keeps the legacy path). See
+`docs/config-transfer/README.md`.
 
 The consolidated `/admin/fees` page (#1933, E7) shows Hut Fees (per lodge →
 season → membership-type × age-tier nightly rates; edits need `bookings:edit`),
