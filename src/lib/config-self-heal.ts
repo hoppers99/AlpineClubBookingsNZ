@@ -49,10 +49,27 @@ import logger from "@/lib/logger";
  * ## Registering a new step (C3/C4/C5)
  * Add another `defineSelfHealStep({...})` to `SELF_HEAL_STEPS` below. A step
  * describes exactly three things:
- *   - `isPresent(db)`  — is the DB row already populated? (guard the write)
+ *   - `isPresent(db)`  — is the DB value already populated? (guard the write)
  *   - `currentValue()` — the current EFFECTIVE config value to persist
- *   - `write(db, v)`   — a create-if-absent write (upsert with `update:{}`)
- * Keep every write create-if-absent so the never-overwrite guarantee holds.
+ *   - `write(db, v)`   — a write that MUST NOT overwrite an existing value
+ *
+ * ### Row-level vs column-level presence — choose the one that matches the migration
+ * The unit of "presence" depends on what the enabling migration added:
+ *   - **New TABLE / singleton row → ROW-LEVEL.** `isPresent` checks whether the
+ *     ROW exists; `write` is a create-if-absent upsert (`update: {}`) that never
+ *     touches an existing row. Worked example: `clubIdentitySelfHealStep`.
+ *   - **New nullable COLUMN on an EXISTING singleton row → COLUMN-LEVEL.** A
+ *     row-level check would wrongly skip every install whose row predates the new
+ *     column (it would never backfill), so `isPresent` checks the COLUMN (is it
+ *     non-null?). `write` is a create-if-absent row upsert (covers a brand-new
+ *     install) THEN an atomic `updateMany` scoped to the null column
+ *     (`where: { id, col: null }`), so it fills ONLY a still-null column and can
+ *     never overwrite an admin-set value or a concurrent booter's write. Worked
+ *     example: `clubFacebookUrlSelfHealStep` — copy that pattern (and read its
+ *     long-form comment for why a null on a later-added column cannot be admin
+ *     intent).
+ * Either way the write must be incapable of overwriting an existing value so the
+ * never-overwrite guarantee holds.
  */
 
 /**

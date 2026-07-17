@@ -58,7 +58,15 @@ Identity** (no redeploy). Each field resolves through a per-field fallback chain
 empty/absent row keeps working from the file config, and clearing a field in the
 admin UI restores the configured default. The Facebook URL resolves
 **`ClubIdentitySettings.facebookUrl` → `config/club.json` `socialLinks.facebook` →
-undefined** and, when set, must be a valid http(s) URL. Changes propagate to the site header,
+undefined** and, when set, must be a valid http(s) URL. **Clearing the Facebook
+URL is not durable like the other three fields.** Clearing the name, short name,
+or hut-leader label leaves that column null permanently, so it keeps tracking
+`config/club.json` on every later boot; clearing the Facebook URL is only transient, because
+`facebookUrl` is filled by a **column-level** boot backfill (not a row-level
+create-if-absent) — the next boot re-heals it from the *then-current*
+`socialLinks.facebook`, after which the column holds that snapshot and stops
+tracking subsequent `club.json` edits. To change it durably, set the new value in
+the admin UI rather than clearing it to fall back to the file. Changes propagate to the site header,
 footer, page titles, and emails within a few seconds (a 15s tagged cache; the
 TOTP issuer label used at 2FA enrolment can lag by a short process-cache TTL and
 only affects new enrolments). `config/club.json` is never modified by these

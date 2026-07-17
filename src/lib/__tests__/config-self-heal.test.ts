@@ -481,4 +481,97 @@ describe("facebookUrl self-heal step (C5 #1984)", () => {
     expect(forward.rows.get("default")).toMatchObject(expected);
     expect(reversed.rows.get("default")).toMatchObject(expected);
   });
+
+  it("does not clobber a facebookUrl written between its presence read and its backfill (mid-race)", async () => {
+    // The row exists with a NULL column, so isPresent proceeds to write. A
+    // concurrent admin edit / booter then sets the column in the window AFTER the
+    // presence read but BEFORE the null-scoped backfill — modelled by mutating the
+    // row inside the create-if-absent upsert, which runs first in the step's write
+    // (immediately before updateMany). The atomic `where: { facebookUrl: null }`
+    // predicate must then match nothing, so the raced value survives.
+    const { rows, db } = makeIdentityDb({
+      name: "Existing Club",
+      facebookUrl: null,
+    });
+    const RACED_VALUE = "https://facebook.com/won-the-race";
+    const settings = db as unknown as {
+      clubIdentitySettings: {
+        upsert: ReturnType<typeof vi.fn>;
+        updateMany: ReturnType<typeof vi.fn>;
+      };
+    };
+    const originalUpsert =
+      settings.clubIdentitySettings.upsert.getMockImplementation()! as (
+        args: unknown,
+      ) => Promise<unknown>;
+    settings.clubIdentitySettings.upsert.mockImplementation(
+      async (args: unknown) => {
+        // A concurrent writer lands the admin value inside the race window.
+        rows.set("default", { ...rows.get("default"), facebookUrl: RACED_VALUE });
+        return originalUpsert(args);
+      },
+    );
+
+    const summary = await runConfigSelfHeal({
+      db,
+      steps: [clubFacebookUrlSelfHealStep],
+      log: silentLog,
+      provenance: "primary",
+    });
+
+    // The step believed it wrote (its presence read saw null), but the null-scoped
+    // backfill matched no row (count: 0), so the raced value is NOT overwritten.
+    expect(summary.failed).toBe(0);
+    expect(rows.get("default")).toMatchObject({ facebookUrl: RACED_VALUE });
+    expect(
+      settings.clubIdentitySettings.updateMany.mock.results[0]?.value,
+    ).resolves.toMatchObject({ count: 0 });
+  });
+
+  it("no-ops (present, zero writes) when the effective config has no facebook link", async () => {
+    // The step must be inert when config/club.json carries no socialLinks.facebook
+    // — there is nothing to backfill. Drive it against a fresh module instance whose
+    // clubConfig has an empty socialLinks (the shared test config DOES set a link).
+    vi.resetModules();
+    vi.doMock("@/config/club", () => ({
+      clubConfig: {
+        name: "No Social Club",
+        shortName: null,
+        hutLeaderLabel: null,
+        socialLinks: {},
+      },
+      clubConfigSource: "primary",
+    }));
+    try {
+      const { clubFacebookUrlSelfHealStep: step, runConfigSelfHeal: run } =
+        await import("@/lib/config-self-heal");
+      const { rows, db } = makeIdentityDb(); // cold DB
+
+      const summary = await run({
+        db,
+        steps: [step],
+        log: silentLog,
+        provenance: "primary",
+      });
+
+      // Present/no-op: isPresent short-circuits on the null config value before any
+      // DB access, so nothing is read or written.
+      expect(summary.healed).toBe(0);
+      expect(summary.alreadyPresent).toBe(1);
+      expect(rows.size).toBe(0);
+      const settings = db as unknown as {
+        clubIdentitySettings: {
+          findUnique: ReturnType<typeof vi.fn>;
+          upsert: ReturnType<typeof vi.fn>;
+          updateMany: ReturnType<typeof vi.fn>;
+        };
+      };
+      expect(settings.clubIdentitySettings.findUnique).not.toHaveBeenCalled();
+      expect(settings.clubIdentitySettings.upsert).not.toHaveBeenCalled();
+      expect(settings.clubIdentitySettings.updateMany).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("@/config/club");
+      vi.resetModules();
+    }
+  });
 });
