@@ -70,8 +70,11 @@ Five identity fields — **public URL**, **support email**, **contact email**,
   outbound **envelope sender** (`EMAIL_FROM` in `src/lib/email-sender.ts`) is a
   bootstrap concern — it must be a provider-verified (SES) address — so it comes
   from the `EMAIL_FROM` env var, falling back to
-  `SAFE_DEFAULT_CONFIG.supportEmail`; the real From header still prefers the
-  DB-first `EmailMessageSetting.supportEmail` when `EMAIL_FROM` is unset. The
+  `SAFE_DEFAULT_CONFIG.supportEmail`. The From/envelope **address** is always
+  this bootstrap value — the DB-first `EmailMessageSetting.supportEmail` is
+  never used as the sender address (it governs the body/footer support links via
+  send-time replacement, and `emailFromName` governs the From display name), so
+  production must set `EMAIL_FROM` to a provider-verified address. The
   `SUPPORT_EMAIL` / `EMAIL_FROM_NAME` module constants and
   `email-message-settings.ts`'s `EMAIL_DEFAULT_FROM_NAME` / default settings are
   the **stable search keys** that the send-time replacement swaps for the live DB

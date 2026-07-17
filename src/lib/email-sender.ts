@@ -1,13 +1,14 @@
 import { clubConfig, SAFE_DEFAULT_CONFIG } from "@/config/club";
 
-// Envelope sender (C6 #1985): the actual From/Return-Path address is a BOOTSTRAP
+// Envelope sender (C6 #1985): the actual From/Return-Path ADDRESS is a BOOTSTRAP
 // concern — it must be a provider-verified sender (SES), not an arbitrary
 // club.json value — so it resolves from the `EMAIL_FROM` bootstrap env var,
-// falling back to `SAFE_DEFAULT_CONFIG.supportEmail` (never club.json). Every
-// real send path passes this through `formatEmailFromAddressWithSettings`
-// (email-message-settings.ts), which prefers the DB-first
-// EmailMessageSetting.supportEmail when `EMAIL_FROM` is unset. C7 owns removing
-// the env term.
+// falling back to `SAFE_DEFAULT_CONFIG.supportEmail` (never club.json). This
+// constant is always truthy, so the DB-first EmailMessageSetting.supportEmail is
+// NEVER the From/envelope address: the DB supportEmail governs the body/footer
+// support links (search-key replacement) and the DB emailFromName governs the
+// From DISPLAY NAME only. Production must set EMAIL_FROM to a provider-verified
+// address. C7 owns removing the env term.
 export const EMAIL_FROM = process.env.EMAIL_FROM || SAFE_DEFAULT_CONFIG.supportEmail;
 // SUPPORT_EMAIL / EMAIL_FROM_NAME are STABLE SEARCH KEYS baked into email
 // templates: `applyEmailMessageSettingsToHtml` replaces these config-derived
