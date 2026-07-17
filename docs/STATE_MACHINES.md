@@ -1042,6 +1042,24 @@ visible. The list API (`/api/admin/member-lifecycle-action-requests`) takes an
 To verify: financial blockers, future booking blockers, family cleanup, Xero
 group/archive behavior, and email visibility.
 
+Direct import into the cancelled end-state (#1946): the admin member CSV import
+accepts an optional **Cancelled Date** column. A row with a cancelled date is
+created directly as a cancelled member — `active = false`, `canLogin = false`,
+`cancelledAt` = the given NZ date-only value, `cancelledReason` and
+`cancelledViaRequestId` null (no `MembershipCancellationRequest` exists for a
+legacy import). This produces the same terminal member fields the normal
+approval transition writes, minus side effects: the import sends no cancellation
+email and queues no Xero cancellation operation (a freshly imported member has
+no Xero contact to cancel), and never sends a setup invite. A cancelled import
+row does not claim the login for a shared email (an active member keeps it), and
+a cancelled date in the future is rejected (mirrors the flow's `cancelledAt =
+now`). Because the import only ever creates members and skips a row whose
+email+name identity already exists, it cannot cancel an existing active member —
+that remains an admin cancellation-flow action, with its blockers, confirmations,
+and Xero handling. The import establishes no family links, so there is no
+cross-row cancellation cascade between a cancelled primary and active family
+rows in the same file; each row's status is independent.
+
 ## Family And Dependent Lifecycle
 
 ```text
