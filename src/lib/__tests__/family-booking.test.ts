@@ -117,4 +117,24 @@ describe("family member booking block messages", () => {
       "Pending admin approval"
     );
   });
+
+  it("appends the provisional-hold consequence only when the hold policy applies (#1942)", () => {
+    const member = {
+      relationship: "dependent" as const,
+      firstName: "Sam",
+      canBeBooked: false,
+      pendingRequestStatus: "PENDING",
+      action: "pending_admin_approval",
+    };
+
+    // Default (no options) keeps the original message, unchanged.
+    expect(getFamilyMemberBookingBlockMessage(member)).not.toContain(
+      "held provisionally"
+    );
+
+    // When the hold policy applies to the stay, spell out the consequence.
+    expect(
+      getFamilyMemberBookingBlockMessage(member, { holdPolicyApplies: true })
+    ).toContain("held provisionally");
+  });
 });

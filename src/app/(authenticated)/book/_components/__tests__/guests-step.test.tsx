@@ -2,10 +2,13 @@
 
 import "@testing-library/jest-dom/vitest";
 import type { ComponentProps } from "react";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { GuestsStep } from "@/app/(authenticated)/book/_components/guests-step";
-import type { FamilyMember } from "@/app/(authenticated)/book/_components/types";
+import type {
+  FamilyMember,
+  PriceQuote,
+} from "@/app/(authenticated)/book/_components/types";
 import type { GuestData } from "@/components/guest-form";
 
 vi.mock("@/components/guest-form", () => ({
@@ -135,5 +138,141 @@ describe("GuestsStep", () => {
       name: "+ Casey Skier (CHILD)",
     });
     expect(childButton).toBeEnabled();
+  });
+
+  describe("member-guest steer (#1942)", () => {
+    const bookableChild: FamilyMember = {
+      id: "member-child",
+      firstName: "Casey",
+      lastName: "Skier",
+      ageTier: "CHILD",
+      relationship: "dependent",
+      canBeBooked: true,
+    };
+
+    it("suggests switching a typed-in guest that matches a bookable family member", () => {
+      const typedMatch: GuestData = {
+        // Different case to prove case-insensitive matching.
+        firstName: "casey",
+        lastName: "SKIER",
+        ageTier: "ADULT",
+        isMember: false,
+      };
+      const handleGuestsChange = vi.fn();
+
+      renderGuestsStep({
+        familyMembers: [bookableChild],
+        guests: [typedMatch],
+        handleGuestsChange,
+      });
+
+      expect(
+        screen.getByText(/Add these as member guests instead/i),
+      ).toBeInTheDocument();
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "Add as member guest" }),
+      );
+
+      expect(handleGuestsChange).toHaveBeenCalledTimes(1);
+      const next = handleGuestsChange.mock.calls[0][0] as GuestData[];
+      expect(next).toHaveLength(1);
+      expect(next[0]).toMatchObject({
+        firstName: "Casey",
+        lastName: "Skier",
+        isMember: true,
+        memberId: "member-child",
+      });
+    });
+
+    it("does not suggest a switch when no family member matches the typed name", () => {
+      const typedGuest: GuestData = {
+        firstName: "Alex",
+        lastName: "Stranger",
+        ageTier: "ADULT",
+        isMember: false,
+      };
+
+      renderGuestsStep({
+        familyMembers: [bookableChild],
+        guests: [typedGuest],
+      });
+
+      expect(
+        screen.queryByText(/Add these as member guests instead/i),
+      ).not.toBeInTheDocument();
+    });
+
+    it("does not suggest a switch for a non-bookable family member match", () => {
+      const nonBookable: FamilyMember = {
+        id: "member-child",
+        firstName: "Casey",
+        lastName: "Skier",
+        ageTier: "CHILD",
+        relationship: "dependent",
+        canBeBooked: false,
+        pendingRequestStatus: "PENDING",
+      };
+      const typedMatch: GuestData = {
+        firstName: "Casey",
+        lastName: "Skier",
+        ageTier: "ADULT",
+        isMember: false,
+      };
+      const hold: PriceQuote["nonMemberHoldDecision"] = {
+        enabled: true,
+        holdDays: 7,
+        source: "default",
+        daysUntilCheckIn: 30,
+        shouldBePending: true,
+        status: "PAYMENT_PENDING",
+      };
+
+      renderGuestsStep({
+        familyMembers: [nonBookable],
+        guests: [typedMatch],
+        priceQuote: {
+          guests: [
+            { ageTier: "ADULT", isMember: false, nights: 2, priceCents: 12000 },
+          ],
+          totalPriceCents: 12000,
+          nonMemberHoldDecision: hold,
+        },
+      });
+
+      expect(
+        screen.queryByText(/Add these as member guests instead/i),
+      ).not.toBeInTheDocument();
+      // The block message gains the provisional consequence when the hold
+      // policy applies to the stay.
+      expect(
+        screen.getByText(/held provisionally/i),
+      ).toBeInTheDocument();
+    });
+
+    it("omits the provisional consequence when the hold policy does not apply", () => {
+      const nonBookable: FamilyMember = {
+        id: "member-child",
+        firstName: "Casey",
+        lastName: "Skier",
+        ageTier: "CHILD",
+        relationship: "dependent",
+        canBeBooked: false,
+        pendingRequestStatus: "PENDING",
+      };
+
+      renderGuestsStep({
+        familyMembers: [nonBookable],
+        guests: [],
+        priceQuote: null,
+      });
+
+      expect(
+        screen.getByText(/awaiting admin approval/i),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText(/held provisionally/i),
+      ).not.toBeInTheDocument();
+    });
   });
 });
