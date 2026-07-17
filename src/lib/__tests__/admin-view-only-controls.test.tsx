@@ -84,6 +84,14 @@ import { MountainConditionsPanel } from "@/app/(admin)/admin/mountain-conditions
 import { ImageManagerClient } from "@/app/(admin)/admin/image-manager/image-manager-client";
 import { SiteStyleWizard } from "@/app/(admin)/admin/site-style/site-style-wizard";
 import { DEFAULT_CLUB_THEME_VALUES } from "@/lib/club-theme-schema";
+// #1940 panels newly brought under the view-only pattern.
+import { InductionSettingsPanel } from "@/components/admin/induction-settings-panel";
+import { InductionTemplateManager } from "@/components/admin/induction-template-manager";
+import { MembershipCancellationSettingsPanel } from "@/components/admin/membership-cancellation-settings-panel";
+import { EmailMessageSettingsPanel } from "@/components/admin/email-settings/email-message-settings-panel";
+import { BookingMessagesPanel } from "@/components/admin/booking-messages/booking-messages-panel";
+import { FinanceReportMappingsPanel } from "@/components/admin/finance-report-mappings-panel";
+import { RoomsBedsManager } from "@/components/admin/rooms-beds-manager";
 
 const SITE_CONTENT_DOCUMENTS = [
   { key: "FOOTER_BLURB", contentHtml: "<p>Blurb</p>", updatedAt: null },
@@ -500,5 +508,384 @@ describe("LodgeInstructionsPanel area wiring (#1927)", () => {
     expect(
       screen.queryByText(/View only — your admin role cannot edit/i),
     ).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1940: view-only gating audit — panels that previously rendered enabled edit
+// controls to a view-level admin. Each panel gates on its OWN route area.
+// ---------------------------------------------------------------------------
+
+describe("InductionSettingsPanel view-only gating (#1940, membership)", () => {
+  const SETTINGS = {
+    gateEnabled: false,
+    minimumMembershipMonths: 6,
+    minimumNights: 3,
+    requiredSignOffs: 2,
+    gateEffectiveFrom: null,
+  };
+
+  beforeEach(() => {
+    sessionMatrix = null;
+    stubFetchRoutes({
+      "/api/admin/membership-nomination-settings": { settings: SETTINGS },
+    });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("disables editors and Save for a membership:view admin", async () => {
+    sessionMatrix = matrix("view", { membership: "view" });
+    render(<InductionSettingsPanel />);
+
+    expect(
+      await screen.findByRole("button", { name: /Save settings/i }),
+    ).toBeDisabled();
+    expect(
+      screen.getByText(/can view the nomination gate settings but cannot change/i),
+    ).toBeInTheDocument();
+  });
+
+  it("enables Save for a membership:edit admin", async () => {
+    sessionMatrix = matrix("view", { membership: "edit" });
+    render(<InductionSettingsPanel />);
+
+    expect(
+      await screen.findByRole("button", { name: /Save settings/i }),
+    ).toBeEnabled();
+  });
+
+  it("surfaces a visible error when a save is rejected with 403", async () => {
+    sessionMatrix = matrix("view", { membership: "edit" });
+    render(<InductionSettingsPanel />);
+
+    const save = await screen.findByRole("button", { name: /Save settings/i });
+    // Stale tab: the actor's membership permission was narrowed after load, so
+    // the PUT now 403s.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("{}", { status: 403 })),
+    );
+    fireEvent.click(save);
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        ADMIN_FORBIDDEN_SAVE_REASON,
+      );
+    });
+  });
+});
+
+describe("MembershipCancellationSettingsPanel view-only gating (#1940, membership)", () => {
+  beforeEach(() => {
+    sessionMatrix = null;
+    stubFetchRoutes({
+      "/api/admin/membership-cancellation-settings": {
+        settings: {
+          warningText: "Warn",
+          rejoinProcessText: "Rejoin",
+          xeroArchiveContactsOnCancellation: false,
+          xeroContactGroups: [],
+        },
+      },
+    });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("disables Add Group and Save for a membership:view admin", async () => {
+    sessionMatrix = matrix("view", { membership: "view" });
+    render(<MembershipCancellationSettingsPanel />);
+
+    expect(
+      await screen.findByRole("button", { name: /Save Cancellation Settings/i }),
+    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Add Group/i })).toBeDisabled();
+    expect(
+      screen.getByText(/can view membership cancellation settings but cannot change/i),
+    ).toBeInTheDocument();
+  });
+
+  it("enables Add Group and Save for a membership:edit admin", async () => {
+    sessionMatrix = matrix("view", { membership: "edit" });
+    render(<MembershipCancellationSettingsPanel />);
+
+    expect(
+      await screen.findByRole("button", { name: /Save Cancellation Settings/i }),
+    ).toBeEnabled();
+    expect(screen.getByRole("button", { name: /Add Group/i })).toBeEnabled();
+  });
+});
+
+describe("InductionTemplateManager view-only gating (#1940, membership)", () => {
+  beforeEach(() => {
+    sessionMatrix = null;
+    stubFetchRoutes({
+      "/api/admin/induction-templates": {
+        templates: [
+          {
+            id: "t1",
+            name: "Lodge Induction",
+            version: "1",
+            kind: "NEW_MEMBER",
+            isActive: false,
+            createdAt: "2026-07-01T00:00:00.000Z",
+            sectionCount: 1,
+            inductionCount: 0,
+            used: false,
+          },
+        ],
+      },
+    });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("disables Activate/Edit/Create for a membership:view admin", async () => {
+    sessionMatrix = matrix("view", { membership: "view" });
+    render(<InductionTemplateManager />);
+
+    expect(
+      await screen.findByRole("button", { name: /Create blank/i }),
+    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^Activate$/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^Edit$/i })).toBeDisabled();
+    expect(
+      screen.getByText(/can view induction templates but cannot change/i),
+    ).toBeInTheDocument();
+  });
+
+  it("enables Activate/Edit/Create for a membership:edit admin", async () => {
+    sessionMatrix = matrix("view", { membership: "edit" });
+    render(<InductionTemplateManager />);
+
+    expect(
+      await screen.findByRole("button", { name: /Create blank/i }),
+    ).toBeEnabled();
+    expect(screen.getByRole("button", { name: /^Activate$/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /^Edit$/i })).toBeEnabled();
+  });
+});
+
+describe("EmailMessageSettingsPanel view-only gating (#1940, support)", () => {
+  beforeEach(() => {
+    sessionMatrix = null;
+    stubFetchRoutes({
+      "/api/admin/email-settings": {
+        settings: {
+          clubName: "Club",
+          bookingsName: "Bookings",
+          emailFromName: "From",
+          supportEmail: "s@example.com",
+          contactEmail: "c@example.com",
+          publicUrl: "https://example.com",
+        },
+      },
+      "/api/admin/email-templates": {
+        templates: [
+          {
+            key: "WELCOME",
+            label: "Welcome",
+            audience: "Member",
+            defaultSubject: "Hi",
+            defaultBody: "Body",
+            allowedTokens: [],
+            requiredTokens: [],
+            triggerSummary: "On join",
+            frequency: "Once",
+            override: null,
+          },
+        ],
+        staleOverrideCount: 0,
+      },
+    });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("disables Save Email Settings and Save Template for a support:view admin", async () => {
+    sessionMatrix = matrix("view", { support: "view" });
+    render(<EmailMessageSettingsPanel />);
+
+    expect(
+      await screen.findByRole("button", { name: /Save Email Settings/i }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: /Save Template/i }),
+    ).toBeDisabled();
+    expect(
+      screen.getByText(/can view email settings and templates but cannot change/i),
+    ).toBeInTheDocument();
+  });
+
+  it("enables Save controls for a support:edit admin", async () => {
+    sessionMatrix = matrix("view", { support: "edit" });
+    render(<EmailMessageSettingsPanel />);
+
+    expect(
+      await screen.findByRole("button", { name: /Save Email Settings/i }),
+    ).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: /Save Template/i }),
+    ).toBeEnabled();
+  });
+});
+
+describe("BookingMessagesPanel view-only gating (#1940, support)", () => {
+  beforeEach(() => {
+    sessionMatrix = null;
+    stubFetchRoutes({
+      "/api/admin/booking-messages": {
+        messages: [
+          {
+            key: "BOOKING_CONFIRM",
+            section: "Booking",
+            label: "Confirmation",
+            description: "Sent on confirm",
+            defaultBody: "Default",
+            bodyText: "Body",
+            tokens: [],
+            override: null,
+          },
+        ],
+      },
+    });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("disables Save Message and Restore Default for a support:view admin", async () => {
+    sessionMatrix = matrix("view", { support: "view" });
+    render(<BookingMessagesPanel />);
+
+    expect(
+      await screen.findByRole("button", { name: /Save Message/i }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: /Restore Default/i }),
+    ).toBeDisabled();
+    // Preview is a pure read and stays enabled for a viewer.
+    expect(screen.getByRole("button", { name: /Preview/i })).toBeEnabled();
+    expect(
+      screen.getByText(/can view booking messages but cannot change/i),
+    ).toBeInTheDocument();
+  });
+
+  it("enables Save Message and Restore Default for a support:edit admin", async () => {
+    sessionMatrix = matrix("view", { support: "edit" });
+    render(<BookingMessagesPanel />);
+
+    expect(
+      await screen.findByRole("button", { name: /Save Message/i }),
+    ).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: /Restore Default/i }),
+    ).toBeEnabled();
+  });
+});
+
+describe("FinanceReportMappingsPanel view-only gating (#1940, finance)", () => {
+  beforeEach(() => {
+    sessionMatrix = null;
+    stubFetchRoutes({
+      "/api/admin/setup/finance-report-mappings": {
+        categories: [],
+        unmappedLines: [],
+        snapshotCoverage: {
+          latestProfitAndLossSnapshot: null,
+          inspectedSnapshotCount: 0,
+        },
+      },
+      "/api/admin/xero/chart-of-accounts": { accounts: [] },
+    });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("disables Save and Backfill for a finance:view admin", async () => {
+    sessionMatrix = matrix("view", { finance: "view" });
+    render(<FinanceReportMappingsPanel />);
+
+    expect(
+      await screen.findByRole("button", { name: /^Save$/i }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: /Backfill History/i }),
+    ).toBeDisabled();
+    expect(
+      screen.getByText(/can view the finance report mappings but cannot change/i),
+    ).toBeInTheDocument();
+  });
+
+  it("enables Save and Backfill for a finance:edit admin", async () => {
+    sessionMatrix = matrix("view", { finance: "edit" });
+    render(<FinanceReportMappingsPanel />);
+
+    expect(
+      await screen.findByRole("button", { name: /^Save$/i }),
+    ).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: /Backfill History/i }),
+    ).toBeEnabled();
+  });
+});
+
+describe("RoomsBedsManager view-only gating (#1940, bookings)", () => {
+  const PAYLOAD = {
+    rooms: [],
+    capacity: {
+      source: "configured_beds",
+      capacity: 10,
+      bedAllocationEnabled: true,
+      activeBedCount: 10,
+      fallbackCapacity: 10,
+    },
+    canImportFromConfig: false,
+    configBeds: [],
+  };
+
+  beforeEach(() => {
+    // This manager reads the matrix from its prop, not the session, but the
+    // shared stub still needs the lodges + rooms endpoints.
+    sessionMatrix = null;
+    stubFetchRoutes({
+      "/api/admin/lodges": { lodges: [] },
+      "/api/admin/bed-allocation/rooms": PAYLOAD,
+    });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("disables Add Room for a bookings:view admin", async () => {
+    render(<RoomsBedsManager permissionMatrix={matrix("view", { bookings: "view" })} />);
+
+    expect(
+      await screen.findByRole("button", { name: /Add Room/i }),
+    ).toBeDisabled();
+    expect(
+      screen.getByText(/can view rooms and beds but cannot change/i),
+    ).toBeInTheDocument();
+  });
+
+  it("enables Add Room for a bookings:edit admin", async () => {
+    render(<RoomsBedsManager permissionMatrix={matrix("view", { bookings: "edit" })} />);
+
+    expect(
+      await screen.findByRole("button", { name: /Add Room/i }),
+    ).toBeEnabled();
   });
 });
