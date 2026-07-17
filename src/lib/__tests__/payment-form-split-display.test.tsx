@@ -68,4 +68,60 @@ describe("PaymentForm split-vs-non-split amount display (#1976)", () => {
     const deferred = screen.getByText(/closer to your stay/i);
     expect(deferred.textContent).toContain("$80.00");
   });
+
+  it("server isSplit=true drives the split display (not just the derived deferred amount)", () => {
+    render(
+      <PaymentForm
+        amountCents={20000} // client full-party total — must NOT be the headline
+        chargedAmountCents={12000} // server member-portion intent amount
+        isSplit={true} // server verdict is the authority
+        deferredGuestAmountCents={8000}
+        returnUrl="http://localhost/return"
+        onSuccess={noop}
+        onError={noop}
+      />,
+    );
+
+    expect(screen.getByText("Charged today: $120.00")).toBeTruthy();
+    expect(screen.queryByText("Total: $200.00")).toBeNull();
+    const deferred = screen.getByText(/closer to your stay/i);
+    expect(deferred.textContent).toContain("$80.00");
+  });
+
+  it("server isSplit=false with no deferred amount renders the pinned non-split output", () => {
+    render(
+      <PaymentForm
+        amountCents={12500}
+        chargedAmountCents={12500}
+        isSplit={false}
+        deferredGuestAmountCents={null}
+        returnUrl="http://localhost/return"
+        onSuccess={noop}
+        onError={noop}
+      />,
+    );
+
+    expect(screen.getByText("Total: $125.00")).toBeTruthy();
+    expect(screen.queryByText(/Charged today/i)).toBeNull();
+    expect(screen.queryByText(/closer to your stay/i)).toBeNull();
+  });
+
+  it("degenerate server response (isSplit=true, no chargedAmountCents) falls back to the non-split display", () => {
+    render(
+      <PaymentForm
+        amountCents={12500}
+        isSplit={true}
+        deferredGuestAmountCents={8000}
+        returnUrl="http://localhost/return"
+        onSuccess={noop}
+        onError={noop}
+      />,
+    );
+
+    // No server charge figure to render → keep the exact non-split "Total" line
+    // rather than an empty/undefined "Charged today" amount.
+    expect(screen.getByText("Total: $125.00")).toBeTruthy();
+    expect(screen.queryByText(/Charged today/i)).toBeNull();
+    expect(screen.queryByText(/closer to your stay/i)).toBeNull();
+  });
 });
