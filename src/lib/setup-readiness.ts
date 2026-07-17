@@ -810,10 +810,12 @@ function buildAgeTierCheck(
     );
   }
 
-  // DB-first (#1987, C8): the expected tier count is the fixed set of
+  // The DB is the sole runtime source of age tiers (#1983) and the readiness
+  // gate is DB-first (#1987, C8): the expected count is the fixed set of
   // configurable slots (INFANT/CHILD/YOUTH/ADULT — NOT_APPLICABLE never gets a
   // row), so an absent config/club.json no longer collapses the expectation to
-  // zero. A seed file, when present, may still narrow it.
+  // zero. A primary config, when present, may still refine it for forks that
+  // configure a non-default number of tiers.
   const expected =
     club.config?.ageTiers.length ?? bookableAgeTierEnum.options.length;
   const actual = db?.ageTierSettingCount ?? 0;
@@ -830,7 +832,7 @@ function buildAgeTierCheck(
         ? "Database age-tier settings are populated."
         : "Seed or review age-tier settings before member imports.",
       details: [
-        `Config age tiers: ${expected || "unknown"}`,
+        `Expected age tiers: ${expected || "unknown"}`,
         `Database age-tier settings: ${actual}`,
       ],
       href: "/admin/age-tier-settings",

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { clubConfig } from "@/config/club";
 import {
+  ageTierSelfHealStep,
   clubFacebookUrlSelfHealStep,
   clubIdentitySelfHealStep,
   defineSelfHealStep,
@@ -103,7 +104,12 @@ describe("runConfigSelfHeal — cold un-backfilled DB", () => {
   it("populates the identity row from the effective config on first run", async () => {
     const { rows, db } = makeIdentityDb();
 
-    const summary = await runConfigSelfHeal({ db, log: silentLog, provenance: "primary" });
+    const summary = await runConfigSelfHeal({
+      db,
+      steps: [clubIdentitySelfHealStep, clubFacebookUrlSelfHealStep],
+      log: silentLog,
+      provenance: "primary",
+    });
 
     // Both identity fields AND the facebookUrl column heal on a cold DB.
     expect(summary.healed).toBe(2);
@@ -131,12 +137,22 @@ describe("runConfigSelfHeal — cold un-backfilled DB", () => {
   it("is a no-op on the second run (idempotent)", async () => {
     const { rows, db } = makeIdentityDb();
 
-    await runConfigSelfHeal({ db, log: silentLog, provenance: "primary" });
+    await runConfigSelfHeal({
+      db,
+      steps: [clubIdentitySelfHealStep, clubFacebookUrlSelfHealStep],
+      log: silentLog,
+      provenance: "primary",
+    });
     const upsertCallsAfterFirst = (
       db as unknown as { clubIdentitySettings: { upsert: { mock: { calls: unknown[] } } } }
     ).clubIdentitySettings.upsert.mock.calls.length;
 
-    const second = await runConfigSelfHeal({ db, log: silentLog, provenance: "primary" });
+    const second = await runConfigSelfHeal({
+      db,
+      steps: [clubIdentitySelfHealStep, clubFacebookUrlSelfHealStep],
+      log: silentLog,
+      provenance: "primary",
+    });
 
     expect(second.healed).toBe(0);
     // Both steps now see a populated row/column and skip.
@@ -163,7 +179,12 @@ describe("runConfigSelfHeal — never overwrites an admin edit", () => {
       facebookUrl: "https://facebook.com/admin-set", // admin-configured link
     });
 
-    const summary = await runConfigSelfHeal({ db, log: silentLog, provenance: "primary" });
+    const summary = await runConfigSelfHeal({
+      db,
+      steps: [clubIdentitySelfHealStep, clubFacebookUrlSelfHealStep],
+      log: silentLog,
+      provenance: "primary",
+    });
 
     expect(summary.healed).toBe(0);
     // Both steps see a populated row/column and skip.
@@ -281,8 +302,18 @@ describe("runConfigSelfHeal — blue/green double-boot", () => {
       },
     } as unknown as SelfHealDb;
 
-    const first = await runConfigSelfHeal({ db, log: silentLog, provenance: "primary" });
-    const second = await runConfigSelfHeal({ db, log: silentLog, provenance: "primary" });
+    const first = await runConfigSelfHeal({
+      db,
+      steps: [clubIdentitySelfHealStep],
+      log: silentLog,
+      provenance: "primary",
+    });
+    const second = await runConfigSelfHeal({
+      db,
+      steps: [clubIdentitySelfHealStep],
+      log: silentLog,
+      provenance: "primary",
+    });
 
     expect(first.results[0].outcome).toBe("healed");
     expect(second.results[0].outcome).toBe("already-present");
@@ -364,6 +395,7 @@ describe("runConfigSelfHeal — config-fallback guard (never freeze a fallback)"
     // Boot 2: operator fixed config/club.json → provenance "primary" → heals.
     const healedRun = await runConfigSelfHeal({
       db,
+      steps: [clubIdentitySelfHealStep, clubFacebookUrlSelfHealStep],
       log: silentLog,
       provenance: "primary",
     });
@@ -379,12 +411,272 @@ describe("runConfigSelfHeal — config-fallback guard (never freeze a fallback)"
   });
 });
 
+/**
+ * A stateful in-memory fake of the `AgeTierSetting` delegate for the age-tier
+ * self-heal step (#1983), modelling the ATOMIC multi-row write for real.
+ *
+ * - `findFirst` reports whether ANY row exists (the table-empty presence
+ *   check). `pinPresenceAbsent` forces it to report empty even once rows exist,
+ *   so both racers in a blue/green double-boot observe the empty window.
+ * - `upsert` returns a LAZY operation (mirroring Prisma's un-executed
+ *   `PrismaPromise`): it is NOT applied until the enclosing `$transaction` runs
+ *   it. When run it is create-if-absent keyed on the unique `tier`; if the tier
+ *   already exists it throws a real P2002-shaped error — the exact shape a raced
+ *   INSERT surfaces under the unique constraint (concurrent blue/green boot).
+ * - `$transaction([...])` runs the queued ops in order and is ALL-OR-NOTHING:
+ *   any thrown error (an injected transient failure via `fail.tier`, or a raced
+ *   P2002) restores every row to the pre-transaction snapshot and rethrows — so
+ *   the production step's atomicity + clean-retry guarantee is exercised for
+ *   real rather than asserted by fiat.
+ *
+ * `fail.tier` injects a mid-write transient (non-P2002) failure: the op for that
+ * tier throws, modelling a DB blip partway through the batch. Set it back to
+ * null to let a later run succeed (the clean-retry pin).
+ */
+function makeAgeTierDb(
+  seedRows: Array<{ tier: string }> = [],
+  options: { pinPresenceAbsent?: boolean } = {},
+) {
+  const rows = new Map<string, Record<string, unknown>>();
+  for (const r of seedRows) rows.set(r.tier, { ...r });
+  const fail: { tier: string | null } = { tier: null };
+
+  const db = {
+    ageTierSetting: {
+      findFirst: vi.fn(async () => {
+        if (options.pinPresenceAbsent) return null;
+        const first = rows.values().next();
+        return first.done ? null : first.value;
+      }),
+      upsert: vi.fn(
+        ({
+          where,
+          create,
+        }: {
+          where: { tier: string };
+          create: Record<string, unknown>;
+        }) => ({
+          // Lazy op — applied only when `$transaction` runs it, exactly as a
+          // Prisma `PrismaPromise` is deferred until the transaction executes.
+          __run: () => {
+            if (fail.tier === where.tier) {
+              throw new Error(`transient DB error writing tier ${where.tier}`);
+            }
+            if (rows.has(where.tier)) {
+              // The tier was created between our table-empty snapshot and this
+              // insert (concurrent booter) — a raced INSERT under unique(tier)
+              // surfaces as P2002.
+              throw Object.assign(
+                new Error("Unique constraint failed on the fields: (`tier`)"),
+                { code: "P2002" },
+              );
+            }
+            rows.set(where.tier, { ...create });
+            return { tier: where.tier };
+          },
+        }),
+      ),
+    },
+    $transaction: vi.fn(async (ops: Array<{ __run: () => unknown }>) => {
+      // Snapshot the table, then apply the queued ops. Any failure rolls the
+      // WHOLE batch back to the snapshot (atomic all-or-nothing) and rethrows.
+      const snapshot = new Map(
+        [...rows].map(([k, v]) => [k, { ...v }] as const),
+      );
+      const results: unknown[] = [];
+      try {
+        for (const op of ops) results.push(op.__run());
+        return results;
+      } catch (err) {
+        rows.clear();
+        for (const [k, v] of snapshot) rows.set(k, v);
+        throw err;
+      }
+    }),
+  };
+
+  return { rows, fail, db: db as unknown as SelfHealDb };
+}
+
+describe("ageTierSelfHealStep — empty table heals from effective config", () => {
+  it("populates all configured tiers on a cold table", async () => {
+    const { rows, db } = makeAgeTierDb();
+
+    const summary = await runConfigSelfHeal({
+      db,
+      steps: [ageTierSelfHealStep],
+      log: silentLog,
+      provenance: "primary",
+    });
+
+    expect(summary.healed).toBe(1);
+    expect(summary.results[0]).toMatchObject({
+      name: "age-tier-settings",
+      outcome: "healed",
+    });
+
+    // One row per effective-config tier, mirroring the seed create-if-missing.
+    expect(rows.size).toBe(clubConfig.ageTiers.length);
+    for (const tier of clubConfig.ageTiers) {
+      expect(rows.get(tier.id)).toMatchObject({
+        tier: tier.id,
+        minAge: tier.minAge,
+        maxAge: tier.maxAge,
+        label: tier.label,
+        subscriptionRequiredForBooking: tier.subscriptionRequiredForBooking,
+        familyGroupRequestCreateMemberAllowed:
+          tier.familyGroupRequestCreateMemberAllowed,
+      });
+    }
+  });
+
+  it("is idempotent across a double-boot (second boot is a no-op)", async () => {
+    const { rows, db } = makeAgeTierDb();
+
+    await runConfigSelfHeal({
+      db,
+      steps: [ageTierSelfHealStep],
+      log: silentLog,
+      provenance: "primary",
+    });
+    const sizeAfterFirst = rows.size;
+
+    const second = await runConfigSelfHeal({
+      db,
+      steps: [ageTierSelfHealStep],
+      log: silentLog,
+      provenance: "primary",
+    });
+
+    expect(second.alreadyPresent).toBe(1);
+    expect(second.healed).toBe(0);
+    expect(rows.size).toBe(sizeAfterFirst);
+  });
+});
+
+describe("ageTierSelfHealStep — never overwrites admin-edited tiers", () => {
+  it("skips the write entirely when ANY row already exists", async () => {
+    // An admin pruned the table to a single custom tier. The whole-table
+    // presence gate must leave it untouched — no new default rows inserted.
+    const { rows, db } = makeAgeTierDb([{ tier: "ADULT" }]);
+
+    const summary = await runConfigSelfHeal({
+      db,
+      steps: [ageTierSelfHealStep],
+      log: silentLog,
+      provenance: "primary",
+    });
+
+    expect(summary.alreadyPresent).toBe(1);
+    expect(summary.healed).toBe(0);
+    expect(rows.size).toBe(1);
+    expect(
+      (db as unknown as { ageTierSetting: { upsert: ReturnType<typeof vi.fn> } })
+        .ageTierSetting.upsert,
+    ).not.toHaveBeenCalled();
+  });
+});
+
+describe("ageTierSelfHealStep — blue/green double-boot race (atomic write)", () => {
+  it("two boots both seeing the table empty yield exactly one full 4-row set; the second is already-present", async () => {
+    // Both booters share one table and observe it empty in the racing window
+    // (pinPresenceAbsent forces `findFirst` to report empty for both). The first
+    // transaction inserts the full set; the second transaction's first upsert
+    // then collides on unique(tier) → P2002 → the whole batch rolls back → the
+    // runner records already-present. Never a partial or duplicated set.
+    const { rows, db } = makeAgeTierDb([], { pinPresenceAbsent: true });
+
+    const first = await runConfigSelfHeal({
+      db,
+      steps: [ageTierSelfHealStep],
+      log: silentLog,
+      provenance: "primary",
+    });
+    const second = await runConfigSelfHeal({
+      db,
+      steps: [ageTierSelfHealStep],
+      log: silentLog,
+      provenance: "primary",
+    });
+
+    expect(first.results[0].outcome).toBe("healed");
+    expect(second.results[0].outcome).toBe("already-present");
+    expect(second.failed).toBe(0);
+    // Exactly one full set despite both boots seeing the table empty.
+    expect(rows.size).toBe(clubConfig.ageTiers.length);
+  });
+});
+
+describe("ageTierSelfHealStep — mid-write transient failure (clean retry)", () => {
+  it("a failure partway through leaves the table EMPTY (atomic rollback), and the next boot heals every tier", async () => {
+    const { rows, fail, db } = makeAgeTierDb();
+    // Fail on the third-written tier: under a non-atomic per-row loop this would
+    // leave a partial set (the first two tiers) that wedges the table forever.
+    const midTier = clubConfig.ageTiers[2].id;
+    fail.tier = midTier;
+
+    const failed = await runConfigSelfHeal({
+      db,
+      steps: [ageTierSelfHealStep],
+      log: silentLog,
+      provenance: "primary",
+    });
+
+    expect(failed.failed).toBe(1);
+    expect(failed.results[0]).toMatchObject({
+      name: "age-tier-settings",
+      outcome: "failed",
+    });
+    // Atomic rollback: NO partial set. The table is left completely empty so the
+    // table-empty presence check retries cleanly on the next boot.
+    expect(rows.size).toBe(0);
+
+    // Next boot with the transient blip cleared heals the full set.
+    fail.tier = null;
+    const healed = await runConfigSelfHeal({
+      db,
+      steps: [ageTierSelfHealStep],
+      log: silentLog,
+      provenance: "primary",
+    });
+
+    expect(healed.healed).toBe(1);
+    expect(healed.results[0].outcome).toBe("healed");
+    expect(rows.size).toBe(clubConfig.ageTiers.length);
+  });
+});
+
+describe("ageTierSelfHealStep — config-fallback guard", () => {
+  it("skips healing on a non-primary provenance (never freezes example/safe-default tiers)", async () => {
+    const { rows, db } = makeAgeTierDb();
+
+    const summary = await runConfigSelfHeal({
+      db,
+      steps: [ageTierSelfHealStep],
+      log: silentLog,
+      provenance: "example",
+    });
+
+    expect(summary.skipped).toBe(true);
+    expect(rows.size).toBe(0);
+    expect(
+      (db as unknown as { ageTierSetting: { findFirst: ReturnType<typeof vi.fn> } })
+        .ageTierSetting.findFirst,
+    ).not.toHaveBeenCalled();
+  });
+});
+
 describe("registry", () => {
   it("registers the identity step first and the facebookUrl step alongside it", () => {
     expect(SELF_HEAL_STEPS[0]).toBe(clubIdentitySelfHealStep);
     expect(SELF_HEAL_STEPS[0].name).toBe("club-identity-settings");
     expect(SELF_HEAL_STEPS).toContain(clubFacebookUrlSelfHealStep);
     expect(clubFacebookUrlSelfHealStep.name).toBe("club-identity-facebook-url");
+  });
+
+  it("registers the age-tier step", () => {
+    expect(SELF_HEAL_STEPS).toContain(ageTierSelfHealStep);
+    expect(ageTierSelfHealStep.name).toBe("age-tier-settings");
   });
 
   it("defineSelfHealStep binds currentValue + write into heal", async () => {
