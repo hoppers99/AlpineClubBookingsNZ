@@ -96,7 +96,7 @@ Minimum production categories:
 
 - Database: `DATABASE_URL`, `DB_PASSWORD`
 - Auth: `AUTH_SECRET`, `NEXTAUTH_SECRET`, `NEXTAUTH_URL`, `AUTH_TRUST_HOST`
-- Public app: `DOMAIN`, `NEXT_PUBLIC_CONTACT_EMAIL`
+- Public app: `DOMAIN`.
   `DOMAIN` is the root public host consumed by `Caddyfile` through the
   `{$DOMAIN}` placeholder. Caddy derives `www`, `bookings`, and `dashboard`
   subdomains from that value.
@@ -117,7 +117,17 @@ Minimum production categories:
   stale generic all-reports scope; reconnect Xero from `/admin/xero` after
   changing allowed scopes so new tokens carry the granular report scopes.
 - Email: `SMTP_HOST`, `SMTP_PORT`, `AWS_SES_ACCESS_KEY_ID`,
-  `AWS_SES_SECRET_ACCESS_KEY`, `EMAIL_FROM`, `SES_SNS_TOPIC_ARN`
+  `AWS_SES_SECRET_ACCESS_KEY`, `EMAIL_FROM`, `SES_SNS_TOPIC_ARN`. `EMAIL_FROM` is
+  the only email-identity env var (besides these transport secrets): it is the
+  envelope / Return-Path sender and must be a provider-verified (SES) address.
+  Email identity — from display name, support address, and contact-form
+  recipient — is admin-managed DB-first from **Admin > Email Messages**
+  (`EmailMessageSetting`); the former `EMAIL_FROM_NAME`, `SUPPORT_EMAIL`,
+  `CONTACT_EMAIL`, and the dead `NEXT_PUBLIC_CONTACT_EMAIL` env vars were removed
+  (#1986). **Upgrade note:** a deployment that previously relied on the
+  `CONTACT_EMAIL` env var to route the contact form must set the DB
+  `contactEmail` (Admin > Email Messages); if unset it falls back to the support
+  address per the existing precedence, so there is no hard break.
 - Cron and backups: `CRON_SECRET`, `BACKUP_*`, optional
   `AUDIT_ARCHIVE_DATABASE_URL`
 - Admin health: optional `CRON_LEADER_RUNTIME_STATUS_URL` when the cron leader
@@ -319,11 +329,20 @@ Registered steps:
 
 - **`club-identity-settings`** — backfills the club identity
   (`ClubIdentitySettings`) from `config/club.json`.
+- **`club-identity-facebook-url`** (#1984) — column-level backfill of the
+  `facebookUrl` column added after the identity row existed.
+- **`age-tiers`** (#1983) — table-empty presence + one atomic create-if-absent
+  row per effective-config tier (mirroring `prisma/seed.ts`'s tier seed); an
+  admin-edited or pruned tier set is never touched. Heals **tiers only** —
+  nightly rates live independently in `MembershipTypeSeasonRate` (#1930, E4).
+  `src/lib/policies/age-tier.ts` reads age tiers DB-only at runtime; its
+  hard-coded 4-tier default is only the last-resort net for an empty table.
 - **`lodge-capacity`** (#1982) — backfills the default lodge's
   `LodgeSettings.capacity` from the `config/club.json` bed total (column-level:
   it fills a null `capacity`, create-if-absent, and never overwrites an
-  admin-set value). This is what keeps a Bed-Allocation-off default lodge from
-  dropping to capacity 0 — and refusing all bookings — after the runtime
+  admin-set value), gated so it only fires when the lodge would otherwise
+  resolve to capacity 0. This is what keeps a Bed-Allocation-off default lodge
+  from dropping to capacity 0 — and refusing all bookings — after the runtime
   `club.json` capacity fallback was removed.
 
 For a deliberate two-phase deploy, or to heal a cold database out-of-band

@@ -1,4 +1,4 @@
-import { Prisma, type PrismaClient } from "@prisma/client";
+import { Prisma, type AgeTier, type PrismaClient } from "@prisma/client";
 import { clubConfig, clubConfigSource, type ClubConfigSource } from "@/config/club";
 import {
   CLUB_CONFIG_LODGE_CAPACITY,
@@ -57,25 +57,39 @@ import logger from "@/lib/logger";
  *   - `currentValue()` — the current EFFECTIVE config value to persist
  *   - `write(db, v)`   — a write that MUST NOT overwrite an existing value
  *
- * ### Row-level vs column-level presence — choose the one that matches the migration
- * The unit of "presence" depends on what the enabling migration added:
- *   - **New TABLE / singleton row → ROW-LEVEL.** `isPresent` checks whether the
- *     ROW exists; `write` is a create-if-absent upsert (`update: {}`) that never
- *     touches an existing row. Worked example: `clubIdentitySelfHealStep`.
- *   - **New nullable COLUMN on an EXISTING singleton row → COLUMN-LEVEL.** A
- *     row-level check would wrongly skip every install whose row predates the new
- *     column (it would never backfill), so `isPresent` checks the COLUMN (is it
- *     non-null?). `write` is a create-if-absent row upsert (covers a brand-new
- *     install) THEN an atomic `updateMany` scoped to the null column
- *     (`where: { id, col: null }`), so it fills ONLY a still-null column and can
- *     never overwrite an admin-set value or a concurrent booter's write. Worked
- *     example: `clubFacebookUrlSelfHealStep` — copy that pattern (and read its
- *     long-form comment for why a null on a later-added column cannot be admin
- *     intent). If the target table stops being a singleton (e.g. LodgeSettings
- *     going per-lodge), drop the `id` predicate so the null-scoped `updateMany`
- *     backfills every null row, not just the default one.
- * Either way the write must be incapable of overwriting an existing value so the
- * never-overwrite guarantee holds.
+ * ### Presence/write grain shapes — choose the one that matches the migration
+ * A step's `isPresent`/`write` pair MUST agree on GRAIN, or a partial write can
+ * wedge the target. Three shapes exist today; pick by what the enabling
+ * migration added:
+ *   1. **New TABLE / fixed-id singleton row → ROW-LEVEL.** `isPresent` checks
+ *      whether the ROW exists (`findUnique` on a known id); `write` is a single
+ *      create-if-absent upsert (`update: {}`) that never touches an existing
+ *      row. One row, one write; nothing can be left half-written. Worked
+ *      example: `clubIdentitySelfHealStep`.
+ *   2. **New nullable COLUMN on an EXISTING singleton row → COLUMN-LEVEL.** A
+ *      row-level check would wrongly skip every install whose row predates the
+ *      new column (it would never backfill), so `isPresent` checks the COLUMN
+ *      (is it non-null?). `write` is a create-if-absent row upsert (covers a
+ *      brand-new install) THEN an atomic `updateMany` scoped to the null column
+ *      (`where: { id, col: null }`), so it fills ONLY a still-null column and
+ *      can never overwrite an admin-set value or a concurrent booter's write.
+ *      Worked example: `clubFacebookUrlSelfHealStep` — copy that pattern (and
+ *      read its long-form comment for why a null on a later-added column cannot
+ *      be admin intent). If the target table stops being a singleton (e.g.
+ *      LodgeSettings going per-lodge), drop the `id` predicate so the
+ *      null-scoped `updateMany` backfills every null row, not just the default.
+ *   3. **Whole-table-empty presence + ATOMIC multi-row write.** Presence is
+ *      "the table is empty" (`findFirst`) but the write inserts SEVERAL rows.
+ *      Worked example: `ageTierSelfHealStep`. The hazard is a grain mismatch:
+ *      per-row writes under a table-grain presence check can wedge a PARTIAL
+ *      set — a mid-write failure leaves e.g. INFANT+CHILD only, the next boot's
+ *      `findFirst` sees rows and skips forever, and classification silently
+ *      breaks. So the multi-row write MUST be all-or-nothing: wrap every row in
+ *      a single `$transaction` so an interrupted heal rolls back to an empty
+ *      table and the presence check retries cleanly on the next boot. Any
+ *      future multi-row step MUST use this atomic shape.
+ * In every shape the write must be incapable of overwriting an existing value so
+ * the never-overwrite guarantee holds.
  */
 
 /**
@@ -437,6 +451,99 @@ export const clubFacebookUrlSelfHealStep = defineSelfHealStep<string | null>({
 });
 
 /**
+ * One `AgeTierSetting` row to create when the table is empty. Mirrors the seed's
+ * create-if-missing tier rows (`prisma/seed.ts` `seedAgeTierSettings` +
+ * `ageTierSetting.upsert`).
+ */
+interface AgeTierSelfHealRow {
+  tier: AgeTier;
+  minAge: number;
+  maxAge: number | null;
+  label: string;
+  subscriptionRequiredForBooking: boolean;
+  familyGroupRequestCreateMemberAllowed: boolean;
+  sortOrder: number;
+}
+
+/**
+ * Age-tier step (epic #1943, child C4 / issue #1983). Once `age-tier.ts` drops
+ * its `config/club.json` fallback and reads age tiers DB-only, a live fork that
+ * never re-runs the seed on a `migrate deploy` could otherwise be left with an
+ * EMPTY `AgeTierSetting` table and no source of tiers. This step guarantees a
+ * primary-config boot populates the table from the effective config tiers so
+ * the fork can never end up with zero tiers.
+ *
+ * Contract differences from the identity singleton step:
+ * - **Presence is table-empty, not a fixed id.** The write is skipped whenever
+ *   ANY row already exists, so an admin who edited or pruned tiers is never
+ *   touched (never-overwrite guarantee at the whole-table grain).
+ * - **Atomic multi-row create-if-absent.** When empty, ALL configured tiers are
+ *   written in a SINGLE `$transaction` of create-only `upsert({ update: {} })`
+ *   calls keyed on the unique `tier`, mirroring the seed rows exactly. The write
+ *   is all-or-nothing by necessity: presence is guarded at the whole-table grain
+ *   (`findFirst`) but the write spans several rows, so a per-row loop that failed
+ *   partway would leave a PARTIAL set (e.g. INFANT+CHILD only) that the next
+ *   boot's table-empty check mistakes for "present" and skips forever — wedging
+ *   the fork on an incomplete tier table. Wrapping the batch in one transaction
+ *   guarantees an interrupted heal rolls back to an EMPTY table so the presence
+ *   check retries cleanly next boot (the clean-retry property). Concurrent
+ *   blue/green boots that both observe the table empty are safe: the create-only
+ *   upsert never overwrites, and a raced INSERT that surfaces as P2002 rolls the
+ *   whole transaction back and is caught by the runner as already-present.
+ *
+ * Scope note: this heals TIERS only. Nightly RATES live independently in
+ * `MembershipTypeSeasonRate` (the authoritative runtime rate source, #1930 E4)
+ * and are NOT self-healed here — the seed's tier block writes only
+ * `AgeTierSetting`, so this mirrors it exactly.
+ */
+export const ageTierSelfHealStep = defineSelfHealStep<AgeTierSelfHealRow[]>({
+  name: "age-tier-settings",
+  async isPresent(db) {
+    // Table-empty presence: any existing row means the table is populated (an
+    // admin edit / prior seed) and MUST NOT be touched.
+    const existing = await db.ageTierSetting.findFirst({ select: { tier: true } });
+    return existing !== null;
+  },
+  currentValue() {
+    // The EFFECTIVE config tiers (mirrors `seedAgeTierSettings` in
+    // prisma/seed.ts). Only reached when provenance === "primary" (the run
+    // guard), so `clubConfig` is the fork's real config, never a fallback.
+    return clubConfig.ageTiers.map((tier, sortOrder) => ({
+      tier: tier.id as AgeTier,
+      minAge: tier.minAge,
+      maxAge: tier.maxAge,
+      label: tier.label,
+      subscriptionRequiredForBooking: tier.subscriptionRequiredForBooking,
+      familyGroupRequestCreateMemberAllowed:
+        tier.familyGroupRequestCreateMemberAllowed,
+      sortOrder,
+    }));
+  },
+  async write(db, rows) {
+    // ATOMIC multi-row write (see the step docblock's grain note). Presence is
+    // guarded at the whole-table grain but the write spans several rows, so the
+    // batch MUST be all-or-nothing — a per-row loop failing partway would leave
+    // a partial set the next boot mistakes for "present". Each element is the
+    // same create-if-absent upsert the seed uses (`prisma/seed.ts`
+    // seedAgeTierSettings), keyed on the unique `tier`, so an existing tier is
+    // never overwritten. `$transaction` gives all-or-nothing: an interrupted
+    // heal rolls back to an empty table (clean retry next boot), and a raced
+    // blue/green INSERT that surfaces as P2002 rolls the whole batch back and is
+    // caught by the runner as already-present.
+    await db.$transaction(
+      rows.map((row) =>
+        db.ageTierSetting.upsert({
+          where: { tier: row.tier },
+          create: row,
+          update: {},
+          select: { tier: true },
+        }),
+      ),
+    );
+  },
+});
+
+/**
  * The ordered registry of self-heal steps. C3/C4/C5 append their capacity /
  * age-tier / identity steps here (see the module doc). Order is not significant —
  * steps are independent — but keep it stable for predictable logs.
@@ -444,6 +551,7 @@ export const clubFacebookUrlSelfHealStep = defineSelfHealStep<string | null>({
 export const SELF_HEAL_STEPS: readonly RegisteredSelfHealStep[] = [
   clubIdentitySelfHealStep,
   clubFacebookUrlSelfHealStep,
+  ageTierSelfHealStep,
   lodgeCapacitySelfHealStep,
 ];
 

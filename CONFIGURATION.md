@@ -49,6 +49,43 @@ constant, and it always carries a valid absolute `publicUrl` so the identity
 bootstrap layer (`src/config/club-identity.ts`) cannot throw. It is a safe
 placeholder only — a real deployment must still configure the club.
 
+#### Bootstrap layer for the collapsing identity fields (C6)
+
+Five identity fields — **public URL**, **support email**, **contact email**,
+**email from-name**, and **social links** — are never read from
+`config/club.json` at runtime. Every consumer resolves them one of two ways:
+
+- **Async-context readers resolve DB-first.** Outbound email identity (sender
+  from-name, support/contact addresses) comes from `EmailMessageSetting`,
+  applied at send time via `applyEmailMessageSettings*` /
+  `formatEmailFromAddressWithSettings` (`src/lib/email-message-settings.ts`); the
+  public contact `mailto:` (contact route + the pre-setup website screen) reads
+  `EmailMessageSetting.contactEmail`; CMS `{{facebook-url}}` /
+  URL tokens resolve through the DB-first `getClubIdentity()` identity
+  (`src/lib/page-content-embeds.ts`).
+- **Genuinely synchronous, boot-critical sites use the bootstrap layer, not
+  `club.json`.** The app origin (sitemap, root metadata `metadataBase`, the
+  identity `publicHost` used for `clubDomainEmail`) comes from the `NEXTAUTH_URL`
+  bootstrap env var, falling back to `SAFE_DEFAULT_CONFIG.publicUrl`. The
+  outbound **envelope sender** (`EMAIL_FROM` in `src/lib/email-sender.ts`) is a
+  bootstrap concern — it must be a provider-verified (SES) address — so it comes
+  from the `EMAIL_FROM` env var, falling back to
+  `SAFE_DEFAULT_CONFIG.supportEmail`. The From/envelope **address** is always
+  this bootstrap value — the DB-first `EmailMessageSetting.supportEmail` is
+  never used as the sender address (it governs the body/footer support links via
+  send-time replacement, and `emailFromName` governs the From display name), so
+  production must set `EMAIL_FROM` to a provider-verified address. The
+  `SUPPORT_EMAIL` / `EMAIL_FROM_NAME` module constants and
+  `email-message-settings.ts`'s `EMAIL_DEFAULT_FROM_NAME` / default settings are
+  the **stable search keys** that the send-time replacement swaps for the live DB
+  values, so they stay config-derived (never the safe default) — mirroring the
+  `EMAIL_DEFAULT_LODGE_NAME` invariant.
+
+`NEXTAUTH_URL` and `EMAIL_FROM` are the only genuine bootstrap env inputs here;
+these fallbacks are intentional bootstrap defaults, never a `club.json` runtime
+read. On a real install the club's `config/club.json` values reach the DB via the
+seed / boot self-heal (see below), after which the DB is authoritative.
+
 ### DB-first identity (admin-editable)
 
 The club **name**, **short name**, **hut-leader label**, and **Facebook URL** are
@@ -98,6 +135,23 @@ Messages) → `ClubIdentitySettings.name` → `config/club.json`. Email template
 default subjects keep the config-derived lodge name as their stable search key;
 the live lodge name is substituted at send time.
 
+**Email identity is admin-managed, DB-first (Admin > Email Messages).** The
+sender **display name** (`emailFromName`), the **support address**
+(`supportEmail`, used for body/footer support links), and the **contact-form
+recipient** (`contactEmail`, which falls back to `supportEmail`) all resolve from
+`EmailMessageSetting` → `config/club.json`. There are **no** `EMAIL_FROM_NAME`,
+`SUPPORT_EMAIL`, or `CONTACT_EMAIL` env vars — they were removed (#1986) so
+`EmailMessageSetting` is the single source for email identity. `EMAIL_FROM`
+remains the sole email env var (besides transport secrets): it is the
+envelope / Return-Path sender **address** and must be a provider-verified (SES)
+address in production; the DB `supportEmail` is never used as the sender address.
+The now-dead `NEXT_PUBLIC_CONTACT_EMAIL` build arg was deleted at the same time.
+**Upgrade note:** a deployment that previously routed the contact form via the
+`CONTACT_EMAIL` env var must set the DB `contactEmail` under Admin > Email
+Messages; if left unset it falls back to `club.json`'s `contactEmail`, then to
+the support address, per the precedence above (via the boot self-heal chain),
+so removing the env var causes no hard break.
+
 Split-booking confirmations depend on the `{{provisionalGuestsNote}}` token in
 the **booking-confirmed** body (Admin > Email Messages): it renders the
 provisional non-member portion story on a split parent and nothing otherwise
@@ -130,6 +184,22 @@ silently lose the "held provisionally / charged later" explanation.
 | `ageTiers[].nightlyRates.winter.nonMemberCents`    | yes      | Winter non-member nightly rate in integer cents.                                                                 |
 | `ageTiers[].nightlyRates.summer.memberCents`       | yes      | Summer member nightly rate in integer cents.                                                                     |
 | `ageTiers[].nightlyRates.summer.nonMemberCents`    | yes      | Summer non-member nightly rate in integer cents.                                                                 |
+
+> **Age tiers are DB-only at runtime (#1983).** `config/club.json ageTiers[]` is
+> a **seed input only**. At runtime the age tiers (boundaries, labels, per-tier
+> subscription/family flags) are read solely from the `AgeTierSetting` table;
+> `config/club.json` is never consulted for age classification once the DB is
+> populated. On a fresh install `prisma/seed.ts` create-only upserts the config
+> tiers into `AgeTierSetting`, and — because a routine `prisma migrate deploy`
+> never runs the seed — the app **self-heals the tiers on every boot**: if the
+> table is EMPTY it populates it from the current effective config tiers (only
+> from a valid primary `config/club.json`; never overwriting an existing row, so
+> admin edits survive). A hard-coded 4-tier TAC default (INFANT 0-4, CHILD 5-9,
+> YOUTH 10-17, ADULT 18+) is the last-resort safety net if the table is still
+> empty, so age classification never breaks. Nightly RATES are NOT self-healed
+> here — they live independently in `MembershipTypeSeasonRate` (see below). See
+> `src/lib/policies/age-tier.ts`, `src/lib/config-self-heal.ts`, and "Config
+> self-heal on boot" in `docs/DEPLOYMENT.md`.
 
 > **Hut rates are keyed by membership type (#1930, E4).** The `memberCents` /
 > `nonMemberCents` seed values above are fanned out at seed time into
@@ -1330,11 +1400,7 @@ read `MemberAccessRole` rows.
 | `EMAIL_SERVER_PORT`                      | SMTP relay port (required when `USE_SMTP_RELAY=true`).                                                                                                       |
 | `EMAIL_SERVER_USER`                      | SMTP relay username (required when `USE_SMTP_RELAY=true`).                                                                                                   |
 | `EMAIL_SERVER_PASSWORD`                  | SMTP relay password (required when `USE_SMTP_RELAY=true`).                                                                                                   |
-| `EMAIL_FROM`                             | Sender email address.                                                                                                                                        |
-| `EMAIL_FROM_NAME`                        | Optional sender display name override.                                                                                                                       |
-| `SUPPORT_EMAIL`                          | Optional support email override.                                                                                                                             |
-| `CONTACT_EMAIL`                          | Server-side contact-form recipient override.                                                                                                                 |
-| `NEXT_PUBLIC_CONTACT_EMAIL`              | Public contact email displayed in client-rendered UI.                                                                                                        |
+| `EMAIL_FROM`                             | Envelope / Return-Path sender address (bootstrap; must be a provider-verified SES address in production). The ONLY email-identity env var besides transport secrets — from display name, support address, and contact-form recipient are admin-managed DB-first (Admin > Email Messages). |
 | `SES_SNS_TOPIC_ARN`                      | SNS topic ARN for SES bounce/complaint webhooks (required for full SES feedback handling when `USE_AWS_SES=true`).                                           |
 | `SES_SNS_ALLOW_UNSAFE_MISSING_TOPIC_ARN` | Local/dev escape hatch only; never enable for deployed SES feedback ingestion.                                                                               |
 | `SES_SNS_ALLOW_SIGNATURE_V1`             | Temporarily permit legacy SNS SignatureVersion 1 (SHA1). Default rejects v1; enable SignatureVersion 2 on the SNS topic and leave this unset in production.   |

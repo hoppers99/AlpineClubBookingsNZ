@@ -58,4 +58,37 @@ describe("admin-split-settlement-unpaid delivery policy (#1967/#1994)", () => {
       mockPrisma.notificationDeliveryPolicy.findUnique,
     ).not.toHaveBeenCalled();
   });
+
+  it("resolves the #1993 terminal admin cancelled notice through its own delivery policy", async () => {
+    // C1: the dedicated terminal notice is an admin system template, so its
+    // delivery mode resolves from its OWN registry+policy row — muting or
+    // overriding the recurring alert cannot touch it.
+    const sends = await shouldSendAdminSystemEmail({
+      templateName: "admin-split-settlement-cancelled",
+    });
+    expect(sends).toEqual({ send: true, mode: "always" });
+    expect(mockPrisma.notificationDeliveryPolicy.findUnique).toHaveBeenCalledWith(
+      { where: { templateName: "admin-split-settlement-cancelled" } },
+    );
+
+    mockPrisma.notificationDeliveryPolicy.findUnique.mockResolvedValue({
+      templateName: "admin-split-settlement-cancelled",
+      mode: "DISABLED",
+    });
+    const disabled = await shouldSendAdminSystemEmail({
+      templateName: "admin-split-settlement-cancelled",
+    });
+    expect(disabled).toEqual({ send: false, mode: "disabled", reason: "disabled" });
+  });
+
+  it("does not treat the member split-guest-portion-cancelled notice as an admin system template", async () => {
+    const result = await shouldSendAdminSystemEmail({
+      templateName: "split-guest-portion-cancelled",
+    });
+
+    expect(result).toEqual({ send: true, mode: "always" });
+    expect(
+      mockPrisma.notificationDeliveryPolicy.findUnique,
+    ).not.toHaveBeenCalled();
+  });
 });

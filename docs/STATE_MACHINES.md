@@ -95,12 +95,17 @@ so the member can settle the guest portion, and emails the member that link.
 The **member email fires once per mint** — `mintSplitGuestPaymentLinkIfAbsent`
 is guarded on the absence of an active (unrevoked, unused, unexpired)
 PaymentLink for the child — while the **admin alert
-(`sendAdminSplitSettlementUnpaidAlert`) fires on every hold-extension run**
-(~2-daily, the same cadence as the request-origin hold-expired alert) until the
-child settles. If the parent is NOT settled (e.g. an abandoned-card
+(`sendAdminSplitSettlementUnpaidAlert`) follows a derived cadence** (#1993 Part
+B): it fires on hold-extension windows 1, 2 and 3, then every 7th window
+thereafter, capping the previously-uncapped ~2-daily alert. The window number is
+a pure function of elapsed time — `floor((now − originalHoldExpiry) /
+REQUEST_HOLD_EXTENSION_MS) + 1`, where `originalHoldExpiry` is re-derived (no
+schema, no counter) as `max(checkIn − holdDays, createdAt)` — and the upstream
+extension CAS still fires exactly once per ~2-day window, so a cron rerun in the
+same window never re-alerts. If the parent is NOT settled (e.g. an abandoned-card
 `PAYMENT_PENDING` parent), no link is minted or emailed — the guest portion must
-not settle ahead of the member's own place — and the same admin alert fires each
-extension run with parent-unpaid wording instead.
+not settle ahead of the member's own place — and the same capped admin alert
+fires with parent-unpaid wording instead.
 
 Payment-link recovery and supersession (#1967). Raw tokens are never stored, so
 a minted-but-undelivered link would otherwise stall settlement forever behind
@@ -131,13 +136,37 @@ reconciled) or after the parent is CANCELLED — the parent-cancel sweep
 (`cancelLinkedProvisionalChildBookings`) only cancels children still PENDING
 (and revokes their links); an already-PAID child deliberately survives, exactly
 like any other paid booking (captured-money invariant), and needs the ordinary
-cancel/refund flow if the party is not coming. There is deliberately no
-auto-cancel/reaper for a split child left unsettled past check-in — that is an
-owner policy decision; the recurring admin alert is the backstop. The child
-stays PENDING and holds no capacity throughout; if the lodge fills, the
-capacity re-check bumps it and revokes its link like any other provisional
-child. Paying the parent by card instead keeps the automatic saved-card
-settlement path unchanged.
+cancel/refund flow if the party is not coming.
+
+Terminal state at check-in (#1993 Part A, owner-selected Option 1). A split
+child still `PENDING` (unsettled, no saved card) once its check-in day has ended
+is **auto-cancelled** by the settlement cron: `PENDING -> CANCELLED`. The boundary
+is the same one the link-mint stop uses
+(`endOfDateOnlyForTimeZone(formatDateOnly(checkIn)) <= now`), so the two can never
+disagree about "check-in has passed". Because the child holds no capacity this is
+bookkeeping + notification, not a capacity change: under the per-lodge lock a
+guarded `updateMany({ status: PENDING } -> CANCELLED)` CAS (count 0 => a payment
+won the lock seconds earlier — `already_processed`, safe), then bed reconcile and
+payment-link revocation, in the same transaction. Post-commit (outside the tx,
+per `booking-events.ts` — an in-tx narrative INSERT failure would abort the whole
+transaction and block the cancel) the `CANCELLED` booking event is recorded, the
+member gets a **dedicated** guest-portion-cancelled email
+(`split-guest-portion-cancelled`: nothing was ever charged, their own booking is
+untouched — and it only promises "remains confirmed" when the parent is genuinely
+settled), and admins get ONE **dedicated** terminal notice
+(`sendAdminSplitSettlementCancelledAlert` / the `admin-split-settlement-cancelled`
+template — its own registry entry, so an override or mute of the recurring
+`admin-split-settlement-unpaid` alert cannot rewrite or suppress it). The recurring
+alert itself now fires on a capped cadence (hold-extension windows 1, 2, 3, then
+every 7th) and the terminal cancel ends that series. A **PAID child is never reached** (it is
+not `PENDING`); the **parent is never touched**; and there is **no Xero void** —
+an unsettled child never had an invoice. A split child that DOES have a saved
+card is still auto-charged at its hold deadline as before (that path settles it,
+so the terminal cancel is only for the no-card link path). The child otherwise
+stays PENDING and holds no capacity throughout; if the lodge fills first, the
+capacity re-check bumps it and revokes its link like any other provisional child.
+Paying the parent by card instead keeps the automatic saved-card settlement path
+unchanged.
 
 Lodge check-in gate (F27 / #1372 + #1422) — status-preserving. A booking that
 carries a pending admin review (`requiresAdminReview` true and
@@ -638,6 +667,22 @@ minus what was refunded), so the mirror invariant is net-based —
 at repay settlement (see `docs/DOMAIN_INVARIANTS.md`). The repay path assumes
 no saved card: it always goes through the immediate card-entry PaymentIntent
 flow.
+
+Duplicate capture on an already-PAID booking (#1992): when a success arrives
+carrying the SAME intent the booking settled with, every reconciliation path
+returns `already_paid` unchanged (webhook redelivery, confirm-payment racing
+the webhook, payment-link reconcile, charge-saved-method / cron reruns
+replaying their `pending_charge_` Stripe idempotency key,
+confirm-pending-guests retries). A success carrying a DIFFERENT intent while
+another captured PRIMARY transaction still holds net cash is double money (the
+residual #1967 split-child link-vs-auto-charge window) and is auto-refunded:
+the duplicate's transaction goes `SUCCEEDED -> REFUNDED` via a durable
+`duplicate_capture_<bookingId>_<pi>` recovery operation, the settlement
+transaction and the booking's PAID status are untouched, and
+`markBookingPaymentSucceeded` reports `duplicate_capture_refunded` /
+`duplicate_capture_refund_failed`. A fully `REFUNDED` prior capture is history
+(#1765), never a settlement a repay generation could "duplicate", and at most
+one side of a capture pair is ever refunded (adjudicated under `lock(1)`).
 
 To verify: whether Internet Banking uses the same `PaymentStatus` transitions
 or Xero invoice state as the effective settlement state.

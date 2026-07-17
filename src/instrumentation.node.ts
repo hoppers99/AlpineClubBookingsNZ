@@ -168,6 +168,8 @@ export async function register() {
             job: "general-cron",
             confirmed: result.confirmPending?.confirmedBookingIds.length ?? 0,
             bumped: result.confirmPending?.bumpedBookingIds.length ?? 0,
+            // #1993 Part A: split children auto-cancelled at end of check-in day.
+            cancelled: result.confirmPending?.cancelledBookingIds.length ?? 0,
             failed: result.confirmPending?.failedBookingIds.length ?? 0,
             preArrivalSent:
               result.preArrivalReminders?.sentBookingIds.length ?? 0,

@@ -322,6 +322,52 @@ describe("#1967/#1994 split-settlement email templates", () => {
   });
 });
 
+describe("#1993 Part A terminal split-cancellation email templates", () => {
+  it("registers the admin terminal cancelled notice as a delivery-editable admin alert (C1)", () => {
+    const definition = getEmailTemplateDefinition(
+      "admin-split-settlement-cancelled",
+    );
+    if (!definition) throw new Error("missing admin-split-settlement-cancelled");
+
+    // Its OWN registry entry (not a variant of the recurring alert): admin
+    // audience, admin-system, NOT delivery-locked (an operational nudge). Its
+    // registered required tokens are the member name + admin action link.
+    expect(definition.audience).toBe("admin");
+    expect(isAdminSystemTemplate("admin-split-settlement-cancelled")).toBe(true);
+    expect(definition.deliveryEditable).toBe(true);
+    expect(getDefaultDeliveryMode("admin-split-settlement-cancelled")).toBe(
+      "always",
+    );
+    expect(definition.requiredTokens).toEqual(
+      expect.arrayContaining(["memberName", "reviewUrl"]),
+    );
+    for (const token of definition.requiredTokens) {
+      expect(definition.defaultBody).toContain(`{{${token}}}`);
+    }
+  });
+
+  it("registers the member guest-portion-cancelled notice as a non-token member template (C2)", () => {
+    const definition = getEmailTemplateDefinition(
+      "split-guest-portion-cancelled",
+    );
+    if (!definition) throw new Error("missing split-guest-portion-cancelled");
+
+    // Member-facing, no bearer token: audience "member", not an admin system
+    // template, delivery not admin-editable, and its required tokens (firstName
+    // + stay dates) all appear in the default body.
+    expect(definition.audience).toBe("member");
+    expect(isAdminSystemTemplate("split-guest-portion-cancelled")).toBe(false);
+    expect(definition.deliveryEditable).toBe(false);
+    expect(getDefaultDeliveryMode("split-guest-portion-cancelled")).toBe(
+      "always",
+    );
+    expect(definition.requiredTokens).not.toContain("token");
+    for (const token of definition.requiredTokens) {
+      expect(definition.defaultBody).toContain(`{{${token}}}`);
+    }
+  });
+});
+
 describe("render path for newly-registered action-link templates (#1797)", () => {
   it.each(ACTION_LINK_KEYS)(
     "renders %s default body from sample data with no unresolved placeholders",
