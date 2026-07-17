@@ -9,11 +9,13 @@ import {
   changedFields,
   hashRow,
   planActionFor,
+  rawHasValue,
   updateDataForMode,
   type ApplyContext,
   type CategoryApplyResult,
   type CategoryImporter,
   type CategoryPlanResult,
+  type ImportMode,
   type PlanContext,
   type PlanItem,
   type ReadDb,
@@ -54,17 +56,23 @@ import { RowValidator, nz, readCsvRows } from "../values";
 // Component invariant (#1932, E6), validated at plan time so a malformed bundle
 // never reaches a write: a NO_INVOICE annual fee is a zero total with NO
 // components; every invoiceable fee carries >=1 component whose amounts sum
-// EXACTLY to the fee total. Because the fee total stays authoritative, an
-// annual-fee row must always travel with its full component set (as the export
-// always emits them) — the sum is checked against the bundle's own amount.
+// EXACTLY to the fee total. Because billing makes Σ(components) authoritative
+// for an invoiceable fee, this is checked TWICE at plan time: once against the
+// bundle's own amounts (validateComponentInvariant), and once against the
+// EFFECTIVE POST-MERGE component set — the bundle's components PLUS any existing
+// target components the bundle does not carry, which upsert-only apply leaves in
+// place (validatePostMergeComponentInvariant). A bundle that renames a component
+// label would otherwise leave the old row behind and silently double-bill.
 //
 // PRECEDENCE over the #1931 legacy materialisation: when a bundle carries this
-// category's joining-fees.csv, the fee amounts are authoritative here, so the
-// xero-config legacy item-code-amount fan-out (which invents JoiningFee windows
-// from a pre-#1931 bundle's dead amountCents column) must NOT also run — it
-// would duplicate or skew the schedule. Old-format bundles (no joining-fees.csv)
-// keep the legacy path per the E13 compat window. See
-// bundleCarriesJoiningFeeSchedule (consumed by xero-config).
+// category's joining-fees.csv AND the membership-fees category is actually being
+// applied, the fee amounts are authoritative here, so the xero-config legacy
+// item-code-amount fan-out (which invents JoiningFee windows from a pre-#1931
+// bundle's dead amountCents column) must NOT also run — it would duplicate or
+// skew the schedule. Old-format bundles (no joining-fees.csv), or a new-format
+// bundle imported with membership-fees DESELECTED, keep the legacy path per the
+// E13 compat window. See bundleCarriesJoiningFeeSchedule (consumed by
+// xero-config, gated there on the category selection).
 
 const JOINING_FEES_FILE = "membership-fees/joining-fees.csv";
 const ANNUAL_FEES_FILE = "membership-fees/annual-fees.csv";
@@ -101,9 +109,10 @@ const DEFAULT_PRORATION_RULE = "NONE";
 
 /**
  * True when a bundle carries the first-class joining-fee schedule (#1941). It
- * SUPERSEDES the #1931 legacy joining-fee materialisation in xero-config: a
- * new-format bundle sets JoiningFee amounts directly here, so the legacy
- * item-code-amount fan-out must not also run. Consumed by xero-config.
+ * SUPERSEDES the #1931 legacy joining-fee materialisation in xero-config, but
+ * ONLY when the membership-fees category is actually being applied — xero-config
+ * gates on that (an import that deselects membership-fees must keep the legacy
+ * path or joining fees silently vanish). Consumed by xero-config.
  */
 export function bundleCarriesJoiningFeeSchedule(
   files: Map<string, Uint8Array>,
@@ -170,6 +179,7 @@ interface AnnualFeeCurrent {
 }
 interface ComponentCurrent {
   id: string;
+  label: string;
   amountCents: number;
   prorate: boolean;
   xeroAccountCode: string | null;
@@ -183,8 +193,10 @@ interface FeesBatch {
   joiningFees: Map<string, JoiningFeeCurrent>;
   /** by `${key}/${fromISO}` */
   annualFees: Map<string, AnnualFeeCurrent>;
-  /** by `${key}/${fromISO}/${label}` */
+  /** by `${key}/${fromISO}/${label}` (last-wins on duplicate labels) */
   components: Map<string, ComponentCurrent>;
+  /** by parentKey `${key}/${fromISO}` → ALL existing rows (duplicates kept). */
+  componentsByParent: Map<string, ComponentCurrent[]>;
 }
 
 async function loadFeesBatch(db: ReadDb): Promise<FeesBatch> {
@@ -236,6 +248,7 @@ async function loadFeesBatch(db: ReadDb): Promise<FeesBatch> {
   }
   const annualFees = new Map<string, AnnualFeeCurrent>();
   const components = new Map<string, ComponentCurrent>();
+  const componentsByParent = new Map<string, ComponentCurrent[]>();
   for (const fee of annualRows) {
     const pk = parentKey(fee.membershipType.key, fee.effectiveFrom);
     annualFees.set(pk, {
@@ -245,16 +258,23 @@ async function loadFeesBatch(db: ReadDb): Promise<FeesBatch> {
       prorationRule: fee.prorationRule,
       effectiveTo: fee.effectiveTo,
     });
+    const list: ComponentCurrent[] = [];
     for (const c of fee.components) {
-      components.set(`${pk}/${c.label}`, {
+      const current: ComponentCurrent = {
         id: c.id,
+        label: c.label,
         amountCents: c.amountCents,
         prorate: c.prorate,
         xeroAccountCode: c.xeroAccountCode,
         xeroItemCode: c.xeroItemCode,
         sortOrder: c.sortOrder,
-      });
+      };
+      // last-wins by label (mirrors the key-weak match); the full list below
+      // preserves duplicates so the post-merge invariant can see them.
+      components.set(`${pk}/${c.label}`, current);
+      list.push(current);
     }
+    componentsByParent.set(pk, list);
   }
 
   return {
@@ -263,6 +283,7 @@ async function loadFeesBatch(db: ReadDb): Promise<FeesBatch> {
     joiningFees,
     annualFees,
     components,
+    componentsByParent,
   };
 }
 
@@ -522,13 +543,20 @@ function parseMembershipFees(
   return out;
 }
 
+/** Format a list of labels for an error message: `"a", "b"`. */
+function quoteLabels(labels: string[]): string {
+  return labels.map((l) => `"${l}"`).join(", ");
+}
+
 /**
  * The #1932 component invariant, checked against the BUNDLE's own amounts so a
  * malformed bundle never reaches a write: a NO_INVOICE fee is a zero total with
  * no components; an invoiceable fee carries >=1 component summing EXACTLY to the
  * fee amount. Every annual-fee row must travel with its full component set (as
  * the export always emits them). Components whose parent fee is not in the
- * bundle are a blocking error (they cannot be reconciled against a total).
+ * bundle are a blocking error (they cannot be reconciled against a total). A
+ * bundle carrying two components with the same (fee window, label) cannot
+ * round-trip (no DB unique; apply is last-wins by label) — also blocked here.
  */
 function validateComponentInvariant(parsed: ParsedFees, errors: string[]): void {
   const componentsByParent = new Map<string, ParsedComponent[]>();
@@ -538,6 +566,18 @@ function validateComponentInvariant(parsed: ParsedFees, errors: string[]): void 
     componentsByParent.set(c.parentKey, list);
   }
   const feeKeys = new Set(parsed.annualFees.map((f) => f.parentKey));
+
+  // FIX-3 (bundle side, #1941): duplicate (fee window, label) within the bundle.
+  for (const [parentPk, comps] of componentsByParent) {
+    const byLabel = new Map<string, number>();
+    for (const c of comps) byLabel.set(c.label, (byLabel.get(c.label) ?? 0) + 1);
+    const dupes = [...byLabel.entries()].filter(([, n]) => n > 1).map(([l]) => l);
+    if (dupes.length > 0) {
+      errors.push(
+        `${ANNUAL_FEE_COMPONENTS_FILE}: annual fee "${parentPk}" carries duplicate component label(s) ${quoteLabels(dupes)} — component labels must be unique within a fee window (the target has no unique constraint, so a duplicate cannot round-trip); rename or remove the duplicate row(s) in the bundle`,
+      );
+    }
+  }
 
   for (const parentPk of componentsByParent.keys()) {
     if (!feeKeys.has(parentPk)) {
@@ -577,6 +617,115 @@ function validateComponentInvariant(parsed: ParsedFees, errors: string[]): void 
   }
 }
 
+/**
+ * The #1932 invariant re-checked against the EFFECTIVE POST-MERGE component set
+ * (#1941, FIX-1). Apply is upsert-only and never deletes (ADR-002), so any
+ * existing target component whose label the bundle does NOT carry survives the
+ * import. Billing makes Σ(components) authoritative for an invoiceable fee, so a
+ * leftover orphan silently over/under-bills members (classic case: the bundle
+ * renames a component label, e.g. "Base fee" → "Membership base fee", leaving
+ * both rows). For every fee window the bundle imports into that ALREADY exists
+ * on the target, compute the post-merge set (bundle components upserted by label
+ * PLUS leftover DB components) and block if it violates the invariant — Σ ≠ the
+ * post-merge fee total, or a NO_INVOICE fee retaining any component. The
+ * effective fee total honours the write mode (merge keeps the DB total/basis
+ * when the bundle cell is blank), so merge-mode is protected too.
+ *
+ * This also blocks (FIX-3, target side) a pre-existing fee that already holds
+ * duplicate-label components for a window the bundle imports into — a label-keyed
+ * upsert cannot reconcile it; the admin must fix it on the Fees page first.
+ */
+function validatePostMergeComponentInvariant(
+  parsed: ParsedFees,
+  batch: FeesBatch,
+  mode: ImportMode,
+  errors: string[],
+): void {
+  const bundleCompsByParent = new Map<string, ParsedComponent[]>();
+  for (const c of parsed.components) {
+    const list = bundleCompsByParent.get(c.parentKey) ?? [];
+    list.push(c);
+    bundleCompsByParent.set(c.parentKey, list);
+  }
+
+  for (const fee of parsed.annualFees) {
+    const currentFee = batch.annualFees.get(fee.key) ?? null;
+    const existingComps = batch.componentsByParent.get(fee.parentKey) ?? [];
+
+    // FIX-3 (target side): duplicate labels already on the target for this fee.
+    if (currentFee) {
+      const byLabel = new Map<string, number>();
+      for (const c of existingComps) byLabel.set(c.label, (byLabel.get(c.label) ?? 0) + 1);
+      const dupes = [...byLabel.entries()].filter(([, n]) => n > 1).map(([l]) => l);
+      if (dupes.length > 0) {
+        errors.push(
+          `${ANNUAL_FEE_COMPONENTS_FILE}: the target's annual fee "${fee.parentKey}" already has duplicate-label component(s) ${quoteLabels(dupes)}, which a label-keyed import cannot reconcile — resolve the duplicate(s) on the Fees page before importing into this fee window`,
+        );
+      }
+    }
+
+    // Only an EXISTING fee can leave orphaned components behind or keep a
+    // merge-preserved total; a brand-new fee's post-merge set equals the
+    // bundle's, already validated by validateComponentInvariant.
+    if (!currentFee) continue;
+
+    // Effective post-merge fee total + billing basis (apply's merge/overwrite
+    // semantics: merge keeps the DB value when the bundle cell is blank).
+    const effectiveTotal =
+      mode === "overwrite" || rawHasValue(fee.raw, "amountCents")
+        ? fee.data.amountCents
+        : currentFee.amountCents;
+    const effectiveBasis =
+      mode === "overwrite" || rawHasValue(fee.raw, "billingBasis")
+        ? fee.data.billingBasis
+        : currentFee.billingBasis;
+
+    const bundleComps = bundleCompsByParent.get(fee.parentKey) ?? [];
+    const bundleLabels = new Set(bundleComps.map((c) => c.label));
+
+    // Existing DB components whose labels the bundle does NOT carry: upsert-only
+    // apply leaves them in place, so they survive the merge.
+    const leftovers = existingComps.filter((c) => !bundleLabels.has(c.label));
+    const leftoverLabels = leftovers.map((c) => c.label);
+
+    if (effectiveBasis === NO_INVOICE) {
+      // A no-invoice fee must end with zero components. The bundle can't carry
+      // any (validateComponentInvariant blocks that), but leftovers would remain.
+      if (leftovers.length > 0) {
+        errors.push(
+          `${ANNUAL_FEE_COMPONENTS_FILE}: importing no-invoice annual fee "${fee.parentKey}" would leave orphaned component(s) ${quoteLabels(leftoverLabels)} on the target (upsert-only import never deletes) — a no-invoice fee must have no components; remove them on the Fees page first`,
+        );
+      }
+      continue;
+    }
+
+    // Post-merge sum = each bundle component's effective (merge/overwrite) amount
+    // PLUS every leftover DB component the bundle does not carry.
+    let sum = 0;
+    for (const c of bundleComps) {
+      const existing = batch.components.get(c.key) ?? null;
+      const eff =
+        mode === "overwrite" || rawHasValue(c.raw, "amountCents")
+          ? c.data.amountCents
+          : existing?.amountCents ?? c.data.amountCents;
+      sum += eff;
+    }
+    for (const c of leftovers) sum += c.amountCents;
+
+    if (sum !== effectiveTotal) {
+      if (leftoverLabels.length > 0) {
+        errors.push(
+          `${ANNUAL_FEE_COMPONENTS_FILE}: importing annual fee "${fee.parentKey}" would leave orphaned component(s) ${quoteLabels(leftoverLabels)} already on the target that the bundle does not carry (upsert-only import never deletes), so its post-merge components sum to ${sum} cents but the fee total is ${effectiveTotal} cents — remove or rename those component(s) on the Fees page before importing`,
+        );
+      } else {
+        errors.push(
+          `${ANNUAL_FEE_COMPONENTS_FILE}: after merge the components for annual fee "${fee.parentKey}" sum to ${sum} cents but the fee total would be ${effectiveTotal} cents`,
+        );
+      }
+    }
+  }
+}
+
 // ---- Plan ------------------------------------------------------------------
 
 async function planMembershipFees(ctx: PlanContext): Promise<CategoryPlanResult> {
@@ -585,6 +734,11 @@ async function planMembershipFees(ctx: PlanContext): Promise<CategoryPlanResult>
   const fingerprintParts: string[] = [];
   const batch = await loadFeesBatch(ctx.db);
   const parsed = parseMembershipFees(ctx.files, batch, errors);
+  // #1941 FIX-1/FIX-3: block imports whose EFFECTIVE post-merge component set
+  // would break the Σ(components)=total billing invariant (leftover orphans from
+  // a renamed label, or duplicate-label rows the label-keyed upsert can't fix).
+  // Runs at plan time and therefore again at the in-lock re-plan.
+  validatePostMergeComponentInvariant(parsed, batch, ctx.mode, errors);
 
   for (const row of parsed.joiningFees) {
     const current = batch.joiningFees.get(row.key) ?? null;
@@ -717,6 +871,8 @@ async function applyMembershipFees(ctx: ApplyContext): Promise<CategoryApplyResu
   // Annual-fee components (MembershipAnnualFeeComponent, keyed by parent fee +
   // label). Upsert-only (never delete), like induction's nested items — a
   // component the bundle drops is left in place (see the docs' upsert caveat).
+  // The plan's post-merge invariant (validatePostMergeComponentInvariant) has
+  // already refused any bundle whose leftover orphans would break Σ=total.
   for (const row of parsed.components) {
     const feeId = feeIdByParent.get(row.parentKey);
     if (!feeId) {
