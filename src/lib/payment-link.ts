@@ -23,7 +23,10 @@ import { acquireLodgeCapacityLock, checkCapacityForGuestRanges } from "@/lib/cap
 import { bookingHasCapacityOverride } from "@/lib/booking-status";
 import { getDefaultLodgeId } from "@/lib/lodges";
 import { endOfDateOnlyForTimeZone, formatDateOnly } from "@/lib/date-only";
-import { sendBookingRequestApprovedEmail } from "@/lib/email";
+import {
+  sendBookingRequestApprovedEmail,
+  sendSplitGuestPaymentLinkEmail,
+} from "@/lib/email";
 import logger from "@/lib/logger";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import { markBookingPaymentSucceeded } from "@/lib/payment-reconciliation";
@@ -541,6 +544,114 @@ export async function createPaymentIntentForPaymentLink(
     clientSecret: paymentIntent.client_secret,
     paymentIntentId: paymentIntent.id,
   };
+}
+
+/**
+ * Mint a tokenised PaymentLink for a split non-member child booking (#1967) IF
+ * it has no active (un-revoked, un-used) link yet, returning the raw token so
+ * the caller can email it. Returns null when an active link already exists —
+ * that absence/presence is the idempotency sentinel that makes the settlement
+ * cron notify the member and admins exactly once across 15-minute re-runs
+ * (only the raw token minted here can be emailed; a pre-existing link's token
+ * is unrecoverable by design, so we never re-send).
+ *
+ * DB-only and safe to call inside a capacity-lock transaction; the email MUST
+ * be sent by the caller OUTSIDE the transaction. The link expires at the end of
+ * the check-in day in NZT, matching the #707/#740 request-origin convention.
+ */
+export async function mintSplitGuestPaymentLinkIfAbsent(
+  tx: Prisma.TransactionClient,
+  booking: { id: string; checkIn: Date }
+): Promise<string | null> {
+  const existing = await tx.paymentLink.findFirst({
+    where: { bookingId: booking.id, revokedAt: null, usedAt: null },
+    select: { id: true },
+  });
+  if (existing) return null;
+
+  const { token, tokenHash } = issueActionToken();
+  await tx.paymentLink.create({
+    data: {
+      bookingId: booking.id,
+      tokenHash,
+      expiresAt: endOfDateOnlyForTimeZone(formatDateOnly(booking.checkIn)),
+    },
+  });
+  return token;
+}
+
+export type IssueSplitGuestPaymentLinkResult =
+  | { outcome: "sent" }
+  | { outcome: "already_active" }
+  | { outcome: "suppressed" }
+  | { outcome: "not_payable" };
+
+/**
+ * On-demand sibling of the settlement-cron path (#1967): mint (if absent) and
+ * email a split non-member child's guest-portion payment link. Backs the
+ * booking-detail affordance a member uses when switching their own place to
+ * Internet Banking (no card on file for the later guest charge). Idempotent:
+ * an already-active link short-circuits to `already_active` without re-sending,
+ * and the mint happens under the shared booking advisory lock so a
+ * double-click, or a click racing the settlement cron, cannot mint two links.
+ */
+export async function issueSplitGuestPaymentLink(
+  childBookingId: string
+): Promise<IssueSplitGuestPaymentLinkResult> {
+  const booking = await prisma.booking.findUnique({
+    where: { id: childBookingId },
+    include: { member: true, guests: { select: { id: true } } },
+  });
+
+  if (
+    !booking ||
+    booking.deletedAt ||
+    booking.status !== BookingStatus.PENDING ||
+    !booking.parentBookingId ||
+    !booking.hasNonMembers ||
+    booking.finalPriceCents <= 0
+  ) {
+    return { outcome: "not_payable" };
+  }
+
+  const token = await prisma.$transaction(async (tx) => {
+    const bookingLodgeId = booking.lodgeId ?? (await getDefaultLodgeId(tx));
+    await acquireLodgeCapacityLock(tx, bookingLodgeId);
+    // Re-read status under the lock; a concurrent settle/cancel is only visible
+    // here. Never mint a link for a booking that has left PENDING.
+    const locked = await tx.booking.findUnique({
+      where: { id: booking.id },
+      select: { status: true },
+    });
+    if (!locked || locked.status !== BookingStatus.PENDING) return null;
+    return mintSplitGuestPaymentLinkIfAbsent(tx, {
+      id: booking.id,
+      checkIn: booking.checkIn,
+    });
+  });
+
+  if (token === null) {
+    // An active link already exists (idempotent no-op) or a concurrent
+    // transition moved the booking out of PENDING — nothing new to send.
+    return { outcome: "already_active" };
+  }
+
+  const emailOutcome = await sendSplitGuestPaymentLinkEmail({
+    email: booking.member.email,
+    firstName: booking.member.firstName,
+    token,
+    checkIn: booking.checkIn,
+    checkOut: booking.checkOut,
+    guestCount: booking.guests.length,
+    priceCents: booking.finalPriceCents,
+    bookingReference: booking.id,
+    expiresAt: endOfDateOnlyForTimeZone(formatDateOnly(booking.checkIn)),
+    lodgeId: booking.lodgeId ?? null,
+  });
+
+  return emailOutcome.status === "suppressed"
+    ? { outcome: "suppressed" }
+    : { outcome: "sent" };
 }
 
 /** Revoke all active payment links for a booking (e.g. when it is bumped). */

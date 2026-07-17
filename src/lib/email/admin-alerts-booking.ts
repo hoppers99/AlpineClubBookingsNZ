@@ -11,6 +11,7 @@ import {
   adminBookingRequestPendingTemplate,
   adminSchoolManualInvoiceTemplate,
   adminBookingRequestHoldExpiredTemplate,
+  adminSplitSettlementUnpaidTemplate,
 } from "../email-templates";
 import {
   formatNZDate,
@@ -361,6 +362,48 @@ export async function sendAdminBookingRequestHoldExpiredEmail(data: {
       reviewUrl,
     },
     preferenceKey: "adminBookingRequest",
+  });
+}
+
+// #1967: Admin alert — a split booking's non-member guest portion reached its
+// hold deadline with no card on file (member paid their own place by Internet
+// Banking). Fired ONCE (first transition, deduped on the absence of an active
+// payment link for the child) after a payment link is emailed to the member and
+// the hold extended. Routed to the existing payment-failure audience so a rare
+// event needs no new NotificationPreference column (#1422 precedent).
+export async function sendAdminSplitSettlementUnpaidAlert(data: {
+  memberName: string;
+  checkIn: Date;
+  checkOut: Date;
+  guestCount: number;
+  totalCents: number;
+  holdUntil: Date;
+}) {
+  const baseUrl = process.env.NEXTAUTH_URL || "http://localhost:3000";
+  const reviewUrl = `${baseUrl}/admin/bookings`;
+
+  await sendToAdmins({
+    subject: `Split booking guest portion unpaid — no card on file: ${data.memberName}`,
+    html: adminSplitSettlementUnpaidTemplate({
+      memberName: data.memberName,
+      checkIn: data.checkIn,
+      checkOut: data.checkOut,
+      guestCount: data.guestCount,
+      totalCents: data.totalCents,
+      holdUntil: data.holdUntil,
+      reviewUrl,
+    }),
+    templateName: "admin-split-settlement-unpaid",
+    templateData: {
+      memberName: data.memberName,
+      checkIn: formatNZDate(data.checkIn),
+      checkOut: formatNZDate(data.checkOut),
+      guestCount: data.guestCount,
+      total: formatMoneyCents(data.totalCents),
+      holdUntil: formatNZDateTime(data.holdUntil),
+      reviewUrl,
+    },
+    preferenceKey: "adminPaymentFailure",
   });
 }
 
