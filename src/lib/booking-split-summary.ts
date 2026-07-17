@@ -10,11 +10,15 @@ export interface ProvisionalChildSummary {
   // is the child's server-side `finalPriceCents`, never a client re-computation.
   //
   // This is the pay-step half of the single deferred "guest portion" figure
-  // (#2003): booking-create stores `finalPriceCents = Σ non-member priceCents`
-  // on the child (no promo), which is exactly what
-  // `sumDeferredGuestPortionCents` (src/lib/deferred-guest-portion.ts) computes
-  // live for the pre-booking review banner — so the two "about $X" surfaces
-  // agree by construction rather than by two independent summations.
+  // (#2003): booking-create prices the NON-MEMBER SUBSET on its own (no promo)
+  // and stores that total as the child's `finalPriceCents`. The pre-booking
+  // review banner shows the SAME figure because the booking quote prices the
+  // same subset through the same helper (`priceDeferredNonMemberPortion`,
+  // src/lib/policies/booking-route-decisions.ts) — the shared subset-pricing
+  // path, NOT a whole-party non-member sum. That matters under a group discount,
+  // where the subset can be priced differently than the whole party (the subset
+  // may fall under minGroupSize while the full party meets it), so a whole-party
+  // sum would under-quote this deferred charge.
   deferredAmountCents: number;
 }
 

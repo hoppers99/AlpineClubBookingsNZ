@@ -1,35 +1,33 @@
 /**
- * Single owner of the deferred non-member "guest portion" figure (#2003).
+ * LEGACY fallback for the deferred non-member "guest portion" figure (#2003).
  *
  * A split party (#738) charges the member places up front and defers the
- * non-member guests' places to closer to the stay. Two surfaces show that
- * deferred sub-amount, hedged as "about $X":
+ * non-member guests' places to closer to the stay, shown as "about $X" on the
+ * wizard review-step banner (#1942) and the pay step (#1976).
  *
- *   - the wizard review-step banner (#1942), rendered BEFORE any booking exists,
- *     from the client's price quote; and
- *   - the pay step (#1976), rendered from the server split summary
- *     (getProvisionalNonMemberChildSummary → ProvisionalChildSummary), whose
- *     `deferredAmountCents` IS the split child's server-priced `finalPriceCents`.
+ * IMPORTANT — this whole-party sum is NOT the authoritative deferred figure, and
+ * the two surfaces do NOT "agree by construction". The charge authority is
+ * booking-create pricing the NON-MEMBER SUBSET on its own (its split child's
+ * `finalPriceCents`), and a group discount can price that subset DIFFERENTLY
+ * than the whole-party quote: the subset can fall under `minGroupSize` while the
+ * full party meets it, so the whole party's non-member rows may be
+ * group-discounted while the subset that is charged is not. Summing those rows
+ * therefore UNDER-QUOTES the deferred charge under group discounts.
  *
- * They agree under normal pricing but used to be summed independently. This is
- * the one function that defines the figure — the sum of the non-member guests'
- * own priced totals in integer cents — so the two surfaces cannot drift apart
- * from two hand-written reductions.
- *
- * It matches the server figure by construction: booking-create prices the
- * non-member subset with `calculateBookingPrice` and stores
- * `finalPriceCents = totalPriceCents = Σ non-member priceCents` on the child (no
- * promo on the child), and `calculateBookingPrice`'s own total is exactly this
- * same sum. Money stays in integer cents; this only adds, it never rounds. This
- * module is intentionally dependency-free so client components (the review step)
- * can import it without pulling in server-only code.
+ * The single source of the figure is instead the server helper
+ * `priceDeferredNonMemberPortion` (src/lib/policies/booking-route-decisions.ts),
+ * which both the booking quote and booking-create call so the review banner
+ * shows exactly what is charged. The review step consumes
+ * `priceQuote.deferredGuestPortionCents` from that helper; `sumDeferredGuestPortionCents`
+ * below survives ONLY as the fallback for an old cached quote that predates the
+ * field. This module stays dependency-free so the client review step can import
+ * the fallback without pulling in server-only pricing code.
  */
 
 /**
- * A guest row carrying just what the deferred-portion figure needs: whether the
- * guest is a member, and their own priced total in integer cents. The wizard's
- * `PriceQuote` guest rows and the server `PriceBreakdown` guest rows both
- * structurally satisfy this, so either can be summed by the same function.
+ * A guest row carrying just what the fallback sum needs: whether the guest is a
+ * member, and their own priced total in integer cents. The wizard's
+ * `PriceQuote` guest rows structurally satisfy this.
  */
 export interface DeferredGuestPortionGuest {
   isMember: boolean;
@@ -37,10 +35,11 @@ export interface DeferredGuestPortionGuest {
 }
 
 /**
- * The deferred (non-member) guest portion in integer cents: the sum of the
- * non-member guests' own priced totals. See the module header for why this is
- * the single owner of the figure and why it equals the server's child
- * `finalPriceCents` by construction.
+ * LEGACY fallback: sum the whole-party quote's non-member guest rows in integer
+ * cents. Used ONLY when `priceQuote.deferredGuestPortionCents` is absent (an old
+ * cached quote). Under a group discount this can under-quote the real deferred
+ * charge (see the module header); prefer the server figure. Money stays in
+ * integer cents; this only adds, it never rounds.
  */
 export function sumDeferredGuestPortionCents(
   guests: readonly DeferredGuestPortionGuest[],

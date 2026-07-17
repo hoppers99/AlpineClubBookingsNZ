@@ -202,6 +202,44 @@ describe("ReviewStep split provisional copy (#1942)", () => {
     expect(screen.getAllByText(/\$213\.30/).length).toBeGreaterThanOrEqual(1);
   });
 
+  it("prefers the server deferredGuestPortionCents over the whole-party sum, so a group discount cannot under-quote the banner (#2003)", () => {
+    // Under a group discount the whole-party quote's non-member rows are
+    // discounted ($90.00 each → $180.00), but the split child is charged the
+    // non-member subset alone, which is NOT discounted ($259.98). The server
+    // sends deferredGuestPortionCents = the subset figure; the banner must show
+    // THAT (what is actually charged), never the lower whole-party sum.
+    const secondNonMember: GuestData = {
+      firstName: "Alex",
+      lastName: "Guest",
+      ageTier: "ADULT",
+      isMember: false,
+    };
+    const guests = [memberGuest, nonMemberGuest, secondNonMember];
+    const priceQuote: PriceQuote = {
+      guests: [
+        { ageTier: "ADULT", isMember: true, nights: 3, priceCents: 9000 },
+        { ageTier: "ADULT", isMember: false, nights: 3, priceCents: 9000 },
+        { ageTier: "ADULT", isMember: false, nights: 3, priceCents: 9000 },
+      ],
+      totalPriceCents: 27000,
+      // The server-priced non-member subset (undiscounted): the real charge.
+      deferredGuestPortionCents: 25998,
+      nonMemberHoldDecision: splitHold,
+    };
+    // The naive whole-party sum would have shown the discounted $180.00.
+    expect(sumDeferredGuestPortionCents(priceQuote.guests)).toBe(18000);
+
+    renderReview(guests, splitHold, {
+      priceQuote,
+      reviewGuestPayload: guests,
+      remainingToPay: priceQuote.totalPriceCents,
+    });
+
+    // The banner shows the server figure ($259.98), NOT the discounted sum.
+    expect(screen.getAllByText(/\$259\.98/).length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByText(/\$180\.00/)).not.toBeInTheDocument();
+  });
+
   it("shows no provisional copy for an all-member party (no split)", () => {
     renderReview([memberGuest], undefined);
 

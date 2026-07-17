@@ -2,13 +2,30 @@ import { describe, expect, it } from "vitest";
 import { parseDateOnly } from "@/lib/date-only";
 import {
   calculateBookingPrice,
+  type GroupDiscountConfig,
   type GuestInput,
   type SeasonRateData,
 } from "@/lib/policies/pricing";
+import { priceDeferredNonMemberPortion } from "@/lib/policies/booking-route-decisions";
+import { priceBookingGuestsWithMembershipTypePolicy } from "@/lib/membership-type-policy";
 import {
   sumDeferredGuestPortionCents,
   type DeferredGuestPortionGuest,
 } from "@/lib/deferred-guest-portion";
+
+// A minimal membership-type policy db (#1930/#2003): non-members resolve to the
+// built-in NON_MEMBER type, memberless members to FULL, and the group discount
+// substitutes the FULL rate for non-members on qualifying nights.
+function makeFakePolicyDb(types: Array<{ id: string; key: string }>) {
+  return {
+    member: { findMany: async () => [] },
+    seasonalMembershipAssignment: { findMany: async () => [] },
+    membershipType: {
+      findMany: async (args: { where: { key: { in: string[] } } }) =>
+        types.filter((type) => args.where.key.in.includes(type.key)),
+    },
+  };
+}
 
 // #2003 — the deferred non-member "guest portion" figure is shown on two
 // surfaces (the wizard review banner and the pay step). These tests pin that a
@@ -111,5 +128,127 @@ describe("review-step figure equals the pay-step (server child) figure (#2003)",
     expect(payStepFigure).toBe(12999 + 8331);
     // The load-bearing assertion: same composition ⇒ same figure on both surfaces.
     expect(reviewFigure).toBe(payStepFigure);
+  });
+});
+
+describe("priceDeferredNonMemberPortion single-sources the deferred figure under group discounts (#2003)", () => {
+  // The worked example from the finding: 3 members + 2 non-members, minGroupSize
+  // 5, 3 nights. The WHOLE party (5 active) qualifies for the group discount, so
+  // the whole-party quote's non-member rows are group-discounted to the FULL
+  // rate (3000/night). But a split charges the NON-MEMBER SUBSET alone, and 2 <
+  // minGroupSize, so the subset is NOT discounted (4333/night). Summing the
+  // whole-party non-member rows therefore UNDER-QUOTES the real deferred charge
+  // — the exact divergence the old "agree by construction" claim missed. Both
+  // the quote and booking-create call priceDeferredNonMemberPortion, so the
+  // banner now shows the subset figure that is actually charged.
+  const checkIn = parseDateOnly("2026-07-20");
+  const checkOut = parseDateOnly("2026-07-23"); // 3 nights: 20, 21, 22
+
+  const FULL_TYPE = "type-full"; // member rate AND group-discount substitute
+  const NON_MEMBER_TYPE_ID = "type-nonmember";
+
+  const seasons: SeasonRateData[] = [
+    {
+      seasonId: "s1",
+      startDate: parseDateOnly("2026-07-01"),
+      endDate: parseDateOnly("2026-07-31"),
+      rates: [
+        { membershipTypeId: FULL_TYPE, ageTier: "ADULT", pricePerNightCents: 3000 },
+        { membershipTypeId: NON_MEMBER_TYPE_ID, ageTier: "ADULT", pricePerNightCents: 4333 },
+      ],
+    },
+  ];
+
+  const groupDiscount: GroupDiscountConfig = {
+    enabled: true,
+    minGroupSize: 5,
+    summerOnly: false,
+    rateMembershipTypeId: FULL_TYPE,
+  };
+
+  const db = makeFakePolicyDb([
+    { id: FULL_TYPE, key: "FULL" },
+    { id: NON_MEMBER_TYPE_ID, key: "NON_MEMBER" },
+  ]);
+
+  const wholeParty = [
+    { ageTier: "ADULT" as const, isMember: true },
+    { ageTier: "ADULT" as const, isMember: true },
+    { ageTier: "ADULT" as const, isMember: true },
+    { ageTier: "ADULT" as const, isMember: false },
+    { ageTier: "ADULT" as const, isMember: false },
+  ];
+
+  const SUBSET_CHARGE_CENTS = 4333 * 3 * 2; // 25998 — undiscounted subset
+  const DISCOUNTED_WHOLE_PARTY_NON_MEMBER_CENTS = 3000 * 3 * 2; // 18000
+
+  it("prices the non-member subset (the real charge), which DIVERGES from the discounted whole-party rows", async () => {
+    // What booking-create charges the split child: the subset priced alone.
+    const deferred = await priceDeferredNonMemberPortion(db, {
+      checkIn,
+      checkOut,
+      guests: wholeParty,
+      seasons,
+      groupDiscount,
+    });
+    expect(deferred).not.toBeNull();
+    expect(deferred!.totalPriceCents).toBe(SUBSET_CHARGE_CENTS);
+
+    // The whole-party quote the review banner used to sum: its non-member rows
+    // ARE group-discounted (5 >= minGroupSize), giving a LOWER figure than the
+    // subset that is actually charged.
+    const wholePartyQuote = await priceBookingGuestsWithMembershipTypePolicy(db, {
+      checkIn,
+      checkOut,
+      guests: wholeParty,
+      seasons,
+      groupDiscount,
+    });
+    const naiveBannerSum = sumDeferredGuestPortionCents(wholePartyQuote.guests);
+    expect(naiveBannerSum).toBe(DISCOUNTED_WHOLE_PARTY_NON_MEMBER_CENTS);
+
+    // The finding: the two figures DIVERGE, and the old whole-party sum
+    // under-quoted the deferred charge in the surprise direction.
+    expect(naiveBannerSum).toBeLessThan(deferred!.totalPriceCents);
+    expect(naiveBannerSum).not.toBe(deferred!.totalPriceCents);
+  });
+
+  it("equals booking-create's split-child pricing to the cent (same subset, same call shape)", async () => {
+    // booking-create prices toGuestPricingInputs(nonMemberGuests) through the
+    // same policy pricer; the helper does exactly that, so the quote's
+    // deferredGuestPortionCents == the child's finalPriceCents.
+    const deferred = await priceDeferredNonMemberPortion(db, {
+      checkIn,
+      checkOut,
+      guests: wholeParty,
+      seasons,
+      groupDiscount,
+    });
+    const childStyle = await priceBookingGuestsWithMembershipTypePolicy(db, {
+      checkIn,
+      checkOut,
+      guests: [
+        { ageTier: "ADULT", isMember: false },
+        { ageTier: "ADULT", isMember: false },
+      ],
+      seasons,
+      groupDiscount,
+    });
+    expect(deferred!.totalPriceCents).toBe(childStyle.totalPriceCents);
+    expect(deferred!.totalPriceCents).toBe(SUBSET_CHARGE_CENTS);
+  });
+
+  it("returns null when the party has no non-member guests (nothing is deferred)", async () => {
+    const deferred = await priceDeferredNonMemberPortion(db, {
+      checkIn,
+      checkOut,
+      guests: [
+        { ageTier: "ADULT", isMember: true },
+        { ageTier: "ADULT", isMember: true },
+      ],
+      seasons,
+      groupDiscount,
+    });
+    expect(deferred).toBeNull();
   });
 });
