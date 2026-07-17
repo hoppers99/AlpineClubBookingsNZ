@@ -45,6 +45,12 @@ vi.mock("bcryptjs", () => ({ hash: vi.fn().mockResolvedValue("hashed") }));
 import { prisma } from "@/lib/prisma";
 import { sendMemberSetupInviteEmail } from "@/lib/email";
 import { POST as importMembers } from "@/app/api/admin/members/import/route";
+import {
+  addDaysDateOnly,
+  formatDateOnly,
+  parseDateOnly,
+  todayDateOnlyForTimeZone,
+} from "@/lib/date-only";
 
 const fullAdminGuard = {
   ok: true,
@@ -223,5 +229,296 @@ describe("issue #1946 — importing cancelled members", () => {
     // The existing member is untouched: no create, no cancellation write.
     expect(createdMemberData).toHaveLength(0);
     expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  // FIX-4: the shared-email login rule must be order-independent. The original
+  // suite only covered cancelled-first; these cover active-first and the
+  // multiple-actives case.
+  it("keeps login on the active row when the active row comes first (active-first order)", async () => {
+    const res = await importRequest({
+      rows: [
+        {
+          firstName: "Active",
+          lastName: "Ann",
+          email: "shared@example.com",
+        },
+        {
+          firstName: "Cora",
+          lastName: "Cancelled",
+          email: "shared@example.com",
+          cancelledDate: "2020-06-30",
+        },
+      ],
+      sendInvites: false,
+    });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.created).toBe(2);
+    expect(data.createdCancelled).toBe(1);
+    expect(data.createdLoginEnabled).toBe(1);
+
+    const active = createdMemberData.find((row) => row.firstName === "Active");
+    const cancelled = createdMemberData.find((row) => row.firstName === "Cora");
+    expect(active?.canLogin).toBe(true);
+    expect(active?.active).toBe(true);
+    expect(cancelled?.canLogin).toBe(false);
+    expect(cancelled?.active).toBe(false);
+  });
+
+  it("gives login to only the first active row when multiple actives plus a cancelled share an email", async () => {
+    const res = await importRequest({
+      rows: [
+        {
+          firstName: "First",
+          lastName: "Active",
+          email: "shared@example.com",
+        },
+        {
+          firstName: "Second",
+          lastName: "Active",
+          email: "shared@example.com",
+        },
+        {
+          firstName: "Cora",
+          lastName: "Cancelled",
+          email: "shared@example.com",
+          cancelledDate: "2020-06-30",
+        },
+      ],
+      sendInvites: false,
+    });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.created).toBe(3);
+    expect(data.createdCancelled).toBe(1);
+    // Exactly one login across the three shared-email rows.
+    expect(data.createdLoginEnabled).toBe(1);
+
+    const first = createdMemberData.find((row) => row.firstName === "First");
+    const second = createdMemberData.find((row) => row.firstName === "Second");
+    const cancelled = createdMemberData.find((row) => row.firstName === "Cora");
+    expect(first?.canLogin).toBe(true);
+    expect(second?.canLogin).toBe(false);
+    expect(cancelled?.canLogin).toBe(false);
+    expect(cancelled?.active).toBe(false);
+  });
+
+  // FIX-4: the per-field date format selected in the UI must reach the route's
+  // cancelled-date parsing, not just the lib preview.
+  it("threads the cancelledDate dateFormat through the route (dd/MM/yyyy)", async () => {
+    const res = await importRequest({
+      rows: [
+        {
+          firstName: "Dee",
+          lastName: "Dateformat",
+          email: "dee@example.com",
+          cancelledDate: "15/01/2020",
+        },
+      ],
+      dateFormats: { cancelledDate: "dd/MM/yyyy" },
+      sendInvites: false,
+    });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.created).toBe(1);
+    expect(data.createdCancelled).toBe(1);
+    expect(createdMemberData).toHaveLength(1);
+    expect((createdMemberData[0].cancelledAt as Date).toISOString()).toBe(
+      "2020-01-15T00:00:00.000Z",
+    );
+  });
+
+  it("rejects the same value when the cancelledDate dateFormat is not threaded (default yyyy-MM-dd)", async () => {
+    const res = await importRequest({
+      rows: [
+        {
+          firstName: "Dee",
+          lastName: "Dateformat",
+          email: "dee@example.com",
+          cancelledDate: "15/01/2020",
+        },
+      ],
+      sendInvites: false,
+    });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.created).toBe(0);
+    expect(data.errors).toHaveLength(1);
+    expect(createdMemberData).toHaveLength(0);
+  });
+
+  // FIX-4: today-boundary in the club time zone. Today is accepted (a
+  // cancellation dated to now is legitimate); tomorrow is rejected as future.
+  it("accepts a cancelledDate equal to NZ-today", async () => {
+    const today = todayDateOnlyForTimeZone();
+    const res = await importRequest({
+      rows: [
+        {
+          firstName: "Tia",
+          lastName: "Today",
+          email: "tia@example.com",
+          cancelledDate: today,
+        },
+      ],
+      sendInvites: false,
+    });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.created).toBe(1);
+    expect(data.createdCancelled).toBe(1);
+  });
+
+  it("rejects a cancelledDate of NZ-tomorrow as a future date", async () => {
+    const tomorrow = formatDateOnly(
+      addDaysDateOnly(parseDateOnly(todayDateOnlyForTimeZone()), 1),
+    );
+    const res = await importRequest({
+      rows: [
+        {
+          firstName: "Tom",
+          lastName: "Tomorrow",
+          email: "tom@example.com",
+          cancelledDate: tomorrow,
+        },
+      ],
+      sendInvites: false,
+    });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.created).toBe(0);
+    expect(data.errors).toHaveLength(1);
+    expect(
+      data.errors[0].errors.some((error: string) =>
+        error.toLowerCase().includes("future"),
+      ),
+    ).toBe(true);
+    expect(createdMemberData).toHaveLength(0);
+  });
+
+  // FIX-4: an existing active DB member owns the login for an email; a NEW
+  // cancelled row sharing that email must not claim the login (it is created
+  // cancelled + non-login, and the existing member is untouched).
+  it("cancelled row does not claim login when an existing active DB member owns the email", async () => {
+    vi.mocked(prisma.member.findMany).mockResolvedValue([
+      {
+        email: "shared@example.com",
+        firstName: "Existing",
+        lastName: "Active",
+        dateOfBirth: null,
+        canLogin: true,
+      },
+    ] as any);
+
+    const res = await importRequest({
+      rows: [
+        {
+          firstName: "Cora",
+          lastName: "Cancelled",
+          email: "shared@example.com",
+          cancelledDate: "2020-06-30",
+        },
+      ],
+      sendInvites: false,
+    });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    // New identity (different name), so created — not skipped.
+    expect(data.created).toBe(1);
+    expect(data.createdCancelled).toBe(1);
+    expect(data.createdLoginEnabled).toBe(0);
+    const cancelled = createdMemberData.find((row) => row.firstName === "Cora");
+    expect(cancelled?.canLogin).toBe(false);
+    expect(cancelled?.active).toBe(false);
+  });
+
+  // FIX-3: a first-wins duplicate skip must tell the admin when the dropped row
+  // carried a different lifecycle state, in both orders.
+  it("notes the lifecycle mismatch when an active row is kept and a cancelled duplicate is skipped", async () => {
+    const res = await importRequest({
+      rows: [
+        {
+          firstName: "Dup",
+          lastName: "Licate",
+          email: "dup@example.com",
+        },
+        {
+          firstName: "Dup",
+          lastName: "Licate",
+          email: "dup@example.com",
+          cancelledDate: "2020-06-30",
+        },
+      ],
+      sendInvites: false,
+    });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.created).toBe(1);
+    expect(data.skipped).toBe(1);
+    const reason = data.skippedRows[0].reason as string;
+    expect(reason).toContain("Duplicate member identity");
+    expect(reason).toContain("kept row is active");
+    expect(reason).toContain("this skipped row is cancelled");
+  });
+
+  it("notes the lifecycle mismatch when a cancelled row is kept and an active duplicate is skipped", async () => {
+    const res = await importRequest({
+      rows: [
+        {
+          firstName: "Dup",
+          lastName: "Licate",
+          email: "dup@example.com",
+          cancelledDate: "2020-06-30",
+        },
+        {
+          firstName: "Dup",
+          lastName: "Licate",
+          email: "dup@example.com",
+        },
+      ],
+      sendInvites: false,
+    });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.created).toBe(1);
+    expect(data.skipped).toBe(1);
+    const reason = data.skippedRows[0].reason as string;
+    expect(reason).toContain("Duplicate member identity");
+    expect(reason).toContain("kept row is cancelled");
+    expect(reason).toContain("this skipped row is active");
+  });
+
+  it("does not add a lifecycle note when duplicates share the same cancelled state", async () => {
+    const res = await importRequest({
+      rows: [
+        {
+          firstName: "Dup",
+          lastName: "Licate",
+          email: "dup@example.com",
+        },
+        {
+          firstName: "Dup",
+          lastName: "Licate",
+          email: "dup@example.com",
+        },
+      ],
+      sendInvites: false,
+    });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.skipped).toBe(1);
+    const reason = data.skippedRows[0].reason as string;
+    expect(reason).toBe(
+      "Duplicate member identity already appears earlier in this import",
+    );
   });
 });
