@@ -119,7 +119,12 @@ function makeStore(seed?: {
   return { db, joiningFees, annualFees, components };
 }
 
-function applyCtx(files: Map<string, Uint8Array>, tx: TxDb, mode: "merge" | "overwrite" = "overwrite") {
+function applyCtx(
+  files: Map<string, Uint8Array>,
+  tx: TxDb,
+  mode: "merge" | "overwrite" = "overwrite",
+  selectedCategories: string[] = ["membership-fees", "xero-config"],
+) {
   return {
     tx,
     files,
@@ -129,16 +134,23 @@ function applyCtx(files: Map<string, Uint8Array>, tx: TxDb, mode: "merge" | "ove
     actorMemberId: "admin-1",
     imageRemap: new Map<string, string>(),
     notes: { doorCodesWritten: [] as string[] },
+    selectedCategories,
   } as never;
 }
 
-function planCtx(files: Map<string, Uint8Array>, db: ReadDb, mode: "merge" | "overwrite" = "merge") {
+function planCtx(
+  files: Map<string, Uint8Array>,
+  db: ReadDb,
+  mode: "merge" | "overwrite" = "merge",
+  selectedCategories: string[] = ["membership-fees", "xero-config"],
+) {
   return {
     db,
     files,
     manifest: {} as never,
     mode,
     resolutions: new Map<string, string>(),
+    selectedCategories,
   } as never;
 }
 
@@ -381,6 +393,30 @@ describe("config-transfer joining-fee precedence: #1941 supersedes #1931 (xero-c
     expect(captures.joiningFeeCreates).toHaveLength(0);
   });
 
+  it("new-format bundle STILL materialises legacy amounts when membership-fees is DESELECTED (regression, FIX-2)", async () => {
+    const captures = { joiningFeeCreates: [] as unknown[] };
+    const files = bundle({
+      "xero-config/item-code-mappings.csv": OLD_ITEM_CODES,
+      "membership-fees/joining-fees.csv": JF_HEADER + "FULL,ADULT,2026-01-01,,12345\n",
+    });
+    // Only xero-config selected → membership-fees importer never runs → the
+    // legacy fan-out MUST still materialise or joining fees silently vanish.
+    await xeroConfigImporter.apply(applyCtx(files, xeroTx(captures), "overwrite", ["xero-config"]));
+    expect(captures.joiningFeeCreates.length).toBeGreaterThan(0);
+  });
+
+  it("plan: new-format bundle STILL previews materialisation when membership-fees deselected (FIX-2)", async () => {
+    const captures = { joiningFeeCreates: [] as unknown[] };
+    const files = bundle({
+      "xero-config/item-code-mappings.csv": OLD_ITEM_CODES,
+      "membership-fees/joining-fees.csv": JF_HEADER + "FULL,ADULT,2026-01-01,,12345\n",
+    });
+    const plan = await xeroConfigImporter.plan(
+      planCtx(files, xeroTx(captures) as unknown as ReadDb, "merge", ["xero-config"]),
+    );
+    expect(plan.items.some((i) => i.entity === "joining-fee-window")).toBe(true);
+  });
+
   it("plan: new-format bundle emits no joining-fee-window items or coverage fingerprint", async () => {
     const captures = { joiningFeeCreates: [] as unknown[] };
     const files = bundle({
@@ -390,5 +426,97 @@ describe("config-transfer joining-fee precedence: #1941 supersedes #1931 (xero-c
     const plan = await xeroConfigImporter.plan(planCtx(files, xeroTx(captures) as unknown as ReadDb));
     expect(plan.items.some((i) => i.entity === "joining-fee-window")).toBe(false);
     expect(plan.fingerprintParts.some((p) => p.startsWith("joining-fee-coverage:"))).toBe(false);
+  });
+});
+
+// ---- FIX-1 (#1941): post-merge Σ(components) invariant against target state --
+
+describe("config-transfer membership-fees post-merge component invariant (#1941)", () => {
+  function seededTarget() {
+    return makeStore({
+      annualFees: [
+        { id: "af-full", membershipTypeId: "mt-full", effectiveFrom: d("2026-01-01"), effectiveTo: null, amountCents: 12000, billingBasis: "PER_MEMBER", prorationRule: "NONE" },
+      ],
+      components: [
+        { id: "c-base", membershipAnnualFeeId: "af-full", label: "Base fee", amountCents: 10000, prorate: true, xeroAccountCode: null, xeroItemCode: null, sortOrder: 0 },
+        { id: "c-fmc", membershipAnnualFeeId: "af-full", label: "FMC", amountCents: 2000, prorate: false, xeroAccountCode: null, xeroItemCode: null, sortOrder: 1 },
+      ],
+    });
+  }
+
+  it("BLOCKS a bundle that renames a component label (would leave the old row and double-bill)", async () => {
+    const target = seededTarget();
+    const files = bundle({
+      "membership-fees/annual-fees.csv": AF_HEADER + "FULL,2026-01-01,,12000,PER_MEMBER,NONE\n",
+      "membership-fees/annual-fee-components.csv":
+        AC_HEADER + "FULL,2026-01-01,Membership base fee,10000,true,,,0\nFULL,2026-01-01,FMC,2000,false,,,1\n",
+    });
+    const plan = await membershipFeesImporter.plan(planCtx(files, target.db as unknown as ReadDb, "overwrite"));
+    expect(plan.errors.join(" ")).toMatch(/"Base fee"/);
+    expect(plan.errors.join(" ")).toMatch(/22000 cents but the fee total is 12000/);
+    expect(plan.errors.join(" ")).toMatch(/Fees page/i);
+  });
+
+  it("passes a bundle that exactly matches the target's fee + components", async () => {
+    const target = seededTarget();
+    const files = bundle({
+      "membership-fees/annual-fees.csv": AF_HEADER + "FULL,2026-01-01,,12000,PER_MEMBER,NONE\n",
+      "membership-fees/annual-fee-components.csv":
+        AC_HEADER + "FULL,2026-01-01,Base fee,10000,true,,,0\nFULL,2026-01-01,FMC,2000,false,,,1\n",
+    });
+    const plan = await membershipFeesImporter.plan(planCtx(files, target.db as unknown as ReadDb, "overwrite"));
+    expect(plan.errors).toEqual([]);
+  });
+
+  it("passes when the bundle carries ALL existing labels (no orphan leftover) even as amounts move", async () => {
+    const target = seededTarget();
+    const files = bundle({
+      "membership-fees/annual-fees.csv": AF_HEADER + "FULL,2026-01-01,,12000,PER_MEMBER,NONE\n",
+      "membership-fees/annual-fee-components.csv":
+        AC_HEADER + "FULL,2026-01-01,Base fee,11000,true,,,0\nFULL,2026-01-01,FMC,1000,false,,,1\n",
+    });
+    const plan = await membershipFeesImporter.plan(planCtx(files, target.db as unknown as ReadDb, "overwrite"));
+    expect(plan.errors).toEqual([]);
+  });
+
+  it("BLOCKS turning an invoiceable fee with components into NO_INVOICE while leftovers remain", async () => {
+    const target = seededTarget();
+    const files = bundle({
+      "membership-fees/annual-fees.csv": AF_HEADER + "FULL,2026-01-01,,0,NO_INVOICE,NONE\n",
+    });
+    const plan = await membershipFeesImporter.plan(planCtx(files, target.db as unknown as ReadDb, "overwrite"));
+    expect(plan.errors.join(" ")).toMatch(/no-invoice annual fee .* would leave orphaned component/i);
+  });
+});
+
+// ---- FIX-3 (#1941): duplicate component labels within one fee ----------------
+
+describe("config-transfer membership-fees duplicate labels (#1941)", () => {
+  it("BLOCKS a bundle carrying two components with the same (fee, label)", async () => {
+    const files = bundle({
+      "membership-fees/annual-fees.csv": AF_HEADER + "FULL,2026-01-01,,12000,PER_MEMBER,NONE\n",
+      "membership-fees/annual-fee-components.csv":
+        AC_HEADER + "FULL,2026-01-01,Base,10000,true,,,0\nFULL,2026-01-01,Base,2000,false,,,1\n",
+    });
+    const plan = await membershipFeesImporter.plan(planCtx(files, makeStore().db as unknown as ReadDb));
+    expect(plan.errors.join(" ")).toMatch(/duplicate component label\(s\) "Base"/i);
+  });
+
+  it("BLOCKS importing into a target fee that already has duplicate-label components", async () => {
+    const target = makeStore({
+      annualFees: [
+        { id: "af-full", membershipTypeId: "mt-full", effectiveFrom: d("2026-01-01"), effectiveTo: null, amountCents: 12000, billingBasis: "PER_MEMBER", prorationRule: "NONE" },
+      ],
+      components: [
+        { id: "c-1", membershipAnnualFeeId: "af-full", label: "Base", amountCents: 6000, prorate: true, xeroAccountCode: null, xeroItemCode: null, sortOrder: 0 },
+        { id: "c-2", membershipAnnualFeeId: "af-full", label: "Base", amountCents: 6000, prorate: true, xeroAccountCode: null, xeroItemCode: null, sortOrder: 1 },
+      ],
+    });
+    const files = bundle({
+      "membership-fees/annual-fees.csv": AF_HEADER + "FULL,2026-01-01,,12000,PER_MEMBER,NONE\n",
+      "membership-fees/annual-fee-components.csv": AC_HEADER + "FULL,2026-01-01,Base,12000,true,,,0\n",
+    });
+    const plan = await membershipFeesImporter.plan(planCtx(files, target.db as unknown as ReadDb, "overwrite"));
+    expect(plan.errors.join(" ")).toMatch(/target's annual fee .* already has duplicate-label component\(s\) "Base"/i);
   });
 });
