@@ -146,11 +146,19 @@ is the same one the link-mint stop uses
 disagree about "check-in has passed". Because the child holds no capacity this is
 bookkeeping + notification, not a capacity change: under the per-lodge lock a
 guarded `updateMany({ status: PENDING } -> CANCELLED)` CAS (count 0 => a payment
-won the lock seconds earlier — `already_processed`, safe), then bed reconcile,
-payment-link revocation and the `CANCELLED` booking event, all in the same
-transaction; post-commit the member gets a cancellation email (no payment taken,
-no refund) and admins get ONE final notice (the `finalNotice` variant of
-`sendAdminSplitSettlementUnpaidAlert`). A **PAID child is never reached** (it is
+won the lock seconds earlier — `already_processed`, safe), then bed reconcile and
+payment-link revocation, in the same transaction. Post-commit (outside the tx,
+per `booking-events.ts` — an in-tx narrative INSERT failure would abort the whole
+transaction and block the cancel) the `CANCELLED` booking event is recorded, the
+member gets a **dedicated** guest-portion-cancelled email
+(`split-guest-portion-cancelled`: nothing was ever charged, their own booking is
+untouched — and it only promises "remains confirmed" when the parent is genuinely
+settled), and admins get ONE **dedicated** terminal notice
+(`sendAdminSplitSettlementCancelledAlert` / the `admin-split-settlement-cancelled`
+template — its own registry entry, so an override or mute of the recurring
+`admin-split-settlement-unpaid` alert cannot rewrite or suppress it). The recurring
+alert itself now fires on a capped cadence (hold-extension windows 1, 2, 3, then
+every 7th) and the terminal cancel ends that series. A **PAID child is never reached** (it is
 not `PENDING`); the **parent is never touched**; and there is **no Xero void** —
 an unsettled child never had an invoice. A split child that DOES have a saved
 card is still auto-charged at its hold deadline as before (that path settles it,

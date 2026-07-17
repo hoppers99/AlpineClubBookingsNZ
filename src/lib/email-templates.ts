@@ -2847,10 +2847,11 @@ export function adminBookingRequestHoldExpiredTemplate(data: {
 
 /**
  * Split-booking guest portion unpaid at hold expiry, no card on file (#1967).
- * Admin alert fired on EVERY hold-extension run while a split non-member child
- * remains unsettled with no saved card (the extension claim is the dedupe, so
- * this repeats roughly every two days, matching the request-origin
- * hold-expired cadence). Two variants:
+ * Admin alert fired while a split non-member child remains unsettled with no
+ * saved card. #1993 Part B caps the previously-every-run cadence to hold
+ * extension windows 1, 2, 3, then every 7th; the terminal auto-cancel past
+ * check-in ends the series with a separate one-off notice
+ * (adminSplitSettlementCancelledTemplate). Two variants:
  * - parent settled (member paid their own place by internet banking): a
  *   payment link has been emailed to the member;
  * - parent unpaid (e.g. an abandoned card payment): NO link was sent — the
@@ -2866,31 +2867,7 @@ export function adminSplitSettlementUnpaidTemplate(data: {
   holdUntil: Date;
   reviewUrl: string;
   parentUnpaid: boolean;
-  // #1993 Part A: terminal final-notice variant. When true this template
-  // reports the guest portion as auto-cancelled at the end of the check-in day
-  // rather than extended — no "hold extended" row, no "repeats each run" note.
-  finalNotice?: boolean;
 }): string {
-  if (data.finalNotice) {
-    return layout(`
-    ${heading("Split Booking Guest Portion Auto-Cancelled — Unpaid Past Check-in")}
-    ${paragraph(
-      data.parentUnpaid
-        ? "A split booking's non-member guest portion was still unpaid at the end of its check-in day, with no saved card to charge and the member's own linked booking also unpaid. The provisional guest booking has now been automatically cancelled. No payment was taken and no beds were held. The member has been notified; the member's own linked booking is unaffected."
-        : "A split booking's non-member guest portion was still unpaid at the end of its check-in day, with no saved card to charge (the member had paid their own place by internet banking). The provisional guest booking has now been automatically cancelled. No payment was taken and no beds were held. The member has been notified; the member's own linked booking is unaffected."
-    )}
-    ${infoTable([
-      { label: "Member", value: escapeHtml(data.memberName) },
-      { label: "Check-in", value: formatNZDate(data.checkIn) },
-      { label: "Check-out", value: formatNZDate(data.checkOut) },
-      { label: "Guests", value: String(data.guestCount) },
-      { label: "Amount (unpaid)", value: formatCents(data.totalCents) },
-    ])}
-    ${paragraph("No further action is required for the guest portion. If these guests are in fact coming and the member intends to pay, create a new booking for them.")}
-    ${muted("This is a one-off notice; the recurring hold-extension alerts for this guest portion have stopped.")}
-    ${button("View Bookings", data.reviewUrl, { sameOrigin: true })}
-  `);
-  }
   return layout(`
     ${heading("Split Booking Guest Portion Unpaid — No Card on File")}
     ${paragraph(
@@ -2907,8 +2884,89 @@ export function adminSplitSettlementUnpaidTemplate(data: {
       { label: "Hold extended to", value: formatNZDateTime(data.holdUntil) },
     ])}
     ${paragraph("No beds are held for these guests until payment is received. Follow up with the member or cancel the guest portion if payment is not expected.")}
-    ${muted("This alert repeats each time the hold is extended while the guest portion remains unpaid.")}
+    ${muted("This alert repeats on a capped cadence (the first three hold extensions, then every seventh) while the guest portion stays unpaid; a terminal cancellation past the check-in day ends the series with a separate final notice.")}
     ${button("View Bookings", data.reviewUrl, { sameOrigin: true })}
+  `);
+}
+
+/**
+ * #1993 Part A — terminal one-off admin notice: a split non-member guest
+ * portion was still unpaid (no saved card) at the end of its check-in day, so
+ * the provisional guest booking was automatically cancelled. Distinct from the
+ * recurring adminSplitSettlementUnpaidTemplate: there is no hold to extend and
+ * no repeating cadence, and it ends the capped alert series. `parentUnpaid`
+ * only selects wording — it reports the member's own linked booking as either
+ * settled-and-unaffected (internet-banking parent) or not-settled (an unpaid or
+ * already-cancelled parent that a human should review), never a false "also
+ * unpaid" for a parent that is in fact cancelled or bumped.
+ */
+export function adminSplitSettlementCancelledTemplate(data: {
+  memberName: string;
+  checkIn: Date;
+  checkOut: Date;
+  guestCount: number;
+  totalCents: number;
+  reviewUrl: string;
+  parentUnpaid: boolean;
+}): string {
+  return layout(`
+    ${heading("Split Booking Guest Portion Auto-Cancelled — Unpaid Past Check-in")}
+    ${paragraph(
+      data.parentUnpaid
+        ? "A split booking's non-member guest portion was still unpaid at the end of its check-in day, with no saved card to charge, and the member's own linked booking is not settled either (it may be unpaid or already cancelled). The provisional guest booking has now been automatically cancelled. No payment was taken and no beds were held. The member has been notified. Review the whole booking to confirm the state of the member's own place."
+        : "A split booking's non-member guest portion was still unpaid at the end of its check-in day, with no saved card to charge (the member had paid their own place by internet banking). The provisional guest booking has now been automatically cancelled. No payment was taken and no beds were held. The member has been notified; the member's own linked booking is settled and is unaffected."
+    )}
+    ${infoTable([
+      { label: "Member", value: escapeHtml(data.memberName) },
+      { label: "Check-in", value: formatNZDate(data.checkIn) },
+      { label: "Check-out", value: formatNZDate(data.checkOut) },
+      { label: "Guests", value: String(data.guestCount) },
+      { label: "Amount (unpaid)", value: formatCents(data.totalCents) },
+    ])}
+    ${paragraph("No further action is required for the guest portion. If these guests are in fact coming and the member intends to pay, create a new booking for them.")}
+    ${muted("This is a one-off notice — it ends the capped hold-extension alert series for this guest portion.")}
+    ${button("View Bookings", data.reviewUrl, { sameOrigin: true })}
+  `);
+}
+
+/**
+ * #1993 Part A — member-facing notice that the provisional non-member guest
+ * portion of their stay was auto-cancelled because it stayed unpaid up to the
+ * check-in day. Reassures that nothing was ever charged for the guest portion
+ * and that the cancellation touches only that portion. `parentConfirmed`
+ * selects the reassurance about their own booking: a settled/internet-banking
+ * parent "remains confirmed"; otherwise the copy only states the parent was not
+ * changed by this cancellation, never a false "confirmed". No bearer token, so
+ * this is not sensitive-log material.
+ */
+export function splitGuestPortionCancelledTemplate(data: {
+  firstName: string;
+  checkIn: Date;
+  checkOut: Date;
+  parentConfirmed: boolean;
+  parentBookingReference?: string | null;
+}): string {
+  const ownBookingLine = data.parentConfirmed
+    ? "This only affects your guests' provisional place — your own booking is unaffected and remains confirmed."
+    : "This only affects your guests' provisional place — your own linked booking has not been changed by this cancellation.";
+  return layout(`
+    ${heading("Your Guests' Provisional Place Was Cancelled")}
+    ${paragraph("Hi " + escapeHtml(data.firstName) + ", the provisional place we were holding for your non-member guests stayed unpaid up to the check-in day, so it has now been automatically cancelled. Nothing was ever charged for it, and no beds were held.")}
+    ${infoTable([
+      { label: "Check-in", value: formatNZDate(data.checkIn) },
+      { label: "Check-out", value: formatNZDate(data.checkOut) },
+      ...(data.parentBookingReference
+        ? [
+            {
+              label: "Your booking reference",
+              value: escapeHtml(data.parentBookingReference),
+            },
+          ]
+        : []),
+    ])}
+    ${paragraph(ownBookingLine)}
+    ${paragraph("If your guests are still coming, you can make a new booking for them at any time.")}
+    ${button("Make a New Booking", BASE_URL + "/book")}
   `);
 }
 

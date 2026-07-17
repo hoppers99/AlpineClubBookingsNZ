@@ -14,6 +14,8 @@ import {
   preArrivalReminderTemplate,
   waitlistOfferTemplate,
   adminSplitSettlementUnpaidTemplate,
+  adminSplitSettlementCancelledTemplate,
+  splitGuestPortionCancelledTemplate,
 } from "../email-templates";
 import { getAppBaseUrl } from "../app-url";
 import { formatNZDateTime } from "../nzst-date";
@@ -48,39 +50,101 @@ describe("email-templates", () => {
       parentUnpaid: false,
     };
 
-    it("recurring variant reports the hold extension and repeating cadence", () => {
+    it("recurring variant reports the hold extension and the capped repeating cadence", () => {
       const html = adminSplitSettlementUnpaidTemplate(base);
       expect(html).toContain("Hold extended to");
-      expect(html).toContain("This alert repeats each time the hold is extended");
+      // #1993 Part B / C3: the cadence is capped (1, 2, 3, then every 7th) and a
+      // terminal cancellation ends the series — no more "repeats each run".
+      expect(html).toContain("capped cadence");
+      expect(html).toContain("first three hold extensions");
+      expect(html).not.toContain("This alert repeats each time the hold is extended");
       expect(html).not.toContain("automatically cancelled");
     });
 
-    it("final-notice variant reports the auto-cancellation and drops the hold/repeat wording", () => {
-      const html = adminSplitSettlementUnpaidTemplate({
-        ...base,
-        finalNotice: true,
-      });
-      expect(html).toContain("Auto-Cancelled");
-      expect(html).toContain("automatically cancelled");
-      // No misleading "hold extended" row or "repeats each run" note on a
-      // terminal, one-off notice.
-      expect(html).not.toContain("Hold extended to");
-      expect(html).not.toContain("This alert repeats each time the hold is extended");
-    });
-
-    it("final-notice variant distinguishes parent-unpaid wording", () => {
+    it("recurring variant distinguishes parent-unpaid wording", () => {
       const settled = adminSplitSettlementUnpaidTemplate({
         ...base,
-        finalNotice: true,
         parentUnpaid: false,
       });
       const parentUnpaid = adminSplitSettlementUnpaidTemplate({
         ...base,
-        finalNotice: true,
         parentUnpaid: true,
       });
       expect(settled).toContain("internet banking");
-      expect(parentUnpaid).toContain("member's own linked booking also unpaid");
+      expect(parentUnpaid).toContain("has not been paid either");
+    });
+  });
+
+  describe("adminSplitSettlementCancelledTemplate (#1993 Part A, C1)", () => {
+    const base = {
+      memberName: "Jane Doe",
+      checkIn: new Date("2026-07-01"),
+      checkOut: new Date("2026-07-03"),
+      guestCount: 2,
+      totalCents: 12000,
+      reviewUrl: "https://example.com/admin/bookings",
+      parentUnpaid: false,
+    };
+
+    it("reports the auto-cancellation and drops any hold/repeat wording", () => {
+      const html = adminSplitSettlementCancelledTemplate(base);
+      expect(html).toContain("Auto-Cancelled");
+      expect(html).toContain("automatically cancelled");
+      // A terminal one-off notice: no "hold extended" row, no recurring cadence.
+      expect(html).not.toContain("Hold extended to");
+      expect(html).not.toContain("capped cadence");
+      expect(html).toContain("one-off notice");
+    });
+
+    it("states the parent's actual state accurately (never a false 'also unpaid')", () => {
+      const settled = adminSplitSettlementCancelledTemplate({
+        ...base,
+        parentUnpaid: false,
+      });
+      const parentUnpaid = adminSplitSettlementCancelledTemplate({
+        ...base,
+        parentUnpaid: true,
+      });
+      expect(settled).toContain("internet banking");
+      expect(settled).toContain("settled and is unaffected");
+      // For a not-settled parent the copy says "not settled (it may be unpaid or
+      // already cancelled)" rather than asserting it is specifically unpaid.
+      expect(parentUnpaid).toContain("not settled either");
+      expect(parentUnpaid).toContain("already cancelled");
+    });
+  });
+
+  describe("splitGuestPortionCancelledTemplate (#1993 Part A, C2)", () => {
+    const base = {
+      firstName: "Sam",
+      checkIn: new Date("2026-07-01"),
+      checkOut: new Date("2026-07-03"),
+      parentConfirmed: true,
+    };
+
+    it("reassures nothing was charged and only the guest portion was cancelled", () => {
+      const html = splitGuestPortionCancelledTemplate(base);
+      expect(html).toContain("Your Guests' Provisional Place Was Cancelled");
+      expect(html).toContain("Nothing was ever charged");
+      expect(html).toContain("your own booking is unaffected and remains confirmed");
+    });
+
+    it("does not promise 'remains confirmed' when the parent is not settled", () => {
+      const html = splitGuestPortionCancelledTemplate({
+        ...base,
+        parentConfirmed: false,
+      });
+      expect(html).not.toContain("remains confirmed");
+      expect(html).toContain("has not been changed by this cancellation");
+    });
+
+    it("shows the member's own booking reference when available", () => {
+      const html = splitGuestPortionCancelledTemplate({
+        ...base,
+        parentBookingReference: "parent_abc",
+      });
+      expect(html).toContain("Your booking reference");
+      expect(html).toContain("parent_abc");
     });
   });
 

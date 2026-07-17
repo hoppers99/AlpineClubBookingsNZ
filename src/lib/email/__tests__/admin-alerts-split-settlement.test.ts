@@ -9,6 +9,7 @@ const h = vi.hoisted(() => ({
   sendToAdmins: vi.fn(),
   shouldSendDirectAdminSystemEmail: vi.fn().mockResolvedValue(true),
   unpaidTemplate: vi.fn(() => "<html>split settlement unpaid</html>"),
+  cancelledTemplate: vi.fn(() => "<html>split settlement cancelled</html>"),
 }));
 
 vi.mock("../admin-alerts-shared", () => ({
@@ -29,9 +30,13 @@ vi.mock("@/lib/email-templates", () => ({
   adminSchoolManualInvoiceTemplate: vi.fn(() => "<html></html>"),
   adminBookingRequestHoldExpiredTemplate: vi.fn(() => "<html></html>"),
   adminSplitSettlementUnpaidTemplate: h.unpaidTemplate,
+  adminSplitSettlementCancelledTemplate: h.cancelledTemplate,
 }));
 
-import { sendAdminSplitSettlementUnpaidAlert } from "@/lib/email/admin-alerts-booking";
+import {
+  sendAdminSplitSettlementUnpaidAlert,
+  sendAdminSplitSettlementCancelledAlert,
+} from "@/lib/email/admin-alerts-booking";
 
 const ORIGINAL_URL = process.env.NEXTAUTH_URL;
 
@@ -87,5 +92,38 @@ describe("sendAdminSplitSettlementUnpaidAlert (#1967/#1994)", () => {
       expect(call[0].templateName).toBe("admin-split-settlement-unpaid");
       expect(call[0].preferenceKey).toBe("adminPaymentFailure");
     }
+  });
+});
+
+describe("sendAdminSplitSettlementCancelledAlert (#1993 Part A, C1)", () => {
+  it.each([false, true])(
+    "sends the DEDICATED cancelled template through adminPaymentFailure for parentUnpaid=%s",
+    async (parentUnpaid) => {
+      await sendAdminSplitSettlementCancelledAlert({ ...baseData, parentUnpaid });
+
+      // A distinct registered template (not the recurring alert's name), so an
+      // admin override of the noisy recurring alert cannot rewrite the terminal
+      // notice; still gated by the shared adminPaymentFailure preference.
+      expect(h.sendToAdmins).toHaveBeenCalledWith(
+        expect.objectContaining({
+          templateName: "admin-split-settlement-cancelled",
+          preferenceKey: "adminPaymentFailure",
+        }),
+      );
+      // Renders the cancelled template, never the recurring unpaid one.
+      expect(h.cancelledTemplate).toHaveBeenCalledWith(
+        expect.objectContaining({ parentUnpaid }),
+      );
+      expect(h.unpaidTemplate).not.toHaveBeenCalled();
+    },
+  );
+
+  it("carries no holdUntil (terminal notice has no hold to extend)", async () => {
+    await sendAdminSplitSettlementCancelledAlert({
+      ...baseData,
+      parentUnpaid: false,
+    });
+
+    expect(h.cancelledTemplate.mock.calls[0][0]).not.toHaveProperty("holdUntil");
   });
 });

@@ -32,12 +32,13 @@ import {
 import {
   sendAdminBookingRequestHoldExpiredEmail,
   sendAdminPaymentFailureAlert,
+  sendAdminSplitSettlementCancelledAlert,
   sendAdminSplitSettlementUnpaidAlert,
   sendBookingBumpedEmail,
-  sendBookingCancelledEmail,
   sendBookingConfirmedEmail,
   sendBookingGuestsCancelledEmail,
   sendSplitGuestPaymentLinkEmail,
+  sendSplitGuestPortionCancelledEmail,
 } from "./email";
 import { getNonMemberHoldDays } from "./cancellation";
 import { processWaitlistForDates } from "./waitlist";
@@ -170,9 +171,10 @@ type HoldResolution =
       // non-member child still PENDING (unsettled, no saved card) once its
       // check-in day has ended. The child holds no capacity, so this is
       // bookkeeping + notification, not a capacity change: the guarded
-      // PENDING -> CANCELLED CAS, link revocation, bed reconcile and the
-      // CANCELLED booking event all commit inside the lock transaction; the
-      // member cancellation email and ONE final admin notice fire post-commit.
+      // PENDING -> CANCELLED CAS, link revocation and bed reconcile commit
+      // inside the lock transaction; the CANCELLED narrative event, the member
+      // cancellation email and ONE final admin notice fire post-commit (the
+      // event write must not sit in-tx — see booking-events.ts).
       // A PAID child is never reached (it is not PENDING); the parent is never
       // touched; there is no Xero void (an unsettled child has no invoice).
       // `parentUnpaid` only selects the admin-notice wording.
@@ -560,11 +562,12 @@ async function resolveHoldWindowUnderLock(
         // can never disagree about "check-in has passed". The child holds no
         // capacity, so this is bookkeeping + notification: a guarded
         // PENDING -> CANCELLED CAS (count 0 => a payment won the lock seconds
-        // earlier: already_processed, safe), then link revocation, bed
-        // reconcile and the CANCELLED event, all in this tx. The member email
-        // and one final admin notice fire post-commit. A PAID child is never
-        // here (not PENDING); the parent is never touched; no Xero void (an
-        // unsettled child has no invoice).
+        // earlier: already_processed, safe), then link revocation and bed
+        // reconcile, all in this tx. The CANCELLED narrative event, the member
+        // email and one final admin notice fire post-commit (the event must not
+        // sit in-tx — see booking-events.ts). A PAID child is never here (not
+        // PENDING); the parent is never touched; no Xero void (an unsettled
+        // child has no invoice).
         const checkInDayEnded =
           endOfDateOnlyForTimeZone(
             formatDateOnly(booking.checkIn)
@@ -592,17 +595,13 @@ async function resolveHoldWindowUnderLock(
 
           await revokePaymentLinksForBooking(booking.id, tx);
 
-          await recordBookingEvent(
-            {
-              bookingId: booking.id,
-              type: BookingEventType.CANCELLED,
-              reason:
-                "The guest portion was still unpaid at the end of the check-in day, so the provisional guest booking was automatically cancelled. No payment was taken.",
-              snapshot: { autoCancelledPastCheckIn: true },
-            },
-            tx
-          );
-
+          // The CANCELLED narrative event is recorded POST-COMMIT (below), not
+          // here: booking-events.ts documents recordBookingEvent as a
+          // post-commit write on the base client, because a failed INSERT
+          // inside a Postgres transaction aborts the whole transaction — an
+          // in-tx narrative failure would poison this tx and block the cancel.
+          // Every sibling terminal path (bumped/confirmed_zero, the group
+          // settlement reaper) records post-commit; match them.
           return {
             type: "split_child_terminal_cancelled",
             booking,
@@ -975,26 +974,38 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
       }
 
       if (resolution.type === "split_child_terminal_cancelled") {
-        // #1993 Part A — the guarded cancel, link revocation, bed reconcile and
-        // CANCELLED event already committed under the lodge lock. Post-commit,
-        // outside any transaction: tell the member their provisional guest
-        // booking was cancelled (no payment taken, no refund), and send ONE
-        // final admin notice. Neither the member email nor the admin notice is
-        // load-bearing for the transition — a send failure is logged, never
-        // retried into a double-cancel.
+        // #1993 Part A — the guarded cancel, link revocation and bed reconcile
+        // already committed under the lodge lock. Post-commit, outside any
+        // transaction: record the CANCELLED narrative event (kept OUT of the
+        // tx per booking-events.ts — an in-tx INSERT failure would abort the
+        // whole transaction and block the cancel), tell the member the
+        // provisional guest portion was cancelled (nothing ever charged; their
+        // own booking untouched), and send ONE dedicated final admin notice.
+        // None of the three is load-bearing for the transition — a failure is
+        // logged, never retried into a double-cancel.
         result.cancelledBookingIds.push(resolution.booking.id);
 
+        await recordBookingEvent({
+          bookingId: resolution.booking.id,
+          type: BookingEventType.CANCELLED,
+          reason:
+            "The guest portion was still unpaid at the end of the check-in day, so the provisional guest booking was automatically cancelled. No payment was taken.",
+          snapshot: { autoCancelledPastCheckIn: true },
+        });
+
         try {
-          await sendBookingCancelledEmail(
-            resolution.booking.member.email,
-            resolution.booking.member.firstName,
-            resolution.booking.checkIn,
-            resolution.booking.checkOut,
-            0,
-            "card",
-            0,
-            resolution.booking.lodgeId
-          );
+          await sendSplitGuestPortionCancelledEmail({
+            email: resolution.booking.member.email,
+            firstName: resolution.booking.member.firstName,
+            checkIn: resolution.booking.checkIn,
+            checkOut: resolution.booking.checkOut,
+            // parentUnpaid conflates unpaid/cancelled/bumped parents, so only
+            // promise "your own booking remains confirmed" when the parent is
+            // genuinely settled (parentUnpaid === false).
+            parentConfirmed: !resolution.parentUnpaid,
+            parentBookingReference: resolution.booking.parentBookingId,
+            lodgeId: resolution.booking.lodgeId,
+          });
         } catch (emailErr) {
           logger.error(
             {
@@ -1007,20 +1018,13 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
         }
 
         try {
-          await sendAdminSplitSettlementUnpaidAlert({
+          await sendAdminSplitSettlementCancelledAlert({
             memberName: `${resolution.booking.member.firstName} ${resolution.booking.member.lastName}`,
             checkIn: resolution.booking.checkIn,
             checkOut: resolution.booking.checkOut,
             guestCount: resolution.booking.guests.length,
             totalCents: resolution.booking.finalPriceCents,
-            // The check-in-day-end boundary that triggered the cancel; the
-            // final-notice variant renders it as the cancellation date, not a
-            // future hold.
-            holdUntil: endOfDateOnlyForTimeZone(
-              formatDateOnly(resolution.booking.checkIn)
-            ),
             parentUnpaid: resolution.parentUnpaid,
-            finalNotice: true,
           });
         } catch (alertErr) {
           logger.error(

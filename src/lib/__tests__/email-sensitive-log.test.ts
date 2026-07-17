@@ -28,4 +28,11 @@ describe("sensitive EmailLog HTML classification", () => {
   it("continues to retain HTML for a non-sensitive template", () => {
     expect(shouldPersistEmailHtml("booking-request-declined")).toBe(true);
   });
+
+  it("retains HTML for the #1993 terminal split-cancellation templates (no bearer token)", () => {
+    // Neither the admin terminal notice nor the member guest-portion-cancelled
+    // notice carries a bearer /pay link, so they must NOT be redacted at rest.
+    expect(shouldPersistEmailHtml("admin-split-settlement-cancelled")).toBe(true);
+    expect(shouldPersistEmailHtml("split-guest-portion-cancelled")).toBe(true);
+  });
 });
