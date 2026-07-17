@@ -429,6 +429,83 @@ describe("member CSV import parser", () => {
     expect(preview.importRows).toHaveLength(3);
   });
 
+  it("maps a cancelled date column and normalizes it (issue #1946)", () => {
+    const parsed = parseMemberImportCsv(
+      [
+        "First Name,Last Name,Email,Cancelled Date",
+        "Alice,Anderson,alice@example.com,15/01/2020",
+      ].join("\n"),
+    );
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const mapping = inferMemberImportColumnMapping(parsed.data.headers);
+    expect(mapping.cancelledDate).not.toBeNull();
+
+    const preview = buildMemberImportPreview(parsed.data, mapping, {
+      cancelledDate: "dd/MM/yyyy",
+    });
+
+    expect(preview.hasErrors).toBe(false);
+    expect(preview.rows[0].values.cancelledDate).toBe("15/01/2020");
+    expect(preview.rows[0].normalizedDateValues.cancelledDate).toBe(
+      "2020-01-15",
+    );
+  });
+
+  it("rejects a cancelled date in the future (issue #1946)", () => {
+    const parsed = parseMemberImportCsv(
+      [
+        "First Name,Last Name,Email,Cancelled Date",
+        "Alice,Anderson,alice@example.com,2999-01-01",
+      ].join("\n"),
+    );
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const preview = buildMemberImportPreview(
+      parsed.data,
+      inferMemberImportColumnMapping(parsed.data.headers),
+    );
+
+    expect(preview.hasErrors).toBe(true);
+    expect(preview.importRows).toEqual([]);
+    expect(
+      preview.rows[0].errors.some((error) =>
+        error.includes("Cancelled Date"),
+      ),
+    ).toBe(true);
+    expect(
+      preview.rows[0].errors.some((error) =>
+        error.toLowerCase().includes("future"),
+      ),
+    ).toBe(true);
+  });
+
+  it("accepts a past cancelled date and reports no error (issue #1946)", () => {
+    const parsed = parseMemberImportCsv(
+      [
+        "First Name,Last Name,Email,Cancelled Date",
+        "Alice,Anderson,alice@example.com,2020-06-30",
+      ].join("\n"),
+    );
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const preview = buildMemberImportPreview(
+      parsed.data,
+      inferMemberImportColumnMapping(parsed.data.headers),
+    );
+
+    expect(preview.hasErrors).toBe(false);
+    expect(preview.rows[0].normalizedDateValues.cancelledDate).toBe(
+      "2020-06-30",
+    );
+  });
+
   it("flags duplicate same-email same-name identities in preview even when DOB differs or is blank", () => {
     const parsed = parseMemberImportCsv(
       [
