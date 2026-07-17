@@ -21,6 +21,7 @@ import {
   type TxDb,
 } from "../import-types";
 import { RowValidator, nz, readCsvRows } from "../values";
+import type { ConfigTransferCategory } from "../manifest";
 import { bundleCarriesJoiningFeeSchedule } from "./membership-fees";
 import { addDaysDateOnly, getTodayDateOnly } from "@/lib/date-only";
 
@@ -589,6 +590,24 @@ export const xeroConfigExporter: CategoryExporter = {
   },
 };
 
+/**
+ * The #1941 precedence guard. The legacy joining-fee materialisation is
+ * SUPERSEDED only when the bundle carries the first-class joining-fee schedule
+ * (membership-fees/joining-fees.csv) AND the membership-fees category is actually
+ * being applied. If an admin imports xero-config with membership-fees DESELECTED,
+ * the membership-fees importer never runs, so the legacy fan-out MUST still run
+ * or the joining fees silently vanish (neither path writes them).
+ */
+function legacyJoiningFeeSuperseded(
+  files: Map<string, Uint8Array>,
+  selectedCategories: ConfigTransferCategory[] | undefined,
+): boolean {
+  return (
+    bundleCarriesJoiningFeeSchedule(files) &&
+    (selectedCategories?.includes("membership-fees") ?? false)
+  );
+}
+
 // ---- Plan ------------------------------------------------------------------
 
 async function planXeroConfig(ctx: PlanContext): Promise<CategoryPlanResult> {
@@ -630,9 +649,12 @@ async function planXeroConfig(ctx: PlanContext): Promise<CategoryPlanResult> {
   // fingerprint so a concurrent fee-configuration change forces a re-plan.
   // SUPERSEDED by #1941: a NEW-format bundle carries the authoritative
   // joining-fee schedule in membership-fees/joining-fees.csv, so the legacy
-  // item-code-amount fan-out must not also run/duplicate. Old-format bundles
-  // (no joining-fees.csv) keep the legacy path per the E13 compat window.
-  if (!bundleCarriesJoiningFeeSchedule(ctx.files)) {
+  // item-code-amount fan-out must not also run/duplicate — but ONLY when the
+  // membership-fees category is actually being applied (see
+  // legacyJoiningFeeSuperseded). Old-format bundles (no joining-fees.csv), or a
+  // new-format bundle imported with membership-fees deselected, keep the legacy
+  // path per the E13 compat window.
+  if (!legacyJoiningFeeSuperseded(ctx.files, ctx.selectedCategories)) {
     const materialisation = await decideJoiningFeeMaterialisation(
       ctx.db,
       parsedItemRows,
@@ -711,10 +733,12 @@ async function applyXeroConfig(ctx: ApplyContext): Promise<CategoryApplyResult> 
   // E5): re-derive the same decision the plan previewed (the fingerprint
   // guarantees the coverage state has not drifted) and fan the amounts out
   // per D-R1 inside this transaction. SUPERSEDED by #1941 for NEW-format
-  // bundles — when membership-fees/joining-fees.csv is present it is the
-  // authoritative joining-fee schedule, so the legacy fan-out is skipped to
-  // avoid duplicating/skewing it (the precedence the plan previewed).
-  if (!bundleCarriesJoiningFeeSchedule(ctx.files)) {
+  // bundles — when membership-fees/joining-fees.csv is present AND the
+  // membership-fees category is being applied it is the authoritative joining-fee
+  // schedule, so the legacy fan-out is skipped to avoid duplicating/skewing it
+  // (the precedence the plan previewed). With membership-fees deselected the
+  // legacy path still runs, so the fees are not silently dropped.
+  if (!legacyJoiningFeeSuperseded(ctx.files, ctx.selectedCategories)) {
     const today = getTodayDateOnly();
     const materialisation = await decideJoiningFeeMaterialisation(
       ctx.tx,

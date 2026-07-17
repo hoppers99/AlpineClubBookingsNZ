@@ -93,6 +93,7 @@ export async function buildImportPlanFromParsed(
     manifest,
     mode,
     resolutions: resolutionMap(resolutions),
+    selectedCategories,
   };
 
   // A category may be served by more than one importer module (e.g.
