@@ -13,6 +13,7 @@ import { formatCents } from "@/lib/utils";
 import { CancelBookingButton } from "@/components/cancel-booking-button";
 import { BookingPaymentSection } from "@/components/booking-payment-section";
 import { SwitchToInternetBankingButton } from "@/components/switch-to-internet-banking-button";
+import { SendGuestPaymentLinkButton } from "@/components/send-guest-payment-link-button";
 import { BookingNotesEditor } from "@/components/booking-notes-editor";
 import { BookingEditor, type BookingEditorData } from "@/components/booking-editor";
 import { AdditionalPaymentCard } from "@/components/additional-payment-card";
@@ -1303,10 +1304,37 @@ export default async function BookingDetailPage({
               returnUrl={`${process.env.NEXTAUTH_URL || "http://localhost:3000"}/bookings/${booking.id}`}
             />
             {canSwitchToInternetBanking && (
-              <SwitchToInternetBankingButton
-                bookingId={booking.id}
-                description={switchToInternetBankingDescription}
-              />
+              <>
+                {hasProvisionalChildren ? (
+                  // #1967: paying your own place by internet banking leaves no
+                  // card on file for the later guest charge. Warn (do not block)
+                  // and offer to email a payment link for the guest portion now,
+                  // making the hedged "we'll contact you to arrange it" promise
+                  // (#1942) real.
+                  <div className="mt-4 space-y-2 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                    <p className="font-medium">
+                      Paying by internet banking? Your guests still need paying
+                      for
+                    </p>
+                    <p>
+                      If you switch to internet banking we won&apos;t have a card
+                      on file to charge for your{" "}
+                      {provisionalChildGuestCount} non-member guest
+                      {provisionalChildGuestCount === 1 ? "" : "s"} closer to
+                      your stay. To keep it automatic, pay for this booking by
+                      card instead so we have a card on file. Otherwise, email
+                      yourself a secure link now to pay for your guests
+                      separately — if we can&apos;t take payment, we&apos;ll
+                      contact you to arrange it.
+                    </p>
+                    <SendGuestPaymentLinkButton bookingId={booking.id} />
+                  </div>
+                ) : null}
+                <SwitchToInternetBankingButton
+                  bookingId={booking.id}
+                  description={switchToInternetBankingDescription}
+                />
+              </>
             )}
           </CardContent>
         </Card>
