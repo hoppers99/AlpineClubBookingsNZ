@@ -224,8 +224,9 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
   "booking-request-verification": ["token"],
   "booking-request-approved": ["token"],
   // #1967/#1994: the tokenised /pay/<token> bearer link is the essential body
-  // content — the required "token" keeps it in the sensitive-log redaction set
-  // (shouldPersistEmailHtml) and blocks an override that drops the pay link.
+  // content — the required "token" blocks an override that drops the pay link.
+  // Sensitive-log redaction is driven separately by SENSITIVE_EMAIL_LOG_TEMPLATES
+  // in src/lib/email/internal.ts, which already contains this template.
   "split-guest-payment-link": ["token"],
   "booking-request-quote": ["token"],
   "admin-booking-request-pending": ["requesterName", "reviewUrl"],
