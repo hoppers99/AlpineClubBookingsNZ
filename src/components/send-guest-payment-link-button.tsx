@@ -4,19 +4,23 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 
 /**
- * Split-booking guest-portion affordance (#1967). Shown next to the
- * switch-to-Internet-Banking control when the booking has a linked provisional
- * non-member child: because paying the member's own place by internet banking
- * leaves no card on file for the later guest charge, this lets the booker email
- * themselves a secure payment link for the guest portion now. It posts to
- * /api/bookings/[id]/send-guest-payment-link, which reuses the same idempotent
- * machinery as the settlement cron, so pressing it twice never sends a
- * duplicate link.
+ * Split-booking guest-portion affordance (#1967). Shown with the
+ * switch-to-Internet-Banking control (pre-switch) and on the booking page
+ * after the member's own place is settled by internet banking: because paying
+ * the member's own place by internet banking leaves no card on file for the
+ * later guest charge, this lets the booker email themselves a secure payment
+ * link for the guest portion. It posts to
+ * /api/bookings/[id]/send-guest-payment-link, a true send/RE-SEND: an existing
+ * link is revoked and a fresh one sent (raw tokens are never stored, so a new
+ * mint is the only way to re-send), while a link minted within the last minute
+ * short-circuits server-side — pressing the button twice never fans out
+ * duplicate emails or leaves two live links.
  */
 export function SendGuestPaymentLinkButton({ bookingId }: { bookingId: string }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState<string | null>(null);
+  const [sentOnce, setSentOnce] = useState(false);
 
   async function sendLink() {
     setBusy(true);
@@ -34,10 +38,14 @@ export function SendGuestPaymentLinkButton({ bookingId }: { bookingId: string })
         );
       }
       if (data.sent > 0) {
-        setDone("We've emailed you a secure link to pay for your guests.");
-      } else if (data.alreadyActive > 0) {
+        setSentOnce(true);
         setDone(
-          "A payment link for your guests has already been sent — check your email (and spam folder)."
+          "We've emailed you a secure link to pay for your guests. Any earlier link no longer works."
+        );
+      } else if (data.justSent > 0) {
+        setSentOnce(true);
+        setDone(
+          "A payment link was sent moments ago — check your email (and spam folder). You can request a fresh one in a minute."
         );
       } else {
         setDone("Your guests' payment is already taken care of.");
@@ -55,13 +63,12 @@ export function SendGuestPaymentLinkButton({ bookingId }: { bookingId: string })
 
   return (
     <div className="mt-3">
-      <Button
-        type="button"
-        variant="outline"
-        onClick={sendLink}
-        disabled={busy || done !== null}
-      >
-        {busy ? "Sending..." : "Email me a payment link for my guests"}
+      <Button type="button" variant="outline" onClick={sendLink} disabled={busy}>
+        {busy
+          ? "Sending..."
+          : sentOnce
+            ? "Re-send the payment link"
+            : "Email me a payment link for my guests"}
       </Button>
       {done ? (
         <p className="mt-2 text-sm text-emerald-700">{done}</p>

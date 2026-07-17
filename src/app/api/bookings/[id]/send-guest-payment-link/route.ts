@@ -10,16 +10,20 @@ import logger from "@/lib/logger";
 /**
  * Split-booking guest-portion payment link, on demand (#1967).
  *
- * The booker calls this from the booking-detail page when they switch their own
- * place to Internet Banking and their non-member guests are held in a linked
+ * The booker calls this from the booking-detail page when they pay their own
+ * place by Internet Banking and their non-member guests are held in a linked
  * provisional child: with no card on file, the guest portion cannot be
  * auto-charged at settlement, so this emails the member a secure `/pay/<token>`
- * link for each provisional child. It reuses the same idempotent
- * `issueSplitGuestPaymentLink` helper the settlement cron uses, so a second
- * click (or a click racing the cron) never mints or emails a duplicate link.
+ * link for each provisional child. It is a true send/RE-SEND: an existing
+ * active link is revoked and replaced (raw tokens are never stored, so a fresh
+ * mint is the only way to re-send), while a link minted within the last minute
+ * short-circuits to `justSent` — so a double click (or a click racing the
+ * settlement cron) never fans out duplicate emails or leaves two live tokens.
  *
  * `id` is the PARENT (member) booking id; links are issued for its linked
- * PENDING non-member children.
+ * genuine split children (#738) — PENDING, non-member, and NOT #796 group
+ * joiners (joiners also carry parentBookingId but always have a
+ * GroupBookingJoin row; their payment flows are separate).
  */
 export async function POST(
   _request: NextRequest,
@@ -41,7 +45,12 @@ export async function POST(
       memberId: true,
       deletedAt: true,
       linkedBookings: {
-        where: { status: BookingStatus.PENDING, hasNonMembers: true },
+        where: {
+          status: BookingStatus.PENDING,
+          hasNonMembers: true,
+          // Genuine split children only — group joiners are a different flow.
+          groupBookingJoin: { is: null },
+        },
         select: { id: true },
       },
     },
@@ -63,13 +72,13 @@ export async function POST(
   }
 
   let sent = 0;
-  let alreadyActive = 0;
+  let justSent = 0;
   let suppressed = 0;
   for (const child of children) {
     try {
       const result = await issueSplitGuestPaymentLink(child.id);
       if (result.outcome === "sent") sent += 1;
-      else if (result.outcome === "already_active") alreadyActive += 1;
+      else if (result.outcome === "just_sent") justSent += 1;
       else if (result.outcome === "suppressed") suppressed += 1;
     } catch (err) {
       logger.error(
@@ -95,5 +104,5 @@ export async function POST(
     );
   }
 
-  return NextResponse.json({ sent, alreadyActive, suppressed });
+  return NextResponse.json({ sent, justSent, suppressed });
 }
