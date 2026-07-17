@@ -131,6 +131,22 @@ describe("setup-wizard-db", () => {
     expect(arg.update).not.toHaveProperty("bookingsName");
   });
 
+  it("keeps familyGroupRequestCreateMemberAllowed create-only so an admin customization survives an overwrite", async () => {
+    const db = makeDb();
+    await applyWizardConfigToDatabase(values, db);
+    const tierUpsert = db.ageTierSetting.upsert as ReturnType<typeof vi.fn>;
+    for (const call of tierUpsert.mock.calls) {
+      const arg = call[0] as {
+        create: Record<string, unknown>;
+        update: Record<string, unknown>;
+      };
+      expect(arg.create).toHaveProperty("familyGroupRequestCreateMemberAllowed");
+      expect(arg.update).not.toHaveProperty(
+        "familyGroupRequestCreateMemberAllowed",
+      );
+    }
+  });
+
   it("writes all age tiers atomically — a mid-set failure persists none, and a re-run completes (W1)", async () => {
     const persisted: string[] = [];
     let call = 0;

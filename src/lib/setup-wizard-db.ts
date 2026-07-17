@@ -309,8 +309,10 @@ export async function applyWizardConfigToDatabase(
           maxAge: tier.maxAge,
           label: tier.label,
           subscriptionRequiredForBooking: tier.subscriptionRequiredForBooking,
-          familyGroupRequestCreateMemberAllowed:
-            tier.familyGroupRequestCreateMemberAllowed,
+          // familyGroupRequestCreateMemberAllowed is never collected by the
+          // wizard and is not carried in the DB-sourced defaults, so it is
+          // create-only — an admin customization survives an overwrite (same
+          // never-overwrite treatment as bookingsName).
           sortOrder: tier.sortOrder,
         },
         create: {
