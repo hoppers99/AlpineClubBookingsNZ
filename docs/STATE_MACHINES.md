@@ -79,24 +79,65 @@ Split-booking guest-portion settlement with no card on file (#1967). A split
 non-member child (#738) is normally auto-charged at its hold deadline to the
 member's saved card inherited from the parent payment
 (`savedPaymentMethodForBooking`). But a `PAYMENT_PENDING` parent can legitimately
-pay by **Internet Banking** (switch-at-pay), which leaves the parent payment with
-no `stripeCustomerId`/`stripePaymentMethodId` — so the child resolves to no saved
+pay by **Internet Banking** (switch-at-pay flips the parent to `CONFIRMED` with
+an IB-source payment), which leaves the parent payment with no
+`stripeCustomerId`/`stripePaymentMethodId` — so the child resolves to no saved
 card and is not `originBookingRequest`. Rather than stranding the guests (the old
 `missing_payment_method` path only logged), `cron-confirm-pending.ts` now mirrors
-the #707 request-origin path: it extends the hold, mints a tokenised
-`/pay/<token>` PaymentLink (reusing the #707 machinery) so the member can settle
-the guest portion, emails the member that link, and fires a dedicated admin alert
-(`sendAdminSplitSettlementUnpaidAlert`). All three side effects fire **once** —
-the mint (`mintSplitGuestPaymentLinkIfAbsent`) is guarded on the absence of an
-active PaymentLink for the child, and only the run that actually mints a fresh
-token notifies; later cron runs re-extend the hold silently, so re-runs never
-re-email or re-alert. The child stays PENDING and holds no capacity throughout,
-exactly as before; if the lodge fills, the capacity re-check bumps it and revokes
-its link like any other provisional child. The member can also trigger this
-proactively from the booking-detail page when switching to Internet Banking
-(`POST /api/bookings/[id]/send-guest-payment-link` → `issueSplitGuestPaymentLink`,
-the same idempotent mint-and-email), warned but never blocked. Paying the parent
-by card instead keeps the automatic saved-card settlement path unchanged.
+the #707 request-origin path — but only for a **genuine split child whose parent
+is genuinely settled without a card** (an IB-source payment on a live parent, or
+a parent already `CONFIRMED`/`PAID`/`COMPLETED`). #796 group joiners also carry
+`parentBookingId` but always have a `GroupBookingJoin` row written atomically at
+creation; that row is the discriminator, and joiners keep the pre-existing
+`missing_payment_method` log path. When the gate passes the cron extends the
+hold, mints a tokenised `/pay/<token>` PaymentLink (reusing the #707 machinery)
+so the member can settle the guest portion, and emails the member that link.
+The **member email fires once per mint** — `mintSplitGuestPaymentLinkIfAbsent`
+is guarded on the absence of an active (unrevoked, unused, unexpired)
+PaymentLink for the child — while the **admin alert
+(`sendAdminSplitSettlementUnpaidAlert`) fires on every hold-extension run**
+(~2-daily, the same cadence as the request-origin hold-expired alert) until the
+child settles. If the parent is NOT settled (e.g. an abandoned-card
+`PAYMENT_PENDING` parent), no link is minted or emailed — the guest portion must
+not settle ahead of the member's own place — and the same admin alert fires each
+extension run with parent-unpaid wording instead.
+
+Payment-link recovery and supersession (#1967). Raw tokens are never stored, so
+a minted-but-undelivered link would otherwise stall settlement forever behind
+the active-link sentinel. Recovery is revoke-and-remint: (a) if the cron's
+post-commit member email throws or is suppressed, the cron revokes the
+just-minted link **by row id** (never the whole booking, so a newer concurrent
+link survives) and the next extension run re-mints and re-sends; (b) the
+on-demand button (`POST /api/bookings/[id]/send-guest-payment-link` →
+`issueSplitGuestPaymentLink`) is a true send/RE-SEND — it revokes the existing
+active link and mints+emails a fresh one atomically under the per-lodge
+advisory lock, except that an active link minted within the last minute
+short-circuits as just-sent (the double-click guard); (c) an EXPIRED link is
+not active (matching #707's `expired_payable` re-issue convention), so a child
+whose dates moved out after its link lapsed gets a fresh link, while a child
+whose check-in day has already ended never gets one minted at all. Every mint
+site (cron, button, `/pay` re-issue) revokes-then-creates under the per-lodge
+advisory lock, so at most one live token can exist per booking. Conversely,
+once a saved card appears (e.g. the member later pays the parent by card), the
+cron's auto-charge claim revokes the child's active links inside the claim
+transaction and the `/pay` intent path re-reads the link under the same lock —
+the tokenised link and the saved-card charge are never both live. The on-demand
+issue path refuses (`not_payable`) whenever a saved card exists for the same
+reason.
+
+Reachable composite states (#1967): the parent and child settle independently,
+so a child can be PAID while its parent is still unpaid (IB transfer never
+reconciled) or after the parent is CANCELLED — the parent-cancel sweep
+(`cancelLinkedProvisionalChildBookings`) only cancels children still PENDING
+(and revokes their links); an already-PAID child deliberately survives, exactly
+like any other paid booking (captured-money invariant), and needs the ordinary
+cancel/refund flow if the party is not coming. There is deliberately no
+auto-cancel/reaper for a split child left unsettled past check-in — that is an
+owner policy decision; the recurring admin alert is the backstop. The child
+stays PENDING and holds no capacity throughout; if the lodge fills, the
+capacity re-check bumps it and revokes its link like any other provisional
+child. Paying the parent by card instead keeps the automatic saved-card
+settlement path unchanged.
 
 Lodge check-in gate (F27 / #1372 + #1422) — status-preserving. A booking that
 carries a pending admin review (`requiresAdminReview` true and
