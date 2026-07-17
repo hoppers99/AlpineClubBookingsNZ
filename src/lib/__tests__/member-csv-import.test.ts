@@ -3,6 +3,7 @@ import {
   buildMemberImportPreview,
   createDefaultMemberImportDateFormatMapping,
   inferMemberImportColumnMapping,
+  MEMBER_IMPORT_CANCELLED_DATE_FLAG_HINT,
   MEMBER_IMPORT_MAX_ROWS,
   normalizeMemberImportDateValue,
   parseCsv,
@@ -482,6 +483,91 @@ describe("member CSV import parser", () => {
         error.toLowerCase().includes("future"),
       ),
     ).toBe(true);
+  });
+
+  // FIX-2: a bare "Cancelled"/"Resigned" header is usually a Y/N flag, not a
+  // date, so it must no longer auto-map onto the cancelled-date field.
+  it("does not auto-map a bare Cancelled Y/N flag column to the cancelled date", () => {
+    const parsed = parseMemberImportCsv(
+      [
+        "First Name,Last Name,Email,Cancelled",
+        "Alice,Anderson,alice@example.com,Yes",
+      ].join("\n"),
+    );
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const mapping = inferMemberImportColumnMapping(parsed.data.headers);
+    expect(mapping.cancelledDate).toBeNull();
+
+    // With the flag column left unmapped, the row imports cleanly.
+    const preview = buildMemberImportPreview(parsed.data, mapping);
+    expect(preview.hasErrors).toBe(false);
+    expect(preview.rows[0].normalizedDateValues.cancelledDate).toBeUndefined();
+  });
+
+  it("does not auto-map a bare Resigned Y/N flag column to the cancelled date", () => {
+    const parsed = parseMemberImportCsv(
+      [
+        "First Name,Last Name,Email,Resigned",
+        "Alice,Anderson,alice@example.com,No",
+      ].join("\n"),
+    );
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const mapping = inferMemberImportColumnMapping(parsed.data.headers);
+    expect(mapping.cancelledDate).toBeNull();
+  });
+
+  // FIX-2: when a column IS mapped to the cancelled date but holds a Yes/No
+  // flag value, the parse error must hint that the column should be unmapped.
+  it("hints to unmap a Yes/No flag when a mapped cancelled-date value fails to parse", () => {
+    const parsed = parseMemberImportCsv(
+      [
+        "First Name,Last Name,Email,Cancelled Date",
+        "Alice,Anderson,alice@example.com,Yes",
+      ].join("\n"),
+    );
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const mapping = inferMemberImportColumnMapping(parsed.data.headers);
+    expect(mapping.cancelledDate).not.toBeNull();
+
+    const preview = buildMemberImportPreview(parsed.data, mapping);
+    expect(preview.hasErrors).toBe(true);
+    const cancelledError = preview.rows[0].errors.find((error) =>
+      error.includes("Cancelled Date"),
+    );
+    expect(cancelledError).toBeDefined();
+    expect(cancelledError).toContain(MEMBER_IMPORT_CANCELLED_DATE_FLAG_HINT);
+  });
+
+  it("does not append the flag hint to a non-cancelled date field error", () => {
+    const parsed = parseMemberImportCsv(
+      [
+        "First Name,Last Name,Email,DOB",
+        "Alice,Anderson,alice@example.com,Yes",
+      ].join("\n"),
+    );
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const preview = buildMemberImportPreview(
+      parsed.data,
+      inferMemberImportColumnMapping(parsed.data.headers),
+    );
+    expect(preview.hasErrors).toBe(true);
+    const dobError = preview.rows[0].errors.find((error) =>
+      error.includes("Date of Birth"),
+    );
+    expect(dobError).toBeDefined();
+    expect(dobError).not.toContain(MEMBER_IMPORT_CANCELLED_DATE_FLAG_HINT);
   });
 
   it("accepts a past cancelled date and reports no error (issue #1946)", () => {
