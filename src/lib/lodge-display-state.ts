@@ -11,7 +11,7 @@ import {
   formatDateOnly,
   getTodayDateOnly,
 } from "./date-only";
-import { clubConfig } from "@/config/club";
+import { getClubIdentity } from "./club-identity-settings";
 import { CLUB_THEME_ID } from "./club-theme-schema";
 import { getSanitizedLodgeInstructions } from "./lodge-instructions";
 import { DISPLAY_RELEVANT_MODULE_KEYS } from "./lodge-display/conditions";
@@ -563,9 +563,14 @@ export async function buildDisplayState(
     .findUnique({ where: { id: CLUB_THEME_ID }, select: { logoDataUrl: true } })
     .catch(() => null);
 
+  // DB-first club name (E3 #1929, leak fixed C5 #1984): resolve through
+  // ClubIdentitySettings so an admin rename reaches the lobby display, instead of
+  // reading the raw config/club.json name. Never throws — falls back to config.
+  const clubIdentity = await getClubIdentity();
+
   return {
     lodge: { name: lodge.name },
-    club: { name: clubConfig.name, logoDataUrl: theme?.logoDataUrl ?? null },
+    club: { name: clubIdentity.name, logoDataUrl: theme?.logoDataUrl ?? null },
     generatedAt: new Date().toISOString(),
     window: { start: formatDateOnly(startDate), days },
     rooms,

@@ -404,6 +404,7 @@ async function main() {
       name: clubConfig.name,
       shortName: clubConfig.shortName ?? null,
       hutLeaderLabel: clubConfig.hutLeaderLabel ?? null,
+      facebookUrl: clubConfig.socialLinks?.facebook ?? null,
     },
   });
   console.log("Club identity settings seeded (create-only)");
