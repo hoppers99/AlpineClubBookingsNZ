@@ -4,6 +4,11 @@ import { prisma } from "@/lib/prisma";
 export interface ProvisionalChildSummary {
   guestCount: number;
   holdUntil: Date;
+  // The provisional non-member child's own priced total in integer cents
+  // (#1976). This is the guest portion that is deferred — charged closer to the
+  // stay, NOT today — while the parent's member portion is charged up front. It
+  // is the child's server-side `finalPriceCents`, never a client re-computation.
+  deferredAmountCents: number;
 }
 
 /**
@@ -35,6 +40,7 @@ export async function getProvisionalNonMemberChildSummary(parent: {
       },
       select: {
         nonMemberHoldUntil: true,
+        finalPriceCents: true,
         _count: { select: { guests: true } },
       },
     });
@@ -46,6 +52,7 @@ export async function getProvisionalNonMemberChildSummary(parent: {
     return {
       guestCount: child._count.guests,
       holdUntil: child.nonMemberHoldUntil,
+      deferredAmountCents: child.finalPriceCents,
     };
   } catch {
     return null;
