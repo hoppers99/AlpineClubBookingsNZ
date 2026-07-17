@@ -89,6 +89,7 @@ import { DEFAULT_CLUB_THEME_VALUES } from "@/lib/club-theme-schema";
 import { InductionSettingsPanel } from "@/components/admin/induction-settings-panel";
 import { InductionTemplateManager } from "@/components/admin/induction-template-manager";
 import { MembershipCancellationSettingsPanel } from "@/components/admin/membership-cancellation-settings-panel";
+import { SubscriptionLockoutSettingsPanel } from "@/components/admin/subscription-lockout-settings-panel";
 import { EmailMessageSettingsPanel } from "@/components/admin/email-settings/email-message-settings-panel";
 import { BookingMessagesPanel } from "@/components/admin/booking-messages/booking-messages-panel";
 import { FinanceReportMappingsPanel } from "@/components/admin/finance-report-mappings-panel";
@@ -650,6 +651,141 @@ describe("MembershipCancellationSettingsPanel view-only gating (#1940, membershi
       await screen.findByRole("button", { name: /Save Cancellation Settings/i }),
     ).toBeEnabled();
     expect(screen.getByRole("button", { name: /Add Group/i })).toBeEnabled();
+  });
+});
+
+describe("SubscriptionLockoutSettingsPanel view-only gating (#1940, membership + finance)", () => {
+  // This panel reads the matrix from its prop (server-computed) and crosses two
+  // write areas: the lockout enable / financial-year / invoice-text controls
+  // write the membership route; the detection account/item codes write the
+  // finance route. Each control gates on its OWN area, so both must be edit for
+  // every editor to be live. Xero is "connected" here (chart-of-accounts returns
+  // an array) so the detection selects are gated by finance edit alone, not the
+  // separate not-connected disable.
+  const ALL_AREAS_EDIT: Partial<AdminPermissionMatrix> = {
+    membership: "edit",
+    finance: "edit",
+    bookings: "edit",
+  };
+
+  beforeEach(() => {
+    sessionMatrix = null;
+    stubFetchRoutes({
+      "/api/admin/membership-lockout-settings": {
+        settings: {
+          enabled: true,
+          financialYearEndMonthOverride: null,
+          textFallbackEnabled: true,
+        },
+      },
+      "/api/admin/xero/account-mappings": {
+        subscriptionIncome: { code: null, itemCode: null },
+      },
+      "/api/admin/xero/chart-of-accounts": { accounts: [] },
+      "/api/admin/xero/items": { items: [] },
+      "/api/admin/xero/organisation": { financialYearEndMonth: 3 },
+      "/api/admin/age-tier-settings": { settings: [] },
+    });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("disables every editor and Save for a membership+finance:view admin", async () => {
+    render(
+      <SubscriptionLockoutSettingsPanel
+        permissionMatrix={matrix("view", {
+          membership: "view",
+          finance: "view",
+          bookings: "view",
+        })}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("button", { name: /Save settings/i }),
+    ).toBeDisabled();
+    // Both membership-write checkboxes (lockout enable, invoice-text fallback)
+    // and every Select trigger are disabled for a viewer.
+    for (const checkbox of screen.getAllByRole("checkbox")) {
+      expect(checkbox).toBeDisabled();
+    }
+    for (const combobox of screen.getAllByRole("combobox")) {
+      expect(combobox).toBeDisabled();
+    }
+    expect(
+      screen.getByText(
+        /can view the subscription lockout settings but cannot change/i,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /can view the paid-subscription detection settings but cannot change/i,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("enables every editor and Save for a membership+finance:edit admin", async () => {
+    render(
+      <SubscriptionLockoutSettingsPanel
+        permissionMatrix={matrix("view", ALL_AREAS_EDIT)}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("button", { name: /Save settings/i }),
+    ).toBeEnabled();
+    for (const checkbox of screen.getAllByRole("checkbox")) {
+      expect(checkbox).toBeEnabled();
+    }
+    for (const combobox of screen.getAllByRole("combobox")) {
+      expect(combobox).toBeEnabled();
+    }
+    expect(
+      screen.queryByText(
+        /can view the subscription lockout settings but cannot change/i,
+      ),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        /can view the paid-subscription detection settings but cannot change/i,
+      ),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps the membership-write controls live for a membership:edit, finance:view admin", async () => {
+    // The finance detection codes are read-only (finance view), but the lockout
+    // enable / financial-year / invoice-text controls stay editable and Save is
+    // enabled because their membership route is editable.
+    render(
+      <SubscriptionLockoutSettingsPanel
+        permissionMatrix={matrix("view", {
+          membership: "edit",
+          finance: "view",
+          bookings: "view",
+        })}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("button", { name: /Save settings/i }),
+    ).toBeEnabled();
+    // The lockout-enable checkbox (membership) is live…
+    for (const checkbox of screen.getAllByRole("checkbox")) {
+      expect(checkbox).toBeEnabled();
+    }
+    // …while the finance detection card advertises its read-only state.
+    expect(
+      screen.getByText(
+        /can view the paid-subscription detection settings but cannot change/i,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        /can view the subscription lockout settings but cannot change/i,
+      ),
+    ).not.toBeInTheDocument();
   });
 });
 
