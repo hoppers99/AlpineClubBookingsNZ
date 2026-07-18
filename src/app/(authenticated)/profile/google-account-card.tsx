@@ -22,12 +22,20 @@ import { Badge } from "@/components/ui/badge";
 export function GoogleAccountCard({
   linked,
   moduleEnabled,
+  credentialsConfigured = true,
 }: {
   linked: boolean;
   moduleEnabled: boolean;
+  credentialsConfigured?: boolean;
 }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+
+  // The Connect affordance is only meaningful when the module is on AND the
+  // per-club Google credentials are configured server-side — mirror the login
+  // page, which hides "Continue with Google" under the same condition. Without
+  // this the button would show but the start route refuses with a generic error.
+  const canConnect = moduleEnabled && credentialsConfigured;
 
   async function connect() {
     setLoading(true);
@@ -84,9 +92,11 @@ export function GoogleAccountCard({
           <p className="mt-0.5 text-xs text-muted-foreground">
             {linked
               ? "You can sign in with this Google account. Password sign-in still works."
-              : moduleEnabled
+              : canConnect
                 ? "Connect your Google account to sign in with Google. This never replaces your password."
-                : "Google sign-in is currently turned off by your club."}
+                : moduleEnabled
+                  ? "Google sign-in is enabled but not yet configured by your club, so linking is unavailable right now."
+                  : "Google sign-in is currently turned off by your club."}
           </p>
         </div>
         {linked ? (
@@ -100,7 +110,7 @@ export function GoogleAccountCard({
             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
             Disconnect
           </Button>
-        ) : moduleEnabled ? (
+        ) : canConnect ? (
           <Button
             size="sm"
             type="button"

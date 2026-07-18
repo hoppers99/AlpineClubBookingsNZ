@@ -19,6 +19,7 @@ import { DeleteAccountButton } from "./delete-account-button";
 import { MembershipCancellationPanel } from "./membership-cancellation-panel";
 import { TwoFactorSecurityCard } from "./two-factor-security-card";
 import { GoogleAccountCard } from "./google-account-card";
+import { googleCredentialsConfigured } from "@/lib/google-oauth";
 import { AuditTimeline } from "@/components/audit-timeline";
 import { SectionNav, type SectionNavItem } from "@/components/section-nav";
 import {
@@ -401,6 +402,7 @@ export default async function ProfilePage({
               <GoogleAccountCard
                 linked={googleLinkedNow}
                 moduleEnabled={modules.googleLogin}
+                credentialsConfigured={googleCredentialsConfigured()}
               />
             ) : null}
           </CardContent>

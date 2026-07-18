@@ -361,6 +361,24 @@ export const authConfig = {
 
       if (intent) {
         // LINK path (profile-initiated, authenticated via the signed cookie).
+        //
+        // CRITICAL (planning-review MAJOR): bind the link to the CURRENT
+        // session, not just to whoever the intent cookie names. Intent clearing
+        // is best-effort (@auth/core builds its own Response, so the cookie can
+        // survive to its TTL), so on a shared device (e.g. a lodge iPad) a stale
+        // intent from member V must NOT convert member W's later Google LOGIN
+        // into a cross-member link. Require the session that completed consent to
+        // BE the member who started linking. In the legitimate flow the linker
+        // always holds an active session equal to the intent, so this is
+        // non-breaking; anyone else (no session, or a different member) is
+        // refused and simply retries a normal login. auth() is callable here —
+        // same request context, and it only decodes the session cookie (it never
+        // re-enters this signIn callback, so there is no recursion).
+        const session = await auth();
+        if (!session?.user?.id || session.user.id !== intent.memberId) {
+          return "/login?error=google_refused";
+        }
+
         // Require a verified Google email before pinning the sub.
         const emailVerified =
           profile && (profile as { email_verified?: unknown }).email_verified;
@@ -540,6 +558,12 @@ export const authConfig = {
   },
   pages: {
     signIn: "/login",
+    // Route genuine provider-side aborts (Google consent denied, OAuth state
+    // mismatch, etc.) that never reach our signIn callback to /login instead of
+    // the bare Auth.js /api/auth/error page. @auth/core appends ?error=<Code>
+    // (e.g. OAuthCallbackError, AccessDenied), which the login form's generic
+    // OAuth branch renders as a sensible "couldn't complete sign-in" message.
+    error: "/login",
   },
   session: {
     strategy: "jwt",

@@ -316,7 +316,37 @@ export async function linkGoogleAccount(
     return "googleLinked=1";
   }
 
-  await prisma.member.update({ where: { id: memberId }, data: { googleSub: sub } });
+  try {
+    await prisma.member.update({
+      where: { id: memberId },
+      data: { googleSub: sub },
+    });
+  } catch (err) {
+    // Race: another member linked this exact sub between the read above and this
+    // write. The googleSub @unique constraint rejects it with P2002 — fail
+    // closed to the same friendly refusal rather than the bare Auth.js error
+    // page (never a takeover; the first writer keeps the sub).
+    if (
+      err &&
+      typeof err === "object" &&
+      "code" in err &&
+      (err as { code?: unknown }).code === "P2002"
+    ) {
+      await auditGoogleLink({
+        action: "member.google.link_refused",
+        actor: { memberId },
+        subject: { memberId },
+        entity: { type: "Member", id: memberId },
+        category: "security",
+        severity: "important",
+        outcome: "blocked",
+        summary: "Google account link refused (unique-constraint race)",
+        metadata: { reason: "sub_linked_to_other_member_race" },
+      });
+      return "googleError=already_linked";
+    }
+    throw err;
+  }
   await auditGoogleLink({
     action: "member.google.linked",
     actor: { memberId },

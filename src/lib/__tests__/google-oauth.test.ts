@@ -248,6 +248,34 @@ describe("linkGoogleAccount (guards + audit)", () => {
     expect(outcome).toBe("googleLinked=1");
     expect(mockMemberUpdate).not.toHaveBeenCalled();
   });
+
+  it("fails closed to a friendly refusal on a P2002 unique-constraint race", async () => {
+    // The reads pass the guards, but between the read and the write another
+    // member links the same sub — the googleSub @unique rejects with P2002.
+    mockMemberFindUnique
+      .mockResolvedValueOnce(null) // existingBySub
+      .mockResolvedValueOnce({ id: "member-1", googleSub: null });
+    mockMemberUpdate.mockRejectedValueOnce(
+      Object.assign(new Error("Unique constraint failed"), { code: "P2002" }),
+    );
+
+    const outcome = await linkGoogleAccount("member-1", "sub-1");
+
+    expect(outcome).toBe("googleError=already_linked");
+    // The race refusal is audited (blocked), not surfaced as a raw error.
+    expect(mockAuditCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("rethrows a non-P2002 update error (not masked as a link conflict)", async () => {
+    mockMemberFindUnique
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ id: "member-1", googleSub: null });
+    mockMemberUpdate.mockRejectedValueOnce(new Error("connection lost"));
+
+    await expect(linkGoogleAccount("member-1", "sub-1")).rejects.toThrow(
+      "connection lost",
+    );
+  });
 });
 
 describe("unlinkGoogleAccount", () => {
