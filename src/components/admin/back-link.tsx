@@ -10,10 +10,12 @@ import Link from "next/link";
  * prepends the ← affordance and the shared underline styling.
  *
  * RULE (enforced): every admin drill-down leaf page must render `BackLink` to
- * its static parent hub, and be listed in the enforcement test at
- * `src/lib/__tests__/admin-leaf-back-links.test.tsx`. When you add a leaf under
- * an admin hub, add its BackLink here AND extend that test — it is the frozen
- * contract that fails if a listed leaf loses its back link.
+ * its parent, and be covered by an enforcement suite. Statically renderable
+ * leaves live in `src/lib/__tests__/admin-leaf-back-links.test.tsx`; the
+ * client-gated leaves that fetch on mount live in the companion RTL suite
+ * `src/lib/__tests__/admin-drilldown-back-links-client.test.tsx`. When you add a
+ * leaf under an admin hub, add its BackLink here AND extend whichever suite fits
+ * its render model — the frozen contract fails if a covered leaf loses its link.
  *
  * Dynamic-parent variant: a few drill-downs sit under a parent that is itself
  * dynamic (an `[id]` record page, or a caller-provided `returnTo`) rather than a

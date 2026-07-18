@@ -40,6 +40,27 @@ vi.mock(
   "@/app/(admin)/admin/lodges/[id]/_components/lodge-display-settings-card",
   () => ({ LodgeDisplaySettingsCard: () => null }),
 );
+// #2046 F2: stub the Xero record activity loader + its heavy client panel so the
+// async server component renders down to its top-of-page BackLink only.
+vi.mock("@/lib/xero-record-activity", () => ({
+  getXeroRecordActivity: async () => ({
+    rootRecord: { label: "Booking BK-7", relation: "Booking" },
+    scopeRecords: [],
+    relatedRecords: [],
+    backLink: { href: "/admin/bookings", label: "Bookings" },
+  }),
+}));
+vi.mock("@/components/admin/xero-record-activity-panel", () => ({
+  XeroRecordActivityPanel: () => null,
+}));
+// #2046 F6: the Induction Settings leaf drills in from the Induction Register;
+// stub its two client panels so only the top-of-page BackLink is asserted.
+vi.mock("@/components/admin/induction-settings-panel", () => ({
+  InductionSettingsPanel: () => null,
+}));
+vi.mock("@/components/admin/induction-template-manager", () => ({
+  InductionTemplateManager: () => null,
+}));
 
 import BookingPeriodsPage from "@/app/(admin)/admin/booking-policies/periods/page";
 import AdminMembershipTypesPage from "@/app/(admin)/admin/membership-types/page";
@@ -51,6 +72,8 @@ import DisplayTemplatesPage from "@/app/(admin)/admin/display/templates/page";
 import DisplayReferencePage from "@/app/(admin)/admin/display/reference/page";
 import DisplayPreviewPage from "@/app/(admin)/admin/display/preview/page";
 import LodgeDisplaySettingsPage from "@/app/(admin)/admin/lodges/[id]/display/page";
+import XeroRecordActivityPage from "@/app/(admin)/admin/xero/records/[localModel]/[localId]/page";
+import AdminInductionSettingsPage from "@/app/(admin)/admin/induction/settings/page";
 import { MemberDetailHeader } from "@/app/(admin)/admin/members/[id]/_components/member-detail-header";
 
 describe("admin drill-down leaf back links", () => {
@@ -73,6 +96,15 @@ describe("admin drill-down leaf back links", () => {
 
     expect(html).toContain('href="/admin/appearance"');
     expect(html).toContain("← Site Appearance &amp; Content");
+  });
+
+  // #2046 F6: the Induction Settings leaf replaced its ad-hoc outline button
+  // ("Induction register") with the shared BackLink to the register.
+  it("points the Induction Settings leaf back at the Induction Register", () => {
+    const html = renderToStaticMarkup(<AdminInductionSettingsPage />);
+
+    expect(html).toContain('href="/admin/induction"');
+    expect(html).toContain("← Induction Register");
   });
 
   // #2046: the five Lobby Display leaves each drilled into from /admin/display
@@ -125,7 +157,7 @@ describe("admin drill-down leaf back links", () => {
             accessRoles: [],
           },
           backHref: "/admin/members",
-          backLabel: "Back to Members",
+          backLabel: "Members",
           isAdultMember: true,
           memberIsArchived: false,
           pendingDeleteRequest: undefined,
@@ -141,16 +173,40 @@ describe("admin drill-down leaf back links", () => {
     );
 
     expect(html).toContain('href="/admin/members"');
-    expect(html).toContain("← Back to Members");
+    expect(html).toContain("← Members");
+  });
+
+  // #2046 F2: the Xero record activity page is an async server component whose
+  // only await is the activity loader; mock the loader and stub the heavy client
+  // panel so the top-of-page BackLink renders in isolation (mirrors the
+  // async-loader stubbing pattern in admin-setup-hubs.test.tsx). Its parent is a
+  // dynamic returnTo — here the record's own scope back-link resolved from the
+  // loader — so this closes the static-render gap for the dynamic-parent variant.
+  it("points the Xero record activity page back at its resolved parent (dynamic returnTo)", async () => {
+    const html = renderToStaticMarkup(
+      await XeroRecordActivityPage({
+        params: Promise.resolve({ localModel: "Booking", localId: "book-7" }),
+        searchParams: Promise.resolve({}),
+      }),
+    );
+
+    expect(html).toContain('href="/admin/bookings"');
+    expect(html).toContain("← Bookings");
   });
 });
 
-// Other #2046 conversions render behind an async data fetch / loading gate, so
-// they are not statically renderable here; their BackLink conversion is enforced
-// by typecheck + lint (unused ArrowLeft/Link/Button imports would fail). They
-// share the same dynamic-[id] BackLink pattern asserted above:
+// The remaining #2046 conversions render behind a client data gate ("use
+// client" pages that read params/session and fetch on mount), so they are not
+// statically renderable in this server-render suite. They are NOT enforced by
+// lint here — ArrowLeft/Link/Button stay imported for other uses in each file,
+// so deleting a BackLink usage would pass typecheck and lint. They are instead
+// covered by render tests in the companion RTL suite
+// `admin-drilldown-back-links-client.test.tsx`, which drives a failed/benign
+// fetch to reach each converted affordance:
 //   - src/app/(admin)/admin/lodges/[id]/page.tsx (error fallback → /admin/lodges)
-//   - src/app/(admin)/admin/lodges/[id]/setup/page.tsx (→ lodge configuration)
+//   - src/app/(admin)/admin/lodges/[id]/setup/page.tsx (main → lodge config; and
+//     the "not found" fallback → /admin/lodges)
 //   - src/app/(admin)/admin/members/[id]/page.tsx (error fallback → returnTo)
 //   - src/app/(admin)/admin/members/[id]/merge/page.tsx (→ master member)
-//   - src/app/(admin)/admin/xero/records/[localModel]/[localId]/page.tsx (→ returnTo)
+// The Xero record activity page (dynamic returnTo) is covered by the async
+// server-render case immediately above.

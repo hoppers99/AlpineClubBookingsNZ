@@ -102,10 +102,14 @@ predictable way back:
   buttons/links are normalised onto `BackLink` so the affordance looks and behaves
   the same everywhere.
 
-The rule is frozen by the enforcement test
-`src/lib/__tests__/admin-leaf-back-links.test.tsx`: when you add a new admin leaf
-add its `BackLink` **and** extend that test, so the suite fails if any listed
-leaf loses its back link.
+The rule is frozen by two enforcement suites. Statically renderable leaves (the
+static-hub ones plus the async Xero record page) are asserted in
+`src/lib/__tests__/admin-leaf-back-links.test.tsx`; the client-gated dynamic
+leaves (lodge config/setup and member detail/merge, which fetch on mount) are
+asserted in the companion RTL suite
+`src/lib/__tests__/admin-drilldown-back-links-client.test.tsx`. When you add a
+new admin leaf, add its `BackLink` **and** extend whichever suite fits its render
+model, so a leaf that loses its back link fails the build.
 
 ## Design Foundation — Restrained Alpine (#1800)
 
