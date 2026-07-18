@@ -504,8 +504,20 @@ export default function AdminDisplayTemplatesPage() {
                   <Button variant="outline" onClick={() => previewTemplate(item)}>
                     Preview
                   </Button>
+                  <Button
+                    variant="outline"
+                    title="Open in the visual builder (falls back to Advanced mode if it was hand-edited)"
+                    onClick={() =>
+                      window.open(
+                        `/admin/display/builder?templateId=${encodeURIComponent(item.id)}`,
+                        "_self"
+                      )
+                    }
+                  >
+                    Builder
+                  </Button>
                   <Button variant="outline" onClick={() => void editTemplate(item.id)}>
-                    Edit
+                    Edit (Advanced)
                   </Button>
                   <ViewOnlyActionButton
                     canEdit={canEdit}

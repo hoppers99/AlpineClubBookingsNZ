@@ -436,8 +436,17 @@ export default function AdminDisplayLayoutsPage() {
     <div className="space-y-6 p-6">
       <div>
         <BackLink href="/admin/display" label="Lobby Display" />
-        <h1 className="mt-2 text-2xl font-bold">Display Layouts</h1>
+        <h1 className="mt-2 text-2xl font-bold">Display Layouts — Advanced mode</h1>
         <p className="text-muted-foreground">
+          This is the <strong>Advanced mode</strong> hand-editor. Most boards are
+          easier to build in the{" "}
+          <a className="underline" href="/admin/display/builder">
+            visual builder
+          </a>
+          , which writes the layout and template for you; drop to Advanced mode
+          for full control over the HTML body, CSS, and areas.
+        </p>
+        <p className="text-muted-foreground mt-1">
           Author the structural skeleton of a lobby display: an HTML body with{" "}
           <code className="bg-muted rounded px-1">{"{{area:key}}"}</code>{" "}
           placeholders, a default CSS block, and the named areas each Template
