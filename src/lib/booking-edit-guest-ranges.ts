@@ -163,7 +163,19 @@ export function buildInProgressGuestRangePlan(
     const proposedStayEnd = removedFromFuture
       ? minDate(stayEnd, editableFrom)
       : newCheckOut;
-    const newFutureStart = maxDate(stayStart, editableFrom);
+    // #2029: the check-out-day extension the widened edit window opened adds
+    // genuinely-new nights in [stayEnd, editableFrom) — a slice that sits INSIDE
+    // the locked window (editableFrom = NZ tomorrow, but the guest's old stay
+    // ended today). Anchoring the new-price window at editableFrom (as the
+    // old-price window correctly does — nothing of the old stay is left to
+    // reprice there) would drop that slice and hand those nights out free.
+    // Start the new-price window at the guest's own stay end whenever it
+    // precedes editableFrom, so futureDelta always equals exactly the added
+    // nights [stayEnd, newCheckOut) per guest. `maxDate(stayStart, …)` keeps a
+    // future-dated partial-range guest (#713) from being charged before they
+    // arrive; whenever editableFrom <= stayEnd this is byte-identical to the
+    // prior `maxDate(stayStart, editableFrom)` (the mid-stay / last-night case).
+    const newFutureStart = maxDate(stayStart, minDate(editableFrom, stayEnd));
     const newFuturePriceCents = removedFromFuture
       ? 0
       : priceGuestRangeCents(newFutureStart, proposedStayEnd, guest, input.seasons);
