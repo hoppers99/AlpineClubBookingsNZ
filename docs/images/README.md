@@ -15,7 +15,7 @@ npm run docs:screenshots -- --list   # dry run: print the manifest, no browser
 ```
 
 Filenames are stable and defined in the harness manifest
-(`scripts/capture-screenshots.ts`), so a refresh overwrites in place — a
+(`e2e/tools/capture-screenshots.ts`), so a refresh overwrites in place — a
 screenshot update is a diff, not a rename. Viewport is a fixed 1280×800.
 
 See [`../STYLE_GUIDE.md`](../STYLE_GUIDE.md) → "Screenshot conventions" for

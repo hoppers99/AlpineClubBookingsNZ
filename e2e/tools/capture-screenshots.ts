@@ -34,8 +34,8 @@ import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { chromium, type Browser, type BrowserContext } from "@playwright/test";
-import { loginPersona, storageStatePath } from "../e2e/helpers/auth";
-import { E2E_ADMIN } from "../e2e/helpers/fixtures";
+import { loginPersona, storageStatePath } from "../helpers/auth";
+import { E2E_ADMIN } from "../helpers/fixtures";
 
 type Capture = {
   /** Stable filename stem and CLI selector, e.g. "admin-dashboard". */
@@ -65,14 +65,14 @@ const CAPTURES: Capture[] = [
 
 const VIEWPORT = { width: 1280, height: 800 } as const;
 const BASE_URL = process.env.E2E_BASE_URL ?? "http://localhost:3001";
-const IMAGES_ROOT = path.resolve(path.join(import.meta.dirname, "..", "docs", "images"));
+const IMAGES_ROOT = path.resolve(path.join(import.meta.dirname, "..", "..", "docs", "images"));
 
 function outputPath(capture: Capture): string {
   return path.join(IMAGES_ROOT, capture.area, `${capture.name}.png`);
 }
 
 function relOut(capture: Capture): string {
-  return path.relative(path.resolve(import.meta.dirname, ".."), outputPath(capture)).replace(/\\/g, "/");
+  return path.relative(path.resolve(import.meta.dirname, "..", ".."), outputPath(capture)).replace(/\\/g, "/");
 }
 
 function parseArgs(argv: string[]): { list: boolean; only: Set<string> } {

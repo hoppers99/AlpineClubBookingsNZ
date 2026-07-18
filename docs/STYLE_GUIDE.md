@@ -91,7 +91,7 @@ re-creatable.
 - **Location:** all images live under `docs/images/**`, grouped by area
   (`docs/images/admin/`, `docs/images/public/`). Never store screenshots
   elsewhere or inline them as data URIs.
-- **Harness:** `scripts/capture-screenshots.ts` (run via `npm run
+- **Harness:** `e2e/tools/capture-screenshots.ts` (run via `npm run
   docs:screenshots`) captures a **named** set against the seeded staging app.
   Filenames are stable and defined in the harness manifest, so re-running
   overwrites the same file — a screenshot refresh is a diff, not a rename.
