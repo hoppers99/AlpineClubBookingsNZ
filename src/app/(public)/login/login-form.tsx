@@ -19,6 +19,23 @@ import { MagicLinkRequestForm } from "./magic-link-request-form";
 // (#email briefly resolving to two nodes — the E2E flake tracked in #1207/#1140).
 // Server-resolved props keep the render deterministic. redirectTo is the
 // already-sanitised post-login destination (resolvePostLoginPath ran server-side).
+// Friendly copy for OAuth (Google) refusals redirected here as ?error=… by the
+// signIn callback (#2035). Unlisted values fall through to the generic branch.
+function oauthErrorMessage(error: string): string {
+  switch (error) {
+    case "google_unlinked":
+      return "That Google account isn't linked to a member here. Sign in with your password first, then connect Google from your profile.";
+    case "google_password_change":
+      return "Please sign in with your password — a password update is required before you can use Google sign-in.";
+    case "google_disabled":
+      return "Google sign-in is currently turned off. Please sign in with your password.";
+    case "google_refused":
+      return "We couldn't sign you in with Google. Please sign in with your password or contact the club.";
+    default:
+      return "Could not sign in with Google. Please try again or use your password.";
+  }
+}
+
 export function LoginForm({
   verified,
   verifyError,
@@ -26,6 +43,8 @@ export function LoginForm({
   redirectTo,
   authBounceRef,
   magicLinkEnabled = false,
+  googleLoginEnabled = false,
+  oauthError,
 }: {
   verified: boolean;
   verifyError?: string;
@@ -33,6 +52,8 @@ export function LoginForm({
   redirectTo: string;
   authBounceRef?: string;
   magicLinkEnabled?: boolean;
+  googleLoginEnabled?: boolean;
+  oauthError?: string;
 }) {
   const club = useClubIdentity();
   const [email, setEmail] = useState("");
@@ -165,6 +186,10 @@ export function LoginForm({
             </Alert>
           )}
 
+          {oauthError && (
+            <Alert variant="error">{oauthErrorMessage(oauthError)}</Alert>
+          )}
+
           {error && (
             <Alert variant="error">{error}</Alert>
           )}
@@ -282,6 +307,26 @@ export function LoginForm({
           </p>
         </CardFooter>
       </form>
+
+      {googleLoginEnabled && (
+        <CardContent>
+          <div className="mt-2 border-t pt-4">
+            <p className="mb-3 text-sm text-muted-foreground">
+              Linked your Google account? Sign in with it below.
+            </p>
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full"
+              onClick={() =>
+                void signIn("google", { callbackUrl: redirectTo })
+              }
+            >
+              Continue with Google
+            </Button>
+          </div>
+        </CardContent>
+      )}
 
       {magicLinkEnabled && (
         <CardContent>
