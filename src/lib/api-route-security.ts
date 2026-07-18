@@ -45,6 +45,11 @@ export const explicitPublicApiRoutes = {
     reason:
       "Password reset request endpoint with non-enumerating behavior and rate limiting.",
   },
+  "src/app/api/auth/password-policy/route.ts": {
+    boundary: "public",
+    reason:
+      "Public read of the club password-complexity policy (#2033) so the reset/change-password forms can show live hints; discloses only rule metadata (min length, required character classes), no member data, and the server enforces the same policy regardless.",
+  },
   "src/app/api/auth/register/route.ts": {
     boundary: "public",
     reason: "Disabled legacy registration endpoint returning 410.",
