@@ -3,8 +3,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, Check } from "lucide-react";
+import { Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { BackLink } from "@/components/admin/back-link";
 import {
   Card,
   CardContent,
@@ -432,9 +433,7 @@ export default function LodgeSetupWizardPage() {
     return (
       <div className="space-y-4">
         <p className="text-destructive">{loadError ?? "Lodge not found"}</p>
-        <Link href="/admin/lodges" className="underline">
-          Back to lodges
-        </Link>
+        <BackLink href="/admin/lodges" label="Lodges" />
       </div>
     );
   }
@@ -464,12 +463,10 @@ export default function LodgeSetupWizardPage() {
   return (
     <div className="space-y-6 max-w-3xl">
       <div>
-        <Link
+        <BackLink
           href={`/admin/lodges/${encodeURIComponent(lodgeId)}`}
-          className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:underline"
-        >
-          <ArrowLeft className="h-4 w-4" /> Lodge configuration
-        </Link>
+          label="Lodge configuration"
+        />
         <h1 className="text-3xl font-bold mt-2">Set up {lodge.name}</h1>
         <p className="text-muted-foreground mt-1">
           A guided setup for the new lodge. Every step can be skipped and
