@@ -181,6 +181,18 @@ export function validateAgeTierPartition<T extends AgeTierPartitionRow>(
     return { ok: false, error: "Each age tier may appear at most once." };
   }
 
+  // Defense-in-depth: NOT_APPLICABLE is the server-managed organisation/school
+  // tier (#1440) — it has no age range and never gets an AgeTierSetting row, so
+  // it can never be part of a bookable partition. The admin route's zod already
+  // rejects it before this runs; we also reject it here so the pure rule is
+  // safe for any caller that skips the zod layer.
+  if (tiers.some((tier) => tier === "NOT_APPLICABLE")) {
+    return {
+      ok: false,
+      error: "The N/A age tier is not part of the bookable age partition.",
+    };
+  }
+
   const adult = settings.find((s) => s.tier === "ADULT");
   if (!adult) {
     return {

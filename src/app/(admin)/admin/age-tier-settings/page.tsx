@@ -22,6 +22,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useConfirm } from "@/components/confirm-dialog";
 
 type AgeTierRow = {
   tier: AgeTier;
@@ -85,6 +86,7 @@ export default function AgeTierSettingsPage() {
   // Age-tier boundaries are a bookings-area setting; a bookings:view admin sees
   // the panel read-only (#1940). The PUT route enforces bookings:edit.
   const canEdit = useAdminAreaEditAccess("bookings");
+  const { confirm, confirmDialog } = useConfirm();
   const [settings, setSettings] = useState<AgeTierRow[]>([]);
   const [savedSettings, setSavedSettings] = useState<AgeTierRow[]>([]);
   const [saving, setSaving] = useState(false);
@@ -146,7 +148,18 @@ export default function AgeTierSettingsPage() {
     setError(null);
   }
 
-  function handleRestoreDefaults() {
+  async function handleRestoreDefaults() {
+    // Restoring overwrites the custom boundaries/labels in the editor with the
+    // four built-in tiers. It does not save on its own — the admin must still
+    // press Save Changes — but confirm first so a click never silently discards
+    // in-progress edits.
+    const confirmed = await confirm({
+      title: "Restore default age tiers?",
+      description:
+        "This replaces the tiers in the editor with the four built-in defaults (INFANT, CHILD, YOUTH, ADULT), discarding your custom boundaries and labels. Nothing is saved until you press Save Changes.",
+      confirmLabel: "Restore defaults",
+    });
+    if (!confirmed) return;
     setSettings(normalizeAgeTierRows(DEFAULT_SETTINGS));
     setSuccess(false);
     setError(null);
@@ -459,6 +472,8 @@ export default function AgeTierSettingsPage() {
           </AdminDataTable>
         </CardContent>
       </Card>
+
+      {confirmDialog}
     </div>
   );
 }

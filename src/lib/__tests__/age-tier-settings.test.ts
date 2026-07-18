@@ -574,6 +574,13 @@ describe("validateAgeTierPartition — subset validity rule (#2009)", () => {
       );
     });
 
+    it("rejects NOT_APPLICABLE in the partition (defense-in-depth)", () => {
+      expectRejected(
+        [row("NOT_APPLICABLE", 0, 17), row("ADULT", 18, null)],
+        /N\/A age tier is not part of the bookable age partition/i,
+      );
+    });
+
     it("rejects a non-ADULT tier with no upper limit", () => {
       expectRejected(
         [row("CHILD", 0, null), row("ADULT", 5, null)],

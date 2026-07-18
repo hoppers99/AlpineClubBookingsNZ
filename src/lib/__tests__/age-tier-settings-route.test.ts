@@ -75,7 +75,23 @@ function putRequest(settings: unknown[]) {
 describe("PUT /api/admin/age-tier-settings — subset save (#2009)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.transaction.mockResolvedValue([]);
+    // The route now runs the removal guard + deleteMany + upserts inside ONE
+    // interactive transaction (prisma.$transaction(async (tx) => …)). The mock
+    // invokes the callback with a tx client backed by the same op mocks, so a
+    // guard that throws inside the callback aborts exactly as it would against a
+    // real DB (the throw rejects the $transaction promise, and the route's
+    // catch turns a TierRemovalBlockedError into the 409).
+    mocks.transaction.mockImplementation(
+      async (fn: (tx: unknown) => unknown) =>
+        fn({
+          ageTierSetting: {
+            upsert: mocks.ageTierUpsert,
+            deleteMany: mocks.ageTierDeleteMany,
+          },
+          member: { count: mocks.memberCount },
+          bookingGuest: { count: mocks.bookingGuestCount },
+        }),
+    );
     mocks.ageTierUpsert.mockReturnValue({ __op: "upsert" });
     mocks.ageTierDeleteMany.mockReturnValue({ __op: "delete" });
     mocks.memberCount.mockResolvedValue(0);
@@ -113,7 +129,7 @@ describe("PUT /api/admin/age-tier-settings — subset save (#2009)", () => {
     });
   });
 
-  it("fails closed (409) when a live member is still classified into a removed tier", async () => {
+  it("fails closed (409) when a live member is still classified into a removed tier, aborting the in-tx delete", async () => {
     mocks.ageTierFindMany.mockReset();
     mocks.ageTierFindMany.mockResolvedValueOnce([
       { tier: "INFANT" },
@@ -121,14 +137,41 @@ describe("PUT /api/admin/age-tier-settings — subset save (#2009)", () => {
       { tier: "YOUTH" },
       { tier: "ADULT" },
     ]);
-    mocks.memberCount.mockResolvedValue(3); // 3 members still YOUTH/INFANT
+    // active = 3, archived = 0.
+    mocks.memberCount.mockResolvedValueOnce(3).mockResolvedValueOnce(0);
 
     const res = await PUT(putRequest([CHILD, ADULT]));
     expect(res.status).toBe(409);
     const body = await res.json();
     expect(body.error).toMatch(/Cannot remove age tier/i);
-    // Nothing is written when the guard blocks.
-    expect(mocks.transaction).not.toHaveBeenCalled();
+    // The guard runs INSIDE the transaction and throws to abort it, so the
+    // delete never lands even though the transaction callback was entered.
+    expect(mocks.transaction).toHaveBeenCalledTimes(1);
+    expect(mocks.ageTierDeleteMany).not.toHaveBeenCalled();
+    expect(mocks.ageTierUpsert).not.toHaveBeenCalled();
+    expect(body.activeMembers).toBe(3);
+    expect(body.archivedMembers).toBe(0);
+  });
+
+  it("fails closed (409) counting ARCHIVED members in a removed tier (would orphan on un-archive)", async () => {
+    mocks.ageTierFindMany.mockReset();
+    mocks.ageTierFindMany.mockResolvedValueOnce([
+      { tier: "INFANT" },
+      { tier: "CHILD" },
+      { tier: "YOUTH" },
+      { tier: "ADULT" },
+    ]);
+    // active = 0, archived = 2 — no live member, but archived ones still block.
+    mocks.memberCount.mockResolvedValueOnce(0).mockResolvedValueOnce(2);
+
+    const res = await PUT(putRequest([CHILD, ADULT]));
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    // New remediation message: edit the member's tier/DOB, not "widen a tier".
+    expect(body.error).toMatch(/including 2 archived/i);
+    expect(body.error).toMatch(/age tier or date of birth/i);
+    expect(body.error).not.toMatch(/widen/i);
+    expect(body.archivedMembers).toBe(2);
     expect(mocks.ageTierDeleteMany).not.toHaveBeenCalled();
   });
 
@@ -142,7 +185,9 @@ describe("PUT /api/admin/age-tier-settings — subset save (#2009)", () => {
 
     const res = await PUT(putRequest([{ ...CHILD }, ADULT]));
     expect(res.status).toBe(409);
-    expect(mocks.transaction).not.toHaveBeenCalled();
+    const body = await res.json();
+    expect(body.liveGuests).toBe(1);
+    expect(mocks.ageTierDeleteMany).not.toHaveBeenCalled();
   });
 
   it("rejects a set missing ADULT (400)", async () => {

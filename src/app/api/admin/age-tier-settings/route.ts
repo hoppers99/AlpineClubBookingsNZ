@@ -117,13 +117,19 @@ export async function PUT(request: NextRequest) {
 
   // --- Tier removal safety (issue #2009) -------------------------------------
   // A subset save may DROP tiers that previously existed in the table. Deleting a
-  // tier row while a live person still classifies into it would orphan their
-  // stored ageTier (no matching AgeTierSetting row → wrong label / price / Xero
-  // group), so we fail CLOSED: a tier can only be removed when no non-archived
-  // member and no current-or-upcoming booking guest is still classified into it.
-  // Past booking guests are frozen historical snapshots and never re-priced, so
-  // they do not block. The admin must first reclassify any live people (e.g.
-  // widen an adjacent tier to absorb the range) before the tier can be dropped.
+  // tier row while a person still classifies into it would orphan their stored
+  // ageTier (no matching AgeTierSetting row → wrong label / price / Xero group),
+  // so we fail CLOSED: a tier can only be removed when NO member (archived
+  // included) and no current-or-upcoming booking guest is still classified into
+  // it. Archived members are counted deliberately — an archived member sitting
+  // in a removed tier would orphan the moment they are un-archived, so we block
+  // now rather than surprise later. Past booking guests are frozen historical
+  // snapshots and never re-priced, so they do not block.
+  //
+  // The guard COUNTS and the deleteMany/upserts run in ONE interactive
+  // transaction: the guard reads and the delete write share the same tx, and a
+  // block throws from inside it (aborting every write). This closes the
+  // check-then-act race the previous pre-transaction count left open.
   const existingTiers = await prisma.ageTierSetting.findMany({
     select: { tier: true },
   });
@@ -132,74 +138,100 @@ export async function PUT(request: NextRequest) {
     .map((row) => row.tier)
     .filter((tier) => !keptTiers.has(tier));
 
-  if (removedTiers.length > 0) {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const [membersInRemoved, liveGuestsInRemoved] = await Promise.all([
-      prisma.member.count({
-        where: { ageTier: { in: removedTiers }, archivedAt: null },
-      }),
-      prisma.bookingGuest.count({
-        where: { ageTier: { in: removedTiers }, stayEnd: { gte: today } },
-      }),
-    ]);
-    if (membersInRemoved > 0 || liveGuestsInRemoved > 0) {
+  // Thrown from inside the transaction to abort it and carry the counts out to
+  // the 409 response. Reclassifying blocked people is a manual, per-member edit
+  // today; a bulk age-tier reclassify tool could be a future convenience but is
+  // deliberately out of scope for #2009.
+  class TierRemovalBlockedError extends Error {
+    constructor(
+      readonly activeMembers: number,
+      readonly archivedMembers: number,
+      readonly liveGuests: number,
+    ) {
+      super("age tier removal blocked");
+    }
+  }
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      if (removedTiers.length > 0) {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const [activeMembers, archivedMembers, liveGuests] = await Promise.all([
+          tx.member.count({
+            where: { ageTier: { in: removedTiers }, archivedAt: null },
+          }),
+          tx.member.count({
+            where: { ageTier: { in: removedTiers }, archivedAt: { not: null } },
+          }),
+          tx.bookingGuest.count({
+            where: { ageTier: { in: removedTiers }, stayEnd: { gte: today } },
+          }),
+        ]);
+        if (activeMembers + archivedMembers > 0 || liveGuests > 0) {
+          throw new TierRemovalBlockedError(
+            activeMembers,
+            archivedMembers,
+            liveGuests,
+          );
+        }
+        // Guarded above, in-tx: no person is classified into these tiers.
+        // Deleting the row cascades its Xero group aliases
+        // (AgeTierXeroAcceptedContactGroup).
+        await tx.ageTierSetting.deleteMany({
+          where: { tier: { in: removedTiers } },
+        });
+      }
+
+      for (const s of normalizedSettings) {
+        await tx.ageTierSetting.upsert({
+          where: { tier: s.tier },
+          update: {
+            minAge: s.minAge,
+            maxAge: s.maxAge,
+            label: s.label,
+            subscriptionRequiredForBooking: s.subscriptionRequiredForBooking,
+            familyGroupRequestCreateMemberAllowed:
+              s.familyGroupRequestCreateMemberAllowed,
+            sortOrder: s.sortOrder,
+          },
+          create: {
+            tier: s.tier,
+            minAge: s.minAge,
+            maxAge: s.maxAge,
+            label: s.label,
+            subscriptionRequiredForBooking: s.subscriptionRequiredForBooking,
+            familyGroupRequestCreateMemberAllowed:
+              s.familyGroupRequestCreateMemberAllowed,
+            sortOrder: s.sortOrder,
+          },
+        });
+      }
+    });
+  } catch (error) {
+    if (error instanceof TierRemovalBlockedError) {
       const plural = removedTiers.length > 1;
+      const totalMembers = error.activeMembers + error.archivedMembers;
       return NextResponse.json(
         {
           error:
             `Cannot remove age tier${plural ? "s" : ""} ${removedTiers.join(", ")}: ` +
-            `${membersInRemoved} active member(s) and ${liveGuestsInRemoved} ` +
-            `current or upcoming booking guest(s) are still classified into ` +
-            `${plural ? "them" : "it"}. Reclassify those people (for example by ` +
-            `widening an adjacent tier to cover their ages) before removing ` +
-            `${plural ? "these tiers" : "this tier"}.`,
+            `${totalMembers} member(s) (including ${error.archivedMembers} archived) ` +
+            `and ${error.liveGuests} current or upcoming booking guest(s) are still ` +
+            `classified into ${plural ? "them" : "it"}. Open each affected member's ` +
+            `page and change their age tier or date of birth so they map to a tier ` +
+            `you are keeping (and reduce the guests on any upcoming bookings), then ` +
+            `save again.`,
+          removedTiers,
+          activeMembers: error.activeMembers,
+          archivedMembers: error.archivedMembers,
+          liveGuests: error.liveGuests,
         },
-        { status: 409 }
+        { status: 409 },
       );
     }
+    throw error;
   }
-
-  const upsertOps = normalizedSettings.map((s) =>
-    prisma.ageTierSetting.upsert({
-        where: { tier: s.tier },
-        update: {
-          minAge: s.minAge,
-          maxAge: s.maxAge,
-          label: s.label,
-          subscriptionRequiredForBooking: s.subscriptionRequiredForBooking,
-          familyGroupRequestCreateMemberAllowed:
-            s.familyGroupRequestCreateMemberAllowed,
-          sortOrder: s.sortOrder,
-        },
-        create: {
-          tier: s.tier,
-          minAge: s.minAge,
-          maxAge: s.maxAge,
-          label: s.label,
-          subscriptionRequiredForBooking: s.subscriptionRequiredForBooking,
-          familyGroupRequestCreateMemberAllowed:
-            s.familyGroupRequestCreateMemberAllowed,
-          sortOrder: s.sortOrder,
-        },
-      })
-  );
-
-  // Drop any tiers no longer in the saved set (guarded above so no live person
-  // is classified into them). Deleting the row cascades its Xero group aliases
-  // (AgeTierXeroAcceptedContactGroup). Runs in the same transaction as the
-  // upserts so the table is never left in a partial state.
-  const ops =
-    removedTiers.length > 0
-      ? [
-          prisma.ageTierSetting.deleteMany({
-            where: { tier: { in: removedTiers } },
-          }),
-          ...upsertOps,
-        ]
-      : upsertOps;
-
-  await prisma.$transaction(ops);
 
   // Invalidate cache so next computeAgeTier reads fresh values
   invalidateAgeTierCache();
