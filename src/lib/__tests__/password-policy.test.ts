@@ -34,12 +34,42 @@ describe("normalizeLoginSecurityPolicy", () => {
     );
   });
 
+  it("pins the minimum-length clamp boundary edges (7→8, 8→8, 64→64, 65→64)", () => {
+    expect(normalizeLoginSecurityPolicy({ minPasswordLength: 7 }).minPasswordLength).toBe(
+      8,
+    );
+    expect(normalizeLoginSecurityPolicy({ minPasswordLength: 8 }).minPasswordLength).toBe(
+      8,
+    );
+    expect(normalizeLoginSecurityPolicy({ minPasswordLength: 64 }).minPasswordLength).toBe(
+      64,
+    );
+    expect(normalizeLoginSecurityPolicy({ minPasswordLength: 65 }).minPasswordLength).toBe(
+      64,
+    );
+  });
+
   it("clamps the magic-link TTL into the accepted 5–60 range", () => {
     expect(
       normalizeLoginSecurityPolicy({ magicLinkTtlMinutes: 1 }).magicLinkTtlMinutes,
     ).toBe(5);
     expect(
       normalizeLoginSecurityPolicy({ magicLinkTtlMinutes: 120 }).magicLinkTtlMinutes,
+    ).toBe(60);
+  });
+
+  it("pins the magic-link TTL clamp boundary edges (4→5, 5→5, 60→60, 61→60)", () => {
+    expect(
+      normalizeLoginSecurityPolicy({ magicLinkTtlMinutes: 4 }).magicLinkTtlMinutes,
+    ).toBe(5);
+    expect(
+      normalizeLoginSecurityPolicy({ magicLinkTtlMinutes: 5 }).magicLinkTtlMinutes,
+    ).toBe(5);
+    expect(
+      normalizeLoginSecurityPolicy({ magicLinkTtlMinutes: 60 }).magicLinkTtlMinutes,
+    ).toBe(60);
+    expect(
+      normalizeLoginSecurityPolicy({ magicLinkTtlMinutes: 61 }).magicLinkTtlMinutes,
     ).toBe(60);
   });
 

@@ -113,6 +113,45 @@ describe("admin security password-policy route (#2033)", () => {
     expect(mocks.upsert).not.toHaveBeenCalled();
   });
 
+  it("pins the minimum-length accept/reject boundary edges (7 rejected, 8 accepted, 64 accepted, 65 rejected)", async () => {
+    // 7 rejected — below the floor, no write.
+    expect((await put({ ...validBody, minPasswordLength: 7 })).status).toBe(400);
+    expect(mocks.upsert).not.toHaveBeenCalled();
+
+    // 8 accepted — the floor is inclusive.
+    vi.clearAllMocks();
+    mocks.requireAdmin.mockResolvedValue({
+      ok: true,
+      session: { user: { id: "admin-1" } },
+    });
+    mocks.findUnique.mockResolvedValue(null);
+    mocks.upsert.mockResolvedValue({});
+    expect((await put({ ...validBody, minPasswordLength: 8 })).status).toBe(200);
+    expect(mocks.upsert.mock.calls[0][0].update.minPasswordLength).toBe(8);
+
+    // 64 accepted — the ceiling is inclusive.
+    vi.clearAllMocks();
+    mocks.requireAdmin.mockResolvedValue({
+      ok: true,
+      session: { user: { id: "admin-1" } },
+    });
+    mocks.findUnique.mockResolvedValue(null);
+    mocks.upsert.mockResolvedValue({});
+    expect((await put({ ...validBody, minPasswordLength: 64 })).status).toBe(200);
+    expect(mocks.upsert.mock.calls[0][0].update.minPasswordLength).toBe(64);
+
+    // 65 rejected — above the ceiling, no write.
+    vi.clearAllMocks();
+    mocks.requireAdmin.mockResolvedValue({
+      ok: true,
+      session: { user: { id: "admin-1" } },
+    });
+    mocks.findUnique.mockResolvedValue(null);
+    mocks.upsert.mockResolvedValue({});
+    expect((await put({ ...validBody, minPasswordLength: 65 })).status).toBe(400);
+    expect(mocks.upsert).not.toHaveBeenCalled();
+  });
+
   it("rejects an unknown field via the strict schema (no write)", async () => {
     const res = await put({ ...validBody, magicLinkTtlMinutes: 30 });
     expect(res.status).toBe(400);
