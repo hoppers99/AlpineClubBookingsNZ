@@ -240,6 +240,14 @@ export interface CronConfirmResult {
  * very first extension run would compute a high index and skip the first alert.
  * Stable across cron reruns (all inputs are immutable booking/policy values),
  * which is what keeps the cadence idempotent.
+ *
+ * #2012 reuses this anchor for request-origin holds. Their true first expiry is
+ * `max(checkIn - holdDays, approvalTime + minimum hold)` and the approval time
+ * is not stored on the Booking, so for a request approved inside the hold
+ * window the computed window index can run ~1 high — which under the
+ * 1,2,3-then-every-7th rule can only SKIP an early alert, never spam or break
+ * the cap. Accepted imprecision; a request-specific anchor would need the
+ * approval timestamp persisted.
  */
 async function resolveOriginalHoldExpiry(
   booking: PendingBooking
