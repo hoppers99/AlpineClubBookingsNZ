@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { ViewOnlyActionButton } from "@/components/admin/view-only-action"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Plus, Trash2 } from "lucide-react"
@@ -22,6 +23,8 @@ interface MemberDependentsCardProps {
   unlinkingDependentId: string | null
   onOpenDependentDialog: () => void
   onUnlinkDependent: (parentId: string, dependentId: string, dependentName: string) => void
+  /** Whether the actor may act (membership edit, #1997). */
+  canEdit?: boolean
   className?: string
 }
 
@@ -33,6 +36,7 @@ export function MemberDependentsCard({
   unlinkingDependentId,
   onOpenDependentDialog,
   onUnlinkDependent,
+  canEdit = true,
   className,
 }: MemberDependentsCardProps) {
   const router = useRouter()
@@ -42,10 +46,10 @@ export function MemberDependentsCard({
       <CardHeader className="flex flex-col gap-3 space-y-0 sm:flex-row sm:items-center sm:justify-between">
         <CardTitle className="text-base font-medium">Dependents</CardTitle>
         {isAdultMember && !memberIsArchived && (
-          <Button variant="outline" size="sm" onClick={onOpenDependentDialog}>
+          <ViewOnlyActionButton canEdit={canEdit} variant="outline" size="sm" onClick={onOpenDependentDialog}>
             <Plus className="h-4 w-4 mr-1" />
             Add Dependent
-          </Button>
+          </ViewOnlyActionButton>
         )}
       </CardHeader>
       <CardContent>
@@ -113,7 +117,8 @@ export function MemberDependentsCard({
                       >
                         View
                       </Button>
-                      <Button
+                      <ViewOnlyActionButton
+                        canEdit={canEdit}
                         variant="outline"
                         size="sm"
                         onClick={() =>
@@ -127,7 +132,7 @@ export function MemberDependentsCard({
                       >
                         <Trash2 className="h-4 w-4 mr-1" />
                         {unlinkingDependentId === dependent.id ? "Removing..." : "Remove"}
-                      </Button>
+                      </ViewOnlyActionButton>
                     </div>
                   </TableCell>
                 </TableRow>

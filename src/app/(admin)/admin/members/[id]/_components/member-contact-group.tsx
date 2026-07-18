@@ -1,6 +1,7 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
+import { ViewOnlyActionButton } from "@/components/admin/view-only-action";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -36,6 +37,8 @@ interface MemberContactGroupProps {
   isSelf: boolean;
   actorIsFullAdmin: boolean;
   edit: MemberGroupEditState<MemberContactEditForm>;
+  /** Whether the actor may edit contact details (membership edit, #1997). */
+  canEdit?: boolean;
 }
 
 function addressLines(input: {
@@ -74,6 +77,7 @@ export function MemberContactGroup({
   isSelf,
   actorIsFullAdmin,
   edit,
+  canEdit = true,
 }: MemberContactGroupProps) {
   const { showTitle, showGender, showOccupation } = useMemberFieldsSettings();
   // Mirror of the server-side Full Admin gate: only a Full Admin may change a
@@ -340,9 +344,13 @@ export function MemberContactGroup({
           <Button variant="outline" onClick={edit.cancelEdit} disabled={saving}>
             Cancel
           </Button>
-          <Button onClick={() => void edit.save()} disabled={saving}>
+          <ViewOnlyActionButton
+            canEdit={canEdit}
+            onClick={() => void edit.save()}
+            disabled={saving}
+          >
             {saving ? "Saving..." : "Save Changes"}
-          </Button>
+          </ViewOnlyActionButton>
         </div>
       </div>
     );
@@ -369,10 +377,10 @@ export function MemberContactGroup({
   return (
     <div className="space-y-3">
       <div className="flex justify-end">
-        <Button variant="outline" size="sm" onClick={edit.startEdit}>
+        <ViewOnlyActionButton canEdit={canEdit} variant="outline" size="sm" onClick={edit.startEdit}>
           <Pencil className="h-4 w-4 mr-1" />
           Edit
-        </Button>
+        </ViewOnlyActionButton>
       </div>
       <dl className="grid grid-cols-1 gap-x-6 gap-y-3 text-sm sm:grid-cols-2">
         {showTitle && (

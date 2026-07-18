@@ -145,6 +145,16 @@ import CommunicationsPage from "@/app/(admin)/admin/communications/page";
 // #1997 member-detail action cards (membership / finance lane).
 import { MemberDeletionCard } from "@/app/(admin)/admin/members/[id]/_components/member-deletion-card";
 import { MemberCreditCard } from "@/app/(admin)/admin/members/[id]/_components/member-credit-card";
+import { MemberParentLinksCard } from "@/app/(admin)/admin/members/[id]/_components/member-parent-links-card";
+import { MemberDependentsCard } from "@/app/(admin)/admin/members/[id]/_components/member-dependents-card";
+import { MemberBillingFamilyCard } from "@/app/(admin)/admin/members/[id]/_components/member-billing-family-card";
+import { MemberLodgeAccessCard } from "@/app/(admin)/admin/members/[id]/_components/member-lodge-access-card";
+import { MemberPartnerLinkCard } from "@/app/(admin)/admin/members/[id]/_components/member-partner-link-card";
+import { MemberSeasonalMembershipCard } from "@/app/(admin)/admin/members/[id]/_components/member-seasonal-membership-card";
+import { MemberCommitteeAssignmentsCard } from "@/app/(admin)/admin/members/[id]/_components/member-committee-assignments-card";
+import { MemberContactGroup } from "@/app/(admin)/admin/members/[id]/_components/member-contact-group";
+import type { MemberGroupEditState } from "@/app/(admin)/admin/members/[id]/_hooks/use-member-group-edit";
+import type { MemberContactEditForm } from "@/lib/admin-member-edit-groups";
 
 const SITE_CONTENT_DOCUMENTS = [
   { key: "FOOTER_BLURB", contentHtml: "<p>Blurb</p>", updatedAt: null },
@@ -2749,5 +2759,319 @@ describe("MemberCreditCard view-only gating (#1997, finance)", () => {
     expect(
       screen.getByRole("button", { name: /Request Adjustment/i }),
     ).toBeEnabled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1997 remaining member-detail action cards. Membership-area cards key on
+// membership edit; the billing-family card writes the finance-area
+// fee-configuration route and keys on finance edit.
+// ---------------------------------------------------------------------------
+
+describe("MemberParentLinksCard view-only gating (#1997, membership)", () => {
+  afterEach(() => {
+    sessionMatrix = null;
+    vi.restoreAllMocks();
+  });
+
+  const props = {
+    member: {
+      id: "m1",
+      firstName: "Pat",
+      lastName: "Kea",
+      parentLinks: [],
+      dependents: [],
+    },
+    memberIsArchived: false,
+    currentMemberPath: "/admin/members/m1",
+    unlinkingDependentId: null,
+    onOpenParentLinkDialog: vi.fn(),
+    onUnlinkParent: vi.fn(),
+  } as unknown as ComponentProps<typeof MemberParentLinksCard>;
+
+  it("disables Add Parent for a membership:view admin", () => {
+    sessionMatrix = matrix("view", { membership: "view" });
+    render(<MemberParentLinksCard {...props} canEdit={false} />);
+    expect(screen.getByRole("button", { name: /Add Parent/i })).toBeDisabled();
+  });
+
+  it("enables Add Parent for a membership:edit admin", () => {
+    sessionMatrix = matrix("view", { membership: "edit" });
+    render(<MemberParentLinksCard {...props} canEdit={true} />);
+    expect(screen.getByRole("button", { name: /Add Parent/i })).toBeEnabled();
+  });
+});
+
+describe("MemberDependentsCard view-only gating (#1997, membership)", () => {
+  afterEach(() => {
+    sessionMatrix = null;
+    vi.restoreAllMocks();
+  });
+
+  const props = {
+    member: { id: "m1", firstName: "Pat", lastName: "Kea", dependents: [] },
+    isAdultMember: true,
+    memberIsArchived: false,
+    currentMemberPath: "/admin/members/m1",
+    unlinkingDependentId: null,
+    onOpenDependentDialog: vi.fn(),
+    onUnlinkDependent: vi.fn(),
+  } as unknown as ComponentProps<typeof MemberDependentsCard>;
+
+  it("disables Add Dependent for a membership:view admin", () => {
+    sessionMatrix = matrix("view", { membership: "view" });
+    render(<MemberDependentsCard {...props} canEdit={false} />);
+    expect(
+      screen.getByRole("button", { name: /Add Dependent/i }),
+    ).toBeDisabled();
+  });
+
+  it("enables Add Dependent for a membership:edit admin", () => {
+    sessionMatrix = matrix("view", { membership: "edit" });
+    render(<MemberDependentsCard {...props} canEdit={true} />);
+    expect(screen.getByRole("button", { name: /Add Dependent/i })).toBeEnabled();
+  });
+});
+
+describe("MemberBillingFamilyCard view-only gating (#1997, finance)", () => {
+  afterEach(() => {
+    sessionMatrix = null;
+    vi.restoreAllMocks();
+  });
+
+  const props = {
+    memberId: "m1",
+    billingFamilyGroupId: null,
+    familyGroups: [{ id: "fg1", name: "Kea" }],
+    familyBillingMode: "BILL_FAMILY_VIA_BILLING_MEMBER" as const,
+  } as unknown as ComponentProps<typeof MemberBillingFamilyCard>;
+
+  it("disables the billing-family select for a finance:view admin", () => {
+    sessionMatrix = matrix("view", { finance: "view" });
+    render(<MemberBillingFamilyCard {...props} canEdit={false} />);
+    expect(screen.getByRole("combobox")).toBeDisabled();
+  });
+
+  it("enables the billing-family select for a finance:edit admin", () => {
+    sessionMatrix = matrix("view", { finance: "edit" });
+    render(<MemberBillingFamilyCard {...props} canEdit={true} />);
+    expect(screen.getByRole("combobox")).toBeEnabled();
+  });
+});
+
+describe("MemberLodgeAccessCard view-only gating (#1997, membership)", () => {
+  beforeEach(() => {
+    sessionMatrix = null;
+    stubFetchRoutes({
+      "/api/admin/lodges": {
+        lodges: [
+          { id: "l1", name: "Lodge One", active: true },
+          { id: "l2", name: "Lodge Two", active: true },
+        ],
+      },
+      "/api/admin/members/m1/lodge-access": { lodgeAccess: [] },
+    });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("shows the notice and disables Save for a membership:view admin", async () => {
+    sessionMatrix = matrix("view", { membership: "view" });
+    render(<MemberLodgeAccessCard memberId="m1" />);
+    expect(
+      await screen.findByText(/can view lodge access but cannot change it/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Save Lodge Access/i }),
+    ).toBeDisabled();
+  });
+
+  it("enables Save for a membership:edit admin", async () => {
+    sessionMatrix = matrix("view", { membership: "edit" });
+    render(<MemberLodgeAccessCard memberId="m1" />);
+    expect(
+      await screen.findByRole("button", { name: /Save Lodge Access/i }),
+    ).toBeEnabled();
+  });
+});
+
+describe("MemberPartnerLinkCard view-only gating (#1997, membership)", () => {
+  beforeEach(() => {
+    sessionMatrix = null;
+    stubFetchRoutes({
+      "/api/admin/members/m1/partner-link": {
+        confirmed: null,
+        pendingIncoming: [],
+        pendingOutgoing: [],
+      },
+    });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("disables Assign Partner for a membership:view admin", async () => {
+    sessionMatrix = matrix("view", { membership: "view" });
+    render(
+      <MemberPartnerLinkCard
+        memberId="m1"
+        isAdultMember
+        memberIsArchived={false}
+        currentMemberPath="/admin/members/m1"
+      />,
+    );
+    expect(
+      await screen.findByRole("button", { name: /Assign Partner/i }),
+    ).toBeDisabled();
+  });
+
+  it("enables Assign Partner for a membership:edit admin", async () => {
+    sessionMatrix = matrix("view", { membership: "edit" });
+    render(
+      <MemberPartnerLinkCard
+        memberId="m1"
+        isAdultMember
+        memberIsArchived={false}
+        currentMemberPath="/admin/members/m1"
+      />,
+    );
+    expect(
+      await screen.findByRole("button", { name: /Assign Partner/i }),
+    ).toBeEnabled();
+  });
+});
+
+describe("MemberSeasonalMembershipCard view-only gating (#1997, membership)", () => {
+  beforeEach(() => {
+    sessionMatrix = null;
+    stubFetchRoutes({ "/api/admin/membership-types": { membershipTypes: [] } });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  const member = {
+    id: "m1",
+    role: "MEMBER",
+    subscriptions: [],
+    seasonalMembershipAssignments: [],
+  } as unknown as ComponentProps<typeof MemberSeasonalMembershipCard>["member"];
+
+  it("shows the view-only notice for a membership:view admin", () => {
+    sessionMatrix = matrix("view", { membership: "view" });
+    render(<MemberSeasonalMembershipCard member={member} onSaved={vi.fn()} />);
+    expect(
+      screen.getByText(/can view the seasonal membership type but cannot/i),
+    ).toBeInTheDocument();
+  });
+
+  it("hides the view-only notice for a membership:edit admin", () => {
+    sessionMatrix = matrix("view", { membership: "edit" });
+    render(<MemberSeasonalMembershipCard member={member} onSaved={vi.fn()} />);
+    expect(
+      screen.queryByText(/can view the seasonal membership type but cannot/i),
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe("MemberCommitteeAssignmentsCard view-only gating (#1997, membership)", () => {
+  beforeEach(() => {
+    sessionMatrix = null;
+    stubFetchRoutes({ "/api/admin/committee/roles": { roles: [] } });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  const member = {
+    id: "m1",
+    firstName: "Pat",
+    lastName: "Kea",
+    committeeAssignments: [],
+  } as unknown as ComponentProps<typeof MemberCommitteeAssignmentsCard>["member"];
+
+  it("shows the view-only notice for a membership:view admin", () => {
+    sessionMatrix = matrix("view", { membership: "view" });
+    render(<MemberCommitteeAssignmentsCard member={member} onSaved={vi.fn()} />);
+    expect(
+      screen.getByText(/can view committee assignments but cannot/i),
+    ).toBeInTheDocument();
+  });
+
+  it("hides the view-only notice for a membership:edit admin", () => {
+    sessionMatrix = matrix("view", { membership: "edit" });
+    render(<MemberCommitteeAssignmentsCard member={member} onSaved={vi.fn()} />);
+    expect(
+      screen.queryByText(/can view committee assignments but cannot/i),
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe("MemberContactGroup view-only gating (#1997, membership)", () => {
+  beforeEach(() => {
+    sessionMatrix = null;
+    stubFetchRoutes({
+      "/api/admin/member-fields": {
+        settings: { showTitle: true, showGender: true, showOccupation: true },
+      },
+    });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  const readOnlyEdit = {
+    editing: false,
+    form: null,
+    saving: false,
+    error: "",
+    errorRef: { current: null },
+    startEdit: vi.fn(),
+    cancelEdit: vi.fn(),
+    updateForm: vi.fn(),
+    save: vi.fn(),
+  } as unknown as MemberGroupEditState<MemberContactEditForm>;
+
+  const member = {
+    id: "m1",
+    firstName: "Pat",
+    lastName: "Kea",
+    email: "pat@example.test",
+    accessRoles: [],
+    role: "MEMBER",
+  } as unknown as ComponentProps<typeof MemberContactGroup>["member"];
+
+  it("disables the Edit button for a membership:view admin", () => {
+    sessionMatrix = matrix("view", { membership: "view" });
+    render(
+      <MemberContactGroup
+        member={member}
+        isSelf={false}
+        actorIsFullAdmin
+        edit={readOnlyEdit}
+        canEdit={false}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /^Edit$/i })).toBeDisabled();
+  });
+
+  it("enables the Edit button for a membership:edit admin", () => {
+    sessionMatrix = matrix("view", { membership: "edit" });
+    render(
+      <MemberContactGroup
+        member={member}
+        isSelf={false}
+        actorIsFullAdmin
+        edit={readOnlyEdit}
+        canEdit
+      />,
+    );
+    expect(screen.getByRole("button", { name: /^Edit$/i })).toBeEnabled();
   });
 });

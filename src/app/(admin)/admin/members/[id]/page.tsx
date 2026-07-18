@@ -90,10 +90,14 @@ export default function MemberDetailPage({
   const router = useRouter();
   const searchParams = useSearchParams();
   const { data: session } = useSession();
-  // Lifecycle/deletion actions write membership-area routes; a view-only
-  // membership admin sees the record but cannot act (#1997). The credit card
-  // gates itself on finance edit; other cards remain follow-up work (see #1997).
+  // Member-detail actions are gated view-only (#1997). Membership-area cards
+  // (contact/account editors, links, seasonal, committee, lifecycle, deletion)
+  // key on membership edit; the credit and billing-family cards write
+  // finance-area routes (members/[id]/credits and fee-configuration), so they
+  // key on finance edit. The credit card reads finance access itself; the
+  // billing-family card takes it as a prop.
   const canEditMembership = useAdminAreaEditAccess("membership");
+  const canEditFinance = useAdminAreaEditAccess("finance");
 
   const [member, setMember] = useState<MemberDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -596,6 +600,7 @@ export default function MemberDetailPage({
             isSelf={isSelf}
             actorIsFullAdmin={actorIsFullAdmin}
             edit={contactEdit}
+            canEdit={canEditMembership}
           />
         </MemberGroupCard>
 
@@ -611,6 +616,7 @@ export default function MemberDetailPage({
             memberLifecycleLocked={memberLifecycleLocked}
             edit={accountEdit}
             inheritEmail={inheritEmail}
+            canEdit={canEditMembership}
           />
           <MemberLodgeAccessCard memberId={id} />
         </MemberGroupCard>
@@ -651,6 +657,7 @@ export default function MemberDetailPage({
                 billingFamilyGroupId={member.billingFamilyGroupId}
                 familyGroups={member.familyGroups}
                 familyBillingMode={member.familyBillingMode}
+                canEdit={canEditFinance}
                 disabled={memberIsArchived}
                 onChange={(billingFamilyGroupId) =>
                   setMember((prev) => (prev ? { ...prev, billingFamilyGroupId } : prev))
@@ -665,6 +672,7 @@ export default function MemberDetailPage({
               unlinkingDependentId={unlinkingDependentId}
               onOpenParentLinkDialog={openParentLinkDialog}
               onUnlinkParent={handleUnlinkDependent}
+              canEdit={canEditMembership}
             />
             <MemberPartnerLinkCard
               className={embeddedCardClassName}
@@ -682,6 +690,7 @@ export default function MemberDetailPage({
               unlinkingDependentId={unlinkingDependentId}
               onOpenDependentDialog={openDependentDialog}
               onUnlinkDependent={handleUnlinkDependent}
+              canEdit={canEditMembership}
             />
           </div>
         </MemberGroupCard>

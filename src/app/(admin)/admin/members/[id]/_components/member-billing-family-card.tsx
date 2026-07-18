@@ -17,6 +17,12 @@ type BillingFamilyProps = {
   familyGroups: { id: string; name: string | null }[];
   familyBillingMode: "BILL_FAMILY_VIA_BILLING_MEMBER" | "BILL_MEMBERS_INDIVIDUALLY";
   disabled?: boolean;
+  /**
+   * Whether the actor may change the billing family. The write goes to the
+   * finance-area fee-configuration route, so this is keyed on finance edit
+   * (#1997).
+   */
+  canEdit?: boolean;
   onChange?: (billingFamilyGroupId: string | null) => void;
 };
 
@@ -30,6 +36,7 @@ export function MemberBillingFamilyCard({
   familyGroups,
   familyBillingMode,
   disabled,
+  canEdit = true,
   onChange,
 }: BillingFamilyProps) {
   const [value, setValue] = useState<string>(billingFamilyGroupId ?? "none");
@@ -38,9 +45,10 @@ export function MemberBillingFamilyCard({
   if (familyGroups.length === 0) return null;
 
   const individualMode = familyBillingMode === "BILL_MEMBERS_INDIVIDUALLY";
-  const controlDisabled = saving || disabled || individualMode;
+  const controlDisabled = saving || disabled || individualMode || !canEdit;
 
   async function save(next: string) {
+    if (!canEdit) return;
     const previous = value;
     setValue(next);
     setSaving(true);
