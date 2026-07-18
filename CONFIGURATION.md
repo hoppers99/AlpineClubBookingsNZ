@@ -226,6 +226,21 @@ silently lose the "held provisionally / charged later" explanation.
 > `src/lib/policies/age-tier.ts`, `src/lib/config-self-heal.ts`, and "Config
 > self-heal on boot" in `docs/DEPLOYMENT.md`.
 
+> **Admins may run a contiguous SUBSET of the four slots (#2009).** On
+> `/admin/age-tier-settings` an admin can save any contiguous subset of the four
+> built-in age slots, not just all four. The saved rows must still tile `[0, ∞)`
+> with no gaps or overlaps: the youngest tier starts at age 0, and `ADULT` is
+> always present as the unbounded terminal (top) tier. So `CHILD 0-17 + ADULT
+> 18+` or `ADULT 0+` alone are both valid; a set without `ADULT`, or one that
+> leaves a gap, is rejected. Removing a tier is blocked (HTTP 409) while any
+> member (archived members included) or any current/upcoming booking guest is
+> still classified into it — reclassify those people first (edit their age tier
+> or date of birth on the member page, and trim upcoming bookings' guests), then
+> save again. The four enum slots (`INFANT`, `CHILD`, `YOUTH`, `ADULT`) remain
+> the identity ceiling — a club cannot add a fifth tier or rename a slot's
+> identity here (labels are free text); the data-driven-identities epic is the
+> path beyond four.
+
 > **Hut rates are keyed by membership type (#1930, E4).** The `memberCents` /
 > `nonMemberCents` seed values above are fanned out at seed time into
 > per-membership-type `MembershipTypeSeasonRate` rows: `memberCents` seeds every

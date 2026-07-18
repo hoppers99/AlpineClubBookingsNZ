@@ -829,16 +829,23 @@ function buildAgeTierCheck(
     );
   }
 
-  // The DB is the sole runtime source of age tiers (#1983) and the readiness
-  // gate is DB-first (#1987, C8): the expected count is the fixed set of
-  // configurable slots (INFANT/CHILD/YOUTH/ADULT — NOT_APPLICABLE never gets a
-  // row), so an absent config/club.json no longer collapses the expectation to
-  // zero. A primary config, when present, may still refine it for forks that
-  // configure a non-default number of tiers.
-  const expected =
-    club.config?.ageTiers.length ?? bookableAgeTierEnum.options.length;
+  // The DB is the sole runtime source of age tiers (#1983), the readiness gate
+  // is DB-first (#1987, C8), and the admin save route (#2009) guarantees any
+  // persisted set is a complete, valid tiling of 0 → ∞ with ADULT as the
+  // terminal tier — including a deliberate SUBSET (e.g. CHILD + ADULT). So
+  // "configured" is simply "≥1 row exists": once the club has saved its tiers,
+  // whatever count it chose is complete by construction, and we must NOT nag a
+  // valid 2-tier club for having fewer rows than the 4-tier default. Pre-config
+  // (no rows yet) the fixed slot count (INFANT/CHILD/YOUTH/ADULT —
+  // NOT_APPLICABLE never gets a row) is the "expected" hint for the operator;
+  // a primary config, when present, refines that hint for forks that seed a
+  // non-default number of tiers.
   const actual = db?.ageTierSettingCount ?? 0;
-  const complete = expected > 0 && actual >= expected;
+  const configured = actual >= 1;
+  const configExpected =
+    club.config?.ageTiers.length ?? bookableAgeTierEnum.options.length;
+  const expected = configured ? actual : configExpected;
+  const complete = configured;
   return applyProgress(
     {
       id: "age-tiers",
