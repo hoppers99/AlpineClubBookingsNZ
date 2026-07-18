@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { BackLink } from "@/components/admin/back-link";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import {
   ADMIN_FORBIDDEN_SAVE_REASON,
@@ -347,12 +348,7 @@ export default function LodgeConfigurationHubPage() {
         <p className="text-sm text-destructive" role="alert">
           {error ?? "Lodge not found."}
         </p>
-        <Button asChild variant="outline">
-          <Link href="/admin/lodges">
-            <ArrowLeft className="mr-2 h-4 w-4" />
-            Back to lodges
-          </Link>
-        </Button>
+        <BackLink href="/admin/lodges" label="Lodges" />
       </div>
     );
   }

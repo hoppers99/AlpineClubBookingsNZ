@@ -1,8 +1,8 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { BackLink } from "@/components/admin/back-link";
 import { ViewOnlyActionButton } from "@/components/admin/view-only-action";
 import {
   DropdownMenu,
@@ -11,7 +11,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
-  ArrowLeft,
   ExternalLink,
   Link2,
   MoreHorizontal,
@@ -63,18 +62,12 @@ export function MemberDetailHeader({
   onUnlinkXero,
 }: MemberDetailHeaderProps) {
   const roleOptions = useAccessRoleOptions();
-  const router = useRouter();
   const accessRoles = member.accessRoles ?? [];
   return (
     <div>
-      <Button
-        variant="ghost"
-        size="sm"
-        className="mb-2 -ml-2"
-        onClick={() => router.push(backHref)}
-      >
-        <ArrowLeft className="h-4 w-4 mr-1" /> {backLabel}
-      </Button>
+      <div className="mb-2">
+        <BackLink href={backHref} label={backLabel} />
+      </div>
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <h1 className="break-words text-2xl font-bold text-foreground">

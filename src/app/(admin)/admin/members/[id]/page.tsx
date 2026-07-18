@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, use } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft } from "lucide-react";
+import { BackLink } from "@/components/admin/back-link";
 import { FamilyGroupEditorDialog } from "@/components/admin/family-group-editor-dialog";
 import {
   formatMemberAccountPreview,
@@ -437,10 +437,7 @@ export default function MemberDetailPage({
   if (pageError || !member) {
     return (
       <div className="space-y-4">
-        <Button variant="outline" onClick={() => router.push(backHref)}>
-          <ArrowLeft className="h-4 w-4 mr-2" />
-          {backLabel}
-        </Button>
+        <BackLink href={backHref} label={backLabel} />
         <div className="p-3 bg-red-50 border border-red-200 text-red-700 rounded-md text-sm">
           {pageError || "Member not found"}
         </div>
