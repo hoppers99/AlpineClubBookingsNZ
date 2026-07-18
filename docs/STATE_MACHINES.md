@@ -406,9 +406,11 @@ Edit-eligibility is governed by a date-window edit policy
 
 ```text
 checkIn > today                     -> "future"        (edit dates/guests freely)
-checkIn <= today < checkOut         -> "in-progress"   (extend future nights only;
-                                                         check-in locked)
-checkOut <= today                   -> null            (not self-editable)
+checkIn <= today <= checkOut        -> "in-progress"   (extend future nights only;
+                                                         check-in locked; #2029:
+                                                         the whole check-out day
+                                                         is still editable)
+checkOut < today                    -> null            (not self-editable)
 
 adminOverride && role === "ADMIN"   -> "admin-override" (issue #1668: date-window
                                                          locks lifted; status

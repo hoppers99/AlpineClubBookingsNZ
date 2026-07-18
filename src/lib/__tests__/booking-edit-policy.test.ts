@@ -60,6 +60,50 @@ describe("booking edit policy", () => {
     vi.useRealTimers();
   });
 
+  it("keeps a PAID stay editable/extendable on its check-out day (#2029)", () => {
+    vi.useFakeTimers();
+    // 2026-08-23T12:00Z is 2026-08-24 00:00 NZ, so NZ today == check-out day.
+    vi.setSystemTime(new Date("2026-08-23T12:00:00.000Z"));
+
+    const policy = getBookingEditPolicy({
+      status: "PAID",
+      role: "MEMBER",
+      checkIn: new Date("2026-08-20T00:00:00.000Z"),
+      checkOut: new Date("2026-08-24T00:00:00.000Z"),
+    });
+
+    // The booking is still PAID this whole day and must stay amendable so guests
+    // at the lodge on their check-out morning can extend.
+    expect(policy.today.toISOString().slice(0, 10)).toBe("2026-08-24");
+    expect(policy.canModify).toBe(true);
+    expect(policy.mode).toBe("in-progress");
+    expect(policy.checkInEditable).toBe(false);
+    // Extending moves check-out to >= tomorrow, which adds the check-out-day
+    // night and beyond; today and earlier stay locked.
+    expect(policy.editableFrom?.toISOString().slice(0, 10)).toBe("2026-08-25");
+
+    vi.useRealTimers();
+  });
+
+  it("locks the stay only once the whole check-out day has passed (#2029)", () => {
+    vi.useFakeTimers();
+    // 2026-08-24T12:00Z is 2026-08-25 00:00 NZ — the day AFTER check-out.
+    vi.setSystemTime(new Date("2026-08-24T12:00:00.000Z"));
+
+    const policy = getBookingEditPolicy({
+      status: "PAID",
+      role: "MEMBER",
+      checkIn: new Date("2026-08-20T00:00:00.000Z"),
+      checkOut: new Date("2026-08-24T00:00:00.000Z"),
+    });
+
+    expect(policy.today.toISOString().slice(0, 10)).toBe("2026-08-25");
+    expect(policy.canModify).toBe(false);
+    expect(policy.mode).toBeNull();
+
+    vi.useRealTimers();
+  });
+
   it("locks fully past completed stays", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-25T12:00:00.000Z"));

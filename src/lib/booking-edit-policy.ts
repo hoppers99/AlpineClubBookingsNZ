@@ -100,7 +100,15 @@ export function getBookingEditPolicy(
     };
   }
 
-  if (checkIn <= today && checkOut > today) {
+  // In-progress window (issue #2029): a stay is still amendable/extendable
+  // through the ENTIRE check-out day (NZ), not just up to it. `checkOut` is the
+  // departure date, so guests can be at the lodge on the morning of `checkOut`
+  // and must be able to extend then — the booking also stays PAID that whole
+  // day (the completion cron only flips once `checkOut < today`). The window is
+  // therefore `checkIn <= today <= checkOut`. `editableFrom` stays `tomorrow`:
+  // an extension moves check-out forward (new check-out >= tomorrow adds the
+  // check-out-day night and beyond), while today and earlier remain locked.
+  if (checkIn <= today && checkOut >= today) {
     const canModify = isInProgressEditStatusAllowed(input.status);
     return {
       canModify,

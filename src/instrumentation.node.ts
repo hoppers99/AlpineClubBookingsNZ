@@ -1038,7 +1038,9 @@ export async function register() {
     logger.info({ job: "email-retry" }, "Scheduled email retry (every 30 minutes)");
 
     // Cron job - Complete bookings (daily at 1:00 AM NZST)
-    // Transitions PAID bookings to COMPLETED once check-in date has passed
+    // Transitions PAID bookings to COMPLETED once their check-out date has
+    // fully passed (#2029): the booking stays PAID/editable through the whole
+    // check-out day (NZ), and only completes on the first 1 AM run after it.
     let isCompleteBookingsRunning = false;
     cron.default.schedule("0 1 * * *", async () => {
       if (isCompleteBookingsRunning) {
