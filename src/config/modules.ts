@@ -20,6 +20,7 @@ export const MODULE_KEYS = [
   "skifieldConditions",
   "twoFactor",
   "magicLink",
+  "googleLogin",
   "analytics",
   "lobbyDisplay",
 ] as const;
@@ -72,6 +73,7 @@ export const DEFAULT_MODULE_SETTINGS: ModuleSettingsValues = {
   skifieldConditions: true,
   twoFactor: false,
   magicLink: false,
+  googleLogin: false,
   analytics: false,
   lobbyDisplay: false,
 };
@@ -221,6 +223,15 @@ export const MODULE_DEFINITIONS: Record<ModuleKey, ModuleDefinition> = {
     dependencies: [
       "Transactional email delivery must be configured so sign-in links can be sent.",
       "The link expiry (default 15 minutes) is set on the Login & Security page.",
+    ],
+  },
+  googleLogin: {
+    key: "googleLogin",
+    label: "Google sign-in",
+    description:
+      "Let members sign in with their linked Google account. Additive to password login, never a replacement. A member links their own Google account from their profile while signed in — no account is ever created from Google, and unlinked Google accounts are refused.",
+    dependencies: [
+      "GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be configured server-side (per-club Google Cloud OAuth credentials) before the button appears.",
     ],
   },
   analytics: {

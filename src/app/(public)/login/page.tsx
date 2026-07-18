@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { isValidAuthBounceRef, resolvePostLoginPath } from "@/lib/auth-redirect";
+import { googleCredentialsConfigured } from "@/lib/google-oauth";
 import { getCachedEffectiveModuleFlags } from "@/lib/public-layout-config";
 import { LoginForm } from "./login-form";
 
@@ -21,12 +22,14 @@ export default async function LoginPage({
     emailChanged?: string | string[];
     callbackUrl?: string | string[];
     ref?: string | string[];
+    error?: string | string[];
   }>;
 }) {
   const params = await searchParams;
   const verified = singleSearchParam(params.verified) === "true";
   const emailChanged = singleSearchParam(params.emailChanged) === "true";
   const verifyError = singleSearchParam(params.verifyError);
+  const oauthError = singleSearchParam(params.error);
   const redirectTo = resolvePostLoginPath(singleSearchParam(params.callbackUrl));
   const refCandidate = singleSearchParam(params.ref);
   const authBounceRef = isValidAuthBounceRef(refCandidate) ? refCandidate : undefined;
@@ -63,6 +66,8 @@ export default async function LoginPage({
       redirectTo={redirectTo}
       authBounceRef={authBounceRef}
       magicLinkEnabled={modules.magicLink}
+      googleLoginEnabled={modules.googleLogin && googleCredentialsConfigured()}
+      oauthError={oauthError}
     />
   );
 }
