@@ -159,6 +159,16 @@ Future reviews and issues should cite this file when proposing changes.
   (`setHours(0,0,0,0)`) instant: under the `TZ=Pacific/Auckland` server pin the
   latter resolves to `(D-1)T12:00Z` and shifts the boundary by a day for the
   first ~13h of each NZ day (F8/F32, #1888).
+- Two check-out boundaries coexist by design (#2029). The completion cron flips
+  PAID → COMPLETED only once `checkOut < todayNZ` — the entire NZ check-out day
+  stays PAID and self-editable/extendable — whereas the admin "finished stay"
+  attention queues (`unpaid-finished-stays.ts`) intentionally use
+  `checkOut <= todayNZ`. The difference is deliberate and the two operate over
+  DISJOINT status sets: the queues surface still-unsettled stays
+  (`PAYMENT_PENDING`, or a settled status carrying an unpaid additional delta) on
+  the check-out day itself for payment chasing, while completion is a next-day
+  transition of PAID bookings. A booking is therefore never both counted as a
+  finished-stay-needing-payment AND still PAID-completable under the same rule.
 - Capacity is per lodge. A booking belongs to exactly one lodge
   (`Booking.lodgeId`); capacity is "beds available on date D at lodge L", and
   no code path may sum beds across lodges into a single club-wide number. Two

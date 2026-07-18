@@ -406,15 +406,31 @@ Edit-eligibility is governed by a date-window edit policy
 
 ```text
 checkIn > today                     -> "future"        (edit dates/guests freely)
-checkIn <= today < checkOut         -> "in-progress"   (extend future nights only;
-                                                         check-in locked)
-checkOut <= today                   -> null            (not self-editable)
+checkIn <= today <= checkOut        -> "in-progress"   (extend future nights only;
+                                                         check-in locked; #2029:
+                                                         the whole check-out day
+                                                         is still editable)
+checkOut < today                    -> null            (not self-editable)
 
 adminOverride && role === "ADMIN"   -> "admin-override" (issue #1668: date-window
                                                          locks lifted; status
                                                          eligibility + capacity
                                                          lock still enforced)
 ```
+
+Self-service cancellation of a **started** stay is blocked (#2029). Once
+`checkIn <= todayNZ`, the member-facing cancel route
+(`enforceStartedStayBlock`) refuses cancellation for a booking owner or Booking
+Officer with a clear "edit to shorten your remaining nights, or contact the
+club" message; a Full Admin (`sessionUserRole === "ADMIN"`) keeps full
+cancellation capability, and every internal/admin cancel path (decline,
+release-hold, review-reject, account-deletion) is unaffected. This restores the
+invariant that a started stay is not member-cancellable — previously implicit
+because the completion cron flipped a started PAID booking to the
+non-cancellable COMPLETED state on day one, an implicit guard #2029's widened
+PAID window removed. Leaving early is done by shrinking the remaining future
+nights through the in-progress edit path (policy-retained), never an
+irreversible `PAID -> CANCELLED` that releases beds with guests present.
 
 The admin-override mode is date-only and takes one of two pricing modes:
 `shift` (pure relocation, all cents frozen, night count preserved, no fee /
