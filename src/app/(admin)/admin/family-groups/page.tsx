@@ -11,6 +11,8 @@ import { Trash2, Plus, Users, X, Edit2, Search } from "lucide-react";
 import { FamilyGroupEditor } from "@/components/admin/family-group-editor";
 import { AgeTierBadge } from "@/components/admin/family-groups/age-tier-badge";
 import { FamilyGroupRequestReviewSection } from "@/components/admin/family-groups/request-review-section";
+import { AdminViewOnlyNotice } from "@/components/admin/view-only-action";
+import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import {
   type FamilyGroupRequest,
   type FamilyGroupSummary,
@@ -30,6 +32,9 @@ type PartnerInvite = {
 export default function FamilyGroupsPage() {
   const searchParams = useSearchParams();
   const router = useRouter();
+  // Approve/reject writes the membership-area family-groups requests route; a
+  // view-only membership admin browses the queue but cannot act (#1997).
+  const canEditMembership = useAdminAreaEditAccess("membership");
   const [groups, setGroups] = useState<FamilyGroupSummary[]>([]);
   const [requests, setRequests] = useState<FamilyGroupRequest[]>([]);
   const [partnerInvites, setPartnerInvites] = useState<PartnerInvite[]>([]);
@@ -401,14 +406,23 @@ export default function FamilyGroupsPage() {
               No family group changes are awaiting review.
             </div>
           ) : (
-            <FamilyGroupRequestReviewSection
-              requests={requests}
-              onReviewed={async () => {
-                await fetchData();
-              }}
-              showSearchGuidance
-              createMemberNoun="member"
-            />
+            <>
+              {!canEditMembership && (
+                <AdminViewOnlyNotice className="mb-4">
+                  Your admin role can view family group requests but cannot
+                  approve or reject them.
+                </AdminViewOnlyNotice>
+              )}
+              <FamilyGroupRequestReviewSection
+                requests={requests}
+                onReviewed={async () => {
+                  await fetchData();
+                }}
+                canEdit={canEditMembership}
+                showSearchGuidance
+                createMemberNoun="member"
+              />
+            </>
           )}
         </CardContent>
       </Card>

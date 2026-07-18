@@ -134,6 +134,10 @@ import { ConfirmPendingGuestsButton } from "@/components/admin/confirm-pending-g
 import { NonMemberContactForm } from "@/components/admin/non-member-contact-form";
 import AdminWaitlistPage from "@/app/(admin)/admin/waitlist/page";
 import AdminBookPage from "@/app/(admin)/admin/book/page";
+// #1997 admin action-button surfaces (membership queues lane).
+import DeletionRequestsClient from "@/app/(admin)/admin/deletion-requests/deletion-requests-client";
+import MemberApplicationsPage from "@/app/(admin)/admin/member-applications/page";
+import MembershipCancellationsPage from "@/app/(admin)/admin/membership-cancellations/page";
 
 const SITE_CONTENT_DOCUMENTS = [
   { key: "FOOTER_BLURB", contentHtml: "<p>Blurb</p>", updatedAt: null },
@@ -2424,6 +2428,150 @@ describe("AdminBookPage view-only gating (#1997, bookings)", () => {
     expect(
       screen.queryByText(
         /can view booking tools but cannot create bookings on behalf/i,
+      ),
+    ).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1997 admin action-button surfaces (membership queues lane). Each queue's
+// write route is membership-area (path-inferred, now explicit on the guard),
+// so gating is keyed on membership edit vs view.
+// ---------------------------------------------------------------------------
+
+describe("DeletionRequestsClient view-only gating (#1997, membership)", () => {
+  beforeEach(() => {
+    sessionMatrix = null;
+    stubFetchRoutes({
+      "/api/admin/deletion-requests": {
+        requests: [],
+        total: 0,
+        totalPages: 1,
+      },
+      "/api/admin/member-lifecycle-action-requests": {
+        requests: [],
+        total: 0,
+        totalPages: 1,
+      },
+    });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("shows the view-only notice for a membership:view admin", async () => {
+    sessionMatrix = matrix("view", { membership: "view" });
+    render(<DeletionRequestsClient sessionMemberId="admin-1" />);
+
+    expect(
+      await screen.findByText(
+        /can view deletion requests but cannot approve or reject/i,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("hides the view-only notice for a membership:edit admin", async () => {
+    sessionMatrix = matrix("view", { membership: "edit" });
+    render(<DeletionRequestsClient sessionMemberId="admin-1" />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: /Deletion Requests/i }),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByText(
+        /can view deletion requests but cannot approve or reject/i,
+      ),
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe("MemberApplicationsPage view-only gating (#1997, membership)", () => {
+  beforeEach(() => {
+    sessionMatrix = null;
+    stubFetchRoutes({
+      "/api/admin/member-applications": { applications: [], pendingCount: 0 },
+    });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("shows the view-only notice for a membership:view admin", async () => {
+    sessionMatrix = matrix("view", { membership: "view" });
+    render(<MemberApplicationsPage />);
+
+    expect(
+      await screen.findByText(
+        /can view member applications but cannot approve, decline/i,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("hides the view-only notice for a membership:edit admin", async () => {
+    sessionMatrix = matrix("view", { membership: "edit" });
+    render(<MemberApplicationsPage />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: /Member Applications/i }),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByText(
+        /can view member applications but cannot approve, decline/i,
+      ),
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe("MembershipCancellationsPage view-only gating (#1997, membership)", () => {
+  beforeEach(() => {
+    sessionMatrix = null;
+    stubFetchRoutes({
+      "/api/admin/membership-cancellation-requests": {
+        requests: [],
+        total: 0,
+        pendingCount: 0,
+      },
+      "/api/admin/member-lifecycle-action-requests": {
+        requests: [],
+        total: 0,
+        pendingCount: 0,
+      },
+    });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("shows the view-only notice for a membership:view admin", async () => {
+    sessionMatrix = matrix("view", { membership: "view" });
+    render(<MembershipCancellationsPage />);
+
+    expect(
+      await screen.findByText(
+        /can view membership cancellations but cannot approve or reject/i,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("hides the view-only notice for a membership:edit admin", async () => {
+    sessionMatrix = matrix("view", { membership: "edit" });
+    render(<MembershipCancellationsPage />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: /Membership Cancellations/i }),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByText(
+        /can view membership cancellations but cannot approve or reject/i,
       ),
     ).not.toBeInTheDocument();
   });

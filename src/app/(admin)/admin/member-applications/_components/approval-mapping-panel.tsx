@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { ViewOnlyActionButton } from "@/components/admin/view-only-action";
 import {
   JoiningFeePreviewHint,
   useJoiningFeePrefill,
@@ -113,11 +114,14 @@ function candidateLabel(candidate: Candidate) {
 export default function ApprovalMappingPanel({
   application,
   submitting,
+  canEdit = true,
   onRequestReview,
   onError,
 }: {
   application: PanelApplication;
   submitting: boolean;
+  /** Whether the actor may approve/decline (membership edit, #1997). */
+  canEdit?: boolean;
   onRequestReview: (payload: ReviewRequestPayload) => void;
   onError: (message: string) => void;
 }) {
@@ -686,17 +690,23 @@ export default function ApprovalMappingPanel({
       </div>
 
       <div className="flex flex-wrap gap-3">
-        <Button type="button" disabled={approveDisabled} onClick={handleApprove}>
+        <ViewOnlyActionButton
+          canEdit={canEdit}
+          type="button"
+          disabled={approveDisabled}
+          onClick={handleApprove}
+        >
           {submitting ? "Working..." : "Approve"}
-        </Button>
-        <Button
+        </ViewOnlyActionButton>
+        <ViewOnlyActionButton
+          canEdit={canEdit}
           type="button"
           variant="outline"
           disabled={submitting}
           onClick={handleReject}
         >
           Reject
-        </Button>
+        </ViewOnlyActionButton>
       </div>
     </div>
   );
