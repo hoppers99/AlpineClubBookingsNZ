@@ -1037,10 +1037,14 @@ export async function register() {
 
     logger.info({ job: "email-retry" }, "Scheduled email retry (every 30 minutes)");
 
-    // Cron job - Complete bookings (daily at 1:00 AM NZST)
-    // Transitions PAID bookings to COMPLETED once their check-out date has
-    // fully passed (#2029): the booking stays PAID/editable through the whole
-    // check-out day (NZ), and only completes on the first 1 AM run after it.
+    // Cron job - Complete bookings. Fires at 01:00 in APP_TIME_ZONE
+    // (Pacific/Auckland) via the timezone option below; the exact fire time is
+    // NOT load-bearing. Transitions PAID bookings to COMPLETED once their
+    // check-out date has fully passed (#2029): the booking stays PAID/editable
+    // through the whole NZ check-out day and completes on the first run where
+    // checkOut < NZ today. Boundary correctness is timezone-independent —
+    // getTodayDateOnly() always resolves the NZ calendar date regardless of when
+    // the job runs (so re-running it, or a server-local clock, cannot shift it).
     let isCompleteBookingsRunning = false;
     cron.default.schedule("0 1 * * *", async () => {
       if (isCompleteBookingsRunning) {

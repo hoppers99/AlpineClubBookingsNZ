@@ -25,7 +25,7 @@ import { ArrivalTimeEditor } from "@/components/arrival-time-editor";
 import { RequestedRoomEditor } from "@/components/requested-room-editor";
 import { WaitlistOfferCard } from "@/components/waitlist-offer-card";
 import { DeleteBookingButton } from "@/components/delete-booking-button";
-import { getBookingEditPolicy } from "@/lib/booking-edit-policy";
+import { getBookingEditPolicy, bookingStayHasStarted } from "@/lib/booking-edit-policy";
 import { getBookingPaymentMode } from "@/lib/booking-payment-flow";
 import { RefundAppealButton } from "@/components/refund-appeal-button";
 import { humanizeStatus, paymentStatusClass } from "@/lib/status-colors";
@@ -387,10 +387,21 @@ export default async function BookingDetailPage({
   const isWaitlisted = booking.status === "WAITLISTED";
   const isWaitlistOffered = booking.status === "WAITLIST_OFFERED";
   const isDeleted = Boolean(booking.deletedAt);
+  // #2029: a self-service actor (booking owner or Booking Officer) can no longer
+  // cancel a stay that has already started (NZ check-in on or before today) —
+  // the service enforces this behind enforceStartedStayBlock. Mirror it here so
+  // the button is honest and never 400s (same "no button that fails" pattern as
+  // the view-only work). A Full Admin (isAdmin) keeps the button; they leave
+  // early via edit/shrink otherwise.
+  const stayHasStarted = bookingStayHasStarted(booking.checkIn);
   // Issue #1313 (option A2): a Booking Officer (bookings:edit) may cancel any
   // booking; the /api/bookings/[id]/cancel route authorizes bookings:edit and the
   // notes editor below is gated on this same predicate.
-  const canCancel = (canManageBooking || canAdminEditBookings) && !isDeleted && ["PAYMENT_PENDING", "CONFIRMED", "PAID", "PENDING", "WAITLISTED", "WAITLIST_OFFERED"].includes(booking.status);
+  const canCancel =
+    (canManageBooking || canAdminEditBookings) &&
+    !isDeleted &&
+    (isAdmin || !stayHasStarted) &&
+    ["PAYMENT_PENDING", "CONFIRMED", "PAID", "PENDING", "WAITLISTED", "WAITLIST_OFFERED"].includes(booking.status);
   const showArrivalTime = !isDeleted && !["CANCELLED", "COMPLETED"].includes(booking.status);
   const modules = await loadEffectiveModuleFlags();
   const bookingMessages = await loadPublicBookingMessages();

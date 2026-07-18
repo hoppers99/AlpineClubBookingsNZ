@@ -132,6 +132,21 @@ export function getBookingEditPolicy(
   };
 }
 
+/**
+ * #2029: a stay has "started" once its NZ check-in date is today or earlier.
+ * The single source of truth shared by the self-service started-stay cancel
+ * block (`booking-cancel.ts`) and the booking-detail UI, so the cancel route and
+ * the Cancel button can never disagree about when a stay has begun. `today` is
+ * injectable purely for deterministic tests; production always resolves the NZ
+ * calendar date via `getTodayDateOnly()`.
+ */
+export function bookingStayHasStarted(
+  checkIn: Date,
+  today: Date = getTodayDateOnly(),
+): boolean {
+  return normalizeDateOnlyForTimeZone(checkIn) <= today;
+}
+
 export function canModifyBookingStatusForRole(status: string, role: string): boolean {
   return isFutureEditStatusAllowed(status, role) || isInProgressEditStatusAllowed(status);
 }
