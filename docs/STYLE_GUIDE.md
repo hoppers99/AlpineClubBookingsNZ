@@ -43,11 +43,27 @@ should find the exact contract in the same place without opening the code.
 Keep money in integer cents and dates as NZ date-only lodge nights in every
 example, matching the domain rules in `DOMAIN_INVARIANTS.md`.
 
+## Where operator guides live (pinned)
+
+All operator guides live in **`docs/guides/`**, one Markdown file per admin
+area, named after the route (`docs/guides/bookings.md` for `/admin/bookings`,
+`docs/guides/bed-allocation.md` for `/admin/bed-allocation`). This is fixed so
+every relative path in a guide is predictable:
+
+- Screenshots (under `docs/images/**`) are referenced as `../images/<area>/…`.
+- The hub back-link (to `docs/README.md`) is `../README.md`.
+- A feature-hub back-link (e.g. to `docs/multi-lodge/README.md`) is
+  `../multi-lodge/README.md`.
+
+The copy-paste template below already uses these paths; keep new guides in
+`docs/guides/` so they stay correct. `COVERAGE_MATRIX.md` names the same
+location, and #2050 agents must place guides there.
+
 ## Operator-guide page skeleton (required)
 
-Every operator guide (the pages #2050 produces, one per admin area) uses this
-exact section order. Omit a section only when it genuinely does not apply, and
-say so rather than silently dropping it.
+Every operator guide (the pages #2050 produces, one per admin area, under
+`docs/guides/`) uses this exact section order. Omit a section only when it
+genuinely does not apply, and say so rather than silently dropping it.
 
 1. **What it is** — one or two plain sentences: what this feature/area does for
    the club, and the admin path to reach it (`Admin → …`) plus the route
@@ -89,10 +105,14 @@ re-creatable.
   full-page PNGs the harness emits are fine). Do not commit multi-megabyte
   raw captures.
 - **Alt text (required):** every embedded image has descriptive alt text that
-  states what the screenshot shows, e.g.
-  `![Admin dashboard showing the Needs Attention cards](images/admin/admin-dashboard.png)`.
+  states what the screenshot shows, e.g. from a guide in `docs/guides/`:
+  `![Admin dashboard showing the Needs Attention cards](../images/admin/admin-dashboard.png)`.
   Alt text is not decorative filler — a screen-reader user must learn what the
   image conveys.
+- **Ordering (link check):** a screenshot must be captured and committed *before
+  or in the same change as* the guide that references it — the CI link check
+  (lychee, offline) fails on a guide that points at an image file that does not
+  yet exist on disk. Never merge a guide ahead of its images.
 - **Refresh policy:** when a page's UI changes materially, re-run the harness in
   the same PR and commit the updated image (same filename). Treat a stale
   screenshot like stale prose: fix it in lockstep. If the harness gains a new
@@ -174,7 +194,7 @@ Audience: Operator
 1. Go to **Admin → <path>**.
 2. <Action.>
 
-   ![<Descriptive alt text>](images/admin/<area>-<state>.png)
+   ![<Descriptive alt text>](../images/admin/<area>-<state>.png)
 
 3. <Action, with the exact field/button named.>
 
