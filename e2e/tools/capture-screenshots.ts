@@ -129,10 +129,25 @@ function printManifest(captures: Capture[]): void {
 async function shoot(context: BrowserContext, capture: Capture): Promise<void> {
   const page = await context.newPage();
   try {
+    // Authenticated pages gate edit affordances on the CLIENT session hook
+    // (useAdminAreaEditAccess -> useSession), which reports view-only until the
+    // post-hydration /api/auth/session fetch resolves. A shot taken in that
+    // window captures a false "view only" banner with disabled controls
+    // (#2050 batch-1 review finding on admin-book). Arm the waiter BEFORE
+    // navigation so the response cannot slip past us, and bound it so an
+    // unauthenticated page (which never fetches the session) cannot stall.
+    const sessionSettled =
+      capture.auth === false
+        ? Promise.resolve()
+        : page
+            .waitForResponse((r) => r.url().includes("/api/auth/session"), { timeout: 10_000 })
+            .then(() => undefined)
+            .catch(() => undefined);
     // Wait for the document 'load' event (deterministic), not "networkidle":
     // networkidle can hang or resolve arbitrarily on pages with long-poll /
     // streaming / analytics requests. Give it an explicit navigation timeout.
     await page.goto(new URL(capture.route, BASE_URL).toString(), { waitUntil: "load", timeout: 30_000 });
+    await sessionSettled;
     // Settle: let web fonts finish so text is not captured in a fallback face,
     // bounded by an explicit timeout so a stuck font load cannot block a shot.
     await Promise.race([

@@ -121,6 +121,31 @@ re-creatable.
 - **Privacy:** capture only against the demo/seeded data set. Never commit a
   screenshot containing real member, payment, or accounting data
   (`CONTRIBUTING.md`).
+- **Capture only what your change documents:** run the harness with explicit
+  capture names (`npx tsx e2e/tools/capture-screenshots.ts <name...>`), never
+  the whole manifest — a full run commits images for pages other batches/PRs
+  own, stranding orphan PNGs that their real PR then has to re-refresh.
+- **Screenshot density:** one screenshot per capturable distinct route or tab
+  (a guide covering six sub-pages embeds six captures). Client-side wizard or
+  dialog sub-steps the URL-driven harness cannot reach are described in prose —
+  they need no screenshot. Do not ship a single landing shot for a
+  multi-screen area.
+- **Session settle:** authenticated admin pages gate edit affordances on the
+  client session hook, which reports view-only until the post-hydration session
+  fetch resolves; the harness waits for that fetch before shooting so captures
+  never show the false pre-hydration "view only" state. If you add a new kind
+  of late-settling UI, extend the harness settle logic generically — never
+  paper over it per-capture.
+
+## Guide opening line (canonical)
+
+The "What it is" section opens with the canonical location line:
+
+> Find it at **Admin → <nav path>** (`/admin/<route>`).
+
+Invert to route-first ONLY when the page genuinely has no direct sidebar
+entry — and then say explicitly how it is reached (hub card, parent page
+link). Do not copy a justified exception as the template.
 
 ## Linking rules
 
