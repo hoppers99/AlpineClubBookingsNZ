@@ -88,6 +88,18 @@ Future reviews and issues should cite this file when proposing changes.
   `NOT_REQUIRED` rule, NOT the booking side's junior age-tier subscription
   exemption (`requiresPaidSubscriptionForAgeTier`): nominating is an adult-member
   act and widening it to un-subscribed junior tiers is an owner policy decision.
+  A third `subscriptionBehavior`, `BASED_ON_AGE_TIER` (#2041), defers the
+  subscription-required answer to the per-age-tier
+  `AgeTierSetting.subscriptionRequiredForBooking` flag — the SAME flag that gates
+  booking-lockout — so it is the single source of truth for both booking-lockout
+  and annual-fee invoice minting. Under it, the billing sweep skips a member
+  whose age tier AT THE START OF THE SEASON (the club financial year, derived
+  from DOB; stored tier as the fail-closed fallback when DOB is unknown) does not
+  require a subscription, and writes that member a NOT_REQUIRED
+  `MemberSubscription` row for the season. That NOT_REQUIRED status row is then
+  authoritative and dominates in the booking resolvers: it keeps booking status
+  consistent with billing even if the member's stored age tier is later promoted
+  mid-season. `REQUIRED` and `NOT_REQUIRED` type behavior is byte-unchanged.
 - **Manual mark-paid provenance (non-Xero clubs / cash).** `status = "PAID"` can
   be set outside the Xero pipeline by an audited finance:edit action, recorded by
   `manuallyMarkedPaidAt` / `manuallyMarkedPaidByMemberId` / `manualPaymentNote`.
