@@ -1257,6 +1257,48 @@ archived/dependent and forcePasswordChange refusals, the unverified block, that
 the emailed link's HTML never persists in `EmailLog`, and that a 2FA-enrolled
 member still lands on `/login/verify`.
 
+## Google Sign-In Lifecycle (profile-initiated linking)
+
+Google OAuth sign-in (issue #2035, epic #2030). JWT strategy, NO adapter.
+Additive to password login, module-gated (`googleLogin`, default off, plus
+`GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`). **Profile-initiated linking only** —
+no account is ever created from Google, and login never matches by email
+(closes the Workspace-domain takeover). Sign-in resolves a member solely by the
+pinned subject id `Member.googleSub`. The single Google provider serves both
+login and linking; the `signIn` callback disambiguates via a short-lived,
+HttpOnly, HMAC-signed link-intent cookie set by the authenticated
+`POST /api/profile/google/link/start`.
+
+```text
+LINK (signed-in member, profile > Connected accounts > Connect Google):
+  POST /api/profile/google/link/start -> sets signed link-intent cookie (binds memberId), then signIn("google")
+  Google OAuth round-trip -> signIn callback sees the intent cookie:
+    module off -> refuse -> /profile?googleError=disabled
+    email_verified !== true -> refuse -> /profile?googleError=unverified
+    sub already linked to ANOTHER member -> refuse (audited) -> /profile?googleError=already_linked
+    member already linked to a DIFFERENT sub -> refuse (audited) -> /profile?googleError=account_conflict
+    else -> pin Member.googleSub = profile.sub (audited, security), RETURN redirect STRING
+            -> Auth.js redirects BEFORE minting a session (no identity switch) -> /profile?googleLinked=1
+UNLINK: POST /api/profile/google/unlink -> googleSub = null (audited); password login always remains
+
+LOGIN (/login "Continue with Google", shown only when module on + creds present):
+  Google OAuth round-trip -> provider profile() resolves by googleSub === profile.sub (login-capable only):
+    no match -> unlinked -> /login?error=google_unlinked (NEVER email-match, NEVER provision)
+    inactive or unverified -> refused -> /login?error=google_refused
+    forcePasswordChange -> /login?error=google_password_change
+    eligible -> same user shape as password login -> lastLoginAt bumped
+  signIn callback: module off -> /login?error=google_disabled (even for linked members)
+    eligible -> allow -> JWT issued with twoFactorVerified=false (2FA member still routed to /login/verify)
+```
+
+To verify: sub-path sign-in; the email-match-without-link refusal (takeover
+regression — no auto-link, no provision); the unverified-email link block; the
+link/unlink/re-link audited flows; the sub-already-linked-to-another and
+member-already-linked refusals; archived/dependent/forcePasswordChange refusals
+even when linked; the module kill-switch in both directions; that a linked
+2FA-enrolled member still lands on `/login/verify`; and that every refusal
+renders a visible friendly message via the `/login?error=…` wiring.
+
 ## Analytics Consent Lifecycle
 
 Client-side state machine for the GA4 consent banner (issue #975). The module

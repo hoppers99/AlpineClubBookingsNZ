@@ -441,6 +441,12 @@ model Member {
   twoFactorEnabled        Boolean          @default(false)
   twoFactorMethod         TwoFactorMethod?
   totpSecret              String?
+  // Google OAuth subject (#2035). Nullable + unique: at most one member per
+  // Google account. Pinned ONLY via profile-initiated linking (member signs in,
+  // then links from their profile); sign-in resolves solely by this sub — never
+  // by email-match, never auto-provisioned. Nulled on unlink; password login
+  // always remains.
+  googleSub               String?          @unique
   twoFactorEnrolledAt     DateTime?
   twoFactorFailedAttempts Int              @default(0)
   twoFactorLockedUntil    DateTime?
@@ -3213,6 +3219,9 @@ model ClubModuleSettings {
   magicLink               Boolean  @default(false)
   analytics               Boolean  @default(false)
   lobbyDisplay            Boolean  @default(false)
+  // Google OAuth sign-in (#2035). Default OFF; per-club opt-in on the Login &
+  // Security page. Additive to password login, never a replacement.
+  googleLogin             Boolean  @default(false)
   updatedByMemberId       String?
   createdAt               DateTime @default(now())
   updatedAt               DateTime @default(now()) @updatedAt

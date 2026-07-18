@@ -1354,7 +1354,23 @@ export async function executeMemberMerge(params: {
       }),
     );
 
-    // 7) Hard-delete the loser (cascade drops its auth/token rows).
+    // 7) Google OAuth identity (#2035). `Member.googleSub` is a scalar @unique,
+    // so it is deliberately NOT in FILL_IF_BLANK_FIELDS/GROUP_FILL_SPECS: the
+    // master NEVER inherits the loser's Google identity, because silently
+    // transferring a login identity to another member is an account-takeover
+    // vector. Mirroring the xeroContactId teardown, null the loser's googleSub
+    // before the hard-delete (the sub is recorded in the loser snapshot audited
+    // above) so the delete cannot race any unique constraint. The loser's Google
+    // account is simply unlinked; re-link to the master is a deliberate,
+    // profile-initiated action, never an automatic merge side effect.
+    if (loserFull.googleSub) {
+      await tx.member.update({
+        where: { id: loserId },
+        data: { googleSub: null },
+      });
+    }
+
+    // 8) Hard-delete the loser (cascade drops its auth/token rows).
     await tx.member.delete({ where: { id: loserId } });
 
     return {
@@ -1393,6 +1409,7 @@ function buildLoserSnapshot(loser: Member) {
     lastName: loser.lastName,
     email: loser.email,
     xeroContactId: loser.xeroContactId,
+    googleSub: loser.googleSub,
     joinedDate: loser.joinedDate?.toISOString() ?? null,
     createdAt: loser.createdAt.toISOString(),
   };

@@ -1,5 +1,6 @@
 import NextAuth, { CredentialsSignin, type NextAuthConfig } from "next-auth";
 import Credentials from "next-auth/providers/credentials";
+import Google from "next-auth/providers/google";
 import bcrypt from "bcryptjs";
 import { prisma } from "./prisma";
 import { getAuthSecret, getAuthTrustHost } from "./runtime-config";
@@ -20,6 +21,13 @@ import { MEMBER_ACCESS_ROLE_SELECT } from "./access-role-definitions";
 import { loadEffectiveModuleFlags } from "./module-settings";
 import { consumeTwoFactorSessionChallenge } from "./two-factor";
 import { hashActionToken, isActionTokenFormat } from "./action-tokens";
+import {
+  linkGoogleAccount,
+  readGoogleLinkIntent,
+  resolveGoogleProfile,
+  type GoogleMemberUser,
+  type GoogleProfileResult,
+} from "./google-oauth";
 
 class EmailNotVerifiedError extends CredentialsSignin {
   code = "EMAIL_NOT_VERIFIED";
@@ -293,8 +301,125 @@ export const authConfig = {
         };
       },
     }),
+    // Google OAuth sign-in via profile-initiated linking (#2035). JWT strategy,
+    // NO adapter. The provider `profile()` maps a Google identity to OUR member
+    // identity by `googleSub === profile.sub` ONLY (never email-match, never
+    // provision), returning the EXACT same user shape as the Credentials
+    // providers so the UNCHANGED jwt/session callbacks stamp role, the
+    // admin-permission matrix, and the 2FA claims identically. Every gate and
+    // the module kill-switch are finalised in the signIn callback below. The
+    // same provider also serves account-linking, disambiguated there by the
+    // short-lived link-intent cookie.
+    Google({
+      clientId: process.env.GOOGLE_CLIENT_ID,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+      // Never auto-link by matching email across identity providers — linking is
+      // profile-initiated only.
+      allowDangerousEmailAccountLinking: false,
+      async profile(profile) {
+        // Pure sub-only resolver (no writes). Returns the member user shape when
+        // eligible, else a sentinel carrying the refusal reason for signIn. The
+        // sentinel intentionally omits the augmented User fields (it can never
+        // mint a session — signIn refuses first), so cast past the User type.
+        return (await resolveGoogleProfile(profile)) as unknown as GoogleMemberUser;
+      },
+    }),
   ],
   callbacks: {
+    // Gate + disambiguate every Google round-trip. Non-Google providers are
+    // untouched (they had no signIn callback before; returning true preserves
+    // "allow"). Returning a STRING makes @auth/core redirect and return EARLY,
+    // BEFORE minting a session — so the link path performs its write and
+    // redirects with no session identity switch, and every refusal lands on a
+    // friendly /login?error=… (or /profile?googleError=…) page.
+    async signIn({ user, account, profile }) {
+      if (account?.provider !== "google") {
+        return true;
+      }
+
+      const sub =
+        profile && typeof profile.sub === "string" ? profile.sub : null;
+      // Read (and best-effort clear) the link-intent cookie set by the
+      // authenticated profile "Connect Google" route. Present ⇒ link round-trip.
+      const intent = await readGoogleLinkIntent();
+
+      // Fresh module read (never cached), mirroring magic-link's verify-side
+      // kill-switch: disabling googleLogin immediately refuses BOTH new logins
+      // AND linking — even for already-linked members.
+      const modules = await loadEffectiveModuleFlags();
+      if (!modules.googleLogin) {
+        return intent
+          ? "/profile?googleError=disabled#security"
+          : "/login?error=google_disabled";
+      }
+
+      if (!sub) {
+        return intent
+          ? "/profile?googleError=failed#security"
+          : "/login?error=google_failed";
+      }
+
+      if (intent) {
+        // LINK path (profile-initiated, authenticated via the signed cookie).
+        //
+        // CRITICAL (planning-review MAJOR): bind the link to the CURRENT
+        // session, not just to whoever the intent cookie names. Intent clearing
+        // is best-effort (@auth/core builds its own Response, so the cookie can
+        // survive to its TTL), so on a shared device (e.g. a lodge iPad) a stale
+        // intent from member V must NOT convert member W's later Google LOGIN
+        // into a cross-member link. Require the session that completed consent to
+        // BE the member who started linking. In the legitimate flow the linker
+        // always holds an active session equal to the intent, so this is
+        // non-breaking; anyone else (no session, or a different member) is
+        // refused and simply retries a normal login. auth() is callable here —
+        // same request context, and it only decodes the session cookie (it never
+        // re-enters this signIn callback, so there is no recursion).
+        const session = await auth();
+        if (!session?.user?.id || session.user.id !== intent.memberId) {
+          return "/login?error=google_refused";
+        }
+
+        // Require a verified Google email before pinning the sub.
+        const emailVerified =
+          profile && (profile as { email_verified?: unknown }).email_verified;
+        if (emailVerified !== true) {
+          return "/profile?googleError=unverified#security";
+        }
+        const outcome = await linkGoogleAccount(intent.memberId, sub);
+        return `/profile?${outcome}#security`;
+      }
+
+      // LOGIN path — sub-only resolution already ran in profile(); read its
+      // verdict from the carried status. Never provision, never email-match.
+      const status = (user as Partial<GoogleProfileResult> | undefined)
+        ?.googleLoginStatus;
+      if (status !== "ok") {
+        switch (status) {
+          case "unlinked":
+            return "/login?error=google_unlinked";
+          case "password_change":
+            return "/login?error=google_password_change";
+          default:
+            return "/login?error=google_refused";
+        }
+      }
+
+      // Eligible: record the login timestamp, then allow — the unchanged
+      // jwt/session callbacks stamp the member identity (never the Google sub)
+      // and leave 2FA to be challenged as usual.
+      try {
+        await prisma.member.update({
+          where: { id: user.id as string },
+          data: { lastLoginAt: new Date() },
+        });
+      } catch (error) {
+        logger.warn(
+          { err: error, memberId: user.id },
+          "Failed to update member last login timestamp (Google sign-in)",
+        );
+      }
+      return true;
+    },
     async jwt({ token, user, trigger, session }) {
       if (user) {
         token.role = user.role;
@@ -433,6 +558,12 @@ export const authConfig = {
   },
   pages: {
     signIn: "/login",
+    // Route genuine provider-side aborts (Google consent denied, OAuth state
+    // mismatch, etc.) that never reach our signIn callback to /login instead of
+    // the bare Auth.js /api/auth/error page. @auth/core appends ?error=<Code>
+    // (e.g. OAuthCallbackError, AccessDenied), which the login form's generic
+    // OAuth branch renders as a sensible "couldn't complete sign-in" message.
+    error: "/login",
   },
   session: {
     strategy: "jwt",

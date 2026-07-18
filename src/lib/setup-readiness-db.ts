@@ -56,6 +56,7 @@ export async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot>
         skifieldConditions: true,
         twoFactor: true,
         magicLink: true,
+        googleLogin: true,
         analytics: true,
         lobbyDisplay: true,
       },

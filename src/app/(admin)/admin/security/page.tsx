@@ -1,13 +1,14 @@
 import type { Metadata } from "next";
+import { GoogleSecurityCard } from "@/components/admin/google-security-card";
 import { MagicLinkSecurityCard } from "@/components/admin/magic-link-security-card";
 import { PasswordPolicyCard } from "@/components/admin/security/password-policy-card";
+import { googleCredentialsConfigured } from "@/lib/google-oauth";
 import { loadLoginSecuritySettings } from "@/lib/login-security-settings";
 import { loadClubModuleSettings } from "@/lib/module-settings";
 
 // Login & Security admin page (epic #2030, child #2033). Scaffolds the page and
-// hosts the password-policy card and the magic-link sign-in card (#2034). The
-// remaining sibling (Google sign-in, #2035) adds a self-contained card below
-// with no churn here.
+// hosts the password-policy card, the magic-link sign-in card (#2034), and the
+// Google sign-in card (#2035).
 // Route access is governed by the `support` admin area (see admin-permissions.ts).
 
 export const metadata: Metadata = {
@@ -35,6 +36,10 @@ export default async function AdminSecurityPage() {
         <MagicLinkSecurityCard
           moduleSettings={moduleSettings}
           initialTtlMinutes={loginSecurity.policy.magicLinkTtlMinutes}
+        />
+        <GoogleSecurityCard
+          moduleSettings={moduleSettings}
+          credentialsConfigured={googleCredentialsConfigured()}
         />
       </div>
     </div>
