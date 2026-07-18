@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { getDefaultLodgeCapacity } from "@/lib/lodge-capacity";
 import {
   computeMembershipTypeRateGaps,
   type SetupDatabaseSnapshot,
@@ -136,6 +137,17 @@ export async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot>
   const clubIdentityName =
     clubIdentity?.name?.trim() || emailSettings?.clubName?.trim() || null;
 
+  // Resolved default-lodge booking capacity (#1982): 0 means the default lodge
+  // has no active beds and no capacity override, so it accepts no bookings — the
+  // club-config readiness check warns on it. Guarded because a pre-seed DB has
+  // no Lodge row (getDefaultLodgeId throws); we then simply omit the signal.
+  let defaultLodgeCapacity: number | null = null;
+  try {
+    defaultLodgeCapacity = await getDefaultLodgeCapacity(prisma);
+  } catch {
+    defaultLodgeCapacity = null;
+  }
+
   return {
     adminCount,
     adminModuleSettings,
@@ -161,6 +173,7 @@ export async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot>
     xeroHutFeeItemMappingCount,
     xeroEntranceFeeMappingCount,
     membershipTypeRateGaps,
+    defaultLodgeCapacity,
     clubIdentityName,
     configuredCapacity: lodgeSettings?.capacity ?? null,
   };
