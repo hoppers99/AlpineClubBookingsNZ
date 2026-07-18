@@ -433,9 +433,7 @@ export default function LodgeSetupWizardPage() {
     return (
       <div className="space-y-4">
         <p className="text-destructive">{loadError ?? "Lodge not found"}</p>
-        <Link href="/admin/lodges" className="underline">
-          Back to lodges
-        </Link>
+        <BackLink href="/admin/lodges" label="Lodges" />
       </div>
     );
   }
