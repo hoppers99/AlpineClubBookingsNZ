@@ -22,7 +22,6 @@
  *
  * Environment:
  *   E2E_BASE_URL   target app (default http://localhost:3001, matching E2E)
- *   E2E_DEMO_PASSWORD  only if the demo seed used a custom password
  *
  * Safety: only ever point this at the local, ephemeral seeded staging stack.
  * Never a live or production deployment — it logs in and navigates admin pages.
@@ -35,7 +34,7 @@ import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { chromium, type Browser, type BrowserContext } from "@playwright/test";
-import { loginPersona, storageStatePath, readStoredTwoFactor } from "../e2e/helpers/auth";
+import { loginPersona, storageStatePath } from "../e2e/helpers/auth";
 import { E2E_ADMIN } from "../e2e/helpers/fixtures";
 
 type Capture = {
@@ -104,7 +103,16 @@ function printManifest(captures: Capture[]): void {
 async function shoot(context: BrowserContext, capture: Capture): Promise<void> {
   const page = await context.newPage();
   try {
-    await page.goto(new URL(capture.route, BASE_URL).toString(), { waitUntil: "networkidle" });
+    // Wait for the document 'load' event (deterministic), not "networkidle":
+    // networkidle can hang or resolve arbitrarily on pages with long-poll /
+    // streaming / analytics requests. Give it an explicit navigation timeout.
+    await page.goto(new URL(capture.route, BASE_URL).toString(), { waitUntil: "load", timeout: 30_000 });
+    // Settle: let web fonts finish so text is not captured in a fallback face,
+    // bounded by an explicit timeout so a stuck font load cannot block a shot.
+    await Promise.race([
+      page.evaluate(() => document.fonts.ready.then(() => undefined)),
+      page.waitForTimeout(3_000),
+    ]);
     if (capture.waitForText) {
       await page.getByText(capture.waitForText).first().waitFor({ state: "visible", timeout: 15_000 });
     }
@@ -141,22 +149,25 @@ async function main(): Promise<void> {
     if (adminNeeded) {
       const statePath = storageStatePath(E2E_ADMIN.email);
       if (fs.existsSync(statePath)) {
-        adminContext = await browser.newContext({ viewport: VIEWPORT, storageState: statePath });
+        adminContext = await browser.newContext({ baseURL: BASE_URL, viewport: VIEWPORT, storageState: statePath });
       } else {
-        const bootstrap = await browser.newContext({ viewport: VIEWPORT });
+        // baseURL is REQUIRED here: loginPersona -> submitLoginForm navigates with
+        // a relative page.goto("/login") (e2e/helpers/auth.ts), which throws
+        // "Cannot navigate to invalid URL" unless the context resolves it against
+        // baseURL. This is the path taken whenever the gitignored e2e/.auth state
+        // is absent (the documented prepare -> capture flow).
+        const bootstrap = await browser.newContext({ baseURL: BASE_URL, viewport: VIEWPORT });
         const page = await bootstrap.newPage();
         await page.goto(new URL("/login", BASE_URL).toString());
         await loginPersona(page, E2E_ADMIN.email);
-        // Persist so a re-run (or the E2E suite) can reuse it. readStoredTwoFactor
-        // is imported to surface a clear error path if enrollment state is missing.
-        void readStoredTwoFactor;
+        // Persist so a re-run (or the E2E suite) can reuse it.
         await bootstrap.storageState({ path: statePath });
         await bootstrap.close();
-        adminContext = await browser.newContext({ viewport: VIEWPORT, storageState: statePath });
+        adminContext = await browser.newContext({ baseURL: BASE_URL, viewport: VIEWPORT, storageState: statePath });
       }
     }
 
-    const publicContext = await browser.newContext({ viewport: VIEWPORT });
+    const publicContext = await browser.newContext({ baseURL: BASE_URL, viewport: VIEWPORT });
 
     for (const capture of captures) {
       const ctx = capture.auth === false ? publicContext : adminContext;
