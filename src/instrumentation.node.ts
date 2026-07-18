@@ -67,6 +67,68 @@ export async function register() {
         "Boot-time config self-heal did not run (non-fatal)",
       );
     }
+
+    // #2021 (residual of #1986 / #2015): the email-identity env vars removed in
+    // #1986 (EMAIL_FROM_NAME / SUPPORT_EMAIL / CONTACT_EMAIL /
+    // NEXT_PUBLIC_CONTACT_EMAIL) are no longer read. If a deployment still sets
+    // one, warn ONCE at boot that its value is ignored and email identity is
+    // admin-managed (Admin → Email Messages). Best-effort: its own try/catch,
+    // greppable scope, and it can never block or fail startup.
+    try {
+      const { getIgnoredEmailEnvWarning } = await import("./lib/ignored-email-env");
+      const ignoredEmailEnv = getIgnoredEmailEnvWarning(process.env);
+      if (ignoredEmailEnv) {
+        const { default: logger } = await import("./lib/logger");
+        logger.warn(
+          { scope: "ignored-email-env", vars: ignoredEmailEnv.vars },
+          ignoredEmailEnv.message,
+        );
+      }
+    } catch {
+      // Ignore — a boot-time advisory warning must never block startup.
+    }
+
+    // #1988 (C9): boot-time config-bundle auto-import (ADR-003, DR / clone).
+    // Runs AFTER the self-heal. When CONFIG_BUNDLE_IMPORT_PATH names a readable
+    // bundle AND the database is empty of non-seed configuration (the six
+    // "no operator footprint" signals — see bootstrap-import.ts), it applies
+    // the bundle non-interactively through the same validated import pipeline
+    // the admin route uses (untrusted-input validation, allowlist, DMMF
+    // type-checks, atomic upsert-only transaction, audit). It fails CLOSED — a
+    // non-empty target, a malformed/oversized bundle, or any I/O/apply failure
+    // refuses and writes nothing; the emptiness probe is re-run inside the
+    // apply advisory lock, so on a multi-replica boot exactly one replica
+    // applies and the others log a calm INFO refusal. Best-effort:
+    // `runConfigBootstrapImport` never throws, and this outer try/catch
+    // additionally guards the dynamic imports so a bootstrap bundle can never
+    // block or fail startup. A successful apply re-warms the identity/email
+    // caches primed earlier this boot so the imported values take effect
+    // immediately.
+    try {
+      const { prisma } = await import("./lib/prisma");
+      const { runConfigBootstrapImport } = await import(
+        "./lib/config-transfer/bootstrap-import"
+      );
+      const bootstrap = await runConfigBootstrapImport({ db: prisma });
+      if (bootstrap.outcome === "applied") {
+        try {
+          const { primeEmailPalette } = await import("./lib/email-theme");
+          const { primeClubIdentitySync } = await import(
+            "./lib/club-identity-settings"
+          );
+          await primeEmailPalette();
+          await primeClubIdentitySync();
+        } catch {
+          // Non-fatal: both caches self-warm on first use.
+        }
+      }
+    } catch (err) {
+      const { default: logger } = await import("./lib/logger");
+      logger.warn(
+        { err, scope: "config-bootstrap-import" },
+        "Boot-time config bundle auto-import did not run (non-fatal)",
+      );
+    }
   }
 
   if (process.env.NEXT_RUNTIME === "edge") {

@@ -168,6 +168,28 @@ capacity re-check bumps it and revokes its link like any other provisional child
 Paying the parent by card instead keeps the automatic saved-card settlement path
 unchanged.
 
+Terminal state at check-in for request-origin holds (#2012, the #1993 sibling).
+A request-origin booking (`originBookingRequest` set, request `CONVERTED`) still
+`PENDING` with no saved card once its check-in day has ended is likewise
+**auto-cancelled** by the settlement cron under the same boundary and the same
+per-lodge-lock + guarded `PENDING -> CANCELLED` CAS discipline (count 0 => a
+`/pay` settlement won — `already_processed`, zero side effects). The structural
+difference from the split child: a request booking **holds real capacity**, so
+the in-transaction bed reconcile genuinely RELEASES beds (mirroring the `bumped`
+path), promo redemptions are cleaned up, and the post-commit waitlist wake has
+real freed capacity to offer. The `CONVERTED` request row is deliberately left
+as the historical record — the booking's CANCELLED status is the capacity source
+of truth (a CONVERTED request is not declinable, so the decline flow cannot and
+does not run here). Post-commit the requester gets a **dedicated**
+`booking-request-payment-expired` email (no payment link — it is dead past
+check-in; the path back is a new request) and admins get ONE dedicated
+`admin-booking-request-hold-cancelled` notice with its own registry entry
+(independently mutable/overridable from the recurring hold alert). The recurring
+request-hold alert now follows the same capped cadence (extension windows 1, 2,
+3, then every 7th), and the terminal cancel ends the series. A booking whose
+parent request path acquired a saved card still auto-charges as before; `$0`
+request bookings still auto-confirm.
+
 Lodge check-in gate (F27 / #1372 + #1422) — status-preserving. A booking that
 carries a pending admin review (`requiresAdminReview` true and
 `adminReviewStatus = PENDING`) is BLOCKED from lodge check-in, but the block
@@ -683,6 +705,21 @@ transaction and the booking's PAID status are untouched, and
 `duplicate_capture_refund_failed`. A fully `REFUNDED` prior capture is history
 (#1765), never a settlement a repay generation could "duplicate", and at most
 one side of a capture pair is ever refunded (adjudicated under `lock(1)`).
+
+Audit trail (#2008): the auto-refund is recorded as a durable, ADMIN-ONLY
+`BookingEvent` once its recovery operation reaches `SUCCEEDED` — a `REFUNDED`
+event carrying a `duplicate_capture_refund` discriminator in its `snapshot`
+(`src/lib/duplicate-capture-refund-event.ts`). It is written exactly once
+across the inline and cron-replay paths, each gated on the operation's terminal
+`SUCCEEDED` transition (`count > 0`). Because the discriminator makes
+`isDuplicateCaptureRefundEvent` true, `resolveBookingNarrative` EXCLUDES it from
+the settlement finder, so a later member cancellation never misreads it as its
+own refund clause. The admin booking-history timeline renders it with honest
+copy ("Duplicate capture auto-refunded — the booking's settlement is
+unaffected"), while the shared member/guest narrative and every member-facing
+surface show nothing new. The rest of the audit trail (recovery-operation row,
+`PaymentRefund` ledger entries, error log, and the dedicated #2007 admin alert)
+is unchanged.
 
 To verify: whether Internet Banking uses the same `PaymentStatus` transitions
 or Xero invoice state as the effective settlement state.

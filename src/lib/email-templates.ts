@@ -907,6 +907,78 @@ export function adminPaymentFailureTemplate(data: {
   `);
 }
 
+/**
+ * #1992 / #2007 — dedicated admin alert for the duplicate-capture auto-refund.
+ * A SECOND, distinct Stripe capture arrived on a booking already settled by a
+ * different intent (the residual #1967 split-child window), so the duplicate
+ * charge is auto-refunded. This replaces the generic payment-anomaly template on
+ * both outcomes so the copy states the real situation instead of reading as a
+ * payment failure. `refundFailed` selects the variant (one-template-with-boolean
+ * precedent, like adminSplitSettlementUnpaidTemplate's parentUnpaid):
+ * - false: the duplicate charge was refunded in full inline — no action needed;
+ * - true: the inline refund could not complete, a durable recovery operation is
+ *   queued and the recovery cron will retry it — watch the recovery queue.
+ * No bearer token, so this is not sensitive-log material.
+ */
+export function adminDuplicateCaptureRefundTemplate(data: {
+  memberName: string;
+  checkIn: Date;
+  checkOut: Date;
+  amountCents: number;
+  paymentIntentId: string;
+  settledPaymentIntentId: string | null;
+  operationReference: string;
+  errorMessage?: string | null;
+  reviewUrl: string;
+  refundFailed: boolean;
+}): string {
+  const settledBy = data.settledPaymentIntentId
+    ? escapeHtml(data.settledPaymentIntentId)
+    : "another capture";
+  return layout(`
+    ${heading(
+      data.refundFailed
+        ? "Duplicate Capture Auto-Refund Failed — Retry Queued"
+        : "Duplicate Card Capture Auto-Refunded"
+    )}
+    ${
+      data.refundFailed
+        ? alertBox(
+            "A duplicate card charge could not be automatically refunded. A durable retry is queued — watch the recovery queue and confirm the refund lands.",
+            "warning"
+          )
+        : alertBox(
+            "A duplicate card charge was automatically refunded in full — no action is needed.",
+            "success"
+          )
+    }
+    ${paragraph(
+      data.refundFailed
+        ? "A second, distinct card capture arrived on a booking that was already paid and settled by another capture. The system tried to refund the duplicate charge automatically, but the refund could not complete inline. A durable recovery operation is queued and the payment recovery cron will retry it with backoff — watch the recovery queue and confirm the refund lands. The booking's own settlement is untouched."
+        : "A second, distinct card capture arrived on a booking that was already paid and settled by another capture. The duplicate charge was automatically refunded in full, so the member has not been double-charged and no action is needed unless the member reports otherwise. The booking's own settlement is untouched."
+    )}
+    ${infoTable([
+      { label: "Member", value: escapeHtml(data.memberName) },
+      { label: "Check-in", value: formatNZDate(data.checkIn) },
+      { label: "Check-out", value: formatNZDate(data.checkOut) },
+      {
+        label: data.refundFailed ? "Amount to refund" : "Amount refunded",
+        value: formatCents(data.amountCents),
+      },
+      { label: "Duplicate Stripe PI", value: escapeHtml(data.paymentIntentId) },
+      { label: "Settled by", value: settledBy },
+      {
+        label: "Recovery operation",
+        value: escapeHtml(data.operationReference),
+      },
+      ...(data.refundFailed && data.errorMessage
+        ? [{ label: "Failure detail", value: escapeHtml(data.errorMessage) }]
+        : []),
+    ])}
+    ${button("View Payments", data.reviewUrl, { sameOrigin: true })}
+  `);
+}
+
 // ---- N-06: Admin Alert — Pending Approaching Deadline ----
 
 export function adminPendingDeadlineTemplate(bookings: Array<{
@@ -2779,6 +2851,32 @@ export function bookingRequestDeclinedTemplate(data: {
   `);
 }
 
+/**
+ * #2012 — member-facing terminal notice that the booking created from their
+ * approved public booking request (#707) stayed unpaid up to the check-in day,
+ * so the provisional booking was released. Distinct wording from
+ * bookingRequestDeclinedTemplate ("unable to accommodate"): this request WAS
+ * approved and priced — the payment window simply lapsed — so it must not
+ * imply a refusal. Reassures that nothing was ever charged. No bearer token, so
+ * this is not sensitive-log material.
+ */
+export function bookingRequestPaymentExpiredTemplate(data: {
+  firstName: string;
+  checkIn: Date;
+  checkOut: Date;
+}): string {
+  return layout(`
+    ${heading("Your Booking Was Released — Payment Not Received")}
+    ${paragraph("Hi " + escapeHtml(data.firstName) + ", the booking we approved from your request stayed unpaid up to the check-in day, so it has now been released. Nothing was ever charged.")}
+    ${infoTable([
+      { label: "Check-in", value: formatNZDate(data.checkIn) },
+      { label: "Check-out", value: formatNZDate(data.checkOut) },
+    ])}
+    ${paragraph("If you still want to stay, you are welcome to submit a new booking request for these or other dates.")}
+    ${supportContactSentence("If you have questions, contact the club at ")}
+  `);
+}
+
 export function adminBookingRequestPendingTemplate(data: {
   requesterName: string;
   checkIn: Date;
@@ -2844,6 +2942,42 @@ export function adminBookingRequestHoldExpiredTemplate(data: {
       { label: "Hold extended to", value: formatNZDateTime(data.holdUntil) },
     ])}
     ${paragraph("Consider following up with the requester or cancelling the booking if payment is not expected.")}
+    ${muted("This alert repeats on a capped cadence (the first three hold extensions, then every seventh) while the request booking stays unpaid; a terminal cancellation past the check-in day ends the series with a separate final notice.")}
+    ${button("View Bookings", data.reviewUrl, { sameOrigin: true })}
+  `);
+}
+
+/**
+ * #2012 — terminal one-off admin notice: a booking created from an approved
+ * public booking request (#707) was still unpaid at the end of its check-in day
+ * with no saved card to charge, so it was automatically cancelled and its held
+ * capacity released. A DEDICATED registered template
+ * (`admin-booking-request-hold-cancelled`), not a variant of the recurring
+ * adminBookingRequestHoldExpiredTemplate, so an admin override of the noisy
+ * recurring alert cannot rewrite this terminal notice and muting the recurring
+ * one does not mute this. Symmetric twin of adminSplitSettlementCancelledTemplate,
+ * but this booking DID hold real beds, so the copy states the release explicitly.
+ */
+export function adminBookingRequestHoldCancelledTemplate(data: {
+  requesterName: string;
+  checkIn: Date;
+  checkOut: Date;
+  guestCount: number;
+  totalCents: number;
+  reviewUrl: string;
+}): string {
+  return layout(`
+    ${heading("Request Booking Auto-Cancelled — Unpaid Past Check-in")}
+    ${paragraph("A booking created from a public booking request was still unpaid at the end of its check-in day, with no saved card to charge. The provisional booking has now been automatically cancelled and the beds it was holding have been released back to availability. No payment was taken. The requester has been notified.")}
+    ${infoTable([
+      { label: "Requester", value: escapeHtml(data.requesterName) },
+      { label: "Check-in", value: formatNZDate(data.checkIn) },
+      { label: "Check-out", value: formatNZDate(data.checkOut) },
+      { label: "Guests", value: String(data.guestCount) },
+      { label: "Amount (unpaid)", value: formatCents(data.totalCents) },
+    ])}
+    ${paragraph("No further action is required. If the requester still intends to come and pay, ask them to submit a new booking request.")}
+    ${muted("This is a one-off notice — it ends the capped hold-extension alert series for this request booking.")}
     ${button("View Bookings", data.reviewUrl, { sameOrigin: true })}
   `);
 }
