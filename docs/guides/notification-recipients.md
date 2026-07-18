@@ -78,7 +78,7 @@ Each admin card has one checkbox per alert type:
 
 - Back to the [documentation hub](../README.md).
 - Hub: [Notifications & Email](notifications.md).
-- Siblings: [Delivery Rules](notification-rules.md),
+- Sibling guides: [Delivery Rules](notification-rules.md),
   [Email Messages](email-messages.md),
   [Email Deliverability](email-deliverability.md).
 - Reference: admin roles and the admin team in [Members](members.md).

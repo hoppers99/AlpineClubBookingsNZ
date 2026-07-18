@@ -67,7 +67,7 @@ the list but the selector is disabled.
 
 - Back to the [documentation hub](../README.md).
 - Hub: [Notifications & Email](notifications.md).
-- Siblings: [Recipients](notification-recipients.md),
+- Sibling guides: [Recipients](notification-recipients.md),
   [Email Messages](email-messages.md),
   [Email Deliverability](email-deliverability.md).
 - Reference: the template catalogue in

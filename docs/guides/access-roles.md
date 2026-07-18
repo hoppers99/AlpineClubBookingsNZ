@@ -60,7 +60,7 @@ area:
 | View | Read-only |
 | Edit | Full read/write |
 
-**Protected system roles** — Full Admin (`ADMIN`), Lodge (`LODGE`), Member
+**Protected system roles** — Full Admin (`ADMIN`), Lodge (`LODGE`), User
 (`USER`), and Organisation (`ORG`) — are code-defined, shown for reference, and
 can never be edited or deleted here.
 

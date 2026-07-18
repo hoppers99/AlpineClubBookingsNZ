@@ -68,7 +68,7 @@ The hub has no settings of its own. Each card links to a tool that does:
 ## Related links
 
 - Back to the [documentation hub](../README.md).
-- Cards: [Delivery Rules](notification-rules.md),
+- Sibling guides: [Delivery Rules](notification-rules.md),
   [Recipients](notification-recipients.md), [Email Messages](email-messages.md),
   [Booking Messages](booking-messages.md),
   [Cancellation Requests](membership-cancellations.md).

@@ -60,7 +60,11 @@ change these pages.
    note**, and **Door code**, then click **Save lodge details**. The lodge name
    and address appear on the public site (contact page and the `{{lodge-name}}`
    / `{{lodge-address}}` content tokens). The **door code is only shared in
-   confirmation emails**, never on the public site.
+   confirmation emails**, never on the public site. For a single-lodge club
+   these are the lodge name, travel note, and door code that automated emails
+   use — the same values the [Email Messages](email-messages.md) templates
+   reference; a multi-lodge club sets them per lodge under **Setup → Lodges**
+   ([Lodges](../multi-lodge/README.md)) instead.
 
 ## Settings reference
 

@@ -108,7 +108,8 @@ re-creatable.
   states what the screenshot shows, e.g. from a guide in `docs/guides/`:
   `![Admin dashboard showing the Needs Attention cards](../images/admin/admin-dashboard.png)`.
   Alt text is not decorative filler — a screen-reader user must learn what the
-  image conveys.
+  image conveys. The blessed form is `<Page> showing <what it conveys>`; do not
+  mass-rewrite existing alt text that already names the page and what it shows.
 - **Ordering (link check):** a screenshot must be captured and committed *before
   or in the same change as* the guide that references it — the CI link check
   (lychee, offline) fails on a guide that points at an image file that does not
@@ -143,9 +144,18 @@ The "What it is" section opens with the canonical location line:
 
 > Find it at **Admin → <nav path>** (`/admin/<route>`).
 
-Invert to route-first ONLY when the page genuinely has no direct sidebar
-entry — and then say explicitly how it is reached (hub card, parent page
-link). Do not copy a justified exception as the template.
+For a page that has **no direct sidebar entry** but is reached by a real click
+path through a hub, **hub-path-first is canonical**: give the full click path
+including the hub, then say how to open it —
+
+> Find it at **Admin → <full click path incl. hub>** (`/admin/<route>`). It has
+> no direct sidebar entry — open it from the **<X>** card.
+
+Route-first (leading with `/admin/<route>`) is reserved ONLY for pages with no
+click path at all — lodge-scoped pages that require picking a lodge first (e.g.
+lockers, seasons), where there is no clean `Admin → X` path. Even then, say
+explicitly how the page is reached. Do not copy a justified exception as the
+template.
 
 ## Linking rules
 
@@ -169,6 +179,9 @@ Other linking rules:
   `../NAME.md`.
 - Prefer linking a `[`code-named`](path)` reference over a bare code span when
   you name another doc, so the link checker can verify it.
+- In a guide's **Related links**, label the sibling list `Sibling guides:`. Add
+  a qualifier (e.g. `Sibling monitoring guides:`) only when a hub genuinely
+  groups several distinct sibling sets and the label needs to name which one.
 - Run `npm run docs:linkcheck` before pushing; CI runs the same class of check
   (`.github/workflows/docs-link-check.yml`, lychee in offline mode).
 

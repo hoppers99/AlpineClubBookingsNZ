@@ -38,8 +38,10 @@ permission area; a view-only support role can read but not save.
    **Support email**, **Contact email**, or **Public URL**, then click
    **Save Email Settings**. These feed the `{{CLUB_NAME}}`, `{{SUPPORT_EMAIL}}`,
    `{{BASE_URL}}` and related tokens in every template. (Lodge name, travel note,
-   and door code are no longer set here — they come from each lodge's own
-   settings under [Lodges](../multi-lodge/README.md).)
+   and door code are no longer set here — a single-lodge club edits them on
+   **Club Identity** under [Site Appearance & Content](appearance.md); a
+   multi-lodge club sets them per lodge under **Setup → Lodges** (see
+   [Lodges](../multi-lodge/README.md)).)
 
 ### Edit a template's wording
 
@@ -91,7 +93,7 @@ Per-template editor:
 
 - Back to the [documentation hub](../README.md).
 - Hub: [Notifications & Email](notifications.md).
-- Siblings: [Delivery Rules](notification-rules.md),
+- Sibling guides: [Delivery Rules](notification-rules.md),
   [Recipients](notification-recipients.md),
   [Booking Messages](booking-messages.md) (member-facing booking copy),
   [Email Deliverability](email-deliverability.md).

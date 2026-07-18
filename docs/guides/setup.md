@@ -29,6 +29,10 @@ install and the map to everything else in Setup & Configuration.
 
 ### Work the checklist and jump to a sub-area
 
+Each hub card opens an aggregator surface that regroups settings owned and
+documented in their own areas' guides, so this hub's single screenshot is
+enough — every sub-page is captured and detailed where it lives.
+
 1. Go to **Admin → Setup & Configuration → Setup**. The readiness summary shows
    how many checks are complete, warning, or blocked.
 

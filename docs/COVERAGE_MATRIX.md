@@ -191,9 +191,11 @@ feature-gated surfaces; the guides document the reality:
   [Site Appearance & Content](guides/appearance.md) hub (`/admin/appearance`) and
   the [Notifications & Email](guides/notifications.md) hub (`/admin/notifications`)
   are the only two with a direct sidebar entry. Their spoke pages have **no
-  sidebar entry** and are reached from a hub card, so those guides open with the
-  hub nav path (`Admin → Site Appearance & Content → …` / `Admin → Notifications
-  & Email → …`), not route-first: `site-style`, `site-content`, `page-content`,
+  sidebar entry** and are reached from a hub card, so those guides open
+  **hub-path-first** — the canonical convention: the full click path through the
+  hub (`Admin → Setup & Configuration → Site Appearance & Content → …` /
+  `Admin → Setup & Configuration → Notifications & Email → …`): `site-style`,
+  `site-content`, `page-content`,
   `site-banners`, `mountain-conditions`, `image-manager` (content hub) and
   `notification-rules`, `notification-recipients`, `email-messages`
   (notifications hub). The notifications hub also cards to `booking-messages`
