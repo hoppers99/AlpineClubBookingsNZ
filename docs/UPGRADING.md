@@ -84,6 +84,91 @@ as a red flag and check the release notes before deploying.
 
 ---
 
+## v0.11.0 → v0.12.0
+
+`v0.12.0` is a large minor release with 25 migrations (24 expand/additive, one
+contract). It adds the flagged-off Lobby Display module, exclusive whole-lodge
+holds, un-flagged core multi-lodge operation, database-first club identity and
+configuration with boot-time self-heal, authoritative fee schedules with
+subscription and joining-fee billing, and rule-based Xero member grouping,
+alongside broad booking-settlement and Xero/finance hardening. Read the full
+release inventory in `docs/releases/v0.12.0.md` and the `0.12.0` changelog
+section before starting.
+
+### Before deployment
+
+1. **Take and restore-test a fresh backup.** Neither Configuration Export nor
+   the new `CONFIG_BUNDLE_IMPORT_PATH` boot auto-import is a database backup;
+   both intentionally exclude members and transactional data.
+2. **Schedule a quiet, low-write window.** Most of the 25 migrations are
+   catalog-only, but several build indexes over `Booking` and
+   `MemberSubscription` (fast, over all-NULL new columns), and the fee,
+   joining-fee, and Xero-grouping migrations run one-time backfills over small
+   configuration tables.
+3. **Plan the contract-migration window.**
+   `20260714140000_drop_committee_member` drops the legacy standalone
+   committee directory table. Its expand predecessor,
+   `20260629130000_add_committee_roles_assignments`, shipped in `v0.11.0`
+   (deployed 2026-07-13) and backfilled the member-linked roles/assignments
+   while the table still existed, so confirm `v0.11.0` is fully deployed and
+   the drop loses no data. The old colour's admin committee CRUD routes error
+   with relation-does-not-exist between migrate and cutover (public committee
+   and contact surfaces are unaffected). Idle or drain old-colour admin
+   traffic, cut over promptly, and use
+   `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1` only with a non-empty
+   `BLUE_GREEN_MIGRATION_OVERRIDE_REASON` acknowledging this reviewed window.
+4. **Review the new fee and billing configuration surfaces.** Season rates
+   keyed by membership type, joining fees, annual-fee components,
+   subscription-billing settings, and family billing modes are backfilled
+   from the club's existing configuration, and the legacy tables are retained
+   so both colours price identically during cutover. Read
+   `docs/AUTHORITATIVE_FEES.md`, and where possible confirm on a staging
+   restore that the backfilled schedules reproduce the club's current
+   amounts before deploying.
+5. **Know the Xero member-grouping cutover plan.** The
+   `xero_member_grouping` migration converges grouping configuration locally
+   and performs **zero** Xero calls; no member is re-grouped until an admin
+   runs the dry-run and bulk re-sync in
+   `docs/XERO_MEMBER_GROUPING_RUNBOOK.md`. Avoid saving membership-type
+   grouping rules on the draining old colour during the window, and re-run
+   the runbook pre-checks after cutover.
+
+### Post-upgrade actions
+
+1. Verify database-first identity and configuration: open the admin club
+   identity, lodge, capacity, age-tier, and email settings surfaces and
+   confirm the expected values. These now resolve from the database with
+   config-file fallback; the boot-time config self-heal backfills any missing
+   database values from the effective configuration and never overwrites an
+   admin edit.
+2. Confirm fee schedules render correctly: admin fee configuration (season
+   rates by membership type, joining fees, annual fees and their components,
+   subscription billing) and the public join/fees pages must show the same
+   amounts the club charged before the upgrade. The public `{{annual-fees}}`
+   embed stays hidden until its visibility gate is enabled.
+3. Review **Admin > Modules**: the Lobby Display module defaults off —
+   enable it only deliberately, following `docs/lobby-display/operating.md`,
+   and confirm guest phone numbers stay hidden unless both the member and
+   the lodge opt in. Multi-lodge is no longer a module and needs no flag.
+4. If the club uses school/group requests, smoke-check exclusive holds: a
+   request can flag exclusivity, and an admin whole-lodge hold blocks all
+   other bookings for its nights until released.
+5. Before enabling any Xero member-grouping bulk re-sync, verify only the
+   migration's backfilled tier rules are active (runbook pre-check) and run
+   a fresh dry-run; the re-sync refuses a stale dry-run.
+6. Spot-check a view-only admin access role: it can read admin surfaces but
+   every action button, editor, and mutating route refuses writes.
+7. Confirm `CONFIG_BUNDLE_IMPORT_PATH` is unset on the production deployment
+   unless deliberately used for disaster recovery or cloning; when set, it
+   imports only at boot and only into a database empty of non-seed
+   configuration.
+
+No one-off data backfill command is required after a successful migration.
+The release's fee, grouping, and content backfills are migration-driven and
+idempotent, and the configuration self-heal runs automatically at boot.
+
+---
+
 ## v0.10.1 → v0.11.0
 
 `v0.11.0` is a large minor release with 30 migrations and first-class
