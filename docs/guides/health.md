@@ -7,7 +7,8 @@ Audience: Operator
 A live status board for the running application: an overall health verdict,
 per-service checks (database, config, Stripe, Xero, SMTP, payment recovery),
 system info (version, Node, memory, uptime, Sentry), and a 24-hour webhook
-summary. Find it at **Admin → System Health** (`/admin/health`).
+summary. Find it at **Admin → Monitoring & Support → System Health**
+(`/admin/health`).
 
 The page is read-only and refreshes on demand. It is the top of the monitoring
 trio — from here you can jump to [Email Deliverability](email-deliverability.md)
