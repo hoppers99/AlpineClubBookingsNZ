@@ -243,7 +243,7 @@ describe("AdminMembershipTypesPage", () => {
     expect(screen.queryByText("Unsaved changes")).toBeNull();
   });
 
-  it("persists saved editor state before Cancel closes the dialog", async () => {
+  it("closes the editor on a successful save and persists the saved state", async () => {
     await renderPage();
 
     fireEvent.click(screen.getAllByRole("button", { name: "Edit" })[0]);
@@ -264,9 +264,14 @@ describe("AdminMembershipTypesPage", () => {
 
     expect(screen.getByText("Membership type saved.")).not.toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    fireEvent.click(screen.getAllByRole("button", { name: "Edit" })[0]);
+    // #2045: a successful edit save closes the dialog automatically — the admin
+    // never needs Cancel to leave a saved state.
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Edit Full" })).toBeNull(),
+    );
 
+    // Reopening shows the persisted saved value and is not dirty.
+    fireEvent.click(screen.getAllByRole("button", { name: "Edit" })[0]);
     expect(screen.getByLabelText("Description")).toHaveProperty(
       "value",
       "Updated description",
@@ -274,6 +279,42 @@ describe("AdminMembershipTypesPage", () => {
     expect(
       screen.getByRole("button", { name: "Save changes" }).hasAttribute("disabled"),
     ).toBe(true);
+  });
+
+  it("routes the header close (X) through the discard guard when dirty", async () => {
+    await renderPage();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Edit" })[0]);
+    fireEvent.change(screen.getByLabelText("Description"), {
+      target: { value: "Updated description" },
+    });
+
+    // Clicking the header X with unsaved changes must not silently drop them —
+    // it triggers the existing discard-confirm (#2045).
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.getByText("Discard unsaved changes?")).not.toBeNull();
+    expect(screen.getByLabelText("Description")).toHaveProperty(
+      "value",
+      "Updated description",
+    );
+
+    // Keep editing leaves the dialog open with the draft intact.
+    fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
+    expect(screen.queryByText("Discard unsaved changes?")).toBeNull();
+    expect(screen.getByRole("dialog", { name: "Edit Full" })).not.toBeNull();
+
+    // Confirming the discard via the X closes the dialog and drops the change.
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Edit Full" })).toBeNull(),
+    );
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Edit" })[0]);
+    expect(screen.getByLabelText("Description")).toHaveProperty(
+      "value",
+      "Default full club membership.",
+    );
   });
 
   it(
