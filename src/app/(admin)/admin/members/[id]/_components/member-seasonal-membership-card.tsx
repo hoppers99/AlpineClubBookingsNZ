@@ -4,6 +4,11 @@ import { useEffect, useMemo, useState } from "react";
 import { Eye, Loader2, RefreshCw, Save } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  AdminViewOnlyNotice,
+  ViewOnlyActionButton,
+} from "@/components/admin/view-only-action";
+import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -168,6 +173,10 @@ export function MemberSeasonalMembershipCard({
   onSaved,
   className,
 }: MemberSeasonalMembershipCardProps) {
+  // Saving a change writes /api/admin/members/[id]/seasonal-membership
+  // (membership area); a view-only membership admin may still preview but
+  // cannot commit the change (#1997).
+  const canEdit = useAdminAreaEditAccess("membership");
   const [membershipTypes, setMembershipTypes] = useState<
     MembershipTypeSummary[]
   >([]);
@@ -362,6 +371,12 @@ export function MemberSeasonalMembershipCard({
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
+        {!canEdit ? (
+          <AdminViewOnlyNotice>
+            Your admin role can view the seasonal membership type but cannot
+            preview or change it.
+          </AdminViewOnlyNotice>
+        ) : null}
         {(error || message) && (
           <div
             className={
@@ -424,7 +439,8 @@ export function MemberSeasonalMembershipCard({
             />
           </div>
 
-          <Button
+          <ViewOnlyActionButton
+            canEdit={canEdit}
             type="button"
             variant="outline"
             onClick={() => void previewChange()}
@@ -436,7 +452,7 @@ export function MemberSeasonalMembershipCard({
               <Eye className="mr-2 h-4 w-4" />
             )}
             Preview
-          </Button>
+          </ViewOnlyActionButton>
         </div>
 
         <div className="grid gap-3 md:grid-cols-2">
@@ -574,7 +590,8 @@ export function MemberSeasonalMembershipCard({
               />
             </div>
 
-            <Button
+            <ViewOnlyActionButton
+              canEdit={canEdit}
               type="button"
               onClick={() => void saveChange()}
               disabled={saving || !reason.trim()}
@@ -585,7 +602,7 @@ export function MemberSeasonalMembershipCard({
                 <Save className="mr-2 h-4 w-4" />
               )}
               Save Membership Type
-            </Button>
+            </ViewOnlyActionButton>
           </div>
         )}
       </CardContent>

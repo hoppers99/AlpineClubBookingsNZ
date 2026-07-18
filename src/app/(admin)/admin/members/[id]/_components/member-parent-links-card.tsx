@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { ViewOnlyActionButton } from "@/components/admin/view-only-action"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Link2, Trash2 } from "lucide-react"
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path"
@@ -16,6 +17,8 @@ interface MemberParentLinksCardProps {
   unlinkingDependentId: string | null
   onOpenParentLinkDialog: () => void
   onUnlinkParent: (parentId: string, dependentId: string, dependentName: string) => void
+  /** Whether the actor may act (membership edit, #1997). */
+  canEdit?: boolean
   className?: string
 }
 
@@ -26,6 +29,7 @@ export function MemberParentLinksCard({
   unlinkingDependentId,
   onOpenParentLinkDialog,
   onUnlinkParent,
+  canEdit = true,
   className,
 }: MemberParentLinksCardProps) {
   const router = useRouter()
@@ -40,7 +44,8 @@ export function MemberParentLinksCard({
             Archived
           </Badge>
         ) : parentLinkCount < 2 ? (
-          <Button
+          <ViewOnlyActionButton
+            canEdit={canEdit}
             variant="outline"
             size="sm"
             onClick={onOpenParentLinkDialog}
@@ -53,7 +58,7 @@ export function MemberParentLinksCard({
           >
             <Link2 className="h-4 w-4 mr-1" />
             {parentLinkCount === 0 ? "Add Parent" : "Add Second Parent"}
-          </Button>
+          </ViewOnlyActionButton>
         ) : (
           <Badge variant="secondary" className="border-border bg-muted text-foreground">
             Two parents linked
@@ -111,7 +116,8 @@ export function MemberParentLinksCard({
                   >
                     View Parent
                   </Button>
-                  <Button
+                  <ViewOnlyActionButton
+                    canEdit={canEdit}
                     variant="outline"
                     size="sm"
                     onClick={() =>
@@ -121,7 +127,7 @@ export function MemberParentLinksCard({
                   >
                     <Trash2 className="h-4 w-4 mr-1" />
                     {unlinkingDependentId === member.id ? "Removing..." : "Remove"}
-                  </Button>
+                  </ViewOnlyActionButton>
                 </div>
               </div>
             ))}
