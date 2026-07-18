@@ -300,6 +300,7 @@ interface MembershipTypeEditorDialogProps {
   availableAgeTiers: AgeTier[];
   saving: boolean;
   canEdit: boolean;
+  error: string;
   onDraftChange: (patch: Partial<DraftMembershipType>) => void;
   onSave: () => void;
   onCancel: () => void;
@@ -313,6 +314,7 @@ function MembershipTypeEditorDialog({
   availableAgeTiers,
   saving,
   canEdit,
+  error,
   onDraftChange,
   onSave,
   onCancel,
@@ -331,6 +333,12 @@ function MembershipTypeEditorDialog({
       : `Edit ${membershipType?.name ?? "membership type"}`;
 
   async function requestDismiss() {
+    // While a save is in flight the editor auto-closes on success; treat
+    // dismissal as inert so the X/Escape cannot open a discard-confirm that the
+    // save's own close would then orphan (#2045 F2).
+    if (saving) {
+      return;
+    }
     if (!dirty) {
       onCancel();
       return;
@@ -361,15 +369,21 @@ function MembershipTypeEditorDialog({
       <Dialog
         open={isOpen}
         onOpenChange={(open) => {
-          if (!open) {
+          if (!open && !saving) {
             void requestDismiss();
           }
         }}
       >
         <DialogContent
           className="max-h-[92vh] overflow-y-auto sm:max-w-5xl"
-          showCloseButton={false}
+          showCloseButton={!saving}
           onEscapeKeyDown={(event) => {
+            // A save in flight makes Escape inert (mirrors the merge dialog's
+            // guard) so it cannot race the auto-close (#2045 F2).
+            if (saving) {
+              event.preventDefault();
+              return;
+            }
             if (dirty) {
               event.preventDefault();
               void requestDismiss();
@@ -393,6 +407,15 @@ function MembershipTypeEditorDialog({
               seasonal membership type.
             </DialogDescription>
           </DialogHeader>
+
+        {error && (
+          <div
+            role="alert"
+            className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800"
+          >
+            {error}
+          </div>
+        )}
 
         {validationError && dirty && (
           <div
@@ -665,6 +688,7 @@ interface MembershipTypeMergeDialogProps {
   membershipTypes: MembershipType[];
   targetId: string;
   merging: boolean;
+  error: string;
   canEdit: boolean;
   onTargetChange: (targetId: string) => void;
   onCancel: () => void;
@@ -676,6 +700,7 @@ function MembershipTypeMergeDialog({
   membershipTypes,
   targetId,
   merging,
+  error,
   canEdit,
   onTargetChange,
   onCancel,
@@ -699,7 +724,7 @@ function MembershipTypeMergeDialog({
         if (!open && !merging) onCancel();
       }}
     >
-      <DialogContent className="max-w-lg" showCloseButton={false}>
+      <DialogContent className="max-w-lg" showCloseButton={!merging}>
         <DialogHeader>
           <DialogTitle>Delete {source?.name ?? "membership type"}</DialogTitle>
           <DialogDescription>
@@ -709,6 +734,15 @@ function MembershipTypeMergeDialog({
             this one. This cannot be undone.
           </DialogDescription>
         </DialogHeader>
+
+        {error && (
+          <div
+            role="alert"
+            className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800"
+          >
+            {error}
+          </div>
+        )}
 
         <div className="space-y-4">
           <div className="space-y-2">
@@ -1161,9 +1195,9 @@ export default function AdminMembershipTypesPage() {
   async function saveMembershipType(
     type: MembershipType,
     overrideDraft?: DraftMembershipType,
-  ) {
+  ): Promise<boolean> {
     const draft = overrideDraft ?? drafts[type.id];
-    if (!draft) return;
+    if (!draft) return false;
 
     setSavingId(type.id);
     setError("");
@@ -1186,7 +1220,7 @@ export default function AdminMembershipTypesPage() {
       if (!response.ok || !("membershipType" in body)) {
         if (response.status === 403) {
           setError(ADMIN_FORBIDDEN_SAVE_REASON);
-          return;
+          return false;
         }
         throw new Error(
           responseErrorMessage(body, "Failed to save membership type"),
@@ -1199,12 +1233,14 @@ export default function AdminMembershipTypesPage() {
       );
       setDrafts((current) => replaceOrAppendDraft(current, body.membershipType));
       setSavedMessage("Membership type saved.");
+      return true;
     } catch (saveError) {
       setError(
         saveError instanceof Error
           ? saveError.message
           : "Failed to save membership type",
       );
+      return false;
     } finally {
       setSavingId(null);
     }
@@ -1727,12 +1763,21 @@ export default function AdminMembershipTypesPage() {
         availableAgeTiers={availableAgeTiers}
         saving={editorSaving}
         canEdit={canEdit}
+        error={editorTarget ? error : ""}
         onDraftChange={updateEditorDraft}
         onSave={() => {
           if (editorTarget?.mode === "new") {
             void createMembershipType();
           } else if (editingType) {
-            void saveMembershipType(editingType);
+            // Close the editor once an edit save succeeds so admins never need
+            // Cancel to leave a saved state (#2045). saveMembershipType has
+            // already synced the draft to the saved values, so clearing the
+            // target (rather than cancelEditor) closes without discarding them.
+            // Archive/Reactivate routes through onSetActive/setActive and keeps
+            // the dialog open, so it is unaffected by this success path.
+            void saveMembershipType(editingType).then((saved) => {
+              if (saved) setEditorTarget(null);
+            });
           }
         }}
         onCancel={cancelEditor}
@@ -1746,6 +1791,7 @@ export default function AdminMembershipTypesPage() {
         membershipTypes={sortedTypes}
         targetId={mergeTargetId}
         merging={merging}
+        error={mergeSource ? error : ""}
         canEdit={canEdit}
         onTargetChange={setMergeTargetId}
         onCancel={() => {
