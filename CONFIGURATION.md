@@ -17,16 +17,37 @@ example and edit it:
 cp config/club.example.json config/club.json
 ```
 
-You can also run:
+Copying the example is optional. Under the DB-first model the club's live
+configuration lives in the **database**, and `config/club.json` is only an
+optional seed/fallback (see "DB-first identity" below). The primary way to
+configure a club is the admin UI at `/admin/setup` and its linked editors
+(identity, lodges/capacity, seasons/rates, email, Stripe, Xero).
+
+You can also run the setup wizard once the database is migrated and seeded:
 
 ```bash
 npm run setup:wizard
 ```
 
-The wizard writes `config/club.json` only. It does not write `.env` files and
-does not store API keys, OAuth secrets, SMTP secrets, or bearer tokens.
+The wizard now **writes the club's configuration to the database**, not to a
+file — it upserts the same settings rows the admin editors write:
 
-`config/club.json` is validated by `src/config/schema.ts`.
+- club name / short name → `ClubIdentitySettings`
+- club/booking name, email from-name, support and contact email, public URL →
+  `EmailMessageSetting`
+- total bunk/bed capacity → `LodgeSettings.capacity`
+- age-tier labels, ages, and subscription rules → `AgeTierSetting` (the four
+  fixed slots INFANT/CHILD/YOUTH/ADULT; per-tier nightly **rates** are set at
+  `/admin/seasons`, not by the wizard)
+
+It writes no `config/club.json`, no `.env` file, and stores no API keys, OAuth
+secrets, SMTP secrets, or bearer tokens. If the database is not yet reachable
+(pre-migration), the wizard writes nothing and instead points you at
+`/admin/setup` to complete configuration after the deploy. Re-running the wizard
+against an already-configured database prompts for confirmation before it
+overwrites existing values (it is an interactive operator tool).
+
+`config/club.json`, when present, is validated by `src/config/schema.ts`.
 
 ### Boot-safe config loading
 
@@ -756,10 +777,17 @@ Run this before bootstrapping a new install:
 npm run setup:check
 ```
 
-The check validates `config/club.json`, environment variable presence/format,
-module capability flags, and first-install readiness. Database-backed checks,
-including Admin Modules activation, are reported inside the admin setup wizard
-after migrations and seed data run.
+The check validates environment variable presence/format, module capability
+flags, and first-install readiness. It reads club configuration **DB-first**: it
+attempts a database snapshot and reports the club-config, age-tier, admin,
+booking, and integration steps from real database state. When the database is
+reachable, an absent `config/club.json` is normal — the club-config step is
+satisfied by the persisted identity (`ClubIdentitySettings` /
+`EmailMessageSetting`), not by a file. A **malformed** primary `config/club.json`
+still surfaces loudly as **blocked**. When the database is not reachable
+(pre-migration), the DB-backed steps are reported as "not checked" and the
+club-config step is a warning that points at `/admin/setup` rather than a hard
+block.
 
 After signing in as an administrator, open `/admin/setup` to review:
 
