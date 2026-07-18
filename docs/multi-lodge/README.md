@@ -1,5 +1,7 @@
 # Multi-Lodge Support
 
+> Part of the [documentation hub](../README.md).
+
 This directory tracks the design and delivery of multi-lodge support for
 AlpineClubBookingsNZ: the ability for the club to operate more than one
 physical lodge property (rooms, beds, capacity, pricing, chores, lockers)
