@@ -74,4 +74,19 @@ describe("DisplayBuilder — keyboard operability + fallbacks", () => {
     // The behaviour picker (static/conditional/rotator) is present + operable.
     expect(within(dialog).getByLabelText(/Behaviour/i)).toBeInTheDocument();
   });
+
+  // §U4: zone keys are positional (re-derived on every reorder), so after a move
+  // the focused arrow must follow the MOVED zone to its new position, not stay on
+  // the DOM slot (which now holds a different zone).
+  it("keeps focus on the moved zone's control after a keyboard reorder", () => {
+    renderBuilder("columns");
+    const downFirst = screen.getByRole("button", { name: /Move zone-1 later/i });
+    downFirst.focus();
+    fireEvent.click(downFirst);
+    // The zone that was first is now second; focus followed it to the second
+    // position's "later" control (labelled by its re-derived key, zone-2).
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: /Move zone-2 later/i })
+    );
+  });
 });

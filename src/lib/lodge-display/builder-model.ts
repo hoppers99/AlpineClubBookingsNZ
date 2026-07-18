@@ -135,6 +135,28 @@ export function defaultChildKey(index: number): string {
   return `slot-${index + 1}`;
 }
 
+/** The board-key slug pattern (mirrors the layouts route `keyField` regex): a
+ * lower-case slug of letters, digits and hyphens, not leading with a hyphen. The
+ * builder validates the key against this client-side so an invalid key is caught
+ * inline rather than round-tripping to a bare server "Invalid request" (§U2/U3). */
+export const BUILDER_KEY_REGEX = /^[a-z0-9][a-z0-9-]*$/;
+
+/** True when `key` is a valid board slug the save routes accept. */
+export function isValidBuilderKey(key: string): boolean {
+  return BUILDER_KEY_REGEX.test(key);
+}
+
+/** Derive a board-key slug from a free-text name: lower-case, runs of any
+ * non-alphanumeric character collapse to a single hyphen, and leading/trailing
+ * hyphens are trimmed. May return "" for an all-symbol name — the UI keeps the
+ * field editable and blocks Save until it holds a valid slug. */
+export function slugifyKey(input: string): string {
+  return input
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
 // ---------------------------------------------------------------------------
 // Generation (model → stored shapes) — pure, deterministic, byte-stable
 // ---------------------------------------------------------------------------

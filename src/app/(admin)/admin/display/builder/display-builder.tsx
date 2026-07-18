@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   DndContext,
   DragOverlay,
@@ -39,6 +39,8 @@ import {
   builderLayout,
   builderSlotContent,
   BUILDER_SKELETONS,
+  isValidBuilderKey,
+  slugifyKey,
   type BuilderContent,
   type BuilderModel,
   type BuilderSkeleton,
@@ -87,6 +89,18 @@ interface ValidationIssue {
   message: string;
 }
 
+// The save routes reject a malformed request body (chiefly an invalid key slug)
+// with a bare `{ error: "Invalid request" }`. Client-side validation blocks that
+// before Save, but if it ever reaches the server this maps the opaque string to a
+// message pointing at the field, so the author never sees bare "Invalid request"
+// (§U2/U3). Any other server error is passed through unchanged.
+function friendlySaveError(raw: string | undefined | null): string | null {
+  if (raw === "Invalid request") {
+    return "Check the board key — use lower-case letters, numbers and hyphens only (e.g. foyer-board).";
+  }
+  return raw ?? null;
+}
+
 type PaletteItem =
   | { kind: "module"; module: DisplayModuleName; label: string; description: string }
   | { kind: "html"; label: string; description: string };
@@ -111,6 +125,10 @@ interface DisplayBuilderProps {
 export default function DisplayBuilder(props: DisplayBuilderProps) {
   const [model, setModel] = useState<BuilderModel>(props.initialModel);
   const [key, setKey] = useState(props.initialKey);
+  // The key auto-derives from the name until the author edits it by hand. An
+  // initial key (editing an existing pair, or a duplicated board) counts as
+  // already-set so a name edit never silently clobbers it (§U2/U3).
+  const [keyTouched, setKeyTouched] = useState(props.initialKey !== "");
   const [name, setName] = useState(props.initialName);
   const [footerHtml, setFooterHtml] = useState(props.initialFooterHtml);
   const [cssOverrides, setCssOverrides] = useState(props.initialCssOverrides);
@@ -126,6 +144,24 @@ export default function DisplayBuilder(props: DisplayBuilderProps) {
   const [previewing, setPreviewing] = useState(false);
 
   const canEdit = props.canEdit && !props.isBuiltIn;
+
+  // The key is authored only on create (an existing pair locks it — bindings key
+  // off it). `keyValid` gates Save so an invalid slug is caught inline rather than
+  // bouncing off the server as a bare "Invalid request" (§U2/U3).
+  const creating = props.layoutId === null;
+  const keyValid = isValidBuilderKey(key.trim());
+
+  // Keyboard reorder focus (§U4): zone keys are positional (re-derived on every
+  // reorder), so after a move React reuses the DOM node at each index and the
+  // focused button would end up on the WRONG logical zone. We refocus the move
+  // control at the moved zone's NEW index so focus follows the item, not the slot.
+  const moveRefs = useRef<Map<string, HTMLButtonElement | null>>(new Map());
+  const [pendingMoveFocus, setPendingMoveFocus] = useState<string | null>(null);
+  useEffect(() => {
+    if (pendingMoveFocus === null) return;
+    moveRefs.current.get(pendingMoveFocus)?.focus();
+    setPendingMoveFocus(null);
+  }, [model, pendingMoveFocus]);
 
   const modules = useMemo(() => listPaletteDisplayModules(), []);
   const conditions = useMemo(() => listDisplayConditions(), []);
@@ -162,8 +198,14 @@ export default function DisplayBuilder(props: DisplayBuilderProps) {
     (item: PaletteItem, zoneIndex: number) => {
       const zone = model.zones[zoneIndex];
       if (!zone || zone.kind === "rotator") {
-        // A rotator holds child slots — open its drawer to fill children instead.
+        // A rotator holds child slots — it is not filled directly. Open its drawer
+        // and say so, rather than implying the module was placed (§U6).
         setOpenZone(zoneIndex);
+        if (zone) {
+          setMessage(
+            `${zone.key} rotates between slots — add ${item.label} as a slot in its settings.`
+          );
+        }
         return;
       }
       setModel((current) =>
@@ -209,9 +251,14 @@ export default function DisplayBuilder(props: DisplayBuilderProps) {
     },
     onDragEnd({ over }) {
       const zoneIndex = (over?.data.current as { zoneIndex?: number } | undefined)?.zoneIndex;
-      return typeof zoneIndex === "number"
-        ? `Dropped into zone ${model.zones[zoneIndex]?.key ?? zoneIndex + 1}.`
-        : "Cancelled.";
+      if (typeof zoneIndex !== "number") return "Cancelled.";
+      const zone = model.zones[zoneIndex];
+      const label = zone?.key ?? zoneIndex + 1;
+      // A rotator is not filled directly — the drop opens its slot settings, so the
+      // announcement must say that, not "Dropped into zone …" (§U6).
+      return zone?.kind === "rotator"
+        ? `Opened slot settings for rotator zone ${label} — add it as a slot there.`
+        : `Dropped into zone ${label}.`;
     },
     onDragCancel() {
       return "Placement cancelled.";
@@ -254,7 +301,7 @@ export default function DisplayBuilder(props: DisplayBuilderProps) {
       if (!layoutRes.ok) {
         setErrors(layoutJson?.errors ?? []);
         setWarnings(layoutJson?.warnings ?? []);
-        setMessage(layoutJson?.error ?? (layoutJson?.errors ? null : "Could not save the layout."));
+        setMessage(friendlySaveError(layoutJson?.error) ?? (layoutJson?.errors ? null : "Could not save the layout."));
         setSaving(false);
         return;
       }
@@ -290,7 +337,7 @@ export default function DisplayBuilder(props: DisplayBuilderProps) {
       if (!templateRes.ok) {
         setErrors(templateJson?.errors ?? []);
         setWarnings((prev) => [...(layoutJson?.warnings ?? []), ...(templateJson?.warnings ?? []), ...prev]);
-        setMessage(templateJson?.error ?? (templateJson?.errors ? null : "Could not save the template."));
+        setMessage(friendlySaveError(templateJson?.error) ?? (templateJson?.errors ? null : "Could not save the template."));
         setSaving(false);
         return;
       }
@@ -380,20 +427,6 @@ export default function DisplayBuilder(props: DisplayBuilderProps) {
         )}
 
         <div className="flex flex-wrap gap-4">
-          <div className="space-y-1">
-            <Label htmlFor="builder-key">Key</Label>
-            <Input
-              id="builder-key"
-              className="w-56 font-mono"
-              placeholder="foyer-board"
-              value={key}
-              disabled={props.layoutId !== null || !canEdit}
-              onChange={(e) => setKey(e.target.value)}
-            />
-            <p className="text-muted-foreground text-xs">
-              {props.layoutId ? "Locked after creation." : "Lower-case slug. Fixed after creation."}
-            </p>
-          </div>
           <div className="min-w-64 flex-1 space-y-1">
             <Label htmlFor="builder-name">Name</Label>
             <Input
@@ -401,8 +434,40 @@ export default function DisplayBuilder(props: DisplayBuilderProps) {
               placeholder="Foyer board"
               value={name}
               disabled={!canEdit}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(e) => {
+                const next = e.target.value;
+                setName(next);
+                // Auto-fill the slug from the name while creating and the author
+                // has not hand-edited the key (§U2/U3).
+                if (creating && !keyTouched) setKey(slugifyKey(next));
+              }}
             />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="builder-key">Board key (slug)</Label>
+            <Input
+              id="builder-key"
+              className="w-56 font-mono"
+              placeholder="foyer-board"
+              value={key}
+              disabled={!creating || !canEdit}
+              aria-invalid={creating && key.trim() !== "" && !keyValid}
+              aria-describedby="builder-key-hint"
+              onChange={(e) => {
+                setKeyTouched(true);
+                setKey(e.target.value);
+              }}
+            />
+            <p id="builder-key-hint" className="text-muted-foreground text-xs">
+              {creating
+                ? "Auto-filled from the name. Lower-case letters, numbers and hyphens only; fixed after creation."
+                : "Locked after creation."}
+            </p>
+            {creating && key.trim() !== "" && !keyValid && (
+              <p className="text-destructive text-xs" role="alert">
+                Use lower-case letters, numbers and hyphens only (e.g. foyer-board).
+              </p>
+            )}
           </div>
         </div>
 
@@ -431,11 +496,11 @@ export default function DisplayBuilder(props: DisplayBuilderProps) {
           {/* Canvas */}
           <Card>
             <CardHeader>
-              <CardTitle>Canvas (16:9)</CardTitle>
+              <CardTitle>Canvas — board body (16:9 screen minus header/footer)</CardTitle>
             </CardHeader>
             <CardContent>
               <div
-                className="aspect-video w-full rounded-md border bg-muted/30 p-3"
+                className="aspect-video w-full rounded-md border bg-muted p-3"
                 data-testid="builder-canvas"
               >
                 <ZoneGrid
@@ -443,11 +508,21 @@ export default function DisplayBuilder(props: DisplayBuilderProps) {
                   canEdit={canEdit}
                   onOpen={(i) => setOpenZone(i)}
                   onRemove={(i) => setModel((c) => removeZone(c, i))}
-                  onMove={(from, to) => setModel((c) => moveZone(c, from, to))}
+                  onMove={(from, to) => {
+                    setModel((c) => moveZone(c, from, to));
+                    // Focus follows the moved zone to its new position (§U4). Mirror
+                    // moveZone's clamping so we target the control that actually moved.
+                    const lower = model.skeleton === "side-rail" ? 1 : 0;
+                    const dest = Math.max(lower, Math.min(model.zones.length - 1, to));
+                    if (dest !== from) {
+                      setPendingMoveFocus(`${dest}-${to > from ? "down" : "up"}`);
+                    }
+                  }}
                   onAddModule={(i, module) => setModel((c) => setZoneModule(c, i, module))}
                   onAddHtml={(i) => setModel((c) => setZoneContent(c, i, { type: "html", html: "" }))}
                   modules={modules}
                   zoneRefs={zoneRefs}
+                  moveRefs={moveRefs}
                 />
               </div>
               {canEdit && canAddZone(model) && (
@@ -534,7 +609,10 @@ export default function DisplayBuilder(props: DisplayBuilderProps) {
 
         {/* Preview + Save */}
         <div className="flex flex-wrap items-center gap-3">
-          <Button onClick={() => void save()} disabled={!canEdit || saving || !name.trim() || !key.trim()}>
+          <Button
+            onClick={() => void save()}
+            disabled={!canEdit || saving || !name.trim() || !key.trim() || !keyValid}
+          >
             {saving ? "Saving…" : props.templateId ? "Save changes" : "Create board"}
           </Button>
           {props.lodges.length > 1 && (
@@ -555,6 +633,18 @@ export default function DisplayBuilder(props: DisplayBuilderProps) {
             {previewing ? "Starting…" : "Live preview"}
           </Button>
         </div>
+
+        {/* Tell the author what still blocks Save, consistent with the key
+            validation messaging (§U8). */}
+        {canEdit && !saving && (!name.trim() || !key.trim() || !keyValid) && (
+          <p className="text-muted-foreground text-xs" role="status">
+            {!name.trim()
+              ? "Enter a name to save."
+              : !key.trim()
+                ? "Enter a board key to save."
+                : "Fix the board key to save — lower-case letters, numbers and hyphens only."}
+          </p>
+        )}
 
         {previewSrc && (
           <div className="w-full overflow-hidden rounded-md border bg-black">
@@ -634,6 +724,9 @@ interface ZoneGridProps {
   onAddHtml: (index: number) => void;
   modules: ReturnType<typeof listPaletteDisplayModules>;
   zoneRefs: React.MutableRefObject<Map<number, HTMLButtonElement | null>>;
+  /** Move-control refs keyed `${index}-up`/`${index}-down` so focus can follow a
+   * reordered zone to its new position (§U4). */
+  moveRefs: React.MutableRefObject<Map<string, HTMLButtonElement | null>>;
 }
 
 function ZoneGrid(props: ZoneGridProps) {
@@ -691,7 +784,7 @@ function ZoneCell(
     <div
       ref={setNodeRef}
       className={`flex min-h-16 flex-col justify-between rounded-md border-2 border-dashed p-2 text-xs ${
-        isOver ? "border-primary bg-primary/10" : "border-muted-foreground/30 bg-background"
+        isOver ? "border-primary bg-accent" : "border-muted-foreground/30 bg-background"
       }`}
       aria-label={`Zone ${zone.key}`}
     >
@@ -738,6 +831,9 @@ function ZoneCell(
           {(model.skeleton !== "side-rail" || isRail) && (
             <>
               <Button
+                ref={(el) => {
+                  props.moveRefs.current.set(`${index}-up`, el);
+                }}
                 variant="ghost"
                 className="h-7 px-1.5 text-xs"
                 aria-label={`Move ${zone.key} earlier`}
@@ -746,6 +842,9 @@ function ZoneCell(
                 ↑
               </Button>
               <Button
+                ref={(el) => {
+                  props.moveRefs.current.set(`${index}-down`, el);
+                }}
                 variant="ghost"
                 className="h-7 px-1.5 text-xs"
                 aria-label={`Move ${zone.key} later`}
@@ -879,6 +978,23 @@ function RotatorEditor(props: {
 }) {
   const { zone, zoneIndex, canEdit, conditions, modules, setModel } = props;
   const selectClass = "border-input bg-background h-9 w-full rounded-md border px-3 text-sm";
+
+  // Focus follows a reordered rotator slot to its new position (§U4). Children are
+  // rendered by index, so without this the focused arrow would land on whichever
+  // slot slid into the old position, not the one that moved.
+  const childMoveRefs = useRef<Map<string, HTMLButtonElement | null>>(new Map());
+  const [pendingChildFocus, setPendingChildFocus] = useState<string | null>(null);
+  useEffect(() => {
+    if (pendingChildFocus === null) return;
+    childMoveRefs.current.get(pendingChildFocus)?.focus();
+    setPendingChildFocus(null);
+  }, [zone.children, pendingChildFocus]);
+  const moveChildFocus = (from: number, to: number) => {
+    setModel((c) => moveChild(c, zoneIndex, from, to));
+    const dest = Math.max(0, Math.min(zone.children.length - 1, to));
+    if (dest !== from) setPendingChildFocus(`${dest}-${to > from ? "down" : "up"}`);
+  };
+
   return (
     <div className="space-y-3">
       <div className="space-y-1">
@@ -903,9 +1019,9 @@ function RotatorEditor(props: {
           <div className="flex items-center justify-between">
             <p className="font-mono text-xs">{child.key}</p>
             <div className="flex gap-1">
-              <Button variant="ghost" className="h-7 px-1.5 text-xs" aria-label="Move slot up" disabled={!canEdit} onClick={() => setModel((c) => moveChild(c, zoneIndex, ci, ci - 1))}>↑</Button>
-              <Button variant="ghost" className="h-7 px-1.5 text-xs" aria-label="Move slot down" disabled={!canEdit} onClick={() => setModel((c) => moveChild(c, zoneIndex, ci, ci + 1))}>↓</Button>
-              <Button variant="ghost" className="text-destructive h-7 px-1.5 text-xs" aria-label="Remove slot" disabled={!canEdit || zone.children.length <= 1} onClick={() => setModel((c) => removeChild(c, zoneIndex, ci))}>✕</Button>
+              <Button ref={(el) => { childMoveRefs.current.set(`${ci}-up`, el); }} variant="ghost" className="h-7 px-1.5 text-xs" aria-label={`Move ${child.key} up`} disabled={!canEdit} onClick={() => moveChildFocus(ci, ci - 1)}>↑</Button>
+              <Button ref={(el) => { childMoveRefs.current.set(`${ci}-down`, el); }} variant="ghost" className="h-7 px-1.5 text-xs" aria-label={`Move ${child.key} down`} disabled={!canEdit} onClick={() => moveChildFocus(ci, ci + 1)}>↓</Button>
+              <Button variant="ghost" className="text-destructive h-7 px-1.5 text-xs" aria-label={`Remove ${child.key}`} disabled={!canEdit || zone.children.length <= 1} onClick={() => setModel((c) => removeChild(c, zoneIndex, ci))}>✕</Button>
             </div>
           </div>
           <select
