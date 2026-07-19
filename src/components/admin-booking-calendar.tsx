@@ -14,7 +14,7 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import { bookingStatusLabel } from "@/lib/status-colors";
 import { buildHrefWithReturnTo, buildPathWithSearch } from "@/lib/internal-return-path";
 import { getAdminCalendarBookingDayRange } from "@/lib/admin-booking-calendar-ranges";
-import { formatDateOnly, getTodayDateOnly } from "@/lib/date-only";
+import { formatDateOnly, getTodayDateOnly, parseDateOnly } from "@/lib/date-only";
 import { formatNZDate } from "@/lib/nzst-date";
 
 interface CalendarBooking {
@@ -246,7 +246,6 @@ export function AdminBookingCalendar() {
     row: number;
     colStart: number;
     colEnd: number;
-    isFirst: boolean;
     spanDays: number;
   };
   const barSegments: BarSegment[] = [];
@@ -266,7 +265,6 @@ export function AdminBookingCalendar() {
           row: r,
           colStart: r === startRow ? startCol : 0,
           colEnd: r === endRow ? endCol : 6,
-          isFirst: r === startRow,
           spanDays,
         });
       }
@@ -563,7 +561,7 @@ export function AdminBookingCalendar() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
-              Bookings on {openDay ? formatNZDate(new Date(openDay)) : ""}
+              Bookings on {openDay ? formatNZDate(parseDateOnly(openDay)) : ""}
             </DialogTitle>
             <DialogDescription>
               All {openDayBookings.length} booking
