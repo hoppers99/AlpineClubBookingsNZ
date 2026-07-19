@@ -78,6 +78,34 @@ const CAPTURES: Capture[] = [
   { name: "admin-seasons", route: "/admin/seasons", area: "admin" },
   { name: "admin-age-tier-settings", route: "/admin/age-tier-settings", area: "admin" },
   { name: "admin-payments", route: "/admin/payments", area: "admin" },
+  // Batch 2 (#2050): membership & applications operator guides.
+  { name: "admin-member-applications", route: "/admin/member-applications", area: "admin" },
+  { name: "admin-member-fields", route: "/admin/member-fields", area: "admin" },
+  { name: "admin-membership-types", route: "/admin/membership-types", area: "admin" },
+  { name: "admin-membership-setup", route: "/admin/membership-setup", area: "admin" },
+  { name: "admin-subscription-lockout", route: "/admin/subscription-lockout", area: "admin" },
+  { name: "admin-membership-cancellations", route: "/admin/membership-cancellations", area: "admin" },
+  { name: "admin-membership-cancellation", route: "/admin/membership-cancellation", area: "admin" },
+  { name: "admin-committee", route: "/admin/committee", area: "admin" },
+  { name: "admin-family-groups", route: "/admin/family-groups", area: "admin" },
+  { name: "admin-family-suggestions", route: "/admin/family-suggestions", area: "admin" },
+  { name: "admin-induction", route: "/admin/induction", area: "admin" },
+  { name: "admin-induction-settings", route: "/admin/induction/settings", area: "admin" },
+  { name: "admin-deletion-requests", route: "/admin/deletion-requests", area: "admin" },
+  { name: "admin-lockers", route: "/admin/lockers", area: "admin" },
+  { name: "admin-fees", route: "/admin/fees", area: "admin" },
+  { name: "admin-subscriptions", route: "/admin/subscriptions", area: "admin" },
+  { name: "admin-refund-requests", route: "/admin/refund-requests", area: "admin" },
+  // The next three routes are gated by the `xeroIntegration` feature flag
+  // (internet-banking additionally by `internetBankingPayments`); see
+  // src/config/feature-routes.ts. They 404 (blank capture) unless those modules
+  // are enabled — the default demo seed leaves Xero off, so no image is committed
+  // for them and their guides describe the screens in prose. Capture these only
+  // against a stack with the Xero module on.
+  { name: "admin-internet-banking", route: "/admin/internet-banking", area: "admin" },
+  { name: "admin-xero", route: "/admin/xero", area: "admin" },
+  { name: "admin-xero-setup", route: "/admin/xero/setup", area: "admin" },
+  { name: "admin-xero-member-grouping", route: "/admin/xero/member-grouping", area: "admin" },
 ];
 
 const VIEWPORT = { width: 1280, height: 800 } as const;
