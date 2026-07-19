@@ -3082,6 +3082,32 @@ describe("MemberContactGroup view-only gating (#1997, membership)", () => {
     );
     expect(screen.getByRole("button", { name: /^Edit$/i })).toBeEnabled();
   });
+
+  // #2065 regression pin: this child previously carried a truthy `canEdit = true`
+  // default, so a parent forwarding the raw tri-state hook value during the
+  // resolution window (`undefined`) coerced it to `true` and briefly flashed an
+  // ENABLED Edit control to a would-be view-only admin. With the default removed
+  // and the prop required, `undefined` flows through to the neutral disabled
+  // state — disabled, but WITHOUT the resolved view-only reason (that is reserved
+  // for `canEdit === false`).
+  it("renders the neutral disabled Edit state (not enabled) while access resolves", () => {
+    render(
+      <MemberContactGroup
+        member={member}
+        isSelf={false}
+        actorIsFullAdmin
+        edit={readOnlyEdit}
+        canEdit={undefined}
+      />,
+    );
+    const editButton = screen.getByRole("button", { name: /^Edit$/i });
+    expect(editButton).toBeDisabled();
+    // Neutral, not resolved-view-only: no read-only reason is advertised yet.
+    expect(editButton).not.toHaveAttribute(
+      "title",
+      ADMIN_VIEW_ONLY_ACTION_REASON,
+    );
+  });
 });
 
 describe("MemberDetailHeader view-only gating (#1997, membership + finance)", () => {
