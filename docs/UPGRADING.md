@@ -84,6 +84,87 @@ as a red flag and check the release notes before deploying.
 
 ---
 
+## v0.12.0 → v0.12.1
+
+`v0.12.1` is a patch release with five migrations, **all expand/additive and
+none contract**. It adds optional sign-in methods (a per-club password-complexity
+policy plus module-flagged email magic-link and Google OAuth, both default off),
+per-age-tier membership billing (subscription requirement and annual fees),
+Lobby Display template/builder polish, a full operator and member documentation
+library, and a screenshot-forward README. Read the full release inventory in
+`docs/releases/v0.12.1.md` and the `0.12.1` changelog section before starting.
+
+### Before deployment
+
+1. **Take and restore-test a fresh backup.** As always, take a fresh `pg_dump`
+   immediately before migrating and confirm it restores before you cut over.
+2. **A normal deploy window is sufficient — no contract migration this
+   release.** Four of the five migrations are catalog-only changes on cold
+   config tables. The one build to note is the `add_google_oauth` unique index
+   over `Member.googleSub`: it builds over an all-NULL new column (NULLs never
+   collide), so it is a fast, trivially-distinct build that briefly blocks
+   `Member` writes — negligible on a normal club, but switch its statement to
+   `CREATE UNIQUE INDEX CONCURRENTLY` if `Member` is very large. Review the four
+   ledger rows in `docs/BLUE_GREEN_MIGRATION_SAFETY.tsv`
+   (`add_magic_link`, `add_google_oauth`,
+   `add_based_on_age_tier_subscription_behavior`, `annual_fee_age_tier` — all
+   `old_code_compatible=yes`). The fifth, `add_login_security_setting`, is a
+   single additive cold table and carries no ledger row (same policy as
+   v0.12.0's ledger-exempt additive migrations).
+3. **Do not author any per-age-tier annual-fee rows until cutover completes.**
+   `20260719140000_annual_fee_age_tier` adds a nullable
+   `MembershipAnnualFee.ageTier` with no backfill, so every existing row stays
+   the flat (`NULL`-tier) fallback and prices identically. But the old colour's
+   fee resolver does **not** filter by age tier, so a per-tier row is **not**
+   invisible to it: once such a row falls in an active window the old colour can
+   select it for a member of any tier (first match by `effectiveFrom` desc) and
+   mis-price them at the wrong tier's amount. Keep annual fees flat-only across
+   both colours for the whole migrate→cutover window; create per-tier annual-fee
+   rows only after the new colour is serving. (Per-tier joining fees already
+   shipped in v0.12.0 and are unaffected.)
+4. **Know that the two new sign-in modules default off.** `magicLink` and
+   `googleLogin` are flagged off, so magic-link and Google sign-in stay disabled
+   through the migrate→cutover window until an admin enables them after cutover.
+   The password-complexity policy applies only at password-set time and never
+   re-validates an existing password, so no member is locked out at cutover.
+
+**Rollback boundary.** A validator or pre-migration failure aborts the deploy
+before any schema change: the old colour is untouched and keeps serving. A
+failed cutover auto-restores traffic to the old colour, which then runs against
+the migrated schema — every migration this release is old-colour compatible, so
+the old colour keeps working (the only rule is the per-age-tier annual-fee
+authoring caveat above). Roll forward (fix and redeploy the new colour — the
+preferred path) or restore the pre-upgrade backup, losing all writes since it
+was taken. There is no down-migration.
+
+### Post-upgrade actions
+
+1. Open the admin **Login & Security** page and confirm the password-complexity
+   policy is what the club intends (an un-configured club keeps the previous
+   default behaviour). Confirm existing members can still sign in with their
+   password.
+2. Under **Admin > Modules**, decide whether to enable email magic-link and/or
+   Google OAuth — both default off. For Google, set the per-club
+   `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` per `CONFIGURATION.md`, then confirm
+   a member can link their verified Google account from their profile and sign
+   in; the magic-link TTL is set on the Login & Security page.
+3. For any membership type set to *Required based on age tier*, verify the
+   age-tier settings (`subscriptionRequiredForBooking`) drive which tiers are
+   billed and that exempt tiers receive no subscription invoice.
+4. Confirm annual fees render correctly in admin fee configuration and the
+   public annual-fees embed; create per-age-tier annual-fee rows only now that
+   cutover is complete. Check the annual-fee editor's Xero Account/Item pickers
+   list the expected codes (or fall back to manual entry with the amber notice
+   if Xero is disconnected).
+5. If the club uses Lobby Display, confirm the module is still off unless
+   intended; if enabled, spot-check the template pack and the guided builder at
+   `/admin/display/builder`.
+
+No one-off data backfill command is required after a successful migration. The
+migrations write no rows; all new behaviour is opt-in through admin surfaces.
+
+---
+
 ## v0.11.0 → v0.12.0
 
 `v0.12.0` is a large minor release with 25 migrations (24 expand/additive, one
