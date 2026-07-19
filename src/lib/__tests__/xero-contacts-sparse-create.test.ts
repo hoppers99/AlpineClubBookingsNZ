@@ -228,6 +228,41 @@ describe("createXeroContactForMember payload hygiene (#2089)", () => {
     ]);
   });
 
+  it("never sends DOB or joined date, even when the member has both", async () => {
+    // A member with real dateOfBirth and joinedDate values must still produce a
+    // create payload that carries neither — joined date only ever round-trips
+    // through the import/backfill path's company-number field, never on create.
+    primeHappyPath({
+      ...SPARSE_MEMBER,
+      dateOfBirth: new Date("1990-01-15T00:00:00.000Z"),
+      joinedDate: new Date("2024-05-01T00:00:00.000Z"),
+    });
+
+    await createXeroContactForMember("member-1");
+
+    const contact = sentContact();
+    // None of the date-bearing Xero contact fields may appear.
+    expect(contact).not.toHaveProperty("companyNumber");
+    expect(contact).not.toHaveProperty("dateOfBirth");
+    expect(contact).not.toHaveProperty("validationDate");
+    // The rest of the payload is exactly the sparse name + email shape.
+    expect(contact.name).toBe("Alice Example");
+    expect(contact.firstName).toBe("Alice");
+    expect(contact.lastName).toBe("Example");
+    expect(contact.emailAddress).toBe("alice@example.org");
+    expect(contact.phones).toEqual([]);
+    expect(contact.addresses).toEqual([]);
+    // Exactly the six known keys — nothing date-related leaked in.
+    expect(Object.keys(contact).sort()).toEqual([
+      "addresses",
+      "emailAddress",
+      "firstName",
+      "lastName",
+      "name",
+      "phones",
+    ]);
+  });
+
   it("rejects a member missing email before any Xero call", async () => {
     primeHappyPath({ ...SPARSE_MEMBER, email: "" });
 
