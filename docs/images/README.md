@@ -4,6 +4,11 @@ All documentation screenshots live here, grouped by area:
 
 - `admin/` — admin/operator UI captures (`admin-<page>.png`).
 - `public/` — public-facing captures (`public-<page>.png`).
+- `readme/` — the root README's front-page assets: `hero-banner.png` and
+  `og-image.png` (generated art, `npm run docs:readme-art`) and
+  `demo-booking.gif` (booking-flow walkthrough, `npm run docs:demo-gif`).
+  `og-image.png` is also the image to upload as the GitHub social preview
+  (repo Settings; there is no API for it).
 
 These are produced by the automated capture harness, never hand-cropped ad hoc,
 so they stay consistent and re-creatable:
