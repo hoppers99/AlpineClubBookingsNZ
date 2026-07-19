@@ -1101,8 +1101,11 @@ model MembershipType {
 // unique index (WHERE "ageTier" IS NULL) enforces one flat window per (type,
 // effectiveFrom) and lives in the migration + prisma/partial-unique-indexes.tsv.
 // PER_FAMILY fees stay flat-only (a raw-SQL CHECK forbids ageTier IS NOT NULL
-// for PER_FAMILY), and a re-scoped GiST EXCLUDE keeps windows non-overlapping
-// per (type, tier) — both raw SQL, not modelled here.
+// for PER_FAMILY), and two partial GiST EXCLUDE constraints (one over flat rows,
+// one over per-tier rows — an enum->text cast is only STABLE, so a single
+// COALESCE-based EXCLUDE is illegal) keep windows non-overlapping per (type,
+// tier) while letting flat-vs-tier and cross-tier windows coexist — all raw SQL,
+// not modelled here.
 model MembershipAnnualFee {
   id               String                       @id @default(cuid())
   membershipTypeId String

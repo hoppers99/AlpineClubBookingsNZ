@@ -38,8 +38,12 @@ untouched. A `NULL` snapshot (pre-refactor booking) resolves at read time as
 > any tier, and every `NOT_APPLICABLE` member, resolves the flat row when no
 > per-tier row matches). Uniqueness and overlap are per (type, tier): a raw-SQL
 > partial unique index enforces one flat window per (type, effectiveFrom) and a
-> re-scoped GiST EXCLUDE keeps windows non-overlapping within each tier (and
-> flat-vs-flat). `PER_FAMILY` annual fees are **flat-only** — a per-family fee
+> pair of partial GiST EXCLUDE constraints (one over flat rows, one over per-tier
+> rows) keeps windows non-overlapping within each tier (and flat-vs-flat) while
+> letting flat-vs-tier and cross-tier windows coexist. Two partial constraints —
+> not one COALESCE(`ageTier`::text,'') EXCLUDE — because an enum→text cast is only
+> STABLE and Postgres forbids non-IMMUTABLE functions in an index/EXCLUDE
+> expression. `PER_FAMILY` annual fees are **flat-only** — a per-family fee
 > bills a family once regardless of age, so a per-tier per-family row is refused
 > at the API (409), by a DB CHECK, and at config-transfer plan time; a flat
 > per-family window may also not overlap per-tier per-member windows for the

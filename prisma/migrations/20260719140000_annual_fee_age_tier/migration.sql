@@ -10,11 +10,12 @@
 -- stay date-only. No now()/CURRENT_TIMESTAMP is used anywhere (session-clock
 -- gate): this migration writes no rows, so it needs no timestamps.
 --
--- Blue/green: OLD code has no ageTier field and reads/writes only the flat rows,
--- so it is unaffected by the additive column; do NOT create per-tier rows until
--- the cutover completes (a per-tier row is invisible to the OLD colour and would
--- under-resolve to the flat fallback there). See
--- docs/BLUE_GREEN_MIGRATION_SAFETY.tsv.
+-- Blue/green: OLD code has no ageTier field and resolves fees without filtering
+-- on ageTier (pre-cutover every row is flat, so it reads/writes only the flat
+-- rows), unaffected by the additive column; do NOT create per-tier rows until the
+-- cutover completes — the OLD resolver does not filter by ageTier, so a per-tier
+-- row is NOT invisible to it: it could be SELECTed for ANY member regardless of
+-- tier and mis-price them (over-resolve). See docs/BLUE_GREEN_MIGRATION_SAFETY.tsv.
 
 -- ---------------------------------------------------------------------------
 -- 1. Nullable ageTier column (NULL = the flat, whole-type fee)
@@ -48,20 +49,37 @@ CREATE INDEX "MembershipAnnualFee_effective_lookup_idx"
 -- 4. Re-scope the GiST no-overlap EXCLUDE from per-type to per-(type, tier).
 --    The pre-existing constraint forbade ANY two overlapping windows for one
 --    type, which would reject a legitimate Adult + Youth pair in the same
---    window. COALESCE("ageTier"::text, '') makes two flat (NULL) rows compare
---    EQUAL (so overlapping flat windows still conflict — the guarantee
---    config-transfer relies on, since it writes directly and bypasses the API
---    overlap check) while a flat row and a per-tier row, or two different-tier
---    rows, never conflict. btree_gist is already installed (migration
---    20260713110000).
+--    window. We CANNOT re-scope it with COALESCE("ageTier"::text, '') because an
+--    enum->text cast is only STABLE (enum labels can be renamed), and Postgres
+--    forbids non-IMMUTABLE functions in an index/EXCLUDE expression (SQLSTATE
+--    42P17). Instead, split into TWO PARTIAL EXCLUDE constraints with the same
+--    combined semantics:
+--      * flat rows (ageTier IS NULL): key on (type, daterange) only — the exact
+--        pre-#2067 constraint, so two overlapping FLAT windows for one type still
+--        conflict (the guarantee config-transfer relies on, since it writes
+--        directly and bypasses the API overlap check). NULL ageTier is never in
+--        the key, so no cast is needed.
+--      * tier rows (ageTier IS NOT NULL): add "ageTier" WITH = — btree_gist
+--        supports enum equality natively on PG16, no cast — so two overlapping
+--        SAME-tier windows conflict while two DIFFERENT-tier windows coexist.
+--    A flat row and a per-tier row live in different partial constraints (each
+--    other's WHERE excludes them), so they never conflict. Net result is
+--    byte-identical to the intended COALESCE form. The daterange expression is
+--    copied verbatim from the pre-#2067 constraint. btree_gist is already
+--    installed (migration 20260713110000).
 -- ---------------------------------------------------------------------------
 ALTER TABLE "MembershipAnnualFee" DROP CONSTRAINT "MembershipAnnualFee_no_overlap";
-ALTER TABLE "MembershipAnnualFee" ADD CONSTRAINT "MembershipAnnualFee_no_overlap"
+ALTER TABLE "MembershipAnnualFee" ADD CONSTRAINT "MembershipAnnualFee_flat_no_overlap"
   EXCLUDE USING gist (
     "membershipTypeId" WITH =,
-    (COALESCE("ageTier"::text, '')) WITH =,
     daterange("effectiveFrom", COALESCE("effectiveTo", 'infinity'::date), '[]') WITH &&
-  );
+  ) WHERE ("ageTier" IS NULL);
+ALTER TABLE "MembershipAnnualFee" ADD CONSTRAINT "MembershipAnnualFee_tier_no_overlap"
+  EXCLUDE USING gist (
+    "membershipTypeId" WITH =,
+    "ageTier" WITH =,
+    daterange("effectiveFrom", COALESCE("effectiveTo", 'infinity'::date), '[]') WITH &&
+  ) WHERE ("ageTier" IS NOT NULL);
 
 -- ---------------------------------------------------------------------------
 -- 5. PER_FAMILY fees stay flat-only (owner decision, #2067). A per-family fee
