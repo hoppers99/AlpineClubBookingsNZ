@@ -343,7 +343,7 @@ export function EditBookingPanel({
   const [reviewJustificationError, setReviewJustificationError] = useState("");
   const [serverRequiresJustification, setServerRequiresJustification] =
     useState(false);
-  const reviewJustificationRef = useRef<HTMLDivElement>(null);
+  const reviewJustificationRef = useRef<HTMLTextAreaElement>(null);
   const { scrollToError } = useScrollToFeedback();
   const [requestReason, setRequestReason] = useState("");
   const [requestSubmitting, setRequestSubmitting] = useState(false);
@@ -913,6 +913,40 @@ export function EditBookingPanel({
     (postEditTripsReview && !actingAsAdmin && !bookingAlreadyUnderReview) ||
     serverRequiresJustification;
 
+  // In the drift case the local predicate is false by definition, so the latch
+  // cannot key off it. Instead remember the guest-set signature at latch time:
+  // if the member then CHANGES the guests (e.g. re-adds an adult) rather than
+  // writing a reason, release the latch so they are not forced to justify a
+  // rule the server will no longer apply.
+  const guestSetSignature = useMemo(
+    () =>
+      JSON.stringify([
+        remainingGuests.map((g) => g.id),
+        addedGuests.map((g) => [g.firstName, g.lastName, g.ageTier]),
+      ]),
+    [remainingGuests, addedGuests],
+  );
+  const latchedGuestSignatureRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!serverRequiresJustification) {
+      latchedGuestSignatureRef.current = null;
+      return;
+    }
+    if (latchedGuestSignatureRef.current === null) {
+      // Latch just set: remember the guest set and bring the freshly-mounted
+      // field into view (the fetch handler ran before it existed in the DOM).
+      latchedGuestSignatureRef.current = guestSetSignature;
+      scrollToError(reviewJustificationRef);
+      return;
+    }
+    if (latchedGuestSignatureRef.current !== guestSetSignature) {
+      setServerRequiresJustification(false);
+      setReviewJustificationError("");
+      latchedGuestSignatureRef.current = null;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverRequiresJustification, guestSetSignature]);
+
   function handleSaveClick() {
     if (actingAsAdmin) {
       setNotifyDialogOpen(true);
@@ -970,12 +1004,13 @@ export function EditBookingPanel({
         // predicate missed it (client/server drift). Reveal the justification
         // field, show the message adjacent to it, and bring it into view.
         if (data.code === "REVIEW_JUSTIFICATION_REQUIRED") {
+          // The effect keyed on serverRequiresJustification scrolls/focuses the
+          // field after it mounts on the next commit.
           setServerRequiresJustification(true);
           setReviewJustificationError(
             data.error ||
               "Please add a reason so an admin can review this booking.",
           );
-          scrollToError(reviewJustificationRef);
           return;
         }
         // Belt-and-braces (#1668): a stale quote can miss an over-capacity
@@ -1970,10 +2005,7 @@ export function EditBookingPanel({
           Rendered above the save footer; the inline error sits with the field
           (not the bottom saveError slot) so a member cannot miss it. */}
       {showReviewJustification && (
-        <div
-          ref={reviewJustificationRef}
-          className="space-y-2 rounded-md border border-warning/20 bg-warning-muted p-4"
-        >
+        <div className="space-y-2 rounded-md border border-warning/20 bg-warning-muted p-4">
           <Label htmlFor="edit-review-justification" className="text-warning">
             Reason for leaving no adult on the booking (required)
           </Label>
@@ -1984,6 +2016,7 @@ export function EditBookingPanel({
           </p>
           <Textarea
             id="edit-review-justification"
+            ref={reviewJustificationRef}
             value={memberReviewJustification}
             onChange={(e) => {
               setMemberReviewJustification(e.target.value);
@@ -1993,9 +2026,20 @@ export function EditBookingPanel({
             maxLength={1000}
             placeholder="Explain why an adult is not on the booking..."
             aria-invalid={reviewJustificationError ? true : undefined}
+            aria-describedby={
+              reviewJustificationError
+                ? "edit-review-justification-error"
+                : undefined
+            }
           />
           {reviewJustificationError && (
-            <p className="text-sm text-red-700">{reviewJustificationError}</p>
+            <p
+              id="edit-review-justification-error"
+              role="alert"
+              className="text-sm text-destructive"
+            >
+              {reviewJustificationError}
+            </p>
           )}
         </div>
       )}
