@@ -31,8 +31,16 @@ sees it read-only. The page appears only when the `bedAllocation` module is on.
 ### Open Rooms & Beds for a lodge
 
 1. From the lodge configuration hub, open a lodge and click its **Rooms & Beds**
-   card (or go to `/admin/rooms-beds`). The header badges show the running totals
-   — how many rooms, how many beds, and the derived **Capacity**.
+   card (or go to `/admin/rooms-beds`). The header shows three badges — the room
+   count, a **beds** badge (the sum of the lodge's active beds, its physical
+   inventory), and a **Capacity** badge. The two are **distinct quantities**: the
+   beds badge is how many beds are installed, while **Capacity** is the *resolved*
+   bookable figure — `min(active beds, the lodge's configured capacity ceiling)`.
+   When the ceiling is unset or above the bed count the two match (and the badge is
+   green); when the ceiling caps the beds the Capacity badge is lower and turns
+   amber. The ceiling itself is **not** typed here — it is the lodge's capacity
+   setting, edited on the lodge configuration page. See the
+   [capacity model](../CAPACITY_MODEL.md#two-distinct-quantities).
 
    ![Rooms & Beds page showing the room/bed/capacity badges, Quick Add Rooms, and the Room Inventory list with Bunk Room A, Bunk Room B, and the Family Room](../images/admin/admin-rooms-beds.png)
 
@@ -65,7 +73,7 @@ sees it read-only. The page appears only when the `bedAllocation` module is on.
 | --- | --- | --- | --- |
 | Rooms / Beds per room / Name prefix (Quick Add) | Seeds a batch of rooms and their beds | — | Integers; rename individually afterwards |
 | Room name | The room's display name | — | Required; shown on the bed board and roster |
-| Room capacity | The room's bed count field | — | Integer; the header **Capacity** badge sums active beds |
+| Room capacity | The room's bed count field | — | Integer; the header **beds** badge sums this lodge's active beds. The separate **Capacity** badge is the resolved bookable figure — `min(active beds, the lodge's configured ceiling)` — not a room field |
 | Room notes | A free-text note on the room | — | Optional |
 | Room Active | Whether the room's beds count toward capacity | on | Inactive rooms are kept for history but not bookable |
 | Bed name | The bed's label | — | Required; unique within its room |
@@ -73,10 +81,16 @@ sees it read-only. The page appears only when the `bedAllocation` module is on.
 | Bed type | Single, Bunk (top), Bunk (bottom), or Double | Single | A bunk top pairs with its bottom; a double adds partner-shared headroom (`CAPACITY_MODEL.md`) |
 | Bed Active | Whether the bed counts toward capacity | on | Inactive beds are kept for history but not bookable |
 
-> Capacity is **derived** — it is the sum of every active bed across active
-> rooms, not a number you type. See the
-> [capacity model](../CAPACITY_MODEL.md#two-distinct-quantities) for how beds,
-> doubles, and overrides combine.
+> The **beds** badge and the **Capacity** badge are two different things (see the
+> [capacity model](../CAPACITY_MODEL.md#two-distinct-quantities)). The beds badge
+> is the physical inventory — every active bed across active rooms. **Capacity** is
+> the resolved bookable figure: `min(active beds, the lodge's configured capacity
+> ceiling)`. The ceiling is the lodge's capacity setting (typed on the lodge
+> configuration page, not here); leave it unset and Capacity simply follows the
+> bed count. A lodge can legitimately have more installed beds than it may sleep —
+> e.g. 10 beds with an 8 ceiling makes the Capacity badge read **8**, and the page
+> warns that the extra beds stay available for allocation but cannot be booked
+> into. See the model for how doubles and overrides combine on top.
 
 ## Troubleshooting
 
@@ -86,6 +100,8 @@ sees it read-only. The page appears only when the `bedAllocation` module is on.
 | The whole page is read-only | Your admin role has bookings view but not edit | Ask a full admin for **bookings edit** access (rooms/beds use the bed-allocation APIs) |
 | The page 404s / is missing | The `bedAllocation` module is off | Enable it under **Admin → Setup → Modules** — see [`CONFIGURATION.md`](../../CONFIGURATION.md#module-controls-and-admin-modules) |
 | Capacity looks too low/high | A room or bed is inactive, or a double/bunk is counted differently than expected | Check each room's and bed's **Active** state and bed types against the [capacity model](../CAPACITY_MODEL.md) |
+| Capacity is **lower than the beds badge**, and the page warns "Sleeping capacity capped below the installed beds" | The lodge's configured capacity ceiling is below the active bed count, so Capacity = the ceiling (`capped_beds`). The surplus beds stay allocatable but cannot be booked into | Intended? Leave it. To lift the cap, raise or clear the lodge's capacity on the **lodge configuration page** ([Lodges](lodges.md)) — see [the capacity model](../CAPACITY_MODEL.md#two-distinct-quantities) |
+| The page warns "Capacity fallback active" and uses the lodge's capacity setting | Bed Allocation is on but **no active beds** are configured, so bookable capacity falls back to the lodge's capacity setting until at least one active bed exists | Add at least one active bed here, or set the fallback capacity on the [Lodges](lodges.md) configuration page |
 | A bunk shows an "unpaired" hint | Its partner bunk bed has not been added yet | Add the matching Bunk (top)/(bottom) bed in the same room |
 
 ## Related links
