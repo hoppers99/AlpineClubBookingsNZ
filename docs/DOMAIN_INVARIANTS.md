@@ -1856,9 +1856,12 @@ Built-in membership types can never be deleted or merged. A custom type may be
 deleted only when it has zero `SeasonalMembershipAssignment` rows; a custom type
 that still has assignments must be merged into another type first. A merge
 requires an active (non-archived) target that is not the source and whose
-allowed age tiers cover every affected member's current age tier
-(`NOT_APPLICABLE`/organisation members are exempt because they are excluded from
-all age-tier policy); it reassigns every source assignment to the target and
+allowed age tiers cover every affected member's current age tier. A member on
+`NOT_APPLICABLE` merges cleanly only when the target type also allows N/A
+(`membershipTypeAgeExemption` FORCED or ALLOWED); the sole exception is
+organisation members, whose N/A is a global org force independent of the type's
+tiers, so they merge onto any target (#2106). It reassigns every source
+assignment to the target and
 deletes the source in one transaction, writing both a `MEMBERSHIP_TYPE_MERGED`
 and a `MEMBERSHIP_TYPE_DELETED` audit record. Because reassigning an
 assignment's membership type never changes its `(memberId, seasonYear)`, the
@@ -1869,10 +1872,12 @@ tooling, and the admin is warned before confirming when the source and target
 Xero rules differ.
 The `NOT_APPLICABLE` age tier is the single "no age" classification, driven by
 two independent forces resolved by one shared helper
-(`resolveEnforcedAgeTier`, `src/lib/age-tier-enforcement.ts`) applied at EVERY
-`Member.ageTier` write site (admin member edit, self-service profile, delegated
-family details, seasonal-assignment save, roll-forward into the current season,
-and bulk set-role). Precedence, highest first:
+(`resolveEnforcedAgeTier`, `src/lib/age-tier-enforcement.ts`) applied at each of
+the enumerated `Member.ageTier` write sites: admin member edit, self-service
+profile, delegated family details, seasonal-assignment save, roll-forward into
+the current season, and bulk set-role. (The Xero member-import creates are a
+separate write path handled by #2108, not this helper.) Precedence, highest
+first:
 
 1. **Org force.** Organisation-type members (the `ORG` access role or the legacy
    `SCHOOL` role) always carry `NOT_APPLICABLE`, on every create/update.
@@ -1898,17 +1903,30 @@ Configuration and lifecycle guards:
   ALLOWED) is valid ONLY on types whose subscription behaviour is
   `NOT_REQUIRED`, so N/A can never bypass the subscription lockout on a paying
   type. Enforced on type create/edit.
-- A type edit that would CREATE or DESTROY FORCED status is blocked while
-  current/future-season assignments hold a tier the new allowed set does not
-  cover (a mirror of the merge coverage rule); the admin reassigns/reclassifies
-  those members first.
+- A type allowed-tiers edit is blocked while it would strand a
+  current/future-season assignee: either becoming FORCED while a person-tier
+  member is assigned, or removing `NOT_APPLICABLE` while a NON-ORG member is
+  still on N/A (org members are exempt — the global org force keeps them N/A
+  regardless of the type). This mirrors the merge coverage rule; the admin
+  reassigns/reclassifies those members first. The offending-assignee check is
+  repeated inside the config-write transaction so a concurrent change cannot slip
+  a stranded member past the guard (#2106).
 - A change that flips a member TO N/A is blocked while they are still a linked
-  guest on someone else's future booking; the change preview lists those
-  bookings for removal first. A FORCED/org flip that leaves `ADULT` sweeps the
-  member's future shared-double placements (#1756). The seasonal-assignment save
-  surfaces the old/new age tier in its critical audit record, and binds the
-  resulting tier into the preview's HMAC token so a tier-relevant drift is
-  stale-detected.
+  guest on someone else's future booking. This block is uniform across every
+  N/A-flip site: the seasonal-assignment save (the change preview lists those
+  bookings for removal first), the admin member edit (manual N/A pick and org
+  grant), and the bulk set-role ORG grant (blocked members are reported as
+  per-member failures — like not-found ids — so the rest of the batch still
+  applies). A FORCED/org flip that leaves `ADULT` sweeps the member's future
+  shared-double placements (#1756). The seasonal-assignment save surfaces the
+  old/new age tier in its critical audit record, and binds the resulting tier
+  into the preview's HMAC token so a tier-relevant drift is stale-detected.
+- Roll-forward into the current season reconciles each copied member's age tier
+  AFTER the copy commits, in bounded chunks (one transaction per chunk, each
+  re-reading member + type state) so no single transaction spans the whole
+  membership; a failed chunk is logged and skipped (the enforcement sites
+  self-heal). The reconcile phase writes one critical summary audit row with the
+  reconciled/swept counts and a bounded per-member before/after sample (#2106).
 
 `NOT_APPLICABLE` never has an `AgeTierSetting` row: it has no age range, is
 displayed as "N/A", and is excluded from every age-based automation — the season

@@ -44,6 +44,15 @@ export const SEASONAL_MEMBERSHIP_ASSIGNMENT_CHANGED_ACTION =
 // test seam
 export const SEASONAL_MEMBERSHIP_ASSIGNMENTS_ROLLED_FORWARD_ACTION =
   "admin.membership_type_assignments.rolled_forward";
+// test seam — the post-copy tier-reconcile summary audit (#2106, MAJOR-4).
+export const SEASONAL_MEMBERSHIP_ROLL_FORWARD_TIERS_RECONCILED_ACTION =
+  "admin.membership_type_assignments.roll_forward_tiers_reconciled";
+
+// #2106 (MAJOR-3): the post-copy tier reconcile runs in transactions of at most
+// this many members so no single transaction spans the whole membership.
+const ROLL_FORWARD_RECONCILE_CHUNK_SIZE = 25;
+// Bounded per-member reconcile sample carried in the summary audit metadata.
+const ROLL_FORWARD_RECONCILE_SAMPLE_LIMIT = 50;
 
 const BOOKING_SUMMARY_LIMIT = 10;
 const SUBSCRIPTION_HISTORY_LIMIT = 5;
@@ -995,7 +1004,21 @@ export async function rollForwardSeasonalMembershipAssignments(params: {
     swept: SweptPartnerSharedAllocation[];
   }> = [];
   let copiedCount = 0;
+  // #2106 (MAJOR-4): reconcile-phase tallies, populated post-copy in chunks.
+  let ageTierReconciledCount = 0;
+  let partnerSharesSweptCount = 0;
+  const ageTierReconcileSamples: Array<{
+    memberId: string;
+    previousAgeTier: AgeTier;
+    newAgeTier: AgeTier;
+  }> = [];
   if (!params.dryRun) {
+    // MAJOR-3: the assignment COPY stays in one transaction, but the
+    // membership-wide per-member tier reconcile + partner-share sweep are moved
+    // OUT of it. Running them inside the copy transaction put the whole
+    // membership under a single ~5s transaction; instead we commit the copy,
+    // then reconcile post-copy in bounded chunks so no single transaction spans
+    // the membership.
     copiedCount = await db.$transaction(async (tx) => {
       const result =
         data.length > 0
@@ -1004,61 +1027,6 @@ export async function rollForwardSeasonalMembershipAssignments(params: {
               skipDuplicates: true,
             })
           : { count: 0 };
-
-      // #2106: when rolling forward INTO the current season, the copied type
-      // becomes each member's effective current-season type, so reconcile their
-      // stored age tier (force N/A on FORCED types / org accounts, restore a
-      // person tier otherwise) and sweep future shared-doubles for an ADULT → N/A
-      // flip (#1756). Future-season roll-forwards never change the tier at "now".
-      if (targetIsCurrentSeason && result.count > 0) {
-        for (const candidate of copyCandidates) {
-          const exemption = membershipTypeAgeExemption(
-            (candidate.membershipType.allowedAgeTiers ?? []).map(
-              (tier) => tier.ageTier,
-            ),
-          );
-          const currentAgeTier: AgeTier = candidate.member.ageTier ?? "ADULT";
-          const restorePersonTier: AgeTier =
-            currentAgeTier !== "NOT_APPLICABLE"
-              ? currentAgeTier
-              : candidate.member.dateOfBirth
-                ? await computeAgeTier(
-                    candidate.member.dateOfBirth,
-                    getSeasonStartDate(getSeasonYear()),
-                  )
-                : "ADULT";
-          const resolved = resolveEnforcedAgeTier({
-            isOrganisation: isOrganisationMember({
-              accessRoleTokens: resolveAccessRoleTokens(candidate.member),
-              legacyRole: candidate.member.role,
-            }),
-            typeExemption: exemption,
-            currentAgeTier,
-            restorePersonTier,
-          });
-          if (!resolved.ok || resolved.ageTier === currentAgeTier) {
-            continue;
-          }
-          await tx.member.update({
-            where: { id: candidate.memberId },
-            data: { ageTier: resolved.ageTier },
-          });
-          if (currentAgeTier === "ADULT" && resolved.ageTier !== "ADULT") {
-            const swept = await sweepFuturePartnerSharedAllocations({
-              memberId: candidate.memberId,
-              reason: "member_age_tier_changed",
-              db: tx,
-            });
-            if (swept.length > 0) {
-              rollSweptByMember.push({
-                memberId: candidate.memberId,
-                memberName: memberDisplayName(candidate.member),
-                swept,
-              });
-            }
-          }
-        }
-      }
 
       await tx.auditLog.create(
         buildStructuredAuditLogCreateArgs({
@@ -1087,6 +1055,195 @@ export async function rollForwardSeasonalMembershipAssignments(params: {
 
       return result.count;
     });
+
+    // #2106: when rolling forward INTO the current season, the copied type
+    // becomes each member's effective current-season type, so reconcile their
+    // stored age tier (force N/A on FORCED types / org accounts, restore a person
+    // tier otherwise) and sweep future shared-doubles for an ADULT → N/A flip
+    // (#1756). Future-season roll-forwards never change the tier at "now".
+    //
+    // MAJOR-3: processed AFTER the copy commits, in chunks of
+    // ROLL_FORWARD_RECONCILE_CHUNK_SIZE members per transaction. Each chunk
+    // re-reads the member + their now-current membership type on its own tx
+    // client, so a stale pre-copy read cannot misflip a tier that changed
+    // between the copy and the reconcile. A chunk that throws is logged and
+    // skipped — it never rolls back the committed copy or the other chunks; the
+    // enforcement sites self-heal any member the failed chunk left unreconciled.
+    if (targetIsCurrentSeason && copiedCount > 0) {
+      const candidateMemberIds = copyCandidates.map(
+        (candidate) => candidate.memberId,
+      );
+      for (
+        let offset = 0;
+        offset < candidateMemberIds.length;
+        offset += ROLL_FORWARD_RECONCILE_CHUNK_SIZE
+      ) {
+        const chunkMemberIds = candidateMemberIds.slice(
+          offset,
+          offset + ROLL_FORWARD_RECONCILE_CHUNK_SIZE,
+        );
+        try {
+          const chunkResult = await db.$transaction(async (tx) => {
+            // Fresh reads on the tx client — never trust the pre-copy snapshot.
+            const [freshMembers, freshAssignments] = await Promise.all([
+              tx.member.findMany({
+                where: { id: { in: chunkMemberIds } },
+                select: {
+                  id: true,
+                  firstName: true,
+                  lastName: true,
+                  email: true,
+                  ageTier: true,
+                  dateOfBirth: true,
+                  role: true,
+                  accessRoles: { select: { role: true } },
+                },
+              }),
+              tx.seasonalMembershipAssignment.findMany({
+                where: {
+                  seasonYear: params.toSeasonYear,
+                  memberId: { in: chunkMemberIds },
+                },
+                select: {
+                  memberId: true,
+                  membershipType: {
+                    select: { allowedAgeTiers: { select: { ageTier: true } } },
+                  },
+                },
+              }),
+            ]);
+            const exemptionByMemberId = new Map(
+              freshAssignments.map((assignment) => [
+                assignment.memberId,
+                membershipTypeAgeExemption(
+                  assignment.membershipType.allowedAgeTiers.map(
+                    (tier) => tier.ageTier,
+                  ),
+                ),
+              ]),
+            );
+
+            const chunkReconciled: Array<{
+              memberId: string;
+              previousAgeTier: AgeTier;
+              newAgeTier: AgeTier;
+            }> = [];
+            const chunkSwept: Array<{
+              memberId: string;
+              memberName: string;
+              swept: SweptPartnerSharedAllocation[];
+            }> = [];
+
+            for (const member of freshMembers) {
+              // No current-season assignment (a concurrent write removed/skipped
+              // it) means no type force applies here — leave the tier to its own
+              // enforcement site rather than un-forcing on a vanished type.
+              const exemption = exemptionByMemberId.get(member.id);
+              if (exemption === undefined) {
+                continue;
+              }
+              const currentAgeTier: AgeTier = member.ageTier ?? "ADULT";
+              const restorePersonTier: AgeTier =
+                currentAgeTier !== "NOT_APPLICABLE"
+                  ? currentAgeTier
+                  : member.dateOfBirth
+                    ? await computeAgeTier(
+                        member.dateOfBirth,
+                        getSeasonStartDate(getSeasonYear()),
+                      )
+                    : "ADULT";
+              const resolved = resolveEnforcedAgeTier({
+                isOrganisation: isOrganisationMember({
+                  accessRoleTokens: resolveAccessRoleTokens(member),
+                  legacyRole: member.role,
+                }),
+                typeExemption: exemption,
+                currentAgeTier,
+                restorePersonTier,
+              });
+              if (!resolved.ok || resolved.ageTier === currentAgeTier) {
+                continue;
+              }
+              await tx.member.update({
+                where: { id: member.id },
+                data: { ageTier: resolved.ageTier },
+              });
+              chunkReconciled.push({
+                memberId: member.id,
+                previousAgeTier: currentAgeTier,
+                newAgeTier: resolved.ageTier,
+              });
+              if (currentAgeTier === "ADULT" && resolved.ageTier !== "ADULT") {
+                const swept = await sweepFuturePartnerSharedAllocations({
+                  memberId: member.id,
+                  reason: "member_age_tier_changed",
+                  db: tx,
+                });
+                if (swept.length > 0) {
+                  chunkSwept.push({
+                    memberId: member.id,
+                    memberName: memberDisplayName(member),
+                    swept,
+                  });
+                }
+              }
+            }
+            return { chunkReconciled, chunkSwept };
+          });
+
+          ageTierReconciledCount += chunkResult.chunkReconciled.length;
+          for (const entry of chunkResult.chunkReconciled) {
+            if (ageTierReconcileSamples.length < ROLL_FORWARD_RECONCILE_SAMPLE_LIMIT) {
+              ageTierReconcileSamples.push(entry);
+            }
+          }
+          for (const entry of chunkResult.chunkSwept) {
+            partnerSharesSweptCount += entry.swept.length;
+            rollSweptByMember.push(entry);
+          }
+        } catch (err) {
+          logger.error(
+            {
+              err,
+              fromSeasonYear: params.fromSeasonYear,
+              toSeasonYear: params.toSeasonYear,
+              chunkMemberIds,
+            },
+            "Roll-forward age-tier reconcile chunk failed; continuing",
+          );
+        }
+      }
+
+      // MAJOR-4: one summary audit row for the (post-copy) reconcile phase,
+      // severity critical to match the save-path tier-change convention. Written
+      // on the bare client after all chunks so it reflects the final tallies.
+      await db.auditLog.create(
+        buildStructuredAuditLogCreateArgs({
+          action:
+            SEASONAL_MEMBERSHIP_ROLL_FORWARD_TIERS_RECONCILED_ACTION,
+          actor: { memberId: params.adminMemberId },
+          entity: {
+            type: "SeasonalMembershipAssignment",
+            id: `${params.fromSeasonYear}->${params.toSeasonYear}`,
+          },
+          category: "admin",
+          severity: "critical",
+          outcome: "success",
+          summary: "Roll-forward age tiers reconciled",
+          metadata: {
+            fromSeasonYear: params.fromSeasonYear,
+            toSeasonYear: params.toSeasonYear,
+            copiedCount,
+            ageTierReconciledCount,
+            partnerSharesSweptCount,
+            ageTierReconciled: ageTierReconcileSamples,
+            ageTierReconciledTruncated:
+              ageTierReconciledCount > ageTierReconcileSamples.length,
+          },
+          request: params.request,
+        }),
+      );
+    }
 
     // Best-effort Xero contact-group re-sync (E8, #1934). Roll-forward usually
     // targets a future season, which does not change any member's grouping at

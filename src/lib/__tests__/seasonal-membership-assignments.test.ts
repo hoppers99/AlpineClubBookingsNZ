@@ -41,6 +41,7 @@ import {
   saveSeasonalMembershipAssignment,
   SEASONAL_MEMBERSHIP_ASSIGNMENT_CHANGED_ACTION,
   SEASONAL_MEMBERSHIP_ASSIGNMENTS_ROLLED_FORWARD_ACTION,
+  SEASONAL_MEMBERSHIP_ROLL_FORWARD_TIERS_RECONCILED_ACTION,
 } from "@/lib/seasonal-membership-assignments";
 
 const fullType = {
@@ -872,5 +873,224 @@ describe("seasonal membership assignment roll-forward", () => {
       createdByMemberId: "admin-1",
       reason: "seasonal_membership_roll_forward",
     });
+  });
+
+  // #2106 (MAJOR-3/4): current-season roll-forward reconciles tiers post-copy,
+  // in chunks, and writes a critical reconcile summary audit.
+  it("reconciles copied members' tiers post-copy and writes the reconcile summary audit", async () => {
+    mockSweep.mockResolvedValueOnce([
+      { bookingId: "bk-1", stayDate: new Date("2099-08-01") },
+    ]);
+    const currentSeason = getSeasonYear();
+    const priorSeason = currentSeason - 1;
+    const personTiers = [
+      { ageTier: "INFANT" },
+      { ageTier: "CHILD" },
+      { ageTier: "YOUTH" },
+      { ageTier: "ADULT" },
+    ];
+    const candidateMembers = [
+      {
+        id: "member-forced",
+        firstName: "Fay",
+        lastName: "Forced",
+        email: "forced@example.test",
+        active: true,
+        archivedAt: null,
+        cancelledAt: null,
+      },
+      {
+        id: "member-keep",
+        firstName: "Kay",
+        lastName: "Keep",
+        email: "keep@example.test",
+        active: true,
+        archivedAt: null,
+        cancelledAt: null,
+      },
+    ];
+    const candidates = candidateMembers.map((member) => ({
+      id: `a-${member.id}`,
+      memberId: member.id,
+      seasonYear: priorSeason,
+      membershipTypeId: member.id === "member-forced" ? "type-exempt" : "type-full",
+      member,
+      membershipType: { ...fullType, isActive: true },
+    }));
+    const freshById: Record<string, unknown> = {
+      "member-forced": {
+        id: "member-forced",
+        ageTier: "ADULT",
+        dateOfBirth: null,
+        role: "USER",
+        accessRoles: [{ role: "USER" }],
+        firstName: "Fay",
+        lastName: "Forced",
+        email: "forced@example.test",
+      },
+      "member-keep": {
+        id: "member-keep",
+        ageTier: "ADULT",
+        dateOfBirth: null,
+        role: "USER",
+        accessRoles: [{ role: "USER" }],
+        firstName: "Kay",
+        lastName: "Keep",
+        email: "keep@example.test",
+      },
+    };
+    const exemptionByMember: Record<string, Array<{ ageTier: string }>> = {
+      "member-forced": [{ ageTier: "NOT_APPLICABLE" }],
+      "member-keep": personTiers,
+    };
+
+    const db: any = {
+      seasonalMembershipAssignment: {
+        findMany: vi.fn().mockImplementation(async ({ where }: any) => {
+          if (where.memberId?.in) {
+            return where.memberId.in.map((id: string) => ({
+              memberId: id,
+              membershipType: { allowedAgeTiers: exemptionByMember[id] },
+            }));
+          }
+          if (where.seasonYear === priorSeason) return candidates;
+          return [];
+        }),
+        createMany: vi.fn().mockResolvedValue({ count: 2 }),
+      },
+      member: {
+        findMany: vi.fn().mockImplementation(async ({ where }: any) => {
+          if (where?.id?.in) {
+            return where.id.in.map((id: string) => freshById[id]);
+          }
+          return candidateMembers;
+        }),
+        update: vi.fn().mockResolvedValue({}),
+      },
+      auditLog: { create: vi.fn().mockResolvedValue({}) },
+      $transaction: vi.fn(async (callback: any) => callback(db)),
+    };
+
+    const result = await rollForwardSeasonalMembershipAssignments({
+      fromSeasonYear: priorSeason,
+      toSeasonYear: currentSeason,
+      adminMemberId: "admin-1",
+      db: db as never,
+    });
+
+    expect(result.body).toMatchObject({ copiedCount: 2 });
+    // The FORCED-type member flips ADULT -> N/A; the person-tier member is left.
+    expect(db.member.update).toHaveBeenCalledWith({
+      where: { id: "member-forced" },
+      data: { ageTier: "NOT_APPLICABLE" },
+    });
+    expect(db.member.update).not.toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "member-keep" } }),
+    );
+
+    const reconcileAudit = db.auditLog.create.mock.calls.find(
+      ([arg]: [any]) =>
+        arg.data.action === SEASONAL_MEMBERSHIP_ROLL_FORWARD_TIERS_RECONCILED_ACTION,
+    );
+    expect(reconcileAudit).toBeTruthy();
+    expect(reconcileAudit[0].data.severity).toBe("critical");
+    expect(reconcileAudit[0].data.metadata).toMatchObject({
+      ageTierReconciledCount: 1,
+      partnerSharesSweptCount: 1,
+      ageTierReconciled: [
+        {
+          memberId: "member-forced",
+          previousAgeTier: "ADULT",
+          newAgeTier: "NOT_APPLICABLE",
+        },
+      ],
+    });
+  });
+
+  it("continues past a failed reconcile chunk without rolling back the copy", async () => {
+    const currentSeason = getSeasonYear();
+    const priorSeason = currentSeason - 1;
+    const ids = Array.from({ length: 30 }, (_, i) => `member-${i}`);
+    const candidateMembers = ids.map((id) => ({
+      id,
+      firstName: id,
+      lastName: "M",
+      email: `${id}@example.test`,
+      active: true,
+      archivedAt: null,
+      cancelledAt: null,
+    }));
+    const candidates = candidateMembers.map((member) => ({
+      id: `a-${member.id}`,
+      memberId: member.id,
+      seasonYear: priorSeason,
+      membershipTypeId: "type-exempt",
+      member,
+      membershipType: { ...fullType, isActive: true },
+    }));
+    const freshById = Object.fromEntries(
+      ids.map((id) => [
+        id,
+        {
+          id,
+          ageTier: "ADULT",
+          dateOfBirth: null,
+          role: "USER",
+          accessRoles: [{ role: "USER" }],
+          firstName: id,
+          lastName: "M",
+          email: `${id}@example.test`,
+        },
+      ]),
+    );
+
+    const db: any = {
+      seasonalMembershipAssignment: {
+        findMany: vi.fn().mockImplementation(async ({ where }: any) => {
+          if (where.memberId?.in) {
+            return where.memberId.in.map((id: string) => ({
+              memberId: id,
+              membershipType: { allowedAgeTiers: [{ ageTier: "NOT_APPLICABLE" }] },
+            }));
+          }
+          if (where.seasonYear === priorSeason) return candidates;
+          return [];
+        }),
+        createMany: vi.fn().mockResolvedValue({ count: 30 }),
+      },
+      member: {
+        findMany: vi.fn().mockImplementation(async ({ where }: any) => {
+          if (where?.id?.in) {
+            return where.id.in.map((id: string) => freshById[id]);
+          }
+          return candidateMembers;
+        }),
+        // The first chunk (members 0-24) throws when it reaches member-0; the
+        // second chunk (25-29) must still reconcile.
+        update: vi.fn().mockImplementation(async ({ where }: any) => {
+          if (where.id === "member-0") throw new Error("update failed");
+          return {};
+        }),
+      },
+      auditLog: { create: vi.fn().mockResolvedValue({}) },
+      $transaction: vi.fn(async (callback: any) => callback(db)),
+    };
+
+    const result = await rollForwardSeasonalMembershipAssignments({
+      fromSeasonYear: priorSeason,
+      toSeasonYear: currentSeason,
+      adminMemberId: "admin-1",
+      db: db as never,
+    });
+
+    // The copy is untouched by the failed chunk.
+    expect(result.body).toMatchObject({ copiedCount: 30 });
+    const reconcileAudit = db.auditLog.create.mock.calls.find(
+      ([arg]: [any]) =>
+        arg.data.action === SEASONAL_MEMBERSHIP_ROLL_FORWARD_TIERS_RECONCILED_ACTION,
+    );
+    expect(reconcileAudit).toBeTruthy();
+    // Only the surviving second chunk's 5 members reconciled.
+    expect(reconcileAudit[0].data.metadata.ageTierReconciledCount).toBe(5);
   });
 });

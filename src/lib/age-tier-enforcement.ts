@@ -148,3 +148,107 @@ export async function loadMemberCurrentSeasonTypeExemption(
     assignment.membershipType.allowedAgeTiers.map((tier) => tier.ageTier),
   );
 }
+
+// #2106 owner decision ("no frozen bookings"): a flip that makes a member
+// age-exempt (N/A) is blocked while the member is still a linked guest on
+// SOMEONE ELSE'S future booking — N/A members are not bookable guests, so those
+// guest links must be removed first. This shared query is the single source for
+// that block across every N/A-flip site (seasonal assignment save, admin member
+// edit, bulk ORG grant) so they stay consistent. `today` is the NZ date-only
+// "now"; a booking guest counts as future when its stayEnd is strictly after it.
+export type FutureLinkedGuestBooking = {
+  id: string;
+  bookingId: string;
+  stayStart: Date;
+  stayEnd: Date;
+  booking: {
+    id: string;
+    memberId: string | null;
+    checkIn: Date;
+    checkOut: Date;
+  };
+};
+
+export interface FutureLinkedGuestClient {
+  bookingGuest: {
+    findMany(args: {
+      where: {
+        memberId: string;
+        isMember: true;
+        stayEnd: { gt: Date };
+        booking: { deletedAt: null; memberId: { not: string } };
+      };
+      orderBy: Array<{ stayStart: "asc" }>;
+      select: {
+        id: true;
+        bookingId: true;
+        stayStart: true;
+        stayEnd: true;
+        booking: {
+          select: {
+            id: true;
+            memberId: true;
+            checkIn: true;
+            checkOut: true;
+          };
+        };
+      };
+    }): Promise<FutureLinkedGuestBooking[]>;
+  };
+}
+
+export async function loadFutureLinkedGuestBookingsForMember(
+  db: FutureLinkedGuestClient,
+  memberId: string,
+  today: Date,
+): Promise<FutureLinkedGuestBooking[]> {
+  return db.bookingGuest.findMany({
+    where: {
+      memberId,
+      isMember: true,
+      stayEnd: { gt: today },
+      booking: { deletedAt: null, memberId: { not: memberId } },
+    },
+    orderBy: [{ stayStart: "asc" }],
+    select: {
+      id: true,
+      bookingId: true,
+      stayStart: true,
+      stayEnd: true,
+      booking: {
+        select: {
+          id: true,
+          memberId: true,
+          checkIn: true,
+          checkOut: true,
+        },
+      },
+    },
+  });
+}
+
+const LINKED_GUEST_SUMMARY_LIMIT = 10;
+
+// Bounded serialization of the linked-guest block for a 409 body, matching the
+// shape the seasonal-assignment preview surfaces.
+export function summarizeFutureLinkedGuestBookings(
+  guests: FutureLinkedGuestBooking[],
+  formatDate: (date: Date) => string,
+) {
+  return {
+    count: guests.length,
+    truncatedCount: Math.max(0, guests.length - LINKED_GUEST_SUMMARY_LIMIT),
+    list: guests.slice(0, LINKED_GUEST_SUMMARY_LIMIT).map((guest) => ({
+      bookingGuestId: guest.id,
+      bookingId: guest.bookingId,
+      ownerMemberId: guest.booking.memberId,
+      checkIn: formatDate(guest.booking.checkIn),
+      checkOut: formatDate(guest.booking.checkOut),
+      stayStart: formatDate(guest.stayStart),
+      stayEnd: formatDate(guest.stayEnd),
+    })),
+  };
+}
+
+export const LINKED_GUEST_NOT_APPLICABLE_BLOCK_MESSAGE =
+  "This change would make the member age-exempt (N/A), but they are still a linked guest on future bookings owned by other members. Remove those guest links before making the member N/A.";

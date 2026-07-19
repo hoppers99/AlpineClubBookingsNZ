@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
-import { Prisma } from "@prisma/client";
+import { Prisma, type AgeTier } from "@prisma/client";
 import { z } from "zod";
+import {
+  isOrganisationMember,
+  resolveAccessRoleTokens,
+} from "@/lib/access-roles";
 import {
   buildStructuredAuditLogCreateArgs,
   getAuditRequestContext,
@@ -41,6 +45,17 @@ const membershipTypeSelect = {
   },
   _count: { select: { assignments: true, annualFees: true } },
 } satisfies Prisma.MembershipTypeSelect;
+
+// Sentinel used to roll back the config-write transaction when the in-tx
+// offending-assignee re-read (MAJOR-2 TOCTOU guard) finds a member the new
+// allowed set would strand. The 409 body is built from `forcedEditConflict`
+// after the transaction unwinds.
+class ForcedEditConflictError extends Error {
+  constructor() {
+    super("membership type allowed-tiers edit would strand assignees");
+    this.name = "ForcedEditConflictError";
+  }
+}
 
 const paramsSchema = z.object({
   id: z.string().min(1),
@@ -206,34 +221,67 @@ export async function PATCH(
     return NextResponse.json({ error: configurationError }, { status: 400 });
   }
 
-  // Owner decision (#2106): block an allowed-tiers edit that would CREATE or
-  // DESTROY the FORCED (only-N/A) state while current/future-season assignments
-  // hold a tier the new set does not cover (mirror of the merge coverage rule).
-  // The admin must reassign or reclassify those members individually first.
-  if (parsed.data.allowedAgeTiers !== undefined) {
-    const affectedAssignments =
-      await prisma.seasonalMembershipAssignment.findMany({
-        where: {
-          membershipTypeId: existing.id,
-          seasonYear: { gte: getSeasonYear() },
+  // Owner decision (#2106): block an allowed-tiers edit that would strand a
+  // current/future-season member — becoming FORCED (only-N/A) while a person-tier
+  // member is assigned, or removing N/A while a NON-ORG member is still on N/A
+  // (org members are globally forced to N/A and exempt). See
+  // membershipTypeForcedEditOffendingTiers. The admin must reassign or reclassify
+  // those members individually first.
+  //
+  // The offending-assignee read is repeated INSIDE the write transaction below
+  // so a concurrent assignment/tier change between this check and the config
+  // write cannot slip a now-stranded member past the guard (MAJOR-2 TOCTOU).
+  // Residual: the assignment-save side of the race is still pre-tx (this route
+  // only serialises the type-config write); that surface is admin-only and
+  // self-heals at the enforcement sites, so a briefly-inconsistent tier is
+  // corrected on the next member/assignment write rather than persisted silently.
+  const buildForcedEditOffendingTiers = async (
+    db: Pick<Prisma.TransactionClient, "seasonalMembershipAssignment">,
+  ): Promise<AgeTier[]> => {
+    if (parsed.data.allowedAgeTiers === undefined) {
+      return [];
+    }
+    const affectedAssignments = await db.seasonalMembershipAssignment.findMany({
+      where: {
+        membershipTypeId: existing.id,
+        seasonYear: { gte: getSeasonYear() },
+      },
+      select: {
+        member: {
+          select: {
+            ageTier: true,
+            role: true,
+            accessRoles: { select: { role: true } },
+          },
         },
-        select: { member: { select: { ageTier: true } } },
-      });
-    const offendingTiers = membershipTypeForcedEditOffendingTiers({
+      },
+    });
+    return membershipTypeForcedEditOffendingTiers({
       previousAllowedAgeTiers,
       nextAllowedAgeTiers: allowedAgeTiers,
-      affectedMemberAgeTiers: affectedAssignments.map(
-        (assignment) => assignment.member.ageTier,
-      ),
+      affectedMembers: affectedAssignments.map((assignment) => ({
+        ageTier: assignment.member.ageTier,
+        isOrganisation: isOrganisationMember({
+          accessRoleTokens: resolveAccessRoleTokens(assignment.member),
+          legacyRole: assignment.member.role,
+        }),
+      })),
     });
+  };
+
+  const describeForcedEditBlock = (offendingTiers: AgeTier[]) => {
+    const offending = offendingTiers
+      .map((tier) => (tier === "NOT_APPLICABLE" ? "N/A" : tier))
+      .join(", ");
+    return `This change to the age-exempt (N/A) configuration is blocked: current or future-season members hold age tier(s) ${offending} that the new allowed set does not cover. Reassign or reclassify those members before changing this type's N/A status.`;
+  };
+
+  // Pre-transaction check: fail fast with a clean 409 for the common case.
+  if (parsed.data.allowedAgeTiers !== undefined) {
+    const offendingTiers = await buildForcedEditOffendingTiers(prisma);
     if (offendingTiers.length > 0) {
-      const offending = offendingTiers
-        .map((tier) => (tier === "NOT_APPLICABLE" ? "N/A" : tier))
-        .join(", ");
       return NextResponse.json(
-        {
-          error: `This change to the age-exempt (N/A) configuration is blocked: current or future-season members hold age tier(s) ${offending} that the new allowed set does not cover. Reassign or reclassify those members before changing this type's N/A status.`,
-        },
+        { error: describeForcedEditBlock(offendingTiers) },
         { status: 409 },
       );
     }
@@ -244,7 +292,15 @@ export async function PATCH(
   };
 
   const auditAction = auditActionForUpdate(existing, parsed.data);
+  let forcedEditConflict: AgeTier[] | null = null;
   const updated = await prisma.$transaction(async (tx) => {
+    // MAJOR-2: re-read the offending assignees on the tx client immediately
+    // before the config write so a race since the pre-tx check is caught.
+    const txOffendingTiers = await buildForcedEditOffendingTiers(tx);
+    if (txOffendingTiers.length > 0) {
+      forcedEditConflict = txOffendingTiers;
+      throw new ForcedEditConflictError();
+    }
     const membershipType = await tx.membershipType.update({
       where: { id: existing.id },
       data,
@@ -284,7 +340,18 @@ export async function PATCH(
     );
 
     return membershipTypeWithRules;
+  }).catch((error) => {
+    if (error instanceof ForcedEditConflictError && forcedEditConflict) {
+      return NextResponse.json(
+        { error: describeForcedEditBlock(forcedEditConflict) },
+        { status: 409 },
+      );
+    }
+    throw error;
   });
+  if (updated instanceof NextResponse) {
+    return updated;
+  }
   revalidatePath("/", "layout");
 
   return NextResponse.json({

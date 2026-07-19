@@ -295,21 +295,24 @@ describe("#2106 — subscription-behaviour restriction on age-exempt config", ()
   });
 });
 
-describe("#2106 — FORCED-transition type-edit coverage guard", () => {
+describe("#2106 — allowed-tiers edit stranding guard", () => {
   it("blocks becoming FORCED while a person-tier member is assigned", () => {
     const offending = membershipTypeForcedEditOffendingTiers({
       previousAllowedAgeTiers: ["ADULT", "NOT_APPLICABLE"],
       nextAllowedAgeTiers: ["NOT_APPLICABLE"],
-      affectedMemberAgeTiers: ["ADULT", "NOT_APPLICABLE"],
+      affectedMembers: [
+        { ageTier: "ADULT", isOrganisation: false },
+        { ageTier: "NOT_APPLICABLE", isOrganisation: false },
+      ],
     });
     expect(offending).toEqual(["ADULT"]);
   });
 
-  it("blocks leaving FORCED (dropping N/A) while an N/A member is assigned", () => {
+  it("blocks leaving FORCED (dropping N/A) while a non-org N/A member is assigned", () => {
     const offending = membershipTypeForcedEditOffendingTiers({
       previousAllowedAgeTiers: ["NOT_APPLICABLE"],
       nextAllowedAgeTiers: ["ADULT"],
-      affectedMemberAgeTiers: ["NOT_APPLICABLE"],
+      affectedMembers: [{ ageTier: "NOT_APPLICABLE", isOrganisation: false }],
     });
     expect(offending).toEqual(["NOT_APPLICABLE"]);
   });
@@ -319,19 +322,52 @@ describe("#2106 — FORCED-transition type-edit coverage guard", () => {
       membershipTypeForcedEditOffendingTiers({
         previousAllowedAgeTiers: ["ADULT", "NOT_APPLICABLE"],
         nextAllowedAgeTiers: ["NOT_APPLICABLE"],
-        affectedMemberAgeTiers: ["NOT_APPLICABLE"],
+        affectedMembers: [{ ageTier: "NOT_APPLICABLE", isOrganisation: false }],
       }),
     ).toEqual([]);
   });
 
-  it("ignores ordinary allowed-tier edits that neither create nor destroy FORCED", () => {
-    // ALLOWED -> DISALLOWED is not a FORCED transition, so this guard is a no-op
-    // even though an N/A member would be offended (that is the merge/other guards' job).
+  it("allows FORCED -> ALLOWED (N/A retained), stranding nobody", () => {
+    expect(
+      membershipTypeForcedEditOffendingTiers({
+        previousAllowedAgeTiers: ["NOT_APPLICABLE"],
+        nextAllowedAgeTiers: ["ADULT", "NOT_APPLICABLE"],
+        affectedMembers: [{ ageTier: "NOT_APPLICABLE", isOrganisation: false }],
+      }),
+    ).toEqual([]);
+  });
+
+  // MAJOR-1(b): ALLOWED -> DISALLOWED (removing N/A) now strands non-org N/A
+  // holders — this guard is no longer limited to FORCED transitions.
+  it("blocks ALLOWED -> DISALLOWED while a non-org N/A member is assigned", () => {
     expect(
       membershipTypeForcedEditOffendingTiers({
         previousAllowedAgeTiers: ["ADULT", "NOT_APPLICABLE"],
         nextAllowedAgeTiers: ["ADULT"],
-        affectedMemberAgeTiers: ["NOT_APPLICABLE"],
+        affectedMembers: [{ ageTier: "NOT_APPLICABLE", isOrganisation: false }],
+      }),
+    ).toEqual(["NOT_APPLICABLE"]);
+  });
+
+  it("exempts org members from the N/A-removal block (global org force keeps them N/A)", () => {
+    expect(
+      membershipTypeForcedEditOffendingTiers({
+        previousAllowedAgeTiers: ["ADULT", "NOT_APPLICABLE"],
+        nextAllowedAgeTiers: ["ADULT"],
+        affectedMembers: [
+          { ageTier: "NOT_APPLICABLE", isOrganisation: true },
+          { ageTier: "ADULT", isOrganisation: false },
+        ],
+      }),
+    ).toEqual([]);
+  });
+
+  it("ignores an ordinary person-tier narrowing that neither creates FORCED nor removes N/A", () => {
+    expect(
+      membershipTypeForcedEditOffendingTiers({
+        previousAllowedAgeTiers: ["YOUTH", "ADULT"],
+        nextAllowedAgeTiers: ["ADULT"],
+        affectedMembers: [{ ageTier: "YOUTH", isOrganisation: false }],
       }),
     ).toEqual([]);
   });

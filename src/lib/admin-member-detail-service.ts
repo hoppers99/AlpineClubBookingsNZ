@@ -53,9 +53,13 @@ import {
   membershipTypeAgeExemption,
 } from "@/lib/membership-types";
 import {
+  LINKED_GUEST_NOT_APPLICABLE_BLOCK_MESSAGE,
+  loadFutureLinkedGuestBookingsForMember,
   loadMemberCurrentSeasonTypeExemption,
   resolveEnforcedAgeTier,
+  summarizeFutureLinkedGuestBookings,
 } from "@/lib/age-tier-enforcement";
+import { formatDateOnly, getTodayDateOnly } from "@/lib/date-only";
 import {
   accessRoleChangeRequiresFullAdmin,
   accessRolesFromCompatibilityFields,
@@ -1100,9 +1104,12 @@ export async function updateAdminMember(params: {
         existing.ageTier === "NOT_APPLICABLE" ? "ADULT" : existing.ageTier;
     }
 
-    // DOB wins over any echoed ageTier; otherwise the admin's explicit pick
-    // (which may be a manual N/A on an ALLOWED type) is the requested tier.
-    const requestedAgeTier = dobProvided ? undefined : data.ageTier ?? undefined;
+    // #2106 (MINOR-6): honour an explicit tier pick even when a DOB change rides
+    // along in the same save — the resolver validates the pick (a manual N/A is
+    // only accepted on an ALLOWED type), and the DOB-derived tier remains the
+    // `restorePersonTier` fallback when no explicit tier is submitted. Previously
+    // a DOB edit silently discarded an accompanying explicit pick.
+    const requestedAgeTier = data.ageTier ?? undefined;
 
     const resolved = resolveEnforcedAgeTier({
       isOrganisation: isOrg,
@@ -1115,6 +1122,35 @@ export async function updateAdminMember(params: {
       return jsonResult({ error: resolved.error }, { status: 422 });
     }
     updateData.ageTier = resolved.ageTier;
+
+    // #2106 owner decision (MAJOR-5a): when this edit flips a non-N/A member TO
+    // N/A (a manual N/A pick or an org grant), block it while the member is a
+    // linked guest on someone else's future booking — N/A members are not
+    // bookable guests. Same query shape as the seasonal-assignment save; the
+    // admin must remove those guest links first. Applies to the current season's
+    // "now" only, mirroring the other N/A-flip sites.
+    if (
+      existing.ageTier !== "NOT_APPLICABLE" &&
+      resolved.ageTier === "NOT_APPLICABLE"
+    ) {
+      const linkedGuestBookings = await loadFutureLinkedGuestBookingsForMember(
+        prisma,
+        id,
+        getTodayDateOnly(),
+      );
+      if (linkedGuestBookings.length > 0) {
+        return jsonResult(
+          {
+            error: LINKED_GUEST_NOT_APPLICABLE_BLOCK_MESSAGE,
+            linkedGuestBookings: summarizeFutureLinkedGuestBookings(
+              linkedGuestBookings,
+              formatDateOnly,
+            ),
+          },
+          { status: 409 },
+        );
+      }
+    }
   }
 
   // #1756: deactivation — or an ADULT → minor/N-A tier correction (the same

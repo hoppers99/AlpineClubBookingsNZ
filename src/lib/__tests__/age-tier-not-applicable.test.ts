@@ -28,6 +28,9 @@ vi.mock("@/lib/prisma", () => ({
       deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
     auditLog: { create: vi.fn().mockResolvedValue({}), findMany: vi.fn() },
+    // #2106: the N/A-flip linked-guest block queries future linked-guest
+    // bookings; default to none.
+    bookingGuest: { findMany: vi.fn().mockResolvedValue([]) },
     // #2106: the update path resolves the member's current-season type exemption.
     seasonalMembershipAssignment: {
       findUnique: vi.fn().mockResolvedValue(null),

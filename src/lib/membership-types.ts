@@ -183,30 +183,50 @@ export function validateMembershipTypeRuleConfiguration(params: {
   return null;
 }
 
-// Owner decision (#2106): a membership-type edit that would CREATE or DESTROY
-// the FORCED (only-N/A) state is blocked while current/future-season
-// assignments on the type hold an age tier the NEW allowed set does not cover —
-// the same coverage rule the merge route enforces. Becoming FORCED offends
-// every member on a real person tier; leaving FORCED (dropping N/A) offends
-// every member still on N/A. When the FORCED-ness is unchanged this returns an
-// empty list (ordinary allowed-tier edits are out of scope of this guard).
+// Owner decision (#2106): a membership-type allowed-tiers edit is blocked while
+// current/future-season assignments on the type would be stranded by the change.
+// Two independent stranding cases are covered (either one blocks):
+//   1. Becoming FORCED (only-N/A) — offends every member currently on a real
+//      person tier (they cannot silently be force-flipped to N/A; reassign or
+//      reclassify them first).
+//   2. Removing N/A from the allowed set (FORCED→DISALLOWED *and* the
+//      ALLOWED→DISALLOWED stranding the earlier guard missed) — offends every
+//      NON-ORG member currently on N/A. Organisation members are exempt: the org
+//      force keeps them N/A globally regardless of the type's tiers (#1440), so
+//      dropping N/A never strands them.
+// When neither case applies (e.g. FORCED→ALLOWED keeps N/A; an ordinary
+// person-tier narrowing that neither creates FORCED nor removes N/A) this
+// returns an empty list.
 export function membershipTypeForcedEditOffendingTiers(params: {
   previousAllowedAgeTiers: readonly AgeTier[];
   nextAllowedAgeTiers: readonly AgeTier[];
-  affectedMemberAgeTiers: readonly AgeTier[];
+  affectedMembers: readonly { ageTier: AgeTier; isOrganisation: boolean }[];
 }): AgeTier[] {
+  const nextAllowed = new Set(params.nextAllowedAgeTiers);
   const previous = membershipTypeAgeExemption(params.previousAllowedAgeTiers);
   const next = membershipTypeAgeExemption(params.nextAllowedAgeTiers);
-  const createsOrDestroysForced =
-    (previous === "FORCED") !== (next === "FORCED");
-  if (!createsOrDestroysForced) {
+  const createsForced = previous !== "FORCED" && next === "FORCED";
+  const removesNotApplicable =
+    params.previousAllowedAgeTiers.includes("NOT_APPLICABLE") &&
+    !nextAllowed.has("NOT_APPLICABLE");
+  if (!createsForced && !removesNotApplicable) {
     return [];
   }
-  const nextAllowed = new Set(params.nextAllowedAgeTiers);
   const offending = new Set<AgeTier>();
-  for (const ageTier of params.affectedMemberAgeTiers) {
-    if (!nextAllowed.has(ageTier)) {
-      offending.add(ageTier);
+  for (const member of params.affectedMembers) {
+    if (member.ageTier === "NOT_APPLICABLE") {
+      // Dropping N/A strands a non-org member currently on N/A; org members are
+      // exempt (global org force keeps them N/A regardless of the type).
+      if (removesNotApplicable && !member.isOrganisation) {
+        offending.add("NOT_APPLICABLE");
+      }
+      continue;
+    }
+    // A real person tier the new set does not cover strands the member. Only
+    // reachable when becoming FORCED (only-N/A excludes every real tier); an
+    // ordinary allowed-tier narrowing is out of scope for this guard.
+    if (createsForced && !nextAllowed.has(member.ageTier)) {
+      offending.add(member.ageTier);
     }
   }
   return [...offending];
