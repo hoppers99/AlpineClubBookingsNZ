@@ -849,9 +849,15 @@ interface SubscriptionInvoiceMatch {
   invoice: Invoice;
   /** Original list position — the stable tie-break, preserving first-seen order. */
   index: number;
-  /** PAID/settled invoice; ranked ahead of UNPAID/OVERDUE (#2109 prefer-paid). */
+  /** PAID/settled invoice; the SECOND selection tier, below strength (#2109). */
   isPaid: boolean;
-  /** Matched via the account code or the flat primary item code (not union-only). */
+  /**
+   * A STRONG (distinguishing) match — account code, the flat primary/fallback
+   * item code, OR the text fallback — rather than ONLY a union-only fee-schedule
+   * code shared with hut/joining/promo fees. Strong matches outrank union-only
+   * ones in selection (#2109 FIX-1) and gate the member-less inbound path
+   * (#2109 FIX-3).
+   */
   isStrong: boolean;
 }
 
@@ -928,9 +934,13 @@ export function collectSubscriptionInvoiceMatches(
       invoice,
       index,
       isPaid: determineSubscriptionStatus(invoice).status === "PAID",
-      // Text is a fallback signal, not an authoritative code leg; only the
-      // account code and the flat primary item code count as strong.
-      isStrong: hasAccountCode || hasPrimaryItemCode,
+      // "Strong" = matched by a DISTINGUISHING signal (the account code, the
+      // flat primary/fallback item code, or the text fallback) rather than ONLY
+      // a union-only fee-schedule code shared with hut/joining/promo fees. A
+      // union-only match is the sole weak signal; every strong signal outranks
+      // it in selection (#2109 FIX-1) and qualifies the member-less inbound path
+      // (#2109 FIX-3).
+      isStrong: hasAccountCode || hasPrimaryItemCode || hasTextMatch,
     });
   });
 
@@ -939,13 +949,23 @@ export function collectSubscriptionInvoiceMatches(
 
 /**
  * Find THE subscription invoice for a season from a list of Xero invoices
- * (#2109). Collects every match, then applies prefer-paid selection:
- *   (a) a PAID/settled invoice outranks an UNPAID/OVERDUE one,
- *   (b) a strong match (account code or flat primary item code) outranks a
- *       union-only fee-schedule match, then
- *   (c) earliest/first-seen order breaks remaining ties (stable).
- * With a single-code (off) set and a single candidate this is byte-for-byte the
- * old first-match-wins behaviour. Exported for testing.
+ * (#2109). Collects every match, then — WHEN fee-schedule look-through is on
+ * (the effective options carry union codes BEYOND the single flat primary) —
+ * applies strong-first selection:
+ *   (1) a STRONG match (account code, the flat primary/fallback item code, or
+ *       the text fallback) outranks a union-only fee-schedule match, then
+ *   (2) a PAID/settled invoice outranks an UNPAID/OVERDUE one, then
+ *   (3) earliest/first-seen order breaks remaining ties (stable).
+ * Strong-first is deliberate (#2109 FIX-1): a PAID union-only match must never
+ * outrank an UNPAID strong match, or the lockout would unlock exactly the member
+ * it should hold. In the motivating scenario (a paid subscription plus an
+ * earlier unpaid overlapping hut invoice) the paid subscription is ALSO strong,
+ * so it still wins and a genuinely paid member is never marked unpaid.
+ * When look-through is OFF (no union codes beyond the primary) selection is
+ * skipped entirely and the legacy first-match-in-list-order invoice is returned,
+ * byte-for-byte with the pre-#2109 behaviour (#2109 FIX-2). VOIDED/DELETED
+ * invoices stay in the collection as unpaid, union-only losers — pre-existing
+ * and benign. Exported for testing.
  */
 export function findSubscriptionInvoice(
   invoices: Invoice[],
@@ -955,20 +975,55 @@ export function findSubscriptionInvoice(
   const matches = collectSubscriptionInvoiceMatches(invoices, seasonYear, options);
   if (matches.length === 0) return null;
 
+  // Look-through is ON only when the item-code set carries codes BEYOND the
+  // single flat primary. With an off (single-code) set, reproduce the legacy
+  // first-match-in-list-order semantics exactly — no re-ranking.
+  const unionCodes = new Set(
+    (options.itemCodes ?? []).filter((code): code is string => Boolean(code))
+  );
+  if (options.primaryItemCode) unionCodes.delete(options.primaryItemCode);
+  if (unionCodes.size === 0) return matches[0].invoice;
+
   let best = matches[0];
   for (const candidate of matches.slice(1)) {
-    if (candidate.isPaid !== best.isPaid) {
-      if (candidate.isPaid) best = candidate;
-      continue;
-    }
+    // (1) strong-first: a strong match always outranks a union-only one,
+    // regardless of paid status.
     if (candidate.isStrong !== best.isStrong) {
       if (candidate.isStrong) best = candidate;
       continue;
     }
-    // Equal on paid + strength: keep the earliest (stable first-seen) match.
+    // (2) then prefer a PAID/settled invoice.
+    if (candidate.isPaid !== best.isPaid) {
+      if (candidate.isPaid) best = candidate;
+      continue;
+    }
+    // (3) equal on strength + paid: keep the earliest (stable first-seen) match.
   }
 
   return best.invoice;
+}
+
+/**
+ * Does ANY of these invoices carry a STRONG subscription match for the season
+ * (#2109 FIX-3)? "Strong" = matched by the account code, the flat
+ * primary/fallback item code, or the text fallback — never ONLY a union-only
+ * fee-schedule code shared with hut/joining/promo fees. The member-less inbound
+ * reconciler uses this (not `findSubscriptionInvoice`) so a single invoice
+ * matched only via a union-only code is NOT treated as a subscription: that
+ * would otherwise write SUBSCRIPTION_INVOICE audit links and fan out a
+ * per-member `checkMembershipStatus` refresh (a recurring per-webhook Xero API
+ * cost) for what is really a fee invoice. Union-only inbound invoices are simply
+ * not treated as subscriptions here; per-member detection still sees them when a
+ * member's full invoice set is evaluated. Exported for testing.
+ */
+export function hasStrongSubscriptionInvoiceMatch(
+  invoices: Invoice[],
+  seasonYear: number,
+  options: SubscriptionInvoiceMatchOptions
+): boolean {
+  return collectSubscriptionInvoiceMatches(invoices, seasonYear, options).some(
+    (match) => match.isStrong
+  );
 }
 
 /**

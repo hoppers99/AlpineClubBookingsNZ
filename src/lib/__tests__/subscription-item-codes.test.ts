@@ -83,22 +83,9 @@ describe("getSubscriptionItemCodes (#2109)", () => {
   });
 
   // Closed-loop invariant: every code billing can stamp on a subscription line
-  // (a component override, else the flat mapping) is in the detection set.
-  it("is a superset of the codes billing stamps (closed loop)", async () => {
-    mocks.feeComponentFindMany.mockResolvedValue([
-      { xeroItemCode: "FULL-ADULT" },
-      { xeroItemCode: "FULL-YOUTH" },
-    ]);
-    mocks.accountMappingFindUnique.mockResolvedValue({
-      code: "203",
-      itemCode: "SUBS",
-    });
-    const stampedByBilling = ["FULL-ADULT", "FULL-YOUTH", "SUBS"];
-    const detectionSet = new Set(await getSubscriptionItemCodes());
-    for (const code of stampedByBilling) {
-      expect(detectionSet.has(code)).toBe(true);
-    }
-  });
+  // is in the detection set. The authoritative closed-loop test drives the REAL
+  // billing line-builder (not a hardcoded array) and lives in
+  // membership-subscription-billing.test.ts (#2109 FIX-4d).
 });
 
 describe("getNonSubscriptionFeeItemCodes (#2109)", () => {
@@ -116,6 +103,17 @@ describe("getNonSubscriptionFeeItemCodes (#2109)", () => {
       "JOIN-001",
       "PROMO-X",
     ]);
+    // #2109 FIX-4a: the hut-fee INCOME account's item code is a non-subscription
+    // code too, so an overlap with it is warned.
+    expect(mocks.accountMappingFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          key: {
+            in: expect.arrayContaining(["hutFeesIncome"]),
+          },
+        }),
+      }),
+    );
   });
 
   it("returns [] on a read failure (best-effort overlap only)", async () => {

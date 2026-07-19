@@ -345,6 +345,71 @@ describe("findSubscriptionInvoice", () => {
     expect(result!.invoiceID).toBe("inv-strong")
   })
 
+  // #2109 FIX-1: strong-first ranking. A PAID union-only match must NOT outrank
+  // an UNPAID strong match — that would unlock exactly the member the lockout
+  // should hold. Must FAIL under the old paid-first comparator.
+  it("keeps an UNPAID strong match above a PAID union-only match (member stays locked)", () => {
+    const paidUnionOnly = makeInvoice({
+      invoiceID: "inv-union-paid",
+      date: "2026-04-05",
+      status: Invoice.StatusEnum.PAID,
+      reference: "Hut booking",
+      // Union-only: a shared fee-schedule/hut code, no account-203 or primary code.
+      lineItems: [
+        { description: "Lodge nights", accountCode: "200", itemCode: "FULL-ADULT", quantity: 1, unitAmount: 120 },
+      ],
+    })
+    const unpaidStrong = makeInvoice({
+      invoiceID: "inv-strong-unpaid",
+      date: "2026-05-01",
+      status: Invoice.StatusEnum.AUTHORISED,
+      reference: "Renewal",
+      lineItems: [
+        { description: "Subscription", accountCode: "203", quantity: 1, unitAmount: 150 },
+      ],
+    })
+    const result = findSubscriptionInvoice([paidUnionOnly, unpaidStrong], 2026, {
+      accountCode: "203",
+      itemCodes: ["FULL-ADULT", "SUBS"],
+      primaryItemCode: "SUBS",
+      textFallbackEnabled: false,
+    })
+    // The unpaid strong subscription wins, so the member stays UNPAID/locked.
+    expect(result!.invoiceID).toBe("inv-strong-unpaid")
+  })
+
+  // #2109 FIX-2: with a single-code (off) set, selection is skipped and the
+  // earlier invoice wins in list order — legacy first-match parity. Must FAIL if
+  // prefer-paid re-ranking runs regardless of the look-through toggle.
+  it("returns the EARLIER matching invoice in OFF (single-code) mode (legacy parity)", () => {
+    const earlierUnpaid = makeInvoice({
+      invoiceID: "inv-earlier-unpaid",
+      date: "2026-04-10",
+      status: Invoice.StatusEnum.AUTHORISED,
+      reference: "Renewal",
+      lineItems: [
+        { description: "Subscription", accountCode: "999", itemCode: "SUBS", quantity: 1, unitAmount: 150 },
+      ],
+    })
+    const laterPaid = makeInvoice({
+      invoiceID: "inv-later-paid",
+      date: "2026-05-01",
+      status: Invoice.StatusEnum.PAID,
+      reference: "Renewal",
+      lineItems: [
+        { description: "Subscription", accountCode: "999", itemCode: "SUBS", quantity: 1, unitAmount: 150 },
+      ],
+    })
+    const result = findSubscriptionInvoice([earlierUnpaid, laterPaid], 2026, {
+      accountCode: "203",
+      // Single-code set (only the flat primary) — look-through OFF.
+      itemCodes: ["SUBS"],
+      primaryItemCode: "SUBS",
+      textFallbackEnabled: false,
+    })
+    expect(result!.invoiceID).toBe("inv-earlier-unpaid")
+  })
+
   // Byte-compat: with a single-code (off) set and one candidate, the result is
   // exactly first-match — the prefer-paid re-ranking never changes it.
   it("is byte-compatible with first-match-wins for the single-code (off) set", () => {

@@ -139,7 +139,8 @@ export async function getSubscriptionItemCodes(
 
 /**
  * The distinct non-null Xero item codes configured for NON-subscription fees —
- * hut fees, joining fees, and promo codes (#2109). Used by the settings preview
+ * hut-fee income, hut fees, joining fees, and promo codes (#2109). Used by the
+ * settings preview
  * to warn when a fee-schedule subscription code also identifies one of these,
  * which would let an unpaid hut/promo invoice masquerade as a subscription in
  * the widened (union) detection set. Best-effort: a read failure yields an empty
@@ -158,7 +159,14 @@ export async function getNonSubscriptionFeeItemCodes(
       }),
       store.xeroAccountMapping.findMany({
         where: {
-          key: { in: ["hutFeeItem", "hutFeeRefundItem", "entranceFeeItem"] },
+          key: {
+            in: [
+              "hutFeeItem",
+              "hutFeeRefundItem",
+              "entranceFeeItem",
+              "hutFeesIncome",
+            ],
+          },
           itemCode: { not: null },
         },
         select: { itemCode: true },

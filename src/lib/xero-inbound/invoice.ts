@@ -6,7 +6,7 @@ import { callXeroApi, getAuthenticatedXeroClient } from "@/lib/xero-api-client";
 import {
   buildSubscriptionInvoiceMatchOptions,
   checkMembershipStatus,
-  findSubscriptionInvoice,
+  hasStrongSubscriptionInvoiceMatch,
 } from "@/lib/xero-membership-sync";
 import { type XeroObjectLinkInput, upsertXeroObjectLink } from "@/lib/xero-sync";
 import { type IncrementalInvoiceReconciliationResult, type IncrementalMembershipReconciliationResult } from "./types";
@@ -159,18 +159,21 @@ export async function reconcileXeroInvoice(
       );
 
   const seasonYear = buildSeasonYearFromInvoice(invoice);
-  // Member-less, single-invoice union semantics (#2109): the reconciler sees
-  // one invoice at a time, so prefer-paid selection cannot distinguish a paid
-  // subscription from an unpaid fee invoice that shares a fee-schedule item
-  // code. That accepted residual — a shared-code fee invoice looking like a
-  // subscription here — is documented in the tests; the settings overlap warning
-  // steers admins away from configuring overlapping codes in the first place.
-  const looksLikeSubscriptionInvoice =
-    findSubscriptionInvoice(
-      [invoice],
-      seasonYear,
-      await buildSubscriptionInvoiceMatchOptions()
-    ) !== null;
+  // Member-less inbound gate (#2109 FIX-3): the reconciler sees ONE invoice at a
+  // time and cannot run prefer-paid selection, so it treats an invoice as a
+  // subscription ONLY on a STRONG match (account code, the flat primary/fallback
+  // item code, or the text fallback) — never on a union-only fee-schedule code
+  // shared with hut/joining/promo fees. A union-only inbound invoice is simply
+  // not treated as a subscription here (writing no SUBSCRIPTION_INVOICE audit
+  // links and triggering no per-member checkMembershipStatus refresh, which also
+  // removes a recurring per-webhook Xero API cost); per-member detection still
+  // sees it when a member's full invoice set is evaluated. The settings overlap
+  // warning still steers admins away from configuring overlapping codes.
+  const looksLikeSubscriptionInvoice = hasStrongSubscriptionInvoiceMatch(
+    [invoice],
+    seasonYear,
+    await buildSubscriptionInvoiceMatchOptions()
+  );
   const fallbackSubscriptionMemberIds: string[] = [];
 
   if (

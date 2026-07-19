@@ -319,8 +319,8 @@ export function SubscriptionLockoutSettingsPanel({
     <div className="space-y-6">
       {!membershipCanEdit ? (
         <AdminViewOnlyNotice canEdit={membershipCanEdit}>
-          Your admin role can view the subscription lockout settings but cannot
-          change them.
+          Your admin role can view the membership booking-lockout settings but
+          cannot change them.
         </AdminViewOnlyNotice>
       ) : null}
       <Card>
@@ -456,8 +456,12 @@ export function SubscriptionLockoutSettingsPanel({
         </CardHeader>
         <CardContent className="space-y-5">
           {!financeCanEdit ? (
+            // Scoped to the finance-gated fields only (the subscription account
+            // and item codes). A membership-edit admin can still change the
+            // item-code matching mode and the invoice-text fallback in this card,
+            // so the notice must not claim they cannot change anything here.
             <AdminViewOnlyNotice canEdit={financeCanEdit}>
-              Your admin role can view the paid-subscription detection settings
+              Your admin role can view the subscription account and item codes
               but cannot change them.
             </AdminViewOnlyNotice>
           ) : null}
