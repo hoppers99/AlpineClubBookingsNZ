@@ -232,10 +232,101 @@ describe("AdminBookingCalendar overflow layout (#2088)", () => {
     fireEvent.click(more as HTMLElement);
 
     const dialog = await screen.findByRole("dialog");
-    expect(within(dialog).getByText(/10 bookings/)).toBeTruthy();
+    // The dialog lists ALL bookings for the night and says so explicitly, so the
+    // "+5 more" chip count and the dialog count no longer read as a mismatch.
+    expect(
+      within(dialog).getByText(
+        /All 10 bookings staying this night \(5 shown on the calendar\)/,
+      ),
+    ).toBeTruthy();
     // The full list includes the bookings that were collapsed under the cap.
     expect(within(dialog).getByText("Member 9")).toBeTruthy();
     expect(within(dialog).getByText("Member 0")).toBeTruthy();
+  });
+});
+
+describe("AdminBookingCalendar overflow name labelling (#2088 review)", () => {
+  // Pin the view to June 2026 (June 1 is a Monday, so week 0 = the 1st–7th and
+  // week 1 = the 8th–14th) for a deterministic grid.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-06-15T00:00:00Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    window.localStorage.clear();
+  });
+
+  // A multi-week booking whose *first* segment is collapsed under week 0's
+  // "+N more" cap, but whose continuation renders as a visible bar in the
+  // (non-overflow) next week. Ordering forces lanes: five fillers take lanes
+  // 0–4, the spanner takes lane 5 (hidden in the overflow week), and two more
+  // fillers take lanes 6–7 to push week 0 over the cap. In week 1 the spanner is
+  // the only booking, so its lane-5 bar is painted and must carry the member
+  // name — previously it rendered as a nameless orphan bar.
+  function orphanBarResponse() {
+    const iso = (day: number) => `2026-06-${String(day).padStart(2, "0")}`;
+    const filler = (id: string) => ({
+      id,
+      memberName: `Filler ${id}`,
+      checkIn: iso(2),
+      checkOut: iso(5), // nights 2–4, all inside week 0
+      status: "PAID",
+      guestCount: 2,
+    });
+    return {
+      bookings: [
+        filler("a0"),
+        filler("a1"),
+        filler("a2"),
+        filler("a3"),
+        filler("a4"),
+        {
+          id: "spanner",
+          memberName: "Spanner Sam",
+          checkIn: iso(2),
+          checkOut: iso(12), // nights 2–11: week 0 into week 1
+          status: "PAID",
+          guestCount: 3,
+        },
+        filler("b0"),
+        filler("b1"),
+      ],
+      availability: {},
+    };
+  }
+
+  it("labels the first VISIBLE segment so a hidden-first-week booking is not a nameless bar", async () => {
+    stubCalendar(orphanBarResponse());
+    const { container } = render(<AdminBookingCalendar />);
+
+    await waitFor(() => {
+      expect(container.querySelectorAll("[data-booking-id]").length).toBeGreaterThan(0);
+    });
+
+    // The spanner's week-0 segment is collapsed under the cap, but its week-1
+    // continuation now renders the member name (regression: it was blank).
+    const spannerBars = container.querySelectorAll('[data-booking-id="spanner"]');
+    // Exactly one visible segment (week 1); the week-0 segment is hidden.
+    expect(spannerBars.length).toBe(1);
+    expect(spannerBars[0].getAttribute("data-row-index")).toBe("1");
+    expect(spannerBars[0].textContent).toMatch(/Spanner Sam/);
+
+    // And it is still counted in week 0's "+N more" chip + dialog for the 2nd.
+    const more = container.querySelector<HTMLElement>('[data-more-day="2026-06-02"]');
+    expect(more).not.toBeNull();
+    expect(more?.textContent).toMatch(/\+3 more/);
+
+    fireEvent.click(more as HTMLElement);
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByText(
+        /All 8 bookings staying this night \(5 shown on the calendar\)/,
+      ),
+    ).toBeTruthy();
+    expect(within(dialog).getByText("Spanner Sam")).toBeTruthy();
   });
 });
 

@@ -15,6 +15,7 @@ import { bookingStatusLabel } from "@/lib/status-colors";
 import { buildHrefWithReturnTo, buildPathWithSearch } from "@/lib/internal-return-path";
 import { getAdminCalendarBookingDayRange } from "@/lib/admin-booking-calendar-ranges";
 import { formatDateOnly, getTodayDateOnly } from "@/lib/date-only";
+import { formatNZDate } from "@/lib/nzst-date";
 
 interface CalendarBooking {
   id: string;
@@ -75,9 +76,13 @@ export function AdminBookingCalendar() {
   const deletedParam = searchParams.get("deleted");
   const lodgeParam = searchParams.get("lodgeId");
 
-  const now = new Date();
-  const [year, setYear] = useState(now.getFullYear());
-  const [month, setMonth] = useState(now.getMonth()); // 0-indexed
+  // Seed the initial view from NZ "today" (getTodayDateOnly is pinned to UTC
+  // midnight of the club-timezone date) so the default month and the "today"
+  // highlight (todayStr, below) stay consistent for admins whose browser clock
+  // trails NZ. A raw new Date() here could open the previous month post-midnight.
+  const nzToday = getTodayDateOnly();
+  const [year, setYear] = useState(nzToday.getUTCFullYear());
+  const [month, setMonth] = useState(nzToday.getUTCMonth()); // 0-indexed
   const [bookings, setBookings] = useState<CalendarBooking[]>([]);
   const [availability, setAvailability] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(false);
@@ -161,8 +166,9 @@ export function AdminBookingCalendar() {
   }, [monthKey]);
 
   const goToday = () => {
-    setYear(now.getFullYear());
-    setMonth(now.getMonth());
+    const today = getTodayDateOnly();
+    setYear(today.getUTCFullYear());
+    setMonth(today.getUTCMonth());
   };
 
   const goPrev = () => {
@@ -299,6 +305,23 @@ export function AdminBookingCalendar() {
     }
   }
 
+  // Overflow is decided per ROW while lanes are global, so a booking whose first
+  // segment is hidden under a "+N more" cap (laneIdx >= cap in that row) can still
+  // render a continuation segment in a later, non-overflow week. The member name
+  // must therefore ride the first *visible* segment of each booking — not strictly
+  // its first segment — or that continuation renders as a nameless orphan bar
+  // (#2088 review). barSegments is built in ascending row order per booking.
+  const isSegmentHidden = (seg: BarSegment) =>
+    rowIsOverflow[seg.row] && seg.laneIdx >= barLaneCapByRow[seg.row];
+  const firstVisibleRowByBooking = new Map<string, number>();
+  for (const seg of barSegments) {
+    if (isSegmentHidden(seg)) continue;
+    const prev = firstVisibleRowByBooking.get(seg.booking.id);
+    if (prev === undefined || seg.row < prev) {
+      firstVisibleRowByBooking.set(seg.booking.id, seg.row);
+    }
+  }
+
   // Count the bookings hidden under the cap on each day so the "+N more" chip
   // can label itself; the dialog then opens the complete day list.
   const hiddenCountByCell = new Map<number, number>();
@@ -323,6 +346,19 @@ export function AdminBookingCalendar() {
             a.memberName.localeCompare(b.memberName)
         )
     : [];
+
+  // How many of the open day's bookings the calendar actually painted as bars
+  // (total minus the ones collapsed under the cap for that cell). Lets the dialog
+  // spell out that it lists ALL bookings, not just the "+N more" remainder — the
+  // chip count and the dialog count otherwise read as a mismatch (#2088 review).
+  const openDayHidden = (() => {
+    if (!openDay) return 0;
+    for (let i = 0; i < rows * 7; i++) {
+      if (cellDateStr(i) === openDay) return hiddenCountByCell.get(i) ?? 0;
+    }
+    return 0;
+  })();
+  const openDayShown = Math.max(0, openDayBookings.length - openDayHidden);
 
   const monthNames = [
     "January", "February", "March", "April", "May", "June",
@@ -439,7 +475,7 @@ export function AdminBookingCalendar() {
         <div className="absolute inset-0 pointer-events-none">
           {barSegments.map((seg) => {
             // Lanes past the cap are hidden here and surface via "+N more".
-            if (rowIsOverflow[seg.row] && seg.laneIdx >= barLaneCapByRow[seg.row]) {
+            if (isSegmentHidden(seg)) {
               return null;
             }
             const { booking } = seg;
@@ -472,7 +508,7 @@ export function AdminBookingCalendar() {
                 title={`${booking.memberName} (${booking.status}) — ${booking.checkIn} to ${booking.checkOut}, ${booking.guestCount} guest(s)`}
                 onClick={() => router.push(buildHrefWithReturnTo(`/bookings/${booking.id}`, currentBookingsPath))}
               >
-                {seg.isFirst && (
+                {firstVisibleRowByBooking.get(booking.id) === seg.row && (
                   <span className="text-white text-[11px] font-medium leading-none truncate px-1.5">
                     {booking.memberName}
                     {seg.spanDays > 2 && ` · ${booking.guestCount}g`}
@@ -526,10 +562,13 @@ export function AdminBookingCalendar() {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Bookings on {openDay}</DialogTitle>
+            <DialogTitle>
+              Bookings on {openDay ? formatNZDate(new Date(openDay)) : ""}
+            </DialogTitle>
             <DialogDescription>
-              {openDayBookings.length} booking
-              {openDayBookings.length === 1 ? "" : "s"} staying this night.
+              All {openDayBookings.length} booking
+              {openDayBookings.length === 1 ? "" : "s"} staying this night
+              {openDayHidden > 0 ? ` (${openDayShown} shown on the calendar)` : ""}.
             </DialogDescription>
           </DialogHeader>
           <div className="max-h-[60vh] divide-y overflow-y-auto">
