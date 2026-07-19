@@ -89,4 +89,16 @@ describe("probeXeroConnectionHealth (#2105)", () => {
 
     expect(result.tokenHealth).toBe("error");
   });
+
+  it("maps a raw 401/403 live-read failure to reconnect_required (revoked-token window)", async () => {
+    h.getAuthenticatedXeroClient.mockRejectedValue(
+      Object.assign(new Error("Unauthorized"), {
+        response: { statusCode: 401 },
+      }),
+    );
+
+    const result = await probeXeroConnectionHealth(1000);
+
+    expect(result.tokenHealth).toBe("reconnect_required");
+  });
 });

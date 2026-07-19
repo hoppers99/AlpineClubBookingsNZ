@@ -594,6 +594,23 @@ describe("lock-date check-failure classification (#2105)", () => {
     );
   });
 
+  it("classifies a raw 401/403 from the org read as reconnect_required (revoked-token window)", async () => {
+    // A token revoked in Xero's UI is rejected live before the pre-expiry
+    // refresh window trips, so the error arrives as a raw API status — the
+    // classifier falls back to the same 401/403 check as getXeroApiErrorInfo.
+    const raw401 = Object.assign(new Error("Unauthorized"), {
+      response: { statusCode: 401 },
+    });
+    const error = await failWith(raw401);
+    expect(error?.reason).toBe("reconnect_required");
+
+    const raw403 = Object.assign(new Error("Forbidden"), {
+      response: { statusCode: 403 },
+    });
+    const error403 = await failWith(raw403);
+    expect(error403?.reason).toBe("reconnect_required");
+  });
+
   it("classifies internally but discloses NO reason to members (non-disclosure)", async () => {
     const error = await failWith(reconnectError(), { audience: "member" });
     // Internally the cause is still known…

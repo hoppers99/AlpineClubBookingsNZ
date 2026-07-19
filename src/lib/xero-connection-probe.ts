@@ -21,6 +21,7 @@ import logger from "@/lib/logger";
 import { redactSensitiveText } from "@/lib/redact-sensitive-json";
 import { getAuthenticatedXeroClient } from "@/lib/xero-api-client";
 import { getLatestXeroUsageErrorMessage } from "@/lib/xero-api-usage";
+import { getXeroErrorStatusCode } from "@/lib/xero-error-shape";
 import { getXeroLockDates } from "@/lib/xero-organisation";
 
 export type XeroTokenHealth =
@@ -63,6 +64,13 @@ function classifyProbeError(error: unknown): XeroTokenHealth {
     if (error.name === "XeroReconnectRequiredError") {
       return "reconnect_required";
     }
+  }
+  // Raw 401/403 from the live read (token revoked before the pre-expiry
+  // refresh window trips) — same status fallback as getXeroApiErrorInfo, so
+  // the panel shows the Reconnect CTA instead of a generic failure.
+  const statusCode = getXeroErrorStatusCode(error);
+  if (statusCode === 401 || statusCode === 403) {
+    return "reconnect_required";
   }
   return "error";
 }

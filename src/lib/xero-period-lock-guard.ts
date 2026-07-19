@@ -46,6 +46,7 @@ import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import { wouldQueueCheckInDatedInvoiceUpdate } from "@/lib/xero-booking-edit-conditions";
 // The source domain module, not the @/lib/xero facade (#1208 lint rule).
 import { isXeroConnected } from "@/lib/xero-token-store";
+import { getXeroErrorStatusCode } from "@/lib/xero-error-shape";
 import {
   getEffectiveXeroLockDate,
   getXeroLockDates,
@@ -146,6 +147,13 @@ function classifyXeroLockDateCheckFailure(
   if (error instanceof Error && error.name === "XeroDailyLimitError") {
     const retryAfterSec = (error as { retryAfterSec?: number }).retryAfterSec;
     return new XeroLockDateCheckFailedError(audience, "rate_limited", retryAfterSec);
+  }
+  // A live 401/403 from the org read (token revoked in Xero's UI before the
+  // pre-expiry refresh window trips) arrives as a raw API error, not a
+  // reconnect-classed one — same status fallback as getXeroApiErrorInfo.
+  const statusCode = getXeroErrorStatusCode(error);
+  if (statusCode === 401 || statusCode === 403) {
+    return new XeroLockDateCheckFailedError(audience, "reconnect_required");
   }
   return new XeroLockDateCheckFailedError(audience, "transient");
 }
