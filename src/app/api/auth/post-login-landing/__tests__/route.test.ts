@@ -11,6 +11,17 @@ vi.mock("@/lib/auth", () => ({
   auth: () => mockAuth(),
 }));
 
+// requireActiveSession re-verifies the member row (active / force-password
+// flags); return an active member so the guard admits the mocked session.
+const mockMemberFindUnique = vi.fn();
+vi.mock("@/lib/prisma", () => ({
+  prisma: {
+    member: {
+      findUnique: (...args: unknown[]) => mockMemberFindUnique(...args),
+    },
+  },
+}));
+
 import { GET } from "@/app/api/auth/post-login-landing/route";
 
 function matrix(
@@ -35,6 +46,11 @@ function req(callbackUrl?: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockMemberFindUnique.mockResolvedValue({
+    active: true,
+    forcePasswordChange: false,
+    twoFactorEnabled: false,
+  });
 });
 
 describe("GET /api/auth/post-login-landing (#2090)", () => {

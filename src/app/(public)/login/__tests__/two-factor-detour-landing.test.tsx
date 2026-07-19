@@ -135,7 +135,9 @@ describe("/login/enroll post-detour landing (#2090)", () => {
       }),
     );
 
-    await expect(runEnroll()).rejects.toThrow("redirect:/login/verify");
+    // Anchored: a baked-in "?callbackUrl=…" would defeat this assertion if it
+    // were a substring match (vitest toThrow(string) matches substrings).
+    await expect(runEnroll()).rejects.toThrow(/redirect:\/login\/verify$/);
   });
 
   it("redirects an already-verified session to the resolved landing", async () => {
@@ -190,6 +192,7 @@ describe("/login/verify post-detour landing (#2090)", () => {
       sessionUser({ adminPermissionMatrix: matrix({ finance: "view" }) }),
     );
 
-    await expect(runVerify()).rejects.toThrow("redirect:/login/enroll");
+    // Anchored so a baked-in "?callbackUrl=…" cannot slip past a substring match.
+    await expect(runVerify()).rejects.toThrow(/redirect:\/login\/enroll$/);
   });
 });

@@ -200,7 +200,8 @@ describe("LoginPage authenticated self-heal", () => {
       })
     );
 
-    await expect(runLoginPage()).rejects.toThrow("redirect:/login/enroll");
+    // Anchored so a baked-in "?callbackUrl=…" cannot slip past a substring match.
+    await expect(runLoginPage()).rejects.toThrow(/redirect:\/login\/enroll$/);
   });
 
   it("still carries a genuine deep link into the detour callbackUrl", async () => {
