@@ -59,6 +59,15 @@ The copy-paste template below already uses these paths; keep new guides in
 `docs/guides/` so they stay correct. `COVERAGE_MATRIX.md` names the same
 location, and #2050 agents must place guides there.
 
+Member guides live in **`docs/user-guide/`** and are additionally
+**auto-mirrored to the GitHub wiki** (`scripts/sync-user-guide-wiki.mjs`, run
+by the `Wiki sync` workflow on every push to `main`; `npm run docs:wiki-sync`
+locally). The folder is the single source of truth: the mirror rewrites
+relative links to absolute repo URLs, stamps every page with a
+mirrored-do-not-edit banner, and deletes orphaned mirrored pages. Never edit
+the wiki directly, and never link *to* wiki pages from in-repo docs — the CI
+link check cannot see them.
+
 ## Operator-guide page skeleton (required)
 
 Every operator guide (the pages #2050 produces, one per admin area, under
