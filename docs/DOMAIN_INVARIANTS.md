@@ -142,6 +142,39 @@ Future reviews and issues should cite this file when proposing changes.
   (finance:edit) restores `NOT_INVOICED` (or `UNPAID` on a legacy row with an
   invoice link) and clears the provenance columns; both directions are audited
   with the acting admin, including the previous status.
+- **Closed-loop item-code detection (#2109).** When the opt-in
+  `MembershipLockoutSettings.useFeeScheduleItemCodes` look-through is on, paid
+  detection matches ANY item code stamped on the fee schedule — the resolver
+  `getSubscriptionItemCodes()` returns the distinct non-null
+  `MembershipAnnualFeeComponent.xeroItemCode` values (every historical fee row
+  contributes; prior seasons were billed under retired rows) UNION the single
+  `subscriptionIncome.itemCode`. Because billing stamps exactly those component
+  codes onto invoice lines, the detection set is always a **superset** of the
+  codes the billing pipeline can stamp: a member billed under the fee schedule is
+  always detectable by item code. Default off reproduces single-item-code
+  detection byte-for-byte. Detection is UNION (never per-member) so family
+  invoices and the member-less inbound reconciler resolve the same set.
+- **Strong-first subscription-invoice selection (#2109).** Widening the item-code
+  set means several season invoices can match (e.g. a paid subscription plus an
+  earlier unpaid hut-fee invoice sharing a code), so — WHEN look-through is on —
+  `findSubscriptionInvoice` never returns the first match over the widened set.
+  It collects ALL matches and selects preferring (1) a STRONG match (the account
+  code, the flat fallback item code, or the text fallback) over a union-only
+  fee-schedule match, then (2) a PAID/settled invoice over UNPAID/OVERDUE, then
+  (3) earliest/stable order. Strong-first is deliberate: a PAID union-only match
+  must never outrank an UNPAID strong match, or the lockout would unlock exactly
+  the member it should hold. In the motivating scenario the paid subscription is
+  itself strong, so it still wins and a genuinely paid member is never marked
+  unpaid — the `matchedInvoiceId` upsert picks the paid subscription invoice, so
+  manual mark-paid provenance survives — even when an overlapping code exists.
+  With look-through OFF (a single-code set) selection is skipped and the legacy
+  first-match-in-list-order invoice is returned, byte-for-byte. The member-less
+  inbound reconciler sees one invoice at a time and treats it as a subscription
+  ONLY on a strong match (never a union-only fee-schedule code), so a shared-code
+  fee invoice writes no subscription audit links and triggers no per-member
+  refresh there; per-member detection still sees such invoices when a member's
+  full set is evaluated. The settings overlap warning still steers admins to give
+  subscriptions dedicated item codes.
 - Xero invoice identity is persisted before Xero email. Email retries reuse it.
   Existing invoices are adopted only on an exact `AUTHORISED` snapshot match;
   conflicts are visible and never trigger a silent provider rewrite. Xero
@@ -1226,6 +1259,25 @@ effective lock date (409 `XERO_PERIOD_LOCKED`, with unlock instructions). The
 guard is **skipped when Xero is not connected** and **fails closed** (retryable
 503 `XERO_LOCK_DATE_CHECK_FAILED`) when the lock dates cannot be read; the Xero
 call is made outside any DB transaction and its result is cached ~5 minutes.
+The guard still fails closed for every cause, but now **classifies that cause**
+(#2105): the `XeroLockDateCheckFailedError` carries a `reason` of
+`reconnect_required` (the Xero connection needs re-authorising — a revoked or
+missing token/tenant, surfaced by the taxonomy's `XeroReconnectRequiredError`),
+`rate_limited` (Xero's daily API budget is exhausted — `XeroDailyLimitError`),
+or `transient` (a temporary outage or unclassified failure). The `reason` and
+the cause-specific admin copy are emitted **only for the admin audience**
+(`getXeroLockGuardErrorResponse` omits it for members) — member-facing bodies
+stay the generic wording so they disclose no Xero connection state. The code
+(`XERO_LOCK_DATE_CHECK_FAILED`) and status (503) are unchanged for both.
+Independently, admins can run a **click-only connection-health probe**
+(`GET /api/admin/xero/status?probe=1`): it refreshes the token and reuses the
+cached lock-date/org read, returning `tokenHealth` of
+`ok | reconnect_required | rate_limited | error`, and is cached server-side
+30–60s so repeated clicks make no extra Xero call. A daily-limit cooldown maps
+to `rate_limited` **without any API call** (the in-process gate throws before the
+network request), so the probe can never burn the shared daily budget; it never
+runs on page mount or a poll. The most recent recorded usage `errorMessage`
+(redacted) is surfaced alongside the health chip.
 The same guard protects the **booking modify paths**
 (`xero-period-lock-guard`), with two deliberately asymmetric scopes:
 - **Admin override** (#1697): a **recalculate** override can queue a
