@@ -160,7 +160,7 @@ export function GoogleSecurityCard({
 
         {enabled && !credentialsConfigured && (
           <Alert variant="warning" title="Google credentials not configured">
-            Google sign-in is enabled, but the sign-in button will not appear
+            With Google sign-in enabled, the sign-in button will not appear
             until <code>GOOGLE_CLIENT_ID</code> and{" "}
             <code>GOOGLE_CLIENT_SECRET</code> are configured server-side (your
             club&apos;s Google Cloud OAuth credentials).

@@ -292,9 +292,10 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   "/api/admin/seasons": "bookings",
   "/api/admin/seasons/[id]": "bookings",
   // Login & Security config (#2033/#2103): support-area system config, pinned
-  // alongside /api/admin/modules. /api/admin/security/* has no dedicated leaf in
-  // ROUTE_AREA_PREFIXES, so each route names support explicitly (a bare
-  // requireAdmin would fall to the overview catch-all). See admin-permissions.ts.
+  // alongside /api/admin/modules. Each route names support:edit explicitly
+  // rather than relying on path inference, which depends on the middleware-set
+  // request-path header (absent header ⇒ full-ADMIN fallback, silently
+  // excluding support-area admins). See admin-permissions.ts.
   "/api/admin/security/magic-link": "support",
   "/api/admin/security/password-policy": "support",
   "/api/admin/setup": "support",

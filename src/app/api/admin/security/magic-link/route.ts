@@ -22,10 +22,10 @@ import { requireAdmin } from "@/lib/session-guards";
 // src/app/api/auth/magic-link/route.ts. The password-policy route deliberately
 // never touches this column — this endpoint owns it.
 //
-// IMPORTANT: `/api/admin/security/*` has no dedicated leaf in
-// ROUTE_AREA_PREFIXES, so a bare `requireAdmin()` would fall to the weak
-// `overview` catch-all (admin-permissions.ts). The guard MUST name the area
-// explicitly — support:edit to write — matching
+// The guard names the area explicitly — support:edit to write — rather than
+// relying on path inference: inference needs the middleware-set request-path
+// header, and when that header is absent the fallback is full-ADMIN, which
+// would silently exclude support-area admins. Matches
 // /api/admin/security/password-policy and /api/admin/modules. Every write is
 // audited under the `security` category (mirroring the password-policy route).
 
