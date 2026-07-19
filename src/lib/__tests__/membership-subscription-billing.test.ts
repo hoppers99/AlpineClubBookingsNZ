@@ -60,6 +60,8 @@ function member(id: string, overrides: Record<string, unknown> = {}) {
     lastName: "Member",
     email: `${id}@example.test`,
     role: "USER",
+    // #2067: the annual fee resolves per the member's age tier (default ADULT).
+    ageTier: "ADULT",
     seasonalMembershipAssignments: [{
       membershipType: {
         id: "type-1",
@@ -355,7 +357,7 @@ describe("membership subscription billing", () => {
         seasonalMembershipAssignments: [{ membershipType: { id: "type-2", key: "LIFE", name: "Life", subscriptionBehavior: "REQUIRED", annualFees: [] } }],
       }),
     ]);
-    mocks.effectiveFee.mockImplementation(async (membershipTypeId: string) => membershipTypeId === "type-2" ? null : fee());
+    mocks.effectiveFee.mockImplementation(async ({ membershipTypeId }: { membershipTypeId: string }) => membershipTypeId === "type-2" ? null : fee());
     const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-07-13T00:00:00.000Z") });
     expect(preview.entries).toHaveLength(0);
     expect(new Set(preview.exceptions.map((row) => row.code))).toEqual(new Set(["MISSING_FEE_SCHEDULE", "MISSING_MEMBERSHIP_ASSIGNMENT"]));
@@ -394,7 +396,7 @@ describe("membership subscription billing", () => {
       member("m2"),
       member("m3", { seasonalMembershipAssignments: [lifeAssignment] }),
     ]);
-    mocks.effectiveFee.mockImplementation(async (membershipTypeId: string) =>
+    mocks.effectiveFee.mockImplementation(async ({ membershipTypeId }: { membershipTypeId: string }) =>
       membershipTypeId === "type-2" ? fee({ id: "fee-2", amountCents: 6_000 }) : fee());
     const preview = await buildSubscriptionBillingPreview({
       seasonYear: 2026,
@@ -407,7 +409,80 @@ describe("membership subscription billing", () => {
     expect(preview.entries.find((entry) => entry.membershipTypeId === "type-2"))
       .toMatchObject({ annualAmountCents: 6_000 });
     expect(mocks.effectiveFee).toHaveBeenCalledTimes(2);
-    expect(mocks.effectiveFee.mock.calls.map((call) => call[0]).sort()).toEqual(["type-1", "type-2"]);
+    // #2067: the memo keys per (type, tier); every member here is ADULT, so each
+    // distinct type is still resolved once. The first arg is now {membershipTypeId, ageTier}.
+    expect(mocks.effectiveFee.mock.calls.map((call) => call[0].membershipTypeId).sort()).toEqual(["type-1", "type-2"]);
+    expect(mocks.effectiveFee.mock.calls.every((call) => call[0].ageTier === "ADULT")).toBe(true);
+  });
+
+  describe("per-age-tier annual fees (#2067)", () => {
+    it("charges each member by their own age tier's fee and memoizes per (type, tier)", async () => {
+      mocks.members.findMany.mockResolvedValue([
+        member("adult-1", { ageTier: "ADULT" }),
+        member("adult-2", { ageTier: "ADULT" }),
+        member("youth-1", { ageTier: "YOUTH" }),
+      ]);
+      mocks.effectiveFee.mockImplementation(async ({ ageTier }: { ageTier: string | null }) =>
+        ageTier === "YOUTH"
+          ? fee({ id: "fee-youth", amountCents: 6_000, prorationRule: "NONE" })
+          : fee({ id: "fee-adult", amountCents: 12_000, prorationRule: "NONE" }));
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-04-01T00:00:00.000Z") });
+      // One resolver call per (type, tier), even though two members share ADULT.
+      expect(mocks.effectiveFee).toHaveBeenCalledTimes(2);
+      const adultEntries = preview.entries.filter((e) => e.membershipAnnualFeeId === "fee-adult");
+      const youthEntries = preview.entries.filter((e) => e.membershipAnnualFeeId === "fee-youth");
+      expect(adultEntries.map((e) => e.coveredMembers[0].id).sort()).toEqual(["adult-1", "adult-2"]);
+      expect(adultEntries.every((e) => e.annualAmountCents === 12_000 && e.chargedAmountCents === 12_000)).toBe(true);
+      expect(youthEntries).toHaveLength(1);
+      expect(youthEntries[0].annualAmountCents).toBe(6_000);
+      expect(youthEntries[0].coveredMembers[0].id).toBe("youth-1");
+    });
+
+    it("falls back to the flat fee (resolver returns the same row for every tier)", async () => {
+      mocks.members.findMany.mockResolvedValue([
+        member("adult", { ageTier: "ADULT" }),
+        member("child", { ageTier: "CHILD" }),
+      ]);
+      // An all-flat config: the resolver returns the flat row for every tier.
+      mocks.effectiveFee.mockResolvedValue(fee({ id: "fee-flat", amountCents: 10_000, prorationRule: "NONE" }));
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-04-01T00:00:00.000Z") });
+      expect(preview.entries).toHaveLength(2);
+      expect(preview.entries.every((e) => e.membershipAnnualFeeId === "fee-flat" && e.annualAmountCents === 10_000)).toBe(true);
+    });
+
+    it("names the member's age tier in the MISSING_FEE_SCHEDULE message", async () => {
+      mocks.members.findMany.mockResolvedValue([member("youth-nofee", { ageTier: "YOUTH" })]);
+      mocks.effectiveFee.mockResolvedValue(null);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-07-13T00:00:00.000Z") });
+      expect(preview.exceptions.map((row) => row.code)).toEqual(["MISSING_FEE_SCHEDULE"]);
+      expect(preview.exceptions[0].message).toContain("YOUTH");
+    });
+
+    it("resolves NOT_APPLICABLE members to the flat fee (tier passed through unchanged)", async () => {
+      mocks.members.findMany.mockResolvedValue([member("org", { ageTier: "NOT_APPLICABLE" })]);
+      mocks.effectiveFee.mockResolvedValue(fee({ id: "fee-flat", amountCents: 8_000, prorationRule: "NONE" }));
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-04-01T00:00:00.000Z") });
+      expect(mocks.effectiveFee).toHaveBeenCalledWith(
+        expect.objectContaining({ ageTier: "NOT_APPLICABLE" }),
+        expect.anything(),
+        expect.anything(),
+      );
+      expect(preview.entries[0]).toMatchObject({ membershipAnnualFeeId: "fee-flat", annualAmountCents: 8_000 });
+    });
+
+    it("groups a flat PER_FAMILY fee across family members of differing tiers (unchanged)", async () => {
+      mocks.members.findMany.mockResolvedValue([
+        member("fam-adult", { ageTier: "ADULT", familyGroupMemberships: [familyMembership()] }),
+        member("fam-child", { ageTier: "CHILD", familyGroupMemberships: [familyMembership()] }),
+      ]);
+      // PER_FAMILY is flat-only, so the resolver returns the same flat family fee
+      // for every tier; the family grouping key ignores fee.id/tier.
+      mocks.effectiveFee.mockResolvedValue(fee({ id: "fee-family", billingBasis: "PER_FAMILY", prorationRule: "NONE" }));
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-04-01T00:00:00.000Z") });
+      expect(preview.entries).toHaveLength(1);
+      expect(preview.entries[0].billingBasis).toBe("PER_FAMILY");
+      expect(preview.entries[0].coveredMembers.map((m) => m.id).sort()).toEqual(["fam-adult", "fam-child"]);
+    });
   });
 
   it("does not regenerate already-covered subscriptions and future fee changes alter only future previews", async () => {

@@ -30,6 +30,7 @@ type JoiningRow = {
 type AnnualRow = {
   id: string;
   membershipTypeId: string;
+  ageTier?: string | null;
   effectiveFrom: Date;
   effectiveTo: Date | null;
   amountCents: number;
@@ -244,6 +245,67 @@ describe("config-transfer membership-fees round-trip (#1941)", () => {
   });
 });
 
+describe("config-transfer membership-fees per-age-tier (#2067)", () => {
+  // A source with Adult + Youth annual fees (same type, same window) plus a flat
+  // fallback, each with a single component summing to its own total.
+  function perTierSource() {
+    return makeStore({
+      annualFees: [
+        { id: "af-adult", membershipTypeId: "mt-full", ageTier: "ADULT", effectiveFrom: d("2026-01-01"), effectiveTo: null, amountCents: 15000, billingBasis: "PER_MEMBER", prorationRule: "NONE" },
+        { id: "af-youth", membershipTypeId: "mt-full", ageTier: "YOUTH", effectiveFrom: d("2026-01-01"), effectiveTo: null, amountCents: 8000, billingBasis: "PER_MEMBER", prorationRule: "NONE" },
+        { id: "af-flat", membershipTypeId: "mt-full", ageTier: null, effectiveFrom: d("2026-01-01"), effectiveTo: null, amountCents: 12000, billingBasis: "PER_MEMBER", prorationRule: "NONE" },
+      ],
+      components: [
+        { id: "c-a", membershipAnnualFeeId: "af-adult", label: "Base", amountCents: 15000, prorate: true, xeroAccountCode: null, xeroItemCode: null, sortOrder: 0 },
+        { id: "c-y", membershipAnnualFeeId: "af-youth", label: "Base", amountCents: 8000, prorate: true, xeroAccountCode: null, xeroItemCode: null, sortOrder: 0 },
+        { id: "c-f", membershipAnnualFeeId: "af-flat", label: "Base", amountCents: 12000, prorate: true, xeroAccountCode: null, xeroItemCode: null, sortOrder: 0 },
+      ],
+    });
+  }
+
+  it("round-trips per-tier annual fees, keeping each tier's amount and its own component", async () => {
+    const source = perTierSource();
+    const { zip } = await exportFees(source.db as unknown as ReadDb);
+    const { files } = readBundle(zip);
+    const target = makeStore();
+    const result = await membershipFeesImporter.apply(applyCtx(files, target.db as unknown as TxDb));
+    // 3 annual fees + 3 components.
+    expect(result.created).toBe(6);
+    expect(target.annualFees).toHaveLength(3);
+    expect(target.annualFees.find((r) => r.ageTier === "ADULT")?.amountCents).toBe(15000);
+    expect(target.annualFees.find((r) => r.ageTier === "YOUTH")?.amountCents).toBe(8000);
+    expect(target.annualFees.find((r) => (r.ageTier ?? null) === null)?.amountCents).toBe(12000);
+    // Byte-stable re-export.
+    const { zip: zip2 } = await exportFees(target.db as unknown as ReadDb);
+    const files2 = readBundle(zip2).files;
+    for (const f of FEE_FILES) expect(strFromU8(files2.get(f)!)).toBe(strFromU8(files.get(f)!));
+  });
+
+  it("imports a pre-#2067 bundle (no ageTier column) as flat NULL-tier rows", async () => {
+    // Old-format annual-fees.csv/annual-fee-components.csv: no ageTier column.
+    const files = bundle({
+      "membership-fees/annual-fees.csv": AF_HEADER + "FULL,2026-01-01,,12000,PER_MEMBER,NONE\n",
+      "membership-fees/annual-fee-components.csv": AC_HEADER + "FULL,2026-01-01,Base,12000,true,,,0\n",
+    });
+    const target = makeStore();
+    const plan = await membershipFeesImporter.plan(planCtx(files, target.db as unknown as ReadDb));
+    expect(plan.errors).toEqual([]);
+    await membershipFeesImporter.apply(applyCtx(files, target.db as unknown as TxDb));
+    expect(target.annualFees).toHaveLength(1);
+    expect(target.annualFees[0].ageTier ?? null).toBeNull();
+    expect(target.annualFees[0].amountCents).toBe(12000);
+  });
+
+  it("blocks a per-family fee that carries an age tier (decision 1)", async () => {
+    const files = bundle({
+      "membership-fees/annual-fees.csv": AF_TIER_HEADER + "FAMILY,ADULT,2026-01-01,,20000,PER_FAMILY,NONE\n",
+      "membership-fees/annual-fee-components.csv": AC_TIER_HEADER + "FAMILY,ADULT,2026-01-01,Base,20000,true,,,0\n",
+    });
+    const plan = await membershipFeesImporter.plan(planCtx(files, makeStore().db as unknown as ReadDb));
+    expect(plan.errors.some((e) => /per-family fee must be flat/i.test(e))).toBe(true);
+  });
+});
+
 // ---- Validation -------------------------------------------------------------
 
 function bundle(rows: Record<string, string>): Map<string, Uint8Array> {
@@ -253,9 +315,14 @@ function bundle(rows: Record<string, string>): Map<string, Uint8Array> {
 }
 
 const JF_HEADER = "membershipTypeKey,ageTier,effectiveFrom,effectiveTo,amountCents\n";
+// Pre-#2067 annual-fee headers (no ageTier column) — exercise old-bundle back-compat.
 const AF_HEADER = "membershipTypeKey,effectiveFrom,effectiveTo,amountCents,billingBasis,prorationRule\n";
 const AC_HEADER =
   "membershipTypeKey,effectiveFrom,label,amountCents,prorate,xeroAccountCode,xeroItemCode,sortOrder\n";
+// #2067 annual-fee headers with the ageTier column.
+const AF_TIER_HEADER = "membershipTypeKey,ageTier,effectiveFrom,effectiveTo,amountCents,billingBasis,prorationRule\n";
+const AC_TIER_HEADER =
+  "membershipTypeKey,ageTier,effectiveFrom,label,amountCents,prorate,xeroAccountCode,xeroItemCode,sortOrder\n";
 
 describe("config-transfer membership-fees validation (#1941)", () => {
   it("rejects an unknown membership type key", async () => {
