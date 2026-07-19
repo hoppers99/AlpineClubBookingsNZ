@@ -5,6 +5,8 @@ vi.mock("@/lib/prisma", () => ({
   prisma: {
     member: { count: vi.fn(), findUnique: vi.fn() },
     booking: { count: vi.fn(), findMany: vi.fn() },
+    choreAssignment: { findMany: vi.fn() },
+    bedAllocation: { findMany: vi.fn() },
     payment: { aggregate: vi.fn() },
     refundRequest: { count: vi.fn() },
     adminCreditAdjustmentRequest: { count: vi.fn() },
@@ -25,7 +27,12 @@ vi.mock("@/lib/hut-leader-coverage", () => ({
 
 import AdminDashboardPage from "@/app/(admin)/admin/dashboard/page";
 import { auth } from "@/lib/auth";
-import { formatDateOnly, getTodayDateOnly } from "@/lib/date-only";
+import { BED_ALLOCATABLE_BOOKING_STATUSES } from "@/lib/bed-allocation-lifecycle";
+import {
+  OPERATIONAL_STAY_BOOKING_STATUSES,
+  UPCOMING_CHECK_IN_BOOKING_STATUSES,
+} from "@/lib/booking-status";
+import { addDaysDateOnly, formatDateOnly, getTodayDateOnly } from "@/lib/date-only";
 import { getUnassignedHutLeaderDates } from "@/lib/hut-leader-coverage";
 import { prisma } from "@/lib/prisma";
 
@@ -52,21 +59,23 @@ function mockDashboardCounts({
   vi.mocked(prisma.member.count).mockResolvedValue(0);
   // booking.count call order mirrors getStats(): totalBookings,
   // activeBookings, upcomingCheckIns, unpaidFinishedStays,
-  // unsettledAdditionalFinishedStays, pendingBookingReviews,
-  // rosterStaysNeedingRoster, bedAllocationStaysAwaiting.
+  // unsettledAdditionalFinishedStays, pendingBookingReviews. The roster and bed
+  // officer-card counts no longer use booking.count — they run through
+  // window-scoped helpers backed by booking.findMany + choreAssignment.findMany
+  // / bedAllocation.findMany (all mocked empty below → count 0).
   vi.mocked(prisma.booking.count)
     .mockResolvedValueOnce(0)
     .mockResolvedValueOnce(0)
     .mockResolvedValueOnce(0)
     .mockResolvedValueOnce(unpaidFinishedStays)
     .mockResolvedValueOnce(unsettledAdditionalFinishedStays)
-    .mockResolvedValueOnce(pendingBookingReviews)
-    .mockResolvedValueOnce(0)
-    .mockResolvedValueOnce(0);
+    .mockResolvedValueOnce(pendingBookingReviews);
   vi.mocked(prisma.payment.aggregate).mockResolvedValue({
     _sum: { amountCents: 0 },
   } as any);
   vi.mocked(prisma.booking.findMany).mockResolvedValue([]);
+  vi.mocked(prisma.choreAssignment.findMany).mockResolvedValue([] as any);
+  vi.mocked(prisma.bedAllocation.findMany).mockResolvedValue([] as any);
   vi.mocked(prisma.refundRequest.count).mockResolvedValue(0);
   vi.mocked(prisma.adminCreditAdjustmentRequest.count).mockResolvedValue(0);
   vi.mocked(prisma.membershipCancellationRequest.count).mockResolvedValue(0);
@@ -215,5 +224,82 @@ describe("admin dashboard deep links", () => {
     const html = renderToStaticMarkup(await AdminDashboardPage());
 
     expect(html).not.toContain("Finished Stays With Unpaid Additions");
+  });
+
+  it("scopes the officer-card counts to the next-7-day window using each surface's own filters (#2091)", async () => {
+    mockDashboardCounts({
+      pendingBookingReviews: 0,
+      pendingBookingChangeRequests: 0,
+    });
+
+    await AdminDashboardPage();
+
+    const today = getTodayDateOnly();
+    const to = addDaysDateOnly(today, 7);
+
+    // Bookings card count matches the list it links to (/admin/bookings?
+    // upcoming=7): the upcoming status set (excludes AWAITING_REVIEW), not
+    // deleted, check-in within the next 7 days.
+    expect(vi.mocked(prisma.booking.count).mock.calls).toContainEqual([
+      {
+        where: {
+          status: { in: [...UPCOMING_CHECK_IN_BOOKING_STATUSES] },
+          deletedAt: null,
+          checkIn: { gte: today, lte: to },
+        },
+      },
+    ]);
+
+    // Roster count: operational stays overlapping the window, guest-existence
+    // required (roster-status.ts semantics), scoped to today..+7.
+    const rosterCall = vi
+      .mocked(prisma.booking.findMany)
+      .mock.calls.find(
+        ([args]) =>
+          JSON.stringify((args as { where?: { status?: unknown } })?.where?.status) ===
+          JSON.stringify({ in: [...OPERATIONAL_STAY_BOOKING_STATUSES] }),
+      );
+    expect(rosterCall).toBeDefined();
+    expect((rosterCall![0] as { where: unknown }).where).toMatchObject({
+      deletedAt: null,
+      checkIn: { lt: to },
+      checkOut: { gt: today },
+      guests: { some: { stayStart: { lt: to }, stayEnd: { gt: today } } },
+    });
+
+    // Chore assignments read for the same window.
+    expect(vi.mocked(prisma.choreAssignment.findMany).mock.calls).toContainEqual([
+      {
+        where: { date: { gte: today, lt: to } },
+        select: { date: true, status: true, bookingId: true },
+      },
+    ]);
+
+    // Bed count: allocatable stays overlapping the window, whole-lodge holds
+    // excluded, guest-existence required (admin-bed-allocation.ts semantics).
+    const bedCall = vi
+      .mocked(prisma.booking.findMany)
+      .mock.calls.find(
+        ([args]) =>
+          (args as { where?: { wholeLodgeHold?: unknown } })?.where
+            ?.wholeLodgeHold === false,
+      );
+    expect(bedCall).toBeDefined();
+    expect((bedCall![0] as { where: unknown }).where).toMatchObject({
+      deletedAt: null,
+      status: { in: [...BED_ALLOCATABLE_BOOKING_STATUSES] },
+      wholeLodgeHold: false,
+      checkIn: { lt: to },
+      checkOut: { gt: today },
+      guests: { some: { stayStart: { lt: to }, stayEnd: { gt: today } } },
+    });
+
+    // Bed allocations diffed for the same window at guest-night granularity.
+    expect(vi.mocked(prisma.bedAllocation.findMany).mock.calls).toContainEqual([
+      {
+        where: { stayDate: { gte: today, lt: to } },
+        select: { bookingGuestId: true, stayDate: true },
+      },
+    ]);
   });
 });

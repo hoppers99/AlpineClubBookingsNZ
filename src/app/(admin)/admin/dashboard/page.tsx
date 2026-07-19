@@ -41,9 +41,8 @@ import { buildHrefWithReturnTo } from "@/lib/internal-return-path";
 import { CLUB_HUT_LEADER_LABEL, CLUB_NAME } from "@/config/club-identity";
 import {
   ACTIVE_BOOKING_STATUSES,
-  OPERATIONAL_STAY_BOOKING_STATUSES,
+  UPCOMING_CHECK_IN_BOOKING_STATUSES,
 } from "@/lib/booking-status";
-import { BED_ALLOCATABLE_BOOKING_STATUSES } from "@/lib/bed-allocation-lifecycle";
 import {
   addDaysDateOnly,
   endOfDateOnlyForTimeZone,
@@ -51,6 +50,8 @@ import {
   getTodayDateOnly,
   startOfDateOnlyForTimeZone,
 } from "@/lib/date-only";
+import { countRosterNightsNeedingChores } from "@/lib/roster-status";
+import { countGuestsAwaitingBed } from "@/lib/admin-bed-allocation";
 import { getUnassignedHutLeaderDates } from "@/lib/hut-leader-coverage";
 import {
   buildUnpaidFinishedStaysHref,
@@ -91,8 +92,8 @@ async function getStats() {
     pendingBookingReviews,
     pendingBookingChangeRequests,
     unassignedHutLeaderDates,
-    rosterStaysNeedingRoster,
-    bedAllocationStaysAwaiting,
+    rosterNightsNeedingChores,
+    bedGuestsAwaiting,
   ] = await Promise.all([
     prisma.member.count(),
     prisma.member.count({ where: { active: true } }),
@@ -108,9 +109,14 @@ async function getStats() {
         createdAt: { gte: startOfMonth, lte: endOfMonth },
       },
     }),
+    // Bookings officer card headline (#2091): check-ins in the next 7 days.
+    // Uses UPCOMING_CHECK_IN_BOOKING_STATUSES (not the wider
+    // ACTIVE_BOOKING_STATUSES) so the count equals the list the card deep links
+    // to — /admin/bookings?upcoming=7 applies the same status set — rather than
+    // over-counting AWAITING_REVIEW bookings the list hides.
     prisma.booking.count({
       where: {
-        status: { in: [...ACTIVE_BOOKING_STATUSES] },
+        status: { in: [...UPCOMING_CHECK_IN_BOOKING_STATUSES] },
         deletedAt: null,
         checkIn: { gte: today, lte: sevenDaysFromNow },
       },
@@ -177,31 +183,22 @@ async function getStats() {
       where: { status: "REQUESTED" },
     }),
     getUnassignedHutLeaderDates(),
-    // Roster Assignment officer card (#2091, D-E2): upcoming operational stays
-    // (checking out in the future) that have no chore assignments yet — the
-    // "work to do" for the roster surface. Cheap existence check; the roster
-    // calendar remains the source of per-night detail.
-    prisma.booking.count({
-      where: {
-        deletedAt: null,
-        status: { in: [...OPERATIONAL_STAY_BOOKING_STATUSES] },
-        checkOut: { gt: today },
-        choreAssignments: { none: {} },
-      },
-    }),
-    // Bed Allocation officer card (#2091, D-E2): upcoming allocatable stays with
-    // no bed allocation rows yet. Whole-lodge holds implicitly occupy every bed
-    // and need no per-bed placement (ADR-001), so they are excluded — matching
-    // the bed-allocation board's own awaiting-allocation set.
-    prisma.booking.count({
-      where: {
-        deletedAt: null,
-        status: { in: [...BED_ALLOCATABLE_BOOKING_STATUSES] },
-        wholeLodgeHold: false,
-        checkOut: { gt: today },
-        bedAllocations: { none: {} },
-      },
-    }),
+    // Roster Assignment officer card (#2091, D-E2): nights in the next 7 days
+    // that still need a chore roster. Window-scoped to the roster surface's own
+    // needs-roster semantics (nights with ≥1 staying guest and no chore
+    // assignment, per src/lib/roster-status.ts computeRosterDayStatuses), so the
+    // headline reconciles with what the officer sees — a per-night count that
+    // neither drops a stay rostered on only some of its nights nor inflates on
+    // guestless bookings. Cheap: bounded 7-day window.
+    countRosterNightsNeedingChores({ from: today, to: sevenDaysFromNow }),
+    // Bed Allocation officer card (#2091, D-E2): guests in the next 7 days with a
+    // bed-night still awaiting allocation. Window-scoped mirror of the bed
+    // board's own unallocatedGuestNights set (src/lib/admin-bed-allocation.ts):
+    // per-guest-night diff with the board's guest-existence rule and whole-lodge
+    // holds excluded (ADR-001), so a partially-allocated booking still counts its
+    // pending guests exactly as the board's buckets do. Cheap: bounded 7-day
+    // window matching the board's landing window.
+    countGuestsAwaitingBed({ from: today, to: sevenDaysFromNow }),
   ]);
 
   const revenueThisMonth = revenueResult._sum.amountCents ?? 0;
@@ -230,19 +227,17 @@ async function getStats() {
     pendingBookingChangeRequests,
     pendingMembershipReviews:
       pendingMembershipCancellations + pendingMemberArchives,
-    rosterStaysNeedingRoster,
-    bedAllocationStaysAwaiting,
+    rosterNightsNeedingChores,
+    bedGuestsAwaiting,
   };
 }
 
 
-export default async function AdminDashboardPage() {
-  const stats = await getStats();
-
-  // Officer key cards are permission-gated via the shared admin matrix (#2091,
-  // D-E3): a card is hidden — never disabled — when the actor cannot open its
-  // target page. The matrix is resolved server-side exactly as the admin layout
-  // does (definition-backed roles cannot be resolved client-side).
+// Officer key cards are permission-gated via the shared admin matrix (#2091,
+// D-E3): a card is hidden — never disabled — when the actor cannot open its
+// target page. The matrix is resolved server-side exactly as the admin layout
+// does (definition-backed roles cannot be resolved client-side).
+async function getPermissionMatrix() {
   const session = await auth();
   const actor = session?.user
     ? await prisma.member.findUnique({
@@ -254,9 +249,17 @@ export default async function AdminDashboardPage() {
         },
       })
     : null;
-  const permissionMatrix = actor
-    ? getAdminPermissionMatrix(actor)
-    : emptyAdminPermissionMatrix();
+  return actor ? getAdminPermissionMatrix(actor) : emptyAdminPermissionMatrix();
+}
+
+export default async function AdminDashboardPage() {
+  // Resolve the stats batch and the actor's permission matrix concurrently —
+  // the auth() + member lookup no longer waits on the stats round-trip (#2091).
+  const [stats, permissionMatrix] = await Promise.all([
+    getStats(),
+    getPermissionMatrix(),
+  ]);
+
   const canViewBookings = canViewAdminHrefWithMatrix(
     permissionMatrix,
     "/admin/bookings",
@@ -536,12 +539,12 @@ export default async function AdminDashboardPage() {
                 </CardHeader>
                 <CardContent>
                   <div className="text-3xl font-bold">
-                    {stats.rosterStaysNeedingRoster}
+                    {stats.rosterNightsNeedingChores}
                   </div>
                   <p className="text-xs text-muted-foreground mt-1">
-                    upcoming stay
-                    {stats.rosterStaysNeedingRoster === 1 ? "" : "s"} with no
-                    chores assigned
+                    night
+                    {stats.rosterNightsNeedingChores === 1 ? "" : "s"} in the
+                    next 7 days with no chores assigned
                   </p>
                 </CardContent>
               </Card>
@@ -559,12 +562,12 @@ export default async function AdminDashboardPage() {
                 </CardHeader>
                 <CardContent>
                   <div className="text-3xl font-bold">
-                    {stats.bedAllocationStaysAwaiting}
+                    {stats.bedGuestsAwaiting}
                   </div>
                   <p className="text-xs text-muted-foreground mt-1">
-                    upcoming stay
-                    {stats.bedAllocationStaysAwaiting === 1 ? "" : "s"} awaiting
-                    a bed
+                    guest
+                    {stats.bedGuestsAwaiting === 1 ? "" : "s"} in the next 7 days
+                    awaiting a bed
                   </p>
                 </CardContent>
               </Card>

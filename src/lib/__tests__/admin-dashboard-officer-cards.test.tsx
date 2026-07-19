@@ -5,6 +5,8 @@ vi.mock("@/lib/prisma", () => ({
   prisma: {
     member: { count: vi.fn(), findUnique: vi.fn() },
     booking: { count: vi.fn(), findMany: vi.fn() },
+    choreAssignment: { findMany: vi.fn() },
+    bedAllocation: { findMany: vi.fn() },
     payment: { aggregate: vi.fn() },
     refundRequest: { count: vi.fn() },
     adminCreditAdjustmentRequest: { count: vi.fn() },
@@ -26,12 +28,15 @@ vi.mock("@/lib/hut-leader-coverage", () => ({
 import AdminDashboardPage from "@/app/(admin)/admin/dashboard/page";
 import type { AdminPermissionMatrix } from "@/lib/admin-permissions";
 import { auth } from "@/lib/auth";
+import { addDaysDateOnly, getTodayDateOnly } from "@/lib/date-only";
 import { getUnassignedHutLeaderDates } from "@/lib/hut-leader-coverage";
 import { prisma } from "@/lib/prisma";
 
-// getStats booking.count call order: totalBookings, activeBookings,
+// getStats booking.count call order (roster + bed counts no longer use
+// booking.count — they now run through window-scoped helpers that findMany
+// bookings + choreAssignments / bedAllocations): totalBookings, activeBookings,
 // upcomingCheckIns, unpaidFinishedStays, unsettledAdditionalFinishedStays,
-// pendingBookingReviews, rosterStaysNeedingRoster, bedAllocationStaysAwaiting.
+// pendingBookingReviews.
 function mockStats() {
   vi.mocked(auth).mockResolvedValue({ user: { id: "admin-1" } } as any);
   vi.mocked(prisma.member.count)
@@ -44,13 +49,52 @@ function mockStats() {
     .mockResolvedValueOnce(7) // upcomingCheckIns
     .mockResolvedValueOnce(0) // unpaidFinishedStays
     .mockResolvedValueOnce(0) // unsettledAdditionalFinishedStays
-    .mockResolvedValueOnce(0) // pendingBookingReviews
-    .mockResolvedValueOnce(4) // rosterStaysNeedingRoster
-    .mockResolvedValueOnce(3); // bedAllocationStaysAwaiting
+    .mockResolvedValueOnce(0); // pendingBookingReviews
+
+  // The reworked officer-card counts compute over real fixtures so the headline
+  // reconciles with each surface's own semantics (#2091 review). A single guest
+  // stays two of the next seven nights with no chore assignment → 2 roster
+  // nights needing chores; three guests each have an unallocated bed-night in
+  // the window → 3 guests awaiting a bed.
+  const today = getTodayDateOnly();
+  const plus1 = addDaysDateOnly(today, 1);
+  const plus2 = addDaysDateOnly(today, 2);
+
+  const rosterBookings = [
+    {
+      id: "rb1",
+      checkIn: today,
+      checkOut: plus2,
+      guests: [{ stayStart: today, stayEnd: plus2, ageTier: null, nights: [] }],
+    },
+  ];
+  const bedBookings = [
+    {
+      id: "bb1",
+      guests: [
+        { id: "g1", stayStart: today, stayEnd: plus1 },
+        { id: "g2", stayStart: today, stayEnd: plus1 },
+        { id: "g3", stayStart: today, stayEnd: plus1 },
+      ],
+    },
+  ];
+
+  // booking.findMany serves three callers; route by the where-clause each uses:
+  // the bed helper is the only one filtering wholeLodgeHold, the roster helper
+  // the only other one carrying a status set, and Recent Bookings carries
+  // neither.
+  vi.mocked(prisma.booking.findMany).mockImplementation((args: any) => {
+    const where = args?.where ?? {};
+    if (where.wholeLodgeHold === false) return Promise.resolve(bedBookings) as any;
+    if (where.status) return Promise.resolve(rosterBookings) as any;
+    return Promise.resolve([]) as any; // Recent Bookings
+  });
+  vi.mocked(prisma.choreAssignment.findMany).mockResolvedValue([] as any);
+  vi.mocked(prisma.bedAllocation.findMany).mockResolvedValue([] as any);
+
   vi.mocked(prisma.payment.aggregate).mockResolvedValue({
     _sum: { amountCents: 123400 },
   } as any);
-  vi.mocked(prisma.booking.findMany).mockResolvedValue([]);
   vi.mocked(prisma.refundRequest.count).mockResolvedValue(0);
   vi.mocked(prisma.adminCreditAdjustmentRequest.count).mockResolvedValue(0);
   vi.mocked(prisma.membershipCancellationRequest.count).mockResolvedValue(0);
@@ -63,12 +107,21 @@ function mockStats() {
   vi.mocked(getUnassignedHutLeaderDates).mockResolvedValue([]);
 }
 
+// Resolve the actor through the accessRoles-derivation path production actually
+// uses (the dashboard's actor select carries accessRoles only — never an
+// embedded adminPermissionMatrix), by attaching a definition-backed custom role
+// whose per-area levels produce the requested matrix (#2091 review).
 function mockActorMatrix(matrix: Partial<AdminPermissionMatrix>) {
+  const roleDefinition = Object.fromEntries(
+    Object.entries(matrix).map(([area, level]) => [
+      `${area}Level`,
+      level === "edit" ? "EDIT" : level === "view" ? "VIEW" : "NONE",
+    ]),
+  );
   vi.mocked(prisma.member.findUnique).mockResolvedValue({
     id: "admin-1",
     canLogin: true,
-    accessRoles: [],
-    adminPermissionMatrix: matrix,
+    accessRoles: [{ role: null, roleDefinition }],
   } as any);
 }
 
@@ -98,12 +151,12 @@ describe("admin dashboard officer key cards", () => {
     // Officer-card-unique copy and headline counts.
     expect(html).toContain("checking in within 7 days");
     expect(html).toContain("Roster Assignment");
-    expect(html).toContain("upcoming stays with no chores assigned");
+    expect(html).toContain("nights in the next 7 days with no chores assigned");
     expect(html).toContain("Bed Allocation");
-    expect(html).toContain("upcoming stays awaiting a bed");
+    expect(html).toContain("guests in the next 7 days awaiting a bed");
     expect(html).toContain(">7</div>"); // upcoming check-ins
-    expect(html).toContain(">4</div>"); // roster stays needing a roster
-    expect(html).toContain(">3</div>"); // stays awaiting a bed
+    expect(html).toContain(">2</div>"); // roster nights needing chores
+    expect(html).toContain(">3</div>"); // guests awaiting a bed
 
     // Slim secondary row keeps Members + Revenue.
     expect(html).toContain("Revenue This Month");
