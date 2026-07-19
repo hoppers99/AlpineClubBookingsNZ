@@ -332,7 +332,10 @@ const DISPLAY_MODULE_METADATA: DisplayModuleMetadata[] = [
     // Mirrors night-columns.tsx: `days` (intOption 1–NIGHT_COLUMNS_MAX_DAYS,
     // default NIGHT_COLUMNS_DEFAULT_DAYS), `show-rooms` (boolOption default true).
     options: [
-      { key: "days", label: "Nights ahead", type: "int", default: 3, min: 1, max: 5 },
+      // max mirrors NIGHT_COLUMNS_MAX_DAYS = 3 (#2056 Option C: the board is a
+      // permanent 3-night board matching the fixed device data window); the
+      // descriptor drift-guard test fails if these ever diverge.
+      { key: "days", label: "Nights ahead", type: "int", default: 3, min: 1, max: 3 },
       {
         key: "show-rooms",
         label: "Annotate with rooms",
