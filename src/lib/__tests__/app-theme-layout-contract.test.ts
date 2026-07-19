@@ -24,6 +24,7 @@ describe("database theme app-shell contract", () => {
     ["src/app/(authenticated)/layout.tsx", "getWebsiteThemeRenderState()"],
     ["src/app/(admin)/layout.tsx", "getWebsiteThemeRenderState()"],
     ["src/app/(finance)/finance/layout.tsx", "getWebsiteThemeRenderState()"],
+    ["src/app/(lodge)/layout.tsx", "getWebsiteThemeRenderState()"],
   ])(
     "injects the sanitized ClubTheme CSS in %s",
     (path, themeLoader) => {
@@ -48,6 +49,7 @@ describe("database theme app-shell contract", () => {
     "src/app/(authenticated)/layout.tsx",
     "src/app/(admin)/layout.tsx",
     "src/app/(finance)/finance/layout.tsx",
+    "src/app/(lodge)/layout.tsx",
   ])("applies the configured font-variable class to the app shell in %s", (path) => {
     const layout = readRepoFile(path);
 
