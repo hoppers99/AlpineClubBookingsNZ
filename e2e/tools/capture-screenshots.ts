@@ -35,7 +35,7 @@ import path from "node:path";
 import process from "node:process";
 import { chromium, type Browser, type BrowserContext } from "@playwright/test";
 import { loginPersona, storageStatePath } from "../helpers/auth";
-import { E2E_ADMIN } from "../helpers/fixtures";
+import { E2E_ADMIN, WAITLISTER } from "../helpers/fixtures";
 
 type Capture = {
   /** Stable filename stem and CLI selector, e.g. "admin-dashboard". */
@@ -44,8 +44,16 @@ type Capture = {
   route: string;
   /** Output area subdirectory under docs/images. */
   area: "admin" | "public";
-  /** Whether the page requires the admin session (default true). */
+  /** Whether the page requires an authenticated session (default true). */
   auth?: boolean;
+  /**
+   * Which signed-in persona to shoot the page as (ignored when `auth` is
+   * false). "admin" (the default) uses the demo E2E admin; "member" uses the
+   * seeded complete-profile member (WAITLISTER / Wanda) so batch-5 member
+   * journey pages render exactly as a real member sees them. Kept generic:
+   * add a member capture by setting `persona: "member"`, not a new context.
+   */
+  persona?: "admin" | "member";
   /** Optional text to wait for before shooting, to avoid loading-state shots. */
   waitForText?: string;
 };
@@ -142,6 +150,21 @@ const CAPTURES: Capture[] = [
   // like the Xero guides (batch 2). The `display` (lobby-display) hub is gated
   // by the `lobbyDisplay` flag (also OFF by default) and keeps its own feature
   // hub docs (docs/lobby-display/), so it is not re-captured here.
+  //
+  // Batch 5 (#2050): member-facing journey guides (docs/user-guide/). These are
+  // the PUBLIC and MEMBER surfaces, not /admin/*. Public pages capture without
+  // auth; member pages use the seeded complete-profile member (persona:
+  // "member" — WAITLISTER / Wanda, PAID + confirmed profile) so the dashboard,
+  // profile, My Bookings, and booking wizard render as a real member sees them.
+  // Client-side wizard/dialog sub-steps the URL-driven harness cannot reach
+  // (the guests/review/pay steps, the cancellation dialog) are documented in
+  // prose per the STYLE_GUIDE screenshot-density rule, so they need no capture.
+  { name: "public-login", route: "/login", area: "public", auth: false },
+  { name: "public-join-apply", route: "/join/apply", area: "public", auth: false },
+  { name: "member-dashboard", route: "/dashboard", area: "public", persona: "member" },
+  { name: "member-profile", route: "/profile", area: "public", persona: "member" },
+  { name: "member-bookings", route: "/bookings", area: "public", persona: "member" },
+  { name: "member-book", route: "/book", area: "public", persona: "member" },
 ];
 
 const VIEWPORT = { width: 1280, height: 800 } as const;
@@ -266,7 +289,7 @@ async function main(): Promise<void> {
     // log the demo admin in (completing the two-factor gate exactly like the
     // E2E suite). This is the "reuse the seeded-app boot approach" from
     // docs/E2E_PLAYWRIGHT.md — same persona, same login path.
-    const adminNeeded = captures.some((c) => c.auth !== false);
+    const adminNeeded = captures.some((c) => c.auth !== false && c.persona !== "member");
     let adminContext: BrowserContext | undefined;
     if (adminNeeded) {
       const statePath = storageStatePath(E2E_ADMIN.email);
@@ -289,15 +312,41 @@ async function main(): Promise<void> {
       }
     }
 
+    // Member session (batch 5): the seeded complete-profile member. Reuse a
+    // stored state if the E2E suite already logged Wanda in, otherwise sign her
+    // in through the same loginPersona path the admin context uses (it clears
+    // whatever two-factor step the server demands). No forced password change
+    // or profile gate blocks her, so she lands straight on the member surface.
+    const memberNeeded = captures.some((c) => c.auth !== false && c.persona === "member");
+    let memberContext: BrowserContext | undefined;
+    if (memberNeeded) {
+      const statePath = storageStatePath(WAITLISTER.email);
+      if (fs.existsSync(statePath)) {
+        memberContext = await browser.newContext({ baseURL: BASE_URL, viewport: VIEWPORT, storageState: statePath });
+      } else {
+        const bootstrap = await browser.newContext({ baseURL: BASE_URL, viewport: VIEWPORT });
+        const page = await bootstrap.newPage();
+        await page.goto(new URL("/login", BASE_URL).toString());
+        await loginPersona(page, WAITLISTER.email);
+        await bootstrap.storageState({ path: statePath });
+        await bootstrap.close();
+        memberContext = await browser.newContext({ baseURL: BASE_URL, viewport: VIEWPORT, storageState: statePath });
+      }
+    }
+
     const publicContext = await browser.newContext({ baseURL: BASE_URL, viewport: VIEWPORT });
 
     for (const capture of captures) {
-      const ctx = capture.auth === false ? publicContext : adminContext;
-      if (!ctx) throw new Error("Admin context unavailable for an authed capture");
+      let ctx: BrowserContext | undefined;
+      if (capture.auth === false) ctx = publicContext;
+      else if (capture.persona === "member") ctx = memberContext;
+      else ctx = adminContext;
+      if (!ctx) throw new Error(`No ${capture.persona ?? "admin"} context available for capture "${capture.name}"`);
       await shoot(ctx, capture);
     }
 
     await publicContext.close();
+    await memberContext?.close();
     await adminContext?.close();
     console.log("Done.");
   } finally {
