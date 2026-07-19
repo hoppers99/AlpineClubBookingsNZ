@@ -82,7 +82,17 @@ cents; dates are NZ date-only.
    member's audit trail) and confirm. Every member is previewed and saved
    individually, so a stale preview or a linked-guest block skips just that
    member and reports it back with a **Preview again** option; the rest still
-   apply. Archived members are excluded and reported. Membership edit only.
+   apply. Archived members are excluded and reported. A run is capped at 100
+   members at a time. Membership edit only.
+
+   Because members are saved one after another and each change commits before the
+   next, the request can take a little while for a large selection; the dialog
+   stays open until the run finishes. After the saves, a single best-effort Xero
+   contact-group reconcile runs in the same request (not in the background) — the
+   membership changes are already committed by then, so re-running is safe and a
+   timeout mid-reconcile can never lose a committed change. If the day's Xero API
+   budget or a timeout cuts the reconcile short, the results panel says how many
+   groups synced and the nightly reconcile finishes the rest automatically.
 
 ### Export
 

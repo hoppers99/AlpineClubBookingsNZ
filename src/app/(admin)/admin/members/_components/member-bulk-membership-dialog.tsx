@@ -21,10 +21,30 @@ import {
 } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 
+// Keep in lockstep with the route schema (`ids.max(100)`): bulk membership
+// changes are capped so one run stays a bounded, sequential set of saves.
+const BULK_MEMBERSHIP_MAX = 100
+
 interface MembershipTypeOption {
   id: string
   name: string
   isActive: boolean
+}
+
+interface LinkedGuestLabel {
+  bookingGuestId: string
+  bookingId: string
+  ownerMemberId: string
+  checkIn: string
+  checkOut: string
+  stayStart: string
+  stayEnd: string
+}
+
+interface LinkedGuestBookings {
+  count: number
+  truncatedCount?: number
+  list?: LinkedGuestLabel[]
 }
 
 interface PreviewMember {
@@ -41,7 +61,7 @@ interface PreviewMember {
   resultingAgeTier: string
   ageTierChanged: boolean
   linkedGuestBlocked: boolean
-  linkedGuestBookings: { count: number }
+  linkedGuestBookings: LinkedGuestBookings
 }
 
 interface PreviewResponse {
@@ -72,13 +92,22 @@ type MemberOutcome =
   | "blocked_linked_guests"
   | "error"
 
+interface SaveResultRow {
+  memberId: string
+  name?: string
+  outcome: MemberOutcome
+  error?: string
+  linkedGuestBookings?: LinkedGuestBookings
+}
+
 interface SaveResponse {
   outcomeCounts: Record<MemberOutcome, number>
-  results: Array<{
-    memberId: string
-    outcome: MemberOutcome
-    error?: string
-  }>
+  results: SaveResultRow[]
+  xeroReconcile?: {
+    attempted: number
+    succeeded: number
+    haltedByDailyLimit: boolean
+  } | null
 }
 
 interface MemberBulkMembershipDialogProps {
@@ -100,6 +129,29 @@ const OUTCOME_LABELS: Record<MemberOutcome, string> = {
   error: "Error",
 }
 
+/** A short, human-readable label for a linked-guest booking row. */
+function linkedGuestLabel(booking: LinkedGuestLabel): string {
+  return `${booking.stayStart} → ${booking.stayEnd}`
+}
+
+function LinkedGuestBookingList({
+  bookings,
+}: {
+  bookings: LinkedGuestBookings | undefined
+}) {
+  if (!bookings?.list?.length) return null
+  return (
+    <ul className="ml-4 mt-0.5 list-disc text-muted-foreground">
+      {bookings.list.map((booking) => (
+        <li key={booking.bookingGuestId}>{linkedGuestLabel(booking)}</li>
+      ))}
+      {bookings.truncatedCount && bookings.truncatedCount > 0 ? (
+        <li>+{bookings.truncatedCount} more</li>
+      ) : null}
+    </ul>
+  )
+}
+
 export function MemberBulkMembershipDialog({
   open,
   selectedIds,
@@ -111,6 +163,9 @@ export function MemberBulkMembershipDialog({
   const currentYear = new Date().getFullYear()
   const [types, setTypes] = useState<MembershipTypeOption[]>([])
   const [membershipTypeId, setMembershipTypeId] = useState<string>("")
+  // Server-resolved (config-driven) current season year; a calendar-year fallback
+  // until the membership-types load supplies it.
+  const [currentSeasonYear, setCurrentSeasonYear] = useState<number>(currentYear)
   const [seasonYear, setSeasonYear] = useState<number>(currentYear)
   const [step, setStep] = useState<Step>("configure")
   const [preview, setPreview] = useState<PreviewResponse | null>(null)
@@ -119,12 +174,14 @@ export function MemberBulkMembershipDialog({
   const [loading, setLoading] = useState(false)
 
   const ids = useMemo(() => [...selectedIds], [selectedIds])
+  const overCap = ids.length > BULK_MEMBERSHIP_MAX
 
   useEffect(() => {
     if (!open) return
     setStep("configure")
     setMembershipTypeId("")
     setSeasonYear(currentYear)
+    setCurrentSeasonYear(currentYear)
     setPreview(null)
     setReason("")
     setSaveResult(null)
@@ -133,9 +190,16 @@ export function MemberBulkMembershipDialog({
       try {
         const res = await fetch("/api/admin/membership-types")
         if (!res.ok) throw new Error("Failed to load membership types")
-        const data = (await res.json()) as { membershipTypes: MembershipTypeOption[] }
+        const data = (await res.json()) as {
+          membershipTypes: MembershipTypeOption[]
+          currentSeasonYear?: number
+        }
         if (!cancelled) {
           setTypes(data.membershipTypes.filter((type) => type.isActive))
+          if (typeof data.currentSeasonYear === "number") {
+            setCurrentSeasonYear(data.currentSeasonYear)
+            setSeasonYear(data.currentSeasonYear)
+          }
         }
       } catch (err) {
         if (!cancelled) {
@@ -149,7 +213,12 @@ export function MemberBulkMembershipDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
-  const yearOptions = [currentYear - 1, currentYear, currentYear + 1, currentYear + 2]
+  const yearOptions = [
+    currentSeasonYear - 1,
+    currentSeasonYear,
+    currentSeasonYear + 1,
+    currentSeasonYear + 2,
+  ]
 
   const runPreview = async () => {
     setLoading(true)
@@ -205,9 +274,30 @@ export function MemberBulkMembershipDialog({
 
   const typeName = types.find((type) => type.id === membershipTypeId)?.name ?? ""
 
+  const nameFor = (memberId: string, name?: string) =>
+    name ?? memberNames.get(memberId) ?? memberId
+
+  const xero = saveResult?.xeroReconcile
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
+    <Dialog
+      open={open}
+      // Never drop a run mid-save: ignore a close request while the server-side
+      // save is in flight so the completed run always lands `onComplete`.
+      onOpenChange={(next) => {
+        if (!next && loading) return
+        onOpenChange(next)
+      }}
+    >
+      <DialogContent
+        className="sm:max-w-lg"
+        onEscapeKeyDown={(event) => {
+          if (loading) event.preventDefault()
+        }}
+        onInteractOutside={(event) => {
+          if (loading) event.preventDefault()
+        }}
+      >
         <DialogHeader>
           <DialogTitle>Set Membership Type</DialogTitle>
           <DialogDescription>
@@ -219,9 +309,9 @@ export function MemberBulkMembershipDialog({
         {step === "configure" && (
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label>Membership type</Label>
+              <Label htmlFor="bulk-membership-type">Membership type</Label>
               <Select value={membershipTypeId} onValueChange={setMembershipTypeId}>
-                <SelectTrigger>
+                <SelectTrigger id="bulk-membership-type">
                   <SelectValue placeholder="Select a type" />
                 </SelectTrigger>
                 <SelectContent>
@@ -234,36 +324,51 @@ export function MemberBulkMembershipDialog({
               </Select>
             </div>
             <div className="space-y-2">
-              <Label>Season year</Label>
+              <Label htmlFor="bulk-membership-season">Season year</Label>
               <Select
                 value={String(seasonYear)}
                 onValueChange={(value) => setSeasonYear(Number(value))}
               >
-                <SelectTrigger>
+                <SelectTrigger id="bulk-membership-season">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
                   {yearOptions.map((year) => (
                     <SelectItem key={year} value={String(year)}>
                       {year}
+                      {year === currentSeasonYear ? " (current season)" : ""}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
+            {overCap && (
+              <Alert variant="warning">
+                Bulk membership changes are limited to {BULK_MEMBERSHIP_MAX} members at
+                a time — refine your selection.
+              </Alert>
+            )}
           </div>
         )}
 
         {step === "preview" && preview && (
           <div className="space-y-3 text-sm">
             <div className="rounded-md border p-3">
-              <p className="font-medium">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Season {preview.seasonYear}
+              </p>
+              <p className="mt-1 font-medium">
                 {preview.summary.changed} of {preview.summary.previewed} will change
                 {preview.summary.unchanged > 0
                   ? ` (${preview.summary.unchanged} already on this type)`
                   : ""}
                 .
               </p>
+              {preview.seasonYear !== currentSeasonYear && (
+                <p className="mt-1 text-xs text-amber-600 dark:text-amber-500">
+                  Heads up: this is not the current season ({currentSeasonYear}).
+                </p>
+              )}
               <ul className="mt-2 space-y-1 text-muted-foreground">
                 <li>
                   Future confirmed bookings affected:{" "}
@@ -300,17 +405,25 @@ export function MemberBulkMembershipDialog({
                   )
                   .map((member) => (
                     <div key={member.memberId} className="py-0.5">
-                      <span className="font-medium">{member.name}</span>
-                      {member.ageTierChanged && (
-                        <span className="ml-2 text-muted-foreground">
-                          age tier {member.currentAgeTier} → {member.resultingAgeTier}
-                        </span>
-                      )}
+                      <div>
+                        <span className="font-medium">{member.name}</span>
+                        {member.ageTierChanged && (
+                          <span className="ml-2 text-muted-foreground">
+                            age tier {member.currentAgeTier} →{" "}
+                            {member.resultingAgeTier}
+                          </span>
+                        )}
+                        {member.linkedGuestBlocked && (
+                          <span className="ml-2 text-destructive">
+                            blocked: linked guest on{" "}
+                            {member.linkedGuestBookings.count} future booking(s)
+                          </span>
+                        )}
+                      </div>
                       {member.linkedGuestBlocked && (
-                        <span className="ml-2 text-destructive">
-                          blocked: linked guest on {member.linkedGuestBookings.count}{" "}
-                          future booking(s)
-                        </span>
+                        <LinkedGuestBookingList
+                          bookings={member.linkedGuestBookings}
+                        />
                       )}
                     </div>
                   ))}
@@ -349,6 +462,14 @@ export function MemberBulkMembershipDialog({
                 ) : null,
               )}
             </div>
+            {xero && xero.attempted > 0 && xero.succeeded < xero.attempted && (
+              <Alert variant="info">
+                Xero group sync: {xero.succeeded} of {xero.attempted} synced
+                {xero.haltedByDailyLimit
+                  ? " — daily limit reached, the nightly reconcile will finish the rest."
+                  : " — the nightly reconcile will finish the rest."}
+              </Alert>
+            )}
             {saveResult.results.some(
               (result) =>
                 result.outcome === "stale" ||
@@ -365,13 +486,20 @@ export function MemberBulkMembershipDialog({
                   )
                   .map((result) => (
                     <div key={result.memberId} className="py-0.5">
-                      <span className="font-medium">
-                        {memberNames.get(result.memberId) ?? result.memberId}
-                      </span>
-                      <span className="ml-2 text-muted-foreground">
-                        {OUTCOME_LABELS[result.outcome]}
-                        {result.error ? ` — ${result.error}` : ""}
-                      </span>
+                      <div>
+                        <span className="font-medium">
+                          {nameFor(result.memberId, result.name)}
+                        </span>
+                        <span className="ml-2 text-muted-foreground">
+                          {OUTCOME_LABELS[result.outcome]}
+                          {result.error ? ` — ${result.error}` : ""}
+                        </span>
+                      </div>
+                      {result.outcome === "blocked_linked_guests" && (
+                        <LinkedGuestBookingList
+                          bookings={result.linkedGuestBookings}
+                        />
+                      )}
                     </div>
                   ))}
               </div>
@@ -385,7 +513,10 @@ export function MemberBulkMembershipDialog({
               <Button variant="outline" onClick={() => onOpenChange(false)} disabled={loading}>
                 Cancel
               </Button>
-              <Button onClick={runPreview} disabled={loading || !membershipTypeId}>
+              <Button
+                onClick={runPreview}
+                disabled={loading || !membershipTypeId || overCap}
+              >
                 {loading ? "Previewing..." : "Preview"}
               </Button>
             </>

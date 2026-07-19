@@ -926,6 +926,8 @@ export type BulkSeasonalMembershipOutcome =
 
 export type BulkSeasonalMembershipMemberResult = {
   memberId: string;
+  /** Display name so the outcomes view never has to render a raw id. */
+  name: string;
   outcome: BulkSeasonalMembershipOutcome;
   /** HTTP-ish status the per-member save returned (undefined ⇒ 200/no-op). */
   status?: number;
@@ -933,6 +935,20 @@ export type BulkSeasonalMembershipMemberResult = {
   error?: string;
   /** The linked-guest block detail when outcome is `blocked_linked_guests`. */
   linkedGuestBookings?: LinkedGuestBookingSummary;
+};
+
+/**
+ * Telemetry for the single deferred, best-effort Xero contact-group reconcile
+ * that runs after the loop (surfaced to the UI so an admin sees when the
+ * nightly reconcile still has to finish the group sync).
+ */
+export type BulkSeasonalMembershipXeroReconcile = {
+  /** Members whose grouping actually changed and were handed to the reconcile. */
+  attempted: number;
+  /** Members whose Xero group membership was successfully synced in-request. */
+  succeeded: number;
+  /** True when the per-day Xero API budget cut the in-request reconcile short. */
+  haltedByDailyLimit: boolean;
 };
 
 /**
@@ -982,6 +998,17 @@ export async function bulkSaveSeasonalMembershipAssignments(params: {
   // De-duplicate ids so a repeated selection is not double-saved/double-counted.
   const uniqueIds = Array.from(new Set(params.ids));
 
+  // Load display names up front so every per-member result carries a name and
+  // the outcomes view never has to render a raw id.
+  const memberRecords = await db.member.findMany({
+    where: { id: { in: uniqueIds } },
+    select: { id: true, firstName: true, lastName: true, email: true },
+  });
+  const nameById = new Map(
+    memberRecords.map((member) => [member.id, memberDisplayName(member)]),
+  );
+  const nameFor = (memberId: string) => nameById.get(memberId) ?? memberId;
+
   for (const memberId of uniqueIds) {
     const previewToken = params.previewTokens[memberId];
     if (!previewToken) {
@@ -990,6 +1017,7 @@ export async function bulkSaveSeasonalMembershipAssignments(params: {
       // dropping the member.
       results.push({
         memberId,
+        name: nameFor(memberId),
         outcome: "stale",
         status: 409,
         error:
@@ -998,19 +1026,45 @@ export async function bulkSaveSeasonalMembershipAssignments(params: {
       continue;
     }
 
-    const saveResult = await saveSeasonalMembershipAssignment({
-      memberId,
-      seasonYear: params.seasonYear,
-      membershipTypeId: params.membershipTypeId,
-      applyFrom: params.applyFrom ?? null,
-      adminMemberId: params.adminMemberId,
-      reason,
-      previewToken,
-      request: params.request,
-      db,
-      // #2107: suppress the per-member sync; batch-reconcile once after the loop.
-      skipXeroContactGroupSync: true,
-    });
+    let saveResult: JsonRouteResult;
+    try {
+      saveResult = await saveSeasonalMembershipAssignment({
+        memberId,
+        seasonYear: params.seasonYear,
+        membershipTypeId: params.membershipTypeId,
+        applyFrom: params.applyFrom ?? null,
+        adminMemberId: params.adminMemberId,
+        reason,
+        previewToken,
+        request: params.request,
+        db,
+        // #2107: suppress the per-member sync; batch-reconcile once after the loop.
+        skipXeroContactGroupSync: true,
+      });
+    } catch (err) {
+      // A THROWN save (DB deadlock, P2025, a partner-share sweep failure) must
+      // never abort the batch: isolate it as this member's `error` outcome and
+      // keep processing the rest. The summary audit + response still happen.
+      logger.error(
+        {
+          err,
+          memberId,
+          seasonYear: params.seasonYear,
+          membershipTypeId: params.membershipTypeId,
+        },
+        "Bulk seasonal membership save threw for a member (isolated, continuing)",
+      );
+      results.push({
+        memberId,
+        name: nameFor(memberId),
+        outcome: "error",
+        error:
+          err instanceof Error
+            ? err.message
+            : "The membership change failed unexpectedly for this member.",
+      });
+      continue;
+    }
 
     const status = saveResult.init?.status;
     const body = saveResult.body as {
@@ -1023,24 +1077,37 @@ export async function bulkSaveSeasonalMembershipAssignments(params: {
       if (status === 409 && body.linkedGuestBookings) {
         results.push({
           memberId,
+          name: nameFor(memberId),
           outcome: "blocked_linked_guests",
           status,
           error: body.error,
           linkedGuestBookings: body.linkedGuestBookings,
         });
       } else if (status === 409) {
-        results.push({ memberId, outcome: "stale", status, error: body.error });
+        results.push({
+          memberId,
+          name: nameFor(memberId),
+          outcome: "stale",
+          status,
+          error: body.error,
+        });
       } else {
-        results.push({ memberId, outcome: "error", status, error: body.error });
+        results.push({
+          memberId,
+          name: nameFor(memberId),
+          outcome: "error",
+          status,
+          error: body.error,
+        });
       }
       continue;
     }
 
     if (body.changed) {
-      results.push({ memberId, outcome: "changed", status });
+      results.push({ memberId, name: nameFor(memberId), outcome: "changed", status });
       changedMemberIds.push(memberId);
     } else {
-      results.push({ memberId, outcome: "unchanged", status });
+      results.push({ memberId, name: nameFor(memberId), outcome: "unchanged", status });
     }
   }
 
@@ -1082,14 +1149,27 @@ export async function bulkSaveSeasonalMembershipAssignments(params: {
   // Deferred, batched Xero contact-group reconcile for the members that actually
   // changed — a single connection check, only current-season changes alter
   // grouping at "now" (mirrors the single save). Post-commit and best-effort.
-  let xeroReconcile: Awaited<
-    ReturnType<typeof reconcileMembersXeroContactGroups>
-  > | null = null;
+  //
+  // Latency posture (#2107): saves run sequentially and this reconcile runs
+  // in-request as a best-effort pass — deliberately NOT backgrounded. Every
+  // membership change is already committed before we get here, so the reconcile
+  // only reconciles Xero *group* membership: it is safe to re-run, and a client
+  // timeout mid-reconcile cannot lose a committed change (the nightly reconcile
+  // finishes any group sync the daily API budget or a timeout left undone).
+  let xeroReconcile: BulkSeasonalMembershipXeroReconcile | null = null;
   if (changedMemberIds.length > 0 && params.seasonYear === getSeasonYear()) {
-    xeroReconcile = await reconcileMembersXeroContactGroups(changedMemberIds, {
-      createdByMemberId: params.adminMemberId,
-      reason: "seasonal_membership_assignment_bulk",
-    });
+    const reconcileResult = await reconcileMembersXeroContactGroups(
+      changedMemberIds,
+      {
+        createdByMemberId: params.adminMemberId,
+        reason: "seasonal_membership_assignment_bulk",
+      },
+    );
+    xeroReconcile = {
+      attempted: changedMemberIds.length,
+      succeeded: reconcileResult.processed,
+      haltedByDailyLimit: reconcileResult.haltedByDailyLimit,
+    };
   }
 
   return jsonResult({

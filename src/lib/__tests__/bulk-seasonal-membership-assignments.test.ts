@@ -94,6 +94,9 @@ interface MemberConfig {
   prevTypeId: string;
   ageTier?: string;
   linkedGuests?: number;
+  /** Force the per-member save to THROW (DB deadlock etc.) to exercise the
+   *  wrapper's loop exception boundary. */
+  throwOnSave?: boolean;
 }
 
 function linkedGuest(memberId: string) {
@@ -144,6 +147,17 @@ function makeBulkDb(members: Record<string, MemberConfig>) {
           lastName: where.id,
         };
       }),
+      findMany: vi.fn(async ({ where }: any) => {
+        const idList: string[] = where.id.in;
+        return idList
+          .filter((id) => members[id])
+          .map((id) => ({
+            id,
+            firstName: "Member",
+            lastName: id,
+            email: `${id}@test.example`,
+          }));
+      }),
       update: vi.fn().mockResolvedValue({}),
     },
     membershipType: {
@@ -156,7 +170,12 @@ function makeBulkDb(members: Record<string, MemberConfig>) {
       findUniqueOrThrow: vi.fn(async ({ where }: any) =>
         prevAssignment(where.memberId_seasonYear.memberId, where.memberId_seasonYear.seasonYear),
       ),
-      upsert: vi.fn(async ({ where, update }: any) => ({
+      upsert: vi.fn(async ({ where, update }: any) => {
+        const memberId = where.memberId_seasonYear.memberId;
+        if (members[memberId]?.throwOnSave) {
+          throw new Error(`DB deadlock saving ${memberId}`);
+        }
+        return {
         id: `assignment-${where.memberId_seasonYear.memberId}`,
         memberId: where.memberId_seasonYear.memberId,
         seasonYear: where.memberId_seasonYear.seasonYear,
@@ -166,7 +185,8 @@ function makeBulkDb(members: Record<string, MemberConfig>) {
         createdAt: new Date("2026-06-01T00:00:00.000Z"),
         updatedAt: new Date("2026-06-02T00:00:00.000Z"),
         membershipType: TYPES[update.membershipTypeId],
-      })),
+        };
+      }),
     },
     booking: {
       findMany: vi.fn().mockResolvedValue([]),
@@ -242,6 +262,17 @@ describe("bulkSaveSeasonalMembershipAssignments", () => {
     const body = result.body as any;
     expect(body.outcomeCounts).toMatchObject({ changed: 2, unchanged: 0 });
     expect(body.results.map((r: any) => r.outcome)).toEqual(["changed", "changed"]);
+    // Every per-member result carries a display name (never a raw id).
+    expect(body.results.map((r: any) => r.name)).toEqual([
+      "Member m-1",
+      "Member m-2",
+    ]);
+    // Reconcile telemetry is surfaced with the {attempted, succeeded, halted} shape.
+    expect(body.xeroReconcile).toEqual({
+      attempted: 2,
+      succeeded: 0,
+      haltedByDailyLimit: false,
+    });
 
     // Per-member sync suppressed; one batched reconcile with exactly the changed ids.
     expect(mockTriggerGroupSync).not.toHaveBeenCalled();
@@ -387,6 +418,50 @@ describe("bulkSaveSeasonalMembershipAssignments", () => {
     expect((result.body as any).outcomeCounts.changed).toBe(1);
     expect(mockReconcileGroups).not.toHaveBeenCalled();
     expect(mockTriggerGroupSync).not.toHaveBeenCalled();
+  });
+
+  it("isolates a THROWN save (deadlock) as an error and keeps processing the rest", async () => {
+    // m-throw's upsert rejects mid-batch; m-after must still be saved, the run
+    // must report m-throw as `error`, and the summary audit must still be written.
+    const db = makeBulkDb({
+      "m-throw": { prevTypeId: "type-full", throwOnSave: true },
+      "m-after": { prevTypeId: "type-full" },
+    });
+    const tokens = {
+      "m-throw": await tokenFor(db, "m-throw", currentSeason, "type-associate"),
+      "m-after": await tokenFor(db, "m-after", currentSeason, "type-associate"),
+    };
+    db.auditLog.create.mockClear();
+
+    const result = await bulkSaveSeasonalMembershipAssignments({
+      ids: ["m-throw", "m-after"],
+      seasonYear: currentSeason,
+      membershipTypeId: "type-associate",
+      adminMemberId: "admin-1",
+      reason: "one member deadlocks",
+      previewTokens: tokens,
+      db: db as never,
+    });
+
+    const body = result.body as any;
+    // The thrower is an `error`; the later member still went through as `changed`.
+    expect(body.outcomeCounts).toMatchObject({ error: 1, changed: 1 });
+    const throwEntry = body.results.find((r: any) => r.memberId === "m-throw");
+    expect(throwEntry.outcome).toBe("error");
+    expect(throwEntry.name).toBe("Member m-throw");
+    expect(throwEntry.error).toMatch(/deadlock/i);
+    const afterEntry = body.results.find((r: any) => r.memberId === "m-after");
+    expect(afterEntry.outcome).toBe("changed");
+
+    // The summary audit is written even though a member threw.
+    const actions = db.auditLog.create.mock.calls.map(
+      (call: any[]) => call[0].data.action,
+    );
+    expect(
+      actions.filter((a: string) => a === SEASONAL_MEMBERSHIP_BULK_ASSIGNMENT_ACTION),
+    ).toHaveLength(1);
+    // Only the surviving member is reconciled.
+    expect(mockReconcileGroups).toHaveBeenCalledWith(["m-after"], expect.anything());
   });
 
   it("rejects an empty reason before touching the database", async () => {
