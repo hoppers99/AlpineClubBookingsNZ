@@ -3,10 +3,18 @@
 import { useEffect, useState, useCallback } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { bookingStatusLabel } from "@/lib/status-colors";
 import { buildHrefWithReturnTo, buildPathWithSearch } from "@/lib/internal-return-path";
 import { getAdminCalendarBookingDayRange } from "@/lib/admin-booking-calendar-ranges";
+import { formatDateOnly, getTodayDateOnly } from "@/lib/date-only";
 
 interface CalendarBooking {
   id: string;
@@ -34,9 +42,18 @@ const ALL_STATUSES = Object.keys(STATUS_COLORS);
 
 const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
+// CELL_HEIGHT is the MINIMUM week-row height. Rows grow past it when a busy week
+// stacks more lanes than fit (issue #2088); quiet months keep the original 80px.
 const CELL_HEIGHT = 80;
 const BAR_HEIGHT = 18;
 const BAR_TOP_OFFSET = 22; // space for day number row
+const LANE_GAP = 2;
+const LANE_STRIDE = BAR_HEIGHT + LANE_GAP; // vertical pitch of one lane
+const ROW_BOTTOM_PADDING = 4; // breathing room below the deepest bar in a row
+// Ceiling on stacked lanes per week. Beyond this a row shows (MAX_LANES - 1) bar
+// lanes and collapses the surplus into a per-day "+N more" affordance so a very
+// busy week never grows without bound.
+const MAX_LANES = 6;
 
 function getMonthDays(year: number, month: number) {
   // month is 0-indexed
@@ -47,10 +64,6 @@ function getMonthDays(year: number, month: number) {
   if (startDow < 0) startDow = 6;
   const daysInMonth = lastDay.getDate();
   return { startDow, daysInMonth };
-}
-
-function dateToStr(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
 const ENABLED_STATUSES_STORAGE_KEY = "admin-calendar-enabled-statuses";
@@ -68,6 +81,8 @@ export function AdminBookingCalendar() {
   const [bookings, setBookings] = useState<CalendarBooking[]>([]);
   const [availability, setAvailability] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(false);
+  // The day whose full booking list is open in the "+N more" dialog (or null).
+  const [openDay, setOpenDay] = useState<string | null>(null);
   // Cancelled bookings are hidden by default to reduce noise; the CANCELLED
   // toggle pill below re-enables them (filtering is purely client-side). The
   // admin's last choice persists across visits (#1039 item 5).
@@ -139,6 +154,12 @@ export function AdminBookingCalendar() {
     fetchBookings();
   }, [fetchBookings]);
 
+  // Closing the "+N more" dialog whenever the visible month changes keeps a
+  // stale day from a previous month out of view after navigating.
+  useEffect(() => {
+    setOpenDay(null);
+  }, [monthKey]);
+
   const goToday = () => {
     setYear(now.getFullYear());
     setMonth(now.getMonth());
@@ -166,11 +187,22 @@ export function AdminBookingCalendar() {
   const filteredBookings = bookings.filter((b) => enabledStatuses.has(b.status));
 
   const { startDow, daysInMonth } = getMonthDays(year, month);
-  const todayStr = dateToStr(now);
+  // NZ date-only "today" (day < today greys out; today itself stays live). Using
+  // the shared club-timezone helper avoids the browser-local drift that a raw
+  // `new Date()` comparison would introduce for admins whose clock trails NZ.
+  const todayStr = formatDateOnly(getTodayDateOnly());
 
   // Build the day cells grid
   const totalCells = startDow + daysInMonth;
   const rows = Math.ceil(totalCells / 7);
+
+  // Map a flat grid-cell index to its yyyy-MM-dd string, or "" for a padding
+  // cell outside the current month.
+  const cellDateStr = (cellIdx: number): string => {
+    const dayNum = cellIdx - startDow + 1;
+    if (dayNum < 1 || dayNum > daysInMonth) return "";
+    return `${year}-${String(month + 1).padStart(2, "0")}-${String(dayNum).padStart(2, "0")}`;
+  };
 
   // Group bookings into lanes to avoid overlap
   type Lane = Array<{ booking: CalendarBooking; start: number; end: number }>;
@@ -196,6 +228,102 @@ export function AdminBookingCalendar() {
     }
   }
 
+  // --- Per-week vertical layout (issue #2088) --------------------------------
+  // The lane packing above assigns each booking a global lane index; bars are
+  // painted in an absolute overlay. With a fixed 80px cell a busy week's lane 3+
+  // bars used to spill over and paint across the week row below. Each row now
+  // grows to fit its own deepest lane, so bars never leave their own week band,
+  // and rows past the ceiling collapse the surplus into a per-day "+N more".
+  type BarSegment = {
+    booking: CalendarBooking;
+    laneIdx: number;
+    row: number;
+    colStart: number;
+    colEnd: number;
+    isFirst: boolean;
+    spanDays: number;
+  };
+  const barSegments: BarSegment[] = [];
+  lanes.forEach((lane, laneIdx) => {
+    for (const { booking, start, end } of lane) {
+      const startCell = startDow + start - 1;
+      const endCell = startDow + end - 1;
+      const startCol = startCell % 7;
+      const startRow = Math.floor(startCell / 7);
+      const endCol = endCell % 7;
+      const endRow = Math.floor(endCell / 7);
+      const spanDays = end - start + 1;
+      for (let r = startRow; r <= endRow; r++) {
+        barSegments.push({
+          booking,
+          laneIdx,
+          row: r,
+          colStart: r === startRow ? startCol : 0,
+          colEnd: r === endRow ? endCol : 6,
+          isFirst: r === startRow,
+          spanDays,
+        });
+      }
+    }
+  });
+
+  // Deepest lane occupied in each week row.
+  const maxLaneByRow = Array.from({ length: rows }, () => -1);
+  for (const seg of barSegments) {
+    if (seg.laneIdx > maxLaneByRow[seg.row]) {
+      maxLaneByRow[seg.row] = seg.laneIdx;
+    }
+  }
+
+  // A row overflows when it needs more than MAX_LANES lanes. Overflowing rows
+  // render (MAX_LANES - 1) bar lanes and reserve the last lane for "+N more".
+  const rowIsOverflow = maxLaneByRow.map((maxLane) => maxLane + 1 > MAX_LANES);
+  const barLaneCapByRow = rowIsOverflow.map((overflow) =>
+    overflow ? MAX_LANES - 1 : Number.POSITIVE_INFINITY
+  );
+  const lanesUsedByRow = maxLaneByRow.map((maxLane, r) =>
+    maxLane < 0 ? 0 : rowIsOverflow[r] ? MAX_LANES : maxLane + 1
+  );
+  const rowHeights = lanesUsedByRow.map((laneCount) =>
+    Math.max(
+      CELL_HEIGHT,
+      BAR_TOP_OFFSET + laneCount * LANE_STRIDE + ROW_BOTTOM_PADDING
+    )
+  );
+  const rowOffsets: number[] = [];
+  {
+    let acc = 0;
+    for (let r = 0; r < rows; r++) {
+      rowOffsets.push(acc);
+      acc += rowHeights[r];
+    }
+  }
+
+  // Count the bookings hidden under the cap on each day so the "+N more" chip
+  // can label itself; the dialog then opens the complete day list.
+  const hiddenCountByCell = new Map<number, number>();
+  for (const seg of barSegments) {
+    if (!rowIsOverflow[seg.row] || seg.laneIdx < barLaneCapByRow[seg.row]) {
+      continue;
+    }
+    for (let col = seg.colStart; col <= seg.colEnd; col++) {
+      const cellIdx = seg.row * 7 + col;
+      hiddenCountByCell.set(cellIdx, (hiddenCountByCell.get(cellIdx) ?? 0) + 1);
+    }
+  }
+
+  // Every booking staying the open night (checkIn inclusive, checkOut exclusive
+  // — one date-only night), sorted for a stable list.
+  const openDayBookings = openDay
+    ? filteredBookings
+        .filter((b) => b.checkIn <= openDay && openDay < b.checkOut)
+        .sort(
+          (a, b) =>
+            a.checkIn.localeCompare(b.checkIn) ||
+            a.memberName.localeCompare(b.memberName)
+        )
+    : [];
+
   const monthNames = [
     "January", "February", "March", "April", "May", "June",
     "July", "August", "September", "October", "November", "December",
@@ -206,13 +334,13 @@ export function AdminBookingCalendar() {
       {/* Header */}
       <div className="flex items-center justify-between p-3 border-b">
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={goPrev}>
+          <Button variant="outline" size="sm" onClick={goPrev} aria-label="Previous month">
             <ChevronLeft className="h-4 w-4" />
           </Button>
           <h2 className="text-sm font-semibold min-w-[140px] text-center">
             {monthNames[month]} {year}
           </h2>
-          <Button variant="outline" size="sm" onClick={goNext}>
+          <Button variant="outline" size="sm" onClick={goNext} aria-label="Next month">
             <ChevronRight className="h-4 w-4" />
           </Button>
           <Button variant="ghost" size="sm" onClick={goToday} className="text-xs">
@@ -260,17 +388,21 @@ export function AdminBookingCalendar() {
           {Array.from({ length: rows * 7 }, (_, i) => {
             const dayNum = i - startDow + 1;
             const isValidDay = dayNum >= 1 && dayNum <= daysInMonth;
-            const dayStr = isValidDay ? `${year}-${String(month + 1).padStart(2, "0")}-${String(dayNum).padStart(2, "0")}` : "";
+            const dayStr = isValidDay ? cellDateStr(i) : "";
             const isToday = dayStr === todayStr;
+            // NZ date-only: a day greys only once it has fully finished; today
+            // itself stays live (D-G2).
+            const isPast = isValidDay && dayStr < todayStr;
             const beds = isValidDay ? availability[dayStr] : undefined;
             const bedsBg = beds === undefined ? "" : beds === 0 ? "bg-red-50" : beds <= 5 ? "bg-red-50/50" : beds <= 15 ? "bg-amber-50/50" : "";
+            const cellBg = !isValidDay ? "bg-slate-50" : isPast ? "bg-slate-100" : bedsBg;
             return (
               <div
                 key={i}
-                className={`border-r border-b last:border-r-0 relative ${
-                  isValidDay ? bedsBg : "bg-slate-50"
-                }`}
-                style={{ minHeight: `${CELL_HEIGHT}px` }}
+                data-day={dayStr || undefined}
+                data-past={isPast ? "true" : undefined}
+                className={`border-r border-b last:border-r-0 relative ${cellBg}`}
+                style={{ minHeight: `${rowHeights[Math.floor(i / 7)]}px` }}
               >
                 {isValidDay && (
                   <div className="flex items-center justify-between px-1.5 pt-1">
@@ -278,7 +410,9 @@ export function AdminBookingCalendar() {
                       className={`text-xs leading-none ${
                         isToday
                           ? "font-bold text-blue-600 bg-blue-100 rounded-full px-1.5 py-0.5"
-                          : "text-slate-500"
+                          : isPast
+                            ? "text-slate-400"
+                            : "text-slate-500"
                       }`}
                     >
                       {dayNum}
@@ -286,6 +420,8 @@ export function AdminBookingCalendar() {
                     {beds !== undefined && (
                       <span
                         className={`text-[11px] leading-none font-medium ${
+                          isPast ? "opacity-60 " : ""
+                        }${
                           beds === 0 ? "text-red-600" : beds <= 5 ? "text-red-600" : beds <= 15 ? "text-amber-600" : "text-green-600"
                         }`}
                       >
@@ -301,62 +437,130 @@ export function AdminBookingCalendar() {
 
         {/* Booking bars overlay */}
         <div className="absolute inset-0 pointer-events-none">
-          {lanes.map((lane, laneIdx) =>
-            lane.map(({ booking, start, end }) => {
-              // Calculate grid position
-              const startCell = startDow + start - 1;
-              const endCell = startDow + end - 1;
-              const startCol = startCell % 7;
-              const startRow = Math.floor(startCell / 7);
-              const endCol = endCell % 7;
-              const endRow = Math.floor(endCell / 7);
+          {barSegments.map((seg) => {
+            // Lanes past the cap are hidden here and surface via "+N more".
+            if (rowIsOverflow[seg.row] && seg.laneIdx >= barLaneCapByRow[seg.row]) {
+              return null;
+            }
+            const { booking } = seg;
+            const leftPct = (seg.colStart / 7) * 100;
+            const widthPct = ((seg.colEnd - seg.colStart + 1) / 7) * 100;
+            const rowTop = rowOffsets[seg.row];
+            const rowHeight = rowHeights[seg.row];
+            const top = rowTop + BAR_TOP_OFFSET + seg.laneIdx * LANE_STRIDE;
+            // A segment fully in the past dims with its cells; a segment that
+            // still reaches today or the future stays at full strength.
+            const lastDayStr = cellDateStr(seg.row * 7 + seg.colEnd);
+            const isPastSeg = lastDayStr !== "" && lastDayStr < todayStr;
 
-              // If booking spans multiple rows, render segments per row
-              const segments: Array<{ row: number; colStart: number; colEnd: number; isFirst: boolean }> = [];
-              for (let r = startRow; r <= endRow; r++) {
-                segments.push({
-                  row: r,
-                  colStart: r === startRow ? startCol : 0,
-                  colEnd: r === endRow ? endCol : 6,
-                  isFirst: r === startRow,
-                });
-              }
+            return (
+              <div
+                key={`${booking.id}-${seg.row}`}
+                data-booking-id={booking.id}
+                data-row-index={seg.row}
+                data-row-top={rowTop}
+                data-row-height={rowHeight}
+                className={`absolute rounded pointer-events-auto cursor-pointer hover:brightness-110 transition-all flex items-center overflow-hidden ${
+                  isPastSeg ? "opacity-50 " : ""
+                }${STATUS_COLORS[booking.status] || "bg-gray-400"}`}
+                style={{
+                  left: `calc(${leftPct}% + 2px)`,
+                  width: `calc(${widthPct}% - 4px)`,
+                  top: `${top}px`,
+                  height: `${BAR_HEIGHT}px`,
+                }}
+                title={`${booking.memberName} (${booking.status}) — ${booking.checkIn} to ${booking.checkOut}, ${booking.guestCount} guest(s)`}
+                onClick={() => router.push(buildHrefWithReturnTo(`/bookings/${booking.id}`, currentBookingsPath))}
+              >
+                {seg.isFirst && (
+                  <span className="text-white text-[11px] font-medium leading-none truncate px-1.5">
+                    {booking.memberName}
+                    {seg.spanDays > 2 && ` · ${booking.guestCount}g`}
+                  </span>
+                )}
+              </div>
+            );
+          })}
 
-              const spanDays = end - start + 1;
-
-              return segments.map((seg, si) => {
-                const leftPct = (seg.colStart / 7) * 100;
-                const widthPct = ((seg.colEnd - seg.colStart + 1) / 7) * 100;
-                const top = seg.row * CELL_HEIGHT + BAR_TOP_OFFSET + laneIdx * (BAR_HEIGHT + 2);
-
-                return (
-                  <div
-                    key={`${booking.id}-${si}`}
-                    className={`absolute rounded pointer-events-auto cursor-pointer hover:brightness-110 transition-all flex items-center overflow-hidden ${
-                      STATUS_COLORS[booking.status] || "bg-gray-400"
-                    }`}
-                    style={{
-                      left: `calc(${leftPct}% + 2px)`,
-                      width: `calc(${widthPct}% - 4px)`,
-                      top: `${top}px`,
-                      height: `${BAR_HEIGHT}px`,
-                    }}
-                    title={`${booking.memberName} (${booking.status}) — ${booking.checkIn} to ${booking.checkOut}, ${booking.guestCount} guest(s)`}
-                    onClick={() => router.push(buildHrefWithReturnTo(`/bookings/${booking.id}`, currentBookingsPath))}
-                  >
-                    {seg.isFirst && (
-                      <span className="text-white text-[11px] font-medium leading-none truncate px-1.5">
-                        {booking.memberName}
-                        {spanDays > 2 && ` · ${booking.guestCount}g`}
-                      </span>
-                    )}
-                  </div>
-                );
-              });
-            })
-          )}
+          {/* "+N more" affordances for days whose bookings exceed the cap. */}
+          {[...hiddenCountByCell.entries()].map(([cellIdx, hidden]) => {
+            const row = Math.floor(cellIdx / 7);
+            const col = cellIdx % 7;
+            const dayStr = cellDateStr(cellIdx);
+            if (!dayStr) return null;
+            const leftPct = (col / 7) * 100;
+            const widthPct = (1 / 7) * 100;
+            const top =
+              rowOffsets[row] + BAR_TOP_OFFSET + (MAX_LANES - 1) * LANE_STRIDE;
+            const isPastCell = dayStr < todayStr;
+            return (
+              <button
+                key={`more-${cellIdx}`}
+                type="button"
+                data-more-day={dayStr}
+                className={`absolute pointer-events-auto flex items-center justify-center rounded border border-slate-300 bg-white text-[11px] font-medium text-slate-600 hover:bg-slate-50 ${
+                  isPastCell ? "opacity-60" : ""
+                }`}
+                style={{
+                  left: `calc(${leftPct}% + 2px)`,
+                  width: `calc(${widthPct}% - 4px)`,
+                  top: `${top}px`,
+                  height: `${BAR_HEIGHT}px`,
+                }}
+                title={`Show all bookings on ${dayStr}`}
+                onClick={() => setOpenDay(dayStr)}
+              >
+                +{hidden} more
+              </button>
+            );
+          })}
         </div>
       </div>
+
+      {/* Full day list for a "+N more" cell */}
+      <Dialog
+        open={openDay !== null}
+        onOpenChange={(open) => {
+          if (!open) setOpenDay(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Bookings on {openDay}</DialogTitle>
+            <DialogDescription>
+              {openDayBookings.length} booking
+              {openDayBookings.length === 1 ? "" : "s"} staying this night.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[60vh] divide-y overflow-y-auto">
+            {openDayBookings.map((b) => (
+              <button
+                key={b.id}
+                type="button"
+                onClick={() => {
+                  setOpenDay(null);
+                  router.push(
+                    buildHrefWithReturnTo(`/bookings/${b.id}`, currentBookingsPath)
+                  );
+                }}
+                className="flex w-full items-center justify-between gap-2 px-1 py-2 text-left text-sm hover:bg-slate-50"
+              >
+                <span className="flex min-w-0 items-center gap-2">
+                  <span
+                    className={`inline-block h-2.5 w-2.5 shrink-0 rounded-sm ${
+                      STATUS_COLORS[b.status] || "bg-gray-400"
+                    }`}
+                  />
+                  <span className="truncate font-medium">{b.memberName}</span>
+                </span>
+                <span className="shrink-0 text-xs text-slate-500">
+                  {bookingStatusLabel(b.status)} · {b.guestCount}g
+                </span>
+              </button>
+            ))}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Legend (click toggles above to filter) */}
       <div className="flex flex-wrap gap-4 px-3 py-2.5 border-t text-xs">
