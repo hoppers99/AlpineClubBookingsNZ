@@ -370,6 +370,33 @@ describe("admin Xero member-grouping route (view/edit gating, #1934)", () => {
     expect(mocks.ruleCreate).not.toHaveBeenCalled();
   });
 
+  it("rejects an all-tiers duplicate when a full-tick selection collapses to [] (friendly 409)", async () => {
+    // An existing "all age tiers" rule is stored as []. A create that ticks all
+    // five tiers collapses to [] in normalizeRule, so isDuplicateRuleShape must
+    // query findFirst with the empty array and return the friendly 409 — never
+    // falling through to the DB unique-index P2002.
+    mocks.ruleFindFirst.mockResolvedValue({ id: "existing-all-tiers" });
+    const res = await POST(
+      postRequest({
+        action: "create-rule",
+        ageTiers: ["INFANT", "CHILD", "YOUTH", "ADULT", "NOT_APPLICABLE"],
+        mode: "MANAGED",
+        groupId: "g1",
+      }),
+    );
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toEqual({
+      error:
+        "A rule with the same membership type, age tiers, mode, and Xero group already exists.",
+    });
+    expect(mocks.ruleFindFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ ageTiers: { equals: [] } }),
+      }),
+    );
+    expect(mocks.ruleCreate).not.toHaveBeenCalled();
+  });
+
   it("allows set-mode for a finance:edit admin", async () => {
     const res = await POST(postRequest({ action: "set-mode", mode: "NONE" }));
     expect(res.status).toBe(200);

@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Client } from "pg";
 import { describe, expect, it } from "vitest";
+import { canonicalizeAgeTiers } from "@/lib/age-tier-schema";
 
 const migrationSql = readFileSync(
   join(
@@ -168,20 +169,87 @@ describeWithDatabase(
       });
     });
 
-    it("re-enforces shape uniqueness over the canonical array (reordered sets collide)", async () => {
+    it("re-enforces shape uniqueness over identical stored arrays (same canonical shape collides)", async () => {
       await withMigrationSchema(async (client) => {
         // nosemgrep: javascript.express.db.pg-express.pg-express
         await client.query(migrationSql);
-        // Two type-wildcard rules with the SAME canonical tier set + group must
-        // collide under the reworked NULLS NOT DISTINCT array index.
+        // Two type-wildcard rules with the SAME stored (canonical) tier set +
+        // group collide under the reworked NULLS NOT DISTINCT array index. The
+        // stored order here is the canonical one the app would write
+        // (YOUTH < ADULT per CANONICAL_AGE_TIER_ORDER).
         await client.query(
           `INSERT INTO "XeroContactGroupRule" ("id", "ageTiers", "mode", "groupId", "updatedAt")
-           VALUES ('a', ARRAY['ADULT','YOUTH']::"AgeTier"[], 'MANAGED', 'g', CURRENT_TIMESTAMP)`,
+           VALUES ('a', ARRAY['YOUTH','ADULT']::"AgeTier"[], 'MANAGED', 'g', CURRENT_TIMESTAMP)`,
         );
         await expect(
           client.query(
             `INSERT INTO "XeroContactGroupRule" ("id", "ageTiers", "mode", "groupId", "updatedAt")
-             VALUES ('b', ARRAY['ADULT','YOUTH']::"AgeTier"[], 'MANAGED', 'g', CURRENT_TIMESTAMP)`,
+             VALUES ('b', ARRAY['YOUTH','ADULT']::"AgeTier"[], 'MANAGED', 'g', CURRENT_TIMESTAMP)`,
+          ),
+        ).rejects.toThrow();
+      });
+    });
+
+    it("does NOT collide on a genuinely reordered raw insert — canonical order is app-enforced, not DB-enforced", async () => {
+      await withMigrationSchema(async (client) => {
+        // nosemgrep: javascript.express.db.pg-express.pg-express
+        await client.query(migrationSql);
+        // btree array equality is ORDER-SENSITIVE, so two raw inserts that differ
+        // ONLY by tier order are DISTINCT rows at the DB level: the index does
+        // NOT dedupe them. This documents that the canonical ordering that makes
+        // reordered sets collide is enforced by the app (normalizeRule ->
+        // canonicalizeAgeTiers), not by the index itself.
+        await client.query(
+          `INSERT INTO "XeroContactGroupRule" ("id", "ageTiers", "mode", "groupId", "updatedAt")
+           VALUES ('raw_adult_youth', ARRAY['ADULT','YOUTH']::"AgeTier"[], 'MANAGED', 'g', CURRENT_TIMESTAMP)`,
+        );
+        // Reversed order — accepted, NO unique violation at the DB level.
+        await expect(
+          client.query(
+            `INSERT INTO "XeroContactGroupRule" ("id", "ageTiers", "mode", "groupId", "updatedAt")
+             VALUES ('raw_youth_adult', ARRAY['YOUTH','ADULT']::"AgeTier"[], 'MANAGED', 'g', CURRENT_TIMESTAMP)`,
+          ),
+        ).resolves.toBeDefined();
+
+        // The app canonicalizes BOTH orders to the same array, so the
+        // app-canonical write path is what actually produces the collision the
+        // index then enforces.
+        const canonicalFromReversed = canonicalizeAgeTiers(["ADULT", "YOUTH"]);
+        const canonicalFromOrdered = canonicalizeAgeTiers(["YOUTH", "ADULT"]);
+        expect(canonicalFromReversed).toEqual(canonicalFromOrdered);
+        expect(canonicalFromOrdered).toEqual(["YOUTH", "ADULT"]);
+
+        // Writing that single canonical shape twice DOES collide.
+        await client.query(
+          `INSERT INTO "XeroContactGroupRule" ("id", "ageTiers", "mode", "groupId", "updatedAt")
+           VALUES ('canon_1', $1::"AgeTier"[], 'MANAGED', 'g2', CURRENT_TIMESTAMP)`,
+          [canonicalFromReversed],
+        );
+        await expect(
+          client.query(
+            `INSERT INTO "XeroContactGroupRule" ("id", "ageTiers", "mode", "groupId", "updatedAt")
+             VALUES ('canon_2', $1::"AgeTier"[], 'MANAGED', 'g2', CURRENT_TIMESTAMP)`,
+            [canonicalFromOrdered],
+          ),
+        ).rejects.toThrow();
+      });
+    });
+
+    it("collides two all-tiers ([]) rules with the same group (empty-array + NULLS NOT DISTINCT)", async () => {
+      await withMigrationSchema(async (client) => {
+        // nosemgrep: javascript.express.db.pg-express.pg-express
+        await client.query(migrationSql);
+        // The "all age tiers" wildcard stores []; two such type-wildcard (NULL
+        // membershipTypeId) rules for the same group must collide (empty-array
+        // equality under NULLS NOT DISTINCT).
+        await client.query(
+          `INSERT INTO "XeroContactGroupRule" ("id", "ageTiers", "mode", "groupId", "updatedAt")
+           VALUES ('e1', ARRAY[]::"AgeTier"[], 'MANAGED', 'g_all', CURRENT_TIMESTAMP)`,
+        );
+        await expect(
+          client.query(
+            `INSERT INTO "XeroContactGroupRule" ("id", "ageTiers", "mode", "groupId", "updatedAt")
+             VALUES ('e2', ARRAY[]::"AgeTier"[], 'MANAGED', 'g_all', CURRENT_TIMESTAMP)`,
           ),
         ).rejects.toThrow();
       });
