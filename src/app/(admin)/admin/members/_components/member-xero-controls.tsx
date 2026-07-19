@@ -277,8 +277,8 @@ export function MemberXeroControls({
               </div>
               {blankOptionalFields.length > 0 && (
                 <div className="rounded-md border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800">
-                  Profile incomplete: {blankOptionalFields.join(", ")} — the contact will be
-                  created without these.
+                  Profile incomplete: {blankOptionalFields.join(", ")} — missing details will
+                  simply be left off the Xero contact.
                 </div>
               )}
               <MemberXeroEntranceFeeFields
@@ -346,8 +346,8 @@ export function MemberXeroControls({
               </p>
               {blankOptionalFields.length > 0 && (
                 <p className="rounded-md border border-blue-200 bg-blue-50 p-2 text-blue-800">
-                  Profile incomplete: {blankOptionalFields.join(", ")} — the contact will be
-                  created without these.
+                  Profile incomplete: {blankOptionalFields.join(", ")} — missing details will
+                  simply be left off the Xero contact.
                 </p>
               )}
               <div className="text-slate-900">

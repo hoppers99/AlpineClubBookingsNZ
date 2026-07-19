@@ -66,8 +66,8 @@ idempotent — retrying the same work never double-charges.
    physical addresses — is optional. Xero's contact-create API itself requires
    only a unique contact name.
 3. When optional profile fields are blank the panel shows a small note (e.g.
-   *"Profile incomplete: postal address, joined date — the contact will be
-   created without these"*) and still lets you create the contact. Blank
+   *"Profile incomplete: postal address, joined date — missing details will
+   simply be left off the Xero contact"*) and still lets you create the contact. Blank
    addresses and an all-blank phone are simply omitted from the payload rather
    than sent as empty blocks. Date of birth and joined date are never sent to
    Xero on create; the joined date round-trips only through Xero's *company
