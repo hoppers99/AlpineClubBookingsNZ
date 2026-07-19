@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -320,19 +321,23 @@ export default function AdminDisplayLayoutsPage() {
   }
 
   async function save() {
-    // Saving an in-place edit to a built-in is not upgrade-safe (it is
-    // overwritten on the next re-seed/upgrade, #111); require an explicit
-    // acknowledgement before persisting (#156).
-    if (
-      draft.id !== null &&
-      isBuiltInDisplayLayoutKey(draft.key) &&
-      !window.confirm(
-        `"${draft.name || draft.key}" is a built-in layout. Saving this ` +
-          "in-place edit is NOT upgrade-safe — it will be overwritten the next " +
-          "time the built-in designs are re-seeded or the app is upgraded. " +
-          "Duplicate it to customise safely instead.\n\nSave the in-place edit anyway?"
-      )
-    ) {
+    // Built-in layouts are code-managed and READ-ONLY: the PUT route now 409s on
+    // a `builtin-*` key (#2048), so an in-place save can never persist. Never
+    // fire that doomed PUT — offer the duplicate-to-customise fork instead, the
+    // only path that keeps the admin's changes (#156, #2048 D).
+    if (draft.id !== null && isBuiltInDisplayLayoutKey(draft.key)) {
+      if (
+        window.confirm(
+          `"${draft.name || draft.key}" is a built-in layout and is ` +
+            "read-only — in-place edits can't be saved (they would be " +
+            "overwritten the next time the built-in designs are re-seeded or " +
+            "the app is upgraded). Duplicate it to a new custom layout to keep " +
+            "your changes?\n\nOK duplicates it now; Cancel leaves the built-in " +
+            "open."
+        )
+      ) {
+        duplicateLayout();
+      }
       return;
     }
 
@@ -436,8 +441,17 @@ export default function AdminDisplayLayoutsPage() {
     <div className="space-y-6 p-6">
       <div>
         <BackLink href="/admin/display" label="Lobby Display" />
-        <h1 className="mt-2 text-2xl font-bold">Display Layouts</h1>
+        <h1 className="mt-2 text-2xl font-bold">Display Layouts — Advanced mode</h1>
         <p className="text-muted-foreground">
+          This is the <strong>Advanced mode</strong> hand-editor. Most boards are
+          easier to build in the{" "}
+          <Link className="underline" href="/admin/display/builder">
+            visual builder
+          </Link>
+          , which writes the layout and template for you; drop to Advanced mode
+          for full control over the HTML body, CSS, and areas.
+        </p>
+        <p className="text-muted-foreground mt-1">
           Author the structural skeleton of a lobby display: an HTML body with{" "}
           <code className="bg-muted rounded px-1">{"{{area:key}}"}</code>{" "}
           placeholders, a default CSS block, and the named areas each Template
