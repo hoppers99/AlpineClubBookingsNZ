@@ -23,7 +23,10 @@ import {
   getAuthenticatedXeroClient,
   XeroDailyLimitError,
 } from "./xero-api-client";
-import { getResolvedAccountMapping } from "./xero-mappings";
+import {
+  getResolvedAccountMapping,
+  getSubscriptionItemCodes,
+} from "./xero-mappings";
 import { getSeasonStartMonth } from "@/lib/financial-year";
 import { loadMembershipLockoutSettings } from "@/lib/membership-lockout-settings";
 import { requiresPaidSubscriptionForAgeTierFromSettings } from "@/lib/member-subscription-eligibility";
@@ -630,14 +633,11 @@ export async function checkMembershipStatus(
         (invoice) => invoice.invoiceID === immutableChargeInvoiceId
       );
     } else {
-      const subscriptionMapping =
-        await getResolvedAccountMapping("subscriptionIncome");
-      const lockoutSettings = await loadMembershipLockoutSettings();
-      subscriptionInvoice = findSubscriptionInvoice(invoices, year, {
-        accountCode: subscriptionMapping.code ?? "203",
-        itemCode: subscriptionMapping.itemCode,
-        textFallbackEnabled: lockoutSettings.textFallbackEnabled,
-      });
+      subscriptionInvoice = findSubscriptionInvoice(
+        invoices,
+        year,
+        await buildSubscriptionInvoiceMatchOptions()
+      );
     }
 
     if (!subscriptionInvoice) {
@@ -824,8 +824,20 @@ export async function checkMembershipStatus(
 export interface SubscriptionInvoiceMatchOptions {
   /** Chart-of-account code that marks a line as a membership subscription. */
   accountCode: string;
-  /** Optional Xero item code that also marks a line as a subscription. */
-  itemCode?: string | null;
+  /**
+   * Xero item codes that also mark a line as a subscription (#2109). Off =
+   * the single configured `subscriptionIncome.itemCode` (or empty); on = that
+   * flat code UNION every distinct fee-schedule component code. Build with
+   * {@link buildSubscriptionInvoiceMatchOptions}.
+   */
+  itemCodes?: readonly string[];
+  /**
+   * The single flat "fallback" item code — always included in `itemCodes`. A
+   * line matched via this code (or via the account code) is a STRONG match and
+   * outranks a line matched only via a union-only fee-schedule code when
+   * choosing between several candidate invoices (#2109 prefer-paid selection).
+   */
+  primaryItemCode?: string | null;
   /**
    * When true (default), an invoice whose reference/description text reads like
    * a membership subscription also matches, in addition to account/item code.
@@ -833,39 +845,69 @@ export interface SubscriptionInvoiceMatchOptions {
   textFallbackEnabled?: boolean;
 }
 
+interface SubscriptionInvoiceMatch {
+  invoice: Invoice;
+  /** Original list position — the stable tie-break, preserving first-seen order. */
+  index: number;
+  /** PAID/settled invoice; ranked ahead of UNPAID/OVERDUE (#2109 prefer-paid). */
+  isPaid: boolean;
+  /** Matched via the account code or the flat primary item code (not union-only). */
+  isStrong: boolean;
+}
+
 /**
- * Find a subscription invoice among a list of Xero invoices for a given season
- * year. An invoice within the season window matches if any line uses the
- * configured account code OR the configured item code, or (when the text
- * fallback is enabled) its reference/description reads like a subscription.
- * Exported for testing.
+ * Collect EVERY invoice in the season window whose lines mark it as a membership
+ * subscription (#2109). An invoice matches if any line uses the configured
+ * account code OR any configured item code, or (when the text fallback is
+ * enabled) its reference/description reads like a subscription. Each match is
+ * tagged paid/strong so the caller can apply prefer-paid selection instead of
+ * returning the first match over a widened item-code set (which could return an
+ * earlier UNPAID hut-fee invoice sharing a code and falsely mark a paid member
+ * unpaid). Exported for testing.
  */
-export function findSubscriptionInvoice(
+export function collectSubscriptionInvoiceMatches(
   invoices: Invoice[],
   seasonYear: number,
   options: SubscriptionInvoiceMatchOptions
-): Invoice | null {
-  const { accountCode, itemCode, textFallbackEnabled = true } = options;
+): SubscriptionInvoiceMatch[] {
+  const {
+    accountCode,
+    itemCodes = [],
+    primaryItemCode = null,
+    textFallbackEnabled = true,
+  } = options;
+  const itemCodeSet = new Set(itemCodes.filter((code): code is string => Boolean(code)));
   const startMonth = getSeasonStartMonth(); // 1-12
   const seasonStart = new Date(seasonYear, startMonth - 1, 1);
   const seasonEndExclusive = new Date(seasonYear + 1, startMonth - 1, 1);
 
-  for (const invoice of invoices) {
+  const matches: SubscriptionInvoiceMatch[] = [];
+
+  invoices.forEach((invoice, index) => {
     // Check if invoice date falls within the season year [seasonStart, seasonEndExclusive)
     const invoiceDate = invoice.date ? new Date(invoice.date) : null;
-    if (!invoiceDate) continue;
+    if (!invoiceDate) return;
 
-    if (invoiceDate < seasonStart || invoiceDate >= seasonEndExclusive) continue;
+    if (invoiceDate < seasonStart || invoiceDate >= seasonEndExclusive) return;
 
     // Match on the configured chart-of-account code (e.g. 203 "Annual Subs").
-    const hasAccountCode = invoice.lineItems?.some(
-      (li) => li.accountCode === accountCode
+    const hasAccountCode = Boolean(
+      invoice.lineItems?.some((li) => li.accountCode === accountCode)
     );
 
-    // Match on the configured Xero item code, when one is set.
-    const hasItemCode = itemCode
-      ? invoice.lineItems?.some((li) => li.itemCode === itemCode)
-      : false;
+    // Match on the flat primary item code (a strong signal) versus a union-only
+    // fee-schedule code (a weaker signal shared with hut/joining/promo fees).
+    const hasPrimaryItemCode = Boolean(
+      primaryItemCode &&
+        invoice.lineItems?.some((li) => li.itemCode === primaryItemCode)
+    );
+    const hasUnionItemCode =
+      itemCodeSet.size > 0 &&
+      Boolean(
+        invoice.lineItems?.some(
+          (li) => li.itemCode != null && itemCodeSet.has(li.itemCode)
+        )
+      );
 
     let hasTextMatch = false;
     if (textFallbackEnabled) {
@@ -878,12 +920,87 @@ export function findSubscriptionInvoice(
       hasTextMatch = Boolean(hasRefMatch || hasDescriptionMatch);
     }
 
-    if (hasAccountCode || hasItemCode || hasTextMatch) {
-      return invoice;
+    if (!(hasAccountCode || hasPrimaryItemCode || hasUnionItemCode || hasTextMatch)) {
+      return;
     }
+
+    matches.push({
+      invoice,
+      index,
+      isPaid: determineSubscriptionStatus(invoice).status === "PAID",
+      // Text is a fallback signal, not an authoritative code leg; only the
+      // account code and the flat primary item code count as strong.
+      isStrong: hasAccountCode || hasPrimaryItemCode,
+    });
+  });
+
+  return matches;
+}
+
+/**
+ * Find THE subscription invoice for a season from a list of Xero invoices
+ * (#2109). Collects every match, then applies prefer-paid selection:
+ *   (a) a PAID/settled invoice outranks an UNPAID/OVERDUE one,
+ *   (b) a strong match (account code or flat primary item code) outranks a
+ *       union-only fee-schedule match, then
+ *   (c) earliest/first-seen order breaks remaining ties (stable).
+ * With a single-code (off) set and a single candidate this is byte-for-byte the
+ * old first-match-wins behaviour. Exported for testing.
+ */
+export function findSubscriptionInvoice(
+  invoices: Invoice[],
+  seasonYear: number,
+  options: SubscriptionInvoiceMatchOptions
+): Invoice | null {
+  const matches = collectSubscriptionInvoiceMatches(invoices, seasonYear, options);
+  if (matches.length === 0) return null;
+
+  let best = matches[0];
+  for (const candidate of matches.slice(1)) {
+    if (candidate.isPaid !== best.isPaid) {
+      if (candidate.isPaid) best = candidate;
+      continue;
+    }
+    if (candidate.isStrong !== best.isStrong) {
+      if (candidate.isStrong) best = candidate;
+      continue;
+    }
+    // Equal on paid + strength: keep the earliest (stable first-seen) match.
   }
 
-  return null;
+  return best.invoice;
+}
+
+/**
+ * Build the shared subscription detection options from configuration (#2109),
+ * used by both `checkMembershipStatus` (member-scoped, single contact) and the
+ * inbound invoice reconciler (member-less, single invoice). Reads the frozen
+ * `subscriptionIncome` mapping for the account/flat item code and the lockout
+ * settings for the text fallback and the fee-schedule look-through toggle. The
+ * flat primary item code is ALWAYS folded into `itemCodes` so it participates in
+ * matching regardless of the fee-schedule read.
+ */
+export async function buildSubscriptionInvoiceMatchOptions(): Promise<SubscriptionInvoiceMatchOptions> {
+  const [subscriptionMapping, lockoutSettings] = await Promise.all([
+    getResolvedAccountMapping("subscriptionIncome"),
+    loadMembershipLockoutSettings(),
+  ]);
+  const primaryItemCode = subscriptionMapping.itemCode;
+  const feeScheduleCodes = lockoutSettings.useFeeScheduleItemCodes
+    ? await getSubscriptionItemCodes()
+    : [];
+  const itemCodes = Array.from(
+    new Set([
+      ...(primaryItemCode ? [primaryItemCode] : []),
+      ...feeScheduleCodes,
+    ])
+  ).sort();
+  return {
+    accountCode: subscriptionMapping.code ?? "203",
+    itemCodes,
+    primaryItemCode,
+    textFallbackEnabled: lockoutSettings.textFallbackEnabled,
+  };
 }
 
 // test seam

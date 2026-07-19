@@ -222,7 +222,8 @@ describe("findSubscriptionInvoice", () => {
     ]
     const result = findSubscriptionInvoice(invoices, 2026, {
       accountCode: "203",
-      itemCode: "SUBS",
+      itemCodes: ["SUBS"],
+      primaryItemCode: "SUBS",
       textFallbackEnabled: false,
     })
     expect(result).not.toBeNull()
@@ -257,6 +258,130 @@ describe("findSubscriptionInvoice", () => {
     expect(
       findSubscriptionInvoice(invoices, 2026, { accountCode: "203", textFallbackEnabled: false })
     ).toBeNull()
+  })
+
+  // #2109 fee-schedule look-through: matching over the widened item-code set.
+  it("matches any item code in the union set (fee-schedule look-through)", () => {
+    const invoices = [
+      makeInvoice({
+        invoiceID: "inv-tier",
+        reference: "Renewal",
+        lineItems: [
+          { description: "Full Member – Youth", accountCode: "999", itemCode: "FULL-YOUTH", quantity: 1, unitAmount: 90 },
+        ],
+      }),
+    ]
+    const result = findSubscriptionInvoice(invoices, 2026, {
+      accountCode: "203",
+      itemCodes: ["FULL-ADULT", "FULL-YOUTH", "SUBS"],
+      primaryItemCode: "SUBS",
+      textFallbackEnabled: false,
+    })
+    expect(result).not.toBeNull()
+    expect(result!.invoiceID).toBe("inv-tier")
+  })
+
+  // THE decisive regression (#2109): a PAID subscription invoice plus an EARLIER
+  // UNPAID hut-fee invoice that shares a fee-schedule item code. First-match-wins
+  // over the widened set would return the earlier unpaid hut invoice and falsely
+  // mark a paid member unpaid (wiping manual mark-paid provenance on the upsert).
+  // Prefer-paid selection must return the PAID subscription invoice.
+  it("prefers the PAID subscription invoice over an earlier UNPAID invoice sharing a code", () => {
+    const unpaidHut = makeInvoice({
+      invoiceID: "inv-hut-unpaid",
+      date: "2026-04-10",
+      status: Invoice.StatusEnum.AUTHORISED,
+      reference: "Hut booking",
+      // Shares the FULL-ADULT code (a fee-schedule/hut overlap) but is unpaid.
+      lineItems: [
+        { description: "Lodge nights", accountCode: "200", itemCode: "FULL-ADULT", quantity: 1, unitAmount: 120 },
+      ],
+    })
+    const paidSub = makeInvoice({
+      invoiceID: "inv-sub-paid",
+      date: "2026-05-01",
+      status: Invoice.StatusEnum.PAID,
+      reference: "Renewal",
+      lineItems: [
+        { description: "Full Member – Adult", accountCode: "203", itemCode: "FULL-ADULT", quantity: 1, unitAmount: 150 },
+      ],
+    })
+    // Order the earlier unpaid invoice first, as Xero might return it.
+    const result = findSubscriptionInvoice([unpaidHut, paidSub], 2026, {
+      accountCode: "203",
+      itemCodes: ["FULL-ADULT", "SUBS"],
+      primaryItemCode: "SUBS",
+      textFallbackEnabled: false,
+    })
+    expect(result).not.toBeNull()
+    expect(result!.invoiceID).toBe("inv-sub-paid")
+  })
+
+  it("prefers a strong (account/primary-code) match over a union-only match when both are unpaid", () => {
+    const unionOnly = makeInvoice({
+      invoiceID: "inv-union-only",
+      date: "2026-04-05",
+      status: Invoice.StatusEnum.AUTHORISED,
+      reference: "Hut booking",
+      lineItems: [
+        { description: "Lodge nights", accountCode: "200", itemCode: "FULL-ADULT", quantity: 1, unitAmount: 120 },
+      ],
+    })
+    const strong = makeInvoice({
+      invoiceID: "inv-strong",
+      date: "2026-05-01",
+      status: Invoice.StatusEnum.AUTHORISED,
+      reference: "Renewal",
+      lineItems: [
+        { description: "Subscription", accountCode: "203", quantity: 1, unitAmount: 150 },
+      ],
+    })
+    const result = findSubscriptionInvoice([unionOnly, strong], 2026, {
+      accountCode: "203",
+      itemCodes: ["FULL-ADULT", "SUBS"],
+      primaryItemCode: "SUBS",
+      textFallbackEnabled: false,
+    })
+    expect(result!.invoiceID).toBe("inv-strong")
+  })
+
+  // Byte-compat: with a single-code (off) set and one candidate, the result is
+  // exactly first-match — the prefer-paid re-ranking never changes it.
+  it("is byte-compatible with first-match-wins for the single-code (off) set", () => {
+    const invoices = [
+      makeInvoice({ invoiceID: "inv-only", status: Invoice.StatusEnum.AUTHORISED }),
+    ]
+    const result = findSubscriptionInvoice(invoices, 2026, {
+      accountCode: "203",
+      itemCodes: ["SUBS"],
+      primaryItemCode: "SUBS",
+    })
+    expect(result!.invoiceID).toBe("inv-only")
+  })
+
+  // Documented residual for the member-less inbound path (#2109): when ONLY a
+  // shared-code fee invoice is present (no distinguishing paid subscription), the
+  // single-invoice reconciler cannot tell it apart and it looks like a
+  // subscription. Prefer-paid needs ≥2 candidates to disambiguate; with one
+  // invoice there is nothing to prefer. The settings overlap warning is the
+  // mitigation. This asserts the accepted behaviour, not a bug.
+  it("residual: a lone shared-code invoice still matches (member-less inbound path)", () => {
+    const hutOnly = makeInvoice({
+      invoiceID: "inv-hut-lone",
+      status: Invoice.StatusEnum.AUTHORISED,
+      reference: "Hut booking",
+      lineItems: [
+        { description: "Lodge nights", accountCode: "200", itemCode: "FULL-ADULT", quantity: 1, unitAmount: 120 },
+      ],
+    })
+    const result = findSubscriptionInvoice([hutOnly], 2026, {
+      accountCode: "203",
+      itemCodes: ["FULL-ADULT", "SUBS"],
+      primaryItemCode: "SUBS",
+      textFallbackEnabled: false,
+    })
+    expect(result).not.toBeNull()
+    expect(result!.invoiceID).toBe("inv-hut-lone")
   })
 })
 

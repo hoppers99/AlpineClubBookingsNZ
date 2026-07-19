@@ -61,6 +61,7 @@ describe("membership lockout settings route guards (#1940)", () => {
       enabled: true,
       financialYearEndMonthOverride: null,
       textFallbackEnabled: true,
+      useFeeScheduleItemCodes: false,
     });
     mocks.auditLogCreate.mockResolvedValue({});
     mocks.getFinancialYearResolution.mockResolvedValue({});
@@ -97,5 +98,40 @@ describe("membership lockout settings route guards (#1940)", () => {
     expect(response.status).toBe(200);
     expect(mocks.upsert).toHaveBeenCalledTimes(1);
     expect(mocks.auditLogCreate).toHaveBeenCalled();
+  });
+
+  it("accepts and persists useFeeScheduleItemCodes (#2109)", async () => {
+    const response = await putLockoutSettings(
+      request({ useFeeScheduleItemCodes: true }),
+    );
+
+    expect(response.status).toBe(200);
+    const upsertArgs = mocks.upsert.mock.calls[0][0];
+    expect(upsertArgs.update).toEqual(
+      expect.objectContaining({ useFeeScheduleItemCodes: true }),
+    );
+    expect(upsertArgs.create).toEqual(
+      expect.objectContaining({ useFeeScheduleItemCodes: true }),
+    );
+  });
+
+  it("rejects an unknown field via the strict schema", async () => {
+    const response = await putLockoutSettings(request({ bogusField: true }));
+    expect(response.status).toBe(400);
+    expect(mocks.upsert).not.toHaveBeenCalled();
+  });
+
+  it("GET returns the fee-schedule detection preview (#2109)", async () => {
+    const response = await getLockoutSettings();
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    // The resolver/overlap reads degrade to [] under the route's minimal prisma
+    // mock, but the preview keys are always present for the panel to consume.
+    expect(body).toEqual(
+      expect.objectContaining({
+        feeScheduleItemCodes: expect.any(Array),
+        overlappingCodes: expect.any(Array),
+      }),
+    );
   });
 });

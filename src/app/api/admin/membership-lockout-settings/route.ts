@@ -13,6 +13,10 @@ import {
   loadPersistedMembershipLockoutSettings,
   normalizeMembershipLockoutSettings,
 } from "@/lib/membership-lockout-settings";
+import {
+  getNonSubscriptionFeeItemCodes,
+  getSubscriptionItemCodes,
+} from "@/lib/xero-mappings";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/session-guards";
 
@@ -27,8 +31,31 @@ const settingsSchema = z
       .nullable()
       .optional(),
     textFallbackEnabled: z.boolean().optional(),
+    useFeeScheduleItemCodes: z.boolean().optional(),
   })
   .strict();
+
+/**
+ * Compute the fee-schedule detection preview (#2109): the resolved item-code set
+ * paid detection would match under look-through, plus the subset of those codes
+ * that also identify a non-subscription fee (hut/joining/promo) — an overlap
+ * that would let an unpaid fee invoice masquerade as a subscription in the
+ * widened set, surfaced as a settings warning.
+ */
+async function buildFeeScheduleItemCodePreview(): Promise<{
+  feeScheduleItemCodes: string[];
+  overlappingCodes: string[];
+}> {
+  const [feeScheduleItemCodes, nonSubscriptionCodes] = await Promise.all([
+    getSubscriptionItemCodes(),
+    getNonSubscriptionFeeItemCodes(),
+  ]);
+  const nonSubscriptionSet = new Set(nonSubscriptionCodes);
+  const overlappingCodes = feeScheduleItemCodes.filter((code) =>
+    nonSubscriptionSet.has(code)
+  );
+  return { feeScheduleItemCodes, overlappingCodes };
+}
 
 export async function GET() {
   const guard = await requireAdmin({
@@ -38,10 +65,14 @@ export async function GET() {
 
   const persisted = await loadPersistedMembershipLockoutSettings();
   const financialYear = await getFinancialYearResolution();
+  const { feeScheduleItemCodes, overlappingCodes } =
+    await buildFeeScheduleItemCodePreview();
   return NextResponse.json({
     settings: normalizeMembershipLockoutSettings(persisted),
     financialYear,
     persisted,
+    feeScheduleItemCodes,
+    overlappingCodes,
   });
 }
 
@@ -79,6 +110,10 @@ export async function PUT(request: NextRequest) {
         : (before?.financialYearEndMonthOverride ?? null),
     textFallbackEnabled:
       parsed.data.textFallbackEnabled ?? before?.textFallbackEnabled ?? true,
+    useFeeScheduleItemCodes:
+      parsed.data.useFeeScheduleItemCodes ??
+      before?.useFeeScheduleItemCodes ??
+      false,
     updatedByMemberId: session.user.id,
   };
 
@@ -110,9 +145,13 @@ export async function PUT(request: NextRequest) {
   );
 
   const financialYear = await getFinancialYearResolution();
+  const { feeScheduleItemCodes, overlappingCodes } =
+    await buildFeeScheduleItemCodePreview();
   return NextResponse.json({
     settings: normalizeMembershipLockoutSettings(record),
     financialYear,
     persisted: record,
+    feeScheduleItemCodes,
+    overlappingCodes,
   });
 }

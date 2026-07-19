@@ -142,6 +142,31 @@ Future reviews and issues should cite this file when proposing changes.
   (finance:edit) restores `NOT_INVOICED` (or `UNPAID` on a legacy row with an
   invoice link) and clears the provenance columns; both directions are audited
   with the acting admin, including the previous status.
+- **Closed-loop item-code detection (#2109).** When the opt-in
+  `MembershipLockoutSettings.useFeeScheduleItemCodes` look-through is on, paid
+  detection matches ANY item code stamped on the fee schedule — the resolver
+  `getSubscriptionItemCodes()` returns the distinct non-null
+  `MembershipAnnualFeeComponent.xeroItemCode` values (every historical fee row
+  contributes; prior seasons were billed under retired rows) UNION the single
+  `subscriptionIncome.itemCode`. Because billing stamps exactly those component
+  codes onto invoice lines, the detection set is always a **superset** of the
+  codes the billing pipeline can stamp: a member billed under the fee schedule is
+  always detectable by item code. Default off reproduces single-item-code
+  detection byte-for-byte. Detection is UNION (never per-member) so family
+  invoices and the member-less inbound reconciler resolve the same set.
+- **Prefer-paid subscription-invoice selection (#2109).** Widening the item-code
+  set means several season invoices can match (e.g. a paid subscription plus an
+  earlier unpaid hut-fee invoice sharing a code), so `findSubscriptionInvoice`
+  never returns the first match over the widened set. It collects ALL matches and
+  selects preferring (a) a PAID/settled invoice over UNPAID/OVERDUE, then (b) a
+  strong match on the account code or the flat fallback item code over a
+  union-only fee-schedule match, then (c) earliest/stable order. This guarantees
+  a genuinely paid member is never marked unpaid — and the `matchedInvoiceId`
+  upsert picks the paid subscription invoice, so manual mark-paid provenance
+  survives — even when an overlapping code exists. The member-less inbound path
+  sees one invoice at a time and cannot disambiguate, so a shared-code fee
+  invoice looking like a subscription there is an accepted residual; the settings
+  overlap warning steers admins to give subscriptions dedicated item codes.
 - Xero invoice identity is persisted before Xero email. Email retries reuse it.
   Existing invoices are adopted only on an exact `AUTHORISED` snapshot match;
   conflicts are visible and never trigger a silent provider rewrite. Xero

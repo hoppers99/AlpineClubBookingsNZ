@@ -3,9 +3,11 @@ import { prisma } from "@/lib/prisma";
 import { getSeasonYear } from "@/lib/utils";
 import { buildXeroInvoiceUrl } from "@/lib/xero-links";
 import { callXeroApi, getAuthenticatedXeroClient } from "@/lib/xero-api-client";
-import { checkMembershipStatus, findSubscriptionInvoice } from "@/lib/xero-membership-sync";
-import { getResolvedAccountMapping } from "@/lib/xero-mappings";
-import { loadMembershipLockoutSettings } from "@/lib/membership-lockout-settings";
+import {
+  buildSubscriptionInvoiceMatchOptions,
+  checkMembershipStatus,
+  findSubscriptionInvoice,
+} from "@/lib/xero-membership-sync";
 import { type XeroObjectLinkInput, upsertXeroObjectLink } from "@/lib/xero-sync";
 import { type IncrementalInvoiceReconciliationResult, type IncrementalMembershipReconciliationResult } from "./types";
 import { buildXeroPaymentDisplayNumber } from "./amounts";
@@ -157,14 +159,18 @@ export async function reconcileXeroInvoice(
       );
 
   const seasonYear = buildSeasonYearFromInvoice(invoice);
-  const subscriptionMapping = await getResolvedAccountMapping("subscriptionIncome");
-  const lockoutSettings = await loadMembershipLockoutSettings();
+  // Member-less, single-invoice union semantics (#2109): the reconciler sees
+  // one invoice at a time, so prefer-paid selection cannot distinguish a paid
+  // subscription from an unpaid fee invoice that shares a fee-schedule item
+  // code. That accepted residual — a shared-code fee invoice looking like a
+  // subscription here — is documented in the tests; the settings overlap warning
+  // steers admins away from configuring overlapping codes in the first place.
   const looksLikeSubscriptionInvoice =
-    findSubscriptionInvoice([invoice], seasonYear, {
-      accountCode: subscriptionMapping.code ?? "203",
-      itemCode: subscriptionMapping.itemCode,
-      textFallbackEnabled: lockoutSettings.textFallbackEnabled,
-    }) !== null;
+    findSubscriptionInvoice(
+      [invoice],
+      seasonYear,
+      await buildSubscriptionInvoiceMatchOptions()
+    ) !== null;
   const fallbackSubscriptionMemberIds: string[] = [];
 
   if (
