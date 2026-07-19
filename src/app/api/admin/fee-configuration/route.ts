@@ -16,6 +16,7 @@ import {
   type FeeComponentInput,
 } from "@/lib/authoritative-fees";
 import { prisma } from "@/lib/prisma";
+import { getResolvedAccountMapping } from "@/lib/xero-mappings";
 import { hasAdminAreaAccess } from "@/lib/admin-permissions";
 import { requireAdmin } from "@/lib/session-guards";
 
@@ -177,7 +178,7 @@ async function reconcileMembershipFeeComponents(args: {
 }
 
 async function loadConfiguration(canEdit: boolean) {
-  const [familyBillingMode, membershipTypes, familyGroups] = await Promise.all([
+  const [familyBillingMode, membershipTypes, familyGroups, subscriptionIncomeMapping] = await Promise.all([
     getFamilyBillingMode(),
     prisma.membershipType.findMany({
       orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
@@ -208,6 +209,10 @@ async function loadConfiguration(canEdit: boolean) {
         },
       },
     }),
+    // Resolve the annual-fee invoice line's default income account so the editor
+    // can surface it (code + name) when a component leaves Account empty (#2068).
+    // Mirrors the invoice-build fallback (subscriptionIncome mapping -> "203").
+    getResolvedAccountMapping("subscriptionIncome"),
   ]);
   // Family-billing exceptions only exist when the club bills families via a
   // nominated billing member. When it bills members individually the whole
@@ -216,6 +221,10 @@ async function loadConfiguration(canEdit: boolean) {
   return {
     canEdit,
     familyBillingMode,
+    // The resolved default income account code for empty component Account
+    // fields (#2068); the client pairs it with the account name from the live
+    // chart of accounts. Null only if no mapping and no hard-coded default.
+    defaultInvoiceAccountCode: subscriptionIncomeMapping.code,
     membershipTypes: membershipTypes.map((type) => ({
       ...type,
       annualFees: type.annualFees.map((fee) => ({
