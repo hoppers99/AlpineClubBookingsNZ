@@ -106,6 +106,42 @@ const CAPTURES: Capture[] = [
   { name: "admin-xero", route: "/admin/xero", area: "admin" },
   { name: "admin-xero-setup", route: "/admin/xero/setup", area: "admin" },
   { name: "admin-xero-member-grouping", route: "/admin/xero/member-grouping", area: "admin" },
+  // Batch 4 (#2050): comms, content & support-platform operator guides.
+  // Content — the Site Appearance & Content hub and its sub-pages.
+  { name: "admin-appearance", route: "/admin/appearance", area: "admin" },
+  { name: "admin-appearance-identity", route: "/admin/appearance/identity", area: "admin" },
+  { name: "admin-site-style", route: "/admin/site-style", area: "admin" },
+  { name: "admin-site-content", route: "/admin/site-content", area: "admin" },
+  { name: "admin-page-content", route: "/admin/page-content", area: "admin" },
+  { name: "admin-site-banners", route: "/admin/site-banners", area: "admin" },
+  // mountain-conditions is gated by the `skifieldConditions` flag, which the
+  // demo seed defaults ON (prisma/schema.prisma) — so it captures normally.
+  { name: "admin-mountain-conditions", route: "/admin/mountain-conditions", area: "admin" },
+  { name: "admin-image-manager", route: "/admin/image-manager", area: "admin" },
+  // Comms — the Notifications & Email hub, its sub-pages, and deliverability.
+  { name: "admin-notifications", route: "/admin/notifications", area: "admin" },
+  { name: "admin-notification-rules", route: "/admin/notification-rules", area: "admin" },
+  { name: "admin-notification-recipients", route: "/admin/notification-recipients", area: "admin" },
+  { name: "admin-email-messages", route: "/admin/email-messages", area: "admin" },
+  { name: "admin-email-deliverability", route: "/admin/email-deliverability", area: "admin" },
+  // communications is gated by the `communications` flag (default ON in the seed).
+  { name: "admin-communications", route: "/admin/communications", area: "admin" },
+  // Support platform surfaces.
+  { name: "admin-access-roles", route: "/admin/access-roles", area: "admin" },
+  { name: "admin-audit-log", route: "/admin/audit-log", area: "admin" },
+  { name: "admin-background-jobs", route: "/admin/background-jobs", area: "admin" },
+  { name: "admin-config-transfer", route: "/admin/config-transfer", area: "admin" },
+  { name: "admin-health", route: "/admin/health", area: "admin" },
+  { name: "admin-issue-reports", route: "/admin/issue-reports", area: "admin" },
+  { name: "admin-modules", route: "/admin/modules", area: "admin" },
+  { name: "admin-security", route: "/admin/security", area: "admin" },
+  { name: "admin-stuck-states", route: "/admin/stuck-states", area: "admin" },
+  // integrations is gated by the `xeroIntegration` flag, which the demo seed
+  // leaves OFF (schema default false) — the route 404s, so no image is
+  // committed and the Integrations guide describes the screen in prose, exactly
+  // like the Xero guides (batch 2). The `display` (lobby-display) hub is gated
+  // by the `lobbyDisplay` flag (also OFF by default) and keeps its own feature
+  // hub docs (docs/lobby-display/), so it is not re-captured here.
 ];
 
 const VIEWPORT = { width: 1280, height: 800 } as const;

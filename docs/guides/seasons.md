@@ -7,13 +7,12 @@ Audience: Operator
 The page that edits an existing **season window** — its name, type (Winter or
 Summer), start and end dates, and whether it is active — for each lodge. Seasons
 decide which nightly rates apply on a given night. Find it at
-`/admin/seasons`.
-
-There is no direct link in the admin sidebar: reach this page from **Fees → Hut
-Fees** (or the lodge hub's "Seasons & Rates" card), or go straight to
-`/admin/seasons`. That placement is deliberate — you **add** a season and set
-its **nightly rates** in **Fees → Hut Fees**; this page only adjusts the dates
-and metadata of a season that already exists, and never touches its rates.
+`/admin/seasons`. It has **no direct sidebar entry** — seasons are lodge-scoped
+(ADR-005), so you reach this page from **Fees → Hut Fees** (or the lodge hub's
+"Seasons & Rates" card), or go straight to `/admin/seasons`. That placement is
+deliberate — you **add** a season and set its **nightly rates** in **Fees → Hut
+Fees**; this page only adjusts the dates and metadata of a season that already
+exists, and never touches its rates.
 
 Editing seasons needs **bookings edit** access; a view-only bookings role can
 inspect the windows but not change them. Dates are NZ date-only lodge nights.

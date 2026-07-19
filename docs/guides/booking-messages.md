@@ -7,9 +7,10 @@ Audience: Operator
 An editor for the member-facing copy shown on booking, payment, cancellation,
 and group-booking screens. Each message has a built-in default, a set of
 merge-field tokens you can drop into the text, a live preview, and a
-per-message restore. Find it at `/admin/booking-messages` — reach it from
-**Admin → Notifications & Email** (the page's back-link) or from
-**Admin → Setup & Configuration → Bookings Setup** (see
+per-message restore. Find it at **Admin → Setup & Configuration → Notifications
+& Email → Booking Messages** (`/admin/booking-messages`). It has no direct
+sidebar entry — open it from the **Booking Messages** card on the Notifications
+& Email hub, or from **Setup & Configuration → Bookings Setup** (see
 [Bookings Setup](bookings-setup.md)).
 
 Booking messages are edited under the **support** ("Support & System")
