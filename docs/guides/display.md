@@ -89,12 +89,12 @@ glance. For the deeper design and operating detail, see the
 1. Open the **Templates** card. A **Template** fills a Layout's areas with content
    or embedded modules, layers CSS overrides on the layout default, and carries the
    footer. The gallery lists the **built-in templates** that ship ready to use;
-   each has **Preview**, **Edit**, and **Delete**. This raw **Key / Layout / CSS**
+   each has **Preview**, **Builder**, **Edit (Advanced)**, and **Delete**. This raw **Key / Layout / CSS**
    authoring flow is the **advanced** path — most operators should compose a board
    with the **Visual builder** (§3) instead, which produces the layout and template
    for them; reach for Templates directly only when you need hand control.
 
-   ![Display Templates page showing the built-in template gallery with Preview, Edit, and Delete actions, and the New template form](../images/admin/admin-display-templates.png)
+   ![Display Templates page showing the seven built-in templates — Everyday board, Whole lodge, Singles house, Room by room, Nights ahead, Lodge operations, and Welcome kiosk — each with Preview, Builder, Edit (Advanced), and Delete actions, above the New template form](../images/admin/admin-display-templates.png)
 
 2. To use a built-in as a starting point, open it and **duplicate it to
    customise** — editing a built-in in place warns you, because built-ins are

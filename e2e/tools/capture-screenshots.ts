@@ -189,17 +189,17 @@ const CAPTURES: Capture[] = [
   // → Modules on the ephemeral capture stack (only) before capturing these, as
   // the display guide documents.
   //
-  // RE-CAPTURE AT BATCH-3 FINALISATION (the committed images predate #2047/#2048):
-  //   - `admin-display-templates` currently shows only the ORIGINAL THREE built-ins
-  //     (Everyday board, Whole lodge, Singles house) — the #2047 template pack
-  //     (Room by room, Nights ahead, Lodge operations, Welcome kiosk) had not been
-  //     seeded on the stack these were shot against.
-  //   - `admin-display` (the hub) currently shows the FOUR-card hub — it predates
-  //     the #2048 **Visual builder** card, so it does not yet show the five-card hub
-  //     the display guide documents.
-  // Both must be re-captured once the capture stack is rebuilt from a `main` that
-  // contains #2047 (template pack) AND #2048 (visual builder). The visual builder
-  // page itself ships its own docs and is not part of this batch-3 manifest.
+  // The committed images were re-captured at batch-3 finalisation against a
+  // capture stack rebuilt from this branch (which carries #2047 + #2048):
+  //   - `admin-display` (the hub) shows the FIVE-card hub — Devices, **Visual
+  //     builder** (#2048), Layouts (Advanced), Templates, and Reference — matching
+  //     the five-card hub the display guide documents.
+  //   - `admin-display-templates` shows the FULL SEVEN built-ins from the #2047
+  //     template pack: Everyday board, Whole lodge, Singles house, Room by room,
+  //     Nights ahead, Lodge operations, and Welcome kiosk (each with a Builder
+  //     entry into the #2048 visual builder).
+  // The visual builder page itself ships its own docs and is not part of this
+  // batch-3 manifest.
   { name: "admin-display", route: "/admin/display", area: "admin" },
   { name: "admin-display-devices", route: "/admin/display/devices", area: "admin" },
   { name: "admin-display-layouts", route: "/admin/display/layouts", area: "admin" },
