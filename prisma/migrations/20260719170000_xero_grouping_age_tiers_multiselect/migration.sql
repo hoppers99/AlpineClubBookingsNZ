@@ -24,7 +24,11 @@
 -- db:check-drift, as with the other partial unique indexes.
 
 -- 1. Add the new array column ------------------------------------------------
--- Prisma models `AgeTier[]` as NOT NULL DEFAULT '{}'.
+-- The DEFAULT is transitional only: it lets the NOT NULL column land on a table
+-- that already has rows (every existing row becomes [] = "all tiers" before the
+-- backfill refines non-NULL scalars). Prisma's final column state for a list
+-- field carries NO database default — step 8 drops it, or db:check-drift flags
+-- `default changed from Some([]) to None`.
 ALTER TABLE "XeroContactGroupRule"
   ADD COLUMN IF NOT EXISTS "ageTiers" "AgeTier"[] NOT NULL DEFAULT ARRAY[]::"AgeTier"[];
 
@@ -83,3 +87,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS "XeroContactGroupRule_shape_unique"
   ON "XeroContactGroupRule" ("membershipTypeId", "ageTiers", "mode", "groupId")
   NULLS NOT DISTINCT
   WHERE "groupId" IS NOT NULL;
+
+-- 8. Drop the transitional column default ------------------------------------
+-- Matches Prisma's modelled state (list fields have no DB default; the app
+-- always writes ageTiers explicitly via canonicalizeAgeTiers). Idempotent:
+-- DROP DEFAULT on a column with no default is a no-op.
+ALTER TABLE "XeroContactGroupRule" ALTER COLUMN "ageTiers" DROP DEFAULT;

@@ -25,6 +25,17 @@ describe("xero grouping multi-select age-tier migration (#2093)", () => {
     );
   });
 
+  it("drops the transitional column default so the final state matches Prisma (no DB default)", () => {
+    expect(migrationSql).toMatch(
+      /ALTER TABLE "XeroContactGroupRule" ALTER COLUMN "ageTiers" DROP DEFAULT/,
+    );
+    // The drop must come AFTER the backfill, which relies on the default to
+    // seed existing rows with [].
+    expect(migrationSql.indexOf('DROP DEFAULT')).toBeGreaterThan(
+      migrationSql.indexOf('WHERE "ageTier" IS NOT NULL'),
+    );
+  });
+
   it("backfills scalar ageTier -> [ageTier] (NULL -> the default empty array)", () => {
     expect(migrationSql).toMatch(
       /UPDATE "XeroContactGroupRule"\s*SET "ageTiers" = ARRAY\["ageTier"\]::"AgeTier"\[\]\s*WHERE "ageTier" IS NOT NULL/,
