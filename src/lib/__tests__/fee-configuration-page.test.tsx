@@ -439,11 +439,21 @@ describe("fee configuration page", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Edit membership fees" }));
     // The account picker trigger surfaces the resolved default income account
     // (code from the GET payload, name from the live chart of accounts).
-    const accountTrigger = screen.getByRole("button", { name: "Account for component 1" });
+    const accountTrigger = screen.getByRole("button", { name: "Account (optional) for component 1" });
     await waitFor(() => expect(accountTrigger.textContent).toContain("Subscriptions Income"));
     expect(accountTrigger.textContent).toContain("Default: 203");
     // Items have no default mapping; the empty state says so accurately.
-    expect(screen.getByRole("button", { name: "Item for component 1" }).textContent).toContain("Default: no item");
+    expect(screen.getByRole("button", { name: "Item (optional) for component 1" }).textContent).toContain("Default: no item");
+  });
+
+  it("says the default is not configured when no subscriptionIncome mapping is surfaced (#2068, F1)", async () => {
+    // The route returns null when subscriptionIncome is not explicitly
+    // configured; the editor must not advertise a code billing would refuse.
+    stubFetch(response(true, { ...editableData, defaultInvoiceAccountCode: null }));
+    render(<FeeConfigurationPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit membership fees" }));
+    const accountTrigger = screen.getByRole("button", { name: "Account (optional) for component 1" });
+    expect(accountTrigger.textContent).toContain("Default: not configured");
   });
 
   it("saves the account and item codes chosen from the pickers (#2068)", async () => {
@@ -452,10 +462,10 @@ describe("fee configuration page", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Edit membership fees" }));
     fireEvent.change(screen.getByLabelText("Annual amount (NZD)"), { target: { value: "150.00" } });
     // Wait for the live lists to load, then pick a revenue account + a sales item.
-    await waitFor(() => expect(screen.getByRole("button", { name: "Account for component 1" }).textContent).toContain("Subscriptions Income"));
-    fireEvent.click(screen.getByRole("button", { name: "Account for component 1" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Account (optional) for component 1" }).textContent).toContain("Subscriptions Income"));
+    fireEvent.click(screen.getByRole("button", { name: "Account (optional) for component 1" }));
     fireEvent.click(screen.getByRole("button", { name: /260.*Other Revenue/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Item for component 1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Item (optional) for component 1" }));
     fireEvent.click(screen.getByRole("button", { name: /WORKPARTY.*Work Party/ }));
     fireEvent.click(screen.getByRole("button", { name: "Add annual fee" }));
     await waitFor(() => expect(mocks.toastSuccess).toHaveBeenCalledWith("Fee schedule saved"));
@@ -468,8 +478,8 @@ describe("fee configuration page", () => {
     stubFetch(response(true, editableData));
     render(<FeeConfigurationPage />);
     fireEvent.click(await screen.findByRole("button", { name: "Edit membership fees" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Account for component 1" }).textContent).toContain("Subscriptions Income"));
-    fireEvent.click(screen.getByRole("button", { name: "Account for component 1" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Account (optional) for component 1" }).textContent).toContain("Subscriptions Income"));
+    fireEvent.click(screen.getByRole("button", { name: "Account (optional) for component 1" }));
     // Revenue accounts are offered; the ASSET/BANK account (090) is filtered out.
     expect(screen.getByRole("button", { name: /260.*Other Revenue/ })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /090.*Bank/ })).toBeNull();
@@ -483,7 +493,7 @@ describe("fee configuration page", () => {
     // Amber notice, never a hard block.
     expect(await screen.findByText(/Could not load the Xero/)).toBeTruthy();
     // Manual code entry via the picker's disconnected fallback.
-    fireEvent.click(screen.getByRole("button", { name: "Account for component 1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Account (optional) for component 1" }));
     fireEvent.change(screen.getByPlaceholderText(/Search account code/), { target: { value: "250" } });
     fireEvent.click(screen.getByRole("button", { name: /Use code/ }));
     fireEvent.click(screen.getByRole("button", { name: "Add annual fee" }));

@@ -59,11 +59,13 @@ describe("XeroAccountSelect", () => {
     expect(onChange).toHaveBeenLastCalledWith("");
   });
 
-  it("hides the manual-code affordance without allowManualCodes", () => {
+  it("hides the manual-code affordance when revenue options exist and allowManualCodes is off", () => {
     const { unmount } = render(
-      <XeroAccountSelect accounts={[]} value="" onChange={vi.fn()} emptyLabel="Default" ariaLabel="Account" />,
+      <XeroAccountSelect accounts={accounts} value="" onChange={vi.fn()} emptyLabel="Default" ariaLabel="Account" />,
     );
     fireEvent.click(screen.getByRole("button", { name: "Account" }));
+    // A populated (non-empty) revenue list without allowManualCodes offers no
+    // manual escape — the disconnected fallback is not implied.
     fireEvent.change(screen.getByPlaceholderText(/Search account code/), { target: { value: "250" } });
     expect(screen.queryByRole("button", { name: /Use code/ })).toBeNull();
     unmount();
@@ -78,6 +80,66 @@ describe("XeroAccountSelect", () => {
     fireEvent.change(screen.getByPlaceholderText(/Search account code/), { target: { value: "250" } });
     fireEvent.click(screen.getByRole("button", { name: /Use code/ }));
     expect(onChange).toHaveBeenCalledWith("250");
+  });
+
+  it("enables manual entry when the effective (revenue-filtered) list is empty even without allowManualCodes (#2068, F2)", () => {
+    const onChange = vi.fn();
+    // A loaded COA whose only accounts are non-REVENUE: the revenue-filtered
+    // picker is empty, so the operator must still be able to type a code.
+    render(
+      <XeroAccountSelect
+        accounts={[{ code: "090", name: "Bank", type: "BANK", class: "ASSET" }]}
+        value=""
+        onChange={onChange}
+        emptyLabel="Default"
+        ariaLabel="Account"
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Account" }));
+    expect(screen.getByText(/No Xero accounts available/)).toBeTruthy();
+    fireEvent.change(screen.getByPlaceholderText(/Search account code/), { target: { value: "250" } });
+    fireEvent.click(screen.getByRole("button", { name: /Use code/ }));
+    expect(onChange).toHaveBeenCalledWith("250");
+  });
+
+  it("offers a Show all accounts toggle that reveals non-revenue codes for re-selection (#2068, F3)", () => {
+    const onChange = vi.fn();
+    render(
+      <XeroAccountSelect accounts={accounts} value="" onChange={onChange} emptyLabel="Default" ariaLabel="Account" />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Account" }));
+    // The ASSET/BANK account is hidden by the REVENUE filter by default.
+    expect(screen.queryByRole("button", { name: /090.*Bank/ })).toBeNull();
+    // Toggling "Show all accounts" reveals it so it can be selected again.
+    fireEvent.click(screen.getByRole("checkbox", { name: /Show all accounts/ }));
+    fireEvent.click(screen.getByRole("button", { name: /090.*Bank/ }));
+    expect(onChange).toHaveBeenCalledWith("090");
+  });
+
+  it("exposes combobox ARIA state and associates a row label via id (#2068, U2/U3)", () => {
+    render(
+      <XeroAccountSelect
+        accounts={accounts}
+        value=""
+        onChange={vi.fn()}
+        emptyLabel="Default"
+        ariaLabel="Account (optional) for component 1"
+        id="component-account-0"
+      />,
+    );
+    const trigger = screen.getByRole("button", { name: "Account (optional) for component 1" });
+    expect(trigger.id).toBe("component-account-0");
+    expect(trigger.getAttribute("aria-haspopup")).toBe("listbox");
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(trigger);
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    // The popup exposes a listbox the trigger controls.
+    const listbox = screen.getByRole("listbox");
+    expect(trigger.getAttribute("aria-controls")).toBe(listbox.id);
+    // Escape closes and returns focus to the trigger.
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
   });
 });
 

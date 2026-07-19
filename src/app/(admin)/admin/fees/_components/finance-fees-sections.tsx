@@ -180,11 +180,13 @@ export function FinanceFeesSections({ financeCanEdit }: { financeCanEdit?: boole
   );
   // The empty-Account placeholder: the resolved default income account (code +
   // name) that the invoice line will use when a component leaves Account blank
-  // (#2068). The code comes from the GET payload; the name is resolved from the
-  // live chart of accounts when available (falls back to code-only otherwise).
+  // (#2068). The code comes from the GET payload (null when subscriptionIncome
+  // is not explicitly configured — the invoice build would refuse to bill, so we
+  // say "not configured" rather than advertise a code that won't apply, F1). The
+  // name is resolved from the live chart of accounts when available.
   const defaultAccountLabel = useMemo(() => {
     const code = data?.defaultInvoiceAccountCode ?? null;
-    if (!code) return "Default";
+    if (!code) return "Default: not configured";
     const account = accounts.find((candidate) => candidate.code.toUpperCase() === code.toUpperCase());
     return account ? `Default: ${code} — ${account.name}` : `Default: ${code}`;
   }, [data?.defaultInvoiceAccountCode, accounts]);
@@ -363,20 +365,23 @@ export function FinanceFeesSections({ financeCanEdit }: { financeCanEdit?: boole
                 </span>
               </div>
               <p className="text-xs text-muted-foreground">Each component is its own Xero invoice line. A single component uses the fee total. Components must sum to the fee amount. Leave Account or Item empty to use the resolved default.</p>
-              {(coaError || itemsError) && <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              {/* Loads asynchronously, so announce it politely to screen readers
+                  (#2068, U1). */}
+              {(coaError || itemsError) && <div role="status" className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
                 Could not load the Xero {coaError && itemsError ? "chart of accounts and item list" : coaError ? "chart of accounts" : "item list"}. You can still type account and item codes manually; reconnect Xero to pick from the live lists.
               </div>}
               {componentRows.map((row, index) =><div key={index} className="grid items-end gap-2 md:grid-cols-[2fr_1fr_auto_1fr_1fr_auto]">
                 <div><Label htmlFor={`component-label-${index}`} className="text-xs">Label</Label><Input id={`component-label-${index}`} value={row.label} onChange={(event) => updateComponentRow(index, { label: event.target.value })} placeholder="Base membership" /></div>
                 <div><Label htmlFor={`component-amount-${index}`} className="text-xs">Amount (NZD)</Label><Input id={`component-amount-${index}`} inputMode="decimal" value={componentRows.length === 1 ? membershipAmount : row.amount} onChange={(event) => updateComponentRow(index, { amount: event.target.value })} disabled={componentRows.length === 1} placeholder="0.00" /></div>
                 {/* A "Full annual fee" (NONE) rule prorates nothing, so the
-                    per-component Prorate opt-in is hidden when the rule is NONE
-                    (#2068, decision 1). Stored values are untouched. */}
+                    per-component Prorate opt-in is replaced with a read-only
+                    "Prorate n/a" placeholder when the rule is NONE (#2068,
+                    decision 1). Stored values are untouched. */}
                 {prorationRule === "NONE"
                   ? <span className="pb-2 text-xs text-muted-foreground" aria-hidden="true">Prorate n/a</span>
                   : <label className="flex items-center gap-1 pb-2 text-xs"><input type="checkbox" checked={row.prorate} onChange={(event) => updateComponentRow(index, { prorate: event.target.checked })} />Prorate</label>}
-                <div><Label className="text-xs">Account (optional)</Label><XeroAccountSelect accounts={accounts} value={row.xeroAccountCode} onChange={(code) => updateComponentRow(index, { xeroAccountCode: code })} emptyLabel={defaultAccountLabel} ariaLabel={`Account for component ${index + 1}`} allowManualCodes={accounts.length === 0 || Boolean(coaError)} /></div>
-                <div><Label className="text-xs">Item (optional)</Label><XeroItemSelect items={items} value={row.xeroItemCode} onChange={(code) => updateComponentRow(index, { xeroItemCode: code })} emptyLabel="Default: no item" ariaLabel={`Item for component ${index + 1}`} allowManualCodes={items.length === 0 || Boolean(itemsError)} /></div>
+                <div><Label htmlFor={`component-account-${index}`} className="text-xs">Account (optional)</Label><XeroAccountSelect accounts={accounts} value={row.xeroAccountCode} onChange={(code) => updateComponentRow(index, { xeroAccountCode: code })} emptyLabel={defaultAccountLabel} id={`component-account-${index}`} ariaLabel={`Account (optional) for component ${index + 1}`} allowManualCodes={accounts.length === 0 || Boolean(coaError)} /></div>
+                <div><Label htmlFor={`component-item-${index}`} className="text-xs">Item (optional)</Label><XeroItemSelect items={items} value={row.xeroItemCode} onChange={(code) => updateComponentRow(index, { xeroItemCode: code })} emptyLabel="Default: no item" id={`component-item-${index}`} ariaLabel={`Item (optional) for component ${index + 1}`} allowManualCodes={items.length === 0 || Boolean(itemsError)} /></div>
                 <Button type="button" size="icon" variant="ghost" aria-label={`Remove component ${index + 1}`} disabled={componentRows.length <= 1} onClick={() => removeComponentRow(index)}><Trash2 className="h-4 w-4" /></Button>
               </div>)}
               <Button type="button" variant="outline" size="sm" onClick={addComponentRow}>Add component</Button>
