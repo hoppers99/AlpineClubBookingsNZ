@@ -4,6 +4,131 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+## 0.12.1 - 2026-07-19
+
+- Release classification: patch public reference release. The version is a
+  deliberate patch bump chosen by the owner even though the range carries
+  feature work, because every addition is additive and flagged off by default:
+  it brings all changes landed after `v0.12.0` into one supported tag, with
+  five migrations (all expand/additive, no contract). It adds optional sign-in
+  methods (per-club password-complexity policy, email magic-link, Google
+  OAuth — the last two default off), per-age-tier membership billing (annual
+  fees and subscription requirement), Lobby Display template/builder polish, a
+  full operator and member documentation library, and a screenshot-forward
+  README, alongside a CI safety-gate hardening. Read
+  `docs/releases/v0.12.1.md` and the `v0.12.0 -> v0.12.1` section of
+  `docs/UPGRADING.md` before deployment.
+
+- **Optional sign-in methods (epic #2030: #2033/#2037, #2034/#2040 —
+  superseding #2039, #2035/#2043).** A new admin **Login & Security** page
+  (`/admin/security`) adds a per-club password-complexity policy — minimum
+  length 8–64 (default 12), four character-class toggles (default off), a
+  fixed 128 maximum — enforced only at password-set time through one shared
+  validator, with live policy hints on the reset/change forms via a public
+  `GET /api/auth/password-policy`. An un-configured club is byte-identical to
+  today (absent `LoginSecuritySetting` row falls through to the code default
+  `min(12)`), and existing passwords are never re-validated
+  (`forcePasswordChange` is the adoption lever). Two optional sign-in methods,
+  both **module-flagged off by default**, join password login without
+  replacing it: **email magic-link** (`ClubModuleSettings.magicLink`) issues a
+  single-use hashed token whose TTL the club sets on the security page
+  (default 15 min, clamp 5–60); and **Google OAuth**
+  (`ClubModuleSettings.googleLogin`) works by profile-initiated linking only —
+  a signed-in member links their verified Google account from their profile,
+  sign-in then resolves solely by the pinned Google subject id
+  (`Member.googleSub @unique`), never by email match and never auto-provisioning,
+  with the same `canLogin`/`active`/`emailVerified`/2FA gates as password
+  login and per-club `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` credentials
+  (runbook in `CONFIGURATION.md`). Google sub is deliberately excluded from
+  member-merge field-fill so a login identity is never inherited.
+
+- **Per-age-tier membership billing (#2041/#2051, #2067/#2072, #2069/#2071,
+  #2068/#2073).** Membership types gain a third subscription behaviour,
+  **Required based on age tier** (`BASED_ON_AGE_TIER`), that defers the
+  subscription-required answer to the existing per-tier
+  `AgeTierSetting.subscriptionRequiredForBooking` flag, so one type can bill
+  older tiers while exempting younger ones; billing liability is fixed by age
+  at the start of the club financial year, exempt members get an authoritative
+  `NOT_REQUIRED` season row, and `REQUIRED`/`NOT_REQUIRED` types are
+  byte-unchanged. Annual membership fees gain the same **flat (all ages) vs
+  per-tier** shape the joining fee already carried: a nullable
+  `MembershipAnnualFee.ageTier` (existing rows are the flat fallback — no
+  backfill), tier-first resolution, and per-family fees held flat-only
+  (enforced at the API, a DB `CHECK`, and config-transfer). The membership-type
+  editor adds an explicit **"N/A (no age)"** (`NOT_APPLICABLE`) allowed-tier
+  option (sorted last, opt-in, excluded from the API default). The annual-fee
+  editor replaces free-text Xero Account/Item inputs with searchable pickers
+  (ACTIVE revenue accounts / sales-capable items) fed by the existing
+  admin-gated proxy endpoints — falling back to manual entry on Xero
+  disconnection, never hard-blocking — surfaces the resolved default account,
+  and shows the fee-level proration rule (no billing-math change).
+
+- **Lobby Display template pack, guided builder, and night-columns fix
+  (#2047/#2055, #2048/#2058, #2056/#2062).** A six-board template pack ships
+  four refresh-on-reseed built-ins (*Room by room*, *Week ahead*, *Lodge
+  operations*, *Welcome kiosk*) plus two extras in an import bundle, so every
+  display module is exercised by at least one built-in. A guided visual
+  **builder** at `/admin/display/builder` (ADR-004) composes skeletons, a
+  module palette, per-zone settings, and a sandboxed live draft preview through
+  the unchanged save contract, with the existing textarea editors retained as
+  Advanced mode and no schema change; the privacy floor stays enforced
+  structurally. Night-columns is rescoped as an honest permanent 3-night board
+  (`NIGHT_COLUMNS_MAX_DAYS` 5 → 3) matching the device data window. The Lobby
+  Display module remains off by default.
+
+- **Documentation foundation, operator and member guide library (#2049/#2054,
+  #2050 via #2057/#2060/#2061/#2064/#2063).** A docs foundation lands a
+  `docs/STYLE_GUIDE.md`, an audience-first `docs/README.md` hub, five curated
+  `docs/ARCHITECTURE.md` mermaid diagrams, a `docs/COVERAGE_MATRIX.md` mapping
+  every admin route area to coverage, an advisory `docs-link-check` CI workflow
+  with a matching local `npm run docs:linkcheck`, and a Playwright screenshot
+  harness (`npm run docs:screenshots`). On top of it, **65 operator guides**
+  in `docs/guides/` (four batches: bookings & capacity, membership &
+  applications, lodge operations & lobby display, and comms/content/support
+  platform) plus a fifth batch of **member-facing journey guides** in
+  `docs/user-guide/`, each written against the running seeded app with
+  seeded-data screenshots, closing the coverage matrix to zero gaps.
+
+- **Screenshot-forward README (#2076/#2077).** The root `README.md` is
+  rewritten as a marketing front page — reproducible hero art, badges, a
+  benefit-led feature grid, a screenshot gallery, a native mermaid
+  architecture diagram, and a condensed quickstart — with two reproducible
+  dev-only asset harnesses (`npm run docs:readme-art`, `npm run docs:demo-gif`)
+  and its former deep operational content relocated into the docs it
+  duplicated. No runtime app code changes.
+
+- **Fixes, CI, and dependencies (#2045/#2052, #2046/#2053, #2038/#2042,
+  #2070).** The membership-types editor closes on a successful edit save and
+  regains a dirty-guarded header X; `/admin/display` drill-down leaves regain
+  the shared `BackLink` (with a repo-wide back-affordance normalisation); the
+  blue/green migration validator's session-clock gate is no longer blinded by
+  dollar-quoted SQL (the splitter is now dollar-quote-aware for arbitrary
+  Postgres tags and fails loudly on an unterminated quote — one benign,
+  already-deployed case recorded in an exact-name-keyed allowlist); and
+  `github/codeql-action` is bumped to 4.37.0.
+
+- **Migration/deployment notes:** deploy in a normal window after a tested
+  backup — **no contract migration** this release. Five expand/additive
+  migrations apply. Four have ledger rows in
+  `docs/BLUE_GREEN_MIGRATION_SAFETY.tsv`, all `old_code_compatible=yes`:
+  `20260718130000_add_magic_link` and `20260719120000_add_google_oauth`
+  (flagged-off boolean(s) + a new/nullable column; the `add_google_oauth`
+  unique index builds over an all-NULL `Member.googleSub`, briefly blocking
+  `Member` writes — use `CREATE UNIQUE INDEX CONCURRENTLY` if `Member` is very
+  large), `20260719130000_add_based_on_age_tier_subscription_behavior` (a pure
+  additive `ALTER TYPE ... ADD VALUE`), and `20260719140000_annual_fee_age_tier`
+  (a nullable catalog-only `ADD COLUMN` plus index/constraint reshaping on the
+  cold `MembershipAnnualFee` table). The fifth, `20260718120000_add_login_security_setting`,
+  is a single additive cold config table with no FK and needs no ledger row
+  (same policy as v0.12.0's ledger-exempt additive migrations). Two flagged-off
+  sign-in modules mean nothing changes at cutover until an admin enables them.
+  **One operator caveat:** because the old colour's fee resolver does not
+  filter by age tier, do **not** create per-age-tier annual-fee rows until the
+  cutover completes — a per-tier row is not invisible to the old resolver and
+  could be selected for a member of any tier and mis-price them (over-resolve).
+  No migration makes a Xero, Stripe, or SES call. See `docs/UPGRADING.md` for
+  the complete operator checklist.
+
 ## 0.12.0 - 2026-07-18
 
 - Release classification: minor public reference release. This is a large
