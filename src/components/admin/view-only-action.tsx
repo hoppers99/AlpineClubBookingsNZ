@@ -5,6 +5,43 @@ import { Button, type ButtonProps } from "@/components/ui/button";
 import { ADMIN_VIEW_ONLY_ACTION_REASON } from "@/hooks/use-admin-area-edit-access";
 import { cn } from "@/lib/utils";
 
+/**
+ * Props for a component whose gated controls are explained by an
+ * {@link AdminViewOnlySectionBanner} that an ANCESTOR renders, rather than by
+ * the component itself (#2168 owner decision: one banner per page on
+ * `/admin/members/[id]`).
+ *
+ * This is the mirror of `FamilyGroupEditor`'s `renderViewOnlyBanner` prop
+ * (#2160). There, a component owns a banner and a covering parent SUPPRESSES
+ * it. Here, a component owns no banner and a covering parent VOUCHES that it
+ * renders one above these controls, which lets them drop their own per-button
+ * reason. Both default to the self-sufficient behaviour, so a component dropped
+ * into a container no banner reaches — a dialog, a sheet, a new page — still
+ * explains itself.
+ *
+ * The default is `false` and that is the whole safety property: the opt-out
+ * cannot happen unless a parent asks for it AT the render site. A component
+ * that grows a new gated control, or gets rendered somewhere new, keeps its
+ * per-button reason until someone deliberately vouches for it.
+ *
+ * Consuming components must use it in exactly one shape —
+ * `describeReason={!ancestorRendersViewOnlyBanner}` — and must not forward it
+ * to a grandchild. Vouching parents must render an UNCONDITIONAL
+ * {@link AdminViewOnlySectionBanner} in the same returned JSX tree as the
+ * child, and must pass the literal `true`. All of that is enforced statically
+ * by `__tests__/view-only-banner-contract.test.ts`; see that file for what each
+ * rule closes off.
+ *
+ * Scope matters: the banner an ancestor renders states ONE permission area. A
+ * child gated on a DIFFERENT area must not take this prop from it — the banner
+ * would not be describing that child's controls. `member-credit-card.tsx` is
+ * gated on `finance` while the member detail page banner states `membership`,
+ * which is why it keeps its per-button reason.
+ */
+export interface AncestorViewOnlyBannerProps {
+  ancestorRendersViewOnlyBanner?: boolean;
+}
+
 interface ViewOnlyActionButtonProps extends ButtonProps {
   // Tri-state (#2065): `undefined` while the session is resolving. Neutral
   // treatment for that window = disabled WITHOUT the view-only reason, so an
@@ -20,8 +57,10 @@ interface ViewOnlyActionButtonProps extends ButtonProps {
    *
    * Since #2160 the DEFAULT is no longer the usual case — it is the fallback.
    * Most admin sections render an {@link AdminViewOnlySectionBanner} and pass
-   * `describeReason={false}` here (203 of 256 call sites at the time of the
-   * rollout). The default survives in three shapes:
+   * `describeReason={false}` here (203 of 256 call sites), and since #2168 a
+   * further 21 pass `describeReason={!ancestorRendersViewOnlyBanner}` because a
+   * VOUCHING PARENT renders the banner instead — 224 opt-outs in total. The
+   * default survives in three shapes:
    *
    *  - inside a dialog, sheet, popover, or dropdown menu, which is a separate
    *    accessibility container (focus trapped, page behind commonly inert), so
@@ -34,17 +73,19 @@ interface ViewOnlyActionButtonProps extends ButtonProps {
    *    not a pure shape: 3 of the 19 are the FIRST shape — dialog contents
    *    inside `page-content-panel.tsx` and `site-banners-panel.tsx`, which are
    *    themselves banner-bearing panels); and
-   *  - in the member detail per-record cards under
-   *    `admin/members/[id]/_components/` (25 controls across 9 files). Those
-   *    COULD host a banner — they are real Card sections — but one page renders
-   *    all nine, so converting them stacks nine identical banners. Whether that
-   *    becomes one page-level banner is **owner decision #2168**; do not
-   *    convert them under #2160.
+   *  - in `member-credit-card.tsx` (4 controls), the one member detail card
+   *    #2168 did NOT vouch for. Its siblings take the page banner's coverage;
+   *    it cannot, because it is gated on `finance` while that banner states
+   *    `membership`. Scope, not folder, is what decides.
    *
    * NEVER pass `false` without a banner in the SAME file. Doing so deletes the
    * explanation outright — no title, no description, no banner — which is
-   * strictly worse than the per-button affordance it replaced. That invariant
-   * is enforced by `__tests__/view-only-banner-contract.test.ts`.
+   * strictly worse than the per-button affordance it replaced. The ONE
+   * sanctioned way to be covered from outside the file is
+   * {@link AncestorViewOnlyBannerProps}, which replaces the missing local proof
+   * with a checked one rather than dropping the requirement. Both invariants —
+   * and the fact that no THIRD spelling of `describeReason` is accepted — are
+   * enforced by `__tests__/view-only-banner-contract.test.ts`.
    *
    * Pass `false` where the surrounding section already renders an
    * {@link AdminViewOnlySectionBanner}. A `disabled` button is out of the tab
@@ -184,11 +225,15 @@ export const ADMIN_VIEW_ONLY_SECTION_HEADING =
  *  - surfaces that state view-only access WITHOUT gating a control through
  *    {@link ViewOnlyActionButton} — with no gated control there is nothing for
  *    this banner to head (seven files today);
- *  - sections that are simply NOT CONVERTED yet, so the Notice is still their
- *    only statement of view-only access: `member-lodge-access-card`,
- *    `member-committee-assignments-card` and `member-seasonal-membership-card`
- *    each render a Notice alongside gated buttons that keep their per-button
- *    reason, because the member detail cards are held for #2168; and
+ *  - a section whose Notice is CONDITIONAL on no ancestor covering it.
+ *    `member-lodge-access-card`, `member-committee-assignments-card` and
+ *    `member-seasonal-membership-card` each render their Notice only when
+ *    `ancestorRendersViewOnlyBanner` is false (#2168), so the member detail page
+ *    — which banners the whole page — sees no Notice, while the same card
+ *    rendered anywhere else still states the reason itself. The lodge-access
+ *    Notice also covers disabled CHECKBOXES that are not
+ *    {@link ViewOnlyActionButton}s, which is why it is kept at all rather than
+ *    deleted; and
  *  - a NARROWER permission scope nested inside a section this banner already
  *    heads. The banner states the section's own scope once at the top; a Notice
  *    further down carries a DIFFERENT permission's reason for a subset of the

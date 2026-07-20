@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import {
   AdminViewOnlyNotice,
   ViewOnlyActionButton,
+  type AncestorViewOnlyBannerProps,
 } from "@/components/admin/view-only-action";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -88,7 +89,7 @@ interface SeasonalMembershipPreview {
   previewToken: string;
 }
 
-interface MemberSeasonalMembershipCardProps {
+interface MemberSeasonalMembershipCardProps extends AncestorViewOnlyBannerProps {
   member: MemberDetail;
   onSaved: () => Promise<void>;
   className?: string;
@@ -173,6 +174,7 @@ export function MemberSeasonalMembershipCard({
   member,
   onSaved,
   className,
+  ancestorRendersViewOnlyBanner = false,
 }: MemberSeasonalMembershipCardProps) {
   // Saving a change writes /api/admin/members/[id]/seasonal-membership
   // (membership area); a view-only membership admin may still preview but
@@ -372,7 +374,14 @@ export function MemberSeasonalMembershipCard({
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        {!canEdit ? (
+        {/*
+          #2168: dropped only when an ancestor vouches that it states the same
+          membership scope above this card — on `/admin/members/[id]` the page
+          banner does, and repeating it here would be the same sentence twice.
+          Rendered standalone, or under any parent that does not vouch, the
+          Notice stays and this card still explains itself.
+        */}
+        {!ancestorRendersViewOnlyBanner ? (
           <AdminViewOnlyNotice canEdit={canEdit}>
             Your admin role can view the seasonal membership type but cannot
             preview or change it.
@@ -442,6 +451,7 @@ export function MemberSeasonalMembershipCard({
 
           <ViewOnlyActionButton
             canEdit={canEdit}
+            describeReason={!ancestorRendersViewOnlyBanner}
             type="button"
             variant="outline"
             onClick={() => void previewChange()}
@@ -593,6 +603,7 @@ export function MemberSeasonalMembershipCard({
 
             <ViewOnlyActionButton
               canEdit={canEdit}
+              describeReason={!ancestorRendersViewOnlyBanner}
               type="button"
               onClick={() => void saveChange()}
               disabled={saving || !reason.trim()}

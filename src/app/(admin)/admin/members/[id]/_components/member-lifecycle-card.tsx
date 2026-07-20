@@ -4,7 +4,10 @@ import Link from "next/link"
 import { useState } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { ViewOnlyActionButton } from "@/components/admin/view-only-action"
+import {
+  ViewOnlyActionButton,
+  type AncestorViewOnlyBannerProps,
+} from "@/components/admin/view-only-action"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
   Dialog,
@@ -23,7 +26,7 @@ import type {
   OpenCancellationRequestSummary,
 } from "../_types"
 
-interface MemberLifecycleCardProps {
+interface MemberLifecycleCardProps extends AncestorViewOnlyBannerProps {
   member: MemberDetail
   pendingArchiveRequest: MemberLifecycleActionRequest | null
   reviewedArchiveRequests: MemberLifecycleActionRequest[]
@@ -77,6 +80,7 @@ export function MemberLifecycleCard({
   onReviewArchive,
   canEdit,
   className,
+  ancestorRendersViewOnlyBanner = false,
 }: MemberLifecycleCardProps) {
   // #1788: which archive review is waiting on the admin's notify-or-not choice.
   // The dialog only opens when an email would actually send (the target member
@@ -196,7 +200,7 @@ export function MemberLifecycleCard({
                 Admin-initiated cancellation requests go directly to the review queue without requiring the member to confirm by email.
               </p>
             </div>
-            <ViewOnlyActionButton canEdit={canEdit} className="mt-3" size="sm" onClick={onSubmitCancellation} disabled={cancellationSubmitting}>
+            <ViewOnlyActionButton canEdit={canEdit} describeReason={!ancestorRendersViewOnlyBanner} className="mt-3" size="sm" onClick={onSubmitCancellation} disabled={cancellationSubmitting}>
               {cancellationSubmitting ? "Submitting..." : "Request Cancellation"}
             </ViewOnlyActionButton>
           </div>
@@ -229,6 +233,7 @@ export function MemberLifecycleCard({
                   <div className="flex justify-end gap-2">
                     <ViewOnlyActionButton
                       canEdit={canEdit}
+                      describeReason={!ancestorRendersViewOnlyBanner}
                       variant="outline"
                       size="sm"
                       disabled={Boolean(archiveActionLoading)}
@@ -238,6 +243,7 @@ export function MemberLifecycleCard({
                     </ViewOnlyActionButton>
                     <ViewOnlyActionButton
                       canEdit={canEdit}
+                      describeReason={!ancestorRendersViewOnlyBanner}
                       variant="destructive"
                       size="sm"
                       disabled={Boolean(archiveActionLoading)}
@@ -270,6 +276,7 @@ export function MemberLifecycleCard({
             </div>
             <ViewOnlyActionButton
               canEdit={canEdit}
+              describeReason={!ancestorRendersViewOnlyBanner}
               className="mt-3"
               size="sm"
               onClick={onSubmitArchive}
