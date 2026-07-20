@@ -434,6 +434,23 @@ describe("membership subscription billing", () => {
     expect(preview.entries[0]).toMatchObject({ membershipTypeKey: "FULL", coveredMembers: [{ id: "new" }] });
   });
 
+  it("excludes a bare ADMIN account via its NOT_REQUIRED role-default type — never billed, no exception (#2149)", async () => {
+    // Guard item 2: with the role-based exemption dropped, a bare operational
+    // account with no season assignment resolves its fallback type FROM THE DB.
+    // The migration seeds ADMIN as NOT_REQUIRED, so the preview skips it entirely
+    // instead of raising MISSING_MEMBERSHIP_ASSIGNMENT (which it would if the
+    // ADMIN type row were absent) or billing it at the FULL rate.
+    mocks.members.findMany.mockResolvedValue([
+      member("bare-admin", { role: "ADMIN", seasonalMembershipAssignments: [] }),
+    ]);
+    mocks.membershipTypes.findMany.mockResolvedValue([
+      { id: "type-admin", key: "ADMIN", name: "Admin", subscriptionBehavior: "NOT_REQUIRED", annualFees: [] },
+    ]);
+    const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-07-13T00:00:00.000Z") });
+    expect(preview.entries).toHaveLength(0);
+    expect(preview.exceptions).toHaveLength(0);
+  });
+
   it("snapshots explicit NO_INVOICE as zero cents rather than treating it as missing config", async () => {
     mocks.members.findMany.mockResolvedValue([
       member("life", {

@@ -57,19 +57,41 @@ describe("checkMembershipStatus BASED_ON_AGE_TIER dominance (#2041)", () => {
     expect(mocks.requiresPaidForAgeTier).not.toHaveBeenCalled();
   });
 
-  it("does not consult the type policy when there is no NOT_REQUIRED row (defers to the age-tier flag)", async () => {
+  it("consults the type policy (membership type is the sole authority, #2149), then defers to the age-tier flag", async () => {
+    // #2149: role-based exemption dropped — checkMembershipStatus now always
+    // resolves the effective membership type. A non-NOT_REQUIRED type with no
+    // dominating NOT_REQUIRED row falls through to the per-age-tier flag.
     mocks.memberFindUnique.mockResolvedValue({ id: "m1", role: "USER", ageTier: "CHILD", xeroContactId: null });
     mocks.subFindUnique.mockResolvedValue({
       status: "NOT_INVOICED", manuallyMarkedPaidAt: null, xeroInvoiceId: null,
       xeroOnlineInvoiceUrl: null, paidAt: null,
     });
+    mocks.resolvePolicy.mockResolvedValue({ subscriptionBehavior: "REQUIRED" });
     mocks.requiresPaidForAgeTier.mockResolvedValue(false); // exempt CHILD
 
     const result = await checkMembershipStatus("m1", 2026);
 
     expect(result.status).toBe("NOT_REQUIRED");
-    expect(mocks.resolvePolicy).not.toHaveBeenCalled();
+    expect(mocks.resolvePolicy).toHaveBeenCalledTimes(1);
     expect(mocks.requiresPaidForAgeTier).toHaveBeenCalledTimes(1);
+  });
+
+  it("a NOT_REQUIRED membership type is never billed regardless of role (#2149)", async () => {
+    // A bare ADMIN/LODGE account resolves via the role→default-type fallback to
+    // its own NOT_REQUIRED built-in type; the age-tier flag is never consulted.
+    mocks.memberFindUnique.mockResolvedValue({ id: "m1", role: "ADMIN", ageTier: "ADULT", xeroContactId: null });
+    mocks.subFindUnique.mockResolvedValue({
+      status: "NOT_INVOICED", manuallyMarkedPaidAt: null, xeroInvoiceId: null,
+      xeroOnlineInvoiceUrl: null, paidAt: null,
+    });
+    mocks.resolvePolicy.mockResolvedValue({ subscriptionBehavior: "NOT_REQUIRED" });
+    mocks.requiresPaidForAgeTier.mockResolvedValue(true);
+
+    const result = await checkMembershipStatus("m1", 2026);
+
+    expect(result.status).toBe("NOT_REQUIRED");
+    expect(mocks.resolvePolicy).toHaveBeenCalledTimes(1);
+    expect(mocks.requiresPaidForAgeTier).not.toHaveBeenCalled();
   });
 
   it("REQUIRED types are byte-unchanged: a NOT_REQUIRED row does NOT dominate; the required path runs", async () => {
