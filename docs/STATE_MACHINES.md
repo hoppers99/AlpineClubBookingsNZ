@@ -792,7 +792,7 @@ stale per-family schedule under individual billing -> PER_FAMILY_FEE_IN_INDIVIDU
 NO_INVOICE -> NOT_REQUIRED (zero-cent durable snapshot; no provider work)
 age-tier not subscription-liable, no PER_MEMBER fee due -> Exempt (no charge, no MISSING_FEE_SCHEDULE; confirm writes NOT_REQUIRED; PER_FAMILY child stays family-covered)
 OPEN exception -> superseding confirm run -> RESOLVED (resolvedVia CONFIRM)
-OPEN exception -> edit-gated preview refresh no longer regenerates it -> RESOLVED (resolvedVia PREVIEW_RECONCILE; scoped to re-evaluated subjects + club-level null-member codes; read-only GET never resolves)
+OPEN exception -> edit-gated preview refresh no longer regenerates it -> RESOLVED (resolvedVia PREVIEW_RECONCILE; whole-club refresh resolves every superseded OPEN row, member-specific and club-level null-member alike; read-only GET never resolves)
 ```
 
 To verify: preview digest changes with fee/recipient/due-day inputs; only finance
