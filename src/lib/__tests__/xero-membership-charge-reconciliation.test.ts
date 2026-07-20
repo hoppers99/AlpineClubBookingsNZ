@@ -97,9 +97,9 @@ describe("membership charge reconciliation", () => {
       xeroInvoiceNumber: "INV-42",
       xeroOnlineInvoiceUrl: "https://in.xero.com/invoice-family",
       paidAt: null,
-      chargeCoverage: {
-        charge: { xeroInvoiceId: "invoice-family" },
-      },
+      chargeCoverage: [
+        { charge: { xeroInvoiceId: "invoice-family" } },
+      ],
     });
     mocks.startOperation.mockResolvedValue({ id: "operation-1" });
     mocks.subscriptionUpsert.mockResolvedValue({ id: "subscription-2" });
@@ -139,7 +139,7 @@ describe("membership charge reconciliation", () => {
       xeroInvoiceNumber: null,
       xeroOnlineInvoiceUrl: null,
       paidAt: new Date("2026-05-01T00:00:00.000Z"),
-      chargeCoverage: null,
+      chargeCoverage: [],
     });
 
     const result = await checkMembershipStatus("family-member-2", 2026);
@@ -195,7 +195,7 @@ describe("membership charge reconciliation", () => {
         xeroInvoiceNumber: null,
         xeroOnlineInvoiceUrl: null,
         paidAt: null,
-        chargeCoverage: { charge: { xeroInvoiceId: "invoice-family" } },
+        chargeCoverage: [{ charge: { xeroInvoiceId: "invoice-family" } }],
       })
       // …after the write fence skips the row, the surviving read shows the
       // manual PAID that a treasurer recorded during the Xero round-trips.
@@ -267,7 +267,7 @@ describe("membership charge reconciliation", () => {
       xeroInvoiceNumber: "INV-42",
       xeroOnlineInvoiceUrl: "https://in.xero.com/invoice-family",
       paidAt: null,
-      chargeCoverage: { charge: { xeroInvoiceId: "invoice-family" } },
+      chargeCoverage: [{ charge: { xeroInvoiceId: "invoice-family" } }],
     });
     mocks.getInvoice.mockResolvedValue({
       body: { invoices: [{
@@ -316,9 +316,9 @@ describe("flushMemberSubscriptionHistory (#1944)", () => {
     // billing sweep would re-invoice the member who already paid — the exact
     // mid-season Xero-adoption scenario this feature exists for.
     mocks.subscriptionFindMany.mockResolvedValue([
-      { id: "sub-derived", seasonYear: 2026, manuallyMarkedPaidAt: null, chargeCoverage: null },
-      { id: "sub-manual", seasonYear: 2026, manuallyMarkedPaidAt: new Date("2026-07-01T00:00:00.000Z"), chargeCoverage: null },
-      { id: "sub-covered", seasonYear: 2025, manuallyMarkedPaidAt: null, chargeCoverage: { id: "coverage-1" } },
+      { id: "sub-derived", seasonYear: 2026, manuallyMarkedPaidAt: null, chargeCoverage: [] },
+      { id: "sub-manual", seasonYear: 2026, manuallyMarkedPaidAt: new Date("2026-07-01T00:00:00.000Z"), chargeCoverage: [] },
+      { id: "sub-covered", seasonYear: 2025, manuallyMarkedPaidAt: null, chargeCoverage: [{ id: "coverage-1" }] },
     ]);
 
     const result = await flushMemberSubscriptionHistory("member-1");
@@ -338,8 +338,8 @@ describe("flushMemberSubscriptionHistory (#1944)", () => {
 
   it("deletes nothing when every row is manual-PAID or charge-covered", async () => {
     mocks.subscriptionFindMany.mockResolvedValue([
-      { id: "sub-manual", seasonYear: 2026, manuallyMarkedPaidAt: new Date("2026-07-01T00:00:00.000Z"), chargeCoverage: null },
-      { id: "sub-covered", seasonYear: 2025, manuallyMarkedPaidAt: null, chargeCoverage: { id: "coverage-1" } },
+      { id: "sub-manual", seasonYear: 2026, manuallyMarkedPaidAt: new Date("2026-07-01T00:00:00.000Z"), chargeCoverage: [] },
+      { id: "sub-covered", seasonYear: 2025, manuallyMarkedPaidAt: null, chargeCoverage: [{ id: "coverage-1" }] },
     ]);
 
     const result = await flushMemberSubscriptionHistory("member-1");

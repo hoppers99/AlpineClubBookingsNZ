@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   settingsFind: vi.fn(),
   coverageFindMany: vi.fn(),
   coverageFindUnique: vi.fn(),
+  coverageFindFirst: vi.fn(),
   memberFindMany: vi.fn(),
   typeFindMany: vi.fn(),
   chargeFindMany: vi.fn(),
@@ -26,7 +27,7 @@ vi.mock("@/lib/prisma", () => {
     $executeRaw: vi.fn(),
     $transaction: mocks.transaction,
     membershipSubscriptionBillingSettings: { findUnique: mocks.settingsFind },
-    membershipSubscriptionChargeCoverage: { findMany: mocks.coverageFindMany, findUnique: mocks.coverageFindUnique },
+    membershipSubscriptionChargeCoverage: { findMany: mocks.coverageFindMany, findUnique: mocks.coverageFindUnique, findFirst: mocks.coverageFindFirst },
     membershipSubscriptionCharge: { findMany: mocks.chargeFindMany, upsert: mocks.chargeUpsert },
     membershipBillingException: { updateMany: mocks.exceptionUpdateMany, upsert: mocks.exceptionUpsert },
     member: { findMany: mocks.memberFindMany },
@@ -53,6 +54,7 @@ describe("membership subscription confirmation", () => {
     mocks.familyMode.mockResolvedValue("BILL_FAMILY_VIA_BILLING_MEMBER");
     mocks.coverageFindMany.mockResolvedValue([]);
     mocks.coverageFindUnique.mockResolvedValue(null);
+    mocks.coverageFindFirst.mockResolvedValue(null);
     mocks.subscriptionFindMany.mockResolvedValue([]);
     mocks.memberFindMany.mockResolvedValue([{
       id: "member-1", firstName: "Member", lastName: "One", email: "member@example.test",
