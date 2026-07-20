@@ -4,6 +4,32 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Public `{{hut-fees}}` embed now reads the authoritative per-membership-type
+  rates (#2129, step 1).** The embed was the last reader of the frozen
+  member/non-member `SeasonRate` table, and it presented a definition list of
+  "Age tier — Member/Non-member" rows. It now reads
+  `MembershipTypeSeasonRate` — the same rows that actually price a booking — and
+  renders a **real table** per lodge × season: age tiers down the side,
+  membership-type rate columns across the top. A membership type earns a column
+  only when it is active, **publicly listed**, and carries rates for that
+  season; types priced identically collapse into one shared column headed by
+  their names (for example "Full Member, Life, Family"), and split back out
+  automatically the moment one of them is repriced. Wide tables scroll inside
+  their own container so the page never scrolls sideways.
+
+  Token semantics changed with it: `type=` now genuinely **filters** to one
+  membership type's column (it previously only validated that the key existed),
+  `group-by=type` splits a season into one table per rate column (it previously
+  split into Member and Non-member groups), and `group-by=age` **transposes**
+  the table (it previously did nothing). Unknown lodge slugs and unknown or
+  unlisted `type=` values still fail closed to the no-information state. The
+  setup-readiness **Seasons And Rates** step now warns when the embed is
+  switched on but a season would publish fewer than two rate columns.
+
+  No schema change: `SeasonRate` is untouched but now has **zero readers**
+  (the four admin season routes also stopped selecting it), so it becomes
+  drop-eligible in the next release (#2129 step 2).
+
 ## 0.12.2 - 2026-07-20
 
 - Release classification: patch public reference release. As with `v0.12.1`, the

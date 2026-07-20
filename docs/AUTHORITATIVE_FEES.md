@@ -10,12 +10,15 @@ type carries its own rate rows; non-members price via the built-in
 types carry zero own rows. A type prices per age tier when
 `MembershipType.ageGroupsApply` is true (one row per tier) or from a single flat
 rate when false (one `NULL`-ageTier row). The legacy member/non-member
-boolean-keyed `SeasonRate` table is **retained but frozen** — still read by the
-public `{{hut-fees}}` embed (its member/non-member split). E13 (#1939)
-deliberately did **not** drop it: because that public embed is still a live
-reader, dropping `SeasonRate` needs an owner decision on how the embed sources
-its Member / Non-member columns from the membership-type-keyed model, tracked as
-a follow-up. E7 (#1933) added the grouped public presentation and token grammar on top of
+boolean-keyed `SeasonRate` table is **retained but frozen, and now has zero
+readers**. E13 (#1939) deliberately did not drop it because the public
+`{{hut-fees}}` embed still read its member/non-member split; step 1 of #2129
+re-sourced that embed onto `MembershipTypeSeasonRate` (one nightly-rate column
+per publicly-listed membership type, with identically-priced types collapsed
+into one column) and removed the admin season routes' unused `rates` include.
+`SeasonRate` is therefore **drop-eligible in the next release** (#2129 step 2,
+Release B, which carries the migration). Do not add new readers or writers to
+it. E7 (#1933) added the grouped public presentation and token grammar on top of
 this source, not a re-key. Xero
 hut-fee item codes re-key the same way via `XeroItemCodeMapping.membershipTypeId`
 so an invoice line never disagrees with the rate that priced it.
@@ -82,7 +85,9 @@ untouched. A `NULL` snapshot (pre-refactor booking) resolves at read time as
 
 Public PageContent blocks are double opt-in: their family is enabled in Admin >
 Page Content. The fee embeds draw from these same authoritative schedules:
-`{{joining-fees}}` and `{{hut-fees}}` from the joining/season schedules, and
+`{{joining-fees}}` from the joining schedule and `{{hut-fees}}` from the
+per-membership-type season rates (one table per lodge x season, one column per
+publicly-listed type — see `docs/PUBLIC_PAGE_CONTENT_TOKENS.md`), and
 `{{annual-fees}}` from the annual-fee schedules (with `{{annual-fees:components}}`
 exposing the E6 per-line breakdown). Joining-fee blocks omit tiers without a
 current schedule; annual-fee blocks omit types with no current invoiceable fee
