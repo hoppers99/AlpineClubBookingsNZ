@@ -1152,6 +1152,36 @@ describe("membership subscription billing", () => {
       });
     });
 
+    it("FINDING 1 (d): fail-closed — a live-invoice holder whose OWN fee basis is NO_INVOICE keeps the family SUPPRESSED", async () => {
+      // A NO_INVOICE-basis member (e.g. a Life/honorary member configured via a
+      // NO_INVOICE fee row rather than a NOT_REQUIRED type) never generates a
+      // personal invoice, so a live invoice on them can only be a legacy/family
+      // invoice. Suppression lifts only on proven PER_MEMBER; basis IS resolved
+      // here, so holderBasisUnresolvable stays false.
+      mocks.effectiveFee.mockImplementation(async ({ membershipTypeId }: { membershipTypeId: string }) =>
+        membershipTypeId === "type-noinv"
+          ? { billingBasis: "NO_INVOICE", annualAmountCents: 0 }
+          : perFamilyFee());
+      mocks.familyGroupMembers.findMany.mockResolvedValue([
+        {
+          familyGroupId: "family-1",
+          memberId: "noinv-holder",
+          member: {
+            firstName: "Liv", lastName: "Life", role: "USER", dateOfBirth: null, ageTier: "ADULT",
+            seasonalMembershipAssignments: [{ membershipType: { id: "type-noinv", key: "LIFE_NOINV", name: "Life", subscriptionBehavior: "REQUIRED" } }],
+            subscriptions: [{ xeroInvoiceId: "xi-l", xeroInvoiceNumber: "INV-L", status: "UNPAID", chargeCoverage: [] }],
+          },
+        },
+      ]);
+      mocks.familyGroupMembers.groupBy.mockResolvedValue([{ familyGroupId: "family-1", _count: { memberId: 2 } }]);
+      mocks.members.findMany.mockResolvedValue([famMember("fam-a")]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-04-01T00:00:00.000Z") });
+      expect(preview.entries).toHaveLength(0);
+      expect(preview.alreadyInvoicedFamilies[0]).toMatchObject({
+        familyGroupId: "family-1", holderMemberId: "noinv-holder", holderBasisUnresolvable: false,
+      });
+    });
+
     it("D2: an active operator marker suppresses the family and surfaces it with the marker indicator + note", async () => {
       mocks.effectiveFee.mockResolvedValue(perFamilyFee());
       mocks.familyMarkers.findMany.mockResolvedValue([

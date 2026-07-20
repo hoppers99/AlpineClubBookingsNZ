@@ -109,12 +109,14 @@ once for the per-family members, and the per-member member stays skipped for the
 own invoice. A suppressed family is shown, with the covering member and invoice
 number, under the collapsed **Already invoiced** panel.
 
-**Unresolvable holder basis suppresses conservatively.** If the member holding a
-live invoice has a basis that cannot be resolved — their type is *not required*
-(for example a Life Member holding the legacy family invoice), no type resolves,
-or there is no fee row for their type — the family is kept **suppressed** (never
-silently re-billed), tagged **Unresolved basis** in the **Already invoiced**
-panel. To re-bill such a family, either fix the holder's membership type/fee so a
+**Only a proven per-member basis lifts suppression.** The family is billed only
+when the invoice-holder's own basis resolves to **per-member** — the one case
+where their live invoice can be a personal invoice. Any other holder keeps the
+family **suppressed** (never silently re-billed): a *no-invoice* fee basis, or a
+basis that cannot be resolved at all — their type is *not required* (for example
+a Life Member holding the legacy family invoice), no type resolves, or there is
+no fee row for their type. Unresolvable cases are tagged **Unresolved basis** in
+the **Already invoiced** panel. To re-bill such a family, either fix the holder's membership type/fee so a
 real basis resolves, or void the stale invoice in Xero (which releases the block
 and re-bills the group as one entry).
 

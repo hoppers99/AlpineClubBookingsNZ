@@ -651,14 +651,18 @@ export async function buildSubscriptionBillingPreview(input: {
     // — keeps the family SUPPRESSED rather than silently minting a second family
     // invoice off a not-yet-billed child (e.g. a Life Member parent holding the
     // legacy family invoice resolves to a NOT_REQUIRED basis of null). Suppression
-    // lifts ONLY on a proven non-PER_FAMILY basis. Escape paths for a family
-    // wrongly suppressed this way: fix the holder's membership type / fee config,
-    // or void the stale invoice in Xero (link nulled + coverage released, then the
-    // group re-bills as one entry — see docs/guides/subscriptions.md).
+    // lifts ONLY on a proven PER_MEMBER basis — the sole basis under which the
+    // holder's live invoice can be their own per-member invoice. PER_FAMILY and
+    // NO_INVOICE holders never generate a personal invoice, so a live invoice on
+    // them can only be a legacy/family invoice and must keep suppressing. Escape
+    // paths for a family wrongly suppressed this way: fix the holder's membership
+    // type / fee config, or void the stale invoice in Xero (link nulled + coverage
+    // released, then the group re-bills as one entry — see
+    // docs/guides/subscriptions.md).
     let basisUnresolvable = false;
     if (!suppresses && sub?.xeroInvoiceId != null) {
       const holderBasis = await resolveMemberBillingBasis(row.member);
-      if (holderBasis === "PER_FAMILY" || holderBasis == null) {
+      if (holderBasis !== "PER_MEMBER") {
         suppresses = true;
         basisUnresolvable = holderBasis == null;
       }
