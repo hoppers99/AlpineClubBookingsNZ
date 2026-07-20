@@ -13,7 +13,10 @@ import {
   OPERATIONAL_ROLE_VALUES,
   isRole,
 } from "@/lib/member-roles";
-import { roleNeverRequiresSubscription } from "@/lib/member-subscription-defaults";
+import {
+  effectiveSubscriptionBehavior,
+  isSubscriptionNotRequiredForMembershipType,
+} from "@/lib/membership-types";
 import { UNASSIGNED_MEMBERSHIP_TYPE_VALUE } from "@/lib/membership-type-filter";
 import { formatDateOnlyForTimeZone } from "@/lib/date-only";
 
@@ -81,8 +84,21 @@ export async function GET(req: NextRequest) {
       .filter((setting) => setting.subscriptionRequiredForBooking === false)
       .map((setting) => setting.tier),
   );
+  // #2149: mirror the members-list filter exactly — membership type is the
+  // authority. Exempt when the assigned season type is NOT_REQUIRED, or (no
+  // assignment) the role's default built-in type is NOT_REQUIRED. See
+  // admin-members-service for the full rationale.
   const notRequiredSubscriptionConditions = [
-    { role: { in: [...OPERATIONAL_ROLE_VALUES, ...NON_MEMBER_ROLE_VALUES] } },
+    {
+      AND: [
+        {
+          seasonalMembershipAssignments: {
+            none: { seasonYear: currentSeasonYear },
+          },
+        },
+        { role: { in: [...OPERATIONAL_ROLE_VALUES, ...NON_MEMBER_ROLE_VALUES] } },
+      ],
+    },
     {
       seasonalMembershipAssignments: {
         some: {
@@ -225,8 +241,8 @@ export async function GET(req: NextRequest) {
   if (subscriptionFilter === "NOT_REQUIRED") {
     andConditions.push({ OR: notRequiredSubscriptionConditions });
   } else if (subscriptionFilter === "NONE") {
+    // #2149: no blanket role exclusion — see admin-members-service.
     andConditions.push(
-      { role: { notIn: [...OPERATIONAL_ROLE_VALUES] } },
       { NOT: { OR: notRequiredSubscriptionConditions } },
       {
         subscriptions: { none: { seasonYear: currentSeasonYear } },
@@ -239,7 +255,6 @@ export async function GET(req: NextRequest) {
     )
   ) {
     andConditions.push(
-      { role: { notIn: [...OPERATIONAL_ROLE_VALUES] } },
       { NOT: { OR: notRequiredSubscriptionConditions } },
       {
         subscriptions: {
@@ -420,12 +435,19 @@ export async function GET(req: NextRequest) {
         {
           header: "Subscription Status",
           value: (m: MemberRow) =>
-            roleNeverRequiresSubscription(m.role) ||
-            notRequiredAgeTiers.has(m.ageTier) ||
-            (m.seasonalMembershipAssignments ?? []).some(
-              (assignment) =>
-                assignment.membershipType.subscriptionBehavior === "NOT_REQUIRED",
-            )
+            // #2149: membership type is the sole authority (role carries no
+            // exemption); mirrors the members-list flag and the SQL filter.
+            isSubscriptionNotRequiredForMembershipType({
+              subscriptionBehavior: effectiveSubscriptionBehavior(
+                (m.seasonalMembershipAssignments ?? [])[0]?.membershipType
+                  .subscriptionBehavior,
+                m.role,
+              ),
+              ageTier: m.ageTier,
+              notRequiredAgeTiers,
+              hasNotRequiredSeasonRow:
+                m.subscriptions[0]?.status === "NOT_REQUIRED",
+            })
               ? "NOT_REQUIRED"
               : m.subscriptions[0]?.status || "NONE",
         },
