@@ -1424,12 +1424,14 @@ model Season {
   // Relations
   // `rates` is the legacy member/non-member boolean-keyed rate table, frozen
   // since the E4 re-key (#1930); the authoritative pricing rows live in
-  // `membershipTypeRates`. Its LAST READER is gone: #2129 step 1 re-sourced the
-  // public {{hut-fees}} embed onto `membershipTypeRates`, dropped the admin
-  // season routes' unused `rates` include, and switched the lodge-setup
-  // copy-seasons flow onto `membershipTypeRates`.
-  // No APPLICATION-RUNTIME reader remains, but the seeders still use it:
-  // ONE READER and TWO WRITERS survive, all outside `src/`.
+  // `membershipTypeRates`. Its last APPLICATION-RUNTIME reader is gone: #2129
+  // step 1 re-sourced the public {{hut-fees}} embed onto `membershipTypeRates`,
+  // dropped the admin season routes' unused `rates` include, and switched the
+  // lodge-setup copy-seasons flow onto `membershipTypeRates`.
+  // The relation is NOT unreferenced, though — the seeders still use it:
+  // ONE READER and TWO WRITERS survive, all outside `src/`. Note that none of
+  // them contains the string "SeasonRate" (they go through this `rates`
+  // relation), so a string grep for the model name will not find them.
   //   READ   e2e/setup/seed-second-lodge.ts:202 — `include: { rates: true }`
   //   WRITE  e2e/setup/seed-second-lodge.ts:218-224 — `rates: { create: ... }`
   //   WRITE  prisma/seed.ts:208-227 — `createMissingSeasonRates` → `seasonRate.upsert`
