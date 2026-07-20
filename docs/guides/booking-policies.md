@@ -80,7 +80,9 @@ rules — see
 
 2. Tick **Enabled**, set the **Minimum group size** (the number of guests at
    which the whole booking is charged at member rates), and optionally
-   **Summer seasons only**. Click **Save Group Discount**.
+   **Summer seasons only**. Click **Save Group Discount**. The Save button stays
+   greyed out until you actually change something, so opening **Edit** and
+   closing it again never records a policy change you did not make.
 
 ### Minimum Night Stay
 

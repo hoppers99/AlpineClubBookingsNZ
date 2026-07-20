@@ -352,13 +352,17 @@ export function DefaultCancellationPolicySection() {
 
             {editingDefaults && (
               <div className="flex flex-wrap gap-3">
-                <Button onClick={handleSaveDefaults} disabled={savingDefaults}>
+                <ViewOnlyActionButton
+                  canEdit={canEdit}
+                  onClick={handleSaveDefaults}
+                  disabled={savingDefaults}
+                >
                   {savingDefaults
                     ? "Saving..."
                     : scopeIsLodge
                       ? "Save Lodge Override"
                       : "Save Default Policy"}
-                </Button>
+                </ViewOnlyActionButton>
                 <Button variant="outline" onClick={handleCancelDefaults} disabled={savingDefaults}>
                   Cancel
                 </Button>

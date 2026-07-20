@@ -303,9 +303,13 @@ export function BookingPeriodsSection() {
                 </div>
 
                 <div className="flex space-x-3">
-                  <Button onClick={handleSavePeriod} disabled={savingPeriod || !periodName || !periodStart || !periodEnd}>
+                  <ViewOnlyActionButton
+                    canEdit={canEdit}
+                    onClick={handleSavePeriod}
+                    disabled={savingPeriod || !periodName || !periodStart || !periodEnd}
+                  >
                     {savingPeriod ? "Saving..." : editingPeriodId ? "Update Period" : "Create Period"}
-                  </Button>
+                  </ViewOnlyActionButton>
                   <Button variant="outline" onClick={resetPeriodForm}>Cancel</Button>
                 </div>
               </CardContent>

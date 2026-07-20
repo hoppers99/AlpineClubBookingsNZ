@@ -278,12 +278,13 @@ export function MinimumNightStaySection() {
                 </div>
 
                 <div className="flex space-x-3">
-                  <Button
+                  <ViewOnlyActionButton
+                    canEdit={canEdit}
                     onClick={handleSaveMinStay}
                     disabled={savingMinStay || !msName || !msStart || !msEnd || msTriggerDays.length === 0}
                   >
                     {savingMinStay ? "Saving..." : editingMinStayId ? "Update Policy" : "Create Policy"}
-                  </Button>
+                  </ViewOnlyActionButton>
                   <Button variant="outline" onClick={resetMinStayForm}>Cancel</Button>
                 </div>
               </CardContent>

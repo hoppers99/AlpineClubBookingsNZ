@@ -36,6 +36,12 @@ function minSizeInput() {
   return screen.getByLabelText("Minimum group size") as HTMLInputElement;
 }
 
+function saveButton() {
+  return screen.getByRole("button", {
+    name: "Save Group Discount",
+  }) as HTMLButtonElement;
+}
+
 function renderSection() {
   return render(
     <ClubIdentityProvider value={clubIdentity}>
@@ -194,6 +200,84 @@ describe("GroupDiscountSection (#2136)", () => {
         .disabled,
     ).toBe(true);
     expect(screen.getByText(/cannot change it/i)).toBeTruthy();
+  });
+
+  it("Save stays disabled while the draft is pristine, so a no-op never PUTs (#2143)", async () => {
+    // The write route logs `group-discount.update` and revalidates the public
+    // pages unconditionally, so an unchanged re-PUT would leave an audit entry
+    // asserting a change that never happened.
+    const fetchMock = vi.fn(
+      async (_url: string, _init?: RequestInit) =>
+        new Response(JSON.stringify(LOADED), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await renderLoaded();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    expect(saveButton().disabled).toBe(true);
+
+    // Dirtying the draft enables Save…
+    fireEvent.click(enabledBox());
+    expect(saveButton().disabled).toBe(false);
+
+    // …and reverting it by hand disables Save again: the gate tracks the draft
+    // against the snapshot, it is not a one-shot "has been touched" flag.
+    fireEvent.click(enabledBox());
+    expect(saveButton().disabled).toBe(true);
+
+    // Belt and braces: even a forced click cannot reach the endpoint.
+    fireEvent.click(saveButton());
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1)); // mount load only
+    expect(
+      fetchMock.mock.calls.filter(([, init]) => init?.method === "PUT"),
+    ).toHaveLength(0);
+  });
+
+  it("permissions narrowing mid-edit disables Save and exposes the reason (#2142)", async () => {
+    // The tri-state `useAdminAreaEditAccess` can flip after mount (a session
+    // refetch narrowing the actor). Save must follow the Edit button's gating
+    // rather than staying clickable into a 403.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify(LOADED), { status: 200 })),
+    );
+    await renderLoaded();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.click(enabledBox());
+    expect(saveButton().disabled).toBe(false);
+
+    // Narrow the actor, then re-render via a further draft edit.
+    hookMock.canEdit = false;
+    fireEvent.change(minSizeInput(), { target: { value: "9" } });
+
+    expect(saveButton().disabled).toBe(true);
+    expect(saveButton().getAttribute("title")).toBe("View-only reason");
+    const describedBy = saveButton().getAttribute("aria-describedby");
+    expect(describedBy).toBeTruthy();
+    expect(document.getElementById(String(describedBy))?.textContent).toBe(
+      "View-only reason",
+    );
+  });
+
+  it("canEdit=undefined mid-edit disables Save WITHOUT the view-only reason (#2142)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify(LOADED), { status: 200 })),
+    );
+    await renderLoaded();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.click(enabledBox());
+
+    // The resolving window is a NEUTRAL disabled state: no reason is flashed at
+    // an admin who may well turn out to be edit-capable.
+    hookMock.canEdit = undefined;
+    fireEvent.change(minSizeInput(), { target: { value: "9" } });
+
+    expect(saveButton().disabled).toBe(true);
+    expect(saveButton().getAttribute("title")).toBeNull();
+    expect(saveButton().getAttribute("aria-describedby")).toBeNull();
   });
 
   it("canEdit=undefined (resolving) disables Edit and shows NO notice", async () => {

@@ -77,12 +77,13 @@ export function GroupDiscountSection() {
       return toDraft(await res.json())
     },
     successMessage: "Group discount settings saved",
-    // Save stays enabled while the draft is pristine, so an unchanged draft
-    // still re-PUTs exactly as it did before the hook landed.
-    allowPristineSave: true,
+    // `allowPristineSave` stays at its default (false): an unchanged draft must
+    // not re-PUT, because the write route logs `group-discount.update` and
+    // revalidates the public pages unconditionally, so a no-op save would leave
+    // an audit entry asserting a policy change that never happened (#2143).
   })
 
-  const { draft, editing, saving, error, success } = section
+  const { draft, editing, saving, dirty, error, success } = section
 
   if (section.loading || !draft) {
     return <div className="text-center py-8">Loading...</div>
@@ -164,9 +165,13 @@ export function GroupDiscountSection() {
 
           {editing && (
             <div className="flex space-x-3">
-              <Button onClick={() => void section.save()} disabled={saving}>
+              <ViewOnlyActionButton
+                canEdit={canEdit}
+                onClick={() => void section.save()}
+                disabled={!dirty || saving}
+              >
                 {saving ? "Saving..." : "Save Group Discount"}
-              </Button>
+              </ViewOnlyActionButton>
               <Button variant="outline" onClick={section.cancelEditing} disabled={saving}>
                 Cancel
               </Button>
