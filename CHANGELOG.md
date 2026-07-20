@@ -4,6 +4,24 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Printing or exporting a report in dark mode no longer produces a blank page
+  (#2146).** A finance manager or admin browsing in dark mode who used **Download
+  PDF**, or the browser print dialog, on `/finance` or `/admin/reports` got a
+  page that looked empty: the print stylesheet forced a white background but the
+  card text stayed on the dark theme's near-white colour. Print and PDF now always
+  render the light colour scheme regardless of the theme you are browsing in, so
+  no theme switch is needed before exporting. The same fix covers every other
+  printable surface — the chore roster sheet, the induction sign-off sheet, and
+  the lodge instructions. The public hut-leader instructions page was swept too
+  and needed no change: it renders on the website theme, which never goes dark.
+  Structurally, each rule that installs the dark palette is now excluded from
+  print media rather than being fought with additional `!important` overrides,
+  and the `html2canvas` PDF capture renders its clone in the light palette. No
+  behaviour change on screen. A browser test now prints both report surfaces in
+  dark mode and checks the ink really is dark on a light page. See
+  `docs/guides/reports.md`, `docs/finance-dashboard/README.md`, and
+  `docs/ARCHITECTURE.md`.
+
 - **Config transfer: old-bundle entrance-fee/season-rate import compat dropped
   (#2131).** One release after the E13 contraction, the importer no longer
   accepts the legacy boolean-keyed bundle shapes: the `isMember` column on
