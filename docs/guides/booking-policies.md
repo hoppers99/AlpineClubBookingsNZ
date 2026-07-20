@@ -112,10 +112,13 @@ rules — see
 4. Each row carries two different controls that used to look alike.
    **Deactivate** (outlined) is the reversible pause — the policy stops applying
    and the row shows an **Activate** button to bring it back. **Delete** (red)
-   removes the policy from use for good; it stays listed as inactive so the
-   change remains auditable. Both are one-click writes, so each button is
-   disabled while it is working: clicking twice in a row does not record the
-   same change twice.
+   takes the policy out of use and records a `delete` in the audit log. Nothing
+   is erased: the row stays listed as inactive, so the change remains auditable
+   and the same **Activate** button can bring it back. Use **Delete** to say
+   "this policy is finished", and **Deactivate** to say "not right now" — the
+   difference is what the audit log records, not whether it can be undone.
+   Both are one-click writes, so each button is disabled while it is working:
+   clicking twice in a row does not record the same change twice.
 
 ### Public Booking Requests
 
@@ -156,7 +159,7 @@ rules — see
 | Every field is read-only, and a banner at the top of the section says "You have view-only access to this area" | Your admin role is view-only for bookings | Ask a full admin for bookings edit access |
 | A **Save** button is greyed out and there is no view-only banner | You have not changed anything yet | Change a field to enable Save. Every section's Save only lights up once the form differs from what is saved, so an accidental re-save cannot record a change you did not make |
 | A **Save** button went grey part-way through editing, and the view-only banner appeared | Your bookings access was reduced while you had the form open | Reload the page and ask a full admin for bookings edit access |
-| A section says "Could not load…" and shows no editor and no list | Its policy or list could not be fetched, so what is stored is unknown — either on first load, or after switching **Rules for** to a lodge | Reload the page (or switch scope again). Nothing is shown deliberately: what was on screen belongs to a different scope, or is only this form's built-in starting values, and editing, removing, or deactivating it from here would change the wrong thing |
+| A section says "Could not load…" and shows no editor and no list | Its policy or list could not be fetched, so what is stored is unknown — either on first load, or after switching **Rules for** to a lodge | Click **Try again** on that card. Nothing is shown deliberately: what was on screen belongs to a different scope, or is only this form's built-in starting values, and editing, removing, or deactivating it from here would change the wrong thing. The **Rules for** selector stays available throughout, so you can also switch scope instead |
 | A "Public copy may be out of date" banner | Your Terms/FAQ still describe the old non-member hold | Click **Edit public pages** and update the copy to match the current policy |
 | A period's rules are not applying | The booking's check-in is outside the period, or the period is inactive | Check the dates and the Active toggle on the period card |
 | Group discount never triggers | It is disabled, the group is under the minimum, or it is summer-only and the stay is in winter | Enable it, lower the minimum group size, or untick Summer seasons only |

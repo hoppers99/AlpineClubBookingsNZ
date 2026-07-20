@@ -471,10 +471,16 @@ export function BookingPeriodsSection() {
     }
   }
 
+  /** Re-run the current scope's load in place, without leaving the section. */
+  function retryLoad() {
+    setError("")
+    void fetchPeriods({ scopeLoad: true })
+  }
+
   /*
     #2142: the view-only explanation lives here, once, at the top of the
     section — announced on arrival and in the reading order — instead of on each
-    disabled button below. It is rendered in BOTH branches below, in the same
+    disabled button below. It is rendered in every state below, in the same
     position, so the polite live region is registered in the accessibility tree
     from the first paint and only its CONTENT changes when `canEdit` resolves. A
     region injected already-populated is silently dropped by some
@@ -487,19 +493,29 @@ export function BookingPeriodsSection() {
     </AdminViewOnlySectionBanner>
   )
 
-  if (loadingPeriods) {
-    return (
-      <div>
-        {viewOnlyBanner}
-        <div className="text-center py-8">Loading...</div>
-      </div>
-    )
-  }
-
   // See `loadedScope`: the list is authoritative only for the scope it was
   // loaded for, and anything else is unknown rather than editable.
   const scopeKnown = loadedScope === scopeLodgeId
 
+  /*
+    #2142 review (round 4): there is deliberately NO early return for the
+    loading state, and the frame below — banner, `PolicyFeedback`, scope
+    select — is rendered in EVERY state. Loading replaces only the list card.
+
+    Two things depend on that, and an early return broke both:
+
+     - FOCUS. A scope change is now a `scopeLoad`, so it flips this section into
+       its loading state. An early return that dropped everything below it took
+       `PolicyScopeSelect` with it, so the keyboard user who had just changed
+       scope from the "Rules for" select watched the control they were focused
+       on leave the DOM for the whole round trip, dumping focus on `<body>` and
+       forcing a full re-traverse to change scope again.
+     - LIVE REGIONS. `PolicyFeedback`'s wrappers only work as live regions if
+       they are registered in the accessibility tree BEFORE they have content
+       (see its own header comment). Below an early return they were not: a
+       failed FIRST load mounted them already populated, in one mutation, which
+       is exactly the pattern some screen-reader/browser pairings drop.
+  */
   return (
     <div>
       {viewOnlyBanner}
@@ -516,7 +532,11 @@ export function BookingPeriodsSection() {
           id="periods-scope"
         />
 
-        {!scopeKnown ? (
+        {loadingPeriods ? (
+          <div className="text-center py-8">Loading...</div>
+        ) : null}
+
+        {!loadingPeriods && !scopeKnown ? (
           <Card>
             <CardHeader>
               <CardTitle>
@@ -527,14 +547,19 @@ export function BookingPeriodsSection() {
                 Nothing is listed, because we do not know what is stored here.
                 The periods that were on screen a moment ago belong to a
                 different scope, so editing, deleting, or deactivating them from
-                here would change the wrong thing. Reload the page (or switch
-                scope again) — the list returns as soon as it loads.
+                here would change the wrong thing. Try again below — the list
+                returns as soon as it loads.
               </CardDescription>
             </CardHeader>
+            <CardContent>
+              <Button variant="outline" onClick={retryLoad}>
+                Try again
+              </Button>
+            </CardContent>
           </Card>
         ) : null}
 
-        {scopeKnown ? (
+        {!loadingPeriods && scopeKnown ? (
           <Card>
             <CardHeader>
               <div className="flex items-center justify-between">

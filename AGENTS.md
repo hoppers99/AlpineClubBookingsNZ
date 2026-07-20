@@ -77,7 +77,13 @@ before changing Next.js APIs or conventions.
   the matching `area:edit` permission. This is binding for settings work touched
   from here on; two pre-existing surfaces are acknowledged divergents and are NOT
   retrofitted by this rule alone: the `/admin/modules` grid (bulk toggles) and
-  the staged-but-ungated legacy settings forms. Reference implementation:
+  the staged-but-ungated legacy settings forms. One further divergent is named
+  because it does NOT qualify as untouched:
+  `src/components/admin/booking-policies/public-booking-requests-section.tsx`
+  was modified by #2142 and its **Show indicative pricing** checkbox still
+  auto-persists on toggle. Whether to stage it is an owner decision tracked in
+  **#2162**; until that lands it is a known divergence, not an exemption. See
+  `docs/ARCHITECTURE.md` → the same list. Reference implementation:
   `src/components/admin/booking-policies/group-discount-section.tsx`.
   When you write a new section, or change an existing section's draft/snapshot
   logic, implement that half of the pattern with the shared
@@ -124,8 +130,11 @@ before changing Next.js APIs or conventions.
   SENTINEL key distinct from every real key: `null` usually means "club-wide"
   as well as "no lodge", so seeding `null` makes a failed FIRST load compare
   equal to the club-wide scope the section mounts on — the widest blast radius
-  there is. All three keyed booking-policy sections (default cancellation,
-  booking periods, minimum night stay) carry this.
+  there is. Make the unknown state recoverable in place: give its card a **Try
+  again** action that re-runs the current key's load, so an admin is not left
+  reloading the page over one failed GET. All three keyed booking-policy
+  sections (default cancellation, booking periods, minimum night stay) carry
+  this.
 - Every gated section's Save must be dirty-gated, not just view-gated. Booking
   write routes log audit entries and revalidate public content unconditionally,
   so a pristine re-save writes an entry asserting a change that never happened
@@ -135,13 +144,20 @@ before changing Next.js APIs or conventions.
   `describeReason={false}` so the view-only reason is stated once, in the
   reading order, instead of on disabled buttons that are out of the tab order —
   and whose `title` never fires at all, because the shared `buttonVariants` set
-  `disabled:pointer-events-none`. Mount the banner ABOVE the section's loading
-  early-return, in the same position in both branches: the component keeps its
-  `role="status"` wrapper permanently mounted and gates only the content,
-  because a polite live region injected already-populated is silently dropped by
-  some screen-reader/browser pairings. Adopted by the five Booking Policies
-  sections only (#2142); the rest of the admin tree keeps `AdminViewOnlyNotice`
-  plus the per-button reason, which stays the default.
+  `disabled:pointer-events-none`. The banner keeps its `role="status"` wrapper
+  permanently mounted and gates only the content, because a polite live region
+  injected already-populated is silently dropped by some screen-reader/browser
+  pairings — and the same is true of `PolicyFeedback`'s `role="alert"` /
+  `role="status"` pair. That guarantee is a POSITION rule, so do not render the
+  loading state as an early return above them. Give the section a FRAME that is
+  rendered in every state — banner, feedback regions, and (where the fetch is
+  scope-keyed) the scope select — and swap only the cards below it. An early
+  return breaks two things at once: a failed FIRST load mounts the section and
+  its already-populated alert in a single commit, and, because a scope change is
+  itself a load, it unmounts the very `PolicyScopeSelect` the admin just used,
+  dropping keyboard focus to `<body>` mid-interaction. Adopted by the five
+  Booking Policies sections only (#2142); the rest of the admin tree keeps
+  `AdminViewOnlyNotice` plus the per-button reason, which stays the default.
 - Security, payment, booking, membership lifecycle, Xero, Stripe, and
   data-integrity work requires high or xhigh reasoning effort and human review
   before merge.

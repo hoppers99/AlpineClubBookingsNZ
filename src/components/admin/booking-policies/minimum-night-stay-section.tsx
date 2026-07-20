@@ -453,10 +453,16 @@ export function MinimumNightStaySection() {
     }
   }
 
+  /** Re-run the current scope's load in place, without leaving the section. */
+  function retryLoad() {
+    setError("")
+    void fetchMinStay({ scopeLoad: true })
+  }
+
   /*
     #2142: the view-only explanation lives here, once, at the top of the
     section — announced on arrival and in the reading order — instead of on each
-    disabled button below. It is rendered in BOTH branches below, in the same
+    disabled button below. It is rendered in every state below, in the same
     position, so the polite live region is registered in the accessibility tree
     from the first paint and only its CONTENT changes when `canEdit` resolves. A
     region injected already-populated is silently dropped by some
@@ -469,19 +475,20 @@ export function MinimumNightStaySection() {
     </AdminViewOnlySectionBanner>
   )
 
-  if (loadingMinStay) {
-    return (
-      <div>
-        {viewOnlyBanner}
-        <div className="text-center py-8">Loading...</div>
-      </div>
-    )
-  }
-
   // See `loadedScope`: the list is authoritative only for the scope it was
   // loaded for, and anything else is unknown rather than editable.
   const scopeKnown = loadedScope === scopeLodgeId
 
+  /*
+    #2142 review (round 4): there is deliberately NO early return for the
+    loading state — see the identical note in `booking-periods-section.tsx`.
+    A scope change is a `scopeLoad`, so an early return unmounted
+    `PolicyScopeSelect` (dropping the keyboard user's focus to `<body>` for the
+    whole round trip) and pushed `PolicyFeedback` below it, so a failed FIRST
+    load mounted its live regions already populated. The frame — banner,
+    feedback, scope select — is rendered in every state; loading replaces only
+    the list card.
+  */
   return (
     <div>
       {viewOnlyBanner}
@@ -498,7 +505,11 @@ export function MinimumNightStaySection() {
           id="min-stay-scope"
         />
 
-        {!scopeKnown ? (
+        {loadingMinStay ? (
+          <div className="text-center py-8">Loading...</div>
+        ) : null}
+
+        {!loadingMinStay && !scopeKnown ? (
           <Card>
             <CardHeader>
               <CardTitle>
@@ -509,14 +520,19 @@ export function MinimumNightStaySection() {
                 Nothing is listed, because we do not know what is stored here.
                 The policies that were on screen a moment ago belong to a
                 different scope, so editing, deleting, or deactivating them from
-                here would change the wrong thing. Reload the page (or switch
-                scope again) — the list returns as soon as it loads.
+                here would change the wrong thing. Try again below — the list
+                returns as soon as it loads.
               </CardDescription>
             </CardHeader>
+            <CardContent>
+              <Button variant="outline" onClick={retryLoad}>
+                Try again
+              </Button>
+            </CardContent>
           </Card>
         ) : null}
 
-        {scopeKnown ? (
+        {!loadingMinStay && scopeKnown ? (
           <Card>
             <CardHeader>
               <div className="flex items-center justify-between">

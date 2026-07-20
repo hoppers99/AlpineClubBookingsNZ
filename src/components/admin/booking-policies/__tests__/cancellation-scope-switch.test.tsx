@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -407,5 +408,113 @@ describe("in-flight scope changes cannot re-target a click (#2142 review)", () =
       expect(screen.getByText(/Override saved for Lodge One/)).toBeTruthy(),
     );
     expect(screen.queryByText(/Override saved for Lodge Two/)).toBeNull();
+  });
+});
+
+// #2142 review (round 4): this section's loading state was an EARLY RETURN
+// above everything else, and a scope change drives `reload`, which flips
+// `loading` back on. So the scope select — which lives below it — was unmounted
+// for the whole round trip, and the keyboard user who had just changed scope
+// from "Rules for" lost focus to `<body>`. `PolicyFeedback` was below it too,
+// so a failed FIRST load mounted its live regions ALREADY POPULATED in a single
+// commit, which is the announcement pattern its header comment says the
+// unconditional wrappers exist to avoid. The frame — banner, feedback, scope
+// select — is now rendered in every state.
+describe("the frame outlives the loading state (#2142 review)", () => {
+  it("keeps the same scope select node, focused, for the whole scope change", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url.includes("lodgeId=lodge-1")) {
+          await gate;
+          return jsonResponse({ rules: [] });
+        }
+        return jsonResponse({
+          rules: CLUB_RULES,
+          nonMemberHoldEnabled: true,
+          nonMemberHoldDays: 7,
+        });
+      }),
+    );
+    await renderClubWide();
+
+    const select = scopeSelect();
+    select.focus();
+    expect(document.activeElement).toBe(select);
+
+    switchScopeTo("lodge-1");
+
+    // Mid-load: the editor is gone (correct — it described the scope being
+    // left) but the control the admin just used is not.
+    expect(screen.getByText("Loading...")).toBeTruthy();
+    expect(document.body.contains(select)).toBe(true);
+    expect(scopeSelect()).toBe(select);
+    expect(document.activeElement).toBe(select);
+
+    release();
+    await act(async () => {});
+    await waitFor(() =>
+      expect(screen.getByText("Lodge One uses the club-wide rules")).toBeTruthy(),
+    );
+    expect(scopeSelect()).toBe(select);
+    expect(document.activeElement).toBe(select);
+  });
+
+  it("mounts the alert region empty, then populates that same node", async () => {
+    let release: (value: Response) => void = () => {};
+    const pending = new Promise<Response>((resolve) => {
+      release = resolve;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => pending),
+    );
+
+    const { container } = render(<DefaultCancellationPolicySection />);
+
+    const alert = container.querySelector('[role="alert"]');
+    expect(alert).toBeTruthy();
+    expect(alert?.textContent).toBe("");
+    expect(screen.getByText("Loading...")).toBeTruthy();
+
+    release(new Response("{}", { status: 500 }));
+
+    await waitFor(() =>
+      expect(alert?.textContent).toMatch(/Failed to fetch policy/i),
+    );
+    // Same NODE, newly populated — an announcement, not an injection.
+    expect(container.querySelector('[role="alert"]')).toBe(alert);
+  });
+
+  it("retries the failed load in place, without a page reload", async () => {
+    let failing = true;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        failing
+          ? new Response("{}", { status: 500 })
+          : jsonResponse({
+              rules: CLUB_RULES,
+              nonMemberHoldEnabled: true,
+              nonMemberHoldDays: 7,
+            }),
+      ),
+    );
+    render(<DefaultCancellationPolicySection />);
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Could not load the policy for the club/i),
+      ).toBeTruthy(),
+    );
+
+    failing = false;
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+    await waitFor(() => expect(screen.getByText("Default Policy")).toBeTruthy());
+    expect(screen.queryByText(/Could not load the policy/i)).toBeNull();
   });
 });

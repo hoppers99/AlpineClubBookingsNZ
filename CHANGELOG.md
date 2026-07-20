@@ -245,8 +245,10 @@ All notable public reference-release changes should be recorded here.
   than by bolting an ad-hoc comparison onto the routes. Because these sections
   edit rows rather than one config object, each **open editor** gets its own
   draft/snapshot pair keyed on the row being edited; the list around it stays
-  ordinary state, and the row-level Activate/Deactivate/Delete buttons are
-  unchanged direct actions. The first-save exception carries over where it
+  ordinary state, and the row-level Activate/Deactivate/Delete buttons stay
+  DIRECT actions rather than becoming draft-and-Save ones — they still write on
+  the click, they just write once (see the single-shot guard below). The
+  first-save exception carries over where it
   applies: creating a period or a minimum-stay policy is always savable (there
   is no stored row to be unchanged from), as is the first cancellation policy on
   a partition that has none — the club-wide rules on a club that never saved
@@ -303,7 +305,24 @@ All notable public reference-release changes should be recorded here.
   confirmations polite, both in regions registered before the message lands. And
   an active minimum-stay row no longer shows two different buttons both labelled
   **Deactivate**: the reversible pause keeps that name, and the destructive one
-  is now **Delete**, which is what it is.
+  is now **Delete**, which is what it is. (**Delete** is a soft delete: the row
+  is taken out of use and a `delete` audit entry is recorded, but it stays
+  listed as inactive and **Activate** brings it back. The guide previously said
+  it removed the policy "for good", which was never what the code did.)
+
+  **The section frame no longer disappears while a scope loads.** All three
+  scoped sections — cancellation policy, Date-Specific Periods, Minimum Night
+  Stay — now keep the view-only banner, the message area, and the **Rules for**
+  select on screen in every state, and swap only the cards below them. Two
+  things were broken by rendering the loading state above all that. A keyboard
+  or screen-reader admin who changed scope from the **Rules for** select had
+  that select removed from the page for the whole round trip, dropping their
+  focus and forcing a full re-traverse to change scope again; and the message
+  area was mounted already carrying an error whenever the FIRST load failed,
+  which is the one thing a live region must never do if the message is to be
+  announced reliably. Finally, the "Could not load…" card now offers **Try
+  again**, so recovering from a failed load is one click instead of a page
+  reload.
 
 ## 0.12.2 - 2026-07-20
 

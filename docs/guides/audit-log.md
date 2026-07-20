@@ -76,6 +76,12 @@ same new value twice and record the second as an update whose `before` and
 `after` were identical. Each button is now disabled for the round trip and
 guarded against a repeat click, so one click is one entry.
 
+The red **Delete** button on a minimum-stay policy records
+`minimum-stay-policy.delete`, not an `*.update`. It is a **soft** delete: the
+policy is marked inactive and stops applying, but the row is kept and stays
+listed in the admin screen, where **Activate** can bring it back. Read the
+entry as "taken out of use", not as "erased".
+
 Two caveats. Entries recorded *before* this release may still be no-ops, so
 treat an older pair of identical `before`/`after` values as "nothing changed"
 rather than as a mystery. And the guarantee is a property of the admin screens,

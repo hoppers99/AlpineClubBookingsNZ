@@ -353,7 +353,7 @@ export function DefaultCancellationPolicySection() {
   /*
     #2142: the view-only explanation lives here, once, at the top of the
     section — announced on arrival and in the reading order — instead of on each
-    disabled button below. It is rendered in BOTH branches below, in the same
+    disabled button below. It is rendered in every state below, in the same
     position, so the polite live region is registered in the accessibility tree
     from the first paint and only its CONTENT changes when `canEdit` resolves. A
     region injected already-populated is silently dropped by some
@@ -366,15 +366,7 @@ export function DefaultCancellationPolicySection() {
     </AdminViewOnlySectionBanner>
   )
 
-  if (section.loading || !draft) {
-    return (
-      <div>
-        {viewOnlyBanner}
-        <div className="text-center py-8">Loading...</div>
-      </div>
-    )
-  }
-
+  const loading = section.loading
   const scopeIsLodge = scopeLodgeId !== null
   // The invariant behind every derivation below: a snapshot is authoritative
   // ONLY for the scope it was loaded for. A failed scope switch leaves the
@@ -387,12 +379,26 @@ export function DefaultCancellationPolicySection() {
   // override built from the club-wide rules, whose Remove button writes a no-op
   // `cancellation-policy.update` entry (#2143) and whose Save creates an
   // override the admin never chose for this lodge.
-  const scopeKnown = saved !== null && saved.scope === scopeLodgeId
+  const scopeKnown =
+    draft !== null && saved !== null && saved.scope === scopeLodgeId
   const hasOverride =
     creatingOverride || (scopeKnown && (saved?.rules.length ?? 0) > 0)
-  const showEditor = scopeKnown && (!scopeIsLodge || hasOverride)
+  const showEditor = !loading && scopeKnown && (!scopeIsLodge || hasOverride)
   const busy = saving || removingOverride
 
+  /*
+    #2142 review (round 4): there is deliberately NO early return for the
+    loading state, and the frame below — banner, `PolicyFeedback`, scope
+    select — is rendered in EVERY state. Loading replaces only the cards.
+
+    A scope change drives `reload`, which flips `loading` back on, so an early
+    return took `PolicyScopeSelect` with it: the keyboard user who had just
+    changed scope from the "Rules for" select watched the control they were
+    focused on leave the DOM for the whole round trip, dumping focus on
+    `<body>`. It also pushed `PolicyFeedback` below it, so a failed FIRST load
+    mounted its live regions already populated in a single mutation — the exact
+    pattern its own header comment says the wrappers exist to avoid.
+  */
   return (
     <div>
       {viewOnlyBanner}
@@ -405,7 +411,9 @@ export function DefaultCancellationPolicySection() {
       <div className="space-y-6">
         <PolicyScopeSelect value={scopeLodgeId} onChange={setScopeLodgeId} />
 
-        {!scopeKnown ? (
+        {loading ? <div className="text-center py-8">Loading...</div> : null}
+
+        {!loading && !scopeKnown ? (
           <Card>
             <CardHeader>
               <CardTitle>
@@ -416,15 +424,19 @@ export function DefaultCancellationPolicySection() {
                 No editor is shown, because we do not know what is stored here.
                 Any rules still on screen came from somewhere else — another
                 scope, or this form&apos;s own starting values — so editing or
-                removing them from here would change the wrong thing. Reload the
-                page (or switch scope again) — the editor returns as soon as the
-                policy loads.
+                removing them from here would change the wrong thing. Try again
+                below — the editor returns as soon as the policy loads.
               </CardDescription>
             </CardHeader>
+            <CardContent>
+              <Button variant="outline" onClick={() => void reload()}>
+                Try again
+              </Button>
+            </CardContent>
           </Card>
         ) : null}
 
-        {scopeIsLodge && scopeKnown && !hasOverride ? (
+        {!loading && scopeIsLodge && scopeKnown && !hasOverride ? (
           <Card>
             <CardHeader>
               <CardTitle>{scopeLodgeName ?? "Lodge"} uses the club-wide rules</CardTitle>
@@ -442,7 +454,10 @@ export function DefaultCancellationPolicySection() {
           </Card>
         ) : null}
 
-        {showEditor ? (
+        {/* `&& draft` only re-states what `showEditor` already implies (it is
+            derived from `draft !== null`); it is what narrows the type now that
+            the loading early return no longer does. */}
+        {showEditor && draft ? (
           <Card>
             <CardHeader className="flex flex-row items-center justify-between">
               <div>

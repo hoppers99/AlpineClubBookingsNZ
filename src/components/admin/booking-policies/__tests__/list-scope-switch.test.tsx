@@ -1,12 +1,14 @@
 // @vitest-environment jsdom
 
 import {
+  act,
   cleanup,
   fireEvent,
   render,
   screen,
   waitFor,
 } from "@testing-library/react";
+import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // #2142 review (round 3): the round-2 fix taught the DEFAULT CANCELLATION
@@ -113,8 +115,40 @@ function stubFetch(clubRows: unknown[], lodgeOne: "fail" | unknown[]) {
   return fetchMock;
 }
 
+/**
+ * As `stubFetch`, but the lodge-1 GET hangs until the returned `release` is
+ * called — so a test can inspect the section MID-LOAD.
+ */
+function stubDeferredLodgeFetch(clubRows: unknown[], lodgeRows: unknown[]) {
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const fetchMock = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(
+    async (url) => {
+      if (url.includes("lodgeId=lodge-1")) {
+        await gate;
+        return jsonResponse(lodgeRows);
+      }
+      return jsonResponse(clubRows);
+    },
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  return {
+    fetchMock,
+    release: async () => {
+      release();
+      await act(async () => {});
+    },
+  };
+}
+
+function scopeSelect() {
+  return screen.getByLabelText("Rules for") as HTMLSelectElement;
+}
+
 function switchScopeTo(value: string) {
-  fireEvent.change(screen.getByLabelText("Rules for") as HTMLSelectElement, {
+  fireEvent.change(scopeSelect(), {
     target: { value },
   });
 }
@@ -330,5 +364,179 @@ describe("a failed FIRST load is unknown, not empty (#2142 review)", () => {
       screen.queryByText(/No minimum night stay policies configured/i),
     ).toBeNull();
     expect(screen.queryByRole("button", { name: "Add Policy" })).toBeNull();
+  });
+});
+
+// #2142 review (round 4): the round-3 work made a scope change a `scopeLoad`,
+// which is what flips these sections into their loading state — and both
+// sections rendered that state as an EARLY RETURN, above everything else. The
+// scope select is BELOW it, so the control the admin had just used was
+// unmounted for the whole round trip.
+//
+// For a keyboard or screen-reader user that is the whole interaction breaking:
+// tab to "Rules for", pick a lodge, and the element you are focused on leaves
+// the DOM. Focus falls back to `<body>`, so changing scope again means
+// re-traversing the page from the top. It cannot happen on `public/main`, where
+// the loading flag was only ever set `false` after the mount load — this was a
+// focus regression introduced INSIDE the accessibility work.
+describe("the scope select survives its own scope change (#2142 review)", () => {
+  const CASES: [string, () => ReactElement, unknown[], unknown[]][] = [
+    [
+      "BookingPeriodsSection",
+      () => <BookingPeriodsSection />,
+      [CLUB_PERIOD],
+      [{ ...CLUB_PERIOD, id: "lodge-period", name: "Lodge One Holidays" }],
+    ],
+    [
+      "MinimumNightStaySection",
+      () => <MinimumNightStaySection />,
+      [CLUB_MIN_STAY],
+      [{ ...CLUB_MIN_STAY, id: "lodge-min", name: "Lodge One Saturdays" }],
+    ],
+  ];
+
+  it.each(CASES)(
+    "%s keeps the same select node, focused, for the whole load",
+    async (_name, renderSection, clubRows, lodgeRows) => {
+      const { release } = stubDeferredLodgeFetch(clubRows, lodgeRows);
+      render(renderSection());
+      await waitFor(() => expect(scopeSelect()).toBeTruthy());
+
+      const select = scopeSelect();
+      select.focus();
+      expect(document.activeElement).toBe(select);
+
+      switchScopeTo("lodge-1");
+
+      // Mid-load. The list is gone — that part is correct, the rows on screen
+      // belong to the scope being left — but the select is not.
+      expect(screen.getByText("Loading...")).toBeTruthy();
+      expect(document.body.contains(select)).toBe(true);
+      expect(scopeSelect()).toBe(select);
+      expect(document.activeElement).toBe(select);
+
+      await release();
+
+      // And still the same node once the new scope's rows land, so a second
+      // scope change is one keystroke away rather than a page re-traverse.
+      await waitFor(() => expect(screen.queryByText("Loading...")).toBeNull());
+      expect(scopeSelect()).toBe(select);
+      expect(document.activeElement).toBe(select);
+      expect(select.value).toBe("lodge-1");
+    },
+  );
+});
+
+// #2142 review (round 4), same root cause: `PolicyFeedback` was BELOW the
+// loading early return too. Its whole design (see its header comment) is that
+// both wrappers are mounted empty so a message arrives as a CONTENT change
+// inside an already-registered live region — a region injected already
+// populated, in one mutation, is silently dropped by some screen-reader /
+// browser pairings. Rendering it only in the loaded branch meant a failed FIRST
+// load did exactly that: section and populated `role="alert"` in one commit.
+describe("the feedback live regions are registered before they have content (#2142 review)", () => {
+  const CASES: [string, () => ReactElement, RegExp][] = [
+    [
+      "BookingPeriodsSection",
+      () => <BookingPeriodsSection />,
+      /Failed to fetch periods/i,
+    ],
+    [
+      "MinimumNightStaySection",
+      () => <MinimumNightStaySection />,
+      /Failed to fetch minimum stay policies/i,
+    ],
+  ];
+
+  it.each(CASES)(
+    "%s mounts the alert region empty, then populates that same node",
+    async (_name, renderSection, message) => {
+      let release: (value: Response) => void = () => {};
+      const pending = new Promise<Response>((resolve) => {
+        release = resolve;
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(() => pending),
+      );
+
+      const { container } = render(renderSection());
+
+      // First paint, still loading: the region exists and is empty.
+      const alert = container.querySelector('[role="alert"]');
+      expect(alert).toBeTruthy();
+      expect(alert?.textContent).toBe("");
+      expect(screen.getByText("Loading...")).toBeTruthy();
+
+      release(new Response("{}", { status: 500 }));
+
+      await waitFor(() => expect(alert?.textContent).toMatch(message));
+      // Same NODE, newly populated — an announcement, not an injection.
+      expect(container.querySelector('[role="alert"]')).toBe(alert);
+    },
+  );
+});
+
+// The unknown-scope card used to say "Reload the page (or switch scope again)",
+// which is a page reload or a two-step scope round trip for what is one failed
+// GET. The select stays rendered so it was never a dead end, but recovery
+// should be one click.
+describe("the unknown-scope card can retry in place (#2142 review)", () => {
+  it("re-loads the booking periods without a page reload", async () => {
+    let failing = true;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        failing
+          ? new Response("{}", { status: 500 })
+          : jsonResponse([CLUB_PERIOD]),
+      ),
+    );
+    render(<BookingPeriodsSection />);
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Could not load the booking periods for the club/i),
+      ).toBeTruthy(),
+    );
+
+    failing = false;
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+    await waitFor(() =>
+      expect(screen.getByText("Club Wide Holidays")).toBeTruthy(),
+    );
+    expect(
+      screen.queryByText(/Could not load the booking periods/i),
+    ).toBeNull();
+  });
+
+  it("re-loads the minimum-stay policies without a page reload", async () => {
+    let failing = true;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        failing
+          ? new Response("{}", { status: 500 })
+          : jsonResponse([CLUB_MIN_STAY]),
+      ),
+    );
+    render(<MinimumNightStaySection />);
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          /Could not load the minimum-stay policies for the club/i,
+        ),
+      ).toBeTruthy(),
+    );
+
+    failing = false;
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+    await waitFor(() =>
+      expect(screen.getByText("Club Wide Saturdays")).toBeTruthy(),
+    );
+    expect(
+      screen.queryByText(/Could not load the minimum-stay policies/i),
+    ).toBeNull();
   });
 });

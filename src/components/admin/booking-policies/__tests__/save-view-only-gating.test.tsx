@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -947,6 +948,28 @@ describe("row toggles are guarded against a double-click (#2143)", () => {
     active: true,
   };
 
+  /**
+   * Two clicks with genuinely NO render between them.
+   *
+   * `fireEvent` twice does NOT test this guard (#2142 review, round 4): RTL
+   * wraps each dispatch in its own `act()`, so the first click's
+   * `setTogglingId` is flushed before the second is dispatched, the button is
+   * already `disabled`, and React never calls the handler again. That passes
+   * with or without `togglingRef` — it only re-tests the `disabled` attribute.
+   *
+   * The guard exists for the case `disabled` alone cannot catch: a real
+   * double-click delivered inside one tick, where BOTH handlers run against the
+   * same pre-update state. Dispatching both inside a SINGLE `act()` reproduces
+   * exactly that — no commit in between, so the second dispatch reaches a button
+   * that is still enabled and a handler that still sees `active: true`.
+   */
+  async function doubleClickInOneTick(button: HTMLElement) {
+    await act(async () => {
+      button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+  }
+
   /** GETs return the list unchanged, so the row never flips on its own. */
   function stubList(list: unknown[]) {
     const fetchMock = vi.fn<
@@ -966,11 +989,7 @@ describe("row toggles are guarded against a double-click (#2143)", () => {
     );
 
     const toggle = screen.getByRole("button", { name: "Deactivate" });
-    // Both clicks dispatched before any state update lands — the case a
-    // `disabled` attribute alone cannot catch, because React has not
-    // re-rendered between them.
-    fireEvent.click(toggle);
-    fireEvent.click(toggle);
+    await doubleClickInOneTick(toggle);
 
     await waitFor(() => expect(writeCalls(fetchMock).length).toBeGreaterThan(0));
     expect(writeCalls(fetchMock)).toHaveLength(1);
@@ -987,8 +1006,7 @@ describe("row toggles are guarded against a double-click (#2143)", () => {
     );
 
     const toggle = screen.getByRole("button", { name: "Deactivate" });
-    fireEvent.click(toggle);
-    fireEvent.click(toggle);
+    await doubleClickInOneTick(toggle);
 
     await waitFor(() => expect(writeCalls(fetchMock).length).toBeGreaterThan(0));
     expect(writeCalls(fetchMock)).toHaveLength(1);

@@ -21,9 +21,19 @@
  * for the same reason `AdminViewOnlySectionBanner` does it: a live region
  * injected into the accessibility tree already populated, in a single mutation,
  * is announced by some screen-reader/browser pairings and silently dropped by
- * others. The wrappers are therefore mounted from the first paint of the loaded
- * section, and the message lands as a content change inside a region that is
- * already registered.
+ * others. The wrappers are therefore mounted from the first paint, and the
+ * message lands as a content change inside a region that is already registered.
+ *
+ * That guarantee is only as good as where the adopter PUTS this component, and
+ * getting it wrong is easy (#2142 review, round 4): every adopting section has
+ * a loading state, and rendering this below an early return for it re-created
+ * the very bug the unconditional wrappers exist to prevent — a failed FIRST
+ * load mounted the section and its already-populated alert in one mutation.
+ * MOUNT THIS ABOVE THE LOADING STATE, not inside the loaded branch: all three
+ * booking-policy sections render the banner, this component, and the scope
+ * select in every state, and swap only the cards below them. `AGENTS.md` and
+ * `docs/ARCHITECTURE.md` state the rule; `save-view-only-gating.test.tsx` pins
+ * it.
  *
  * Consequence for adopters: because these wrappers always exist, this component
  * sits OUTSIDE the section's `space-y-*` stack (next to the view-only banner,

@@ -323,7 +323,16 @@ window stays neutral), and the backing write route enforces the matching
 the view-only reason is then stated once, at the top of the section, in a
 permanently-mounted `role="status"` region, rather than on disabled buttons that
 are out of the tab order and whose `title` never fires at all (the shared
-`buttonVariants` set `disabled:pointer-events-none`). That banner shape is
+`buttonVariants` set `disabled:pointer-events-none`). "Permanently mounted" is a
+POSITION rule as much as a rendering one, and it covers `PolicyFeedback`'s
+`role="alert"` / `role="status"` pair too: the section has a FRAME — banner,
+feedback regions, and, where the fetch is scope-keyed, the scope select — that
+is rendered in EVERY state, with only the cards below it swapped. A loading
+early return above that frame re-creates both defects it exists to prevent: a
+failed FIRST load mounts the section together with an already-populated alert in
+one commit, and because a scope change is itself a load it unmounts the
+`PolicyScopeSelect` the admin just operated, dropping keyboard focus to `<body>`
+for the duration of the round trip. That banner shape is
 adopted by the five Booking Policies sections only (#2142); the rest of the
 admin tree keeps `AdminViewOnlyNotice` plus the per-button reason, which stays
 the default. Module
@@ -337,7 +346,14 @@ older staged-but-ungated settings forms, and the age-tier and notification
 settings panels — the last two were previously written up as blanket exemptions
 "because they are list sections", which is no longer the reason: list sections
 are in scope (see the per-row shape below), those two simply have not been
-touched since. Reference:
+touched since. One divergent is NOT pre-existing-and-untouched and is called out
+by name for that reason: `public-booking-requests-section.tsx` was modified by
+#2142 (its Save buttons and view-only banner), yet its **Show indicative
+pricing** checkbox still auto-persists on toggle rather than staging behind
+Edit → Save. That is deliberate for now — the owner decision on whether to stage
+it lives in **#2162** — but under "binds new or modified sections" it is a real
+divergence, not an exemption, and it stays listed here until #2162 resolves.
+Reference:
 `src/components/admin/booking-policies/group-discount-section.tsx` — note that
 it now carries the section banner, so for the default per-button
 `AdminViewOnlyNotice` treatment look at any admin surface outside Booking
@@ -388,9 +404,10 @@ value is a set of rows whose Edit, Delete, and Activate/Deactivate buttons all
 act on a row id belonging to the partition the admin has navigated away from —
 and the never-loaded state needs a SENTINEL key distinct from every real one,
 because `null` already means "club-wide" and a `null` seed makes a failed FIRST
-load compare equal to the scope the section mounts on. All three keyed
-booking-policy sections (default cancellation, booking periods, minimum night
-stay) carry this.
+load compare equal to the scope the section mounts on. The unknown state must
+also be RECOVERABLE without leaving the page: it carries a **Try again** action
+that re-runs the current key's load in place. All three keyed booking-policy
+sections (default cancellation, booking periods, minimum night stay) carry this.
 
 The `/admin/xero` and `/admin/members` routes are route shells with local
 `_components` and `_hooks` folders; the member `/book` wizard follows the same
