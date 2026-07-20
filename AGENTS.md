@@ -77,18 +77,19 @@ before changing Next.js APIs or conventions.
   the matching `area:edit` permission. This is binding for settings work touched
   from here on; two pre-existing surfaces are acknowledged divergents and are NOT
   retrofitted by this rule alone: the `/admin/modules` grid (bulk toggles) and
-  the staged-but-ungated legacy settings forms. Booking Policies still has one
-  divergent, narrowed but not removed by #2162. No settings control in the area
-  persists on change any more (row-level Activate/Deactivate stay plain direct
-  writes, which the per-row shape sanctions) — the last one that did, the
-  **Show indicative pricing** checkbox in
-  `src/components/admin/booking-policies/public-booking-requests-section.tsx`,
-  was brought onto Edit → Save in #2162 — but the two timing cards in that same
-  file (quote window / reminder lead, and the school-attendee prompts) are
-  staged-but-ungated: always editable, with a dirty-gated Save and no Edit or
-  Cancel. That file HAS now been modified, so treat this as a live divergence
-  rather than an untouched one; whether to Edit-gate those two cards is an owner
-  decision tracked in #2166 and must not be retrofitted in passing. See
+  the staged-but-ungated legacy settings forms. Booking Policies has NO
+  divergent left. Every settings control in the area now stages behind a
+  per-card Edit → Save/Cancel: the **Show indicative pricing** checkbox stopped
+  persisting on change in #2162, and the two timing cards beside it in
+  `src/components/admin/booking-policies/public-booking-requests-section.tsx`
+  (quote window / reminder lead, and the school-attendee prompts) — always
+  editable with a dirty-gated Save and no Edit or Cancel until then — were
+  Edit-gated in #2166 on the owner's decision. The only direct writes left in
+  the area are discrete ACTIONS rather than staged fields: row-level
+  Activate/Deactivate and Delete on the booking-period and minimum-stay lists,
+  and the confirm-gated **Remove override** on the default cancellation card.
+  The per-row/per-action shape below sanctions those; do not read them as a
+  licence to auto-persist a settings FIELD. See
   `docs/ARCHITECTURE.md` → the same list. Reference implementation:
   `src/components/admin/booking-policies/group-discount-section.tsx`.
   When you write a new section, or change an existing section's draft/snapshot
@@ -149,12 +150,19 @@ before changing Next.js APIs or conventions.
   last-writer-wins, exactly as `/api/admin/modules` does. Claim the narrowing,
   not a guarantee. That
   covers the module toggles sharing `PUT /api/admin/modules` and all three cards
-  sharing `PUT /api/admin/booking-requests/settings` (#2162). Because that read
-  can move a field the admin never touched, re-seed the editor draft of any such
-  field the admin had NOT edited along with the snapshot: leaving the two out of
-  step arms a dirty-gated Save that nobody armed, one click from reverting the
-  other admin. A draft the admin HAD typed into stays untouched — it is their
-  own in-progress input. `docs/ARCHITECTURE.md` carries the worked example.
+  sharing `PUT /api/admin/booking-requests/settings` (#2162, #2166). That read
+  can move a field the admin never touched, so the snapshot a save re-seeds from
+  it must never end up out of step with the editor draft that is compared
+  against that snapshot: the mismatch arms a dirty-gated Save nobody armed, one
+  click from reverting the other admin. Prefer to make that impossible by
+  construction — give each card its OWN `useSectionEditState`, whose draft and
+  snapshot are only ever re-seeded together, by that card's own load or its own
+  save (what #2166 did). Where a snapshot genuinely is shared across editors,
+  re-seed the draft of every field the admin had NOT edited along with it, and
+  leave a draft they HAD typed into alone: it is their own in-progress input.
+  The residue either way is display staleness in a card the admin did not touch,
+  which is accepted — the same property `/admin/modules` has.
+  `docs/ARCHITECTURE.md` carries the worked example.
 - Every gated section's Save must be dirty-gated, not just view-gated. Booking
   write routes log audit entries and revalidate public content unconditionally,
   so a pristine re-save writes an entry asserting a change that never happened

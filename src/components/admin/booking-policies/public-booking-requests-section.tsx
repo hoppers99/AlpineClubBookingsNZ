@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useState } from "react"
+import { useCallback, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
@@ -9,7 +9,7 @@ import {
   ForbiddenSaveError,
   useSectionEditState,
 } from "@/hooks/use-section-edit-state"
-import { ADMIN_FORBIDDEN_SAVE_REASON, AdminViewOnlySectionBanner, ViewOnlyActionButton } from "@/components/admin/view-only-action"
+import { AdminViewOnlySectionBanner, ViewOnlyActionButton } from "@/components/admin/view-only-action"
 import { PolicyFeedback } from "./policy-feedback"
 
 const ENDPOINT = "/api/admin/booking-requests/settings"
@@ -23,31 +23,42 @@ interface BookingRequestSettings {
 }
 
 /**
- * The Indicative Pricing card's own draft (#2162).
+ * The three cards' drafts (#2162, #2166).
  *
  * All five settings live in ONE server-side row behind ONE whole-object PUT, so
  * a single `useSectionEditState` instance for the whole section would match the
- * storage exactly. It cannot be used here, because the hook carries ONE
- * `editing` flag and the three cards do not share an editing mode: the two
- * timing cards are always-editable with a dirty-gated Save (their shape since
- * before #2142, and still an acknowledged divergence from the canonical pattern
- * — whether to Edit-gate them is the owner decision in #2166), while the
- * canonical pattern this card is being brought onto reveals Save/Cancel behind
- * a per-card Edit. Fusing them would have forced an Edit step onto the two
- * timing cards as a side effect, pre-empting that decision.
- * Joining one of those cards' state instead would have been arbitrary: pricing
- * visibility is a public-facing disclosure, not quote or attendee timing, and
- * it is its own card in the UI.
+ * storage exactly. It still cannot be used, and the reason survived the #2166
+ * decision to Edit-gate the timing cards: the hook carries ONE `editing` flag,
+ * and three cards sharing it would mean one Edit unlocking all three, one
+ * Cancel discarding all three drafts, and one Save writing all five fields. The
+ * owner decision in #2166 was explicitly per-card Edit gating, NOT a
+ * section-level Edit — so each card keeps its own instance, its own Edit, its
+ * own dirty gate, and its own Cancel.
  *
- * The price of a separate instance is the shared write object, and it is paid
- * the documented way (`AGENTS.md`, `docs/ARCHITECTURE.md`): the save GETs the
- * fresh settings and merges only its own key, exactly as the magic-link and
- * Google cards do against `PUT /api/admin/modules`. That is what keeps this
- * card from writing a sibling card's UNSAVED draft, or its own stale snapshot
- * of one, back over storage.
+ * The price of three instances is the shared write object, and it is paid the
+ * documented way (`AGENTS.md`, `docs/ARCHITECTURE.md`): every save GETs the
+ * fresh settings and merges only its own fields, exactly as the magic-link and
+ * Google cards do against `PUT /api/admin/modules`. That is what keeps a card
+ * from writing a sibling card's UNSAVED draft, or its own stale snapshot of
+ * one, back over storage.
+ *
+ * The two timing drafts hold STRINGS, because their editors are free-text
+ * number boxes an admin can legitimately leave mid-typed ("", "1", "0"). They
+ * are declared as type aliases rather than interfaces so they carry the
+ * implicit index signature {@link isTimingDirty} needs.
  */
 interface PricingDraft {
   showPricingToNonMembers: boolean
+}
+
+type QuoteTimingDraft = {
+  quoteResponseTtlDays: string
+  quoteReminderLeadDays: string
+}
+
+type AttendeeTimingDraft = {
+  attendeeConfirmationLeadDays: string
+  attendeeConfirmationReminderDays: string
 }
 
 /**
@@ -62,15 +73,39 @@ const SETTINGS_FALLBACK: BookingRequestSettings = {
   attendeeConfirmationReminderDays: 3,
 }
 
-/** The four settings whose editor is a free-text number box on a timing card. */
-const TIMING_FIELDS = [
-  "quoteResponseTtlDays",
-  "quoteReminderLeadDays",
-  "attendeeConfirmationLeadDays",
-  "attendeeConfirmationReminderDays",
-] as const
+function toQuoteTimingDraft(data: BookingRequestSettings): QuoteTimingDraft {
+  return {
+    quoteResponseTtlDays: String(data.quoteResponseTtlDays),
+    quoteReminderLeadDays: String(data.quoteReminderLeadDays),
+  }
+}
 
-type TimingField = (typeof TIMING_FIELDS)[number]
+function toAttendeeTimingDraft(data: BookingRequestSettings): AttendeeTimingDraft {
+  return {
+    attendeeConfirmationLeadDays: String(data.attendeeConfirmationLeadDays),
+    attendeeConfirmationReminderDays: String(data.attendeeConfirmationReminderDays),
+  }
+}
+
+/**
+ * Dirty check for the two timing cards.
+ *
+ * Their drafts are strings but the stored values are integers, so the
+ * comparison is NUMERIC — `07` is not a change from `7`, and an emptied box is
+ * not a change from `0`. That is the same comparison the pre-#2166 hand-rolled
+ * `timingDirty` / `attendeeTimingDirty` flags made, kept deliberately: a plain
+ * string compare would arm Save for a re-typing that stores nothing, and the
+ * write logs `booking_request.settings_updated` unconditionally (#2143).
+ *
+ * A box the admin has made unparseable (`abc` -> `NaN`) still counts as dirty,
+ * so Save stays clickable and the card's own validation can explain what is
+ * wrong rather than leaving a greyed-out button with no reason.
+ */
+function isTimingDirty<T extends Record<string, string>>(draft: T, saved: T) {
+  return (Object.keys(draft) as (keyof T & string)[]).some(
+    (field) => Number(draft[field]) !== Number(saved[field]),
+  )
+}
 
 /**
  * Shown when the fresh read a save takes fails for any reason other than a 403
@@ -79,6 +114,9 @@ type TimingField = (typeof TIMING_FIELDS)[number]
  */
 const SAVE_STEP_READ_FAILED =
   "Your change was not saved: the current settings could not be re-read. Please try again."
+
+/** Every card reports the same thing, because they all write the same row. */
+const SAVE_SUCCESS = "Booking request settings saved"
 
 /**
  * The section's only read, in both of its roles: the mount-time load, and the
@@ -91,7 +129,7 @@ const SAVE_STEP_READ_FAILED =
  * an ordinary GET on `bookings:view`, so the same status there is a genuine read
  * failure and keeps the generic message.
  *
- * Only the load passes an `AbortSignal` (the hook's, aborted on unmount). The
+ * Only the load passes an `AbortSignal` (a hook's, aborted on unmount). The
  * save path deliberately does not, matching the precedent above: aborting the
  * read half of a save would leave the write undecided rather than cancelled,
  * and the PUT it feeds is not abortable either.
@@ -117,13 +155,13 @@ async function fetchSettings(
 
 /**
  * The section's only write. The route takes the whole settings object, so every
- * card sends all five fields. No card may source the four it does not own from
+ * card sends all five fields. No card may source the fields it does not own from
  * its load-time snapshot: each one GETs the fresh row through
  * {@link fetchSettings} and merges only its own fields over it, so everything
  * else on the wire is what is STORED right now.
  *
- * Throws {@link ForbiddenSaveError} for a 403 so both the hook-driven card and
- * the two hand-rolled ones map it to the same shared copy.
+ * Throws {@link ForbiddenSaveError} for a 403 so all three cards map it to the
+ * same shared copy through the hook.
  */
 async function putSettings(
   body: BookingRequestSettings,
@@ -141,96 +179,72 @@ async function putSettings(
   return (await res.json()) as BookingRequestSettings
 }
 
+/** The slice of a card's state a SIBLING card needs in order to clear it. */
+interface ClearableFeedback {
+  setError: (message: string) => void
+  setSuccess: (message: string) => void
+}
+
+/**
+ * All three cards report through one `PolicyFeedback`, so a card starting a save
+ * clears the other two first — otherwise one card's stale confirmation sits
+ * above another card's fresh result. Each hook already clears its OWN pair when
+ * its save starts.
+ */
+function clearOtherFeedback(...others: ClearableFeedback[]) {
+  for (const card of others) {
+    card.setError("")
+    card.setSuccess("")
+  }
+}
+
 export function PublicBookingRequestsSection() {
-  const [settings, setSettings] = useState<BookingRequestSettings>(SETTINGS_FALLBACK)
-  const [ttlDraft, setTtlDraft] = useState("14")
-  const [reminderDraft, setReminderDraft] = useState("3")
-  const [attendeeLeadDraft, setAttendeeLeadDraft] = useState("14")
-  const [attendeeReminderDraft, setAttendeeReminderDraft] = useState("3")
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState("")
-  const [success, setSuccess] = useState("")
   // Booking-request settings gate on the bookings area (its write route enforces
   // bookings:edit); a bookings:view admin sees the whole section read-only
-  // (#1940). Since #2162 no control in it auto-persists, so the gate is now
+  // (#1940). Since #2162/#2166 no control in it auto-persists, so the gate is
   // purely about which affordances are offered, not about a silent 403.
   const canEdit = useAdminAreaEditAccess("bookings")
 
-  /** Full re-seed: snapshot and all four timing drafts. The LOAD path only. */
-  const applySettings = useCallback((data: BookingRequestSettings) => {
-    setSettings(data)
-    setTtlDraft(String(data.quoteResponseTtlDays))
-    setReminderDraft(String(data.quoteReminderLeadDays))
-    setAttendeeLeadDraft(String(data.attendeeConfirmationLeadDays))
-    setAttendeeReminderDraft(String(data.attendeeConfirmationReminderDays))
+  /**
+   * ONE mount-time GET for the whole section, shared by the three cards' loads.
+   *
+   * Each card owns a `useSectionEditState` instance and the hook fetches per
+   * instance, so without this the section would issue three identical GETs on
+   * mount — and, worse, three snapshots that a write landing between them could
+   * leave disagreeing about the same row. The three `load` callbacks run in the
+   * same commit, so they all reach this before the request settles and all
+   * three seed from the SAME response.
+   *
+   * The ref is cleared once the request settles so a later `reload` (none today)
+   * would fetch again rather than replay a stale body. Only the first caller's
+   * `AbortSignal` is honoured; the three are aborted together on unmount, and
+   * the hook swallows the resulting `AbortError` in every instance.
+   */
+  const inflightLoad = useRef<Promise<BookingRequestSettings> | null>(null)
+  const loadSettings = useCallback((signal: AbortSignal) => {
+    if (!inflightLoad.current) {
+      const pending = fetchSettings({ signal })
+      const release = () => {
+        if (inflightLoad.current === pending) inflightLoad.current = null
+      }
+      // Both arms, so a failed load does not pin the rejected promise in the ref.
+      pending.then(release, release)
+      inflightLoad.current = pending
+    }
+    return inflightLoad.current
   }, [])
 
-  const timingDrafts: Record<
-    TimingField,
-    { value: string; set: (next: string) => void }
-  > = {
-    quoteResponseTtlDays: { value: ttlDraft, set: setTtlDraft },
-    quoteReminderLeadDays: { value: reminderDraft, set: setReminderDraft },
-    attendeeConfirmationLeadDays: { value: attendeeLeadDraft, set: setAttendeeLeadDraft },
-    attendeeConfirmationReminderDays: {
-      value: attendeeReminderDraft,
-      set: setAttendeeReminderDraft,
-    },
-  }
-
-  /**
-   * Call this at the START of any save; call what it returns with the server's
-   * response (#2162 review).
-   *
-   * Every write in this section re-seeds the snapshot the timing cards send
-   * their unchanged fields from, and the fresh read means that snapshot can
-   * legitimately move to a value THIS admin never typed. A draft box left
-   * showing the old value beside a moved snapshot is not merely cosmetic: the
-   * two `*Dirty` flags below compare them, so the mismatch lights up a Save the
-   * admin never armed, one click from reverting the other admin's change.
-   *
-   * So a field whose draft still matched the snapshot when the save started —
-   * the admin had not typed into it — is re-seeded from the response with it. A
-   * field the admin HAD typed into is left exactly as they left it: that draft
-   * is their own in-progress input and this save was not theirs. Dirtiness is
-   * captured now, synchronously, before the round trip, so a keystroke landing
-   * mid-flight cannot be mistaken for a clean field.
-   *
-   * The pricing card is deliberately not re-seeded the same way: its draft is
-   * one boolean and Save is disabled while it matches the snapshot, so a stale
-   * snapshot there cannot arm a Save either. The worst case is a checkbox
-   * showing last-load's value until the next load.
-   */
-  function beginSaveDraftSync() {
-    const clean = TIMING_FIELDS.filter(
-      (field) => Number(timingDrafts[field].value) === settings[field],
-    )
-    return (data: BookingRequestSettings) => {
-      setSettings(data)
-      for (const field of clean) timingDrafts[field].set(String(data[field]))
-    }
-  }
-
   /*
-    #2162: the Indicative Pricing card. It owns the section's single GET as
-    well as its own draft/snapshot pair, so the section still loads once — the
-    `load` seeds the two timing cards through `applySettings` on its way past
-    and returns only this card's slice.
+    #2162: the Indicative Pricing card. The toggle used to persist the moment it
+    was clicked; it now stages behind an Edit, like every other control in
+    Booking Policies.
   */
   const pricing = useSectionEditState<PricingDraft>({
     initial: { showPricingToNonMembers: SETTINGS_FALLBACK.showPricingToNonMembers },
-    load: async (signal) => {
-      const data = await fetchSettings({ signal })
-      if (!signal.aborted) applySettings(data)
-      return { showPricingToNonMembers: data.showPricingToNonMembers }
-    },
+    load: async (signal) => ({
+      showPricingToNonMembers: (await loadSettings(signal)).showPricingToNonMembers,
+    }),
     save: async (draft) => {
-      // The two timing cards report through the section's own feedback state;
-      // clear it here so one card's stale confirmation cannot sit above another
-      // card's fresh result.
-      setError("")
-      setSuccess("")
-      const syncDrafts = beginSaveDraftSync()
       // GET-fresh-then-merge over the shared whole-object PUT: write the STORED
       // timing values plus this card's new one, never the snapshot this card
       // happened to load with and never a timing draft the admin has typed but
@@ -240,100 +254,157 @@ export function PublicBookingRequestsSection() {
         ...fresh,
         showPricingToNonMembers: draft.showPricingToNonMembers,
       })
-      syncDrafts(next)
       return { showPricingToNonMembers: next.showPricingToNonMembers }
     },
-    successMessage: "Booking request settings saved",
-    // No first-save exception, even though the GET SYNTHESISES defaults when no
-    // row is stored (`getBookingRequestSettings`). The exception exists so a
-    // form whose defaults are already correct can still commit them; here the
-    // whole draft is one boolean, so "unchanged" and "already effectively
-    // stored" are the same state — an admin who wants the toggle ON flips it and
-    // the draft is dirty. Adding a `configured` flag would only unlock a
-    // pristine Save that writes an audit entry asserting a change that never
-    // happened (#2143).
+    successMessage: SAVE_SUCCESS,
+    // No first-save exception on any of the three cards, even though the GET
+    // SYNTHESISES defaults when no row is stored (`getBookingRequestSettings`).
+    // The exception exists so a form whose defaults are already correct can
+    // still commit them — but here the synthesised defaults ARE the effective
+    // settings at every read site, and nothing downstream keys on the row
+    // existing (no setup-checklist entry, no create/delete semantics). An admin
+    // who wants a different value types it and the draft is dirty; an admin
+    // happy with the defaults has nothing to commit. Adding a `configured` flag
+    // would only unlock a pristine Save that writes an audit entry asserting a
+    // change that never happened (#2143).
   })
 
-  /**
-   * The two timing cards' save. `patch` is only the fields the calling card
-   * OWNS; everything else on the wire comes from a fresh read taken inside this
-   * function, never from `settings` as it stood at page load (#2162 review).
-   *
-   * Without that read a stale tab reverted whatever another admin had changed
-   * in the meantime — most concretely, "Save quote timing" writing back the
-   * pricing flag as it was when the tab was opened. It is the same
-   * GET-fresh-then-merge the pricing card and the module-toggle cards use, and
-   * `AGENTS.md` / `docs/ARCHITECTURE.md` make it mandatory for any card sharing
-   * a strict whole-object PUT.
-   *
-   * It deliberately does NOT call `applySettings` on the response. That would
-   * re-seed EVERY draft from the row, including drafts belonging to cards the
-   * admin is mid-edit in — the clobber this whole change exists to remove. The
-   * visible cost is that the saving card's own box keeps whatever the admin
-   * typed rather than the normalised echo: type `07` into the quote window and
-   * save, and it still reads `07` where it used to snap to `7`. That is
-   * cosmetic only — `syncDrafts` moves the snapshot too, so `timingDirty` is
-   * false and Save stays disabled. Do not "fix" it by reinstating
-   * `applySettings`.
-   */
-  async function saveSettings(patch: Partial<BookingRequestSettings>) {
-    const syncDrafts = beginSaveDraftSync()
-    setSaving(true)
-    setError("")
-    setSuccess("")
-    pricing.setError("")
-    pricing.setSuccess("")
-    try {
+  /*
+    #2166 (owner decision): the two timing cards used to be always-editable with
+    a dirty-gated Save and no Edit or Cancel — the last acknowledged divergence
+    from the canonical settings pattern in Booking Policies. They now follow the
+    pricing card exactly: read-only until Edit, Save and Cancel only while
+    editing, Save gated on `dirty`.
+  */
+  const quoteTiming = useSectionEditState<QuoteTimingDraft>({
+    initial: toQuoteTimingDraft(SETTINGS_FALLBACK),
+    load: async (signal) => toQuoteTimingDraft(await loadSettings(signal)),
+    save: async (draft) => {
+      // Same GET-fresh-then-merge. Both fields of the route's cross-field rule
+      // (`quoteReminderLeadDays < quoteResponseTtlDays`) are owned by THIS card,
+      // so merging over the fresh row cannot compose an invalid pair.
       const fresh = await fetchSettings({ asSaveStep: true })
-      syncDrafts(await putSettings({ ...fresh, ...patch }))
-      setSuccess("Booking request settings saved")
-    } catch (err) {
-      if (err instanceof ForbiddenSaveError) {
-        setError(ADMIN_FORBIDDEN_SAVE_REASON)
-        return
-      }
-      setError(err instanceof Error ? err.message : "Unknown error")
-    } finally {
-      setSaving(false)
-    }
+      return toQuoteTimingDraft(
+        await putSettings({
+          ...fresh,
+          quoteResponseTtlDays: Number(draft.quoteResponseTtlDays),
+          quoteReminderLeadDays: Number(draft.quoteReminderLeadDays),
+        }),
+      )
+    },
+    successMessage: SAVE_SUCCESS,
+    isDirty: isTimingDirty,
+  })
+
+  const attendeeTiming = useSectionEditState<AttendeeTimingDraft>({
+    initial: toAttendeeTimingDraft(SETTINGS_FALLBACK),
+    load: async (signal) => toAttendeeTimingDraft(await loadSettings(signal)),
+    save: async (draft) => {
+      const fresh = await fetchSettings({ asSaveStep: true })
+      return toAttendeeTimingDraft(
+        await putSettings({
+          ...fresh,
+          attendeeConfirmationLeadDays: Number(draft.attendeeConfirmationLeadDays),
+          attendeeConfirmationReminderDays: Number(
+            draft.attendeeConfirmationReminderDays,
+          ),
+        }),
+      )
+    },
+    successMessage: SAVE_SUCCESS,
+    isDirty: isTimingDirty,
+  })
+
+  /*
+    #2166: `beginSaveDraftSync` is GONE, and nothing replaces it.
+
+    It existed because every card wrote through ONE shared `settings` snapshot
+    that every save re-seeded from its fresh read. That read can legitimately
+    move a field this admin never touched, so a sibling card's untouched draft
+    box could end up disagreeing with the snapshot its dirty flag compared
+    against — arming a Save nobody armed, one click from silently reverting the
+    other admin.
+
+    There is no shared snapshot any more. Each card's draft and snapshot live in
+    its own hook instance and are only ever re-seeded TOGETHER, by that card's
+    own load or its own save. No card's save can leave a sibling dirty, so the
+    hazard is structurally impossible rather than defended against.
+
+    What is left is display staleness: after a save, a card the admin did not
+    touch still shows the values it loaded with, even if the fresh read revealed
+    that a second admin has moved them. That is the same accepted property the
+    module-toggle cards on `/admin/security` have — and it is now strictly
+    safer than it was, because those values sit behind a read-only card whose
+    Save is unreachable until the admin clicks Edit, and dirty-gated against a
+    snapshot that matches what is on screen when they do. Do NOT "fix" it by
+    having one card's save re-seed another card's state: that is the coupling
+    this removed.
+  */
+
+  const busy = pricing.saving || quoteTiming.saving || attendeeTiming.saving
+  const loading = pricing.loading || quoteTiming.loading || attendeeTiming.loading
+
+  // `initial` is always supplied, so these are never actually null once loading
+  // clears; the checks below exist only to narrow the hook's `T | null`, which
+  // is `null` only for a card that renders nothing until its fetch resolves.
+  const pricingDraft = pricing.draft
+  const quoteDraft = quoteTiming.draft
+  const attendeeDraft = attendeeTiming.draft
+
+  function handleSavePricing() {
+    clearOtherFeedback(quoteTiming, attendeeTiming)
+    void pricing.save()
   }
 
-  function handleSaveQuoteTiming() {
-    const ttl = Number(ttlDraft)
-    const reminder = Number(reminderDraft)
+  /*
+    Validation stays in the click handler rather than in the hook's `isValid`.
+    `isValid` would only grey the Save button out, leaving the admin with a dead
+    control and no reason for it — and the reason (which field, which range,
+    which cross-field rule) is exactly what they need. Save therefore stays
+    enabled for a dirty-but-invalid draft and the click explains the problem.
+  */
+  function handleSaveQuoteTiming(draft: QuoteTimingDraft) {
+    clearOtherFeedback(pricing, attendeeTiming)
+    const ttl = Number(draft.quoteResponseTtlDays)
+    const reminder = Number(draft.quoteReminderLeadDays)
     if (!Number.isInteger(ttl) || ttl < 1 || ttl > 60) {
-      setError("Quote response window must be a whole number of days between 1 and 60.")
+      quoteTiming.setError(
+        "Quote response window must be a whole number of days between 1 and 60.",
+      )
       return
     }
     if (!Number.isInteger(reminder) || reminder < 0 || reminder > 30) {
-      setError("Reminder lead time must be a whole number of days between 0 and 30.")
+      quoteTiming.setError(
+        "Reminder lead time must be a whole number of days between 0 and 30.",
+      )
       return
     }
     if (reminder >= ttl) {
-      setError("Reminder lead time must be shorter than the quote response window.")
+      quoteTiming.setError(
+        "Reminder lead time must be shorter than the quote response window.",
+      )
       return
     }
-    void saveSettings({
-      quoteResponseTtlDays: ttl,
-      quoteReminderLeadDays: reminder,
-    })
+    void quoteTiming.save()
   }
 
-  function handleSaveAttendeeTiming() {
-    const lead = Number(attendeeLeadDraft)
-    const reminder = Number(attendeeReminderDraft)
+  function handleSaveAttendeeTiming(draft: AttendeeTimingDraft) {
+    clearOtherFeedback(pricing, quoteTiming)
+    const lead = Number(draft.attendeeConfirmationLeadDays)
+    const reminder = Number(draft.attendeeConfirmationReminderDays)
     if (!Number.isInteger(lead) || lead < 0 || lead > 90) {
-      setError("The attendee prompt lead time must be a whole number of days between 0 and 90.")
+      attendeeTiming.setError(
+        "The attendee prompt lead time must be a whole number of days between 0 and 90.",
+      )
       return
     }
     if (!Number.isInteger(reminder) || reminder < 1 || reminder > 30) {
-      setError("The attendee reminder interval must be a whole number of days between 1 and 30.")
+      attendeeTiming.setError(
+        "The attendee reminder interval must be a whole number of days between 1 and 30.",
+      )
       return
     }
-    void saveSettings({
-      attendeeConfirmationLeadDays: lead,
-      attendeeConfirmationReminderDays: reminder,
-    })
+    void attendeeTiming.save()
   }
 
   /*
@@ -354,37 +425,27 @@ export function PublicBookingRequestsSection() {
     </AdminViewOnlySectionBanner>
   )
 
-  // `initial` is always supplied, so this is never actually null once loading
-  // clears; the check below exists only to narrow the hook's `T | null`, which
-  // is `null` only for a card that renders nothing until its fetch resolves.
-  const pricingDraft = pricing.draft
-  // Any write in the section disables every control in it, so a second card
-  // cannot be submitted against a settings object that is mid-flight.
-  const busy = saving || pricing.saving
-
-  const timingDirty =
-    Number(ttlDraft) !== settings.quoteResponseTtlDays ||
-    Number(reminderDraft) !== settings.quoteReminderLeadDays
-  const attendeeTimingDirty =
-    Number(attendeeLeadDraft) !== settings.attendeeConfirmationLeadDays ||
-    Number(attendeeReminderDraft) !== settings.attendeeConfirmationReminderDays
-
   return (
     <div>
       {viewOnlyBanner}
       <PolicyFeedback
-        error={error || pricing.error}
-        success={success || pricing.success}
+        error={pricing.error || quoteTiming.error || attendeeTiming.error}
+        success={pricing.success || quoteTiming.success || attendeeTiming.success}
         onClearError={() => {
-          setError("")
           pricing.setError("")
+          quoteTiming.setError("")
+          attendeeTiming.setError("")
         }}
         onClearSuccess={() => {
-          setSuccess("")
           pricing.setSuccess("")
+          quoteTiming.setSuccess("")
+          attendeeTiming.setSuccess("")
         }}
       />
-      {pricing.loading || pricingDraft === null ? (
+      {loading ||
+      pricingDraft === null ||
+      quoteDraft === null ||
+      attendeeDraft === null ? (
         <div className="text-center py-8">Loading...</div>
       ) : (
       <div className="space-y-6">
@@ -397,10 +458,16 @@ export function PublicBookingRequestsSection() {
               </CardDescription>
             </div>
             {/*
-              #2162: the toggle used to persist the moment it was clicked. It now
-              stages behind this Edit, like every other control in Booking
-              Policies, so an accidental click no longer changes what the public
-              site shows.
+              #2166: all three cards now carry an Edit, so the shared visible
+              word cannot be the whole accessible name — a screen reader's
+              button list would show three identical "Edit"s, the same defect
+              #2142 fixed for the two look-alike "Deactivate" buttons on a
+              minimum-stay row. Each one therefore carries an `aria-label`
+              naming its card, matching that card's already-distinct Save label
+              and leaving the visible button exactly as it looks today. The
+              label still STARTS with the visible word, so it satisfies
+              WCAG 2.5.3 Label in Name for speech input. Same treatment on
+              Cancel, which can legitimately appear three times at once.
             */}
             {!pricing.editing && (
               <ViewOnlyActionButton
@@ -409,6 +476,7 @@ export function PublicBookingRequestsSection() {
                 describeReason={false}
                 variant="outline"
                 size="sm"
+                aria-label="Edit indicative pricing"
                 onClick={pricing.startEditing}
                 disabled={busy}
               >
@@ -446,7 +514,7 @@ export function PublicBookingRequestsSection() {
                   type="button"
                   canEdit={canEdit}
                   describeReason={false}
-                  onClick={() => void pricing.save()}
+                  onClick={handleSavePricing}
                   disabled={busy || !pricing.dirty || !canEdit}
                 >
                   {pricing.saving ? "Saving…" : "Save indicative pricing"}
@@ -454,6 +522,7 @@ export function PublicBookingRequestsSection() {
                 <Button
                   type="button"
                   variant="outline"
+                  aria-label="Cancel indicative pricing"
                   onClick={pricing.cancelEditing}
                   disabled={busy}
                 >
@@ -465,12 +534,28 @@ export function PublicBookingRequestsSection() {
         </Card>
 
         <Card>
-          <CardHeader>
-            <CardTitle>Quote Response Window &amp; Reminders</CardTitle>
-            <CardDescription>
-              Set how long a quote link stays valid after you send it, and when the requester is reminded
-              before it expires.
-            </CardDescription>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <div>
+              <CardTitle>Quote Response Window &amp; Reminders</CardTitle>
+              <CardDescription>
+                Set how long a quote link stays valid after you send it, and when the requester is reminded
+                before it expires.
+              </CardDescription>
+            </div>
+            {!quoteTiming.editing && (
+              <ViewOnlyActionButton
+                type="button"
+                canEdit={canEdit}
+                describeReason={false}
+                variant="outline"
+                size="sm"
+                aria-label="Edit quote timing"
+                onClick={quoteTiming.startEditing}
+                disabled={busy}
+              >
+                Edit
+              </ViewOnlyActionButton>
+            )}
           </CardHeader>
           <CardContent className="space-y-5">
             <div className="space-y-1">
@@ -480,10 +565,12 @@ export function PublicBookingRequestsSection() {
                 id="quoteResponseTtlDays"
                 min={1}
                 max={60}
-                value={ttlDraft}
-                onChange={(e) => setTtlDraft(e.target.value)}
+                value={quoteDraft.quoteResponseTtlDays}
+                onChange={(e) =>
+                  quoteTiming.setDraft({ quoteResponseTtlDays: e.target.value })
+                }
                 className="block w-28 rounded border border-input px-2 py-1 text-sm"
-                disabled={busy || !canEdit}
+                disabled={!quoteTiming.editing || busy}
               />
               <p className="text-xs text-muted-foreground">
                 How many days the requester has to accept, cancel, or reply before the secure quote link
@@ -498,10 +585,12 @@ export function PublicBookingRequestsSection() {
                 id="quoteReminderLeadDays"
                 min={0}
                 max={30}
-                value={reminderDraft}
-                onChange={(e) => setReminderDraft(e.target.value)}
+                value={quoteDraft.quoteReminderLeadDays}
+                onChange={(e) =>
+                  quoteTiming.setDraft({ quoteReminderLeadDays: e.target.value })
+                }
                 className="block w-28 rounded border border-input px-2 py-1 text-sm"
-                disabled={busy || !canEdit}
+                disabled={!quoteTiming.editing || busy}
               />
               <p className="text-xs text-muted-foreground">
                 Send the requester one reminder this many days before the quote expires. The reminder
@@ -511,9 +600,9 @@ export function PublicBookingRequestsSection() {
             </div>
 
             {/*
-              #2142: these two Saves were already gated correctly, but as raw
-              <button> elements they were unthemed and could not participate in the
-              shared view-only treatment. `ViewOnlyActionButton` keeps the
+              #2142: these Saves were already gated correctly, but as raw
+              <button> elements they were unthemed and could not participate in
+              the shared view-only treatment. `ViewOnlyActionButton` keeps the
               resolving (`undefined`) window neutral, and `describeReason={false}`
               defers the explanation to the section banner above (a disabled button
               is out of the tab order, so its own reason was never reachable). The
@@ -521,26 +610,55 @@ export function PublicBookingRequestsSection() {
               `canEdit !== true` check; it is kept so the gate is legible here
               rather than only inside the wrapper.
             */}
-            <ViewOnlyActionButton
-              type="button"
-              canEdit={canEdit}
-              describeReason={false}
-              onClick={handleSaveQuoteTiming}
-              disabled={busy || !timingDirty || !canEdit}
-            >
-              {saving ? "Saving…" : "Save quote timing"}
-            </ViewOnlyActionButton>
+            {quoteTiming.editing && (
+              <div className="flex space-x-3">
+                <ViewOnlyActionButton
+                  type="button"
+                  canEdit={canEdit}
+                  describeReason={false}
+                  onClick={() => handleSaveQuoteTiming(quoteDraft)}
+                  disabled={busy || !quoteTiming.dirty || !canEdit}
+                >
+                  {quoteTiming.saving ? "Saving…" : "Save quote timing"}
+                </ViewOnlyActionButton>
+                <Button
+                  type="button"
+                  variant="outline"
+                  aria-label="Cancel quote timing"
+                  onClick={quoteTiming.cancelEditing}
+                  disabled={busy}
+                >
+                  Cancel
+                </Button>
+              </div>
+            )}
           </CardContent>
         </Card>
 
         <Card>
-          <CardHeader>
-            <CardTitle>School Attendee Confirmation</CardTitle>
-            <CardDescription>
-              Before a school group arrives, the school contact is emailed a secure link to replace the
-              placeholder attendee names and confirm who is coming. The chore roster uses the confirmed
-              names.
-            </CardDescription>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <div>
+              <CardTitle>School Attendee Confirmation</CardTitle>
+              <CardDescription>
+                Before a school group arrives, the school contact is emailed a secure link to replace the
+                placeholder attendee names and confirm who is coming. The chore roster uses the confirmed
+                names.
+              </CardDescription>
+            </div>
+            {!attendeeTiming.editing && (
+              <ViewOnlyActionButton
+                type="button"
+                canEdit={canEdit}
+                describeReason={false}
+                variant="outline"
+                size="sm"
+                aria-label="Edit attendee prompts"
+                onClick={attendeeTiming.startEditing}
+                disabled={busy}
+              >
+                Edit
+              </ViewOnlyActionButton>
+            )}
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-1">
@@ -550,10 +668,14 @@ export function PublicBookingRequestsSection() {
                 id="attendeeConfirmationLeadDays"
                 min={0}
                 max={90}
-                value={attendeeLeadDraft}
-                onChange={(e) => setAttendeeLeadDraft(e.target.value)}
+                value={attendeeDraft.attendeeConfirmationLeadDays}
+                onChange={(e) =>
+                  attendeeTiming.setDraft({
+                    attendeeConfirmationLeadDays: e.target.value,
+                  })
+                }
                 className="block w-28 rounded border border-input px-2 py-1 text-sm"
-                disabled={busy || !canEdit}
+                disabled={!attendeeTiming.editing || busy}
               />
               <p className="text-xs text-muted-foreground">
                 Start prompting the school this many days before check-in. Set to 0 to turn the prompts
@@ -568,10 +690,14 @@ export function PublicBookingRequestsSection() {
                 id="attendeeConfirmationReminderDays"
                 min={1}
                 max={30}
-                value={attendeeReminderDraft}
-                onChange={(e) => setAttendeeReminderDraft(e.target.value)}
+                value={attendeeDraft.attendeeConfirmationReminderDays}
+                onChange={(e) =>
+                  attendeeTiming.setDraft({
+                    attendeeConfirmationReminderDays: e.target.value,
+                  })
+                }
                 className="block w-28 rounded border border-input px-2 py-1 text-sm"
-                disabled={busy || !canEdit}
+                disabled={!attendeeTiming.editing || busy}
               />
               <p className="text-xs text-muted-foreground">
                 Keep re-sending the confirmation link this often until the school confirms the list or
@@ -579,15 +705,28 @@ export function PublicBookingRequestsSection() {
               </p>
             </div>
 
-            <ViewOnlyActionButton
-              type="button"
-              canEdit={canEdit}
-              describeReason={false}
-              onClick={handleSaveAttendeeTiming}
-              disabled={busy || !attendeeTimingDirty || !canEdit}
-            >
-              {saving ? "Saving…" : "Save attendee prompts"}
-            </ViewOnlyActionButton>
+            {attendeeTiming.editing && (
+              <div className="flex space-x-3">
+                <ViewOnlyActionButton
+                  type="button"
+                  canEdit={canEdit}
+                  describeReason={false}
+                  onClick={() => handleSaveAttendeeTiming(attendeeDraft)}
+                  disabled={busy || !attendeeTiming.dirty || !canEdit}
+                >
+                  {attendeeTiming.saving ? "Saving…" : "Save attendee prompts"}
+                </ViewOnlyActionButton>
+                <Button
+                  type="button"
+                  variant="outline"
+                  aria-label="Cancel attendee prompts"
+                  onClick={attendeeTiming.cancelEditing}
+                  disabled={busy}
+                >
+                  Cancel
+                </Button>
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>

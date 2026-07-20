@@ -560,43 +560,60 @@ simultaneous writes still resolve last-writer-wins — the same property the
 covers the module toggles
 sharing `PUT /api/admin/modules` (for example the magic-link and Google cards on
 `/admin/security`) and all three cards sharing
-`PUT /api/admin/booking-requests/settings` (#2162). It also constrains what a
-save may re-seed: re-seeding the snapshot from a fresh read can move a field the
-admin never touched, so re-seed that field's editor draft with it. Leaving the
-two out of step arms a dirty-gated Save the admin never armed, one click from
-reverting the other admin's change — while a draft the admin HAD typed into
-stays untouched, because it is their own in-progress input. The rule binds sections that are NEW
+`PUT /api/admin/booking-requests/settings` (#2162, #2166). It also constrains
+what a save may re-seed: re-seeding a snapshot from a fresh read can move a field
+the admin never touched, and a snapshot that ends up out of step with the editor
+draft compared against it arms a dirty-gated Save the admin never armed, one
+click from reverting the other admin's change. The structural fix is preferred
+and is what #2166 adopted here: give each card its OWN `useSectionEditState`, so
+its draft and its snapshot are only ever re-seeded together, by that card's own
+load or its own save, and no save can leave a sibling dirty. Where a snapshot
+genuinely is shared across editors, re-seed the draft of every field the admin
+had NOT edited along with it, and leave a draft they HAD typed into alone —
+that is their own in-progress input. Either way the residue is display staleness
+in a card the admin did not touch, which is accepted: it sits behind a read-only
+card whose Save is unreachable until Edit, and it is the same property
+`/admin/modules` has. The rule binds sections that are NEW
 or MODIFIED, so several pre-existing surfaces are acknowledged divergents it does
 not retrofit on its own: the `/admin/modules` grid (deliberate bulk toggles), the
 older staged-but-ungated settings forms, and the age-tier and notification
 settings panels — the last two were previously written up as blanket exemptions
 "because they are list sections", which is no longer the reason: list sections
 are in scope (see the per-row shape below), those two simply have not been
-touched since. Booking Policies still has one divergent, narrowed but NOT
-removed by #2162: no settings control in the area persists on change any more
-(row-level Activate/Deactivate stay plain direct writes, which the per-row shape
-below sanctions) — the last one that did, the **Show indicative pricing** checkbox in
-`public-booking-requests-section.tsx`, was brought onto Edit → Save — but the
-two timing cards in that same file (quote window / reminder lead, and the
-school-attendee prompts) remain staged-but-ungated: always editable, with a
-dirty-gated Save and no Edit or Cancel. That file has now been modified, so this
-is a LIVE divergence, not an untouched one; whether to Edit-gate those two cards
-is an owner decision tracked in #2166 and is not to be retrofitted in passing.
-The pricing card is a worked example of the two rules that meet awkwardly here.
+touched since. Booking Policies has NO divergent left. Every settings control in
+the area now stages behind a per-card Edit → Save/Cancel: the **Show indicative
+pricing** checkbox in `public-booking-requests-section.tsx` stopped persisting on
+change in #2162, and the two timing cards beside it (quote window / reminder
+lead, and the school-attendee prompts) — always editable with a dirty-gated Save
+and no Edit or Cancel until then — were Edit-gated in #2166 on the owner's
+decision. The only direct writes left in the area are discrete ACTIONS rather
+than staged fields: row-level Activate/Deactivate and Delete on the
+booking-period and minimum-stay lists, and the confirm-gated **Remove override**
+on the default cancellation card. The per-row/per-action shape below sanctions
+those; they are not a licence to auto-persist a settings FIELD.
+
+That section is the worked example of the two rules that meet awkwardly here.
 All five public-booking-request settings live in ONE row behind ONE whole-object
 PUT, so a single hook instance for the section would match storage exactly — but
-the hook carries one `editing` flag and the two timing cards are deliberately
-always-editable, so fusing them would have forced an Edit step onto cards that
-were not in scope and pre-empted #2166. The card therefore takes its OWN
-instance and pays for the shared write object the documented way: it GETs the
-fresh settings and merges only its own key, exactly as the module-toggle cards
-below do, so it can never persist a sibling card's uncommitted draft or its own
-load-time snapshot of one. Both timing handlers were brought onto that same
-fresh read in the same change, so no card in the section can revert another's
-saved value. It carries NO first-save exception even though the
-read synthesises defaults on a miss, because its whole draft is a single boolean
-— "unchanged" and "already effectively stored" are the same state there, so the
-exception would only unlock a pristine, audit-writing no-op.
+the hook carries one `editing` flag, and one Edit unlocking all three cards, one
+Cancel discarding all three drafts, and one Save writing all five fields is not
+what #2166 decided. Each card therefore takes its OWN instance and pays for the
+shared write object the documented way: every save GETs the fresh settings and
+merges only its own fields, exactly as the module-toggle cards below do, so no
+card can persist a sibling's uncommitted draft or its own load-time snapshot of
+one, and no card can revert another's saved value. Three instances would mean
+three identical mount-time GETs and three snapshots a concurrent write could
+leave disagreeing, so the section holds ONE in-flight load in a ref and all
+three `load` callbacks seed from that single response. None of the three carries
+a first-save exception even though the read synthesises defaults on a miss: those
+synthesised defaults ARE the effective settings at every read site and nothing
+downstream keys on the row existing, so the exception would only unlock a
+pristine, audit-writing no-op (#2143). Validation stays in each card's click
+handler rather than the hook's `isValid`, so an out-of-range or
+reminder-not-shorter-than-window draft gets an explanation instead of a greyed
+button with no reason. The three Edit and three Cancel buttons carry an
+`aria-label` naming their card, because three identically-named buttons in one
+section is the look-alike-control defect #2142 fixed elsewhere.
 Reference:
 `src/components/admin/booking-policies/group-discount-section.tsx` — note that
 it now carries the section banner, so for the default per-button

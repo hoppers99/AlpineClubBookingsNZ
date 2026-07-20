@@ -133,11 +133,18 @@ rules — see
    harmless. With it on, the public form is "Request to Book" and shows a price;
    with it off, it is "Request for Price" and shows none until an officer
    reviews it.
-3. The two timing cards below work differently, and deliberately so: they have
-   no **Edit** button, so you type straight into them. Set the **Quote response
-   window** and **Reminder lead time**, then **Save quote timing**. Set the
-   **School Attendee Confirmation** prompts and **Save attendee prompts**. As
-   everywhere else, nothing is saved until you click that card's **Save**.
+3. The two timing cards below work exactly the same way. Click **Edit** on
+   **Quote Response Window & Reminders**, set the **Quote response window** and
+   **Reminder lead time**, then click **Save quote timing**. Click **Edit** on
+   **School Attendee Confirmation**, set the prompts, then click **Save attendee
+   prompts**. Each card has its own **Cancel**, which puts that card's boxes back
+   the way they were saved and leaves the other cards alone. Save stays greyed
+   out until you actually change something, so opening **Edit** and closing it
+   again never records a change you did not make.
+4. You can have more than one card open at once, and each keeps its own draft —
+   cancelling one does not touch what you have typed in another. While a card is
+   saving, the whole section is briefly locked, because all three cards write the
+   same settings record and only one of them may be in flight at a time.
 
 ## Settings reference
 
@@ -153,10 +160,10 @@ rules — see
 | Summer seasons only | Group Discount | Restrict the group discount to summer | on | — |
 | Minimum nights | Minimum Stay | Nights required when a trigger day is included | 2 | Minimum 2 |
 | Trigger days | Minimum Stay | Which weekdays activate the rule | Sat | At least one day |
-| Show indicative pricing | Public Requests | Price shown on the public request form | off | Edit → tick → Save |
-| Quote response window | Public Requests | Days a quote link stays valid | 14 | 1–60 days |
-| Reminder lead time | Public Requests | Days before expiry to remind the requester | 3 | 0–30, must be shorter than the window |
-| Attendee first prompt / reminder | Public Requests | School attendee-confirmation timing | 14 / 3 days | Prompt 0–90 (0 = off); reminder 1–30 |
+| Show indicative pricing | Public Requests | Price shown on the public request form | off | Edit → tick → Save, like every other Booking Policies setting |
+| Quote response window | Public Requests | Days a quote link stays valid | 14 | 1–60 days; Edit → change → Save |
+| Reminder lead time | Public Requests | Days before expiry to remind the requester | 3 | 0–30, must be shorter than the window; Edit → change → Save |
+| Attendee first prompt / reminder | Public Requests | School attendee-confirmation timing | 14 / 3 days | Prompt 0–90 (0 = off); reminder 1–30; Edit → change → Save |
 
 ## Troubleshooting
 

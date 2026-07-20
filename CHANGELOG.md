@@ -4,6 +4,29 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **The two quote-timing cards now open with Edit, like everything else in
+  Booking Policies (#2166).** On **Booking Policies → Public Booking Requests**,
+  the **Quote Response Window & Reminders** and **School Attendee Confirmation**
+  cards used to be typed into directly — no **Edit**, no **Cancel**, just a
+  **Save** that lit up once a number changed. They were the last thing in the
+  area that worked that way. Each now has its own **Edit** button that unlocks
+  its boxes, its own **Save**, and its own **Cancel** that puts that card back
+  the way it was saved without touching any other card. **This is a visible
+  change for admins:** changing a quote window or an attendee prompt is now
+  three clicks rather than two, deliberately, so the whole section behaves the
+  same way and a stray keystroke in a settings box is no longer one click from a
+  change. You can still have more than one card open at once; only saving is
+  exclusive, because all three cards write the same settings record. Nothing
+  else about them moved: the same ranges are enforced, the same explanation
+  appears if a quote reminder is not shorter than its window, and each card
+  still re-reads the stored settings immediately before it writes so it cannot
+  overwrite another card. One consequence worth knowing: a card you have not
+  opened keeps showing the values it loaded with, even if another admin has
+  since changed them — the same as everywhere else in the admin, and its
+  **Save** can no longer arm itself without you. No schema, permission, route,
+  or audit change. See `docs/guides/booking-policies.md` and
+  `docs/ARCHITECTURE.md`.
+
 - **"Show indicative pricing" no longer changes the public site the moment you
   click it (#2162).** On **Booking Policies → Public Booking Requests**, the
   **Show indicative pricing on the request form** checkbox used to save the
@@ -21,10 +44,11 @@ All notable public reference-release changes should be recorded here.
   admin changed in another card while your page was open — or what you typed
   into a card below but have not saved yet. (Two admins who hit Save in the same
   instant still resolve last-one-wins, as they always have; what is fixed is the
-  page that has been sitting open.) If a re-read brings back a value you
-  had not touched, the box showing it is refreshed too, so a **Save** never
-  lights up on its own beside a stale number (anything you had typed is left
-  exactly as you left it). And the save now sends the school-attendee timings
+  page that has been sitting open.) A **Save** never lights up on its own
+  either: each card's boxes and the saved values they are compared against only
+  ever move together, so no other card's save can arm yours, and anything you
+  had typed is left exactly as you left it (#2166 finished this by giving each
+  card its own draft). And the save now sends the school-attendee timings
   back to the browser as well as the pricing and quote ones; previously they
   came back missing, which blanked both attendee boxes after any save and then
   made the next quote-timing save fail outright. No schema, permission, or audit
