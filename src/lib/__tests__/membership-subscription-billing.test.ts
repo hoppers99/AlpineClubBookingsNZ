@@ -912,6 +912,46 @@ describe("membership subscription billing", () => {
       expect(preview.exemptMemberIds).toEqual([]);
       expect(preview.entries).toHaveLength(2);
     });
+
+    // #2148 (D1): the exemption gate runs BEFORE MISSING_FEE_SCHEDULE and does
+    // not require a resolved fee. A deliberately exempt tier legitimately has no
+    // fee row, so it must land in the Exempt bucket, not the exceptions list.
+    it("#2148: an exempt-tier member with NO fee row is exempted, never raises MISSING_FEE_SCHEDULE", async () => {
+      mocks.effectiveFee.mockResolvedValue(null);
+      mocks.members.findMany.mockResolvedValue([
+        // Child at 1 Apr 2026 season start -> exempt; no fee resolves for CHILD.
+        ageTierMember("child-no-fee", { dateOfBirth: new Date(2017, 2, 31) }),
+      ]);
+      const preview = await buildSubscriptionBillingPreview({
+        seasonYear: 2026,
+        decisionDate: new Date("2026-07-13T00:00:00.000Z"),
+      });
+      expect(preview.exceptions).toEqual([]);
+      expect(preview.entries).toEqual([]);
+      expect(preview.exemptMemberIds).toEqual(["child-no-fee"]);
+      expect(preview.exemptMembers).toEqual([
+        { memberId: "child-no-fee", memberName: "First-child-no-fee Member", ageTier: "CHILD" },
+      ]);
+      // No fee resolved and no invoice entries -> the Xero mapping is not touched.
+      expect(mocks.mapping).not.toHaveBeenCalled();
+    });
+
+    // #2148 constraint: a LIABLE tier with no fee is a genuine config gap and
+    // must still surface, so it is not swept into the Exempt bucket.
+    it("#2148: a liable-tier member with NO fee row still raises MISSING_FEE_SCHEDULE (not exempted)", async () => {
+      mocks.effectiveFee.mockResolvedValue(null);
+      mocks.members.findMany.mockResolvedValue([
+        // Youth at season start -> liable; no fee resolves for YOUTH.
+        ageTierMember("youth-no-fee", { dateOfBirth: new Date(2016, 3, 1) }),
+      ]);
+      const preview = await buildSubscriptionBillingPreview({
+        seasonYear: 2026,
+        decisionDate: new Date("2026-07-13T00:00:00.000Z"),
+      });
+      expect(preview.exceptions.map((row) => row.code)).toEqual(["MISSING_FEE_SCHEDULE"]);
+      expect(preview.exemptMemberIds).toEqual([]);
+      expect(preview.exemptMembers).toEqual([]);
+    });
   });
 
   describe("stored tier vs season-start tier price alignment (#2067 finding 1)", () => {

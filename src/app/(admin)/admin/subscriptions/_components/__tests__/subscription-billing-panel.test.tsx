@@ -21,7 +21,11 @@ vi.mock("@/lib/date-only", () => ({
 
 import { SubscriptionBillingPanel } from "@/app/(admin)/admin/subscriptions/_components/subscription-billing-panel";
 
-function payload(options: { decisionDate?: string; membershipTypeName?: string } = {}) {
+function payload(options: {
+  decisionDate?: string;
+  membershipTypeName?: string;
+  exemptMembers?: Array<{ memberId: string; memberName: string; ageTier: string | null }>;
+} = {}) {
   const decisionDate = options.decisionDate ?? "2026-07-13";
   const membershipTypeName = options.membershipTypeName ?? "Full";
   return {
@@ -44,6 +48,8 @@ function payload(options: { decisionDate?: string; membershipTypeName?: string }
         coveredMembers: [{ id: "member-1", name: "Member One" }],
       }],
       exceptions: [{ fingerprint: "same", message: "Configure billing" }],
+      exemptMembers: options.exemptMembers ?? [],
+      alreadyInvoiced: [],
     },
     charges: [{
       id: "charge-1",
@@ -178,6 +184,52 @@ describe("subscription billing panel", () => {
     expect(JSON.parse(String((postCall![1] as RequestInit).body))).toEqual({
       action: "UPDATE_SETTINGS", invoiceDueDays: 30, familyBillingMode: "BILL_MEMBERS_INDIVIDUALLY",
     });
+  });
+
+  // #2148 (D1): exempt members render in the collapsed informational section.
+  it("shows the collapsed Exempt section with a count", async () => {
+    mocks.canEdit.mockReturnValue(true);
+    vi.mocked(fetch).mockImplementation(() => successResponse(payload({
+      exemptMembers: [
+        { memberId: "kid-1", memberName: "Kid One", ageTier: "CHILD" },
+        { memberId: "kid-2", memberName: "Kid Two", ageTier: "INFANT" },
+      ],
+    })));
+    render(<SubscriptionBillingPanel seasonYear={2026} />);
+    expect(await screen.findByText(/Exempt \(2\)/)).toBeTruthy();
+    expect(screen.getByText("Kid One")).toBeTruthy();
+    expect(screen.getByText("Kid Two")).toBeTruthy();
+  });
+
+  // #2148 (D2 / constraint 3): a finance-EDIT admin's Refresh reconciles via the
+  // edit-gated POST action; a finance-VIEW admin's Refresh stays a read-only GET.
+  it("Refresh posts REFRESH_PREVIEW for a finance-edit admin", async () => {
+    mocks.canEdit.mockReturnValue(true);
+    const fetchMock = vi.mocked(fetch);
+    render(<SubscriptionBillingPanel seasonYear={2026} />);
+    await screen.findByRole("button", { name: "Confirm and queue annual batch" });
+    fetchMock.mockClear();
+    fetchMock.mockImplementation(async (_input, init) =>
+      (init as RequestInit | undefined)?.method === "POST"
+        ? ({ ok: true, json: async () => ({ success: true, message: "Preview refreshed.", ...payload() }) } as Response)
+        : successResponse());
+    fireEvent.click(screen.getByRole("button", { name: "Refresh preview" }));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === "POST")).toBe(true));
+    const postCall = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === "POST");
+    expect(JSON.parse(String((postCall![1] as RequestInit).body))).toEqual({
+      action: "REFRESH_PREVIEW", seasonYear: 2026, decisionDate: "2026-07-13",
+    });
+  });
+
+  it("Refresh stays a read-only GET for a finance-view admin", async () => {
+    mocks.canEdit.mockReturnValue(false);
+    const fetchMock = vi.mocked(fetch);
+    render(<SubscriptionBillingPanel seasonYear={2026} />);
+    await screen.findByText("Open exceptions");
+    fetchMock.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh preview" }));
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(0));
+    expect(fetchMock.mock.calls.every(([, init]) => (init as RequestInit | undefined)?.method !== "POST")).toBe(true);
   });
 
   it("reloads the latest selection when an older-selection mutation completes", async () => {
