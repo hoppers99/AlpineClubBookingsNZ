@@ -39,10 +39,25 @@ All notable public reference-release changes should be recorded here.
   E4 re-key, so every copy silently failed validation. It now posts
   `membershipTypeRates` and works again.
 
-  No schema change: `SeasonRate` is untouched but now has **zero readers** (the
-  admin season routes and the lodge-setup copy flow all stopped selecting it).
-  It is still *written* by `prisma/seed.ts`, so #2129 step 2 must delete that
-  seed writer in the same PR as the drop migration.
+  No schema change: `SeasonRate` is untouched, and this step removed its last
+  **application-runtime** reader (the embed; the admin season routes and the
+  lodge-setup copy flow also stopped selecting it). The table is **not**
+  unreferenced, though — **one reader and two writers remain**, all in seed code
+  outside `src/`:
+
+  - `e2e/setup/seed-second-lodge.ts:202` — READ, `include: { rates: true }`
+  - `e2e/setup/seed-second-lodge.ts:218-224` — WRITE, `rates: { create: … }`
+  - `prisma/seed.ts:208-227` — WRITE, `createMissingSeasonRates` →
+    `prisma.seasonRate.upsert`
+
+  So #2129 step 2 (Release B) must, **in the same PR as the DROP migration**,
+  strip both the `rates` include and the `rates: { create: … }` block from
+  `e2e/setup/seed-second-lodge.ts` **and** delete `createMissingSeasonRates`
+  from `prisma/seed.ts`. Skipping either breaks the build twice over:
+  `e2e/**` sits inside `tsconfig.json`'s `**/*.ts` include and is not excluded,
+  so `npm run typecheck` fails on both seeder lines; and
+  `scripts/e2e-stack.sh:92` runs that seeder under `E2E_MULTI_LODGE=1`, so the
+  required **E2E multi-lodge** branch-protection check fails at seed time.
 
 ## 0.12.2 - 2026-07-20
 

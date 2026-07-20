@@ -135,7 +135,10 @@ changelog section before starting.
      — follow-ups #2129/#2130/#2131.
      *(Superseded after this release: #2129 step 1 re-sourced the public
      `{{hut-fees}}` embed onto `MembershipTypeSeasonRate`, removing the last
-     `SeasonRate` reader — see the following release's entry. The sentence above
+     **application-runtime** `SeasonRate` reader — see the following release's
+     entry. One reader and two writers still remain in seed code
+     (`e2e/setup/seed-second-lodge.ts:202` and `:218-224`, `prisma/seed.ts:208-227`)
+     and must be removed in the same PR as the DROP migration. The sentence above
      describes the position as at v0.12.2.)*
 3. **The two additive migrations need no special handling.**
    `20260719150000_add_post_login_landing` adds a `PostLoginLanding` enum plus a
