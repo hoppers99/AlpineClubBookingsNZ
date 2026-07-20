@@ -26,7 +26,7 @@ import { useClubIdentity } from "@/components/club-identity-provider";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import {
   ADMIN_FORBIDDEN_SAVE_REASON,
-  AdminViewOnlyNotice,
+  AdminViewOnlySectionBanner,
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action";
 import type {
@@ -451,8 +451,26 @@ export default function HutLeadersPage() {
 
   const today = formatDateOnly(getTodayDateOnly());
 
+  /*
+    #2160: the view-only explanation lives here, once, at the top of the section —
+    announced on arrival and ahead of the controls it explains — instead of on
+    each disabled button below. The `role="status"` wrapper is permanently
+    mounted so the live region is registered in the accessibility tree before its
+    content appears; a region injected already-populated is silently dropped by
+    some screen-reader/browser pairings. It sits OUTSIDE the `space-y-*` stack so
+    the empty wrapper an edit-capable admin gets costs no layout.
+  */
+  const viewOnlyBanner = (
+    <AdminViewOnlySectionBanner canEdit={canEdit} className="mb-6">
+      Your admin role can view {hutLeaderLabel.toLowerCase()} assignments but
+      cannot change them. Lodge edit access is required.
+    </AdminViewOnlySectionBanner>
+  );
+
   return (
-    <div className="space-y-6">
+    <div>
+      {viewOnlyBanner}
+      <div className="space-y-6">
       <AdminPageHeader
         title={`${hutLeaderLabel} Assignments`}
         description={`Paint the calendar: assign a member as ${hutLeaderLabel.toLowerCase()} for the nights that need cover.`}
@@ -472,13 +490,6 @@ export default function HutLeadersPage() {
         >
           {error.message}
         </div>
-      )}
-
-      {!canEdit && (
-        <AdminViewOnlyNotice canEdit={canEdit}>
-          Your admin role can view {hutLeaderLabel.toLowerCase()} assignments but
-          cannot change them. Lodge edit access is required.
-        </AdminViewOnlyNotice>
       )}
 
       {unassignedDates.length > 0 && (
@@ -622,6 +633,7 @@ export default function HutLeadersPage() {
                     <div className="flex justify-end gap-1">
                       <ViewOnlyActionButton
                         canEdit={canEdit}
+                        describeReason={false}
                         variant="ghost"
                         size="sm"
                         onClick={() => handleResetPin(a)}
@@ -634,6 +646,7 @@ export default function HutLeadersPage() {
                       </ViewOnlyActionButton>
                       <ViewOnlyActionButton
                         canEdit={canEdit}
+                        describeReason={false}
                         variant="ghost"
                         size="sm"
                         onClick={() => handleDelete(a.id)}
@@ -651,6 +664,7 @@ export default function HutLeadersPage() {
           </TableBody>
         </AdminDataTable>
       )}
+      </div>
     </div>
   );
 }
