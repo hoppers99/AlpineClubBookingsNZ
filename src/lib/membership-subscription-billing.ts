@@ -5,6 +5,7 @@ import type {
   MembershipFeeProrationRule,
   MembershipSubscriptionChargeSource,
   Prisma,
+  SubscriptionStatus,
 } from "@prisma/client";
 import {
   computeAgeTierWithSettings,
@@ -108,6 +109,20 @@ export type SubscriptionBillingPreview = {
   // re-preview reproduces it, and clubs with no BASED_ON_AGE_TIER type keep a
   // byte-identical token (always []).
   exemptMemberIds: string[];
+  // #2147 (D3): members skipped because their season MemberSubscription already
+  // holds a LIVE Xero invoice (xeroInvoiceId not null — PAID/UNPAID/OVERDUE).
+  // The admin sees them, and their invoice number, in a collapsed "Already
+  // invoiced" section instead of being silently re-billed. Derived
+  // deterministically from MemberSubscription state (like alreadyCovered /
+  // exempt), so it is NOT part of the confirmation token — the skip itself is
+  // already reflected by the absence of an entry, which the in-transaction
+  // re-preview reproduces under the per-season advisory lock.
+  alreadyInvoiced: Array<{
+    memberId: string;
+    memberName: string;
+    xeroInvoiceNumber: string | null;
+    status: SubscriptionStatus;
+  }>;
   totalCents: number;
   confirmationToken: string;
 };
@@ -221,6 +236,9 @@ export async function buildSubscriptionBillingPreview(input: {
     getFamilyBillingMode(db),
     db.membershipSubscriptionChargeCoverage.findMany({
       where: {
+        // #2147: only ACTIVE claims block re-billing. A released claim (its Xero
+        // invoice was voided/deleted) must not keep a member un-billable forever.
+        releasedAt: null,
         subscription: {
           seasonYear: input.seasonYear,
           ...(input.memberIds?.length ? { memberId: { in: input.memberIds } } : {}),
@@ -228,19 +246,30 @@ export async function buildSubscriptionBillingPreview(input: {
       },
       select: { memberId: true },
     }),
-    // #1944 non-clobber guard: the sweep otherwise keys "already handled" off
-    // charge-coverage rows, so a manually marked-paid subscription (status PAID
-    // with no charge and no Xero invoice link) would be re-invoiced. Skip every
-    // member whose subscription is already PAID for this season. Xero-paid rows
-    // already carry a coverage row and are a no-op here; this strictly adds the
-    // manual-PAID case and upholds "never invoice a subscription already PAID".
+    // #1944 + #2147 (D1) non-clobber / anti-double-billing guard. Skip every
+    // member whose season subscription is either already PAID *or* already
+    // carries a LIVE Xero invoice link (xeroInvoiceId not null — UNPAID/OVERDUE
+    // included). The PAID clause preserves the #1944 manual-mark-paid case
+    // (PAID with a null xeroInvoiceId, cash paid outside Xero); the additive
+    // xeroInvoiceId clause fixes #2147 — an invoiced-but-unpaid member (e.g.
+    // billed by the older Xero-sync path, so no charge-coverage row exists) was
+    // passing both the coverage and PAID guards and being re-invoiced. The
+    // predicate is ADDITIVE, not a replacement: it never re-bills a manual-PAID
+    // member. The invoiced subset (with its invoice number) is surfaced to the
+    // admin in the collapsed "Already invoiced" section (D3).
     db.memberSubscription.findMany({
       where: {
         seasonYear: input.seasonYear,
-        status: "PAID",
+        OR: [{ status: "PAID" }, { xeroInvoiceId: { not: null } }],
         ...(input.memberIds?.length ? { memberId: { in: input.memberIds } } : {}),
       },
-      select: { memberId: true },
+      select: {
+        memberId: true,
+        status: true,
+        xeroInvoiceId: true,
+        xeroInvoiceNumber: true,
+        member: { select: { firstName: true, lastName: true } },
+      },
     }),
     db.membershipSubscriptionCharge.findMany({
       where: {
@@ -321,8 +350,23 @@ export async function buildSubscriptionBillingPreview(input: {
   const fallbackTypeByKey = new Map(fallbackTypes.map((type) => [type.key, type]));
 
   const coveredSet = new Set(alreadyCovered.map((row) => row.memberId));
-  // #1944: members already PAID (manual or Xero) are never re-invoiced.
+  // #1944 + #2147: members already PAID (manual or Xero) OR holding a live Xero
+  // invoice are never re-invoiced (D1). Both clauses feed one skip-set.
   const paidSet = new Set(alreadyPaid.map((row) => row.memberId));
+  // #2147 (D3): the invoiced (live xeroInvoiceId) subset, for the "Already
+  // invoiced" section. Names come from the joined member row so an already-
+  // invoiced member who has since gone inactive still renders correctly.
+  const alreadyInvoiced = alreadyPaid
+    .filter((row) => row.xeroInvoiceId != null)
+    .map((row) => ({
+      memberId: row.memberId,
+      memberName: row.member
+        ? `${row.member.firstName} ${row.member.lastName}`.trim()
+        : row.memberId,
+      xeroInvoiceNumber: row.xeroInvoiceNumber,
+      status: row.status,
+    }))
+    .sort((left, right) => left.memberId.localeCompare(right.memberId));
   // The effective fee depends on the membership type, the member's age tier
   // (#2067 per-tier pricing), and the decision date; the decision date is fixed
   // for the whole preview, so memoize per (type, tier) instead of querying once
@@ -663,6 +707,7 @@ export async function buildSubscriptionBillingPreview(input: {
     exceptions,
     alreadyCoveredMemberIds: [...coveredSet].sort(),
     exemptMemberIds: [...exemptMemberIds].sort(),
+    alreadyInvoiced,
     totalCents: entries.reduce((sum, entry) => sum + entry.chargedAmountCents, 0),
     confirmationToken: digest(tokenPayload),
   };
@@ -714,6 +759,9 @@ export async function confirmSubscriptionBillingPreview(input: {
       if (expectedMemberIds.length > 0 && expectedMemberIds.every((memberId) => coveredMemberIds.has(memberId))) {
         const existing = await tx.membershipSubscriptionChargeCoverage.findMany({
           where: {
+            // #2147: match the active-only skip-set — a released claim's chargeId
+            // must not be reported as the current coverage for a re-billed member.
+            releasedAt: null,
             memberId: { in: expectedMemberIds },
             subscription: { seasonYear: input.preview.seasonYear },
           },
@@ -756,15 +804,31 @@ export async function confirmSubscriptionBillingPreview(input: {
             seasonYear: entry.seasonYear,
             status: entry.billingBasis === "NO_INVOICE" ? "NOT_REQUIRED" : "NOT_INVOICED",
           },
-          select: { id: true, memberId: true },
+          // #2147: voidGeneration discriminates a post-void re-bill's idempotency
+          // key from the original (released) charge's.
+          select: { id: true, memberId: true, voidGeneration: true },
         });
-        const coveredAlready = await tx.membershipSubscriptionChargeCoverage.findUnique({
-          where: { subscriptionId: subscription.id }, select: { id: true },
+        // #2147: only an ACTIVE coverage claim means "already billed". A released
+        // claim (its invoice was voided) must NOT suppress the re-bill.
+        const coveredAlready = await tx.membershipSubscriptionChargeCoverage.findFirst({
+          where: { subscriptionId: subscription.id, releasedAt: null }, select: { id: true },
         });
         if (!coveredAlready) subscriptions.push({ ...subscription, memberName: covered.name });
       }
       if (subscriptions.length === 0) continue;
-      const idempotencyKey = digest([entry.key, subscriptions.map((row) => row.memberId).sort(), entry.chargedAmountCents]);
+      // #2147: fold each covered subscription's voidGeneration into the charge
+      // idempotency key so a post-void re-bill mints a NEW charge instead of
+      // no-op-ing onto the released (VOIDED) one via the @unique idempotencyKey.
+      // When every voidGeneration is 0 (the never-voided case) the key omits the
+      // discriminator entirely, staying byte-identical to the pre-#2147 shape so
+      // existing charges and re-runs remain idempotent. invoiceReference derives
+      // from this key and follows automatically.
+      const sortedMemberIds = subscriptions.map((row) => row.memberId).sort();
+      const voidGenByMember = new Map(subscriptions.map((row) => [row.memberId, row.voidGeneration ?? 0]));
+      const voidGenerations = sortedMemberIds.map((memberId) => voidGenByMember.get(memberId) ?? 0);
+      const idempotencyKey = voidGenerations.some((generation) => generation > 0)
+        ? digest([entry.key, sortedMemberIds, entry.chargedAmountCents, { voidGenerations }])
+        : digest([entry.key, sortedMemberIds, entry.chargedAmountCents]);
       const charge = await tx.membershipSubscriptionCharge.upsert({
         where: { idempotencyKey },
         update: {},

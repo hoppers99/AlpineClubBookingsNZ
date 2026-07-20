@@ -292,7 +292,9 @@ function meaningfulMemberSubscriptionWhere(
       { paidAt: { not: null } },
       // Even a zero-cent NO_INVOICE subscription is immutable charge coverage
       // and must block hard deletion rather than surfacing a late FK failure.
-      { chargeCoverage: { isNot: null } },
+      // #2147: chargeCoverage is now a list — ANY coverage row (active or a
+      // retained released one) is durable history that blocks deletion.
+      { chargeCoverage: { some: {} } },
     ],
   };
 }
