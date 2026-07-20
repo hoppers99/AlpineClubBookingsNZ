@@ -175,9 +175,16 @@ re-creatable.
   controls inside a dialog, popover, or dropdown; leaf toolbars dropped into
   another page's layout; and, most of all, the **member detail per-record cards**
   (`/admin/members/[id]`), which are unconverted pending owner decision #2168.
-  See `docs/ARCHITECTURE.md` for the full list of shapes and counts. Where a
-  section DOES have a banner, a view-only admin should meet it exactly once —
-  never twice on one screen.
+  See `docs/ARCHITECTURE.md` for the full list of shapes and counts. And note
+  the banner is stated once per **section**, not once per screen: a page built
+  from several banner-bearing sections repeats it once per section, so
+  `/admin/security` and `/admin/booking-requests` each show it three times. What
+  is ruled out is *nesting* — a banner-bearing component never renders another
+  one, so no admin meets the sentence twice over the same controls. So on a
+  multi-section page, write "each section says so at the top", not "the page
+  says so once at the top". Whether stacked sibling banners should collapse into
+  a single page-level one is an open design question, and is exactly what owner
+  decision #2168 is deciding for the member detail page.
 
 ## Guide opening line (canonical)
 

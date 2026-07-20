@@ -558,21 +558,31 @@ three shapes:
 - **Controls inside a dialog, sheet, popover, or dropdown menu.** These live in
   a separate accessibility container — focus is trapped and the page behind is
   commonly inert — so a banner rendered in the page body does not reach them.
-  (9 controls across 4 files.)
+  (9 controls across 4 files, which the test enumerates by name; three further
+  controls of this shape live in files counted under the next bucket, see
+  there.)
 - **Leaf components with no section of their own**, which a parent drops into
   someone else's layout (for example the member detail header's action toolbar,
   the booking capacity/exclusive hold controls, the family-group login-holder
   and request-review sub-sections, and the non-member contact form). Nothing
   local proves an ancestor renders a banner above them, so the reason stays on
-  the control. (19 controls across 10 files.)
+  the control. (19 controls across 10 files.) Read that bucket as the
+  REMAINDER — everything that is neither a member detail card nor one of the
+  four dialog-only files — rather than as a claim that all 19 are leaves. Eight
+  of the ten files are (16 controls); the other two, `page-content-panel.tsx`
+  and `site-banners-panel.tsx`, are full banner-bearing panels whose last 3
+  controls sit inside their own edit/create `Dialog`, so those 3 are really the
+  first shape occurring inside a file that also has the third. Nothing is
+  mis-gated either way — the point is only that the bucket boundary is where the
+  test can draw one mechanically, not a clean taxonomy.
 - **The member detail per-record cards** in
   `src/app/(admin)/admin/members/[id]/_components/` — `member-credit-card`,
   `member-lifecycle-card`, `member-committee-assignments-card`,
   `member-partner-link-card`, `member-deletion-card`, `member-dependents-card`,
   `member-parent-links-card`, `member-lodge-access-card`, and
   `member-seasonal-membership-card`. (25 controls across 9 files — the single
-  largest block of unconverted controls, and the busiest admin surface in the
-  product.) These are NOT the two shapes above: they are real `Card`/
+  largest block of unconverted controls, on one of the admin tree's densest
+  screens.) These are NOT the two shapes above: they are real `Card`/
   `CardHeader` sections, several call `useAdminAreaEditAccess` themselves, and
   they are structurally identical to panels that were converted, so a banner
   *could* cover them. They were deferred for a different reason — one member
@@ -632,6 +642,23 @@ and would not see a component reached by an aliased or default import, a barrel
 re-export, or `next/dynamic`; none are used for banner-bearing admin components
 today, but a refactor to one of those forms would quietly take the pair out of
 the test's view rather than fail it.
+
+**Once per section, NOT once per screen.** The nesting rule is about parent and
+child — one banner covering the same controls as another — and that is all it
+is. It does not, and structurally can not, say anything about SIBLINGS. Several
+banner-bearing sections sitting side by side on one page each render their own,
+so a view-only admin meets the sentence once per section: `/admin/security`
+(`password-policy-card`, `magic-link-security-card`, `google-security-card`) and
+`/admin/booking-requests` (approvals, change requests, public requests) show it
+three times each, and `/admin/appearance/identity`,
+`/admin/induction/settings` and `/admin/page-content` twice. That is inherited
+from the #2142 shape rather than introduced by the rollout, and nothing in the
+contract test flags it. Whether stacked sibling banners should collapse into one
+page-level banner is an open design question with a visible-UI consequence — it
+is the same question **#2168** is deciding for the member detail page, where the
+count would be nine, and it should be answered there for the whole tree rather
+than page by page. Until it is, do not dedupe siblings ad hoc, and do not write
+docs that promise one banner per screen.
 
 **Known limitation, accepted by the owner as Decision 1 on #2160.** Gated
 controls keep the `disabled` attribute rather than moving to

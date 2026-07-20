@@ -6,10 +6,13 @@ All notable public reference-release changes should be recorded here.
 
 - **Most admin areas now explain view-only access once, at the top, instead of
   on each greyed-out button (#2160).** If your admin role can look at an area
-  but not change it, you now meet a single short banner when you arrive — "You
-  have view-only access to this area", followed by what specifically you cannot
-  change there and which permission would let you. The greyed-out buttons below
-  it no longer each carry their own hidden copy of that explanation. This is the
+  but not change it, you now meet a short banner at the top of the section when
+  you arrive — "You have view-only access to this area", followed by what
+  specifically you cannot change there and which permission would let you. The
+  greyed-out buttons below it no longer each carry their own hidden copy of that
+  explanation. The banner belongs to a section rather than to a page, so a
+  screen built from several sections — Security, or Booking Requests — shows it
+  once per section, three times in those two cases. This is the
   pattern Booking Policies adopted in #2142 (above), now applied across most of
   the admin tree: about four out of five gated buttons (201 of 254) are now
   explained by a banner instead of individually. **Nothing about who can do what
@@ -38,8 +41,10 @@ All notable public reference-release changes should be recorded here.
   link, deletion, dependents, parent links, lodge access, seasonal membership)
   are unchanged. Those cards *could* each show the banner, but one member page
   shows all nine at once, so it would repeat the same sentence nine times down a
-  single screen; whether that becomes one banner for the whole page is a
-  separate open decision (#2168). The rest — 28 controls — are places no banner
+  single screen — the same stacking that Security and Booking Requests already
+  do three times over, at a scale where it stops being acceptable. Whether that
+  collapses to one banner for the whole page, there and on the pages that
+  already stack, is a separate open decision (#2168). The rest — 28 controls — are places no banner
   can reach: inside a pop-up dialog or dropdown menu, or in small toolbars
   dropped into another page's layout. See `docs/ARCHITECTURE.md` and
   `docs/STYLE_GUIDE.md`.

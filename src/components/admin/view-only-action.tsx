@@ -29,7 +29,11 @@ interface ViewOnlyActionButtonProps extends ButtonProps {
    *  - in a leaf component with no section of its own, dropped by a parent into
    *    someone else's layout (the member detail header toolbar, the booking
    *    capacity/exclusive hold controls, the non-member contact form), where
-   *    nothing local proves an ancestor renders a banner; and
+   *    nothing local proves an ancestor renders a banner. (`docs/ARCHITECTURE.md`
+   *    counts 19 controls here, but that bucket is the arithmetic remainder,
+   *    not a pure shape: 3 of the 19 are the FIRST shape — dialog contents
+   *    inside `page-content-panel.tsx` and `site-banners-panel.tsx`, which are
+   *    themselves banner-bearing panels); and
    *  - in the member detail per-record cards under
    *    `admin/members/[id]/_components/` (25 controls across 9 files). Those
    *    COULD host a banner — they are real Card sections — but one page renders
@@ -175,11 +179,16 @@ export const ADMIN_VIEW_ONLY_SECTION_HEADING =
  * left inside it would add a gap for every edit-capable admin.
  *
  * Since #2160 this is the default for the admin tree, not just Booking
- * Policies. {@link AdminViewOnlyNotice} is retained in two cases:
+ * Policies. {@link AdminViewOnlyNotice} is retained in three cases:
  *
  *  - surfaces that state view-only access WITHOUT gating a control through
  *    {@link ViewOnlyActionButton} — with no gated control there is nothing for
- *    this banner to head; and
+ *    this banner to head (seven files today);
+ *  - sections that are simply NOT CONVERTED yet, so the Notice is still their
+ *    only statement of view-only access: `member-lodge-access-card`,
+ *    `member-committee-assignments-card` and `member-seasonal-membership-card`
+ *    each render a Notice alongside gated buttons that keep their per-button
+ *    reason, because the member detail cards are held for #2168; and
  *  - a NARROWER permission scope nested inside a section this banner already
  *    heads. The banner states the section's own scope once at the top; a Notice
  *    further down carries a DIFFERENT permission's reason for a subset of the
