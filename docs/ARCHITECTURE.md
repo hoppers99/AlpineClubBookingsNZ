@@ -162,6 +162,24 @@ dark-adapts correctly while staying on the -50/-600 tile convention in light
 mode. The calendar's `bg-teal-500` is outside the pass's range (it only remaps
 `-50/-100/-200` fills) and does not depend on it.
 
+**Print and PDF always render the LIGHT palette** (#2146). Paper and the
+generated PDF page are white, so dark mode must never reach them. Rather than
+stacking `!important` overrides on the print block — which cannot win against a
+token a descendant sets on itself, such as `Card`'s own `text-card-foreground` —
+every rule that installs the dark palette is wrapped in `@media not print`: the
+`:root`-level `.dark` token ramp, the `.dark .app-theme-scope` token block, and
+the literal-valued colored-callout pass. The token-driven neutral remap needs no
+wrapper because it resolves through `--card` / `--foreground` and self-heals once
+those are light. The `@media print` block then only pins `color-scheme: light`
+(the one `!important` it needs, because `next-themes` writes `color-scheme` as an
+inline style on `<html>`) plus the page/section layout rules. The
+`html2canvas`-based **Download PDF** path (`src/lib/report-pdf.ts`) is the same
+hazard in a different medium: it composites onto a hard-coded white page, so its
+`onclone` hook strips the theme class from the cloned capture document. If you
+add a dark-mode rule with a literal colour, wrap it in `@media not print` — the
+contract test `src/lib/__tests__/print-light-palette-contract.test.ts` fails on
+any `.dark`-gated rule left visible to print media.
+
 Chart colours are a documented carve-out. `FINANCE_MIX_COLORS` in
 `src/components/finance/charts/finance-chart-theme.ts` stays a literal hex
 palette (#1801, re-affirmed in #2137): the values feed Recharts `fill`/`stroke`

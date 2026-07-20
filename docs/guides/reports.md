@@ -49,6 +49,10 @@ date-only lodge nights, interpreted in the club time zone.
 1. Click **CSV** to download the figures as a spreadsheet, or **Download PDF**
    for a printable version. Both are enabled once the data has loaded.
 
+Exports and printing always come out in the light colour scheme — dark text on a
+white page — even when you are browsing the app in dark mode. You do not need to
+switch themes before exporting.
+
 ## Settings reference
 
 This page is read-only. Its controls:
@@ -61,7 +65,7 @@ This page is read-only. Its controls:
 | Deleted | Include soft-deleted bookings | Hide deleted | Include deleted, or Deleted only |
 | Update | Re-run the query | — | — |
 | CSV | Download the figures as CSV | — | Filename `tac-report-<date>.csv` |
-| Download PDF | Generate a printable PDF | — | Falls back to the browser print dialog on error |
+| Download PDF | Generate a printable PDF | — | Falls back to the browser print dialog on error; always rendered light-on-white regardless of your theme |
 
 Notes: **Total Revenue** excludes cancelled and bumped bookings; the member
 stat cards always use the current season's data (shown in the print header);
