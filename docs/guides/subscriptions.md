@@ -37,6 +37,40 @@ configurable — see [Subscription lockout](subscription-lockout.md)).
    link, and paid date. Only **linked** members are checked in Xero — unlinked
    members stay *Not Invoiced* until a Xero contact is linked or created.
 
+> **Who shows as *Not Required*.** A member's **membership type** — not their
+> login role — decides whether they owe a subscription. A member shows *Not
+> Required* only when their season membership type opts out (Life, School,
+> Non-Member, and the operational Admin/Lodge accounts), or their age group is
+> not subscription-liable. An administrator who is also an ordinary fee-paying
+> member (a normal membership type) shows their real Paid / Unpaid status here,
+> on their profile, in the members list, and in the CSV export — all of which
+> read the same rule. To exempt someone from subscriptions, change their
+> membership type; changing only their admin permission does not.
+>
+> **Assignment changes reconcile the current-season row.** When you assign a
+> REQUIRED-type season membership to a member who previously showed *Not Required*
+> (for example an operational Admin/Lodge account being made a paying member),
+> their current-season subscription row is re-derived on save from *Not Required*
+> to *Not Invoiced*, so the members list, member detail, and subscription history
+> immediately agree with the booking gate. Rows that carry a real Xero invoice, a
+> charge/family coverage, or a manual mark-paid are never changed.
+>
+> The reconcile runs in the REQUIRED direction only: if you later reassign that
+> member back to a Not Required type before any invoice exists, the row keeps
+> showing *Not Invoiced* in the raw subscription history until the next Xero
+> membership sync re-derives it. All status badges, list filters, exports, and
+> the booking gate derive from the membership type and stay correct throughout —
+> the stale value is visible only in the history ledger and can never cause a
+> charge.
+>
+> **Before deploying #2149:** because membership type (not login role) now decides
+> liability, audit for any operational-role accounts (Admin/Lodge) that hold a
+> REQUIRED-type season assignment. The next Xero membership sync will begin
+> reflecting their real subscription (Paid/Unpaid/Not Invoiced) state — this is
+> intended, but worth a pre-deploy check so no operational account is unexpectedly
+> invoiced. Give any such account a NOT_REQUIRED membership type (or remove the
+> assignment) if it should stay exempt.
+
 ### Refresh paid status from Xero
 
 1. Click **Incremental Sync** for the normal low-cost refresh, or **Repair Stale
@@ -73,6 +107,27 @@ audit, never retried), and releases its coverage so the member becomes
 bookings](subscription-lockout.md) — void an invoice only when you intend to
 re-bill or clear the obligation.
 
+**Age-tier-exempt members are not billed and raise no exception.** When a
+membership type charges *by age tier* and a member's age tier does not require a
+paid subscription (for example a Child or Infant tier), that member has no annual
+fee by design. The preview lists them — with their age tier — under the collapsed
+**Exempt** panel below the preview, and they never raise a "no effective annual
+fee" (`MISSING_FEE_SCHEDULE`) exception. Confirming the batch records a
+**Not required** subscription for them for the season, so their booking status
+stays consistent, but creates no charge and no Xero work. A per-family fee is
+unaffected: a family that contains an exempt child is still billed once, so the
+child stays in the family's coverage rather than the Exempt panel.
+
+**Refreshing the preview clears stale exceptions.** Exceptions are stored so they
+persist between visits. Once you have fixed what caused one (for example added the
+missing fee, or linked the Xero account), press **Refresh preview** as a
+finance-edit admin: the fresh preview auto-resolves any stored exception it no
+longer regenerates — including club-level ones such as a missing Xero account
+mapping — and records that the resolution came from the refresh (not a confirm
+run). Genuine, still-failing exceptions stay listed in their current wording.
+A view-only finance user's Refresh only re-reads the preview and never changes
+stored exceptions.
+
 ### Mark a member paid manually
 
 1. On a member's row (finance edit), **Mark as paid (manual)** records a payment
@@ -105,6 +160,8 @@ re-bill or clear the obligation.
 | A member is missing from the preview | They are already paid, or already hold a live Xero invoice for the season | Check the collapsed **Already invoiced** panel; record payment against the existing invoice in Xero, or void it there to re-bill |
 | A voided-invoice member still won't re-bill | The paid-status refresh has not run since you voided the invoice in Xero | Run **Incremental Sync** (or the daily refresh), then refresh the preview — the member reappears with a new charge |
 | A per-family fee raised an exception | The club bills individually but the schedule is per-family | Re-base the schedule to per-member/no-invoice in [Fees](fees.md), or switch the family billing mode here |
+| A child/infant member is missing from the preview | Their age tier does not require a subscription | Expected — check the collapsed **Exempt** panel; confirming records a Not-required season row, no invoice |
+| A `MISSING_FEE_SCHEDULE` (or other) exception won't clear after you fixed it | The stored exception only clears on an edit-gated preview refresh | As a finance-edit admin, press **Refresh preview**; the fresh preview auto-resolves any exception it no longer regenerates |
 
 ## Related links
 

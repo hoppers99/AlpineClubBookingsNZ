@@ -5,7 +5,6 @@ import type {
   Role,
 } from "@prisma/client";
 import { BUILT_IN_MEMBERSHIP_TYPES, defaultMembershipTypeKeyForRole } from "@/lib/membership-types";
-import { roleNeverRequiresSubscription } from "@/lib/member-subscription-defaults";
 import { requiresPaidSubscriptionForBooking } from "@/lib/member-subscription-eligibility";
 import {
   calculateBookingPrice,
@@ -616,9 +615,11 @@ export async function requiresPaidSubscriptionForMemberForBooking(
   if (policy?.subscriptionBehavior === "NOT_REQUIRED") {
     return false;
   }
-  if (policy && roleNeverRequiresSubscription(policy.memberRole)) {
-    return false;
-  }
+  // #2149: role-based subscription exemption dropped. Membership type is the sole
+  // authority — a bare ADMIN/LODGE account resolves (via the role→default-type
+  // fallback) to its own NOT_REQUIRED built-in type and is caught above, while a
+  // fee-paying human who holds the admin permission carries a REQUIRED membership
+  // type and now correctly owes a subscription.
   // BASED_ON_AGE_TIER (issue #2041): the type defers its subscription-required
   // answer to the per-age-tier flag (decision Q2 — the same
   // AgeTierSetting.subscriptionRequiredForBooking that gates invoice minting).

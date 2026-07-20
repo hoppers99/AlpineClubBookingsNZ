@@ -328,6 +328,98 @@ describe("membership type booking and subscription policy", () => {
     ).resolves.toBe(false);
   });
 
+  describe("role carries no subscription exemption (#2149)", () => {
+    // ADMIN/LODGE built-in fallback types (seeded by migration; resolved from DB
+    // via defaultMembershipTypeKeyForRole when a member has no season assignment).
+    const adminType: PolicyType = {
+      id: "type-admin",
+      key: "ADMIN",
+      name: "Admin",
+      isActive: true,
+      isBuiltIn: true,
+      bookingBehavior: "BLOCK_BOOKING",
+      subscriptionBehavior: "NOT_REQUIRED",
+    };
+    const lodgeType: PolicyType = {
+      id: "type-lodge",
+      key: "LODGE",
+      name: "Lodge",
+      isActive: true,
+      isBuiltIn: true,
+      bookingBehavior: "MEMBER_RATE",
+      subscriptionBehavior: "NOT_REQUIRED",
+    };
+
+    it("a fee-paying member holding the ADMIN role with a REQUIRED assignment now owes a subscription", async () => {
+      // The bug: the role short-circuit exempted them before the type was read.
+      const db = makePolicyDb({
+        members: [makeMember({ role: "ADMIN" })],
+        assignments: [
+          { memberId: "member-1", seasonYear: 2026, membershipType: fullType },
+        ],
+      });
+
+      await expect(
+        requiresPaidSubscriptionForMemberForBooking(db, {
+          memberId: "member-1",
+          seasonYear: 2026,
+          ageTier: "ADULT",
+        }),
+      ).resolves.toBe(true);
+    });
+
+    it("a bare ADMIN account (no assignment) falls back to its NOT_REQUIRED built-in type", async () => {
+      const db = makePolicyDb({
+        members: [makeMember({ role: "ADMIN" })],
+        assignments: [],
+        membershipTypes: [adminType],
+      });
+
+      await expect(
+        requiresPaidSubscriptionForMemberForBooking(db, {
+          memberId: "member-1",
+          seasonYear: 2026,
+          ageTier: "ADULT",
+        }),
+      ).resolves.toBe(false);
+    });
+
+    it("a bare LODGE kiosk account is not required across a season boundary (rollover with no assignment)", async () => {
+      // A LODGE-role kiosk, a season later, with no assignment, must resolve
+      // NOT_REQUIRED via the LODGE fallback type so it is never blocked from
+      // booking on behalf of members. makeMember's role type does not include
+      // LODGE, so build the member row inline.
+      const seasonBoundaryDb = {
+        member: {
+          findMany: vi.fn(async () => [
+            {
+              id: "lodge-1",
+              firstName: "Lodge",
+              lastName: "Kiosk",
+              email: "lodge@example.test",
+              role: "LODGE",
+              ageTier: "ADULT",
+            },
+          ]),
+        },
+        seasonalMembershipAssignment: { findMany: vi.fn(async () => []) },
+        membershipType: {
+          findMany: vi.fn(async (args: { where: { key: { in: string[] } } }) =>
+            [lodgeType].filter((type) => args.where.key.in.includes(type.key)),
+          ),
+        },
+      };
+
+      await expect(
+        requiresPaidSubscriptionForMemberForBooking(seasonBoundaryDb, {
+          memberId: "lodge-1",
+          seasonYear: 2027,
+          ageTier: "ADULT",
+        }),
+      ).resolves.toBe(false);
+    });
+  });
+
   describe("BASED_ON_AGE_TIER booking gate (#2041)", () => {
     const ageTierType: PolicyType = {
       id: "type-full",

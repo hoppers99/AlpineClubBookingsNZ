@@ -569,6 +569,23 @@ describe("membership subscription billing", () => {
     expect(preview.entries[0]).toMatchObject({ membershipTypeKey: "FULL", coveredMembers: [{ id: "new" }] });
   });
 
+  it("excludes a bare ADMIN account via its NOT_REQUIRED role-default type — never billed, no exception (#2149)", async () => {
+    // Guard item 2: with the role-based exemption dropped, a bare operational
+    // account with no season assignment resolves its fallback type FROM THE DB.
+    // The migration seeds ADMIN as NOT_REQUIRED, so the preview skips it entirely
+    // instead of raising MISSING_MEMBERSHIP_ASSIGNMENT (which it would if the
+    // ADMIN type row were absent) or billing it at the FULL rate.
+    mocks.members.findMany.mockResolvedValue([
+      member("bare-admin", { role: "ADMIN", seasonalMembershipAssignments: [] }),
+    ]);
+    mocks.membershipTypes.findMany.mockResolvedValue([
+      { id: "type-admin", key: "ADMIN", name: "Admin", subscriptionBehavior: "NOT_REQUIRED", annualFees: [] },
+    ]);
+    const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-07-13T00:00:00.000Z") });
+    expect(preview.entries).toHaveLength(0);
+    expect(preview.exceptions).toHaveLength(0);
+  });
+
   it("snapshots explicit NO_INVOICE as zero cents rather than treating it as missing config", async () => {
     mocks.members.findMany.mockResolvedValue([
       member("life", {
@@ -1100,6 +1117,46 @@ describe("membership subscription billing", () => {
       });
       expect(preview.exemptMemberIds).toEqual([]);
       expect(preview.entries).toHaveLength(2);
+    });
+
+    // #2148 (D1): the exemption gate runs BEFORE MISSING_FEE_SCHEDULE and does
+    // not require a resolved fee. A deliberately exempt tier legitimately has no
+    // fee row, so it must land in the Exempt bucket, not the exceptions list.
+    it("#2148: an exempt-tier member with NO fee row is exempted, never raises MISSING_FEE_SCHEDULE", async () => {
+      mocks.effectiveFee.mockResolvedValue(null);
+      mocks.members.findMany.mockResolvedValue([
+        // Child at 1 Apr 2026 season start -> exempt; no fee resolves for CHILD.
+        ageTierMember("child-no-fee", { dateOfBirth: new Date(2017, 2, 31) }),
+      ]);
+      const preview = await buildSubscriptionBillingPreview({
+        seasonYear: 2026,
+        decisionDate: new Date("2026-07-13T00:00:00.000Z"),
+      });
+      expect(preview.exceptions).toEqual([]);
+      expect(preview.entries).toEqual([]);
+      expect(preview.exemptMemberIds).toEqual(["child-no-fee"]);
+      expect(preview.exemptMembers).toEqual([
+        { memberId: "child-no-fee", memberName: "First-child-no-fee Member", ageTier: "CHILD" },
+      ]);
+      // No fee resolved and no invoice entries -> the Xero mapping is not touched.
+      expect(mocks.mapping).not.toHaveBeenCalled();
+    });
+
+    // #2148 constraint: a LIABLE tier with no fee is a genuine config gap and
+    // must still surface, so it is not swept into the Exempt bucket.
+    it("#2148: a liable-tier member with NO fee row still raises MISSING_FEE_SCHEDULE (not exempted)", async () => {
+      mocks.effectiveFee.mockResolvedValue(null);
+      mocks.members.findMany.mockResolvedValue([
+        // Youth at season start -> liable; no fee resolves for YOUTH.
+        ageTierMember("youth-no-fee", { dateOfBirth: new Date(2016, 3, 1) }),
+      ]);
+      const preview = await buildSubscriptionBillingPreview({
+        seasonYear: 2026,
+        decisionDate: new Date("2026-07-13T00:00:00.000Z"),
+      });
+      expect(preview.exceptions.map((row) => row.code)).toEqual(["MISSING_FEE_SCHEDULE"]);
+      expect(preview.exemptMemberIds).toEqual([]);
+      expect(preview.exemptMembers).toEqual([]);
     });
   });
 

@@ -17,7 +17,11 @@ import {
 import { sendMemberSetupInviteEmail } from "@/lib/email";
 import { getSeasonYear } from "@/lib/utils";
 import { UNASSIGNED_MEMBERSHIP_TYPE_VALUE } from "@/lib/membership-type-filter";
-import { membershipTypeAgeExemption } from "@/lib/membership-types";
+import {
+  effectiveSubscriptionBehavior,
+  isSubscriptionNotRequiredForMembershipType,
+  membershipTypeAgeExemption,
+} from "@/lib/membership-types";
 import logger from "@/lib/logger";
 import { isPrismaUniqueConstraintError } from "@/lib/prisma-errors";
 import { getXeroApiErrorInfo } from "@/lib/xero-api-errors";
@@ -26,10 +30,7 @@ import { validateInheritEmailSource } from "@/lib/member-email-inheritance";
 import { buildParentLinks } from "@/lib/member-parent-links";
 import { isXeroLiveMemberGroupLookupsEnabled } from "@/lib/xero-feature-flags";
 import { getMemberSetupInviteExpiryDate } from "@/lib/member-setup-invite";
-import {
-  ensureNotRequiredSubscriptionForRole,
-  roleNeverRequiresSubscription,
-} from "@/lib/member-subscription-defaults";
+import { ensureDefaultSeasonSubscriptionForNewMember } from "@/lib/member-subscription-defaults";
 import { ensureMemberAccessRoles } from "@/lib/member-access-role-writes";
 import { issueActionToken } from "@/lib/action-tokens";
 import { hasMemberCompletedAccountSetup } from "@/lib/password-reset";
@@ -294,14 +295,52 @@ export async function listAdminMembers(
       .filter((setting) => setting.subscriptionRequiredForBooking === false)
       .map((setting) => setting.tier),
   );
+  // #2149: the SQL exempt-filter must derive from the SAME source as the
+  // displayed flag, so it cannot key off role alone. Membership type is the
+  // authority: a member is exempt when their assigned season type is NOT_REQUIRED,
+  // OR — with no season assignment — their role's DEFAULT built-in type is
+  // NOT_REQUIRED (the role→default-type fallback the resolver applies). Roles
+  // whose default type is NOT_REQUIRED are exactly OPERATIONAL + NON_MEMBER
+  // (ADMIN/LODGE/NON_MEMBER/SCHOOL); USER defaults to FULL (REQUIRED). Guarding
+  // the role clause on "no assignment" is what stops a fee-paying admin (role
+  // ADMIN with a REQUIRED assignment) from being wrongly filtered as exempt.
   const notRequiredSubscriptionConditions = [
-    { role: { in: [...OPERATIONAL_ROLE_VALUES, ...NON_MEMBER_ROLE_VALUES] } },
+    {
+      AND: [
+        {
+          seasonalMembershipAssignments: {
+            none: { seasonYear: currentSeasonYear },
+          },
+        },
+        { role: { in: [...OPERATIONAL_ROLE_VALUES, ...NON_MEMBER_ROLE_VALUES] } },
+      ],
+    },
     {
       seasonalMembershipAssignments: {
         some: {
           seasonYear: currentSeasonYear,
           membershipType: { subscriptionBehavior: "NOT_REQUIRED" },
         },
+      },
+    },
+    // #2041/#2149: mirror the displayed flag's row-dominance branch. A
+    // BASED_ON_AGE_TIER assignment paired with a NOT_REQUIRED current-season
+    // subscription row is exempt even when the member's age tier is
+    // subscription-liable (the mid-season tier-promotion shape). This clause
+    // matches `isSubscriptionNotRequiredForMembershipType`'s
+    // `subscriptionBehavior === "BASED_ON_AGE_TIER" && hasNotRequiredSeasonRow`
+    // branch exactly — the assignment gate is required because a bare NOT_REQUIRED
+    // row does NOT exempt a REQUIRED type, and effective behavior is only
+    // BASED_ON_AGE_TIER when a season assignment carries it (no role default does).
+    {
+      seasonalMembershipAssignments: {
+        some: {
+          seasonYear: currentSeasonYear,
+          membershipType: { subscriptionBehavior: "BASED_ON_AGE_TIER" },
+        },
+      },
+      subscriptions: {
+        some: { seasonYear: currentSeasonYear, status: "NOT_REQUIRED" },
       },
     },
     ...(notRequiredAgeTiers.size > 0
@@ -549,8 +588,11 @@ export async function listAdminMembers(
   if (subscriptionFilter === "NOT_REQUIRED") {
     andConditions.push({ OR: notRequiredSubscriptionConditions });
   } else if (subscriptionFilter === "NONE") {
+    // #2149: no separate role exclusion — the NOT_REQUIRED conditions above now
+    // exempt bare operational/non-member accounts via the assignment-aware
+    // fallback, so a fee-paying admin (REQUIRED assignment) correctly stays in
+    // the owing set instead of being dropped by a blanket role filter.
     andConditions.push(
-      { role: { notIn: [...OPERATIONAL_ROLE_VALUES] } },
       { NOT: { OR: notRequiredSubscriptionConditions } },
       {
         subscriptions: { none: { seasonYear: currentSeasonYear } },
@@ -563,7 +605,6 @@ export async function listAdminMembers(
     )
   ) {
     andConditions.push(
-      { role: { notIn: [...OPERATIONAL_ROLE_VALUES] } },
       { NOT: { OR: notRequiredSubscriptionConditions } },
       {
         subscriptions: {
@@ -770,24 +811,22 @@ export async function listAdminMembers(
         : null;
     const currentSeasonAssignment = m.seasonalMembershipAssignments?.[0] ?? null;
     const currentMembershipType = currentSeasonAssignment?.membershipType ?? null;
-    const membershipTypeNotRequired =
-      currentMembershipType?.subscriptionBehavior === "NOT_REQUIRED";
-    // #2041: a BASED_ON_AGE_TIER type defers its subscription answer to the
-    // per-age-tier flag, but a NOT_REQUIRED current-season row is authoritative
-    // and dominates the stored ageTier (mirrors the booking resolver / sweep).
-    // Without this, a manual mid-season tier promotion (Child -> Youth) would
-    // leave the row NOT_REQUIRED yet flip this list flag to required, disagreeing
-    // with the booking gate. The current-season row is already selected per
-    // member above (m.subscriptions[0]), so this adds no query. Scoped to
-    // BASED_ON_AGE_TIER so REQUIRED/NOT_REQUIRED types are byte-unchanged.
-    const ageTierNotRequiredRow =
-      currentMembershipType?.subscriptionBehavior === "BASED_ON_AGE_TIER" &&
-      m.subscriptions?.[0]?.status === "NOT_REQUIRED";
-    const subscriptionNotRequired =
-      roleNeverRequiresSubscription(m.role) ||
-      notRequiredAgeTiers.has(m.ageTier) ||
-      membershipTypeNotRequired ||
-      ageTierNotRequiredRow;
+    // #2149: role carries no subscription exemption. Membership type is the sole
+    // authority via the shared derivation: the assigned season type wins, else
+    // the role→default-type fallback (so a bare ADMIN/LODGE account resolves to
+    // its NOT_REQUIRED built-in type, while a fee-paying admin with a REQUIRED
+    // assignment correctly owes a subscription). The current-season row (already
+    // selected as m.subscriptions[0]) still lets a NOT_REQUIRED row dominate a
+    // BASED_ON_AGE_TIER type after a mid-season tier promotion (#2041).
+    const subscriptionNotRequired = isSubscriptionNotRequiredForMembershipType({
+      subscriptionBehavior: effectiveSubscriptionBehavior(
+        currentMembershipType?.subscriptionBehavior,
+        m.role,
+      ),
+      ageTier: m.ageTier,
+      notRequiredAgeTiers,
+      hasNotRequiredSeasonRow: m.subscriptions?.[0]?.status === "NOT_REQUIRED",
+    });
 
     return {
       ...m,
@@ -1157,9 +1196,11 @@ export async function createAdminMember(
         definitions: roleDefinitions,
       });
 
-      // Admin accounts never owe a membership subscription, so they default
-      // to NOT_REQUIRED for the current season at creation time.
-      await ensureNotRequiredSubscriptionForRole(tx, {
+      // Seed a NOT_REQUIRED current-season row when the new member's effective
+      // membership type does not owe a subscription (operational/non-member
+      // accounts). Derived from the shared type resolver, not the login role
+      // (#2149).
+      await ensureDefaultSeasonSubscriptionForNewMember(tx, {
         id: created.id,
         role: created.role,
       });

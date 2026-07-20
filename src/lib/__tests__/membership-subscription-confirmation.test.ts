@@ -48,6 +48,7 @@ vi.mock("@/lib/audit", () => ({ createAuditLog: vi.fn() }));
 import {
   buildSubscriptionBillingPreview,
   confirmSubscriptionBillingPreview,
+  reconcileSubscriptionBillingExceptions,
 } from "@/lib/membership-subscription-billing";
 
 describe("membership subscription confirmation", () => {
@@ -202,6 +203,37 @@ describe("membership subscription confirmation", () => {
       });
     });
 
+    it("#2148: an exempt tier with NO fee row still confirms a NOT_REQUIRED season row (no charge, no Xero op)", async () => {
+      mocks.fee.mockResolvedValue(null);
+      mocks.memberFindMany.mockResolvedValue([{
+        id: "child-1", firstName: "Kid", lastName: "One", email: "kid@example.test",
+        role: "USER", dateOfBirth: null, ageTier: "CHILD", billingFamilyGroupId: null,
+        seasonalMembershipAssignments: [{ membershipType: {
+          id: "type-1", key: "FULL", name: "Full", subscriptionBehavior: "BASED_ON_AGE_TIER",
+        } }], familyGroupMemberships: [],
+      }]);
+      const preview = await buildSubscriptionBillingPreview({
+        seasonYear: 2026,
+        decisionDate: new Date("2026-07-13T00:00:00.000Z"),
+      });
+      expect(preview.exceptions).toEqual([]);
+      expect(preview.exemptMemberIds).toEqual(["child-1"]);
+
+      const result = await confirmSubscriptionBillingPreview({
+        preview,
+        expectedConfirmationToken: preview.confirmationToken,
+        source: "ANNUAL_BATCH",
+      });
+      expect(result.chargeIds).toEqual([]);
+      expect(mocks.chargeUpsert).not.toHaveBeenCalled();
+      expect(mocks.operationCreate).not.toHaveBeenCalled();
+      expect(mocks.subscriptionUpsert).toHaveBeenCalledWith({
+        where: { memberId_seasonYear: { memberId: "child-1", seasonYear: 2026 } },
+        update: {},
+        create: { memberId: "child-1", seasonYear: 2026, status: "NOT_REQUIRED" },
+      });
+    });
+
     it("never rewrites an already-PAID member (no upsert, no charge) — history intact", async () => {
       mocks.memberFindMany.mockResolvedValue([{
         id: "paid-child", firstName: "Paid", lastName: "Kid", email: "paidkid@example.test",
@@ -226,6 +258,97 @@ describe("membership subscription confirmation", () => {
       });
       expect(mocks.subscriptionUpsert).not.toHaveBeenCalled();
       expect(mocks.chargeUpsert).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("exception resolution provenance + preview reconciliation (#2148, D2)", () => {
+    it("confirm stamps CONFIRM provenance when resolving superseded exceptions", async () => {
+      mocks.exceptionUpdateMany.mockResolvedValue({ count: 0 });
+      const preview = await buildSubscriptionBillingPreview({
+        seasonYear: 2026,
+        decisionDate: new Date("2026-07-13T00:00:00.000Z"),
+      });
+      await confirmSubscriptionBillingPreview({
+        preview,
+        expectedConfirmationToken: preview.confirmationToken,
+        source: "ANNUAL_BATCH",
+      });
+      expect(mocks.exceptionUpdateMany).toHaveBeenCalledWith(expect.objectContaining({
+        data: { status: "RESOLVED", resolvedAt: expect.any(Date), resolvedVia: "CONFIRM" },
+      }));
+      // Whole-club ANNUAL_BATCH: no member-scoping OR filter, so every superseded
+      // OPEN exception (including club-level null-member ones) is in range.
+      const where = (mocks.exceptionUpdateMany.mock.calls[0][0] as { where: Record<string, unknown> }).where;
+      expect(where.OR).toBeUndefined();
+    });
+
+    it("a NEW_MEMBER_APPROVAL confirm scopes the resolve to its members OR the club-level null-member mapping code (constraint 4)", async () => {
+      mocks.exceptionUpdateMany.mockResolvedValue({ count: 0 });
+      const preview = await buildSubscriptionBillingPreview({
+        seasonYear: 2026,
+        decisionDate: new Date("2026-07-13T00:00:00.000Z"),
+        memberIds: ["member-1"],
+      });
+      await confirmSubscriptionBillingPreview({
+        preview,
+        expectedConfirmationToken: preview.confirmationToken,
+        source: "NEW_MEMBER_APPROVAL",
+      });
+      const where = (mocks.exceptionUpdateMany.mock.calls[0][0] as { where: { OR?: unknown[] } }).where;
+      expect(where.OR).toEqual([
+        { memberId: { in: expect.arrayContaining(["member-1"]) } },
+        { code: "MISSING_XERO_ACCOUNT_MAPPING", memberId: null },
+      ]);
+    });
+
+    it("reconcile auto-resolves whole-club with PREVIEW_RECONCILE provenance and reports the resolved count", async () => {
+      // A fresh whole-club preview with no exceptions -> every OPEN row is superseded.
+      mocks.exceptionUpdateMany.mockResolvedValue({ count: 4 });
+      const result = await reconcileSubscriptionBillingExceptions({
+        seasonYear: 2026,
+        decisionDate: new Date("2026-07-13T00:00:00.000Z"),
+      });
+      expect(result).toEqual({ resolvedCount: 4 });
+      expect(mocks.exceptionUpdateMany).toHaveBeenCalledWith(expect.objectContaining({
+        where: expect.objectContaining({ seasonYear: 2026, status: "OPEN" }),
+        data: { status: "RESOLVED", resolvedAt: expect.any(Date), resolvedVia: "PREVIEW_RECONCILE" },
+      }));
+      const where = (mocks.exceptionUpdateMany.mock.calls[0][0] as { where: { OR?: unknown; fingerprint?: unknown } }).where;
+      // Whole-club scope: no member OR filter, so club-level null-member exceptions
+      // are reconciled too (constraint 4). No genuine exception this run -> no
+      // fingerprint exclusion, so all superseded OPEN rows resolve.
+      expect(where.OR).toBeUndefined();
+      expect(where.fingerprint).toBeUndefined();
+    });
+
+    it("reconcile preserves a still-genuine exception by excluding its fingerprint", async () => {
+      mocks.fee.mockResolvedValue(null);
+      // A non-exempt member with no fee -> the fresh preview regenerates a
+      // MISSING_FEE_SCHEDULE; reconcile must NOT resolve that fingerprint.
+      mocks.memberFindMany.mockResolvedValue([{
+        id: "member-1", firstName: "Member", lastName: "One", email: "member@example.test",
+        role: "USER", dateOfBirth: null, ageTier: "ADULT", billingFamilyGroupId: null,
+        seasonalMembershipAssignments: [{ membershipType: {
+          id: "type-1", key: "FULL", name: "Full", subscriptionBehavior: "REQUIRED",
+        } }], familyGroupMemberships: [],
+      }]);
+      mocks.exceptionUpdateMany.mockResolvedValue({ count: 0 });
+      await reconcileSubscriptionBillingExceptions({
+        seasonYear: 2026,
+        decisionDate: new Date("2026-07-13T00:00:00.000Z"),
+      });
+      const where = (mocks.exceptionUpdateMany.mock.calls[0][0] as { where: { fingerprint?: { notIn: string[] } } }).where;
+      expect(where.fingerprint?.notIn).toHaveLength(1);
+    });
+
+    it("reconcile runs under the per-season advisory lock", async () => {
+      mocks.exceptionUpdateMany.mockResolvedValue({ count: 0 });
+      await reconcileSubscriptionBillingExceptions({
+        seasonYear: 2026,
+        decisionDate: new Date("2026-07-13T00:00:00.000Z"),
+      });
+      const execRaw = (mocks.client as { $executeRaw: ReturnType<typeof vi.fn> }).$executeRaw;
+      expect(execRaw).toHaveBeenCalledTimes(1);
     });
   });
 
