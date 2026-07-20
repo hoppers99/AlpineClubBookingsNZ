@@ -549,6 +549,13 @@ describe("view-only live region is mounted before the loading early-return (#214
       // … and the region already exists and is empty, so the banner text that
       // lands later is a CONTENT change inside a registered region.
       expect(viewOnlyBanner().textContent).toBe("");
+      // The same rule applies to `PolicyFeedback`'s assertive region, and
+      // nothing pinned its POSITION until the #2162 review: a section that
+      // early-returns its loading state ABOVE `PolicyFeedback` mounts the alert
+      // already populated on a failed FIRST load, which is exactly the
+      // announcement some screen-reader/browser pairings drop. This one line
+      // covers all five sections.
+      expect(screen.getByRole("alert").textContent).toBe("");
     },
   );
 
@@ -939,8 +946,12 @@ describe("PublicBookingRequestsSection indicative pricing stages behind Save (#2
    * and the PUT merges its whole-object body and echoes the row back. The
    * echo matters — the card re-seeds its draft AND its snapshot from it.
    */
-  function stubSettings(stored: Record<string, unknown> = STORED) {
+  function stubSettings(
+    stored: Record<string, unknown> = STORED,
+    options: { changedByAnotherAdmin?: Partial<typeof STORED> } = {},
+  ) {
     let current = { ...stored };
+    let reads = 0;
     const fetchMock = vi.fn<
       (url: string, init?: RequestInit) => Promise<Response>
     >(async (_url, init) => {
@@ -948,10 +959,57 @@ describe("PublicBookingRequestsSection indicative pricing stages behind Save (#2
         current = { ...current, ...JSON.parse(String(init.body)) };
         return jsonResponse(current);
       }
-      return jsonResponse(current);
+      // `jsonResponse` serialises now, so this body is the row as it stood for
+      // THIS read.
+      const body = jsonResponse(current);
+      reads += 1;
+      // Between the section's mount-time load and any later read, a second
+      // admin changes the row. Without this the card's load-time snapshot IS
+      // what is stored, so a save that skipped the fresh read would produce a
+      // byte-identical body and every "merges the fresh row" assertion would
+      // pass against an implementation that never re-read (#2162 review).
+      if (reads === 1 && options.changedByAnotherAdmin) {
+        current = { ...current, ...options.changedByAnotherAdmin };
+      }
+      return body;
     });
     vi.stubGlobal("fetch", fetchMock);
     return fetchMock;
+  }
+
+  /**
+   * The body of the single write, plus how many READS ran before it.
+   *
+   * The count is the point. "The call immediately before the PUT was a read" is
+   * satisfied by the mount-time load on its own, so it stays true even with the
+   * save-step read deleted — a guard that cannot fail, which is this area's
+   * recurring bug (#2162 review). Two reads means the mount-time load PLUS the
+   * fresh read the save takes; one means the fresh read is gone.
+   */
+  function writeContext(fetchMock: ReturnType<typeof vi.fn>) {
+    const calls = fetchMock.mock.calls;
+    const index = calls.findIndex(
+      (call) => (call[1] as RequestInit | undefined)?.method !== undefined,
+    );
+    return {
+      body: JSON.parse(String((calls[index][1] as RequestInit).body)),
+      readsBeforeWrite: calls
+        .slice(0, index)
+        .filter((call) => (call[1] as RequestInit | undefined)?.method === undefined)
+        .length,
+    };
+  }
+
+  function quoteWindowInput() {
+    return screen.getByLabelText(
+      "Quote response window (days)",
+    ) as HTMLInputElement;
+  }
+
+  function quoteTimingButton() {
+    return screen.getByRole("button", {
+      name: "Save quote timing",
+    }) as HTMLButtonElement;
   }
 
   async function loadSection() {
@@ -1060,26 +1118,124 @@ describe("PublicBookingRequestsSection indicative pricing stages behind Save (#2
     expect(writeCalls(fetchMock)).toHaveLength(0);
   });
 
-  // All five settings share ONE whole-object PUT, so this card must send the
-  // STORED timing values alongside its own key — never a sibling card's
-  // uncommitted draft, and never its own load-time snapshot of one.
-  it("GETs the fresh settings and merges, so an unsaved timing draft is not persisted", async () => {
-    const fetchMock = stubSettings();
+  // All five settings share ONE whole-object PUT, so every card must send the
+  // four fields it does not own as the values STORED AT WRITE TIME — never a
+  // sibling card's uncommitted draft, and never its own load-time snapshot of
+  // one. Each of these three saves therefore has another admin move a field it
+  // does not own, between the load and the save, and asserts the moved value
+  // goes back out.
+  it("merges the fresh row on a pricing save, over both a stale snapshot and an unsaved draft", async () => {
+    const fetchMock = stubSettings(STORED, {
+      changedByAnotherAdmin: { quoteResponseTtlDays: 30 },
+    });
     render(<PublicBookingRequestsSection />);
     await loadSection();
 
-    fireEvent.change(screen.getByLabelText("Quote response window (days)"), {
-      target: { value: "45" },
-    });
+    // The admin has typed into the quote window but not saved it.
+    fireEvent.change(quoteWindowInput(), { target: { value: "45" } });
     fireEvent.click(editButton());
     fireEvent.click(pricingCheckbox());
     fireEvent.click(saveButton());
 
     await waitFor(() => expect(writeCalls(fetchMock)).toHaveLength(1));
-    expect(JSON.parse(String(writeCalls(fetchMock)[0][1]?.body))).toEqual({
+    const { body, readsBeforeWrite } = writeContext(fetchMock);
+    // Asserted BEFORE the body, so a missing fresh read is reported as the
+    // missing read it is rather than being shadowed by the deep-equal.
+    expect(readsBeforeWrite).toBe(2);
+    // 30 = what is stored now. NOT 14 (the load-time snapshot) and NOT 45 (the
+    // uncommitted draft).
+    expect(body).toEqual({
       ...STORED,
+      quoteResponseTtlDays: 30,
       showPricingToNonMembers: true,
     });
+  });
+
+  it("merges the fresh row on a quote-timing save, so it cannot revert a pricing change", async () => {
+    const fetchMock = stubSettings(STORED, {
+      changedByAnotherAdmin: { showPricingToNonMembers: true },
+    });
+    render(<PublicBookingRequestsSection />);
+    await loadSection();
+
+    fireEvent.change(quoteWindowInput(), { target: { value: "20" } });
+    fireEvent.click(quoteTimingButton());
+
+    await waitFor(() => expect(writeCalls(fetchMock)).toHaveLength(1));
+    const { body, readsBeforeWrite } = writeContext(fetchMock);
+    // Asserted BEFORE the body, so a missing fresh read is reported as the
+    // missing read it is rather than being shadowed by the deep-equal.
+    expect(readsBeforeWrite).toBe(2);
+    expect(body).toEqual({
+      ...STORED,
+      showPricingToNonMembers: true,
+      quoteResponseTtlDays: 20,
+    });
+  });
+
+  it("merges the fresh row on an attendee-timing save, so it cannot revert a pricing change", async () => {
+    const fetchMock = stubSettings(STORED, {
+      changedByAnotherAdmin: { showPricingToNonMembers: true },
+    });
+    render(<PublicBookingRequestsSection />);
+    await loadSection();
+
+    fireEvent.change(screen.getByLabelText("First prompt (days before check-in)"), {
+      target: { value: "21" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save attendee prompts" }));
+
+    await waitFor(() => expect(writeCalls(fetchMock)).toHaveLength(1));
+    const { body, readsBeforeWrite } = writeContext(fetchMock);
+    // Asserted BEFORE the body, so a missing fresh read is reported as the
+    // missing read it is rather than being shadowed by the deep-equal.
+    expect(readsBeforeWrite).toBe(2);
+    expect(body).toEqual({
+      ...STORED,
+      showPricingToNonMembers: true,
+      attendeeConfirmationLeadDays: 21,
+    });
+  });
+
+  // #2162 review: the fresh read can move a field this card does not own, and
+  // the save re-seeds the snapshot the TIMING cards write from. If the box
+  // showing that field is not moved with it, its dirty-gated Save lights up
+  // with no admin input at all — one click from reverting the other admin.
+  it("re-seeds an untouched timing box when a pricing save brings back a new value", async () => {
+    stubSettings(STORED, { changedByAnotherAdmin: { quoteResponseTtlDays: 30 } });
+    render(<PublicBookingRequestsSection />);
+    await loadSection();
+
+    // The admin touches nothing but the pricing checkbox.
+    expect(quoteWindowInput().value).toBe("14");
+    fireEvent.click(editButton());
+    fireEvent.click(pricingCheckbox());
+    fireEvent.click(saveButton());
+
+    await waitFor(() =>
+      expect(screen.getByText("Booking request settings saved")).toBeTruthy(),
+    );
+    expect(quoteWindowInput().value).toBe("30");
+    // No Save the admin did not arm.
+    expect(quoteTimingButton().disabled).toBe(true);
+  });
+
+  it("leaves a timing box the admin typed into alone across another card's save", async () => {
+    stubSettings(STORED, { changedByAnotherAdmin: { quoteResponseTtlDays: 30 } });
+    render(<PublicBookingRequestsSection />);
+    await loadSection();
+
+    fireEvent.change(quoteWindowInput(), { target: { value: "45" } });
+    fireEvent.click(editButton());
+    fireEvent.click(pricingCheckbox());
+    fireEvent.click(saveButton());
+
+    await waitFor(() =>
+      expect(screen.getByText("Booking request settings saved")).toBeTruthy(),
+    );
+    // Their own in-progress input survives, and its Save stays armed for it.
+    expect(quoteWindowInput().value).toBe("45");
+    expect(quoteTimingButton().disabled).toBe(false);
   });
 
   it("offers no way in for a view-only admin, and explains it once section-wide", async () => {
@@ -1127,6 +1283,43 @@ describe("PublicBookingRequestsSection indicative pricing stages behind Save (#2
     // The write failed, so the card stays open holding the admin's draft.
     expect(saveButton()).toBeTruthy();
     expect(pricingCheckbox().checked).toBe(true);
+  });
+
+  // #2162 review: the save's fresh read is part of the WRITE. When it fails for
+  // anything other than a 403 the PUT never goes out, so the message the admin
+  // gets after clicking Save must say the CHANGE did not land. Reusing the
+  // mount-time load's "Failed to fetch booking request settings" reports a read
+  // they never asked for and says nothing about the change they did.
+  it("says the change was not saved when the save's fresh read fails", async () => {
+    let reads = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(
+        async (_url, init) => {
+          if (init?.method) return jsonResponse(STORED);
+          reads += 1;
+          // Read 1 is the mount-time load and must succeed, or the section
+          // never renders a Save to click. Read 2 is the save step.
+          return reads === 1
+            ? jsonResponse(STORED)
+            : new Response("{}", { status: 500 });
+        },
+      ),
+    );
+    render(<PublicBookingRequestsSection />);
+    await loadSection();
+
+    fireEvent.change(quoteWindowInput(), { target: { value: "20" } });
+    fireEvent.click(quoteTimingButton());
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          "Your change was not saved: the current settings could not be re-read. Please try again.",
+        ),
+      ).toBeTruthy(),
+    );
+    expect(screen.queryByText("Failed to fetch booking request settings")).toBeNull();
   });
 });
 

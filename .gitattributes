@@ -14,3 +14,11 @@ scripts/*.mjs text eol=lf
 # silently rewriting it to CRLF turns a 14-line change into a ~9,400-line diff
 # that conflicts on every line at the next port (#2129), so pin it to LF.
 prisma/schema.prisma text eol=lf
+
+# The hand-edited markdown carries the same hazard as the schema, and `AGENTS.md`
+# / `docs/ARCHITECTURE.md` / `CHANGELOG.md` are the files most often ported
+# between the public repo and its forks. A Windows editor rewriting one to CRLF
+# turned a 28-line change into an 848-line diff, destroyed blame, and made
+# `git diff --check` flag every line as trailing whitespace (#2162). Pin the
+# whole set to LF rather than waiting to relearn this per file.
+*.md text eol=lf

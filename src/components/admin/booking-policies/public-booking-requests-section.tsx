@@ -30,9 +30,11 @@ interface BookingRequestSettings {
  * storage exactly. It cannot be used here, because the hook carries ONE
  * `editing` flag and the three cards do not share an editing mode: the two
  * timing cards are always-editable with a dirty-gated Save (their shape since
- * before #2142, unchanged by this issue), while the canonical pattern this card
- * is being brought onto reveals Save/Cancel behind a per-card Edit. Fusing them
- * would have forced an Edit step onto the two timing cards as a side effect.
+ * before #2142, and still an acknowledged divergence from the canonical pattern
+ * — whether to Edit-gate them is the owner decision in #2166), while the
+ * canonical pattern this card is being brought onto reveals Save/Cancel behind
+ * a per-card Edit. Fusing them would have forced an Edit step onto the two
+ * timing cards as a side effect, pre-empting that decision.
  * Joining one of those cards' state instead would have been arbitrary: pricing
  * visibility is a public-facing disclosure, not quote or attendee timing, and
  * it is its own card in the UI.
@@ -60,16 +62,65 @@ const SETTINGS_FALLBACK: BookingRequestSettings = {
   attendeeConfirmationReminderDays: 3,
 }
 
-async function fetchSettings(signal?: AbortSignal): Promise<BookingRequestSettings> {
-  const res = await fetch(ENDPOINT, signal ? { signal } : undefined)
-  if (!res.ok) throw new Error("Failed to fetch booking request settings")
+/** The four settings whose editor is a free-text number box on a timing card. */
+const TIMING_FIELDS = [
+  "quoteResponseTtlDays",
+  "quoteReminderLeadDays",
+  "attendeeConfirmationLeadDays",
+  "attendeeConfirmationReminderDays",
+] as const
+
+type TimingField = (typeof TIMING_FIELDS)[number]
+
+/**
+ * Shown when the fresh read a save takes fails for any reason other than a 403
+ * (which has its own narrowed-actor copy). It has to say the change did not
+ * land: the admin clicked Save, not Reload.
+ */
+const SAVE_STEP_READ_FAILED =
+  "Your change was not saved: the current settings could not be re-read. Please try again."
+
+/**
+ * The section's only read, in both of its roles: the mount-time load, and the
+ * fresh read every card takes immediately before it writes.
+ *
+ * `asSaveStep` says which. A save's fresh read is part of the WRITE, so a 403
+ * on it means the actor was narrowed since page load and belongs in the shared
+ * "this change was not saved" copy — the same mapping `google-security-card.tsx`
+ * applies to its own fresh read of `/api/admin/modules`. The mount-time load is
+ * an ordinary GET on `bookings:view`, so the same status there is a genuine read
+ * failure and keeps the generic message.
+ *
+ * Only the load passes an `AbortSignal` (the hook's, aborted on unmount). The
+ * save path deliberately does not, matching the precedent above: aborting the
+ * read half of a save would leave the write undecided rather than cancelled,
+ * and the PUT it feeds is not abortable either.
+ */
+async function fetchSettings(
+  options: { signal?: AbortSignal; asSaveStep?: boolean } = {},
+): Promise<BookingRequestSettings> {
+  const res = await fetch(ENDPOINT, options.signal ? { signal: options.signal } : undefined)
+  if (!res.ok) {
+    if (options.asSaveStep) {
+      if (res.status === 403) throw new ForbiddenSaveError()
+      // Any other failure of the save's fresh read means the PUT never went out.
+      // The message lands in the error region the admin is watching after
+      // clicking Save, so read-flavoured copy there would report a failure they
+      // did not ask for and say nothing about the change they did (#2162
+      // review).
+      throw new Error(SAVE_STEP_READ_FAILED)
+    }
+    throw new Error("Failed to fetch booking request settings")
+  }
   return (await res.json()) as BookingRequestSettings
 }
 
 /**
  * The section's only write. The route takes the whole settings object, so every
- * card sends all five fields; each caller is responsible for the ones it does
- * not own being the STORED values rather than a stale or uncommitted draft.
+ * card sends all five fields. No card may source the four it does not own from
+ * its load-time snapshot: each one GETs the fresh row through
+ * {@link fetchSettings} and merges only its own fields over it, so everything
+ * else on the wire is what is STORED right now.
  *
  * Throws {@link ForbiddenSaveError} for a 403 so both the hook-driven card and
  * the two hand-rolled ones map it to the same shared copy.
@@ -105,6 +156,7 @@ export function PublicBookingRequestsSection() {
   // purely about which affordances are offered, not about a silent 403.
   const canEdit = useAdminAreaEditAccess("bookings")
 
+  /** Full re-seed: snapshot and all four timing drafts. The LOAD path only. */
   const applySettings = useCallback((data: BookingRequestSettings) => {
     setSettings(data)
     setTtlDraft(String(data.quoteResponseTtlDays))
@@ -112,6 +164,52 @@ export function PublicBookingRequestsSection() {
     setAttendeeLeadDraft(String(data.attendeeConfirmationLeadDays))
     setAttendeeReminderDraft(String(data.attendeeConfirmationReminderDays))
   }, [])
+
+  const timingDrafts: Record<
+    TimingField,
+    { value: string; set: (next: string) => void }
+  > = {
+    quoteResponseTtlDays: { value: ttlDraft, set: setTtlDraft },
+    quoteReminderLeadDays: { value: reminderDraft, set: setReminderDraft },
+    attendeeConfirmationLeadDays: { value: attendeeLeadDraft, set: setAttendeeLeadDraft },
+    attendeeConfirmationReminderDays: {
+      value: attendeeReminderDraft,
+      set: setAttendeeReminderDraft,
+    },
+  }
+
+  /**
+   * Call this at the START of any save; call what it returns with the server's
+   * response (#2162 review).
+   *
+   * Every write in this section re-seeds the snapshot the timing cards send
+   * their unchanged fields from, and the fresh read means that snapshot can
+   * legitimately move to a value THIS admin never typed. A draft box left
+   * showing the old value beside a moved snapshot is not merely cosmetic: the
+   * two `*Dirty` flags below compare them, so the mismatch lights up a Save the
+   * admin never armed, one click from reverting the other admin's change.
+   *
+   * So a field whose draft still matched the snapshot when the save started —
+   * the admin had not typed into it — is re-seeded from the response with it. A
+   * field the admin HAD typed into is left exactly as they left it: that draft
+   * is their own in-progress input and this save was not theirs. Dirtiness is
+   * captured now, synchronously, before the round trip, so a keystroke landing
+   * mid-flight cannot be mistaken for a clean field.
+   *
+   * The pricing card is deliberately not re-seeded the same way: its draft is
+   * one boolean and Save is disabled while it matches the snapshot, so a stale
+   * snapshot there cannot arm a Save either. The worst case is a checkbox
+   * showing last-load's value until the next load.
+   */
+  function beginSaveDraftSync() {
+    const clean = TIMING_FIELDS.filter(
+      (field) => Number(timingDrafts[field].value) === settings[field],
+    )
+    return (data: BookingRequestSettings) => {
+      setSettings(data)
+      for (const field of clean) timingDrafts[field].set(String(data[field]))
+    }
+  }
 
   /*
     #2162: the Indicative Pricing card. It owns the section's single GET as
@@ -122,7 +220,7 @@ export function PublicBookingRequestsSection() {
   const pricing = useSectionEditState<PricingDraft>({
     initial: { showPricingToNonMembers: SETTINGS_FALLBACK.showPricingToNonMembers },
     load: async (signal) => {
-      const data = await fetchSettings(signal)
+      const data = await fetchSettings({ signal })
       if (!signal.aborted) applySettings(data)
       return { showPricingToNonMembers: data.showPricingToNonMembers }
     },
@@ -132,20 +230,17 @@ export function PublicBookingRequestsSection() {
       // card's fresh result.
       setError("")
       setSuccess("")
+      const syncDrafts = beginSaveDraftSync()
       // GET-fresh-then-merge over the shared whole-object PUT: write the STORED
       // timing values plus this card's new one, never the snapshot this card
       // happened to load with and never a timing draft the admin has typed but
       // not saved.
-      const fresh = await fetchSettings()
+      const fresh = await fetchSettings({ asSaveStep: true })
       const next = await putSettings({
         ...fresh,
         showPricingToNonMembers: draft.showPricingToNonMembers,
       })
-      // Re-seed the SNAPSHOT the timing cards send their unchanged fields from,
-      // so a later "Save quote timing" cannot revert the pricing change that
-      // just landed. Their text drafts are deliberately left alone: they are the
-      // admin's own in-progress input and this save was not theirs.
-      setSettings(next)
+      syncDrafts(next)
       return { showPricingToNonMembers: next.showPricingToNonMembers }
     },
     successMessage: "Booking request settings saved",
@@ -159,14 +254,38 @@ export function PublicBookingRequestsSection() {
     // happened (#2143).
   })
 
-  async function saveSettings(next: BookingRequestSettings) {
+  /**
+   * The two timing cards' save. `patch` is only the fields the calling card
+   * OWNS; everything else on the wire comes from a fresh read taken inside this
+   * function, never from `settings` as it stood at page load (#2162 review).
+   *
+   * Without that read a stale tab reverted whatever another admin had changed
+   * in the meantime — most concretely, "Save quote timing" writing back the
+   * pricing flag as it was when the tab was opened. It is the same
+   * GET-fresh-then-merge the pricing card and the module-toggle cards use, and
+   * `AGENTS.md` / `docs/ARCHITECTURE.md` make it mandatory for any card sharing
+   * a strict whole-object PUT.
+   *
+   * It deliberately does NOT call `applySettings` on the response. That would
+   * re-seed EVERY draft from the row, including drafts belonging to cards the
+   * admin is mid-edit in — the clobber this whole change exists to remove. The
+   * visible cost is that the saving card's own box keeps whatever the admin
+   * typed rather than the normalised echo: type `07` into the quote window and
+   * save, and it still reads `07` where it used to snap to `7`. That is
+   * cosmetic only — `syncDrafts` moves the snapshot too, so `timingDirty` is
+   * false and Save stays disabled. Do not "fix" it by reinstating
+   * `applySettings`.
+   */
+  async function saveSettings(patch: Partial<BookingRequestSettings>) {
+    const syncDrafts = beginSaveDraftSync()
     setSaving(true)
     setError("")
     setSuccess("")
     pricing.setError("")
     pricing.setSuccess("")
     try {
-      applySettings(await putSettings(next))
+      const fresh = await fetchSettings({ asSaveStep: true })
+      syncDrafts(await putSettings({ ...fresh, ...patch }))
       setSuccess("Booking request settings saved")
     } catch (err) {
       if (err instanceof ForbiddenSaveError) {
@@ -195,7 +314,6 @@ export function PublicBookingRequestsSection() {
       return
     }
     void saveSettings({
-      ...settings,
       quoteResponseTtlDays: ttl,
       quoteReminderLeadDays: reminder,
     })
@@ -213,7 +331,6 @@ export function PublicBookingRequestsSection() {
       return
     }
     void saveSettings({
-      ...settings,
       attendeeConfirmationLeadDays: lead,
       attendeeConfirmationReminderDays: reminder,
     })
@@ -237,6 +354,9 @@ export function PublicBookingRequestsSection() {
     </AdminViewOnlySectionBanner>
   )
 
+  // `initial` is always supplied, so this is never actually null once loading
+  // clears; the check below exists only to narrow the hook's `T | null`, which
+  // is `null` only for a card that renders nothing until its fetch resolves.
   const pricingDraft = pricing.draft
   // Any write in the section disables every control in it, so a second card
   // cannot be submitted against a settings object that is mid-flight.
