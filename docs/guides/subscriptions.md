@@ -109,6 +109,15 @@ once for the per-family members, and the per-member member stays skipped for the
 own invoice. A suppressed family is shown, with the covering member and invoice
 number, under the collapsed **Already invoiced** panel.
 
+**Unresolvable holder basis suppresses conservatively.** If the member holding a
+live invoice has a basis that cannot be resolved — their type is *not required*
+(for example a Life Member holding the legacy family invoice), no type resolves,
+or there is no fee row for their type — the family is kept **suppressed** (never
+silently re-billed), tagged **Unresolved basis** in the **Already invoiced**
+panel. To re-bill such a family, either fix the holder's membership type/fee so a
+real basis resolves, or void the stale invoice in Xero (which releases the block
+and re-bills the group as one entry).
+
 **Mark a family as already invoiced (operator override).** Sometimes an older,
 ambiguous invoice already covered a whole family, but it sits on a member whose
 current billing basis is per-member — so the automatic suppression above will not
@@ -119,7 +128,11 @@ the covering invoice number). A marked family is suppressed from billing — sho
 in the **Already invoiced** panel with an **Operator marked** indicator — until
 you **Unmark** it there, which restores it to the next billing run. Marking keeps
 an audit row even after you unmark. Use it only when you know a real invoice
-covers the family; to re-bill, unmark it.
+covers the family; to re-bill, unmark it. A marker created while a confirm run is
+mid-flight can end up alongside a family that was billed by that same run — this
+is harmless: the resulting charge's own coverage suppresses the family in every
+future preview, so the redundant marker changes nothing. If that invoice is later
+voided, the marker simply becomes visible and unmarkable again.
 
 **Voided/deleted invoices re-open billing.** If you **void or delete** a
 member's subscription invoice in Xero, the next paid-status refresh clears the
