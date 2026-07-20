@@ -37,6 +37,15 @@ type BillingData = {
       coveredMembers: Array<{ id: string; name: string }>;
     }>;
     exceptions: Array<{ fingerprint: string; message: string }>;
+    // #2147 (D3): members suppressed from the preview because their season
+    // subscription already holds a live Xero invoice. Shown in a collapsed
+    // "Already invoiced" section with their invoice number, never re-billed.
+    alreadyInvoiced: Array<{
+      memberId: string;
+      memberName: string;
+      xeroInvoiceNumber: string | null;
+      status: string;
+    }>;
   };
   charges: Array<{
     id: string;
@@ -200,6 +209,26 @@ export function SubscriptionBillingPanel({ seasonYear }: { seasonYear: number })
                 <ViewOnlyActionButton canEdit={canEditFinance} type="button" onClick={() => void confirmBatch()} disabled={working}>Confirm and queue annual batch</ViewOnlyActionButton>
               </div>
             ) : <Alert variant="info">No new charges are available for this preview. Existing immutable coverage is not regenerated.</Alert>}
+            {data.preview.alreadyInvoiced.length > 0 ? (
+              <details className="rounded-md border p-3 text-sm">
+                <summary className="cursor-pointer font-medium">
+                  Already invoiced ({data.preview.alreadyInvoiced.length}) — suppressed to avoid double-billing
+                </summary>
+                <p className="mt-1 text-muted-foreground">
+                  These members already have a Xero invoice for this season, so they are not re-billed. Record payment against the existing invoice in Xero (or void it there to re-bill).
+                </p>
+                <ul className="mt-2 space-y-1">
+                  {data.preview.alreadyInvoiced.map((row) => (
+                    <li key={row.memberId} className="flex flex-wrap items-center justify-between gap-2">
+                      <span>{row.memberName}</span>
+                      <span className="tabular-nums text-muted-foreground">
+                        {row.xeroInvoiceNumber ?? "No Xero number"} · {row.status.replaceAll("_", " ")}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            ) : null}
             {visibleExceptions.length > 0 ? (
               <Alert variant="warning"><div className="space-y-1"><p className="font-medium">Billing exceptions — no invoice created</p>{visibleExceptions.map((item) => <p key={item.fingerprint}>{item.message}</p>)}</div></Alert>
             ) : null}
