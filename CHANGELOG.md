@@ -118,7 +118,10 @@ All notable public reference-release changes should be recorded here.
   reader), `MembershipTypeAgeTier`, and the `XeroItemCodeMapping.isMember` /
   `AgeTierSetting.xeroContactGroup*` columns are all deliberately **kept or
   deferred** to follow-ups #2129/#2130/#2131. The destructive `DROP TABLE`s
-  require the blue/green acknowledgement (see notes).
+  require the blue/green acknowledgement (see notes). The #2130 **runtime-prep**
+  also ships in this release (#2133): the three remaining no-`select` queries on
+  `XeroItemCodeMapping`/`AgeTierSetting` now name only their consumed columns, so
+  the deferred column drops become blue/green-legal next release.
 
 - **Docs, CI, and tests (#2083/#2085, #2117/#2125).** The member-facing user
   guide (`docs/user-guide/`) is now mirrored one-way to the GitHub wiki by a
