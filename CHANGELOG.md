@@ -17,15 +17,28 @@ All notable public reference-release changes should be recorded here.
   same way and a stray keystroke in a settings box is no longer one click from a
   change. You can still have more than one card open at once; only saving is
   exclusive, because all three cards write the same settings record. Nothing
-  else about them moved: the same ranges are enforced, the same explanation
-  appears if a quote reminder is not shorter than its window, and each card
-  still re-reads the stored settings immediately before it writes so it cannot
-  overwrite another card. One consequence worth knowing: a card you have not
-  opened keeps showing the values it loaded with, even if another admin has
-  since changed them — the same as everywhere else in the admin, and its
-  **Save** can no longer arm itself without you. No schema, permission, route,
-  or audit change. See `docs/guides/booking-policies.md` and
-  `docs/ARCHITECTURE.md`.
+  else about them moved: the same ranges are enforced and the same explanation
+  appears if a quote reminder is not shorter than its window. A read-only box is
+  now shaded so you can see at a glance that it is waiting for **Edit**, rather
+  than looking editable and ignoring your typing.
+
+  **Saving is also safer against a second admin.** Each card still re-reads the
+  stored settings immediately before it writes, and it now sends back only the
+  boxes you actually changed. Previously, if someone else changed the quote
+  window while your page was open and you edited only the reminder, your Save
+  put the old window back. Now your untouched boxes are left exactly as they are
+  stored, and after saving the card shows you the other admin's value. If that
+  makes the two quote settings contradict each other — your new reminder is no
+  longer shorter than a window someone else has shortened — nothing is written
+  and you are told to reload and try again, instead of getting a bare
+  "Invalid input".
+
+  One thing worth knowing: a card you have not opened keeps showing the values
+  it loaded with, even if another admin has since changed them, and clicking
+  **Edit** does not refresh it — the same as everywhere else in the admin.
+  Reload the page if you want to be certain. What that staleness can no longer
+  do is get written back. No schema, permission, route, or audit change. See
+  `docs/guides/booking-policies.md` and `docs/ARCHITECTURE.md`.
 
 - **"Show indicative pricing" no longer changes the public site the moment you
   click it (#2162).** On **Booking Policies → Public Booking Requests**, the

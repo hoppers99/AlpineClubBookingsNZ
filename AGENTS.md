@@ -75,9 +75,12 @@ before changing Next.js APIs or conventions.
   Gate edit affordances on the tri-state `useAdminAreaEditAccess` via
   `ViewOnlyActionButton`/`AdminViewOnlyNotice`, and the write route must enforce
   the matching `area:edit` permission. This is binding for settings work touched
-  from here on; two pre-existing surfaces are acknowledged divergents and are NOT
-  retrofitted by this rule alone: the `/admin/modules` grid (bulk toggles) and
-  the staged-but-ungated legacy settings forms. Booking Policies has NO
+  from here on; four pre-existing surfaces are acknowledged divergents and are
+  NOT retrofitted by this rule alone: the `/admin/modules` grid (bulk toggles),
+  the older staged-but-ungated settings forms, and the age-tier and notification
+  settings panels — the last two not because they are list sections (list
+  sections are in scope), but simply because they have not been touched since.
+  `docs/ARCHITECTURE.md` carries the same four. Booking Policies has NO
   divergent left. Every settings control in the area now stages behind a
   per-card Edit → Save/Cancel: the **Show indicative pricing** checkbox stopped
   persisting on change in #2162, and the two timing cards beside it in
@@ -88,8 +91,11 @@ before changing Next.js APIs or conventions.
   the area are discrete ACTIONS rather than staged fields: row-level
   Activate/Deactivate and Delete on the booking-period and minimum-stay lists,
   and the confirm-gated **Remove override** on the default cancellation card.
-  The per-row/per-action shape below sanctions those; do not read them as a
-  licence to auto-persist a settings FIELD. See
+  The per-row shape below sanctions the row-level ones; **Remove override** is
+  not a row action and is justified instead in its own JSDoc on
+  `handleRemoveOverride` (a destructive action that deletes the lodge's rows
+  whatever the open editor holds, so it bypasses `section.save()` by design).
+  None of them is a licence to auto-persist a settings FIELD. See
   `docs/ARCHITECTURE.md` → the same list. Reference implementation:
   `src/components/admin/booking-policies/group-discount-section.tsx`.
   When you write a new section, or change an existing section's draft/snapshot
@@ -143,8 +149,14 @@ before changing Next.js APIs or conventions.
   sections (default cancellation, booking periods, minimum night stay) carry
   this.
 - A card that shares a strict whole-object PUT with a sibling card must GET the
-  fresh row and merge only its OWN fields immediately before it writes, so a save
-  cannot overwrite a sibling's change made while the page was open. That narrows
+  fresh row and merge only the fields the admin actually CHANGED immediately
+  before it writes, so a save cannot overwrite a change made while the page was
+  open. Its own fields are not a narrow enough filter: a field the card owns but
+  the admin never touched still goes out from a stale draft and reverts whoever
+  moved it. The schema still gets every field — the untouched ones just come
+  from the fresh read rather than the draft. Where the card owns both halves of
+  a cross-field rule, re-check the COMPOSED pair after the fresh read: sending
+  only the changed half can assemble a pair the admin never saw. That narrows
   the read-modify-write window to milliseconds rather than closing it — these
   routes carry no ETag or `If-Match`, so simultaneous writes still resolve
   last-writer-wins, exactly as `/api/admin/modules` does. Claim the narrowing,
@@ -161,8 +173,12 @@ before changing Next.js APIs or conventions.
   re-seed the draft of every field the admin had NOT edited along with it, and
   leave a draft they HAD typed into alone: it is their own in-progress input.
   The residue either way is display staleness in a card the admin did not touch,
-  which is accepted — the same property `/admin/modules` has.
-  `docs/ARCHITECTURE.md` carries the worked example.
+  which is accepted — the same property `/admin/modules` has. Do not claim an
+  Edit gate resolves it: `startEditing` only flips a flag, so opening a card
+  never re-fetches. What stops stale display becoming a stale write is the
+  changed-fields-only patch above; what the gate adds is that the dirty
+  comparison is against the card's own snapshot, so a stale box never arms Save
+  by itself. `docs/ARCHITECTURE.md` carries the worked example.
 - Every gated section's Save must be dirty-gated, not just view-gated. Booking
   write routes log audit entries and revalidate public content unconditionally,
   so a pristine re-save writes an entry asserting a change that never happened

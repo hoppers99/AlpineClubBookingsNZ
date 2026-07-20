@@ -9,7 +9,7 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
-import type { ReactElement } from "react";
+import { StrictMode, type ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const hookMock = vi.hoisted(() => ({ canEdit: true as boolean | undefined }));
@@ -1035,8 +1035,11 @@ describe("PublicBookingRequestsSection indicative pricing stages behind Save (#2
   }
 
   // #2166: all three cards carry an Edit and can carry a Cancel at the same
-  // time, so the shared visible word is no longer the whole accessible name —
-  // each button names its card in an sr-only span.
+  // time, so the shared visible word is no longer the whole accessible name.
+  // Each button carries an `aria-label` naming its card, which REPLACES the
+  // accessible name rather than appending to it — so these queries match the
+  // label, not the visible "Edit". The label starts with the visible word, so
+  // WCAG 2.5.3 Label in Name still holds for speech input.
   function editButton() {
     return screen.getByRole("button", {
       name: "Edit indicative pricing",
@@ -1376,9 +1379,13 @@ describe("PublicBookingRequestsSection timing cards stage behind Edit (#2166)", 
 
   /** GET returns what is stored; PUT merges its whole-object body and echoes. */
   function stubSettings(
-    options: { changedByAnotherAdmin?: Partial<typeof STORED> } = {},
+    options: {
+      changedByAnotherAdmin?: Partial<typeof STORED>;
+      /** Override the starting row, for cases STORED's values cannot express. */
+      stored?: Partial<typeof STORED>;
+    } = {},
   ) {
-    let current = { ...STORED };
+    let current = { ...STORED, ...options.stored };
     let reads = 0;
     const fetchMock = vi.fn<
       (url: string, init?: RequestInit) => Promise<Response>
@@ -1757,6 +1764,219 @@ describe("PublicBookingRequestsSection timing cards stage behind Edit (#2166)", 
         (call) => (call[1] as RequestInit | undefined)?.method === undefined,
       ),
     ).toHaveLength(1);
+  });
+
+  // #2166 review. The shared mount-time GET is held in a ref that is only
+  // cleared in a MICROTASK (`pending.then(release, release)`), while React
+  // StrictMode's mount -> cleanup -> re-mount is SYNCHRONOUS. So the re-mounted
+  // hooks are handed the FIRST mount's promise. If that promise carried the
+  // first mount's `AbortSignal` — which its cleanup has just aborted — it
+  // rejects with `AbortError`, every hook swallows it as an ordinary unmount,
+  // and each one still clears `loading` (its OWN signal was never aborted)
+  // without ever seeding `saved`/`draft`. The section then renders
+  // `SETTINGS_FALLBACK` as though those were the stored values, and an admin who
+  // edits one field and saves writes the fallback over the real row.
+  // `next dev` enables StrictMode by default, so that is every local session.
+  //
+  // No other mock in this file honours `init.signal` — which is exactly why the
+  // rest of the suite could not see this. This one does.
+  it("seeds from the stored row under StrictMode, not the hardcoded fallback", async () => {
+    // Deliberately none of SETTINGS_FALLBACK's values (14 / 3), so a fallback
+    // render is unmistakable.
+    const ROW = {
+      ...STORED,
+      quoteResponseTtlDays: 30,
+      quoteReminderLeadDays: 7,
+    };
+    const fetchMock = vi.fn<
+      (url: string, init?: RequestInit) => Promise<Response>
+    >(
+      (_url, init) =>
+        new Promise<Response>((resolve, reject) => {
+          const signal = init?.signal;
+          const abort = () =>
+            reject(new DOMException("The operation was aborted.", "AbortError"));
+          if (signal?.aborted) return abort();
+          signal?.addEventListener("abort", abort);
+          // Settle a macrotask later, so StrictMode's synchronous remount lands
+          // while the request is genuinely still in flight.
+          setTimeout(() => resolve(jsonResponse(ROW)), 0);
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <StrictMode>
+        <PublicBookingRequestsSection />
+      </StrictMode>,
+    );
+    await waitFor(() =>
+      expect(button("Edit quote timing")).toBeTruthy(),
+    );
+
+    expect(input("Quote response window (days)").value).toBe("30");
+    expect(input("Reminder lead time (days before expiry)").value).toBe("7");
+    // Still one GET for the whole section: the ref did its job.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  // #2166 review. GET-fresh-then-merge only protects the fields a card does NOT
+  // own. A field the card owns but the admin never touched was still written
+  // from the stale draft, silently reverting whoever moved it — so each save
+  // sends only the fields the admin actually CHANGED.
+  it("keeps another admin's change to an untouched box in the same card", async () => {
+    const fetchMock = stubSettings({
+      changedByAnotherAdmin: { quoteReminderLeadDays: 5 },
+    });
+    await loadSection();
+
+    fireEvent.click(button("Edit quote timing"));
+    // The reminder box still shows the 3 it loaded with; 5 is what is stored.
+    expect(input("Reminder lead time (days before expiry)").value).toBe("3");
+    fireEvent.change(input("Quote response window (days)"), {
+      target: { value: "20" },
+    });
+    fireEvent.click(button("Save quote timing"));
+
+    await waitFor(() => expect(writeCalls(fetchMock)).toHaveLength(1));
+    // The untouched reminder is NOT sourced from the draft: 5 (stored), not 3.
+    expect(JSON.parse(String(writeCalls(fetchMock)[0][1]?.body))).toEqual({
+      ...STORED,
+      quoteResponseTtlDays: 20,
+      quoteReminderLeadDays: 5,
+    });
+    // And the server echo leaves the other admin's value on screen.
+    await waitFor(() =>
+      expect(input("Reminder lead time (days before expiry)").value).toBe("5"),
+    );
+  });
+
+  it("keeps another admin's change to an untouched attendee box", async () => {
+    const fetchMock = stubSettings({
+      changedByAnotherAdmin: { attendeeConfirmationReminderDays: 6 },
+    });
+    await loadSection();
+
+    fireEvent.click(button("Edit attendee prompts"));
+    fireEvent.change(input("First prompt (days before check-in)"), {
+      target: { value: "21" },
+    });
+    fireEvent.click(button("Save attendee prompts"));
+
+    await waitFor(() => expect(writeCalls(fetchMock)).toHaveLength(1));
+    expect(JSON.parse(String(writeCalls(fetchMock)[0][1]?.body))).toEqual({
+      ...STORED,
+      attendeeConfirmationLeadDays: 21,
+      attendeeConfirmationReminderDays: 6,
+    });
+    await waitFor(() =>
+      expect(input("Reminder interval (days)").value).toBe("6"),
+    );
+  });
+
+  // The cost of sending only the changed field: the quote card owns BOTH halves
+  // of the route's cross-field rule, so the pair that would reach the route can
+  // be one the admin never saw. The card's click-time validation compares the
+  // two DRAFT values and cannot see it, so the composed pair is re-checked after
+  // the fresh read.
+  it("refuses a quote pair another admin's change would make invalid, and says why", async () => {
+    const fetchMock = stubSettings({
+      stored: { quoteResponseTtlDays: 30, quoteReminderLeadDays: 7 },
+      changedByAnotherAdmin: { quoteResponseTtlDays: 6 },
+    });
+    await loadSection();
+
+    fireEvent.click(button("Edit quote timing"));
+    // Valid against what this admin can see (10 < 30); invalid against what is
+    // now stored (10 >= 6).
+    fireEvent.change(input("Reminder lead time (days before expiry)"), {
+      target: { value: "10" },
+    });
+    fireEvent.click(button("Save quote timing"));
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(/another admin has changed the quote timing/),
+      ).toBeTruthy(),
+    );
+    // Refused BEFORE the write — the other admin's 6 is untouched — and the card
+    // stays open holding this admin's input.
+    expect(writeCalls(fetchMock)).toHaveLength(0);
+    expect(input("Reminder lead time (days before expiry)").value).toBe("10");
+  });
+
+  // #2166 review: Tailwind's preflight resets `color`, `background-color` and
+  // `opacity` on `input` at AUTHOR origin, which overrides the UA's `:disabled`
+  // presentation entirely — so `disabled` on its own is invisible and a gated
+  // box looks exactly like an editable one. The reference section
+  // (`group-discount-section.tsx`) carries these same two classes for it.
+  it.each(CARDS)("$name shades its boxes while they are read-only", async (card) => {
+    stubSettings();
+    await loadSection();
+
+    expect(input(card.field).className).toContain("bg-slate-50");
+    expect(input(card.field).className).toContain("text-slate-700");
+
+    fireEvent.click(button(card.edit));
+    expect(input(card.field).className).not.toContain("bg-slate-50");
+    expect(input(card.field).className).not.toContain("text-slate-700");
+  });
+
+  // #2166 review: a validation failure returns BEFORE `save()`, and `save()` is
+  // what clears this card's own feedback pair — so an earlier green
+  // confirmation would sit above the fresh red error.
+  it("clears its own earlier confirmation when the next save fails validation", async () => {
+    stubSettings();
+    await loadSection();
+
+    fireEvent.click(button("Edit quote timing"));
+    fireEvent.change(input("Quote response window (days)"), {
+      target: { value: "20" },
+    });
+    fireEvent.click(button("Save quote timing"));
+    await waitFor(() =>
+      expect(screen.getByText("Booking request settings saved")).toBeTruthy(),
+    );
+
+    fireEvent.click(button("Edit quote timing"));
+    fireEvent.change(input("Quote response window (days)"), {
+      target: { value: "99" },
+    });
+    fireEvent.click(button("Save quote timing"));
+
+    expect(
+      screen.getByText(
+        "Quote response window must be a whole number of days between 1 and 60.",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText("Booking request settings saved")).toBeNull();
+  });
+
+  it("clears its own earlier confirmation when an attendee save fails validation", async () => {
+    stubSettings();
+    await loadSection();
+
+    fireEvent.click(button("Edit attendee prompts"));
+    fireEvent.change(input("First prompt (days before check-in)"), {
+      target: { value: "21" },
+    });
+    fireEvent.click(button("Save attendee prompts"));
+    await waitFor(() =>
+      expect(screen.getByText("Booking request settings saved")).toBeTruthy(),
+    );
+
+    fireEvent.click(button("Edit attendee prompts"));
+    fireEvent.change(input("Reminder interval (days)"), {
+      target: { value: "99" },
+    });
+    fireEvent.click(button("Save attendee prompts"));
+
+    expect(
+      screen.getByText(
+        "The attendee reminder interval must be a whole number of days between 1 and 30.",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText("Booking request settings saved")).toBeNull();
   });
 });
 

@@ -124,7 +124,7 @@ rules — see
 
 1. Open **Public Booking Requests**.
 
-   ![Public Booking Requests: the indicative-pricing toggle plus quote-window and school-attendee timing cards](../images/admin/admin-booking-policies-public-requests.png)
+   ![Public Booking Requests: the indicative-pricing card and the quote-window and school-attendee timing cards, each with its own Edit button and shaded read-only boxes](../images/admin/admin-booking-policies-public-requests.png)
 
 2. To change **Show indicative pricing on the request form**, click **Edit** on
    the Indicative Pricing card, tick or untick the box, then click **Save
@@ -145,6 +145,12 @@ rules — see
    cancelling one does not touch what you have typed in another. While a card is
    saving, the whole section is briefly locked, because all three cards write the
    same settings record and only one of them may be in flight at a time.
+5. Each card sends back only the boxes you actually changed, so if another admin
+   changed one of the others while your page was open, your save leaves theirs
+   alone and the card shows you their value afterwards. Note that clicking
+   **Edit** does not re-read the settings — a card shows what it loaded with
+   until something is saved from it. Reload the page if you need to be sure you
+   are looking at current values.
 
 ## Settings reference
 
@@ -160,10 +166,10 @@ rules — see
 | Summer seasons only | Group Discount | Restrict the group discount to summer | on | — |
 | Minimum nights | Minimum Stay | Nights required when a trigger day is included | 2 | Minimum 2 |
 | Trigger days | Minimum Stay | Which weekdays activate the rule | Sat | At least one day |
-| Show indicative pricing | Public Requests | Price shown on the public request form | off | Edit → tick → Save, like every other Booking Policies setting |
-| Quote response window | Public Requests | Days a quote link stays valid | 14 | 1–60 days; Edit → change → Save |
-| Reminder lead time | Public Requests | Days before expiry to remind the requester | 3 | 0–30, must be shorter than the window; Edit → change → Save |
-| Attendee first prompt / reminder | Public Requests | School attendee-confirmation timing | 14 / 3 days | Prompt 0–90 (0 = off); reminder 1–30; Edit → change → Save |
+| Show indicative pricing | Public Requests | Price shown on the public request form | off | — |
+| Quote response window | Public Requests | Days a quote link stays valid | 14 | 1–60 days |
+| Reminder lead time | Public Requests | Days before expiry to remind the requester | 3 | 0–30, must be shorter than the window |
+| Attendee first prompt / reminder | Public Requests | School attendee-confirmation timing | 14 / 3 days | Prompt 0–90 (0 = off); reminder 1–30 |
 
 ## Troubleshooting
 
@@ -177,6 +183,8 @@ rules — see
 | A period's rules are not applying | The booking's check-in is outside the period, or the period is inactive | Check the dates and the Active toggle on the period card |
 | Group discount never triggers | It is disabled, the group is under the minimum, or it is summer-only and the stay is in winter | Enable it, lower the minimum group size, or untick Summer seasons only |
 | Reminder lead time won't save | It is not shorter than the quote response window | Set a lead time shorter than the window |
+| A Public Booking Requests number box is shaded and will not accept typing, and there is no view-only banner | That card is not open for editing yet — its boxes are read-only until you open it | Click **Edit** in that card's header. The boxes turn white and **Save** and **Cancel** appear |
+| A Public Booking Requests card says "another admin has changed the quote timing since this page loaded" | Someone else changed the quote response window or the reminder lead time while your page was open, and your change would leave the reminder no shorter than the window. Nothing was written | Reload the page to see the current values, then make your change again |
 | A Public Booking Requests card says "Your change was not saved: the current settings could not be re-read" | Each of that section's three cards re-reads the stored settings just before it writes, so it cannot overwrite another card. That read failed, so nothing was written | Click **Save** again. Your typing is still in the box — nothing was lost and nothing was changed |
 
 ## Related links

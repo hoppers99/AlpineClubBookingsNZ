@@ -37,10 +37,12 @@ interface BookingRequestSettings {
  *
  * The price of three instances is the shared write object, and it is paid the
  * documented way (`AGENTS.md`, `docs/ARCHITECTURE.md`): every save GETs the
- * fresh settings and merges only its own fields, exactly as the magic-link and
- * Google cards do against `PUT /api/admin/modules`. That is what keeps a card
- * from writing a sibling card's UNSAVED draft, or its own stale snapshot of
- * one, back over storage.
+ * fresh settings and merges only the fields the ADMIN CHANGED, exactly as the
+ * magic-link and Google cards do against `PUT /api/admin/modules`. Merging only
+ * its own fields would be enough to stop a card writing a sibling's UNSAVED
+ * draft or its own stale snapshot of one; narrowing further to the changed
+ * fields is what stops a card reverting a field it owns but the admin never
+ * touched (see {@link changedTimingFields}).
  *
  * The two timing drafts hold STRINGS, because their editors are free-text
  * number boxes an admin can legitimately leave mid-typed ("", "1", "0"). They
@@ -108,6 +110,54 @@ function isTimingDirty<T extends Record<string, string>>(draft: T, saved: T) {
 }
 
 /**
+ * The fields of a timing card the admin ACTUALLY changed, as numbers, ready to
+ * merge over the save's fresh read.
+ *
+ * GET-fresh-then-merge only protects the fields a card does not OWN. Writing
+ * every field a card owns from its draft still reverts an untouched-but-stale
+ * one: admin A opens the page (window 30, reminder 7), admin B changes the
+ * window to 45, admin A edits only the reminder and saves — a whole-draft merge
+ * would put A's load-time 30 back over B's 45, and A's card would then display
+ * 30 as confirmed.
+ *
+ * Sending only the changed fields closes that: an untouched field is simply not
+ * in the patch, so it keeps the fresh read's value and the server echo re-seeds
+ * the card with B's 45 rather than A's 30. The route's schema still requires all
+ * five fields, and it still gets all five — what changes is which of them come
+ * from `fresh` and which from the draft.
+ *
+ * The comparison is the same NUMERIC one {@link isTimingDirty} makes, so the
+ * two agree by construction: a field that did not arm Save is never written.
+ * `saved` is `null` only before a load has resolved, which Save is gated behind;
+ * treating that as "everything changed" keeps the fallback the safe one.
+ */
+function changedTimingFields<T extends Record<string, string>>(
+  draft: T,
+  saved: T | null,
+): Partial<Record<keyof T, number>> {
+  const patch: Partial<Record<keyof T, number>> = {}
+  for (const field of Object.keys(draft) as (keyof T & string)[]) {
+    if (saved === null || Number(draft[field]) !== Number(saved[field])) {
+      patch[field] = Number(draft[field])
+    }
+  }
+  return patch
+}
+
+/**
+ * The quote card carries the route's cross-field rule
+ * (`quoteReminderLeadDays < quoteResponseTtlDays`), and only the CHANGED field
+ * goes on the wire, so the pair that would reach the route can be one the admin
+ * never saw: their new reminder beside a window a second admin moved since (or
+ * the reverse). The card's own click-time validation compares the two DRAFT
+ * values and cannot see that. Refuse the composed pair here instead of sending
+ * it — the route would reject it with a bare "Invalid input", and either way the
+ * change does not land, so the admin deserves to be told why.
+ */
+const QUOTE_TIMING_CONFLICT =
+  "Your change was not saved: another admin has changed the quote timing since this page loaded, and the reminder lead time would no longer be shorter than the response window. Reload the page to see the current values, then try again."
+
+/**
  * Shown when the fresh read a save takes fails for any reason other than a 403
  * (which has its own narrowed-actor copy). It has to say the change did not
  * land: the admin clicked Save, not Reload.
@@ -129,15 +179,16 @@ const SAVE_SUCCESS = "Booking request settings saved"
  * an ordinary GET on `bookings:view`, so the same status there is a genuine read
  * failure and keeps the generic message.
  *
- * Only the load passes an `AbortSignal` (a hook's, aborted on unmount). The
- * save path deliberately does not, matching the precedent above: aborting the
- * read half of a save would leave the write undecided rather than cancelled,
- * and the PUT it feeds is not abortable either.
+ * Neither role passes an `AbortSignal`. The save's read must not be abortable —
+ * aborting the read half of a save would leave the write undecided rather than
+ * cancelled, and the PUT it feeds is not abortable either — and the mount-time
+ * load is shared across three hooks, where a signal is actively harmful (see
+ * `loadSettings`).
  */
 async function fetchSettings(
-  options: { signal?: AbortSignal; asSaveStep?: boolean } = {},
+  options: { asSaveStep?: boolean } = {},
 ): Promise<BookingRequestSettings> {
-  const res = await fetch(ENDPOINT, options.signal ? { signal: options.signal } : undefined)
+  const res = await fetch(ENDPOINT)
   if (!res.ok) {
     if (options.asSaveStep) {
       if (res.status === 403) throw new ForbiddenSaveError()
@@ -155,10 +206,11 @@ async function fetchSettings(
 
 /**
  * The section's only write. The route takes the whole settings object, so every
- * card sends all five fields. No card may source the fields it does not own from
- * its load-time snapshot: each one GETs the fresh row through
- * {@link fetchSettings} and merges only its own fields over it, so everything
- * else on the wire is what is STORED right now.
+ * card sends all five fields — but a card may only source a field from its own
+ * draft when the admin CHANGED it. Each save GETs the fresh row through
+ * {@link fetchSettings} and merges its changed fields over it, so every other
+ * field on the wire is what is STORED right now: the four a card does not own,
+ * and any it owns but the admin left alone.
  *
  * Throws {@link ForbiddenSaveError} for a 403 so all three cards map it to the
  * same shared copy through the hook.
@@ -216,14 +268,30 @@ export function PublicBookingRequestsSection() {
    * three seed from the SAME response.
    *
    * The ref is cleared once the request settles so a later `reload` (none today)
-   * would fetch again rather than replay a stale body. Only the first caller's
-   * `AbortSignal` is honoured; the three are aborted together on unmount, and
-   * the hook swallows the resulting `AbortError` in every instance.
+   * would fetch again rather than replay a stale body.
+   *
+   * The shared read deliberately carries NO `AbortSignal`, and that is load-
+   * bearing rather than an omission. The ref is only cleared in a microtask
+   * (`pending.then`), but React StrictMode's mount -> cleanup -> re-mount is
+   * SYNCHRONOUS: on the second mount the ref still holds the first mount's
+   * promise, whose fetch the first mount's cleanup just aborted. If that promise
+   * were signal-bound, all three re-mounted hooks would await a promise that
+   * rejects with `AbortError`, the hook would swallow it as an ordinary
+   * unmount, and — because the SECOND mount's signals were never aborted — it
+   * would still clear `loading` without ever seeding `saved`/`draft`. The
+   * section would then render {@link SETTINGS_FALLBACK} as though those were the
+   * stored values, and an admin who edited one field and saved would write the
+   * fallback over the real row. `next dev` enables StrictMode by default, so
+   * that is every local session.
+   *
+   * Nothing is lost by dropping the signal: the request is one GET, and each
+   * hook independently discards a result whose OWN signal aborted before it
+   * resolved, so an unmounted section still sets no state.
    */
   const inflightLoad = useRef<Promise<BookingRequestSettings> | null>(null)
-  const loadSettings = useCallback((signal: AbortSignal) => {
+  const loadSettings = useCallback(() => {
     if (!inflightLoad.current) {
-      const pending = fetchSettings({ signal })
+      const pending = fetchSettings()
       const release = () => {
         if (inflightLoad.current === pending) inflightLoad.current = null
       }
@@ -241,14 +309,15 @@ export function PublicBookingRequestsSection() {
   */
   const pricing = useSectionEditState<PricingDraft>({
     initial: { showPricingToNonMembers: SETTINGS_FALLBACK.showPricingToNonMembers },
-    load: async (signal) => ({
-      showPricingToNonMembers: (await loadSettings(signal)).showPricingToNonMembers,
+    load: async () => ({
+      showPricingToNonMembers: (await loadSettings()).showPricingToNonMembers,
     }),
     save: async (draft) => {
       // GET-fresh-then-merge over the shared whole-object PUT: write the STORED
       // timing values plus this card's new one, never the snapshot this card
       // happened to load with and never a timing draft the admin has typed but
-      // not saved.
+      // not saved. This card owns ONE field and Save is dirty-gated, so that
+      // field has always changed — no per-field patch is needed here.
       const fresh = await fetchSettings({ asSaveStep: true })
       const next = await putSettings({
         ...fresh,
@@ -261,12 +330,21 @@ export function PublicBookingRequestsSection() {
     // SYNTHESISES defaults when no row is stored (`getBookingRequestSettings`).
     // The exception exists so a form whose defaults are already correct can
     // still commit them — but here the synthesised defaults ARE the effective
-    // settings at every read site, and nothing downstream keys on the row
-    // existing (no setup-checklist entry, no create/delete semantics). An admin
-    // who wants a different value types it and the draft is dirty; an admin
-    // happy with the defaults has nothing to commit. Adding a `configured` flag
-    // would only unlock a pristine Save that writes an audit entry asserting a
-    // change that never happened (#2143).
+    // settings at every read site, and no BEHAVIOUR keys on the row existing
+    // (no setup-checklist entry, no create/delete semantics). An admin who
+    // wants a different value types it and the draft is dirty; an admin happy
+    // with the defaults has nothing to commit. Adding a `configured` flag would
+    // only unlock a pristine Save that writes an audit entry asserting a change
+    // that never happened (#2143).
+    //
+    // One thing DOES observe the row: config-transfer skips a singleton with no
+    // row (`src/lib/config-transfer/categories/club-settings.ts` — `if (!row)
+    // continue`), so a club that never saved these settings exports no
+    // `booking-request-settings.json`. That is not a reason for an exception
+    // here: every other singleton in that exporter, the group-discount
+    // reference included, has exactly the same property, the GET exposes no
+    // `configured` flag to key one off, and the workaround is to change a value
+    // and save. Fixing it belongs in config-transfer, not in this card.
   })
 
   /*
@@ -278,19 +356,18 @@ export function PublicBookingRequestsSection() {
   */
   const quoteTiming = useSectionEditState<QuoteTimingDraft>({
     initial: toQuoteTimingDraft(SETTINGS_FALLBACK),
-    load: async (signal) => toQuoteTimingDraft(await loadSettings(signal)),
-    save: async (draft) => {
-      // Same GET-fresh-then-merge. Both fields of the route's cross-field rule
-      // (`quoteReminderLeadDays < quoteResponseTtlDays`) are owned by THIS card,
-      // so merging over the fresh row cannot compose an invalid pair.
+    load: async () => toQuoteTimingDraft(await loadSettings()),
+    save: async (draft, saved) => {
+      // Same GET-fresh-then-merge, narrowed to the fields the admin changed so
+      // an untouched box cannot revert the other admin who moved it.
       const fresh = await fetchSettings({ asSaveStep: true })
-      return toQuoteTimingDraft(
-        await putSettings({
-          ...fresh,
-          quoteResponseTtlDays: Number(draft.quoteResponseTtlDays),
-          quoteReminderLeadDays: Number(draft.quoteReminderLeadDays),
-        }),
-      )
+      const body = { ...fresh, ...changedTimingFields(draft, saved) }
+      // Merging one field of a cross-field pair CAN compose a pair the admin
+      // never saw, which is why this check exists (see QUOTE_TIMING_CONFLICT).
+      if (body.quoteReminderLeadDays >= body.quoteResponseTtlDays) {
+        throw new Error(QUOTE_TIMING_CONFLICT)
+      }
+      return toQuoteTimingDraft(await putSettings(body))
     },
     successMessage: SAVE_SUCCESS,
     isDirty: isTimingDirty,
@@ -298,17 +375,13 @@ export function PublicBookingRequestsSection() {
 
   const attendeeTiming = useSectionEditState<AttendeeTimingDraft>({
     initial: toAttendeeTimingDraft(SETTINGS_FALLBACK),
-    load: async (signal) => toAttendeeTimingDraft(await loadSettings(signal)),
-    save: async (draft) => {
+    load: async () => toAttendeeTimingDraft(await loadSettings()),
+    save: async (draft, saved) => {
+      // Same per-field patch. This card's two fields carry no cross-field rule
+      // (the route range-checks each on its own), so there is nothing to compose.
       const fresh = await fetchSettings({ asSaveStep: true })
       return toAttendeeTimingDraft(
-        await putSettings({
-          ...fresh,
-          attendeeConfirmationLeadDays: Number(draft.attendeeConfirmationLeadDays),
-          attendeeConfirmationReminderDays: Number(
-            draft.attendeeConfirmationReminderDays,
-          ),
-        }),
+        await putSettings({ ...fresh, ...changedTimingFields(draft, saved) }),
       )
     },
     successMessage: SAVE_SUCCESS,
@@ -330,15 +403,24 @@ export function PublicBookingRequestsSection() {
     own load or its own save. No card's save can leave a sibling dirty, so the
     hazard is structurally impossible rather than defended against.
 
-    What is left is display staleness: after a save, a card the admin did not
-    touch still shows the values it loaded with, even if the fresh read revealed
-    that a second admin has moved them. That is the same accepted property the
-    module-toggle cards on `/admin/security` have — and it is now strictly
-    safer than it was, because those values sit behind a read-only card whose
-    Save is unreachable until the admin clicks Edit, and dirty-gated against a
-    snapshot that matches what is on screen when they do. Do NOT "fix" it by
-    having one card's save re-seed another card's state: that is the coupling
-    this removed.
+    What is left is display staleness: a card the admin did not touch still
+    shows the values it loaded with, even after a sibling's save re-read the row
+    and found that a second admin has moved them. That is the same accepted
+    property the module-toggle cards on `/admin/security` have. Be precise about
+    what does and does not follow from it:
+
+      - `startEditing` is `setEditing(true)` and NOTHING else. Opening a card
+        does not re-fetch, so clicking Edit does not resolve the staleness. The
+        boxes an admin starts typing into can already be out of date.
+      - What keeps that from becoming a WRITE is the per-field patch: a stale
+        box the admin never touched is not in the PUT body at all, so it cannot
+        revert anyone. Only a field they actually changed is written, and that
+        one they saw.
+      - The dirty gate is against this card's own snapshot, which is what is on
+        screen — so a stale box never arms Save on its own either.
+
+    Do NOT "fix" the staleness by having one card's save re-seed another card's
+    state: that is the coupling this removed.
   */
 
   const busy = pricing.saving || quoteTiming.saving || attendeeTiming.saving
@@ -365,6 +447,10 @@ export function PublicBookingRequestsSection() {
   */
   function handleSaveQuoteTiming(draft: QuoteTimingDraft) {
     clearOtherFeedback(pricing, attendeeTiming)
+    // The hook clears this card's own pair when `save()` starts, but a
+    // validation failure returns BEFORE `save()` — leaving a green "settings
+    // saved" from an earlier save sitting above the red error below.
+    quoteTiming.setSuccess("")
     const ttl = Number(draft.quoteResponseTtlDays)
     const reminder = Number(draft.quoteReminderLeadDays)
     if (!Number.isInteger(ttl) || ttl < 1 || ttl > 60) {
@@ -390,6 +476,8 @@ export function PublicBookingRequestsSection() {
 
   function handleSaveAttendeeTiming(draft: AttendeeTimingDraft) {
     clearOtherFeedback(pricing, quoteTiming)
+    // Same reason as the quote handler above.
+    attendeeTiming.setSuccess("")
     const lead = Number(draft.attendeeConfirmationLeadDays)
     const reminder = Number(draft.attendeeConfirmationReminderDays)
     if (!Number.isInteger(lead) || lead < 0 || lead > 90) {
@@ -569,7 +657,9 @@ export function PublicBookingRequestsSection() {
                 onChange={(e) =>
                   quoteTiming.setDraft({ quoteResponseTtlDays: e.target.value })
                 }
-                className="block w-28 rounded border border-input px-2 py-1 text-sm"
+                className={`block w-28 rounded border border-input px-2 py-1 text-sm${
+                  !quoteTiming.editing ? " bg-slate-50 text-slate-700" : ""
+                }`}
                 disabled={!quoteTiming.editing || busy}
               />
               <p className="text-xs text-muted-foreground">
@@ -589,7 +679,9 @@ export function PublicBookingRequestsSection() {
                 onChange={(e) =>
                   quoteTiming.setDraft({ quoteReminderLeadDays: e.target.value })
                 }
-                className="block w-28 rounded border border-input px-2 py-1 text-sm"
+                className={`block w-28 rounded border border-input px-2 py-1 text-sm${
+                  !quoteTiming.editing ? " bg-slate-50 text-slate-700" : ""
+                }`}
                 disabled={!quoteTiming.editing || busy}
               />
               <p className="text-xs text-muted-foreground">
@@ -674,7 +766,9 @@ export function PublicBookingRequestsSection() {
                     attendeeConfirmationLeadDays: e.target.value,
                   })
                 }
-                className="block w-28 rounded border border-input px-2 py-1 text-sm"
+                className={`block w-28 rounded border border-input px-2 py-1 text-sm${
+                  !attendeeTiming.editing ? " bg-slate-50 text-slate-700" : ""
+                }`}
                 disabled={!attendeeTiming.editing || busy}
               />
               <p className="text-xs text-muted-foreground">
@@ -696,7 +790,9 @@ export function PublicBookingRequestsSection() {
                     attendeeConfirmationReminderDays: e.target.value,
                   })
                 }
-                className="block w-28 rounded border border-input px-2 py-1 text-sm"
+                className={`block w-28 rounded border border-input px-2 py-1 text-sm${
+                  !attendeeTiming.editing ? " bg-slate-50 text-slate-700" : ""
+                }`}
                 disabled={!attendeeTiming.editing || busy}
               />
               <p className="text-xs text-muted-foreground">
