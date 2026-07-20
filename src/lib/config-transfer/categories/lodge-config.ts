@@ -30,10 +30,11 @@ import { RowValidator, asStr, coerceBool, nz, readCsvRows } from "../values";
 //     seasons.csv         name, type, startDate, endDate, active
 //     season-rates.csv    seasonName, membershipTypeKey, ageTier, pricePerNightCents
 //                         (ageTier blank = a flat type's single all-ages rate)
-//     Rates are keyed by membership type (#1930, E4). OLD bundles carrying the
-//     legacy `isMember` column are still accepted on import: isMember=true maps
-//     to the FULL type, false to NON_MEMBER (documented lossy compat — the
-//     other MEMBER_RATE types get no rows from a legacy bundle).
+//     Rates are keyed by membership type (#1930, E4). The old-bundle IMPORT
+//     compat for the legacy `isMember` column closed one release after the E13
+//     contraction (#2131): a bundle carrying that shape is now REJECTED with a
+//     clear validation error, never silently mapped (re-export it from an
+//     up-to-date install).
 // so the lodge a row belongs to is implied by the folder (not a CSV column).
 // The authoritative slug is lodge.json's `slug` — the folder name is just a
 // container.
@@ -74,11 +75,6 @@ const ROOM_FIELDS = ["name", "sortOrder", "active", "notes"] as const;
 const BED_FIELDS = ["roomName", "name", "sortOrder", "active", "bedType", "bunkGroup"] as const;
 const SEASON_FIELDS = ["name", "type", "startDate", "endDate", "active"] as const;
 const RATE_FIELDS = ["seasonName", "membershipTypeKey", "ageTier", "pricePerNightCents"] as const;
-// Legacy isMember -> membershipTypeKey mapping for OLD import bundles (#1930, E4).
-const LEGACY_IS_MEMBER_TYPE_KEY: Record<"true" | "false", string> = {
-  true: "FULL",
-  false: "NON_MEMBER",
-};
 
 /** Folder-name segment for a lodge slug (slugs are url-safe; guard anyway). */
 export function folderSegment(slug: string): string {
@@ -596,17 +592,17 @@ function parseLodgeFolder(
     const v = new RowValidator(paths.rates, i, errors);
     const seasonName = v.required("seasonName", raw.seasonName);
 
-    // Membership-type key (#1930, E4). OLD bundles carry `isMember` instead:
-    // map true -> FULL, false -> NON_MEMBER (documented lossy compat).
-    let membershipTypeKey: string;
-    if (nz(raw.membershipTypeKey) !== null) {
-      membershipTypeKey = v.required("membershipTypeKey", raw.membershipTypeKey);
-    } else if (nz(raw.isMember) !== null) {
-      const isMember = v.bool("isMember", raw.isMember);
-      membershipTypeKey = LEGACY_IS_MEMBER_TYPE_KEY[String(isMember) as "true" | "false"];
-    } else {
-      membershipTypeKey = v.required("membershipTypeKey", raw.membershipTypeKey);
+    // Membership-type key (#1930, E4). The legacy pre-#1930 `isMember` column
+    // (true -> FULL, false -> NON_MEMBER) is no longer imported — the compat
+    // window closed one release after E13 (#2131) — so a bundle carrying that
+    // shape is rejected here, never silently mapped.
+    if (nz(raw.membershipTypeKey) === null && nz(raw.isMember) !== null) {
+      errors.push(
+        `${paths.rates}: row ${i + 1}: the legacy 'isMember' season-rate shape is no longer imported; re-export this bundle from an up-to-date install (v0.12.2 was the last release that could import the legacy isMember bundle shape)`,
+      );
+      return;
     }
+    const membershipTypeKey = v.required("membershipTypeKey", raw.membershipTypeKey);
     const membershipType = batch.membershipTypesByKey.get(membershipTypeKey);
     if (membershipTypeKey && !membershipType) {
       errors.push(

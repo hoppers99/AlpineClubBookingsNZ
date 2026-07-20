@@ -4,6 +4,18 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Config transfer: old-bundle entrance-fee/season-rate import compat dropped
+  (#2131).** One release after the E13 contraction, the importer no longer
+  accepts the legacy boolean-keyed bundle shapes: the `isMember` column on
+  `season-rates.csv` and on the Xero `item-code-mappings.csv` HUT_FEE rows, and
+  the pre-#1931 `ENTRANCE_FEE` item-code category name. A bundle carrying any of
+  these is now **rejected at dry-run** with a clear, row-named validation error
+  that disables Apply and points to re-exporting from an up-to-date install
+  (**v0.12.2 was the last release that could import the legacy shape**) — never
+  a silent partial import. New-bundle export/import is byte-identical, and the
+  #1931 item-code-amount joining-fee materialisation (for current `JOINING_FEE`
+  rows) is unchanged. No schema change. See `docs/config-transfer/README.md`.
+
 - **Post-login landing for admins + per-member preference (#2090).** After
   sign-in, a member with admin access now lands on their admin area instead of
   the member dashboard when they have set no preference — precisely

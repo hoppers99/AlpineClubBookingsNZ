@@ -8,8 +8,10 @@ import { xeroConfigImporter } from "@/lib/config-transfer/categories/xero-config
 import type { TxDb } from "@/lib/config-transfer/import-types";
 
 // Config-transfer season-rate + Xero HUT_FEE re-key (#1930, E4): apply writes the
-// membership-type-keyed rows, and OLD bundles carrying `isMember` still import
-// (true -> FULL, false -> NON_MEMBER, documented lossy compat).
+// membership-type-keyed rows. The old-bundle IMPORT compat for the legacy
+// boolean `isMember` key (and the pre-#1931 ENTRANCE_FEE category name) closed
+// one release after E13 (#2131): such a bundle is now rejected with a clear
+// validation error at plan time, never silently mapped.
 
 const MEMBERSHIP_TYPES = [
   { id: "mt-full", key: "FULL", bookingBehavior: "MEMBER_RATE", ageGroupsApply: true },
@@ -124,21 +126,23 @@ describe("config-transfer season-rate re-key apply (#1930, E4)", () => {
     );
   });
 
-  it("imports an OLD bundle: isMember true -> FULL, false -> NON_MEMBER", async () => {
+  it("rejects an OLD isMember season-rate bundle with a clear error (#2131, compat closed)", async () => {
     const captures = { rateCreates: [] as Record<string, unknown>[], itemCreates: [] as Record<string, unknown>[] };
     const files = lodgeFiles(
       "seasonName,ageTier,isMember,pricePerNightCents\n" +
       "Winter,ADULT,true,5000\n" +
       "Winter,ADULT,false,7000\n",
     );
-    await lodgeConfigImporter.apply(applyCtx(files, makeTx(captures)) as never);
+    const plan = await lodgeConfigImporter.plan(planCtx(files, makeTx(captures)) as never);
 
-    expect(captures.rateCreates).toEqual(
+    expect(plan.errors).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ membershipTypeId: "mt-full", ageTier: "ADULT", pricePerNightCents: 5000 }),
-        expect.objectContaining({ membershipTypeId: "mt-nonmember", ageTier: "ADULT", pricePerNightCents: 7000 }),
+        expect.stringContaining("legacy 'isMember' season-rate shape is no longer imported"),
       ]),
     );
+    // The rejected legacy rows contribute no season-rate plan items (no silent
+    // partial import).
+    expect(plan.items.filter((i) => i.entity === "season-rate")).toHaveLength(0);
   });
 });
 
@@ -212,7 +216,7 @@ describe("config-transfer D2 + shape import validation (#1930, E4 review F9)", (
         "HUT_FEE,FULL,,WINTER,,HUT-BAD-FLAT,\n" +
         "HUT_FEE,FULL,ADULT,WINTER,,HUT-OK,\n" +
         "HUT_FEE,SCHOOL_GROUP,,WINTER,,HUT-OK-FLAT,\n" +
-        "ENTRANCE_FEE,,,,ADULT,ENT-OK,5000\n",
+        "JOINING_FEE,,,,ADULT,ENT-OK,5000\n",
       )],
     ]);
     const plan = await xeroConfigImporter.plan(planCtx(files, makeTx(captures)) as never);
@@ -224,9 +228,9 @@ describe("config-transfer D2 + shape import validation (#1930, E4 review F9)", (
         expect.stringContaining('"FULL" uses per-age-tier rates'),
       ]),
     );
-    // Valid rows still plan; invalid ones are excluded. The old-bundle
-    // ENTRANCE_FEE label (which never carries a membership type) is normalised
-    // to the current JOINING_FEE category on import (#1931, E5).
+    // Valid rows still plan; invalid ones are excluded. A current JOINING_FEE
+    // item-code row (which carries an entranceFeeCategory, never a membership
+    // type) plans under the current natural key.
     const itemKeys = plan.items
       .filter((item) => item.entity === "xero-item-code-mapping")
       .map((item) => item.key);
@@ -241,8 +245,8 @@ describe("config-transfer D2 + shape import validation (#1930, E4 review F9)", (
   });
 });
 
-describe("config-transfer Xero HUT_FEE re-key apply (#1930, E4)", () => {
-  it("imports an OLD HUT_FEE bundle: isMember maps to FULL / NON_MEMBER membershipTypeId", async () => {
+describe("config-transfer Xero HUT_FEE re-key import rejection (#2131)", () => {
+  it("rejects an OLD isMember HUT_FEE bundle with a clear error (compat closed)", async () => {
     const captures = { rateCreates: [] as Record<string, unknown>[], itemCreates: [] as Record<string, unknown>[] };
     const files = new Map<string, Uint8Array>([
       ["xero-config/item-code-mappings.csv", strToU8(
@@ -251,17 +255,33 @@ describe("config-transfer Xero HUT_FEE re-key apply (#1930, E4)", () => {
         "HUT_FEE,ADULT,WINTER,false,,HUT-NON,\n",
       )],
     ]);
-    await xeroConfigImporter.apply(applyCtx(files, makeTx(captures)) as never);
+    const plan = await xeroConfigImporter.plan(planCtx(files, makeTx(captures)) as never);
 
-    expect(captures.itemCreates).toEqual(
+    expect(plan.errors).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ category: "HUT_FEE", membershipTypeId: "mt-full", ageTier: "ADULT", seasonType: "WINTER", itemCode: "HUT-MEM" }),
-        expect.objectContaining({ category: "HUT_FEE", membershipTypeId: "mt-nonmember", ageTier: "ADULT", seasonType: "WINTER", itemCode: "HUT-NON" }),
+        expect.stringContaining("legacy 'isMember' HUT_FEE key is no longer imported"),
       ]),
     );
-    // Legacy isMember column is not carried onto the new-key row.
-    for (const created of captures.itemCreates) {
-      expect(created.isMember ?? null).toBeNull();
-    }
+    // No item-code rows are planned from the rejected legacy bundle.
+    expect(plan.items.filter((i) => i.entity === "xero-item-code-mapping")).toHaveLength(0);
+  });
+
+  it("rejects a legacy ENTRANCE_FEE item-code row naming the last compatible release", async () => {
+    const captures = { rateCreates: [] as Record<string, unknown>[], itemCreates: [] as Record<string, unknown>[] };
+    const files = new Map<string, Uint8Array>([
+      ["xero-config/item-code-mappings.csv", strToU8(
+        "category,membershipTypeKey,ageTier,seasonType,entranceFeeCategory,itemCode,amountCents\n" +
+        "ENTRANCE_FEE,,,,ADULT,ENT-OLD,5000\n",
+      )],
+    ]);
+    const plan = await xeroConfigImporter.plan(planCtx(files, makeTx(captures)) as never);
+
+    expect(plan.errors).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('legacy "ENTRANCE_FEE" item-code rows are no longer imported'),
+      ]),
+    );
+    expect(plan.errors.join(" ")).toContain("v0.12.2");
+    expect(plan.items.filter((i) => i.entity === "xero-item-code-mapping")).toHaveLength(0);
   });
 });
