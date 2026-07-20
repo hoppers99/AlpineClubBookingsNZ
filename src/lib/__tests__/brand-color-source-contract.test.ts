@@ -57,3 +57,38 @@ describe("brand accent source contract", () => {
     ).toEqual([]);
   });
 });
+
+// The /finance surface renders inside `app-theme-scope` (see
+// `src/app/(finance)/finance/layout.tsx`), which applies the club theme. Raw
+// neutral utilities inside that scope ignore the theme and read wrong under
+// dark mode and strongly non-default palettes — exactly the drift fixed in
+// #2137. The finance tree is now 100% token-based, so this check runs with an
+// EMPTY allowlist and stays cheap to keep green.
+//
+// Deliberately NOT repo-wide: `src/` still has ~160 files carrying raw slate
+// (about 111 of them under the admin tree), so a repo-wide version would need a
+// huge allowlist and would assert nothing useful. Widening it to the admin
+// surface is a follow-up that has to migrate those files first.
+const THEMED_TOKEN_ONLY_ROOTS = ["src/app/(finance)", "src/components/finance"];
+
+describe("themed-surface neutral contract", () => {
+  it("keeps the /finance surface on theme tokens, never raw slate or bg-white", () => {
+    const rawNeutral = /\b(?:bg|text|border)-slate-\d|\bbg-white\b/;
+    const offenders = THEMED_TOKEN_ONLY_ROOTS.flatMap(listSourceFiles).filter(
+      (path) => rawNeutral.test(readFileSync(join(process.cwd(), path), "utf8")),
+    );
+
+    expect(
+      offenders,
+      offenders.length === 0
+        ? ""
+        : `The /finance surface renders inside app-theme-scope, so raw ` +
+            `slate-*/bg-white utilities ignore the club theme and break dark ` +
+            `mode. Use the semantic tokens instead: bg-card/text-card-foreground ` +
+            `for card surfaces, bg-popover/text-popover-foreground for floating ` +
+            `panels, text-muted-foreground for secondary labels, bg-muted for ` +
+            `tinted rows, border-border for rules. Offenders:\n` +
+            `${offenders.join("\n")}`,
+    ).toEqual([]);
+  });
+});
