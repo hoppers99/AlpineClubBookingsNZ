@@ -1,6 +1,5 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
-import fg from "fast-glob";
 import { describe, expect, it } from "vitest";
 
 /*
@@ -24,16 +23,32 @@ import { describe, expect, it } from "vitest";
 
 const SRC = join(process.cwd(), "src");
 
+// Plain recursive walk rather than a glob library: this is the only place in
+// the repo that would need one, and knip rightly flags a dependency added for a
+// single test.
+function walk(dir: string, out: string[] = []): string[] {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name === "__tests__" || entry.name === "node_modules") continue;
+      walk(full, out);
+    } else if (entry.name.endsWith(".tsx") && !entry.name.endsWith(".test.tsx")) {
+      out.push(full);
+    }
+  }
+  return out;
+}
+
 function adminSourceFiles(): string[] {
-  return fg
-    .sync(["**/*.tsx"], {
-      cwd: SRC,
-      absolute: true,
-      ignore: ["**/__tests__/**", "**/*.test.tsx"],
-    })
+  return walk(SRC)
     .filter((file) => {
       const rel = relative(SRC, file).split(sep).join("/");
-      return rel.includes("admin");
+      // `view-only-action.tsx` DEFINES the primitives and documents them, so its
+      // JSDoc necessarily quotes `describeReason={false}` and `aria-disabled` as
+      // prose. Scanning it would match the documentation rather than a call
+      // site. Its own behaviour is pinned by the dedicated Decision 1 case below
+      // and by `view-only-section-banner.test.tsx`.
+      return rel.includes("admin") && !rel.endsWith("admin/view-only-action.tsx");
     });
 }
 
@@ -113,7 +128,15 @@ describe("gated controls keep `disabled` (#2160 Decision 1)", () => {
       join(SRC, "components", "admin", "view-only-action.tsx"),
       "utf8",
     );
-    expect(source).toContain("disabled={isDisabled}");
-    expect(source).not.toContain('aria-disabled');
+    // Strip comments first: the JSDoc DISCUSSES `aria-disabled` at length —
+    // explaining what was weighed and declined — so matching raw source would
+    // fail on the documentation that exists precisely to record this decision.
+    // Only the code is the contract.
+    const code = source
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
+
+    expect(code).toContain("disabled={isDisabled}");
+    expect(code).not.toMatch(/aria-disabled/);
   });
 });
