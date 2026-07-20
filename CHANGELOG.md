@@ -4,6 +4,27 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **"Show indicative pricing" no longer changes the public site the moment you
+  click it (#2162).** On **Booking Policies → Public Booking Requests**, the
+  **Show indicative pricing on the request form** checkbox used to save the
+  instant it was ticked — one stray click and the public request form switched
+  between "Request to Book" (with a price) and "Request for Price" (without
+  one), with an audit entry to match. It now works like every other setting in
+  the area: click **Edit** on the Indicative Pricing card, tick or untick the
+  box, then **Save indicative pricing**, with **Cancel** to put it back. Save
+  stays greyed out until you have actually changed something, so an
+  open-and-close cannot record a change that never happened. **This is a visible
+  change for admins:** a one-click toggle is now three clicks, deliberately, to
+  match the rest of Booking Policies. Two related fixes ride along. The card
+  re-reads the stored settings immediately before it writes, so saving it can
+  never quietly overwrite quote or attendee timings that someone else changed —
+  or that you typed into the cards below but have not saved yet. And the save
+  now sends the school-attendee timings back to the browser as well as the
+  pricing and quote ones; previously they came back missing, which blanked both
+  attendee boxes after any save and made the next attendee save fail. No schema,
+  API, permission, or audit change. See `docs/guides/booking-policies.md` and
+  `docs/ARCHITECTURE.md`.
+
 - **Secondary text in the member and admin app now actually looks secondary
   (#2145).** Small labels, hints, and footnotes are meant to sit a step below
   normal text, but inside the themed app they rendered in exactly the same

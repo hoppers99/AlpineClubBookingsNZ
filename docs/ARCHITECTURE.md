@@ -560,13 +560,22 @@ older staged-but-ungated settings forms, and the age-tier and notification
 settings panels — the last two were previously written up as blanket exemptions
 "because they are list sections", which is no longer the reason: list sections
 are in scope (see the per-row shape below), those two simply have not been
-touched since. One divergent is NOT pre-existing-and-untouched and is called out
-by name for that reason: `public-booking-requests-section.tsx` was modified by
-#2142 (its Save buttons and view-only banner), yet its **Show indicative
-pricing** checkbox still auto-persists on toggle rather than staging behind
-Edit → Save. That is deliberate for now — the owner decision on whether to stage
-it lives in **#2162** — but under "binds new or modified sections" it is a real
-divergence, not an exemption, and it stays listed here until #2162 resolves.
+touched since. Booking Policies itself no longer has a divergent: the last
+auto-persisting control in the area, the **Show indicative pricing** checkbox in
+`public-booking-requests-section.tsx`, was brought onto Edit → Save in #2162.
+Its card is a worked example of the two rules that meet awkwardly here. All five
+public-booking-request settings live in ONE row behind ONE whole-object PUT, so
+a single hook instance for the section would match storage exactly — but the
+hook carries one `editing` flag and the two timing cards are deliberately
+always-editable with a dirty-gated Save, so fusing them would have forced an
+Edit step onto cards that were not in scope. The card therefore takes its OWN
+instance and pays for the shared write object the documented way: it GETs the
+fresh settings and merges only its own key, exactly as the module-toggle cards
+below do, so it can never persist a sibling card's uncommitted draft or its own
+load-time snapshot of one. It carries NO first-save exception even though the
+read synthesises defaults on a miss, because its whole draft is a single boolean
+— "unchanged" and "already effectively stored" are the same state there, so the
+exception would only unlock a pristine, audit-writing no-op.
 Reference:
 `src/components/admin/booking-policies/group-discount-section.tsx` — note that
 it now carries the section banner, so for the default per-button

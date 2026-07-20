@@ -286,10 +286,18 @@ export async function updateBookingRequestSettings(input: {
     },
   });
 
+  // The write echoes the STORED row back, in the same shape the GET returns
+  // (#2162). The canonical settings-section pattern re-seeds a card's draft and
+  // snapshot from this response, so a partial echo is not a cosmetic omission:
+  // the two attendee fields used to be missing, which left the admin form
+  // holding `undefined` for both after any save and made the next attendee write
+  // send `NaN`.
   return {
     showPricingToNonMembers: settings.showPricingToNonMembers,
     quoteResponseTtlDays: settings.quoteResponseTtlDays,
     quoteReminderLeadDays: settings.quoteReminderLeadDays,
+    attendeeConfirmationLeadDays: settings.attendeeConfirmationLeadDays,
+    attendeeConfirmationReminderDays: settings.attendeeConfirmationReminderDays,
   };
 }
 

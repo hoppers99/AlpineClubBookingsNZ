@@ -126,9 +126,13 @@ rules — see
 
    ![Public Booking Requests: the indicative-pricing toggle plus quote-window and school-attendee timing cards](../images/admin/admin-booking-policies-public-requests.png)
 
-2. Toggle **Show indicative pricing on the request form** (this autosaves).
-   With it on, the public form is "Request to Book" and shows a price; with it
-   off, it is "Request for Price" and shows none until an officer reviews it.
+2. To change **Show indicative pricing on the request form**, click **Edit** on
+   the Indicative Pricing card, tick or untick the box, then click **Save
+   indicative pricing**. **Cancel** puts it back the way it was. Nothing changes
+   on the public site until you save, so an accidental click on the box is
+   harmless. With it on, the public form is "Request to Book" and shows a price;
+   with it off, it is "Request for Price" and shows none until an officer
+   reviews it.
 3. Set the **Quote response window** and **Reminder lead time**, then **Save
    quote timing**. Set the **School Attendee Confirmation** prompts and **Save
    attendee prompts**.
@@ -147,7 +151,7 @@ rules — see
 | Summer seasons only | Group Discount | Restrict the group discount to summer | on | — |
 | Minimum nights | Minimum Stay | Nights required when a trigger day is included | 2 | Minimum 2 |
 | Trigger days | Minimum Stay | Which weekdays activate the rule | Sat | At least one day |
-| Show indicative pricing | Public Requests | Price shown on the public request form | off | Autosaves |
+| Show indicative pricing | Public Requests | Price shown on the public request form | off | Edit → tick → Save, like every other policy setting |
 | Quote response window | Public Requests | Days a quote link stays valid | 14 | 1–60 days |
 | Reminder lead time | Public Requests | Days before expiry to remind the requester | 3 | 0–30, must be shorter than the window |
 | Attendee first prompt / reminder | Public Requests | School attendee-confirmation timing | 14 / 3 days | Prompt 0–90 (0 = off); reminder 1–30 |

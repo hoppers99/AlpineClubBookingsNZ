@@ -920,6 +920,216 @@ describe("PublicBookingRequestsSection Save gating (#2142)", () => {
   });
 });
 
+// #2162: the "Show indicative pricing" checkbox used to persist the instant it
+// was clicked — the last control in Booking Policies that auto-saved, and the
+// reason this section was listed as an acknowledged divergent in `AGENTS.md`
+// and `docs/ARCHITECTURE.md`. It now stages behind its own Edit -> Save ->
+// Cancel cycle on `useSectionEditState`, like the group discount card.
+describe("PublicBookingRequestsSection indicative pricing stages behind Save (#2162)", () => {
+  const STORED = {
+    showPricingToNonMembers: false,
+    quoteResponseTtlDays: 14,
+    quoteReminderLeadDays: 3,
+    attendeeConfirmationLeadDays: 14,
+    attendeeConfirmationReminderDays: 3,
+  };
+
+  /**
+   * A stub that behaves like the real endpoint: the GET returns what is stored
+   * and the PUT merges its whole-object body and echoes the row back. The
+   * echo matters — the card re-seeds its draft AND its snapshot from it.
+   */
+  function stubSettings(stored: Record<string, unknown> = STORED) {
+    let current = { ...stored };
+    const fetchMock = vi.fn<
+      (url: string, init?: RequestInit) => Promise<Response>
+    >(async (_url, init) => {
+      if (init?.method === "PUT") {
+        current = { ...current, ...JSON.parse(String(init.body)) };
+        return jsonResponse(current);
+      }
+      return jsonResponse(current);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  async function loadSection() {
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Save quote timing" })).toBeTruthy(),
+    );
+  }
+
+  function pricingCheckbox() {
+    return screen.getByLabelText(
+      "Show indicative pricing on the request form",
+    ) as HTMLInputElement;
+  }
+
+  function editButton() {
+    return screen.getByRole("button", { name: "Edit" }) as HTMLButtonElement;
+  }
+
+  function saveButton() {
+    return screen.getByRole("button", {
+      name: "Save indicative pricing",
+    }) as HTMLButtonElement;
+  }
+
+  it("leaves the checkbox read-only until Edit is clicked, and writes nothing on a click", async () => {
+    const fetchMock = stubSettings();
+    render(<PublicBookingRequestsSection />);
+    await loadSection();
+
+    expect(pricingCheckbox().disabled).toBe(true);
+    // No Save is even offered before Edit.
+    expect(
+      screen.queryByRole("button", { name: "Save indicative pricing" }),
+    ).toBeNull();
+
+    // `fireEvent.click` dispatches straight at the node, so jsdom flips the DOM
+    // `checked` property even on a disabled input — which a real browser would
+    // not. What is asserted is the part that matters and that a browser and
+    // jsdom agree on: React's `onChange` never runs, so nothing is staged and
+    // nothing is written.
+    fireEvent.click(pricingCheckbox());
+    expect(writeCalls(fetchMock)).toHaveLength(0);
+  });
+
+  it("stages the tick and writes only once Save is clicked", async () => {
+    const fetchMock = stubSettings();
+    render(<PublicBookingRequestsSection />);
+    await loadSection();
+
+    fireEvent.click(editButton());
+    fireEvent.click(pricingCheckbox());
+
+    // Staged, not persisted.
+    expect(pricingCheckbox().checked).toBe(true);
+    expect(writeCalls(fetchMock)).toHaveLength(0);
+    expect(saveButton().disabled).toBe(false);
+
+    fireEvent.click(saveButton());
+
+    await waitFor(() =>
+      expect(screen.getByText("Booking request settings saved")).toBeTruthy(),
+    );
+    expect(writeCalls(fetchMock)).toHaveLength(1);
+    expect(JSON.parse(String(writeCalls(fetchMock)[0][1]?.body))).toMatchObject({
+      showPricingToNonMembers: true,
+    });
+    // The card closes back to read-only and the new value is the snapshot.
+    expect(
+      screen.queryByRole("button", { name: "Save indicative pricing" }),
+    ).toBeNull();
+    expect(pricingCheckbox().checked).toBe(true);
+  });
+
+  // #2143: the write logs `booking_request.settings_updated` unconditionally, so
+  // a pristine Save would record a change that never happened.
+  it("keeps Save disabled while the draft matches what is stored", async () => {
+    const fetchMock = stubSettings();
+    render(<PublicBookingRequestsSection />);
+    await loadSection();
+
+    fireEvent.click(editButton());
+    expect(saveButton().disabled).toBe(true);
+
+    fireEvent.click(pricingCheckbox());
+    expect(saveButton().disabled).toBe(false);
+
+    // Ticked and unticked again is not a change.
+    fireEvent.click(pricingCheckbox());
+    expect(saveButton().disabled).toBe(true);
+    expect(writeCalls(fetchMock)).toHaveLength(0);
+  });
+
+  it("reverts the checkbox and closes the card on Cancel, writing nothing", async () => {
+    const fetchMock = stubSettings();
+    render(<PublicBookingRequestsSection />);
+    await loadSection();
+
+    fireEvent.click(editButton());
+    fireEvent.click(pricingCheckbox());
+    expect(pricingCheckbox().checked).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(pricingCheckbox().checked).toBe(false);
+    expect(pricingCheckbox().disabled).toBe(true);
+    expect(writeCalls(fetchMock)).toHaveLength(0);
+  });
+
+  // All five settings share ONE whole-object PUT, so this card must send the
+  // STORED timing values alongside its own key — never a sibling card's
+  // uncommitted draft, and never its own load-time snapshot of one.
+  it("GETs the fresh settings and merges, so an unsaved timing draft is not persisted", async () => {
+    const fetchMock = stubSettings();
+    render(<PublicBookingRequestsSection />);
+    await loadSection();
+
+    fireEvent.change(screen.getByLabelText("Quote response window (days)"), {
+      target: { value: "45" },
+    });
+    fireEvent.click(editButton());
+    fireEvent.click(pricingCheckbox());
+    fireEvent.click(saveButton());
+
+    await waitFor(() => expect(writeCalls(fetchMock)).toHaveLength(1));
+    expect(JSON.parse(String(writeCalls(fetchMock)[0][1]?.body))).toEqual({
+      ...STORED,
+      showPricingToNonMembers: true,
+    });
+  });
+
+  it("offers no way in for a view-only admin, and explains it once section-wide", async () => {
+    hookMock.canEdit = false;
+    stubSettings();
+    render(<PublicBookingRequestsSection />);
+    await loadSection();
+
+    expectViewOnly(editButton());
+    expect(pricingCheckbox().disabled).toBe(true);
+    expect(screen.getAllByTestId("admin-view-only-banner")).toHaveLength(1);
+  });
+
+  it("disables Edit neutrally while access is still resolving", async () => {
+    hookMock.canEdit = undefined;
+    stubSettings();
+    render(<PublicBookingRequestsSection />);
+    await loadSection();
+
+    expectNeutralDisabled(editButton());
+  });
+
+  // Defence in depth behind the UI gating (#1927): a stale tab whose actor was
+  // narrowed after the page loaded.
+  it("maps a 403 on the pricing save to the shared not-saved copy", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(
+        async (_url, init) =>
+          init?.method
+            ? new Response("{}", { status: 403 })
+            : jsonResponse(STORED),
+      ),
+    );
+    render(<PublicBookingRequestsSection />);
+    await loadSection();
+
+    fireEvent.click(editButton());
+    fireEvent.click(pricingCheckbox());
+    fireEvent.click(saveButton());
+
+    await waitFor(() =>
+      expect(screen.getByText(ADMIN_FORBIDDEN_SAVE_REASON)).toBeTruthy(),
+    );
+    // The write failed, so the card stays open holding the admin's draft.
+    expect(saveButton()).toBeTruthy();
+    expect(pricingCheckbox().checked).toBe(true);
+  });
+});
+
 // #2142 review (#2143, second route in): Activate/Deactivate is a one-click
 // direct write, never covered by the Save dirty gate. It read `active` off a row
 // that only changes once the refresh resolves, so two quick clicks both saw the

@@ -77,13 +77,12 @@ before changing Next.js APIs or conventions.
   the matching `area:edit` permission. This is binding for settings work touched
   from here on; two pre-existing surfaces are acknowledged divergents and are NOT
   retrofitted by this rule alone: the `/admin/modules` grid (bulk toggles) and
-  the staged-but-ungated legacy settings forms. One further divergent is named
-  because it does NOT qualify as untouched:
-  `src/components/admin/booking-policies/public-booking-requests-section.tsx`
-  was modified by #2142 and its **Show indicative pricing** checkbox still
-  auto-persists on toggle. Whether to stage it is an owner decision tracked in
-  **#2162**; until that lands it is a known divergence, not an exemption. See
-  `docs/ARCHITECTURE.md` → the same list. Reference implementation:
+  the staged-but-ungated legacy settings forms. Every Booking Policies control
+  now follows the rule: the last auto-persisting one, the **Show indicative
+  pricing** checkbox in
+  `src/components/admin/booking-policies/public-booking-requests-section.tsx`,
+  was brought onto Edit → Save in #2162. See `docs/ARCHITECTURE.md` → the same
+  list. Reference implementation:
   `src/components/admin/booking-policies/group-discount-section.tsx`.
   When you write a new section, or change an existing section's draft/snapshot
   logic, implement that half of the pattern with the shared
