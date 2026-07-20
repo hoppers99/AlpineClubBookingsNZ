@@ -610,10 +610,20 @@
   outline-offset: -1px;
 }
 
-.dark
-  .app-theme-scope
-  :is(.bg-primary, .bg-brand-gold):not(.website-theme *) {
-  outline: none;
+/* Screen-only (#2146). This one assigns no colour, so the earlier revision of
+   the print contract test (which only probed for literal colour values) let it
+   through — but it still made the SAME page print differently depending on the
+   operator's theme: a printed `bg-primary` chip kept its charcoal hairline in
+   light mode and lost it in dark. Print renders the light palette, so it must
+   also render the light palette's outline. The contract test now flags ANY
+   `.dark`-gated rule reachable from print media unless every value it assigns
+   is a `var(--token)` that self-heals against the light `:root`. */
+@media not print {
+  .dark
+    .app-theme-scope
+    :is(.bg-primary, .bg-brand-gold):not(.website-theme *) {
+    outline: none;
+  }
 }
 
 /* A native outline is independent of Tailwind's ring opacity and component

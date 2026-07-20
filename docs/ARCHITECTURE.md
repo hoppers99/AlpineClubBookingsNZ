@@ -175,10 +175,39 @@ those are light. The `@media print` block then only pins `color-scheme: light`
 inline style on `<html>`) plus the page/section layout rules. The
 `html2canvas`-based **Download PDF** path (`src/lib/report-pdf.ts`) is the same
 hazard in a different medium: it composites onto a hard-coded white page, so its
-`onclone` hook strips the theme class from the cloned capture document. If you
-add a dark-mode rule with a literal colour, wrap it in `@media not print` — the
-contract test `src/lib/__tests__/print-light-palette-contract.test.ts` fails on
-any `.dark`-gated rule left visible to print media.
+`onclone` hook strips the theme class from the cloned capture document.
+
+Two rules follow for anyone adding dark-mode styling, because the guarantee has
+two halves with different enforcement:
+
+1. **In `globals.css`:** wrap any new `.dark`-gated rule in `@media not print`,
+   unless every value it assigns is a `var(--token)` (those resolve through the
+   light `:root` on paper and self-heal, which is why the token-driven neutral
+   remap is deliberately left unwrapped). The contract test
+   `src/lib/__tests__/print-light-palette-contract.test.ts` parses this file and
+   fails on any `.dark`-gated rule left visible to print media that assigns
+   anything else — a literal colour in any syntax, or a colourless but
+   theme-dependent declaration such as `outline: none`.
+2. **In TSX:** a Tailwind `dark:` utility carrying a **literal palette colour**
+   (`dark:bg-slate-900`, `dark:text-amber-200`) must not go on a printable
+   surface. This is the half `globals.css` cannot protect: `dark:` utilities
+   compile into Tailwind's own generated stylesheet, never into `globals.css`,
+   so no `@media not print` wrapper here can ever reach them — they print exactly
+   as written. Token-driven variants (`dark:bg-input/30`,
+   `dark:checked:bg-primary`) are fine, since they resolve to `var(--token)` and
+   self-heal like the rules above. The same contract test enforces this by
+   scanning the printable trees (`(finance)`, `components/finance`,
+   `admin/reports`, `admin/roster`, `admin/induction`, `lodge-instructions`,
+   `hut-leader-instructions`, and `components/ui`) and keeps the handful of
+   non-printable files that legitimately carry such utilities on an enumerated
+   list. On a printable surface, reach the colour through a semantic token or the
+   `--hue-*` pairs instead.
+
+`e2e/print-dark-mode.spec.ts` backs both halves at the medium the bug actually
+lives in: it renders `/admin/reports` and `/finance` under
+`emulateMedia({ media: "print", colorScheme: "dark" })` and asserts the computed
+ink is dark on a light surface, and that the printed result is identical with
+and without the theme class.
 
 Chart colours are a documented carve-out. `FINANCE_MIX_COLORS` in
 `src/components/finance/charts/finance-chart-theme.ts` stays a literal hex
