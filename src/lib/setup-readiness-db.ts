@@ -190,7 +190,9 @@ export async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot>
   const publicHutFeeSingleColumnSeasons: string[] = [];
   if (publicContentSettings?.hutFees === true) {
     const publicSeasons = await prisma.season.findMany({
-      where: { active: true },
+      // Active seasons of ACTIVE lodges only — exactly the set the embed
+      // renders, so the warning cannot flag a season no visitor can see.
+      where: { active: true, lodge: { active: true } },
       orderBy: [{ startDate: "asc" }, { name: "asc" }],
       select: {
         name: true,
