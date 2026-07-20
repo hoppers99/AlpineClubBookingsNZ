@@ -34,7 +34,7 @@ import { RowValidator, asStr, coerceBool, nz, readCsvRows } from "../values";
 //     compat for the legacy `isMember` column closed one release after the E13
 //     contraction (#2131): a bundle carrying that shape is now REJECTED with a
 //     clear validation error, never silently mapped (re-export it from an
-//     up-to-date install).
+//     install running the current release).
 // so the lodge a row belongs to is implied by the folder (not a CSV column).
 // The authoritative slug is lodge.json's `slug` — the folder name is just a
 // container.
