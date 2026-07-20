@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   requireAdmin: vi.fn(),
   buildPreview: vi.fn(),
   confirmPreview: vi.fn(),
+  reconcile: vi.fn(),
   enqueue: vi.fn(),
   audit: vi.fn(),
   revalidatePath: vi.fn(),
@@ -20,6 +21,7 @@ vi.mock("@/lib/session-guards", () => ({ requireAdmin: mocks.requireAdmin }));
 vi.mock("@/lib/membership-subscription-billing", () => ({
   buildSubscriptionBillingPreview: mocks.buildPreview,
   confirmSubscriptionBillingPreview: mocks.confirmPreview,
+  reconcileSubscriptionBillingExceptions: mocks.reconcile,
   SubscriptionBillingError: mocks.SubscriptionBillingError,
 }));
 vi.mock("@/lib/logger", () => ({
@@ -48,6 +50,8 @@ const preview = {
   exceptions: [],
   alreadyCoveredMemberIds: [],
   exemptMemberIds: [],
+  exemptMembers: [],
+  alreadyInvoiced: [],
   totalCents: 0,
   confirmationToken: "a".repeat(64),
 };
@@ -66,6 +70,7 @@ describe("admin subscription billing route", () => {
     mocks.requireAdmin.mockResolvedValue({ ok: true, session: { user: { id: "admin-1" } } });
     mocks.buildPreview.mockResolvedValue(preview);
     mocks.confirmPreview.mockResolvedValue({ chargeIds: ["charge-1"], exceptionCount: 0 });
+    mocks.reconcile.mockResolvedValue({ resolvedCount: 0 });
     mocks.enqueue.mockResolvedValue({ queueOperationId: "op-1", message: "queued" });
     mocks.charges.findMany.mockResolvedValue([]);
     mocks.exceptions.findMany.mockResolvedValue([]);
@@ -217,5 +222,43 @@ describe("admin subscription billing route", () => {
     const response = await GET(new NextRequest("http://localhost/api/admin/subscription-billing"));
     expect(response.status).toBe(403);
     expect(mocks.buildPreview).not.toHaveBeenCalled();
+  });
+
+  // #2148 (D2 / constraint 3): the read-only GET must never reconcile.
+  it("the finance-view GET never reconciles (no mutation)", async () => {
+    const response = await GET(new NextRequest("http://localhost/api/admin/subscription-billing?seasonYear=2026&decisionDate=2026-07-13"));
+    expect(response.status).toBe(200);
+    expect(mocks.reconcile).not.toHaveBeenCalled();
+  });
+
+  it("REFRESH_PREVIEW is finance-edit gated, reconciles, and returns the refreshed billing data", async () => {
+    mocks.reconcile.mockResolvedValue({ resolvedCount: 3 });
+    const response = await POST(request({ action: "REFRESH_PREVIEW", seasonYear: 2026, decisionDate: "2026-07-13" }));
+    expect(response.status).toBe(200);
+    expect(mocks.requireAdmin).toHaveBeenCalledWith({ permission: { area: "finance", level: "edit" } });
+    expect(mocks.reconcile).toHaveBeenCalledWith({ seasonYear: 2026, decisionDate: expect.any(Date) });
+    const body = await response.json();
+    expect(body).toMatchObject({ success: true, reconciledCount: 3, preview, settings: { invoiceDueDays: 30 } });
+    // Audits the reconciliation when it resolved rows.
+    expect(mocks.audit).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "membership-subscription-billing.reconcile" }),
+    );
+  });
+
+  it("REFRESH_PREVIEW skips the audit log when nothing was reconciled", async () => {
+    mocks.reconcile.mockResolvedValue({ resolvedCount: 0 });
+    const response = await POST(request({ action: "REFRESH_PREVIEW", seasonYear: 2026, decisionDate: "2026-07-13" }));
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toMatchObject({ success: true, reconciledCount: 0 });
+    expect(mocks.audit).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: "membership-subscription-billing.reconcile" }),
+    );
+  });
+
+  it("REFRESH_PREVIEW rejects a malformed decision date", async () => {
+    const response = await POST(request({ action: "REFRESH_PREVIEW", seasonYear: 2026, decisionDate: "13-07-2026" }));
+    expect(response.status).toBe(400);
+    expect(mocks.reconcile).not.toHaveBeenCalled();
   });
 });

@@ -7,6 +7,7 @@ import { getTodayDateOnly, isDateOnlyString, parseDateOnly } from "@/lib/date-on
 import {
   buildSubscriptionBillingPreview,
   confirmSubscriptionBillingPreview,
+  reconcileSubscriptionBillingExceptions,
   SubscriptionBillingError,
 } from "@/lib/membership-subscription-billing";
 import logger from "@/lib/logger";
@@ -28,6 +29,15 @@ const mutationSchema = z.discriminatedUnion("action", [
     confirmed: z.literal(true),
   }).strict(),
   z.object({ action: z.literal("RETRY_CHARGE"), chargeId: z.string().min(1) }).strict(),
+  // #2148 (D2): edit-gated preview refresh. Reconciles stale persisted
+  // exceptions (auto-resolves any OPEN row the fresh whole-club preview no
+  // longer regenerates) and returns the refreshed billing data. The read-only
+  // GET never mutates; this action is the documented way stale rows clear.
+  z.object({
+    action: z.literal("REFRESH_PREVIEW"),
+    seasonYear: z.number().int().min(2020).max(2040),
+    decisionDate: z.string(),
+  }).strict(),
   z.object({
     action: z.literal("UPDATE_SETTINGS"),
     invoiceDueDays: z.number().int().min(1).max(365),
@@ -43,6 +53,42 @@ function invalidate() {
   revalidatePath("/admin/members/[id]", "page");
 }
 
+// Build the panel payload (preview + durable charge queue + persisted-only
+// exceptions + settings) for a season/decision date. Shared by the read-only
+// GET and the edit-gated REFRESH_PREVIEW action so both return the same shape.
+// Pure reads only — any exception reconciliation is done by the caller BEFORE
+// this loads, so the GET stays a non-mutating view (#2148 constraint 3).
+async function loadBillingData(seasonYear: number, decisionDate: Date) {
+  const [preview, charges, exceptions, settings] = await Promise.all([
+    buildSubscriptionBillingPreview({ seasonYear, decisionDate }),
+    prisma.membershipSubscriptionCharge.findMany({
+      where: { seasonYear },
+      orderBy: { createdAt: "desc" },
+      take: 100,
+      include: { coverage: { select: { memberId: true, memberName: true } } },
+    }),
+    prisma.membershipBillingException.findMany({
+      where: { seasonYear, status: "OPEN" },
+      orderBy: { lastSeenAt: "desc" },
+      take: 100,
+    }),
+    prisma.membershipSubscriptionBillingSettings.findUnique({ where: { id: "default" } }),
+  ]);
+  const previewFingerprints = new Set(preview.exceptions.map((item) => item.fingerprint));
+  const visiblePersistentExceptions = exceptions.filter(
+    (item) => !previewFingerprints.has(item.fingerprint)
+  );
+  return {
+    preview,
+    charges,
+    exceptions: visiblePersistentExceptions,
+    settings: {
+      invoiceDueDays: settings?.invoiceDueDays ?? 30,
+      familyBillingMode: settings?.familyBillingMode ?? DEFAULT_FAMILY_BILLING_MODE,
+    },
+  };
+}
+
 export async function GET(request: NextRequest) {
   const guard = await requireAdmin({ permission: { area: "finance", level: "view" } });
   if (!guard.ok) return guard.response;
@@ -54,34 +100,7 @@ export async function GET(request: NextRequest) {
   if (!decisionDate) return NextResponse.json({ error: "Decision date must be YYYY-MM-DD." }, { status: 400 });
   const seasonYear = parsed.data.seasonYear ?? getSeasonYear(decisionDate);
   try {
-    const [preview, charges, exceptions, settings] = await Promise.all([
-      buildSubscriptionBillingPreview({ seasonYear, decisionDate }),
-      prisma.membershipSubscriptionCharge.findMany({
-        where: { seasonYear },
-        orderBy: { createdAt: "desc" },
-        take: 100,
-        include: { coverage: { select: { memberId: true, memberName: true } } },
-      }),
-      prisma.membershipBillingException.findMany({
-        where: { seasonYear, status: "OPEN" },
-        orderBy: { lastSeenAt: "desc" },
-        take: 100,
-      }),
-      prisma.membershipSubscriptionBillingSettings.findUnique({ where: { id: "default" } }),
-    ]);
-    const previewFingerprints = new Set(preview.exceptions.map((item) => item.fingerprint));
-    const visiblePersistentExceptions = exceptions.filter(
-      (item) => !previewFingerprints.has(item.fingerprint)
-    );
-    return NextResponse.json({
-      preview,
-      charges,
-      exceptions: visiblePersistentExceptions,
-      settings: {
-        invoiceDueDays: settings?.invoiceDueDays ?? 30,
-        familyBillingMode: settings?.familyBillingMode ?? DEFAULT_FAMILY_BILLING_MODE,
-      },
-    });
+    return NextResponse.json(await loadBillingData(seasonYear, decisionDate));
   } catch (error) {
     if (error instanceof SubscriptionBillingError) {
       return NextResponse.json({ error: error.message }, { status: 409 });
@@ -144,6 +163,34 @@ export async function POST(request: Request) {
       });
       invalidate();
       return NextResponse.json({ success: true, ...result });
+    }
+    if (parsed.data.action === "REFRESH_PREVIEW") {
+      if (!isDateOnlyString(parsed.data.decisionDate)) {
+        return NextResponse.json({ error: "Decision date must be YYYY-MM-DD." }, { status: 400 });
+      }
+      const decisionDate = parseDateOnly(parsed.data.decisionDate);
+      const seasonYear = parsed.data.seasonYear;
+      // Reconcile stale persisted exceptions FIRST (the only mutation), then load
+      // the refreshed view so the response reflects the auto-resolved rows.
+      const reconciled = await reconcileSubscriptionBillingExceptions({ seasonYear, decisionDate });
+      if (reconciled.resolvedCount > 0) {
+        await createAuditLog({
+          action: "membership-subscription-billing.reconcile",
+          memberId: guard.session.user.id,
+          targetId: String(seasonYear),
+          details: JSON.stringify(reconciled),
+        });
+      }
+      const data = await loadBillingData(seasonYear, decisionDate);
+      invalidate();
+      return NextResponse.json({
+        success: true,
+        message: reconciled.resolvedCount > 0
+          ? `Preview refreshed. ${reconciled.resolvedCount} stale exception${reconciled.resolvedCount === 1 ? "" : "s"} auto-resolved.`
+          : "Preview refreshed.",
+        reconciledCount: reconciled.resolvedCount,
+        ...data,
+      });
     }
     if (!isDateOnlyString(parsed.data.decisionDate)) {
       return NextResponse.json({ error: "Decision date must be YYYY-MM-DD." }, { status: 400 });

@@ -2204,18 +2204,22 @@ export async function processQueuedXeroOutboxOperations(options?: {
       if (payload?.queueType === XERO_OUTBOX_SUBSCRIPTION_INVOICE_TYPE) {
         const currentCharge = await prisma.membershipSubscriptionCharge.findUnique({
           where: { id: payload.chargeId },
-          select: { xeroInvoiceId: true },
+          select: { xeroInvoiceId: true, status: true },
         }).catch(() => null);
-        await prisma.membershipSubscriptionCharge.update({
-          where: { id: payload.chargeId },
-          data: {
-            status: currentCharge?.xeroInvoiceId ? "EMAIL_FAILED" : "QUEUED",
-            lastErrorCode: currentCharge?.xeroInvoiceId ? "EMAIL_FAILED" : "XERO_FAILED",
-            lastErrorMessage: error instanceof Error ? error.message : String(error),
-          },
-        }).catch((chargeError) => {
-          logger.error({ err: chargeError, chargeId: payload.chargeId }, "Failed to expose subscription charge outbox error");
-        });
+        // #2147: never resurrect a VOIDED charge (its invoice was voided and its
+        // coverage released) back to a retryable QUEUED/EMAIL_FAILED state.
+        if (currentCharge && currentCharge.status !== "VOIDED") {
+          await prisma.membershipSubscriptionCharge.update({
+            where: { id: payload.chargeId },
+            data: {
+              status: currentCharge.xeroInvoiceId ? "EMAIL_FAILED" : "QUEUED",
+              lastErrorCode: currentCharge.xeroInvoiceId ? "EMAIL_FAILED" : "XERO_FAILED",
+              lastErrorMessage: error instanceof Error ? error.message : String(error),
+            },
+          }).catch((chargeError) => {
+            logger.error({ err: chargeError, chargeId: payload.chargeId }, "Failed to expose subscription charge outbox error");
+          });
+        }
       }
       // F4 (#1354): fail the operation for EVERY queue type, not just the two
       // membership-cancellation types and payload-shape errors. An operation

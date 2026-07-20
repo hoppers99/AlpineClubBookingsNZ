@@ -414,7 +414,7 @@ describe("member delete lifecycle actions", () => {
           { xeroInvoiceNumber: { not: null } },
           { xeroOnlineInvoiceUrl: { not: null } },
           { paidAt: { not: null } },
-          { chargeCoverage: { isNot: null } },
+          { chargeCoverage: { some: {} } },
         ],
       },
     });
@@ -440,7 +440,7 @@ describe("member delete lifecycle actions", () => {
     );
     expect(mockPrisma.memberSubscription.count).toHaveBeenCalledWith({
       where: expect.objectContaining({
-        OR: expect.arrayContaining([{ chargeCoverage: { isNot: null } }]),
+        OR: expect.arrayContaining([{ chargeCoverage: { some: {} } }]),
       }),
     });
   });

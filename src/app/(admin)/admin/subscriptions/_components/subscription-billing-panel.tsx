@@ -37,6 +37,36 @@ type BillingData = {
       coveredMembers: Array<{ id: string; name: string }>;
     }>;
     exceptions: Array<{ fingerprint: string; message: string }>;
+    // #2148 (D1): members exempt from a subscription by their age tier (no fee
+    // required by design). Shown in a collapsed informational "Exempt" section,
+    // never raised as MISSING_FEE_SCHEDULE. Optional so an older cached response
+    // without the field still renders.
+    exemptMembers?: Array<{
+      memberId: string;
+      memberName: string;
+      ageTier: string | null;
+    }>;
+    // #2147 (D3): members suppressed from the preview because their season
+    // subscription already holds a live Xero invoice. Shown in a collapsed
+    // "Already invoiced" section with their invoice number, never re-billed.
+    alreadyInvoiced: Array<{
+      memberId: string;
+      memberName: string;
+      xeroInvoiceNumber: string | null;
+      status: string;
+    }>;
+    // #2147 FINDING 1: family groups suppressed from a second PER_FAMILY charge
+    // because a group member already holds a live season invoice or an active
+    // coverage claim. Shown in the same "Already invoiced" section, labelled as
+    // covering the whole family group, never re-billed.
+    alreadyInvoicedFamilies?: Array<{
+      familyGroupId: string;
+      holderMemberId: string;
+      holderName: string;
+      xeroInvoiceNumber: string | null;
+      status: string | null;
+      membersCovered: number;
+    }>;
   };
   charges: Array<{
     id: string;
@@ -121,6 +151,18 @@ export function SubscriptionBillingPanel({ seasonYear }: { seasonYear: number })
     }
   }
 
+  // #2148 (D2): the Refresh button reconciles stale persisted exceptions for a
+  // finance-EDIT user via the edit-gated POST action, and stays a plain
+  // read-only reload for a finance-VIEW user. Mount-time and post-action reloads
+  // always go through the read-only GET (load), so the view never mutates.
+  async function refreshPreview() {
+    if (canEditFinance) {
+      await post({ action: "REFRESH_PREVIEW", seasonYear, decisionDate });
+    } else {
+      await load();
+    }
+  }
+
   async function confirmBatch() {
     if (!data || data.preview.seasonYear !== seasonYear || data.preview.decisionDate !== decisionDate) return;
     const accepted = await confirm({
@@ -150,7 +192,7 @@ export function SubscriptionBillingPanel({ seasonYear }: { seasonYear: number })
         </p>
         <div className="flex flex-wrap items-end gap-3">
           <div className="space-y-1"><Label htmlFor="subscription-decision-date">Decision date</Label><Input id="subscription-decision-date" type="date" value={decisionDate} onChange={(event) => { setData(null); setDecisionDate(event.target.value); }} /></div>
-          <Button type="button" variant="outline" onClick={() => void load()} disabled={loading || working}><RefreshCw className="mr-1 h-4 w-4" /> Refresh preview</Button>
+          <Button type="button" variant="outline" onClick={() => void refreshPreview()} disabled={loading || working}><RefreshCw className="mr-1 h-4 w-4" /> Refresh preview</Button>
           <div className="space-y-1"><Label htmlFor="subscription-due-days">Invoice due days</Label><Input id="subscription-due-days" className="w-28" type="number" min={1} max={365} value={dueDays} disabled={!canEditFinance} onChange={(event) => setDueDays(event.target.value)} /></div>
           <ViewOnlyActionButton canEdit={canEditFinance} type="button" variant="outline" disabled={working || Number(dueDays) < 1 || Number(dueDays) > 365} onClick={() => void post({ action: "UPDATE_SETTINGS", invoiceDueDays: Number(dueDays) })}>Save due days</ViewOnlyActionButton>
         </div>
@@ -200,6 +242,60 @@ export function SubscriptionBillingPanel({ seasonYear }: { seasonYear: number })
                 <ViewOnlyActionButton canEdit={canEditFinance} type="button" onClick={() => void confirmBatch()} disabled={working}>Confirm and queue annual batch</ViewOnlyActionButton>
               </div>
             ) : <Alert variant="info">No new charges are available for this preview. Existing immutable coverage is not regenerated.</Alert>}
+            {(data.preview.exemptMembers ?? []).length > 0 ? (
+              <details className="rounded-md border p-3 text-sm">
+                <summary className="cursor-pointer font-medium">
+                  Exempt ({(data.preview.exemptMembers ?? []).length}) — no subscription required by age tier
+                </summary>
+                <p className="mt-1 text-muted-foreground">
+                  These members are in an age tier that does not require a paid subscription, so no annual fee is charged and no MISSING_FEE_SCHEDULE exception is raised. Confirming the batch records a NOT_REQUIRED subscription for the season.
+                </p>
+                <ul className="mt-2 space-y-1">
+                  {(data.preview.exemptMembers ?? []).map((row) => (
+                    <li key={row.memberId} className="flex flex-wrap items-center justify-between gap-2">
+                      <span>{row.memberName}</span>
+                      <span className="tabular-nums text-muted-foreground">
+                        {row.ageTier ? row.ageTier.replaceAll("_", " ") : "No age tier"}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            ) : null}
+            {((data.preview.alreadyInvoiced ?? []).length + (data.preview.alreadyInvoicedFamilies ?? []).length) > 0 ? (
+              <details className="rounded-md border p-3 text-sm">
+                <summary className="cursor-pointer font-medium">
+                  Already invoiced ({(data.preview.alreadyInvoiced ?? []).length + (data.preview.alreadyInvoicedFamilies ?? []).length}) — suppressed to avoid double-billing
+                </summary>
+                <p className="mt-1 text-muted-foreground">
+                  These members already have a Xero invoice for this season, so they are not re-billed. Record payment against the existing invoice in Xero (or void it there to re-bill).
+                </p>
+                {(data.preview.alreadyInvoiced ?? []).length > 0 ? (
+                  <ul className="mt-2 space-y-1">
+                    {(data.preview.alreadyInvoiced ?? []).map((row) => (
+                      <li key={row.memberId} className="flex flex-wrap items-center justify-between gap-2">
+                        <span>{row.memberName}</span>
+                        <span className="tabular-nums text-muted-foreground">
+                          {row.xeroInvoiceNumber ?? "No Xero number"} · {row.status.replaceAll("_", " ")}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+                {(data.preview.alreadyInvoicedFamilies ?? []).length > 0 ? (
+                  <ul className="mt-2 space-y-1">
+                    {(data.preview.alreadyInvoicedFamilies ?? []).map((row) => (
+                      <li key={row.familyGroupId} className="flex flex-wrap items-center justify-between gap-2">
+                        <span>{row.holderName}&rsquo;s family — covers the whole family group ({row.membersCovered} {row.membersCovered === 1 ? "member" : "members"})</span>
+                        <span className="tabular-nums text-muted-foreground">
+                          {row.xeroInvoiceNumber ?? "No Xero number"}{row.status ? ` · ${row.status.replaceAll("_", " ")}` : ""}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </details>
+            ) : null}
             {visibleExceptions.length > 0 ? (
               <Alert variant="warning"><div className="space-y-1"><p className="font-medium">Billing exceptions — no invoice created</p>{visibleExceptions.map((item) => <p key={item.fingerprint}>{item.message}</p>)}</div></Alert>
             ) : null}
