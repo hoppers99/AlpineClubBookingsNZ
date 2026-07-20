@@ -170,6 +170,11 @@ enum MembershipSubscriptionChargeStatus {
   EMAIL_FAILED
   EMAILED
   CONFLICT
+  // #2147: the charge's Xero invoice was observed VOIDED/DELETED by the
+  // membership sync. The row is KEPT for audit; its coverage claim is released
+  // (MembershipSubscriptionChargeCoverage.releasedAt) so the member becomes
+  // re-billable. Every delivery/retry consumer ignores a VOIDED charge.
+  VOIDED
 }
 
 enum MembershipBillingExceptionStatus {
@@ -924,13 +929,25 @@ model MemberSubscription {
   manuallyMarkedPaidAt         DateTime?
   manuallyMarkedPaidByMemberId String?
   manualPaymentNote            String?   @db.VarChar(500)
+  // #2147: monotonic re-bill discriminator. Incremented each time the
+  // membership sync observes this season's Xero invoice VOIDED/DELETED and
+  // releases the coverage claim. The confirm step folds it into the charge
+  // idempotencyKey so a post-void re-bill mints a NEW charge instead of
+  // no-op-ing onto the released one. Stays 0 for a never-voided subscription,
+  // which keeps the idempotencyKey byte-identical to the pre-#2147 shape.
+  voidGeneration       Int       @default(0)
   createdAt            DateTime           @default(now())
   updatedAt            DateTime           @updatedAt
 
   // Relations
   member Member @relation(fields: [memberId], references: [id], onDelete: Cascade)
   manuallyMarkedPaidBy Member? @relation("MemberSubscriptionManualPaidBy", fields: [manuallyMarkedPaidByMemberId], references: [id], onDelete: SetNull)
-  chargeCoverage MembershipSubscriptionChargeCoverage?
+  // #2147: was a to-one relation while coverage.subscriptionId was @unique.
+  // Now that a released claim is retained alongside a fresh active claim, a
+  // subscription can accrue several coverage rows over its lifetime (at most
+  // one ACTIVE — releasedAt IS NULL — at a time, enforced by the raw-SQL
+  // partial unique index in prisma/partial-unique-indexes.tsv).
+  chargeCoverage MembershipSubscriptionChargeCoverage[]
 
   @@unique([memberId, seasonYear])
   @@index([memberId])
@@ -1023,9 +1040,19 @@ model MembershipSubscriptionChargeComponent {
 model MembershipSubscriptionChargeCoverage {
   id             String   @id @default(cuid())
   chargeId       String
-  subscriptionId String   @unique
+  subscriptionId String
   memberId       String
   memberName     String
+  // #2147: null while the claim is ACTIVE. Set (never cleared, row never
+  // deleted) when the membership sync observes the charge's Xero invoice
+  // VOIDED/DELETED, releasing the claim so a fresh preview can re-bill the
+  // member. The dedup skip-set and the confirm coveredAlready check count only
+  // active (releasedAt IS NULL) claims. "One active claim per subscription" is
+  // enforced by the raw-SQL partial unique index
+  // MembershipSubscriptionChargeCoverage_active_subscription_unique
+  // (prisma/partial-unique-indexes.tsv) — Prisma cannot express it, which is
+  // why the plain subscriptionId @unique was dropped.
+  releasedAt     DateTime?
   createdAt      DateTime @default(now())
 
   charge       MembershipSubscriptionCharge @relation(fields: [chargeId], references: [id], onDelete: Restrict)
@@ -1033,6 +1060,7 @@ model MembershipSubscriptionChargeCoverage {
 
   @@unique([chargeId, subscriptionId], map: "MembershipChargeCoverage_charge_subscription_key")
   @@index([chargeId])
+  @@index([subscriptionId])
   @@index([memberId, createdAt])
 }
 

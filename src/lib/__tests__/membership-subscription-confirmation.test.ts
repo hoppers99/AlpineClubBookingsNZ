@@ -4,9 +4,12 @@ const mocks = vi.hoisted(() => ({
   settingsFind: vi.fn(),
   coverageFindMany: vi.fn(),
   coverageFindUnique: vi.fn(),
+  coverageFindFirst: vi.fn(),
   memberFindMany: vi.fn(),
   typeFindMany: vi.fn(),
   chargeFindMany: vi.fn(),
+  familyGroupMemberFindMany: vi.fn(),
+  familyGroupMemberGroupBy: vi.fn(),
   chargeUpsert: vi.fn(),
   subscriptionUpsert: vi.fn(),
   subscriptionFindMany: vi.fn(),
@@ -26,8 +29,9 @@ vi.mock("@/lib/prisma", () => {
     $executeRaw: vi.fn(),
     $transaction: mocks.transaction,
     membershipSubscriptionBillingSettings: { findUnique: mocks.settingsFind },
-    membershipSubscriptionChargeCoverage: { findMany: mocks.coverageFindMany, findUnique: mocks.coverageFindUnique },
+    membershipSubscriptionChargeCoverage: { findMany: mocks.coverageFindMany, findUnique: mocks.coverageFindUnique, findFirst: mocks.coverageFindFirst },
     membershipSubscriptionCharge: { findMany: mocks.chargeFindMany, upsert: mocks.chargeUpsert },
+    familyGroupMember: { findMany: mocks.familyGroupMemberFindMany, groupBy: mocks.familyGroupMemberGroupBy },
     membershipBillingException: { updateMany: mocks.exceptionUpdateMany, upsert: mocks.exceptionUpsert },
     member: { findMany: mocks.memberFindMany },
     membershipType: { findMany: mocks.typeFindMany },
@@ -53,6 +57,7 @@ describe("membership subscription confirmation", () => {
     mocks.familyMode.mockResolvedValue("BILL_FAMILY_VIA_BILLING_MEMBER");
     mocks.coverageFindMany.mockResolvedValue([]);
     mocks.coverageFindUnique.mockResolvedValue(null);
+    mocks.coverageFindFirst.mockResolvedValue(null);
     mocks.subscriptionFindMany.mockResolvedValue([]);
     mocks.memberFindMany.mockResolvedValue([{
       id: "member-1", firstName: "Member", lastName: "One", email: "member@example.test",
@@ -62,6 +67,8 @@ describe("membership subscription confirmation", () => {
     }]);
     mocks.typeFindMany.mockResolvedValue([]);
     mocks.chargeFindMany.mockResolvedValue([]);
+    mocks.familyGroupMemberFindMany.mockResolvedValue([]);
+    mocks.familyGroupMemberGroupBy.mockResolvedValue([]);
     mocks.fee.mockResolvedValue({
       id: "fee-1", amountCents: 12_000, billingBasis: "PER_MEMBER", prorationRule: "NONE",
     });
@@ -105,6 +112,35 @@ describe("membership subscription confirmation", () => {
     expect(replay.chargeIds).toEqual(["charge-1"]);
     expect(mocks.chargeUpsert).toHaveBeenCalledTimes(1);
     expect(mocks.operationCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("checks only ACTIVE coverage and mints a NEW idempotency key after a void (#2147)", async () => {
+    const preview = await buildSubscriptionBillingPreview({
+      seasonYear: 2026,
+      decisionDate: new Date("2026-07-13T00:00:00.000Z"),
+    });
+
+    // voidGeneration 0 (never voided) — key is byte-identical to the pre-#2147 shape.
+    mocks.subscriptionUpsert.mockResolvedValue({ id: "subscription-1", memberId: "member-1", voidGeneration: 0 });
+    await confirmSubscriptionBillingPreview({
+      preview, expectedConfirmationToken: preview.confirmationToken, source: "ANNUAL_BATCH",
+    });
+    const keyV0 = (mocks.chargeUpsert.mock.calls[0][0] as { where: { idempotencyKey: string } }).where.idempotencyKey;
+    // coveredAlready counts only ACTIVE (releasedAt IS NULL) claims — a released
+    // claim must NOT suppress the re-bill.
+    expect(mocks.coverageFindFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { subscriptionId: "subscription-1", releasedAt: null } }),
+    );
+
+    // Same member/amount but voidGeneration 1 after a void → a DIFFERENT key, so
+    // the confirm upsert creates a NEW charge instead of no-op-ing onto the
+    // released (VOIDED) one.
+    mocks.subscriptionUpsert.mockResolvedValue({ id: "subscription-1", memberId: "member-1", voidGeneration: 1 });
+    await confirmSubscriptionBillingPreview({
+      preview, expectedConfirmationToken: preview.confirmationToken, source: "ANNUAL_BATCH",
+    });
+    const keyV1 = (mocks.chargeUpsert.mock.calls[1][0] as { where: { idempotencyKey: string } }).where.idempotencyKey;
+    expect(keyV1).not.toBe(keyV0);
   });
 
   it("freezes one component snapshot per line in the same transaction (#1932, E6)", async () => {

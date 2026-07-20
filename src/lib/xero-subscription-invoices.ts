@@ -105,7 +105,15 @@ export async function enqueueMembershipSubscriptionChargeOperation(
     select: { id: true, status: true, billingBasis: true, xeroInvoiceId: true, emailSentAt: true },
   });
   if (!charge) throw new Error(`Membership subscription charge not found: ${chargeId}`);
-  if (charge.billingBasis === "NO_INVOICE" || charge.status === "NOT_REQUIRED" || charge.emailSentAt) {
+  // #2147: a VOIDED charge (its Xero invoice was voided/deleted and its coverage
+  // released) is terminal audit history — never re-enqueue it. This also fences
+  // the RETRY_CHARGE admin action, which routes through here.
+  if (
+    charge.billingBasis === "NO_INVOICE" ||
+    charge.status === "NOT_REQUIRED" ||
+    charge.status === "VOIDED" ||
+    charge.emailSentAt
+  ) {
     return { queueOperationId: null, message: "No subscription invoice work is required." };
   }
   const correlationKey = buildXeroIdempotencyKey("membership-charge", chargeId, "invoice-and-email", "v1");
@@ -183,6 +191,11 @@ export async function createXeroMembershipSubscriptionInvoice(input: {
   if (!charge) throw new Error(`Membership subscription charge not found: ${input.chargeId}`);
   if (charge.billingBasis === "NO_INVOICE") {
     await completeXeroSyncOperation(input.syncOperationId, { responsePayload: { skipped: true, reason: "NO_INVOICE" } });
+    return null;
+  }
+  // #2147: skip a VOIDED charge if a stale queued op is drained after the void.
+  if (charge.status === "VOIDED") {
+    await completeXeroSyncOperation(input.syncOperationId, { responsePayload: { skipped: true, reason: "VOIDED" } });
     return null;
   }
 
