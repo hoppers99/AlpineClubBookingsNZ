@@ -174,10 +174,13 @@ fully justified in `docs/BLUE_GREEN_MIGRATION_SAFETY.tsv`:
   (`20260717140000_pricing_rekey_by_membership_type`) and nothing has priced
   from them since. Release A (#2129 step 1) removed the last
   application-runtime reader, the public `{{hut-fees}}` embed; the only other
-  references were seeders, removed in the same PR as this migration.
+  references were seeders, removed in the same PR as this migration. The
+  migration opens with a **coverage guard** that aborts the whole deploy if any
+  `SeasonRate` row has no `MembershipTypeSeasonRate` counterpart — pre-flight it
+  with the query in step 3 below.
 - **`20260721130000_contract_drop_ismember_and_agetier_xero_columns`** —
   deletes the orphaned legacy `HUT_FEE` item-code rows that carry no
-  `membershipTypeId` (unreadable by the current runtime; a production install
+  `membershipTypeId` (not resolvable for pricing by the current runtime; a production install
   typically has a handful — ours had 16), drops the old
   `(category, ageTier, seasonType, isMember)` unique index, drops
   `XeroItemCodeMapping.isMember`, and drops
@@ -196,7 +199,36 @@ fully justified in `docs/BLUE_GREEN_MIGRATION_SAFETY.tsv`:
 2. **Confirm Release A is actually the deployed colour.** Check the running
    image/tag, not just what merged. If the live colour is still `v0.12.2`,
    **stop** — deploying Release B against it will break the drain.
-3. **Set the breaking-migration acknowledgement for this deploy only.** The
+3. **Pre-flight the `SeasonRate` coverage check.** The `SeasonRate` drop is only
+   safe because the E4 re-key
+   (`20260717140000_pricing_rekey_by_membership_type`) copied every row forward
+   into `MembershipTypeSeasonRate` — but that copy was **conditional** on your
+   install having a `MEMBER_RATE`-behaviour membership type and a type keyed
+   `NON_MEMBER` at the time. On a fork whose types did not match, it copied
+   nothing and `SeasonRate` is still the only copy of that pricing. Run this
+   **read-only** query against your production database before you start:
+
+   ```sql
+   SELECT sr."seasonId", sr."ageTier", count(*) AS uncovered_rows
+   FROM "SeasonRate" sr
+   WHERE NOT EXISTS (
+     SELECT 1 FROM "MembershipTypeSeasonRate" m
+     WHERE m."seasonId" = sr."seasonId"
+       AND m."ageTier" IS NOT DISTINCT FROM sr."ageTier"
+   )
+   GROUP BY 1, 2;
+   ```
+
+   **Zero rows means you are clear.** Any rows returned name seasons and age
+   tiers whose rates exist *only* in the table about to be dropped, including
+   inactive and past seasons. Recreate those rates as per-membership-type rates
+   (**Admin → Seasons & Rates**) and re-run the query until it is empty. The
+   migration carries the same check as an aborting guard, so if you skip this
+   step the deploy fails safely instead of losing the rates — but it fails
+   mid-deploy, which is a worse place to discover it. If the guard does fire,
+   reconcile the rates; **do not** delete the orphaned rows or edit the guard
+   out.
+4. **Set the breaking-migration acknowledgement for this deploy only.** The
    blue/green validator refuses a destructive migration without it:
 
    ```bash
@@ -207,13 +239,13 @@ fully justified in `docs/BLUE_GREEN_MIGRATION_SAFETY.tsv`:
    Put the real soak date and backup identifier in the reason — it is the audit
    record for why the drop was safe. Unset both afterwards so the next deploy
    does not inherit the override.
-4. **No special traffic window is needed.** Both tables are cold admin-only
+5. **No special traffic window is needed.** Both tables are cold admin-only
    config tables: `DROP TABLE`, `DROP INDEX` and `DROP COLUMN` are
    metadata-only catalog changes taking a brief `ACCESS EXCLUSIVE` lock each,
    and the row delete touches a handful of rows. No hot table, no table
    rewrite, no backfill. The normal deploy window is fine; let the deploy guard
    stop on lock timeout.
-5. **No Xero call is made.** Neither migration contacts Xero — no contact,
+6. **No Xero call is made.** Neither migration contacts Xero — no contact,
    contact group, item or invoice is touched.
 
 **Post-upgrade actions (Release B)**
