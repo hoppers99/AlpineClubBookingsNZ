@@ -99,15 +99,66 @@ describe("collapseHutFeeColumns (#2129)", () => {
     ])).toEqual(["Full Member"]);
   });
 
-  it("keys a flat type on the NULL tier and folds stray per-tier rows onto it", () => {
+  it("keys a flat type on its real NULL-tier row even when stray per-tier rows exist", () => {
     const columns = collapseHutFeeColumns([
       type({ id: "school", name: "School Group", sortOrder: 4, ageGroupsApply: false, rates: [
+        { ageTier: "INFANT", pricePerNightCents: 0 },
+        { ageTier: null, pricePerNightCents: 5000 },
         { ageTier: "ADULT", pricePerNightCents: 9000 },
-        { ageTier: "CHILD", pricePerNightCents: 1000 },
       ] }),
     ]);
     expect(columns).toHaveLength(1);
-    expect([...columns[0]!.prices.entries()]).toEqual([[null, 9000]]);
+    expect([...columns[0]!.prices.entries()]).toEqual([[null, 5000]]);
+  });
+
+  it("folds a flat type with no NULL row to its HIGHEST price, whatever the row order", () => {
+    // Regression: the fold used to be "first row wins", so the result depended
+    // on DB row order. Prisma sorts `ageTier asc` and Postgres sorts a native
+    // enum by declaration order (INFANT first, NULLs last), so a type carrying
+    // stray INFANT 0 / ADULT 9000 rows published "All ages — $0.00" and the
+    // club advertised free accommodation. Both orderings must now agree, and
+    // must agree on the safe direction.
+    const rates = [
+      { ageTier: "INFANT", pricePerNightCents: 0 },
+      { ageTier: "CHILD", pricePerNightCents: 1000 },
+      { ageTier: "ADULT", pricePerNightCents: 9000 },
+    ];
+    const dbOrder = collapseHutFeeColumns([
+      type({ id: "school", name: "School Group", sortOrder: 4, ageGroupsApply: false, rates }),
+    ]);
+    const reversed = collapseHutFeeColumns([
+      type({ id: "school", name: "School Group", sortOrder: 4, ageGroupsApply: false, rates: [...rates].reverse() }),
+    ]);
+    expect([...dbOrder[0]!.prices.entries()]).toEqual([[null, 9000]]);
+    expect([...reversed[0]!.prices.entries()]).toEqual([[null, 9000]]);
+  });
+
+  it("keeps a genuinely free flat type rather than dropping its column", () => {
+    // 0 is a real price, not "missing". A truthiness test here would drop the
+    // column entirely and the type would vanish from the public table.
+    const columns = collapseHutFeeColumns([
+      type({ id: "child", name: "Under 5", sortOrder: 1, ageGroupsApply: false, rates: [
+        { ageTier: null, pricePerNightCents: 0 },
+      ] }),
+    ]);
+    expect(columns).toHaveLength(1);
+    expect([...columns[0]!.prices.entries()]).toEqual([[null, 0]]);
+  });
+
+  it("orders identically-named, identically-sorted types deterministically", () => {
+    // `MembershipType.name` is not unique, so two publicly listed "Senior"
+    // types at different prices produce two columns with the same heading and
+    // the same sortOrder. Order must not depend on input/Map insertion order.
+    const build = (reverse: boolean) => {
+      const types = [
+        type({ id: "a", name: "Senior", sortOrder: 2, rates: [{ ageTier: "ADULT", pricePerNightCents: 3000 }] }),
+        type({ id: "b", name: "Senior", sortOrder: 2, rates: [{ ageTier: "ADULT", pricePerNightCents: 7000 }] }),
+      ];
+      return collapseHutFeeColumns(reverse ? types.reverse() : types).map(
+        (column) => column.prices.get("ADULT"),
+      );
+    };
+    expect(build(false)).toEqual(build(true));
   });
 
   it("does not collapse a flat type with a per-tier type that happens to share a price", () => {

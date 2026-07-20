@@ -30,6 +30,14 @@ export type PublicFeeTable = {
   rowHeading: string;
   columns: string[];
   rows: PublicFeeTableRow[];
+  /**
+   * True when at least one rate column collapses several identically-priced
+   * membership types (its heading lists them, e.g. "Full Member, Life"). The
+   * renderer shows a one-line explanation only then, so a multi-name heading
+   * does not read to a visitor as a rendering glitch. Survives the `group-by=age`
+   * transpose, where the collapsed names become row labels instead.
+   */
+  collapsedColumns: boolean;
 };
 
 export type PublicBookingPolicy = {
@@ -382,6 +390,7 @@ function hutFeeTable(
     heading,
     rowHeading: "Age",
     columns: columns.map((column) => column.heading),
+    collapsedColumns: columns.some((column) => column.typeNames.length > 1),
     rows: tierKeys.map((tier) => ({
       label: ageLabel(tiers, tier),
       cells: columns.map((column) => {
@@ -398,6 +407,7 @@ function transposeFeeTable(table: PublicFeeTable): PublicFeeTable {
     heading: table.heading,
     rowHeading: "Membership type",
     columns: table.rows.map((row) => row.label),
+    collapsedColumns: table.collapsedColumns,
     rows: table.columns.map((column, columnIndex) => ({
       label: column,
       cells: table.rows.map((row) => row.cells[columnIndex] ?? null),

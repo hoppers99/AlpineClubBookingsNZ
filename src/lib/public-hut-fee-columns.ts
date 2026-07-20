@@ -50,14 +50,58 @@ export interface HutFeeColumn {
 // always a non-empty uppercase identifier.
 const FLAT_TIER_SIGNATURE = "";
 
+/**
+ * Fold a flat type's (`ageGroupsApply=false`) rows down to the single price it
+ * publishes. The canonical shape is exactly one NULL-tier row, but a type
+ * flipped to flat while per-tier rows survive can carry several.
+ *
+ * This choice must be TOTAL and independent of row order. "First row wins" was
+ * neither: callers hand us rows straight from Prisma's `orderBy ageTier asc`,
+ * and Postgres sorts a native enum by DECLARATION order — `AgeTier` declares
+ * INFANT first and Prisma puts NULLs LAST. So the cheapest tier tended to win
+ * and the genuine flat row tended to lose. A type carrying stray INFANT 0 /
+ * ADULT 9000 rows would publish "All ages — $0.00": the club advertising free
+ * accommodation on its public website.
+ *
+ * Resolution order:
+ *   1. A real NULL-tier row is authoritative — that is the flat rate itself.
+ *   2. Otherwise the data is malformed and any answer is a guess, so guess in
+ *      the safe direction: the HIGHEST price. Over-quoting is recoverable at
+ *      the desk; under-quoting (worst case, free) is publicly binding-looking
+ *      and unrecoverable.
+ *   3. Ties are impossible to distinguish by price, so they resolve on tier
+ *      name to stay deterministic across renders.
+ */
+function flatPrice(rates: HutFeeColumnType["rates"]): number | undefined {
+  const flat = rates.find((rate) => rate.ageTier === null);
+  if (flat) return flat.pricePerNightCents;
+  let chosen: { ageTier: string | null; pricePerNightCents: number } | undefined;
+  for (const rate of rates) {
+    if (
+      !chosen ||
+      rate.pricePerNightCents > chosen.pricePerNightCents ||
+      (rate.pricePerNightCents === chosen.pricePerNightCents &&
+        (rate.ageTier ?? "").localeCompare(chosen.ageTier ?? "") < 0)
+    ) {
+      chosen = rate;
+    }
+  }
+  return chosen?.pricePerNightCents;
+}
+
 function priceMap(type: HutFeeColumnType): Map<string | null, number> {
   const prices = new Map<string | null, number>();
+  if (!type.ageGroupsApply) {
+    const cents = flatPrice(type.rates);
+    // `cents` may legitimately be 0 — a free flat rate — so test for undefined,
+    // never truthiness, or a genuinely free type would lose its column.
+    if (cents !== undefined) prices.set(null, cents);
+    return prices;
+  }
   for (const rate of type.rates) {
-    // A type with ageGroupsApply=false prices from one flat rate; fold any
-    // stray per-tier row onto the flat key (first row wins), mirroring the
-    // joining-fee and annual-fee embeds.
-    const tier = type.ageGroupsApply ? rate.ageTier : null;
-    if (!prices.has(tier)) prices.set(tier, rate.pricePerNightCents);
+    // Age-keyed types have a unique (type, tier) row per the DB constraint, so
+    // there is nothing to fold here; a duplicate would be a broken invariant.
+    if (!prices.has(rate.ageTier)) prices.set(rate.ageTier, rate.pricePerNightCents);
   }
   return prices;
 }
@@ -95,8 +139,8 @@ export function collapseHutFeeColumns(
       });
     }
   }
-  return [...bySignature.values()]
-    .map((group) => {
+  return [...bySignature.entries()]
+    .map(([signature, group]) => {
       const members = group.members
         .slice()
         .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
@@ -106,7 +150,20 @@ export function collapseHutFeeColumns(
         typeNames,
         sortOrder: Math.min(...members.map((member) => member.sortOrder)),
         prices: group.prices,
+        signature,
       };
     })
-    .sort((a, b) => a.sortOrder - b.sortOrder || a.heading.localeCompare(b.heading));
+    // `MembershipType.name` is not unique (only `key` is), so two publicly
+    // listed types can share a sortOrder AND a heading — "Senior" at two
+    // different prices. localeCompare then returns 0 and the order fell back to
+    // Map insertion order, which can swap between renders. The price signature
+    // is the last discriminator that always differs here: two groups with the
+    // same signature would have collapsed into one column already.
+    .sort(
+      (a, b) =>
+        a.sortOrder - b.sortOrder ||
+        a.heading.localeCompare(b.heading) ||
+        a.signature.localeCompare(b.signature),
+    )
+    .map(({ signature: _signature, ...column }) => column);
 }
