@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EditBookingPanel } from "@/components/edit-booking-panel";
 
@@ -152,15 +152,13 @@ describe("EditBookingPanel — in-progress date extension (#2124)", () => {
         { message: "Stays including a Friday or Saturday night must be at least 2 nights." },
       ],
     });
-    const user = (await import("@testing-library/user-event")).default.setup();
     render(
       <EditBookingPanel booking={inProgressBooking()} onDone={vi.fn()} />,
     );
 
     const checkOut = screen.getByLabelText("Check-out") as HTMLInputElement;
-    await user.clear(checkOut);
     // Shorten to the earliest allowed check-out to trigger a fresh quote.
-    await user.type(checkOut, "2026-08-16");
+    fireEvent.change(checkOut, { target: { value: "2026-08-16" } });
 
     expect(
       await screen.findByText(
