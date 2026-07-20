@@ -290,6 +290,66 @@ describe("membership subscription billing", () => {
     )).toBe(false);
   });
 
+  it("skips a member holding a live Xero invoice (invoiced-but-unpaid) and surfaces them under alreadyInvoiced (#2147 D1/D3)", async () => {
+    // The bug: an invoiced-but-unpaid member (real xeroInvoiceId, status
+    // UNPAID/OVERDUE, NO charge-coverage row because they were billed by the
+    // older Xero-sync path) passed both the coverage and PAID guards and was
+    // re-billed. They must now be skipped AND listed with their invoice number.
+    mocks.members.findMany.mockResolvedValue([member("invoiced-unpaid"), member("owes")]);
+    mocks.coverage.findMany.mockResolvedValue([]); // no coverage rows at all
+    mocks.subscriptions.findMany.mockResolvedValue([
+      { memberId: "invoiced-unpaid", status: "OVERDUE", xeroInvoiceId: "xi-1", xeroInvoiceNumber: "INV-100", member: { firstName: "Iva", lastName: "Owe" } },
+    ]);
+    const preview = await buildSubscriptionBillingPreview({
+      seasonYear: 2026,
+      decisionDate: new Date("2026-07-13T00:00:00.000Z"),
+    });
+    expect(preview.entries).toHaveLength(1);
+    expect(preview.entries[0].coveredMembers).toEqual([{ id: "owes", name: "First-owes Member" }]);
+    expect(preview.entries.some((entry) => entry.coveredMembers.some((c) => c.id === "invoiced-unpaid"))).toBe(false);
+    expect(preview.alreadyInvoiced).toEqual([
+      { memberId: "invoiced-unpaid", memberName: "Iva Owe", xeroInvoiceNumber: "INV-100", status: "OVERDUE" },
+    ]);
+  });
+
+  it("keeps a manually marked-paid member (PAID, null xeroInvoiceId) skipped and OUT of alreadyInvoiced (#2147 regression)", async () => {
+    // The dedup predicate is ADDITIVE: a manual-PAID (cash, no invoice) member
+    // is skipped by the PAID clause, but has no invoice number to show, so they
+    // must NOT appear in the alreadyInvoiced list.
+    mocks.members.findMany.mockResolvedValue([member("manual-paid"), member("owes")]);
+    mocks.coverage.findMany.mockResolvedValue([]);
+    mocks.subscriptions.findMany.mockResolvedValue([
+      { memberId: "manual-paid", status: "PAID", xeroInvoiceId: null, xeroInvoiceNumber: null, member: { firstName: "First-manual-paid", lastName: "Member" } },
+    ]);
+    const preview = await buildSubscriptionBillingPreview({
+      seasonYear: 2026,
+      decisionDate: new Date("2026-07-13T00:00:00.000Z"),
+    });
+    expect(preview.entries).toHaveLength(1);
+    expect(preview.entries[0].coveredMembers).toEqual([{ id: "owes", name: "First-owes Member" }]);
+    expect(preview.alreadyInvoiced).toEqual([]);
+  });
+
+  it("re-bills a member whose only coverage claim was released after a void (#2147)", async () => {
+    // A released coverage row (releasedAt set) is excluded from the skip-set
+    // query, so the member is billable again. The billing query passes
+    // releasedAt: null, so a released row simply never appears in alreadyCovered.
+    mocks.members.findMany.mockResolvedValue([member("re-billable")]);
+    mocks.coverage.findMany.mockResolvedValue([]); // released rows filtered out by releasedAt: null
+    mocks.subscriptions.findMany.mockResolvedValue([]); // link nulled by the void release
+    const preview = await buildSubscriptionBillingPreview({
+      seasonYear: 2026,
+      decisionDate: new Date("2026-07-13T00:00:00.000Z"),
+    });
+    expect(preview.alreadyCoveredMemberIds).toEqual([]);
+    expect(preview.entries).toHaveLength(1);
+    expect(preview.entries[0].coveredMembers).toEqual([{ id: "re-billable", name: "First-re-billable Member" }]);
+    // The coverage skip-set query only counts ACTIVE (releasedAt IS NULL) claims.
+    expect(mocks.coverage.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ releasedAt: null }),
+    }));
+  });
+
   it("produces one visible exception and no invoice charges when subscriptionIncome is not explicitly configured", async () => {
     mocks.mapping.mockResolvedValue({ code: "203", itemCode: null, codeExplicitlyConfigured: false });
     mocks.members.findMany.mockResolvedValue([member("m1"), member("m2")]);

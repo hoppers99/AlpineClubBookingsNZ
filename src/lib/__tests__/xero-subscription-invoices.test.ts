@@ -1,6 +1,56 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Invoice, LineAmountTypes } from "xero-node";
-import { subscriptionInvoiceMatchesSnapshot } from "@/lib/xero-subscription-invoices";
+
+const enqueueMocks = vi.hoisted(() => ({
+  chargeFindUnique: vi.fn(),
+  operationFindFirst: vi.fn(),
+  startOperation: vi.fn(),
+  chargeUpdate: vi.fn(),
+}));
+
+vi.mock("@/lib/prisma", () => ({
+  prisma: {
+    membershipSubscriptionCharge: { findUnique: enqueueMocks.chargeFindUnique, update: enqueueMocks.chargeUpdate },
+    xeroSyncOperation: { findFirst: enqueueMocks.operationFindFirst },
+  },
+}));
+vi.mock("@/lib/xero-sync", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/xero-sync")>()),
+  startXeroSyncOperation: enqueueMocks.startOperation,
+}));
+
+import {
+  enqueueMembershipSubscriptionChargeOperation,
+  subscriptionInvoiceMatchesSnapshot,
+} from "@/lib/xero-subscription-invoices";
+
+describe("enqueueMembershipSubscriptionChargeOperation ignores VOIDED charges (#2147)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    enqueueMocks.operationFindFirst.mockResolvedValue(null);
+    enqueueMocks.startOperation.mockResolvedValue({ id: "op-1" });
+    enqueueMocks.chargeUpdate.mockResolvedValue({});
+  });
+
+  it("no-ops a VOIDED charge (RETRY_CHARGE must not re-enqueue it)", async () => {
+    enqueueMocks.chargeFindUnique.mockResolvedValue({
+      id: "charge-void", status: "VOIDED", billingBasis: "PER_MEMBER", xeroInvoiceId: "xi", emailSentAt: null,
+    });
+    const result = await enqueueMembershipSubscriptionChargeOperation("charge-void");
+    expect(result).toEqual({ queueOperationId: null, message: "No subscription invoice work is required." });
+    expect(enqueueMocks.startOperation).not.toHaveBeenCalled();
+    expect(enqueueMocks.chargeUpdate).not.toHaveBeenCalled();
+  });
+
+  it("still enqueues a QUEUED charge (control)", async () => {
+    enqueueMocks.chargeFindUnique.mockResolvedValue({
+      id: "charge-live", status: "QUEUED", billingBasis: "PER_MEMBER", xeroInvoiceId: null, emailSentAt: null,
+    });
+    const result = await enqueueMembershipSubscriptionChargeOperation("charge-live");
+    expect(result.queueOperationId).toBe("op-1");
+    expect(enqueueMocks.startOperation).toHaveBeenCalledTimes(1);
+  });
+});
 
 function invoice(overrides: Partial<Invoice> = {}): Invoice {
   return {

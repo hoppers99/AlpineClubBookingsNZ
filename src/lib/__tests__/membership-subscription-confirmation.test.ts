@@ -109,6 +109,35 @@ describe("membership subscription confirmation", () => {
     expect(mocks.operationCreate).toHaveBeenCalledTimes(1);
   });
 
+  it("checks only ACTIVE coverage and mints a NEW idempotency key after a void (#2147)", async () => {
+    const preview = await buildSubscriptionBillingPreview({
+      seasonYear: 2026,
+      decisionDate: new Date("2026-07-13T00:00:00.000Z"),
+    });
+
+    // voidGeneration 0 (never voided) — key is byte-identical to the pre-#2147 shape.
+    mocks.subscriptionUpsert.mockResolvedValue({ id: "subscription-1", memberId: "member-1", voidGeneration: 0 });
+    await confirmSubscriptionBillingPreview({
+      preview, expectedConfirmationToken: preview.confirmationToken, source: "ANNUAL_BATCH",
+    });
+    const keyV0 = (mocks.chargeUpsert.mock.calls[0][0] as { where: { idempotencyKey: string } }).where.idempotencyKey;
+    // coveredAlready counts only ACTIVE (releasedAt IS NULL) claims — a released
+    // claim must NOT suppress the re-bill.
+    expect(mocks.coverageFindFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { subscriptionId: "subscription-1", releasedAt: null } }),
+    );
+
+    // Same member/amount but voidGeneration 1 after a void → a DIFFERENT key, so
+    // the confirm upsert creates a NEW charge instead of no-op-ing onto the
+    // released (VOIDED) one.
+    mocks.subscriptionUpsert.mockResolvedValue({ id: "subscription-1", memberId: "member-1", voidGeneration: 1 });
+    await confirmSubscriptionBillingPreview({
+      preview, expectedConfirmationToken: preview.confirmationToken, source: "ANNUAL_BATCH",
+    });
+    const keyV1 = (mocks.chargeUpsert.mock.calls[1][0] as { where: { idempotencyKey: string } }).where.idempotencyKey;
+    expect(keyV1).not.toBe(keyV0);
+  });
+
   it("freezes one component snapshot per line in the same transaction (#1932, E6)", async () => {
     mocks.fee.mockResolvedValue({
       id: "fee-1", amountCents: 12_000, billingBasis: "PER_MEMBER", prorationRule: "NONE",
