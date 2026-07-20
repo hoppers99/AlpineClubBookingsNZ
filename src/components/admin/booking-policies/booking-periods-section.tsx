@@ -234,6 +234,13 @@ export function BookingPeriodsSection() {
   const [showPeriodForm, setShowPeriodForm] = useState(false)
   const [editingPeriodId, setEditingPeriodId] = useState<string | null>(null)
   const [editingDraft, setEditingDraft] = useState<PeriodDraft>(NEW_PERIOD_DRAFT)
+  // Bumped every time an editor is opened. The open editor owns its own
+  // draft/snapshot pair, seeded once from `initial`, so re-opening the SAME row
+  // has to remount it — otherwise `key={editingPeriodId ?? "new"}` is unchanged,
+  // React reuses the instance, the new `initial` is ignored, and clicking Edit
+  // again on a row you were already editing silently keeps the unsaved draft
+  // instead of resetting the form (#2142 review).
+  const [editorInstance, setEditorInstance] = useState(0)
   const [error, setError] = useState("")
   const [success, setSuccess] = useState("")
 
@@ -273,15 +280,23 @@ export function BookingPeriodsSection() {
     setEditingDraft(NEW_PERIOD_DRAFT)
   }
 
+  /** Close the open editor and clear the message it mirrored up (#2142 review). */
+  function cancelPeriodForm() {
+    setError("")
+    resetPeriodForm()
+  }
+
   function startAddPeriod() {
     setEditingPeriodId(null)
     setEditingDraft(NEW_PERIOD_DRAFT)
+    setEditorInstance((n) => n + 1)
     setShowPeriodForm(true)
   }
 
   function startEditPeriod(period: BookingPeriod) {
     setEditingPeriodId(period.id)
     setEditingDraft(toDraft(period))
+    setEditorInstance((n) => n + 1)
     setShowPeriodForm(true)
   }
 
@@ -318,17 +333,34 @@ export function BookingPeriodsSection() {
         const data = await res.json()
         throw new Error(data.error || "Failed to save period")
       }
-      const saved = await res.json()
+      const wasEditing = editingPeriodId !== null
       // Parse the SERVER row into the re-seed value BEFORE closing the form, so
       // a malformed response surfaces as a save error rather than after a
       // success message has already been shown.
-      const reseeded = toDraft({
-        ...saved,
-        cancellationRules: (saved.cancellationRules ?? draft.rules).map(
-          (rule: PolicyRule) => normalizeCancellationRule(rule),
-        ),
-      })
-      const wasEditing = editingPeriodId !== null
+      let reseeded: PeriodDraft
+      try {
+        const saved = await res.json()
+        reseeded = toDraft({
+          ...saved,
+          cancellationRules: (saved.cancellationRules ?? draft.rules).map(
+            (rule: PolicyRule) => normalizeCancellationRule(rule),
+          ),
+        })
+      } catch {
+        // The write ALREADY SUCCEEDED at this point, so what a parse failure
+        // may safely do depends on the verb. An edit is an idempotent PUT: keep
+        // the form open with the error and the natural retry re-writes the same
+        // row. A create is not: the row exists, but the form still has
+        // `periodId === null`, so the same retry would POST a SECOND row. There
+        // we swallow the parse failure, fall back to the submitted draft, and
+        // close the form — the list refresh below shows what was really stored.
+        if (wasEditing) {
+          throw new Error(
+            "The period was saved, but the server's reply could not be read. Reload the page to see what is stored.",
+          )
+        }
+        reseeded = draft
+      }
       resetPeriodForm()
       void fetchPeriods()
       setSuccess(wasEditing ? "Period updated" : "Period created")
@@ -363,127 +395,141 @@ export function BookingPeriodsSection() {
     }
   }
 
+  /*
+    #2142: the view-only explanation lives here, once, at the top of the
+    section — announced on arrival and in the reading order — instead of on each
+    disabled button below. It is rendered in BOTH branches below, in the same
+    position, so the polite live region is registered in the accessibility tree
+    from the first paint and only its CONTENT changes when `canEdit` resolves. A
+    region injected already-populated is silently dropped by some
+    screen-reader/browser pairings.
+  */
+  const viewOnlyBanner = (
+    <AdminViewOnlySectionBanner canEdit={canEdit} className="mb-6">
+      Your admin role can view booking periods but cannot change them. Bookings
+      edit access is required.
+    </AdminViewOnlySectionBanner>
+  )
+
   if (loadingPeriods) {
-    return <div className="text-center py-8">Loading...</div>
+    return (
+      <div>
+        {viewOnlyBanner}
+        <div className="text-center py-8">Loading...</div>
+      </div>
+    )
   }
 
   return (
-    <div className="space-y-6">
-      <PolicyFeedback
-        error={error}
-        success={success}
-        onClearError={() => setError("")}
-        onClearSuccess={() => setSuccess("")}
-      />
+    <div>
+      {viewOnlyBanner}
+      <div className="space-y-6">
+        <PolicyFeedback
+          error={error}
+          success={success}
+          onClearError={() => setError("")}
+          onClearSuccess={() => setSuccess("")}
+        />
 
-      {/*
-        #2142: the view-only explanation lives here, once, at the top of the
-        section — announced on arrival and in the reading order — instead of on
-        each disabled (and therefore unfocusable) button below.
-      */}
-      <AdminViewOnlySectionBanner canEdit={canEdit}>
-        Your admin role can view booking periods but cannot change them.
-        Bookings edit access is required.
-      </AdminViewOnlySectionBanner>
+        <PolicyScopeSelect
+          value={scopeLodgeId}
+          onChange={setScopeLodgeId}
+          id="periods-scope"
+        />
 
-      <PolicyScopeSelect
-        value={scopeLodgeId}
-        onChange={setScopeLodgeId}
-        id="periods-scope"
-      />
-
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle>
-                {scopeLodgeName
-                  ? `Date-Specific Periods — ${scopeLodgeName}`
-                  : "Date-Specific Periods"}
-              </CardTitle>
-              <CardDescription>
-                Override the default policy for specific date ranges (e.g. school holidays).
-                If a booking&apos;s check-in falls within a period, that period&apos;s rules apply.
-                {scopeLodgeName ? (
-                  <>
-                    {" "}
-                    Periods listed here belong to {scopeLodgeName} and replace
-                    the club-wide set for that lodge; if the list is empty the
-                    lodge uses the club-wide periods.
-                  </>
-                ) : null}
-              </CardDescription>
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle>
+                  {scopeLodgeName
+                    ? `Date-Specific Periods — ${scopeLodgeName}`
+                    : "Date-Specific Periods"}
+                </CardTitle>
+                <CardDescription>
+                  Override the default policy for specific date ranges (e.g. school holidays).
+                  If a booking&apos;s check-in falls within a period, that period&apos;s rules apply.
+                  {scopeLodgeName ? (
+                    <>
+                      {" "}
+                      Periods listed here belong to {scopeLodgeName} and replace
+                      the club-wide set for that lodge; if the list is empty the
+                      lodge uses the club-wide periods.
+                    </>
+                  ) : null}
+                </CardDescription>
+              </div>
+              {!showPeriodForm && (
+                <ViewOnlyActionButton canEdit={canEdit} describeReason={false} onClick={startAddPeriod}>Add Period</ViewOnlyActionButton>
+              )}
             </div>
-            {!showPeriodForm && (
-              <ViewOnlyActionButton canEdit={canEdit} describeReason={false} onClick={startAddPeriod}>Add Period</ViewOnlyActionButton>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {/* Period Form — one `useSectionEditState` instance per open editor. */}
+            {showPeriodForm && (
+              <PeriodForm
+                key={`${editingPeriodId ?? "new"}:${editorInstance}`}
+                periodId={editingPeriodId}
+                initial={editingDraft}
+                canEdit={canEdit}
+                onSubmit={submitPeriod}
+                onCancel={cancelPeriodForm}
+                onError={setError}
+              />
             )}
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {/* Period Form — one `useSectionEditState` instance per open editor. */}
-          {showPeriodForm && (
-            <PeriodForm
-              key={editingPeriodId ?? "new"}
-              periodId={editingPeriodId}
-              initial={editingDraft}
-              canEdit={canEdit}
-              onSubmit={submitPeriod}
-              onCancel={resetPeriodForm}
-              onError={setError}
-            />
-          )}
 
-          {/* Periods List */}
-          {periods.length === 0 && !showPeriodForm ? (
-            <p className="text-sm text-muted-foreground py-4 text-center">
-              No date-specific periods configured. The default policy applies to all bookings.
-            </p>
-          ) : (
-            <div className="space-y-3">
-              {periods.map((period) => (
-                <Card key={period.id} className={!period.active ? "opacity-60" : ""}>
-                  <CardContent className="pt-4">
-                    <div className="flex items-start justify-between mb-3">
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <h4 className="font-semibold">{period.name}</h4>
-                          <Badge variant={period.active ? "default" : "outline"}>
-                            {period.active ? "Active" : "Inactive"}
-                          </Badge>
+            {/* Periods List */}
+            {periods.length === 0 && !showPeriodForm ? (
+              <p className="text-sm text-muted-foreground py-4 text-center">
+                No date-specific periods configured. The default policy applies to all bookings.
+              </p>
+            ) : (
+              <div className="space-y-3">
+                {periods.map((period) => (
+                  <Card key={period.id} className={!period.active ? "opacity-60" : ""}>
+                    <CardContent className="pt-4">
+                      <div className="flex items-start justify-between mb-3">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <h4 className="font-semibold">{period.name}</h4>
+                            <Badge variant={period.active ? "default" : "outline"}>
+                              {period.active ? "Active" : "Inactive"}
+                            </Badge>
+                          </div>
+                          <p className="text-sm text-muted-foreground">
+                            {new Date(period.startDate).toLocaleDateString("en-NZ")} &mdash;{" "}
+                            {new Date(period.endDate).toLocaleDateString("en-NZ")}
+                            <span className="ml-3">
+                              Non-member hold:{" "}
+                              <strong>
+                                {period.nonMemberHoldEnabled ?? true
+                                  ? `${period.nonMemberHoldDays} days`
+                                  : "First Paid, First In"}
+                              </strong>
+                            </span>
+                          </p>
                         </div>
-                        <p className="text-sm text-muted-foreground">
-                          {new Date(period.startDate).toLocaleDateString("en-NZ")} &mdash;{" "}
-                          {new Date(period.endDate).toLocaleDateString("en-NZ")}
-                          <span className="ml-3">
-                            Non-member hold:{" "}
-                            <strong>
-                              {period.nonMemberHoldEnabled ?? true
-                                ? `${period.nonMemberHoldDays} days`
-                                : "First Paid, First In"}
-                            </strong>
-                          </span>
-                        </p>
+                        <div className="flex space-x-2">
+                          <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="outline" size="sm" onClick={() => handleTogglePeriod(period)}>
+                            {period.active ? "Deactivate" : "Activate"}
+                          </ViewOnlyActionButton>
+                          <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="outline" size="sm" onClick={() => startEditPeriod(period)}>
+                            Edit
+                          </ViewOnlyActionButton>
+                          <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="destructive" size="sm" onClick={() => handleDeletePeriod(period.id)}>
+                            Delete
+                          </ViewOnlyActionButton>
+                        </div>
                       </div>
-                      <div className="flex space-x-2">
-                        <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="outline" size="sm" onClick={() => handleTogglePeriod(period)}>
-                          {period.active ? "Deactivate" : "Activate"}
-                        </ViewOnlyActionButton>
-                        <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="outline" size="sm" onClick={() => startEditPeriod(period)}>
-                          Edit
-                        </ViewOnlyActionButton>
-                        <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="destructive" size="sm" onClick={() => handleDeletePeriod(period.id)}>
-                          Delete
-                        </ViewOnlyActionButton>
-                      </div>
-                    </div>
-                    <PolicyPreview rules={period.cancellationRules} />
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+                      <PolicyPreview rules={period.cancellationRules} />
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
     </div>
   )
 }

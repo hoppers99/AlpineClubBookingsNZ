@@ -10,10 +10,13 @@ import {
 import { ADMIN_VIEW_ONLY_ACTION_REASON } from "@/hooks/use-admin-area-edit-access";
 
 // #2142 owner decision: the view-only explanation moves from each disabled
-// button to ONE section-level banner. The old per-button affordance was
-// unreachable exactly where it mattered — a disabled button is out of the tab
-// order, so a keyboard or screen-reader user never landed on it and never heard
-// the `title` / `aria-describedby` reason.
+// button to ONE section-level banner. The old per-button affordance was, at
+// best, hard to meet — a disabled button is out of the tab order, so a keyboard
+// user never landed on it and never encountered the `aria-describedby` reason
+// in the normal flow (a screen reader can still traverse a disabled button in
+// browse mode, but only by going looking). The `title` was worse than that:
+// `buttonVariants` sets `disabled:pointer-events-none`, so a disabled `Button`
+// fires no hover event and the native tooltip never appeared at all.
 
 afterEach(cleanup);
 
@@ -26,8 +29,8 @@ describe("AdminViewOnlySectionBanner (#2142)", () => {
     );
 
     // `role="status"` is an implicit polite live region, so the banner is
-    // announced when it appears — which is always, since `canEdit` resolves
-    // from `undefined` after hydration.
+    // announced when its CONTENT appears — which is always, since `canEdit`
+    // resolves from `undefined` after hydration.
     const banner = screen.getByRole("status");
     expect(banner.textContent).toContain(ADMIN_VIEW_ONLY_SECTION_HEADING);
     expect(banner.textContent).toContain("Bookings edit access is required.");
@@ -36,18 +39,44 @@ describe("AdminViewOnlySectionBanner (#2142)", () => {
     expect(banner.className).not.toContain("sr-only");
   });
 
-  it("renders nothing for an edit-capable admin", () => {
+  it("keeps the live region mounted but empty for an edit-capable admin", () => {
     render(<AdminViewOnlySectionBanner canEdit={true}>Detail</AdminViewOnlySectionBanner>);
-    expect(screen.queryByRole("status")).toBeNull();
+    const region = screen.getByRole("status");
+    expect(region.textContent).toBe("");
+    // No visible box: every style lives on the inner element, which is absent.
+    expect(region.className).toBe("");
+    expect(region.childElementCount).toBe(0);
   });
 
-  it("renders nothing while access is still resolving", () => {
+  it("keeps the live region mounted but empty while access is still resolving", () => {
     // Tri-state (#2065): an explicitly-passed `undefined` must not flash the
     // banner at an admin who may well turn out to be edit-capable.
     render(
       <AdminViewOnlySectionBanner canEdit={undefined}>Detail</AdminViewOnlySectionBanner>,
     );
-    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe("");
+  });
+
+  // #2142 review (a11y blocker): a polite live region has to be registered in
+  // the accessibility tree BEFORE its content changes. A region injected
+  // already-populated in one mutation is announced by some screen-reader/browser
+  // pairings and silently dropped by others (VoiceOver with Safari notably), so
+  // the wrapper must be the SAME node before and after `canEdit` resolves —
+  // only its content may appear.
+  it("reuses the same live-region node when access resolves to view-only", () => {
+    const { rerender } = render(
+      <AdminViewOnlySectionBanner canEdit={undefined}>Detail</AdminViewOnlySectionBanner>,
+    );
+    const beforeResolve = screen.getByRole("status");
+    expect(beforeResolve.textContent).toBe("");
+
+    rerender(
+      <AdminViewOnlySectionBanner canEdit={false}>Detail</AdminViewOnlySectionBanner>,
+    );
+
+    const afterResolve = screen.getByRole("status");
+    expect(afterResolve).toBe(beforeResolve);
+    expect(afterResolve.textContent).toContain(ADMIN_VIEW_ONLY_SECTION_HEADING);
   });
 });
 

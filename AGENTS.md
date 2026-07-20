@@ -104,6 +104,12 @@ before changing Next.js APIs or conventions.
   exception: count the draft as dirty so committing the defaults stays
   reachable, but never extend that exception to a FAILED load, where the same
   fallback values would let one click blind-write over a real stored policy.
+  For the same reason, a snapshot is authoritative only for the KEY it was
+  loaded for. Where the fetch is keyed on something beyond the section itself (a
+  lodge scope, say), carry that key inside the snapshot and treat a mismatch as
+  UNKNOWN — no editor, no destructive affordances, no first-save exception —
+  because the hook leaves `saved`/`draft` untouched when a re-fetch fails, and
+  the previous key's value would otherwise be presented as this key's.
 - Every gated section's Save must be dirty-gated, not just view-gated. Booking
   write routes log audit entries and revalidate public content unconditionally,
   so a pristine re-save writes an entry asserting a change that never happened
@@ -111,11 +117,15 @@ before changing Next.js APIs or conventions.
   ad-hoc no-op comparison onto the route.
 - Where a section renders an `AdminViewOnlySectionBanner`, its buttons pass
   `describeReason={false}` so the view-only reason is stated once, in the
-  reading order, instead of on disabled buttons that are out of the tab order
-  and therefore unreachable by the keyboard and screen-reader users the reason
-  was for. Adopted by the five Booking Policies sections only (#2142); the rest
-  of the admin tree keeps `AdminViewOnlyNotice` plus the per-button reason,
-  which stays the default.
+  reading order, instead of on disabled buttons that are out of the tab order —
+  and whose `title` never fires at all, because the shared `buttonVariants` set
+  `disabled:pointer-events-none`. Mount the banner ABOVE the section's loading
+  early-return, in the same position in both branches: the component keeps its
+  `role="status"` wrapper permanently mounted and gates only the content,
+  because a polite live region injected already-populated is silently dropped by
+  some screen-reader/browser pairings. Adopted by the five Booking Policies
+  sections only (#2142); the rest of the admin tree keeps `AdminViewOnlyNotice`
+  plus the per-button reason, which stays the default.
 - Security, payment, booking, membership lifecycle, Xero, Stripe, and
   data-integrity work requires high or xhigh reasoning effort and human review
   before merge.

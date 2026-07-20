@@ -122,107 +122,121 @@ export function GroupDiscountSection() {
 
   const { draft, editing, saving, dirty, error, success } = section
 
+  /*
+    #2142: the view-only explanation lives here, once, at the top of the
+    section — announced on arrival and in the reading order — instead of on each
+    disabled button below. It is rendered in BOTH branches below, in the same
+    position, so the polite live region is registered in the accessibility tree
+    from the first paint and only its CONTENT changes when `canEdit` resolves. A
+    region injected already-populated is silently dropped by some
+    screen-reader/browser pairings.
+  */
+  const viewOnlyBanner = (
+    <AdminViewOnlySectionBanner canEdit={canEdit} className="mb-6">
+      Your admin role can view the group discount policy but cannot change it.
+      Bookings edit access is required.
+    </AdminViewOnlySectionBanner>
+  )
+
   if (section.loading || !draft) {
-    return <div className="text-center py-8">Loading...</div>
+    return (
+      <div>
+        {viewOnlyBanner}
+        <div className="text-center py-8">Loading...</div>
+      </div>
+    )
   }
 
   return (
-    <div className="space-y-6">
-      <PolicyFeedback
-        error={error}
-        success={success}
-        onClearError={() => section.setError("")}
-        onClearSuccess={() => section.setSuccess("")}
-      />
+    <div>
+      {viewOnlyBanner}
+      <div className="space-y-6">
+        <PolicyFeedback
+          error={error}
+          success={success}
+          onClearError={() => section.setError("")}
+          onClearSuccess={() => section.setSuccess("")}
+        />
 
-      {/*
-        #2142: the view-only explanation lives here, once, at the top of the
-        section — announced on arrival and in the reading order — instead of on
-        each disabled (and therefore unfocusable) button below.
-      */}
-      <AdminViewOnlySectionBanner canEdit={canEdit}>
-        Your admin role can view the group discount policy but cannot change
-        it. Bookings edit access is required.
-      </AdminViewOnlySectionBanner>
-
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between">
-          <div>
-            <CardTitle>Group Discount</CardTitle>
-            <CardDescription>
-              When a booking has enough guests, all guests are charged at member rates.
-            </CardDescription>
-          </div>
-          {!editing && (
-            <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="outline" size="sm" onClick={section.startEditing}>
-              Edit
-            </ViewOnlyActionButton>
-          )}
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex items-center space-x-2">
-            <input
-              type="checkbox"
-              id="groupEnabled"
-              checked={draft.enabled}
-              onChange={(e) => section.setDraft({ enabled: e.target.checked })}
-              className="rounded border-input"
-              disabled={!editing}
-            />
-            <Label htmlFor="groupEnabled">Enabled</Label>
-          </div>
-
-          <div className="space-y-2 max-w-xs">
-            <Label htmlFor="groupMinSize">Minimum group size</Label>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <div>
+              <CardTitle>Group Discount</CardTitle>
+              <CardDescription>
+                When a booking has enough guests, all guests are charged at member rates.
+              </CardDescription>
+            </div>
+            {!editing && (
+              <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="outline" size="sm" onClick={section.startEditing}>
+                Edit
+              </ViewOnlyActionButton>
+            )}
+          </CardHeader>
+          <CardContent className="space-y-4">
             <div className="flex items-center space-x-2">
-              <Input
-                id="groupMinSize"
-                type="number"
-                min="2"
-                max={String(lodgeCapacity)}
-                value={draft.minGroupSize}
-                onChange={(e) =>
-                  section.setDraft({ minGroupSize: parseInt(e.target.value) || 5 })
-                }
-                className={`w-20 ${!editing ? "bg-slate-50 text-slate-700" : ""}`}
+              <input
+                type="checkbox"
+                id="groupEnabled"
+                checked={draft.enabled}
+                onChange={(e) => section.setDraft({ enabled: e.target.checked })}
+                className="rounded border-input"
                 disabled={!editing}
               />
-              <span className="text-sm text-muted-foreground">guests</span>
+              <Label htmlFor="groupEnabled">Enabled</Label>
             </div>
-            <p className="text-xs text-muted-foreground">
-              Bookings with this many or more guests will have all guests charged at member rates.
-            </p>
-          </div>
 
-          <div className="flex items-center space-x-2">
-            <input
-              type="checkbox"
-              id="groupSummerOnly"
-              checked={draft.summerOnly}
-              onChange={(e) => section.setDraft({ summerOnly: e.target.checked })}
-              className="rounded border-input"
-              disabled={!editing}
-            />
-            <Label htmlFor="groupSummerOnly">Summer seasons only</Label>
-          </div>
-
-          {editing && (
-            <div className="flex space-x-3">
-              <ViewOnlyActionButton
-                canEdit={canEdit}
-                describeReason={false}
-                onClick={() => void section.save()}
-                disabled={!dirty || saving}
-              >
-                {saving ? "Saving..." : "Save Group Discount"}
-              </ViewOnlyActionButton>
-              <Button variant="outline" onClick={section.cancelEditing} disabled={saving}>
-                Cancel
-              </Button>
+            <div className="space-y-2 max-w-xs">
+              <Label htmlFor="groupMinSize">Minimum group size</Label>
+              <div className="flex items-center space-x-2">
+                <Input
+                  id="groupMinSize"
+                  type="number"
+                  min="2"
+                  max={String(lodgeCapacity)}
+                  value={draft.minGroupSize}
+                  onChange={(e) =>
+                    section.setDraft({ minGroupSize: parseInt(e.target.value) || 5 })
+                  }
+                  className={`w-20 ${!editing ? "bg-slate-50 text-slate-700" : ""}`}
+                  disabled={!editing}
+                />
+                <span className="text-sm text-muted-foreground">guests</span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Bookings with this many or more guests will have all guests charged at member rates.
+              </p>
             </div>
-          )}
-        </CardContent>
-      </Card>
+
+            <div className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                id="groupSummerOnly"
+                checked={draft.summerOnly}
+                onChange={(e) => section.setDraft({ summerOnly: e.target.checked })}
+                className="rounded border-input"
+                disabled={!editing}
+              />
+              <Label htmlFor="groupSummerOnly">Summer seasons only</Label>
+            </div>
+
+            {editing && (
+              <div className="flex space-x-3">
+                <ViewOnlyActionButton
+                  canEdit={canEdit}
+                  describeReason={false}
+                  onClick={() => void section.save()}
+                  disabled={!dirty || saving}
+                >
+                  {saving ? "Saving..." : "Save Group Discount"}
+                </ViewOnlyActionButton>
+                <Button variant="outline" onClick={section.cancelEditing} disabled={saving}>
+                  Cancel
+                </Button>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
     </div>
   )
 }

@@ -196,16 +196,22 @@ All notable public reference-release changes should be recorded here.
 
   **The explanation for a view-only disabled state now lives at the section
   level, not on each button.** A `disabled` button is out of the tab order, so
-  the `title` and `aria-describedby` reason it used to carry was attached to the
-  one element a keyboard or screen-reader user can never reach — precisely the
-  people it was for. Each of the five sections now renders a single banner at
-  the top — "You have view-only access to this area", plus what that section
-  specifically cannot be changed — in the normal reading order and in a polite
-  live region, so it is announced when the session resolves and met *before* the
-  dead controls rather than never. The buttons stay disabled exactly as before;
-  only the explanation moved. This is scoped to Booking Policies: every other
-  admin surface keeps the per-button reason unchanged, and widening the pattern
-  is tracked separately.
+  the reason it used to carry was attached to an element a keyboard user never
+  lands on — precisely the people it was for. (A screen reader *can* still
+  traverse a disabled button in browse mode, so "unreachable" overstates it; but
+  the `title` tooltip genuinely never appeared, because the shared button styles
+  set `disabled:pointer-events-none`, so a disabled button fires no hover event
+  at all.) Each of the five sections now renders a single banner at the top —
+  "You have view-only access to this area", plus what that section specifically
+  cannot be changed — in the normal reading order and in a polite live region,
+  so it is announced when the session resolves and met *before* the dead
+  controls rather than never. The live region itself is mounted from the first
+  paint, ahead of each section's "Loading…" state, and only its *content*
+  appears when access resolves: a live region injected already-populated is
+  silently dropped by some screen reader and browser combinations. The buttons
+  stay disabled exactly as before; only the explanation moved. This is scoped to
+  Booking Policies: every other admin surface keeps the per-button reason
+  unchanged, and widening the pattern is tracked in #2160.
 
   Second, the group discount card's Save is no longer clickable while the form
   is unchanged. Opening **Edit** and clicking **Save** without touching a field
@@ -242,13 +248,26 @@ All notable public reference-release changes should be recorded here.
   ordinary state, and the row-level Activate/Deactivate/Delete buttons are
   unchanged direct actions. The first-save exception carries over where it
   applies: creating a period or a minimum-stay policy is always savable (there
-  is no stored row to be unchanged from), as is the first club-wide cancellation
-  policy on a club that has never saved one — but, as with the group discount, a
+  is no stored row to be unchanged from), as is the first cancellation policy on
+  a partition that has none — the club-wide rules on a club that never saved
+  them, or a lodge override being created — but, as with the group discount, a
   **failed** load never gets that exception, so a load error can never turn into
   a one-click overwrite of a real policy. Comparisons are semantic rather than
   literal: a re-ordered but otherwise identical set of refund rules is not a
   change (the routes sort before storing), and neither is ticking a trigger day
   and unticking it again.
+
+  For multi-lodge clubs, the same "a failed load must not become a write" rule
+  now also covers the **scope switch**. If you pick a lodge and its policy fails
+  to load, the section says so and shows nothing else: previously the club-wide
+  policy left on screen would have been relabelled as that lodge's override,
+  offering a **Remove override** that wrote an audit entry while deleting
+  nothing, and a Save that would have created an override out of rules you never
+  chose for that lodge. Three smaller editor fixes ship alongside: clicking
+  **Edit** again on the row you already have open now resets the form instead of
+  keeping the abandoned draft, **Cancel** clears the error the editor raised, and
+  if the server's reply to a *create* cannot be read the form still closes — so
+  the obvious retry cannot quietly create a second period or policy.
 
 ## 0.12.2 - 2026-07-20
 

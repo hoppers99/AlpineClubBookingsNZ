@@ -224,9 +224,13 @@ describe("GroupDiscountSection (#2136)", () => {
     // The write route logs `group-discount.update` and revalidates the public
     // pages unconditionally, so an unchanged re-PUT would leave an audit entry
     // asserting a change that never happened.
-    const fetchMock = vi.fn(
-      async (_url: string, _init?: RequestInit) =>
-        new Response(JSON.stringify(LOADED), { status: 200 }),
+    // Typed via a rest tuple so `mock.calls` still carries the `RequestInit`
+    // this test filters on below, without declaring parameters it never reads.
+    // The signature is declared on `vi.fn` rather than as parameters this test
+    // never reads, so `mock.calls` still carries the `RequestInit` filtered on
+    // below without tripping the unused-argument lint.
+    const fetchMock = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(
+      async () => new Response(JSON.stringify(LOADED), { status: 200 }),
     );
     vi.stubGlobal("fetch", fetchMock);
     await renderLoaded();
@@ -382,7 +386,10 @@ describe("GroupDiscountSection (#2136)", () => {
     expect(saveButton().disabled).toBe(true);
     expect(saveButton().getAttribute("title")).toBeNull();
     expect(saveButton().getAttribute("aria-describedby")).toBeNull();
-    expect(screen.queryByRole("status")).toBeNull();
+    // The live region itself is always mounted (#2142 review) — a polite region
+    // must be registered before its content changes. What must be absent while
+    // access is resolving is its CONTENT.
+    expect(screen.getByRole("status").textContent).toBe("");
   });
 
   it("canEdit=undefined (resolving) disables Edit and shows NO notice", async () => {

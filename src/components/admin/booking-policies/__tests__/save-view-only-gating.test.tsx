@@ -7,6 +7,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const hookMock = vi.hoisted(() => ({ canEdit: true as boolean | undefined }));
@@ -22,11 +23,17 @@ vi.mock("@/components/lodge-select", () => ({
   useLodgeOptions: () => ({ lodges: [], loading: false }),
 }));
 
+import { ClubIdentityProvider } from "@/components/club-identity-provider";
+import { clubIdentity } from "@/config/club-identity";
 import { BookingPeriodsSection } from "../booking-periods-section";
 import { DefaultCancellationPolicySection } from "../default-cancellation-policy-section";
+import { GroupDiscountSection } from "../group-discount-section";
 import { MinimumNightStaySection } from "../minimum-night-stay-section";
 import { PublicBookingRequestsSection } from "../public-booking-requests-section";
-import { ADMIN_VIEW_ONLY_SECTION_HEADING } from "@/components/admin/view-only-action";
+import {
+  ADMIN_FORBIDDEN_SAVE_REASON,
+  ADMIN_VIEW_ONLY_SECTION_HEADING,
+} from "@/components/admin/view-only-action";
 
 // #2142: every booking-policies section's Save is wrapped in
 // `ViewOnlyActionButton`, matching the security cards and the sections' own
@@ -81,7 +88,10 @@ function expectNeutralDisabled(button: HTMLButtonElement) {
   expect(button.disabled).toBe(true);
   expect(button.getAttribute("title")).toBeNull();
   expect(button.getAttribute("aria-describedby")).toBeNull();
-  expect(screen.queryByRole("status")).toBeNull();
+  // The live region itself is always mounted (#2142 review) — a polite region
+  // must be registered before its content changes or some screen-reader/browser
+  // pairings drop the announcement. What must be absent is its CONTENT.
+  expect(screen.getByRole("status").textContent).toBe("");
 }
 
 /** Every write verb the section could have fired, across the whole stub. */
@@ -416,6 +426,339 @@ describe("DefaultCancellationPolicySection Save gating (#2142, #2143)", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Edit" }));
     expect(saveButton().disabled).toBe(true);
+  });
+});
+
+// #2142 review (a11y blocker): the polite live region has to be registered in
+// the accessibility tree BEFORE its content changes. Every one of these sections
+// short-circuits to a loading placeholder first, so if the banner lived only in
+// the loaded branch, React would create the region AND its content in a single
+// mutation — announced by some screen-reader/browser pairings and silently
+// dropped by others. The region must therefore be mounted ABOVE each section's
+// loading early-return.
+describe("view-only live region is mounted before the loading early-return (#2142)", () => {
+  function stubPendingFetch() {
+    // Never resolves: the section stays in its loading branch for the assertion.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => new Promise<Response>(() => {})),
+    );
+  }
+
+  /** Section, and a loaded body its own fetch can parse. */
+  const SECTIONS: [string, () => ReactElement, unknown][] = [
+    ["BookingPeriodsSection", () => <BookingPeriodsSection />, []],
+    ["MinimumNightStaySection", () => <MinimumNightStaySection />, []],
+    [
+      "DefaultCancellationPolicySection",
+      () => <DefaultCancellationPolicySection />,
+      { rules: [], nonMemberHoldEnabled: true, nonMemberHoldDays: 7 },
+    ],
+    [
+      "PublicBookingRequestsSection",
+      () => <PublicBookingRequestsSection />,
+      {
+        showPricingToNonMembers: false,
+        quoteResponseTtlDays: 14,
+        quoteReminderLeadDays: 3,
+        attendeeConfirmationLeadDays: 14,
+        attendeeConfirmationReminderDays: 3,
+      },
+    ],
+    [
+      "GroupDiscountSection",
+      () => (
+        <ClubIdentityProvider value={clubIdentity}>
+          <GroupDiscountSection />
+        </ClubIdentityProvider>
+      ),
+      { minGroupSize: 5, summerOnly: true, enabled: false, configured: true },
+    ],
+  ];
+
+  it.each(SECTIONS)(
+    "%s mounts the region, empty, while still loading",
+    (_name, renderSection) => {
+      stubPendingFetch();
+      // The real arrival order: the session has not resolved yet either.
+      hookMock.canEdit = undefined;
+
+      render(renderSection());
+
+      // Still loading …
+      expect(screen.getByText("Loading...")).toBeTruthy();
+      // … and the region already exists and is empty, so the banner text that
+      // lands later is a CONTENT change inside a registered region.
+      expect(screen.getByRole("status").textContent).toBe("");
+    },
+  );
+
+  it.each(SECTIONS)(
+    "%s keeps the same region node from loading through to the resolved banner",
+    async (_name, renderSection, body) => {
+      let release: (value: Response) => void = () => {};
+      const pending = new Promise<Response>((resolve) => {
+        release = resolve;
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(() => pending),
+      );
+      hookMock.canEdit = undefined;
+
+      const { rerender } = render(renderSection());
+      const region = screen.getByRole("status");
+      expect(region.textContent).toBe("");
+
+      // The section's own fetch settles first …
+      release(jsonResponse(body));
+      await waitFor(() => expect(screen.queryByText("Loading...")).toBeNull());
+      expect(screen.getByRole("status")).toBe(region);
+      expect(screen.getByRole("status").textContent).toBe("");
+
+      // … then the session resolves the actor as view-only.
+      narrowTo(false, () => rerender(renderSection()));
+
+      // Same NODE, newly populated — an announcement, not an injection.
+      expect(screen.getByRole("status")).toBe(region);
+      expect(region.textContent).toContain(ADMIN_VIEW_ONLY_SECTION_HEADING);
+    },
+  );
+});
+
+// #2142 review: `PeriodForm` / `MinStayForm` mirror the hook's error up through
+// `useEffect(() => onError(error))`, and the 403 path was rewritten to throw
+// `ForbiddenSaveError` -> hook -> effect -> the parent's `PolicyFeedback`.
+// Neither leg of that plumbing was covered.
+describe("open-editor save failures reach the section feedback (#2142)", () => {
+  function stubSaveOutcome(status: number, body: unknown = {}) {
+    const fetchMock = vi.fn<
+      (url: string, init?: RequestInit) => Promise<Response>
+    >(async (...args) =>
+      args[1]?.method
+        ? new Response(JSON.stringify(body), { status })
+        : jsonResponse([]),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  async function createPeriod() {
+    render(<BookingPeriodsSection />);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Add Period" })).toBeTruthy(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Add Period" }));
+    fireEvent.change(screen.getByLabelText("Period Name"), {
+      target: { value: "School Holidays" },
+    });
+    fireEvent.change(screen.getByLabelText("Start Date"), {
+      target: { value: "2026-07-01" },
+    });
+    fireEvent.change(screen.getByLabelText("End Date"), {
+      target: { value: "2026-07-14" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create Period" }));
+  }
+
+  async function createMinStay() {
+    render(<MinimumNightStaySection />);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Add Policy" })).toBeTruthy(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Add Policy" }));
+    fireEvent.change(screen.getByLabelText("Policy Name"), {
+      target: { value: "Winter Saturdays" },
+    });
+    fireEvent.change(screen.getByLabelText("Start Date"), {
+      target: { value: "2026-07-01" },
+    });
+    fireEvent.change(screen.getByLabelText("End Date"), {
+      target: { value: "2026-09-30" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create Policy" }));
+  }
+
+  it("surfaces a failed period save above the list, with the form still open", async () => {
+    stubSaveOutcome(500, { error: "Overlapping period" });
+    await createPeriod();
+
+    await waitFor(() =>
+      expect(screen.getByText("Overlapping period")).toBeTruthy(),
+    );
+    // The write failed, so the editor must stay open with the admin's draft.
+    expect(screen.getByRole("button", { name: "Create Period" })).toBeTruthy();
+    expect(
+      (screen.getByLabelText("Period Name") as HTMLInputElement).value,
+    ).toBe("School Holidays");
+  });
+
+  it("maps a 403 on a period save to the shared not-saved copy", async () => {
+    // Defence in depth behind the UI gating (#1927): a stale tab whose actor was
+    // narrowed after the page loaded.
+    stubSaveOutcome(403);
+    await createPeriod();
+
+    await waitFor(() =>
+      expect(screen.getByText(ADMIN_FORBIDDEN_SAVE_REASON)).toBeTruthy(),
+    );
+  });
+
+  it("surfaces a failed minimum-stay save above the list", async () => {
+    stubSaveOutcome(500, { error: "Overlapping policy" });
+    await createMinStay();
+
+    await waitFor(() =>
+      expect(screen.getByText("Overlapping policy")).toBeTruthy(),
+    );
+    expect(screen.getByRole("button", { name: "Create Policy" })).toBeTruthy();
+  });
+
+  it("maps a 403 on a minimum-stay save to the shared not-saved copy", async () => {
+    stubSaveOutcome(403);
+    await createMinStay();
+
+    await waitFor(() =>
+      expect(screen.getByText(ADMIN_FORBIDDEN_SAVE_REASON)).toBeTruthy(),
+    );
+  });
+
+  // #2142 review: the save callback now parses the server row AFTER the write
+  // has already succeeded. On an EDIT that is safe — the retry re-PUTs the same
+  // row — but on a CREATE the row exists while the form still has no id, so
+  // leaving the form open turns the natural retry into a SECOND row.
+  describe("a 2xx whose body cannot be parsed", () => {
+    function stubUnparseableWrite() {
+      const fetchMock = vi.fn<
+        (url: string, init?: RequestInit) => Promise<Response>
+      >(async (...args) =>
+        args[1]?.method
+          ? // A truncated proxy response: 2xx, but not the row.
+            new Response("<html>502 upstream</html>", { status: 200 })
+          : jsonResponse([PERIOD_ROW]),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      return fetchMock;
+    }
+
+    const PERIOD_ROW = {
+      id: "p1",
+      name: "School Holidays",
+      startDate: "2026-07-01T00:00:00.000Z",
+      endDate: "2026-07-14T00:00:00.000Z",
+      nonMemberHoldEnabled: true,
+      nonMemberHoldDays: 5,
+      cancellationRules: [],
+      active: true,
+    };
+
+    it("closes the CREATE form anyway, so a retry cannot POST a second period", async () => {
+      const fetchMock = stubUnparseableWrite();
+      await createPeriod();
+
+      await waitFor(() =>
+        expect(screen.getByText("Period created")).toBeTruthy(),
+      );
+      expect(screen.queryByRole("button", { name: "Create Period" })).toBeNull();
+      expect(
+        fetchMock.mock.calls.filter(([, init]) => init?.method === "POST"),
+      ).toHaveLength(1);
+    });
+
+    it("closes the CREATE form anyway, so a retry cannot POST a second minimum-stay policy", async () => {
+      const fetchMock = vi.fn<
+        (url: string, init?: RequestInit) => Promise<Response>
+      >(async (...args) =>
+        args[1]?.method
+          ? new Response("<html>502 upstream</html>", { status: 200 })
+          : jsonResponse([]),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      await createMinStay();
+
+      await waitFor(() =>
+        expect(screen.getByText("Minimum stay policy created")).toBeTruthy(),
+      );
+      expect(screen.queryByRole("button", { name: "Create Policy" })).toBeNull();
+      expect(
+        fetchMock.mock.calls.filter(([, init]) => init?.method === "POST"),
+      ).toHaveLength(1);
+    });
+
+    it("keeps the EDIT form open and says so, because re-PUTting the same row is idempotent", async () => {
+      stubUnparseableWrite();
+      render(<BookingPeriodsSection />);
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Edit" })).toBeTruthy(),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+      fireEvent.change(screen.getByLabelText("Period Name"), {
+        target: { value: "School Holidays (revised)" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Update Period" }));
+
+      await waitFor(() =>
+        expect(screen.getByText(/could not be read/i)).toBeTruthy(),
+      );
+      expect(screen.getByRole("button", { name: "Update Period" })).toBeTruthy();
+    });
+  });
+
+  // #2142 review: Cancel closes the editor, so the message the editor mirrored
+  // up must go with it — the child clears its own error on unmount but the
+  // parent's copy is one-way, so it used to outlive the form that caused it.
+  it("clears the mirrored error when the editor is cancelled", async () => {
+    stubSaveOutcome(500, { error: "Overlapping period" });
+    await createPeriod();
+    await waitFor(() =>
+      expect(screen.getByText("Overlapping period")).toBeTruthy(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(screen.queryByText("Overlapping period")).toBeNull();
+  });
+
+  // #2142 review: re-clicking Edit on the row that is ALREADY open must reset
+  // the form. The editor is keyed, and without an instance counter the key is
+  // unchanged for the same row, so React reuses the hook instance and the fresh
+  // `initial` is ignored — the unsaved draft silently survives.
+  it("resets the editor when Edit is clicked again on the row already open", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse([
+          {
+            id: "p1",
+            name: "School Holidays",
+            startDate: "2026-07-01T00:00:00.000Z",
+            endDate: "2026-07-14T00:00:00.000Z",
+            nonMemberHoldEnabled: true,
+            nonMemberHoldDays: 5,
+            cancellationRules: [],
+            active: true,
+          },
+        ]),
+      ),
+    );
+    render(<BookingPeriodsSection />);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Edit" })).toBeTruthy(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("Period Name"), {
+      target: { value: "Abandoned edit" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+
+    expect(
+      (screen.getByLabelText("Period Name") as HTMLInputElement).value,
+    ).toBe("School Holidays");
+    expect(
+      (screen.getByRole("button", { name: "Update Period" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
   });
 });
 

@@ -309,10 +309,24 @@ Admin settings sections follow one canonical edit model (developer rule, binding
 for new or modified sections; see `AGENTS.md` → Change Discipline). A section
 renders read-only on mount and stages every change behind a per-section Edit →
 Save/Cancel step: no individual control auto-persists on toggle, Cancel reverts
-to the last saved snapshot, and Save writes once. Edit affordances gate on the
-tri-state `useAdminAreaEditAccess(area)` through `ViewOnlyActionButton` /
-`AdminViewOnlyNotice` (so the resolving `undefined` window stays neutral), and
-the backing write route enforces the matching `area:edit` permission. Module
+to the last saved snapshot, and Save writes once. Save is **dirty-gated as well
+as view-gated**: booking write routes log an audit entry and revalidate public
+content unconditionally, so a pristine re-save would record a change that never
+happened (#2143). That gate belongs at the FORM layer, through the hook's
+`isDirty` — routes deliberately keep no ad-hoc no-op comparison, so a direct API
+caller holding `area:edit` can still write an unchanged body. Edit affordances
+gate on the tri-state `useAdminAreaEditAccess(area)` through
+`ViewOnlyActionButton` / `AdminViewOnlyNotice` (so the resolving `undefined`
+window stays neutral), and the backing write route enforces the matching
+`area:edit` permission. Where a section renders an
+`AdminViewOnlySectionBanner` instead, its buttons pass `describeReason={false}`:
+the view-only reason is then stated once, at the top of the section, in a
+permanently-mounted `role="status"` region, rather than on disabled buttons that
+are out of the tab order and whose `title` never fires at all (the shared
+`buttonVariants` set `disabled:pointer-events-none`). That banner shape is
+adopted by the five Booking Policies sections only (#2142); the rest of the
+admin tree keeps `AdminViewOnlyNotice` plus the per-button reason, which stays
+the default. Module
 toggles that share the strict `PUT /api/admin/modules` object (for example the
 magic-link and Google cards on `/admin/security`) must GET the fresh settings and
 merge only their own key before writing, so a sibling card's change is never
@@ -320,7 +334,10 @@ clobbered by a stale render-time snapshot. Two pre-existing surfaces are
 acknowledged divergents that this rule does not retrofit on its own: the
 `/admin/modules` grid (deliberate bulk toggles) and the older staged-but-ungated
 settings forms. Reference:
-`src/components/admin/booking-policies/group-discount-section.tsx`.
+`src/components/admin/booking-policies/group-discount-section.tsx` — note that
+it now carries the section banner, so for the default per-button
+`AdminViewOnlyNotice` treatment look at any admin surface outside Booking
+Policies instead.
 
 The draft/snapshot half of that pattern lives in the shared
 `useSectionEditState` hook (`src/hooks/use-section-edit-state.ts`), which new
@@ -341,9 +358,20 @@ GET-fresh-then-merge step above, multi-endpoint writes, and per-endpoint failure
 copy all stay local — and throws the hook's `ForbiddenSaveError` for a 403 so it
 maps to the shared `ADMIN_FORBIDDEN_SAVE_REASON` copy. Feedback rendering stays
 in the component, because booking-policy sections use `PolicyFeedback` while the
-security cards use `Alert`. Sections whose snapshot is a list edited row by row
-(age tiers, notification settings) are a different shape and stay outside the
-hook.
+security cards use `Alert`. A section whose snapshot is a LIST with per-row
+edits is not out of scope, but the hook belongs one level down: the OPEN EDITOR
+gets its own instance, keyed on the row being edited (`key={rowId ?? "new"}`),
+while the list itself stays ordinary state and its row-level actions stay plain
+direct writes. The booking-periods and minimum-night-stay sections are the
+reference for that shape (#2142). Wherever the read endpoint SYNTHESISES
+defaults on a miss — or the editor is creating a row that does not exist yet —
+carry the first-save exception so committing the defaults stays reachable, but
+never extend it to a FAILED load, where the same fallback values would let one
+click blind-write over a real stored policy. For the same reason a snapshot is
+authoritative only for the scope it was loaded for: a section whose fetch is
+keyed on something else (a lodge scope) must track that key WITH the snapshot
+and treat a mismatch as unknown, because a failed re-fetch leaves the previous
+key's value in place.
 
 The `/admin/xero` and `/admin/members` routes are route shells with local
 `_components` and `_hooks` folders; the member `/book` wizard follows the same

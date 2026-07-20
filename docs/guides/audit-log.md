@@ -59,6 +59,19 @@ and machine `action`, the actor, the affected member (subject), the entity, and
 primary drill-down links. Expanding a row reveals the request ID, IP, user
 agent, **retention class**, raw details, and JSON metadata.
 
+### Booking-policy entries
+
+From this release, a `group-discount.update`, `cancellation-policy.update`, or
+`booking-period.update` entry recorded **from the admin screens** always reflects
+a real change: the Booking Policies forms keep **Save** disabled until the form
+actually differs from what is stored, so opening **Edit** and saving without
+touching anything can no longer write an entry. Two caveats. Entries recorded
+*before* this release may still be no-ops, so treat an older pair of identical
+`before`/`after` values as "nothing changed" rather than as a mystery. And the
+guarantee is a property of the forms, not of the write routes — a script or
+integration calling the API directly with `bookings:edit` can still submit an
+unchanged body and get an entry.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |

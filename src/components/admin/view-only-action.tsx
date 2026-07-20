@@ -21,13 +21,17 @@ interface ViewOnlyActionButtonProps extends ButtonProps {
    *
    * Pass `false` where the surrounding section already renders an
    * {@link AdminViewOnlySectionBanner}. A `disabled` button is out of the tab
-   * order, so neither the `title` nor the `aria-describedby` it points at is
-   * ever reachable by keyboard or announced by a screen reader — the reason was
-   * attached to the one element that can never surface it. The banner says it
-   * once, in the reading order, in a live region; repeating it per button then
-   * only adds noise for the pointer users who could read it. Gating stays
-   * exactly the same either way: this prop changes where the EXPLANATION lives,
-   * never whether the button is disabled.
+   * order, so a keyboard user never lands on it and never meets the
+   * `aria-describedby` reason in the normal flow — a screen-reader user CAN
+   * still reach it in browse/virtual mode, so "unreachable" overstates it, but
+   * only by going looking for a control they have already been given no reason
+   * to expect. The `title` is worse than hard to reach: it never appears at all
+   * here, because `buttonVariants` sets `disabled:pointer-events-none`
+   * (`src/components/ui/button.tsx`), so a disabled `Button` receives no hover
+   * event and the browser's native tooltip is never triggered. The banner says
+   * it once, in the reading order, in a live region; repeating it per button
+   * then only adds noise. Gating stays exactly the same either way: this prop
+   * changes where the EXPLANATION lives, never whether the button is disabled.
    */
   describeReason?: boolean;
 }
@@ -109,29 +113,44 @@ export const ADMIN_VIEW_ONLY_SECTION_HEADING =
 /**
  * Section-level view-only banner (#2142 owner decision).
  *
- * The per-button affordance it replaces was unreachable where it mattered most:
- * `ViewOnlyActionButton` disables the button, and a disabled button is out of
- * the tab order, so a keyboard or screen-reader user never lands on it and
- * never hears the `title` / `aria-describedby` reason. Saying it once at the
- * top of the section fixes both halves of that:
+ * The per-button affordance it replaces was, at best, hard to meet: a disabled
+ * button is out of the tab order, so a keyboard user never lands on it and
+ * never encounters the `aria-describedby` reason in the normal flow (a screen
+ * reader can still traverse a disabled button in browse/virtual mode, but only
+ * by going looking). The `title` was strictly worse — `buttonVariants` sets
+ * `disabled:pointer-events-none`, so a disabled `Button` fires no hover event
+ * and the native tooltip never appears at all. Saying it once at the top of the
+ * section fixes both halves of that:
  *
  *  - it sits in the normal reading order, ahead of the controls it explains, so
  *    it is met before the dead buttons rather than after; and
- *  - `role="status"` (an implicit polite live region) announces it when it
- *    appears, which is the real arrival moment here — `canEdit` is tri-state
- *    and resolves from `undefined` AFTER hydration, so the banner is always a
- *    dynamic insertion, never part of the first paint.
+ *  - `role="status"` (an implicit polite live region) announces it when its
+ *    CONTENT appears, which is the real arrival moment here — `canEdit` is
+ *    tri-state and resolves from `undefined` AFTER hydration.
  *
- * Same tri-state contract as {@link AdminViewOnlyNotice}: renders only once we
- * positively know the admin is view-only, so it never flashes while the session
- * is still resolving. `canEdit` is required for the same reason — a default
- * would fire on an explicitly-passed `undefined`.
+ * That second half is why the `role="status"` wrapper is rendered
+ * UNCONDITIONALLY and only its content is gated. A polite live region has to be
+ * registered in the accessibility tree BEFORE its content changes: a region
+ * injected already-populated in a single mutation is announced by some
+ * screen-reader/browser pairings and silently dropped by others (VoiceOver with
+ * Safari notably). Adopting sections must therefore also mount this component
+ * ABOVE their own loading early-return, so the region exists from the first
+ * paint rather than from whenever the section's fetch settles. The empty
+ * wrapper renders no visible box and takes no layout space — every style lives
+ * on the inner element, which only exists once `canEdit === false`.
+ *
+ * Same tri-state contract as {@link AdminViewOnlyNotice}: the banner CONTENT
+ * appears only once we positively know the admin is view-only, so it never
+ * flashes while the session is still resolving. `canEdit` is required for the
+ * same reason — a default would fire on an explicitly-passed `undefined`.
  *
  * Adopters pass the section-specific detail as `children`; the shared heading
  * is what makes it recognisable as the same banner from section to section.
- * Currently adopted by the five Booking Policies sections only — the rest of
- * the admin tree still uses {@link AdminViewOnlyNotice} plus the per-button
- * reason, and rolling this wider is tracked separately.
+ * `className` lands on the inner box (not the wrapper) so a spacing utility
+ * applies only when there is something to space. Currently adopted by the five
+ * Booking Policies sections only — the rest of the admin tree still uses
+ * {@link AdminViewOnlyNotice} plus the per-button reason. Rolling this wider is
+ * tracked in #2160.
  */
 export function AdminViewOnlySectionBanner({
   className,
@@ -142,18 +161,19 @@ export function AdminViewOnlySectionBanner({
   children?: ReactNode;
   canEdit: boolean | undefined;
 }) {
-  if (canEdit !== false) return null;
-
   return (
-    <div
-      role="status"
-      className={cn(
-        "rounded-md border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-700",
-        className,
-      )}
-    >
-      <span className="font-medium">{ADMIN_VIEW_ONLY_SECTION_HEADING}.</span>
-      {children ? <span> {children}</span> : null}
+    <div role="status">
+      {canEdit === false ? (
+        <div
+          className={cn(
+            "rounded-md border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-700",
+            className,
+          )}
+        >
+          <span className="font-medium">{ADMIN_VIEW_ONLY_SECTION_HEADING}.</span>
+          {children ? <span> {children}</span> : null}
+        </div>
+      ) : null}
     </div>
   );
 }
