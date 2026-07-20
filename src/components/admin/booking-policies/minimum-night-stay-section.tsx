@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, useCallback } from "react"
+import { useEffect, useRef, useState, useCallback } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -33,6 +33,13 @@ interface MinStayDraft {
   triggerDays: number[]
   minimumNights: number
 }
+
+/**
+ * The scope of a list that was never loaded (#2142 review). Club-wide scope is
+ * `null`, so `null` cannot double as "unknown" — see the identical sentinel in
+ * `default-cancellation-policy-section.tsx`.
+ */
+const UNLOADED_SCOPE = "__unloaded__"
 
 const NEW_MIN_STAY_DRAFT: MinStayDraft = {
   name: "",
@@ -212,6 +219,25 @@ export function MinimumNightStaySection() {
   const [scopeLodgeId, setScopeLodgeId] = useState<string | null>(null)
   const scopeLodgeName = usePolicyScopeLodgeName(scopeLodgeId)
   const [minStayPolicies, setMinStayPolicies] = useState<MinStayPolicy[]>([])
+  /**
+   * The scope `minStayPolicies` was actually loaded FOR (#2142 review).
+   *
+   * `AGENTS.md` makes this binding for any section whose fetch is keyed on
+   * something beyond the section itself: the key travels WITH the snapshot and a
+   * mismatch is UNKNOWN — no editor, no destructive affordances. A failed fetch
+   * here used to set `error` and leave the list alone, so after a failed switch
+   * to a lodge the card was retitled "Minimum Night Stay — Lodge One", said
+   * "Policies listed here belong to Lodge One", and left Edit, Delete and
+   * Activate/Deactivate live over rows that were still the CLUB-WIDE set. Every
+   * one of those buttons acts on `policy.id`, so they would have hit the
+   * club-wide rows the admin believed they had navigated away from.
+   */
+  const [loadedScope, setLoadedScope] = useState<string | null>(UNLOADED_SCOPE)
+  // Mirrors `scopeLodgeId` for the async fetch below, which needs the CURRENT
+  // scope at the moment it resolves rather than the one it closed over. The
+  // list refresh after a save/delete/toggle carries no AbortSignal, so this is
+  // the only thing standing between a slow response and the wrong partition.
+  const scopeRef = useRef(scopeLodgeId)
   const [loadingMinStay, setLoadingMinStay] = useState(true)
   const [showMinStayForm, setShowMinStayForm] = useState(false)
   const [editingMinStayId, setEditingMinStayId] = useState<string | null>(null)
@@ -226,30 +252,56 @@ export function MinimumNightStaySection() {
   const [error, setError] = useState("")
   const [success, setSuccess] = useState("")
 
-  const fetchMinStay = useCallback(async (signal?: AbortSignal) => {
-    try {
-      const res = await fetch(
-        scopeLodgeId
-          ? `/api/admin/booking-policies/minimum-stay?lodgeId=${encodeURIComponent(scopeLodgeId)}`
-          : "/api/admin/booking-policies/minimum-stay",
-        { signal }
-      )
-      if (!res.ok) throw new Error("Failed to fetch minimum stay policies")
-      const data = await res.json()
-      setMinStayPolicies(data)
-    } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError") return
-      setError(err instanceof Error ? err.message : "Unknown error")
-    } finally {
-      setLoadingMinStay(false)
-    }
-  }, [scopeLodgeId])
+  /**
+   * Load the list for the CURRENT scope.
+   *
+   * `scopeLoad` marks the fetch that a scope change (including the mount) is
+   * waiting on: only that one flips the section into its loading state, so an
+   * ordinary refresh after a write never blanks the list. Every state write is
+   * guarded on the scope still being the one this call was made for, which is
+   * also what keeps `loadedScope` honest — a dropped response leaves the new
+   * scope UNKNOWN until its own load lands, rather than labelling one scope's
+   * rows with another's.
+   */
+  const fetchMinStay = useCallback(
+    async (options: { signal?: AbortSignal; scopeLoad?: boolean } = {}) => {
+      const { signal, scopeLoad = false } = options
+      const scope = scopeLodgeId
+      if (scopeLoad) setLoadingMinStay(true)
+      try {
+        const res = await fetch(
+          scope
+            ? `/api/admin/booking-policies/minimum-stay?lodgeId=${encodeURIComponent(scope)}`
+            : "/api/admin/booking-policies/minimum-stay",
+          { signal }
+        )
+        if (!res.ok) throw new Error("Failed to fetch minimum stay policies")
+        const data = await res.json()
+        if (scopeRef.current !== scope) return
+        setMinStayPolicies(data)
+        setLoadedScope(scope)
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return
+        if (scopeRef.current !== scope) return
+        setError(err instanceof Error ? err.message : "Unknown error")
+      } finally {
+        if (scopeLoad && scopeRef.current === scope) setLoadingMinStay(false)
+      }
+    },
+    [scopeLodgeId],
+  )
 
   useEffect(() => {
+    scopeRef.current = scopeLodgeId
+    // An open editor belongs to the partition we are leaving, so a scope change
+    // closes it. Its row id would otherwise stay pointed at the old partition.
+    setShowMinStayForm(false)
+    setEditingMinStayId(null)
+    setEditingDraft(NEW_MIN_STAY_DRAFT)
     const controller = new AbortController()
-    fetchMinStay(controller.signal)
+    void fetchMinStay({ signal: controller.signal, scopeLoad: true })
     return () => controller.abort()
-  }, [fetchMinStay])
+  }, [fetchMinStay, scopeLodgeId])
 
   function resetMinStayForm() {
     setShowMinStayForm(false)
@@ -346,18 +398,45 @@ export function MinimumNightStaySection() {
   )
 
   async function handleDeleteMinStay(id: string) {
-    if (!confirm("Deactivate this minimum stay policy?")) return
+    if (
+      !confirm(
+        "Delete this minimum stay policy? It stops applying immediately and stays listed as inactive, so the change is auditable.",
+      )
+    ) {
+      return
+    }
     try {
       const res = await fetch(`/api/admin/booking-policies/minimum-stay/${id}`, { method: "DELETE" })
       if (!res.ok) throw new Error("Failed to deactivate")
       fetchMinStay()
-      setSuccess("Minimum stay policy deactivated")
+      setSuccess("Minimum stay policy deleted — it is listed as inactive")
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error")
     }
   }
 
+  /**
+   * #2143, second route in: Activate/Deactivate is a direct write, and it read
+   * `policy.active` from a row that only changes once the refresh below
+   * resolves. Two quick clicks therefore both saw `active: true` and both sent
+   * `{ active: false }` — the second PUT writing a `minimum-stay-policy.update`
+   * entry whose `before` and `after` are identical AND busting the public-page
+   * cache, which is exactly the harm the Save dirty gate exists to stop,
+   * reachable by one admin with an impatient double-click and no concurrency.
+   *
+   * The ref is the real guard: it is set synchronously, so a genuine
+   * double-click dispatched inside one tick — where both handlers close over the
+   * same pre-update state — still only fires once. `togglingId` is the visible
+   * half, disabling the button for the round trip, and the refresh is awaited so
+   * it stays disabled until the row it re-reads is on screen.
+   */
+  const togglingRef = useRef(false)
+  const [togglingId, setTogglingId] = useState<string | null>(null)
+
   async function handleToggleMinStay(policy: MinStayPolicy) {
+    if (togglingRef.current) return
+    togglingRef.current = true
+    setTogglingId(policy.id)
     try {
       const res = await fetch(`/api/admin/booking-policies/minimum-stay/${policy.id}`, {
         method: "PUT",
@@ -365,9 +444,12 @@ export function MinimumNightStaySection() {
         body: JSON.stringify({ active: !policy.active }),
       })
       if (!res.ok) throw new Error("Failed to update")
-      fetchMinStay()
+      await fetchMinStay()
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error")
+    } finally {
+      togglingRef.current = false
+      setTogglingId(null)
     }
   }
 
@@ -396,117 +478,160 @@ export function MinimumNightStaySection() {
     )
   }
 
+  // See `loadedScope`: the list is authoritative only for the scope it was
+  // loaded for, and anything else is unknown rather than editable.
+  const scopeKnown = loadedScope === scopeLodgeId
+
   return (
     <div>
       {viewOnlyBanner}
+      <PolicyFeedback
+        error={error}
+        success={success}
+        onClearError={() => setError("")}
+        onClearSuccess={() => setSuccess("")}
+      />
       <div className="space-y-6">
-        <PolicyFeedback
-          error={error}
-          success={success}
-          onClearError={() => setError("")}
-          onClearSuccess={() => setSuccess("")}
-        />
-
         <PolicyScopeSelect
           value={scopeLodgeId}
           onChange={setScopeLodgeId}
           id="min-stay-scope"
         />
 
-        <Card>
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <div>
-                <CardTitle>
-                  {scopeLodgeName
-                    ? `Minimum Night Stay — ${scopeLodgeName}`
-                    : "Minimum Night Stay"}
-                </CardTitle>
-                <CardDescription>
-                  Require a minimum number of nights when a booking touches specific days of the week
-                  within a date range. Admins can override these rules.
-                  {scopeLodgeName ? (
-                    <>
-                      {" "}
-                      Policies listed here belong to {scopeLodgeName} and replace
-                      the club-wide set for that lodge; if the list is empty the
-                      lodge uses the club-wide policies.
-                    </>
-                  ) : null}
-                </CardDescription>
-              </div>
-              {!showMinStayForm && (
-                <ViewOnlyActionButton canEdit={canEdit} describeReason={false} onClick={startAddMinStay}>Add Policy</ViewOnlyActionButton>
-              )}
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {/* Min Stay Form — one `useSectionEditState` instance per open editor. */}
-            {showMinStayForm && (
-              <MinStayForm
-                key={`${editingMinStayId ?? "new"}:${editorInstance}`}
-                policyId={editingMinStayId}
-                initial={editingDraft}
-                canEdit={canEdit}
-                onSubmit={submitMinStay}
-                onCancel={cancelMinStayForm}
-                onError={setError}
-              />
-            )}
+        {!scopeKnown ? (
+          <Card>
+            <CardHeader>
+              <CardTitle>
+                Could not load the minimum-stay policies for{" "}
+                {scopeLodgeName ?? "the club"}
+              </CardTitle>
+              <CardDescription>
+                Nothing is listed, because we do not know what is stored here.
+                The policies that were on screen a moment ago belong to a
+                different scope, so editing, deleting, or deactivating them from
+                here would change the wrong thing. Reload the page (or switch
+                scope again) — the list returns as soon as it loads.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        ) : null}
 
-            {/* Min Stay List */}
-            {minStayPolicies.length === 0 && !showMinStayForm ? (
-              <p className="text-sm text-muted-foreground py-4 text-center">
-                No minimum night stay policies configured. Members can book any number of nights.
-              </p>
-            ) : (
-              <div className="space-y-3">
-                {minStayPolicies.map((policy) => (
-                  <Card key={policy.id} className={!policy.active ? "opacity-60" : ""}>
-                    <CardContent className="pt-4">
-                      <div className="flex items-start justify-between mb-2">
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <h4 className="font-semibold">{policy.name}</h4>
-                            <Badge variant={policy.active ? "default" : "outline"}>
-                              {policy.active ? "Active" : "Inactive"}
-                            </Badge>
-                          </div>
-                          <p className="text-sm text-muted-foreground">
-                            {new Date(policy.startDate).toLocaleDateString("en-NZ")} &mdash;{" "}
-                            {new Date(policy.endDate).toLocaleDateString("en-NZ")}
-                          </p>
-                        </div>
-                        <div className="flex space-x-2">
-                          <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="outline" size="sm" onClick={() => handleToggleMinStay(policy)}>
-                            {policy.active ? "Deactivate" : "Activate"}
-                          </ViewOnlyActionButton>
-                          <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="outline" size="sm" onClick={() => startEditMinStay(policy)}>
-                            Edit
-                          </ViewOnlyActionButton>
-                          {policy.active && (
-                            <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="destructive" size="sm" onClick={() => handleDeleteMinStay(policy.id)}>
-                              Deactivate
-                            </ViewOnlyActionButton>
-                          )}
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2 text-sm">
-                        <span className="text-muted-foreground">Trigger days:</span>
-                        {policy.triggerDays.map((d) => (
-                          <Badge key={d} variant="secondary">{DAY_LABELS[d]}</Badge>
-                        ))}
-                        <span className="ml-2 text-muted-foreground">
-                          Min <strong>{policy.minimumNights}</strong> nights
-                        </span>
-                      </div>
-                    </CardContent>
-                  </Card>
-                ))}
+        {scopeKnown ? (
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle>
+                    {scopeLodgeName
+                      ? `Minimum Night Stay — ${scopeLodgeName}`
+                      : "Minimum Night Stay"}
+                  </CardTitle>
+                  <CardDescription>
+                    Require a minimum number of nights when a booking touches specific days of the week
+                    within a date range. Admins can override these rules.
+                    {scopeLodgeName ? (
+                      <>
+                        {" "}
+                        Policies listed here belong to {scopeLodgeName} and replace
+                        the club-wide set for that lodge; if the list is empty the
+                        lodge uses the club-wide policies.
+                      </>
+                    ) : null}
+                  </CardDescription>
+                </div>
+                {!showMinStayForm && (
+                  <ViewOnlyActionButton canEdit={canEdit} describeReason={false} onClick={startAddMinStay}>Add Policy</ViewOnlyActionButton>
+                )}
               </div>
-            )}
-          </CardContent>
-        </Card>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {/* Min Stay Form — one `useSectionEditState` instance per open editor. */}
+              {showMinStayForm && (
+                <MinStayForm
+                  key={`${editingMinStayId ?? "new"}:${editorInstance}`}
+                  policyId={editingMinStayId}
+                  initial={editingDraft}
+                  canEdit={canEdit}
+                  onSubmit={submitMinStay}
+                  onCancel={cancelMinStayForm}
+                  onError={setError}
+                />
+              )}
+
+              {/* Min Stay List */}
+              {minStayPolicies.length === 0 && !showMinStayForm ? (
+                <p className="text-sm text-muted-foreground py-4 text-center">
+                  No minimum night stay policies configured. Members can book any number of nights.
+                </p>
+              ) : (
+                <div className="space-y-3">
+                  {minStayPolicies.map((policy) => (
+                    <Card key={policy.id} className={!policy.active ? "opacity-60" : ""}>
+                      <CardContent className="pt-4">
+                        <div className="flex items-start justify-between mb-2">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h4 className="font-semibold">{policy.name}</h4>
+                              <Badge variant={policy.active ? "default" : "outline"}>
+                                {policy.active ? "Active" : "Inactive"}
+                              </Badge>
+                            </div>
+                            <p className="text-sm text-muted-foreground">
+                              {new Date(policy.startDate).toLocaleDateString("en-NZ")} &mdash;{" "}
+                              {new Date(policy.endDate).toLocaleDateString("en-NZ")}
+                            </p>
+                          </div>
+                          <div className="flex space-x-2">
+                            <ViewOnlyActionButton
+                              canEdit={canEdit}
+                              describeReason={false}
+                              variant="outline"
+                              size="sm"
+                              disabled={togglingId === policy.id}
+                              onClick={() => void handleToggleMinStay(policy)}
+                            >
+                              {policy.active ? "Deactivate" : "Activate"}
+                            </ViewOnlyActionButton>
+                            <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="outline" size="sm" onClick={() => startEditMinStay(policy)}>
+                              Edit
+                            </ViewOnlyActionButton>
+                            {/*
+                              #2142 review: this used to read "Deactivate" too,
+                              so an active row offered two differently-styled
+                              buttons with the same label and no way to tell them
+                              apart. They are genuinely different actions — the
+                              outline one is the reversible Active/Inactive
+                              toggle, this one is the delete, implemented as a
+                              soft delete (`active: false`) purely so the audit
+                              history survives, and recorded as
+                              `minimum-stay-policy.delete`. The label now names
+                              the action; the confirm and the success copy below
+                              say what a soft delete actually leaves behind.
+                            */}
+                            {policy.active && (
+                              <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="destructive" size="sm" onClick={() => handleDeleteMinStay(policy.id)}>
+                                Delete
+                              </ViewOnlyActionButton>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 text-sm">
+                          <span className="text-muted-foreground">Trigger days:</span>
+                          {policy.triggerDays.map((d) => (
+                            <Badge key={d} variant="secondary">{DAY_LABELS[d]}</Badge>
+                          ))}
+                          <span className="ml-2 text-muted-foreground">
+                            Min <strong>{policy.minimumNights}</strong> nights
+                          </span>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        ) : null}
       </div>
     </div>
   )

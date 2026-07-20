@@ -61,16 +61,26 @@ agent, **retention class**, raw details, and JSON metadata.
 
 ### Booking-policy entries
 
-From this release, a `group-discount.update`, `cancellation-policy.update`, or
-`booking-period.update` entry recorded **from the admin screens** always reflects
-a real change: the Booking Policies forms keep **Save** disabled until the form
-actually differs from what is stored, so opening **Edit** and saving without
-touching anything can no longer write an entry. Two caveats. Entries recorded
-*before* this release may still be no-ops, so treat an older pair of identical
-`before`/`after` values as "nothing changed" rather than as a mystery. And the
-guarantee is a property of the forms, not of the write routes — a script or
-integration calling the API directly with `bookings:edit` can still submit an
-unchanged body and get an entry.
+From this release, a `group-discount.update`, `cancellation-policy.update`,
+`booking-period.update`, or `minimum-stay-policy.update` entry recorded **from
+the admin screens** always reflects a real change: the Booking Policies forms
+keep **Save** disabled until the form actually differs from what is stored, so
+opening **Edit** and saving without touching anything can no longer write an
+entry.
+
+The same now holds for the row-level **Activate** / **Deactivate** buttons on
+booking periods and minimum-stay policies, which write through the same two
+`*.update` actions. Those are not form saves — they are one-click writes — so
+they were never covered by the Save gate; a quick double-click used to send the
+same new value twice and record the second as an update whose `before` and
+`after` were identical. Each button is now disabled for the round trip and
+guarded against a repeat click, so one click is one entry.
+
+Two caveats. Entries recorded *before* this release may still be no-ops, so
+treat an older pair of identical `before`/`after` values as "nothing changed"
+rather than as a mystery. And the guarantee is a property of the admin screens,
+not of the write routes — a script or integration calling the API directly with
+`bookings:edit` can still submit an unchanged body and get an entry.
 
 ## Troubleshooting
 

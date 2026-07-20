@@ -363,9 +363,12 @@ describe("GroupDiscountSection (#2136)", () => {
     // in the reading order, in a live region (#2142 owner decision).
     expect(saveButton().getAttribute("title")).toBeNull();
     expect(saveButton().getAttribute("aria-describedby")).toBeNull();
-    expect(screen.getByRole("status").textContent).toContain(
-      ADMIN_VIEW_ONLY_SECTION_HEADING,
-    );
+    // Queried by testid, not by role: `PolicyFeedback` now mounts its own
+    // permanently-registered `role="status"` region for save confirmations, so
+    // "the status region" is ambiguous (#2142 review).
+    expect(
+      screen.getByTestId("admin-view-only-banner").textContent,
+    ).toContain(ADMIN_VIEW_ONLY_SECTION_HEADING);
   });
 
   it("canEdit=undefined mid-edit disables Save WITHOUT the view-only reason (#2142)", async () => {
@@ -389,7 +392,7 @@ describe("GroupDiscountSection (#2136)", () => {
     // The live region itself is always mounted (#2142 review) — a polite region
     // must be registered before its content changes. What must be absent while
     // access is resolving is its CONTENT.
-    expect(screen.getByRole("status").textContent).toBe("");
+    expect(screen.getByTestId("admin-view-only-banner").textContent).toBe("");
   });
 
   it("canEdit=undefined (resolving) disables Edit and shows NO notice", async () => {

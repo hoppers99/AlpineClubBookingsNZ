@@ -96,8 +96,16 @@ before changing Next.js APIs or conventions.
   for a 403) and keep the section's feedback rendering in the component. A
   section whose snapshot is a LIST with per-row edits is NOT out of scope, but
   the hook belongs one level down: give the OPEN EDITOR its own instance, keyed
-  on the row being edited (`key={rowId ?? "new"}`), and leave the list itself as
-  ordinary state with its row-level actions as plain direct writes. The
+  on the row being edited AND on an instance counter bumped every time an editor
+  is opened (`` key={`${rowId ?? "new"}:${editorInstance}`} ``), and leave the
+  list itself as ordinary state with its row-level actions as plain direct
+  writes. The counter is not cosmetic: with the bare `key={rowId ?? "new"}` the
+  key is unchanged when Edit is clicked again on the row already open, React
+  reuses the instance, the fresh `initial` is ignored, and the abandoned draft
+  silently survives. Row-level actions that WRITE need an in-flight guard held in
+  a ref, not just a disabled button — a double-click dispatched inside one tick
+  gives both handlers the same pre-update row, so both send the same value and
+  the second write is a no-op audit entry of exactly the #2143 kind. The
   booking-periods and minimum-night-stay sections are the reference for that
   shape (#2142). Wherever the read endpoint SYNTHESISES defaults on a miss — or
   the editor is creating a row that does not exist yet — carry the first-save
@@ -109,7 +117,15 @@ before changing Next.js APIs or conventions.
   lodge scope, say), carry that key inside the snapshot and treat a mismatch as
   UNKNOWN — no editor, no destructive affordances, no first-save exception —
   because the hook leaves `saved`/`draft` untouched when a re-fetch fails, and
-  the previous key's value would otherwise be presented as this key's.
+  the previous key's value would otherwise be presented as this key's. That
+  binds LIST sections too, where the stale value is a set of rows whose Edit,
+  Delete, and Activate/Deactivate buttons all act on a row id from the partition
+  the admin has already navigated away from. Give the never-loaded state a
+  SENTINEL key distinct from every real key: `null` usually means "club-wide"
+  as well as "no lodge", so seeding `null` makes a failed FIRST load compare
+  equal to the club-wide scope the section mounts on — the widest blast radius
+  there is. All three keyed booking-policy sections (default cancellation,
+  booking periods, minimum night stay) carry this.
 - Every gated section's Save must be dirty-gated, not just view-gated. Booking
   write routes log audit entries and revalidate public content unconditionally,
   so a pristine re-save writes an entry asserting a change that never happened

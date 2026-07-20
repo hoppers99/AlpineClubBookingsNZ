@@ -269,6 +269,42 @@ All notable public reference-release changes should be recorded here.
   if the server's reply to a *create* cannot be read the form still closes — so
   the obvious retry cannot quietly create a second period or policy.
 
+  **A failed load now stops the section everywhere, not just on a scope
+  switch.** Three related holes closed. If the cancellation policy fails to load
+  on ARRIVAL — not after switching lodge, just an ordinary failed page load — the
+  section used to render the full **Default Policy** editor over its own
+  hard-coded starting rules, indistinguishable on screen from the club's real
+  refund schedule. A pristine Save was already blocked, but the realistic path
+  was not: click **Edit**, change one field, **Save**, and the write replaced the
+  club-wide rules wholesale with values nobody had ever configured. It now shows
+  the same "Could not load…" card a failed lodge switch shows, with no editor at
+  all. **Date-Specific Periods** and **Minimum Night Stay** got the same
+  treatment, which they had been missing entirely: a failed switch there left the
+  previous scope's rows on screen under the new scope's heading, with **Edit**,
+  **Delete**, and **Activate/Deactivate** all live over them — so a click acted
+  on the partition the admin thought they had left. Both now list nothing and say
+  so, and switching scope closes any editor that was open. Two smaller
+  scope-timing fixes ship with it: **Create override** can no longer land on the
+  lodge you switched TO while its seed was still loading, and the "Override saved
+  for …" confirmation now names the lodge that was actually written rather than
+  whichever one is selected when the reply arrives.
+
+  **Activate/Deactivate is now single-shot, and it is announced.** Those row
+  buttons are one-click writes, never covered by the Save dirty gate, and they
+  read the row's current state from a list that only refreshes afterwards — so a
+  quick double-click sent the same value twice and recorded the second as an
+  update whose "before" and "after" were identical, the exact #2143 harm from a
+  different direction. Each button is now disabled for the round trip and
+  guarded against the repeat click. Separately, the box that reports the outcome
+  of every booking-policy save had no live region at all, so neither a success
+  nor a failure — including the "This change was not saved" message for a
+  permissions change mid-edit — was announced to a screen reader. Failures are
+  now assertive (they contradict what you believe just happened) and
+  confirmations polite, both in regions registered before the message lands. And
+  an active minimum-stay row no longer shows two different buttons both labelled
+  **Deactivate**: the reversible pause keeps that name, and the destructive one
+  is now **Delete**, which is what it is.
+
 ## 0.12.2 - 2026-07-20
 
 - Release classification: patch public reference release. As with `v0.12.1`, the

@@ -330,10 +330,14 @@ the default. Module
 toggles that share the strict `PUT /api/admin/modules` object (for example the
 magic-link and Google cards on `/admin/security`) must GET the fresh settings and
 merge only their own key before writing, so a sibling card's change is never
-clobbered by a stale render-time snapshot. Two pre-existing surfaces are
-acknowledged divergents that this rule does not retrofit on its own: the
-`/admin/modules` grid (deliberate bulk toggles) and the older staged-but-ungated
-settings forms. Reference:
+clobbered by a stale render-time snapshot. The rule binds sections that are NEW
+or MODIFIED, so several pre-existing surfaces are acknowledged divergents it does
+not retrofit on its own: the `/admin/modules` grid (deliberate bulk toggles), the
+older staged-but-ungated settings forms, and the age-tier and notification
+settings panels — the last two were previously written up as blanket exemptions
+"because they are list sections", which is no longer the reason: list sections
+are in scope (see the per-row shape below), those two simply have not been
+touched since. Reference:
 `src/components/admin/booking-policies/group-discount-section.tsx` — note that
 it now carries the section banner, so for the default per-button
 `AdminViewOnlyNotice` treatment look at any admin surface outside Booking
@@ -360,10 +364,18 @@ maps to the shared `ADMIN_FORBIDDEN_SAVE_REASON` copy. Feedback rendering stays
 in the component, because booking-policy sections use `PolicyFeedback` while the
 security cards use `Alert`. A section whose snapshot is a LIST with per-row
 edits is not out of scope, but the hook belongs one level down: the OPEN EDITOR
-gets its own instance, keyed on the row being edited (`key={rowId ?? "new"}`),
-while the list itself stays ordinary state and its row-level actions stay plain
-direct writes. The booking-periods and minimum-night-stay sections are the
-reference for that shape (#2142). Wherever the read endpoint SYNTHESISES
+gets its own instance, keyed on the row being edited AND on an instance counter
+bumped every time an editor is opened
+(`` key={`${rowId ?? "new"}:${editorInstance}`} ``), while the list itself stays
+ordinary state and its row-level actions stay plain direct writes. The counter
+is not cosmetic: with the bare `key={rowId ?? "new"}` the key is unchanged when
+Edit is clicked again on the row already open, so React reuses the instance, the
+fresh `initial` is ignored, and the abandoned draft silently survives. Row-level
+actions that WRITE also need an in-flight guard held in a ref rather than only a
+disabled button, because a double-click dispatched inside one tick gives both
+handlers the same pre-update row and the second write becomes a no-op audit
+entry of the #2143 kind. The booking-periods and minimum-night-stay sections are
+the reference for that shape (#2142). Wherever the read endpoint SYNTHESISES
 defaults on a miss — or the editor is creating a row that does not exist yet —
 carry the first-save exception so committing the defaults stays reachable, but
 never extend it to a FAILED load, where the same fallback values would let one
@@ -371,7 +383,14 @@ click blind-write over a real stored policy. For the same reason a snapshot is
 authoritative only for the scope it was loaded for: a section whose fetch is
 keyed on something else (a lodge scope) must track that key WITH the snapshot
 and treat a mismatch as unknown, because a failed re-fetch leaves the previous
-key's value in place.
+key's value in place. That binds LIST sections just as hard — there the stale
+value is a set of rows whose Edit, Delete, and Activate/Deactivate buttons all
+act on a row id belonging to the partition the admin has navigated away from —
+and the never-loaded state needs a SENTINEL key distinct from every real one,
+because `null` already means "club-wide" and a `null` seed makes a failed FIRST
+load compare equal to the scope the section mounts on. All three keyed
+booking-policy sections (default cancellation, booking periods, minimum night
+stay) carry this.
 
 The `/admin/xero` and `/admin/members` routes are route shells with local
 `_components` and `_hooks` folders; the member `/book` wizard follows the same

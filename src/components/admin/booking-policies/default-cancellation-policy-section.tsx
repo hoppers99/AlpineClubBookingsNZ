@@ -37,6 +37,24 @@ const FALLBACK_RULES: PolicyRule[] = [
 
 const ENDPOINT = "/api/admin/booking-policies/cancellation"
 
+/**
+ * The scope of a snapshot that was never loaded (#2142 review).
+ *
+ * The seed below has to claim SOME scope, and every real scope is either a
+ * lodge id or `null` for club-wide. Seeding `null` made the seed indistinguishable
+ * from a successfully-loaded CLUB-WIDE snapshot, so `saved.scope === scopeLodgeId`
+ * was `null === null` — true — for a mount whose GET had failed. The section then
+ * rendered a live "Default Policy" editor over the hard-coded `FALLBACK_RULES`,
+ * visually identical to real data; changing one field and saving would PUT those
+ * fallbacks, and the route replaces the whole club-wide partition
+ * (`deleteMany` + `createMany`), destroying the club's real refund schedule.
+ *
+ * A sentinel that can never equal a real scope closes that: an unloaded snapshot
+ * is a MISMATCH for every scope, so a failed FIRST load lands in the same "Could
+ * not load" card a failed scope SWITCH already did.
+ */
+const UNLOADED_SCOPE = "__unloaded__"
+
 function endpointFor(lodgeId: string | null) {
   return lodgeId ? `${ENDPOINT}?lodgeId=${encodeURIComponent(lodgeId)}` : ENDPOINT
 }
@@ -71,6 +89,9 @@ interface CancellationDraft {
    * would carry across and let one click blind-write `FALLBACK_RULES` as a new
    * lodge override. So the scope travels WITH the snapshot, and a mismatch is
    * treated as "unknown" until a load for the current scope succeeds.
+   *
+   * {@link UNLOADED_SCOPE} is the third state: no load has ever succeeded, so
+   * the snapshot describes no scope at all.
    */
   scope: string | null
 }
@@ -79,11 +100,16 @@ const CANCELLATION_DEFAULTS: CancellationDraft = {
   // Deliberately `configured: true`: this seed is also the fallback a FAILED
   // load leaves in the form, where we know nothing about the stored rows.
   // Claiming "nothing persisted" would enable a pristine Save that blind-writes
-  // these rules over a club's real policy. Failing closed costs nothing — the
-  // admin can still save after changing a field, or reload.
+  // these rules over a club's real policy.
   configured: true,
-  // The section always mounts on the club-wide scope, so this seed matches it.
-  scope: null,
+  // NOT `null`: club-wide scope is also `null`, so a `null` seed would make a
+  // never-loaded snapshot compare EQUAL to the club-wide scope the section
+  // mounts on, and a failed first load would open a live editor over
+  // `FALLBACK_RULES` (#2142 review). The sentinel matches no scope, so the
+  // failure lands in the "Could not load" card instead. Failing closed is not
+  // "free" — it is the entire protection: with an editor on screen, changing
+  // one field is enough to make the fallbacks savable over the real policy.
+  scope: UNLOADED_SCOPE,
   rules: FALLBACK_RULES,
   holdEnabled: true,
   holdDays: 7,
@@ -136,6 +162,12 @@ export function DefaultCancellationPolicySection() {
   // the CURRENT scope at the moment they resolve rather than the one they
   // closed over. Assigned in an effect, never during render.
   const scopeRef = useRef(scopeLodgeId)
+  // The lodge NAME as it read at the moment a save was submitted (#2142
+  // review). `successMessage` is evaluated when the PUT RESOLVES, so reading
+  // `scopeLodgeName` from render scope there would name whatever lodge is
+  // selected by then — save on lodge B, switch to C mid-flight, and the
+  // confirmation says "Override saved for LodgeC" while B was written.
+  const savedScopeNameRef = useRef<string | null>(null)
 
   const section = useSectionEditState<CancellationDraft>({
     // Seeded so a failed load still renders the form with its defaults
@@ -159,6 +191,8 @@ export function DefaultCancellationPolicySection() {
     },
     save: async (draft) => {
       const lodgeId = scopeLodgeId
+      // Captured at SUBMIT time — see `savedScopeNameRef`.
+      savedScopeNameRef.current = scopeLodgeName
       const res = await fetch(ENDPOINT, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -184,9 +218,12 @@ export function DefaultCancellationPolicySection() {
       // route sorts and normalises the rules it persists.
       return toDraft(await res.json(), lodgeId)
     },
-    successMessage: () =>
-      scopeLodgeId
-        ? `Override saved for ${scopeLodgeName ?? "lodge"}`
+    // Both halves describe the partition that was actually WRITTEN, not the one
+    // selected when the response landed: the scope comes from the re-seeded
+    // snapshot the save returned, the name from the submit-time ref.
+    successMessage: (savedDraft) =>
+      savedDraft.scope
+        ? `Override saved for ${savedScopeNameRef.current ?? "lodge"}`
         : "Default policy saved",
     // #2143: an Edit -> Save that changed nothing must not reach the PUT, which
     // logs `cancellation-policy.update` and revalidates the public pages
@@ -241,6 +278,15 @@ export function DefaultCancellationPolicySection() {
   }
 
   async function handleCreateOverride() {
+    // The scope this click was made ON. The seed fetch below is async and the
+    // scope select stays live throughout, so everything after the `await` is
+    // guarded on it — the same guard `load` uses (#2142 review). Without it:
+    // click Create override on lodge B, switch to lodge C before the seed
+    // resolves; the scope effect clears `creatingOverride` and C loads cleanly,
+    // then B's fetch resolves and flips `creatingOverride` back on for C,
+    // opening a create-mode editor pre-filled with club-wide rules, Save
+    // enabled, on a lodge the admin never chose.
+    const scopeAtClick = scopeLodgeId
     section.setError("")
     section.setSuccess("")
     try {
@@ -249,12 +295,16 @@ export function DefaultCancellationPolicySection() {
       const res = await fetch(ENDPOINT)
       if (!res.ok) throw new Error("Failed to fetch policy")
       const clubWide = toDraft(await res.json(), null)
+      if (scopeRef.current !== scopeAtClick) return
       section.setDraft({
         rules: clubWide.rules.length > 0 ? clubWide.rules : FALLBACK_RULES,
       })
       setCreatingOverride(true)
       section.startEditing()
     } catch (err) {
+      // A failure that belongs to a scope the admin has already left is not
+      // this scope's failure to report.
+      if (scopeRef.current !== scopeAtClick) return
       section.setError(err instanceof Error ? err.message : "Unknown error")
     }
   }
@@ -328,11 +378,13 @@ export function DefaultCancellationPolicySection() {
   const scopeIsLodge = scopeLodgeId !== null
   // The invariant behind every derivation below: a snapshot is authoritative
   // ONLY for the scope it was loaded for. A failed scope switch leaves the
-  // previous partition's snapshot in place (the hook does not clear it), and
-  // the current scope's real state is then simply UNKNOWN — no editor, no
-  // override affordances, no first-save exception, until a load for this scope
-  // succeeds. Reading the stale snapshot instead would show a phantom override
-  // built from the club-wide rules, whose Remove button writes a no-op
+  // previous partition's snapshot in place (the hook does not clear it), and a
+  // failed FIRST load leaves the {@link UNLOADED_SCOPE} seed, which matches no
+  // scope at all. Either way the current scope's real state is UNKNOWN — no
+  // editor, no override affordances, no first-save exception, until a load for
+  // this scope succeeds. Reading the seed or a stale snapshot instead would
+  // present hard-coded fallbacks as the club's stored policy, or show a phantom
+  // override built from the club-wide rules, whose Remove button writes a no-op
   // `cancellation-policy.update` entry (#2143) and whose Save creates an
   // override the admin never chose for this lodge.
   const scopeKnown = saved !== null && saved.scope === scopeLodgeId
@@ -344,14 +396,13 @@ export function DefaultCancellationPolicySection() {
   return (
     <div>
       {viewOnlyBanner}
+      <PolicyFeedback
+        error={error}
+        success={success}
+        onClearError={() => section.setError("")}
+        onClearSuccess={() => section.setSuccess("")}
+      />
       <div className="space-y-6">
-        <PolicyFeedback
-          error={error}
-          success={success}
-          onClearError={() => section.setError("")}
-          onClearSuccess={() => section.setSuccess("")}
-        />
-
         <PolicyScopeSelect value={scopeLodgeId} onChange={setScopeLodgeId} />
 
         {!scopeKnown ? (
@@ -362,11 +413,12 @@ export function DefaultCancellationPolicySection() {
                 {scopeIsLodge ? (scopeLodgeName ?? "this lodge") : "the club"}
               </CardTitle>
               <CardDescription>
-                No editor is shown, because we do not know what is stored for
-                this scope. The rules that were on screen a moment ago belong to
-                a different scope, so editing or removing them from here would
-                change the wrong thing. Switch scope again, or reload the page —
-                the editor returns as soon as the policy loads.
+                No editor is shown, because we do not know what is stored here.
+                Any rules still on screen came from somewhere else — another
+                scope, or this form&apos;s own starting values — so editing or
+                removing them from here would change the wrong thing. Reload the
+                page (or switch scope again) — the editor returns as soon as the
+                policy loads.
               </CardDescription>
             </CardHeader>
           </Card>

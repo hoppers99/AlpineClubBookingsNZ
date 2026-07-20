@@ -167,14 +167,13 @@ export function PublicBookingRequestsSection() {
   return (
     <div>
       {viewOnlyBanner}
+      <PolicyFeedback
+        error={error}
+        success={success}
+        onClearError={() => setError("")}
+        onClearSuccess={() => setSuccess("")}
+      />
       <div className="space-y-6">
-        <PolicyFeedback
-          error={error}
-          success={success}
-          onClearError={() => setError("")}
-          onClearSuccess={() => setSuccess("")}
-        />
-
         <Card>
           <CardHeader>
             <CardTitle>Indicative Pricing</CardTitle>

@@ -162,7 +162,13 @@ export function AdminViewOnlySectionBanner({
   canEdit: boolean | undefined;
 }) {
   return (
-    <div role="status">
+    // The testid scopes a test's "the view-only banner" query away from the
+    // section's OTHER live regions — `PolicyFeedback` renders a permanently
+    // mounted `role="status"` for its success copy — the same way
+    // `data-testid="booking-detail-content"` scopes content queries away from
+    // the booking detail page's section rail. Counting `role="status"` nodes
+    // globally would otherwise pin an unrelated component's a11y shape.
+    <div role="status" data-testid="admin-view-only-banner">
       {canEdit === false ? (
         <div
           className={cn(

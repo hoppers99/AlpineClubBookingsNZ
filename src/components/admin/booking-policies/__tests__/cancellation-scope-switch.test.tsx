@@ -281,3 +281,131 @@ describe("DefaultCancellationPolicySection scope switching (#2142 review)", () =
     ).toBeTruthy();
   });
 });
+
+// #2142 review (round 3): two async handlers in this section still read the
+// scope (or its NAME) from render scope AFTER an await, so a scope switch during
+// the round trip re-targets them at whatever is selected by the time they
+// resolve. `load` already carries the guard; these two did not.
+describe("in-flight scope changes cannot re-target a click (#2142 review)", () => {
+  /**
+   * Route by scope, with the club-wide GET held open on demand so a scope switch
+   * can be interleaved with the "Create override" seed fetch, and the PUT held
+   * open so a scope switch can be interleaved with a save.
+   */
+  function stubDeferrable() {
+    const state = {
+      holdClubGet: false,
+      releaseClubGet: (() => {}) as () => void,
+      holdPut: false,
+      releasePut: (() => {}) as () => void,
+    };
+    const fetchMock = vi.fn<
+      (url: string, init?: RequestInit) => Promise<Response>
+    >(async (url, init) => {
+      if (init?.method === "PUT") {
+        const body = JSON.parse(String(init.body));
+        const response = () =>
+          jsonResponse({ rules: body.rules ?? [] });
+        if (state.holdPut) {
+          return new Promise<Response>((resolve) => {
+            state.releasePut = () => resolve(response());
+          });
+        }
+        return response();
+      }
+      if (url.includes("lodgeId=")) {
+        // Neither lodge has an override.
+        return jsonResponse({ rules: [] });
+      }
+      const clubBody = {
+        rules: CLUB_RULES,
+        nonMemberHoldEnabled: true,
+        nonMemberHoldDays: 7,
+      };
+      if (state.holdClubGet) {
+        return new Promise<Response>((resolve) => {
+          state.releaseClubGet = () => resolve(jsonResponse(clubBody));
+        });
+      }
+      return jsonResponse(clubBody);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return { fetchMock, state };
+  }
+
+  async function goToLodgeOne() {
+    await renderClubWide();
+    switchScopeTo("lodge-1");
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Create override for this lodge" }),
+      ).toBeTruthy(),
+    );
+  }
+
+  // Click "Create override" on lodge B, switch to lodge C before the seed fetch
+  // resolves: the scope effect clears `creatingOverride` and C loads clean, then
+  // B's fetch resolves and flips `creatingOverride` back on — for C. The editor
+  // opened in create mode on C, pre-filled with club-wide rules, Save enabled,
+  // on a lodge the admin never chose.
+  it("does not open a create-override editor on the lodge the admin switched TO", async () => {
+    const { fetchMock, state } = stubDeferrable();
+    await goToLodgeOne();
+
+    state.holdClubGet = true;
+    fireEvent.click(
+      screen.getByRole("button", { name: "Create override for this lodge" }),
+    );
+
+    switchScopeTo("lodge-2");
+    await waitFor(() =>
+      expect(
+        screen.getByText("Lodge Two uses the club-wide rules"),
+      ).toBeTruthy(),
+    );
+
+    // Lodge One's seed fetch lands now, on Lodge Two's screen.
+    state.releaseClubGet();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+
+    expect(screen.queryByText("Lodge Two Override")).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Save Lodge Override" }),
+    ).toBeNull();
+    // Still exactly where the admin actually is.
+    expect(screen.getByText("Lodge Two uses the club-wide rules")).toBeTruthy();
+    expect(writeCalls(fetchMock)).toHaveLength(0);
+  });
+
+  // `successMessage` is evaluated when the save RESOLVES, so reading the lodge
+  // name from render scope there named whatever lodge was selected by then.
+  it("names the lodge that was actually written, not the one now selected", async () => {
+    const { state } = stubDeferrable();
+    await goToLodgeOne();
+
+    // Creating an override is the first-save exception, so Save is live with no
+    // field change needed.
+    fireEvent.click(
+      screen.getByRole("button", { name: "Create override for this lodge" }),
+    );
+    await waitFor(() =>
+      expect(screen.getByText("Lodge One Override")).toBeTruthy(),
+    );
+    state.holdPut = true;
+    fireEvent.click(screen.getByRole("button", { name: "Save Lodge Override" }));
+
+    switchScopeTo("lodge-2");
+    await waitFor(() =>
+      expect(
+        screen.getByText("Lodge Two uses the club-wide rules"),
+      ).toBeTruthy(),
+    );
+
+    state.releasePut();
+
+    await waitFor(() =>
+      expect(screen.getByText(/Override saved for Lodge One/)).toBeTruthy(),
+    );
+    expect(screen.queryByText(/Override saved for Lodge Two/)).toBeNull();
+  });
+});

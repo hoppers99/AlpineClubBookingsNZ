@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, useCallback } from "react"
+import { useEffect, useRef, useState, useCallback } from "react"
 import {
   cancellationRuleSetsEqual,
   normalizeCancellationRule,
@@ -46,6 +46,13 @@ interface PeriodDraft {
   holdDays: number
   rules: PolicyRule[]
 }
+
+/**
+ * The scope of a list that was never loaded (#2142 review). Club-wide scope is
+ * `null`, so `null` cannot double as "unknown" — see the identical sentinel in
+ * `default-cancellation-policy-section.tsx`.
+ */
+const UNLOADED_SCOPE = "__unloaded__"
 
 const NEW_PERIOD_DRAFT: PeriodDraft = {
   name: "",
@@ -230,6 +237,25 @@ export function BookingPeriodsSection() {
   const [scopeLodgeId, setScopeLodgeId] = useState<string | null>(null)
   const scopeLodgeName = usePolicyScopeLodgeName(scopeLodgeId)
   const [periods, setPeriods] = useState<BookingPeriod[]>([])
+  /**
+   * The scope `periods` was actually loaded FOR (#2142 review).
+   *
+   * `AGENTS.md` makes this binding for any section whose fetch is keyed on
+   * something beyond the section itself: the key travels WITH the snapshot and a
+   * mismatch is UNKNOWN — no editor, no destructive affordances. A failed fetch
+   * here used to set `error` and leave `periods` alone, so after a failed switch
+   * to a lodge the card was retitled "Date-Specific Periods — Lodge One", said
+   * "Periods listed here belong to Lodge One", and left Edit, Delete (a HARD
+   * delete) and Activate/Deactivate live over rows that were still the CLUB-WIDE
+   * set. Every one of those buttons acts on `period.id`, so they would have hit
+   * the club-wide rows the admin believed they had navigated away from.
+   */
+  const [loadedScope, setLoadedScope] = useState<string | null>(UNLOADED_SCOPE)
+  // Mirrors `scopeLodgeId` for the async fetch below, which needs the CURRENT
+  // scope at the moment it resolves rather than the one it closed over. The
+  // list refresh after a save/delete/toggle carries no AbortSignal, so this is
+  // the only thing standing between a slow response and the wrong partition.
+  const scopeRef = useRef(scopeLodgeId)
   const [loadingPeriods, setLoadingPeriods] = useState(true)
   const [showPeriodForm, setShowPeriodForm] = useState(false)
   const [editingPeriodId, setEditingPeriodId] = useState<string | null>(null)
@@ -244,35 +270,61 @@ export function BookingPeriodsSection() {
   const [error, setError] = useState("")
   const [success, setSuccess] = useState("")
 
-  const fetchPeriods = useCallback(async (signal?: AbortSignal) => {
-    try {
-      const res = await fetch(
-        scopeLodgeId
-          ? `/api/admin/booking-policies/periods?lodgeId=${encodeURIComponent(scopeLodgeId)}`
-          : "/api/admin/booking-policies/periods",
-        { signal }
-      )
-      if (!res.ok) throw new Error("Failed to fetch periods")
-      const data = await res.json()
-      setPeriods(
-        data.map((period: BookingPeriod) => ({
-          ...period,
-          cancellationRules: period.cancellationRules.map((rule) => normalizeCancellationRule(rule)),
-        }))
-      )
-    } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError") return
-      setError(err instanceof Error ? err.message : "Unknown error")
-    } finally {
-      setLoadingPeriods(false)
-    }
-  }, [scopeLodgeId])
+  /**
+   * Load the list for the CURRENT scope.
+   *
+   * `scopeLoad` marks the fetch that a scope change (including the mount) is
+   * waiting on: only that one flips the section into its loading state, so an
+   * ordinary refresh after a write never blanks the list. Every state write is
+   * guarded on the scope still being the one this call was made for, which is
+   * also what keeps `loadedScope` honest — a dropped response leaves the new
+   * scope UNKNOWN until its own load lands, rather than labelling one scope's
+   * rows with another's.
+   */
+  const fetchPeriods = useCallback(
+    async (options: { signal?: AbortSignal; scopeLoad?: boolean } = {}) => {
+      const { signal, scopeLoad = false } = options
+      const scope = scopeLodgeId
+      if (scopeLoad) setLoadingPeriods(true)
+      try {
+        const res = await fetch(
+          scope
+            ? `/api/admin/booking-policies/periods?lodgeId=${encodeURIComponent(scope)}`
+            : "/api/admin/booking-policies/periods",
+          { signal }
+        )
+        if (!res.ok) throw new Error("Failed to fetch periods")
+        const data = await res.json()
+        if (scopeRef.current !== scope) return
+        setPeriods(
+          data.map((period: BookingPeriod) => ({
+            ...period,
+            cancellationRules: period.cancellationRules.map((rule) => normalizeCancellationRule(rule)),
+          }))
+        )
+        setLoadedScope(scope)
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return
+        if (scopeRef.current !== scope) return
+        setError(err instanceof Error ? err.message : "Unknown error")
+      } finally {
+        if (scopeLoad && scopeRef.current === scope) setLoadingPeriods(false)
+      }
+    },
+    [scopeLodgeId],
+  )
 
   useEffect(() => {
+    scopeRef.current = scopeLodgeId
+    // An open editor belongs to the partition we are leaving, so a scope change
+    // closes it. Its row id would otherwise stay pointed at the old partition.
+    setShowPeriodForm(false)
+    setEditingPeriodId(null)
+    setEditingDraft(NEW_PERIOD_DRAFT)
     const controller = new AbortController()
-    fetchPeriods(controller.signal)
+    void fetchPeriods({ signal: controller.signal, scopeLoad: true })
     return () => controller.abort()
-  }, [fetchPeriods])
+  }, [fetchPeriods, scopeLodgeId])
 
   function resetPeriodForm() {
     setShowPeriodForm(false)
@@ -381,7 +433,28 @@ export function BookingPeriodsSection() {
     }
   }
 
+  /**
+   * #2143, second route in: Activate/Deactivate is a direct write, and it read
+   * `period.active` from a row that only changes once the refresh below
+   * resolves. Two quick clicks therefore both saw `active: true` and both sent
+   * `{ active: false }` — the second PUT writing a `booking-period.update` entry
+   * whose `before` and `after` are identical AND busting the public-page cache,
+   * which is exactly the harm the Save dirty gate exists to stop, reachable by
+   * one admin with an impatient double-click and no concurrency at all.
+   *
+   * The ref is the real guard: it is set synchronously, so a genuine
+   * double-click dispatched inside one tick — where both handlers close over the
+   * same pre-update state — still only fires once. `togglingId` is the visible
+   * half, disabling the button for the round trip, and the refresh is awaited so
+   * it stays disabled until the row it re-reads is on screen.
+   */
+  const togglingRef = useRef(false)
+  const [togglingId, setTogglingId] = useState<string | null>(null)
+
   async function handleTogglePeriod(period: BookingPeriod) {
+    if (togglingRef.current) return
+    togglingRef.current = true
+    setTogglingId(period.id)
     try {
       const res = await fetch(`/api/admin/booking-policies/periods/${period.id}`, {
         method: "PUT",
@@ -389,9 +462,12 @@ export function BookingPeriodsSection() {
         body: JSON.stringify({ active: !period.active }),
       })
       if (!res.ok) throw new Error("Failed to update")
-      fetchPeriods()
+      await fetchPeriods()
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error")
+    } finally {
+      togglingRef.current = false
+      setTogglingId(null)
     }
   }
 
@@ -420,115 +496,145 @@ export function BookingPeriodsSection() {
     )
   }
 
+  // See `loadedScope`: the list is authoritative only for the scope it was
+  // loaded for, and anything else is unknown rather than editable.
+  const scopeKnown = loadedScope === scopeLodgeId
+
   return (
     <div>
       {viewOnlyBanner}
+      <PolicyFeedback
+        error={error}
+        success={success}
+        onClearError={() => setError("")}
+        onClearSuccess={() => setSuccess("")}
+      />
       <div className="space-y-6">
-        <PolicyFeedback
-          error={error}
-          success={success}
-          onClearError={() => setError("")}
-          onClearSuccess={() => setSuccess("")}
-        />
-
         <PolicyScopeSelect
           value={scopeLodgeId}
           onChange={setScopeLodgeId}
           id="periods-scope"
         />
 
-        <Card>
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <div>
-                <CardTitle>
-                  {scopeLodgeName
-                    ? `Date-Specific Periods — ${scopeLodgeName}`
-                    : "Date-Specific Periods"}
-                </CardTitle>
-                <CardDescription>
-                  Override the default policy for specific date ranges (e.g. school holidays).
-                  If a booking&apos;s check-in falls within a period, that period&apos;s rules apply.
-                  {scopeLodgeName ? (
-                    <>
-                      {" "}
-                      Periods listed here belong to {scopeLodgeName} and replace
-                      the club-wide set for that lodge; if the list is empty the
-                      lodge uses the club-wide periods.
-                    </>
-                  ) : null}
-                </CardDescription>
-              </div>
-              {!showPeriodForm && (
-                <ViewOnlyActionButton canEdit={canEdit} describeReason={false} onClick={startAddPeriod}>Add Period</ViewOnlyActionButton>
-              )}
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {/* Period Form — one `useSectionEditState` instance per open editor. */}
-            {showPeriodForm && (
-              <PeriodForm
-                key={`${editingPeriodId ?? "new"}:${editorInstance}`}
-                periodId={editingPeriodId}
-                initial={editingDraft}
-                canEdit={canEdit}
-                onSubmit={submitPeriod}
-                onCancel={cancelPeriodForm}
-                onError={setError}
-              />
-            )}
+        {!scopeKnown ? (
+          <Card>
+            <CardHeader>
+              <CardTitle>
+                Could not load the booking periods for{" "}
+                {scopeLodgeName ?? "the club"}
+              </CardTitle>
+              <CardDescription>
+                Nothing is listed, because we do not know what is stored here.
+                The periods that were on screen a moment ago belong to a
+                different scope, so editing, deleting, or deactivating them from
+                here would change the wrong thing. Reload the page (or switch
+                scope again) — the list returns as soon as it loads.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        ) : null}
 
-            {/* Periods List */}
-            {periods.length === 0 && !showPeriodForm ? (
-              <p className="text-sm text-muted-foreground py-4 text-center">
-                No date-specific periods configured. The default policy applies to all bookings.
-              </p>
-            ) : (
-              <div className="space-y-3">
-                {periods.map((period) => (
-                  <Card key={period.id} className={!period.active ? "opacity-60" : ""}>
-                    <CardContent className="pt-4">
-                      <div className="flex items-start justify-between mb-3">
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <h4 className="font-semibold">{period.name}</h4>
-                            <Badge variant={period.active ? "default" : "outline"}>
-                              {period.active ? "Active" : "Inactive"}
-                            </Badge>
-                          </div>
-                          <p className="text-sm text-muted-foreground">
-                            {new Date(period.startDate).toLocaleDateString("en-NZ")} &mdash;{" "}
-                            {new Date(period.endDate).toLocaleDateString("en-NZ")}
-                            <span className="ml-3">
-                              Non-member hold:{" "}
-                              <strong>
-                                {period.nonMemberHoldEnabled ?? true
-                                  ? `${period.nonMemberHoldDays} days`
-                                  : "First Paid, First In"}
-                              </strong>
-                            </span>
-                          </p>
-                        </div>
-                        <div className="flex space-x-2">
-                          <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="outline" size="sm" onClick={() => handleTogglePeriod(period)}>
-                            {period.active ? "Deactivate" : "Activate"}
-                          </ViewOnlyActionButton>
-                          <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="outline" size="sm" onClick={() => startEditPeriod(period)}>
-                            Edit
-                          </ViewOnlyActionButton>
-                          <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="destructive" size="sm" onClick={() => handleDeletePeriod(period.id)}>
-                            Delete
-                          </ViewOnlyActionButton>
-                        </div>
-                      </div>
-                      <PolicyPreview rules={period.cancellationRules} />
-                    </CardContent>
-                  </Card>
-                ))}
+        {scopeKnown ? (
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle>
+                    {scopeLodgeName
+                      ? `Date-Specific Periods — ${scopeLodgeName}`
+                      : "Date-Specific Periods"}
+                  </CardTitle>
+                  <CardDescription>
+                    Override the default policy for specific date ranges (e.g. school holidays).
+                    If a booking&apos;s check-in falls within a period, that period&apos;s rules apply.
+                    {scopeLodgeName ? (
+                      <>
+                        {" "}
+                        Periods listed here belong to {scopeLodgeName} and replace
+                        the club-wide set for that lodge; if the list is empty the
+                        lodge uses the club-wide periods.
+                      </>
+                    ) : null}
+                  </CardDescription>
+                </div>
+                {!showPeriodForm && (
+                  <ViewOnlyActionButton canEdit={canEdit} describeReason={false} onClick={startAddPeriod}>Add Period</ViewOnlyActionButton>
+                )}
               </div>
-            )}
-          </CardContent>
-        </Card>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {/* Period Form — one `useSectionEditState` instance per open editor. */}
+              {showPeriodForm && (
+                <PeriodForm
+                  key={`${editingPeriodId ?? "new"}:${editorInstance}`}
+                  periodId={editingPeriodId}
+                  initial={editingDraft}
+                  canEdit={canEdit}
+                  onSubmit={submitPeriod}
+                  onCancel={cancelPeriodForm}
+                  onError={setError}
+                />
+              )}
+
+              {/* Periods List */}
+              {periods.length === 0 && !showPeriodForm ? (
+                <p className="text-sm text-muted-foreground py-4 text-center">
+                  No date-specific periods configured. The default policy applies to all bookings.
+                </p>
+              ) : (
+                <div className="space-y-3">
+                  {periods.map((period) => (
+                    <Card key={period.id} className={!period.active ? "opacity-60" : ""}>
+                      <CardContent className="pt-4">
+                        <div className="flex items-start justify-between mb-3">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h4 className="font-semibold">{period.name}</h4>
+                              <Badge variant={period.active ? "default" : "outline"}>
+                                {period.active ? "Active" : "Inactive"}
+                              </Badge>
+                            </div>
+                            <p className="text-sm text-muted-foreground">
+                              {new Date(period.startDate).toLocaleDateString("en-NZ")} &mdash;{" "}
+                              {new Date(period.endDate).toLocaleDateString("en-NZ")}
+                              <span className="ml-3">
+                                Non-member hold:{" "}
+                                <strong>
+                                  {period.nonMemberHoldEnabled ?? true
+                                    ? `${period.nonMemberHoldDays} days`
+                                    : "First Paid, First In"}
+                                </strong>
+                              </span>
+                            </p>
+                          </div>
+                          <div className="flex space-x-2">
+                            <ViewOnlyActionButton
+                              canEdit={canEdit}
+                              describeReason={false}
+                              variant="outline"
+                              size="sm"
+                              disabled={togglingId === period.id}
+                              onClick={() => void handleTogglePeriod(period)}
+                            >
+                              {period.active ? "Deactivate" : "Activate"}
+                            </ViewOnlyActionButton>
+                            <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="outline" size="sm" onClick={() => startEditPeriod(period)}>
+                              Edit
+                            </ViewOnlyActionButton>
+                            <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="destructive" size="sm" onClick={() => handleDeletePeriod(period.id)}>
+                              Delete
+                            </ViewOnlyActionButton>
+                          </div>
+                        </div>
+                        <PolicyPreview rules={period.cancellationRules} />
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        ) : null}
       </div>
     </div>
   )

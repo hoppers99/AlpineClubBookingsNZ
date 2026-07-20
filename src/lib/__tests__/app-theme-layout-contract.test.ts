@@ -239,9 +239,11 @@ describe("database theme app-shell contract", () => {
     );
     expect(publicRequests).not.toMatch(/bg-brand-charcoal/);
     expect(publicRequests).not.toMatch(/text-white/);
-    expect(
-      publicRequests.match(/<ViewOnlyActionButton\b/g),
-    ).toHaveLength(2);
+    // Deliberately NOT a count of `<ViewOnlyActionButton`: how many gated
+    // controls this section happens to have is not a theme contract, and pinning
+    // it here would fail the day a third one is legitimately added. The
+    // behaviour — that every Save in this section is gated — is covered where it
+    // belongs, in `save-view-only-gating.test.tsx` (#2142 review).
   });
 
   it("keeps text-bearing calendar states off interpolated brand fills", () => {

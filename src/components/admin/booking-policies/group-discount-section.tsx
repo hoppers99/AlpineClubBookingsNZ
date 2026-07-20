@@ -150,14 +150,13 @@ export function GroupDiscountSection() {
   return (
     <div>
       {viewOnlyBanner}
+      <PolicyFeedback
+        error={error}
+        success={success}
+        onClearError={() => section.setError("")}
+        onClearSuccess={() => section.setSuccess("")}
+      />
       <div className="space-y-6">
-        <PolicyFeedback
-          error={error}
-          success={success}
-          onClearError={() => section.setError("")}
-          onClearSuccess={() => section.setSuccess("")}
-        />
-
         <Card>
           <CardHeader className="flex flex-row items-center justify-between">
             <div>
