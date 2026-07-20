@@ -97,6 +97,33 @@ export const BUILT_IN_MEMBERSHIP_TYPES = [
     subscriptionBehavior: "REQUIRED",
     sortOrder: 5,
   },
+  {
+    // Operational account, not a membership (#2149). Role is a pure permission
+    // level, so the ADMIN membership TYPE is the sole authority that a bare admin
+    // account (no explicit season assignment) never owes a subscription. It
+    // blocks lodge bookings for the account itself — a real fee-paying human who
+    // happens to hold the admin permission is assigned a real membership type
+    // (Full etc.) and is unaffected by this fallback.
+    key: "ADMIN",
+    name: "Admin",
+    description:
+      "Operational administrator account. Carries no Annual Membership Fee obligation and does not book the lodge as itself.",
+    bookingBehavior: "BLOCK_BOOKING",
+    subscriptionBehavior: "NOT_REQUIRED",
+    sortOrder: 6,
+  },
+  {
+    // Shared lodge kiosk account (#2149). Operational, so it never owes a
+    // subscription, but it MUST remain able to create bookings on behalf of
+    // members (kiosk booking), so it keeps member booking-rate semantics.
+    key: "LODGE",
+    name: "Lodge",
+    description:
+      "Shared lodge kiosk account. Carries no Annual Membership Fee obligation but keeps member booking-rate access for kiosk bookings.",
+    bookingBehavior: "MEMBER_RATE",
+    subscriptionBehavior: "NOT_REQUIRED",
+    sortOrder: 7,
+  },
 ] as const satisfies ReadonlyArray<{
   key: string;
   name: string;
@@ -128,6 +155,10 @@ const BUILT_IN_MEMBERSHIP_TYPE_ALLOWED_AGE_TIERS = {
   SCHOOL: ["CHILD", "YOUTH", "ADULT"],
   NON_MEMBER: ["INFANT", "CHILD", "YOUTH", "ADULT"],
   FAMILY: ["INFANT", "CHILD", "YOUTH", "ADULT"],
+  // Operational fallback types (#2149): a single real person tier keeps them off
+  // the N/A path (N/A is opt-in only and would force the age-exempt branch).
+  ADMIN: ["ADULT"],
+  LODGE: ["ADULT"],
 } as const satisfies Record<BuiltInMembershipTypeKey, readonly AgeTier[]>;
 
 export function normalizeMembershipTypeAgeTiers(
@@ -408,7 +439,76 @@ export function defaultMembershipTypeKeyForRole(
   if (role === "NON_MEMBER") {
     return "NON_MEMBER";
   }
+  // #2149: operational accounts fall back to their own NOT_REQUIRED built-in
+  // types so a bare account (no explicit season assignment) is never treated as
+  // owing a subscription and — for LODGE — keeps member booking-rate access.
+  // Without this an un-remapped ADMIN/LODGE fell back to FULL (billable) once
+  // the role-based subscription exemption was dropped.
+  if (role === "ADMIN") {
+    return "ADMIN";
+  }
+  if (role === "LODGE") {
+    return "LODGE";
+  }
   return "FULL";
+}
+
+/**
+ * Effective membership-type subscription behaviour for a member (#2149). The
+ * membership TYPE is the sole authority for whether a subscription is owed:
+ * an explicit season assignment wins; with no assignment the member's role maps
+ * to a built-in default type (the same fallback the canonical policy resolver
+ * uses). This is the shared, DB-free primitive the admin members list, the
+ * subscriptions list, and the CSV export all use so their exempt classification
+ * cannot drift from the canonical resolver. Role carries NO exemption of its
+ * own; it only selects the fallback type when no assignment exists.
+ */
+export function effectiveSubscriptionBehavior(
+  assignmentBehavior: MembershipTypeSubscriptionBehavior | null | undefined,
+  role: Role | string,
+): MembershipTypeSubscriptionBehavior {
+  if (assignmentBehavior) {
+    return assignmentBehavior;
+  }
+  const key = defaultMembershipTypeKeyForRole(role);
+  return (
+    BUILT_IN_MEMBERSHIP_TYPES.find((type) => type.key === key)
+      ?.subscriptionBehavior ?? "REQUIRED"
+  );
+}
+
+/**
+ * Shared "subscription not required" (exempt) decision (#2149). Given a member's
+ * EFFECTIVE membership-type subscription behaviour plus their age tier and
+ * current-season subscription row, returns true when the member does not owe a
+ * subscription. Consolidates the four divergent inline OR-chains onto one rule:
+ *   - the membership type opts out entirely (NOT_REQUIRED), OR
+ *   - the type defers to the age tier (BASED_ON_AGE_TIER) and a NOT_REQUIRED
+ *     current-season row is authoritative (dominates a mid-season tier promotion,
+ *     #2041), OR
+ *   - the member's age tier is not subscription-liable.
+ * This is the display-side companion to the booking gate
+ * `requiresPaidSubscriptionForMemberForBooking`; the booking gate additionally
+ * layers the Xero-enforcement bypass, which display surfaces deliberately omit.
+ */
+export function isSubscriptionNotRequiredForMembershipType(params: {
+  subscriptionBehavior: MembershipTypeSubscriptionBehavior | null | undefined;
+  ageTier: AgeTier | string | null | undefined;
+  notRequiredAgeTiers: ReadonlySet<string>;
+  hasNotRequiredSeasonRow: boolean;
+}): boolean {
+  if (params.subscriptionBehavior === "NOT_REQUIRED") {
+    return true;
+  }
+  if (
+    params.subscriptionBehavior === "BASED_ON_AGE_TIER" &&
+    params.hasNotRequiredSeasonRow
+  ) {
+    return true;
+  }
+  return (
+    params.ageTier != null && params.notRequiredAgeTiers.has(params.ageTier)
+  );
 }
 
 // test seam
