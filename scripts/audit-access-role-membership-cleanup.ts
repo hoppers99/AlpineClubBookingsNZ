@@ -226,11 +226,16 @@ export function evaluateAuditSnapshots(
     asCount(after.metrics.membershipTypeAgeTierRows),
   );
   // The "Managed Xero age-tier rules backfilled" check was REMOVED by #2130.
-  // Its expected value came from AgeTierSetting."xeroContactGroupId", the very
-  // column the follow-on contract migration drops — and that column is the
-  // migration's own input, so the check cannot be re-sourced from
-  // XeroContactGroupRule without losing what it verified (the "before" snapshot
-  // predates that table). The ACCEPTED half below is unaffected: it reads the
+  // Decisive reason: this whole script is already RETIRED and never executes —
+  // main() returns immediately once the 20260720120000 contraction migration
+  // exists, and it shipped in v0.12.2 (see RETIRING_CONTRACTION_MIGRATION
+  // below). evaluateAuditSnapshots is unreachable outside its unit test, so no
+  // live audit coverage is lost. Removing the check simply stops the retired
+  // script's SQL naming AgeTierSetting."xeroContactGroupId" at all, ahead of
+  // the #2130 STEP 2 contract migration that drops it. (Secondary: the check
+  // could not have been re-sourced from XeroContactGroupRule anyway — the
+  // dropped column was the backfill's own input and the "before" snapshot
+  // predates that table.) The ACCEPTED half below is unaffected: it reads the
   // separate AgeTierXeroAcceptedContactGroup fixture.
   addCheck(
     checks,
@@ -398,11 +403,15 @@ function buildRepresentativeSeedSql(): string {
       "updatedAt" = CURRENT_TIMESTAMP;
 
     -- #2130 runtime-prep: this fixture no longer seeds the legacy
-    -- "xeroContactGroupId"/"xeroContactGroupName" columns, which the next
-    -- release drops. They were the SOURCE the 20260629160000 migration read to
-    -- backfill MANAGED "XeroContactGroupRule" rows, so the paired
-    -- "Managed Xero age-tier rules backfilled" check went with them (see
-    -- evaluateAuditSnapshots) — the precondition can no longer be expressed.
+    -- "xeroContactGroupId"/"xeroContactGroupName" columns. Nothing forced the
+    -- removal — this replay database never receives the STEP 2 drop migration
+    -- (main() applies only migrations < 20260629160000 plus two named ones), so
+    -- the columns survive here regardless. The real reason is that the script
+    -- is already RETIRED and never runs: main() returns immediately because the
+    -- 20260720120000 contraction migration shipped in v0.12.2. This is
+    -- defensive cleanup so the dead fixture SQL stops naming a column the
+    -- #2130 STEP 2 contract migration drops. The paired "Managed Xero age-tier
+    -- rules backfilled" check went with it (see evaluateAuditSnapshots).
     INSERT INTO "AgeTierSetting" (
       "id",
       "tier",
@@ -866,9 +875,11 @@ function collectSnapshot(databaseUrl: string): AuditSnapshot {
             AND membership_type."key" = 'NON_MEMBER';
         `,
       ),
-      // managedAgeTierSettings was dropped by #2130 along with its check: it
-      // counted AgeTierSetting."xeroContactGroupId", a column the follow-on
-      // contract migration removes.
+      // managedAgeTierSettings was dropped by #2130 along with its check. This
+      // script is retired and never executes (main() returns early — the
+      // 20260720120000 contraction shipped in v0.12.2), so removing the metric
+      // loses no live coverage; it just stops dead code naming
+      // AgeTierSetting."xeroContactGroupId" before STEP 2 drops it.
       acceptedAgeTierGroups: queryNumber(
         databaseUrl,
         'SELECT COUNT(*) FROM "AgeTierXeroAcceptedContactGroup";',
