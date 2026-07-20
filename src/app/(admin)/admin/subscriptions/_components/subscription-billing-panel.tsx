@@ -209,16 +209,16 @@ export function SubscriptionBillingPanel({ seasonYear }: { seasonYear: number })
                 <ViewOnlyActionButton canEdit={canEditFinance} type="button" onClick={() => void confirmBatch()} disabled={working}>Confirm and queue annual batch</ViewOnlyActionButton>
               </div>
             ) : <Alert variant="info">No new charges are available for this preview. Existing immutable coverage is not regenerated.</Alert>}
-            {data.preview.alreadyInvoiced.length > 0 ? (
+            {(data.preview.alreadyInvoiced ?? []).length > 0 ? (
               <details className="rounded-md border p-3 text-sm">
                 <summary className="cursor-pointer font-medium">
-                  Already invoiced ({data.preview.alreadyInvoiced.length}) — suppressed to avoid double-billing
+                  Already invoiced ({(data.preview.alreadyInvoiced ?? []).length}) — suppressed to avoid double-billing
                 </summary>
                 <p className="mt-1 text-muted-foreground">
                   These members already have a Xero invoice for this season, so they are not re-billed. Record payment against the existing invoice in Xero (or void it there to re-bill).
                 </p>
                 <ul className="mt-2 space-y-1">
-                  {data.preview.alreadyInvoiced.map((row) => (
+                  {(data.preview.alreadyInvoiced ?? []).map((row) => (
                     <li key={row.memberId} className="flex flex-wrap items-center justify-between gap-2">
                       <span>{row.memberName}</span>
                       <span className="tabular-nums text-muted-foreground">
