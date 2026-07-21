@@ -1,7 +1,7 @@
 {
   "meta": {
     "root": "src",
-    "filesScanned": 1436,
+    "filesScanned": 1437,
     "prefixes": [
       "bg",
       "text",
@@ -50,7 +50,7 @@
     "note": "Occurrence = one Tailwind colour-utility token (variant prefixes stripped; /opacity suffix folded into the base string). Files under __tests__ excluded, TS/TSX only."
   },
   "colored": {
-    "total": 1717,
+    "total": 1716,
     "kioskAggregateTotal": 37,
     "byTree": {
       "app-admin": 779,
@@ -58,7 +58,7 @@
       "app-authenticated": 218,
       "components-admin": 212,
       "lib": 107,
-      "app-public": 45,
+      "app-public": 44,
       "kiosk-lodge-kiosk": 37,
       "app-website": 35,
       "app-lodge": 31,
@@ -68,7 +68,7 @@
       "amber": 491,
       "red": 442,
       "green": 229,
-      "blue": 169,
+      "blue": 168,
       "emerald": 110,
       "sky": 53,
       "rose": 50,
@@ -431,14 +431,6 @@
           "src/app/(lodge)/lodge/roster/[date]/setup/page.tsx:766"
         ]
       },
-      "bg-blue-800": {
-        "family": "blue",
-        "count": 2,
-        "anchors": [
-          "src/app/(lodge)/lodge/roster/[date]/setup/page.tsx:583",
-          "src/app/(public)/chores/[token]/page.tsx:92"
-        ]
-      },
       "border-blue-600": {
         "family": "blue",
         "count": 2,
@@ -461,6 +453,13 @@
         "anchors": [
           "src/app/(admin)/admin/image-manager/image-manager-client.tsx:477",
           "src/app/(lodge)/lodge/kiosk/page.tsx:592"
+        ]
+      },
+      "bg-blue-800": {
+        "family": "blue",
+        "count": 1,
+        "anchors": [
+          "src/app/(lodge)/lodge/roster/[date]/setup/page.tsx:583"
         ]
       },
       "border-blue-300": {
@@ -732,7 +731,7 @@
         "count": 3,
         "anchors": [
           "src/app/(admin)/admin/book/page.tsx:860",
-          "src/app/(admin)/admin/site-style/site-style-wizard.tsx:779",
+          "src/app/(admin)/admin/site-style/site-style-wizard.tsx:788",
           "src/components/guest-night-grid.tsx:112"
         ]
       },
@@ -1239,7 +1238,7 @@
         "count": 4,
         "anchors": [
           "src/app/(admin)/admin/members/[id]/merge/page.tsx:333",
-          "src/app/(admin)/admin/site-style/site-style-wizard.tsx:774",
+          "src/app/(admin)/admin/site-style/site-style-wizard.tsx:783",
           "src/components/admin/view-only-action.tsx:166"
         ]
       },
@@ -1427,7 +1426,7 @@
         "count": 10,
         "anchors": [
           "src/app/(admin)/admin/members/_components/member-import-dialog.tsx:662",
-          "src/app/(admin)/admin/site-style/site-style-wizard.tsx:718",
+          "src/app/(admin)/admin/site-style/site-style-wizard.tsx:727",
           "src/app/(authenticated)/bookings/[id]/page.tsx:103"
         ]
       },
@@ -1435,7 +1434,7 @@
         "family": "sky",
         "count": 9,
         "anchors": [
-          "src/app/(admin)/admin/site-style/site-style-wizard.tsx:718",
+          "src/app/(admin)/admin/site-style/site-style-wizard.tsx:727",
           "src/app/(authenticated)/bookings/[id]/page.tsx:103",
           "src/app/(authenticated)/bookings/[id]/page.tsx:1001"
         ]
@@ -1488,7 +1487,7 @@
         "family": "sky",
         "count": 2,
         "anchors": [
-          "src/app/(admin)/admin/site-style/site-style-wizard.tsx:718",
+          "src/app/(admin)/admin/site-style/site-style-wizard.tsx:727",
           "src/components/admin/admin-capacity-hold-controls.tsx:155"
         ]
       },
@@ -1642,14 +1641,12 @@
     }
   },
   "neutral": {
-    "total": 675,
-    "authPublicSubset": 137,
+    "total": 538,
+    "authPublicSubset": 0,
     "byTree": {
       "components-other": 253,
-      "app-authenticated": 91,
       "kiosk-lodge-kiosk": 81,
       "app-lodge": 71,
-      "app-public": 46,
       "app-admin": 40,
       "app-website": 31,
       "lib": 30,
@@ -1658,10 +1655,10 @@
       "app-finance": 1
     },
     "byFamily": {
-      "slate": 474,
-      "gray": 102,
-      "text-white": 50,
-      "bg-white": 40,
+      "slate": 360,
+      "gray": 90,
+      "text-white": 48,
+      "bg-white": 31,
       "bg-black": 5,
       "neutral": 3,
       "text-black": 1
