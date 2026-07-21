@@ -20,6 +20,12 @@ export default function BackgroundJobsPage() {
             </span>
             <button
               onClick={refresh}
+              // KNOWN FLAT HOVER (#2144 owner decision): `--muted` and
+              // `--accent` share a value in app scope, so `bg-muted
+              // hover:bg-accent` currently shows no visible hover step here
+              // (and at the other converted `bg-muted hover:bg-accent` button
+              // sites). Deliberately left for #2181's structural token split
+              // rather than a per-site bandaid.
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm bg-muted hover:bg-accent rounded-md transition-colors"
             >
               <RefreshCw className="h-3.5 w-3.5" />

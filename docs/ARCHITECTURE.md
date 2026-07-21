@@ -135,14 +135,21 @@ popover takes `bg-card`; a nested strip inside a card, a zebra row, a table
 header band, a read-only field fill, or a recessed well takes `bg-muted`.
 
 With admin migrated, the `.dark .app-theme-scope` neutral remap block in
-`globals.css` is **legacy-compat for NON-admin surfaces only**: the raw
-neutrals that still depend on it live under `src/app/(authenticated)`,
-`src/app/(public)`, and the shared `src/components` root (a few hundred
-occurrences), plus the handful of deliberately-literal admin files the
-source-contract allowlist names (print pages, signage letterboxes, the site-style
-code previews, solid status chips). Deleting the block would require migrating
-those member-facing trees onto the same tokens first — out of scope for #2144
-and untracked; until then the block stays exactly as is.
+`globals.css` is **legacy-compat for the non-admin surfaces plus the
+allowlisted admin files**. The bulk of the raw neutrals that still depend on
+it live under `src/app/(authenticated)`, `src/app/(public)`, and the shared
+`src/components` root (a few hundred occurrences) — but some allowlisted
+admin files depend on it too, wherever their deliberately-literal classes
+fall inside the remap's ranges: the roster and induction print pages read
+correctly when viewed ON SCREEN in dark mode only because the remap rewrites
+their `bg-gray-50/100`, `bg-white`, and grey-ink classes (the remap is not
+print-scoped — print always renders the light palette, #2146), and the
+site-style wizard's raw-CSS editor pane (`bg-white`) is likewise
+remap-darkened on screen. Deleting the block therefore requires migrating
+those member-facing trees — and re-deciding the remap-dependent allowlisted
+files — first. That work is tracked: remap deletion is Phases 2–3 of the
+theme-architecture program planned on issue #2181. Until then the block
+stays exactly as is.
 
 **`--muted-foreground` is a DERIVED tone, not a brand colour** (#2145). Every
 other app text token in the `.app-theme-scope` block resolves to a solid brand
@@ -282,10 +289,11 @@ enforce this:
   ungated shared roots (`admin-booking-calendar.tsx`, `admin-hub-page.tsx`,
   `admin-permission-matrix-table.tsx`, `src/lib/admin-family-group-ui-helpers.ts`).
   The #2144 sweep migrated the admin tree, so the check now runs with a
-  ten-entry PER-FILE allowlist, each entry carrying its stated reason in the
+  nine-entry PER-FILE allowlist, each entry carrying its stated reason in the
   test (print paper surfaces, signage `bg-black` letterboxes, the site-style
   code-preview panes that `app-theme-layout-contract` pins as literal slate,
-  and solid-fill status chips). Per-file granularity means an entry forfeits
+  solid-fill status chips and swatches, and the member-import wizard's solid
+  near-black active-step emphasis border). Per-file granularity means an entry forfeits
   gate coverage on that file's other occurrences — prefer fixing a stray over
   adding an entry. Still not repo-wide: the member-facing
   `src/app/(authenticated)`/`(public)` trees and the shared `src/components`

@@ -159,12 +159,6 @@ const THEMED_NEUTRAL_ALLOWLIST = new Set<string>(
     // fallback): standalone opaque fills with no tinted/accent pairing, the
     // same shape as this file's teal allowlist entry above.
     "src/components/admin-booking-calendar.tsx",
-    // Neutral fallback of the categorical age-tier chip family
-    // (`bg-gray-100 text-gray-700 border-gray-200`): sits alongside the
-    // literal tinted families in `AGE_TIER_COLORS`, mirroring the
-    // `status-colors.ts` / badge-helper carve-outs whose tests assert the
-    // literal strings.
-    "src/components/admin/family-groups/age-tier-badge.tsx",
   ].map((path) => path.replaceAll("\\", "/")),
 );
 
