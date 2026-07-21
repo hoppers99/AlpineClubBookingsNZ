@@ -12,7 +12,6 @@ import { invalidateXeroOrganisationCaches } from "@/lib/xero-organisation-cache-
 // honoured AND that invalidation forces a fresh read of the new org.
 describe("xero-organisation cache invalidation (#2080 F1)", () => {
   const originalOrigin = process.env.XERO_MOCK_API_ORIGIN;
-  const originalNodeEnv = process.env.NODE_ENV;
 
   function mockOrg(name: string) {
     global.fetch = vi.fn(async () => ({
@@ -23,18 +22,17 @@ describe("xero-organisation cache invalidation (#2080 F1)", () => {
 
   beforeEach(() => {
     // Drive the mock-Xero organisation path (no live Xero / DB), non-production.
-    process.env.NODE_ENV = "test";
+    vi.stubEnv("NODE_ENV", "test");
     process.env.XERO_MOCK_API_ORIGIN = "http://localhost:3000";
     resetXeroOrganisationCachesForTests();
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     vi.restoreAllMocks();
     resetXeroOrganisationCachesForTests();
     if (originalOrigin === undefined) delete process.env.XERO_MOCK_API_ORIGIN;
     else process.env.XERO_MOCK_API_ORIGIN = originalOrigin;
-    if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
-    else process.env.NODE_ENV = originalNodeEnv;
   });
 
   it("serves the cached org name until the cache is invalidated", async () => {

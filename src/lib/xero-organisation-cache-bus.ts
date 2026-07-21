@@ -35,8 +35,3 @@ export function invalidateXeroOrganisationCaches(): void {
     invalidate();
   }
 }
-
-// test seam — drop registrations so a test can assert the bus in isolation.
-export function resetXeroOrganisationCacheBusForTests(): void {
-  invalidators.clear();
-}
