@@ -39,7 +39,6 @@
  */
 
 import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from "crypto";
-import { getAuthSecret } from "@/lib/runtime-config";
 
 const ENCRYPTION_ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 16;
