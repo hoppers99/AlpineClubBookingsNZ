@@ -41,7 +41,7 @@ async function resolveConnectedAccount(): Promise<StripeAccountSummary> {
   try {
     const stripe = await getStripe();
     const account = await withTimeout(
-      stripe.accounts.retrieve(),
+      stripe.accounts.retrieveCurrent(),
       ACCOUNT_LOOKUP_TIMEOUT_MS,
     );
     const displayName =
