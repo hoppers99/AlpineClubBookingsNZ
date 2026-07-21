@@ -148,9 +148,9 @@ export function WebhooksStep({
   return (
     <div className="space-y-4">
       <div>
-        <h3 className="text-base font-semibold text-foreground">
+        <h2 className="text-base font-semibold text-foreground">
           Webhooks (optional)
-        </h3>
+        </h2>
         <p className="mt-1 text-sm text-muted-foreground">
           Webhooks let Xero tell the app the moment an invoice is paid or a
           contact changes, so payment status updates in real time. Without them
@@ -238,23 +238,26 @@ export function WebhooksStep({
             </p>
           </div>
 
-          {error ? (
-            <div
-              role="alert"
-              className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800"
-            >
-              {error}
-            </div>
-          ) : null}
-          {notice ? (
-            <div
-              role="status"
-              className="flex items-start gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800"
-            >
-              <Info className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-              <span>{notice}</span>
-            </div>
-          ) : null}
+          {/* Live regions stay PERMANENTLY mounted and only their content swaps,
+              so the message is announced when it appears (a region injected
+              already populated is dropped by some SR/browser pairings — AGENTS.md
+              live-region rule, matching CredentialsStep). The styled box exists
+              only when there is a message, so the empty region takes no space. */}
+          <div role="alert">
+            {error ? (
+              <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+                {error}
+              </div>
+            ) : null}
+          </div>
+          <div role="status">
+            {notice ? (
+              <div className="flex items-start gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+                <Info className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+                <span>{notice}</span>
+              </div>
+            ) : null}
+          </div>
 
           <div className="flex flex-wrap items-center gap-3">
             <Button
@@ -309,9 +312,9 @@ export function MappingStep({ context }: { context: XeroWizardContext }) {
   return (
     <div className="space-y-4">
       <div>
-        <h3 className="text-base font-semibold text-foreground">
+        <h2 className="text-base font-semibold text-foreground">
           Map accounts &amp; items
-        </h3>
+        </h2>
         <p className="mt-1 text-sm text-muted-foreground">
           Choose which Xero accounts and item codes booking transactions post to.
           Anything you leave unset uses a sensible default, so you can map only
@@ -350,23 +353,24 @@ export function FinishStep({ context }: { context: XeroWizardContext }) {
   return (
     <div className="space-y-5">
       <div>
-        <h3 className="text-base font-semibold text-foreground">
+        <h2 className="text-base font-semibold text-foreground">
           Import contacts &amp; finish
-        </h3>
+        </h2>
         <p className="mt-1 text-sm text-muted-foreground">
           Optionally import your existing Xero contacts as members now (a one-time
           step you can also run later), then you&rsquo;re done.
         </p>
       </div>
 
-      {message ? (
-        <div
-          role="status"
-          className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800"
-        >
-          {message}
-        </div>
-      ) : null}
+      {/* Permanently-mounted live region (content swaps) so the import result is
+          announced when it appears — matches CredentialsStep's pattern. */}
+      <div role="status">
+        {message ? (
+          <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+            {message}
+          </div>
+        ) : null}
+      </div>
 
       {context.connected ? (
         <SetupPanels
@@ -385,10 +389,10 @@ export function FinishStep({ context }: { context: XeroWizardContext }) {
       ) : null}
 
       <div className="rounded-md border border-border bg-card p-4">
-        <h4 className="flex items-center gap-2 text-sm font-semibold text-foreground">
+        <h3 className="flex items-center gap-2 text-sm font-semibold text-foreground">
           <CheckCircle2 className="h-4 w-4 text-emerald-600" aria-hidden />
           Setup summary
-        </h4>
+        </h3>
         <dl className="mt-3 space-y-2 text-sm">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <dt className="text-muted-foreground">Organisation</dt>
