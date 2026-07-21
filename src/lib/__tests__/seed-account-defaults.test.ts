@@ -449,6 +449,22 @@ describe("reconcileSeasonSubscriptionForAssignment", () => {
     expect(activeClaim.memberSubscription.updateMany).not.toHaveBeenCalled();
   });
 
+  // The write-time WHERE re-asserts every read-phase guard, so a concurrent
+  // writer that moved the row between the read and the write makes updateMany
+  // match 0 rows. The lost race MUST surface as { reconciled: false } — the
+  // count>0 mapping is the proof that a lost claim reports no side effect.
+  it("reports { reconciled: false } when the write-time guard loses the race (updateMany matches 0 rows)", async () => {
+    const db = makeReconcileDb(untouchedSeedRow, 0);
+    const result = await reconcileSeasonSubscriptionForAssignment(db as never, {
+      memberId: "m1",
+      seasonYear: 2026,
+      subscriptionBehavior: "REQUIRED",
+    });
+
+    expect(result).toEqual({ reconciled: false });
+    expect(db.memberSubscription.updateMany).toHaveBeenCalledTimes(1);
+  });
+
   it("never touches a manually marked-paid or charge-covered row", async () => {
     for (const guarded of [
       { ...untouchedSeedRow, manuallyMarkedPaidAt: new Date() },
