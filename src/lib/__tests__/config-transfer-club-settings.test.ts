@@ -13,6 +13,15 @@ import {
   clubSettingsImporter,
 } from "@/lib/config-transfer/categories/club-settings";
 import type { ApplyContext, ReadDb, TxDb } from "@/lib/config-transfer/import-types";
+import { buildBundle } from "@/lib/config-transfer/bundle";
+import { DEFAULTS_INTENTIONALLY_PARTIAL } from "@/lib/config-transfer/categories/club-settings";
+import {
+  DEFAULT_BOOKING_DEFAULTS,
+  DEFAULT_BOOKING_REQUEST_SETTINGS,
+  DEFAULT_GROUP_DISCOUNT_SETTING,
+  DEFAULT_MEMBERSHIP_CANCELLATION_SETTINGS,
+  DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS,
+} from "@/config/club-settings-defaults";
 import { CLUB_MODULE_SETTINGS_COLUMN_SELECT } from "@/config/modules";
 
 // Delegate names touched by the club-settings category.
@@ -76,8 +85,9 @@ describe("config-transfer club-settings", () => {
     const paths = manifest.files.map((f) => f.path);
     expect(paths).toContain("club-settings/club-module-settings.json");
     expect(paths).toContain("club-settings/email-message-setting.json");
-    // Absent singletons are not emitted.
-    expect(paths).not.toContain("club-settings/booking-defaults.json");
+    // #2171: a singleton with no persisted row is still emitted, carrying the
+    // effective defaults the app reads on a miss.
+    expect(paths).toContain("club-settings/booking-defaults.json");
 
     const email = JSON.parse(
       strFromU8(files.get("club-settings/email-message-setting.json")!),
@@ -283,6 +293,238 @@ describe("club-settings allowlists match the Prisma schema", () => {
       }
       for (const field of spec.fields) {
         if (!columns.has(field)) problems.push(`${modelName}.${field} is not a column`);
+      }
+    }
+    expect(problems).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2171 — a singleton the club has NEVER SAVED still travels, carrying the
+// effective defaults every read site synthesises on a miss, so an import
+// reproduces the source club instead of leaving the target's own values alone.
+// ---------------------------------------------------------------------------
+
+type SingletonSpy = {
+  findUnique: ReturnType<typeof vi.fn>;
+  upsert: ReturnType<typeof vi.fn>;
+};
+
+/** Apply-side stub: every singleton delegate with a findUnique + upsert spy. */
+function stubTx(rows: Record<string, Record<string, unknown> | null>): {
+  tx: TxDb;
+  delegates: Record<string, SingletonSpy>;
+} {
+  const delegates: Record<string, SingletonSpy> = {};
+  for (const name of SINGLETON_DELEGATES) {
+    delegates[name] = {
+      findUnique: vi.fn().mockResolvedValue(rows[name] ?? null),
+      upsert: vi.fn().mockResolvedValue(null),
+    };
+  }
+  return { tx: delegates as unknown as TxDb, delegates };
+}
+
+function applyCtx(
+  tx: TxDb,
+  files: Map<string, Uint8Array>,
+  mode: "merge" | "overwrite",
+): ApplyContext {
+  return {
+    tx,
+    files,
+    manifest: {} as unknown as ApplyContext["manifest"],
+    mode,
+    resolutions: new Map(),
+    actorMemberId: "test-actor",
+    imageRemap: new Map(),
+    notes: { doorCodesWritten: [] },
+  };
+}
+
+/** Export from a source club whose singleton rows have never been saved. */
+async function exportFromUnsavedClub() {
+  return buildConfigExport({
+    db: stubDb({}),
+    categories: ["club-settings"],
+    includeDoorCodes: false,
+    appVersion: "0.10.1",
+    prismaMigration: null,
+    generatedAt: "2026-07-08T00:00:00.000Z",
+  });
+}
+
+function readJson(files: Map<string, Uint8Array>, entity: string) {
+  return JSON.parse(strFromU8(files.get(`club-settings/${entity}.json`)!));
+}
+
+describe("club-settings exports effective defaults for an unsaved singleton (#2171)", () => {
+  it("emits an entry for EVERY singleton, not only the persisted ones", async () => {
+    const { zip } = await exportFromUnsavedClub();
+    const { files } = readBundle(zip);
+    for (const spec of SINGLETONS) {
+      expect(files.has(`club-settings/${spec.entity}.json`)).toBe(true);
+    }
+  });
+
+  it("carries the values the app reads on a miss, sourced from the getters' own defaults", async () => {
+    const { zip } = await exportFromUnsavedClub();
+    const { files } = readBundle(zip);
+
+    // Read-site `?? x` defaults, now shared constants.
+    expect(readJson(files, "booking-defaults")).toEqual({
+      nonMemberHoldEnabled: DEFAULT_BOOKING_DEFAULTS.nonMemberHoldEnabled,
+      nonMemberHoldDays: DEFAULT_BOOKING_DEFAULTS.nonMemberHoldDays,
+      waitlistCrossLodgeOrder: DEFAULT_BOOKING_DEFAULTS.waitlistCrossLodgeOrder,
+    });
+    expect(readJson(files, "booking-request-settings")).toEqual({
+      ...DEFAULT_BOOKING_REQUEST_SETTINGS,
+    });
+    expect(readJson(files, "group-discount-setting")).toEqual({
+      ...DEFAULT_GROUP_DISCOUNT_SETTING,
+    });
+
+    // A `false` default must survive the export, not collapse to null.
+    expect(
+      readJson(files, "booking-request-settings").showPricingToNonMembers,
+    ).toBe(false);
+
+    // A nullable column whose default IS null still exports as null.
+    expect(readJson(files, "membership-lockout-settings")).toEqual({
+      enabled: DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS.enabled,
+      financialYearEndMonthOverride: null,
+      textFallbackEnabled:
+        DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS.textFallbackEnabled,
+    });
+
+    // Default COPY travels too, so the target reads the same words.
+    expect(readJson(files, "membership-cancellation-setting").warningText).toBe(
+      DEFAULT_MEMBERSHIP_CANCELLATION_SETTINGS.warningText,
+    );
+  });
+
+  it("exports the two override-only identity singletons as 'no override', never the install's own club.json identity", async () => {
+    const { zip } = await exportFromUnsavedClub();
+    const { files } = readBundle(zip);
+    expect(readJson(files, "club-identity-settings")).toEqual({
+      name: null,
+      shortName: null,
+      hutLeaderLabel: null,
+      facebookUrl: null,
+    });
+    expect(readJson(files, "email-message-setting")).toEqual({
+      clubName: null,
+      bookingsName: null,
+      emailFromName: null,
+      supportEmail: null,
+      contactEmail: null,
+      publicUrl: null,
+    });
+  });
+
+  it("round-trips into a target that HAS a row: the target moves to the source's effective values", async () => {
+    const { zip } = await exportFromUnsavedClub();
+    // The target explicitly saved a longer quote window than the source runs on.
+    const targetRow = {
+      ...DEFAULT_BOOKING_REQUEST_SETTINGS,
+      quoteResponseTtlDays: 30,
+    };
+    const plan = await buildImportPlan(
+      stubDb({ bookingRequestSettings: targetRow }),
+      zip,
+      { mode: "merge" },
+    );
+    const item = plan.categories[0].items.find(
+      (i) => i.entity === "booking-request-settings",
+    );
+    expect(item?.action).toBe("update");
+    expect(item?.changedFields).toEqual(["quoteResponseTtlDays"]);
+
+    const { files } = readBundle(zip);
+    const { tx, delegates } = stubTx({ bookingRequestSettings: targetRow });
+    await clubSettingsImporter.apply(applyCtx(tx, files, "merge"));
+    expect(delegates.bookingRequestSettings.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          quoteResponseTtlDays:
+            DEFAULT_BOOKING_REQUEST_SETTINGS.quoteResponseTtlDays,
+        }),
+      }),
+    );
+  });
+
+  it("round-trips into a target with NO row: it creates the row, and every value it creates is the default the target already read", async () => {
+    const { zip } = await exportFromUnsavedClub();
+    const { files } = readBundle(zip);
+    const { tx, delegates } = stubTx({});
+    const result = await clubSettingsImporter.apply(applyCtx(tx, files, "merge"));
+
+    // Effect on what the app reads: none. Effect on the database: the row is
+    // MATERIALISED — the cost the owner accepted on #2171.
+    expect(result.created).toBe(SINGLETONS.length);
+    expect(delegates.bookingRequestSettings.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: { id: "default", ...DEFAULT_BOOKING_REQUEST_SETTINGS },
+      }),
+    );
+    expect(delegates.groupDiscountSetting.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: { id: "default", ...DEFAULT_GROUP_DISCOUNT_SETTING },
+      }),
+    );
+  });
+
+  it("still imports an older bundle that omits a singleton entirely (no format-version bump needed)", async () => {
+    // A bundle exported before this change: one singleton present, the rest
+    // absent. The importer is files-first, so the absent ones stay untouched.
+    const zip = buildBundle({
+      entries: [
+        {
+          path: "club-settings/group-discount-setting.json",
+          category: "club-settings",
+          rowCount: 1,
+          bytes: strToU8(
+            JSON.stringify({ minGroupSize: 8, summerOnly: false, enabled: true }),
+          ),
+        },
+      ],
+      appVersion: "0.12.2",
+      prismaMigration: null,
+      includedCategories: ["club-settings"],
+      doorCodesIncluded: false,
+      generatedAt: "2026-07-08T00:00:00.000Z",
+    });
+
+    const plan = await buildImportPlan(stubDb({}), zip, { mode: "merge" });
+    expect(plan.categories[0].items.map((i) => i.entity)).toEqual([
+      "group-discount-setting",
+    ]);
+    expect(plan.categories[0].errors).toEqual([]);
+
+    const { files } = readBundle(zip);
+    const { tx, delegates } = stubTx({});
+    const result = await clubSettingsImporter.apply(applyCtx(tx, files, "merge"));
+    expect(result.created).toBe(1);
+    expect(delegates.groupDiscountSetting.upsert).toHaveBeenCalledTimes(1);
+    expect(delegates.bookingRequestSettings.upsert).not.toHaveBeenCalled();
+  });
+});
+
+describe("every singleton spec declares defaults for every field it exports", () => {
+  it("covers each exported field, and only the two override-only singletons opt out", () => {
+    const problems: string[] = [];
+    for (const spec of SINGLETONS) {
+      const defaults = spec.defaults();
+      if (DEFAULTS_INTENTIONALLY_PARTIAL.has(spec.entity)) {
+        // These two must stay EMPTY: exporting an install-local fallback
+        // identity would rename the target club.
+        expect(Object.keys(defaults)).toEqual([]);
+        continue;
+      }
+      for (const field of spec.fields) {
+        if (!(field in defaults) || defaults[field] === undefined) {
+          problems.push(`${spec.entity}.${field} has no declared default`);
+        }
       }
     }
     expect(problems).toEqual([]);

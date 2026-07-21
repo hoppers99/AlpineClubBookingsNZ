@@ -1,7 +1,21 @@
 import { strToU8, strFromU8 } from "fflate";
 import { Prisma } from "@prisma/client";
 
-import { CLUB_MODULE_SETTINGS_COLUMN_SELECT } from "@/config/modules";
+import {
+  DEFAULT_BED_ALLOCATION_SETTINGS,
+  DEFAULT_BOOKING_DEFAULTS,
+  DEFAULT_BOOKING_REQUEST_SETTINGS,
+  DEFAULT_GROUP_DISCOUNT_SETTING,
+  DEFAULT_INTERNET_BANKING_PAYMENT_SETTINGS,
+  DEFAULT_MEMBERSHIP_CANCELLATION_SETTINGS,
+  DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS,
+  DEFAULT_MEMBERSHIP_NOMINATION_SETTINGS,
+} from "@/config/club-settings-defaults";
+import { DEFAULT_MEMBER_FIELDS_SETTINGS } from "@/config/member-fields";
+import {
+  CLUB_MODULE_SETTINGS_COLUMN_SELECT,
+  DEFAULT_MODULE_SETTINGS,
+} from "@/config/modules";
 import type { BundleEntry } from "../bundle";
 import { registerEntity } from "../registry";
 import type { CategoryExporter, ExportContext } from "../export-types";
@@ -51,7 +65,38 @@ interface SingletonSpec {
    * the doc comment on that constant. Other singletons keep a bare read.
    */
   select?: Record<string, boolean>;
+  /**
+   * The EFFECTIVE value of each field when the club has never saved this
+   * singleton — i.e. what the app's own read path synthesises on a miss, which
+   * is NOT always what a fresh Prisma row would default to. Exported in place
+   * of the missing row (#2171) so the bundle carries the source club's
+   * effective settings and an import reproduces them, instead of quietly
+   * leaving the target's own values in place.
+   *
+   * Never write the values out here: import them from the same constant the
+   * getter reads, so a changed default cannot leave the exporter behind.
+   *
+   * A field omitted from this record exports as `null`, which is only correct
+   * for a NULLABLE OVERRIDE column whose real default lives in a lower fallback
+   * layer. Returning `{}` is therefore a deliberate statement — see
+   * `DEFAULTS_INTENTIONALLY_PARTIAL` — not an oversight.
+   */
+  defaults: () => Record<string, unknown>;
 }
+
+/**
+ * The singletons whose `defaults()` legitimately covers none (or only some) of
+ * their fields. Both are made entirely of nullable OVERRIDE columns resolved
+ * through the deployment's `config/club.json` / environment fallback chain, so
+ * "never saved" means "no override" — exactly what their admin GETs synthesise
+ * — and the fallback values belong to the install rather than to the club's
+ * portable configuration. Guarded by a test so a genuinely under-specified new
+ * singleton cannot join them silently.
+ */
+export const DEFAULTS_INTENTIONALLY_PARTIAL = new Set([
+  "club-identity-settings",
+  "email-message-setting",
+]);
 
 export const SINGLETONS: SingletonSpec[] = [
   {
@@ -65,21 +110,25 @@ export const SINGLETONS: SingletonSpec[] = [
       "twoFactor", "analytics", "lobbyDisplay",
     ],
     select: CLUB_MODULE_SETTINGS_COLUMN_SELECT,
+    defaults: () => DEFAULT_MODULE_SETTINGS,
   },
   {
     entity: "booking-defaults",
     delegate: "bookingDefaults",
     fields: ["nonMemberHoldEnabled", "nonMemberHoldDays", "waitlistCrossLodgeOrder"],
+    defaults: () => DEFAULT_BOOKING_DEFAULTS,
   },
   {
     entity: "member-fields-settings",
     delegate: "memberFieldsSettings",
     fields: ["showTitle", "showGender", "showOccupation"],
+    defaults: () => DEFAULT_MEMBER_FIELDS_SETTINGS,
   },
   {
     entity: "bed-allocation-settings",
     delegate: "bedAllocationSettings",
     fields: ["autoAllocationEnabled"],
+    defaults: () => DEFAULT_BED_ALLOCATION_SETTINGS,
   },
   {
     entity: "booking-request-settings",
@@ -88,11 +137,13 @@ export const SINGLETONS: SingletonSpec[] = [
       "showPricingToNonMembers", "quoteResponseTtlDays", "quoteReminderLeadDays",
       "attendeeConfirmationLeadDays", "attendeeConfirmationReminderDays",
     ],
+    defaults: () => DEFAULT_BOOKING_REQUEST_SETTINGS,
   },
   {
     entity: "internet-banking-payment-settings",
     delegate: "internetBankingPaymentSettings",
     fields: ["holdBedSlots", "holdDays", "minimumDaysBeforeCheckIn"],
+    defaults: () => DEFAULT_INTERNET_BANKING_PAYMENT_SETTINGS,
   },
   {
     // DB-first club identity (E3 #1929). Singleton row id="default"; all fields
@@ -101,6 +152,9 @@ export const SINGLETONS: SingletonSpec[] = [
     entity: "club-identity-settings",
     delegate: "clubIdentitySettings",
     fields: ["name", "shortName", "hutLeaderLabel", "facebookUrl"],
+    // No override saved = every column null, which is what the admin GET
+    // synthesises. See DEFAULTS_INTENTIONALLY_PARTIAL.
+    defaults: () => ({}),
   },
   {
     entity: "email-message-setting",
@@ -113,11 +167,16 @@ export const SINGLETONS: SingletonSpec[] = [
       "clubName", "bookingsName", "emailFromName", "supportEmail",
       "contactEmail", "publicUrl",
     ],
+    // As club-identity-settings: these columns are nullable overrides on top of
+    // the install's own club.json/env identity, and that identity is not
+    // portable. See DEFAULTS_INTENTIONALLY_PARTIAL.
+    defaults: () => ({}),
   },
   {
     entity: "group-discount-setting",
     delegate: "groupDiscountSetting",
     fields: ["minGroupSize", "summerOnly", "enabled"],
+    defaults: () => DEFAULT_GROUP_DISCOUNT_SETTING,
   },
   {
     entity: "membership-nomination-settings",
@@ -126,16 +185,19 @@ export const SINGLETONS: SingletonSpec[] = [
       "gateEnabled", "minimumMembershipMonths", "minimumNights",
       "requiredSignOffs", "gateEffectiveFrom",
     ],
+    defaults: () => DEFAULT_MEMBERSHIP_NOMINATION_SETTINGS,
   },
   {
     entity: "membership-lockout-settings",
     delegate: "membershipLockoutSettings",
     fields: ["enabled", "financialYearEndMonthOverride", "textFallbackEnabled"],
+    defaults: () => DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS,
   },
   {
     entity: "membership-cancellation-setting",
     delegate: "membershipCancellationSetting",
     fields: ["warningText", "rejoinProcessText", "xeroArchiveContactsOnCancellation"],
+    defaults: () => DEFAULT_MEMBERSHIP_CANCELLATION_SETTINGS,
   },
 ];
 
@@ -243,13 +305,26 @@ export const clubSettingsExporter: CategoryExporter = {
         where: { id: "default" },
         select: spec.select,
       });
-      if (!row) continue;
+      // #2171: a club that has never SAVED a singleton is not a club with no
+      // settings — every read site synthesises defaults on a miss. Export those
+      // effective values in place of the missing row so the bundle carries what
+      // the source club actually runs on, and an import reproduces it instead
+      // of silently leaving the target's own row in place.
+      //
+      // The cost, accepted by the owner on #2171: a bundle no longer
+      // distinguishes "saved these values" from "never saved anything", and
+      // importing one MATERIALISES the row in the target. That is visible in
+      // the three setup-checklist signals that key on row existence
+      // (bookingDefaultsConfigured, groupDiscountConfigured,
+      // membershipCancellationSettingsConfigured) — see docs/config-transfer.
       const fields = exportFields(spec, ctx.includeDoorCodes);
       entries.push({
         path: fileFor(spec.entity),
         category: "club-settings",
         rowCount: 1,
-        bytes: strToU8(JSON.stringify(project(row, fields), null, 2)),
+        bytes: strToU8(
+          JSON.stringify(project(row ?? spec.defaults(), fields), null, 2),
+        ),
       });
     }
     return entries;

@@ -4,6 +4,38 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Settings your club never saved now travel in a configuration export
+  (#2171).** Every club-wide setting has a value even if nobody has ever opened
+  and saved it — the built-in default the software runs on. Until now the export
+  simply left such a setting out of the bundle, so importing it into another club
+  quietly kept that club's own values instead of moving the source club's
+  across, and a transfer could report success while the two clubs still behaved
+  differently. The export now writes the built-in defaults in place of a setting
+  that was never saved, for **every** club-wide setting in the bundle — booking
+  defaults, group discount, booking requests, modules, member fields, bed
+  allocation, internet banking, membership nomination/lockout/cancellation.
+
+  **Two things to know after importing such a bundle.** The settings record is
+  created on the target club even though nobody configured it, so **Admin →
+  Setup** will start counting booking defaults, group discount, and membership
+  cancellation as configured — the values are the same defaults it was already
+  using, but the "has this been reviewed?" signal changes, so review those three
+  steps after an import. And because the value is now written down rather than
+  worked out fresh each time, a later release that changes a built-in default no
+  longer reaches that club.
+
+  **Club identity and email message settings are deliberately excluded from
+  this.** Every field there is an optional override on top of the install's own
+  configuration file, so "never saved" travels as "no override set" and a bundle
+  never carries one install's club name, support address, or public URL into
+  another.
+
+  No schema, permission, or audit change, and no bundle format change: a bundle
+  exported before this release still imports, leaving any setting it omits
+  untouched. The built-in defaults themselves are unchanged — they simply moved
+  to one shared place (`src/config/club-settings-defaults.ts`) so the export and
+  the settings screens can never disagree about them.
+
 - **The two quote-timing cards now open with Edit, like everything else in
   Booking Policies (#2166).** On **Booking Policies → Public Booking Requests**,
   the **Quote Response Window & Reminders** and **School Attendee Confirmation**

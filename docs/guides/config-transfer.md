@@ -64,6 +64,32 @@ Exportable categories:
 | Membership fees (joining & annual) | Joining-fee and annual-fee schedules with invoice-line components (integer cents) |
 | Xero configuration | Xero account and item-code mappings |
 
+### Settings your club has never saved
+
+A club-wide setting you have never opened and saved still has a value — the
+built-in default the software runs on. Those settings **do travel** in a bundle:
+the export writes the built-in defaults in place of the setting you never saved,
+so importing the bundle moves the source club's settings across rather than
+quietly leaving the target club's own values in place.
+
+Two consequences worth knowing:
+
+- **Importing creates the settings record**, even for a setting nobody ever
+  configured. On the target club, **Admin → Setup** will then count booking
+  defaults, group discount, and membership cancellation as *configured*. The
+  values are the same defaults it was already using — only the "has this been
+  reviewed?" signal changes. Review those three steps after an import.
+- **A default that ships changed in a later release no longer reaches that
+  club**, because the value is now written down rather than resolved fresh each
+  time. Change it deliberately in the admin if you want a different value.
+
+Club identity and email message settings are the exception: every field there is
+an optional override on top of the values in the install's own configuration
+file, so "never saved" travels as "no override set" — a bundle never carries one
+install's club name, support address, or public URL into another. In **Overwrite**
+mode a bundle from a club with no overrides clears the target's overrides, which
+is the point: the target ends up matching the source.
+
 | Control | Effect |
 | --- | --- |
 | Include lodge door codes | Opt-in; adds physical-access door codes to the export |

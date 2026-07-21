@@ -858,12 +858,15 @@ render the hardcoded fallback as though it were stored. None of the three carrie
 a first-save exception even though the read synthesises defaults on a miss: those
 synthesised defaults ARE the effective settings at every read site and no
 behaviour keys on the row existing, so the exception would only unlock a
-pristine, audit-writing no-op (#2143). (Config-transfer does observe the row —
-`club-settings.ts` skips a singleton that has none, so a club that never saved
-these settings exports no `booking-request-settings.json`. Every singleton in
-that exporter behaves that way, the group-discount reference included, so it is a
-config-transfer question rather than a reason to unlock a pristine save here —
-tracked as #2171.)
+pristine, audit-writing no-op (#2143). (Config-transfer used to be the one thing
+that DID observe the row: `club-settings.ts` skipped a singleton with none, so a
+club that had never saved these settings exported no
+`booking-request-settings.json`. #2171 closed that for the whole `SINGLETONS`
+set — the exporter now emits an entry for every singleton and fills a missing
+row with the same effective defaults the read sites synthesise, read from the
+shared constants in `src/config/club-settings-defaults.ts` rather than a second
+copy. Nothing outside config-transfer changed, and nothing here depends on the
+row existing.)
 Validation stays in each card's click
 handler rather than the hook's `isValid`, so an out-of-range or
 reminder-not-shorter-than-window draft gets an explanation instead of a greyed
