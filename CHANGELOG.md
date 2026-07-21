@@ -4,6 +4,41 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **The two quote-timing cards now open with Edit, like everything else in
+  Booking Policies (#2166).** On **Booking Policies → Public Booking Requests**,
+  the **Quote Response Window & Reminders** and **School Attendee Confirmation**
+  cards used to be typed into directly — no **Edit**, no **Cancel**, just a
+  **Save** that lit up once a number changed. They were the last thing in the
+  area that worked that way. Each now has its own **Edit** button that unlocks
+  its boxes, its own **Save**, and its own **Cancel** that puts that card back
+  the way it was saved without touching any other card. **This is a visible
+  change for admins:** changing a quote window or an attendee prompt is now
+  three clicks rather than two, deliberately, so the whole section behaves the
+  same way and a stray keystroke in a settings box is no longer one click from a
+  change. You can still have more than one card open at once; only saving is
+  exclusive, because all three cards write the same settings record. Nothing
+  else about them moved: the same ranges are enforced and the same explanation
+  appears if a quote reminder is not shorter than its window. A read-only box is
+  now shaded so you can see at a glance that it is waiting for **Edit**, rather
+  than looking editable and ignoring your typing.
+
+  **Saving is also safer against a second admin.** Each card still re-reads the
+  stored settings immediately before it writes, and it now sends back only the
+  boxes you actually changed. Previously, if someone else changed the quote
+  window while your page was open and you edited only the reminder, your Save
+  put the old window back. Now your untouched boxes are left exactly as they are
+  stored, and after saving the card shows you the other admin's value. If that
+  makes the two quote settings contradict each other — your new reminder is no
+  longer shorter than a window someone else has shortened — nothing is written
+  and you are told to reload and try again, instead of getting a bare
+  "Invalid input".
+
+  One thing worth knowing: a card you have not opened keeps showing the values
+  it loaded with, even if another admin has since changed them, and clicking
+  **Edit** does not refresh it — the same as everywhere else in the admin.
+  Reload the page if you want to be certain. What that staleness can no longer
+  do is get written back. No schema, permission, route, or audit change. See
+  `docs/guides/booking-policies.md` and `docs/ARCHITECTURE.md`.
 - **Most admin areas now explain view-only access once, at the top, instead of
   on each greyed-out button (#2160).** If your admin role can look at an area
   but not change it, you now meet a short banner at the top of the section when
@@ -14,9 +49,9 @@ All notable public reference-release changes should be recorded here.
   screen built from several sections — Security, or Booking Requests — shows it
   once per section, three times in those two cases. This is the
   pattern Booking Policies adopted in #2142 (below), now applied across most of
-  the admin tree: 205 of the 258 gated buttons were converted here, and #2168
-  below takes it to 226 — about seven out of eight now explained by a banner
-  instead of individually. **Nothing about who can do what
+  the admin tree: 207 of the 260 gated buttons are covered by a banner in their
+  own section, and #2168 below takes the total to 228 — about seven out of eight
+  now explained by a banner instead of individually. **Nothing about who can do what
   has changed** — the same
   people can edit the same things, every button is gated exactly as it was, and
   no write path, price, or permission moved.
@@ -117,10 +152,11 @@ All notable public reference-release changes should be recorded here.
   admin changed in another card while your page was open — or what you typed
   into a card below but have not saved yet. (Two admins who hit Save in the same
   instant still resolve last-one-wins, as they always have; what is fixed is the
-  page that has been sitting open.) If a re-read brings back a value you
-  had not touched, the box showing it is refreshed too, so a **Save** never
-  lights up on its own beside a stale number (anything you had typed is left
-  exactly as you left it). And the save now sends the school-attendee timings
+  page that has been sitting open.) A **Save** never lights up on its own
+  either: each card's boxes and the saved values they are compared against only
+  ever move together, so no other card's save can arm yours, and anything you
+  had typed is left exactly as you left it (#2166 finished this by giving each
+  card its own draft). And the save now sends the school-attendee timings
   back to the browser as well as the pricing and quote ones; previously they
   came back missing, which blanked both attendee boxes after any save and then
   made the next quote-timing save fail outright. No schema, permission, or audit
