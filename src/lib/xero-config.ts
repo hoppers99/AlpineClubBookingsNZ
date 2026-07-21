@@ -92,6 +92,43 @@ export function getOperationalXeroRedirectUri(): string {
   }
 }
 
+/**
+ * True only for an https:// origin whose host is not localhost/loopback — the
+ * single condition under which Xero can actually deliver a webhook (and its
+ * intent-to-receive ping) to this deployment. Shared by the setup page and the
+ * webhook verify-status route so the wizard step and the persistent amber badge
+ * agree on whether webhooks are verifiable here.
+ */
+export function isPublicHttpsOrigin(origin: string): boolean {
+  if (!origin) return false;
+  try {
+    const url = new URL(origin);
+    if (url.protocol !== "https:") return false;
+    const host = url.hostname.toLowerCase();
+    return (
+      host !== "localhost" &&
+      host !== "127.0.0.1" &&
+      host !== "::1" &&
+      host !== "[::1]" &&
+      !host.endsWith(".localhost")
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether this deployment can verify Xero webhooks at all: derived from the
+ * NEXTAUTH_URL-backed redirect origin (public HTTPS, non-localhost). When false,
+ * a webhook key can be stored but the intent-to-receive ping can never arrive,
+ * so the wizard defaults to Skip and the badge softens to an informational note.
+ */
+export function getXeroWebhooksVerifiable(): boolean {
+  const redirectUri = getOperationalXeroRedirectUri();
+  const origin = redirectUri ? new URL(redirectUri).origin : "";
+  return isPublicHttpsOrigin(origin);
+}
+
 export interface OperationalXeroConfig {
   clientId: string;
   clientSecret: string;

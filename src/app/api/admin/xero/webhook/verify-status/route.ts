@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/session-guards";
 import { checkXeroWebhookFreshVerify } from "@/lib/xero-webhook-validation";
+import { getXeroWebhooksVerifiable } from "@/lib/xero-config";
 import logger from "@/lib/logger";
 
 /**
@@ -27,14 +28,23 @@ export async function GET(request: Request) {
   let sinceMs: number | null = null;
   if (sinceRaw !== null) {
     const parsed = Number(sinceRaw);
-    // Reject a non-finite/negative `since` rather than treating it as 0 (which
-    // would make ANY marker look fresh). An unusable value means "no start yet".
-    sinceMs = Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+    // Require a strictly positive `since`. `?since=0` (or any non-finite/negative
+    // value) is unusable as a real server-issued verify-start — freshness needs a
+    // marker STRICTLY newer than it, and 0 would make every marker look fresh — so
+    // treat it as "no start yet" (null) and never as a satisfiable window.
+    sinceMs = Number.isFinite(parsed) && parsed > 0 ? parsed : null;
   }
 
   try {
     const result = await checkXeroWebhookFreshVerify(sinceMs);
-    return NextResponse.json(result);
+    // `webhooksVerifiable` (deployment can receive Xero's ping at all) lets the
+    // amber badge soften to an informational note off a public-HTTPS deployment
+    // instead of nagging to finish an unfinishable step. Same derivation the
+    // setup page uses, so both surfaces agree.
+    return NextResponse.json({
+      ...result,
+      webhooksVerifiable: getXeroWebhooksVerifiable(),
+    });
   } catch (error) {
     logger.error({ err: error }, "Failed to check Xero webhook verify status");
     return NextResponse.json(

@@ -1,6 +1,7 @@
 import {
   detectLegacyProviderEnv,
   getOperationalXeroRedirectUri,
+  getXeroWebhooksVerifiable,
 } from "@/lib/xero-config";
 import { XeroSetupPageClient } from "../_components/xero-setup-page-client";
 
@@ -19,7 +20,9 @@ export default function XeroSetupPage() {
   // (typical dev/self-host-behind-tunnel-not-yet) can store a key but can never
   // receive the intent-to-receive ping, so the step there defaults to Skip.
   const webhookDeliveryUrl = companyUrl ? `${companyUrl}/api/webhooks/xero` : "";
-  const webhooksVerifiable = isPublicHttpsOrigin(companyUrl);
+  // Shared derivation (src/lib/xero-config) so the wizard step, this page, and
+  // the verify-status route / amber badge all agree on verifiability.
+  const webhooksVerifiable = getXeroWebhooksVerifiable();
 
   return (
     <XeroSetupPageClient
@@ -32,23 +35,4 @@ export default function XeroSetupPage() {
       }}
     />
   );
-}
-
-/** True only for an https:// origin whose host is not localhost/loopback. */
-function isPublicHttpsOrigin(origin: string): boolean {
-  if (!origin) return false;
-  try {
-    const url = new URL(origin);
-    if (url.protocol !== "https:") return false;
-    const host = url.hostname.toLowerCase();
-    return (
-      host !== "localhost" &&
-      host !== "127.0.0.1" &&
-      host !== "::1" &&
-      host !== "[::1]" &&
-      !host.endsWith(".localhost")
-    );
-  } catch {
-    return false;
-  }
 }

@@ -16,9 +16,15 @@ const WEBHOOK_STATUS_ENDPOINT = "/api/admin/xero/webhook/verify-status";
  *
  * Only renders once we've confirmed NOT-verified, so a verified club never sees
  * a flash of amber.
+ *
+ * When webhooks can't be verified on this deployment at all (a non-public-HTTPS
+ * origin — Xero never reaches it), the "finish setup" nag would be unactionable,
+ * so the badge instead states plainly that scheduled sync keeps payments up to
+ * date. Both pages read the same `webhooksVerifiable` flag, so they stay in step.
  */
 export function WebhookAmberBadge({ connected }: { connected: boolean }) {
   const [verified, setVerified] = useState<boolean | null>(null);
+  const [verifiable, setVerifiable] = useState<boolean | null>(null);
 
   useEffect(() => {
     if (!connected) return;
@@ -29,8 +35,14 @@ export function WebhookAmberBadge({ connected }: { connected: boolean }) {
           credentials: "same-origin",
         });
         if (!res.ok) return;
-        const data = (await res.json()) as { verified?: boolean };
-        if (active) setVerified(Boolean(data.verified));
+        const data = (await res.json()) as {
+          verified?: boolean;
+          webhooksVerifiable?: boolean;
+        };
+        if (active) {
+          setVerified(Boolean(data.verified));
+          setVerifiable(Boolean(data.webhooksVerifiable));
+        }
       } catch {
         // Leave unknown — the badge stays hidden rather than false-alarming.
       }
@@ -41,6 +53,23 @@ export function WebhookAmberBadge({ connected }: { connected: boolean }) {
   }, [connected]);
 
   if (!connected || verified !== false) return null;
+
+  // Not verifiable here: state the fallback plainly instead of nagging to finish
+  // a step that can't be finished on this deployment.
+  if (verifiable === false) {
+    return (
+      <div
+        role="status"
+        className="mb-4 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"
+      >
+        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+        <span>
+          Webhooks can&rsquo;t verify on this deployment — scheduled sync keeps
+          payments up to date.
+        </span>
+      </div>
+    );
+  }
 
   return (
     <div
