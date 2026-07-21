@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
   AlertTriangle,
@@ -22,6 +22,29 @@ import type { XeroWizardContext } from "./use-xero-wizard-context";
 
 const CREDENTIALS_ENDPOINT = "/api/admin/integrations/credentials";
 const WEBHOOK_STATUS_ENDPOINT = "/api/admin/xero/webhook/verify-status";
+const ACCOUNT_MAPPINGS_ENDPOINT = "/api/admin/xero/account-mappings";
+
+/** How many mapping keys carry an account code or item code vs. the total set. */
+interface MappingSummary {
+  mapped: number;
+  total: number;
+}
+
+/**
+ * Count mapping keys that resolve to a concrete account/item code. The
+ * account-mappings endpoint returns every key with `{ code, itemCode }` (null
+ * where unset), so a key is "mapped" when either side is a non-empty string.
+ */
+function summariseMappings(
+  data: Record<string, { code?: string | null; itemCode?: string | null }>,
+): MappingSummary {
+  const keys = Object.keys(data);
+  const mapped = keys.filter((key) => {
+    const row = data[key];
+    return Boolean(row?.code?.trim()) || Boolean(row?.itemCode?.trim());
+  }).length;
+  return { mapped, total: keys.length };
+}
 
 // Client-side mirror of the server verify contract (see
 // src/lib/xero-webhook-validation.ts). Kept as local literals so the client
@@ -87,7 +110,7 @@ export function WebhooksStep({
       }
       setWebhookKey("");
       setNotice(
-        "Webhook key saved. In Xero, save the webhook so Xero sends its verification, then Verify below.",
+        "Webhook key saved. Click Verify below first, then in Xero use Send ‘intent to receive’ (or save the webhook there if it’s new) so its ping arrives while this page is waiting.",
       );
       helpers.refresh();
     } catch (saveError) {
@@ -191,10 +214,8 @@ export function WebhooksStep({
         <>
           <CopyField
             label="Webhook delivery URL"
-            value={
-              context.webhookDeliveryUrl ||
-              "Set NEXTAUTH_URL so the delivery URL can be derived"
-            }
+            value={context.webhookDeliveryUrl}
+            emptyHint="Set NEXTAUTH_URL so the delivery URL can be derived"
             description="In Xero (My Apps → your app → Webhooks), paste this as the delivery URL, then subscribe to the Invoices and Contacts events."
           />
 
@@ -251,7 +272,17 @@ export function WebhooksStep({
             ) : null}
           </div>
           <div role="status">
-            {notice ? (
+            {verifying ? (
+              <div className="flex items-start gap-2 rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground">
+                <Loader2
+                  className="mt-0.5 h-4 w-4 shrink-0 animate-spin"
+                  aria-hidden
+                />
+                <span>
+                  Waiting for Xero&rsquo;s verification ping — up to 90 seconds…
+                </span>
+              </div>
+            ) : notice ? (
               <div className="flex items-start gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
                 <Info className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
                 <span>{notice}</span>
@@ -349,6 +380,36 @@ export function FinishStep({ context }: { context: XeroWizardContext }) {
   const [syncing, setSyncing] = useState<string | null>(null);
   const [, setSyncResult] = useState<SyncResult | null>(null);
   const [message, setMessage] = useState("");
+  const [mappingSummary, setMappingSummary] = useState<MappingSummary | null>(
+    null,
+  );
+
+  // Read the mapping counts for the summary. A single lightweight fetch scoped to
+  // this step (not threaded through the wizard context, which every step would
+  // then pay for) — the MappingsPanel keeps its own richer fetch on step 5.
+  const connected = context.connected;
+  useEffect(() => {
+    if (!connected) return;
+    let active = true;
+    void (async () => {
+      try {
+        const res = await fetch(ACCOUNT_MAPPINGS_ENDPOINT, {
+          credentials: "same-origin",
+        });
+        if (!res.ok) return;
+        const data = (await res.json()) as Record<
+          string,
+          { code?: string | null; itemCode?: string | null }
+        >;
+        if (active) setMappingSummary(summariseMappings(data));
+      } catch {
+        // Leave null — the summary row shows a neutral default instead.
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [connected]);
 
   return (
     <div className="space-y-5">
@@ -412,6 +473,24 @@ export function FinishStep({ context }: { context: XeroWizardContext }) {
                 <span className="inline-flex items-center gap-1 font-medium text-amber-700">
                   <AlertTriangle className="h-4 w-4" aria-hidden />
                   Not configured — scheduled sync only
+                </span>
+              )}
+            </dd>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <dt className="text-muted-foreground">Mappings</dt>
+            <dd className="font-medium text-foreground">
+              {mappingSummary ? (
+                <>
+                  {mappingSummary.mapped} of {mappingSummary.total} accounts
+                  mapped{" "}
+                  <span className="font-normal text-muted-foreground">
+                    (unset ones use defaults)
+                  </span>
+                </>
+              ) : (
+                <span className="font-normal text-muted-foreground">
+                  Unset accounts use defaults
                 </span>
               )}
             </dd>

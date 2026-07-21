@@ -113,6 +113,10 @@ test("operator completes the whole Xero wizard including verified webhooks", asy
   ).toBeVisible();
   await expect(page.getByText(/Setup summary/i)).toBeVisible();
   await expect(page.getByText(/^Verified$/)).toBeVisible();
+  // Summary covers org, webhook state AND mappings (#2081 acceptance criteria):
+  // the Mappings row reports how many of the mapping keys resolve to a code.
+  await expect(page.getByText(/Mappings/)).toBeVisible();
+  await expect(page.getByText(/\d+ of \d+ accounts mapped/)).toBeVisible();
 
   // The whole wizard is now complete.
   await expect(page.getByText(/Setup complete/i)).toBeVisible();
