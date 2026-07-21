@@ -548,8 +548,9 @@ one commit, and because a scope change is itself a load it unmounts the
 `PolicyScopeSelect` the admin just operated, dropping keyboard focus to `<body>`
 for the duration of the round trip. That banner shape started in the five
 Booking Policies sections (#2142) and is now the **default across the admin
-tree** (#2160) — not a claim that nothing is left. Measured on the branch that
-rolled it out: **72 components render a banner, and 205 of the 258
+tree** (#2160) — not a claim that nothing is left. Measured on the current tree
+by `view-only-banner-contract.test.ts`, which asserts these figures rather than
+trusting a hand count: **72 components render a banner, and 207 of the 260
 `ViewOnlyActionButton` call sites opt out** of the per-button reason because a
 banner in the same file covers them. The remaining **53 controls across 23 files
 deliberately keep the per-button default** (`describeReason` left at `true`), in
@@ -595,11 +596,17 @@ three shapes:
 Every figure in this section is asserted mechanically by
 `src/components/admin/__tests__/view-only-banner-contract.test.ts` — the totals
 and all three buckets — so they can not drift out of step with the tree. The
-test strips comments with TypeScript's own scanner before counting, because
-counting raw text conflates a call site with prose *about* a call site (both
-`view-only-action.tsx`'s JSDoc and `public-booking-requests-section.tsx`'s JSX
-commentary quote `describeReason={false}` while explaining it, and each was
-miscounted as an opt-out once). If you add or convert a gated control, that test
+test strips comments before counting, because counting raw text conflates a call
+site with prose *about* a call site (both `view-only-action.tsx`'s JSDoc and
+`public-booking-requests-section.tsx`'s JSX commentary quote
+`describeReason={false}` while explaining it, and each was miscounted as an
+opt-out). The strip runs TypeScript's own PARSER, not its scanner: a bare
+`ts.createScanner` cannot resume a template literal after a `${…}` substitution
+(that is the parser's job), so a `className={`…${…}`}` above a JSX comment
+opened a bogus template that swallowed the comment's opening `/*` and let its
+quoted `describeReason={false}` count as real — which is exactly how
+`public-booking-requests-section.tsx` was miscounted a SECOND time, in #2166.
+If you add or convert a gated control, that test
 fails and the numbers here, in `AGENTS.md`, in `docs/STYLE_GUIDE.md`, in
 `CHANGELOG.md` and in the `ViewOnlyActionButton` JSDoc all need updating
 together.

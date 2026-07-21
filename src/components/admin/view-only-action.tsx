@@ -20,8 +20,9 @@ interface ViewOnlyActionButtonProps extends ButtonProps {
    *
    * Since #2160 the DEFAULT is no longer the usual case — it is the fallback.
    * Most admin sections render an {@link AdminViewOnlySectionBanner} and pass
-   * `describeReason={false}` here (205 of 258 call sites at the time of the
-   * rollout). The default survives in three shapes:
+   * `describeReason={false}` here (207 of 260 call sites on the current tree —
+   * `view-only-banner-contract.test.ts` asserts that figure, so it is measured
+   * rather than counted by hand). The default survives in three shapes:
    *
    *  - inside a dialog, sheet, popover, or dropdown menu, which is a separate
    *    accessibility container (focus trapped, page behind commonly inert), so

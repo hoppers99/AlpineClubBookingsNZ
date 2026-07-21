@@ -37,33 +37,64 @@ const SRC = join(process.cwd(), "src");
  * carries a JSX comment narrating the #2142 conversion that quotes it too.
  *
  * Excluding those two files by name would only postpone the third instance, so
- * the strip is structural instead. It uses TypeScript's own scanner — the same
- * lexer the compiler runs — because a regex can not reliably tell a comment
- * from a `/*` inside a string, a template literal, or a regex literal, and a
- * naive JSX-comment pattern (`\{\s*\/\*[\s\S]*?\*\/\s*\}`) silently swallows an
- * object type that merely OPENS with a JSDoc member comment, taking the real
- * call sites inside it along with the prose.
+ * the strip is structural instead. It uses TypeScript's own PARSER — a full
+ * `createSourceFile`, then every comment range attached to every token — rather
+ * than a regex or a bare scanner.
+ *
+ * A regex can not reliably tell a comment from a `/*` inside a string, a
+ * template literal, or a regex literal, and a naive JSX-comment pattern
+ * (`\{\s*\/\*[\s\S]*?\*\/\s*\}`) silently swallows an object type that merely
+ * OPENS with a JSDoc member comment, taking the real call sites inside it along
+ * with the prose.
+ *
+ * A bare `ts.createScanner` is not enough either, and #2166 caught it being
+ * wrong. The scanner is a LEXER, not a parser: it cannot resume a template
+ * literal after a `${…}` substitution, because that resumption is the parser's
+ * job (`rescanTemplateToken`). So in
+ * `booking-policies/public-booking-requests-section.tsx`, the closing
+ * `` `} `` of a `className={`…${…}`}` template opened a BOGUS template literal
+ * that ran forward until the next backtick — 700-odd characters later, inside
+ * the `#2142` JSX comment. The comment therefore never opened as far as the
+ * lexer was concerned, its prose was lexed as ordinary code, and the
+ * `describeReason={false}` it QUOTES was counted as a real opt-out. That is
+ * precisely the miscount this helper exists to prevent, in its third incarnation.
+ *
+ * Both leading AND trailing comment ranges are collected. A JSX comment
+ * (`{/* … *\/}`) sits on the same line as the `{` that opens it, and
+ * `getLeadingCommentRanges` by design only reports comments that follow a line
+ * break — so a leading-only sweep misses exactly the JSX-comment form this file
+ * family keeps hitting.
  */
 function stripComments(source: string): string {
-  const scanner = ts.createScanner(
-    ts.ScriptTarget.Latest,
-    /* skipTrivia */ false,
-    ts.LanguageVariant.JSX,
+  const sourceFile = ts.createSourceFile(
+    "in-memory.tsx",
     source,
+    ts.ScriptTarget.Latest,
+    /* setParentNodes */ true,
+    ts.ScriptKind.TSX,
   );
   const chars = source.split("");
-  let token = scanner.scan();
-  while (token !== ts.SyntaxKind.EndOfFileToken) {
-    if (
-      token === ts.SyntaxKind.SingleLineCommentTrivia ||
-      token === ts.SyntaxKind.MultiLineCommentTrivia
-    ) {
-      for (let i = scanner.getTokenStart(); i < scanner.getTokenEnd(); i += 1) {
-        if (chars[i] !== "\n") chars[i] = " ";
-      }
+  const blank = (start: number, end: number) => {
+    for (let i = start; i < end; i += 1) {
+      if (chars[i] !== "\n") chars[i] = " ";
     }
-    token = scanner.scan();
-  }
+  };
+
+  const visit = (node: ts.Node): void => {
+    const children = node.getChildren(sourceFile);
+    if (children.length > 0) {
+      for (const child of children) visit(child);
+      return;
+    }
+    for (const range of ts.getLeadingCommentRanges(source, node.getFullStart()) ?? []) {
+      blank(range.pos, range.end);
+    }
+    for (const range of ts.getTrailingCommentRanges(source, node.getEnd()) ?? []) {
+      blank(range.pos, range.end);
+    }
+  };
+  visit(sourceFile);
+
   return chars.join("");
 }
 
@@ -227,8 +258,8 @@ describe("view-only section banner coverage (#2160)", () => {
         f.source.includes("<AdminViewOnlySectionBanner"),
       ).length,
     }).toEqual({
-      callSites: 258,
-      optOuts: 205,
+      callSites: 260,
+      optOuts: 207,
       exceptions: 53,
       exceptionFiles: 23,
       bannerComponents: 72,
