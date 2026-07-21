@@ -283,22 +283,15 @@ export function WebhooksStep({
         </>
       )}
 
-      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
+      {/* The Skip action itself is rendered by the wizard shell's footer for this
+          optional step (see the step's `optional` skip copy in xero-setup-wizard);
+          this note just explains what skipping defers. */}
+      <div className="border-t border-border pt-4">
         <p className="text-xs text-muted-foreground">
           {context.webhookVerified
             ? "Verified. Continue to account mapping."
             : "Not required to finish setup — Skip keeps an amber reminder until you verify."}
         </p>
-        {!context.webhookVerified ? (
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={() => helpers.acknowledge()}
-            disabled={verifying}
-          >
-            Skip for now
-          </Button>
-        ) : null}
       </div>
     </div>
   );

@@ -26,17 +26,40 @@ export interface WizardStepHelpers {
   refresh: () => void;
   /** Advance to the next step. No-op unless this step is verified/passed. */
   goNext: () => void;
-  /**
-   * Acknowledge (skip) the current step and advance. Only meaningful for an
-   * `optional` step: it records the step id in the acknowledged set so the shell
-   * treats it as passed for gating (e.g. skipping the webhook step in C3, which
-   * leaves the persistent amber badge until webhooks are later verified). A no-op
-   * for a required step.
-   */
-  acknowledge: () => void;
   /** Whether this step is currently verified (its gate is satisfied). */
   isVerified: boolean;
+  /** Whether THIS step is optional (may be skipped while unverified). */
+  optional: boolean;
+  /**
+   * Whether THIS step has been acknowledged (skipped). Advisory only — it is
+   * re-derived to `false` the moment the step verifies (verified > acknowledged),
+   * so a step never shows both states at once.
+   */
+  acknowledged: boolean;
+  /**
+   * Acknowledge (skip) this optional, unverified step and advance. A no-op for a
+   * required step or one already verified. The shell also renders a standalone
+   * "skip" action for optional steps; a step may call this to drive its own
+   * inline control instead. Load-bearing for C3 (skippable webhook step).
+   */
+  skip: () => void;
 }
+
+/**
+ * Copy for an optional step's shell-rendered skip affordance. The provider
+ * supplies the wording so the shell stays PROVIDER-NEUTRAL — the shell never
+ * hard-codes provider copy. Both fields are optional; the shell falls back to
+ * neutral defaults ({@link DEFAULT_WIZARD_SKIP_LABEL}).
+ */
+export interface WizardStepOptionalConfig {
+  /** Label for the shell-rendered skip button (default "Skip for now"). */
+  skipLabel?: string;
+  /** One-line explanation of what skipping defers, shown beside the action. */
+  skipDescription?: string;
+}
+
+/** Neutral default label the shell uses when a step supplies no `skipLabel`. */
+export const DEFAULT_WIZARD_SKIP_LABEL = "Skip for now";
 
 /** One step, declared as data. `Ctx` is the provider's derived-state shape. */
 export interface WizardStepConfig<Ctx> {
@@ -58,9 +81,35 @@ export interface WizardStepConfig<Ctx> {
   /**
    * Optional steps (e.g. webhooks in C3) may be acknowledged/skipped instead of
    * verified; the shell then treats an acknowledged optional step as passed for
-   * gating. Defaults to false (required).
+   * gating. Defaults to falsy (required).
+   *
+   * Pass `true` for the neutral "Skip for now" affordance, or a
+   * {@link WizardStepOptionalConfig} to supply provider-specific skip copy. Any
+   * truthy value marks the step optional; the shell renders a skip action while
+   * the step is unverified and not yet acknowledged, and once the step later
+   * verifies, verification supersedes the acknowledgement.
    */
-  optional?: boolean;
+  optional?: boolean | WizardStepOptionalConfig;
+}
+
+/** Whether a step is optional (skippable) — `optional` is any truthy value. */
+export function isWizardStepOptional<Ctx>(step: WizardStepConfig<Ctx>): boolean {
+  return Boolean(step.optional);
+}
+
+/**
+ * Resolve the skip label + description for an optional step, falling back to the
+ * neutral shell defaults. Returns empty copy for a required step (never used).
+ */
+export function getWizardStepSkipCopy<Ctx>(
+  step: WizardStepConfig<Ctx>,
+): { skipLabel: string; skipDescription: string } {
+  const config =
+    step.optional && typeof step.optional === "object" ? step.optional : {};
+  return {
+    skipLabel: config.skipLabel ?? DEFAULT_WIZARD_SKIP_LABEL,
+    skipDescription: config.skipDescription ?? "",
+  };
 }
 
 export interface IntegrationWizardProps<Ctx> {
@@ -84,4 +133,18 @@ export interface IntegrationWizardProps<Ctx> {
    * Clamped to the furthest reachable step, so a link can never jump the gate.
    */
   initialStepId?: string;
+  /**
+   * Copy shown once every step has passed. The provider supplies it so the
+   * final state cannot read as "the WHOLE integration is done" when there is
+   * still provider-specific configuration below the wizard (e.g. Xero account
+   * mappings). All fields fall back to neutral shell defaults.
+   */
+  completion?: {
+    /** Status-badge label when complete (default "Complete"). */
+    badgeLabel?: string;
+    /** Footer completion headline (default "Setup complete"). */
+    message?: ReactNode;
+    /** Optional secondary line pointing at the remaining configuration. */
+    hint?: ReactNode;
+  };
 }

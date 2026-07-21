@@ -68,7 +68,13 @@ export function XeroSetupWizard({
         summary: "Real-time updates (optional)",
         // Optional/skippable (epic decision 5): passes when verified OR skipped;
         // skipping leaves the persistent amber badge until later verification.
-        optional: true,
+        // Provider-specific skip copy for the shell's skip affordance (#2080 C2);
+        // the shell owns the Skip action, so the step body renders no skip button.
+        optional: {
+          skipLabel: "Skip for now",
+          skipDescription:
+            "You can add webhooks later — the scheduled sync keeps payments up to date meanwhile.",
+        },
         isVerified: (ctx) => ctx.webhookVerified,
         render: (ctx, helpers) => <WebhooksStep context={ctx} helpers={helpers} />,
       },
@@ -108,6 +114,14 @@ export function XeroSetupWizard({
       onRefresh={refresh}
       canEdit={canEdit}
       initialStepId={initialStepId}
+      // The wizard connects Xero, but account/item mappings and contact import
+      // still follow below — so the final state must read as "connected, more to
+      // configure", never "the whole integration is done" (#2080 UX-F9).
+      completion={{
+        badgeLabel: "Connected",
+        message: "Connected",
+        hint: "Configure account mappings and run contact import below to finish setting up Xero.",
+      }}
       viewOnlyBanner={
         <>
           Your admin role can view Xero setup, but changing credentials and

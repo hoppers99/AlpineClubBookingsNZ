@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 import { AdminViewOnlySectionBanner } from "@/components/admin/view-only-action";
 import { useWizardCursor } from "./use-integration-wizard";
 import type { IntegrationWizardProps, WizardStepHelpers } from "./types";
+import { getWizardStepSkipCopy, isWizardStepOptional } from "./types";
 
 /**
  * Reusable, PROVIDER-AGNOSTIC guided-setup wizard shell (#2080).
@@ -29,6 +30,13 @@ import type { IntegrationWizardProps, WizardStepHelpers } from "./types";
  * acknowledged). The furthest reachable step is the FIRST unpassed step, so the
  * operator can freely revisit completed steps but can never jump a gate — even
  * via a deep link or a stale persisted cursor.
+ *
+ * Optional steps (C3's skippable webhook step): an unverified optional step may
+ * be acknowledged via a shell-rendered "skip" action, which persists its id and
+ * lets gating pass it. Verification always supersedes an acknowledgement
+ * (verified > acknowledged), re-derived from live truth so a step never shows
+ * both the amber "skipped" and green "verified" state at once, and an
+ * acknowledged step stays re-enterable.
  */
 export function IntegrationWizard<Ctx>({
   wizardId,
@@ -41,6 +49,7 @@ export function IntegrationWizard<Ctx>({
   canEdit,
   viewOnlyBanner: viewOnlyBannerText,
   initialStepId,
+  completion,
 }: IntegrationWizardProps<Ctx>) {
   const cursor = useWizardCursor(wizardId);
 
@@ -53,13 +62,22 @@ export function IntegrationWizard<Ctx>({
     () => new Set(cursor.acknowledged),
     [cursor.acknowledged],
   );
-  const passedFlags = useMemo(
+  // A step is acknowledged-only when it was skipped but has NOT since verified;
+  // verification supersedes the acknowledgement, so a verified step never counts
+  // here (its stepper mark stays the green "verified" tick, not amber "skipped").
+  const acknowledgedOnlyFlags = useMemo(
     () =>
       steps.map(
         (step, i) =>
-          verifiedFlags[i] || (step.optional === true && acknowledgedSet.has(step.id)),
+          !verifiedFlags[i] &&
+          isWizardStepOptional(step) &&
+          acknowledgedSet.has(step.id),
       ),
     [steps, verifiedFlags, acknowledgedSet],
+  );
+  const passedFlags = useMemo(
+    () => steps.map((_, i) => verifiedFlags[i] || acknowledgedOnlyFlags[i]),
+    [steps, verifiedFlags, acknowledgedOnlyFlags],
   );
   const firstUnpassed = passedFlags.indexOf(false);
   const maxReachable = firstUnpassed === -1 ? steps.length - 1 : firstUnpassed;
@@ -67,6 +85,9 @@ export function IntegrationWizard<Ctx>({
 
   const [index, setIndex] = useState(0);
   const initialisedRef = useRef(false);
+  // Flips true once the resume target is set, so focus-on-step-change (below)
+  // can arm WITHOUT stealing focus on the initial resume render.
+  const [ready, setReady] = useState(false);
 
   // Initialise the cursor ONCE, after both the persisted cursor and the provider
   // context have loaded, so the resume target is clamped against real gating.
@@ -82,6 +103,7 @@ export function IntegrationWizard<Ctx>({
     );
     setIndex(start);
     initialisedRef.current = true;
+    setReady(true);
   }, [
     contextLoading,
     cursor.loaded,
@@ -99,25 +121,45 @@ export function IntegrationWizard<Ctx>({
     }
   }, [index, maxReachable]);
 
+  // Focus management (a11y): on a step change, move focus to the new step's
+  // container so keyboard and screen-reader users are taken to the fresh content
+  // — and so focus is never dropped to <body> when the Continue button unmounts
+  // on the last step. The resume render itself does NOT steal focus (the page
+  // just loaded); only later navigations do.
+  const stepContainerRef = useRef<HTMLDivElement | null>(null);
+  const lastFocusedIndexRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!ready) return;
+    if (lastFocusedIndexRef.current === null) {
+      // First observation after the resume target settles — adopt it silently.
+      lastFocusedIndexRef.current = index;
+      return;
+    }
+    if (lastFocusedIndexRef.current !== index) {
+      lastFocusedIndexRef.current = index;
+      stepContainerRef.current?.focus();
+    }
+  }, [index, ready]);
+
   function goTo(next: number) {
     const clamped = Math.min(Math.max(next, 0), maxReachable);
     setIndex(clamped);
     cursor.persist(steps[clamped].id, cursor.acknowledged);
   }
 
-  // Acknowledge (skip) the active step and advance. Only an `optional` step can
-  // actually be skipped this way — acknowledging adds it to the passed set, so
-  // the next step becomes reachable. Persisting the enlarged acknowledged set
-  // both records the skip and drives the re-derived gating on the next render.
-  function acknowledgeActive() {
-    const active = steps[index];
-    if (active.optional !== true) return;
-    const nextAcknowledged = Array.from(
-      new Set([...cursor.acknowledged, active.id]),
-    );
-    const target = Math.min(index + 1, steps.length - 1);
-    setIndex(target);
-    cursor.persist(steps[target].id, nextAcknowledged);
+  // Skip an optional, unverified step: acknowledge it (persist its id so gating
+  // passes it) and advance. A no-op for a required or already-verified step.
+  function skipCurrent() {
+    const step = steps[index];
+    if (!isWizardStepOptional(step) || verifiedFlags[index]) return;
+    const nextAcknowledged = acknowledgedSet.has(step.id)
+      ? cursor.acknowledged
+      : [...cursor.acknowledged, step.id];
+    // On the last step there is nowhere to advance to; acknowledging it there
+    // flips the wizard into its complete state in place.
+    const nextIndex = Math.min(index + 1, steps.length - 1);
+    cursor.persist(steps[nextIndex].id, nextAcknowledged);
+    setIndex(nextIndex);
   }
 
   // Banner frame rendered in EVERY branch (the live-region-position rule,
@@ -144,11 +186,19 @@ export function IntegrationWizard<Ctx>({
     canEdit,
     refresh: onRefresh,
     goNext: () => goTo(index + 1),
-    acknowledge: acknowledgeActive,
     isVerified: verifiedFlags[index],
+    optional: isWizardStepOptional(activeStep),
+    acknowledged: acknowledgedOnlyFlags[index],
+    skip: skipCurrent,
   };
   const isLast = index === steps.length - 1;
   const currentPassed = passedFlags[index];
+  // A skip action shows only while an optional step is neither verified nor yet
+  // acknowledged (an acknowledged step is already passed and stays re-enterable).
+  const canSkip =
+    helpers.optional && !verifiedFlags[index] && !acknowledgedOnlyFlags[index];
+  const skipCopy = getWizardStepSkipCopy(activeStep);
+  const completionBadgeLabel = completion?.badgeLabel ?? "Complete";
 
   return (
     <div>
@@ -163,18 +213,23 @@ export function IntegrationWizard<Ctx>({
               ) : null}
             </div>
             <Badge variant={allPassed ? "success" : "secondary"}>
-              {allPassed ? "Complete" : `Step ${index + 1} of ${steps.length}`}
+              {allPassed
+                ? completionBadgeLabel
+                : `Step ${index + 1} of ${steps.length}`}
             </Badge>
           </div>
         </CardHeader>
         <CardContent className="space-y-6">
           {/* Stepper — a completed/reachable step is a button; an upcoming
-              (gated) step is disabled so the gate cannot be jumped. */}
-          <ol className="grid gap-2 sm:grid-cols-3">
+              (gated) step is disabled so the gate cannot be jumped. One column
+              on mobile; on wider screens the tracks auto-fit to the step count
+              so 2-, 3- and 4-step wizards (C4/C5) all lay out correctly. */}
+          <ol className="grid grid-cols-1 gap-2 sm:[grid-template-columns:repeat(auto-fit,minmax(11rem,1fr))]">
             {steps.map((step, i) => {
               const reachable = i <= maxReachable;
               const active = i === index;
-              const done = passedFlags[i];
+              const verified = verifiedFlags[i];
+              const acknowledgedOnly = acknowledgedOnlyFlags[i];
               return (
                 <li key={step.id}>
                   <button
@@ -194,20 +249,30 @@ export function IntegrationWizard<Ctx>({
                     <span
                       className={cn(
                         "flex h-6 w-6 shrink-0 items-center justify-center rounded-full border text-xs font-semibold",
-                        done
+                        verified
                           ? "border-emerald-600 bg-emerald-600 text-white"
-                          : active
-                            ? "border-primary text-foreground"
-                            : "border-border text-muted-foreground",
+                          : acknowledgedOnly
+                            ? "border-amber-500 bg-amber-500 text-white"
+                            : active
+                              ? "border-primary text-foreground"
+                              : "border-border text-muted-foreground",
                       )}
                     >
-                      {done ? <Check className="h-3.5 w-3.5" aria-hidden /> : i + 1}
+                      {verified ? (
+                        <Check className="h-3.5 w-3.5" aria-hidden />
+                      ) : (
+                        i + 1
+                      )}
                     </span>
                     <span className="min-w-0">
                       <span className="block truncate font-medium">
                         {step.title}
                       </span>
-                      {step.summary ? (
+                      {acknowledgedOnly ? (
+                        <span className="block truncate text-xs text-amber-700">
+                          Skipped for now
+                        </span>
+                      ) : step.summary ? (
                         <span className="block truncate text-xs text-muted-foreground">
                           {step.summary}
                         </span>
@@ -219,7 +284,14 @@ export function IntegrationWizard<Ctx>({
             })}
           </ol>
 
-          <div className="rounded-md border p-4">
+          {/* tabIndex={-1} focus target: the shell moves focus here on a step
+              change so keyboard/SR users land on the new content and focus is
+              never dropped to <body> when Continue unmounts on the last step. */}
+          <div
+            ref={stepContainerRef}
+            tabIndex={-1}
+            className="rounded-md border p-4 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
             {activeStep.render(context, helpers)}
           </div>
 
@@ -232,26 +304,47 @@ export function IntegrationWizard<Ctx>({
             >
               Back
             </Button>
-            {isLast ? (
-              allPassed ? (
-                <Badge variant="success">
-                  <Check className="mr-1 h-3.5 w-3.5" aria-hidden />
-                  Setup complete
-                </Badge>
+            <div className="flex flex-wrap items-center justify-end gap-3">
+              {canSkip ? (
+                <div className="flex flex-col items-end gap-0.5">
+                  <Button type="button" variant="ghost" onClick={skipCurrent}>
+                    {skipCopy.skipLabel}
+                  </Button>
+                  {skipCopy.skipDescription ? (
+                    <span className="max-w-xs text-right text-xs text-muted-foreground">
+                      {skipCopy.skipDescription}
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
+              {isLast ? (
+                allPassed ? (
+                  <div className="flex flex-col items-end gap-0.5">
+                    <Badge variant="success">
+                      <Check className="mr-1 h-3.5 w-3.5" aria-hidden />
+                      {completion?.message ?? "Setup complete"}
+                    </Badge>
+                    {completion?.hint ? (
+                      <span className="max-w-xs text-right text-xs text-muted-foreground">
+                        {completion.hint}
+                      </span>
+                    ) : null}
+                  </div>
+                ) : canSkip ? null : (
+                  <span className="text-sm text-muted-foreground">
+                    Complete this step to finish.
+                  </span>
+                )
               ) : (
-                <span className="text-sm text-muted-foreground">
-                  Complete this step to finish.
-                </span>
-              )
-            ) : (
-              <Button
-                type="button"
-                onClick={() => goTo(index + 1)}
-                disabled={!currentPassed}
-              >
-                Continue
-              </Button>
-            )}
+                <Button
+                  type="button"
+                  onClick={() => goTo(index + 1)}
+                  disabled={!currentPassed}
+                >
+                  Continue
+                </Button>
+              )}
+            </div>
           </div>
         </CardContent>
       </Card>
