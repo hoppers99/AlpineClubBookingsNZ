@@ -171,10 +171,12 @@ re-creatable.
   That tooltip never appears (disabled buttons receive no pointer events), and
   gated controls also stay out of the keyboard tab order, so "tab to the button
   to hear why" is wrong too. **Check the screen before you write "the banner
-  says why":** 53 controls still carry their own per-button reason instead —
+  says why":** 32 controls still carry their own per-button reason instead —
   controls inside a dialog, popover, or dropdown; leaf toolbars dropped into
-  another page's layout; and, most of all, the **member detail per-record cards**
-  (`/admin/members/[id]`), which are unconverted pending owner decision #2168.
+  another page's layout; and the member detail **credit** card, whose buttons
+  are gated on finance while that page's banner states membership. The member
+  detail page itself was converted under owner decision #2168 and now shows ONE
+  banner covering its eight membership-scoped cards.
   See `docs/ARCHITECTURE.md` for the full list of shapes and counts. And note
   the banner is stated once per **section**, not once per screen: a page built
   from several banner-bearing sections repeats it once per section, so
@@ -182,9 +184,11 @@ re-creatable.
   is ruled out is *nesting* — a banner-bearing component never renders another
   one, so no admin meets the sentence twice over the same controls. So on a
   multi-section page, write "each section says so at the top", not "the page
-  says so once at the top". Whether stacked sibling banners should collapse into
-  a single page-level one is an open design question, and is exactly what owner
-  decision #2168 is deciding for the member detail page.
+  says so once at the top" — **except** `/admin/members/[id]`, which owner
+  decision #2168 made a genuine one-banner page, so there the page-level phrasing
+  is the correct one. Whether stacked sibling banners elsewhere should collapse
+  the same way is still an open design question; do not write guides that assume
+  they have.
 
 ## Guide opening line (canonical)
 

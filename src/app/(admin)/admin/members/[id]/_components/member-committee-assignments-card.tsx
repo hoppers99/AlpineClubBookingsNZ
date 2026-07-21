@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import {
   AdminViewOnlyNotice,
   ViewOnlyActionButton,
+  type AncestorViewOnlyBannerProps,
 } from "@/components/admin/view-only-action";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -30,7 +31,7 @@ interface RolesResponse {
   roles: CommitteeRoleSummary[];
 }
 
-interface MemberCommitteeAssignmentsCardProps {
+interface MemberCommitteeAssignmentsCardProps extends AncestorViewOnlyBannerProps {
   member: MemberDetail;
   onSaved: () => Promise<void>;
   className?: string;
@@ -82,6 +83,7 @@ export function MemberCommitteeAssignmentsCard({
   member,
   onSaved,
   className,
+  ancestorRendersViewOnlyBanner = false,
 }: MemberCommitteeAssignmentsCardProps) {
   // Add/edit/remove write /api/admin/committee/assignments (membership area); a
   // view-only membership admin sees the assignments but cannot change them
@@ -343,13 +345,20 @@ export function MemberCommitteeAssignmentsCard({
             membership type.
           </p>
         </div>
-        <ViewOnlyActionButton canEdit={canEdit} onClick={openAddForm} disabled={rolesLoading || activeRoles.length === 0}>
+        <ViewOnlyActionButton canEdit={canEdit} describeReason={!ancestorRendersViewOnlyBanner} onClick={openAddForm} disabled={rolesLoading || activeRoles.length === 0}>
           <Plus className="mr-2 h-4 w-4" />
           Add Assignment
         </ViewOnlyActionButton>
       </CardHeader>
       <CardContent className="space-y-4">
-        {!canEdit ? (
+        {/*
+          #2168: dropped only when an ancestor vouches that it states the same
+          membership scope above this card — on `/admin/members/[id]` the page
+          banner does, and repeating it here would be the same sentence twice.
+          Rendered standalone, or under any parent that does not vouch, the
+          Notice stays and this card still explains itself.
+        */}
+        {!ancestorRendersViewOnlyBanner ? (
           <AdminViewOnlyNotice canEdit={canEdit}>
             Your admin role can view committee assignments but cannot add, edit,
             or remove them.
@@ -518,7 +527,7 @@ export function MemberCommitteeAssignmentsCard({
               </div>
             ) : null}
             <div className="mt-4 flex gap-2">
-              <ViewOnlyActionButton canEdit={canEdit} type="submit" disabled={saving}>
+              <ViewOnlyActionButton canEdit={canEdit} describeReason={!ancestorRendersViewOnlyBanner} type="submit" disabled={saving}>
                 <Save className="mr-2 h-4 w-4" />
                 Save Assignment
               </ViewOnlyActionButton>
@@ -584,6 +593,7 @@ export function MemberCommitteeAssignmentsCard({
                   <div className="flex gap-1">
                     <ViewOnlyActionButton
                       canEdit={canEdit}
+                      describeReason={!ancestorRendersViewOnlyBanner}
                       variant="ghost"
                       size="sm"
                       aria-label="Edit assignment"
@@ -593,6 +603,7 @@ export function MemberCommitteeAssignmentsCard({
                     </ViewOnlyActionButton>
                     <ViewOnlyActionButton
                       canEdit={canEdit}
+                      describeReason={!ancestorRendersViewOnlyBanner}
                       variant="ghost"
                       size="sm"
                       aria-label="Remove assignment"

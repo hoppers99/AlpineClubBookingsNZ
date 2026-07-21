@@ -1,6 +1,9 @@
 "use client"
 
-import { ViewOnlyActionButton } from "@/components/admin/view-only-action"
+import {
+  ViewOnlyActionButton,
+  type AncestorViewOnlyBannerProps,
+} from "@/components/admin/view-only-action"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Trash2 } from "lucide-react"
 import { formatMemberDateNz } from "@/lib/admin-member-detail-helpers"
@@ -10,7 +13,7 @@ import type {
   MemberLifecycleActionRequest,
 } from "../_types"
 
-interface MemberDeletionCardProps {
+interface MemberDeletionCardProps extends AncestorViewOnlyBannerProps {
   deleteEligibility: MemberDeleteEligibility
   deleteRequests: MemberLifecycleActionRequest[]
   pendingDeleteRequest: MemberLifecycleActionRequest | undefined
@@ -43,6 +46,7 @@ export function MemberDeletionCard({
   onOpenReviewDialog,
   canEdit,
   className,
+  ancestorRendersViewOnlyBanner = false,
 }: MemberDeletionCardProps) {
   const deleteBlockers = deleteEligibility.blockers
 
@@ -57,6 +61,7 @@ export function MemberDeletionCard({
         </div>
         <ViewOnlyActionButton
           canEdit={canEdit}
+          describeReason={!ancestorRendersViewOnlyBanner}
           variant="destructive"
           size="sm"
           onClick={onOpenRequestDialog}
@@ -78,6 +83,7 @@ export function MemberDeletionCard({
             <div className="mt-3 flex flex-wrap gap-2">
               <ViewOnlyActionButton
                 canEdit={canEdit}
+                describeReason={!ancestorRendersViewOnlyBanner}
                 size="sm"
                 variant="destructive"
                 onClick={() => onOpenReviewDialog(pendingDeleteRequest, "approve")}
@@ -87,6 +93,7 @@ export function MemberDeletionCard({
               </ViewOnlyActionButton>
               <ViewOnlyActionButton
                 canEdit={canEdit}
+                describeReason={!ancestorRendersViewOnlyBanner}
                 size="sm"
                 variant="outline"
                 onClick={() => onOpenReviewDialog(pendingDeleteRequest, "reject")}

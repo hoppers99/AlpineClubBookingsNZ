@@ -162,6 +162,7 @@ import { MemberLodgeAccessCard } from "@/app/(admin)/admin/members/[id]/_compone
 import { MemberPartnerLinkCard } from "@/app/(admin)/admin/members/[id]/_components/member-partner-link-card";
 import { MemberSeasonalMembershipCard } from "@/app/(admin)/admin/members/[id]/_components/member-seasonal-membership-card";
 import { MemberCommitteeAssignmentsCard } from "@/app/(admin)/admin/members/[id]/_components/member-committee-assignments-card";
+import { MemberLifecycleCard } from "@/app/(admin)/admin/members/[id]/_components/member-lifecycle-card";
 import { MemberDetailHeader } from "@/app/(admin)/admin/members/[id]/_components/member-detail-header";
 import { MemberContactGroup } from "@/app/(admin)/admin/members/[id]/_components/member-contact-group";
 import type { MemberGroupEditState } from "@/app/(admin)/admin/members/[id]/_hooks/use-member-group-edit";
@@ -3527,4 +3528,278 @@ describe("SiteContentPanel session-resolution neutral state (#2065)", () => {
       screen.queryByText(/View only — your admin role cannot edit/i),
     ).not.toBeInTheDocument();
   });
+});
+
+// ---------------------------------------------------------------------------
+// #2168 — the member detail page renders ONE view-only banner and the eight
+// membership-scoped cards below it hand over their per-button reason.
+//
+// This is the BEHAVIOURAL check of the property that
+// `src/components/admin/__tests__/view-only-banner-contract.test.ts` proves
+// statically, and it is deliberately independent of that mechanism: it renders
+// the real components and looks at what a view-only admin actually gets, so a
+// bug in the static analysis cannot make it pass.
+//
+// Two halves, and BOTH matter:
+//
+//  - default (no vouching parent): every gated control still carries the
+//    reason, and the three cards that own a Notice still render it. This is the
+//    half that guarantees the opt-out can never orphan an explanation — drop a
+//    card into a dialog, a new page, or a test, and it explains itself.
+//  - vouched: the reason and the same-scope Notice are gone, and the control is
+//    still disabled. Gating never depends on this prop; only who states the
+//    reason does.
+// ---------------------------------------------------------------------------
+
+describe("member detail cards hand their reason to the page banner (#2168)", () => {
+  afterEach(() => {
+    sessionMatrix = null;
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  const member = {
+    id: "m1",
+    firstName: "Pat",
+    lastName: "Kea",
+    email: "pat@example.test",
+    role: "MEMBER",
+    parentLinks: [],
+    dependents: [],
+    subscriptions: [],
+    seasonalMembershipAssignments: [],
+    committeeAssignments: [],
+  };
+
+  interface VouchCase {
+    name: string;
+    routes?: Record<string, unknown>;
+    /** A control the card gates, used to prove gating is unchanged. */
+    control: RegExp;
+    /** Same-scope Notice the card drops when an ancestor vouches, if any. */
+    notice?: RegExp;
+    render: (vouched: boolean) => void;
+  }
+
+  const cases: VouchCase[] = [
+    {
+      name: "MemberDeletionCard",
+      control: /Request Delete/i,
+      render: (vouched) =>
+        render(
+          <MemberDeletionCard
+            {...({
+              deleteEligibility: { eligible: true, blockers: [] },
+              deleteRequests: [],
+              pendingDeleteRequest: undefined,
+              approvalBlockerCount: 0,
+              canReviewPendingDeleteRequest: true,
+              onOpenRequestDialog: vi.fn(),
+              onOpenReviewDialog: vi.fn(),
+            } as unknown as ComponentProps<typeof MemberDeletionCard>)}
+            canEdit={false}
+            ancestorRendersViewOnlyBanner={vouched}
+          />,
+        ),
+    },
+    {
+      name: "MemberDependentsCard",
+      control: /Add Dependent/i,
+      render: (vouched) =>
+        render(
+          <MemberDependentsCard
+            {...({
+              member,
+              isAdultMember: true,
+              memberIsArchived: false,
+              currentMemberPath: "/admin/members/m1",
+              unlinkingDependentId: null,
+              onOpenDependentDialog: vi.fn(),
+              onUnlinkDependent: vi.fn(),
+            } as unknown as ComponentProps<typeof MemberDependentsCard>)}
+            canEdit={false}
+            ancestorRendersViewOnlyBanner={vouched}
+          />,
+        ),
+    },
+    {
+      name: "MemberParentLinksCard",
+      control: /Add Parent/i,
+      render: (vouched) =>
+        render(
+          <MemberParentLinksCard
+            {...({
+              member,
+              memberIsArchived: false,
+              currentMemberPath: "/admin/members/m1",
+              unlinkingDependentId: null,
+              onOpenParentLinkDialog: vi.fn(),
+              onUnlinkParent: vi.fn(),
+            } as unknown as ComponentProps<typeof MemberParentLinksCard>)}
+            canEdit={false}
+            ancestorRendersViewOnlyBanner={vouched}
+          />,
+        ),
+    },
+    {
+      name: "MemberLifecycleCard",
+      control: /Request Archive/i,
+      render: (vouched) =>
+        render(
+          <MemberLifecycleCard
+            {...({
+              member,
+              pendingArchiveRequest: null,
+              reviewedArchiveRequests: [],
+              isArchiveRequester: false,
+              canRequestArchive: true,
+              canRequestCancellation: false,
+              openCancellationRequest: null,
+              archiveError: "",
+              archiveReason: "",
+              archiveReviewNotes: {},
+              archiveActionLoading: null,
+              cancellationError: "",
+              cancellationReason: "",
+              cancellationSubmitting: false,
+              onChangeArchiveReason: vi.fn(),
+              onChangeArchiveReviewNote: vi.fn(),
+              onChangeCancellationReason: vi.fn(),
+              onSubmitArchive: vi.fn(),
+              onSubmitCancellation: vi.fn(),
+              onReviewArchive: vi.fn(),
+            } as unknown as ComponentProps<typeof MemberLifecycleCard>)}
+            canEdit={false}
+            ancestorRendersViewOnlyBanner={vouched}
+          />,
+        ),
+    },
+    {
+      name: "MemberPartnerLinkCard",
+      routes: {
+        "/api/admin/members/m1/partner-link": {
+          confirmed: null,
+          pendingIncoming: [],
+          pendingOutgoing: [],
+        },
+      },
+      control: /Assign Partner/i,
+      render: (vouched) =>
+        render(
+          <MemberPartnerLinkCard
+            memberId="m1"
+            isAdultMember
+            memberIsArchived={false}
+            currentMemberPath="/admin/members/m1"
+            ancestorRendersViewOnlyBanner={vouched}
+          />,
+        ),
+    },
+    {
+      name: "MemberSeasonalMembershipCard",
+      routes: { "/api/admin/membership-types": { membershipTypes: [] } },
+      control: /Preview/i,
+      notice: /can view the seasonal membership type but cannot/i,
+      render: (vouched) =>
+        render(
+          <MemberSeasonalMembershipCard
+            member={
+              member as unknown as ComponentProps<
+                typeof MemberSeasonalMembershipCard
+              >["member"]
+            }
+            onSaved={vi.fn()}
+            ancestorRendersViewOnlyBanner={vouched}
+          />,
+        ),
+    },
+    {
+      name: "MemberCommitteeAssignmentsCard",
+      routes: { "/api/admin/committee/roles": { roles: [] } },
+      control: /Add Assignment/i,
+      notice: /can view committee assignments but cannot/i,
+      render: (vouched) =>
+        render(
+          <MemberCommitteeAssignmentsCard
+            member={
+              member as unknown as ComponentProps<
+                typeof MemberCommitteeAssignmentsCard
+              >["member"]
+            }
+            onSaved={vi.fn()}
+            ancestorRendersViewOnlyBanner={vouched}
+          />,
+        ),
+    },
+    {
+      name: "MemberLodgeAccessCard",
+      routes: {
+        "/api/admin/lodges": {
+          lodges: [
+            { id: "l1", name: "Lodge One", active: true },
+            { id: "l2", name: "Lodge Two", active: true },
+          ],
+        },
+        "/api/admin/members/m1/lodge-access": { lodgeAccess: [] },
+      },
+      control: /Save Lodge Access/i,
+      notice: /can view lodge access but cannot change it/i,
+      render: (vouched) =>
+        render(
+          <MemberLodgeAccessCard
+            memberId="m1"
+            ancestorRendersViewOnlyBanner={vouched}
+          />,
+        ),
+    },
+  ];
+
+  for (const testCase of cases) {
+    it(`${testCase.name} states the reason itself when nothing vouches for it`, async () => {
+      sessionMatrix = matrix("view", { membership: "view" });
+      if (testCase.routes) stubFetchRoutes(testCase.routes);
+      testCase.render(false);
+
+      const control = await screen.findByRole("button", {
+        name: testCase.control,
+      });
+      expect(control).toBeDisabled();
+      expect(control).toHaveAttribute("title", ADMIN_VIEW_ONLY_ACTION_REASON);
+      const describedBy = control.getAttribute("aria-describedby");
+      expect(describedBy).toBeTruthy();
+      expect(document.getElementById(describedBy ?? "")).toHaveTextContent(
+        ADMIN_VIEW_ONLY_ACTION_REASON,
+      );
+      if (testCase.notice) {
+        expect(screen.getByText(testCase.notice)).toBeInTheDocument();
+      }
+    });
+
+    it(`${testCase.name} hands the reason over when an ancestor vouches`, async () => {
+      sessionMatrix = matrix("view", { membership: "view" });
+      if (testCase.routes) stubFetchRoutes(testCase.routes);
+      testCase.render(true);
+
+      const control = await screen.findByRole("button", {
+        name: testCase.control,
+      });
+      // Gating is untouched — only WHERE the explanation lives changes.
+      expect(control).toBeDisabled();
+      expect(control).not.toHaveAttribute(
+        "title",
+        ADMIN_VIEW_ONLY_ACTION_REASON,
+      );
+      // Not one control in the card keeps the reason, not just this one.
+      expect(
+        document.querySelectorAll(`[title="${ADMIN_VIEW_ONLY_ACTION_REASON}"]`)
+          .length,
+      ).toBe(0);
+      expect(
+        screen.queryByText(ADMIN_VIEW_ONLY_ACTION_REASON),
+      ).not.toBeInTheDocument();
+      if (testCase.notice) {
+        expect(screen.queryByText(testCase.notice)).not.toBeInTheDocument();
+      }
+    });
+  }
 });
