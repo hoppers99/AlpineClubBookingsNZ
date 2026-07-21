@@ -52,6 +52,7 @@ import {
   type ContrastWarning,
 } from "@/lib/club-theme-schema";
 import { buildThemeSubstrate } from "@/lib/theme/theme-substrate";
+import { buildAppThemeTokens } from "@/lib/theme/app-tokens";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import {
   AdminForbiddenSaveNotice,
@@ -117,7 +118,15 @@ function themePayload(values: ClubThemeValues, completeSetup: boolean) {
 function previewStyle(values: ClubThemeValues): CSSProperties {
   const muted = deriveAppMutedForeground(values);
   const brand = deriveBrandShims(values);
+  // #2187 (c) — the preview emits the FULL generated substrate set via the same
+  // shipping emitter as `buildClubThemeAppCss` (`--gen-*` / `--gen-*-dark`), not
+  // just the `--brand-*` shims, so the sample paints exactly the palette that
+  // ships for the seeds being edited.
+  const generated = buildAppThemeTokens(
+    themeSeedsFromValues(values),
+  ).tokens as Record<string, string>;
   return {
+    ...generated,
     "--app-muted-foreground": muted.light,
     "--app-muted-foreground-dark": muted.dark,
     "--brand-gold": brand.gold,

@@ -2,6 +2,7 @@ import {
   buildThemeSubstrate,
   type ThemeSeeds,
 } from "@/lib/theme/theme-substrate";
+import { serializeAppThemeTokens } from "@/lib/theme/app-tokens";
 
 export const CLUB_THEME_ID = "default";
 export const MAX_LOGO_DATA_URL_BYTES = 900_000;
@@ -304,7 +305,12 @@ export function buildClubThemeAppCss(
 ): string {
   const theme = normaliseThemeValues(value);
   const muted = deriveAppMutedForeground(theme);
-  return `.app-theme-scope{${buildClubThemeDeclarations(theme)}--app-muted-foreground:${muted.light};--app-muted-foreground-dark:${muted.dark};}`;
+  // #2187 P1 — emit the full GENERATED substrate (`--gen-*` / `--gen-*-dark`)
+  // that the static `.app-theme-scope` blocks in globals.css consume. The legacy
+  // `--brand-*` shims stay (buildClubThemeDeclarations) so website/app brand
+  // utilities keep working through P1 (deleted in P2/P3).
+  const generated = serializeAppThemeTokens(themeSeedsFromValues(theme));
+  return `.app-theme-scope{${buildClubThemeDeclarations(theme)}${generated}--app-muted-foreground:${muted.light};--app-muted-foreground-dark:${muted.dark};}`;
 }
 
 function buildClubThemeDeclarations(theme: ClubThemeValues): string {

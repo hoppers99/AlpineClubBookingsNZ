@@ -8,7 +8,9 @@ import {
   DEFAULT_CLUB_THEME_VALUES,
   contrastRatio,
   deriveAppMutedForeground,
+  themeSeedsFromValues,
 } from "@/lib/club-theme-schema";
+import { defaultAppRoleFallbacks } from "@/lib/theme/app-tokens";
 
 function readRepoFile(path: string) {
   return readFileSync(join(process.cwd(), path), "utf8");
@@ -146,75 +148,102 @@ describe("database theme app-shell contract", () => {
     expect(alert).not.toMatch(/error:.*destructive/);
   });
 
-  it("maps app presentation tokens to brand variables without remapping semantic status", () => {
+  // #2187 P1 — the RESTYLE wire-up. The app core tokens no longer alias the
+  // `--brand-*` shims: each resolves from the GENERATED substrate that
+  // `buildClubThemeAppCss` emits at render time (`--gen-<token>` light /
+  // `--gen-<token>-dark` dark), with a static default-palette fallback for the
+  // no-stylesheet case. The fallback literals are derived from the same
+  // substrate here so the CSS and the code cannot drift (F1: no `var(--brand-*)`
+  // in the dark block; the #2144 split: `--accent`=neutral-4 ≠ `--muted`/
+  // `--secondary`=neutral-3).
+  it("resolves app presentation tokens from the generated substrate without remapping semantic status", () => {
     const globals = readRepoFile("src/app/globals.css");
     const start = globals.indexOf(".app-theme-scope {");
     const end = globals.indexOf("/* App headings pick up", start);
     const appThemeRules = globals.slice(start, end);
     const darkStart = appThemeRules.indexOf(".dark .app-theme-scope {");
     const lightRules = appThemeRules.slice(0, darkStart);
-    const darkRules = appThemeRules.slice(darkStart);
+    // The dark CORE-token block only (up to its closing brace) — the F1 target.
+    // Rules AFTER it (e.g. the `.bg-primary` charcoal outline) legitimately keep
+    // brand refs and must not fall inside the grep-proof slice.
+    const darkRules = appThemeRules.slice(
+      darkStart,
+      appThemeRules.indexOf("}", darkStart) + 1,
+    );
 
-    expect(appThemeRules).toContain("--primary: var(--brand-gold)");
-    for (const token of ["background", "card", "popover"]) {
-      expect(lightRules).toContain(`--${token}: var(--brand-snow)`);
-    }
-    for (const token of ["secondary", "muted", "accent"]) {
-      expect(lightRules).toContain(`--${token}: var(--brand-mist)`);
-    }
-    for (const token of [
+    const fb = defaultAppRoleFallbacks(
+      themeSeedsFromValues(DEFAULT_CLUB_THEME_VALUES),
+    );
+
+    const roleTokens = [
+      "background",
       "foreground",
+      "card",
       "card-foreground",
+      "popover",
       "popover-foreground",
+      "primary",
+      "primary-foreground",
+      "secondary",
       "secondary-foreground",
+      "muted",
+      "accent",
       "accent-foreground",
-    ]) {
-      expect(lightRules).toContain(`--${token}: var(--brand-deep)`);
+      "app-accent-text",
+      "border",
+      "input",
+      "ring",
+      "chart-1",
+      "chart-2",
+      "chart-3",
+      "chart-4",
+      "chart-5",
+      "sidebar",
+      "sidebar-foreground",
+      "sidebar-primary",
+      "sidebar-primary-foreground",
+      "sidebar-accent",
+      "sidebar-accent-foreground",
+      "sidebar-border",
+      "sidebar-ring",
+    ];
+
+    // Every role token wires to its generated prop with the derived fallback.
+    for (const token of roleTokens) {
+      expect(
+        lightRules,
+        `light --${token} must consume the generated substrate prop`,
+      ).toContain(`--${token}: var(--gen-${token}, ${fb.light[token]});`);
+      expect(
+        darkRules,
+        `dark --${token} must consume the generated substrate prop`,
+      ).toContain(`--${token}: var(--gen-${token}-dark, ${fb.dark[token]});`);
     }
-    // `--muted-foreground` is deliberately NOT in that list (#2145): it is a
-    // semantic role, so it must resolve to a DERIVED tone rather than alias
-    // `--foreground`/`--brand-deep`.
+
+    // F1 grep-proof: no `var(--brand-*)` survives in the dark core block
+    // (comments stripped, so this measures declarations, not prose).
+    const darkDeclarations = darkRules.replaceAll(/\/\*[\s\S]*?\*\//g, "");
+    expect(darkDeclarations).not.toMatch(/var\(--brand-/);
+
+    // The #2144 hover fix: `--accent` (neutral-4) is one band off
+    // `--muted`/`--secondary` (neutral-3) in BOTH modes — distinct hexes.
+    expect(fb.light.accent).not.toBe(fb.light.muted);
+    expect(fb.light.muted).toBe(fb.light.secondary);
+    expect(fb.dark.accent).not.toBe(fb.dark.muted);
+    expect(fb.dark.muted).toBe(fb.dark.secondary);
+
+    // `--muted-foreground` is deliberately NOT routed through the substrate
+    // (#2145): it stays a measured-AA derived tone, not a raw neutral step.
     expect(lightRules).toContain(
       "--muted-foreground: var(--app-muted-foreground,",
     );
-    expect(lightRules).not.toContain("--muted-foreground: var(--brand-deep)");
-    expect(lightRules).toContain("--sidebar: var(--brand-charcoal)");
-    expect(lightRules).toContain("--sidebar-accent: var(--brand-deep)");
-    expect(lightRules).toContain("--sidebar-foreground: var(--brand-snow)");
-    expect(lightRules).toContain("--sidebar-accent-foreground: var(--brand-snow)");
-    expect(lightRules).toContain("--ring: var(--brand-deep)");
-    expect(lightRules).toContain("--sidebar-ring: var(--brand-snow)");
-    expect(darkRules).toContain("--background: var(--brand-deep)");
-    for (const token of [
-      "card",
-      "popover",
-      "secondary",
-      "muted",
-      "accent",
-      "sidebar",
-    ]) {
-      expect(darkRules).toContain(`--${token}: var(--brand-charcoal)`);
-    }
-    for (const token of [
-      "foreground",
-      "card-foreground",
-      "popover-foreground",
-      "secondary-foreground",
-      "accent-foreground",
-      "sidebar-foreground",
-      "sidebar-accent-foreground",
-    ]) {
-      expect(darkRules).toContain(`--${token}: var(--brand-snow)`);
-    }
     expect(darkRules).toContain(
       "--muted-foreground: var(--app-muted-foreground-dark,",
     );
-    expect(darkRules).not.toContain("--muted-foreground: var(--brand-snow)");
-    expect(darkRules).toContain("--sidebar-accent: var(--brand-deep)");
-    expect(darkRules).toContain("--ring: var(--brand-snow)");
-    expect(darkRules).toContain("--sidebar-ring: var(--brand-snow)");
-    expect(lightRules).toContain("--app-accent-text: var(--brand-deep)");
-    expect(darkRules).toContain("--app-accent-text: var(--brand-snow)");
+    expect(lightRules).not.toContain("--muted-foreground: var(--gen-");
+    expect(darkRules).not.toContain("--muted-foreground: var(--gen-");
+
+    // No core token is expressed as an unmeasurable color-mix.
     expect(appThemeRules).not.toMatch(
       /--(?:background|foreground|card|card-foreground|popover|popover-foreground|secondary|secondary-foreground|muted|muted-foreground|accent|accent-foreground|sidebar|sidebar-foreground|sidebar-accent|sidebar-accent-foreground):\s*color-mix/,
     );
@@ -228,6 +257,7 @@ describe("database theme app-shell contract", () => {
     expect(appThemeRules).toContain("outline-offset: 2px !important");
     expect(appThemeRules).toContain("--font-website-body");
     expect(appThemeRules).toContain("--font-website-heading");
+    // The app block still declares no semantic status tokens (#1808).
     expect(appThemeRules).not.toMatch(
       /--(?:success|warning|info|danger)(?:-|:)/,
     );
