@@ -170,11 +170,26 @@ enum MembershipSubscriptionChargeStatus {
   EMAIL_FAILED
   EMAILED
   CONFLICT
+  // #2147: the charge's Xero invoice was observed VOIDED/DELETED by the
+  // membership sync. The row is KEPT for audit; its coverage claim is released
+  // (MembershipSubscriptionChargeCoverage.releasedAt) so the member becomes
+  // re-billable. Every delivery/retry consumer ignores a VOIDED charge.
+  VOIDED
 }
 
 enum MembershipBillingExceptionStatus {
   OPEN
   RESOLVED
+}
+
+// #2148 (D2): how an OPEN billing exception reached RESOLVED. CONFIRM =
+// resolved by a confirm run superseding it; PREVIEW_RECONCILE = auto-resolved
+// by an edit-gated preview refresh whose fresh preview no longer regenerated
+// it. Null on legacy rows resolved before this field existed and on every
+// still-OPEN row.
+enum MembershipBillingExceptionResolution {
+  CONFIRM
+  PREVIEW_RECONCILE
 }
 
 enum FamilyBillingMode {
@@ -587,6 +602,8 @@ model Member {
   memberSubscriptionsManuallyPaid            MemberSubscription[]                    @relation("MemberSubscriptionManualPaidBy")
   membershipChargesReceived                  MembershipSubscriptionCharge[]          @relation("MembershipChargeRecipient")
   membershipChargesConfirmed                 MembershipSubscriptionCharge[]          @relation("MembershipChargeConfirmer")
+  familyInvoiceMarkersMarked                 FamilyGroupSeasonInvoiceMarker[]        @relation("FamilyInvoiceMarkerMarkedBy")
+  familyInvoiceMarkersReleased               FamilyGroupSeasonInvoiceMarker[]        @relation("FamilyInvoiceMarkerReleasedBy")
   membershipBillingExceptions                MembershipBillingException[]            @relation("MembershipBillingExceptionMember")
   seasonalMembershipAssignments              SeasonalMembershipAssignment[]             @relation("SeasonalMembershipAssignmentMember")
   seasonalMembershipAssignmentsAssigned      SeasonalMembershipAssignment[]             @relation("SeasonalMembershipAssignmentAssignedBy")
@@ -924,13 +941,25 @@ model MemberSubscription {
   manuallyMarkedPaidAt         DateTime?
   manuallyMarkedPaidByMemberId String?
   manualPaymentNote            String?   @db.VarChar(500)
+  // #2147: monotonic re-bill discriminator. Incremented each time the
+  // membership sync observes this season's Xero invoice VOIDED/DELETED and
+  // releases the coverage claim. The confirm step folds it into the charge
+  // idempotencyKey so a post-void re-bill mints a NEW charge instead of
+  // no-op-ing onto the released one. Stays 0 for a never-voided subscription,
+  // which keeps the idempotencyKey byte-identical to the pre-#2147 shape.
+  voidGeneration       Int       @default(0)
   createdAt            DateTime           @default(now())
   updatedAt            DateTime           @updatedAt
 
   // Relations
   member Member @relation(fields: [memberId], references: [id], onDelete: Cascade)
   manuallyMarkedPaidBy Member? @relation("MemberSubscriptionManualPaidBy", fields: [manuallyMarkedPaidByMemberId], references: [id], onDelete: SetNull)
-  chargeCoverage MembershipSubscriptionChargeCoverage?
+  // #2147: was a to-one relation while coverage.subscriptionId was @unique.
+  // Now that a released claim is retained alongside a fresh active claim, a
+  // subscription can accrue several coverage rows over its lifetime (at most
+  // one ACTIVE — releasedAt IS NULL — at a time, enforced by the raw-SQL
+  // partial unique index in prisma/partial-unique-indexes.tsv).
+  chargeCoverage MembershipSubscriptionChargeCoverage[]
 
   @@unique([memberId, seasonYear])
   @@index([memberId])
@@ -1023,9 +1052,19 @@ model MembershipSubscriptionChargeComponent {
 model MembershipSubscriptionChargeCoverage {
   id             String   @id @default(cuid())
   chargeId       String
-  subscriptionId String   @unique
+  subscriptionId String
   memberId       String
   memberName     String
+  // #2147: null while the claim is ACTIVE. Set (never cleared, row never
+  // deleted) when the membership sync observes the charge's Xero invoice
+  // VOIDED/DELETED, releasing the claim so a fresh preview can re-bill the
+  // member. The dedup skip-set and the confirm coveredAlready check count only
+  // active (releasedAt IS NULL) claims. "One active claim per subscription" is
+  // enforced by the raw-SQL partial unique index
+  // MembershipSubscriptionChargeCoverage_active_subscription_unique
+  // (prisma/partial-unique-indexes.tsv) — Prisma cannot express it, which is
+  // why the plain subscriptionId @unique was dropped.
+  releasedAt     DateTime?
   createdAt      DateTime @default(now())
 
   charge       MembershipSubscriptionCharge @relation(fields: [chargeId], references: [id], onDelete: Restrict)
@@ -1033,7 +1072,48 @@ model MembershipSubscriptionChargeCoverage {
 
   @@unique([chargeId, subscriptionId], map: "MembershipChargeCoverage_charge_subscription_key")
   @@index([chargeId])
+  @@index([subscriptionId])
   @@index([memberId, createdAt])
+}
+
+// #2161 (D2): an explicit operator "already invoiced" marker for one family
+// group in one membership season. An operator sets this when they KNOW an
+// ambiguous legacy invoice — e.g. one sitting on a member whose current resolved
+// billing basis is PER_MEMBER — actually covered the whole family. It closes the
+// double-billing window the #2161 D1 predicate refinement re-opens for
+// mixed-basis families (where a PER_MEMBER member's personal live invoice no
+// longer blocks the family fee). An ACTIVE marker (releasedAt IS NULL) suppresses
+// the family's PER_FAMILY charge in the billing preview — and therefore in the
+// in-transaction confirm re-preview — regardless of the D1 predicate. Unmark sets
+// releasedAt (the row is retained for audit, mirroring the coverage-release
+// pattern in MembershipSubscriptionChargeCoverage); a fresh mark then inserts a
+// new row. "At most one ACTIVE marker per (familyGroupId, seasonYear)" is enforced
+// by the raw-SQL partial unique index FamilyGroupSeasonInvoiceMarker_active_unique
+// (prisma/partial-unique-indexes.tsv) — Prisma cannot express a partial unique
+// index. The audit FKs are nullable + SetNull (mirroring
+// MembershipSubscriptionCharge.confirmedByMemberId) so removing the operator
+// account never deletes the marker.
+model FamilyGroupSeasonInvoiceMarker {
+  id                 String    @id @default(cuid())
+  familyGroupId      String
+  seasonYear         Int
+  markedByMemberId   String?
+  markedAt           DateTime  @default(now())
+  // Optional free text, e.g. the covering invoice number the operator knows about.
+  note               String?
+  releasedAt         DateTime?
+  releasedByMemberId String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  familyGroup FamilyGroup @relation(fields: [familyGroupId], references: [id], onDelete: Cascade)
+  markedBy    Member?     @relation("FamilyInvoiceMarkerMarkedBy", fields: [markedByMemberId], references: [id], onDelete: SetNull)
+  releasedBy  Member?     @relation("FamilyInvoiceMarkerReleasedBy", fields: [releasedByMemberId], references: [id], onDelete: SetNull)
+
+  @@index([familyGroupId, seasonYear])
+  @@index([seasonYear])
+  @@index([markedByMemberId])
+  @@index([releasedByMemberId])
 }
 
 model MembershipBillingException {
@@ -1051,6 +1131,9 @@ model MembershipBillingException {
   firstSeenAt    DateTime                         @default(now())
   lastSeenAt     DateTime                         @default(now())
   resolvedAt     DateTime?
+  // #2148 (D2): resolution provenance — CONFIRM vs PREVIEW_RECONCILE. Null while
+  // OPEN and on rows resolved before this column existed.
+  resolvedVia    MembershipBillingExceptionResolution?
   createdAt      DateTime                         @default(now())
   updatedAt      DateTime                         @updatedAt
 
@@ -2711,6 +2794,45 @@ model XeroToken {
 }
 
 // ---------------------------------------------------------------------------
+// Encrypted integration credentials (guided provider setup — #2079)
+// ---------------------------------------------------------------------------
+//
+// Provider credentials (Xero client id/secret/webhook key here; Stripe/Google/
+// Backup in later epic lanes) encrypted at rest with AES-256-GCM under a key
+// derived from the app auth secret via HKDF-SHA256. The database is the ONLY
+// credential source — legacy provider env vars are detected and flagged, never
+// honoured. Standalone table (no FK coupling) so the migration is a pure
+// blue/green EXPAND. See src/lib/integration-crypto.ts and
+// src/lib/integration-credentials.ts.
+model IntegrationCredential {
+  id           String   @id @default(cuid())
+  // Logical provider namespace, e.g. "xero", "stripe", "google", "backup".
+  provider     String
+  // Credential slot within the provider, e.g. "client_id", "client_secret",
+  // "webhook_key", "token_key". Disjoint from two-factor's label namespace.
+  key          String
+  ciphertext   String
+  iv           String
+  authTag      String
+  // Which auth-secret env var the wrapping key was derived from at write time
+  // (AUTH_SECRET | NEXTAUTH_SECRET) — a silent fallback flip stays diagnosable
+  // without ever exposing the value.
+  secretSource String
+  // HKDF info-label version used to derive the wrapping key, e.g.
+  // "integration-credential:v1" / "xero-token-key:v1".
+  labelVersion String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  // Full Admin member id that last wrote this credential (audit provenance).
+  // Plain string, not an FK, to keep the table standalone/expand-safe.
+  updatedByUserId String?
+
+  @@unique([provider, key])
+  @@index([provider])
+  @@index([updatedAt])
+}
+
+// ---------------------------------------------------------------------------
 // Finance Snapshot Storage
 // ---------------------------------------------------------------------------
 
@@ -3878,6 +4000,8 @@ model FamilyGroup {
   billingSelectedMembers Member[]        @relation("MemberBillingFamily")
   joinRequests  FamilyGroupJoinRequest[]
   partnerInviteTokens PartnerInviteToken[]
+  // #2161 (D2): operator "already invoiced" markers for this group, per season.
+  seasonInvoiceMarkers FamilyGroupSeasonInvoiceMarker[]
   billingMembershipId String?            @unique
   billingMembership   FamilyGroupMember? @relation("FamilyBillingMembership", fields: [billingMembershipId], references: [id], onDelete: SetNull)
 }

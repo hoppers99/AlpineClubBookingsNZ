@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
 import type {
   AgeTier,
+  MembershipBillingExceptionResolution,
   MembershipFeeBillingBasis,
   MembershipFeeProrationRule,
   MembershipSubscriptionChargeSource,
   Prisma,
+  SubscriptionStatus,
 } from "@prisma/client";
 import {
   computeAgeTierWithSettings,
@@ -108,6 +110,68 @@ export type SubscriptionBillingPreview = {
   // re-preview reproduces it, and clubs with no BASED_ON_AGE_TIER type keep a
   // byte-identical token (always []).
   exemptMemberIds: string[];
+  // #2148 (D1): the same exempt set as exemptMemberIds, enriched with the member
+  // name and the season-start age tier that made them exempt, for the collapsed
+  // informational "Exempt" preview section. Derived deterministically alongside
+  // exemptMemberIds, so — like exemptMemberIds — it is NOT part of the
+  // confirmation token. A member lands here when their BASED_ON_AGE_TIER
+  // season-start tier is not subscription-liable AND either no fee resolves for
+  // that tier or the resolved fee is PER_MEMBER (a PER_FAMILY fee still bills the
+  // family once, so a tier-exempt child under it is NOT exempted here — Q5 / #2148
+  // constraint 1).
+  exemptMembers: Array<{
+    memberId: string;
+    memberName: string;
+    ageTier: AgeTier | null;
+  }>;
+  // #2147 (D3): members skipped because their season MemberSubscription already
+  // holds a LIVE Xero invoice (xeroInvoiceId not null — PAID/UNPAID/OVERDUE).
+  // The admin sees them, and their invoice number, in a collapsed "Already
+  // invoiced" section instead of being silently re-billed. Derived
+  // deterministically from MemberSubscription state (like alreadyCovered /
+  // exempt), so it is NOT part of the confirmation token — the skip itself is
+  // already reflected by the absence of an entry, which the in-transaction
+  // re-preview reproduces under the per-season advisory lock.
+  alreadyInvoiced: Array<{
+    memberId: string;
+    memberName: string;
+    xeroInvoiceNumber: string | null;
+    status: SubscriptionStatus;
+  }>;
+  // #2147 FINDING 1 + #2161: family groups suppressed from a (second) PER_FAMILY
+  // charge. A family is suppressed when EITHER a group member's own resolved
+  // billing basis is PER_FAMILY and they hold a live season Xero invoice or a
+  // PER_FAMILY coverage claim (#2161 D1 refinement of the #2147 predicate — a
+  // PER_MEMBER member's personal invoice no longer blocks the family fee), OR an
+  // operator has set an explicit "already invoiced" marker for the family/season
+  // (#2161 D2). Surfaced beside alreadyInvoiced so the operator can audit what
+  // covers the whole family. Like alreadyInvoiced it is derived deterministically
+  // from persisted state (NOT part of the confirmation token — the suppressed
+  // family simply mints no entry, which the in-transaction re-preview reproduces
+  // under the per-season advisory lock).
+  alreadyInvoicedFamilies: Array<{
+    familyGroupId: string;
+    // Null for a family suppressed only by an operator marker (no auto-detected
+    // invoice holder).
+    holderMemberId: string | null;
+    holderName: string | null;
+    xeroInvoiceNumber: string | null;
+    status: SubscriptionStatus | null;
+    membersCovered: number;
+    // #2161 FINDING 1: true when the auto-detected invoice holder suppressed the
+    // family via the fail-closed path — its OWN billing basis could not be
+    // resolved (NOT_REQUIRED type, no resolvable type, or no fee row), so the
+    // family is conservatively suppressed. Resolve the holder's type/fee or void
+    // the invoice to re-bill. Always false for a purely operator-marked family.
+    holderBasisUnresolvable: boolean;
+    // #2161 (D2): true when an operator marker suppresses this family. The
+    // marker fields describe who marked it and any note; a family can be BOTH
+    // auto-suppressed (holder fields populated) and operator-marked.
+    operatorMarked: boolean;
+    markerNote: string | null;
+    markedByName: string | null;
+    markedAt: Date | null;
+  }>;
   totalCents: number;
   confirmationToken: string;
 };
@@ -216,11 +280,14 @@ export async function buildSubscriptionBillingPreview(input: {
   if (decisionDate < bounds.start || decisionDate > bounds.end) {
     throw new SubscriptionBillingError(`Decision date must fall within membership year ${input.seasonYear}.`);
   }
-  const [dueDays, familyBillingMode, alreadyCovered, alreadyPaid, existingFamilyCharges, members] = await Promise.all([
+  const [dueDays, familyBillingMode, alreadyCovered, alreadyPaid, existingFamilyCharges, familyInvoiceBlockers, activeFamilyMarkers, members] = await Promise.all([
     getSubscriptionBillingDueDays(db),
     getFamilyBillingMode(db),
     db.membershipSubscriptionChargeCoverage.findMany({
       where: {
+        // #2147: only ACTIVE claims block re-billing. A released claim (its Xero
+        // invoice was voided/deleted) must not keep a member un-billable forever.
+        releasedAt: null,
         subscription: {
           seasonYear: input.seasonYear,
           ...(input.memberIds?.length ? { memberId: { in: input.memberIds } } : {}),
@@ -228,30 +295,134 @@ export async function buildSubscriptionBillingPreview(input: {
       },
       select: { memberId: true },
     }),
-    // #1944 non-clobber guard: the sweep otherwise keys "already handled" off
-    // charge-coverage rows, so a manually marked-paid subscription (status PAID
-    // with no charge and no Xero invoice link) would be re-invoiced. Skip every
-    // member whose subscription is already PAID for this season. Xero-paid rows
-    // already carry a coverage row and are a no-op here; this strictly adds the
-    // manual-PAID case and upholds "never invoice a subscription already PAID".
+    // #1944 + #2147 (D1) non-clobber / anti-double-billing guard. Skip every
+    // member whose season subscription is either already PAID *or* already
+    // carries a LIVE Xero invoice link (xeroInvoiceId not null — UNPAID/OVERDUE
+    // included). The PAID clause preserves the #1944 manual-mark-paid case
+    // (PAID with a null xeroInvoiceId, cash paid outside Xero); the additive
+    // xeroInvoiceId clause fixes #2147 — an invoiced-but-unpaid member (e.g.
+    // billed by the older Xero-sync path, so no charge-coverage row exists) was
+    // passing both the coverage and PAID guards and being re-invoiced. The
+    // predicate is ADDITIVE, not a replacement: it never re-bills a manual-PAID
+    // member. The invoiced subset (with its invoice number) is surfaced to the
+    // admin in the collapsed "Already invoiced" section (D3).
     db.memberSubscription.findMany({
       where: {
         seasonYear: input.seasonYear,
-        status: "PAID",
+        OR: [{ status: "PAID" }, { xeroInvoiceId: { not: null } }],
         ...(input.memberIds?.length ? { memberId: { in: input.memberIds } } : {}),
       },
-      select: { memberId: true },
+      select: {
+        memberId: true,
+        status: true,
+        xeroInvoiceId: true,
+        xeroInvoiceNumber: true,
+        member: { select: { firstName: true, lastName: true } },
+      },
     }),
     db.membershipSubscriptionCharge.findMany({
       where: {
         seasonYear: input.seasonYear,
         billingBasis: "PER_FAMILY",
         familyGroupId: { not: null },
+        // #2147: a VOIDED family charge (its Xero invoice was voided/deleted and
+        // its coverage released) must NOT keep the family un-billable forever.
+        // The void handler (releaseVoidedSubscriptionInvoice) retains the charge
+        // row with status VOIDED + familyGroupId intact for audit; without this
+        // filter it would still populate billedFamilyTypes and fire
+        // FAMILY_ALREADY_BILLED, permanently blocking the family's re-bill and
+        // contradicting the void→re-bill design.
+        status: { not: "VOIDED" },
       },
       select: {
         id: true,
         familyGroupId: true,
         membershipTypeId: true,
+      },
+    }),
+    // #2147 FINDING 1 (family-level dedup): every family-group membership whose
+    // member already holds a LIVE season Xero invoice (xeroInvoiceId not null)
+    // OR an ACTIVE coverage claim (releasedAt IS NULL). The per-member skip-set
+    // (coveredSet/paidSet) only suppresses the invoice-HOLDER; a family group
+    // billed PER_FAMILY would otherwise mint a SECOND family charge to the
+    // recipient because a not-yet-invoiced child (no invoice link, no coverage
+    // row) still proceeds through the PER_FAMILY branch and folds the whole
+    // family in. Deliberately UNSCOPED by input.memberIds: a scoped
+    // NEW_MEMBER_APPROVAL run for just a child must still see the billing
+    // member's live invoice on the same family group. The subset is bounded by
+    // the number of invoiced/covered members, so this stays cheap.
+    db.familyGroupMember.findMany({
+      where: {
+        member: {
+          subscriptions: {
+            some: {
+              seasonYear: input.seasonYear,
+              OR: [
+                { xeroInvoiceId: { not: null } },
+                { chargeCoverage: { some: { releasedAt: null } } },
+              ],
+            },
+          },
+        },
+      },
+      select: {
+        familyGroupId: true,
+        memberId: true,
+        // #2161 (D1): the holder's own resolved billing basis decides whether a
+        // bare live invoice suppresses the family fee, so the same policy/fee
+        // resolution the main loop performs (assignment-first membership type →
+        // per-tier fee → billingBasis) must run for holders too. Holders may be
+        // OUTSIDE the scoped member set (the blocker query is deliberately
+        // unscoped), so we fetch the resolution inputs here and reuse the shared
+        // memoized resolver — no parallel resolution machinery.
+        member: {
+          select: {
+            firstName: true,
+            lastName: true,
+            role: true,
+            dateOfBirth: true,
+            ageTier: true,
+            seasonalMembershipAssignments: {
+              where: { seasonYear: input.seasonYear },
+              take: 1,
+              select: {
+                membershipType: { select: { id: true, key: true, name: true, subscriptionBehavior: true } },
+              },
+            },
+            subscriptions: {
+              where: { seasonYear: input.seasonYear },
+              take: 1,
+              select: {
+                xeroInvoiceId: true,
+                xeroInvoiceNumber: true,
+                status: true,
+                // #2161 (D1): where an active coverage claim is the trigger, the
+                // basis is derived from the CHARGE row it belongs to (simpler and
+                // exact) — a PER_FAMILY charge for this group suppresses; a
+                // PER_MEMBER charge's coverage does not.
+                chargeCoverage: {
+                  where: { releasedAt: null },
+                  select: { charge: { select: { billingBasis: true, familyGroupId: true } } },
+                },
+              },
+            },
+          },
+        },
+      },
+    }),
+    // #2161 (D2): every ACTIVE operator "already invoiced" marker for the season.
+    // An active marker suppresses its family group's PER_FAMILY charge regardless
+    // of the D1 predicate, closing the double-billing window D1 re-opens for a
+    // mixed-basis family whose live invoice sits on a PER_MEMBER-billed member.
+    // Uses `db` (the store), so the in-transaction confirm re-preview sees markers
+    // committed since the admin previewed, keeping preview/confirm parity.
+    db.familyGroupSeasonInvoiceMarker.findMany({
+      where: { seasonYear: input.seasonYear, releasedAt: null },
+      select: {
+        familyGroupId: true,
+        note: true,
+        markedAt: true,
+        markedBy: { select: { firstName: true, lastName: true } },
       },
     }),
     db.member.findMany({
@@ -307,9 +478,18 @@ export async function buildSubscriptionBillingPreview(input: {
     }),
   ]);
 
-  const fallbackKeys = [...new Set(members
-    .filter((member) => member.seasonalMembershipAssignments.length === 0)
-    .map((member) => defaultMembershipTypeKeyForRole(member.role)))];
+  // #2161 (D1): resolve fallback types for BOTH the scoped members AND the
+  // (possibly out-of-scope) invoice-holders the blocker query surfaced, so a
+  // holder without a season assignment can still resolve its role-default type
+  // for the basis check.
+  const fallbackKeys = [...new Set([
+    ...members
+      .filter((member) => member.seasonalMembershipAssignments.length === 0)
+      .map((member) => defaultMembershipTypeKeyForRole(member.role)),
+    ...familyInvoiceBlockers
+      .filter((blocker) => blocker.member.seasonalMembershipAssignments.length === 0)
+      .map((blocker) => defaultMembershipTypeKeyForRole(blocker.member.role)),
+  ])];
   const fallbackTypes = fallbackKeys.length > 0
     ? await db.membershipType.findMany({
         where: { key: { in: fallbackKeys }, isActive: true },
@@ -320,9 +500,69 @@ export async function buildSubscriptionBillingPreview(input: {
     : [];
   const fallbackTypeByKey = new Map(fallbackTypes.map((type) => [type.key, type]));
 
+  // #2147 FINDING 1 + #2161 (D1): family groups auto-suppressed from generating a
+  // (second) family charge because a member's OWN resolved billing basis is
+  // PER_FAMILY and they already hold a live season Xero invoice or a PER_FAMILY
+  // coverage claim. familySuppressionInfo carries the representative
+  // invoice-holder for the "Already invoiced" audit surface — preferring a member
+  // who actually holds a live Xero invoice (so a real invoice number is shown),
+  // then deterministic by memberId so preview and the in-transaction confirm
+  // re-run agree byte-for-byte. Populated AFTER the memoized fee resolver is
+  // defined (below), because the D1 predicate resolves each holder's basis.
+  const suppressedFamilyGroupIds = new Set<string>();
+  const familySuppressionInfo = new Map<string, {
+    holderMemberId: string;
+    holderName: string;
+    xeroInvoiceNumber: string | null;
+    status: SubscriptionStatus | null;
+    hasLiveInvoice: boolean;
+    // #2161 FINDING 1: the representative holder blocked the family via the
+    // fail-closed unresolvable-basis path (surfaced so the operator sees WHY).
+    basisUnresolvable: boolean;
+  }>();
+  // #2161 (D2): ACTIVE operator markers by family group, plus their display info.
+  // An active marker suppresses the family regardless of the D1 predicate.
+  const markedFamilyGroupIds = new Set(activeFamilyMarkers.map((marker) => marker.familyGroupId));
+  const markerInfoByFamilyGroupId = new Map(activeFamilyMarkers.map((marker) => [
+    marker.familyGroupId,
+    {
+      note: marker.note,
+      markedByName: marker.markedBy
+        ? `${marker.markedBy.firstName} ${marker.markedBy.lastName}`.trim()
+        : null,
+      markedAt: marker.markedAt,
+    },
+  ]));
+  // Member counts for every family group that MIGHT surface (auto-suppressed or
+  // operator-marked), so the audit line can state how many members are covered.
+  // Populated after the D1 suppression predicate runs (below), in one cheap
+  // grouped read, only when at least one such family exists.
+  const familyGroupSizeById = new Map<string, number>();
+  // The suppressed family groups actually surfaced by this preview — a family is
+  // only surfaced when a not-yet-billed member of it would otherwise have minted
+  // a second charge (a fully-invoiced family's members are all skipped per-member
+  // before the family branch, and already appear in alreadyInvoiced).
+  const suppressedFamiliesSurfaced = new Set<string>();
+  const alreadyInvoicedFamilies: SubscriptionBillingPreview["alreadyInvoicedFamilies"] = [];
+
   const coveredSet = new Set(alreadyCovered.map((row) => row.memberId));
-  // #1944: members already PAID (manual or Xero) are never re-invoiced.
+  // #1944 + #2147: members already PAID (manual or Xero) OR holding a live Xero
+  // invoice are never re-invoiced (D1). Both clauses feed one skip-set.
   const paidSet = new Set(alreadyPaid.map((row) => row.memberId));
+  // #2147 (D3): the invoiced (live xeroInvoiceId) subset, for the "Already
+  // invoiced" section. Names come from the joined member row so an already-
+  // invoiced member who has since gone inactive still renders correctly.
+  const alreadyInvoiced = alreadyPaid
+    .filter((row) => row.xeroInvoiceId != null)
+    .map((row) => ({
+      memberId: row.memberId,
+      memberName: row.member
+        ? `${row.member.firstName} ${row.member.lastName}`.trim()
+        : row.memberId,
+      xeroInvoiceNumber: row.xeroInvoiceNumber,
+      status: row.status,
+    }))
+    .sort((left, right) => left.memberId.localeCompare(right.memberId));
   // The effective fee depends on the membership type, the member's age tier
   // (#2067 per-tier pricing), and the decision date; the decision date is fixed
   // for the whole preview, so memoize per (type, tier) instead of querying once
@@ -355,6 +595,9 @@ export async function buildSubscriptionBillingPreview(input: {
   // only when a BASED_ON_AGE_TIER type is actually encountered) so clubs without
   // the feature pay no extra read.
   const exemptMemberIds = new Set<string>();
+  // #2148 (D1): parallel display list for the collapsed "Exempt" section — same
+  // membership as exemptMemberIds, plus name + the tier that made them exempt.
+  const exemptMembers: Array<{ memberId: string; memberName: string; ageTier: AgeTier | null }> = [];
   let ageTierSettingsCache: AgeTierSettingData[] | null = null;
   const getAgeTierSettingsMemoized = async () => {
     if (!ageTierSettingsCache) {
@@ -362,6 +605,99 @@ export async function buildSubscriptionBillingPreview(input: {
     }
     return ageTierSettingsCache;
   };
+
+  // #2161 (D1): resolve one member's OWN effective billing basis using the SAME
+  // policy/fee resolution the main loop performs (assignment-first membership
+  // type → per-tier fee → billingBasis), reusing the shared memoized resolver and
+  // age-tier settings. Used to decide whether a bare live-invoice holder blocks
+  // the family fee; it must work for holders OUTSIDE the scoped member set, which
+  // it does because the blocker query fetched the same resolution inputs and the
+  // fallback types cover holder roles too.
+  const resolveMemberBillingBasis = async (
+    holder: (typeof familyInvoiceBlockers)[number]["member"],
+  ): Promise<MembershipFeeBillingBasis | null> => {
+    const membershipType = holder.seasonalMembershipAssignments[0]?.membershipType
+      ?? fallbackTypeByKey.get(defaultMembershipTypeKeyForRole(holder.role));
+    if (!membershipType || membershipType.subscriptionBehavior === "NOT_REQUIRED") return null;
+    let feeTier: AgeTier | null;
+    if (membershipType.subscriptionBehavior === "BASED_ON_AGE_TIER") {
+      const ageTierSettings = await getAgeTierSettingsMemoized();
+      feeTier = holder.dateOfBirth
+        ? computeAgeTierWithSettings(holder.dateOfBirth, getSeasonStartDate(input.seasonYear), ageTierSettings)
+        : holder.ageTier;
+    } else {
+      feeTier = holder.ageTier;
+    }
+    const fee = await getMemoizedFee(membershipType.id, feeTier);
+    return fee?.billingBasis ?? null;
+  };
+
+  // #2147 FINDING 1 + #2161 (D1): decide, per surfaced blocker, whether it
+  // suppresses ITS family group's PER_FAMILY charge. Coverage trigger: an active
+  // claim from a PER_FAMILY charge for THIS family group suppresses (a PER_MEMBER
+  // charge's coverage does not). Bare live-invoice trigger (legacy, no charge
+  // row): suppress only if the holder's OWN resolved basis is PER_FAMILY.
+  for (const row of familyInvoiceBlockers) {
+    const sub = row.member.subscriptions[0];
+    const coverageSuppresses = (sub?.chargeCoverage ?? []).some(
+      (claim) => claim.charge.billingBasis === "PER_FAMILY"
+        && claim.charge.familyGroupId === row.familyGroupId,
+    );
+    let suppresses = coverageSuppresses;
+    // #2161 FINDING 1 (FAIL CLOSED): a bare live-invoice holder (no PER_FAMILY
+    // coverage claim) suppresses its family unless its OWN basis PROVABLY
+    // resolves to a non-PER_FAMILY (PER_MEMBER-ish) value. A null / unresolvable
+    // basis — NOT_REQUIRED type, no resolvable type, or no fee row for the type
+    // — keeps the family SUPPRESSED rather than silently minting a second family
+    // invoice off a not-yet-billed child (e.g. a Life Member parent holding the
+    // legacy family invoice resolves to a NOT_REQUIRED basis of null). Suppression
+    // lifts ONLY on a proven PER_MEMBER basis — the sole basis under which the
+    // holder's live invoice can be their own per-member invoice. PER_FAMILY and
+    // NO_INVOICE holders never generate a personal invoice, so a live invoice on
+    // them can only be a legacy/family invoice and must keep suppressing. Escape
+    // paths for a family wrongly suppressed this way: fix the holder's membership
+    // type / fee config, or void the stale invoice in Xero (link nulled + coverage
+    // released, then the group re-bills as one entry — see
+    // docs/guides/subscriptions.md).
+    let basisUnresolvable = false;
+    if (!suppresses && sub?.xeroInvoiceId != null) {
+      const holderBasis = await resolveMemberBillingBasis(row.member);
+      if (holderBasis !== "PER_MEMBER") {
+        suppresses = true;
+        basisUnresolvable = holderBasis == null;
+      }
+    }
+    if (!suppresses) continue;
+    suppressedFamilyGroupIds.add(row.familyGroupId);
+    const candidate = {
+      holderMemberId: row.memberId,
+      holderName: `${row.member.firstName} ${row.member.lastName}`.trim(),
+      xeroInvoiceNumber: sub?.xeroInvoiceNumber ?? null,
+      status: sub?.status ?? null,
+      hasLiveInvoice: sub?.xeroInvoiceId != null,
+      basisUnresolvable,
+    };
+    const existing = familySuppressionInfo.get(row.familyGroupId);
+    if (
+      !existing ||
+      (candidate.hasLiveInvoice && !existing.hasLiveInvoice) ||
+      (candidate.hasLiveInvoice === existing.hasLiveInvoice &&
+        candidate.holderMemberId < existing.holderMemberId)
+    ) {
+      familySuppressionInfo.set(row.familyGroupId, candidate);
+    }
+  }
+  // One grouped read for the sizes of every family that could surface (auto-
+  // suppressed OR operator-marked).
+  const sizeTargetFamilyGroupIds = new Set([...suppressedFamilyGroupIds, ...markedFamilyGroupIds]);
+  if (sizeTargetFamilyGroupIds.size > 0) {
+    const sizes = await db.familyGroupMember.groupBy({
+      by: ["familyGroupId"],
+      where: { familyGroupId: { in: [...sizeTargetFamilyGroupIds] } },
+      _count: { memberId: true },
+    });
+    for (const size of sizes) familyGroupSizeById.set(size.familyGroupId, size._count.memberId);
+  }
 
   for (const member of members) {
     if (coveredSet.has(member.id) || paidSet.has(member.id)) continue;
@@ -414,6 +750,34 @@ export async function buildSubscriptionBillingPreview(input: {
         ? seasonStartTier
         : member.ageTier;
     const fee = await getMemoizedFee(membershipType.id, feeTier);
+    // #2041 + #2148 (D1): BASED_ON_AGE_TIER defers per-member liability to the
+    // season-start age tier. The exemption gate runs BEFORE MISSING_FEE_SCHEDULE
+    // and does NOT require a resolved fee — a deliberately exempt tier
+    // (subscriptionRequiredForBooking = false, e.g. CHILD/INFANT) legitimately
+    // has no MembershipAnnualFee row, so raising MISSING_FEE_SCHEDULE for it is
+    // pure noise (#2148). A member is exempt when their season-start tier is not
+    // subscription-liable AND either NO fee resolves for that tier OR the
+    // resolved fee is PER_MEMBER. The PER_FAMILY carve-out is deliberate
+    // (#2148 constraint 1 / decision Q5): a BASED_ON_AGE_TIER PER_FAMILY fee
+    // bills the family once even when a child is tier-exempt, so a resolved
+    // PER_FAMILY fee must NOT short-circuit here — the child falls through to the
+    // family path below and stays in family coverage. NO_INVOICE fees already
+    // mint a zero charge + NOT_REQUIRED row on the entry path, so a resolved
+    // NO_INVOICE fee is also left to fall through.
+    if (membershipType.subscriptionBehavior === "BASED_ON_AGE_TIER") {
+      const ageTierSettings = await getAgeTierSettingsMemoized();
+      if (
+        !requiresPaidSubscriptionForAgeTier(seasonStartTier, ageTierSettings) &&
+        (!fee || fee.billingBasis === "PER_MEMBER")
+      ) {
+        // Skip the charge; confirm upserts a NOT_REQUIRED season row (Q4). Join
+        // exemptMemberIds (drives the confirm NOT_REQUIRED write — constraint 2),
+        // and the display list for the collapsed "Exempt" section.
+        exemptMemberIds.add(member.id);
+        exemptMembers.push({ memberId: member.id, memberName, ageTier: feeTier });
+        continue;
+      }
+    }
     if (!fee) {
       exceptions.push(exception({
         code: "MISSING_FEE_SCHEDULE",
@@ -423,22 +787,6 @@ export async function buildSubscriptionBillingPreview(input: {
         context: { memberName, decisionDate: decisionDateOnly },
       }));
       continue;
-    }
-    // #2041: BASED_ON_AGE_TIER defers per-member liability to the season-start
-    // age tier. Only PER_MEMBER fees vary by tier — a PER_FAMILY fee bills the
-    // family once regardless of any exempt child (decision Q5), so it is left on
-    // the unchanged family path below. NO_INVOICE fees already mint a zero
-    // charge + NOT_REQUIRED row, so they need no special handling here either.
-    if (
-      membershipType.subscriptionBehavior === "BASED_ON_AGE_TIER" &&
-      fee.billingBasis === "PER_MEMBER"
-    ) {
-      const ageTierSettings = await getAgeTierSettingsMemoized();
-      if (!requiresPaidSubscriptionForAgeTier(seasonStartTier, ageTierSettings)) {
-        // Skip the charge; confirm upserts a NOT_REQUIRED season row (Q4).
-        exemptMemberIds.add(member.id);
-        continue;
-      }
     }
     const calculated = calculateMembershipCharge({
       annualAmountCents: fee.amountCents,
@@ -552,6 +900,42 @@ export async function buildSubscriptionBillingPreview(input: {
       }));
       continue;
     }
+    // #2147 FINDING 1: family-level dedup. If ANY member of this family group is
+    // already billed for the season (a live Xero invoice or an active coverage
+    // claim), the whole family is already covered — suppress the ENTIRE group
+    // from generating a second family charge and surface it (once) in the
+    // "Already invoiced" audit section, rather than minting a duplicate invoice
+    // to the recipient off a not-yet-invoiced child. familyGroupId is non-null
+    // only on the PER_FAMILY path, so per-member paths are untouched. Placed
+    // after FAMILY_ALREADY_BILLED so an existing NEW-system family charge still
+    // reports that dedicated exception; this handles the legacy shape where the
+    // live invoice lives only on MemberSubscription.xeroInvoiceId with no charge
+    // or coverage rows. Once the invoice is voided (link nulled, coverage
+    // released) no member blocks the group and it re-bills as one normal entry.
+    // #2161 (D2): an operator marker suppresses the family regardless of the D1
+    // auto-suppression predicate, so a mixed-basis family whose live invoice sits
+    // on a PER_MEMBER-billed member can still be closed out by the operator.
+    if (familyGroupId && (suppressedFamilyGroupIds.has(familyGroupId) || markedFamilyGroupIds.has(familyGroupId))) {
+      if (!suppressedFamiliesSurfaced.has(familyGroupId)) {
+        suppressedFamiliesSurfaced.add(familyGroupId);
+        const info = familySuppressionInfo.get(familyGroupId);
+        const marker = markerInfoByFamilyGroupId.get(familyGroupId);
+        alreadyInvoicedFamilies.push({
+          familyGroupId,
+          holderMemberId: info?.holderMemberId ?? null,
+          holderName: info?.holderName ?? null,
+          xeroInvoiceNumber: info?.xeroInvoiceNumber ?? null,
+          status: info?.status ?? null,
+          holderBasisUnresolvable: info?.basisUnresolvable ?? false,
+          membersCovered: familyGroupSizeById.get(familyGroupId) ?? 0,
+          operatorMarked: marker != null,
+          markerNote: marker?.note ?? null,
+          markedByName: marker?.markedByName ?? null,
+          markedAt: marker?.markedAt ?? null,
+        });
+      }
+      continue;
+    }
     const current = familyGroups.get(groupingKey);
     if (current) {
       current.coveredMembers.push({ id: member.id, name: memberName });
@@ -663,6 +1047,10 @@ export async function buildSubscriptionBillingPreview(input: {
     exceptions,
     alreadyCoveredMemberIds: [...coveredSet].sort(),
     exemptMemberIds: [...exemptMemberIds].sort(),
+    exemptMembers: [...exemptMembers].sort((left, right) => left.memberId.localeCompare(right.memberId)),
+    alreadyInvoiced,
+    alreadyInvoicedFamilies: alreadyInvoicedFamilies.sort((left, right) =>
+      left.familyGroupId.localeCompare(right.familyGroupId)),
     totalCents: entries.reduce((sum, entry) => sum + entry.chargedAmountCents, 0),
     confirmationToken: digest(tokenPayload),
   };
@@ -687,6 +1075,75 @@ async function persistOpenExceptions(
       create: { ...item, source, context: item.context as Prisma.InputJsonValue },
     });
   }
+}
+
+// Resolve every OPEN MembershipBillingException for the season that a fresh
+// preview no longer regenerated (its fingerprint is not in currentFingerprints),
+// recording the resolution provenance (#2148, D2). `scopedMemberIds`:
+//  * null — whole-club scope (a whole-club confirm, or the whole-club preview
+//    refresh): every superseded OPEN exception for the season resolves, which
+//    already covers club-level null-member exceptions.
+//  * an array — partial scope (e.g. a NEW_MEMBER_APPROVAL confirm re-evaluating
+//    only some members): resolve only exceptions whose subject the preview
+//    actually re-evaluated, OR the club-level MISSING_XERO_ACCOUNT_MAPPING
+//    (memberId: null) special case that the confirm path has always folded in
+//    (#2148 constraint 4). This is the single scoping definition both the
+//    confirm and the preview-reconciliation paths reuse.
+async function resolveSupersededExceptions(
+  tx: Prisma.TransactionClient,
+  input: {
+    seasonYear: number;
+    currentFingerprints: string[];
+    resolvedVia: MembershipBillingExceptionResolution;
+    scopedMemberIds: string[] | null;
+  },
+) {
+  return tx.membershipBillingException.updateMany({
+    where: {
+      seasonYear: input.seasonYear,
+      status: "OPEN",
+      ...(input.scopedMemberIds ? {
+        OR: [
+          { memberId: { in: input.scopedMemberIds } },
+          { code: "MISSING_XERO_ACCOUNT_MAPPING", memberId: null },
+        ],
+      } : {}),
+      ...(input.currentFingerprints.length ? { fingerprint: { notIn: input.currentFingerprints } } : {}),
+    },
+    data: { status: "RESOLVED", resolvedAt: new Date(), resolvedVia: input.resolvedVia },
+  });
+}
+
+// #2148 (D2): auto-resolve stale persisted exceptions on an explicit preview
+// refresh. The refresh is whole-club (no memberIds scope), so a fresh preview
+// re-evaluates every active member; any OPEN exception it did not regenerate
+// (including club-level null-member ones) is superseded and resolved with
+// PREVIEW_RECONCILE provenance. This is the ONLY read path that mutates, and it
+// is reached exclusively through the edit-gated (finance:edit) refresh action —
+// the bare finance:view GET stays read-only (#2148 constraint 3). Runs under the
+// same per-season advisory lock as confirm so a refresh and a confirm cannot
+// race the exception ledger. Does not create or re-message OPEN exceptions
+// (refresh must not persist new rows); the live preview already renders
+// still-open exceptions in the current message format.
+export async function reconcileSubscriptionBillingExceptions(input: {
+  seasonYear: number;
+  decisionDate: Date;
+}): Promise<{ resolvedCount: number }> {
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`membership-subscription-billing:${input.seasonYear}`}))`;
+    const preview = await buildSubscriptionBillingPreview({
+      seasonYear: input.seasonYear,
+      decisionDate: input.decisionDate,
+      store: tx,
+    });
+    const result = await resolveSupersededExceptions(tx, {
+      seasonYear: input.seasonYear,
+      currentFingerprints: preview.exceptions.map((item) => item.fingerprint),
+      resolvedVia: "PREVIEW_RECONCILE",
+      scopedMemberIds: null,
+    });
+    return { resolvedCount: result.count };
+  });
 }
 
 export async function confirmSubscriptionBillingPreview(input: {
@@ -714,6 +1171,9 @@ export async function confirmSubscriptionBillingPreview(input: {
       if (expectedMemberIds.length > 0 && expectedMemberIds.every((memberId) => coveredMemberIds.has(memberId))) {
         const existing = await tx.membershipSubscriptionChargeCoverage.findMany({
           where: {
+            // #2147: match the active-only skip-set — a released claim's chargeId
+            // must not be reported as the current coverage for a re-billed member.
+            releasedAt: null,
             memberId: { in: expectedMemberIds },
             subscription: { seasonYear: input.preview.seasonYear },
           },
@@ -730,19 +1190,16 @@ export async function confirmSubscriptionBillingPreview(input: {
       ...preview.exceptions.map((item) => item.memberId).filter((id): id is string => Boolean(id)),
       ...preview.alreadyCoveredMemberIds,
     ])];
-    await tx.membershipBillingException.updateMany({
-      where: {
-        seasonYear: preview.seasonYear,
-        status: "OPEN",
-        ...(input.source === "NEW_MEMBER_APPROVAL" ? {
-          OR: [
-            { memberId: { in: scopedMemberIds } },
-            { code: "MISSING_XERO_ACCOUNT_MAPPING", memberId: null },
-          ],
-        } : {}),
-        ...(currentFingerprints.length ? { fingerprint: { notIn: currentFingerprints } } : {}),
-      },
-      data: { status: "RESOLVED", resolvedAt: new Date() },
+    // #2148 (D2): resolve superseded exceptions via the shared scoping helper,
+    // stamping CONFIRM provenance. A NEW_MEMBER_APPROVAL confirm re-evaluates
+    // only its members, so it scopes to those subjects (plus the club-level
+    // null-member special case); a whole-club ANNUAL_BATCH confirm resolves every
+    // superseded exception (null scope).
+    await resolveSupersededExceptions(tx, {
+      seasonYear: preview.seasonYear,
+      currentFingerprints,
+      resolvedVia: "CONFIRM",
+      scopedMemberIds: input.source === "NEW_MEMBER_APPROVAL" ? scopedMemberIds : null,
     });
     await persistOpenExceptions(tx, input.source, preview.exceptions);
     for (const entry of preview.entries) {
@@ -756,15 +1213,31 @@ export async function confirmSubscriptionBillingPreview(input: {
             seasonYear: entry.seasonYear,
             status: entry.billingBasis === "NO_INVOICE" ? "NOT_REQUIRED" : "NOT_INVOICED",
           },
-          select: { id: true, memberId: true },
+          // #2147: voidGeneration discriminates a post-void re-bill's idempotency
+          // key from the original (released) charge's.
+          select: { id: true, memberId: true, voidGeneration: true },
         });
-        const coveredAlready = await tx.membershipSubscriptionChargeCoverage.findUnique({
-          where: { subscriptionId: subscription.id }, select: { id: true },
+        // #2147: only an ACTIVE coverage claim means "already billed". A released
+        // claim (its invoice was voided) must NOT suppress the re-bill.
+        const coveredAlready = await tx.membershipSubscriptionChargeCoverage.findFirst({
+          where: { subscriptionId: subscription.id, releasedAt: null }, select: { id: true },
         });
         if (!coveredAlready) subscriptions.push({ ...subscription, memberName: covered.name });
       }
       if (subscriptions.length === 0) continue;
-      const idempotencyKey = digest([entry.key, subscriptions.map((row) => row.memberId).sort(), entry.chargedAmountCents]);
+      // #2147: fold each covered subscription's voidGeneration into the charge
+      // idempotency key so a post-void re-bill mints a NEW charge instead of
+      // no-op-ing onto the released (VOIDED) one via the @unique idempotencyKey.
+      // When every voidGeneration is 0 (the never-voided case) the key omits the
+      // discriminator entirely, staying byte-identical to the pre-#2147 shape so
+      // existing charges and re-runs remain idempotent. invoiceReference derives
+      // from this key and follows automatically.
+      const sortedMemberIds = subscriptions.map((row) => row.memberId).sort();
+      const voidGenByMember = new Map(subscriptions.map((row) => [row.memberId, row.voidGeneration ?? 0]));
+      const voidGenerations = sortedMemberIds.map((memberId) => voidGenByMember.get(memberId) ?? 0);
+      const idempotencyKey = voidGenerations.some((generation) => generation > 0)
+        ? digest([entry.key, sortedMemberIds, entry.chargedAmountCents, { voidGenerations }])
+        : digest([entry.key, sortedMemberIds, entry.chargedAmountCents]);
       const charge = await tx.membershipSubscriptionCharge.upsert({
         where: { idempotencyKey },
         update: {},

@@ -30,7 +30,6 @@ import {
 import { getSeasonStartMonth } from "@/lib/financial-year";
 import { loadMembershipLockoutSettings } from "@/lib/membership-lockout-settings";
 import { requiresPaidSubscriptionForAgeTierFromSettings } from "@/lib/member-subscription-eligibility";
-import { roleNeverRequiresSubscription } from "@/lib/member-subscription-defaults";
 import { resolveMembershipTypePolicyForMember } from "@/lib/membership-type-policy";
 import {
   getXeroSyncCursor,
@@ -226,7 +225,10 @@ export async function flushMemberSubscriptionHistory(memberId: string): Promise<
         id: true,
         seasonYear: true,
         manuallyMarkedPaidAt: true,
-        chargeCoverage: { select: { id: true } },
+        // #2147: chargeCoverage is now a list (a released claim is retained
+        // alongside a fresh active one). ANY coverage row — active or released —
+        // is durable financial history that must survive a contact resync/unlink.
+        chargeCoverage: { select: { id: true }, take: 1 },
       },
     });
 
@@ -247,7 +249,7 @@ export async function flushMemberSubscriptionHistory(memberId: string): Promise<
     const subscriptionIds = subscriptions
       .filter(
         (subscription) =>
-          !subscription.chargeCoverage && !subscription.manuallyMarkedPaidAt
+          subscription.chargeCoverage.length === 0 && !subscription.manuallyMarkedPaidAt
       )
       .map((subscription) => subscription.id);
     const seasonYears = Array.from(
@@ -480,26 +482,31 @@ export async function checkMembershipStatus(
     };
   }
 
+  // #2149: role carries no subscription exemption — the membership TYPE is the
+  // sole authority, consistent with the booking gate and every display surface.
+  // Resolve the effective type once (assignment, else the role→default-type
+  // fallback): a bare ADMIN/LODGE account resolves to its NOT_REQUIRED built-in
+  // type and is written NOT_REQUIRED, while a fee-paying human holding the admin
+  // permission carries a REQUIRED type and now correctly syncs their real Xero
+  // subscription state instead of being force-reset to NOT_REQUIRED.
+  const membershipTypePolicy = await resolveMembershipTypePolicyForMember(
+    prisma,
+    { memberId, seasonYear: year },
+  );
+
   // #2041: BASED_ON_AGE_TIER dominance. If the sweep already wrote a
   // NOT_REQUIRED row for this season (the member was tier-exempt at season
   // start) AND their current-season type defers to the age tier, that row is
   // authoritative: a later manual mid-season tier promotion must not let a Xero
-  // sync re-mark them required and re-mint an invoice. The type is only resolved
-  // when a NOT_REQUIRED row actually exists (short-circuit), so the common path
-  // adds no query, and REQUIRED/NOT_REQUIRED types never reach this branch. The
-  // not-required outcome flows through the SAME writeXeroDerivedSubscriptionState
-  // NOT_REQUIRED path below, so Xero op shapes are byte-unchanged.
+  // sync re-mark them required and re-mint an invoice. The not-required outcome
+  // flows through the SAME writeXeroDerivedSubscriptionState NOT_REQUIRED path
+  // below, so Xero op shapes are byte-unchanged.
   const ageTierNotRequiredRow =
     manualPaidGuard?.status === "NOT_REQUIRED" &&
-    (
-      await resolveMembershipTypePolicyForMember(prisma, {
-        memberId,
-        seasonYear: year,
-      })
-    )?.subscriptionBehavior === "BASED_ON_AGE_TIER";
+    membershipTypePolicy?.subscriptionBehavior === "BASED_ON_AGE_TIER";
 
   const subscriptionRequired =
-    !roleNeverRequiresSubscription(member.role) &&
+    membershipTypePolicy?.subscriptionBehavior !== "NOT_REQUIRED" &&
     !ageTierNotRequiredRow &&
     (await requiresPaidSubscriptionForAgeTierFromSettings(member.ageTier));
 
@@ -531,7 +538,13 @@ export async function checkMembershipStatus(
       xeroInvoiceNumber: true,
       xeroOnlineInvoiceUrl: true,
       paidAt: true,
+      // #2147: only the ACTIVE coverage claim (releasedAt IS NULL) drives the
+      // immutable charge invoice identity. A released claim's charge invoice was
+      // voided and must not be re-fetched — after a void the subscription falls
+      // back to contact-scoped discovery.
       chargeCoverage: {
+        where: { releasedAt: null },
+        take: 1,
         select: {
           charge: {
             select: {
@@ -543,7 +556,7 @@ export async function checkMembershipStatus(
     },
   });
   const immutableChargeInvoiceId =
-    existingSubscription?.chargeCoverage?.charge.xeroInvoiceId ?? null;
+    existingSubscription?.chargeCoverage?.[0]?.charge.xeroInvoiceId ?? null;
 
   // Family-billed subscriptions can be covered by an invoice issued to another
   // member. In that case the covered member does not need their own Xero contact,
@@ -668,9 +681,44 @@ export async function checkMembershipStatus(
       return { status: "NOT_INVOICED" };
     }
 
-    const status = determineSubscriptionStatus(subscriptionInvoice);
     const matchedInvoiceId = subscriptionInvoice.invoiceID ?? null;
     const matchedInvoiceNumber = subscriptionInvoice.invoiceNumber ?? null;
+
+    // #2147 (D2 + required change 1): a VOIDED/DELETED Xero invoice must not keep
+    // the member locked out or un-billable. Before #2147 determineSubscriptionStatus
+    // mapped a voided invoice to UNPAID (read as "locked out"), and the write path
+    // re-wrote xeroInvoiceId — so the D1 dedup predicate (skip when xeroInvoiceId
+    // is set) would make a voided member permanently un-billable. On observing a
+    // void we instead atomically (a) null the subscription's Xero invoice link
+    // and set a NOT_INVOICED (un-invoiced, NOT locked-out) status, (b) mark the
+    // covering charge VOIDED, and (c) release its coverage claim (bumping
+    // voidGeneration) so a fresh preview re-bills with a new idempotency key.
+    if (
+      subscriptionInvoice.status === Invoice.StatusEnum.VOIDED ||
+      subscriptionInvoice.status === Invoice.StatusEnum.DELETED
+    ) {
+      const release = await releaseVoidedSubscriptionInvoice({
+        subscriptionId: existingSubscription?.id ?? null,
+        memberId,
+        seasonYear: year,
+        voidedInvoiceId: matchedInvoiceId,
+      });
+      await completeXeroSyncOperation(operation.id, {
+        responsePayload: {
+          fetchedInvoices: invoices.length,
+          matchedInvoiceId,
+          matchedInvoiceNumber,
+          previousStatus: existingSubscription?.status ?? null,
+          nextStatus: "NOT_INVOICED",
+          voided: true,
+          coverageReleased: release.coverageReleased,
+          chargeVoidedId: release.chargeVoidedId,
+        },
+      });
+      return { status: "NOT_INVOICED" };
+    }
+
+    const status = determineSubscriptionStatus(subscriptionInvoice);
     const matchedInvoiceChanged = Boolean(
       matchedInvoiceId && options?.changedInvoiceIds?.has(matchedInvoiceId)
     );
@@ -819,6 +867,94 @@ export async function checkMembershipStatus(
     await failXeroSyncOperation(operation.id, error);
     throw error;
   }
+}
+
+/**
+ * #2147 (D2): atomically react to a season subscription's Xero invoice being
+ * observed VOIDED/DELETED. In one transaction:
+ *  (a) mark + release — if an ACTIVE coverage claim points at the voided
+ *      invoice, release it (set releasedAt), mark the covering charge VOIDED
+ *      (row KEPT for audit), and bump MemberSubscription.voidGeneration so a
+ *      later confirm mints a NEW charge with a fresh idempotency key;
+ *  (b) always null the subscription's Xero invoice link and set NOT_INVOICED,
+ *      so even a legacy invoiced-but-uncovered member becomes re-billable.
+ *
+ * Every write is status/link-guarded and keyed on the voided invoice id, so a
+ * repeat sync run, a manual-mark-paid row (null xeroInvoiceId), or a concurrent
+ * release is a no-op. Note the deliberate lockout-reading change: a voided
+ * invoice now reads as NOT_INVOICED (not locked out) rather than the pre-#2147
+ * UNPAID (locked out) — see docs/guides/subscriptions.md and
+ * docs/guides/subscription-lockout.md.
+ */
+async function releaseVoidedSubscriptionInvoice(input: {
+  subscriptionId: string | null;
+  memberId: string;
+  seasonYear: number;
+  voidedInvoiceId: string | null;
+}): Promise<{ coverageReleased: boolean; chargeVoidedId: string | null }> {
+  const now = new Date();
+  return prisma.$transaction(async (tx) => {
+    let coverageReleased = false;
+    let chargeVoidedId: string | null = null;
+
+    if (input.subscriptionId && input.voidedInvoiceId) {
+      const activeCoverage = await tx.membershipSubscriptionChargeCoverage.findFirst({
+        where: {
+          subscriptionId: input.subscriptionId,
+          releasedAt: null,
+          charge: { xeroInvoiceId: input.voidedInvoiceId },
+        },
+        select: { id: true, chargeId: true },
+      });
+      if (activeCoverage) {
+        const released = await tx.membershipSubscriptionChargeCoverage.updateMany({
+          where: { id: activeCoverage.id, releasedAt: null },
+          data: { releasedAt: now },
+        });
+        if (released.count > 0) {
+          coverageReleased = true;
+          chargeVoidedId = activeCoverage.chargeId;
+          await tx.membershipSubscriptionCharge.updateMany({
+            where: { id: activeCoverage.chargeId, status: { not: "VOIDED" } },
+            data: { status: "VOIDED", lastErrorCode: null, lastErrorMessage: null },
+          });
+          await tx.memberSubscription.update({
+            where: { id: input.subscriptionId },
+            data: { voidGeneration: { increment: 1 } },
+          });
+        }
+      }
+    }
+
+    if (input.voidedInvoiceId) {
+      await tx.memberSubscription.updateMany({
+        where: {
+          memberId: input.memberId,
+          seasonYear: input.seasonYear,
+          xeroInvoiceId: input.voidedInvoiceId,
+        },
+        data: {
+          status: "NOT_INVOICED",
+          xeroInvoiceId: null,
+          xeroInvoiceNumber: null,
+          xeroOnlineInvoiceUrl: null,
+          paidAt: null,
+        },
+      });
+      await tx.xeroObjectLink.updateMany({
+        where: {
+          localModel: "MemberSubscription",
+          xeroObjectId: input.voidedInvoiceId,
+          role: "SUBSCRIPTION_INVOICE",
+          active: true,
+          ...(input.subscriptionId ? { localId: input.subscriptionId } : {}),
+        },
+        data: { active: false },
+      });
+    }
+
+    return { coverageReleased, chargeVoidedId };
+  });
 }
 
 export interface SubscriptionInvoiceMatchOptions {
@@ -1090,7 +1226,13 @@ export function determineSubscriptionStatus(invoice: Invoice): {
     return { status: "UNPAID" };
   }
 
-  // Draft or voided invoices — treat as not yet properly invoiced
+  // Draft invoices — treat as not yet properly invoiced. VOIDED/DELETED
+  // invoices technically also fall here, but since #2147 the subscription write
+  // path in checkMembershipStatus intercepts a VOIDED/DELETED invoice BEFORE
+  // calling this (routing it to releaseVoidedSubscriptionInvoice, which sets
+  // NOT_INVOICED — no longer locked out). This function still runs over voided
+  // invoices only in collectSubscriptionInvoiceMatches' isPaid ranking, where a
+  // voided invoice is correctly a non-paid (union-only loser) candidate.
   return { status: "UNPAID" };
 }
 

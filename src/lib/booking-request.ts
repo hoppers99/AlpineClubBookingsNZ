@@ -15,6 +15,7 @@
  *   - external calls (email) run after the transaction commits
  */
 import { randomBytes } from "crypto";
+import { DEFAULT_BOOKING_REQUEST_SETTINGS } from "@/config/club-settings-defaults";
 import { hash } from "bcryptjs";
 import {
   AgeTier,
@@ -162,12 +163,21 @@ export async function getBookingRequestSettings(db: Pick<typeof prisma, "booking
     where: { id: "default" },
   });
   return {
-    showPricingToNonMembers: record?.showPricingToNonMembers ?? false,
-    quoteResponseTtlDays: record?.quoteResponseTtlDays ?? 14,
-    quoteReminderLeadDays: record?.quoteReminderLeadDays ?? 3,
-    attendeeConfirmationLeadDays: record?.attendeeConfirmationLeadDays ?? 14,
+    showPricingToNonMembers:
+      record?.showPricingToNonMembers ??
+      DEFAULT_BOOKING_REQUEST_SETTINGS.showPricingToNonMembers,
+    quoteResponseTtlDays:
+      record?.quoteResponseTtlDays ??
+      DEFAULT_BOOKING_REQUEST_SETTINGS.quoteResponseTtlDays,
+    quoteReminderLeadDays:
+      record?.quoteReminderLeadDays ??
+      DEFAULT_BOOKING_REQUEST_SETTINGS.quoteReminderLeadDays,
+    attendeeConfirmationLeadDays:
+      record?.attendeeConfirmationLeadDays ??
+      DEFAULT_BOOKING_REQUEST_SETTINGS.attendeeConfirmationLeadDays,
     attendeeConfirmationReminderDays:
-      record?.attendeeConfirmationReminderDays ?? 3,
+      record?.attendeeConfirmationReminderDays ??
+      DEFAULT_BOOKING_REQUEST_SETTINGS.attendeeConfirmationReminderDays,
   };
 }
 
@@ -286,10 +296,26 @@ export async function updateBookingRequestSettings(input: {
     },
   });
 
+  // The write echoes the STORED row back, in the same shape the GET returns
+  // (#2162). The canonical settings-section pattern re-seeds a card's draft and
+  // snapshot from this response, so a partial echo is not a cosmetic omission.
+  //
+  // The two attendee fields used to be missing, and that broke BOTH timing
+  // cards after any save in the section, not just the attendee one: the admin
+  // form re-seeded from the three-field echo, so both attendee inputs rendered
+  // blank (their drafts became the string "undefined") and both attendee
+  // settings became `undefined`. The next "Save quote timing" then spread those
+  // `undefined`s into its whole-object body, `JSON.stringify` dropped the two
+  // keys entirely, and the route's schema — which requires all five — rejected
+  // the request with a 400 "Invalid input". The attendee card's own Save failed
+  // earlier and more quietly: `Number("undefined")` is `NaN`, so its client-side
+  // range check returned with a validation message before any fetch.
   return {
     showPricingToNonMembers: settings.showPricingToNonMembers,
     quoteResponseTtlDays: settings.quoteResponseTtlDays,
     quoteReminderLeadDays: settings.quoteReminderLeadDays,
+    attendeeConfirmationLeadDays: settings.attendeeConfirmationLeadDays,
+    attendeeConfirmationReminderDays: settings.attendeeConfirmationReminderDays,
   };
 }
 

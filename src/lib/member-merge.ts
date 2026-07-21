@@ -93,7 +93,7 @@ function spec(
 }
 
 /**
- * The authoritative classification of all 70 Member FK-owning relations. The
+ * The authoritative classification of all 72 Member FK-owning relations. The
  * DMMF/schema completeness test (member-merge-dmmf.test.ts) fails CI if the
  * schema grows a Member relation that is missing here (or if a key here no
  * longer exists in the schema), so a new relation cannot silently escape merge
@@ -130,6 +130,14 @@ export const MEMBER_MERGE_RELATION_SPECS: readonly MemberMergeRelationSpec[] = [
   }),
   spec("MembershipSubscriptionCharge", "recipient", "recipientMemberId", "move"),
   spec("MembershipSubscriptionCharge", "confirmedBy", "confirmedByMemberId", "move"),
+  // #2161 (D2): audit back-refs on the family "already invoiced" marker. Both are
+  // nullable + SetNull actor columns with NO member unique constraint, exactly
+  // mirroring MembershipSubscriptionCharge.confirmedByMemberId above (the schema
+  // comment on the model calls out that mirror). Classify them the same way —
+  // `move` re-points the loser's marking/release history onto the surviving
+  // member (history follows the person; no collision possible without a unique).
+  spec("FamilyGroupSeasonInvoiceMarker", "markedBy", "markedByMemberId", "move"),
+  spec("FamilyGroupSeasonInvoiceMarker", "releasedBy", "releasedByMemberId", "move"),
   spec("MemberSubscription", "manuallyMarkedPaidBy", "manuallyMarkedPaidByMemberId", "move"),
   spec("MembershipBillingException", "member", "memberId", "move"),
   spec("SeasonalMembershipAssignment", "member", "memberId", "resolve", {
@@ -850,7 +858,9 @@ const MEANINGFUL_SUBSCRIPTION_OR: Prisma.MemberSubscriptionWhereInput["OR"] = [
   { xeroInvoiceNumber: { not: null } },
   { xeroOnlineInvoiceUrl: { not: null } },
   { paidAt: { not: null } },
-  { chargeCoverage: { isNot: null } },
+  // #2147: chargeCoverage is now a list — ANY coverage row (active or a retained
+  // released one) makes the loser subscription meaningful for merge-collision.
+  { chargeCoverage: { some: {} } },
 ];
 
 /**

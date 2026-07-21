@@ -75,9 +75,28 @@ before changing Next.js APIs or conventions.
   Gate edit affordances on the tri-state `useAdminAreaEditAccess` via
   `ViewOnlyActionButton`/`AdminViewOnlyNotice`, and the write route must enforce
   the matching `area:edit` permission. This is binding for settings work touched
-  from here on; two pre-existing surfaces are acknowledged divergents and are NOT
-  retrofitted by this rule alone: the `/admin/modules` grid (bulk toggles) and
-  the staged-but-ungated legacy settings forms. Reference implementation:
+  from here on; four pre-existing surfaces are acknowledged divergents and are
+  NOT retrofitted by this rule alone: the `/admin/modules` grid (bulk toggles),
+  the older staged-but-ungated settings forms, and the age-tier and notification
+  settings panels — the last two not because they are list sections (list
+  sections are in scope), but simply because they have not been touched since.
+  `docs/ARCHITECTURE.md` carries the same four. Booking Policies has NO
+  divergent left. Every settings control in the area now stages behind a
+  per-card Edit → Save/Cancel: the **Show indicative pricing** checkbox stopped
+  persisting on change in #2162, and the two timing cards beside it in
+  `src/components/admin/booking-policies/public-booking-requests-section.tsx`
+  (quote window / reminder lead, and the school-attendee prompts) — always
+  editable with a dirty-gated Save and no Edit or Cancel until then — were
+  Edit-gated in #2166 on the owner's decision. The only direct writes left in
+  the area are discrete ACTIONS rather than staged fields: row-level
+  Activate/Deactivate and Delete on the booking-period and minimum-stay lists,
+  and the confirm-gated **Remove override** on the default cancellation card.
+  The per-row shape below sanctions the row-level ones; **Remove override** is
+  not a row action and is justified instead in its own JSDoc on
+  `handleRemoveOverride` (a destructive action that deletes the lodge's rows
+  whatever the open editor holds, so it bypasses `section.save()` by design).
+  None of them is a licence to auto-persist a settings FIELD. See
+  `docs/ARCHITECTURE.md` → the same list. Reference implementation:
   `src/components/admin/booking-policies/group-discount-section.tsx`.
   When you write a new section, or change an existing section's draft/snapshot
   logic, implement that half of the pattern with the shared
@@ -94,10 +113,116 @@ before changing Next.js APIs or conventions.
   that DOES normalise and the form silently disagrees with storage. Keep the
   transport in your own `save` callback (throw the hook's `ForbiddenSaveError`
   for a 403) and keep the section's feedback rendering in the component. A
-  section whose snapshot is a LIST with per-row edits is a different shape and
-  is out of the hook's scope — such a section still follows the canonical
-  pattern by hand. `default-cancellation-policy-section` is a not-yet-adopted
-  holdover that still hand-rolls its draft/snapshot state.
+  section whose snapshot is a LIST with per-row edits is NOT out of scope, but
+  the hook belongs one level down: give the OPEN EDITOR its own instance, keyed
+  on the row being edited AND on an instance counter bumped every time an editor
+  is opened (`` key={`${rowId ?? "new"}:${editorInstance}`} ``), and leave the
+  list itself as ordinary state with its row-level actions as plain direct
+  writes. The counter is not cosmetic: with the bare `key={rowId ?? "new"}` the
+  key is unchanged when Edit is clicked again on the row already open, React
+  reuses the instance, the fresh `initial` is ignored, and the abandoned draft
+  silently survives. Row-level actions that WRITE need an in-flight guard held in
+  a ref, not just a disabled button — a double-click dispatched inside one tick
+  gives both handlers the same pre-update row, so both send the same value and
+  the second write is a no-op audit entry of exactly the #2143 kind. The
+  booking-periods and minimum-night-stay sections are the reference for that
+  shape (#2142). Wherever the read endpoint SYNTHESISES defaults on a miss — or
+  the editor is creating a row that does not exist yet — carry the first-save
+  exception: count the draft as dirty so committing the defaults stays
+  reachable, but never extend that exception to a FAILED load, where the same
+  fallback values would let one click blind-write over a real stored policy.
+  For the same reason, a snapshot is authoritative only for the KEY it was
+  loaded for. Where the fetch is keyed on something beyond the section itself (a
+  lodge scope, say), carry that key inside the snapshot and treat a mismatch as
+  UNKNOWN — no editor, no destructive affordances, no first-save exception —
+  because the hook leaves `saved`/`draft` untouched when a re-fetch fails, and
+  the previous key's value would otherwise be presented as this key's. That
+  binds LIST sections too, where the stale value is a set of rows whose Edit,
+  Delete, and Activate/Deactivate buttons all act on a row id from the partition
+  the admin has already navigated away from. Give the never-loaded state a
+  SENTINEL key distinct from every real key: `null` usually means "club-wide"
+  as well as "no lodge", so seeding `null` makes a failed FIRST load compare
+  equal to the club-wide scope the section mounts on — the widest blast radius
+  there is. Make the unknown state recoverable in place: give its card a **Try
+  again** action that re-runs the current key's load, so an admin is not left
+  reloading the page over one failed GET. All three keyed booking-policy
+  sections (default cancellation, booking periods, minimum night stay) carry
+  this.
+- A card that shares a strict whole-object PUT with a sibling card must GET the
+  fresh row and merge only the fields the admin actually CHANGED immediately
+  before it writes, so a save cannot overwrite a change made while the page was
+  open. Its own fields are not a narrow enough filter: a field the card owns but
+  the admin never touched still goes out from a stale draft and reverts whoever
+  moved it. The schema still gets every field — the untouched ones just come
+  from the fresh read rather than the draft. Where the card owns both halves of
+  a cross-field rule, re-check the COMPOSED pair after the fresh read: sending
+  only the changed half can assemble a pair the admin never saw. That narrows
+  the read-modify-write window to milliseconds rather than closing it — these
+  routes carry no ETag or `If-Match`, so simultaneous writes still resolve
+  last-writer-wins, exactly as `/api/admin/modules` does. Claim the narrowing,
+  not a guarantee. That
+  covers the module toggles sharing `PUT /api/admin/modules` and all three cards
+  sharing `PUT /api/admin/booking-requests/settings` (#2162, #2166). That read
+  can move a field the admin never touched, so the snapshot a save re-seeds from
+  it must never end up out of step with the editor draft that is compared
+  against that snapshot: the mismatch arms a dirty-gated Save nobody armed, one
+  click from reverting the other admin. Prefer to make that impossible by
+  construction — give each card its OWN `useSectionEditState`, whose draft and
+  snapshot are only ever re-seeded together, by that card's own load or its own
+  save (what #2166 did). Where a snapshot genuinely is shared across editors,
+  re-seed the draft of every field the admin had NOT edited along with it, and
+  leave a draft they HAD typed into alone: it is their own in-progress input.
+  The residue either way is display staleness in a card the admin did not touch,
+  which is accepted — the same property `/admin/modules` has. Do not claim an
+  Edit gate resolves it: `startEditing` only flips a flag, so opening a card
+  never re-fetches. What stops stale display becoming a stale write is the
+  changed-fields-only patch above; what the gate adds is that the dirty
+  comparison is against the card's own snapshot, so a stale box never arms Save
+  by itself. `docs/ARCHITECTURE.md` carries the worked example.
+- Every gated section's Save must be dirty-gated, not just view-gated. Booking
+  write routes log audit entries and revalidate public content unconditionally,
+  so a pristine re-save writes an entry asserting a change that never happened
+  (#2143). Fix that at the FORM layer via the hook's `isDirty`; do not bolt an
+  ad-hoc no-op comparison onto the route.
+- Where a section renders an `AdminViewOnlySectionBanner`, its buttons pass
+  `describeReason={false}` so the view-only reason is stated once, in the
+  reading order, instead of on disabled buttons that are out of the tab order —
+  and whose `title` never fires at all, because the shared `buttonVariants` set
+  `disabled:pointer-events-none`. The banner keeps its `role="status"` wrapper
+  permanently mounted and gates only the content, because a polite live region
+  injected already-populated is silently dropped by some screen-reader/browser
+  pairings — and the same is true of `PolicyFeedback`'s `role="alert"` /
+  `role="status"` pair. That guarantee is a POSITION rule, so do not render the
+  loading state as an early return above them. Give the section a FRAME that is
+  rendered in every state — banner, feedback regions, and (where the fetch is
+  scope-keyed) the scope select — and swap only the cards below it. An early
+  return breaks two things at once: a failed FIRST load mounts the section and
+  its already-populated alert in a single commit, and, because a scope change is
+  itself a load, it unmounts the very `PolicyScopeSelect` the admin just used,
+  dropping keyboard focus to `<body>` mid-interaction. Started in the five
+  Booking Policies sections (#2142) and rolled across most of the admin tree
+  (#2160, extended by #2168): 230 of 262 `ViewOnlyActionButton` call sites now
+  opt out — 209 covered by a banner in the SAME file, 21 by a verified vouching
+  parent — and 32 keep the per-button reason: dialog/popover contents, leaf
+  toolbars, and `member-credit-card.tsx`, whose finance scope differs from the
+  member detail page banner's membership scope. The banner is stated once per
+  SECTION, and never twice over the same controls: a banner-bearing component
+  may not render another banner-bearing component, so when a covering parent
+  renders such a child, the child takes `renderViewOnlyBanner={false}` at the
+  render site (it keeps its own banner where an ancestor cannot reach it, e.g.
+  inside a dialog). The mirror case — a child with NO banner whose controls are
+  covered by a parent's — is `ancestorRendersViewOnlyBanner` (#2168): the child
+  defaults it to `false` and writes
+  `describeReason={!ancestorRendersViewOnlyBanner}`, and only a parent that
+  demonstrably renders an unconditional banner in the same returned tree may
+  pass the literal `true`. Never widen the per-file coverage rule instead; an
+  opt-out with no covering banner deletes the explanation outright. It is NOT
+  once per screen — sibling sections on one page each keep their own banner, and
+  `/admin/security` and `/admin/booking-requests` each show three; #2168 settled
+  that only for `/admin/members/[id]`, so collapsing sibling banners elsewhere
+  is still a fresh owner decision. All of it — coverage, the vouching rules,
+  nesting, and the published counts — is enforced by
+  `src/components/admin/__tests__/view-only-banner-contract.test.ts`.
 - Security, payment, booking, membership lifecycle, Xero, Stripe, and
   data-integrity work requires high or xhigh reasoning effort and human review
   before merge.

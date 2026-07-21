@@ -60,7 +60,12 @@ rules — see
 4. Edit the **Cancellation Refund Rules** table — one row per "days before
    stay" threshold, each with a card refund %, credit refund %, and optional
    fixed fees. The **Preview** restates the rules in plain English (for example
-   "14+ days before stay: 100% refund"). Click **Save Default Policy**.
+   "14+ days before stay: 100% refund"). Click **Save Default Policy**. Save
+   stays greyed out until you actually change something, so opening **Edit**
+   and clicking **Save** without touching a field never records a policy change
+   you did not make. On a club that has never saved a cancellation policy, Save
+   is available straight away so you can commit the starting rules once.
+   **Cancel** puts every field back exactly as it was saved.
 
 ### Date-Specific Periods
 
@@ -71,6 +76,10 @@ rules — see
 2. Give the period a name, start and end dates, its own hold setting, and its
    own refund rules, then click **Create Period**. Any booking whose check-in
    falls inside the period uses these rules instead of the default.
+3. To change an existing period, click its **Edit** button. **Update Period**
+   stays greyed out until you actually change something, so re-saving an
+   untouched period never records a change you did not make. **Cancel** closes
+   the editor and leaves the period as it was.
 
 ### Group Discount
 
@@ -80,7 +89,12 @@ rules — see
 
 2. Tick **Enabled**, set the **Minimum group size** (the number of guests at
    which the whole booking is charged at member rates), and optionally
-   **Summer seasons only**. Click **Save Group Discount**.
+   **Summer seasons only**. Click **Save Group Discount**. The Save button stays
+   greyed out until you actually change something, so opening **Edit** and
+   clicking **Save** without touching a field never records a policy change you
+   did not make. On a club that has never saved this policy, Save is available
+   straight away so you can commit the defaults once and have the setup
+   checklist show the group discount as configured.
 
 ### Minimum Night Stay
 
@@ -92,19 +106,51 @@ rules — see
    **Trigger Days** (Sun–Sat) activate it, then click **Create Policy**. The
    minimum stay applies whenever a booking includes any trigger day in the
    range. (Admins can still override it when booking on behalf.)
+3. To change an existing policy, click its **Edit** button. **Update Policy**
+   stays greyed out until you actually change something — including trigger
+   days, where ticking a day and unticking it again counts as no change.
+4. Each row carries two different controls that used to look alike.
+   **Deactivate** (outlined) is the reversible pause — the policy stops applying
+   and the row shows an **Activate** button to bring it back. **Delete** (red)
+   takes the policy out of use and records a `delete` in the audit log. Nothing
+   is erased: the row stays listed as inactive, so the change remains auditable
+   and the same **Activate** button can bring it back. Use **Delete** to say
+   "this policy is finished", and **Deactivate** to say "not right now" — the
+   difference is what the audit log records, not whether it can be undone.
+   Both are one-click writes, so each button is disabled while it is working:
+   clicking twice in a row does not record the same change twice.
 
 ### Public Booking Requests
 
 1. Open **Public Booking Requests**.
 
-   ![Public Booking Requests: the indicative-pricing toggle plus quote-window and school-attendee timing cards](../images/admin/admin-booking-policies-public-requests.png)
+   ![Public Booking Requests: the indicative-pricing card and the quote-window and school-attendee timing cards, each with its own Edit button and shaded read-only boxes](../images/admin/admin-booking-policies-public-requests.png)
 
-2. Toggle **Show indicative pricing on the request form** (this autosaves).
-   With it on, the public form is "Request to Book" and shows a price; with it
-   off, it is "Request for Price" and shows none until an officer reviews it.
-3. Set the **Quote response window** and **Reminder lead time**, then **Save
-   quote timing**. Set the **School Attendee Confirmation** prompts and **Save
-   attendee prompts**.
+2. To change **Show indicative pricing on the request form**, click **Edit** on
+   the Indicative Pricing card, tick or untick the box, then click **Save
+   indicative pricing**. **Cancel** puts it back the way it was. Nothing changes
+   on the public site until you save, so an accidental click on the box is
+   harmless. With it on, the public form is "Request to Book" and shows a price;
+   with it off, it is "Request for Price" and shows none until an officer
+   reviews it.
+3. The two timing cards below work exactly the same way. Click **Edit** on
+   **Quote Response Window & Reminders**, set the **Quote response window** and
+   **Reminder lead time**, then click **Save quote timing**. Click **Edit** on
+   **School Attendee Confirmation**, set the prompts, then click **Save attendee
+   prompts**. Each card has its own **Cancel**, which puts that card's boxes back
+   the way they were saved and leaves the other cards alone. Save stays greyed
+   out until you actually change something, so opening **Edit** and closing it
+   again never records a change you did not make.
+4. You can have more than one card open at once, and each keeps its own draft —
+   cancelling one does not touch what you have typed in another. While a card is
+   saving, the whole section is briefly locked, because all three cards write the
+   same settings record and only one of them may be in flight at a time.
+5. Each card sends back only the boxes you actually changed, so if another admin
+   changed one of the others while your page was open, your save leaves theirs
+   alone and the card shows you their value afterwards. Note that clicking
+   **Edit** does not re-read the settings — a card shows what it loaded with
+   until something is saved from it. Reload the page if you need to be sure you
+   are looking at current values.
 
 ## Settings reference
 
@@ -120,7 +166,7 @@ rules — see
 | Summer seasons only | Group Discount | Restrict the group discount to summer | on | — |
 | Minimum nights | Minimum Stay | Nights required when a trigger day is included | 2 | Minimum 2 |
 | Trigger days | Minimum Stay | Which weekdays activate the rule | Sat | At least one day |
-| Show indicative pricing | Public Requests | Price shown on the public request form | off | Autosaves |
+| Show indicative pricing | Public Requests | Price shown on the public request form | off | — |
 | Quote response window | Public Requests | Days a quote link stays valid | 14 | 1–60 days |
 | Reminder lead time | Public Requests | Days before expiry to remind the requester | 3 | 0–30, must be shorter than the window |
 | Attendee first prompt / reminder | Public Requests | School attendee-confirmation timing | 14 / 3 days | Prompt 0–90 (0 = off); reminder 1–30 |
@@ -129,11 +175,17 @@ rules — see
 
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
-| Every field is read-only | Your admin role is view-only for bookings | Ask a full admin for bookings edit access |
+| Every field is read-only, and a banner at the top of the section says "You have view-only access to this area" | Your admin role is view-only for bookings | Ask a full admin for bookings edit access |
+| A **Save** button is greyed out and there is no view-only banner | You have not changed anything yet | Change a field to enable Save. Every section's Save only lights up once the form differs from what is saved, so an accidental re-save cannot record a change you did not make |
+| A **Save** button went grey part-way through editing, and the view-only banner appeared | Your bookings access was reduced while you had the form open | Reload the page and ask a full admin for bookings edit access |
+| A section says "Could not load…" and shows no editor and no list | Its policy or list could not be fetched, so what is stored is unknown — either on first load, or after switching **Rules for** to a lodge | Click **Try again** on that card. Nothing is shown deliberately: what was on screen belongs to a different scope, or is only this form's built-in starting values, and editing, removing, or deactivating it from here would change the wrong thing. The **Rules for** selector stays available throughout, so you can also switch scope instead |
 | A "Public copy may be out of date" banner | Your Terms/FAQ still describe the old non-member hold | Click **Edit public pages** and update the copy to match the current policy |
 | A period's rules are not applying | The booking's check-in is outside the period, or the period is inactive | Check the dates and the Active toggle on the period card |
 | Group discount never triggers | It is disabled, the group is under the minimum, or it is summer-only and the stay is in winter | Enable it, lower the minimum group size, or untick Summer seasons only |
 | Reminder lead time won't save | It is not shorter than the quote response window | Set a lead time shorter than the window |
+| A Public Booking Requests number box is shaded and will not accept typing, and there is no view-only banner | That card is not open for editing yet — its boxes are read-only until you open it | Click **Edit** in that card's header. The boxes turn white and **Save** and **Cancel** appear |
+| A Public Booking Requests card says "the quote timing has been changed since this page loaded" | The quote response window or the reminder lead time changed while your page was open — another admin, you in a second tab, or a configuration import — and your change would leave the reminder no shorter than the window. Nothing was written | Reload the page to see the current values, then make your change again |
+| A Public Booking Requests card says "Your change was not saved: the current settings could not be re-read" | Each of that section's three cards re-reads the stored settings just before it writes, so it cannot overwrite another card. That read failed, so nothing was written | Click **Save** again. Your typing is still in the box — nothing was lost and nothing was changed |
 
 ## Related links
 

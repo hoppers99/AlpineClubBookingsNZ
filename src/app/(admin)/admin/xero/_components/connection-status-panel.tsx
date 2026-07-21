@@ -105,7 +105,7 @@ export function ConnectionStatusPanel({
             {/* Live connection-health check. The green "Connected" chip above
                 reflects token-row presence only; this button actually exercises
                 the refresh + a cheap org read (#2105). */}
-            <div className="space-y-2 rounded-md border border-slate-200 bg-slate-50 p-3">
+            <div className="space-y-2 rounded-md border border-border bg-muted p-3">
               <div className="flex flex-wrap items-center gap-2">
                 <Button
                   type="button"
@@ -175,6 +175,21 @@ export function ConnectionStatusPanel({
               and finance syncs until you reconnect. It does not change anything
               inside Xero.
             </p>
+          </div>
+        ) : status?.needsReentry ? (
+          // Tokens exist but no longer decrypt — the auth secret / encryption
+          // key changed (e.g. the #2079 env→DB upgrade). This is a reconnect,
+          // not a first-time connect.
+          <div className="space-y-3">
+            <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+              <span>
+                Stored Xero tokens can no longer be read because the encryption
+                key (derived from the app auth secret) changed. Reconnect Xero to
+                re-authorise — no data inside Xero is affected.
+              </span>
+            </div>
+            <Button onClick={onConnect}>Reconnect Xero</Button>
           </div>
         ) : (
           <Button onClick={onConnect}>Connect Xero</Button>

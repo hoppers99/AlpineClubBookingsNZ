@@ -7,6 +7,11 @@ const mocks = vi.hoisted(() => ({
   members: { findMany: vi.fn() },
   membershipTypes: { findMany: vi.fn() },
   charges: { findMany: vi.fn() },
+  // #2147 FINDING 1: family-level dedup reads FamilyGroupMember rows for members
+  // already billed (live invoice / active coverage) and groups them for sizes.
+  familyGroupMembers: { findMany: vi.fn(), groupBy: vi.fn() },
+  // #2161 (D2): active operator family markers read by the billing builder.
+  familyMarkers: { findMany: vi.fn() },
   // #2109 FIX-4d: the closed-loop test runs the REAL getSubscriptionItemCodes
   // resolver over these fee-component rows. getSubscriptionItemCodes folds in the
   // flat subscriptionIncome item code via the module-INTERNAL
@@ -42,6 +47,8 @@ vi.mock("@/lib/prisma", () => ({
     member: mocks.members,
     membershipType: mocks.membershipTypes,
     membershipSubscriptionCharge: mocks.charges,
+    familyGroupMember: mocks.familyGroupMembers,
+    familyGroupSeasonInvoiceMarker: mocks.familyMarkers,
     membershipAnnualFeeComponent: mocks.feeComponents,
     xeroAccountMapping: mocks.accountMapping,
   },
@@ -146,6 +153,9 @@ describe("membership subscription billing", () => {
     mocks.members.findMany.mockResolvedValue([]);
     mocks.membershipTypes.findMany.mockResolvedValue([]);
     mocks.charges.findMany.mockResolvedValue([]);
+    mocks.familyGroupMembers.findMany.mockResolvedValue([]);
+    mocks.familyGroupMembers.groupBy.mockResolvedValue([]);
+    mocks.familyMarkers.findMany.mockResolvedValue([]);
     mocks.feeComponents.findMany.mockResolvedValue([]);
     mocks.effectiveFee.mockResolvedValue(fee());
     mocks.familyMode.mockResolvedValue("BILL_FAMILY_VIA_BILLING_MEMBER");
@@ -290,6 +300,66 @@ describe("membership subscription billing", () => {
     )).toBe(false);
   });
 
+  it("skips a member holding a live Xero invoice (invoiced-but-unpaid) and surfaces them under alreadyInvoiced (#2147 D1/D3)", async () => {
+    // The bug: an invoiced-but-unpaid member (real xeroInvoiceId, status
+    // UNPAID/OVERDUE, NO charge-coverage row because they were billed by the
+    // older Xero-sync path) passed both the coverage and PAID guards and was
+    // re-billed. They must now be skipped AND listed with their invoice number.
+    mocks.members.findMany.mockResolvedValue([member("invoiced-unpaid"), member("owes")]);
+    mocks.coverage.findMany.mockResolvedValue([]); // no coverage rows at all
+    mocks.subscriptions.findMany.mockResolvedValue([
+      { memberId: "invoiced-unpaid", status: "OVERDUE", xeroInvoiceId: "xi-1", xeroInvoiceNumber: "INV-100", member: { firstName: "Iva", lastName: "Owe" } },
+    ]);
+    const preview = await buildSubscriptionBillingPreview({
+      seasonYear: 2026,
+      decisionDate: new Date("2026-07-13T00:00:00.000Z"),
+    });
+    expect(preview.entries).toHaveLength(1);
+    expect(preview.entries[0].coveredMembers).toEqual([{ id: "owes", name: "First-owes Member" }]);
+    expect(preview.entries.some((entry) => entry.coveredMembers.some((c) => c.id === "invoiced-unpaid"))).toBe(false);
+    expect(preview.alreadyInvoiced).toEqual([
+      { memberId: "invoiced-unpaid", memberName: "Iva Owe", xeroInvoiceNumber: "INV-100", status: "OVERDUE" },
+    ]);
+  });
+
+  it("keeps a manually marked-paid member (PAID, null xeroInvoiceId) skipped and OUT of alreadyInvoiced (#2147 regression)", async () => {
+    // The dedup predicate is ADDITIVE: a manual-PAID (cash, no invoice) member
+    // is skipped by the PAID clause, but has no invoice number to show, so they
+    // must NOT appear in the alreadyInvoiced list.
+    mocks.members.findMany.mockResolvedValue([member("manual-paid"), member("owes")]);
+    mocks.coverage.findMany.mockResolvedValue([]);
+    mocks.subscriptions.findMany.mockResolvedValue([
+      { memberId: "manual-paid", status: "PAID", xeroInvoiceId: null, xeroInvoiceNumber: null, member: { firstName: "First-manual-paid", lastName: "Member" } },
+    ]);
+    const preview = await buildSubscriptionBillingPreview({
+      seasonYear: 2026,
+      decisionDate: new Date("2026-07-13T00:00:00.000Z"),
+    });
+    expect(preview.entries).toHaveLength(1);
+    expect(preview.entries[0].coveredMembers).toEqual([{ id: "owes", name: "First-owes Member" }]);
+    expect(preview.alreadyInvoiced).toEqual([]);
+  });
+
+  it("re-bills a member whose only coverage claim was released after a void (#2147)", async () => {
+    // A released coverage row (releasedAt set) is excluded from the skip-set
+    // query, so the member is billable again. The billing query passes
+    // releasedAt: null, so a released row simply never appears in alreadyCovered.
+    mocks.members.findMany.mockResolvedValue([member("re-billable")]);
+    mocks.coverage.findMany.mockResolvedValue([]); // released rows filtered out by releasedAt: null
+    mocks.subscriptions.findMany.mockResolvedValue([]); // link nulled by the void release
+    const preview = await buildSubscriptionBillingPreview({
+      seasonYear: 2026,
+      decisionDate: new Date("2026-07-13T00:00:00.000Z"),
+    });
+    expect(preview.alreadyCoveredMemberIds).toEqual([]);
+    expect(preview.entries).toHaveLength(1);
+    expect(preview.entries[0].coveredMembers).toEqual([{ id: "re-billable", name: "First-re-billable Member" }]);
+    // The coverage skip-set query only counts ACTIVE (releasedAt IS NULL) claims.
+    expect(mocks.coverage.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ releasedAt: null }),
+    }));
+  });
+
   it("produces one visible exception and no invoice charges when subscriptionIncome is not explicitly configured", async () => {
     mocks.mapping.mockResolvedValue({ code: "203", itemCode: null, codeExplicitlyConfigured: false });
     mocks.members.findMany.mockResolvedValue([member("m1"), member("m2")]);
@@ -358,6 +428,75 @@ describe("membership subscription billing", () => {
           existingFamilyChargeId: "charge-existing",
           membershipAnnualFeeId: "fee-new",
         }),
+      }),
+    ]);
+  });
+
+  it("re-bills a new-system PER_FAMILY family once its charge is VOIDED (coverage released) (#2147)", async () => {
+    // After a NEW-system PER_FAMILY charge's Xero invoice is voided, the void
+    // handler (releaseVoidedSubscriptionInvoice) keeps the charge row with
+    // status VOIDED and familyGroupId intact for audit, releases coverage
+    // (releasedAt set) and nulls the subscription link. The existingFamilyCharges
+    // query must exclude VOIDED rows so the retained charge no longer populates
+    // billedFamilyTypes — otherwise it fires FAMILY_ALREADY_BILLED and blocks the
+    // family's re-bill forever, contradicting the void→re-bill design.
+    const annual = fee({ id: "fee-new", billingBasis: "PER_FAMILY", prorationRule: "NONE" });
+    mocks.effectiveFee.mockResolvedValue(annual);
+    // Filter-aware mock mirrors the real DB: apply the where.status filter to a
+    // fixture holding one VOIDED family charge.
+    const voidedCharge = { id: "charge-voided", familyGroupId: "family-1", membershipTypeId: "type-1", status: "VOIDED" };
+    mocks.charges.findMany.mockImplementation((args?: { where?: { status?: { not?: string } } }) => {
+      const notStatus = args?.where?.status?.not;
+      return Promise.resolve([voidedCharge].filter((charge) => (notStatus ? charge.status !== notStatus : true)));
+    });
+    mocks.coverage.findMany.mockResolvedValue([]); // released by the void
+    mocks.subscriptions.findMany.mockResolvedValue([]); // link nulled by the void
+    mocks.members.findMany.mockResolvedValue([
+      member("re-billable", { familyGroupMemberships: [familyMembership()] }),
+    ]);
+    const preview = await buildSubscriptionBillingPreview({
+      seasonYear: 2026,
+      decisionDate: new Date("2026-08-01T00:00:00.000Z"),
+    });
+    // The retained VOIDED charge is excluded, so the family re-bills as one entry.
+    expect(preview.entries).toHaveLength(1);
+    expect(preview.entries[0]).toMatchObject({
+      billingBasis: "PER_FAMILY",
+      familyGroupId: "family-1",
+      recipient: { id: "billing-1" },
+    });
+    expect(preview.exceptions.some((row) => row.code === "FAMILY_ALREADY_BILLED")).toBe(false);
+    // The query must carry the VOIDED filter that makes this correct.
+    expect(mocks.charges.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ status: { not: "VOIDED" } }),
+    }));
+  });
+
+  it("control: a live (non-VOIDED) PER_FAMILY charge still blocks with FAMILY_ALREADY_BILLED (#2147)", async () => {
+    // Same fixture, but the charge is live (e.g. UNPAID). The VOIDED filter keeps
+    // it in existingFamilyCharges, so a late-joining family member is correctly
+    // blocked — proving the filter narrows only VOIDED rows, not live ones.
+    const annual = fee({ id: "fee-new", billingBasis: "PER_FAMILY", prorationRule: "NONE" });
+    mocks.effectiveFee.mockResolvedValue(annual);
+    const liveCharge = { id: "charge-live", familyGroupId: "family-1", membershipTypeId: "type-1", status: "UNPAID" };
+    mocks.charges.findMany.mockImplementation((args?: { where?: { status?: { not?: string } } }) => {
+      const notStatus = args?.where?.status?.not;
+      return Promise.resolve([liveCharge].filter((charge) => (notStatus ? charge.status !== notStatus : true)));
+    });
+    mocks.members.findMany.mockResolvedValue([
+      member("late", { familyGroupMemberships: [familyMembership()] }),
+    ]);
+    const preview = await buildSubscriptionBillingPreview({
+      seasonYear: 2026,
+      decisionDate: new Date("2026-08-01T00:00:00.000Z"),
+      memberIds: ["late"],
+    });
+    expect(preview.entries).toHaveLength(0);
+    expect(preview.exceptions).toEqual([
+      expect.objectContaining({
+        code: "FAMILY_ALREADY_BILLED",
+        memberId: "late",
+        context: expect.objectContaining({ existingFamilyChargeId: "charge-live" }),
       }),
     ]);
   });
@@ -432,6 +571,23 @@ describe("membership subscription billing", () => {
     const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-07-13T00:00:00.000Z"), memberIds: ["new"] });
     expect(preview.exceptions).toHaveLength(0);
     expect(preview.entries[0]).toMatchObject({ membershipTypeKey: "FULL", coveredMembers: [{ id: "new" }] });
+  });
+
+  it("excludes a bare ADMIN account via its NOT_REQUIRED role-default type — never billed, no exception (#2149)", async () => {
+    // Guard item 2: with the role-based exemption dropped, a bare operational
+    // account with no season assignment resolves its fallback type FROM THE DB.
+    // The migration seeds ADMIN as NOT_REQUIRED, so the preview skips it entirely
+    // instead of raising MISSING_MEMBERSHIP_ASSIGNMENT (which it would if the
+    // ADMIN type row were absent) or billing it at the FULL rate.
+    mocks.members.findMany.mockResolvedValue([
+      member("bare-admin", { role: "ADMIN", seasonalMembershipAssignments: [] }),
+    ]);
+    mocks.membershipTypes.findMany.mockResolvedValue([
+      { id: "type-admin", key: "ADMIN", name: "Admin", subscriptionBehavior: "NOT_REQUIRED", annualFees: [] },
+    ]);
+    const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-07-13T00:00:00.000Z") });
+    expect(preview.entries).toHaveLength(0);
+    expect(preview.exceptions).toHaveLength(0);
   });
 
   it("snapshots explicit NO_INVOICE as zero cents rather than treating it as missing config", async () => {
@@ -703,6 +859,368 @@ describe("membership subscription billing", () => {
     });
   });
 
+  describe("family-level dedup on a partial legacy invoice (#2147 FINDING 1)", () => {
+    const familyFee = () => fee({ id: "fee-family", billingBasis: "PER_FAMILY", prorationRule: "NONE" });
+    // A FamilyGroupMember blocker row: the member already holds a live season
+    // invoice, so the whole family group is suppressed from a second charge. #2161
+    // (D1): the row now carries the holder's resolution inputs (role/DOB/tier/
+    // assignment) and its subscription's active chargeCoverage, so the builder can
+    // resolve the holder's OWN basis (here PER_FAMILY, since mocks.effectiveFee
+    // returns the family fee) and confirm it should suppress.
+    function blocker(
+      memberId: string,
+      sub: {
+        xeroInvoiceId?: string | null;
+        xeroInvoiceNumber?: string | null;
+        status?: string;
+        chargeCoverage?: Array<{ charge: { billingBasis: string; familyGroupId: string | null } }>;
+      } = {},
+      memberOverrides: Record<string, unknown> = {},
+    ) {
+      return {
+        familyGroupId: "family-1",
+        memberId,
+        member: {
+          firstName: "Bill",
+          lastName: "Member",
+          role: "USER",
+          dateOfBirth: null,
+          ageTier: "ADULT",
+          seasonalMembershipAssignments: [{
+            membershipType: { id: "type-1", key: "FAMILY", name: "Family", subscriptionBehavior: "REQUIRED" },
+          }],
+          subscriptions: [{
+            xeroInvoiceId: sub.xeroInvoiceId ?? "xi-100",
+            xeroInvoiceNumber: sub.xeroInvoiceNumber ?? "INV-100",
+            status: sub.status ?? "UNPAID",
+            chargeCoverage: sub.chargeCoverage ?? [],
+          }],
+          ...memberOverrides,
+        },
+      };
+    }
+
+    beforeEach(() => { mocks.effectiveFee.mockResolvedValue(familyFee()); });
+
+    it("(a) suppresses the whole family when the billing member holds a live legacy invoice and children do not (empty charge/coverage tables)", async () => {
+      // Billing member B holds live INV-100; children c1/c2 have no invoice link
+      // and no charge/coverage rows. Without family-level dedup c1 would proceed,
+      // resolve recipient B, and mint a SECOND family charge to B.
+      mocks.charges.findMany.mockResolvedValue([]); // no family charge exists yet
+      mocks.coverage.findMany.mockResolvedValue([]); // no coverage rows
+      mocks.subscriptions.findMany.mockResolvedValue([
+        // B is separately surfaced per-member in alreadyInvoiced (unchanged).
+        { memberId: "billing-1", status: "UNPAID", xeroInvoiceId: "xi-100", xeroInvoiceNumber: "INV-100", member: { firstName: "Bill", lastName: "Member" } },
+      ]);
+      mocks.familyGroupMembers.findMany.mockResolvedValue([blocker("billing-1")]);
+      mocks.familyGroupMembers.groupBy.mockResolvedValue([{ familyGroupId: "family-1", _count: { memberId: 3 } }]);
+      mocks.members.findMany.mockResolvedValue([
+        member("c1", { familyGroupMemberships: [familyMembership()] }),
+        member("c2", { familyGroupMemberships: [familyMembership()] }),
+      ]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-04-01T00:00:00.000Z") });
+      // No family entry is minted at all.
+      expect(preview.entries).toHaveLength(0);
+      // The whole family is surfaced for audit, with the invoice-holder + number.
+      expect(preview.alreadyInvoicedFamilies).toEqual([
+        { familyGroupId: "family-1", holderMemberId: "billing-1", holderName: "Bill Member", xeroInvoiceNumber: "INV-100", status: "UNPAID", holderBasisUnresolvable: false, membersCovered: 3, operatorMarked: false, markerNote: null, markedByName: null, markedAt: null },
+      ]);
+      // The family-level dedup query is intentionally NOT scoped to memberIds.
+      expect(mocks.familyGroupMembers.findMany).toHaveBeenCalled();
+    });
+
+    it("(a') suppresses the family even for a scoped NEW_MEMBER_APPROVAL run over only a child", async () => {
+      // Confirming just the child must still see the billing member's invoice on
+      // the same group — the blocker query is unscoped by memberIds.
+      mocks.subscriptions.findMany.mockResolvedValue([]);
+      mocks.familyGroupMembers.findMany.mockResolvedValue([blocker("billing-1")]);
+      mocks.familyGroupMembers.groupBy.mockResolvedValue([{ familyGroupId: "family-1", _count: { memberId: 3 } }]);
+      mocks.members.findMany.mockResolvedValue([
+        member("c1", { familyGroupMemberships: [familyMembership()] }),
+      ]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-04-01T00:00:00.000Z"), memberIds: ["c1"] });
+      expect(preview.entries).toHaveLength(0);
+      expect(preview.alreadyInvoicedFamilies.map((f) => f.familyGroupId)).toEqual(["family-1"]);
+    });
+
+    it("(b) re-bills the whole family as ONE charge once the invoice is voided and coverage released", async () => {
+      // Post-void: link nulled, coverage released -> no blocker rows -> the group
+      // is billable again and folds every member into a single family entry.
+      mocks.subscriptions.findMany.mockResolvedValue([]); // B is NOT_INVOICED again
+      mocks.coverage.findMany.mockResolvedValue([]); // released row excluded by releasedAt: null
+      mocks.familyGroupMembers.findMany.mockResolvedValue([]); // no live invoice, no active coverage
+      mocks.members.findMany.mockResolvedValue([
+        member("billing-1", { familyGroupMemberships: [familyMembership()] }),
+        member("c1", { familyGroupMemberships: [familyMembership()] }),
+        member("c2", { familyGroupMemberships: [familyMembership()] }),
+      ]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-04-01T00:00:00.000Z") });
+      expect(preview.alreadyInvoicedFamilies).toEqual([]);
+      expect(preview.entries).toHaveLength(1);
+      expect(preview.entries[0]).toMatchObject({ billingBasis: "PER_FAMILY", familyGroupId: "family-1", recipient: { id: "billing-1" } });
+      // ONE charge covering the whole group — not a partial charge covering B only.
+      expect(preview.entries[0].coveredMembers.map((m) => m.id)).toEqual(["billing-1", "c1", "c2"]);
+    });
+
+    it("(d) a family with no live invoice and no charges still bills normally (regression)", async () => {
+      mocks.familyGroupMembers.findMany.mockResolvedValue([]);
+      mocks.members.findMany.mockResolvedValue([
+        member("m1", { familyGroupMemberships: [familyMembership()] }),
+        member("m2", { familyGroupMemberships: [familyMembership()] }),
+      ]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-04-01T00:00:00.000Z") });
+      expect(preview.alreadyInvoicedFamilies).toEqual([]);
+      expect(preview.entries).toHaveLength(1);
+      expect(preview.entries[0].coveredMembers.map((m) => m.id)).toEqual(["m1", "m2"]);
+      // groupBy is only queried when a suppression actually applies.
+      expect(mocks.familyGroupMembers.groupBy).not.toHaveBeenCalled();
+    });
+
+    it("prefers a live-invoice holder as the representative and stays deterministic by memberId", async () => {
+      // One group member has an active-coverage-only block from a PER_FAMILY
+      // charge (no invoice number), another holds the live invoice — the
+      // invoice-holder must be surfaced. #2161 (D1): the coverage trigger derives
+      // its basis from the charge row (PER_FAMILY here), so it suppresses.
+      mocks.familyGroupMembers.findMany.mockResolvedValue([
+        {
+          familyGroupId: "family-1",
+          memberId: "z-covered",
+          member: {
+            firstName: "Zoe",
+            lastName: "Cover",
+            role: "USER",
+            dateOfBirth: null,
+            ageTier: "ADULT",
+            seasonalMembershipAssignments: [],
+            subscriptions: [{
+              xeroInvoiceId: null,
+              xeroInvoiceNumber: null,
+              status: "NOT_INVOICED",
+              chargeCoverage: [{ charge: { billingBasis: "PER_FAMILY", familyGroupId: "family-1" } }],
+            }],
+          },
+        },
+        blocker("billing-1"),
+      ]);
+      mocks.familyGroupMembers.groupBy.mockResolvedValue([{ familyGroupId: "family-1", _count: { memberId: 4 } }]);
+      mocks.members.findMany.mockResolvedValue([
+        member("c1", { familyGroupMemberships: [familyMembership()] }),
+      ]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-04-01T00:00:00.000Z") });
+      expect(preview.alreadyInvoicedFamilies).toEqual([
+        { familyGroupId: "family-1", holderMemberId: "billing-1", holderName: "Bill Member", xeroInvoiceNumber: "INV-100", status: "UNPAID", holderBasisUnresolvable: false, membersCovered: 4, operatorMarked: false, markerNote: null, markedByName: null, markedAt: null },
+      ]);
+    });
+  });
+
+  describe("family suppression refinement + operator marker (#2161)", () => {
+    const perFamilyFee = () => fee({ id: "fee-fam", billingBasis: "PER_FAMILY", prorationRule: "NONE" });
+    const perMemberFee = () => fee({ id: "fee-pm", billingBasis: "PER_MEMBER", prorationRule: "NONE" });
+    // effectiveFee keyed by membershipTypeId so a mixed-basis family resolves each
+    // member's OWN basis (type-fam -> PER_FAMILY, type-pm -> PER_MEMBER).
+    function mixedBasisFees() {
+      mocks.effectiveFee.mockImplementation(async ({ membershipTypeId }: { membershipTypeId: string }) =>
+        membershipTypeId === "type-pm" ? perMemberFee() : perFamilyFee());
+    }
+    function famMember(id: string) {
+      return member(id, {
+        familyGroupMemberships: [familyMembership()],
+        seasonalMembershipAssignments: [{ membershipType: { id: "type-fam", key: "FAMILY", name: "Family", subscriptionBehavior: "REQUIRED" } }],
+      });
+    }
+    // A blocker whose OWN resolved basis is PER_MEMBER (assignment type-pm).
+    function perMemberBlocker(
+      memberId: string,
+      sub: { xeroInvoiceId?: string | null; chargeCoverage?: Array<{ charge: { billingBasis: string; familyGroupId: string | null } }> } = {},
+    ) {
+      const xeroInvoiceId = sub.xeroInvoiceId === undefined ? "xi-pm" : sub.xeroInvoiceId;
+      return {
+        familyGroupId: "family-1",
+        memberId,
+        member: {
+          firstName: "Pat", lastName: "Member", role: "USER", dateOfBirth: null, ageTier: "ADULT",
+          seasonalMembershipAssignments: [{ membershipType: { id: "type-pm", key: "FULL", name: "Full", subscriptionBehavior: "REQUIRED" } }],
+          subscriptions: [{
+            xeroInvoiceId,
+            xeroInvoiceNumber: xeroInvoiceId ? "INV-PM" : null,
+            status: "UNPAID",
+            chargeCoverage: sub.chargeCoverage ?? [],
+          }],
+        },
+      };
+    }
+
+    it("D1: a PER_MEMBER member's live personal invoice no longer blocks the family fee (mixed-basis family bills)", async () => {
+      // pm-member holds a live personal PER_MEMBER invoice; fam-a/fam-b are
+      // PER_FAMILY. The OLD conservative predicate suppressed the whole family off
+      // pm-member's invoice (under-billing); D1 resolves pm-member's own basis as
+      // PER_MEMBER, so it no longer blocks the family fee.
+      mixedBasisFees();
+      mocks.subscriptions.findMany.mockResolvedValue([
+        { memberId: "pm-member", status: "UNPAID", xeroInvoiceId: "xi-pm", xeroInvoiceNumber: "INV-PM", member: { firstName: "Pat", lastName: "Member" } },
+      ]);
+      mocks.familyGroupMembers.findMany.mockResolvedValue([perMemberBlocker("pm-member")]);
+      mocks.members.findMany.mockResolvedValue([famMember("fam-a"), famMember("fam-b")]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-04-01T00:00:00.000Z") });
+      // The family charge IS generated for the PER_FAMILY-liable members...
+      expect(preview.entries).toHaveLength(1);
+      expect(preview.entries[0]).toMatchObject({ billingBasis: "PER_FAMILY", familyGroupId: "family-1" });
+      expect(preview.entries[0].coveredMembers.map((m) => m.id)).toEqual(["fam-a", "fam-b"]);
+      // ...the family is NOT suppressed...
+      expect(preview.alreadyInvoicedFamilies).toEqual([]);
+      // ...and the PER_MEMBER holder stays skipped per-member (its own invoice).
+      expect(preview.alreadyInvoiced.map((r) => r.memberId)).toEqual(["pm-member"]);
+    });
+
+    it("D1: coverage from a PER_MEMBER charge does not suppress the family fee", async () => {
+      mixedBasisFees();
+      mocks.familyGroupMembers.findMany.mockResolvedValue([
+        perMemberBlocker("pm-cov", { xeroInvoiceId: null, chargeCoverage: [{ charge: { billingBasis: "PER_MEMBER", familyGroupId: null } }] }),
+      ]);
+      mocks.members.findMany.mockResolvedValue([famMember("fam-a"), famMember("fam-b")]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-04-01T00:00:00.000Z") });
+      expect(preview.entries).toHaveLength(1);
+      expect(preview.entries[0]).toMatchObject({ billingBasis: "PER_FAMILY", familyGroupId: "family-1" });
+      expect(preview.alreadyInvoicedFamilies).toEqual([]);
+    });
+
+    it("D1: coverage from a PER_FAMILY charge for this group suppresses the family fee", async () => {
+      mixedBasisFees();
+      mocks.familyGroupMembers.findMany.mockResolvedValue([
+        perMemberBlocker("fam-cov", { xeroInvoiceId: null, chargeCoverage: [{ charge: { billingBasis: "PER_FAMILY", familyGroupId: "family-1" } }] }),
+      ]);
+      mocks.familyGroupMembers.groupBy.mockResolvedValue([{ familyGroupId: "family-1", _count: { memberId: 3 } }]);
+      mocks.members.findMany.mockResolvedValue([famMember("fam-a")]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-04-01T00:00:00.000Z") });
+      expect(preview.entries).toHaveLength(0);
+      expect(preview.alreadyInvoicedFamilies).toHaveLength(1);
+      expect(preview.alreadyInvoicedFamilies[0]).toMatchObject({ familyGroupId: "family-1", holderMemberId: "fam-cov", operatorMarked: false });
+    });
+
+    it("FINDING 1 (a): fail-closed — a live-invoice holder whose OWN basis is unresolvable (NOT_REQUIRED type) keeps the family SUPPRESSED + surfaced", async () => {
+      // Regression guard for the fail-open bug: a Life-Member-style parent holds
+      // the legacy family invoice but their membership type is NOT_REQUIRED, so
+      // resolveMemberBillingBasis returns null. The pre-fix predicate treated null
+      // like a proven PER_MEMBER and LIFTED suppression, minting a duplicate family
+      // invoice off fam-a. Fail-closed keeps the family suppressed and surfaces it
+      // with holderBasisUnresolvable=true (holder + invoice number still shown).
+      mocks.effectiveFee.mockResolvedValue(perFamilyFee()); // fam-a resolves PER_FAMILY
+      mocks.familyGroupMembers.findMany.mockResolvedValue([
+        {
+          familyGroupId: "family-1",
+          memberId: "life-parent",
+          member: {
+            firstName: "Lena", lastName: "Life", role: "USER", dateOfBirth: null, ageTier: "ADULT",
+            seasonalMembershipAssignments: [{ membershipType: { id: "type-life", key: "LIFE", name: "Life", subscriptionBehavior: "NOT_REQUIRED" } }],
+            subscriptions: [{ xeroInvoiceId: "xi-legacy", xeroInvoiceNumber: "INV-LEGACY", status: "UNPAID", chargeCoverage: [] }],
+          },
+        },
+      ]);
+      mocks.familyGroupMembers.groupBy.mockResolvedValue([{ familyGroupId: "family-1", _count: { memberId: 2 } }]);
+      mocks.members.findMany.mockResolvedValue([famMember("fam-a")]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-04-01T00:00:00.000Z") });
+      expect(preview.entries).toHaveLength(0);
+      expect(preview.alreadyInvoicedFamilies).toHaveLength(1);
+      expect(preview.alreadyInvoicedFamilies[0]).toMatchObject({
+        familyGroupId: "family-1", holderMemberId: "life-parent", xeroInvoiceNumber: "INV-LEGACY",
+        holderBasisUnresolvable: true, operatorMarked: false,
+      });
+    });
+
+    it("FINDING 1 (c): fail-closed — a live-invoice holder whose type resolves but has NO fee row keeps the family SUPPRESSED", async () => {
+      // Type resolves (REQUIRED) but getEffectiveMembershipAnnualFee returns null
+      // for it, so the holder's basis is null/unresolvable -> fail closed.
+      mocks.effectiveFee.mockImplementation(async ({ membershipTypeId }: { membershipTypeId: string }) =>
+        membershipTypeId === "type-nofee" ? null : perFamilyFee());
+      mocks.familyGroupMembers.findMany.mockResolvedValue([
+        {
+          familyGroupId: "family-1",
+          memberId: "nofee-holder",
+          member: {
+            firstName: "Nora", lastName: "NoFee", role: "USER", dateOfBirth: null, ageTier: "ADULT",
+            seasonalMembershipAssignments: [{ membershipType: { id: "type-nofee", key: "X", name: "X", subscriptionBehavior: "REQUIRED" } }],
+            subscriptions: [{ xeroInvoiceId: "xi-x", xeroInvoiceNumber: "INV-X", status: "UNPAID", chargeCoverage: [] }],
+          },
+        },
+      ]);
+      mocks.familyGroupMembers.groupBy.mockResolvedValue([{ familyGroupId: "family-1", _count: { memberId: 2 } }]);
+      mocks.members.findMany.mockResolvedValue([famMember("fam-a")]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-04-01T00:00:00.000Z") });
+      expect(preview.entries).toHaveLength(0);
+      expect(preview.alreadyInvoicedFamilies[0]).toMatchObject({
+        familyGroupId: "family-1", holderMemberId: "nofee-holder", holderBasisUnresolvable: true,
+      });
+    });
+
+    it("FINDING 1 (d): fail-closed — a live-invoice holder whose OWN fee basis is NO_INVOICE keeps the family SUPPRESSED", async () => {
+      // A NO_INVOICE-basis member (e.g. a Life/honorary member configured via a
+      // NO_INVOICE fee row rather than a NOT_REQUIRED type) never generates a
+      // personal invoice, so a live invoice on them can only be a legacy/family
+      // invoice. Suppression lifts only on proven PER_MEMBER; basis IS resolved
+      // here, so holderBasisUnresolvable stays false.
+      mocks.effectiveFee.mockImplementation(async ({ membershipTypeId }: { membershipTypeId: string }) =>
+        membershipTypeId === "type-noinv"
+          ? { billingBasis: "NO_INVOICE", annualAmountCents: 0 }
+          : perFamilyFee());
+      mocks.familyGroupMembers.findMany.mockResolvedValue([
+        {
+          familyGroupId: "family-1",
+          memberId: "noinv-holder",
+          member: {
+            firstName: "Liv", lastName: "Life", role: "USER", dateOfBirth: null, ageTier: "ADULT",
+            seasonalMembershipAssignments: [{ membershipType: { id: "type-noinv", key: "LIFE_NOINV", name: "Life", subscriptionBehavior: "REQUIRED" } }],
+            subscriptions: [{ xeroInvoiceId: "xi-l", xeroInvoiceNumber: "INV-L", status: "UNPAID", chargeCoverage: [] }],
+          },
+        },
+      ]);
+      mocks.familyGroupMembers.groupBy.mockResolvedValue([{ familyGroupId: "family-1", _count: { memberId: 2 } }]);
+      mocks.members.findMany.mockResolvedValue([famMember("fam-a")]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-04-01T00:00:00.000Z") });
+      expect(preview.entries).toHaveLength(0);
+      expect(preview.alreadyInvoicedFamilies[0]).toMatchObject({
+        familyGroupId: "family-1", holderMemberId: "noinv-holder", holderBasisUnresolvable: false,
+      });
+    });
+
+    it("D2: an active operator marker suppresses the family and surfaces it with the marker indicator + note", async () => {
+      mocks.effectiveFee.mockResolvedValue(perFamilyFee());
+      mocks.familyMarkers.findMany.mockResolvedValue([
+        { familyGroupId: "family-1", note: "Covered by INV-legacy-9", markedAt: new Date("2026-05-01T00:00:00.000Z"), markedBy: { firstName: "Ada", lastName: "Admin" } },
+      ]);
+      mocks.familyGroupMembers.groupBy.mockResolvedValue([{ familyGroupId: "family-1", _count: { memberId: 2 } }]);
+      mocks.members.findMany.mockResolvedValue([famMember("fam-a"), famMember("fam-b")]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-04-01T00:00:00.000Z") });
+      expect(preview.entries).toHaveLength(0);
+      expect(preview.alreadyInvoicedFamilies).toEqual([
+        {
+          familyGroupId: "family-1", holderMemberId: null, holderName: null, xeroInvoiceNumber: null, status: null,
+          holderBasisUnresolvable: false,
+          membersCovered: 2, operatorMarked: true, markerNote: "Covered by INV-legacy-9", markedByName: "Ada Admin",
+          markedAt: new Date("2026-05-01T00:00:00.000Z"),
+        },
+      ]);
+    });
+
+    it("D2: a marker closes the D1 window — it suppresses a mixed-basis family D1 would otherwise bill", async () => {
+      mixedBasisFees();
+      mocks.subscriptions.findMany.mockResolvedValue([
+        { memberId: "pm-member", status: "UNPAID", xeroInvoiceId: "xi-pm", xeroInvoiceNumber: "INV-PM", member: { firstName: "Pat", lastName: "Member" } },
+      ]);
+      mocks.familyGroupMembers.findMany.mockResolvedValue([perMemberBlocker("pm-member")]);
+      mocks.familyMarkers.findMany.mockResolvedValue([
+        { familyGroupId: "family-1", note: null, markedAt: new Date("2026-05-01T00:00:00.000Z"), markedBy: null },
+      ]);
+      mocks.familyGroupMembers.groupBy.mockResolvedValue([{ familyGroupId: "family-1", _count: { memberId: 3 } }]);
+      mocks.members.findMany.mockResolvedValue([famMember("fam-a"), famMember("fam-b")]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-04-01T00:00:00.000Z") });
+      // Without the marker the D1 test above proves the family bills; the marker
+      // suppresses it regardless of basis.
+      expect(preview.entries).toHaveLength(0);
+      expect(preview.alreadyInvoicedFamilies).toHaveLength(1);
+      expect(preview.alreadyInvoicedFamilies[0]).toMatchObject({ familyGroupId: "family-1", operatorMarked: true, markedByName: null, membersCovered: 3 });
+    });
+  });
+
   describe("BASED_ON_AGE_TIER per-tier liability (#2041)", () => {
     // Local-Date DOBs so computeAge compares calendar components against the
     // season-start reference (also a local Date) TZ-independently. Season 2026
@@ -851,6 +1369,46 @@ describe("membership subscription billing", () => {
       });
       expect(preview.exemptMemberIds).toEqual([]);
       expect(preview.entries).toHaveLength(2);
+    });
+
+    // #2148 (D1): the exemption gate runs BEFORE MISSING_FEE_SCHEDULE and does
+    // not require a resolved fee. A deliberately exempt tier legitimately has no
+    // fee row, so it must land in the Exempt bucket, not the exceptions list.
+    it("#2148: an exempt-tier member with NO fee row is exempted, never raises MISSING_FEE_SCHEDULE", async () => {
+      mocks.effectiveFee.mockResolvedValue(null);
+      mocks.members.findMany.mockResolvedValue([
+        // Child at 1 Apr 2026 season start -> exempt; no fee resolves for CHILD.
+        ageTierMember("child-no-fee", { dateOfBirth: new Date(2017, 2, 31) }),
+      ]);
+      const preview = await buildSubscriptionBillingPreview({
+        seasonYear: 2026,
+        decisionDate: new Date("2026-07-13T00:00:00.000Z"),
+      });
+      expect(preview.exceptions).toEqual([]);
+      expect(preview.entries).toEqual([]);
+      expect(preview.exemptMemberIds).toEqual(["child-no-fee"]);
+      expect(preview.exemptMembers).toEqual([
+        { memberId: "child-no-fee", memberName: "First-child-no-fee Member", ageTier: "CHILD" },
+      ]);
+      // No fee resolved and no invoice entries -> the Xero mapping is not touched.
+      expect(mocks.mapping).not.toHaveBeenCalled();
+    });
+
+    // #2148 constraint: a LIABLE tier with no fee is a genuine config gap and
+    // must still surface, so it is not swept into the Exempt bucket.
+    it("#2148: a liable-tier member with NO fee row still raises MISSING_FEE_SCHEDULE (not exempted)", async () => {
+      mocks.effectiveFee.mockResolvedValue(null);
+      mocks.members.findMany.mockResolvedValue([
+        // Youth at season start -> liable; no fee resolves for YOUTH.
+        ageTierMember("youth-no-fee", { dateOfBirth: new Date(2016, 3, 1) }),
+      ]);
+      const preview = await buildSubscriptionBillingPreview({
+        seasonYear: 2026,
+        decisionDate: new Date("2026-07-13T00:00:00.000Z"),
+      });
+      expect(preview.exceptions.map((row) => row.code)).toEqual(["MISSING_FEE_SCHEDULE"]);
+      expect(preview.exemptMemberIds).toEqual([]);
+      expect(preview.exemptMembers).toEqual([]);
     });
   });
 

@@ -39,6 +39,7 @@ import {
   DEFAULT_CLUB_THEME_VALUES,
   MAX_LOGO_DATA_URL_BYTES,
   buildClubThemeCss,
+  deriveAppMutedForeground,
   fontCssVariable,
   fontLabel,
   getBlockingContrastWarnings,
@@ -52,7 +53,7 @@ import {
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import {
   AdminForbiddenSaveNotice,
-  AdminViewOnlyNotice,
+  AdminViewOnlySectionBanner,
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action";
 
@@ -100,8 +101,22 @@ function themePayload(values: ClubThemeValues, completeSetup: boolean) {
   };
 }
 
+/**
+ * The inline variables the live preview overlays on `app-theme-scope`.
+ *
+ * `--app-muted-foreground*` are here because they are DERIVED, not picked
+ * (#2145): `globals.css` resolves `--muted-foreground` from them, so emitting
+ * only the `--brand-*` values would leave the preview painting the STATIC
+ * fallback — the default palette's tone — no matter which palette is being
+ * edited. That made the one screen where an admin evaluates this feature the one
+ * screen that showed the wrong colour, and for an endpoint-crossing palette it
+ * could show a sub-AA sample of a tone that ships perfectly readable.
+ */
 function previewStyle(values: ClubThemeValues): CSSProperties {
+  const muted = deriveAppMutedForeground(values);
   return {
+    "--app-muted-foreground": muted.light,
+    "--app-muted-foreground-dark": muted.dark,
     "--brand-gold": values.brandGold,
     "--brand-charcoal": values.brandCharcoal,
     "--brand-deep": values.brandDeep,
@@ -303,7 +318,25 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
   );
   const saveBlocked = hasFieldErrors || blockingContrastWarnings.length > 0;
 
+  /*
+    #2160: the view-only explanation lives here, once, at the top of the section —
+    announced on arrival and ahead of the controls it explains — instead of on
+    each disabled button below. The `role="status"` wrapper is permanently
+    mounted so the live region is registered in the accessibility tree before its
+    content appears; a region injected already-populated is silently dropped by
+    some screen-reader/browser pairings. It sits OUTSIDE the card's `space-y-*`
+    stack so the empty wrapper an edit-capable admin gets costs no layout.
+  */
+  const viewOnlyBanner = (
+    <AdminViewOnlySectionBanner canEdit={canEdit} className="mb-6">
+      Your admin role can view the site style but cannot change it. The
+      controls below are read-only.
+    </AdminViewOnlySectionBanner>
+  );
+
   return (
+    <div>
+      {viewOnlyBanner}
     <Card>
       <CardHeader>
         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -321,12 +354,6 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
         </div>
       </CardHeader>
       <CardContent className="space-y-6">
-        {!canEdit ? (
-          <AdminViewOnlyNotice canEdit={canEdit}>
-            Your admin role can view the site style but cannot change it. The
-            controls below are read-only.
-          </AdminViewOnlyNotice>
-        ) : null}
         {forbidden ? <AdminForbiddenSaveNotice /> : null}
         <div className="grid gap-2 sm:grid-cols-5">
           {steps.map((item) => {
@@ -510,6 +537,7 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
                 <div className="flex flex-wrap gap-3">
                   <ViewOnlyActionButton
                     canEdit={canEdit}
+                    describeReason={false}
                     type="button"
                     variant="outline"
                     onClick={() => fileInputRef.current?.click()}
@@ -520,6 +548,7 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
                   {values.logoDataUrl && (
                     <ViewOnlyActionButton
                       canEdit={canEdit}
+                      describeReason={false}
                       type="button"
                       variant="outline"
                       onClick={() => {
@@ -701,6 +730,7 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
         <div className="flex flex-wrap justify-between gap-3 border-t pt-5">
           <ViewOnlyActionButton
             canEdit={canEdit}
+            describeReason={false}
             type="button"
             variant="outline"
             onClick={resetNeutral}
@@ -720,6 +750,7 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
             {stepIndex < steps.length - 1 ? (
               <ViewOnlyActionButton
                 canEdit={canEdit}
+                describeReason={false}
                 type="button"
                 onClick={goNext}
                 disabled={saving || saveBlocked}
@@ -729,6 +760,7 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
             ) : (
               <ViewOnlyActionButton
                 canEdit={canEdit}
+                describeReason={false}
                 type="button"
                 onClick={finish}
                 disabled={saving || saveBlocked}
@@ -740,5 +772,6 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
         </div>
       </CardContent>
     </Card>
+    </div>
   );
 }

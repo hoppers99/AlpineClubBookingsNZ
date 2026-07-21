@@ -790,6 +790,9 @@ provider reference exists but is not AUTHORISED -> CONFLICT (never emailed)
 late member joins already-billed family -> FAMILY_ALREADY_BILLED exception (old coverage unchanged; no second invoice)
 stale per-family schedule under individual billing -> PER_FAMILY_FEE_IN_INDIVIDUAL_MODE exception (no invoice; basis must change)
 NO_INVOICE -> NOT_REQUIRED (zero-cent durable snapshot; no provider work)
+age-tier not subscription-liable, no PER_MEMBER fee due -> Exempt (no charge, no MISSING_FEE_SCHEDULE; confirm writes NOT_REQUIRED; PER_FAMILY child stays family-covered)
+OPEN exception -> superseding confirm run -> RESOLVED (resolvedVia CONFIRM)
+OPEN exception -> edit-gated preview refresh no longer regenerates it -> RESOLVED (resolvedVia PREVIEW_RECONCILE; whole-club refresh resolves every superseded OPEN row, member-specific and club-level null-member alike; read-only GET never resolves)
 ```
 
 To verify: preview digest changes with fee/recipient/due-day inputs; only finance
@@ -806,10 +809,12 @@ existing invoices are adopted; amount/contact/account mismatch becomes visible
 `PAID`, `OVERDUE`.
 
 ```text
-(no row) -> NOT_REQUIRED            role/policy never owes (ensureNotRequiredSubscriptionForRole, billing NO_INVOICE)
+(no row) -> NOT_REQUIRED            membership type never owes (ensureDefaultSeasonSubscriptionForNewMember, billing NO_INVOICE)
 (no row) -> NOT_INVOICED            billing sweep creates a billable-but-uninvoiced row
+NOT_REQUIRED -> NOT_INVOICED        REQUIRED-type season assignment supersedes a stale creation-seeded NOT_REQUIRED row (reconcileSeasonSubscriptionForAssignment, #2149)
 NOT_INVOICED -> UNPAID              Xero subscription invoice created (xero-subscription-invoices)
 UNPAID/OVERDUE <-> PAID             Xero discovery/webhook reflects the invoice's real payment state
+UNPAID/OVERDUE/PAID -> NOT_INVOICED Xero invoice observed VOIDED/DELETED (#2147): invoice link nulled, member re-billable — deliberately reads NOT locked out (was UNPAID/locked out pre-#2147)
 NOT_INVOICED -> PAID (manual)       manual mark-paid (finance:edit) — sets manuallyMarkedPaidAt/By/Note, never calls Xero
 PAID (manual) -> NOT_INVOICED      manual reversal when no Xero invoice link exists (clears provenance)
 PAID (manual) -> UNPAID            manual reversal on a legacy row that somehow carries an invoice link (clears provenance)
@@ -829,12 +834,31 @@ covered subscription became `PAID` while it was queued. `checkMembershipStatus`
 never downgrades a manually marked-paid row that carries no Xero invoice link
 (enforced by a write-time fence, not just an up-front read), and
 `flushMemberSubscriptionHistory` never deletes a manual-PAID row on contact
-link/push/unlink. Every manual transition is audited with the acting admin.
+link/push/unlink. The assignment reconcile
+(`reconcileSeasonSubscriptionForAssignment`, #2149) only ever flips a row that is
+still the untouched creation-seeded `NOT_REQUIRED` default (null Xero invoice, no
+charge/family coverage, no manual mark-paid) and only when the newly-effective
+type is `REQUIRED`; it is a status-guarded, idempotent `updateMany` (no advisory
+lock, no provider call) that runs inside the assignment transaction, so it can
+never downgrade a paid/invoiced/covered/manual row and never fires for a
+`BASED_ON_AGE_TIER` type (whose `NOT_REQUIRED` row is the authoritative #2041
+season-start exemption). Every manual transition is audited with the acting admin.
+
+The annual sweep (#2147) skips a member who is already `PAID` **OR** holds a LIVE
+Xero invoice link (any of UNPAID/OVERDUE/PAID) — an additive dedup guard so an
+invoiced-but-unpaid member is never double-billed, while a manually marked-paid
+member (PAID, null invoice link) is still skipped. On a void/delete the sync
+marks the covering `MembershipSubscriptionCharge` `VOIDED` (kept for audit, never
+re-enqueued), releases its coverage claim (`releasedAt` set — row kept), and
+bumps `MemberSubscription.voidGeneration` so a re-bill mints a NEW charge with a
+fresh idempotency key.
 
 To verify: manual mark-paid sets PAID + provenance and never calls Xero; the
-sweep skips a manual-PAID member; a Xero force-sync leaves a manual-PAID row
-untouched; a contact link/unlink resync leaves a manual-PAID row in place;
-reversal restores UNPAID vs NOT_INVOICED by invoice-link presence.
+sweep skips a manual-PAID member and an invoiced-but-unpaid member; a Xero
+force-sync leaves a manual-PAID row untouched; a contact link/unlink resync
+leaves a manual-PAID row in place; reversal restores UNPAID vs NOT_INVOICED by
+invoice-link presence; a voided invoice makes the member NOT_INVOICED and
+re-billable with a new charge.
 
 ## Committee Assignment Lifecycle
 
@@ -1020,9 +1044,14 @@ Runtime booking paths resolve the policy for the booking season. `BLOCK_BOOKING`
 stops owners or linked member guests with a structured policy error.
 `NON_MEMBER_RATE` uses non-member nightly rates while keeping the stored member
 identity. `NOT_REQUIRED` changes effective subscription lockout and display
-without deleting raw subscription, payment, or Xero invoice history. `ADMIN` and
-`LODGE` operational subscription exemptions remain governed by access-role
-helpers, separate from seasonal type policy. The optional assignment `applyFrom`
+without deleting raw subscription, payment, or Xero invoice history. Membership
+type is the sole authority for the subscription-required answer (#2149): access
+**role carries no exemption of its own**. `ADMIN` and `LODGE` accounts are exempt
+only because — with no explicit season assignment — they resolve via the
+role→default-type fallback to their own built-in `NOT_REQUIRED` types (`ADMIN` =
+BLOCK_BOOKING, `LODGE` = MEMBER_RATE so the kiosk still books); a fee-paying
+human holding the admin permission carries a normal REQUIRED type and owes a
+subscription like anyone else. The optional assignment `applyFrom`
 date is date-only metadata for mid-season changeover reporting and audit; the
 guarded preview remains the required save path and existing future bookings are
 not automatically repriced by a type or apply-from change.
