@@ -7,6 +7,14 @@ import { AlertTriangle } from "lucide-react";
 const WEBHOOK_STATUS_ENDPOINT = "/api/admin/xero/webhook/verify-status";
 
 /**
+ * Fired (on window) whenever webhook verification state changes in-page — a
+ * successful wizard verify, or a key save/replace re-arming verification — so
+ * a mounted badge refetches instead of showing its mount-time snapshot until
+ * the next full page load.
+ */
+export const XERO_WEBHOOK_STATE_CHANGED_EVENT = "xero-webhook-state-changed";
+
+/**
  * Persistent amber badge (#2081): "Webhooks not configured — payment updates
  * rely on scheduled sync." Shown on /admin/xero and /admin/xero/setup whenever
  * Xero is connected but webhooks are not verified (the stored key has no
@@ -29,7 +37,7 @@ export function WebhookAmberBadge({ connected }: { connected: boolean }) {
   useEffect(() => {
     if (!connected) return;
     let active = true;
-    void (async () => {
+    const load = async () => {
       try {
         const res = await fetch(WEBHOOK_STATUS_ENDPOINT, {
           credentials: "same-origin",
@@ -46,9 +54,18 @@ export function WebhookAmberBadge({ connected }: { connected: boolean }) {
       } catch {
         // Leave unknown — the badge stays hidden rather than false-alarming.
       }
-    })();
+    };
+    void load();
+    // Refetch when the wizard (same page) verifies or re-arms webhooks, so the
+    // badge clears/reappears in place rather than at the next full page load.
+    const onStateChanged = () => void load();
+    window.addEventListener(XERO_WEBHOOK_STATE_CHANGED_EVENT, onStateChanged);
     return () => {
       active = false;
+      window.removeEventListener(
+        XERO_WEBHOOK_STATE_CHANGED_EVENT,
+        onStateChanged,
+      );
     };
   }, [connected]);
 

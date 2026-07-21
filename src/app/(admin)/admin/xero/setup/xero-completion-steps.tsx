@@ -17,6 +17,7 @@ import type { WizardStepHelpers } from "@/components/admin/integration-wizard";
 import { useClubIdentity } from "@/components/club-identity-provider";
 import { MappingsPanel } from "../_components/mappings-panel";
 import { SetupPanels } from "../_components/setup-panels";
+import { XERO_WEBHOOK_STATE_CHANGED_EVENT } from "../_components/webhook-amber-badge";
 import type { SyncResult } from "../_components/types";
 import type { XeroWizardContext } from "./use-xero-wizard-context";
 
@@ -113,6 +114,8 @@ export function WebhooksStep({
         "Webhook key saved. Click Verify below first, then in Xero use Send ‘intent to receive’ (or save the webhook there if it’s new) so its ping arrives while this page is waiting.",
       );
       helpers.refresh();
+      // A key save/replace re-arms verification — refresh any mounted badge.
+      window.dispatchEvent(new Event(XERO_WEBHOOK_STATE_CHANGED_EVENT));
     } catch (saveError) {
       setError(
         saveError instanceof Error ? saveError.message : "Failed to save.",
@@ -151,6 +154,8 @@ export function WebhooksStep({
         if (data.freshVerified) {
           setNotice("Webhooks verified — payment updates arrive in real time.");
           helpers.refresh();
+          // Tell any mounted amber badge (same page) to refetch and clear.
+          window.dispatchEvent(new Event(XERO_WEBHOOK_STATE_CHANGED_EVENT));
           return;
         }
       }
