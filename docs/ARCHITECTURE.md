@@ -172,9 +172,37 @@ files — first. That work is tracked: remap deletion is Phases 2–3 of the
 theme-architecture program planned on issue #2181. Until then the block
 stays exactly as is.
 
+**The app tokens resolve from a GENERATED substrate** (#2187 P1, the restyle
+event). A club now picks three seeds (accent + optional neutral-character +
+optional support); `buildThemeSubstrate` (`src/lib/theme/theme-substrate.ts`)
+turns them into the full 12-step light/dark Radix-style scales, and
+`buildClubThemeAppCss` emits the whole generated custom-property set —
+`--gen-<scale>-<step>` raw steps plus the resolved role tokens
+`--gen-<token>` (light) / `--gen-<token>-dark` (dark), per the data alias map
+in `src/lib/theme/aliases.ts` (`src/lib/theme/app-tokens.ts` assembles them).
+`globals.css`'s static `.app-theme-scope` (light) and `.dark .app-theme-scope`
+(dark) blocks CONSUME those props via `var(--gen-<token>, <default-fallback>)`,
+so an un-themed page still paints the shipped default palette. `--accent`
+(neutral-4) is deliberately one band off `--muted`/`--secondary` (neutral-3) in
+BOTH modes — the structural fix for the seven hover-dead `bg-muted
+hover:bg-accent` #2144 buttons — and the dark core-token block is rewired onto
+generated dark steps with **no `--brand-*` reference left inside it** (F1). The
+legacy `--brand-*` values still ship as derived SHIMS (`deriveBrandShims`, from
+the substrate neutral ramp) so the website `color-mix()` recipes, the app
+`bg-brand-*` utilities, and the email palette keep working through P1; those
+shims are deleted in P2/P3. The `.dark` neutral/colored remap blocks above are
+untouched by P1.
+
+The member-facing `src/app/(authenticated)` and `src/app/(public)` trees were
+migrated off raw neutrals onto the semantic surface tokens in the same event
+(#2187 B4), so at restyle their light mode follows the club theme at source
+rather than by shim; the remaining raw neutrals live under `src/components`,
+the kiosk/lodge display trees, and the allowlisted admin files.
+
 **`--muted-foreground` is a DERIVED tone, not a brand colour** (#2145). Every
-other app text token in the `.app-theme-scope` block resolves to a solid brand
-endpoint (`--foreground` is `--brand-deep` in light, `--brand-snow` in dark).
+other app text token in the `.app-theme-scope` block resolves to a solid
+generated-substrate endpoint (`--foreground` is the club ramp's neutral-12 in
+each mode).
 `--muted-foreground` used to do the same — which made it byte-identical to
 `--foreground`, so `text-muted-foreground` rendered as primary text and the
 `muted` role was inert. It is now computed by `deriveAppMutedForeground` in
