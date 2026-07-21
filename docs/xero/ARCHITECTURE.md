@@ -540,6 +540,39 @@ exact-cent lines and cannot drift, so they are out of scope by construction.
 4. `/api/admin/xero/disconnect` revokes and deletes tokens; workers then
    short-circuit via `isXeroConnected()` (cron records SKIPPED).
 
+## Guided setup wizard (#2080)
+
+The operator-facing setup surface at **`/admin/xero/setup`** is a guided,
+three-step wizard, built as a **config of the reusable, provider-agnostic
+`IntegrationWizard` shell** (`src/components/admin/integration-wizard/`) so
+Stripe (C4) and Google (C5) reuse the same shell with their own steps:
+
+1. **Create your Xero app** — portal-mirroring instructions with a shared
+   `CopyField` (secure-context-aware, with a select-on-focus fallback for
+   plain-HTTP LAN) for the app name, company URL, and the **resolved redirect
+   URI** (derived from `NEXTAUTH_URL` via `getOperationalXeroRedirectUri`, so the
+   displayed value is exactly what the flow sends).
+2. **Enter credentials** — the write-only client id / secret form posting to the
+   C1 credentials API (Full Admin only; weak-secret gate surfaced; verify-reset
+   drops the connection and re-arms). Supersedes C1's interim
+   `xero-credentials-section`.
+3. **Connect** — the existing OAuth flow, then confirms the connected
+   organisation **name** (via `/api/admin/xero/organisation`, extended to return
+   the name). The connect route accepts a sanitised `?return=/admin/...` so the
+   callback resumes on the wizard rather than the Sync page.
+
+Each step gates on **live server truth** (`isVerified(context)`); a small
+`IntegrationWizardProgress` row persists only a resume cursor (advisory), so a
+reload mid-flow resumes at the right step and a stale cursor can never skip a
+gate.
+
+**Mock-Xero E2E harness.** A test-only seam (`xero-mock-endpoint.ts`, gated on
+`XERO_MOCK_API_ORIGIN`) routes the consent/token/connections/organisation calls
+to gated `/api/testing/xero-mock/*` endpoints for the wizard happy-path
+Playwright spec. It is **production-inert**: with the env var unset (every real
+deployment) the OAuth/organisation code path is unchanged and the mock endpoints
+404. C3 extends the harness with a webhook-validation ping and chart of accounts.
+
 ## Refactor opportunities (ranked)
 
 Ranked by risk-reduction value; item 1 touches the most money-path logic.
