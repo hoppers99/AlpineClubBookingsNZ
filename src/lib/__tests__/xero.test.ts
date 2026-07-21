@@ -34,6 +34,7 @@ import {
   shouldBackfillMembershipStatus,
   withXeroRetry,
   XeroDailyLimitError,
+  XeroTokenDecryptError,
   XeroTransientOutageError,
   resetXeroRateLimitStateForTests,
 } from "../xero"
@@ -79,15 +80,22 @@ describe("Token encryption", () => {
     await expect(decryptToken(parts.join(":"))).rejects.toThrow()
   })
 
-  it("throws on a truncated authentication tag", async () => {
+  // #2079 (FIX-1): decryptToken now raises the typed XeroTokenDecryptError on a
+  // malformed/undecryptable row (fail-closed, still throws) so the API/probe map
+  // it to the "reconnect Xero" state instead of surfacing an opaque crypto error.
+  it("throws XeroTokenDecryptError on a truncated authentication tag", async () => {
     const encrypted = await encryptToken("test_token")
     const parts = encrypted.split(":")
     parts[1] = parts[1].slice(0, -2)
-    await expect(decryptToken(parts.join(":"))).rejects.toThrow("authentication tag length")
+    await expect(decryptToken(parts.join(":"))).rejects.toBeInstanceOf(
+      XeroTokenDecryptError,
+    )
   })
 
-  it("throws on invalid format", async () => {
-    await expect(decryptToken("invalid")).rejects.toThrow("Invalid encrypted token format")
+  it("throws XeroTokenDecryptError on invalid format", async () => {
+    await expect(decryptToken("invalid")).rejects.toBeInstanceOf(
+      XeroTokenDecryptError,
+    )
   })
 })
 
