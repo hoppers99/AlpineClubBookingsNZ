@@ -548,13 +548,16 @@ one commit, and because a scope change is itself a load it unmounts the
 `PolicyScopeSelect` the admin just operated, dropping keyboard focus to `<body>`
 for the duration of the round trip. That banner shape started in the five
 Booking Policies sections (#2142) and is now the **default across the admin
-tree** (#2160) — not a claim that nothing is left. Measured on the current tree
-by `view-only-banner-contract.test.ts`, which asserts these figures rather than
-trusting a hand count: **72 components render a banner, and 207 of the 260
-`ViewOnlyActionButton` call sites opt out** of the per-button reason because a
-banner in the same file covers them. The remaining **53 controls across 23 files
-deliberately keep the per-button default** (`describeReason` left at `true`), in
-three shapes:
+tree** (#2160, extended by #2168) — not a claim that nothing is left. Measured
+on the current tree by `view-only-banner-contract.test.ts`, which asserts these
+figures rather than trusting a hand count: **73 components render a banner, and
+228 of the 260 `ViewOnlyActionButton` call sites opt out** of the per-button
+reason. Those 228 split by WHICH rule covers them: **207** pass the literal
+`describeReason={false}` and are covered by a banner in the same file, and **21**
+pass `describeReason={!ancestorRendersViewOnlyBanner}` and are covered by a
+verified vouching parent (see *Vouching for a child's coverage* below). The
+remaining **32 controls across 15 files deliberately keep the per-button
+default** (`describeReason` left at `true`), in three shapes:
 
 - **Controls inside a dialog, sheet, popover, or dropdown menu.** These live in
   a separate accessibility container — focus is trapped and the page behind is
@@ -576,44 +579,128 @@ three shapes:
   first shape occurring inside a file that also has the third. Nothing is
   mis-gated either way — the point is only that the bucket boundary is where the
   test can draw one mechanically, not a clean taxonomy.
-- **The member detail per-record cards** in
-  `src/app/(admin)/admin/members/[id]/_components/` — `member-credit-card`,
-  `member-lifecycle-card`, `member-committee-assignments-card`,
-  `member-partner-link-card`, `member-deletion-card`, `member-dependents-card`,
-  `member-parent-links-card`, `member-lodge-access-card`, and
-  `member-seasonal-membership-card`. (25 controls across 9 files — the single
-  largest block of unconverted controls, on one of the admin tree's densest
-  screens.) These are NOT the two shapes above: they are real `Card`/
-  `CardHeader` sections, several call `useAdminAreaEditAccess` themselves, and
-  they are structurally identical to panels that were converted, so a banner
-  *could* cover them. They were deferred for a different reason — one member
-  detail page renders all nine at once, so converting them stacks nine copies of
-  the same banner down a single page, and the right answer is probably one
-  page-level banner rather than nine section-level ones. That is a design
-  decision with a visible-UI consequence, so it is **owner decision #2168**, not
-  a silent to-do. Do not convert them under #2160.
+- **A member detail per-record card gated on a DIFFERENT permission area than
+  the page banner** — today exactly one: `member-credit-card.tsx` (4 controls
+  across 1 file). The other eight cards in
+  `src/app/(admin)/admin/members/[id]/_components/` were converted under #2168
+  and now take their coverage from the page banner. The credit card did not,
+  and that is deliberate rather than a leftover: the page banner states the
+  **membership** area, the credit card's controls are gated on **finance**, so
+  vouching for it would name the wrong permission — and an admin with membership
+  edit but finance view-only would meet no banner at all while looking at four
+  dead buttons. Any second banner for the finance scope would break the owner's
+  one-banner-per-page decision and trip the nesting rule, so the per-button
+  reason stays. Bucket by SCOPE, not by folder, when reading this figure.
 
 Every figure in this section is asserted mechanically by
-`src/components/admin/__tests__/view-only-banner-contract.test.ts` — the totals
-and all three buckets — so they can not drift out of step with the tree. The
-test strips comments before counting, because counting raw text conflates a call
-site with prose *about* a call site (both `view-only-action.tsx`'s JSDoc and
+`src/components/admin/__tests__/view-only-banner-contract.test.ts` — the totals,
+the static/vouched split, and all three buckets — so they can not drift out of
+step with the tree. Since #2168 the figures themselves are counted over the
+parsed AST, where an attribute is a node and prose is trivia, so a
+`describeReason={false}` written in a comment cannot reach a total at all. That
+was the miscount to beat: both `view-only-action.tsx`'s JSDoc and
 `public-booking-requests-section.tsx`'s JSX commentary quote
-`describeReason={false}` while explaining it, and each was miscounted as an
-opt-out). The strip runs TypeScript's own PARSER, not its scanner: a bare
+`describeReason={false}` while explaining it, and each was counted as an opt-out
+once. The text-based assertions in the same file still strip comments first, and
+that stripper runs TypeScript's own PARSER, not its scanner: a bare
 `ts.createScanner` cannot resume a template literal after a `${…}` substitution
 (that is the parser's job), so a ``className={`…${…}`}`` above a JSX comment
-opened a bogus template that swallowed the comment's opening `/*` and let its
-quoted `describeReason={false}` count as real — which is exactly how
-`public-booking-requests-section.tsx` was miscounted a SECOND time, in #2166.
-If you add or convert a gated control, that test
-fails and the numbers here, in `AGENTS.md`, in `docs/STYLE_GUIDE.md`, in
+opened a bogus template that swallowed the comment's opening `/*` and left its
+quoted `describeReason={false}` in the "code" the text checks read — which is
+how `public-booking-requests-section.tsx` slipped past the stripper a SECOND
+time, caught and fixed in #2166. If you add or convert a gated control, that
+test fails and the numbers here, in `AGENTS.md`, in `docs/STYLE_GUIDE.md`, in
 `CHANGELOG.md` and in the `ViewOnlyActionButton` JSDoc all need updating
 together.
 
+**Vouching for a child's coverage (#2168).** The coverage rule below is asserted
+per FILE, which the member detail page cannot satisfy: the owner's decision is
+ONE banner for that page, so the banner is in `page.tsx` and the opt-outs are in
+the card files. The rule was **not** relaxed to allow that — "some ancestor
+might render a banner" would reopen the orphan-opt-out hazard the rule exists to
+prevent. Instead a parent gets an explicit way to vouch, and the vouch is
+verified:
+
+- the child declares `ancestorRendersViewOnlyBanner?: boolean` (the shared
+  `AncestorViewOnlyBannerProps` in `view-only-action.tsx`), **defaults it to
+  `false`**, and writes `describeReason={!ancestorRendersViewOnlyBanner}`;
+- a covering parent passes the literal `true` at the render site.
+
+The default is the safety property, not the documentation: the opt-out cannot
+happen unless a parent asks for it, at the line a reader sees. A card rendered
+standalone, in a dialog, or by a new parent keeps its per-button reason
+automatically, and so does a NEW gated control added to a converted card.
+
+This is the mirror of `renderViewOnlyBanner` (#2160), and the two compose: there
+a component owns a banner and a covering parent suppresses it; here a component
+owns no banner and a covering parent vouches that it renders one. Both default
+to the self-sufficient behaviour.
+
+The contract test then closes each way the vouch could be a lie:
+
+- `describeReason` accepts **only** the literal `{false}`, the vouched
+  `{!ancestorRendersViewOnlyBanner}`, or the `true` default. A third spelling
+  fails, so neither coverage rule can be escaped by inventing one.
+- the child must default the prop to `false`, and may read it only in
+  `describeReason={!prop}` or as the guard on its own `AdminViewOnlyNotice`. It
+  may not FORWARD it, so coverage never becomes transitive across a hop the test
+  does not check.
+- the vouching parent must render the banner — the element, or the hoisted
+  `const` idiom — in the **same returned JSX tree** as the child, reached
+  **unconditionally** (no `? :`, no `&&`, no callback). A banner that appears
+  only in some states does not cover a child that appears in all of them.
+- the vouch value must be the literal `true`, and a JSX spread at a vouched
+  child's render site fails outright, because `{...props}` could carry the prop
+  invisibly past every other check.
+- wherever the attribute NAME appears, its tag must resolve to a known vouched
+  child through a named import. An aliased, default, barrel or dynamic import
+  fails here rather than quietly leaving the vouch unverified — the one blind
+  spot the nesting check still has is closed for this mechanism.
+- a child that declares the prop but is never vouched for anywhere fails too, so
+  the plumbing cannot sit there implying coverage that never happens.
+- the covering banner's `canEdit` may not be the literal `true` (nor a bare
+  `canEdit`, which JSX reads as true). `AdminViewOnlySectionBanner` emits its
+  sentence only when `canEdit === false`, so a banner hardcoded editable renders
+  an empty live region and orphans every opt-out beneath it.
+
+What it does **not** prove, and reviewers must still check. The checks establish
+that the banner ELEMENT renders; they say nothing about whether it ever
+DISPLAYS. The gap holds four things:
+
+- **which permission area the parent's banner names.** A parent vouching with a
+  banner for a different area is a real defect no static check here can see — it
+  is exactly why `member-credit-card` is excluded above, and the reasoning is
+  written at the render site as well as here.
+- **source ORDER**, so "the banner precedes the controls it explains" remains a
+  review concern.
+- **whether `canEdit`'s expression can ever be false.** Only the literal is
+  rejected; a non-literal expression that never resolves to false produces the
+  same orphaned opt-outs at runtime.
+- **whether the banner has `children`.** A vouching banner with none passes
+  everything, and its page-specific sentence silently degrades to the generic
+  shared heading.
+
+Two scope limits apply to the whole contract test, not only these checks: it
+scans **only paths containing `admin`**, so a vouching parent or vouched child
+moved outside one would become invisible to every check (zero such files exist
+today); and the vouched-child rule reads `describeReason={!prop}` on any
+component, not only `ViewOnlyActionButton` — not exploitable, since no other
+component declares the prop and a planted use fails to compile, but worth
+knowing when reading the check. The behavioural
+half — that an unvouched card really does keep its reason, and a vouched one
+really does drop it while staying disabled — is verified by rendering the real
+components in `src/lib/__tests__/admin-view-only-controls.test.tsx`, so a bug in
+the static analysis cannot make the property vacuous.
+
 **Where the banner goes: first child, every branch.** The banner is the first
 child of a section's outermost wrapper, rendered identically in the loading,
-error and loaded branches. That position is load-bearing, not cosmetic: it is
+error and loaded branches. The "every branch" half is asserted mechanically, per
+component and over the AST: a loading-guarded branch must mount the banner, and
+so must every branch below the first one that mounts it. (Terminal branches
+ABOVE the first mount — `lodge-details-panel`'s `accessDenied` and `multiLodge`
+returns, say — carry no banner on purpose: they explain in their own words that
+the section is unavailable, and there are no controls there to gate.) That
+position is load-bearing, not cosmetic: it is
 what keeps the `role="status"` wrapper at the same place in the DOM when a fetch
 settles. Put a heading above the banner in the loaded branch only, and React
 reconciles child 0 from the live region into the heading and mounts a fresh,
@@ -634,7 +721,10 @@ Two further invariants are enforced by the same test. First,
 coverage: a file may only use `describeReason={false}` if it also renders an
 `AdminViewOnlySectionBanner`. That is asserted per FILE, because that is the
 only scope in which a reader — and the test — can see that the banner really
-does render above the control. Second, and because the coverage rule is by
+does render above the control. The single sanctioned way out of that scope is
+the #2168 vouching prop described above, which replaces the missing local proof
+with a checked one rather than dropping the requirement. Second, and because the
+coverage rule is by
 construction blind to it, **nesting**: a component that renders a banner may not
 also render a child component that renders one, or a view-only admin meets the
 same sentence twice in two `role="status"` regions. Where a child is legitimately
@@ -661,11 +751,16 @@ three times each, and `/admin/appearance/identity`,
 `/admin/induction/settings` and `/admin/page-content` twice. That is inherited
 from the #2142 shape rather than introduced by the rollout, and nothing in the
 contract test flags it. Whether stacked sibling banners should collapse into one
-page-level banner is an open design question with a visible-UI consequence — it
-is the same question **#2168** is deciding for the member detail page, where the
-count would be nine, and it should be answered there for the whole tree rather
-than page by page. Until it is, do not dedupe siblings ad hoc, and do not write
-docs that promise one banner per screen.
+page-level banner is still an open design question with a visible-UI
+consequence. **#2168 answered it for the member detail page only** — one banner
+there, with the eight membership-scoped cards vouched for — and deliberately did
+NOT generalise the answer to sibling stacking elsewhere. The vouching mechanism
+it built is what a settings page would need to collapse its siblings, so the
+tooling now exists; whether to use it is a fresh owner decision, because the
+sibling case differs in kind (side-by-side sections of equal weight, each with
+its own scope, rather than one page's worth of per-record cards). Until that is
+decided, do not dedupe siblings ad hoc, and do not write docs that promise one
+banner per screen.
 
 **Known limitation, accepted by the owner as Decision 1 on #2160.** Gated
 controls keep the `disabled` attribute rather than moving to

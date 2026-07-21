@@ -49,8 +49,9 @@ All notable public reference-release changes should be recorded here.
   screen built from several sections — Security, or Booking Requests — shows it
   once per section, three times in those two cases. This is the
   pattern Booking Policies adopted in #2142 (below), now applied across most of
-  the admin tree: about four out of five gated buttons (207 of 260) are now
-  explained by a banner instead of individually. **Nothing about who can do what
+  the admin tree: 207 of the 260 gated buttons are covered by a banner in their
+  own section, and #2168 below takes the total to 228 — about seven out of eight
+  now explained by a banner instead of individually. **Nothing about who can do what
   has changed** — the same
   people can edit the same things, every button is gated exactly as it was, and
   no write path, price, or permission moved.
@@ -70,19 +71,37 @@ All notable public reference-release changes should be recorded here.
   risk of getting that wrong on a money or membership screen outweighed the
   benefit.
 
-  **What is not converted.** 53 controls still carry their own per-button
-  explanation. Most of that is one screen: **the member detail page**, where 25
-  buttons across nine per-record cards (credit, lifecycle, committee, partner
-  link, deletion, dependents, parent links, lodge access, seasonal membership)
-  are unchanged. Those cards *could* each show the banner, but one member page
-  shows all nine at once, so it would repeat the same sentence nine times down a
-  single screen — the same stacking that Security and Booking Requests already
-  do three times over, at a scale where it stops being acceptable. Whether that
-  collapses to one banner for the whole page, there and on the pages that
-  already stack, is a separate open decision (#2168). The rest — 28 controls — are places no banner
-  can reach: inside a pop-up dialog or dropdown menu, or in small toolbars
-  dropped into another page's layout. See `docs/ARCHITECTURE.md` and
-  `docs/STYLE_GUIDE.md`.
+  **What is not converted.** 32 controls still carry their own per-button
+  explanation. They are places no banner can reach — inside a pop-up dialog or
+  dropdown menu, or in small toolbars dropped into another page's layout — plus
+  the member detail **Account credit** card, explained below. See
+  `docs/ARCHITECTURE.md` and `docs/STYLE_GUIDE.md`.
+
+- **The member detail page now explains view-only access once at the top, not
+  nine times down the page (#2168).** A member's page is built from nine
+  per-record cards (credit, lifecycle, committee, partner link, deletion,
+  dependents, parent links, lodge access, seasonal membership). Giving each of
+  them the #2160 banner would have repeated the same sentence three times in the
+  Family section alone and nine times on the page, so the cards were held back
+  from that rollout. The owner's decision was one banner for the whole page, and
+  that is what now happens: a view-only admin arriving at a member sees the
+  banner once, above everything, and the buttons below it no longer each carry
+  their own hidden copy of the reason. Three cards that also repeated the
+  sentence in their own smaller notice — committee assignments, lodge access,
+  seasonal membership — now leave it to the page banner as well. **Nothing about
+  who can do what has changed:** every button is gated exactly as it was.
+
+  **One card is deliberately left out.** The **Account credit** card's buttons
+  depend on *finance* permission, while the page banner speaks about
+  *membership* permission. An admin who can edit membership but only view
+  finance would get no banner at all, and vouching for that card would point
+  everyone else at the wrong permission, so its four buttons keep their own
+  explanation. A second banner just for finance would have put two banners back
+  on the page, which is what the decision was about.
+
+  Sibling banners on other screens — Security and Booking Requests still show
+  three each — are **not** changed here; whether they should collapse the same
+  way remains an open decision.
 
 - **Cleared four new dependency security advisories that were failing CI.**
   `npm audit` began reporting one moderate and three high-severity advisories

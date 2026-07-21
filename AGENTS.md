@@ -201,19 +201,27 @@ before changing Next.js APIs or conventions.
   itself a load, it unmounts the very `PolicyScopeSelect` the admin just used,
   dropping keyboard focus to `<body>` mid-interaction. Started in the five
   Booking Policies sections (#2142) and rolled across most of the admin tree
-  (#2160): 207 of 260 `ViewOnlyActionButton` call sites now opt out, and 53 keep
-  the per-button reason — dialog/popover contents, leaf toolbars, and the member
-  detail per-record cards, which are deferred to owner decision **#2168** and
-  must not be converted opportunistically. The banner is stated once per
+  (#2160, extended by #2168): 228 of 260 `ViewOnlyActionButton` call sites now
+  opt out — 207 covered by a banner in the SAME file, 21 by a verified vouching
+  parent — and 32 keep the per-button reason: dialog/popover contents, leaf
+  toolbars, and `member-credit-card.tsx`, whose finance scope differs from the
+  member detail page banner's membership scope. The banner is stated once per
   SECTION, and never twice over the same controls: a banner-bearing component
   may not render another banner-bearing component, so when a covering parent
   renders such a child, the child takes `renderViewOnlyBanner={false}` at the
   render site (it keeps its own banner where an ancestor cannot reach it, e.g.
-  inside a dialog). It is NOT once per screen — sibling sections on one page
-  each keep their own banner, and `/admin/security` and `/admin/booking-requests`
-  each show three; whether that should collapse to one page-level banner is
-  open, and is the same question owner decision **#2168** is deciding for the
-  member detail page. Both rules — coverage and nesting — are enforced by
+  inside a dialog). The mirror case — a child with NO banner whose controls are
+  covered by a parent's — is `ancestorRendersViewOnlyBanner` (#2168): the child
+  defaults it to `false` and writes
+  `describeReason={!ancestorRendersViewOnlyBanner}`, and only a parent that
+  demonstrably renders an unconditional banner in the same returned tree may
+  pass the literal `true`. Never widen the per-file coverage rule instead; an
+  opt-out with no covering banner deletes the explanation outright. It is NOT
+  once per screen — sibling sections on one page each keep their own banner, and
+  `/admin/security` and `/admin/booking-requests` each show three; #2168 settled
+  that only for `/admin/members/[id]`, so collapsing sibling banners elsewhere
+  is still a fresh owner decision. All of it — coverage, the vouching rules,
+  nesting, and the published counts — is enforced by
   `src/components/admin/__tests__/view-only-banner-contract.test.ts`.
 - Security, payment, booking, membership lifecycle, Xero, Stripe, and
   data-integrity work requires high or xhigh reasoning effort and human review
