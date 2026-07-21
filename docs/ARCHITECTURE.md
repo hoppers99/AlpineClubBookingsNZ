@@ -89,6 +89,27 @@ Important route groups:
 - `src/app/api` contains route handlers for auth, bookings, payments, admin,
   finance, lodge, webhooks, cron, and health checks.
 
+> **Theme substrate — the 3-seed model (#2187 P1).** Site Style stores THREE
+> seed colours, not seven: `brandGold` (the required accent), `brandDeep` (an
+> optional neutral character whose hue tints the grey ramp), and `brandSafety`
+> (an optional support accent). The wizard's colour step is 1 required + 2
+> optional hex-only pickers. Those seeds feed the vendored Radix custom-palette
+> generator (`src/lib/theme/`), which derives the full 12-step light/dark
+> substrate with cross-colour text contrast guaranteed by construction, so a
+> low-contrast pick is **adjusted and disclosed (before → after), not rejected**
+> — the old blocking contrast gate is gone. The four former columns
+> (`brandCharcoal`/`brandRidge`/`brandMist`/`brandSnow`) are dead to code:
+> `deriveBrandShims` derives those `--brand-*` shim values from the substrate
+> neutral ramp so the website utilities and email palette keep working through
+> P1 (P2/P3 delete the shims). The columns remain in the DB behind a default (an
+> additive EXPAND migration) so pre-#2187 code stays compatible across a
+> blue/green cutover; the destructive column drop ships in P4. Config-transfer
+> bundles are **format version 2** and reject any version-1 bundle. The deeper
+> substrate wire-up of `globals.css` (generated scale variables + alias blocks +
+> the `.dark .app-theme-scope` rewrite) and the neutral/callout/kiosk remap
+> deletions land in later phases; through P1 the `--brand-*` shims below still
+> drive the app scope.
+
 Every app-shell layout (`(public)`, `(authenticated)`, `(admin)`, `(finance)`)
 injects the admin-configured theme via `getWebsiteThemeRenderState()` inside an
 `app-theme-scope` wrapper, so never hardcode the brand accent (e.g. Tailwind

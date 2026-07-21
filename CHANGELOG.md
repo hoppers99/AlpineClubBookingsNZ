@@ -4,6 +4,17 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Site Style now derives the whole theme from three seed colours instead of
+  seven hand-picked ones (#2187).** You pick one required accent (your club's
+  brand colour) plus, optionally, a neutral character and a support accent; a
+  vendored Radix colour generator turns those seeds into the full light/dark
+  palette, with cross-colour text contrast guaranteed by construction. Because
+  contrast is now guaranteed, a low-contrast pick is no longer rejected — the
+  wizard **saves it and discloses the colours it adjusted** (before → after)
+  rather than blocking you. Colour input is hex only. Configuration bundles move
+  to **format version 2**; a bundle exported by an older app (version 1) is
+  refused with a clear message rather than importing stale colour columns.
+
 ## 0.13.1 - 2026-07-22
 
 - **Provider credentials now live in an encrypted database store, and Xero
