@@ -216,6 +216,69 @@ function extractJpegDimensions(bytes: Buffer): ImageDimensions | null {
   return null;
 }
 
+function readUInt24LE(bytes: Buffer, offset: number): number {
+  return bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16);
+}
+
+/**
+ * Parse the canvas dimensions from a WebP file's first chunk without an image
+ * library. Covers the three container forms: VP8X (extended/animated — the one
+ * that can declare a huge canvas), VP8 (lossy) and VP8L (lossless). Returns
+ * null for an unrecognised/truncated form so callers apply their own policy.
+ */
+function extractWebpDimensions(bytes: Buffer): ImageDimensions | null {
+  // "RIFF"(4) + size(4) + "WEBP"(4) already validated by the sniffer; the first
+  // chunk header (FourCC(4) + size(4)) begins at 12, its payload at 20.
+  if (bytes.length < 20) return null;
+  const fourCC = bytes.toString("ascii", 12, 16);
+  const payload = 20;
+
+  if (fourCC === "VP8X") {
+    // 4 bytes flags/reserved, then 24-bit (width-1) and 24-bit (height-1), LE.
+    if (bytes.length < payload + 10) return null;
+    return {
+      width: readUInt24LE(bytes, payload + 4) + 1,
+      height: readUInt24LE(bytes, payload + 7) + 1,
+    };
+  }
+
+  if (fourCC === "VP8 ") {
+    // Lossy: 3-byte frame tag, then the start code 0x9d 0x01 0x2a, then the
+    // 14-bit width and height (LE).
+    if (bytes.length < payload + 10) return null;
+    if (
+      bytes[payload + 3] !== 0x9d ||
+      bytes[payload + 4] !== 0x01 ||
+      bytes[payload + 5] !== 0x2a
+    ) {
+      return null;
+    }
+    return {
+      width: bytes.readUInt16LE(payload + 6) & 0x3fff,
+      height: bytes.readUInt16LE(payload + 8) & 0x3fff,
+    };
+  }
+
+  if (fourCC === "VP8L") {
+    // Lossless: 0x2f signature byte, then 14-bit (width-1) and 14-bit (height-1)
+    // packed little-endian across the next 4 bytes.
+    if (bytes.length < payload + 5) return null;
+    if (bytes[payload] !== 0x2f) return null;
+    const bits =
+      ((bytes[payload + 4] << 24) |
+        (bytes[payload + 3] << 16) |
+        (bytes[payload + 2] << 8) |
+        bytes[payload + 1]) >>>
+      0;
+    return {
+      width: (bits & 0x3fff) + 1,
+      height: ((bits >>> 14) & 0x3fff) + 1,
+    };
+  }
+
+  return null;
+}
+
 function extractSvgDimensions(bytes: Buffer): ImageDimensions | null {
   const head = bytes.subarray(0, 4096).toString("utf8");
   const svgTagMatch = head.match(/<svg[^>]*>/i);
@@ -249,7 +312,7 @@ function extractSvgDimensions(bytes: Buffer): ImageDimensions | null {
 /**
  * Best-effort dimension extraction for formats where it is cheap to do
  * without an image-processing dependency. Returns null when the format
- * isn't supported (WebP/AVIF) or the bytes can't be parsed.
+ * isn't supported (AVIF) or the bytes can't be parsed.
  */
 export function extractImageDimensions(
   bytes: Buffer,
@@ -263,6 +326,8 @@ export function extractImageDimensions(
         return extractGifDimensions(bytes);
       case "image/jpeg":
         return extractJpegDimensions(bytes);
+      case "image/webp":
+        return extractWebpDimensions(bytes);
       case "image/svg+xml":
         return extractSvgDimensions(bytes);
       default:
@@ -270,6 +335,143 @@ export function extractImageDimensions(
     }
   } catch {
     return null;
+  }
+}
+
+/**
+ * Remove EXIF/XMP/comment metadata from a JPEG by copying every marker
+ * segment except APP1 (EXIF + XMP, where camera GPS/location lives) and COM
+ * comments, then the entropy-coded scan verbatim. Colour-relevant segments
+ * (JFIF APP0, ICC APP2, Adobe APP14) are preserved. Returns the original bytes
+ * unchanged if the structure is malformed, so stripping can never corrupt.
+ */
+function stripJpegMetadata(bytes: Buffer): Buffer {
+  if (bytes.length < 2 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return bytes;
+  const kept: Buffer[] = [bytes.subarray(0, 2)]; // SOI
+  let offset = 2;
+  while (offset + 4 <= bytes.length) {
+    if (bytes[offset] !== 0xff) return bytes; // not at a marker → don't risk it
+    const marker = bytes[offset + 1];
+    if (marker === 0xda || marker === 0xd9) {
+      // Start-of-scan / end-of-image: copy the remainder verbatim.
+      kept.push(bytes.subarray(offset));
+      return Buffer.concat(kept);
+    }
+    const segLen = bytes.readUInt16BE(offset + 2);
+    const segEnd = offset + 2 + segLen;
+    if (segLen < 2 || segEnd > bytes.length) return bytes; // truncated/invalid
+    const isExifOrXmp = marker === 0xe1; // APP1
+    const isComment = marker === 0xfe; // COM
+    if (!isExifOrXmp && !isComment) {
+      kept.push(bytes.subarray(offset, segEnd));
+    }
+    offset = segEnd;
+  }
+  return bytes; // ran off the end without a scan → leave untouched
+}
+
+const PNG_METADATA_CHUNKS = new Set(["tEXt", "zTXt", "iTXt", "eXIf", "tIME"]);
+
+/**
+ * Remove text/EXIF/timestamp ancillary chunks from a PNG (eXIf can carry GPS),
+ * keeping all critical and colour chunks. Returns the original bytes if the
+ * structure is malformed.
+ */
+function stripPngMetadata(bytes: Buffer): Buffer {
+  const SIG = 8;
+  if (bytes.length < SIG + 12) return bytes;
+  const kept: Buffer[] = [bytes.subarray(0, SIG)];
+  let offset = SIG;
+  while (offset + 12 <= bytes.length) {
+    const len = readUInt32BE(bytes, offset);
+    const type = bytes.toString("ascii", offset + 4, offset + 8);
+    const chunkEnd = offset + 12 + len; // len(4) + type(4) + data(len) + crc(4)
+    if (chunkEnd > bytes.length) return bytes; // truncated
+    if (!PNG_METADATA_CHUNKS.has(type)) {
+      kept.push(bytes.subarray(offset, chunkEnd));
+    }
+    if (type === "IEND") break;
+    offset = chunkEnd;
+  }
+  return Buffer.concat(kept);
+}
+
+/**
+ * Remove EXIF and XMP chunks from a WebP RIFF container and clear the matching
+ * VP8X metadata flag bits, recomputing the RIFF size. Returns the original
+ * bytes if the structure is malformed.
+ */
+function stripWebpMetadata(bytes: Buffer): Buffer {
+  if (
+    bytes.length < 12 ||
+    bytes.toString("ascii", 0, 4) !== "RIFF" ||
+    bytes.toString("ascii", 8, 12) !== "WEBP"
+  ) {
+    return bytes;
+  }
+  const kept: Buffer[] = [];
+  let offset = 12;
+  let changed = false;
+  while (offset + 8 <= bytes.length) {
+    const fourCC = bytes.toString("ascii", offset, offset + 4);
+    const size = bytes.readUInt32LE(offset + 4);
+    const padded = size + (size % 2);
+    const chunkEnd = offset + 8 + padded;
+    if (chunkEnd > bytes.length) return bytes; // malformed
+    if (fourCC === "EXIF" || fourCC === "XMP ") {
+      changed = true;
+      offset = chunkEnd;
+      continue;
+    }
+    let chunk = bytes.subarray(offset, chunkEnd);
+    if (fourCC === "VP8X" && chunk.length > 8) {
+      // Clear the EXIF (0x08) and XMP (0x04) flag bits in the first payload byte.
+      const flags = chunk[8];
+      const cleared = flags & ~0b0000_1100;
+      if (cleared !== flags) {
+        chunk = Buffer.from(chunk);
+        chunk[8] = cleared;
+        changed = true;
+      }
+    }
+    kept.push(chunk);
+    offset = chunkEnd;
+  }
+  if (!changed) return bytes;
+  const body = Buffer.concat(kept);
+  const out = Buffer.alloc(12 + body.length);
+  out.write("RIFF", 0, "ascii");
+  out.writeUInt32LE(4 + body.length, 4); // "WEBP" tag + chunk bytes
+  out.write("WEBP", 8, "ascii");
+  body.copy(out, 12);
+  return out;
+}
+
+/**
+ * Strip privacy-sensitive metadata (EXIF/GPS, XMP, comments) from an uploaded
+ * image before it is stored and potentially served publicly. Best-effort and
+ * fail-safe: on any unexpected structure the original bytes are returned rather
+ * than risk corrupting the image. Content that has been re-encoded client-side
+ * (the crop canvas) is already metadata-free; this covers the direct-upload
+ * path where a phone-camera JPEG could carry GPS coordinates.
+ */
+export function stripImageMetadata(
+  bytes: Buffer,
+  contentType: AllowedMediaImageContentType,
+): Buffer {
+  try {
+    switch (contentType) {
+      case "image/jpeg":
+        return stripJpegMetadata(bytes);
+      case "image/png":
+        return stripPngMetadata(bytes);
+      case "image/webp":
+        return stripWebpMetadata(bytes);
+      default:
+        return bytes;
+    }
+  } catch {
+    return bytes;
   }
 }
 

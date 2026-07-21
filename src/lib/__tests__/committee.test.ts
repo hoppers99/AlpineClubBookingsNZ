@@ -903,9 +903,14 @@ describe("Committee Public API - GET /api/committee", () => {
           committeeRole: { isActive: true },
           member: { active: true },
         },
-        take: 50,
       })
     );
+    // No row cap: the roster must show every published/active member so it stays
+    // in lockstep with what /api/members/[id]/photo serves publicly.
+    const call = (prisma.committeeAssignment.findMany as unknown as {
+      mock: { calls: Array<[{ take?: number }]> };
+    }).mock.calls[0][0];
+    expect(call.take).toBeUndefined();
   });
 
   it("emits committee photo metadata only when the club opts the roster in (MP5)", async () => {

@@ -21,7 +21,11 @@ export async function GET() {
         member: { active: true },
       },
       orderBy: committeeAssignmentOrderBy(),
-      take: 50,
+      // No row cap: the roster shows every published, active committee
+      // assignment — exactly the set whose photos /api/members/[id]/photo serves
+      // publicly. A cap here would silently hide members past it whose photos
+      // stayed publicly fetchable (visibility must stay in lockstep). Committee
+      // assignments are curated admin data, so the set is inherently small.
       select: publicCommitteeAssignmentSelect,
     }),
     prisma.publicContentSettings.findUnique({

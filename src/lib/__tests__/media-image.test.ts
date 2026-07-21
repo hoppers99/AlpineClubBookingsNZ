@@ -9,6 +9,7 @@ import {
   extractImageDimensions,
   mediaImageServingUrl,
   sanitiseMediaImageFilename,
+  stripImageMetadata,
 } from "@/lib/media-image";
 
 function buildPng(width: number, height: number): Buffer {
@@ -225,5 +226,143 @@ describe("mediaImageServingUrl", () => {
 describe("MAX_MEDIA_IMAGE_BYTES", () => {
   it("is 2MB", () => {
     expect(MAX_MEDIA_IMAGE_BYTES).toBe(2 * 1024 * 1024);
+  });
+});
+
+// ─── WebP dimension parsing (decode-bomb backstop, review #7) ────────────────
+
+function buildWebpVp8x(width: number, height: number): Buffer {
+  const payload = Buffer.alloc(10); // 4 flags/reserved + 3 (w-1) + 3 (h-1), LE
+  payload.writeUIntLE(width - 1, 4, 3);
+  payload.writeUIntLE(height - 1, 7, 3);
+  const buf = Buffer.alloc(20 + payload.length);
+  buf.write("RIFF", 0, "ascii");
+  buf.writeUInt32LE(4 + 8 + payload.length, 4);
+  buf.write("WEBP", 8, "ascii");
+  buf.write("VP8X", 12, "ascii");
+  buf.writeUInt32LE(payload.length, 16);
+  payload.copy(buf, 20);
+  return buf;
+}
+
+describe("extractImageDimensions — WebP (VP8X)", () => {
+  it("parses the canvas dimensions from a VP8X chunk", () => {
+    expect(extractImageDimensions(buildWebpVp8x(1024, 768), "image/webp")).toEqual(
+      { width: 1024, height: 768 },
+    );
+  });
+
+  it("reads an oversized canvas so the caller's backstop can reject it", () => {
+    expect(
+      extractImageDimensions(buildWebpVp8x(16384, 16384), "image/webp"),
+    ).toEqual({ width: 16384, height: 16384 });
+  });
+});
+
+// ─── Metadata stripping (privacy, review #6) ─────────────────────────────────
+
+function pngChunk(type: string, data: Buffer): Buffer {
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(data.length, 0);
+  const crc = Buffer.alloc(4); // stripper does not validate the CRC
+  return Buffer.concat([len, Buffer.from(type, "ascii"), data, crc]);
+}
+
+function webpChunk(fourCC: string, data: Buffer): Buffer {
+  const header = Buffer.alloc(8);
+  header.write(fourCC, 0, "ascii");
+  header.writeUInt32LE(data.length, 4);
+  const pad = data.length % 2 === 1 ? Buffer.from([0]) : Buffer.alloc(0);
+  return Buffer.concat([header, data, pad]);
+}
+
+const SECRET = "GPS:-41.29,174.78";
+
+describe("stripImageMetadata", () => {
+  it("removes the EXIF APP1 segment from a JPEG but keeps the frame", () => {
+    const soi = Buffer.from([0xff, 0xd8]);
+    const exifPayload = Buffer.from(`Exif\0\0${SECRET}`, "latin1");
+    const app1Len = Buffer.alloc(2);
+    app1Len.writeUInt16BE(exifPayload.length + 2, 0);
+    const app1 = Buffer.concat([Buffer.from([0xff, 0xe1]), app1Len, exifPayload]);
+    const sof0 = (() => {
+      const s = Buffer.alloc(11);
+      s.writeUInt8(0xff, 0);
+      s.writeUInt8(0xc0, 1);
+      s.writeUInt16BE(9, 2);
+      s.writeUInt8(8, 4);
+      s.writeUInt16BE(16, 5); // height
+      s.writeUInt16BE(16, 7); // width
+      s.writeUInt8(1, 9);
+      return s;
+    })();
+    const sos = Buffer.from([0xff, 0xda, 0x00, 0x02, 0x01, 0xff, 0xd9]);
+    const jpeg = Buffer.concat([soi, app1, sof0, sos]);
+
+    const stripped = stripImageMetadata(jpeg, "image/jpeg");
+
+    expect(stripped.includes(Buffer.from(SECRET, "latin1"))).toBe(false);
+    expect(stripped.length).toBeLessThan(jpeg.length);
+    // Still a JPEG whose dimensions survive.
+    expect(stripped[0]).toBe(0xff);
+    expect(stripped[1]).toBe(0xd8);
+    expect(extractImageDimensions(stripped, "image/jpeg")).toEqual({
+      width: 16,
+      height: 16,
+    });
+  });
+
+  it("removes eXIf and tEXt chunks from a PNG, keeping critical chunks", () => {
+    const sig = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const ihdrData = Buffer.alloc(13);
+    ihdrData.writeUInt32BE(16, 0);
+    ihdrData.writeUInt32BE(16, 4);
+    const png = Buffer.concat([
+      sig,
+      pngChunk("IHDR", ihdrData),
+      pngChunk("eXIf", Buffer.from(SECRET, "latin1")),
+      pngChunk("tEXt", Buffer.from(`Comment\0${SECRET}`, "latin1")),
+      pngChunk("IDAT", Buffer.from([0x00])),
+      pngChunk("IEND", Buffer.alloc(0)),
+    ]);
+
+    const stripped = stripImageMetadata(png, "image/png");
+
+    expect(stripped.includes(Buffer.from(SECRET, "latin1"))).toBe(false);
+    expect(stripped.includes(Buffer.from("IHDR", "ascii"))).toBe(true);
+    expect(stripped.includes(Buffer.from("IDAT", "ascii"))).toBe(true);
+    expect(stripped.includes(Buffer.from("IEND", "ascii"))).toBe(true);
+    expect(stripped.includes(Buffer.from("eXIf", "ascii"))).toBe(false);
+  });
+
+  it("removes the EXIF chunk from a WebP RIFF container", () => {
+    const body = Buffer.concat([
+      webpChunk("VP8L", Buffer.from([0x2f, 0x00, 0x00, 0x00, 0x00])),
+      webpChunk("EXIF", Buffer.from(SECRET, "latin1")),
+    ]);
+    const webp = Buffer.concat([
+      Buffer.from("RIFF", "ascii"),
+      (() => {
+        const s = Buffer.alloc(4);
+        s.writeUInt32LE(4 + body.length, 0);
+        return s;
+      })(),
+      Buffer.from("WEBP", "ascii"),
+      body,
+    ]);
+
+    const stripped = stripImageMetadata(webp, "image/webp");
+
+    expect(stripped.includes(Buffer.from(SECRET, "latin1"))).toBe(false);
+    expect(stripped.toString("ascii", 0, 4)).toBe("RIFF");
+    expect(stripped.toString("ascii", 8, 12)).toBe("WEBP");
+    expect(stripped.includes(Buffer.from("VP8L", "ascii"))).toBe(true);
+    // RIFF size header is recomputed to match the shortened body.
+    expect(stripped.readUInt32LE(4)).toBe(stripped.length - 8);
+  });
+
+  it("returns the original bytes unchanged when the structure is malformed", () => {
+    const garbage = Buffer.from([0xff, 0xd8, 0x12, 0x34, 0x56]);
+    expect(stripImageMetadata(garbage, "image/jpeg").equals(garbage)).toBe(true);
   });
 });

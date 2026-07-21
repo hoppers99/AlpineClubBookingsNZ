@@ -1,5 +1,6 @@
 import "server-only";
 
+import { type Prisma } from "@prisma/client";
 import {
   MAX_MEDIA_IMAGE_BYTES,
   type AllowedMediaImageContentType,
@@ -61,8 +62,59 @@ export const MAX_MEMBER_PHOTO_REQUEST_BYTES =
 /**
  * Dimension backstop against decompression bombs and absurd inputs. The
  * client target is <=512px; 4096 is generous headroom. Dimension checks are
- * best effort — WebP dimensions are not parsed (the repo deliberately ships
- * no image-processing dependency), so a `null` reading is accepted rather
- * than rejected, and only a parsed dimension over this cap is refused.
+ * best effort (the repo deliberately ships no image-processing dependency):
+ * JPEG/PNG/GIF/WebP dimensions are parsed from the header, so an oversized
+ * canvas is refused; only a genuinely unparseable image reads `null` and is
+ * accepted rather than rejected.
  */
 export const MAX_MEMBER_PHOTO_DIMENSION = 4096;
+
+/**
+ * Delete a member's owned `MEMBER_PHOTO` blobs when they leave the system
+ * (merged away as a loser, or hard-deleted), without collateral damage to
+ * other members' photos. Shared by the member-merge reconcile step and the
+ * account-deletion path so both apply the identical safety predicate.
+ *
+ * A blob qualifies when it is the member's own current photo (`photoImageId`)
+ * or was uploaded by them (`uploadedByMemberId` — note an admin's on-behalf
+ * upload carries the *admin* here) — but only if it is **not still referenced
+ * by any other surviving member**. That carve-out is essential: an admin can
+ * upload photos on behalf of members X/Y/Z, so those blobs carry the admin's
+ * `uploadedByMemberId`; deleting the admin must not strip X/Y/Z's photos
+ * (`Member.photoImage` is `onDelete: SetNull`). The member's own blob, which
+ * only they reference, is still deleted. `keepImageId` spares a specific blob
+ * (the master's kept photo during a merge). Runs inside the caller's
+ * transaction; row-level locks only.
+ */
+export async function deleteOwnedMemberPhotoBlobs(
+  tx: Prisma.TransactionClient,
+  {
+    memberId,
+    photoImageId,
+    keepImageId,
+  }: {
+    memberId: string;
+    photoImageId?: string | null;
+    keepImageId?: string | null;
+  },
+): Promise<{ deleted: number }> {
+  const orClauses: Prisma.MediaImageWhereInput[] = [
+    { uploadedByMemberId: memberId },
+  ];
+  if (photoImageId) {
+    orClauses.push({ id: photoImageId });
+  }
+
+  const where: Prisma.MediaImageWhereInput = {
+    kind: "MEMBER_PHOTO",
+    OR: orClauses,
+    // Never delete a blob still referenced by a member OTHER than this one.
+    photoOfMembers: { none: { id: { not: memberId } } },
+  };
+  if (keepImageId) {
+    where.NOT = { id: keepImageId };
+  }
+
+  const { count } = await tx.mediaImage.deleteMany({ where });
+  return { deleted: count };
+}

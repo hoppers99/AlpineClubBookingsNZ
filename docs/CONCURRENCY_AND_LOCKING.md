@@ -178,6 +178,18 @@ do not use unnamespaced `hashtext(<id>)` for new lock families.
 - `admin-bed-allocation.ts` locks the owning `LodgeRoom` row with `FOR UPDATE`
   before checking and changing one room's bunk-group membership. This protocol
   is independent of the booking/capacity/credit lock cluster.
+- **Member photo writer** — `src/app/api/members/[id]/photo/route.ts` (epic #171):
+  the upload (POST) and remove (DELETE) transactions each `SELECT "photoImageId"
+  FROM "Member" WHERE "id" = $1 FOR UPDATE` before creating/repointing the blob,
+  so two concurrent replace/remove requests for the same member serialise on the
+  member row and can never leave a `MEMBER_PHOTO` blob orphaned. Member-id keyed;
+  no advisory lock; the only writer is `MediaImage` (`kind = MEMBER_PHOTO`) +
+  `Member.photoImageId`, disjoint from the booking/capacity/credit and money
+  lock clusters, so there is no cross-order to compose. Counterpart cleanup
+  writers (`deleteOwnedMemberPhotoBlobs`, run inside the member-merge and
+  account-deletion transactions) touch the same `MEMBER_PHOTO` rows but under the
+  merge/lifecycle locks, and never race a live upload because they run only when
+  the member is being merged away or deleted.
 
 Do not add or compose a row lock without updating this inventory and documenting
 its order against every advisory- and row-lock counterpart.

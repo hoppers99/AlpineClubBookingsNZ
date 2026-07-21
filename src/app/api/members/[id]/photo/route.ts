@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { requireAdmin, requireActiveSessionUser } from "@/lib/session-guards";
@@ -8,6 +9,7 @@ import { MEMBER_ACCESS_ROLE_SELECT } from "@/lib/access-role-definitions";
 import {
   detectImageContentType,
   extractImageDimensions,
+  stripImageMetadata,
 } from "@/lib/media-image";
 import {
   MAX_MEMBER_PHOTO_BYTES,
@@ -33,7 +35,9 @@ import {
  *
  * Resize is the client's job (MP3 crop UI). This route validates content-type
  * (JPEG/PNG/WebP only), enforces a byte cap and a dimension sanity backstop,
- * and stores the bytes verbatim — there is no server-side image library.
+ * and strips EXIF/XMP/comment metadata (no re-encode — there is no server-side
+ * image library) before storing so a straight-from-phone upload can't carry
+ * GPS coordinates onto a publicly-served committee photo.
  */
 
 // A member's photo is public exactly when the member is shown on the public
@@ -106,6 +110,7 @@ export async function GET(
     select: {
       active: true,
       photoImageId: true,
+      photoUpdatedAt: true,
       committeeAssignments: {
         where: PUBLIC_COMMITTEE_ASSIGNMENT_FILTER,
         select: { id: true },
@@ -174,9 +179,14 @@ export async function GET(
     // briefly — committee membership (and therefore public visibility) can be
     // revoked while the stored bytes stay the same, so a long-lived
     // `immutable` cache would leak the photo past un-publication. A short
-    // max-age plus an id-derived ETag bounds that window and still allows
-    // 304 revalidation.
-    const etag = `"${member.photoImageId}"`;
+    // max-age plus a content-derived ETag bounds that window and still allows
+    // 304 revalidation. The ETag is an opaque digest — never the raw
+    // `photoImageId` — so the internal MediaImage id is not disclosed to
+    // anonymous clients (defence in depth alongside the /api/images kind gate).
+    const etag = `"${createHash("sha256")
+      .update(`${member.photoImageId}:${member.photoUpdatedAt?.toISOString() ?? ""}`)
+      .digest("hex")
+      .slice(0, 32)}"`;
     const headers = {
       ...baseHeaders,
       "Cache-Control": "public, max-age=300, must-revalidate",
@@ -213,7 +223,7 @@ export async function POST(
   // The target member must exist (and, for admins, be a real subject).
   const target = await prisma.member.findUnique({
     where: { id },
-    select: { id: true, photoImageId: true },
+    select: { id: true },
   });
   if (!target) {
     return notFoundResponse();
@@ -279,9 +289,10 @@ export async function POST(
     );
   }
 
-  // Dimension sanity is best effort: WebP dimensions are not parsed (no image
-  // library by design), so a null reading is accepted and only a parsed
-  // dimension beyond the backstop is rejected as absurd.
+  // Dimension sanity is best effort (no image library by design): a null
+  // reading is accepted and only a parsed dimension beyond the backstop is
+  // rejected as absurd. JPEG/PNG/GIF/WebP dimensions are parsed from the header,
+  // so an oversized-canvas WebP (a decode-bomb) is now caught here too.
   const dimensions = extractImageDimensions(bytes, detected);
   if (
     dimensions &&
@@ -296,20 +307,38 @@ export async function POST(
     );
   }
 
-  const previousImageId = target.photoImageId;
+  // Strip EXIF/XMP/comment metadata (camera GPS coordinates live in JPEG APP1)
+  // before storing: a committee member's photo is served to anonymous callers,
+  // so location data in a straight-from-phone upload must not travel with it.
+  // The crop UI already re-encodes via canvas; this covers the direct-upload
+  // path. Fail-safe — returns the original bytes if the image can't be parsed.
+  const storedBytes = stripImageMetadata(bytes, detected);
+
   const now = new Date();
 
   // Create the new blob, repoint the member, then delete the old blob — all in
   // one transaction so a replaced photo never leaks an orphaned MEMBER_PHOTO
   // row (consistent with MP1's cleanup ethos). No external calls inside the
   // transaction.
-  const image = await prisma.$transaction(async (tx) => {
+  const result = await prisma.$transaction(async (tx) => {
+    // Lock the member row and read its CURRENT pointer under that lock, so two
+    // concurrent replace/remove requests serialise instead of both deleting the
+    // same stale blob and orphaning the other's new one. The pre-transaction
+    // read is only used for the existence/authorisation gate above.
+    const locked = await tx.$queryRaw<Array<{ photoImageId: string | null }>>`
+      SELECT "photoImageId" FROM "Member" WHERE "id" = ${id} FOR UPDATE`;
+    if (locked.length === 0) {
+      // Member was deleted between the pre-check and the lock.
+      return null;
+    }
+    const currentImageId = locked[0].photoImageId;
+
     const created = await tx.mediaImage.create({
       data: {
         filename: "member-photo",
         contentType: detected,
-        byteSize: bytes.length,
-        data: bytes,
+        byteSize: storedBytes.length,
+        data: new Uint8Array(storedBytes),
         width: dimensions?.width ?? null,
         height: dimensions?.height ?? null,
         uploadedByMemberId: actor.actorId,
@@ -327,16 +356,22 @@ export async function POST(
       },
     });
 
-    if (previousImageId && previousImageId !== created.id) {
+    if (currentImageId && currentImageId !== created.id) {
       // Scope the delete to MEMBER_PHOTO so a mispointed FK can never take out
       // a CONTENT image.
       await tx.mediaImage.deleteMany({
-        where: { id: previousImageId, kind: "MEMBER_PHOTO" },
+        where: { id: currentImageId, kind: "MEMBER_PHOTO" },
       });
     }
 
-    return created;
+    return { created, previousImageId: currentImageId };
   });
+
+  if (!result) {
+    return notFoundResponse();
+  }
+  const image = result.created;
+  const previousImageId = result.previousImageId;
 
   logAudit({
     action: "member_photo.upload",
@@ -378,19 +413,28 @@ export async function DELETE(
 
   const target = await prisma.member.findUnique({
     where: { id },
-    select: { id: true, photoImageId: true },
+    select: { id: true },
   });
   if (!target) {
     return notFoundResponse();
   }
 
-  const previousImageId = target.photoImageId;
   const now = new Date();
 
   // Clear the pointer (with audit columns) and delete the blob in one
   // transaction. Idempotent: removing when there is no photo simply stamps the
   // audit columns and returns success.
-  await prisma.$transaction(async (tx) => {
+  const removeResult = await prisma.$transaction(async (tx) => {
+    // Lock the member row and read the current pointer under the lock so a
+    // concurrent upload can't leave the blob we intended to delete orphaned
+    // (or delete a blob a concurrent upload has just re-pointed to).
+    const locked = await tx.$queryRaw<Array<{ photoImageId: string | null }>>`
+      SELECT "photoImageId" FROM "Member" WHERE "id" = ${id} FOR UPDATE`;
+    if (locked.length === 0) {
+      return null;
+    }
+    const currentImageId = locked[0].photoImageId;
+
     await tx.member.update({
       where: { id },
       data: {
@@ -400,12 +444,19 @@ export async function DELETE(
       },
     });
 
-    if (previousImageId) {
+    if (currentImageId) {
       await tx.mediaImage.deleteMany({
-        where: { id: previousImageId, kind: "MEMBER_PHOTO" },
+        where: { id: currentImageId, kind: "MEMBER_PHOTO" },
       });
     }
+
+    return { previousImageId: currentImageId };
   });
+
+  if (!removeResult) {
+    return notFoundResponse();
+  }
+  const previousImageId = removeResult.previousImageId;
 
   logAudit({
     action: "member_photo.remove",

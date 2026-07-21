@@ -612,12 +612,15 @@ describe("member-photo reconciliation at execute time (MP1, #189)", () => {
       db: client as never,
     });
 
-    // Master keeps master-img; every loser MEMBER_PHOTO (its discarded photo +
-    // anything it uploaded) is swept, excluding the master's kept photo.
+    // Master keeps master-img; the loser's own MEMBER_PHOTO plus any blob it
+    // uploaded that no OTHER surviving member references is swept, excluding the
+    // master's kept photo. The `photoOfMembers` carve-out spares photos the
+    // loser uploaded on behalf of members who still reference them.
     expect(mediaImage.deleteMany).toHaveBeenCalledWith({
       where: {
         kind: "MEMBER_PHOTO",
         OR: [{ uploadedByMemberId: LOSER_ID }, { id: "loser-img" }],
+        photoOfMembers: { none: { id: { not: LOSER_ID } } },
         NOT: { id: "master-img" },
       },
     });
@@ -660,6 +663,7 @@ describe("member-photo reconciliation at execute time (MP1, #189)", () => {
       where: {
         kind: "MEMBER_PHOTO",
         OR: [{ uploadedByMemberId: LOSER_ID }, { id: "loser-img" }],
+        photoOfMembers: { none: { id: { not: LOSER_ID } } },
         NOT: { id: "loser-img" },
       },
     });

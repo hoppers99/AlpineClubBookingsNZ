@@ -6,6 +6,7 @@ import {
 } from "@/lib/admin-account-guards";
 import { hasAdminAccess } from "@/lib/access-roles";
 import { buildStructuredAuditLogCreateArgs } from "@/lib/audit";
+import { deleteOwnedMemberPhotoBlobs } from "@/lib/member-photo";
 import { memberDisplayName } from "@/lib/member-serialization";
 import { prisma } from "@/lib/prisma";
 
@@ -1510,15 +1511,16 @@ async function collectMovedIdSample(
 
 /**
  * MP1 (#189) — member-photo cleanup on merge. `Member.photoImageId` is an
- * outbound scalar FK handled by the master-wins field merge; this deletes every
- * MEMBER_PHOTO `MediaImage` that BELONGED to the loser (its discarded photo, and
- * anything it uploaded) EXCEPT the one the master now keeps, so no member-photo
- * blob survives unreferenced as a dangling public asset. Deleting a blob the
- * loser still points to is safe: the `Member.photoImage` FK is `onDelete:
- * SetNull`, so the pointer is nulled rather than the delete blocked. CONTENT
- * images the loser uploaded are untouched (the `kind` filter); their
- * `uploadedByMemberId` is left as an immutable snapshot like every other actor
- * column. Runs BEFORE the loser hard-delete.
+ * outbound scalar FK handled by the master-wins field merge; this deletes the
+ * loser's own MEMBER_PHOTO `MediaImage` (its discarded photo) plus any blob it
+ * uploaded that is now unreferenced, EXCEPT the one the master keeps — so no
+ * member-photo blob survives unreferenced as a dangling public asset. It does
+ * NOT delete a blob still referenced by another surviving member: an admin
+ * (a possible loser) may have uploaded photos on behalf of others, which carry
+ * the admin's `uploadedByMemberId` but are the *subject's* current photo. That
+ * carve-out lives in the shared `deleteOwnedMemberPhotoBlobs` helper. Deleting a
+ * blob the loser still points to is safe (`onDelete: SetNull`). Runs BEFORE the
+ * loser hard-delete, while the loser still references its own blob.
  */
 async function reconcileLoserMemberPhotos(
   tx: Prisma.TransactionClient,
@@ -1527,15 +1529,15 @@ async function reconcileLoserMemberPhotos(
 ): Promise<{ deleted: number }> {
   const loserPhotoId =
     (loser as unknown as { photoImageId: string | null }).photoImageId ?? null;
-  const orClauses: Prisma.MediaImageWhereInput[] = [{ uploadedByMemberId: loser.id }];
-  if (loserPhotoId) orClauses.push({ id: loserPhotoId });
-  const where: Prisma.MediaImageWhereInput = {
-    kind: "MEMBER_PHOTO",
-    OR: orClauses,
-  };
-  if (keepPhotoImageId) where.NOT = { id: keepPhotoImageId };
-  const { count } = await tx.mediaImage.deleteMany({ where });
-  return { deleted: count };
+  // Delegate to the shared helper so the merge and account-deletion paths apply
+  // the identical "spare blobs referenced by another surviving member" rule.
+  // The loser is hard-deleted moments later (still present at this point), so
+  // its own blob — referenced only by it — is still swept.
+  return deleteOwnedMemberPhotoBlobs(tx, {
+    memberId: loser.id,
+    photoImageId: loserPhotoId,
+    keepImageId: keepPhotoImageId,
+  });
 }
 
 async function nullSelfRelationCycles(

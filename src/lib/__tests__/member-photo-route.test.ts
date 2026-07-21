@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
@@ -11,9 +12,21 @@ const mocks = vi.hoisted(() => ({
   mediaImageFindUnique: vi.fn(),
   mediaImageCreate: vi.fn(),
   mediaImageDeleteMany: vi.fn(),
+  txQueryRaw: vi.fn(),
   transaction: vi.fn(),
   logAudit: vi.fn(),
 }));
+
+// The committee-public ETag is an opaque digest of the image id + last-updated
+// timestamp — never the raw MediaImage id (which used to leak to anonymous
+// callers). Mirror the route's derivation so tests assert the exact value.
+const PHOTO_UPDATED_AT = new Date("2026-07-01T00:00:00.000Z");
+function committeeEtag(photoImageId: string, updatedAt: Date | null): string {
+  return `"${createHash("sha256")
+    .update(`${photoImageId}:${updatedAt?.toISOString() ?? ""}`)
+    .digest("hex")
+    .slice(0, 32)}"`;
+}
 
 vi.mock("@/lib/auth", () => ({
   auth: mocks.auth,
@@ -87,6 +100,22 @@ const WEBP_BYTES = (() => {
   return buf;
 })();
 
+// A VP8X WebP declaring a 16384×16384 canvas (> MAX_MEMBER_PHOTO_DIMENSION):
+// small on disk, a ~1GB decode bomb in the browser.
+const OVERSIZED_WEBP_BYTES = (() => {
+  const payload = Buffer.alloc(10); // 4 flags/reserved + 3 (w-1) + 3 (h-1)
+  payload.writeUIntLE(16383, 4, 3);
+  payload.writeUIntLE(16383, 7, 3);
+  const buf = Buffer.alloc(20 + payload.length);
+  buf.write("RIFF", 0, "ascii");
+  buf.writeUInt32LE(4 + 8 + payload.length, 4);
+  buf.write("WEBP", 8, "ascii");
+  buf.write("VP8X", 12, "ascii");
+  buf.writeUInt32LE(payload.length, 16);
+  payload.copy(buf, 20);
+  return buf;
+})();
+
 /**
  * Wire prisma.member.findUnique to answer each of the route's three distinct
  * selects: the GET committee/photo lookup, the GET private-branch viewer
@@ -107,11 +136,17 @@ function wireMemberLookups({
     async ({ where, select }: { where: { id: string }; select: Record<string, unknown> }) => {
       if (select.committeeAssignments) {
         if (photoImageId === null) {
-          return { active: memberActive, photoImageId: null, committeeAssignments: [] };
+          return {
+            active: memberActive,
+            photoImageId: null,
+            photoUpdatedAt: PHOTO_UPDATED_AT,
+            committeeAssignments: [],
+          };
         }
         return {
           active: memberActive,
           photoImageId,
+          photoUpdatedAt: PHOTO_UPDATED_AT,
           committeeAssignments: committeePublished ? [{ id: "ca-1" }] : [],
         };
       }
@@ -119,9 +154,13 @@ function wireMemberLookups({
         return viewer ?? null;
       }
       // POST/DELETE target lookup.
-      return where.id === TARGET_ID ? { id: TARGET_ID, photoImageId } : null;
+      return where.id === TARGET_ID ? { id: TARGET_ID } : null;
     },
   );
+  // The upload/remove transaction re-reads the current pointer under a row lock
+  // (SELECT ... FOR UPDATE) instead of trusting the pre-transaction read, so a
+  // concurrent replace can't orphan a blob. Mirror the current pointer here.
+  mocks.txQueryRaw.mockResolvedValue([{ photoImageId }]);
 }
 
 function servingRequest(id: string, headers?: Record<string, string>) {
@@ -156,8 +195,10 @@ beforeEach(() => {
   }));
   mocks.mediaImageDeleteMany.mockResolvedValue({ count: 1 });
   mocks.memberUpdate.mockResolvedValue({});
+  mocks.txQueryRaw.mockResolvedValue([{ photoImageId: null }]);
   mocks.transaction.mockImplementation(async (cb: (tx: unknown) => unknown) =>
     cb({
+      $queryRaw: mocks.txQueryRaw,
       mediaImage: {
         create: mocks.mediaImageCreate,
         deleteMany: mocks.mediaImageDeleteMany,
@@ -177,7 +218,12 @@ describe("GET /api/members/[id]/photo — serving authz matrix", () => {
     expect(response.headers.get("Cache-Control")).toBe(
       "public, max-age=300, must-revalidate",
     );
-    expect(response.headers.get("ETag")).toBe('"img-1"');
+    // Opaque digest, never the raw MediaImage id (defence against id leakage).
+    expect(response.headers.get("ETag")).toBe(
+      committeeEtag("img-1", PHOTO_UPDATED_AT),
+    );
+    expect(response.headers.get("ETag")).not.toBe('"img-1"');
+    expect(response.headers.get("ETag")).toMatch(/^"[0-9a-f]{32}"$/);
     expect(response.headers.get("Content-Type")).toBe("image/png");
     expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
     const buffer = Buffer.from(await response.arrayBuffer());
@@ -188,7 +234,9 @@ describe("GET /api/members/[id]/photo — serving authz matrix", () => {
     wireMemberLookups({ photoImageId: "img-1", committeePublished: true });
 
     const response = await GET(
-      servingRequest(TARGET_ID, { "if-none-match": '"img-1"' }),
+      servingRequest(TARGET_ID, {
+        "if-none-match": committeeEtag("img-1", PHOTO_UPDATED_AT),
+      }),
       params(TARGET_ID),
     );
 
@@ -304,7 +352,7 @@ describe("POST /api/members/[id]/photo — upload", () => {
     );
   });
 
-  it("accepts a WebP even though its dimensions cannot be parsed", async () => {
+  it("accepts a WebP whose dimensions cannot be parsed (truncated header)", async () => {
     wireMemberLookups({ photoImageId: null });
     mocks.auth.mockResolvedValue(ownerSession);
 
@@ -321,6 +369,19 @@ describe("POST /api/members/[id]/photo — upload", () => {
         }),
       }),
     );
+  });
+
+  it("rejects an oversized-canvas VP8X WebP (decode-bomb backstop) with 400", async () => {
+    wireMemberLookups({ photoImageId: null });
+    mocks.auth.mockResolvedValue(ownerSession);
+
+    const file = new File([OVERSIZED_WEBP_BYTES], "bomb.webp", {
+      type: "image/webp",
+    });
+    const response = await POST(uploadRequest(TARGET_ID, file), params(TARGET_ID));
+
+    expect(response.status).toBe(400);
+    expect(mocks.mediaImageCreate).not.toHaveBeenCalled();
   });
 
   it("cleans up the previous MEMBER_PHOTO blob when replacing", async () => {
