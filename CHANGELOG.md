@@ -4,7 +4,9 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
-### Release B (contract drops — deploy as its own release)
+## 0.13.1 - 2026-07-22
+
+### Release B (contract drops)
 
 > **⚠️ Precondition (now satisfied): Release A must be the deployed, drained
 > colour before this ships.** Release A shipped as **v0.13.0** and has been the

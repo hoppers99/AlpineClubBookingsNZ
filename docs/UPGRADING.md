@@ -86,10 +86,17 @@ as a red flag and check the release notes before deploying.
 
 ## Unreleased
 
-The unreleased range is **Release B of the #2129/#2130 contract series**: two
-destructive `contract` migrations that finish what the `v0.13.0` runtime-prep
-(Release A) made legal. They require the breaking-migration acknowledgement at
-deploy time and are only legal once `v0.13.0` is the deployed, drained colour.
+_No schema or migration changes are staged for the next release yet._
+
+---
+
+## v0.13.0 → v0.13.1
+
+`v0.13.1` is a **patch** release whose entire content is **Release B of the
+#2129/#2130 contract series**: two destructive `contract` migrations that finish
+what the `v0.13.0` runtime-prep (Release A) made legal. They require the
+breaking-migration acknowledgement at deploy time and are only legal once
+`v0.13.0` is the deployed, drained colour.
 
 ### Release B: the two contract migrations
 
