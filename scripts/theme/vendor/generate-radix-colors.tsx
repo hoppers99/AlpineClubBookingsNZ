@@ -13,6 +13,8 @@
  * (src/lib/theme/__tests__/generator-goldens.test.ts) pin the numeric output so
  * any drift between the two is a failing test, not a silent ship.
  */
+/* eslint-disable -- verbatim vendored upstream source; not linted, not shipped (the
+   ported src/lib/theme/generate-radix-colors.ts is what compiles into the app). */
 import * as RadixColors from "@radix-ui/colors";
 import Color from "colorjs.io";
 import BezierEasing from "bezier-easing";

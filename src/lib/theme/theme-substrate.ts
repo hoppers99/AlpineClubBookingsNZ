@@ -196,11 +196,6 @@ export function buildThemeSubstrate(seeds: ThemeSeeds, mode: Appearance): BuiltT
   return { mode, graySeed, background: bg, neutralHex, neutralAlpha, bandL, scales };
 }
 
-/** Build both modes for a seed set (dark reuses light neutral-12 nowhere but is paired for callers). */
-export function buildThemePair(seeds: ThemeSeeds): { light: BuiltTheme; dark: BuiltTheme } {
-  return { light: buildThemeSubstrate(seeds, "light"), dark: buildThemeSubstrate(seeds, "dark") };
-}
-
 /** A5 kiosk substrate (dark only) + its light-neutral-12 for the A4 ladder. */
 export function buildKioskTheme(): { theme: BuiltTheme; lightNeutral12: string } {
   const { background, graySeed, accent } = PINS.kiosk;

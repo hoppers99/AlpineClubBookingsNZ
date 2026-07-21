@@ -21,8 +21,8 @@ import { A2_INPUT_RING_NEUTRAL_STEP } from "./aliases";
 export const AA_TEXT = 4.5;
 /** G5b floor: interactive-boundary contrast against adjacent surfaces. */
 export const INPUT_RING_MIN = 3;
-/** G2b floor: status-chip text must clear AA on its pale chip surface. */
-export const CHIP_TEXT_FLOOR = AA_TEXT;
+/** G2b floor: status-chip text must clear AA (4.5:1) on its pale chip surface. */
+export const CHIP_TEXT_FLOOR = 4.5;
 
 /**
  * G5a card separation — signed-off A6 candidate ii (tint + shadow). The measured

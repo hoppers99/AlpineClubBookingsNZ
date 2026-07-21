@@ -445,19 +445,6 @@ export function transposeProgressionStart(
   });
 }
 
-export function transposeProgressionEnd(
-  to: number,
-  arr: number[],
-  curve: [number, number, number, number],
-): number[] {
-  return arr.map((n, i, arr2) => {
-    const lastIndex = arr2.length - 1;
-    const diff = arr2[lastIndex] - to;
-    const fn = BezierEasing(...curve);
-    return n - diff * fn(i / lastIndex);
-  });
-}
-
 function toOklchString(color: any): string {
   const L = +(color.coords[0] * 100).toFixed(1);
   return color
