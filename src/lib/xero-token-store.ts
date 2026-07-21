@@ -13,21 +13,27 @@ const ENCRYPTION_ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 16;
 const AUTH_TAG_LENGTH = 16;
 
-function getEncryptionKey(): Buffer {
-  const key = getOperationalXeroEncryptionKey();
+// The token-encryption key is the DB-backed, auto-generated, HKDF-wrapped Xero
+// token key (#2079). `XERO_ENCRYPTION_KEY` no longer exists. Resolution is async
+// (a cache-backed DB fetch); throws when the key cannot be resolved so callers
+// surface a clean "reconnect Xero" rather than operate without encryption.
+async function getEncryptionKey(): Promise<Buffer> {
+  const key = await getOperationalXeroEncryptionKey();
   if (!key) {
-    throw new Error("XERO_ENCRYPTION_KEY environment variable is required (32-byte hex string)");
+    throw new Error(
+      "Xero token encryption key is not available. Connect Xero from the admin panel (a strong AUTH_SECRET is required).",
+    );
   }
   const buf = Buffer.from(key, "hex");
   if (buf.length !== 32) {
-    throw new Error("XERO_ENCRYPTION_KEY must be a 64-character hex string (32 bytes)");
+    throw new Error("Xero token encryption key must be a 64-character hex string (32 bytes)");
   }
   return buf;
 }
 
 // test seam
-export function encryptToken(plaintext: string): string {
-  const key = getEncryptionKey();
+export async function encryptToken(plaintext: string): Promise<string> {
+  const key = await getEncryptionKey();
   const iv = randomBytes(IV_LENGTH);
   const cipher = createCipheriv(ENCRYPTION_ALGORITHM, key, iv, {
     authTagLength: AUTH_TAG_LENGTH,
@@ -40,8 +46,8 @@ export function encryptToken(plaintext: string): string {
 }
 
 // test seam
-export function decryptToken(encrypted: string): string {
-  const key = getEncryptionKey();
+export async function decryptToken(encrypted: string): Promise<string> {
+  const key = await getEncryptionKey();
   const parts = encrypted.split(":");
   if (parts.length !== 3) {
     throw new Error("Invalid encrypted token format");
@@ -92,28 +98,36 @@ export interface SaveXeroTokenOptions {
   refreshLeaseUntil?: Date;
 }
 
-function serializeTokenData(tokens: TokenData) {
+async function serializeTokenData(tokens: TokenData) {
+  const [accessToken, refreshToken] = await Promise.all([
+    encryptToken(tokens.accessToken),
+    encryptToken(tokens.refreshToken),
+  ]);
   return {
-    accessToken: encryptToken(tokens.accessToken),
-    refreshToken: encryptToken(tokens.refreshToken),
+    accessToken,
+    refreshToken,
     expiresAt: tokens.expiresAt,
     tenantId: tokens.tenantId ?? null,
     refreshInProgressUntil: null,
   };
 }
 
-function deserializeTokenRecord(record: {
+async function deserializeTokenRecord(record: {
   id: string;
   accessToken: string;
   refreshToken: string;
   expiresAt: Date;
   tenantId: string | null;
   refreshInProgressUntil: Date | null;
-}): XeroTokenRecord {
+}): Promise<XeroTokenRecord> {
+  const [accessToken, refreshToken] = await Promise.all([
+    decryptToken(record.accessToken),
+    decryptToken(record.refreshToken),
+  ]);
   return {
     id: record.id,
-    accessToken: decryptToken(record.accessToken),
-    refreshToken: decryptToken(record.refreshToken),
+    accessToken,
+    refreshToken,
     expiresAt: record.expiresAt,
     tenantId: record.tenantId ?? undefined,
     refreshInProgressUntil: record.refreshInProgressUntil,
@@ -124,7 +138,7 @@ export async function saveXeroTokens(
   tokens: TokenData,
   options?: SaveXeroTokenOptions
 ): Promise<void> {
-  const data = serializeTokenData(tokens);
+  const data = await serializeTokenData(tokens);
 
   if (options?.claimedTokenId && options.refreshLeaseUntil) {
     const updated = await prisma.xeroToken.updateMany({
@@ -146,8 +160,10 @@ export async function saveXeroTokens(
     return;
   }
 
-  const encryptedAccess = encryptToken(tokens.accessToken);
-  const encryptedRefresh = encryptToken(tokens.refreshToken);
+  const [encryptedAccess, encryptedRefresh] = await Promise.all([
+    encryptToken(tokens.accessToken),
+    encryptToken(tokens.refreshToken),
+  ]);
 
   // Atomic upsert via transaction to prevent concurrent token refresh race conditions.
   // Two concurrent refreshes could both read the same row and overwrite each other.
@@ -185,6 +201,10 @@ export async function loadXeroTokens(): Promise<XeroTokenRecord | null> {
   return deserializeTokenRecord(record);
 }
 
+// Note: getXeroConnectionStatus / isXeroConnected below deliberately do NOT
+// decrypt (they only read tenantId presence), so they never depend on the
+// token-encryption key and never throw for a rotated/absent key.
+
 export async function claimXeroTokenRefreshLease(options?: {
   now?: Date;
   leaseMs?: number;
@@ -204,7 +224,7 @@ export async function claimXeroTokenRefreshLease(options?: {
     if (existingLeaseUntil && existingLeaseUntil > now) {
       return {
         claimed: false,
-        tokens: deserializeTokenRecord(record),
+        tokens: await deserializeTokenRecord(record),
         leaseUntil: existingLeaseUntil,
       };
     }
@@ -228,14 +248,14 @@ export async function claimXeroTokenRefreshLease(options?: {
       });
       return {
         claimed: false,
-        tokens: latest ? deserializeTokenRecord(latest) : null,
+        tokens: latest ? await deserializeTokenRecord(latest) : null,
         leaseUntil: latest?.refreshInProgressUntil ?? null,
       };
     }
 
     return {
       claimed: true,
-      tokens: deserializeTokenRecord({
+      tokens: await deserializeTokenRecord({
         ...record,
         refreshInProgressUntil: leaseUntil,
       }),
