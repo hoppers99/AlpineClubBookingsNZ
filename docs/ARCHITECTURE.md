@@ -109,18 +109,40 @@ rewrites literal `bg-white`, `bg-{neutral}-50/100/200`,
 `--foreground`, `--muted-foreground`, and `--accent`, treating
 slate/gray/zinc/neutral/stone as one family. So a raw neutral inside
 `app-theme-scope` is **already handled in dark mode** — that shim is why dark
-mode reads correctly today, and it is not going away.
+mode read correctly before the migrations below.
 
 What the shim does **not** do is cover LIGHT mode: it is `.dark`-scoped only. A
 literal `slate-*` or `bg-white` therefore stays literally slate/white under a
 strongly non-default club theme in light mode, where the theme's own surface
 colours should apply. That gap — plus the plain consistency argument that a
-surface should be correct at source rather than correct-by-shim — is why new and
-migrated code inside `app-theme-scope` uses the semantic surface tokens:
+surface should be correct at source rather than correct-by-shim — is why code
+inside `app-theme-scope` uses the semantic surface tokens:
 `bg-card` / `text-card-foreground` for card surfaces, `bg-popover` /
 `text-popover-foreground` for floating panels such as chart tooltips,
 `text-muted-foreground` for secondary labels and footnotes, `bg-muted` for
-tinted rows, and `border-border` for rules.
+tinted rows and recessed insets, and `border-border` for rules. The finance
+tree migrated in #2137 and the whole admin tree followed in #2144, so both are
+now token-only at source and gated by
+`src/lib/__tests__/brand-color-source-contract.test.ts`.
+
+**Insets use `bg-muted`, outer surfaces use `bg-card`** (#2144 owner decision).
+The shim's raw→token table maps `bg-white`/`bg-{neutral}-50` onto `--card`, but
+inside `app-theme-scope` `--card` and `--background` share the same colour in
+light mode, so a nested strip converted to `bg-card` renders flat against its
+page. The #2137 finance precedent (`finance-dashboard-client.tsx`,
+`ratio-explorer.tsx`) answers this: a Card/section root, page-level panel, or
+popover takes `bg-card`; a nested strip inside a card, a zebra row, a table
+header band, a read-only field fill, or a recessed well takes `bg-muted`.
+
+With admin migrated, the `.dark .app-theme-scope` neutral remap block in
+`globals.css` is **legacy-compat for NON-admin surfaces only**: the raw
+neutrals that still depend on it live under `src/app/(authenticated)`,
+`src/app/(public)`, and the shared `src/components` root (a few hundred
+occurrences), plus the handful of deliberately-literal admin files the
+source-contract allowlist names (print pages, signage letterboxes, the site-style
+code previews, solid status chips). Deleting the block would require migrating
+those member-facing trees onto the same tokens first — out of scope for #2144
+and untracked; until then the block stays exactly as is.
 
 **`--muted-foreground` is a DERIVED tone, not a brand colour** (#2145). Every
 other app text token in the `.app-theme-scope` block resolves to a solid brand
@@ -254,12 +276,20 @@ enforce this:
   truth for chip tone classes — those were already -100/-800 pairs, so the
   migration was value-identical.
 - **Themed neutrals.** No raw `slate-`/`gray-`/`zinc-`/`neutral-`/`stone-`
-  utility, `bg-white`, or `bg-`/`text-black` under `src/app/(finance)` or
-  `src/components/finance`, with an empty allowlist (the empty `Set` is kept in
-  the test so a future exception is a reviewable edit). This check is
-  deliberately scoped to the finance tree rather than repo-wide: the admin tree
-  still carries raw slate in many files and would have to be migrated before the
-  check could be widened.
+  utility, `bg-white`, or `bg-`/`text-black` under `src/app/(admin)`,
+  `src/app/(finance)`, `src/components/admin`, or `src/components/finance`,
+  plus four admin-only files gated individually because they live under the
+  ungated shared roots (`admin-booking-calendar.tsx`, `admin-hub-page.tsx`,
+  `admin-permission-matrix-table.tsx`, `src/lib/admin-family-group-ui-helpers.ts`).
+  The #2144 sweep migrated the admin tree, so the check now runs with a
+  ten-entry PER-FILE allowlist, each entry carrying its stated reason in the
+  test (print paper surfaces, signage `bg-black` letterboxes, the site-style
+  code-preview panes that `app-theme-layout-contract` pins as literal slate,
+  and solid-fill status chips). Per-file granularity means an entry forfeits
+  gate coverage on that file's other occurrences — prefer fixing a stray over
+  adding an entry. Still not repo-wide: the member-facing
+  `src/app/(authenticated)`/`(public)` trees and the shared `src/components`
+  root keep raw neutrals and would have to migrate before widening further.
 
 The dark-mode colored-callout pass in `globals.css` (#1248) re-tints literal
 Tailwind `bg-{family}-50/100/200`, `text-{family}-600..950`, and
@@ -868,7 +898,10 @@ Validation stays in each card's click
 handler rather than the hook's `isValid`, so an out-of-range or
 reminder-not-shorter-than-window draft gets an explanation instead of a greyed
 button with no reason. The four number boxes take the reference section's
-read-only styling (`bg-slate-50 text-slate-700` while not editing), because
+read-only styling (`bg-muted text-muted-foreground` while not editing — moved
+off raw `bg-slate-50 text-slate-700` by #2144, deliberately onto `bg-muted`
+rather than the raw→token table's `bg-card`, which is invisible against the
+themed light background), because
 Tailwind's preflight resets `color`, `background-color`, and `opacity` on
 `input` at author origin and so erases the browser's own disabled presentation —
 without it a gated box looks exactly like an editable one. The three Edit and

@@ -4,6 +4,31 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **The admin area now follows the club's saved site colours in light mode
+  (#2144).** Every admin screen previously carried hard-coded light-grey
+  ("slate") Tailwind colours that ignored the club theme in light mode; a
+  sweep of roughly 1,400 class occurrences across the admin tree moved them
+  onto the same semantic theme tokens the finance dashboard has used since
+  #2137, so a club with a strongly non-default palette now sees it applied
+  consistently across admin. **Dark mode is visually unchanged for ~96% of
+  occurrences by construction:** the converted classes fall inside the
+  existing `.dark` neutral remap in `globals.css`, which already rewrote them
+  onto the same tokens, so for those the conversion is a provable dark-mode
+  no-op. Two deliberate visual changes in light mode: (1) all five grey text
+  tints collapse onto the single AA-clamped `text-muted-foreground` tone, so
+  the faintest icon/label tints get slightly **darker** — a flattening of the
+  old grey hierarchy accepted as an accessibility improvement; (2) recessed
+  panels (nested strips, zebra rows, table header bands, read-only field
+  fills) use the tinted `bg-muted` while cards and outer panels use
+  `bg-card`, following the finance precedent, so insets stay visibly recessed
+  under themes where the card and page colours coincide. Deliberate
+  exclusions keep their literal colours: the roster and induction print pages
+  (paper output), the reports page's print-only borders, the display
+  builder/preview signage letterboxes, the site-style code-preview panes, and
+  solid-fill status chips. A widened source-contract test now gates the whole
+  admin tree (plus finance) against raw neutral classes so they cannot creep
+  back.
+
 ## 0.13.0 - 2026-07-21
 
 - **Annual-subscription billing no longer double-bills, and a voided invoice can
