@@ -639,10 +639,13 @@ config (`AUTH_SECRET`, `DATABASE_URL`, `NEXTAUTH_URL`, SMTP/SES) is unchanged.
    secret; setup readiness shows a passive amber warning before you start.
 2. Deploy the new release. Nothing fails at boot; readiness shows the legacy-env
    warnings and the Xero "reconnect" prompt.
-3. In **Admin > Integrations**, re-enter the Xero client id, client secret, and
-   webhook key. Each write is Full-Admin only, encrypted at rest, and audited
-   (metadata only). The wrapped token-encryption key is auto-generated on first
-   use.
+3. Open **Admin > Xero > Setup** (the Integrations hub links here) and use the
+   **Xero Credentials** section to re-enter the client id, client secret, and
+   (optional) webhook key. Each write is Full-Admin only, encrypted at rest, and
+   audited (metadata only); values are never displayed back. The wrapped
+   token-encryption key is auto-generated on first use. (This interim entry form
+   is superseded by the guided Xero setup wizard in a later release, C2/#2080 —
+   the re-entry steps stay the same.)
 4. Reconnect Xero (OAuth) so fresh tokens are stored under the new key.
 5. Remove the now-ignored `XERO_*` credential env vars from the environment;
    the readiness warning clears.

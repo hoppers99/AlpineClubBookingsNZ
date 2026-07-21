@@ -465,7 +465,7 @@ describe("setup-readiness", () => {
     const report = renderSetupCheckReport(readiness);
 
     expect(report).toContain(
-      "reconnect Xero from the in-app setup (Admin > Integrations)",
+      "reconnect Xero from the in-app setup (Admin > Xero > Setup)",
     );
     expect(report).toContain("Stored Xero tokens no longer decrypt");
     // Must NOT read as connected/complete over dead tokens.

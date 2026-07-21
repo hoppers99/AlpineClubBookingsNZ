@@ -11,6 +11,7 @@ import { setIntegrationCredential } from "@/lib/integration-credentials";
 import { WeakAuthSecretError } from "@/lib/integration-crypto";
 import { deleteXeroTokens } from "@/lib/xero-token-store";
 import { XERO_CREDENTIAL_KEYS, XERO_PROVIDER } from "@/lib/xero-config";
+import { prisma } from "@/lib/prisma";
 import logger from "@/lib/logger";
 
 // POST /api/admin/integrations/credentials — write-only credential setter.
@@ -35,6 +36,46 @@ const WRITABLE_CREDENTIALS: Record<string, readonly string[]> = {
     XERO_CREDENTIAL_KEYS.webhookKey,
   ],
 };
+
+// GET /api/admin/integrations/credentials?provider=xero — METADATA-ONLY status.
+//
+// Any admin may read the set/not-set status so area admins keep visibility
+// (epic decision 4); only Full Admins can WRITE (POST below). The response
+// carries NO value or ciphertext/iv/authTag — only whether each key is set, its
+// set-at timestamp, and secretSource. Exposure contract (#2079).
+export async function GET(request: Request) {
+  const guard = await requireAdmin();
+  if (!guard.ok) return guard.response;
+
+  const provider = new URL(request.url).searchParams.get("provider") ?? "";
+  const allowedKeys = WRITABLE_CREDENTIALS[provider];
+  if (!allowedKeys) {
+    return NextResponse.json(
+      { error: "Unknown provider." },
+      { status: 400 },
+    );
+  }
+
+  // Select METADATA COLUMNS ONLY — never ciphertext/iv/authTag/value.
+  const rows = await prisma.integrationCredential.findMany({
+    where: { provider, key: { in: [...allowedKeys] } },
+    select: { key: true, secretSource: true, updatedAt: true },
+  });
+
+  const credentials: Record<
+    string,
+    { set: boolean; setAt: string; secretSource: string }
+  > = {};
+  for (const row of rows) {
+    credentials[row.key] = {
+      set: true,
+      setAt: row.updatedAt.toISOString(),
+      secretSource: row.secretSource,
+    };
+  }
+
+  return NextResponse.json({ provider, credentials });
+}
 
 const bodySchema = z.object({
   provider: z.string().min(1).max(64),

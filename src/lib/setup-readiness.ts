@@ -1207,12 +1207,12 @@ function buildOperationalXeroCheck(
         : !db
           ? "Operational Xero credentials are captured in-app; connection state was not checked."
           : needsReentry
-            ? "Xero tokens can no longer be read (the auth secret changed) — reconnect Xero from the in-app setup (Admin > Integrations)."
+            ? "Xero tokens can no longer be read (the auth secret changed) — reconnect Xero from the in-app setup (Admin > Xero > Setup)."
             : legacyXeroVars.length > 0
               ? "Remove the legacy XERO_* env vars — Xero is configured in-app now."
               : connected
                 ? "Operational Xero is connected."
-                : "Connect Xero from the in-app setup (Admin > Integrations).",
+                : "Connect Xero from the in-app setup (Admin > Xero > Setup).",
       details: [
         formatModuleActivationDetail(db, moduleState.adminEnabled),
         `Effective state: ${enabled ? "enabled" : "disabled"}`,
@@ -1226,7 +1226,9 @@ function buildOperationalXeroCheck(
               ? `Token expires: ${db?.operationalXeroTokenExpiresAt ?? "unknown"}`
               : "No active operational Xero token found.",
       ],
-      href: "/admin/integrations",
+      // Land on the page where credentials can actually be entered (#2079); the
+      // Integrations hub also links here.
+      href: "/admin/xero/setup",
       action: {
         type: "provider-test",
         provider: "xero",

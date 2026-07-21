@@ -9,10 +9,14 @@ const mocks = vi.hoisted(() => ({
   createAuditLog: vi.fn(),
   deleteXeroTokens: vi.fn(),
   loggerError: vi.fn(),
+  findMany: vi.fn(),
 }));
 
 vi.mock("@/lib/session-guards", () => ({ requireAdmin: mocks.requireAdmin }));
 vi.mock("@/lib/access-roles", () => ({ isFullAdmin: mocks.isFullAdmin }));
+vi.mock("@/lib/prisma", () => ({
+  prisma: { integrationCredential: { findMany: mocks.findMany } },
+}));
 vi.mock("@/lib/integration-credentials", () => ({
   setIntegrationCredential: mocks.setIntegrationCredential,
 }));
@@ -24,7 +28,7 @@ vi.mock("@/lib/xero-token-store", () => ({ deleteXeroTokens: mocks.deleteXeroTok
 vi.mock("@/lib/logger", () => ({ default: { error: mocks.loggerError } }));
 
 import { WeakAuthSecretError } from "@/lib/integration-crypto";
-import { POST } from "../route";
+import { GET, POST } from "../route";
 
 const SECRET_VALUE = "super-secret-xero-client-secret-value";
 
@@ -36,12 +40,23 @@ function makeRequest(body: unknown) {
   });
 }
 
-function asFullAdmin() {
+function makeGetRequest(provider: string) {
+  return new Request(
+    `https://club.example.com/api/admin/integrations/credentials?provider=${provider}`,
+    { method: "GET" },
+  );
+}
+
+function asAdmin(accessRoles: string[], fullAdmin: boolean) {
   mocks.requireAdmin.mockResolvedValue({
     ok: true,
-    session: { user: { id: "admin-1", accessRoles: ["ADMIN"] } },
+    session: { user: { id: "admin-1", accessRoles } },
   });
-  mocks.isFullAdmin.mockReturnValue(true);
+  mocks.isFullAdmin.mockReturnValue(fullAdmin);
+}
+
+function asFullAdmin() {
+  asAdmin(["ADMIN"], true);
 }
 
 beforeEach(() => {
@@ -131,5 +146,61 @@ describe("POST /api/admin/integrations/credentials", () => {
     const json = await res.json();
     expect(json.error).toMatch(/placeholder/i);
     expect(JSON.stringify(json)).not.toContain(SECRET_VALUE);
+  });
+});
+
+describe("GET /api/admin/integrations/credentials (metadata-only)", () => {
+  it("returns set/not-set + setAt + secretSource, and NEVER a value or ciphertext", async () => {
+    // Any admin may read status (area admins keep visibility, epic decision 4).
+    asAdmin(["FINANCE_ADMIN"], false);
+    mocks.findMany.mockResolvedValue([
+      {
+        key: "client_id",
+        secretSource: "AUTH_SECRET",
+        updatedAt: new Date("2026-07-21T10:00:00.000Z"),
+      },
+    ]);
+
+    const res = await GET(makeGetRequest("xero"));
+    expect(res.status).toBe(200);
+    const json = await res.json();
+
+    // client_id is set with its metadata; the other keys are simply absent.
+    expect(json).toMatchObject({
+      provider: "xero",
+      credentials: {
+        client_id: {
+          set: true,
+          setAt: "2026-07-21T10:00:00.000Z",
+          secretSource: "AUTH_SECRET",
+        },
+      },
+    });
+    expect(json.credentials.client_secret).toBeUndefined();
+
+    // Exposure contract: no value/ciphertext/iv/authTag anywhere in the body,
+    // and the DB query itself selects only metadata columns.
+    const serialized = JSON.stringify(json);
+    for (const forbidden of ["ciphertext", "iv", "authTag", "value"]) {
+      expect(serialized).not.toContain(forbidden);
+    }
+    const selectArg = mocks.findMany.mock.calls[0][0].select;
+    expect(selectArg).toEqual({ key: true, secretSource: true, updatedAt: true });
+  });
+
+  it("rejects an unknown provider with 400", async () => {
+    asAdmin(["ADMIN"], true);
+    const res = await GET(makeGetRequest("not_a_provider"));
+    expect(res.status).toBe(400);
+    expect(mocks.findMany).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unauthenticated caller via the admin guard", async () => {
+    mocks.requireAdmin.mockResolvedValue({
+      ok: false,
+      response: new Response(null, { status: 401 }),
+    });
+    const res = await GET(makeGetRequest("xero"));
+    expect(res.status).toBe(401);
   });
 });
