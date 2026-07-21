@@ -9,6 +9,10 @@
 
 import logger from "@/lib/logger";
 import { parseDateOnly } from "@/lib/date-only";
+import {
+  fetchMockXeroOrganisation,
+  getXeroMockApiOrigin,
+} from "@/lib/xero-mock-endpoint";
 import { callXeroApi, getAuthenticatedXeroClient } from "./xero-api-client";
 
 const ORG_CACHE_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
@@ -59,6 +63,86 @@ export async function getXeroFinancialYearEndMonth(
     // Fall back to the last cached value if we have one, otherwise null.
     return cached?.month ?? null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Connected-organisation summary (#2080): the org NAME (+ year-end month) so the
+// setup wizard's step 3 can confirm the operator linked the RIGHT Xero org after
+// the OAuth round-trip. Cached in-process with the same long TTL as the
+// year-end read; a status/summary read must never mutate the DB.
+// ---------------------------------------------------------------------------
+
+export interface XeroConnectedOrganisation {
+  name: string | null;
+  financialYearEndMonth: number | null;
+}
+
+interface OrgSummaryCacheEntry {
+  summary: XeroConnectedOrganisation;
+  fetchedAt: number;
+}
+
+let orgSummaryCache: OrgSummaryCacheEntry | null = null;
+
+/**
+ * Returns the connected Xero organisation's name and financial year-end month,
+ * or nulls when Xero is not connected / unavailable. Never throws — a failed
+ * read falls back to the last cached summary (or nulls). Cached in-process.
+ *
+ * Honours the test-only mock-Xero harness (#2080): inert in production.
+ */
+export async function getXeroConnectedOrganisation(
+  forceRefresh = false,
+): Promise<XeroConnectedOrganisation> {
+  if (
+    !forceRefresh &&
+    orgSummaryCache &&
+    Date.now() - orgSummaryCache.fetchedAt < ORG_CACHE_TTL_MS
+  ) {
+    return orgSummaryCache.summary;
+  }
+
+  const mockOrigin = getXeroMockApiOrigin();
+  if (mockOrigin) {
+    const summary = await fetchMockXeroOrganisation(mockOrigin);
+    orgSummaryCache = { summary, fetchedAt: Date.now() };
+    return summary;
+  }
+
+  try {
+    const { xero, tenantId } = await getAuthenticatedXeroClient();
+    const response = await callXeroApi(
+      () => xero.accountingApi.getOrganisations(tenantId),
+      {
+        operation: "getOrganisations",
+        resourceType: "ORGANISATION",
+        workflow: "setupWizardOrgConfirmation",
+        context: "xero-organisation getConnectedOrganisation",
+      },
+    );
+    const org = response.body.organisations?.[0];
+    const rawMonth = org?.financialYearEndMonth;
+    const summary: XeroConnectedOrganisation = {
+      name: org?.name ?? null,
+      financialYearEndMonth:
+        typeof rawMonth === "number" && rawMonth >= 1 && rawMonth <= 12
+          ? rawMonth
+          : null,
+    };
+    orgSummaryCache = { summary, fetchedAt: Date.now() };
+    return summary;
+  } catch (error) {
+    logger.warn(
+      { err: error },
+      "Failed to read Xero connected organisation summary",
+    );
+    return orgSummaryCache?.summary ?? { name: null, financialYearEndMonth: null };
+  }
+}
+
+// test seam
+export function resetXeroOrgSummaryCacheForTests(): void {
+  orgSummaryCache = null;
 }
 
 // ---------------------------------------------------------------------------
