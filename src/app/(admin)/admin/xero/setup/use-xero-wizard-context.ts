@@ -76,7 +76,7 @@ export function useXeroWizardContext(serverConfig: XeroWizardServerConfig): {
   const [needsReentry, setNeedsReentry] = useState(false);
   const [orgName, setOrgName] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (forceOrgRefresh = false) => {
     try {
       const [credRes, statusRes] = await Promise.all([
         fetch(CREDENTIALS_ENDPOINT, { credentials: "same-origin" }),
@@ -106,9 +106,15 @@ export function useXeroWizardContext(serverConfig: XeroWizardServerConfig): {
         setNeedsReentry(Boolean(data.needsReentry));
       }
 
-      // Only read the org (a Xero API call) when actually connected.
+      // Only read the org (a Xero API call) when actually connected. An explicit
+      // refresh (post-connect return, post-credential save) forces a fresh read
+      // (?refresh=1) so a just-reconnected DIFFERENT org can never show the old
+      // cached name — belt-and-braces over the server-side cache reset (#2080 F1).
       if (isConnected) {
-        const orgRes = await fetch(ORG_ENDPOINT, { credentials: "same-origin" });
+        const orgUrl = forceOrgRefresh
+          ? `${ORG_ENDPOINT}?refresh=1`
+          : ORG_ENDPOINT;
+        const orgRes = await fetch(orgUrl, { credentials: "same-origin" });
         if (orgRes.ok) {
           const data = (await orgRes.json()) as OrgResponse;
           setOrgName(data.name ?? null);
@@ -127,8 +133,11 @@ export function useXeroWizardContext(serverConfig: XeroWizardServerConfig): {
     void load();
   }, [load]);
 
+  // A user-triggered refresh always forces a fresh org read (the only callers
+  // are post-connect and post-credential-save, where the org identity may have
+  // just changed); the initial mount load uses the cache.
   const refresh = useCallback(() => {
-    void load();
+    void load(true);
   }, [load]);
 
   const context: XeroWizardContext = {

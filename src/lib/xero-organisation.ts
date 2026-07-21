@@ -13,6 +13,7 @@ import {
   fetchMockXeroOrganisation,
   getXeroMockApiOrigin,
 } from "@/lib/xero-mock-endpoint";
+import { registerXeroOrganisationCacheInvalidator } from "@/lib/xero-organisation-cache-bus";
 import { callXeroApi, getAuthenticatedXeroClient } from "./xero-api-client";
 
 const ORG_CACHE_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
@@ -272,4 +273,27 @@ export function getEffectiveXeroLockDate(lockDates: XeroLockDates): Date | null 
 // test seam
 export function resetXeroLockDatesCacheForTests(): void {
   lockDatesCache = null;
+}
+
+// ---------------------------------------------------------------------------
+// Cache invalidation (#2080 review, CORRECTNESS-F1): every cache above is keyed
+// on the CONNECTED Xero organisation. When the connection identity changes —
+// a connect/reconnect saves new tokens (possibly a DIFFERENT org) or a
+// disconnect drops them — those caches are stale and must be reset, or the
+// setup wizard's "is this the right org?" step would confirm the OLD org's name.
+// The token store fires this via the dependency-free bus (no import cycle).
+// ---------------------------------------------------------------------------
+
+/** Reset every in-process organisation cache (name/FYE, summary, lock dates). */
+function resetXeroOrganisationCaches(): void {
+  cached = null;
+  orgSummaryCache = null;
+  lockDatesCache = null;
+}
+
+registerXeroOrganisationCacheInvalidator(resetXeroOrganisationCaches);
+
+// test seam
+export function resetXeroOrganisationCachesForTests(): void {
+  resetXeroOrganisationCaches();
 }
