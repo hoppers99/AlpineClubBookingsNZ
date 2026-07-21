@@ -1,14 +1,44 @@
+import {
+  buildThemeSubstrate,
+  type ThemeSeeds,
+} from "@/lib/theme/theme-substrate";
+
 export const CLUB_THEME_ID = "default";
 export const MAX_LOGO_DATA_URL_BYTES = 900_000;
 
+/**
+ * The THREE seed colours a club picks (#2187 P1, D2/D17 — 1 required + 2
+ * optional). The seven-colour hand-rolled palette is gone: these three seed the
+ * vendored Radix generator, which derives the full 12-step light/dark substrate
+ * (see `@/lib/theme/theme-substrate`). Stored verbatim in the `brandGold` /
+ * `brandDeep` / `brandSafety` columns; the four former columns (the charcoal,
+ * ridge, mist, and snow surfaces) are dead to code and derived at render time
+ * from the substrate neutral ramp (see `deriveBrandShims`). They remain in the
+ * DB (P4 drops them).
+ *
+ *  - `brandGold`   → generator ACCENT (the club's primary brand colour). Required.
+ *  - `brandDeep`   → NEUTRAL CHARACTER source; its hue tints the grey ramp. Optional.
+ *  - `brandSafety` → generator SUPPORT accent. Optional.
+ */
 export const CLUB_THEME_COLOUR_FIELDS = [
-  { key: "brandGold", label: "Primary accent" },
-  { key: "brandCharcoal", label: "Charcoal" },
-  { key: "brandDeep", label: "Deep" },
-  { key: "brandRidge", label: "Ridge" },
-  { key: "brandMist", label: "Mist" },
-  { key: "brandSnow", label: "Snow" },
-  { key: "brandSafety", label: "Safety" },
+  {
+    key: "brandGold",
+    label: "Primary accent",
+    role: "The club's main brand colour. Seeds every accent surface and action.",
+    required: true,
+  },
+  {
+    key: "brandDeep",
+    label: "Neutral character",
+    role: "Tints the grey ramp toward this hue. Leave to pair a neutral grey with the accent.",
+    required: false,
+  },
+  {
+    key: "brandSafety",
+    label: "Support accent",
+    role: "An optional secondary accent for highlights. Leave to omit a support colour.",
+    required: false,
+  },
 ] as const;
 
 export type ClubThemeColourKey =
@@ -77,21 +107,16 @@ export type ClubThemeValues = Record<ClubThemeColourKey, string> & {
 };
 
 export const DEFAULT_CLUB_THEME_VALUES: ClubThemeValues = {
-  // Generic "Aotearoa" default palette (#1807): a glacial-teal primary accent on
-  // a deep bush-green cool-stone neutral ramp, with a terracotta safety accent.
-  // Reads as generic New Zealand alpine, not any specific club (Tokoroa gold now
-  // lives only in TOKOROA_CLUB_THEME_VALUES). brandGold is the primary-action
-  // colour with brand-charcoal button text (see .website-theme
-  // --primary/--primary-foreground); it must clear WCAG AA 4.5:1 against
-  // brand-charcoal — teal #57b3ab on #21362b gives 5.19:1. Every gated pair
-  // passes getBlockingContrastWarnings (regression-pinned in
-  // club-theme-schema.test.ts).
+  // Generic "Aotearoa" default palette (#1807, contracted to 3 seeds in #2187):
+  // a glacial-teal primary accent, a deep bush-green neutral character, and a
+  // terracotta support accent. Reads as generic New Zealand alpine, not any
+  // specific club (Tokoroa gold now lives only in TOKOROA_CLUB_THEME_VALUES).
+  // These three seed the vendored Radix generator, which derives the full
+  // 12-step substrate whose contrast is guaranteed by construction (see the
+  // guarantee sweep in `@/lib/theme/guarantees`). The former charcoal/mist/snow/
+  // ridge surfaces are derived from the neutral ramp (see `deriveBrandShims`).
   brandGold: "#57b3ab",
-  brandCharcoal: "#21362b",
   brandDeep: "#17231c",
-  brandRidge: "#5c6f66",
-  brandMist: "#d4ddd7",
-  brandSnow: "#f5f8f6",
   brandSafety: "#b04d28",
   headingFontKey: "LEAGUE_SPARTAN",
   bodyFontKey: "INTER",
@@ -101,11 +126,7 @@ export const DEFAULT_CLUB_THEME_VALUES: ClubThemeValues = {
 
 export const TOKOROA_CLUB_THEME_VALUES: ClubThemeValues = {
   brandGold: "#ffcb05",
-  brandCharcoal: "#4d4d46",
   brandDeep: "#2f2f2b",
-  brandRidge: "#6a6a63",
-  brandMist: "#d9d5c2",
-  brandSnow: "#f7f5ed",
   brandSafety: "#ff7c12",
   headingFontKey: "LEAGUE_SPARTAN",
   bodyFontKey: "INTER",
@@ -114,20 +135,62 @@ export const TOKOROA_CLUB_THEME_VALUES: ClubThemeValues = {
 };
 
 const HEX_COLOUR_PATTERN = /^#[0-9a-fA-F]{6}$/;
-const OKLCH_NUMBER = "(?:0|[1-9]\\d*)(?:\\.\\d{1,4})?";
-const OKLCH_LIGHTNESS = `(?:${OKLCH_NUMBER}|(?:0|[1-9]\\d|100)(?:\\.\\d{1,2})?%)`;
-const OKLCH_CHROMA = OKLCH_NUMBER;
-const OKLCH_HUE = "(?:0|[1-9]\\d{0,2}|3[0-5]\\d|360)(?:\\.\\d{1,2})?";
-const OKLCH_COLOUR_PATTERN = new RegExp(
-  `^oklch\\(${OKLCH_LIGHTNESS} ${OKLCH_CHROMA} ${OKLCH_HUE}\\)$`,
-  "i",
-);
 const LOGO_DATA_URL_PATTERN =
   /^data:(image\/(?:png|jpeg|jpg|webp|gif));base64,([A-Za-z0-9+/]+={0,2})$/;
 
+/**
+ * A user-entered theme seed is valid iff it is a 6-digit hex colour (#2187 D6:
+ * hex-only). The oklch paste-in path is gone — the generator seeds are hex, and
+ * the wizard's native colour picker only emits hex. Internal derivation maths
+ * (the curated `*-muted` surfaces, the app muted-tone clamp) still measures
+ * oklch literals; this validator gates only the user-INPUT path.
+ */
 export function isValidThemeColour(value: string): boolean {
-  const trimmed = value.trim();
-  return HEX_COLOUR_PATTERN.test(trimmed) || OKLCH_COLOUR_PATTERN.test(trimmed);
+  return HEX_COLOUR_PATTERN.test(value.trim());
+}
+
+/** Map the three stored seed columns onto the generator's seed shape. */
+export function themeSeedsFromValues(theme: ClubThemeValues): ThemeSeeds {
+  return {
+    accent: theme.brandGold,
+    neutralSource: theme.brandDeep,
+    support: theme.brandSafety,
+  };
+}
+
+export interface BrandShims {
+  gold: string;
+  charcoal: string;
+  deep: string;
+  ridge: string;
+  mist: string;
+  snow: string;
+  safety: string;
+}
+
+/**
+ * The seven legacy `--brand-*` values, derived from the 3 seeds via the light
+ * substrate neutral ramp (#2187). Old shims (`bg-brand-mist`, the website-theme
+ * `color-mix()` recipes, the email palette) keep functioning through P1 by
+ * consuming these; P2/P3 delete the shims. The four former-column surfaces map
+ * to neutral steps chosen to preserve their structural role:
+ *   snow → neutral-1 (lightest page/card), mist → neutral-3 (quiet surface),
+ *   ridge → neutral-8 (hairline/mid), charcoal → neutral-12 (darkest ink/nav).
+ * The three real seeds pass through verbatim. Property names are unprefixed
+ * ROLES, not column names — the four former columns are dead to code.
+ */
+export function deriveBrandShims(theme: ClubThemeValues): BrandShims {
+  const light = buildThemeSubstrate(themeSeedsFromValues(theme), "light");
+  const n = light.neutralHex;
+  return {
+    gold: theme.brandGold,
+    deep: theme.brandDeep,
+    safety: theme.brandSafety,
+    snow: n[0],
+    mist: n[2],
+    ridge: n[7],
+    charcoal: n[11],
+  };
 }
 
 function logoDataUrlByteLength(value: string): number | null {
@@ -203,11 +266,7 @@ export function normaliseThemeValues(
 ): ClubThemeValues {
   return {
     brandGold: sanitiseThemeColour(value?.brandGold, "brandGold"),
-    brandCharcoal: sanitiseThemeColour(value?.brandCharcoal, "brandCharcoal"),
     brandDeep: sanitiseThemeColour(value?.brandDeep, "brandDeep"),
-    brandRidge: sanitiseThemeColour(value?.brandRidge, "brandRidge"),
-    brandMist: sanitiseThemeColour(value?.brandMist, "brandMist"),
-    brandSnow: sanitiseThemeColour(value?.brandSnow, "brandSnow"),
     brandSafety: sanitiseThemeColour(value?.brandSafety, "brandSafety"),
     headingFontKey: sanitiseThemeFont(
       value?.headingFontKey,
@@ -249,7 +308,8 @@ export function buildClubThemeAppCss(
 }
 
 function buildClubThemeDeclarations(theme: ClubThemeValues): string {
-  return `--brand-gold:${theme.brandGold};--brand-charcoal:${theme.brandCharcoal};--brand-deep:${theme.brandDeep};--brand-ridge:${theme.brandRidge};--brand-mist:${theme.brandMist};--brand-snow:${theme.brandSnow};--brand-safety:${theme.brandSafety};--font-website-heading:var(${fontCssVariable(theme.headingFontKey)});--font-website-body:var(${fontCssVariable(theme.bodyFontKey)});`;
+  const s = deriveBrandShims(theme);
+  return `--brand-gold:${s.gold};--brand-charcoal:${s.charcoal};--brand-deep:${s.deep};--brand-ridge:${s.ridge};--brand-mist:${s.mist};--brand-snow:${s.snow};--brand-safety:${s.safety};--font-website-heading:var(${fontCssVariable(theme.headingFontKey)});--font-website-body:var(${fontCssVariable(theme.bodyFontKey)});`;
 }
 
 export type ContrastWarning = {
@@ -623,17 +683,17 @@ export type AppMutedForegroundTones = {
 export function deriveAppMutedForeground(
   value: Partial<Record<keyof ClubThemeValues, unknown>> | null | undefined,
 ): AppMutedForegroundTones {
-  const theme = normaliseThemeValues(value);
+  const s = deriveBrandShims(normaliseThemeValues(value));
 
   return {
-    light: deriveMutedTone(theme.brandDeep, theme.brandSnow, [
-      theme.brandSnow,
-      theme.brandMist,
+    light: deriveMutedTone(s.deep, s.snow, [
+      s.snow,
+      s.mist,
       ...SEMANTIC_MUTED_SURFACES_LIGHT,
     ]),
-    dark: deriveMutedTone(theme.brandSnow, theme.brandDeep, [
-      theme.brandDeep,
-      theme.brandCharcoal,
+    dark: deriveMutedTone(s.snow, s.deep, [
+      s.deep,
+      s.charcoal,
       ...SEMANTIC_MUTED_SURFACES_DARK,
     ]),
   };
@@ -642,7 +702,7 @@ export function deriveAppMutedForeground(
 export function getContrastWarnings(
   value: Partial<Record<keyof ClubThemeValues, unknown>>,
 ): ContrastWarning[] {
-  const theme = normaliseThemeValues(value);
+  const s = deriveBrandShims(normaliseThemeValues(value));
   const checks: Array<{
     id: string;
     label: string;
@@ -652,44 +712,44 @@ export function getContrastWarnings(
     {
       id: "body-on-snow",
       label: "Body text on page background",
-      foreground: theme.brandDeep,
-      background: theme.brandSnow,
+      foreground: s.deep,
+      background: s.snow,
     },
     {
       id: "header-on-charcoal",
       label: "Header text on navigation background",
-      foreground: theme.brandSnow,
-      background: theme.brandCharcoal,
+      foreground: s.snow,
+      background: s.charcoal,
     },
     {
       id: "button-on-gold",
       label: "Button text on primary action",
-      foreground: theme.brandCharcoal,
-      background: theme.brandGold,
+      foreground: s.charcoal,
+      background: s.gold,
     },
     {
       id: "app-accent-on-deep",
       label: "App accent on dark app chrome",
-      foreground: theme.brandGold,
-      background: theme.brandDeep,
+      foreground: s.gold,
+      background: s.deep,
     },
     {
       id: "app-accent-on-snow",
       label: "App accent foreground on light app background",
-      foreground: theme.brandCharcoal,
-      background: theme.brandSnow,
+      foreground: s.charcoal,
+      background: s.snow,
     },
     {
       id: "app-muted-on-snow",
       label: "App muted text on light app background",
-      foreground: theme.brandDeep,
-      background: theme.brandSnow,
+      foreground: s.deep,
+      background: s.snow,
     },
     {
       id: "app-secondary-on-mist",
       label: "App text on secondary surface",
-      foreground: theme.brandDeep,
-      background: theme.brandMist,
+      foreground: s.deep,
+      background: s.mist,
     },
   ];
 
