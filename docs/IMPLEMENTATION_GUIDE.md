@@ -71,15 +71,15 @@ Replace the remaining deployment branding files in `public/branding/`:
 
 The public `*.example.*` files are placeholders for forks and documentation.
 
-For the Tokoroa transition, run the seed with
-`SEED_TOKOROA_THEME_COMPLETE=1` in the private deployment fork. It pre-populates
-that fork's three brand **seed** colours — an accent, an optional neutral
-character, and an optional support accent, the only colour fields a club stores
-under the #2181 3-seed model (the generator derives the full light/dark palette
-from them) — marks the wizard complete, and imports `public/branding/logo.png`
-into the theme when present and within the 900KB limit. The fork's actual seed
-values live in its own `ClubTheme` database row; per standing directive D15 they
-are not reproduced in this public repo's docs.
+The public seed provisions **only** the generic default site style — the three
+brand **seed** colours of the #2181 3-seed model (an accent plus an optional
+neutral character and support accent, from which the generator derives the full
+light/dark palette). A deployment fork that wants its own brand palette carries
+it in that fork's own `ClubTheme` database row and provisions it from its own
+seed override; per standing directive D15, no fork's brand colours (or a
+fork-specific seed path) live in this public repository. Setting a club's palette
+in a fresh install is done through the Site Style admin wizard, which stores the
+three seeds and marks setup complete.
 
 ## 3. Configure Local Environment
 
