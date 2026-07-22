@@ -176,7 +176,11 @@ export interface FinanceDashboardPageModel {
 }
 
 const SERIES_COLORS = {
-  revenue: "#ffcb05",
+  // #2190 P4 (D15): the headline revenue series was Tokoroa's gold #ffcb05;
+  // that literal is evicted from public code. Revenue now takes the categorical
+  // chart-1 tone (cat1 step 9, #7c5cff), keeping it distinct from costs (orange),
+  // bookings (grey), cash (blue), positive (green) and negative (red).
+  revenue: "#7c5cff",
   costs: "#ff7c12",
   bookings: "#6a6a63",
   cash: "#2563eb",
