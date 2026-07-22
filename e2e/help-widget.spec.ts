@@ -103,7 +103,7 @@ test.describe("member booking-detail help widget", () => {
 
       await launcher(page).click();
       await expect(panel(page)).toBeVisible();
-      await panel(page).getByRole("tab", { name: "Page guide" }).click();
+      await panel(page).getByRole("button", { name: "Page guide" }).click();
 
       // The BookingHelpExtras leaf re-surfaces the dialog's four blocks; the
       // refund-schedule block is present for a captured-payment booking.
