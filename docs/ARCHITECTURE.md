@@ -128,8 +128,12 @@ injects the admin-configured theme via `getWebsiteThemeRenderState()` inside an
 `app-theme-scope` wrapper, so never hardcode the brand accent (e.g. Tailwind
 `teal-*`) in components: reach it through semantic tokens (`--primary`,
 `bg-primary`, `text-primary-foreground`, `border-primary/30`, ...) so the saved
-site colours apply in light and dark, and use the `--hue-*` tokens for
-categorical status hues that must stay fixed across themes.
+site colours apply in light and dark, and use the generated categorical scales
+`cat1..cat6` (via `CHIP_TONE_CLASSES` or `bg/text-cat<N>-<step>`) for categorical
+status hues. (#2218 P4 added a sixth categorical scale, `cat6` — a teal H≈183
+chosen for maximum separation from cat1-5 and the four semantic hues — and
+retired the legacy `--hue-*` accent pairs entirely; every categorical chip now
+reaches a generated cat scale.)
 
 The same rule applies to raw NEUTRALS, though for a narrower reason than the
 brand accent — and the reason is worth stating precisely, because a safety net
@@ -151,7 +155,7 @@ source. **#2188 P2 removed the shim entirely** (see below); code inside
 tinted rows and recessed insets, and `border-border` for rules. Colored surfaces
 likewise reach their hue through the signed-off scale vocabulary — the semantic
 `bg/text/border-<success|warning|info|danger>-<step>` scales, the categorical
-`cat1..cat5` scales, or `CHIP_TONE_CLASSES` — never raw Tailwind colour
+`cat1..cat6` scales, or `CHIP_TONE_CLASSES` — never raw Tailwind colour
 utilities. The finance tree migrated in #2137, admin in #2144, the member-facing
 `(authenticated)`/`(public)` trees in #2187 P1 (B4), and the remaining trees
 (lodge, website, shared components, root) in #2188 P2, so the source is
@@ -349,14 +353,18 @@ the on-solid AA pair guard, themed neutrals, and print-light):
   `divide-`, `fill-`, and gradient `from-`/`to-` teal are not currently
   matched). The `CATEGORICAL_TEAL_ALLOWLIST` is now **EMPTY**: #2190 P4 moved its
   last entry — `admin-booking-calendar.tsx`, which painted the `WAITLIST_OFFERED`
-  status as a solid `bg-teal-500` swatch — onto the categorical `bg-cat2-9` step
+  status as a solid `bg-teal-500` swatch — onto the categorical `bg-cat6-9` step
   token, so no source file names a raw teal utility. The dashboard Chore Roster
   tile was migrated onto the brand role tokens (`bg-accent` / `text-primary`, M9,
-  #2188 P2). The only surviving teal is the load-bearing `--hue-teal` chip PAIR
-  behind `WAITLIST_OFFERED` (`CHIP_TONE_CLASSES.teal` in `src/lib/chip-tones.ts`,
-  the single source of truth for chip tone classes) — a token, not a raw utility,
-  so it is invisible to the regex; the audit `family` badge and the family-group
-  `GROUP_CREATE` badge reach their hue the same way.
+  #2188 P2). #2218 P4 retired the legacy `--hue-*` accent pairs ENTIRELY: cat6
+  gave the booking column its sixth distinguisher (`WAITLIST_OFFERED` →
+  `CHIP_TONE_CLASSES.cat6`), and every other former hue consumer (payments
+  settlement/xero chips, the Internet-Banking chips, member-table badges,
+  status-chip PROCESSING/REFUNDED/PARTIALLY_REFUNDED, the audit `family` and
+  family-group `GROUP_CREATE` badges, the bed-type icons) moved onto a cat scale.
+  `CHIP_TONE_CLASSES` (`src/lib/chip-tones.ts`, the single source of truth for
+  chip tone classes) now carries only the five semantic tones plus `cat1..cat6` —
+  no `--hue-*` remains anywhere.
 - **Themed neutrals.** No raw `slate-`/`gray-`/`zinc-`/`neutral-`/`stone-`
   utility, `bg-white`, or `bg-`/`text-black` anywhere in source — the contract is
   **repo-wide** via `listRepoSourceFiles()` (the member-facing
@@ -386,7 +394,7 @@ the on-solid AA pair guard, themed neutrals, and print-light):
 The dark-mode colored-callout pass (#1248) that used to re-tint literal Tailwind
 `bg-{family}-50/100/200` / `text-{family}-600..950` / `border-{family}-100..300`
 inside `app-theme-scope` was **deleted in #2188 P2** — every colored surface now
-carries a scale token at source (`bg-danger-3` / `text-danger-11` / the `cat1..5`
+carries a scale token at source (`bg-danger-3` / `text-danger-11` / the `cat1..6`
 scales) that adapts per mode by construction, so no re-tint pass is needed. The
 dashboard Chore Roster tile that used to depend on that pass (its `bg-teal-50` /
 `text-teal-600` were what it re-tinted) was migrated onto the brand role tokens
@@ -462,7 +470,7 @@ two halves with different enforcement:
    utilities on an enumerated list. The scan covers `.ts` as well as `.tsx`,
    because this repo already keeps palette class strings in plain modules
    (`bed-allocation/_components/booking-accent.ts`). On a printable surface,
-   reach the colour through a semantic token or the `--hue-*` pairs instead.
+   reach the colour through a semantic token or a categorical `cat1..cat6` scale instead.
 
    **What the class-string scan does and does not see.** It is a regex over
    source text, not a Tailwind parse, so the boundary is worth stating exactly

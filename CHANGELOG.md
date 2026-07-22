@@ -4,6 +4,14 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Status and label chips now draw from one generated colour system, and the
+  last legacy accent colours are gone (#2218).** A sixth categorical colour (a
+  teal, added to the generated palette) gives the booking board a distinct tone
+  for the "waitlist offered" state, which lets the older hand-tuned accent
+  colours behind the payments, member, audit, bed-type and family-group chips
+  retire entirely — every coloured chip now follows the club theme through the
+  same generated scales, so colours stay consistent and readable in light and
+  dark by construction. No workflow changes; a few admin chips shift hue slightly.
 - **Theme burn-down: the last hand-picked colours leave the product, and the
   four dead theme columns are dropped from the database (#2190).** This closes
   out the theme rebuild. The finance dashboard's mix/breakdown charts now draw
