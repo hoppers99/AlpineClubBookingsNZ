@@ -16,10 +16,14 @@ import {
   type HelpWidgetExtras,
 } from "@/components/help-widget/help-widget-context";
 import {
-  AI_DISCLAIMER,
   BUDGET_DISABLED_NOTICE,
   CAP_MESSAGE,
 } from "@/components/help-widget/help-free-text-input";
+
+// Assert the LITERAL pinned disclaimer wording (not the imported constant) so
+// that any edit to the copy fails this test and is reviewed deliberately.
+const AI_DISCLAIMER_LITERAL =
+  "AI answers can be wrong — check the page itself for anything important. Your question is sent to Anthropic (US); don't include personal details.";
 import {
   BUDGET_EXHAUSTED_COPY,
   FALLBACK_ANSWER,
@@ -95,7 +99,7 @@ describe("HelpWidget free-text (LLM enabled)", () => {
   it("renders the ask box with the exact disclaimer text", () => {
     const panel = renderWidget();
     expect(within(panel).getByRole("textbox")).toBeTruthy();
-    expect(within(panel).getByText(AI_DISCLAIMER)).toBeTruthy();
+    expect(within(panel).getByText(AI_DISCLAIMER_LITERAL)).toBeTruthy();
     expect(
       within(panel).getByPlaceholderText("Ask about this page…"),
     ).toBeTruthy();
@@ -301,6 +305,92 @@ describe("HelpWidget free-text (LLM enabled)", () => {
     );
     expect(parsed.pageContext).toContain("Refund schedule");
     expect(parsed.pageContext).toContain("Can I cancel?");
+  });
+
+  it("does not fire a second fetch while one is in flight", async () => {
+    // A fetch that never settles keeps the hook in its pending state.
+    let releaseFetch: (value: unknown) => void = () => {};
+    const fetchMock = vi.fn().mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releaseFetch = resolve;
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const panel = renderWidget();
+
+    await ask(panel, "first question");
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    // A second submit while the first is still in flight must be a no-op.
+    await ask(panel, "second question");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // Let the first request settle so nothing dangles.
+    releaseFetch({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        status: "answered",
+        answer: "done",
+        truncated: false,
+        remainingExchanges: 3,
+      }),
+    });
+    await waitFor(() =>
+      expect(within(panel).getByText("done")).toBeTruthy(),
+    );
+  });
+
+  it("resends a clean paired transcript after a failed exchange", async () => {
+    // Curated (fromGuide) pair + a failed free-text (429), then a successful
+    // resend. The POSTed transcript must carry neither the curated pair nor the
+    // unpaired user turn left by the failed exchange.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 429, json: async () => null })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          status: "answered",
+          answer: "Second answer",
+          truncated: false,
+          remainingExchanges: 3,
+        }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+    const panel = renderWidget();
+
+    // Curated chip → instant fromGuide pair, no fetch.
+    fireEvent.click(
+      within(panel).getByRole("button", { name: "How do I book a stay?" }),
+    );
+    expect(within(panel).getByText("Open Book.")).toBeTruthy();
+
+    // Failed free-text exchange (rate limited).
+    await ask(panel, "failing question");
+    await waitFor(() =>
+      expect(within(panel).getByText(RATE_LIMITED_COPY)).toBeTruthy(),
+    );
+
+    // Resend — the call we deep-assert.
+    await ask(panel, "good question");
+    await waitFor(() =>
+      expect(within(panel).getByText("Second answer")).toBeTruthy(),
+    );
+
+    const resendCall = fetchMock.mock.calls.at(-1)!;
+    const parsed = JSON.parse((resendCall[1] as RequestInit).body as string);
+    expect(parsed.question).toBe("good question");
+    // No unpaired user turn and no curated pair leaked into the transcript.
+    expect(parsed.transcript).toEqual([]);
+    const contents = (parsed.transcript as Array<{ content: string }>).map(
+      (turn) => turn.content,
+    );
+    expect(contents).not.toContain("failing question");
+    expect(contents).not.toContain("How do I book a stay?");
+    expect(contents).not.toContain("Open Book.");
   });
 });
 

@@ -73,14 +73,16 @@ async function readError(res: Response, fallback: string): Promise<string> {
 const STATUS_TONES: Record<BudgetStatus, string> = {
   healthy: "bg-success-muted text-success",
   warning: "bg-warning-muted text-warning",
-  critical: "bg-warning-muted text-warning",
+  // Critical is already in the red zone — use the solid danger fill so it reads
+  // as danger, while staying distinct from exhausted's muted danger pill.
+  critical: "bg-danger text-danger-foreground",
   exhausted: "bg-danger-muted text-danger",
 };
 
 const STATUS_FILL: Record<BudgetStatus, string> = {
   healthy: "bg-success",
   warning: "bg-warning",
-  critical: "bg-warning",
+  critical: "bg-danger",
   exhausted: "bg-danger",
 };
 

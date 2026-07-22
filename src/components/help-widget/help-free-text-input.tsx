@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { SendHorizontal } from "lucide-react";
 import type { ChatDisabledReason } from "./use-help-chat";
 
@@ -17,7 +17,8 @@ import type { ChatDisabledReason } from "./use-help-chat";
 
 export const AI_DISCLAIMER =
   "AI answers can be wrong — check the page itself for anything important. Your question is sent to Anthropic (US); don't include personal details.";
-export const CAP_MESSAGE = "That's the limit for one conversation.";
+export const CAP_MESSAGE =
+  "That's the limit for one conversation. Curated page help still works.";
 export const BUDGET_DISABLED_NOTICE =
   "The AI assistant is unavailable for the rest of the month (spending limit reached). Curated page help still works.";
 
@@ -35,6 +36,17 @@ export function HelpFreeTextInput({
   onReset: () => void;
 }) {
   const [value, setValue] = useState("");
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const prevCapReached = useRef(capReached);
+
+  // After "Start new chat" (onReset) transitions the widget out of the cap
+  // state, the input re-mounts; move focus to it so the member can keep typing.
+  useEffect(() => {
+    if (prevCapReached.current && !capReached) {
+      textareaRef.current?.focus();
+    }
+    prevCapReached.current = capReached;
+  }, [capReached]);
 
   if (capReached) {
     return (
@@ -75,14 +87,21 @@ export function HelpFreeTextInput({
 
   return (
     <div className="space-y-2 border-t border-border pt-3">
-      <p className="text-xs leading-5 text-muted-foreground">{AI_DISCLAIMER}</p>
+      <p
+        id="help-ai-disclaimer"
+        className="text-xs leading-5 text-muted-foreground"
+      >
+        {AI_DISCLAIMER}
+      </p>
       <div className="flex items-end gap-2">
         <textarea
+          ref={textareaRef}
           aria-label="Ask about this page"
+          aria-describedby="help-ai-disclaimer"
           placeholder="Ask about this page…"
           rows={2}
           value={value}
-          disabled={pending}
+          maxLength={1000}
           onChange={(event) => setValue(event.target.value)}
           onKeyDown={handleKeyDown}
           className="min-h-[2.75rem] flex-1 resize-none rounded-lg border border-border bg-card px-3 py-2 text-sm leading-6 text-foreground placeholder:text-muted-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"

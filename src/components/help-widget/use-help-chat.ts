@@ -92,18 +92,48 @@ function nextId(): string {
   return `help-msg-${idCounter}`;
 }
 
-/** Build the alternating transcript POSTed alongside the new question. */
+/**
+ * Build the alternating transcript POSTed alongside the new question.
+ *
+ * Only *settled* user→assistant pairs are sent, and curated (`fromGuide`)
+ * exchanges are excluded, because:
+ *  (a) the server's grounding block already contains every curated Q&A pair
+ *      (C1's `buildHelpGrounding` serializes them), so resending a curated
+ *      exchange duplicates tokens for zero grounding value and needlessly eats
+ *      into the last-8 cap; and
+ *  (b) pair-dropping keeps the transcript clean of failed questions. A user
+ *      turn whose only following assistant bubble is transient (a fallback /
+ *      error) — or a trailing user turn with no answer yet — is dropped. The
+ *      current Anthropic API merges consecutive same-role turns rather than
+ *      erroring, so this is hygiene + cost, not a crash fix.
+ *
+ * The per-turn char cap and the last-8 cap then operate on the filtered pairs;
+ * MAX_SENT_TRANSCRIPT is even, so slicing never splits a pair.
+ */
 function buildTranscript(
   messages: HelpChatMessage[],
 ): Array<{ role: HelpChatRole; content: string }> {
-  return messages
-    .filter((message) => !message.transient)
-    .map((message) => ({
-      role: message.role,
-      content: message.text.slice(0, TURN_MAX_CHARS),
-    }))
-    .filter((turn) => turn.content.length > 0)
-    .slice(-MAX_SENT_TRANSCRIPT);
+  const turns: Array<{ role: HelpChatRole; content: string }> = [];
+  for (let i = 0; i < messages.length; i += 1) {
+    const user = messages[i];
+    if (user.role !== "user") continue;
+    const answer = messages[i + 1];
+    // Unpaired trailing user turn (no answer settled yet) — drop it.
+    if (!answer || answer.role !== "assistant") continue;
+    // Consume the answer turn regardless of whether we keep the pair.
+    i += 1;
+    // Curated exchanges live in the grounding block; transient bubbles mark a
+    // failed exchange. Either way, do not resend the pair.
+    if (answer.fromGuide || answer.transient) continue;
+    const userContent = user.text.slice(0, TURN_MAX_CHARS);
+    const answerContent = answer.text.slice(0, TURN_MAX_CHARS);
+    if (!userContent || !answerContent) continue;
+    turns.push(
+      { role: "user", content: userContent },
+      { role: "assistant", content: answerContent },
+    );
+  }
+  return turns.slice(-MAX_SENT_TRANSCRIPT);
 }
 
 export function useHelpChat({
@@ -161,6 +191,8 @@ export function useHelpChat({
       ) {
         return;
       }
+      // The wire cap; the optimistic bubble shows exactly what is sent.
+      const question = trimmed.slice(0, 1000);
 
       // Snapshot the transcript BEFORE the new user turn — the new question
       // travels in `question`, never inside the transcript.
@@ -168,7 +200,7 @@ export function useHelpChat({
 
       setMessages((prev) => [
         ...prev,
-        { id: nextId(), role: "user", text: trimmed },
+        { id: nextId(), role: "user", text: question },
       ]);
       pendingRef.current = true;
       setPending(true);
@@ -180,7 +212,7 @@ export function useHelpChat({
           body: JSON.stringify({
             pathname: meta.pathname,
             surface: meta.surface,
-            question: trimmed.slice(0, 1000),
+            question,
             transcript,
             ...(meta.pageContext ? { pageContext: meta.pageContext } : {}),
           }),
