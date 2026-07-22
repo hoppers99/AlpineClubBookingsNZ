@@ -404,51 +404,58 @@
 .website-theme {
   --website-heading-font: var(--font-website-heading, var(--font-sans));
   --font-sans: var(--font-website-body, ui-sans-serif, system-ui, sans-serif);
-  --background: var(--brand-snow);
-  --foreground: var(--brand-deep);
-  --card: #fffdf7;
-  --card-foreground: var(--brand-deep);
-  --popover: #fffdf7;
-  --popover-foreground: var(--brand-deep);
-  --primary: var(--brand-gold);
-  --primary-foreground: var(--brand-charcoal);
-  --secondary: var(--brand-mist);
-  --secondary-foreground: var(--brand-deep);
-  --muted: color-mix(in srgb, var(--brand-mist) 72%, var(--brand-snow));
-  --muted-foreground: color-mix(
-    in srgb,
-    var(--brand-deep) 70%,
-    var(--brand-snow)
-  );
-  --accent: color-mix(in srgb, var(--brand-gold) 16%, var(--brand-snow));
-  --accent-foreground: var(--brand-deep);
+  /* #2217 (theme burndown) — the website role tokens are migrated OFF the
+     `--brand-*` shims and the srgb-mix recipes and ONTO the GENERATED substrate
+     steps. The literals below are the DEFAULT palette's resolved light-mode hexes
+     (a static, no-stylesheet fallback); at render time `buildClubThemeCss`
+     injects a `.website-theme` block whose `serializeWebsiteRoleTokens()` output
+     overrides these per-club by source order (see `src/lib/theme/app-tokens.ts`,
+     `WEBSITE_ROLE_ALIASES`). The BRANDED look is preserved deliberately: a light
+     page (neutral-1), a GOLD (accent-9) primary/ring, and a DARK charcoal
+     (neutral-12) nav. `--destructive*` stay fixed oklch (not brand-derived).
+     Pinned against the resolver in `app-theme-layout-contract.test.ts` so the
+     CSS literals and the derivation cannot drift. */
+  --background: #f6f8f7;
+  --foreground: #1c211d;
+  --card: #f6f8f7;
+  --card-foreground: #1c211d;
+  --popover: #f6f8f7;
+  --popover-foreground: #1c211d;
+  --primary: #57b3ab;
+  --primary-foreground: #1c211d;
+  --secondary: #e9ebe9;
+  --secondary-foreground: #1c211d;
+  --muted: #e9ebe9;
+  --muted-foreground: #595e5a;
+  --accent: #e0e3e1;
+  --accent-foreground: #1c211d;
   --destructive: oklch(0.577 0.245 27.325);
   --destructive-foreground: oklch(0.985 0 0);
-  --border: color-mix(in srgb, var(--brand-ridge) 30%, var(--brand-snow));
-  --input: color-mix(in srgb, var(--brand-ridge) 30%, var(--brand-snow));
-  --ring: color-mix(in srgb, var(--brand-gold) 72%, white);
-  --sidebar: var(--brand-charcoal);
-  --sidebar-foreground: var(--brand-snow);
-  --sidebar-primary: var(--brand-gold);
-  --sidebar-primary-foreground: var(--brand-charcoal);
-  --sidebar-accent: color-mix(in srgb, var(--brand-snow) 12%, transparent);
-  --sidebar-accent-foreground: var(--brand-snow);
-  --sidebar-border: color-mix(
-    in srgb,
-    var(--brand-ridge) 35%,
-    var(--brand-charcoal)
-  );
-  --sidebar-ring: color-mix(in srgb, var(--brand-gold) 80%, white);
+  --border: #d0d3d0;
+  --input: #c5c8c5;
+  --ring: #57b3ab;
+  --sidebar: #1c211d;
+  --sidebar-foreground: #f6f8f7;
+  --sidebar-primary: #57b3ab;
+  --sidebar-primary-foreground: #1c211d;
+  --sidebar-accent: #595e5a;
+  --sidebar-accent-foreground: #f6f8f7;
+  --sidebar-border: #595e5a;
+  --sidebar-ring: #57b3ab;
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-sans);
 }
 
 .website-mobile-menu {
-  --background: var(--brand-charcoal);
-  --foreground: var(--brand-snow);
-  background: var(--brand-charcoal);
-  color: var(--brand-snow);
+  /* #2217 — dark mobile menu chrome: charcoal → neutral-12, snow → neutral-1
+     (default-palette resolved fallbacks; the injected `.website-theme` block's
+     `--sidebar`/`--sidebar-foreground` do not reach here, so these carry the
+     dark nav directly). */
+  --background: #1c211d;
+  --foreground: #f6f8f7;
+  background: #1c211d;
+  color: #f6f8f7;
 }
 
 .website-theme :is(h1, h2, h3, h4, [data-website-heading="true"]) {

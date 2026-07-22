@@ -6,6 +6,7 @@ import { ACCENT_NEUTRAL_STEP } from "@/lib/theme/aliases";
 import {
   serializeAppThemeTokens,
   serializeWebsiteStepTokens,
+  serializeWebsiteRoleTokens,
 } from "@/lib/theme/app-tokens";
 
 export const CLUB_THEME_ID = "default";
@@ -281,6 +282,7 @@ export function buildClubThemeCss(
   value: Partial<Record<keyof ClubThemeValues, unknown>> | null | undefined,
 ): string {
   const theme = normaliseThemeValues(value);
+  const seeds = themeSeedsFromValues(theme);
   const base = `:root,.website-theme{${buildClubThemeDeclarations(theme)}}`;
   // #2188 P2 — the website scope (`.website-theme`, light-only) consumes the
   // semantic + categorical STEP utilities too (form callouts etc.), but sits
@@ -288,10 +290,18 @@ export function buildClubThemeCss(
   // as a `.website-theme` block with the same generated club values as the app
   // scope; globals.css's @theme step tokens carry a static default fallback so a
   // no-sheet page never falls through to transparent.
-  const websiteSteps = `.website-theme{${serializeWebsiteStepTokens(
-    themeSeedsFromValues(theme),
-  )}}`;
-  const core = `${base}${websiteSteps}`;
+  //
+  // #2217 (theme burndown) — the website SEMANTIC ROLE tokens
+  // (`--background`/`--primary`/`--sidebar`/…) are now also injected here, as
+  // RESOLVED substrate-step hexes (`serializeWebsiteRoleTokens`), migrating the
+  // `.website-theme` block OFF the `--brand-*` shims + `color-mix()` recipes it
+  // used to carry. Same selector as the globals.css `.website-theme` static
+  // fallbacks, so these per-club values override them by source order while
+  // preserving the branded look (gold primary/ring, dark charcoal nav).
+  const websiteTokens = `.website-theme{${serializeWebsiteStepTokens(
+    seeds,
+  )}${serializeWebsiteRoleTokens(seeds)}}`;
+  const core = `${base}${websiteTokens}`;
   return theme.rawCss ? `${core}\n${theme.rawCss}` : core;
 }
 

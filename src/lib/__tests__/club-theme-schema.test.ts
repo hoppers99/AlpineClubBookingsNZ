@@ -395,8 +395,9 @@ describe("deriveAppMutedForeground (#2145)", () => {
 
     expect(appCss).toContain(`--app-muted-foreground:${muted.light};`);
     expect(appCss).toContain(`--app-muted-foreground-dark:${muted.dark};`);
-    // The public website scope keeps its own color-mix muted tone and must not
-    // pick up the app-only tokens.
+    // The public website scope resolves its muted tone from the substrate
+    // (`--muted-foreground` = neutral-11, #2217) and must not pick up the
+    // app-only measured tokens.
     expect(buildClubThemeCss(DEFAULT_CLUB_THEME_VALUES)).not.toContain(
       "--app-muted-foreground",
     );
