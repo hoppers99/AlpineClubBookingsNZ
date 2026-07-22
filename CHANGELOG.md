@@ -4,6 +4,24 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Configuration transfer now covers three more club-wide settings, and guards
+  against any future settings singleton being silently left out (#2200).** A
+  bundle now carries your **login/security policy** (password-complexity rules
+  and the magic-link link lifetime), your **public-content visibility** choices
+  (the double-opt-in embed toggles and whether the public "Book Now" button
+  shows), and your **subscription-billing policy** (invoice due-days and the
+  family-billing model) — portable club decisions that previously stayed behind
+  when you moved config between installs. Instance-specific settings deliberately
+  do **not** travel and are now recorded as such with a reason: the Xero
+  member-grouping mode (tied to your connected Xero organisation), per-lodge
+  capacity/soft-cap settings (they belong with each lodge), setup-wizard
+  progress, and the AI monthly spend cap. A new test enumerates every
+  single-row (`id = "default"`) settings table straight from the schema and
+  fails the build if one is neither exported nor explicitly excluded, so a future
+  settings table can't quietly join the blind spot. No secret or credential
+  travels, and no bundle format-version change is needed — an older app importing
+  a newer bundle simply ignores the extra files, and a newer app importing an
+  older bundle leaves the new settings untouched.
 - **The lodge kiosk / wall display now paints from a fixed, glare-proof colour
   set that never follows the club theme or the light/dark toggle (#2189).** The
   kiosk, its roster-setup wizard, and the lodge-instructions panel were the one

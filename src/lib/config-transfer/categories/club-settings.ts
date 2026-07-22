@@ -10,8 +10,11 @@ import {
   DEFAULT_MEMBERSHIP_CANCELLATION_SETTINGS,
   DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS,
   DEFAULT_MEMBERSHIP_NOMINATION_SETTINGS,
+  DEFAULT_MEMBERSHIP_SUBSCRIPTION_BILLING_SETTINGS,
+  DEFAULT_PUBLIC_CONTENT_SETTINGS,
 } from "@/config/club-settings-defaults";
 import { DEFAULT_MEMBER_FIELDS_SETTINGS } from "@/config/member-fields";
+import { DEFAULT_LOGIN_SECURITY_POLICY } from "@/lib/password-policy";
 import {
   CLUB_MODULE_SETTINGS_COLUMN_SELECT,
   DEFAULT_MODULE_SETTINGS,
@@ -294,6 +297,59 @@ export const SINGLETONS: SingletonSpec[] = [
     delegate: "membershipCancellationSetting",
     fields: ["warningText", "rejoinProcessText", "xeroArchiveContactsOnCancellation"],
     defaults: () => DEFAULT_MEMBERSHIP_CANCELLATION_SETTINGS,
+  },
+  {
+    // #2200 (model-level completeness audit): portable club login/security POLICY
+    // — the password-complexity rules and the magic-link token TTL. Every field is
+    // a portable club decision with no secret, credential, tenant, or deployment
+    // coupling (the FORBIDDEN_FIELD_PATTERNS sweep passes: none is a secret/token
+    // value — magicLinkTtlMinutes is a duration, not a token). An absent row reads
+    // as the code default (normalizeLoginSecurityPolicy over null), so the exporter
+    // emits exactly that constant.
+    entity: "login-security-setting",
+    delegate: "loginSecuritySetting",
+    fields: [
+      "minPasswordLength", "requireUppercase", "requireLowercase",
+      "requireDigit", "requireSymbol", "magicLinkTtlMinutes",
+    ],
+    defaults: () => DEFAULT_LOGIN_SECURITY_POLICY,
+  },
+  {
+    // #2200: portable public-content visibility POLICY — the six double-opt-in
+    // embed gates plus whether the public "Book Now" button is shown. The
+    // Book-Now DESTINATION does not travel: bookNowTarget/bookNowPageId reference
+    // a specific install's PageContent id (instance-local, like the phase-7
+    // lodgeId / rateMembershipTypeId FK exclusions), and getBookNowConfig fails
+    // open to the booking flow when the target page is absent — so a target keeps
+    // its own destination and the button is never dead.
+    entity: "public-content-settings",
+    delegate: "publicContentSettings",
+    fields: [
+      "membershipTypes", "entranceFees", "hutFees", "bookingPolicySummary",
+      "cancellationPolicy", "annualFees", "showBookNow",
+    ],
+    excluded: {
+      bookNowTarget:
+        "half of the instance-local Book-Now destination; only meaningful with " +
+        "bookNowPageId, which names a specific install's PageContent row",
+      bookNowPageId:
+        "FK to a PageContent row; an instance-local id that need not resolve on " +
+        "the target — getBookNowConfig fails open to the booking flow without it",
+    },
+    defaults: () => DEFAULT_PUBLIC_CONTENT_SETTINGS,
+  },
+  {
+    // #2200: portable membership billing POLICY — the invoice due-days window and
+    // the club family-billing model. Neither embeds a Xero/provider or tenant
+    // reference (verified against the schema), so both are portable club config,
+    // exactly like the other membership-settings singletons. familyBillingMode
+    // interacts with PER_FAMILY fee schedules (which travel in the membership-fees
+    // category); a whole-bundle export stays internally consistent, and the
+    // admin-reviewed dry-run surfaces any partial-import mismatch.
+    entity: "membership-subscription-billing-settings",
+    delegate: "membershipSubscriptionBillingSettings",
+    fields: ["invoiceDueDays", "familyBillingMode"],
+    defaults: () => DEFAULT_MEMBERSHIP_SUBSCRIPTION_BILLING_SETTINGS,
   },
 ];
 

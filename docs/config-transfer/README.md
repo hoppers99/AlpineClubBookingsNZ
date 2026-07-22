@@ -90,9 +90,10 @@ deeper reference for what each category contains and the import safety model.
 - **club-settings** — the club-wide settings singletons (modules, booking
   defaults, member-fields, bed-allocation, booking-request, IB payments, club
   identity (name/short name/hut-leader label), email message settings, group
-  discount, membership nomination/lockout/cancellation). Applying the bundle
-  refreshes the DB-first club-identity cache so imported identity takes effect
-  immediately.
+  discount, membership nomination/lockout/cancellation, login/security policy,
+  public-content visibility, and subscription-billing policy). Applying the
+  bundle refreshes the DB-first club-identity cache so imported identity takes
+  effect immediately.
 
   **Field-level allowlisting is audited in both directions (#2178).** Each
   singleton exports only the columns in its `fields` allowlist; every other
@@ -112,6 +113,71 @@ deeper reference for what each category contains and the import safety model.
   would first need a credential-presence render gate).
   `MembershipLockoutSettings.useFeeScheduleItemCodes` (#2109) is
   classified should-travel and now exports like the rest of that singleton.
+
+  **Model-level completeness is audited too (#2200).** The field-level guard
+  above proves no COLUMN inside a registered singleton is dropped; a second guard
+  proves no singleton-shaped MODEL is silently absent. "Singleton-shaped" is the
+  `id = "default"` upsert pattern — a model whose `@id` scalar defaults to the
+  literal `"default"` — enumerated mechanically from `prisma/schema.prisma` by
+  `src/lib/config-transfer/singleton-models.ts`. Every such model must be either
+  registered for export or named in `MODEL_LEVEL_EXCLUSIONS` with a one-line
+  reason, so a future settings singleton fails the test until someone classifies
+  it. Models keyed by `cuid()`/`uuid()` or a business unique — e.g.
+  `AgeTierSetting` (`@default(cuid())`, `tier @unique`, one row per age tier) —
+  are NOT singletons and are out of scope for this guard by shape; a portable
+  multi-row table would use the natural-key entity mechanism instead.
+
+  The audit classified the six models that were absent, plus two the enumeration
+  surfaced (`SetupProgress`, `AiAssistantSettings`), as:
+
+  - **Portable club policy — now exported** (`LoginSecuritySetting`,
+    `PublicContentSettings`, `MembershipSubscriptionBillingSettings`).
+    - `LoginSecuritySetting` — the password-complexity policy and the magic-link
+      token TTL. No secret/credential travels: the field-allowlist sweep passes
+      (the password-length bound is a portable integer rule, not a secret — the
+      `/password.../` forbidden pattern carves out `minPasswordLength` while still
+      blocking `passwordHash` and every other credential field).
+    - `PublicContentSettings` — the six double-opt-in embed visibility gates and
+      whether the public "Book Now" button is shown. The button DESTINATION does
+      **not** travel: `bookNowTarget` / `bookNowPageId` reference a specific
+      install's `PageContent` id (instance-local, excluded like the phase-7
+      `lodgeId` and `GroupDiscountSetting.rateMembershipTypeId` FKs), and
+      `getBookNowConfig` fails open to the booking flow when the page is absent,
+      so a target keeps its own destination and the button is never dead.
+    - `MembershipSubscriptionBillingSettings` — the invoice due-days window and
+      the club family-billing model. Neither embeds a Xero/provider or tenant
+      reference, so both are portable club policy. `familyBillingMode` interacts
+      with `PER_FAMILY` fee schedules, which travel in the **membership-fees**
+      category; a whole-bundle export stays internally consistent and the
+      admin-reviewed dry-run surfaces any partial-import mismatch.
+  - **Instance-local — excluded with a reason** (`MODEL_LEVEL_EXCLUSIONS`):
+    - `XeroGroupingSettings` — Xero member-grouping mode is bound to the source
+      install's connected Xero organisation (tenant); Xero settings never travel.
+    - `LodgeSettings` — per-lodge physical/operational settings (bed capacity,
+      school-group soft cap) keyed to a specific lodge via `lodgeId`; lodge
+      identity and capacity travel through the **lodge-config** category's Lodge
+      rows, not this singleton.
+    - `SetupProgress` — deployment-local setup-wizard progress (which steps THIS
+      install completed/skipped); operational install state, not club policy.
+    - `AiAssistantSettings` — the deployment-specific AI monthly spend cap; an
+      operational spend control a source club must never reset on a target
+      (a fresh import keeps the target's own cap, #2211).
+
+  Both `ClubTheme` and the twelve original singletons remain accounted for
+  (registered); `ClubTheme` is registered in the site-content category and listed
+  in `SINGLETON_MODELS_REGISTERED_ELSEWHERE`.
+
+  **No format-version bump for the three additions.** `CONFIG_TRANSFER_FORMAT_VERSION`
+  stays `2`. Adding a model is purely additive and tolerated in both directions:
+  a post-#2200 bundle imported by a pre-#2200 app (both v2) carries three extra
+  `club-settings/*.json` files the older importer simply never reads (it iterates
+  its own `SINGLETONS` list), and a pre-#2200 bundle imported by a post-#2200 app
+  omits those files, so the files-first importer leaves each new singleton
+  untouched. This is unlike the v1→v2 bump (#2187), which was forced by an
+  INCOMPATIBLE column collapse on `ClubTheme` that would have silently discarded
+  data; adding models loses nothing in either direction, so a bump would only
+  gratuitously reject otherwise-importable v2 bundles (`readBundle` rejects any
+  `formatVersion != CONFIG_TRANSFER_FORMAT_VERSION`).
 
   **A singleton the source club never saved is still exported (#2171).** Every
   entry in `SINGLETONS` always produces its JSON file; where the `id = "default"`
@@ -180,10 +246,12 @@ deeper reference for what each category contains and the import safety model.
     now exists — but it is a visible behaviour change, not purely a checklist one.
   - **A materialised row stops tracking the code default.** Once written, a
     later release that changes the built-in default does not reach that club.
-  - **No format-version bump.** `CONFIG_TRANSFER_FORMAT_VERSION` stays `1`: the
-    file shape is unchanged and only completeness improved. The importer is
-    files-first, so an older bundle that omits a singleton still imports and
-    leaves that singleton untouched — covered by a test.
+  - **No format-version bump.** #2171 needed no bump (it was `formatVersion 1`
+    at the time; #2187 has since taken the format to `2`): the file shape was
+    unchanged and only completeness improved. The importer is files-first, so an
+    older bundle that omits a singleton still imports and leaves that singleton
+    untouched — covered by a test. The same reasoning carried the #2200 model
+    additions (see "Model-level completeness" above).
 - **lodge-config** — lodges, rooms, beds, seasons, season rates, lodge
   instructions (content images bundled + remapped), and chore templates. Each
   lodge is a **self-contained folder**, `lodge-config/lodges/<slug>/` with a

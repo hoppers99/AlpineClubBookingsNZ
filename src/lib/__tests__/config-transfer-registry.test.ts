@@ -53,6 +53,17 @@ describe("config-transfer registry — forbidden field guard", () => {
     }
   });
 
+  // #2200: the password-POLICY length bound is portable (an integer rule), but
+  // every credential-bearing password field stays blocked.
+  it("allows the password-length policy bound but still blocks credential material", () => {
+    expect(isForbiddenField("minPasswordLength")).toBe(false);
+    expect(isForbiddenField("maxPasswordLength")).toBe(false);
+    expect(isForbiddenField("password")).toBe(true);
+    expect(isForbiddenField("passwordHash")).toBe(true);
+    expect(isForbiddenField("newPassword")).toBe(true);
+    expect(isForbiddenField("forcePasswordChange")).toBe(true);
+  });
+
   it("treats door codes as sensitive opt-in, not forbidden", () => {
     expect(isSensitiveOptInField("doorCode")).toBe(true);
     expect(isForbiddenField("doorCode")).toBe(false);
