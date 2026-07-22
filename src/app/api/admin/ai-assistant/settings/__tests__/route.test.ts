@@ -42,15 +42,24 @@ beforeEach(() => {
     session: { user: { id: "admin-1" } },
   });
   mocks.buildAudit.mockReturnValue({ data: {} });
-  mocks.settingsUpsert.mockReturnValue("UPSERT_OP");
-  mocks.auditCreate.mockReturnValue("AUDIT_OP");
-  mocks.transaction.mockResolvedValue([
-    {
-      monthlyBudgetCents: 2000,
-      updatedAt: new Date("2026-07-23T10:00:00.000Z"),
-      updatedByMemberId: "admin-1",
-    },
-  ]);
+  mocks.settingsUpsert.mockResolvedValue({
+    monthlyBudgetCents: 2000,
+    updatedAt: new Date("2026-07-23T10:00:00.000Z"),
+    updatedByMemberId: "admin-1",
+  });
+  mocks.auditCreate.mockResolvedValue("AUDIT_OP");
+  // Interactive-transaction form: the route reads the previous value, upserts,
+  // and audits inside one callback. Run it with a tx that reuses the same
+  // delegate mocks so the read-then-write race fix is exercised.
+  mocks.transaction.mockImplementation(async (cb) =>
+    cb({
+      aiAssistantSettings: {
+        findUnique: mocks.settingsFindUnique,
+        upsert: mocks.settingsUpsert,
+      },
+      auditLog: { create: mocks.auditCreate },
+    }),
+  );
 });
 
 describe("GET /api/admin/ai-assistant/settings", () => {

@@ -5,7 +5,8 @@ import logger from "@/lib/logger";
 
 // GET /api/admin/ai-assistant/usage — AI help assistant usage + spend summary
 // for the admin panel (#2211, C3). Matches the Xero usage route's permission
-// shape (bare admin guard). The response NEVER contains question text.
+// shape: an admin guard (resolves to support/view via the route-area header).
+// The response NEVER contains question text.
 export async function GET() {
   const guard = await requireAdmin();
   if (!guard.ok) return guard.response;

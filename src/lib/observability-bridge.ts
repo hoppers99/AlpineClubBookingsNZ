@@ -123,12 +123,13 @@ export function reportWebhookError(
 }
 
 /**
- * Bridge a genuine AI-metering persistence FAILURE to Sentry (scoped, deduped).
- * Scoped like cron/webhook: only the AI usage-recording catch handler
- * (`recordAiUsage`) calls this, at its genuine-failure path. A failure to write
- * a usage row means the deployment can no longer prove what it spent, so it is a
- * real alerting event — and it drives the metering circuit breaker that stops
- * further spend (#2211, C3).
+ * Bridge a genuine AI FAILURE to Sentry (scoped, deduped). Scoped like
+ * cron/webhook: called from the usage-recording failure path (`recordAiUsage`)
+ * and the chat route's provider-auth-failure path. A failure to write a usage
+ * row means the deployment can no longer prove what it spent (and it drives the
+ * metering circuit breaker that stops further spend); a provider-auth failure
+ * means the stored Anthropic key is bad and an operator must re-enter it. Both
+ * are real alerting events (#2211, C3).
  */
 export function reportAiError(
   input: Omit<ReportScopedErrorInput, "scope">

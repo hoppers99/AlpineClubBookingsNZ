@@ -62,27 +62,31 @@ export async function PUT(request: Request) {
   }
   const { monthlyBudgetCents } = parsed.data;
 
-  const existing = await prisma.aiAssistantSettings.findUnique({
-    where: { id: AI_ASSISTANT_SETTINGS_ID },
-  });
-  const previousCents = existing?.monthlyBudgetCents ?? DEFAULT_MONTHLY_BUDGET_CENTS;
+  // Read the previous value, upsert, and write the audit log inside ONE
+  // transaction so concurrent PUTs record accurate previous values (reading the
+  // old row before the transaction would let two racing writers both capture the
+  // same stale `previousMonthlyBudgetCents`).
+  const row = await prisma.$transaction(async (tx) => {
+    const existing = await tx.aiAssistantSettings.findUnique({
+      where: { id: AI_ASSISTANT_SETTINGS_ID },
+    });
+    const previousCents =
+      existing?.monthlyBudgetCents ?? DEFAULT_MONTHLY_BUDGET_CENTS;
 
-  const write = prisma.aiAssistantSettings.upsert({
-    where: { id: AI_ASSISTANT_SETTINGS_ID },
-    create: {
-      id: AI_ASSISTANT_SETTINGS_ID,
-      monthlyBudgetCents,
-      updatedByMemberId: session.user.id,
-    },
-    update: {
-      monthlyBudgetCents,
-      updatedByMemberId: session.user.id,
-    },
-  });
+    const updated = await tx.aiAssistantSettings.upsert({
+      where: { id: AI_ASSISTANT_SETTINGS_ID },
+      create: {
+        id: AI_ASSISTANT_SETTINGS_ID,
+        monthlyBudgetCents,
+        updatedByMemberId: session.user.id,
+      },
+      update: {
+        monthlyBudgetCents,
+        updatedByMemberId: session.user.id,
+      },
+    });
 
-  const [row] = await prisma.$transaction([
-    write,
-    prisma.auditLog.create(
+    await tx.auditLog.create(
       buildStructuredAuditLogCreateArgs({
         action: "AI_ASSISTANT_SETTINGS_UPDATED",
         actor: { memberId: session.user.id },
@@ -97,8 +101,10 @@ export async function PUT(request: Request) {
         },
         request: getAuditRequestContext(request),
       }),
-    ),
-  ]);
+    );
+
+    return updated;
+  });
 
   return NextResponse.json({
     monthlyBudgetCents: row.monthlyBudgetCents,

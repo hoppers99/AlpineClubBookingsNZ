@@ -363,7 +363,13 @@ export const rateLimiters = {
   aiChatMember: { id: "ai-chat-member", limit: 10, windowSeconds: 600, authSensitive: true } as RateLimitConfig,
   /** AI help chat per IP: 20 questions per 10 minutes */
   aiChatIp: { id: "ai-chat-ip", limit: 20, windowSeconds: 600, authSensitive: true } as RateLimitConfig,
-  /** AI help chat global backstop: 300 questions per day across the deployment */
+  /**
+   * AI help chat global backstop: 300 questions per day across the deployment.
+   * authSensitive, so on a shared-store outage the degraded per-process fallback
+   * runs at limit/4 (~75/process): the global 300/day effectively becomes ~75
+   * per replica. That deliberately under-permits (fail-safe) — a degraded store
+   * tightens, never loosens, the paid-call backstop.
+   */
   aiChatGlobal: { id: "ai-chat-global", limit: 300, windowSeconds: 86400, authSensitive: true } as RateLimitConfig,
 } as const;
 

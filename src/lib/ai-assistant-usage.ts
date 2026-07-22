@@ -44,11 +44,13 @@ export const AI_PRICE_TABLE_NZ_CENTS_PER_MTOK: Record<
  * A conservative worst-case cost for a single call, in cents. The pre-call
  * budget gate reserves this so a call that would push spend over the cap is
  * denied BEFORE it is made (we cannot know the real cost until the call
- * returns). A dense-script (heavy-tokenising) call at the 512-output ceiling with
- * a large cached grounding prefix stays well under this bound; 8c is a
- * deliberate over-reserve so the cap is never overshot by an in-flight call.
+ * returns). A typical Latin-text call costs ~2c; an adversarial dense-Unicode
+ * question (CJK/emoji at ~1.8-2 tokens/char) hitting the zod input caps and the
+ * 512-output ceiling can reach ~10c, so 16c restores true worst-case headroom.
+ * Post-call metering reconciles the actual cost regardless — this constant only
+ * bounds the pre-call reservation, never what is charged to the ledger.
  */
-export const WORST_CASE_CALL_CENTS = 8;
+export const WORST_CASE_CALL_CENTS = 16;
 
 // ---------------------------------------------------------------------------
 // Month key (Pacific/Auckland)
@@ -145,6 +147,12 @@ export interface AiBudgetState {
  * `{ allowed: false }` (mirrors `loadEffectiveModuleFlags`'s disable-on-error).
  * Denies when `spentCents + WORST_CASE_CALL_CENTS > budgetCents`, reserving the
  * worst-case cost of the in-flight call.
+ *
+ * SOFT CAP: this is a read-then-spend gate, not a lock. N concurrent in-flight
+ * calls can each pass here before any of their metering lands, so spend can
+ * overshoot the cap — but only by cents: each overshoot is bounded by the
+ * per-call WORST_CASE reserve, and N is bounded by the per-member/IP/global rate
+ * limiters. The Anthropic console spend limit is the hard backstop.
  */
 export async function checkAiBudget(
   now: Date = new Date(),
@@ -183,6 +191,8 @@ export async function checkAiBudget(
 // ---------------------------------------------------------------------------
 
 const AI_METERING_FAILURE_THRESHOLD = 3;
+// Per-process counter: each blue/green replica trips its breaker independently.
+// The cross-process spend control is the shared-DB budget gate (checkAiBudget).
 let consecutiveMeteringFailures = 0;
 
 /**
