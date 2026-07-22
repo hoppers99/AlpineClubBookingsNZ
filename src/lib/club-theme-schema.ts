@@ -3,7 +3,10 @@ import {
   type ThemeSeeds,
 } from "@/lib/theme/theme-substrate";
 import { ACCENT_NEUTRAL_STEP } from "@/lib/theme/aliases";
-import { serializeAppThemeTokens } from "@/lib/theme/app-tokens";
+import {
+  serializeAppThemeTokens,
+  serializeWebsiteStepTokens,
+} from "@/lib/theme/app-tokens";
 
 export const CLUB_THEME_ID = "default";
 export const MAX_LOGO_DATA_URL_BYTES = 900_000;
@@ -288,7 +291,17 @@ export function buildClubThemeCss(
 ): string {
   const theme = normaliseThemeValues(value);
   const base = `:root,.website-theme{${buildClubThemeDeclarations(theme)}}`;
-  return theme.rawCss ? `${base}\n${theme.rawCss}` : base;
+  // #2188 P2 — the website scope (`.website-theme`, light-only) consumes the
+  // semantic + categorical STEP utilities too (form callouts etc.), but sits
+  // outside `.app-theme-scope`, so it needs its own generated step vars. Emitted
+  // as a `.website-theme` block with the same generated club values as the app
+  // scope; globals.css's @theme step tokens carry a static default fallback so a
+  // no-sheet page never falls through to transparent.
+  const websiteSteps = `.website-theme{${serializeWebsiteStepTokens(
+    themeSeedsFromValues(theme),
+  )}}`;
+  const core = `${base}${websiteSteps}`;
+  return theme.rawCss ? `${core}\n${theme.rawCss}` : core;
 }
 
 /** Brand/font variables for app shells. Deliberately excludes rawCss so an

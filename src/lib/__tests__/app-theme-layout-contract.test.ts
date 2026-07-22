@@ -9,6 +9,7 @@ import {
   contrastRatio,
   deriveAppMutedForeground,
   themeSeedsFromValues,
+  buildClubThemeCss,
 } from "@/lib/club-theme-schema";
 import {
   buildAppThemeTokens,
@@ -327,12 +328,39 @@ describe("database theme app-shell contract", () => {
         ).toContain(
           `--${scale}-${step}: var(--gen-${scale}-${step}-dark, ${dark});`,
         );
+        // #2188 P2 — the @theme token carries a STATIC default-seed fallback so a
+        // scope with no injected step vars (or no sheet at all) never falls
+        // through to transparent. The fallback equals the light gen value (R9).
         expect(
           globals,
-          `@theme must surface bg/text/border-${scale}-${step}`,
-        ).toContain(`--color-${scale}-${step}: var(--${scale}-${step});`);
+          `@theme must surface bg/text/border-${scale}-${step} with its default fallback`,
+        ).toContain(`--color-${scale}-${step}: var(--${scale}-${step}, ${light});`);
       }
     }
+  });
+
+  // #2188 P2 (lens BLOCKER-2) — the website scope (`.website-theme`) consumes the
+  // step utilities (form callouts etc.) but sits OUTSIDE `.app-theme-scope`, so
+  // it gets its own generated step vars from `buildClubThemeCss`. Without them a
+  // `bg-danger-3` public-page callout would resolve to nothing. Pinned against
+  // the same generator, mutation-proof.
+  it("resolves the step scales in the website scope from the club stylesheet", () => {
+    const css = buildClubThemeCss(DEFAULT_CLUB_THEME_VALUES);
+    // A `.website-theme` block declares the exposed step vars.
+    expect(css).toMatch(/\.website-theme\{[^}]*--success-3:/);
+    const { tokens } = buildAppThemeTokens(
+      themeSeedsFromValues(DEFAULT_CLUB_THEME_VALUES),
+    );
+    for (const scale of ["success", "warning", "info", "danger", "cat1", "cat5"]) {
+      for (const step of [3, 9, 11]) {
+        expect(
+          css,
+          `website scope must declare --${scale}-${step}`,
+        ).toContain(`--${scale}-${step}:${tokens[`--gen-${scale}-${step}`]};`);
+      }
+    }
+    // Mutation guard: a scope that DROPPED the step vars would fail the above.
+    expect(css).not.toMatch(/\.website-theme\{\}/);
   });
 
   // #2145 — the CSS half of the derived muted role. The value itself is derived
