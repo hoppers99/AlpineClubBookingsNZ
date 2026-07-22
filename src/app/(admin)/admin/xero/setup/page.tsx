@@ -1,119 +1,22 @@
-"use client"
-
-import { useEffect, useState } from "react"
-import Link from "next/link"
-import { usePathname, useSearchParams } from "next/navigation"
-import { BackLink } from "@/components/admin/back-link"
-import { useClubIdentity } from "@/components/club-identity-provider"
-import { buildPathWithSearch } from "@/lib/internal-return-path"
 import {
-  ConnectionStatusPanel,
-  MappingsPanel,
-  SetupPanels,
-  SyncResultsPanel,
-} from "../_components/panels"
-import { Message } from "../_components/message"
-import { XeroCredentialsSection } from "../_components/xero-credentials-section"
-import {
-  SECTION_DEFAULTS,
-  type SectionKey,
-  type SyncResult,
-} from "../_components/types"
-import { useXeroConnection } from "../_hooks/use-xero-connection"
+  detectLegacyProviderEnv,
+  getOperationalXeroRedirectUri,
+} from "@/lib/xero-config";
+import { XeroSetupPageClient } from "../_components/xero-setup-page-client";
 
+// Server component: resolves the server-derived setup config (the C1 redirect
+// URI, legacy env detection) once, then renders the interactive client body.
+// The guided wizard (#2080) is the credential-entry + connect surface; it
+// supersedes the interim credentials section from C1.
 export default function XeroSetupPage() {
-  const club = useClubIdentity()
-  const pathname = usePathname()
-  const searchParams = useSearchParams()
-  const currentXeroPath = buildPathWithSearch(pathname, searchParams.toString())
-  const {
-    status,
-    loading,
-    error,
-    setError,
-    connectSuccess,
-    setConnectSuccess,
-    sectionOpen,
-    setSectionState,
-    handleConnect,
-    handleDisconnect,
-  } = useXeroConnection()
-  const [syncing, setSyncing] = useState<string | null>(null)
-  const [syncResult, setSyncResult] = useState<SyncResult | null>(null)
-  const [operationMessage, setOperationMessage] = useState("")
-
-  const connected = status?.connected === true
-  const noop = () => {}
-
-  useEffect(() => {
-    const section = searchParams.get("section")
-    if (section && section in SECTION_DEFAULTS) {
-      setSectionState(section as SectionKey, true)
-    }
-  }, [searchParams, setSectionState])
-
-  if (loading) {
-    return (
-      <div className="p-6">
-        <h1 className="mb-4 text-2xl font-bold">Xero Setup</h1>
-        <p className="text-muted-foreground">Loading...</p>
-      </div>
-    )
-  }
+  const redirectUri = getOperationalXeroRedirectUri();
+  const companyUrl = redirectUri ? new URL(redirectUri).origin : "";
+  const legacyEnvVars =
+    detectLegacyProviderEnv().find((f) => f.provider === "xero")?.vars ?? [];
 
   return (
-    <div className="max-w-6xl p-6">
-      <BackLink href="/admin/integrations" label="Integrations" />
-      <h1 className="mt-2 mb-2 text-2xl font-bold">Xero Setup</h1>
-      <p className="mb-2 text-muted-foreground">
-        Connect Xero, configure account and item mappings, and run one-time contact import and linking.
-      </p>
-      <p className="mb-6 text-sm">
-        Day-to-day syncing, operations, and usage live on the{" "}
-        <Link
-          href="/admin/xero"
-          className="font-medium text-foreground underline decoration-brand-gold/70 decoration-2 underline-offset-4"
-        >
-          Xero Sync
-        </Link>{" "}
-        page.
-      </p>
-
-      {error && <Message tone="error" message={error} onDismiss={() => setError("")} />}
-      {operationMessage && <Message tone="success" message={operationMessage} onDismiss={() => setOperationMessage("")} />}
-      {connectSuccess && <Message tone="success" message="Xero connected successfully!" onDismiss={() => setConnectSuccess(false)} />}
-
-      <ConnectionStatusPanel status={status} onConnect={handleConnect} onDisconnect={handleDisconnect} />
-
-      {/* Interim in-app credential entry (#2079, C1). Always available — a
-          C1-only deployment enters/re-enters credentials here (the wizard, C2,
-          will supersede it). */}
-      <XeroCredentialsSection />
-
-      {connected && (
-        <>
-          <MappingsPanel
-            connected={connected}
-            open={sectionOpen.mappings}
-            onToggle={setSectionState}
-            clubName={club.name}
-          />
-          <SetupPanels
-            connected={connected}
-            open={sectionOpen.setup}
-            onToggle={setSectionState}
-            clubName={club.name}
-            bookingsName={club.bookingsName}
-            syncing={syncing}
-            setSyncing={setSyncing}
-            setSyncResult={setSyncResult}
-            onMessage={setOperationMessage}
-            onRefreshOperations={noop}
-            onRefreshDiagnostics={noop}
-          />
-          <SyncResultsPanel syncResult={syncResult} currentXeroPath={currentXeroPath} />
-        </>
-      )}
-    </div>
-  )
+    <XeroSetupPageClient
+      serverConfig={{ redirectUri, companyUrl, legacyEnvVars }}
+    />
+  );
 }

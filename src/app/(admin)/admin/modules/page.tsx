@@ -1,8 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import {
   AlertCircle,
+  ArrowRight,
   CheckCircle2,
   Loader2,
   RefreshCw,
@@ -78,6 +80,12 @@ function readinessLabel(status: ModuleReadinessStatus) {
   if (status === "credentials_missing") return "Needs setup";
   return "Disabled";
 }
+
+// Modules whose "Needs setup" state has a guided setup wizard to deep-link to
+// (#2080). C4/C5 add their providers here as their wizards land.
+const MODULE_SETUP_HREFS: Partial<Record<ModuleKey, string>> = {
+  xeroIntegration: "/admin/xero/setup",
+};
 
 function getReadiness(
   module: ModuleStatus,
@@ -365,6 +373,16 @@ export default function AdminModulesPage() {
                       {readinessLabel(module.readiness.status)}
                     </Badge>
                     <p>{module.readiness.message}</p>
+                    {module.readiness.status === "credentials_missing" &&
+                    MODULE_SETUP_HREFS[module.key] ? (
+                      <Link
+                        href={MODULE_SETUP_HREFS[module.key] as string}
+                        className="mt-2 inline-flex items-center gap-1 text-sm font-medium text-foreground underline decoration-brand-gold/70 decoration-2 underline-offset-4"
+                      >
+                        Set up
+                        <ArrowRight className="h-3.5 w-3.5" aria-hidden />
+                      </Link>
+                    ) : null}
                   </div>
                 </div>
 

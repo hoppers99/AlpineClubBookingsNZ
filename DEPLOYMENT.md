@@ -106,8 +106,9 @@ Minimum production categories:
 - Stripe: `STRIPE_SECRET_KEY`, `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY`,
   `STRIPE_WEBHOOK_SECRET`
 - Xero: **no env vars** (#2079). The Xero client id/secret, webhook key, and
-  token-encryption key are captured **in-app** (Admin > Integrations, Full Admin
-  only) and stored encrypted; the redirect URI derives from `NEXTAUTH_URL`. This
+  token-encryption key are captured **in-app** through the guided setup wizard at
+  **Admin > Xero > Setup** (#2080; Full Admin only) and stored encrypted; the
+  redirect URI derives from `NEXTAUTH_URL`. This
   single connection serves bookings, payments, subscriptions, and the finance
   dashboard. Configure the Xero app with the exact operational scopes requested
   by `src/lib/xero-config.ts`: `openid`, `profile`, `email`,
@@ -639,14 +640,16 @@ config (`AUTH_SECRET`, `DATABASE_URL`, `NEXTAUTH_URL`, SMTP/SES) is unchanged.
    secret; setup readiness shows a passive amber warning before you start.
 2. Deploy the new release. Nothing fails at boot; readiness shows the legacy-env
    warnings and the Xero "reconnect" prompt.
-3. Open **Admin > Xero > Setup** (the Integrations hub links here) and use the
-   **Xero Credentials** section to re-enter the client id, client secret, and
-   (optional) webhook key. Each write is Full-Admin only, encrypted at rest, and
-   audited (metadata only); values are never displayed back. The wrapped
-   token-encryption key is auto-generated on first use. (This interim entry form
-   is superseded by the guided Xero setup wizard in a later release, C2/#2080 —
-   the re-entry steps stay the same.)
-4. Reconnect Xero (OAuth) so fresh tokens are stored under the new key.
+3. Open **Admin > Xero > Setup** (the Integrations hub and the Modules "Set up"
+   CTA link here) and follow the **guided Xero setup wizard** (#2080): it walks
+   you through creating the Xero app with copy-paste-exact values (including the
+   resolved redirect URI), re-entering the client id and client secret, and
+   reconnecting. Each credential write is Full-Admin only, encrypted at rest, and
+   audited (metadata only); values are never displayed back. Entering a new value
+   resets the connection, so the wizard has you reconnect on the next step. The
+   wrapped token-encryption key is auto-generated on first use.
+4. Complete the wizard's **Connect** step (OAuth) so fresh tokens are stored
+   under the new key, and confirm the connected organisation name it shows.
 5. Remove the now-ignored `XERO_*` credential env vars from the environment;
    the readiness warning clears.
 

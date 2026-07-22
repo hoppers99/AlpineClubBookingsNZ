@@ -1525,9 +1525,12 @@ invalid app, email, or recovery-code attempts lock the two-factor challenge for
 
 **Xero credentials are DB-only (#2079).** The Xero OAuth client id/secret, the
 webhook signing key, and the token-encryption key live **only** in the encrypted
-`IntegrationCredential` store and are captured in-app under **Admin >
-Integrations** (Full Admin only). The redirect URI is **derived from
-`NEXTAUTH_URL`** (`{origin}/api/admin/xero/callback`). There are **no**
+`IntegrationCredential` store and are captured in-app through the **guided setup
+wizard at Admin > Xero > Setup** (#2080; Full Admin only) — it walks you through
+creating the Xero app with copy-paste-exact values, entering the credentials, and
+the OAuth connect, then confirms the connected organisation name. The redirect
+URI is **derived from `NEXTAUTH_URL`** (`{origin}/api/admin/xero/callback`) and
+shown for copy-paste in the wizard. There are **no**
 `XERO_CLIENT_ID`, `XERO_CLIENT_SECRET`, `XERO_REDIRECT_URI`,
 `XERO_ENCRYPTION_KEY`, or `XERO_WEBHOOK_KEY` environment variables any more — if
 any are still present they are **ignored** and setup readiness raises a warning
