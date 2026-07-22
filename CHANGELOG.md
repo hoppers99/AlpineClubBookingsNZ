@@ -4,6 +4,27 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Theme burn-down: the last hand-picked colours leave the product, and the
+  four dead theme columns are dropped from the database (#2190).** This closes
+  out the theme rebuild. The finance dashboard's mix/breakdown charts now draw
+  their series colours from the generated categorical scales instead of a fixed
+  hand-picked list (the old palette led with a bright gold that belonged to one
+  fork), so the chart colours are part of the same generated system as the rest
+  of the app. Five small admin surfaces that were still painted with raw colour
+  utilities — the booking-calendar draft and waitlist-offered swatches, the Xero
+  activity status chips, and the member-import step marker — now use theme
+  tokens, so they follow the club palette and the light/dark toggle. The one
+  fork-specific brand colour that lingered in shared code (a gold accent and its
+  reference values) is removed from the shipping product; a fork's own colours
+  live only in that deployment's saved theme. Finally, the four legacy theme
+  columns that stopped being used when Site Style moved to three seeds
+  (`brandCharcoal` / `brandRidge` / `brandMist` / `brandSnow`) are **dropped from
+  the `ClubTheme` table** by a contract migration — the surfaces they used to
+  hold are derived from the generated palette at render time, so nothing is lost
+  and the change is invisible to operators. **Operators: this migration removes
+  database columns and must run only after the previous release (the three-seed
+  substrate, #2187) has been deployed and drained; the blue/green safety ledger
+  records the sequence.**
 - **The lodge kiosk / wall display now paints from a fixed, glare-proof colour
   set that never follows the club theme or the light/dark toggle (#2189).** The
   kiosk, its roster-setup wizard, and the lodge-instructions panel were the one

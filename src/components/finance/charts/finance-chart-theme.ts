@@ -6,8 +6,8 @@ import { CHART_FINANCE_8SLOT } from "@/lib/theme/aliases";
  * Ordered palette for mix/breakdown charts (pies, stacked bars).
  *
  * #2190 P4 (D15/J7): the eight slots are now DERIVED from the signed-off
- * CATEGORICAL scales rather than hand-picked brand hex (the old palette carried
- * Tokoroa's gold `#ffcb05` and seven other literals). The mapping is the
+ * CATEGORICAL scales rather than hand-picked brand hex (the old palette led with
+ * a fork's brand gold and carried seven other literals). The mapping is the
  * `chart_finance_8slot` order recorded in `docs/theme/phase0/data/aliases.json`
  * and encoded once as `CHART_FINANCE_8SLOT`: series 1–5 = cat1–5 step 9, series
  * 6–8 = cat1–3 step 7.

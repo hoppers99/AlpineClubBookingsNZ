@@ -244,8 +244,8 @@
   /* Generic "Aotearoa" default brand palette (#1807): glacial-teal primary,
      deep bush-green cool-stone neutrals, terracotta safety. These must stay in
      lockstep with DEFAULT_CLUB_THEME_VALUES in src/lib/club-theme-schema.ts so
-     the static app chrome and the DB default agree for a fresh fork. Tokoroa
-     gold lives only in TOKOROA_CLUB_THEME_VALUES + the seed flag path. */
+     the static app chrome and the DB default agree for a fresh fork. A fork's
+     own brand colour lives only in its deployment's ClubTheme DB row. */
   --brand-gold: #57b3ab;
   --brand-charcoal: #21362b;
   --brand-deep: #17231c;
