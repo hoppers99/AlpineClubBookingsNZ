@@ -174,8 +174,17 @@ function verifyIntentValue(value: string | undefined): GoogleLinkIntent | null {
   try {
     const decoded = JSON.parse(
       Buffer.from(payload, "base64").toString("utf8"),
-    ) as { m?: unknown; e?: unknown };
-    if (typeof decoded.m !== "string" || typeof decoded.e !== "number") {
+    ) as { m?: unknown; e?: unknown; k?: unknown };
+    // Symmetric namespace guard (mirrors the `k: "verify"` check on the verify
+    // side): a genuine LINK cookie never carries a `k`, so any payload that DOES
+    // carry one — e.g. a validly-signed verify cookie — must be refused here.
+    // This keeps the two intents disjoint in BOTH directions even though they
+    // share the same HMAC key.
+    if (
+      decoded.k !== undefined ||
+      typeof decoded.m !== "string" ||
+      typeof decoded.e !== "number"
+    ) {
       return null;
     }
     if (decoded.e <= Date.now()) {

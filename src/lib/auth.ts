@@ -635,11 +635,17 @@ export const authConfig = {
 } satisfies NextAuthConfig;
 
 /**
- * The two always-present providers (password + magic-link Credentials). Sliced
- * from the static config so they are defined exactly once; the function-form
- * config below reuses them and decides whether to append Google per request.
+ * The always-present providers (password + magic-link Credentials). Derived from
+ * the static config by IDENTITY — every provider that is NOT the Google OAuth
+ * provider — so they are defined exactly once and a future provider inserted
+ * ahead of Google can never be silently dropped (a positional slice would).
+ * The function-form config below reuses these and decides whether to append a
+ * freshly-credentialled Google provider per request.
  */
-const baseProviders = authConfig.providers.slice(0, 2);
+const GOOGLE_PROVIDER_ID = "google";
+const baseProviders = authConfig.providers.filter(
+  (provider) => (provider as { id?: string }).id !== GOOGLE_PROVIDER_ID,
+);
 
 /**
  * Request-scoped NextAuth config (#2087). The provider list is computed PER

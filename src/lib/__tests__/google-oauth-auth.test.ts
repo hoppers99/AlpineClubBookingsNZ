@@ -172,8 +172,22 @@ describe("buildRequestAuthConfig — per-request provider list (#2087)", () => {
     const config = await buildRequestAuthConfig();
     expect(config.providers).toHaveLength(2);
     expect(providerIds(config.providers)).not.toContain("google");
-    // The password + magic-link Credentials providers are always present.
+    // Pin the SURVIVORS by identity, not just count: the magic-link Credentials
+    // provider (and the un-ided password Credentials provider) must both remain,
+    // so an identity-based base-provider derivation can never drop one.
+    expect(providerIds(config.providers)).toContain("magic-link");
     expect(config.callbacks).toBe(authConfig.callbacks);
+  });
+
+  it("derives the base providers by IDENTITY, not position (regression #2087)", async () => {
+    // A positional slice(0, 2) would silently drop magic-link if any provider
+    // were ever inserted before Google. The identity filter (drop the `google`
+    // provider) keeps every non-Google provider regardless of order.
+    mockGetGoogleOAuthConfig.mockResolvedValue(null);
+    const config = await buildRequestAuthConfig();
+    const ids = providerIds(config.providers);
+    expect(ids).not.toContain("google");
+    expect(ids).toContain("magic-link");
   });
 });
 

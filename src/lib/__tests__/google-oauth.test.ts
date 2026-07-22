@@ -130,6 +130,16 @@ describe("google link-intent cookie", () => {
     expect(await readGoogleLinkIntent()).toBeNull();
     expect(mockCookieStore.delete).not.toHaveBeenCalled();
   });
+
+  it("REFUSES a verify cookie replayed as a link (symmetric namespace guard)", async () => {
+    // Mirror image of the verify-side guard: a validly-signed VERIFY cookie
+    // (which carries `k: "verify"`) must never satisfy readGoogleLinkIntent, so
+    // the namespace enforcement is disjoint in BOTH directions.
+    const verifyValue = buildGoogleVerifyIntentValue("admin-1");
+    mockCookieStore.get.mockReturnValue({ value: verifyValue });
+
+    expect(await readGoogleLinkIntent()).toBeNull();
+  });
 });
 
 describe("google verify-intent cookie (#2087)", () => {
