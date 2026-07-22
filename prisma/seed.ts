@@ -1,8 +1,6 @@
 // Club-agnostic first-run seed. Every section is create-if-missing: re-running
 // the seed against a populated database must never delete, overwrite, or
 // duplicate data. Clubs customise the placeholders through the admin screens.
-import fs from "node:fs";
-import path from "node:path";
 import { type AgeTier, PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import { clubConfig } from "../src/config/club";
@@ -15,8 +13,6 @@ import { CLUB_CONFIG_LODGE_CAPACITY } from "../src/lib/lodge-capacity";
 import {
   CLUB_THEME_ID,
   DEFAULT_CLUB_THEME_VALUES,
-  MAX_LOGO_DATA_URL_BYTES,
-  isValidLogoDataUrl,
 } from "../src/lib/club-theme-schema";
 import { DEFAULT_INDUCTION_TEMPLATE } from "../src/lib/induction-checklist-template";
 import { DEFAULT_FINANCE_REPORT_CATEGORIES } from "../src/lib/finance-report-mapping-defaults";
@@ -33,8 +29,6 @@ import {
   buildSeedChoreTemplates,
   buildSeedCommitteeRoles,
   buildSeedLodgeMemberData,
-  shouldSkipTokoroaThemeSeed,
-  TOKOROA_CLUB_THEME_VALUES,
 } from "./seed-data";
 import { starterPageContent } from "./starter-page-content";
 import { starterSiteContent } from "./starter-site-content";
@@ -132,65 +126,12 @@ function requireSeedEnv(
   return value;
 }
 
-function readBrandingLogoDataUrl() {
-  const logoPath = path.join(process.cwd(), "public", "branding", "logo.png");
-  if (!fs.existsSync(logoPath)) {
-    return null;
-  }
-
-  const logo = fs.readFileSync(logoPath);
-  if (logo.byteLength > MAX_LOGO_DATA_URL_BYTES) {
-    throw new Error(
-      `public/branding/logo.png is ${logo.byteLength} bytes; the site style logo cap is ${MAX_LOGO_DATA_URL_BYTES} bytes.`,
-    );
-  }
-
-  const dataUrl = `data:image/png;base64,${logo.toString("base64")}`;
-  if (!isValidLogoDataUrl(dataUrl)) {
-    throw new Error(
-      "public/branding/logo.png could not be converted to a valid logo data URL.",
-    );
-  }
-
-  return dataUrl;
-}
-
+// #2190 P4 — the public seed provisions ONLY the generic default site style.
+// A fork's own brand palette lives in its deployment's ClubTheme DB row and is
+// provisioned by that fork's own seed override, not by public-repo code
+// (standing directive D15 — no fork/Tokoroa colours in the public repo). The
+// former SEED_TOKOROA_THEME_COMPLETE fork-seed path was removed here.
 async function seedClubTheme() {
-  if (process.env.SEED_TOKOROA_THEME_COMPLETE === "1") {
-    const existing = await prisma.clubTheme.findUnique({
-      where: { id: CLUB_THEME_ID },
-      select: { completedAt: true },
-    });
-    if (shouldSkipTokoroaThemeSeed(existing)) {
-      console.log(
-        "Club theme setup already completed; skipping Tokoroa site style re-seed",
-      );
-      return;
-    }
-
-    const logoDataUrl = readBrandingLogoDataUrl();
-    await prisma.clubTheme.upsert({
-      where: { id: CLUB_THEME_ID },
-      update: {
-        ...TOKOROA_CLUB_THEME_VALUES,
-        logoDataUrl,
-        completedAt: new Date(),
-      },
-      create: {
-        id: CLUB_THEME_ID,
-        ...TOKOROA_CLUB_THEME_VALUES,
-        logoDataUrl,
-        completedAt: new Date(),
-      },
-    });
-    console.log(
-      logoDataUrl
-        ? "Tokoroa site style seeded with palette and logo"
-        : "Tokoroa site style seeded with palette; public/branding/logo.png was not present",
-    );
-    return;
-  }
-
   await prisma.clubTheme.upsert({
     where: { id: CLUB_THEME_ID },
     update: {},
