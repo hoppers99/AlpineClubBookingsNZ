@@ -17,6 +17,12 @@ import {
   clearStripeWebhookVerified,
 } from "@/lib/stripe-config";
 import {
+  BACKUP_CREDENTIAL_KEYS,
+  BACKUP_PROVIDER,
+  BACKUP_SECRET_CREDENTIAL_KEYS,
+  isValidRestoreValidationUrl,
+} from "@/lib/backup-config";
+import {
   GOOGLE_PROVIDER,
   GOOGLE_WRITABLE_CREDENTIAL_KEYS,
   clearGoogleVerified,
@@ -47,6 +53,11 @@ const WRITABLE_CREDENTIALS: Record<string, readonly string[]> = {
   ],
   [STRIPE_PROVIDER]: [...STRIPE_WRITABLE_CREDENTIAL_KEYS],
   [GOOGLE_PROVIDER]: [...GOOGLE_WRITABLE_CREDENTIAL_KEYS],
+  // Backup S3 access key/secret + the restore-validation shadow DSN (#2095, C6):
+  // write-only secrets, Full Admin. The non-secret destination (bucket/region)
+  // and operational config (enabled/retention) are written on the backups
+  // config route, not here.
+  [BACKUP_PROVIDER]: [...BACKUP_SECRET_CREDENTIAL_KEYS],
 };
 
 // GET /api/admin/integrations/credentials?provider=xero — METADATA-ONLY status.
@@ -161,6 +172,24 @@ export async function POST(request: Request) {
   if (!allowedKeys || !allowedKeys.includes(key)) {
     return NextResponse.json(
       { error: "Unknown provider or credential key." },
+      { status: 400 },
+    );
+  }
+
+  // Capture-time gate for the restore-validation DSN (#2095 MAJOR-2): it carries
+  // a password passed to psql, so it must be a parseable postgres:// URI. A
+  // keyword-form conninfo or malformed URI would keep the password on argv (and
+  // in any persisted error), so it is rejected with a clear message here.
+  if (
+    provider === BACKUP_PROVIDER &&
+    key === BACKUP_CREDENTIAL_KEYS.restoreValidationUrl &&
+    !isValidRestoreValidationUrl(value)
+  ) {
+    return NextResponse.json(
+      {
+        error:
+          "The restore-validation URL must be a postgres:// or postgresql:// connection URI (for example postgresql://user:password@host:5432/shadow_db).",
+      },
       { status: 400 },
     );
   }
