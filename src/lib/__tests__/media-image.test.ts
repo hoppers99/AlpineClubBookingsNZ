@@ -444,6 +444,49 @@ describe("stripImageMetadata", () => {
     expect(stripped.includes(Buffer.from("VP8L", "ascii"))).toBe(true);
   });
 
+  it("truncates at the primary EOI, dropping an appended MPF/motion-photo image and its EXIF", () => {
+    const gps1 = "GPS-PRIMARY-41.29";
+    const gps2 = "GPS-SECONDARY-41.29";
+    const oneJpeg = (gps: string) =>
+      Buffer.concat([
+        Buffer.from([0xff, 0xd8]),
+        jpegAppSegment(0xe1, Buffer.from(`Exif\0\0${gps}`, "latin1")),
+        JPEG_SOF0,
+        JPEG_SOS_EOI,
+      ]);
+    // Primary image + an appended secondary image (as MPF / motion-photo JPEGs do).
+    const mpf = Buffer.concat([oneJpeg(gps1), oneJpeg(gps2)]);
+
+    const stripped = stripImageMetadata(mpf, "image/jpeg");
+
+    // Primary EXIF stripped AND the appended secondary image (with its own GPS)
+    // dropped entirely by truncating at the primary EOI.
+    expect(stripped.includes(Buffer.from(gps1, "latin1"))).toBe(false);
+    expect(stripped.includes(Buffer.from(gps2, "latin1"))).toBe(false);
+    expect(stripped[stripped.length - 2]).toBe(0xff);
+    expect(stripped[stripped.length - 1]).toBe(0xd9);
+    expect(extractImageDimensions(stripped, "image/jpeg")).toEqual({
+      width: 16,
+      height: 16,
+    });
+  });
+
+  it("drops a non-ICC APP2 (MPF index) while keeping an ICC-profile APP2", () => {
+    const mpfSecret = "MPF-POINTS-AT-SECONDARY";
+    const jpeg = Buffer.concat([
+      Buffer.from([0xff, 0xd8]),
+      jpegAppSegment(0xe2, Buffer.from(`MPF\0${mpfSecret}`, "latin1")), // drop
+      jpegAppSegment(0xe2, Buffer.from("ICC_PROFILE\0colour-data", "latin1")), // keep
+      JPEG_SOF0,
+      JPEG_SOS_EOI,
+    ]);
+
+    const stripped = stripImageMetadata(jpeg, "image/jpeg");
+
+    expect(stripped.includes(Buffer.from(mpfSecret, "latin1"))).toBe(false);
+    expect(stripped.includes(Buffer.from("ICC_PROFILE", "latin1"))).toBe(true);
+  });
+
   it("returns the original bytes unchanged when the structure is malformed", () => {
     const garbage = Buffer.from([0xff, 0xd8, 0x12, 0x34, 0x56]);
     expect(stripImageMetadata(garbage, "image/jpeg").equals(garbage)).toBe(true);

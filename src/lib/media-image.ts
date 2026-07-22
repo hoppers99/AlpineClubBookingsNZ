@@ -340,45 +340,81 @@ export function extractImageDimensions(
 
 /**
  * Remove metadata from a JPEG by copying only the colour/rendering marker
- * segments — JFIF (APP0), ICC (APP2), Adobe (APP14) — and the structural
- * markers, dropping every other APPn (EXIF/XMP APP1, IPTC/Photoshop APP13,
- * Ducky APP12, vendor blocks) and every COM comment, any of which can carry
- * creator contact info, location or GPS. Then the entropy-coded scan is copied
- * verbatim. Returns the original bytes unchanged if the structure is malformed,
- * so stripping can never corrupt.
+ * segments — JFIF (APP0), an ICC-profile APP2, Adobe (APP14) — and the
+ * structural markers, dropping every other APPn (EXIF/XMP APP1, IPTC/Photoshop
+ * APP13, Ducky APP12, the MPF index APP2, vendor blocks) and every COM comment,
+ * any of which can carry creator contact info, location or GPS. The parser runs
+ * through the entropy-coded scan(s) to the primary EOI and STOPS there, dropping
+ * any bytes appended after it — an MPF multi-picture / motion-photo JPEG appends
+ * a second image with its own EXIF/GPS. Returns the original bytes unchanged if
+ * the structure is malformed, so stripping can never corrupt.
  */
 function stripJpegMetadata(bytes: Buffer): Buffer {
   if (bytes.length < 2 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return bytes;
   const kept: Buffer[] = [bytes.subarray(0, 2)]; // SOI
   let offset = 2;
-  while (offset + 4 <= bytes.length) {
+  while (offset + 2 <= bytes.length) {
     if (bytes[offset] !== 0xff) return bytes; // not at a marker → don't risk it
     const marker = bytes[offset + 1];
-    if (marker === 0xda || marker === 0xd9) {
-      // Start-of-scan / end-of-image: copy the remainder verbatim.
-      kept.push(bytes.subarray(offset));
+
+    if (marker === 0xd9) {
+      // Primary EOI: end of the primary image. Emit it and STOP, dropping any
+      // appended trailer (MPF / motion-photo secondary image + its EXIF/GPS).
+      kept.push(bytes.subarray(offset, offset + 2));
       return Buffer.concat(kept);
     }
+
+    if (marker === 0xda) {
+      // Start of scan: copy the SOS header + entropy-coded data up to the next
+      // real marker (an 0xff not part of 0xff00 byte-stuffing or an RSTn
+      // 0xd0-0xd7), then continue so a following EOI truncates any trailer and a
+      // following scan (progressive JPEG) is handled normally.
+      if (offset + 4 > bytes.length) return bytes;
+      const sosLen = bytes.readUInt16BE(offset + 2);
+      let scan = offset + 2 + sosLen;
+      if (scan > bytes.length) return bytes;
+      while (scan + 1 < bytes.length) {
+        if (bytes[scan] === 0xff) {
+          const m = bytes[scan + 1];
+          if (m === 0x00 || (m >= 0xd0 && m <= 0xd7)) {
+            scan += 2; // stuffed byte or restart marker → part of the scan
+            continue;
+          }
+          break; // real marker
+        }
+        scan += 1;
+      }
+      kept.push(bytes.subarray(offset, scan));
+      offset = scan;
+      continue;
+    }
+
+    // Length-prefixed marker segment (APPn, COM, DQT, DHT, SOFn, DRI, …).
+    if (offset + 4 > bytes.length) return bytes;
     const segLen = bytes.readUInt16BE(offset + 2);
     const segEnd = offset + 2 + segLen;
     if (segLen < 2 || segEnd > bytes.length) return bytes; // truncated/invalid
-    // Allow-list, not deny-list: metadata lives across many APPn markers
-    // (APP1 EXIF/XMP, APP13 IPTC/Photoshop, APP12 Ducky, vendor APP3-APP11),
-    // any of which can carry creator contact info, location or GPS. Preserve
-    // ONLY the colour/rendering segments — APP0 (JFIF), APP2 (ICC), APP14
-    // (Adobe) — and drop every other APPn and every COM comment, so no
-    // metadata segment survives by omission. Structural markers (DQT, DHT,
-    // SOFn, DRI, …) are not APPn/COM and are always kept.
+    // Allow-list, not deny-list: metadata lives across many APPn markers (APP1
+    // EXIF/XMP, APP13 IPTC/Photoshop, APP12 Ducky, vendor APP3-APP11), any of
+    // which can carry creator contact info, location or GPS. Preserve ONLY the
+    // colour/rendering segments — APP0 (JFIF), APP14 (Adobe), and an APP2 that
+    // is an ICC profile (identified by its "ICC_PROFILE\0" tag, so the MPF index
+    // APP2 that points at appended images is NOT kept) — and drop every other
+    // APPn and every COM comment. Structural markers (DQT, DHT, SOFn, DRI, …)
+    // are not APPn/COM and are always kept.
     const isAppSegment = marker >= 0xe0 && marker <= 0xef;
-    const isColourApp =
-      marker === 0xe0 || marker === 0xe2 || marker === 0xee;
-    const drop = (isAppSegment && !isColourApp) || marker === 0xfe; // COM
+    const isJfifOrAdobe = marker === 0xe0 || marker === 0xee;
+    const isIccApp2 =
+      marker === 0xe2 &&
+      bytes.toString("latin1", offset + 4, offset + 4 + 12) === "ICC_PROFILE\0";
+    const drop =
+      (isAppSegment && !isJfifOrAdobe && !isIccApp2) || marker === 0xfe; // COM
     if (!drop) {
       kept.push(bytes.subarray(offset, segEnd));
     }
     offset = segEnd;
   }
-  return bytes; // ran off the end without a scan → leave untouched
+  return bytes; // no primary EOI found → leave untouched (fail-safe)
 }
 
 const PNG_METADATA_CHUNKS = new Set(["tEXt", "zTXt", "iTXt", "eXIf", "tIME"]);
