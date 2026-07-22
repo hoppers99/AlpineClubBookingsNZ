@@ -139,7 +139,11 @@ deeper reference for what each category contains and the import safety model.
       token TTL. No secret/credential travels: the field-allowlist sweep passes
       (the password-length bound is a portable integer rule, not a secret — the
       `/password.../` forbidden pattern carves out `minPasswordLength` while still
-      blocking `passwordHash` and every other credential field).
+      blocking `passwordHash` and every other credential field). Note that login
+      policy travels **by ratified intent** (#2200): importing a source club whose
+      password rules are *weaker* than the target's will weaken the target — this
+      is surfaced in the dry-run diff for the admin to review before applying, and
+      is the expected behaviour of transferring policy, not a leak.
     - `PublicContentSettings` — the six double-opt-in embed visibility gates and
       whether the public "Book Now" button is shown. The button DESTINATION does
       **not** travel: `bookNowTarget` / `bookNowPageId` reference a specific

@@ -36,8 +36,10 @@ export function singletonShapedModelNamesFromSchema(schemaText: string): string[
       current = null;
       continue;
     }
-    // The id line of a singleton: `id String @id @default("default")`.
-    if (current && /@id\b/.test(line) && /@default\("default"\)/.test(line)) {
+    // The id line of a singleton: `id String @id @default("default")`. Tolerate
+    // spacing variants inside @default(...) so a reformatted schema can't slip a
+    // singleton past the enumeration.
+    if (current && /@id\b/.test(line) && /@default\(\s*"default"\s*\)/.test(line)) {
       names.push(current);
     }
   }

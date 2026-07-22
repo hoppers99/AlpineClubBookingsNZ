@@ -1033,3 +1033,89 @@ describe("every singleton spec declares defaults for every field it exports", ()
     expect(problems).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2200 — singleton dry-run validation. Config transfer bypasses the admin API,
+// so the singleton parser mirrors its bounds: an out-of-range Int, a present
+// null on a required field, or an invalid enum must fail the DRY-RUN (plan
+// errors), not the write. (Prisma 7's DMMF strips isRequired, so `required` is
+// declared per-field in the spec `constraints`.)
+// ---------------------------------------------------------------------------
+
+function singletonBundle(entity: string, obj: Record<string, unknown>) {
+  return buildBundle({
+    entries: [
+      {
+        path: `club-settings/${entity}.json`,
+        category: "club-settings",
+        rowCount: 1,
+        bytes: strToU8(JSON.stringify(obj)),
+      },
+    ],
+    appVersion: "0.14.0",
+    prismaMigration: null,
+    includedCategories: ["club-settings"],
+    doorCodesIncluded: false,
+    generatedAt: "2026-07-23T00:00:00.000Z",
+  });
+}
+
+describe("#2200 singleton dry-run validation (bounds, required, enum)", () => {
+  it("rejects invoiceDueDays outside the admin 1–365 range", async () => {
+    for (const bad of [0, -5, 999999]) {
+      const zip = singletonBundle("membership-subscription-billing-settings", {
+        invoiceDueDays: bad,
+        familyBillingMode: "BILL_FAMILY_VIA_BILLING_MEMBER",
+      });
+      const plan = await buildImportPlan(stubDb({}), zip, { mode: "merge" });
+      expect(plan.errors.join(" ")).toMatch(/invoiceDueDays — .*out of range.*1–365/);
+    }
+  });
+
+  it("accepts an in-range invoiceDueDays and a valid familyBillingMode", async () => {
+    const zip = singletonBundle("membership-subscription-billing-settings", {
+      invoiceDueDays: 45,
+      familyBillingMode: "BILL_MEMBERS_INDIVIDUALLY",
+    });
+    const plan = await buildImportPlan(stubDb({}), zip, { mode: "merge" });
+    expect(plan.errors).toEqual([]);
+  });
+
+  it("rejects an invalid familyBillingMode enum value", async () => {
+    const zip = singletonBundle("membership-subscription-billing-settings", {
+      invoiceDueDays: 30,
+      familyBillingMode: "NOT_A_MODE",
+    });
+    const plan = await buildImportPlan(stubDb({}), zip, { mode: "merge" });
+    expect(plan.errors.join(" ")).toMatch(
+      /familyBillingMode — .*is not a valid FamilyBillingMode/,
+    );
+  });
+
+  it("rejects a present null on a required login-security field", async () => {
+    const zip = singletonBundle("login-security-setting", {
+      minPasswordLength: null,
+      requireUppercase: false,
+      requireLowercase: false,
+      requireDigit: false,
+      requireSymbol: false,
+      magicLinkTtlMinutes: 15,
+    });
+    const plan = await buildImportPlan(stubDb({}), zip, { mode: "merge" });
+    expect(plan.errors.join(" ")).toMatch(/minPasswordLength — null is not allowed/);
+  });
+
+  it("rejects a present null on a required public-content gate", async () => {
+    const zip = singletonBundle("public-content-settings", {
+      membershipTypes: null,
+      entranceFees: false,
+      hutFees: false,
+      bookingPolicySummary: false,
+      cancellationPolicy: false,
+      annualFees: false,
+      showBookNow: true,
+    });
+    const plan = await buildImportPlan(stubDb({}), zip, { mode: "merge" });
+    expect(plan.errors.join(" ")).toMatch(/membershipTypes — null is not allowed/);
+  });
+});

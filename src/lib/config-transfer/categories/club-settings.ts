@@ -21,6 +21,7 @@ import {
 } from "@/config/modules";
 import type { BundleEntry } from "../bundle";
 import { registerEntity } from "../registry";
+import { prismaEnumValues } from "../values";
 import type { CategoryExporter, ExportContext } from "../export-types";
 import {
   changedFields,
@@ -55,12 +56,30 @@ interface SingletonDelegate {
   }): Promise<unknown>;
 }
 
+/**
+ * Per-field dry-run constraints for a singleton (#2200). These mirror the
+ * admin-API bounds that config transfer would otherwise bypass, so a hand-edited
+ * value out of the admin's allowed range fails the PLAN (dry-run) instead of the
+ * write. `required` fills the gap left by Prisma 7's DMMF stripping `isRequired`
+ * (so `parseSingleton` can no longer read non-nullability from the schema): a
+ * PRESENT `null` on a required field is a plan error. `min`/`max` are inclusive
+ * bounds for an Int field. Enum-typed fields are validated automatically against
+ * the real Prisma enum, independent of this map.
+ */
+interface SingletonFieldConstraint {
+  required?: boolean;
+  min?: number;
+  max?: number;
+}
+
 interface SingletonSpec {
   entity: string;
   /** Prisma delegate name, e.g. "bookingDefaults". */
   delegate: string;
   fields: string[];
   optInFields?: string[];
+  /** Per-field dry-run bounds (see SingletonFieldConstraint). */
+  constraints?: Record<string, SingletonFieldConstraint>;
   /**
    * Prisma columns on this model that DELIBERATELY never travel in a bundle,
    * each mapped to a one-line reason. Merged with COMMON_EXCLUDED_COLUMNS to
@@ -312,7 +331,19 @@ export const SINGLETONS: SingletonSpec[] = [
       "minPasswordLength", "requireUppercase", "requireLowercase",
       "requireDigit", "requireSymbol", "magicLinkTtlMinutes",
     ],
-    defaults: () => DEFAULT_LOGIN_SECURITY_POLICY,
+    // Every column is a non-null policy field: a present null fails the dry-run
+    // (#2200). Range bounds are not enforced here because normalizeLoginSecurityPolicy
+    // already clamps minPasswordLength/magicLinkTtlMinutes on read, so an out-of-range
+    // import is corrected at read time rather than silently mis-applied.
+    constraints: {
+      minPasswordLength: { required: true },
+      requireUppercase: { required: true },
+      requireLowercase: { required: true },
+      requireDigit: { required: true },
+      requireSymbol: { required: true },
+      magicLinkTtlMinutes: { required: true },
+    },
+    defaults: () => ({ ...DEFAULT_LOGIN_SECURITY_POLICY }),
   },
   {
     // #2200: portable public-content visibility POLICY — the six double-opt-in
@@ -328,6 +359,17 @@ export const SINGLETONS: SingletonSpec[] = [
       "membershipTypes", "entranceFees", "hutFees", "bookingPolicySummary",
       "cancellationPolicy", "annualFees", "showBookNow",
     ],
+    // Every exported column is a non-null boolean gate: a present null fails the
+    // dry-run (#2200).
+    constraints: {
+      membershipTypes: { required: true },
+      entranceFees: { required: true },
+      hutFees: { required: true },
+      bookingPolicySummary: { required: true },
+      cancellationPolicy: { required: true },
+      annualFees: { required: true },
+      showBookNow: { required: true },
+    },
     excluded: {
       bookNowTarget:
         "half of the instance-local Book-Now destination; only meaningful with " +
@@ -349,6 +391,13 @@ export const SINGLETONS: SingletonSpec[] = [
     entity: "membership-subscription-billing-settings",
     delegate: "membershipSubscriptionBillingSettings",
     fields: ["invoiceDueDays", "familyBillingMode"],
+    // Mirror the admin API's bounds so a hand-edited bundle fails the dry-run:
+    // invoiceDueDays is 1–365 (subscription-billing route z.number().int().min(1).max(365)),
+    // and both fields are non-null. familyBillingMode is enum-validated automatically.
+    constraints: {
+      invoiceDueDays: { required: true, min: 1, max: 365 },
+      familyBillingMode: { required: true },
+    },
     defaults: () => DEFAULT_MEMBERSHIP_SUBSCRIPTION_BILLING_SETTINGS,
   },
 ];
@@ -429,9 +478,25 @@ function parseSingleton(
     const value = record[field];
     const column = model?.fields.find((f) => f.name === field);
     if (!column) continue; // guarded separately by the schema-drift test
+    const rule = spec.constraints?.[field];
     if (value === null) {
-      if (column.isRequired) {
+      // Prisma 7's client DMMF strips `isRequired`, so non-nullability is no
+      // longer readable from the schema here (#2200) — a spec declares it via
+      // `constraints.required`. A present null on a required field is a plan
+      // error, so a hand-edited bundle fails the dry-run, not the write.
+      if (rule?.required) {
         errors.push(`${file}: ${field} — null is not allowed (required setting)`);
+        ok = false;
+      }
+      continue;
+    }
+    // Enum columns (e.g. familyBillingMode) are validated against the real
+    // Prisma enum so an invalid value fails the dry-run, not the write (#2200).
+    if (column.kind === "enum") {
+      if (typeof value !== "string" || !prismaEnumValues(column.type).has(value)) {
+        errors.push(
+          `${file}: ${field} — ${JSON.stringify(value)} is not a valid ${column.type}`,
+        );
         ok = false;
       }
       continue;
@@ -446,6 +511,24 @@ function parseSingleton(
       errors.push(
         `${file}: ${field} — ${JSON.stringify(value)} is not a valid ${column.type}`,
       );
+      ok = false;
+      continue;
+    }
+    // Inclusive Int bounds mirroring the admin API, so an out-of-range value
+    // (e.g. invoiceDueDays outside 1–365) fails the dry-run, not the write.
+    if (
+      column.type === "Int" &&
+      typeof value === "number" &&
+      ((rule?.min !== undefined && value < rule.min) ||
+        (rule?.max !== undefined && value > rule.max))
+    ) {
+      const range =
+        rule?.min !== undefined && rule?.max !== undefined
+          ? `${rule.min}–${rule.max}`
+          : rule?.min !== undefined
+            ? `at least ${rule.min}`
+            : `at most ${rule?.max}`;
+      errors.push(`${file}: ${field} — ${value} is out of range (must be ${range})`);
       ok = false;
     }
   }
