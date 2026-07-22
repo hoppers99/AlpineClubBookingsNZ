@@ -129,19 +129,30 @@ function requireSeedEnv(
 // #2190 P4 — the public seed provisions ONLY the generic default site style.
 // A fork's own brand palette lives in its deployment's ClubTheme DB row and is
 // provisioned by that fork's own seed override, not by public-repo code
-// (standing directive D15 — no fork/Tokoroa colours in the public repo). The
-// former SEED_TOKOROA_THEME_COMPLETE fork-seed path was removed here.
+// (standing directive D15 — no fork/Tokoroa colours in the public repo).
+//
+// SEED_THEME_COMPLETE=1 stamps the DEFAULT palette's setup COMPLETE (completedAt)
+// so the public site renders its real header/footer/title chrome — used by E2E
+// and staging where the club-identity smoke asserts on that chrome. It is
+// palette-free: it seeds no colours and no logo, only the completion timestamp
+// (the default palette is already seeded on the row). It replaces the removed,
+// colour-bearing SEED_TOKOROA_THEME_COMPLETE path.
 async function seedClubTheme() {
+  const markComplete = process.env.SEED_THEME_COMPLETE === "1";
   await prisma.clubTheme.upsert({
     where: { id: CLUB_THEME_ID },
-    update: {},
+    update: markComplete ? { completedAt: new Date() } : {},
     create: {
       id: CLUB_THEME_ID,
       ...DEFAULT_CLUB_THEME_VALUES,
-      completedAt: null,
+      completedAt: markComplete ? new Date() : null,
     },
   });
-  console.log("Default site style seeded");
+  console.log(
+    markComplete
+      ? "Default site style seeded and marked complete"
+      : "Default site style seeded",
+  );
 }
 
 // Seed the membership-type-keyed hut rates (#1930, E4) with the same D4 fan-out
