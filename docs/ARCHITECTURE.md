@@ -114,12 +114,15 @@ Important route groups:
 > timestamps. The additive EXPAND migration had kept the columns behind a default
 > so pre-#2187 code stayed compatible across the blue/green cutover; the contract
 > drop ran once no code read them. The `--brand-*` values still ship as DERIVED
-> shims (`deriveBrandShims`, from the substrate neutral ramp) because two consumers
-> still read them — the website scope's `color-mix()` recipes (the `.website-theme`
-> block in `globals.css`) and the email palette; the app scope's generated token
-> block carries **no `--brand-*` reference** (F1). Migrating the website recipes
-> off the shims is a documented **carry-forward** (a website-scope redesign
-> deferred to a follow-up issue), so the shims are **not** deleted. Config-transfer
+> shims (`deriveBrandShims`, from the substrate neutral ramp); the app scope's
+> generated token block carries **no `--brand-*` reference** (F1), and #2217 P4
+> re-mapped the website `.website-theme` role tokens off their `color-mix()`
+> recipes onto resolved generated steps too (`serializeWebsiteRoleTokens`,
+> injected by `buildClubThemeCss`), preserving the branded public look (gold
+> primary/ring, dark nav). The shims stay because the EMAIL palette still derives
+> from them and the app brand utilities / wizard preview / muted-tone clamp still
+> read them (the website's legal-callout and mobile-menu `bg-brand-*` utilities
+> are a small remaining consumer, left for their own render review). Config-transfer
 > bundles are **format version 2** (`CONFIG_TRANSFER_FORMAT_VERSION`) and reject
 > any version-1 bundle.
 
@@ -202,12 +205,16 @@ BOTH modes — the structural fix for the seven hover-dead `bg-muted
 hover:bg-accent` #2144 buttons — and the dark core-token block is rewired onto
 generated dark steps with **no `--brand-*` reference left inside it** (F1). The
 legacy `--brand-*` values still ship as derived SHIMS (`deriveBrandShims`, from
-the substrate neutral ramp) because two consumers still read them: the website
-scope's `color-mix()` recipes (the `.website-theme` block, `globals.css`
-~lines 442–466) and the email palette. Migrating those website recipes onto the
-substrate directly is a documented **carry-forward** (the website-scope redesign
-is deferred to a follow-up issue), so the shims are **not** deleted — only the
-app scope's generated token block no longer references them. The `.dark`
+the substrate neutral ramp). #2217 P4 re-mapped the website `.website-theme`
+(and `.website-mobile-menu`) role tokens off their `color-mix()` recipes onto
+RESOLVED generated substrate steps via `serializeWebsiteRoleTokens` (injected by
+`buildClubThemeCss`, with default-palette static fallbacks in `globals.css`),
+preserving the branded look (accent-9 gold primary + focus ring, neutral-12 dark
+nav) — so no `.website-theme` `color-mix()` or `var(--brand-*)` remains. The
+shims are still load-bearing: the EMAIL palette derives from them, and the app
+brand utilities, the site-style wizard preview, and the muted-tone clamp read
+them (plus the website legal-callout / mobile-menu `bg-brand-*` utilities, a small
+consumer left for a separate render review). The `.dark`
 neutral/colored remap blocks described above were deleted by #2188 P2 once every
 tree was migrated at source.
 

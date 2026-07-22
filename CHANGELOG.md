@@ -4,6 +4,13 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **The public website now paints from the same generated palette as the admin
+  app (#2217).** The public site's neutral chrome — page, cards, borders, inputs,
+  muted text, hover surfaces and the dark-nav hairline — is now resolved from the
+  generated 12-step palette instead of ad-hoc colour-mixing recipes, so a club's
+  saved colours drive every website surface the same way they drive the app. The
+  branded look is unchanged by design: a light page, a gold primary action and
+  focus ring, and a dark charcoal navigation bar are all preserved.
 - **Status and label chips now draw from one generated colour system, and the
   last legacy accent colours are gone (#2218).** A sixth categorical colour (a
   teal, added to the generated palette) gives the booking board a distinct tone
