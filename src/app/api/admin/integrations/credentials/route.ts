@@ -16,6 +16,11 @@ import {
   STRIPE_WRITABLE_CREDENTIAL_KEYS,
   clearStripeWebhookVerified,
 } from "@/lib/stripe-config";
+import {
+  GOOGLE_PROVIDER,
+  GOOGLE_WRITABLE_CREDENTIAL_KEYS,
+  clearGoogleVerified,
+} from "@/lib/google-config";
 import { prisma } from "@/lib/prisma";
 import logger from "@/lib/logger";
 
@@ -41,6 +46,7 @@ const WRITABLE_CREDENTIALS: Record<string, readonly string[]> = {
     XERO_CREDENTIAL_KEYS.webhookKey,
   ],
   [STRIPE_PROVIDER]: [...STRIPE_WRITABLE_CREDENTIAL_KEYS],
+  [GOOGLE_PROVIDER]: [...GOOGLE_WRITABLE_CREDENTIAL_KEYS],
 };
 
 // GET /api/admin/integrations/credentials?provider=xero — METADATA-ONLY status.
@@ -127,6 +133,12 @@ async function applyVerifyReset(provider: string, key: string): Promise<void> {
   // check itself is live-derived (no persisted verified flag to reset).
   if (provider === STRIPE_PROVIDER) {
     await clearStripeWebhookVerified();
+  }
+  // Google (epic decision 6 / D2): writing either Google credential drops the
+  // verified marker so the module re-locks until a fresh OAuth round-trip
+  // verifies. The verified state is a stored marker (no live-derived check).
+  if (provider === GOOGLE_PROVIDER) {
+    await clearGoogleVerified();
   }
 }
 
