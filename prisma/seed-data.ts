@@ -2,6 +2,33 @@
 // src/lib/__tests__/seed-account-defaults.test.ts. Everything here must stay
 // free of real personal data: names, phone numbers, and emails are clearly
 // generic placeholders that a club replaces through the admin screens.
+//
+// The one exception is the OPTIONAL Tokoroa theme fork-seed below: it is
+// provisioning data, gated behind SEED_TOKOROA_THEME_COMPLETE=1 and applied only
+// on a fork that opts in. It lives HERE (prisma/, the seed-provisioning domain,
+// alongside its shouldSkipTokoroaThemeSeed guard) rather than in the shipping
+// theme library so that standing directive D15 ("no Tokoroa colours in the src/
+// product code") holds: `grep TOKOROA_CLUB_THEME_VALUES src` stays empty (#2190).
+
+import type { ClubThemeValues } from "../src/lib/club-theme-schema";
+
+/**
+ * The complete Tokoroa site-style values for the OPTIONAL fork seed
+ * (SEED_TOKOROA_THEME_COMPLETE=1). This is fork-provisioning data, not shipping
+ * product code: the public default seed uses DEFAULT_CLUB_THEME_VALUES, and a
+ * fork's live palette ultimately lives in its own deployment's ClubTheme DB row.
+ * Kept out of src/ per D15 (#2190). The theme generator/guarantee TESTS re-export
+ * it via src/lib/theme/__tests__/reference-seed-sets.ts.
+ */
+export const TOKOROA_CLUB_THEME_VALUES: ClubThemeValues = {
+  brandGold: "#ffcb05",
+  brandDeep: "#2f2f2b",
+  brandSafety: "#ff7c12",
+  headingFontKey: "LEAGUE_SPARTAN",
+  bodyFontKey: "INTER",
+  logoDataUrl: null,
+  rawCss: "",
+};
 
 export interface SeedMemberAccountData {
   email: string;

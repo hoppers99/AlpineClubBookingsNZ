@@ -16,7 +16,6 @@ import {
   CLUB_THEME_ID,
   DEFAULT_CLUB_THEME_VALUES,
   MAX_LOGO_DATA_URL_BYTES,
-  TOKOROA_CLUB_THEME_VALUES,
   isValidLogoDataUrl,
 } from "../src/lib/club-theme-schema";
 import { DEFAULT_INDUCTION_TEMPLATE } from "../src/lib/induction-checklist-template";
@@ -35,6 +34,7 @@ import {
   buildSeedCommitteeRoles,
   buildSeedLodgeMemberData,
   shouldSkipTokoroaThemeSeed,
+  TOKOROA_CLUB_THEME_VALUES,
 } from "./seed-data";
 import { starterPageContent } from "./starter-page-content";
 import { starterSiteContent } from "./starter-site-content";
