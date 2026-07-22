@@ -1,5 +1,9 @@
 import { formatDollarsDisplay } from "@/lib/finance-format";
-import { buildThemeSubstrate, type ThemeSeeds } from "@/lib/theme/theme-substrate";
+import { buildThemeSubstrate } from "@/lib/theme/theme-substrate";
+import {
+  DEFAULT_CLUB_THEME_VALUES,
+  themeSeedsFromValues,
+} from "@/lib/club-theme-schema";
 import { CHART_FINANCE_8SLOT } from "@/lib/theme/aliases";
 
 /**
@@ -17,7 +21,8 @@ import { CHART_FINANCE_8SLOT } from "@/lib/theme/aliases";
  * required. The categorical scales are club-INDEPENDENT at step 9 (the seed sits
  * unbanded at step 9 by construction) and vary only by ≤1/255 at step 7 (the A1
  * band snaps to the club's neutral ramp), so building them once from the shipping
- * default reference seeds yields the categorical intent: a palette that stays
+ * default reference seeds (`DEFAULT_CLUB_THEME_VALUES`, the single source of truth
+ * — no hand-copied triple) yields the categorical intent: a palette that stays
  * mutually distinguishable regardless of the admin-configured site colours. The
  * exact eight hexes are pinned by `finance-chart-theme.test.ts`, which recomputes
  * them from the substrate so a generator change surfaces as a test diff.
@@ -35,14 +40,11 @@ import { CHART_FINANCE_8SLOT } from "@/lib/theme/aliases";
  * selectors, which DO follow the theme (including dark mode). See the in-file
  * comment at `trend-chart.tsx` `sharedAxes`.
  */
-const FINANCE_MIX_REFERENCE_SEEDS: ThemeSeeds = {
-  accent: "#57b3ab",
-  neutralSource: "#17231c",
-  support: "#b04d28",
-};
-
 function buildFinanceMixColors(): readonly string[] {
-  const light = buildThemeSubstrate(FINANCE_MIX_REFERENCE_SEEDS, "light");
+  const light = buildThemeSubstrate(
+    themeSeedsFromValues(DEFAULT_CLUB_THEME_VALUES),
+    "light",
+  );
   return CHART_FINANCE_8SLOT.map(
     ({ scale, step }) => light.scales[scale].hex[step - 1],
   );

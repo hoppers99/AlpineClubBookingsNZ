@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { FINANCE_MIX_COLORS } from "../finance-chart-theme";
-import { buildThemeSubstrate, type ThemeSeeds } from "@/lib/theme/theme-substrate";
+import { buildThemeSubstrate } from "@/lib/theme/theme-substrate";
+import {
+  DEFAULT_CLUB_THEME_VALUES,
+  themeSeedsFromValues,
+} from "@/lib/club-theme-schema";
 import { CHART_FINANCE_8SLOT } from "@/lib/theme/aliases";
 
 /*
@@ -8,15 +12,21 @@ import { CHART_FINANCE_8SLOT } from "@/lib/theme/aliases";
  * scales (D15/J7), not hand-picked brand hex. These are computed pins: the
  * expected values are re-resolved from the substrate here, so a generator change
  * surfaces as a diff rather than shipping silently, and the palette can never
- * regress to a hardcoded literal (Tokoroa's gold #ffcb05 in particular).
+ * regress to a hardcoded literal (Tokoroa's gold #ffcb05 in particular). The
+ * reference seeds come from the canonical DEFAULT_CLUB_THEME_VALUES (no
+ * hand-copied triple) — the link assertion below fails if that mapping drifts.
  */
-const REFERENCE_SEEDS: ThemeSeeds = {
-  accent: "#57b3ab",
-  neutralSource: "#17231c",
-  support: "#b04d28",
-};
+const REFERENCE_SEEDS = themeSeedsFromValues(DEFAULT_CLUB_THEME_VALUES);
 
 describe("FINANCE_MIX_COLORS (derived categorical palette)", () => {
+  it("derives its reference seeds from the canonical default palette", () => {
+    expect(REFERENCE_SEEDS).toEqual({
+      accent: DEFAULT_CLUB_THEME_VALUES.brandGold,
+      neutralSource: DEFAULT_CLUB_THEME_VALUES.brandDeep,
+      support: DEFAULT_CLUB_THEME_VALUES.brandSafety,
+    });
+  });
+
   it("resolves each of the 8 slots from its cat scale step (chart_finance_8slot)", () => {
     const light = buildThemeSubstrate(REFERENCE_SEEDS, "light");
     const expected = CHART_FINANCE_8SLOT.map(
