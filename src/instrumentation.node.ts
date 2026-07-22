@@ -593,8 +593,24 @@ export async function register() {
       );
 
       try {
-        const { buildBackupCronOutcome, runDatabaseBackup } = await import("./lib/backup");
-        const result = await runDatabaseBackup();
+        const { buildBackupCronOutcome } = await import("./lib/backup");
+        const { runManagedBackup } = await import("./lib/backup-run");
+        // Claim through the DB-level cross-process lock the /admin/backups
+        // run-now action also honours: if another container already holds an
+        // active run, skip rather than start a second overlapping pg_dump.
+        const managed = await runManagedBackup({ trigger: "scheduled" });
+        if (!managed.claimed || !managed.result) {
+          logger.info(
+            { job: "backup" },
+            "Another process is already running a backup; skipping"
+          );
+          await recordCronRun("backup", startedAt, "SKIPPED", {
+            reason: "another process is already running a backup",
+          });
+          Sentry.captureCheckIn({ checkInId, monitorSlug: "database-backup", status: "ok" });
+          return;
+        }
+        const result = managed.result;
         const outcome = buildBackupCronOutcome(result);
 
         if (outcome.status === "SUCCESS") {
