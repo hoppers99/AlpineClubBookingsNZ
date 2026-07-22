@@ -353,7 +353,10 @@ describe("club-settings allowlists account for every column (reverse guard)", ()
     const problems: string[] = [];
     for (const spec of SINGLETONS) {
       const exported = new Set([...spec.fields, ...(spec.optInFields ?? [])]);
-      for (const col of Object.keys(spec.excluded ?? {})) {
+      // Merged set: a COMMON_EXCLUDED_COLUMNS entry added to `fields` is just as
+      // contradictory as a per-spec one, and the defaults-coverage test skips the
+      // DEFAULTS_INTENTIONALLY_PARTIAL singletons, so it must be caught here.
+      for (const col of Object.keys(excludedColumnsFor(spec))) {
         if (exported.has(col)) {
           problems.push(`${spec.entity}.${col} is in both fields and excluded`);
         }
