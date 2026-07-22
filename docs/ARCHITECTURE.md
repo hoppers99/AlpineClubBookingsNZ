@@ -351,8 +351,9 @@ enforce this:
   gate coverage on that file's other occurrences — prefer fixing a stray over
   adding an entry. As of #2188 P2 the contract is **repo-wide** (the member-facing
   `(authenticated)`/`(public)`, `(lodge)`, `(website)`, shared `components`, and
-  root trees are all migrated at source), with only the theme-aware-kiosk FAMILY
-  excluded (B8, until #2189 P3).
+  root trees are all migrated at source). #2189 P3 removed the last carve-out —
+  the kiosk family — so all five source contracts now run **truly repo-wide** with
+  no kiosk exclusion (see "Kiosk / wall-display" below).
 
 The dark-mode colored-callout pass (#1248) that used to re-tint literal Tailwind
 `bg-{family}-50/100/200` / `text-{family}-600..950` / `border-{family}-100..300`
@@ -476,6 +477,40 @@ categorical tones chosen to stay distinguishable independent of the club theme.
 Chart neutrals (grid, axis, ticks) are themed in `globals.css` through the
 `.finance-trend-chart .recharts-*` selectors, which override the light-mode
 literal fallbacks that `trend-chart.tsx` passes as attributes.
+
+**Kiosk / wall-display is the fixed-seed, mode-invariant exception** (#2189 P3,
+epic #2181 A5/J4). The lodge kiosk (`src/app/(lodge)/lodge/kiosk/**`) and its two
+sibling surfaces reached from it — the roster-setup wizard
+(`lodge/roster/[date]/setup/page.tsx`) and `components/kiosk-lodge-instructions.tsx`
+— are a glare-proof wall display, NOT a club-themed page. They are deliberately
+literalist and must **not** follow the club accent and must **not** change with
+the operator's light/dark toggle. So instead of the club-themed role/scale tokens,
+they paint through a dedicated fixed **`--kiosk-*`** token set (`bg-kiosk-page`,
+`text-kiosk-fg`, `bg-kiosk-card`, `border-kiosk-border`, `bg-kiosk-accent`, the
+`kiosk-{danger,success,warning,orange}-{bg,fg,border,solid,solid-fg}` status
+tokens, …). The set is generated ONCE from the fixed A5 kiosk seed (near-black
+`#0a0a0b` page, neutral grey ramp from `#808080`, `#7dd3fc` accent) by
+`buildKioskTokens()` in `src/lib/theme/kiosk-tokens.ts`; the status hues are
+generated in that same fixed context. Because the values are static and club- AND
+mode-independent, `globals.css` carries them as literal `--kiosk-*` custom
+properties on `:root` plus `@theme` `--color-kiosk-*` utilities — declared once,
+un-gated — and `src/lib/__tests__/kiosk-token-contract.test.ts` pins every literal
+against the derivation (R9 fallback-pin). This is the **principled replacement for
+the old #1249 light-mode kiosk readability remap**: that block existed only because
+the kiosk was authored in literal dark slate/colour utilities that turned
+unreadable under the LIGHT palette, so it re-mapped them whenever the document was
+not in dark mode. With the kiosk authored on mode-invariant fixed tokens the remap
+is unnecessary and has been deleted (grep-proof: `globals.css` matches neither
+`theme-aware-kiosk` nor `html:not(.dark)`). The `theme-aware-kiosk` class remains
+in the kiosk markup only as an inert semantic marker; it no longer keys any rule.
+The **print-safety discipline above does not apply** to these surfaces — they are
+on-screen wall displays, never printed, and their fixed tokens have no light/dark
+pair to self-heal — which is exactly why they carry their own token family rather
+than the print-aware role tokens. Note this is distinct from the separate `display`
+route (`src/app/display/`, `components/lodge-display`, `lib/lodge-display`), which
+already paints via its own `--display-*` CSS custom properties in
+`src/app/display/display.css` (a non-Tailwind, already-principled CSS-var surface)
+and carries **zero** raw colour utilities, so P3 left it untouched.
 
 ## Module Boundaries
 
