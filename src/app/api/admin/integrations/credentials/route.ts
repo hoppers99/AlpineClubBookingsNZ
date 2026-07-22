@@ -16,6 +16,10 @@ import {
   STRIPE_WRITABLE_CREDENTIAL_KEYS,
   clearStripeWebhookVerified,
 } from "@/lib/stripe-config";
+import {
+  BACKUP_PROVIDER,
+  BACKUP_SECRET_CREDENTIAL_KEYS,
+} from "@/lib/backup-config";
 import { prisma } from "@/lib/prisma";
 import logger from "@/lib/logger";
 
@@ -41,6 +45,11 @@ const WRITABLE_CREDENTIALS: Record<string, readonly string[]> = {
     XERO_CREDENTIAL_KEYS.webhookKey,
   ],
   [STRIPE_PROVIDER]: [...STRIPE_WRITABLE_CREDENTIAL_KEYS],
+  // Backup S3 access key/secret + the restore-validation shadow DSN (#2095, C6):
+  // write-only secrets, Full Admin. The non-secret destination (bucket/region)
+  // and operational config (enabled/retention) are written on the backups
+  // config route, not here.
+  [BACKUP_PROVIDER]: [...BACKUP_SECRET_CREDENTIAL_KEYS],
 };
 
 // GET /api/admin/integrations/credentials?provider=xero — METADATA-ONLY status.
