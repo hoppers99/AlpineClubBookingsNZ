@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { CalendarDays, RefreshCw } from "lucide-react";
-import { ThemeSwitcher } from "@/components/theme-switcher";
 import { KioskLodgeInstructions } from "@/components/kiosk-lodge-instructions";
 import { useClubIdentity } from "@/components/club-identity-provider";
 import type { KioskTier } from "@/lib/kiosk-access";
@@ -518,9 +517,6 @@ export default function KioskPage() {
           {" · read-only, no changes are saved"}
         </div>
       )}
-      <div className="mb-4 flex justify-end">
-        <ThemeSwitcher className="w-full max-w-sm" />
-      </div>
       {actionError && (
         <div className="bg-kiosk-danger-solid text-kiosk-danger-solid-fg text-center py-2 text-sm font-medium">
           {actionError}
@@ -749,7 +745,7 @@ export default function KioskPage() {
                     {section.title} ({section.bookings.reduce((sum, booking) => sum + booking.guests.length, 0)})
                   </h3>
                   {section.bookings.length === 0 ? (
-                    <div className="rounded-xl bg-kiosk-card p-4 text-center text-sm text-kiosk-faint-fg">
+                    <div className="rounded-xl bg-kiosk-card p-4 text-center text-sm text-kiosk-muted-fg">
                       {section.emptyText}
                     </div>
                   ) : (
@@ -769,7 +765,7 @@ export default function KioskPage() {
                               </span>
                             )}
                             {!booking.expectedArrivalTime && booking.guests.some((g) => g.isArriving) && (
-                              <span className="text-sm text-kiosk-faint-fg">
+                              <span className="text-sm text-kiosk-muted-fg">
                                 Arrival time: Not specified
                               </span>
                             )}

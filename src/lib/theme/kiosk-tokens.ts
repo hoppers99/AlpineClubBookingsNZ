@@ -88,6 +88,22 @@ export function buildKioskTokens(): Record<string, string> {
     ).pick,
   });
 
+  // Interactive states for a text-bearing status SOLID button. A `/90` opacity
+  // modifier would composite the fill toward the near-black page and DARKEN it,
+  // dropping a dark on-solid label below AA on hover. Instead these LIGHTEN the
+  // step-9 fill by a fixed OKLCH lightness step (chroma/hue held), mirroring the
+  // intent of the accent-hover/accent-active pair — so a dark label only GAINS
+  // contrast when hovered/pressed. (The scale's own step 10 runs darker here, so
+  // it cannot serve; a derived lighten is deterministic and monotonic.)
+  const lighten = (hex: string, dL: number) => {
+    const [L, C, H] = oklch(hex);
+    return fromOklch(Math.min(1, L + dL), C, H);
+  };
+  const statusSolidStates = (scale: string[], prefix: string) => ({
+    [`${prefix}-solid-hover`]: lighten(scale[8], 0.06),
+    [`${prefix}-solid-active`]: lighten(scale[8], 0.12),
+  });
+
   return {
     // --- Neutral surfaces (page darkest → chip lightest) + hover/borders. ---
     page: PINS.kiosk.background, // A5 fixed near-black page background
@@ -116,6 +132,7 @@ export function buildKioskTokens(): Record<string, string> {
     ...statusSolid(danger, "danger"),
     ...statusTriplet(success, "success"),
     ...statusSolid(success, "success"),
+    ...statusSolidStates(success, "success"),
     ...statusTriplet(warning, "warning"),
     ...statusSolid(warning, "warning"),
     ...statusTriplet(orange, "orange"),
@@ -150,6 +167,8 @@ export const KIOSK_TOKEN_ORDER = [
   "success-border",
   "success-solid",
   "success-solid-fg",
+  "success-solid-hover",
+  "success-solid-active",
   "warning-bg",
   "warning-fg",
   "warning-border",

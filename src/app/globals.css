@@ -218,6 +218,8 @@
   --color-kiosk-success-border: var(--kiosk-success-border, #15562e);
   --color-kiosk-success-solid: var(--kiosk-success-solid, #1f9d55);
   --color-kiosk-success-solid-fg: var(--kiosk-success-solid-fg, #202020);
+  --color-kiosk-success-solid-hover: var(--kiosk-success-solid-hover, #3ab067);
+  --color-kiosk-success-solid-active: var(--kiosk-success-solid-active, #51c379);
   --color-kiosk-warning-bg: var(--kiosk-warning-bg, #2b200b);
   --color-kiosk-warning-fg: var(--kiosk-warning-fg, #e2a93d);
   --color-kiosk-warning-border: var(--kiosk-warning-border, #5d430e);
@@ -1193,6 +1195,8 @@
   --kiosk-success-border: #15562e;
   --kiosk-success-solid: #1f9d55;
   --kiosk-success-solid-fg: #202020;
+  --kiosk-success-solid-hover: #3ab067;
+  --kiosk-success-solid-active: #51c379;
   --kiosk-warning-bg: #2b200b;
   --kiosk-warning-fg: #e2a93d;
   --kiosk-warning-border: #5d430e;
@@ -1312,6 +1316,29 @@
      otherwise the UA paints dark form controls and default surfaces on paper. */
   :root {
     color-scheme: light !important;
+  }
+
+  /* Kiosk family on paper (#2189 P3, NOTE B). ON SCREEN the kiosk is
+     mode-invariant near-black; ON PAPER that is an ink flood, and the roster-setup
+     wizard is realistically printed. So for print the neutral SURFACE + text
+     `--kiosk-*` tokens flip to a light paper palette (page/card → white, insets →
+     light grey, rules → mid grey, foregrounds → ink); every `bg-kiosk-*` /
+     `text-kiosk-*` utility then resolves light with no per-element print rules. The
+     status + accent tokens deliberately KEEP their tints — small self-consistent
+     badges/buttons/callouts, not a flood. Not `.dark`-gated, so this sits outside
+     the self-healing print contract. Kept as its own `:root` so the color-scheme
+     pin above stays a clean single-declaration rule. */
+  :root {
+    --kiosk-page: #ffffff;
+    --kiosk-card: #ffffff;
+    --kiosk-inset: #f4f4f5;
+    --kiosk-chip: #e9e9ec;
+    --kiosk-hover: #e4e4e7;
+    --kiosk-border: #c4c4c8;
+    --kiosk-border-muted: #e0e0e3;
+    --kiosk-fg: #18181b;
+    --kiosk-muted-fg: #52525b;
+    --kiosk-faint-fg: #6b6b73;
   }
 
   aside,

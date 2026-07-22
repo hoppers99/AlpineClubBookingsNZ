@@ -3,7 +3,6 @@
 import type { AgeTier } from "@prisma/client";
 import { useState, useEffect, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { ThemeSwitcher } from "@/components/theme-switcher";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -433,9 +432,6 @@ export default function RosterSetupWizard() {
 
   return (
     <div className="theme-aware-kiosk min-h-screen bg-kiosk-page text-kiosk-fg p-4 select-none max-w-4xl mx-auto">
-      <div className="mb-4 flex justify-end">
-        <ThemeSwitcher className="w-full max-w-sm" />
-      </div>
       {/* Header */}
       <header className="mb-6">
         <div className="flex items-center justify-between mb-2">
@@ -842,7 +838,7 @@ export default function RosterSetupWizard() {
             <button
               onClick={confirmRoster}
               disabled={submitting}
-              className="bg-kiosk-success-solid hover:bg-kiosk-success-solid/90 active:bg-kiosk-success-solid/80 disabled:bg-kiosk-chip disabled:text-kiosk-faint-fg text-kiosk-success-solid-fg text-lg font-bold px-10 py-4 rounded-xl min-h-[56px] transition-colors"
+              className="bg-kiosk-success-solid hover:bg-kiosk-success-solid-hover active:bg-kiosk-success-solid-active disabled:bg-kiosk-chip disabled:text-kiosk-faint-fg text-kiosk-success-solid-fg text-lg font-bold px-10 py-4 rounded-xl min-h-[56px] transition-colors"
             >
               {submitting ? "Confirming..." : "Confirm Roster"}
             </button>

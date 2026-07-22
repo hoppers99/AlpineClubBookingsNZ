@@ -503,10 +503,16 @@ not in dark mode. With the kiosk authored on mode-invariant fixed tokens the rem
 is unnecessary and has been deleted (grep-proof: `globals.css` matches neither
 `theme-aware-kiosk` nor `html:not(.dark)`). The `theme-aware-kiosk` class remains
 in the kiosk markup only as an inert semantic marker; it no longer keys any rule.
-The **print-safety discipline above does not apply** to these surfaces — they are
-on-screen wall displays, never printed, and their fixed tokens have no light/dark
-pair to self-heal — which is exactly why they carry their own token family rather
-than the print-aware role tokens. Note this is distinct from the separate `display`
+Mode invariance applies **on screen**; **on paper** the discipline still holds —
+a near-black wall page is an ink flood, and the roster-setup wizard is realistically
+printed — so a single `@media print { :root { … } }` block re-declares the neutral
+surface + text `--kiosk-*` tokens as a light paper palette (page/card → white,
+insets → light grey, foregrounds → ink), which every `bg-kiosk-*`/`text-kiosk-*`
+utility then resolves light with no per-element print rules. The status and accent
+tokens keep their tints on paper (small self-consistent badges/buttons/callouts,
+not a flood). That print block is not `.dark`-gated, so it sits outside the
+`print-light-palette` self-healing contract and does not perturb it. Note this is
+distinct from the separate `display`
 route (`src/app/display/`, `components/lodge-display`, `lib/lodge-display`), which
 already paints via its own `--display-*` CSS custom properties in
 `src/app/display/display.css` (a non-Tailwind, already-principled CSS-var surface)
