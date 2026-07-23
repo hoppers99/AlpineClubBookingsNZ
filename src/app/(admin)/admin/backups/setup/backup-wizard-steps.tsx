@@ -10,7 +10,7 @@ import type { WizardStepHelpers } from "@/components/admin/integration-wizard";
 import {
   MIN_BACKUP_RETENTION_DAYS,
   MAX_BACKUP_RETENTION_DAYS,
-} from "@/lib/backup-config";
+} from "@/lib/backup-config-shared";
 import type { BackupWizardContext } from "./use-backup-wizard-context";
 
 const CREDENTIALS_ENDPOINT = "/api/admin/integrations/credentials";

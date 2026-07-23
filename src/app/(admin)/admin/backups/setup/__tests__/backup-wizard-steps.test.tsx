@@ -65,11 +65,13 @@ function makeHelpers(
 }
 
 function mockFetchOk(status = 200) {
-  const fetchMock = vi.fn(async () => ({
-    ok: status >= 200 && status < 300,
-    status,
-    json: async () => ({}),
-  }));
+  const fetchMock = vi.fn(
+    async (_input: RequestInfo | URL, _init?: RequestInit) => ({
+      ok: status >= 200 && status < 300,
+      status,
+      json: async () => ({}),
+    }),
+  );
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
 }
