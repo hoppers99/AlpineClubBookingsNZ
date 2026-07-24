@@ -1,3 +1,4 @@
+import type { AgeTier } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
 // Parity guard for the batched financial-status resolver introduced to remove
@@ -158,7 +159,7 @@ import {
 
 describe("resolveFinancialStatusForMembers parity with isMemberFinancial", () => {
   it("agrees member-for-member on a mixed fixture", async () => {
-    const candidates = h.members.map((m) => ({ id: m.id, ageTier: m.ageTier }));
+    const candidates = h.members.map((m) => ({ id: m.id, ageTier: m.ageTier as AgeTier }));
 
     const batched = await resolveFinancialStatusForMembers(candidates, h.SEASON);
 
@@ -176,7 +177,7 @@ describe("resolveFinancialStatusForMembers parity with isMemberFinancial", () =>
   });
 
   it("computes the expected financial status per branch", async () => {
-    const candidates = h.members.map((m) => ({ id: m.id, ageTier: m.ageTier }));
+    const candidates = h.members.map((m) => ({ id: m.id, ageTier: m.ageTier as AgeTier }));
     const batched = await resolveFinancialStatusForMembers(candidates, h.SEASON);
 
     // m1 exempt type; m2 required+PAID; m5 age-exempt; m6 NOT_REQUIRED dominance;

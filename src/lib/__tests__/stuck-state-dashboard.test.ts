@@ -28,6 +28,7 @@ const modulesOn: FeatureFlags = {
   analytics: false,
   lobbyDisplay: false,
   aiAssistant: false,
+  memberNotices: true,
 };
 
 function emptyEmailResponses() {
