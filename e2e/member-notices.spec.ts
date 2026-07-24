@@ -75,17 +75,32 @@ test("an in-audience member sees the notice, reads it, and the admin report reco
   test.setTimeout(120_000);
   await signIn(page, IN_AUDIENCE);
 
-  // Dashboard shows the Recent News card with an unread indicator.
+  // Dashboard shows the Recent News card with an unread indicator. During the
+  // React streaming reveal the card can briefly exist both revealed and in a
+  // hidden streamed segment, tripping strict mode on a bare text match (#21,
+  // same class as internet-banking.spec.ts) — filter to the visible instance;
+  // a genuine double visible render would still strict-violate and fail.
   await page.goto("/dashboard");
-  await expect(page.getByText("Recent News")).toBeVisible();
-  await expect(page.getByText(noticeTitle)).toBeVisible();
-  await expect(page.getByText(/unread/i)).toBeVisible();
+  await expect(
+    page.getByText("Recent News").filter({ visible: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText(noticeTitle).filter({ visible: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText(/unread/i).filter({ visible: true }),
+  ).toBeVisible();
 
   // Open the notice; the read receipt fires on the detail page.
-  await page.getByRole("link", { name: noticeTitle }).click();
+  await page
+    .getByRole("link", { name: noticeTitle })
+    .filter({ visible: true })
+    .click();
   await expect(page).toHaveURL(new RegExp(`/notices/${noticeId}$`));
   await expect(
-    page.getByText("Committee update for the targeted member only."),
+    page
+      .getByText("Committee update for the targeted member only.")
+      .filter({ visible: true }),
   ).toBeVisible();
 
   // The admin read report now shows a receipt for this member.
