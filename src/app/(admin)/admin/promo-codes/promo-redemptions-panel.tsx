@@ -1,0 +1,654 @@
+"use client";
+
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { ChevronDown, ChevronRight, Download } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import {
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { AdminDataTable } from "@/components/admin/admin-data-table";
+import { DateRangeControls } from "@/components/admin/date-range-controls";
+import { auditAndPaymentsDateRangePresets } from "@/lib/date-range-presets";
+import { formatCents } from "@/lib/utils";
+import { APP_TIME_ZONE } from "@/config/operational";
+import { useLodgeOptions } from "@/components/lodge-select";
+
+const TYPE_LABELS: Record<string, string> = {
+  PERCENTAGE: "Percentage",
+  FIXED_AMOUNT: "Fixed Amount",
+  FREE_NIGHTS: "Free Nights",
+  FIXED_NIGHTLY_PRICE: "Fixed Price per Night",
+};
+
+const PAGE_SIZE = 50;
+// The API caps pageSize at 200; the CSV export walks pages of this size.
+const EXPORT_PAGE_SIZE = 200;
+
+interface Totals {
+  redemptions: number;
+  uniqueMembers: number;
+  discountCents: number;
+  freeNightsUsed: number;
+}
+
+interface RedemptionAllocation {
+  memberId: string;
+  name: string;
+  discountCents: number;
+  freeNightsUsed: number;
+}
+
+interface RedemptionRow {
+  id: string;
+  createdAt: string;
+  member: { id: string; name: string; email: string };
+  booking: {
+    id: string;
+    reference: string;
+    lodgeId: string;
+    lodgeName: string;
+    checkIn: string;
+    checkOut: string;
+    nights: number;
+  };
+  eligibleGuestCount: number | null;
+  discountCents: number;
+  freeNightsUsed: number;
+  memberUseIndex: number;
+  allocations: RedemptionAllocation[];
+}
+
+interface RedemptionsResponse {
+  code: {
+    id: string;
+    code: string;
+    description: string | null;
+    type: string;
+    active: boolean;
+    archived: boolean;
+    internal: boolean;
+    currentRedemptions: number;
+    caps: {
+      maxRedemptionsTotal: number | null;
+      maxUniqueMembersTotal: number | null;
+      maxUsesPerMember: number | null;
+      lifetimeFreeNightsCap: number | null;
+    };
+  };
+  totals: { all: Totals; filtered: Totals };
+  pagination: { page: number; pageSize: number; total: number };
+  rows: RedemptionRow[];
+}
+
+interface PromoSummary {
+  id: string;
+  code: string;
+  description: string | null;
+  type: string;
+  archived: boolean;
+}
+
+function formatRedeemedAt(value: string): string {
+  return new Date(value).toLocaleString("en-NZ", {
+    timeZone: APP_TIME_ZONE,
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+}
+
+function formatStayDate(value: string): string {
+  // `value` is a yyyy-MM-dd lodge night from the API; render it without any
+  // timezone shift by parsing the parts directly.
+  const [year, month, day] = value.split("-").map(Number);
+  if (!year || !month || !day) return value;
+  return new Date(Date.UTC(year, month - 1, day)).toLocaleDateString("en-NZ", {
+    timeZone: "UTC",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+}
+
+function StatTile({
+  title,
+  value,
+  subtitle,
+  progress,
+}: {
+  title: string;
+  value: string;
+  subtitle?: string;
+  progress?: { current: number; cap: number } | null;
+}) {
+  const pct =
+    progress && progress.cap > 0
+      ? Math.min(100, Math.round((progress.current / progress.cap) * 100))
+      : null;
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-medium text-muted-foreground">
+          {title}
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="text-2xl font-bold text-foreground">{value}</div>
+        {subtitle ? (
+          <p className="mt-1 text-xs text-muted-foreground">{subtitle}</p>
+        ) : null}
+        {pct != null ? (
+          <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+            <div
+              className="h-full rounded-full bg-primary"
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+export function PromoRedemptionsPanel({
+  promo,
+  onBack,
+}: {
+  promo: PromoSummary;
+  onBack: () => void;
+}) {
+  const { lodges } = useLodgeOptions("admin");
+  const multiLodge = lodges.length > 1;
+
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [lodgeId, setLodgeId] = useState("");
+  const [page, setPage] = useState(1);
+  const [data, setData] = useState<RedemptionsResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [exporting, setExporting] = useState(false);
+
+  const buildQuery = useCallback(
+    (nextPage: number, nextPageSize: number) => {
+      const params = new URLSearchParams();
+      if (from) params.set("from", from);
+      if (to) params.set("to", to);
+      if (lodgeId) params.set("lodgeId", lodgeId);
+      params.set("page", String(nextPage));
+      params.set("pageSize", String(nextPageSize));
+      return params.toString();
+    },
+    [from, to, lodgeId]
+  );
+
+  const fetchRedemptions = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch(
+        `/api/admin/promo-codes/${promo.id}/redemptions?${buildQuery(page, PAGE_SIZE)}`
+      );
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || "Failed to load redemptions");
+      }
+      const json = (await res.json()) as RedemptionsResponse;
+      setData(json);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load redemptions");
+    } finally {
+      setLoading(false);
+    }
+  }, [promo.id, buildQuery, page]);
+
+  useEffect(() => {
+    void fetchRedemptions();
+  }, [fetchRedemptions]);
+
+  // Any filter change resets to the first page and collapses open rows.
+  function applyFilterChange(mutator: () => void) {
+    mutator();
+    setPage(1);
+    setExpanded(new Set());
+  }
+
+  function toggleExpanded(id: string) {
+    setExpanded((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  const totals = data?.totals;
+  const caps = data?.code.caps;
+  const total = data?.pagination.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const resultStart = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
+  const resultEnd = Math.min(page * PAGE_SIZE, total);
+
+  const filterActive = Boolean(from || to || lodgeId);
+
+  const csvFilename = useMemo(() => {
+    const dateStr = new Date().toISOString().slice(0, 10);
+    return `promo-${promo.code}-redemptions-${dateStr}.csv`;
+  }, [promo.code]);
+
+  async function exportCSV() {
+    setExporting(true);
+    setError("");
+    try {
+      const allRows: RedemptionRow[] = [];
+      let exportPage = 1;
+      // Walk every filtered page so the export is the full filtered set, not
+      // just the page on screen.
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const res = await fetch(
+          `/api/admin/promo-codes/${promo.id}/redemptions?${buildQuery(exportPage, EXPORT_PAGE_SIZE)}`
+        );
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.error || "Failed to export redemptions");
+        }
+        const json = (await res.json()) as RedemptionsResponse;
+        allRows.push(...json.rows);
+        if (
+          json.rows.length < EXPORT_PAGE_SIZE ||
+          allRows.length >= json.pagination.total
+        ) {
+          break;
+        }
+        exportPage += 1;
+      }
+
+      const rows: string[][] = [];
+      rows.push([`Promo code redemptions: ${promo.code}`]);
+      rows.push([
+        "Redeemed",
+        "Member",
+        "Email",
+        "Booking reference",
+        "Booking ID",
+        "Lodge",
+        "Check-in",
+        "Check-out",
+        "Nights",
+        "Guests",
+        "Discount",
+        "Free nights",
+        "Member use #",
+      ]);
+      for (const row of allRows) {
+        rows.push([
+          formatRedeemedAt(row.createdAt),
+          row.member.name,
+          row.member.email,
+          row.booking.reference,
+          row.booking.id,
+          row.booking.lodgeName,
+          row.booking.checkIn,
+          row.booking.checkOut,
+          String(row.booking.nights),
+          row.eligibleGuestCount != null ? String(row.eligibleGuestCount) : "",
+          (row.discountCents / 100).toFixed(2),
+          String(row.freeNightsUsed),
+          String(row.memberUseIndex),
+        ]);
+      }
+
+      const csvContent = rows
+        .map((row) =>
+          row
+            .map((cell) => {
+              if (cell.includes(",") || cell.includes('"') || cell.includes("\n")) {
+                return `"${cell.replace(/"/g, '""')}"`;
+              }
+              return cell;
+            })
+            .join(",")
+        )
+        .join("\n");
+
+      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = csvFilename;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to export redemptions");
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <button
+            onClick={onBack}
+            className="mb-1 flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+          >
+            <ChevronRight className="h-4 w-4 rotate-180" />
+            Back to promo codes
+          </button>
+          <div className="flex items-center gap-3">
+            <h1 className="font-mono text-2xl font-bold">{promo.code}</h1>
+            <Badge variant="outline">{TYPE_LABELS[promo.type] ?? promo.type}</Badge>
+            {promo.archived ? (
+              <Badge
+                variant="outline"
+                className="border-warning-7 text-warning-11"
+              >
+                Archived
+              </Badge>
+            ) : null}
+          </div>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Redemptions{promo.description ? ` · ${promo.description}` : ""}
+          </p>
+        </div>
+        <Button
+          variant="outline"
+          onClick={exportCSV}
+          disabled={exporting || total === 0}
+        >
+          <Download className="mr-1 h-4 w-4" />
+          {exporting ? "Exporting..." : "CSV"}
+        </Button>
+      </div>
+
+      {error ? (
+        <div className="rounded-md bg-destructive/10 px-4 py-3 text-destructive">
+          {error}
+        </div>
+      ) : null}
+
+      {/* Summary stat tiles — recompute with the active filter. */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <StatTile
+          title="Total redemptions"
+          value={String(totals?.filtered.redemptions ?? 0)}
+          subtitle={
+            caps?.maxRedemptionsTotal != null
+              ? `${totals?.all.redemptions ?? 0} of ${caps.maxRedemptionsTotal} all-time`
+              : filterActive
+                ? `${totals?.all.redemptions ?? 0} all-time`
+                : "No total cap"
+          }
+          progress={
+            caps?.maxRedemptionsTotal != null
+              ? {
+                  current: totals?.all.redemptions ?? 0,
+                  cap: caps.maxRedemptionsTotal,
+                }
+              : null
+          }
+        />
+        <StatTile
+          title="Unique members"
+          value={String(totals?.filtered.uniqueMembers ?? 0)}
+          subtitle={
+            caps?.maxUniqueMembersTotal != null
+              ? `${totals?.all.uniqueMembers ?? 0} of ${caps.maxUniqueMembersTotal} all-time`
+              : filterActive
+                ? `${totals?.all.uniqueMembers ?? 0} all-time`
+                : "No unique-member cap"
+          }
+          progress={
+            caps?.maxUniqueMembersTotal != null
+              ? {
+                  current: totals?.all.uniqueMembers ?? 0,
+                  cap: caps.maxUniqueMembersTotal,
+                }
+              : null
+          }
+        />
+        <StatTile
+          title="Total discounted"
+          value={formatCents(totals?.filtered.discountCents ?? 0)}
+          subtitle={
+            filterActive
+              ? `${formatCents(totals?.all.discountCents ?? 0)} all-time`
+              : "Sum of discounts applied"
+          }
+        />
+        <StatTile
+          title="Free nights used"
+          value={String(totals?.filtered.freeNightsUsed ?? 0)}
+          subtitle={
+            caps?.lifetimeFreeNightsCap != null
+              ? `Per-member lifetime cap: ${caps.lifetimeFreeNightsCap}`
+              : filterActive
+                ? `${totals?.all.freeNightsUsed ?? 0} all-time`
+                : "Guest-nights subsidised"
+          }
+        />
+      </div>
+
+      {/* Filters */}
+      <Card>
+        <CardContent className="flex flex-wrap items-end gap-3 pt-6">
+          <DateRangeControls
+            presets={auditAndPaymentsDateRangePresets}
+            from={from}
+            to={to}
+            onFromChange={(value) => applyFilterChange(() => setFrom(value))}
+            onToChange={(value) => applyFilterChange(() => setTo(value))}
+            fromLabel="Redeemed from"
+            toLabel="Redeemed to"
+            idPrefix="promo-redemptions"
+          />
+          {multiLodge ? (
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground">
+                Lodge
+              </label>
+              <select
+                value={lodgeId}
+                onChange={(event) =>
+                  applyFilterChange(() => setLodgeId(event.target.value))
+                }
+                className="flex h-9 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors"
+              >
+                <option value="">All lodges</option>
+                {lodges.map((lodge) => (
+                  <option key={lodge.id} value={lodge.id}>
+                    {lodge.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : null}
+        </CardContent>
+      </Card>
+
+      {loading ? (
+        <Card>
+          <CardContent className="py-8 text-center text-muted-foreground">
+            Loading redemptions...
+          </CardContent>
+        </Card>
+      ) : total === 0 ? (
+        <Card>
+          <CardContent className="py-8 text-center text-muted-foreground">
+            No redemptions{filterActive ? " match the current filters" : " yet"}.
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="space-y-3">
+          <p className="text-sm text-muted-foreground">
+            Showing {resultStart}-{resultEnd} of {total}
+          </p>
+          <AdminDataTable>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-8" />
+                <TableHead>Redeemed</TableHead>
+                <TableHead>Member</TableHead>
+                <TableHead>Booking</TableHead>
+                <TableHead>Lodge</TableHead>
+                <TableHead>Stay</TableHead>
+                <TableHead>Guests</TableHead>
+                <TableHead>Discount</TableHead>
+                <TableHead>Free nights</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {(data?.rows ?? []).map((row) => {
+                const canExpand = row.allocations.length > 1;
+                const isOpen = expanded.has(row.id);
+                return (
+                  <Fragment key={row.id}>
+                    <TableRow>
+                      <TableCell>
+                        {canExpand ? (
+                          <button
+                            onClick={() => toggleExpanded(row.id)}
+                            aria-label={
+                              isOpen ? "Hide member split" : "Show member split"
+                            }
+                            aria-expanded={isOpen}
+                            className="text-muted-foreground hover:text-foreground"
+                          >
+                            {isOpen ? (
+                              <ChevronDown className="h-4 w-4" />
+                            ) : (
+                              <ChevronRight className="h-4 w-4" />
+                            )}
+                          </button>
+                        ) : null}
+                      </TableCell>
+                      <TableCell className="text-xs">
+                        {formatRedeemedAt(row.createdAt)}
+                      </TableCell>
+                      <TableCell>
+                        <Link
+                          href={`/admin/members/${row.member.id}`}
+                          className="hover:underline"
+                        >
+                          <div className="font-medium text-primary">
+                            {row.member.name}
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            {row.member.email}
+                          </div>
+                        </Link>
+                        {row.memberUseIndex > 1 ? (
+                          <Badge variant="secondary" className="mt-1 text-xs">
+                            Use #{row.memberUseIndex}
+                          </Badge>
+                        ) : null}
+                      </TableCell>
+                      <TableCell>
+                        <Link
+                          href={`/admin/bookings/${row.booking.id}`}
+                          className="font-mono text-sm text-primary hover:underline"
+                        >
+                          {row.booking.reference}
+                        </Link>
+                      </TableCell>
+                      <TableCell>{row.booking.lodgeName}</TableCell>
+                      <TableCell>
+                        <div>{formatStayDate(row.booking.checkIn)}</div>
+                        <div className="text-xs text-muted-foreground">
+                          to {formatStayDate(row.booking.checkOut)} ·{" "}
+                          {row.booking.nights} night
+                          {row.booking.nights === 1 ? "" : "s"}
+                        </div>
+                      </TableCell>
+                      <TableCell>{row.eligibleGuestCount ?? "-"}</TableCell>
+                      <TableCell>{formatCents(row.discountCents)}</TableCell>
+                      <TableCell>{row.freeNightsUsed}</TableCell>
+                    </TableRow>
+                    {canExpand && isOpen ? (
+                      <TableRow>
+                        <TableCell />
+                        <TableCell colSpan={8} className="bg-muted">
+                          <div className="space-y-2 py-1">
+                            <p className="text-xs font-medium text-muted-foreground">
+                              Per-member split ({row.allocations.length} members)
+                            </p>
+                            <div className="space-y-1">
+                              {row.allocations.map((allocation) => (
+                                <div
+                                  key={allocation.memberId}
+                                  className="flex flex-wrap items-center justify-between gap-2 text-sm"
+                                >
+                                  <span className="font-medium">
+                                    {allocation.name}
+                                  </span>
+                                  <span className="text-muted-foreground">
+                                    {formatCents(allocation.discountCents)}
+                                    {allocation.freeNightsUsed > 0
+                                      ? ` · ${allocation.freeNightsUsed} free night${
+                                          allocation.freeNightsUsed === 1 ? "" : "s"
+                                        }`
+                                      : ""}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ) : null}
+                  </Fragment>
+                );
+              })}
+            </TableBody>
+          </AdminDataTable>
+
+          {totalPages > 1 ? (
+            <div className="flex flex-col gap-3 border-t pt-4 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-sm text-muted-foreground">
+                Page {page} of {totalPages}
+              </p>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={page <= 1}
+                  onClick={() => {
+                    setExpanded(new Set());
+                    setPage((current) => Math.max(1, current - 1));
+                  }}
+                >
+                  Previous
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={page >= totalPages}
+                  onClick={() => {
+                    setExpanded(new Set());
+                    setPage((current) => Math.min(totalPages, current + 1));
+                  }}
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      )}
+    </div>
+  );
+}
