@@ -87,8 +87,10 @@ test("an in-audience member sees the notice, reads it, and the admin report reco
   await expect(
     page.getByText(noticeTitle).filter({ visible: true }),
   ).toBeVisible();
+  // Assert the badge specifically — a bare /unread/i also matches the
+  // sr-only "(unread)" marker inside the notice link.
   await expect(
-    page.getByText(/unread/i).filter({ visible: true }),
+    page.getByText("1 unread", { exact: true }).filter({ visible: true }),
   ).toBeVisible();
 
   // Open the notice; the read receipt fires on the detail page.
