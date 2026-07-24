@@ -44,7 +44,7 @@ export default async function NoticesPage() {
       ) : (
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg">Notices</CardTitle>
+            <CardTitle className="text-lg">Recent News</CardTitle>
           </CardHeader>
           <CardContent className="p-0">
             <ul className="divide-y divide-border">
@@ -86,7 +86,10 @@ export default async function NoticesPage() {
                       </span>
                       {notice.publishedAt ? (
                         <span className="block text-xs text-muted-foreground">
-                          {new Date(notice.publishedAt).toLocaleDateString()}
+                          {new Date(notice.publishedAt).toLocaleDateString(
+                            "en-NZ",
+                            { dateStyle: "medium" },
+                          )}
                         </span>
                       ) : null}
                     </span>

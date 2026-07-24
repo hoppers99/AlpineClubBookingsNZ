@@ -113,6 +113,10 @@ export function NoticeAudiencePicker({
   const [search, setSearch] = useState("");
   const [results, setResults] = useState<MemberResult[]>([]);
   const [searching, setSearching] = useState(false);
+  // Whether the member-search results popup is open. Driven open on typing and
+  // dismissed on Escape / focus leaving the combobox (a lightweight combobox,
+  // no arrow-key activedescendant navigation — the results stay tab-reachable).
+  const [resultsOpen, setResultsOpen] = useState(false);
 
   // Load the three group audience sources once.
   useEffect(() => {
@@ -233,6 +237,7 @@ export function NoticeAudiencePicker({
     );
     setSearch("");
     setResults([]);
+    setResultsOpen(false);
   }, []);
 
   const removeMember = useCallback((id: string) => {
@@ -240,6 +245,7 @@ export function NoticeAudiencePicker({
   }, []);
 
   const targetedEmpty = mode === "targeted" && composed.length === 0;
+  const showResults = resultsOpen && search.trim().length >= 2;
 
   return (
     <div className="space-y-4">
@@ -379,17 +385,45 @@ export function NoticeAudiencePicker({
                 ))}
               </div>
             ) : null}
-            <div className="relative">
+            <div
+              className="relative"
+              onBlur={(e) => {
+                // Focus leaving the combobox (Tab-out, or a click on anything
+                // outside) dismisses the popup. A relatedTarget still inside the
+                // container keeps it open, so clicking a result button lands its
+                // onClick before the popup closes.
+                if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+                  setResultsOpen(false);
+                }
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Escape" && resultsOpen) {
+                  e.stopPropagation();
+                  setResultsOpen(false);
+                }
+              }}
+            >
               <Input
                 id="notice-member-search"
                 value={search}
                 disabled={disabled}
                 placeholder="Search members by name or email..."
-                onChange={(e) => setSearch(e.target.value)}
+                onChange={(e) => {
+                  setSearch(e.target.value);
+                  setResultsOpen(true);
+                }}
                 autoComplete="off"
+                role="combobox"
+                aria-expanded={showResults}
+                aria-controls="notice-member-search-results"
+                aria-autocomplete="list"
               />
-              {search.trim().length >= 2 ? (
-                <div className="absolute z-10 mt-1 w-full overflow-hidden rounded-md border border-border bg-background shadow-md">
+              {showResults ? (
+                <div
+                  id="notice-member-search-results"
+                  role="listbox"
+                  className="absolute z-10 mt-1 w-full overflow-hidden rounded-md border border-border bg-background shadow-md"
+                >
                   {searching ? (
                     <p className="px-3 py-2 text-xs text-muted-foreground">
                       Searching...

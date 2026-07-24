@@ -30,7 +30,9 @@ export function NoticeAcknowledgeButton({
         <Check className="h-4 w-4" />
         Acknowledged
         {acknowledgedAt
-          ? ` on ${new Date(acknowledgedAt).toLocaleDateString()}`
+          ? ` on ${new Date(acknowledgedAt).toLocaleDateString("en-NZ", {
+              dateStyle: "medium",
+            })}`
           : ""}
       </p>
     );

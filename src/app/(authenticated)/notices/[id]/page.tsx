@@ -65,7 +65,10 @@ export default async function NoticeDetailPage({
           </div>
           {notice.publishedAt ? (
             <p className="text-sm text-muted-foreground">
-              Posted {new Date(notice.publishedAt).toLocaleDateString()}
+              Posted{" "}
+              {new Date(notice.publishedAt).toLocaleDateString("en-NZ", {
+                dateStyle: "medium",
+              })}
             </p>
           ) : null}
         </CardHeader>

@@ -29,7 +29,7 @@ export async function RecentNewsCard({ memberId }: { memberId: string }) {
     <Card>
       <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
         <CardTitle className="flex items-center gap-2 text-lg">
-          <Newspaper className="h-5 w-5 text-muted-foreground" />
+          <Newspaper className="h-5 w-5 text-muted-foreground" aria-hidden="true" />
           Recent News
           {unreadCount > 0 ? (
             <Badge variant="secondary">{unreadCount} unread</Badge>
@@ -40,7 +40,7 @@ export async function RecentNewsCard({ memberId }: { memberId: string }) {
           className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
         >
           All news
-          <ArrowRight className="h-4 w-4" />
+          <ArrowRight className="h-4 w-4" aria-hidden="true" />
         </Link>
       </CardHeader>
       <CardContent>
@@ -78,7 +78,9 @@ export async function RecentNewsCard({ memberId }: { memberId: string }) {
                   </span>
                   {notice.publishedAt ? (
                     <span className="block text-xs text-muted-foreground">
-                      {new Date(notice.publishedAt).toLocaleDateString()}
+                      {new Date(notice.publishedAt).toLocaleDateString("en-NZ", {
+                        dateStyle: "medium",
+                      })}
                     </span>
                   ) : null}
                 </span>
