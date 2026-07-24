@@ -161,6 +161,8 @@ content and appearance, and the platform/support admin surfaces):
   wording of audited email templates.
 - [Communications](guides/communications.md) — admin bulk email to opted-in
   members.
+- [Member Notices](guides/member-notices.md) — committee news notices targeted
+  to member audiences, shown on the dashboard with read/acknowledge tracking.
 - [Email Deliverability](guides/email-deliverability.md) — suppressions and
   exhausted delivery failures.
 - [Site Appearance & Content](guides/appearance.md) — the content hub and club
