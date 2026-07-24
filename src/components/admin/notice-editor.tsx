@@ -146,7 +146,12 @@ export function NoticeEditor({ mode, notice }: NoticeEditorProps) {
     if (html.length > NOTICE_BODY_MAX_LENGTH) {
       return `The notice body is too long (limit ${NOTICE_BODY_MAX_LENGTH.toLocaleString()} characters).`;
     }
-    if (html.replace(/<[^>]*>/g, "").trim().length === 0) {
+    // Emptiness check only — never a sanitiser (the server sanitises on save
+    // and render). DOMParser avoids the regex tag-stripping pattern CodeQL
+    // flags and handles entities correctly.
+    const textContent =
+      new DOMParser().parseFromString(html, "text/html").body.textContent ?? "";
+    if (textContent.trim().length === 0) {
       return "A notice body is required.";
     }
     return null;
