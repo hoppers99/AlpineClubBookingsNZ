@@ -26,6 +26,7 @@ import { bookingStatusLabel } from "@/lib/status-colors";
 import { DateRangeControls } from "@/components/admin/date-range-controls";
 import { reportsDateRangePresets } from "@/lib/date-range-presets";
 import { todayDateOnlyForTimeZone } from "@/lib/date-only";
+import { escapeCsvCell } from "@/lib/csv";
 
 // Charts load on demand (#1147): recharts is ~139kB gz, so the trees live in
 // _components/report-charts and mount after the page shell. The placeholders
@@ -282,16 +283,7 @@ export default function ReportsPage() {
     }
 
     const csvContent = rows
-      .map((row) =>
-        row
-          .map((cell) => {
-            if (cell.includes(",") || cell.includes('"') || cell.includes("\n")) {
-              return `"${cell.replace(/"/g, '""')}"`;
-            }
-            return cell;
-          })
-          .join(",")
-      )
+      .map((row) => row.map(escapeCsvCell).join(","))
       .join("\n");
 
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });

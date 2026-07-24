@@ -19,6 +19,7 @@ import {
 } from "@/lib/membership-types";
 import { UNASSIGNED_MEMBERSHIP_TYPE_VALUE } from "@/lib/membership-type-filter";
 import { formatDateOnlyForTimeZone } from "@/lib/date-only";
+import { escapeCsvCell } from "@/lib/csv";
 
 const AGE_TIER_VALUES = Object.values(AgeTier);
 const SUBSCRIPTION_STATUS_FILTERS = [
@@ -35,35 +36,10 @@ const MEMBER_LIFECYCLE_STATUS_FILTERS = [
   "all",
 ] as const;
 
-/**
- * Escape a value for RFC 4180 CSV format.
- * Wraps in double-quotes if value contains comma, quote, or newline.
- * Also guards against CSV/formula injection: values whose first character could
- * be interpreted as a formula by a spreadsheet (= + - @, tab, or CR) are
- * prefixed with a single quote before the RFC-4180 quoting logic runs.
- */
-function csvEscape(value: string): string {
-  const firstChar = value.charAt(0);
-  if (
-    firstChar === "=" ||
-    firstChar === "+" ||
-    firstChar === "-" ||
-    firstChar === "@" ||
-    firstChar === "\t" ||
-    firstChar === "\r"
-  ) {
-    value = "'" + value;
-  }
-  if (
-    value.includes('"') ||
-    value.includes(",") ||
-    value.includes("\n") ||
-    value.includes("\r")
-  ) {
-    return '"' + value.replace(/"/g, '""') + '"';
-  }
-  return value;
-}
+// RFC 4180 CSV cell escaping (with formula-injection guard) lives in the shared
+// `@/lib/csv` helper so the client-side exports and this route can never drift.
+// This thin alias keeps the local call sites below unchanged.
+const csvEscape = escapeCsvCell;
 
 /**
  * GET /api/admin/members/export
