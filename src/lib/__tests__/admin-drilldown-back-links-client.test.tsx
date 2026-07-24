@@ -168,4 +168,75 @@ describe("admin drill-down BackLink conversions (client-gated)", () => {
       ).toHaveAttribute("href", "/admin/members");
     });
   });
+
+  // Member Notices: both editor leaves (the create page and the [id] edit page)
+  // are "use client" pages that fetch on mount, so — like the lodge/member leaves
+  // above — they carry the shared BackLink to the /admin/notices hub and are
+  // enforced here rather than in the static-markup suite.
+  it("renders the New Notice page with a BackLink to /admin/notices", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({ membershipTypes: [], lodges: [], roles: [], members: [] }),
+      })),
+    );
+    const NewNoticePage = (
+      await import("@/app/(admin)/admin/notices/new/page")
+    ).default;
+
+    await act(async () => {
+      render(<NewNoticePage />);
+      await Promise.resolve();
+    });
+
+    const link = await screen.findByRole("link", { name: "← Member notices" });
+    expect(link).toHaveAttribute("href", "/admin/notices");
+  });
+
+  it("renders the notice edit page with a BackLink to /admin/notices", async () => {
+    // The page renders its BackLink unconditionally at the top of the return, so
+    // a benign fetch of the notice detail + reads is enough to reach it.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({
+          notice: {
+            id: "lodge-7",
+            title: "Notice",
+            bodyHtml: "<p>x</p>",
+            status: "DRAFT",
+            publishedAt: null,
+            expiresAt: null,
+            pinned: false,
+            requiresAcknowledgement: false,
+            financialMembersOnly: false,
+            emailedAt: null,
+            audiences: [],
+          },
+          rows: [],
+          page: 1,
+          pageSize: 50,
+          total: 0,
+          totalPages: 1,
+          audienceCount: 0,
+          readCount: 0,
+          acknowledgedCount: 0,
+          requiresAcknowledgement: false,
+        }),
+      })),
+    );
+    const NoticeEditPage = (
+      await import("@/app/(admin)/admin/notices/[id]/page")
+    ).default;
+
+    await act(async () => {
+      render(<NoticeEditPage />);
+      await Promise.resolve();
+    });
+
+    const link = await screen.findByRole("link", { name: "← Member notices" });
+    expect(link).toHaveAttribute("href", "/admin/notices");
+  });
 });

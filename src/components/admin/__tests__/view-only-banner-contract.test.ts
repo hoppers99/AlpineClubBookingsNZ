@@ -711,13 +711,17 @@ describe("view-only section banner coverage (#2160)", () => {
     }).toEqual({
       // +1 vs upstream's 263: member-photos (hoppers#171) adds the committee
       // photo-display control — a leaf exception that keeps its own reason.
-      callSites: 264,
-      optOuts: 231,
-      staticOptOuts: 210,
+      // +4 vs 264 / +2 banners vs 75: the Member Notices feature adds two
+      // banner-bearing admin surfaces (the notices list page and the notice
+      // editor), each with static opt-out ViewOnlyActionButtons covered by an
+      // AdminViewOnlySectionBanner in the same file.
+      callSites: 268,
+      optOuts: 235,
+      staticOptOuts: 214,
       vouchedOptOuts: 21,
       exceptions: 33,
       exceptionFiles: 16,
-      bannerComponents: 75,
+      bannerComponents: 77,
     });
 
     /*
