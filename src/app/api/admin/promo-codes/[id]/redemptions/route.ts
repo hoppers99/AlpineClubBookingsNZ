@@ -9,10 +9,16 @@ import {
   startOfDateOnlyForTimeZone,
 } from "@/lib/date-only";
 import type { Prisma } from "@prisma/client";
+import { createAuditLog } from "@/lib/audit";
 
 const dateOnlyString = z.string().refine(isDateOnlyString, {
   message: "Date must be YYYY-MM-DD",
 });
+
+// Hard upper bound on rows returned by a single `?export=1` request. Keeps a
+// full-filtered export bounded (mirroring the member-import cap convention of a
+// fixed row ceiling) so one request can never stream an unbounded result set.
+const EXPORT_MAX_ROWS = 10_000;
 
 // Redeemed-date range (`from`/`to` are inclusive club-timezone days), an
 // optional lodge filter, and page/pageSize pagination mirroring the waitlist
@@ -71,6 +77,11 @@ export async function GET(
   }
 
   const { from, to, lodgeId, page, pageSize } = parsed.data;
+
+  // Export mode returns the full filtered set (bounded by EXPORT_MAX_ROWS) in a
+  // single request and — unlike normal paginated browsing — records a privacy
+  // audit entry, mirroring the members-CSV export convention.
+  const isExport = searchParams.get("export") === "1";
 
   if (from && to && to < from) {
     return NextResponse.json(
@@ -147,8 +158,8 @@ export async function GET(
     prisma.promoRedemption.findMany({
       where: filteredWhere,
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-      skip: (page - 1) * pageSize,
-      take: pageSize,
+      skip: isExport ? 0 : (page - 1) * pageSize,
+      take: isExport ? EXPORT_MAX_ROWS : pageSize,
       include: {
         member: {
           select: { id: true, firstName: true, lastName: true, email: true },
@@ -214,6 +225,29 @@ export async function GET(
           }))
         : [],
   }));
+
+  // Privacy audit: only a full export is recorded (normal paginated browsing is
+  // an unaudited read-GET). Store just the applied filters and row count — never
+  // any redemption row contents.
+  if (isExport) {
+    await createAuditLog({
+      action: "promoRedemptions.exported",
+      memberId: guard.session.user.id,
+      category: "privacy",
+      severity: "info",
+      outcome: "success",
+      summary: "Exported promo code redemptions CSV",
+      metadata: {
+        promoCodeId: id,
+        filters: {
+          from: from ?? null,
+          to: to ?? null,
+          lodgeId: lodgeId ?? null,
+        },
+        rowCount: rows.length,
+      },
+    });
+  }
 
   return NextResponse.json({
     code: {
