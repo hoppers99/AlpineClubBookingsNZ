@@ -22,8 +22,11 @@ import { AdminDataTable } from "@/components/admin/admin-data-table";
 import { DateRangeControls } from "@/components/admin/date-range-controls";
 import { auditAndPaymentsDateRangePresets } from "@/lib/date-range-presets";
 import { formatCents } from "@/lib/utils";
-import { APP_TIME_ZONE } from "@/config/operational";
 import { useLodgeOptions } from "@/components/lodge-select";
+import {
+  buildPromoRedemptionsCsvContent,
+  formatRedeemedAt,
+} from "@/lib/promo-redemptions-csv";
 
 const TYPE_LABELS: Record<string, string> = {
   PERCENTAGE: "Percentage",
@@ -33,8 +36,6 @@ const TYPE_LABELS: Record<string, string> = {
 };
 
 const PAGE_SIZE = 50;
-// The API caps pageSize at 200; the CSV export walks pages of this size.
-const EXPORT_PAGE_SIZE = 200;
 
 interface Totals {
   redemptions: number;
@@ -98,14 +99,6 @@ interface PromoSummary {
   description: string | null;
   type: string;
   archived: boolean;
-}
-
-function formatRedeemedAt(value: string): string {
-  return new Date(value).toLocaleString("en-NZ", {
-    timeZone: APP_TIME_ZONE,
-    dateStyle: "medium",
-    timeStyle: "short",
-  });
 }
 
 function formatStayDate(value: string): string {
@@ -252,77 +245,24 @@ export function PromoRedemptionsPanel({
     setExporting(true);
     setError("");
     try {
-      const allRows: RedemptionRow[] = [];
-      let exportPage = 1;
-      // Walk every filtered page so the export is the full filtered set, not
-      // just the page on screen.
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        const res = await fetch(
-          `/api/admin/promo-codes/${promo.id}/redemptions?${buildQuery(exportPage, EXPORT_PAGE_SIZE)}`
-        );
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          throw new Error(body.error || "Failed to export redemptions");
-        }
-        const json = (await res.json()) as RedemptionsResponse;
-        allRows.push(...json.rows);
-        if (
-          json.rows.length < EXPORT_PAGE_SIZE ||
-          allRows.length >= json.pagination.total
-        ) {
-          break;
-        }
-        exportPage += 1;
+      // A single server-side export request returns the full filtered row set
+      // (bounded server-side) and writes the privacy audit entry — no client
+      // page-walk, so the O(N²/page) memberUseIndex rescan is avoided.
+      const params = new URLSearchParams();
+      if (from) params.set("from", from);
+      if (to) params.set("to", to);
+      if (lodgeId) params.set("lodgeId", lodgeId);
+      params.set("export", "1");
+      const res = await fetch(
+        `/api/admin/promo-codes/${promo.id}/redemptions?${params.toString()}`
+      );
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || "Failed to export redemptions");
       }
+      const json = (await res.json()) as RedemptionsResponse;
 
-      const rows: string[][] = [];
-      rows.push([`Promo code redemptions: ${promo.code}`]);
-      rows.push([
-        "Redeemed",
-        "Member",
-        "Email",
-        "Booking reference",
-        "Booking ID",
-        "Lodge",
-        "Check-in",
-        "Check-out",
-        "Nights",
-        "Guests",
-        "Discount",
-        "Free nights",
-        "Member use #",
-      ]);
-      for (const row of allRows) {
-        rows.push([
-          formatRedeemedAt(row.createdAt),
-          row.member.name,
-          row.member.email,
-          row.booking.reference,
-          row.booking.id,
-          row.booking.lodgeName,
-          row.booking.checkIn,
-          row.booking.checkOut,
-          String(row.booking.nights),
-          row.eligibleGuestCount != null ? String(row.eligibleGuestCount) : "",
-          (row.discountCents / 100).toFixed(2),
-          String(row.freeNightsUsed),
-          String(row.memberUseIndex),
-        ]);
-      }
-
-      const csvContent = rows
-        .map((row) =>
-          row
-            .map((cell) => {
-              if (cell.includes(",") || cell.includes('"') || cell.includes("\n")) {
-                return `"${cell.replace(/"/g, '""')}"`;
-              }
-              return cell;
-            })
-            .join(",")
-        )
-        .join("\n");
+      const csvContent = buildPromoRedemptionsCsvContent(promo.code, json.rows);
 
       const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
       const url = URL.createObjectURL(blob);
@@ -435,7 +375,9 @@ export function PromoRedemptionsPanel({
           value={String(totals?.filtered.freeNightsUsed ?? 0)}
           subtitle={
             caps?.lifetimeFreeNightsCap != null
-              ? `Per-member lifetime cap: ${caps.lifetimeFreeNightsCap}`
+              ? filterActive
+                ? `${totals?.all.freeNightsUsed ?? 0} all-time · per-member lifetime cap: ${caps.lifetimeFreeNightsCap}`
+                : `Per-member lifetime cap: ${caps.lifetimeFreeNightsCap}`
               : filterActive
                 ? `${totals?.all.freeNightsUsed ?? 0} all-time`
                 : "Guest-nights subsidised"

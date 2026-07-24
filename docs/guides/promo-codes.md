@@ -81,7 +81,10 @@ and stored as integer cents; dates are NZ date-only lodge nights.
    second or later use of the code.
 5. Bookings that split the promo across several members show an expander;
    open it to see each member's share of the discount and free nights.
-6. Click **CSV** to download the full filtered list.
+6. Click **CSV** to download the full filtered list. The export is fetched in a
+   single request and is recorded in the audit log as a privacy event (the
+   applied filters and the row count only — never the redemption rows
+   themselves); ordinary paginated browsing of the report is not audited.
 
 ## Settings reference
 
