@@ -22,6 +22,7 @@ import {
   Shield,
   Activity,
   Mail,
+  Newspaper,
   UserCheck,
   Trash2,
   Sliders,
@@ -303,6 +304,12 @@ const navSections: NavSection[] = [
         label: "Communications",
         icon: Mail,
         keywords: ["email", "newsletter", "bulk message", "broadcast"],
+      },
+      {
+        href: "/admin/notices",
+        label: "Member Notices",
+        icon: Newspaper,
+        keywords: ["news", "recent news", "notice", "announcement", "committee"],
       },
       // Lockers is lodge-scoped (#130, ADR-005) — reached via the lodge hub's
       // "Lockers" card, not a standalone sidebar entry.
