@@ -30,11 +30,11 @@ describe("notice-published email token escaping", () => {
   it("HTML-escapes a malicious {{noticeTitle}} in the rendered email body", () => {
     const html = renderOverrideBody(MALICIOUS_TITLE);
 
-    // The dangerous markup must not appear raw...
-    expect(html).not.toContain("<img");
-    expect(html).not.toContain("onerror=");
-    // ...it must arrive escaped instead.
-    expect(html).toContain("&lt;img");
+    // The title must never appear as live markup (raw <img ... onerror=...>)...
+    expect(html).not.toContain(MALICIOUS_TITLE);
+    expect(html).not.toContain("<img src=x onerror=");
+    // ...it must arrive fully escaped instead.
+    expect(html).toContain("&lt;img src=x onerror=&quot;alert(1)&quot;&gt;");
   });
 
   it("still renders a benign title as readable text", () => {
