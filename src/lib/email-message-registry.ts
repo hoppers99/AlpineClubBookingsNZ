@@ -720,6 +720,8 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "newGuestCount",
   "newTotal",
   "nominatorName",
+  "noticeTitle",
+  "noticeUrl",
   "occupiedBeds",
   "oldCheckIn",
   "oldCheckOut",

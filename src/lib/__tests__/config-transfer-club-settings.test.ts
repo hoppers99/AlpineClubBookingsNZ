@@ -70,7 +70,7 @@ const MODULES = {
   xeroIntegration: false, bedAllocation: true, internetBankingPayments: false,
   addressAutocomplete: false, groupBookings: true, lockers: true,
   induction: true, workParties: true, promoCodes: true, hutLeaders: true,
-  communications: true, skifieldConditions: true,
+  communications: true, memberNotices: true, skifieldConditions: true,
   twoFactor: false, analytics: false,
   // Every travelling module flag is a non-null Boolean; the #2200 dry-run
   // `constraints.required` audit rejects a projected null, so the fixture must

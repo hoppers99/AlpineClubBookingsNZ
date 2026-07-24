@@ -1186,6 +1186,25 @@ export function bulkCommunicationTemplate(
   `);
 }
 
+// ---- Member notice published ----
+
+export function noticePublishedTemplate(
+  firstName: string,
+  noticeTitle: string,
+  noticeUrl: string
+): string {
+  const p = emailPalette();
+  return layout(`
+    ${heading("New notice from the committee")}
+    <p style="color: ${p.deep}; font-size: 15px; line-height: 1.6;">Hi ${escapeHtml(firstName)},</p>
+    <p style="color: ${p.deep}; font-size: 15px; line-height: 1.6;">The ${escapeHtml(CLUB_NAME)} committee has posted a new notice:</p>
+    <p style="color: ${p.deep}; font-size: 17px; font-weight: 600; line-height: 1.5;">${escapeHtml(noticeTitle)}</p>
+    ${button("Read the notice", noticeUrl)}
+    ${muted(`You are receiving this because you opted in to club communications. You can update your email preferences in your account settings.`)}
+    ${button("Manage Preferences", BASE_URL + "/profile")}
+  `);
+}
+
 // ---- N-13: Admin Daily Digest ----
 
 export function adminDailyDigestTemplate(sections: {

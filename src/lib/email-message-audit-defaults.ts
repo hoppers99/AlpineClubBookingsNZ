@@ -302,6 +302,10 @@ export const EMAIL_AUDIT_DEFAULTS = {
     "defaultSubject": "{{adminEnteredSubject}}",
     "defaultBody": "{{adminEnteredSubject}}\n\n{{adminEnteredBody}}\n\nThis email was sent to you by the {{CLUB_NAME}} administration. You can update your email preferences in your account settings.\n\nManage Preferences: {{BASE_URL}}/profile"
   },
+  "notice-published": {
+    "defaultSubject": "New notice: {{noticeTitle}}",
+    "defaultBody": "Hi {{firstName}},\n\nThe {{CLUB_NAME}} committee has posted a new notice: {{noticeTitle}}\n\nRead it here: {{noticeUrl}}\n\nYou can update your email preferences in your account settings.\n\nManage Preferences: {{BASE_URL}}/profile"
+  },
   "website-contact": {
     "defaultSubject": "Website Contact{{recipientLabel}}: {{name}}",
     "defaultBody": "New Contact Form Submission\n\nName: {{name}}\nEmail: {{email}}\nMessage: {{message}}"

@@ -17,6 +17,7 @@ export const MODULE_KEYS = [
   "promoCodes",
   "hutLeaders",
   "communications",
+  "memberNotices",
   "skifieldConditions",
   "twoFactor",
   "magicLink",
@@ -71,6 +72,7 @@ export const DEFAULT_MODULE_SETTINGS: ModuleSettingsValues = {
   promoCodes: true,
   hutLeaders: true,
   communications: true,
+  memberNotices: true,
   skifieldConditions: true,
   twoFactor: false,
   magicLink: false,
@@ -199,6 +201,13 @@ export const MODULE_DEFINITIONS: Record<ModuleKey, ModuleDefinition> = {
     label: "Communications",
     description:
       "Admin bulk email to members. Does not affect transactional notifications.",
+    dependencies: [],
+  },
+  memberNotices: {
+    key: "memberNotices",
+    label: "Member notices",
+    description:
+      "Committee-authored news notices targeted to member audiences, shown on the member dashboard with per-member read tracking.",
     dependencies: [],
   },
   skifieldConditions: {

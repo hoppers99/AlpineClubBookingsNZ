@@ -62,6 +62,7 @@ deploy-time setup default **off**; general-purpose modules default **on**):
 | Promo codes (`promoCodes`) | Discount codes on bookings | On |
 | Hut leaders (`hutLeaders`) | Daily hut-leader assignment and auto-assignment | On |
 | Communications (`communications`) | Admin bulk email to members | On |
+| Member notices (`memberNotices`) | Committee news notices targeted to member audiences, shown on the dashboard with read/acknowledge tracking | On |
 | Ski-field conditions (`skifieldConditions`) | Mountain/road status panel and the Mountain Conditions page | On |
 | Two-factor authentication (`twoFactor`) | Second-factor after password login | Off |
 | Email sign-in link (`magicLink`) | Single-use email sign-in links | Off |

@@ -670,6 +670,10 @@ model Member {
   lockersAllocated                           Locker[]                                   @relation("LockerAllocatedMember")
   committeeAssignments                       CommitteeAssignment[]                      @relation("CommitteeAssignmentMember")
   committeeAssignmentsAssigned               CommitteeAssignment[]                      @relation("CommitteeAssignmentAssignedBy")
+  noticesCreated                             Notice[]                                   @relation("NoticeCreatedBy")
+  noticesUpdated                             Notice[]                                   @relation("NoticeUpdatedBy")
+  noticeAudienceTargets                      NoticeAudience[]                           @relation("NoticeAudienceMember")
+  noticeReadReceipts                         NoticeReadReceipt[]                        @relation("NoticeReadReceiptMember")
 
   // Member profile photo (MP1). Outbound scalar FK, so it is part of the
   // additive master-wins field merge (not a re-pointed inbound relation); the
@@ -1208,6 +1212,7 @@ model MembershipType {
   annualFees            MembershipAnnualFee[]
   seasonRates           MembershipTypeSeasonRate[]
   joiningFees           JoiningFee[]
+  noticeAudiences       NoticeAudience[]
 
   @@index([isActive, sortOrder])
   @@index([sortOrder])
@@ -3504,6 +3509,11 @@ model ClubModuleSettings {
   // AI help assistant (#2211, epic #2094 C3). Default OFF; free-text help
   // questions answered by a paid AI model, grounded in each page's help content.
   aiAssistant             Boolean  @default(false)
+  // Member notices / Recent News (memberNotices module). Default ON: an existing
+  // install gets committee news + read tracking without a config step. Safe to
+  // add as a defaulted column because every read narrows to
+  // CLUB_MODULE_SETTINGS_COLUMN_SELECT.
+  memberNotices           Boolean  @default(true)
   updatedByMemberId       String?
   createdAt               DateTime @default(now())
   updatedAt               DateTime @default(now()) @updatedAt
@@ -3582,6 +3592,7 @@ model Lodge {
   instructions             LodgeInstruction[]
   bookingRequests          BookingRequest[]
   displayDevices           LodgeDisplayDevice[]
+  noticeAudiences          NoticeAudience[]
 }
 
 model LodgeSettings {
@@ -3786,6 +3797,115 @@ model SiteBanner {
   updatedAt         DateTime           @updatedAt
 
   @@index([active, startDate, endDate])
+}
+
+// ---------------------------------------------------------------------------
+// Member Notices / Recent News (memberNotices module)
+//
+// Committee/admin-authored, audience-targeted notices with per-member read
+// receipts. bodyHtml is sanitised on save AND re-sanitised at render
+// (defense-in-depth, sanitizePageContentHtml). Members never see audience
+// definitions or other members' receipts; the single visibility predicate in
+// src/lib/notices.ts (visibleNoticeWhere) gates every member-facing read so no
+// caller can diverge. financialMembersOnly restricts GROUP-kind audience
+// matches to paid-up/exempt (financial) members; explicit MEMBER targets always
+// see the notice.
+// ---------------------------------------------------------------------------
+
+enum NoticeStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum NoticeAudienceKind {
+  ALL_MEMBERS
+  MEMBER
+  MEMBERSHIP_TYPE
+  LODGE
+  COMMITTEE_ROLE
+}
+
+model Notice {
+  id                      String       @id @default(cuid())
+  title                   String       @db.VarChar(200)
+  // Sanitised authored HTML (sanitizePageContentHtml on save; re-sanitised at
+  // render). Never rendered raw.
+  bodyHtml                String       @db.Text
+  status                  NoticeStatus @default(DRAFT)
+  // Set once, on the first DRAFT/ARCHIVED -> PUBLISHED transition; never
+  // rewritten on re-publish so the member-facing publishedAt ordering is stable.
+  publishedAt             DateTime?
+  expiresAt               DateTime?
+  pinned                  Boolean      @default(false)
+  requiresAcknowledgement Boolean      @default(false)
+  // When true, group-kind audience matches (ALL_MEMBERS/MEMBERSHIP_TYPE/LODGE/
+  // COMMITTEE_ROLE) only reach financial (paid-up or exempt) members; explicit
+  // MEMBER targets are exempt from this filter.
+  financialMembersOnly    Boolean      @default(false)
+  // Single-send guard for the optional email-on-publish. Set once after the send
+  // batch commits; a second publish never re-emails.
+  emailedAt               DateTime?
+  createdByMemberId       String?
+  updatedByMemberId       String?
+  createdAt               DateTime     @default(now())
+  updatedAt               DateTime     @updatedAt
+
+  createdBy Member? @relation("NoticeCreatedBy", fields: [createdByMemberId], references: [id], onDelete: SetNull)
+  updatedBy Member? @relation("NoticeUpdatedBy", fields: [updatedByMemberId], references: [id], onDelete: SetNull)
+
+  audiences    NoticeAudience[]
+  readReceipts NoticeReadReceipt[]
+
+  @@index([status, publishedAt])
+  @@index([createdByMemberId])
+  @@index([updatedByMemberId])
+}
+
+// One audience-targeting rule for a notice. Real (not app-only) foreign keys on
+// every typed target so a deleted target row Cascades the audience row away
+// (fails closed — a stale id can never widen visibility). App-side dedup is via
+// replace-all writes (deleteMany + createMany) inside the update transaction,
+// mirroring replaceMembershipTypeRuleConfiguration.
+model NoticeAudience {
+  id               String             @id @default(cuid())
+  noticeId         String
+  kind             NoticeAudienceKind
+  memberId         String?
+  membershipTypeId String?
+  lodgeId          String?
+  committeeRoleId  String?
+  createdAt        DateTime           @default(now())
+
+  notice         Notice          @relation(fields: [noticeId], references: [id], onDelete: Cascade)
+  member         Member?         @relation("NoticeAudienceMember", fields: [memberId], references: [id], onDelete: Cascade)
+  membershipType MembershipType? @relation(fields: [membershipTypeId], references: [id], onDelete: Cascade)
+  lodge          Lodge?          @relation(fields: [lodgeId], references: [id], onDelete: Cascade)
+  committeeRole  CommitteeRole?  @relation(fields: [committeeRoleId], references: [id], onDelete: Cascade)
+
+  @@index([noticeId])
+  @@index([memberId])
+  @@index([membershipTypeId])
+  @@index([lodgeId])
+  @@index([committeeRoleId])
+}
+
+// Per-member read receipt. readAt is set once on first open and never
+// overwritten; acknowledgedAt is set once when a member acknowledges a notice
+// that requiresAcknowledgement.
+model NoticeReadReceipt {
+  id             String    @id @default(cuid())
+  noticeId       String
+  memberId       String
+  readAt         DateTime  @default(now())
+  acknowledgedAt DateTime?
+
+  notice Notice @relation(fields: [noticeId], references: [id], onDelete: Cascade)
+  member Member @relation("NoticeReadReceiptMember", fields: [memberId], references: [id], onDelete: Cascade)
+
+  @@unique([noticeId, memberId])
+  @@index([noticeId, readAt])
+  @@index([memberId])
 }
 
 enum NotificationDeliveryMode {
@@ -4739,7 +4859,8 @@ model CommitteeRole {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  assignments CommitteeAssignment[]
+  assignments     CommitteeAssignment[]
+  noticeAudiences NoticeAudience[]
 
   @@index([isActive, sortOrder])
   @@index([sortOrder])

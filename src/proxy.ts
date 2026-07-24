@@ -125,6 +125,7 @@ export const config = {
     "/api/group-bookings/:path*",
     "/api/inductions/:path*",
     "/api/lodge/:path*",
+    "/api/notices/:path*",
     "/api/promo-codes/:path*",
     "/api/skifield-conditions/:path*",
     "/api/skifield-whakapapa/:path*",
