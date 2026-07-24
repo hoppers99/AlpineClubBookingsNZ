@@ -34,6 +34,10 @@ export function CommitteeMembersGrid() {
   const [photoDisplay, setPhotoDisplay] =
     useState<CommitteePhotoDisplay>("NONE");
   const [loading, setLoading] = useState(true);
+  // Members whose photo failed to load (endpoint error, or the photo was
+  // removed after the roster was fetched). We fall back to the initials block
+  // so a broken-image icon never shows on the public page.
+  const [failedPhotos, setFailedPhotos] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -93,9 +97,11 @@ export function CommitteeMembersGrid() {
                 className={`mb-4 flex h-24 w-24 items-center justify-center overflow-hidden border border-brand-ridge/25 bg-brand-mist/40 text-xl font-semibold text-brand-deep/70 ${
                   photoDisplay === "CIRCLE" ? "rounded-full" : "rounded-lg"
                 }`}
-                aria-hidden={member.photo ? undefined : true}
+                aria-hidden={
+                  member.photo && !failedPhotos[member.id] ? undefined : true
+                }
               >
-                {member.photo ? (
+                {member.photo && !failedPhotos[member.id] ? (
                   // Plain <img>: the scoped serving endpoint is uncacheable by the
                   // image optimiser and gated per member.
                   // eslint-disable-next-line @next/next/no-img-element
@@ -107,7 +113,14 @@ export function CommitteeMembersGrid() {
                     alt={`${member.name}'s photo`}
                     width={96}
                     height={96}
+                    loading="lazy"
                     className="h-full w-full object-cover"
+                    onError={() =>
+                      setFailedPhotos((prev) => ({
+                        ...prev,
+                        [member.id]: true,
+                      }))
+                    }
                   />
                 ) : (
                   <span>{memberInitials(member.name)}</span>

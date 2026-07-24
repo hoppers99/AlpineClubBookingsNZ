@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Camera, Loader2, Trash2, UploadCloud } from "lucide-react";
@@ -109,6 +109,11 @@ export function MemberPhotoEditor({
     lastX: 0,
     lastY: 0,
   });
+  // Object URLs created for a decode that has not yet been adopted into
+  // `source` state. If the component unmounts mid-decode the load handlers never
+  // run, so state alone would leak the URL — we revoke anything still pending on
+  // unmount.
+  const pendingObjectUrlsRef = useRef<Set<string>>(new Set());
 
   const [hasPhoto, setHasPhoto] = useState(initialHasPhoto);
   const [version, setVersion] = useState<string | null>(initialPhotoVersion);
@@ -125,16 +130,25 @@ export function MemberPhotoEditor({
   const scale = baseScale * zoom;
   const dialogOpen = source !== null;
 
-  const releaseSource = useCallback((current: LoadedSource | null) => {
-    if (current) URL.revokeObjectURL(current.objectUrl);
-  }, []);
-
-  // Revoke the last object URL when the component unmounts.
+  // Revoke the object URL of the source being replaced. This cleanup runs both
+  // when `source` changes (revoking the previous value) and on unmount, so the
+  // revoke is an effect side effect rather than living inside a setState updater.
   useEffect(() => {
+    const url = source?.objectUrl;
     return () => {
-      if (source) URL.revokeObjectURL(source.objectUrl);
+      if (url) URL.revokeObjectURL(url);
     };
   }, [source]);
+
+  // Safety net: revoke any object URL created for a decode that never reached
+  // state (e.g. the component unmounted while the image was still decoding).
+  useEffect(() => {
+    const pending = pendingObjectUrlsRef.current;
+    return () => {
+      for (const url of pending) URL.revokeObjectURL(url);
+      pending.clear();
+    };
+  }, []);
 
   // Redraw the preview whenever the framing changes OR the canvas mounts.
   useEffect(() => {
@@ -172,24 +186,29 @@ export function MemberPhotoEditor({
     }
 
     const objectUrl = URL.createObjectURL(file);
+    // Track the URL until it is either adopted into `source` state (whose effect
+    // then owns its revocation) or revoked on failure below.
+    pendingObjectUrlsRef.current.add(objectUrl);
     const image = new Image();
     image.onload = () => {
       const natural = { width: image.naturalWidth, height: image.naturalHeight };
       if (natural.width < 1 || natural.height < 1) {
+        pendingObjectUrlsRef.current.delete(objectUrl);
         URL.revokeObjectURL(objectUrl);
         toast.error("That image could not be read.");
         return;
       }
       const nextBase = coverBaseScale(natural, VIEWPORT);
-      setSource((prev) => {
-        releaseSource(prev);
-        return { image, natural, objectUrl };
-      });
+      // The source-revoke effect releases the previous source's URL; the revoke
+      // stays out of the state updater (no side effects in a reducer).
+      pendingObjectUrlsRef.current.delete(objectUrl);
+      setSource({ image, natural, objectUrl });
       setZoom(MIN_ZOOM);
       // Centre the image within the covered viewport.
       setOffset(clampOffset({ x: 0, y: 0 }, natural, VIEWPORT, nextBase));
     };
     image.onerror = () => {
+      pendingObjectUrlsRef.current.delete(objectUrl);
       URL.revokeObjectURL(objectUrl);
       toast.error("That image could not be read.");
     };
@@ -197,10 +216,8 @@ export function MemberPhotoEditor({
   }
 
   function closeDialog() {
-    setSource((prev) => {
-      releaseSource(prev);
-      return null;
-    });
+    // The source-revoke effect releases the URL when `source` becomes null.
+    setSource(null);
   }
 
   function handleZoomChange(nextZoom: number) {
@@ -243,6 +260,51 @@ export function MemberPhotoEditor({
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
+  }
+
+  // Keyboard affordance for panning (and, for parity with the zoom slider,
+  // +/- to zoom) so the cropper is operable without a pointer. Arrow keys nudge
+  // the same `offset` state the pointer drag mutates, clamped identically.
+  function handleCanvasKeyDown(event: React.KeyboardEvent<HTMLCanvasElement>) {
+    if (!source) return;
+    const step = event.shiftKey ? 32 : 8;
+    let dx = 0;
+    let dy = 0;
+    switch (event.key) {
+      case "ArrowLeft":
+        dx = -step;
+        break;
+      case "ArrowRight":
+        dx = step;
+        break;
+      case "ArrowUp":
+        dy = -step;
+        break;
+      case "ArrowDown":
+        dy = step;
+        break;
+      case "+":
+      case "=":
+        event.preventDefault();
+        handleZoomChange(Math.min(MAX_ZOOM, zoom + 0.25));
+        return;
+      case "-":
+      case "_":
+        event.preventDefault();
+        handleZoomChange(Math.max(MIN_ZOOM, zoom - 0.25));
+        return;
+      default:
+        return;
+    }
+    event.preventDefault();
+    setOffset((current) =>
+      clampOffset(
+        { x: current.x + dx, y: current.y + dy },
+        source.natural,
+        VIEWPORT,
+        scale,
+      ),
+    );
   }
 
   async function handleSave() {
@@ -379,13 +441,17 @@ export function MemberPhotoEditor({
               </Button>
             ) : null}
           </div>
-        ) : (
+        ) : canEdit === false ? (
+          // Definitive denial only. While `canEdit` is still `undefined`
+          // (permission resolving) we render the avatar with no controls and no
+          // message, matching the house anti-flash contract — an edit-capable
+          // admin must never briefly see a "you cannot change this" message.
           <p className="text-sm text-muted-foreground">
             {isAdmin
               ? "You have view-only access to membership, so you cannot change this photo."
               : "You do not have permission to change this photo."}
           </p>
-        )}
+        ) : null}
       </div>
       <p className="text-sm text-muted-foreground">{visibilityHint}</p>
       {editable && isAdmin ? (
@@ -420,9 +486,10 @@ export function MemberPhotoEditor({
               {isAdmin ? `Frame ${memberName}'s photo` : "Frame your photo"}
             </DialogTitle>
             <DialogDescription>
-              Drag to reposition and use the zoom slider. The area inside the
-              frame is saved as your photo; some pages show it as a circle and
-              others as a square, so the corners may be visible too.
+              Drag or use the arrow keys to reposition; use the zoom slider or
+              the plus and minus keys to zoom. The area inside the frame is saved
+              as your photo; some pages show it as a circle and others as a
+              square, so the corners may be visible too.
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col items-center gap-4">
@@ -434,13 +501,15 @@ export function MemberPhotoEditor({
                 ref={setCanvasEl}
                 width={VIEWPORT}
                 height={VIEWPORT}
+                tabIndex={0}
                 onPointerDown={handlePointerDown}
                 onPointerMove={handlePointerMove}
                 onPointerUp={handlePointerUp}
                 onPointerCancel={handlePointerUp}
-                className="cursor-move rounded-md bg-muted"
+                onKeyDown={handleCanvasKeyDown}
+                className="cursor-move rounded-md bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                 role="img"
-                aria-label="Photo crop preview. Drag to reposition."
+                aria-label="Photo crop preview. Drag or use the arrow keys to reposition; use the zoom slider or the plus and minus keys to zoom."
               />
               {/* Circular framing guide: darkens the area outside the circle. */}
               <div

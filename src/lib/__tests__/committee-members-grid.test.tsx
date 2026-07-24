@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CommitteeMembersGrid } from "@/components/website/committee-members-grid";
 
@@ -101,10 +101,47 @@ describe("CommitteeMembersGrid", () => {
     const img = screen.getByAltText("Alex Admin's photo") as HTMLImageElement;
     expect(img.getAttribute("src")).toBe("/api/members/mem-1/photo?v=v9");
     expect(img.getAttribute("src")).not.toContain("/api/images");
+    // Roster photos are lazy-loaded so the public page is not blocked on them.
+    expect(img.getAttribute("loading")).toBe("lazy");
     // Member without a photo: initials placeholder.
     expect(screen.getByText("JJ")).toBeTruthy();
     // Circular shape applied to the avatar wrappers.
     expect(container.querySelector(".rounded-full")).toBeTruthy();
     expect(container.querySelector(".rounded-lg")).toBeNull();
+  });
+
+  it("falls back to initials when a roster photo fails to load (never a broken image on the public page)", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        photoDisplay: "CIRCLE",
+        members: [
+          {
+            id: "a1",
+            role: "President",
+            roleKey: "president",
+            name: "Alex Admin",
+            phone: null,
+            contactKey: null,
+            description: null,
+            photo: { memberId: "mem-1", version: "v9" },
+          },
+        ],
+      }),
+    }) as unknown as typeof fetch;
+
+    render(<CommitteeMembersGrid />);
+    const img = (await waitFor(() =>
+      screen.getByAltText("Alex Admin's photo"),
+    )) as HTMLImageElement;
+
+    // Simulate the scoped endpoint failing (or the photo removed after fetch).
+    fireEvent.error(img);
+
+    await waitFor(() =>
+      expect(screen.queryByAltText("Alex Admin's photo")).toBeNull(),
+    );
+    // The initials placeholder now stands in for the broken image.
+    expect(screen.getByText("AA")).toBeTruthy();
   });
 });
