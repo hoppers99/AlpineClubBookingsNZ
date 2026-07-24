@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext } from "@playwright/test";
-import { storageStatePath, submitLoginForm } from "./helpers/auth";
+import { loginPersona, storageStatePath } from "./helpers/auth";
 import { signIn } from "./helpers/auth";
 import { E2E_ADMIN } from "./helpers/fixtures";
 import { overrideModules, setModuleSettings } from "./helpers/modules";
@@ -127,9 +127,10 @@ test("an in-audience member sees the notice, reads it, and the admin report reco
 test("an out-of-audience member sees no card and gets a 404 on the direct URL", async ({
   page,
 }) => {
-  // Plain-member login: the signIn helper is Alice-only (it asserts an
-  // /admin/dashboard landing), so drive the login form directly.
-  await submitLoginForm(page, OUT_OF_AUDIENCE_EMAIL);
+  // Plain-member login via loginPersona: it clears whatever two-factor step
+  // the stack demands (enrollment is forced for every member here) without
+  // signIn's Alice-only /admin/dashboard landing assertion.
+  await loginPersona(page, OUT_OF_AUDIENCE_EMAIL);
   await expect(page).toHaveURL(/\/dashboard/);
 
   await page.goto("/dashboard");
