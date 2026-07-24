@@ -94,7 +94,7 @@ function spec(
 }
 
 /**
- * The authoritative classification of all 72 Member FK-owning relations. The
+ * The authoritative classification of all 76 Member FK-owning relations. The
  * DMMF/schema completeness test (member-merge-dmmf.test.ts) fails CI if the
  * schema grows a Member relation that is missing here (or if a key here no
  * longer exists in the schema), so a new relation cannot silently escape merge
@@ -243,6 +243,23 @@ export const MEMBER_MERGE_RELATION_SPECS: readonly MemberMergeRelationSpec[] = [
   }),
   spec("MemberInductionAssignedSigner", "member", "memberId", "resolve", {
     note: "@@unique(inductionId,memberId); keep master's row",
+  }),
+
+  // --- Member notices ---
+  // Notice authorship actor back-refs: nullable SetNull columns with no member
+  // unique — history follows the surviving person (mirrors SiteBanner's FK-less
+  // actor columns, but these are real FKs so they must be classified).
+  spec("Notice", "createdBy", "createdByMemberId", "move"),
+  spec("Notice", "updatedBy", "updatedByMemberId", "move"),
+  // Individual audience targeting: Cascade FK, no member unique on the audience
+  // table, so a loser's targeted-notice rows re-point onto the master. A
+  // resulting duplicate (both members targeted on one notice) is harmless — the
+  // visibility predicate OR-matches once and admin writes replace-all.
+  spec("NoticeAudience", "member", "memberId", "move"),
+  // Read receipts: @@unique(noticeId,memberId) — keep the master's receipt on a
+  // collision, else move the loser's. Handled by the generic keyed resolver.
+  spec("NoticeReadReceipt", "member", "memberId", "resolve", {
+    note: "@@unique(noticeId,memberId); keep master's receipt on collision",
   }),
 ];
 
@@ -1150,6 +1167,7 @@ const GENERIC_KEYED_RESOLVERS: readonly {
   { spec: "CommitteeAssignment.member", delegate: "committeeAssignment", memberColumn: "memberId", keys: [["committeeRoleId"]] },
   { spec: "MemberInductionAssignedSigner.member", delegate: "memberInductionAssignedSigner", memberColumn: "memberId", keys: [["inductionId"]] },
   { spec: "NotificationPreference.member", delegate: "notificationPreference", memberColumn: "memberId", keys: [[]] },
+  { spec: "NoticeReadReceipt.member", delegate: "noticeReadReceipt", memberColumn: "memberId", keys: [["noticeId"]] },
 ];
 
 /**

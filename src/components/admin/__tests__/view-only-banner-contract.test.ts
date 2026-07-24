@@ -709,19 +709,19 @@ describe("view-only section banner coverage (#2160)", () => {
         (f) => bannerRenderSites(f.ast).length > 0,
       ).length,
     }).toEqual({
-      // Reconciled to the true current counts: this block was stale by one
-      // (callSites 264→265, exceptions 32→33, exceptionFiles 15→16) after a
-      // committee admin control (member-photos #171) landed on main without its
-      // coverage figure being re-run. The per-bucket block below was already
-      // consistent (its files sum to 16), so only these totals moved — no bucket
-      // change. Never loosen these; re-run and update on any real rollout change.
-      callSites: 265,
-      optOuts: 232,
-      staticOptOuts: 211,
+      // +1 vs upstream's 263: member-photos (hoppers#171) adds the committee
+      // photo-display control — a leaf exception that keeps its own reason.
+      // +4 vs 264 / +2 banners vs 75: the Member Notices feature adds two
+      // banner-bearing admin surfaces (the notices list page and the notice
+      // editor), each with static opt-out ViewOnlyActionButtons covered by an
+      // AdminViewOnlySectionBanner in the same file.
+      callSites: 268,
+      optOuts: 235,
+      staticOptOuts: 214,
       vouchedOptOuts: 21,
       exceptions: 33,
       exceptionFiles: 16,
-      bannerComponents: 76,
+      bannerComponents: 77,
     });
 
     /*

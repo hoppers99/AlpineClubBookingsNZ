@@ -63,6 +63,29 @@ and stored as integer cents; dates are NZ date-only lodge nights.
    that has been redeemed is **archived** rather than deleted (its history is
    kept); use **Restore** from the Archived section to bring it back.
 
+### See who redeemed a code
+
+1. Click **Redemptions** on any code (active, archived, or an internal
+   work-party code) to open its redemption report. This view is available to
+   view-only bookings admins as well — it changes nothing.
+2. The tiles at the top summarise **total redemptions** (with progress toward
+   the total-redemptions cap when one is set), **unique members**, **total
+   discounted** (the summed discount), and **free nights used**.
+3. Filter by **redeemed date range** (quick presets or custom dates) and, on a
+   multi-lodge site, by **lodge**. The tiles and table recompute for the filter;
+   the tiles also show the all-time figure alongside the filtered one.
+4. Each table row is one booking's redemption: when it was redeemed, the member
+   (name and email, linking to their profile), the booking reference (linking to
+   the booking), the lodge, the stay dates and nights, the eligible guest count,
+   the discount, and the free nights used. A **Use #N** badge marks a member's
+   second or later use of the code.
+5. Bookings that split the promo across several members show an expander;
+   open it to see each member's share of the discount and free nights.
+6. Click **CSV** to download the full filtered list. The export is fetched in a
+   single request and is recorded in the audit log as a privacy event (the
+   applied filters and the row count only — never the redemption rows
+   themselves); ordinary paginated browsing of the report is not audited.
+
 ## Settings reference
 
 | Setting | What it controls | Default | Notes / constraints |

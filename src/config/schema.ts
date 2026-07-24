@@ -140,6 +140,7 @@ export const featureFlagsSchema = z
     promoCodes: z.boolean(),
     hutLeaders: z.boolean(),
     communications: z.boolean(),
+    memberNotices: z.boolean(),
     skifieldConditions: z.boolean(),
     twoFactor: z.boolean(),
     magicLink: z.boolean(),

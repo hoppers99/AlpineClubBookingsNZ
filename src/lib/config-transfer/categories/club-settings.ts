@@ -168,7 +168,7 @@ export const SINGLETONS: SingletonSpec[] = [
       "kiosk", "chores", "financeDashboard", "waitlist", "xeroIntegration",
       "bedAllocation", "internetBankingPayments", "addressAutocomplete",
       "groupBookings", "lockers", "induction", "workParties", "promoCodes",
-      "hutLeaders", "communications", "skifieldConditions",
+      "hutLeaders", "communications", "memberNotices", "skifieldConditions",
       "twoFactor", "analytics", "lobbyDisplay",
       // aiAssistant SHOULD-TRAVEL (#2211): a capability toggle like xeroIntegration,
       // not an auth-provider decision like magicLink/googleLogin. Importing `true`
@@ -217,6 +217,7 @@ export const SINGLETONS: SingletonSpec[] = [
       promoCodes: { required: true },
       hutLeaders: { required: true },
       communications: { required: true },
+      memberNotices: { required: true },
       skifieldConditions: { required: true },
       twoFactor: { required: true },
       analytics: { required: true },

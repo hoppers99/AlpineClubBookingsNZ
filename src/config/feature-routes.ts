@@ -122,6 +122,15 @@ export const FEATURE_ROUTE_RULES: FeatureRouteRule[] = [
     prefixes: ["/admin/communications", "/api/admin/communications"],
   },
   {
+    flag: "memberNotices",
+    prefixes: [
+      "/notices",
+      "/api/notices",
+      "/admin/notices",
+      "/api/admin/notices",
+    ],
+  },
+  {
     flag: "skifieldConditions",
     prefixes: [
       "/admin/mountain-conditions",

@@ -948,6 +948,38 @@ const adminHelpEntries: HelpEntry[] = [
     ),
   ),
   entry(
+    "/admin/notices",
+    help(
+      "Member Notices",
+      "Member Notices posts committee news to targeted member audiences and tracks who has read each notice.",
+      [
+        "Target a notice to everyone or to specific members, membership types, lodges, or committee roles.",
+        "Publish when ready; optionally email the notice to the audience once on publish.",
+        "Open a notice to see the read-status report and, where required, acknowledgements.",
+      ],
+      [
+        {
+          name: "Audience",
+          description:
+            "Who can see the notice: everyone, or a targeted set of members, types, lodges, or roles.",
+        },
+        {
+          name: "Financial members only",
+          description:
+            "When set, group audiences reach only paid-up or exempt members; individually targeted members always see it.",
+        },
+        {
+          name: "Read receipts",
+          description:
+            "Records when each member first opened the notice, and their acknowledgement when required.",
+        },
+      ],
+      [
+        "Notices can carry private committee information. Check the audience before publishing.",
+      ],
+    ),
+  ),
+  entry(
     "/admin/lockers",
     help(
       "Lockers",

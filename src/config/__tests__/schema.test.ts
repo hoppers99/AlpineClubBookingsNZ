@@ -230,6 +230,7 @@ describe("featureFlagsSchema", () => {
         promoCodes: false,
         hutLeaders: true,
         communications: false,
+        memberNotices: true,
         skifieldConditions: true,
         twoFactor: false,
         magicLink: false,
