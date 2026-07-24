@@ -277,6 +277,31 @@ describe("listNoticesForMember", () => {
     expect(await listNoticesForMember("nope", { now: NOW })).toEqual([]);
     expect(mocks.noticeFindMany).not.toHaveBeenCalled();
   });
+
+  it("uses precomputed keys without re-resolving the member", async () => {
+    mocks.noticeFindMany.mockResolvedValue([]);
+    const keys: MemberAudienceKeys = {
+      memberId: "member-1",
+      membershipTypeIds: ["type-1"],
+      lodgeIds: [],
+      committeeRoleIds: [],
+      isFinancial: true,
+    };
+
+    await listNoticesForMember("member-1", { now: NOW, keys });
+
+    // Precomputed keys short-circuit the getMemberAudienceKeys lookup.
+    expect(mocks.memberFindUnique).not.toHaveBeenCalled();
+    expect(mocks.noticeFindMany).toHaveBeenCalled();
+  });
+
+  it("treats precomputed keys of null as 'no such member'", async () => {
+    expect(
+      await listNoticesForMember("member-1", { now: NOW, keys: null }),
+    ).toEqual([]);
+    expect(mocks.memberFindUnique).not.toHaveBeenCalled();
+    expect(mocks.noticeFindMany).not.toHaveBeenCalled();
+  });
 });
 
 describe("getUnreadNoticeCount", () => {
@@ -295,6 +320,22 @@ describe("getUnreadNoticeCount", () => {
         }),
       }),
     );
+  });
+
+  it("uses precomputed keys without re-resolving the member", async () => {
+    mocks.noticeCount.mockResolvedValue(1);
+    const keys: MemberAudienceKeys = {
+      memberId: "member-1",
+      membershipTypeIds: [],
+      lodgeIds: [],
+      committeeRoleIds: [],
+      isFinancial: false,
+    };
+
+    await getUnreadNoticeCount("member-1", { now: NOW, keys });
+
+    expect(mocks.memberFindUnique).not.toHaveBeenCalled();
+    expect(mocks.noticeCount).toHaveBeenCalled();
   });
 });
 

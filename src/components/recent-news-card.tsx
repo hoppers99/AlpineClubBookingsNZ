@@ -7,7 +7,11 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { getUnreadNoticeCount, listNoticesForMember } from "@/lib/notices";
+import {
+  getMemberAudienceKeys,
+  getUnreadNoticeCount,
+  listNoticesForMember,
+} from "@/lib/notices";
 
 /**
  * Dashboard "Recent News" card: the member's top few visible notices (pinned
@@ -16,10 +20,19 @@ import { getUnreadNoticeCount, listNoticesForMember } from "@/lib/notices";
  * club that has not posted any. Only ever shows the member's OWN read state.
  */
 export async function RecentNewsCard({ memberId }: { memberId: string }) {
+  // Resolve the member's audience keys ONCE and share them across the two reads
+  // below (each would otherwise re-resolve them), keeping a single `now` so the
+  // season/visibility window is consistent between the list and the count.
+  const now = new Date();
+  const keys = await getMemberAudienceKeys(memberId, { now });
+  if (!keys) {
+    return null;
+  }
+
   const [notices, unreadCount] = await Promise.all([
-    listNoticesForMember(memberId, { limit: 3 }),
+    listNoticesForMember(memberId, { limit: 3, now, keys }),
     // True unread total across all visible notices (not just the top 3).
-    getUnreadNoticeCount(memberId),
+    getUnreadNoticeCount(memberId, { now, keys }),
   ]);
   if (notices.length === 0) {
     return null;

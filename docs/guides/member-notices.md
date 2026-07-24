@@ -34,7 +34,10 @@ post with per-member read tracking. The two are complementary — a notice can
 A notice is shown to a member only if it targets them. You can target:
 
 - **Everyone** — all active members.
-- **Specific members** — chosen individually.
+- **Specific members** — chosen individually. Only **active** members are
+  reached: an inactive member you target individually cannot log in or read the
+  notice, so they are not emailed and do not appear as a permanently-unread row
+  in the read report.
 - **Membership types** — everyone whose current-season type matches. A member
   with no explicit season assignment still matches via their role's default
   type, so operational and new accounts are handled correctly.
@@ -82,6 +85,13 @@ means re-publishing never re-emails. The email:
 
 The email is a short "new notice" message with a link back to the notice on the
 site; the full notice always lives in the app.
+
+When the batch finishes, an audit record (`notice.emailSent`) is written with the
+audience size and the sent / failed / opted-out counts, so there is a trail of
+each send. If the send cannot even begin — for example the audience can't be
+resolved — the one-time send guard is released so a later re-publish can retry;
+once emails have started going out it is never released, so successful recipients
+are never emailed twice.
 
 ## Step-by-step
 

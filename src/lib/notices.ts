@@ -1,10 +1,18 @@
 import "server-only";
 
 import type { AgeTier, NoticeAudienceKind, Prisma } from "@prisma/client";
+import { getAgeTierSettings } from "@/lib/age-tier";
+import {
+  isSubscriptionEnforcementActive,
+  requiresPaidSubscriptionForAgeTier,
+} from "@/lib/member-subscription-eligibility";
 import {
   defaultMembershipTypeKeyForRole,
 } from "@/lib/membership-types";
-import { requiresPaidSubscriptionForMemberForBooking } from "@/lib/membership-type-policy";
+import {
+  requiresPaidSubscriptionForMemberForBooking,
+  resolveMembershipTypePoliciesForMembers,
+} from "@/lib/membership-type-policy";
 import { prisma } from "@/lib/prisma";
 import { getSeasonYear } from "@/lib/utils";
 
@@ -46,7 +54,7 @@ type FinancialDb = Parameters<typeof requiresPaidSubscriptionForMemberForBooking
  *   - current-season MemberSubscription.status === "PAID".
  * No parallel definition of "financial" is introduced.
  */
-async function isMemberFinancial(
+export async function isMemberFinancial(
   db: FinancialDb,
   params: { memberId: string; seasonYear: number; ageTier: AgeTier | null | undefined },
 ): Promise<boolean> {
@@ -65,6 +73,74 @@ async function isMemberFinancial(
     select: { status: true },
   });
   return sub?.status === "PAID";
+}
+
+/**
+ * Batched, many-member equivalent of {@link isMemberFinancial}, resolving the
+ * paid-up/exempt ("financial") status for a whole candidate set in a CONSTANT
+ * number of queries — replacing the previous per-member N+1 in
+ * resolveNoticeAudienceMembers. It faithfully decomposes
+ * requiresPaidSubscriptionForMemberForBooking + isMemberFinancial:
+ *   - ONE batched effective-type policy resolution (the very resolver the
+ *     single-member path calls under the hood);
+ *   - ONE batched current-season MemberSubscription read — because
+ *     (memberId, seasonYear) is unique there is at most one row per member, and
+ *     that single row yields BOTH the NOT_REQUIRED-dominance fact (used only by
+ *     BASED_ON_AGE_TIER types, matching hasNotRequiredSubscriptionRow) and the
+ *     PAID fact;
+ *   - the global subscription-enforcement flag and age-tier settings resolved
+ *     ONCE for the whole batch (the singular path re-derived them per member).
+ * isMemberFinancial stays the canonical single-member helper; a parity test
+ * (notices-financial-parity.test.ts) asserts the two never diverge.
+ */
+export async function resolveFinancialStatusForMembers(
+  members: ReadonlyArray<{ id: string; ageTier: AgeTier | null }>,
+  seasonYear: number,
+): Promise<Map<string, boolean>> {
+  const result = new Map<string, boolean>();
+  if (members.length === 0) {
+    return result;
+  }
+  const memberIds = members.map((m) => m.id);
+
+  const policies = await resolveMembershipTypePoliciesForMembers(prisma, {
+    memberIds,
+    seasonYear,
+  });
+
+  const subs = await prisma.memberSubscription.findMany({
+    where: { memberId: { in: memberIds }, seasonYear },
+    select: { memberId: true, status: true },
+  });
+  const statusByMember = new Map(subs.map((s) => [s.memberId, s.status]));
+
+  // Global config (same seams requiresPaidSubscriptionForBooking uses), once.
+  const enforcementActive = await isSubscriptionEnforcementActive();
+  const ageTierSettings = enforcementActive ? await getAgeTierSettings() : [];
+
+  for (const member of members) {
+    const policy = policies.get(member.id);
+    const status = statusByMember.get(member.id) ?? null;
+
+    let required: boolean;
+    if (policy?.subscriptionBehavior === "NOT_REQUIRED") {
+      required = false;
+    } else if (
+      policy?.subscriptionBehavior === "BASED_ON_AGE_TIER" &&
+      status === "NOT_REQUIRED"
+    ) {
+      // Matches hasNotRequiredSubscriptionRow: a NOT_REQUIRED row dominates.
+      required = false;
+    } else {
+      required = enforcementActive
+        ? requiresPaidSubscriptionForAgeTier(member.ageTier, ageTierSettings)
+        : false;
+    }
+
+    result.set(member.id, required ? status === "PAID" : true);
+  }
+
+  return result;
 }
 
 /**
@@ -258,10 +334,20 @@ const OWN_RECEIPT_INCLUDE = (memberId: string) =>
  */
 export async function listNoticesForMember(
   memberId: string,
-  options: { limit?: number; now?: Date } = {},
+  options: {
+    limit?: number;
+    now?: Date;
+    /** Precomputed audience keys (resolve once and share across sibling calls,
+     *  e.g. the dashboard card's list + unread-count). Pass `null` to mean "no
+     *  such member" without a lookup; omit to resolve internally. */
+    keys?: MemberAudienceKeys | null;
+  } = {},
 ): Promise<MemberNoticeView[]> {
   const now = options.now ?? new Date();
-  const keys = await getMemberAudienceKeys(memberId, { now });
+  const keys =
+    options.keys !== undefined
+      ? options.keys
+      : await getMemberAudienceKeys(memberId, { now });
   if (!keys) {
     return [];
   }
@@ -279,10 +365,17 @@ export async function listNoticesForMember(
 /** Count of visible notices the member has not opened. */
 export async function getUnreadNoticeCount(
   memberId: string,
-  options: { now?: Date } = {},
+  options: {
+    now?: Date;
+    /** Precomputed audience keys — see listNoticesForMember. */
+    keys?: MemberAudienceKeys | null;
+  } = {},
 ): Promise<number> {
   const now = options.now ?? new Date();
-  const keys = await getMemberAudienceKeys(memberId, { now });
+  const keys =
+    options.keys !== undefined
+      ? options.keys
+      : await getMemberAudienceKeys(memberId, { now });
   if (!keys) {
     return 0;
   }
@@ -552,8 +645,14 @@ export async function resolveNoticeAudienceMembers(
     return [];
   }
 
+  // active:true also filters explicit MEMBER targets down to active members.
+  // Group kinds already constrain active:true in their own queries, so only
+  // explicit targets could be inactive here; an inactive member cannot log in
+  // or read a notice, so they must not be emailed or surface as a permanent
+  // unread "ghost" in the read report. Any id dropped here is simply skipped by
+  // the `!member` guard below.
   const members = await prisma.member.findMany({
-    where: { id: { in: memberIds } },
+    where: { id: { in: memberIds }, active: true },
     select: {
       id: true,
       firstName: true,
@@ -563,6 +662,14 @@ export async function resolveNoticeAudienceMembers(
     },
   });
   const memberById = new Map(members.map((m) => [m.id, m]));
+
+  // financialMembersOnly filters GROUP-kind matches only (explicit MEMBER
+  // targets are always included). Resolve every candidate's financial status in
+  // a CONSTANT number of queries — batched — instead of the old per-member N+1;
+  // skip the work entirely when the notice is not financialMembersOnly.
+  const financialByMember = notice.financialMembersOnly
+    ? await resolveFinancialStatusForMembers(members, seasonYear)
+    : null;
 
   const result: ResolvedAudienceMember[] = [];
   for (const id of memberIds) {
@@ -575,12 +682,7 @@ export async function resolveNoticeAudienceMembers(
     // financialMembersOnly filters GROUP-kind-only matches; an explicit MEMBER
     // target is always included.
     if (notice.financialMembersOnly && !via.explicit) {
-      const financial = await isMemberFinancial(prisma, {
-        memberId: id,
-        seasonYear,
-        ageTier: member.ageTier,
-      });
-      if (!financial) {
+      if (!financialByMember?.get(id)) {
         continue;
       }
     }
