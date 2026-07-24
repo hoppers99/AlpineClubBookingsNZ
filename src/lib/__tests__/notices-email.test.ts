@@ -6,18 +6,24 @@ const mocks = vi.hoisted(() => ({
   sendEmail: vi.fn(),
   resolveAudience: vi.fn(),
   noticeFindUnique: vi.fn(),
+  noticeUpdateMany: vi.fn(),
   memberFindMany: vi.fn(),
   getAppBaseUrl: vi.fn(() => "http://x"),
+  createAuditLog: vi.fn(),
 }));
 
 vi.mock("@/lib/email", () => ({ sendEmail: mocks.sendEmail }));
 vi.mock("@/lib/email-templates", () => ({ noticePublishedTemplate: () => "<html></html>" }));
 vi.mock("@/lib/app-url", () => ({ getAppBaseUrl: mocks.getAppBaseUrl }));
+vi.mock("@/lib/audit", () => ({ createAuditLog: mocks.createAuditLog }));
 vi.mock("@/lib/logger", () => ({ default: { error: vi.fn() } }));
 vi.mock("@/lib/notices", () => ({ resolveNoticeAudienceMembers: mocks.resolveAudience }));
 vi.mock("@/lib/prisma", () => ({
   prisma: {
-    notice: { findUnique: mocks.noticeFindUnique },
+    notice: {
+      findUnique: mocks.noticeFindUnique,
+      updateMany: mocks.noticeUpdateMany,
+    },
     member: { findMany: mocks.memberFindMany },
   },
 }));
@@ -32,6 +38,8 @@ beforeEach(() => {
     status: "PUBLISHED",
   });
   mocks.sendEmail.mockResolvedValue({ status: "sent" });
+  mocks.noticeUpdateMany.mockResolvedValue({ count: 1 });
+  mocks.createAuditLog.mockResolvedValue(undefined);
 });
 
 it("does nothing for a notice that is not published", async () => {
@@ -85,4 +93,77 @@ it("treats a member with no preference row as opted out", async () => {
   const result = await sendNoticePublishedEmails("notice-1");
   expect(mocks.sendEmail).not.toHaveBeenCalled();
   expect(result.skipped).toBe(1);
+});
+
+it("resets the single-send claim when the pre-send phase fails, so a retry can send", async () => {
+  // Audience resolution crashes BEFORE any email is attempted.
+  mocks.resolveAudience.mockRejectedValueOnce(new Error("db down"));
+
+  const result = await sendNoticePublishedEmails("notice-1");
+
+  expect(result).toEqual({ sent: 0, skipped: 0 });
+  expect(mocks.sendEmail).not.toHaveBeenCalled();
+  // emailedAt released (guarded on emailedAt not null) so a re-publish retries.
+  expect(mocks.noticeUpdateMany).toHaveBeenCalledWith({
+    where: { id: "notice-1", emailedAt: { not: null } },
+    data: { emailedAt: null },
+  });
+  // No audit record for a pre-send crash — nothing was sent.
+  expect(mocks.createAuditLog).not.toHaveBeenCalled();
+});
+
+it("does NOT reset the claim after a partial send (would double-email delivered recipients)", async () => {
+  mocks.resolveAudience.mockResolvedValue([
+    { memberId: "m1", name: "A", email: "a@x.test", audienceVia: "All members", viaExplicitMember: false },
+    { memberId: "m2", name: "B", email: "b@x.test", audienceVia: "All members", viaExplicitMember: false },
+  ]);
+  mocks.memberFindMany.mockResolvedValue([
+    { id: "m1", firstName: "A", notificationPreference: { marketingEmails: true } },
+    { id: "m2", firstName: "B", notificationPreference: { marketingEmails: true } },
+  ]);
+  // First recipient delivers, second throws mid-batch.
+  mocks.sendEmail
+    .mockResolvedValueOnce({ status: "sent" })
+    .mockRejectedValueOnce(new Error("smtp blip"));
+
+  const result = await sendNoticePublishedEmails("notice-1");
+
+  expect(result.sent).toBe(1);
+  // Second recipient counted as skipped (failed), not re-queued.
+  expect(result.skipped).toBe(1);
+  // The claim is retained — never released after a send was attempted.
+  expect(mocks.noticeUpdateMany).not.toHaveBeenCalled();
+});
+
+it("writes an audit record with the send counts after the batch", async () => {
+  mocks.resolveAudience.mockResolvedValue([
+    { memberId: "m1", name: "A", email: "a@x.test", audienceVia: "All members", viaExplicitMember: false },
+    { memberId: "m2", name: "B", email: "b@x.test", audienceVia: "All members", viaExplicitMember: false },
+    { memberId: "m3", name: "C", email: "c@x.test", audienceVia: "All members", viaExplicitMember: false },
+  ]);
+  mocks.memberFindMany.mockResolvedValue([
+    { id: "m1", firstName: "A", notificationPreference: { marketingEmails: true } },
+    { id: "m2", firstName: "B", notificationPreference: { marketingEmails: true } },
+    // m3 opted out.
+    { id: "m3", firstName: "C", notificationPreference: { marketingEmails: false } },
+  ]);
+  // m1 sends, m2 suppressed.
+  mocks.sendEmail
+    .mockResolvedValueOnce({ status: "sent" })
+    .mockResolvedValueOnce({ status: "suppressed" });
+
+  await sendNoticePublishedEmails("notice-1");
+
+  expect(mocks.createAuditLog).toHaveBeenCalledTimes(1);
+  const arg = mocks.createAuditLog.mock.calls[0][0];
+  expect(arg.action).toBe("notice.emailSent");
+  expect(arg.entityId).toBe("notice-1");
+  expect(arg.metadata).toMatchObject({
+    noticeId: "notice-1",
+    audienceCount: 3,
+    recipientCount: 2,
+    sentCount: 1,
+    failedCount: 1,
+    optedOutCount: 1,
+  });
 });
