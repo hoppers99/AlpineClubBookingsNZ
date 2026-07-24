@@ -295,6 +295,7 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   "/api/admin/pending-counts": "overview",
   "/api/admin/promo-codes": "bookings",
   "/api/admin/promo-codes/[id]": "bookings",
+  "/api/admin/promo-codes/[id]/redemptions": "bookings",
   "/api/admin/refund-requests": "finance",
   "/api/admin/refund-requests/[id]": "finance",
   "/api/admin/reports": "finance",

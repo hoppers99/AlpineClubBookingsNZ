@@ -29,6 +29,15 @@ import {
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action";
 import type { AdminPermissionMatrix } from "@/lib/admin-permissions";
+import { PromoRedemptionsPanel } from "./promo-redemptions-panel";
+
+interface RedemptionsPromoSummary {
+  id: string;
+  code: string;
+  description: string | null;
+  type: PromoType;
+  archived: boolean;
+}
 
 interface MemberOption {
   id: string;
@@ -138,6 +147,9 @@ export function PromoCodesPageClient({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
+  // When set, the page swaps the list for the per-code redemptions report.
+  const [redemptionsPromo, setRedemptionsPromo] =
+    useState<RedemptionsPromoSummary | null>(null);
 
   const [code, setCode] = useState("");
   const [description, setDescription] = useState("");
@@ -641,6 +653,24 @@ export function PromoCodesPageClient({
               )}
             </div>
             <div className="flex space-x-2">
+              {/* Redemptions is a read-only report, available to view-only
+                  bookings admins too, so it is a plain button rather than a
+                  ViewOnlyActionButton. */}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  setRedemptionsPromo({
+                    id: promo.id,
+                    code: promo.code,
+                    description: promo.description,
+                    type: promo.type,
+                    archived: isArchived,
+                  })
+                }
+              >
+                Redemptions
+              </Button>
               {isArchived ? (
                 <ViewOnlyActionButton
                   canEdit={canEdit}
@@ -799,6 +829,17 @@ export function PromoCodesPageClient({
       edit access is required.
     </AdminViewOnlySectionBanner>
   );
+
+  // The redemptions report is a self-contained sub-view; render it in place of
+  // the list (and its view-only banner, which is about editing) until dismissed.
+  if (redemptionsPromo) {
+    return (
+      <PromoRedemptionsPanel
+        promo={redemptionsPromo}
+        onBack={() => setRedemptionsPromo(null)}
+      />
+    );
+  }
 
   if (loading) {
     return (
