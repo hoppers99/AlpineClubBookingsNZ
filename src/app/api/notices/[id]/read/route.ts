@@ -29,6 +29,11 @@ export async function POST(
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
+  // Double-click / concurrent-tab safety relies on Prisma compiling this
+  // compound-unique upsert (no nested creates/relations) to a single native
+  // INSERT ... ON CONFLICT DO NOTHING. Keep it that way: adding nested writes
+  // would make Prisma fall back to find-then-write and reintroduce a P2002 race
+  // on the second concurrent open.
   await prisma.noticeReadReceipt.upsert({
     where: { noticeId_memberId: { noticeId: id, memberId } },
     create: { noticeId: id, memberId },

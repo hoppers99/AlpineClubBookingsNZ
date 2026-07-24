@@ -35,6 +35,9 @@ export async function POST(
   // Ensure a receipt exists (stamping both readAt and acknowledgedAt if brand
   // new), then set acknowledgedAt exactly once via a null-guarded updateMany so
   // a repeat POST never moves the first acknowledgement time.
+  // Double-click safety relies on Prisma compiling this compound-unique upsert
+  // (no nested writes) to a native INSERT ... ON CONFLICT; a nested-write
+  // refactor would fall back to find-then-write and reintroduce a P2002 race.
   await prisma.noticeReadReceipt.upsert({
     where: { noticeId_memberId: { noticeId: id, memberId } },
     create: { noticeId: id, memberId, readAt: now, acknowledgedAt: now },
