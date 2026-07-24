@@ -80,14 +80,25 @@ const readonlyAdminSession = {
   },
 };
 
+// A structurally complete PNG (signature → IHDR → IDAT → IEND) so it passes the
+// route's now fail-closed metadata strip (which requires a clean walk reaching
+// IEND). 64×32 from IHDR; no ancillary metadata chunks, so stripping is a no-op.
 const PNG_BYTES = (() => {
-  const buf = Buffer.alloc(33);
-  buf.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
-  buf.writeUInt32BE(13, 8);
-  buf.write("IHDR", 12, "ascii");
-  buf.writeUInt32BE(64, 16);
-  buf.writeUInt32BE(32, 20);
-  return buf;
+  const pngChunk = (type: string, data: Buffer) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length, 0);
+    const crc = Buffer.alloc(4); // stripper does not validate the CRC
+    return Buffer.concat([len, Buffer.from(type, "ascii"), data, crc]);
+  };
+  const ihdrData = Buffer.alloc(13);
+  ihdrData.writeUInt32BE(64, 0); // width
+  ihdrData.writeUInt32BE(32, 4); // height
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk("IHDR", ihdrData),
+    pngChunk("IDAT", Buffer.from([0x00])),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
 })();
 
 const GIF_BYTES = Buffer.from("GIF89a\x01\x00\x01\x00", "latin1");
@@ -114,6 +125,34 @@ const OVERSIZED_WEBP_BYTES = (() => {
   buf.writeUInt32LE(payload.length, 16);
   payload.copy(buf, 20);
   return buf;
+})();
+
+// A renderable JPEG that STILL sniffs as image/jpeg (FF D8 FF…) and still parses
+// a frame (SOF0 → 16×16), but has NO trailing EOI (FF D9) and carries EXIF/GPS.
+// This is the exact fail-open leak: the old strip returned it unchanged and the
+// route stored & served the raw GPS bytes. Fail-closed, the route must reject it.
+const NO_EOI_JPEG_BYTES = (() => {
+  const soi = Buffer.from([0xff, 0xd8]);
+  const exif = (() => {
+    const payload = Buffer.from("Exif\0\0GPS:-41.29,174.78", "latin1");
+    const len = Buffer.alloc(2);
+    len.writeUInt16BE(payload.length + 2, 0);
+    return Buffer.concat([Buffer.from([0xff, 0xe1]), len, payload]); // FF E1 → byte[2]=0xff
+  })();
+  const sof0 = (() => {
+    const s = Buffer.alloc(11);
+    s.writeUInt8(0xff, 0);
+    s.writeUInt8(0xc0, 1);
+    s.writeUInt16BE(9, 2);
+    s.writeUInt8(8, 4);
+    s.writeUInt16BE(16, 5); // height
+    s.writeUInt16BE(16, 7); // width
+    s.writeUInt8(1, 9);
+    return s;
+  })();
+  // SOS header + a byte of entropy-coded scan data, but NO closing FF D9.
+  const sos = Buffer.from([0xff, 0xda, 0x00, 0x02, 0x01, 0x77]);
+  return Buffer.concat([soi, exif, sof0, sos]);
 })();
 
 /**
@@ -187,6 +226,7 @@ beforeEach(() => {
   mocks.mediaImageFindUnique.mockResolvedValue({
     data: PNG_BYTES,
     contentType: "image/png",
+    kind: "MEMBER_PHOTO",
   });
   mocks.mediaImageCreate.mockImplementation(async ({ data }) => ({
     id: "img-new",
@@ -315,6 +355,22 @@ describe("GET /api/members/[id]/photo — serving authz matrix", () => {
 
     expect(response.status).toBe(404);
   });
+
+  it("returns 404 when photoImageId points at a non-MEMBER_PHOTO row (kind guard)", async () => {
+    // Defence in depth: a future mispointed FK to a CONTENT image must fail
+    // closed rather than serve arbitrary library content through the committee-
+    // cacheable member-photo path.
+    wireMemberLookups({ photoImageId: "img-1", committeePublished: true });
+    mocks.mediaImageFindUnique.mockResolvedValue({
+      data: PNG_BYTES,
+      contentType: "image/png",
+      kind: "CONTENT",
+    });
+
+    const response = await GET(servingRequest(TARGET_ID), params(TARGET_ID));
+
+    expect(response.status).toBe(404);
+  });
 });
 
 describe("POST /api/members/[id]/photo — upload", () => {
@@ -418,6 +474,24 @@ describe("POST /api/members/[id]/photo — upload", () => {
     const response = await POST(uploadRequest(TARGET_ID, file), params(TARGET_ID));
 
     expect(response.status).toBe(400);
+    expect(mocks.mediaImageCreate).not.toHaveBeenCalled();
+  });
+
+  it("rejects a renderable-but-no-EOI JPEG (unconfirmed strip) with 400 and stores nothing", async () => {
+    // Fail-closed regression guard: this JPEG sniffs as image/jpeg and parses a
+    // frame, but the stripper cannot confirm a clean strip (no primary EOI), so
+    // the route must reject it BEFORE the transaction — never storing bytes whose
+    // EXIF/GPS we could not prove was scrubbed.
+    wireMemberLookups({ photoImageId: null });
+    mocks.auth.mockResolvedValue(ownerSession);
+
+    const file = new File([NO_EOI_JPEG_BYTES], "leak.jpg", {
+      type: "image/jpeg",
+    });
+    const response = await POST(uploadRequest(TARGET_ID, file), params(TARGET_ID));
+
+    expect(response.status).toBe(400);
+    expect(mocks.transaction).not.toHaveBeenCalled();
     expect(mocks.mediaImageCreate).not.toHaveBeenCalled();
   });
 

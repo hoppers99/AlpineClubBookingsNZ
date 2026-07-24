@@ -40,9 +40,12 @@ import {
  * GPS coordinates onto a publicly-served committee photo.
  */
 
-// A member's photo is public exactly when the member is shown on the public
-// committee page: an active, published assignment to an active role. Kept in
-// lockstep with the /api/committee visibility predicate.
+// A member's photo is public exactly when the member holds an active, published
+// CommitteeAssignment to an active role (committee-membership) — per ADR-001,
+// that assignment is what gates serving. `committeePhotoDisplay` is PRESENTATIONAL
+// only (it controls whether the committee page renders the photo) and does NOT
+// gate whether this endpoint serves the bytes. Kept in lockstep with the
+// /api/committee visibility predicate.
 const PUBLIC_COMMITTEE_ASSIGNMENT_FILTER = {
   published: true,
   isActive: true,
@@ -157,10 +160,18 @@ export async function GET(
 
   const image = await prisma.mediaImage.findUnique({
     where: { id: member.photoImageId },
-    select: { data: true, contentType: true },
+    select: { data: true, contentType: true, kind: true },
   });
 
   if (!image) {
+    return notFoundResponse();
+  }
+
+  // Defence in depth: only ever serve a MEMBER_PHOTO blob through this
+  // committee-cacheable path. If a future bug mispoints `photoImageId` at a
+  // CONTENT image, fail closed (404) rather than leak arbitrary library content
+  // via the member-photo endpoint.
+  if (image.kind !== "MEMBER_PHOTO") {
     return notFoundResponse();
   }
 
@@ -310,9 +321,24 @@ export async function POST(
   // Strip EXIF/XMP/comment metadata (camera GPS coordinates live in JPEG APP1)
   // before storing: a committee member's photo is served to anonymous callers,
   // so location data in a straight-from-phone upload must not travel with it.
-  // The crop UI already re-encodes via canvas; this covers the direct-upload
-  // path. Fail-safe — returns the original bytes if the image can't be parsed.
-  const storedBytes = stripImageMetadata(bytes, detected);
+  // The crop UI already re-encodes via canvas (clean JPEG/PNG/WebP with a proper
+  // EOI/IEND terminator), so legitimate uploads pass; this also covers the
+  // direct-upload path. Fail-CLOSED for privacy: if the parser cannot positively
+  // confirm a clean strip (malformed/nonstandard structure — e.g. a renderable
+  // JPEG missing its trailing EOI that would otherwise sail past the byte
+  // sniffer with EXIF/GPS intact), reject the upload BEFORE the transaction
+  // rather than store bytes we could not prove were scrubbed.
+  const stripped = stripImageMetadata(bytes, detected);
+  if (!stripped.ok) {
+    return NextResponse.json(
+      {
+        error:
+          "Unsupported or invalid image. Allowed photo types: JPEG, PNG, WebP.",
+      },
+      { status: 400 },
+    );
+  }
+  const storedBytes = stripped.bytes;
 
   const now = new Date();
 

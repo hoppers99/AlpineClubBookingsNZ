@@ -339,6 +339,17 @@ export function extractImageDimensions(
 }
 
 /**
+ * Result of an attempted metadata strip. `ok: true` means the parser completed
+ * a clean structural walk AND any privacy-sensitive metadata present was removed
+ * (or there was validly none) — `bytes` is safe to store & serve publicly.
+ * `ok: false` means the strip could not be positively confirmed (malformed or
+ * nonstandard structure, or a thrown exception); `bytes` is the ORIGINAL,
+ * unchanged, and the caller must reject rather than store it. Fail-CLOSED for
+ * privacy: an image whose EXIF/GPS we cannot prove was removed is never served.
+ */
+export type StripImageResult = { ok: boolean; bytes: Buffer };
+
+/**
  * Remove metadata from a JPEG by copying only the colour/rendering marker
  * segments — JFIF (APP0), an ICC-profile APP2, Adobe (APP14) — and the
  * structural markers, dropping every other APPn (EXIF/XMP APP1, IPTC/Photoshop
@@ -346,22 +357,25 @@ export function extractImageDimensions(
  * any of which can carry creator contact info, location or GPS. The parser runs
  * through the entropy-coded scan(s) to the primary EOI and STOPS there, dropping
  * any bytes appended after it — an MPF multi-picture / motion-photo JPEG appends
- * a second image with its own EXIF/GPS. Returns the original bytes unchanged if
- * the structure is malformed, so stripping can never corrupt.
+ * a second image with its own EXIF/GPS. Fail-CLOSED: `ok` is true ONLY on the
+ * primary-EOI-terminated path; any malformed/nonstandard structure returns
+ * `ok: false` with the original bytes so the caller rejects the upload.
  */
-function stripJpegMetadata(bytes: Buffer): Buffer {
-  if (bytes.length < 2 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return bytes;
+function stripJpegMetadata(bytes: Buffer): StripImageResult {
+  if (bytes.length < 2 || bytes[0] !== 0xff || bytes[1] !== 0xd8)
+    return { ok: false, bytes };
   const kept: Buffer[] = [bytes.subarray(0, 2)]; // SOI
   let offset = 2;
   while (offset + 2 <= bytes.length) {
-    if (bytes[offset] !== 0xff) return bytes; // not at a marker → don't risk it
+    if (bytes[offset] !== 0xff) return { ok: false, bytes }; // not at a marker
     const marker = bytes[offset + 1];
 
     if (marker === 0xd9) {
       // Primary EOI: end of the primary image. Emit it and STOP, dropping any
       // appended trailer (MPF / motion-photo secondary image + its EXIF/GPS).
+      // This is the ONLY confirmed-clean exit.
       kept.push(bytes.subarray(offset, offset + 2));
-      return Buffer.concat(kept);
+      return { ok: true, bytes: Buffer.concat(kept) };
     }
 
     if (marker === 0xda) {
@@ -369,10 +383,10 @@ function stripJpegMetadata(bytes: Buffer): Buffer {
       // real marker (an 0xff not part of 0xff00 byte-stuffing or an RSTn
       // 0xd0-0xd7), then continue so a following EOI truncates any trailer and a
       // following scan (progressive JPEG) is handled normally.
-      if (offset + 4 > bytes.length) return bytes;
+      if (offset + 4 > bytes.length) return { ok: false, bytes };
       const sosLen = bytes.readUInt16BE(offset + 2);
       let scan = offset + 2 + sosLen;
-      if (scan > bytes.length) return bytes;
+      if (scan > bytes.length) return { ok: false, bytes };
       while (scan + 1 < bytes.length) {
         if (bytes[scan] === 0xff) {
           const m = bytes[scan + 1];
@@ -390,10 +404,10 @@ function stripJpegMetadata(bytes: Buffer): Buffer {
     }
 
     // Length-prefixed marker segment (APPn, COM, DQT, DHT, SOFn, DRI, …).
-    if (offset + 4 > bytes.length) return bytes;
+    if (offset + 4 > bytes.length) return { ok: false, bytes };
     const segLen = bytes.readUInt16BE(offset + 2);
     const segEnd = offset + 2 + segLen;
-    if (segLen < 2 || segEnd > bytes.length) return bytes; // truncated/invalid
+    if (segLen < 2 || segEnd > bytes.length) return { ok: false, bytes }; // truncated/invalid
     // Allow-list, not deny-list: metadata lives across many APPn markers (APP1
     // EXIF/XMP, APP13 IPTC/Photoshop, APP12 Ducky, vendor APP3-APP11), any of
     // which can carry creator contact info, location or GPS. Preserve ONLY the
@@ -414,47 +428,51 @@ function stripJpegMetadata(bytes: Buffer): Buffer {
     }
     offset = segEnd;
   }
-  return bytes; // no primary EOI found → leave untouched (fail-safe)
+  return { ok: false, bytes }; // no primary EOI found → reject (fail-closed)
 }
 
 const PNG_METADATA_CHUNKS = new Set(["tEXt", "zTXt", "iTXt", "eXIf", "tIME"]);
 
 /**
  * Remove text/EXIF/timestamp ancillary chunks from a PNG (eXIf can carry GPS),
- * keeping all critical and colour chunks. Returns the original bytes if the
- * structure is malformed.
+ * keeping all critical and colour chunks. Fail-CLOSED: `ok` is true only if the
+ * chunk walk actually reaches an IEND chunk; a truncated chunk or a walk that
+ * ends without IEND returns `ok: false` with the original bytes.
  */
-function stripPngMetadata(bytes: Buffer): Buffer {
+function stripPngMetadata(bytes: Buffer): StripImageResult {
   const SIG = 8;
-  if (bytes.length < SIG + 12) return bytes;
+  if (bytes.length < SIG + 12) return { ok: false, bytes };
   const kept: Buffer[] = [bytes.subarray(0, SIG)];
   let offset = SIG;
   while (offset + 12 <= bytes.length) {
     const len = readUInt32BE(bytes, offset);
     const type = bytes.toString("ascii", offset + 4, offset + 8);
     const chunkEnd = offset + 12 + len; // len(4) + type(4) + data(len) + crc(4)
-    if (chunkEnd > bytes.length) return bytes; // truncated
+    if (chunkEnd > bytes.length) return { ok: false, bytes }; // truncated
     if (!PNG_METADATA_CHUNKS.has(type)) {
       kept.push(bytes.subarray(offset, chunkEnd));
     }
-    if (type === "IEND") break;
+    if (type === "IEND") return { ok: true, bytes: Buffer.concat(kept) };
     offset = chunkEnd;
   }
-  return Buffer.concat(kept);
+  return { ok: false, bytes }; // walk ended without IEND → reject (fail-closed)
 }
 
 /**
  * Remove EXIF and XMP chunks from a WebP RIFF container and clear the matching
- * VP8X metadata flag bits, recomputing the RIFF size. Returns the original
- * bytes if the structure is malformed.
+ * VP8X metadata flag bits, recomputing the RIFF size. Fail-CLOSED: `ok` is true
+ * when the chunk walk completes cleanly to EOF — including the "nothing to
+ * strip" (`!changed`) case and the legitimate final-odd-pad case. A malformed
+ * non-final-chunk overrun (or a bad RIFF/WEBP header) returns `ok: false` with
+ * the original bytes.
  */
-function stripWebpMetadata(bytes: Buffer): Buffer {
+function stripWebpMetadata(bytes: Buffer): StripImageResult {
   if (
     bytes.length < 12 ||
     bytes.toString("ascii", 0, 4) !== "RIFF" ||
     bytes.toString("ascii", 8, 12) !== "WEBP"
   ) {
-    return bytes;
+    return { ok: false, bytes };
   }
   const kept: Buffer[] = [];
   let offset = 12;
@@ -468,11 +486,11 @@ function stripWebpMetadata(bytes: Buffer): Buffer {
       // A final odd-sized chunk may omit its RIFF pad byte. Accept that exact
       // case (the unpadded end lands on EOF) so a trailing EXIF/XMP chunk is
       // still stripped rather than the whole file being left untouched;
-      // anything else is genuinely malformed.
+      // anything else is genuinely malformed → reject.
       if (offset + 8 + size === bytes.length) {
         chunkEnd = bytes.length;
       } else {
-        return bytes;
+        return { ok: false, bytes };
       }
     }
     if (fourCC === "EXIF" || fourCC === "XMP ") {
@@ -494,28 +512,37 @@ function stripWebpMetadata(bytes: Buffer): Buffer {
     kept.push(chunk);
     offset = chunkEnd;
   }
-  if (!changed) return bytes;
+  // Clean walk to EOF. Nothing to strip is a confirmed-clean result too.
+  if (!changed) return { ok: true, bytes };
   const body = Buffer.concat(kept);
   const out = Buffer.alloc(12 + body.length);
   out.write("RIFF", 0, "ascii");
   out.writeUInt32LE(4 + body.length, 4); // "WEBP" tag + chunk bytes
   out.write("WEBP", 8, "ascii");
   body.copy(out, 12);
-  return out;
+  return { ok: true, bytes: out };
 }
 
 /**
  * Strip privacy-sensitive metadata (EXIF/GPS, XMP, comments) from an uploaded
- * image before it is stored and potentially served publicly. Best-effort and
- * fail-safe: on any unexpected structure the original bytes are returned rather
- * than risk corrupting the image. Content that has been re-encoded client-side
- * (the crop canvas) is already metadata-free; this covers the direct-upload
- * path where a phone-camera JPEG could carry GPS coordinates.
+ * image before it is stored and potentially served publicly. Fail-CLOSED: the
+ * result carries `ok: true` ONLY when the parser completed a clean structural
+ * walk and any metadata present was removed (or there was validly none) — the
+ * caller must reject any upload that returns `ok: false` (malformed/nonstandard
+ * structure, or a thrown exception) rather than store the original bytes with
+ * EXIF/GPS intact. Content re-encoded client-side (the crop canvas) is already
+ * metadata-free and passes cleanly; this also covers the direct-upload path
+ * where a phone-camera JPEG could carry GPS coordinates.
+ *
+ * The `default` branch (a content type other than jpeg/png/webp) is unreachable
+ * from the member-photo route — its only caller — which restricts uploads to
+ * jpeg/png/webp; it returns `ok: true` (nothing to strip for that type) so the
+ * contract stays non-breaking.
  */
 export function stripImageMetadata(
   bytes: Buffer,
   contentType: AllowedMediaImageContentType,
-): Buffer {
+): StripImageResult {
   try {
     switch (contentType) {
       case "image/jpeg":
@@ -525,10 +552,10 @@ export function stripImageMetadata(
       case "image/webp":
         return stripWebpMetadata(bytes);
       default:
-        return bytes;
+        return { ok: true, bytes };
     }
   } catch {
-    return bytes;
+    return { ok: false, bytes };
   }
 }
 
