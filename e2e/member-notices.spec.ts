@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext } from "@playwright/test";
-import { storageStatePath } from "./helpers/auth";
+import { storageStatePath, submitLoginForm } from "./helpers/auth";
 import { signIn } from "./helpers/auth";
 import { E2E_ADMIN } from "./helpers/fixtures";
 import { overrideModules, setModuleSettings } from "./helpers/modules";
@@ -17,7 +17,12 @@ import { personas } from "./helpers/personas";
 test.describe.configure({ mode: "serial" });
 
 const IN_AUDIENCE = personas.booker; // Alice — targeted individually
-const OUT_OF_AUDIENCE = personas.enrollee; // Bob — not targeted
+// Carol is a plain member (no finance access, so no forced 2FA and a member
+// /dashboard landing). Bob (personas.enrollee) must NOT be used here: he is
+// the reserved un-enrolled 2FA persona — signing him in would enroll him and
+// break two-factor-login.spec.ts — and his FINANCE_USER landing is
+// /admin/payments, which the signIn helper's /admin/dashboard gate rejects.
+const OUT_OF_AUDIENCE_EMAIL = "carol@demo.alpineclub.test";
 
 let admin: APIRequestContext;
 let noticeId: string;
@@ -122,7 +127,10 @@ test("an in-audience member sees the notice, reads it, and the admin report reco
 test("an out-of-audience member sees no card and gets a 404 on the direct URL", async ({
   page,
 }) => {
-  await signIn(page, OUT_OF_AUDIENCE);
+  // Plain-member login: the signIn helper is Alice-only (it asserts an
+  // /admin/dashboard landing), so drive the login form directly.
+  await submitLoginForm(page, OUT_OF_AUDIENCE_EMAIL);
+  await expect(page).toHaveURL(/\/dashboard/);
 
   await page.goto("/dashboard");
   // The targeted notice must not appear for this member.
