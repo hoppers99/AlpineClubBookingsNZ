@@ -5,6 +5,7 @@ import { emptyAdminPermissionMatrix } from "@/lib/admin-permissions";
 const mocks = vi.hoisted(() => ({
   auth: vi.fn(),
   requireActiveSessionUser: vi.fn(),
+  createAuditLog: vi.fn(),
   prisma: {
     promoCode: { findUnique: vi.fn() },
     lodge: { findUnique: vi.fn() },
@@ -18,6 +19,10 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/lib/auth", () => ({
   auth: mocks.auth,
+}));
+
+vi.mock("@/lib/audit", () => ({
+  createAuditLog: mocks.createAuditLog,
 }));
 
 vi.mock("@/lib/session-guards", () => ({
@@ -172,6 +177,30 @@ function seedHappyPath(codeOverride: Record<string, unknown> = {}) {
   mocks.prisma.promoRedemption.findMany
     .mockResolvedValueOnce(ORDERED_FOR_CODE)
     .mockResolvedValueOnce(ROWS);
+}
+
+// Divergent all vs filtered mocks so the totals mapping cannot silently swap the
+// two aggregates/groupBys: all = 3 redemptions / 8500c / two members, filtered =
+// 1 redemption / 1000c / one member.
+function seedDivergentTotals() {
+  mocks.prisma.promoCode.findUnique.mockResolvedValue(PROMO_CODE);
+  // Promise.all order: aggregate(all), groupBy(all), aggregate(filtered),
+  // groupBy(filtered), findMany(orderedForCode), findMany(rows).
+  mocks.prisma.promoRedemption.aggregate
+    .mockResolvedValueOnce({
+      _count: { _all: 3 },
+      _sum: { discountCents: 8500, freeNightsUsed: 4 },
+    })
+    .mockResolvedValueOnce({
+      _count: { _all: 1 },
+      _sum: { discountCents: 1000, freeNightsUsed: 1 },
+    });
+  mocks.prisma.promoRedemption.groupBy
+    .mockResolvedValueOnce([{ memberId: "m1" }, { memberId: "m2" }])
+    .mockResolvedValueOnce([{ memberId: "m1" }]);
+  mocks.prisma.promoRedemption.findMany
+    .mockResolvedValueOnce(ORDERED_FOR_CODE)
+    .mockResolvedValueOnce([ROWS[2]]);
 }
 
 describe("GET /api/admin/promo-codes/[id]/redemptions", () => {
@@ -334,5 +363,70 @@ describe("GET /api/admin/promo-codes/[id]/redemptions", () => {
     const body = await res.json();
     expect(body.code.archived).toBe(true);
     expect(body.code.internal).toBe(true);
+  });
+
+  it("maps filtered totals from the filtered aggregates and all-time totals from the all aggregates", async () => {
+    // Divergent mocks: a silent swap of all<->filtered in the response mapping
+    // would flip these assertions.
+    seedDivergentTotals();
+    const res = await GET(
+      req(`${BASE_URL}?from=2026-07-01&to=2026-07-02`),
+      params("pc-1"),
+    );
+    const body = await res.json();
+
+    expect(body.totals.all).toEqual({
+      redemptions: 3,
+      uniqueMembers: 2,
+      discountCents: 8500,
+      freeNightsUsed: 4,
+    });
+    expect(body.totals.filtered).toEqual({
+      redemptions: 1,
+      uniqueMembers: 1,
+      discountCents: 1000,
+      freeNightsUsed: 1,
+    });
+    // pagination.total tracks the filtered count, not the all-time count.
+    expect(body.pagination.total).toBe(1);
+  });
+
+  it("export mode returns the full filtered set in one request and writes a privacy audit", async () => {
+    seedHappyPath();
+    // A lodge filter is present, so the lodge existence check must resolve.
+    mocks.prisma.lodge.findUnique.mockResolvedValue({ id: "lodge-1" });
+    const res = await GET(
+      req(`${BASE_URL}?from=2026-07-01&to=2026-07-31&lodgeId=lodge-1&export=1`),
+      params("pc-1"),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.rows).toHaveLength(3);
+
+    // Rows findMany (2nd call) requests the full bounded set, not a page.
+    const rowsCall = mocks.prisma.promoRedemption.findMany.mock.calls[1][0];
+    expect(rowsCall.skip).toBe(0);
+    expect(rowsCall.take).toBe(10_000);
+
+    expect(mocks.createAuditLog).toHaveBeenCalledTimes(1);
+    const auditArg = mocks.createAuditLog.mock.calls[0][0];
+    expect(auditArg).toMatchObject({
+      action: "promoRedemptions.exported",
+      memberId: "admin-1",
+      category: "privacy",
+      outcome: "success",
+    });
+    expect(auditArg.metadata).toEqual({
+      promoCodeId: "pc-1",
+      filters: { from: "2026-07-01", to: "2026-07-31", lodgeId: "lodge-1" },
+      rowCount: 3,
+    });
+  });
+
+  it("does not write an audit for a normal paginated (non-export) GET", async () => {
+    seedHappyPath();
+    const res = await GET(req(BASE_URL), params("pc-1"));
+    expect(res.status).toBe(200);
+    expect(mocks.createAuditLog).not.toHaveBeenCalled();
   });
 });
