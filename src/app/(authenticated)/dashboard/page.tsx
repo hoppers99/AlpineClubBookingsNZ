@@ -41,6 +41,7 @@ import {
   type AvailablePromoCode,
 } from "@/lib/promo";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
+import { RecentNewsCard } from "@/components/recent-news-card";
 import {
   buildHrefWithReturnTo,
   buildProfilePathWithReturnTo,
@@ -372,6 +373,10 @@ export default async function DashboardPage() {
           )}
         </div>
       )}
+
+      {/* Recent news (member notices module). Renders nothing when the member
+          has no visible notices. */}
+      {modules.memberNotices && <RecentNewsCard memberId={memberId} />}
 
       {/* Summary cards */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
