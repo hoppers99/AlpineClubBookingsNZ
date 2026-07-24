@@ -86,10 +86,14 @@ function stripComments(source: string): string {
       for (const child of children) visit(child);
       return;
     }
-    for (const range of ts.getLeadingCommentRanges(source, node.getFullStart()) ?? []) {
+    for (const range of ts.getLeadingCommentRanges(
+      source,
+      node.getFullStart(),
+    ) ?? []) {
       blank(range.pos, range.end);
     }
-    for (const range of ts.getTrailingCommentRanges(source, node.getEnd()) ?? []) {
+    for (const range of ts.getTrailingCommentRanges(source, node.getEnd()) ??
+      []) {
       blank(range.pos, range.end);
     }
   };
@@ -108,7 +112,10 @@ function walk(dir: string, out: string[] = []): string[] {
     if (entry.isDirectory()) {
       if (entry.name === "__tests__" || entry.name === "node_modules") continue;
       walk(full, out);
-    } else if (entry.name.endsWith(".tsx") && !entry.name.endsWith(".test.tsx")) {
+    } else if (
+      entry.name.endsWith(".tsx") &&
+      !entry.name.endsWith(".test.tsx")
+    ) {
       out.push(full);
     }
   }
@@ -124,7 +131,8 @@ function walk(dir: string, out: string[] = []): string[] {
 function resolveImport(fromFile: string, specifier: string): string | null {
   let base: string;
   if (specifier.startsWith("@/")) base = join(SRC, specifier.slice(2));
-  else if (specifier.startsWith(".")) base = resolve(dirname(fromFile), specifier);
+  else if (specifier.startsWith("."))
+    base = resolve(dirname(fromFile), specifier);
   else return null;
 
   for (const candidate of [`${base}.tsx`, join(base, "index.tsx")]) {
@@ -294,7 +302,8 @@ function hasSpread(node: JsxTag): boolean {
 /** The expression inside `attr={…}`, or null for a bare `attr`. */
 function attrExpression(a: ts.JsxAttribute): ts.Expression | null {
   if (!a.initializer) return null;
-  if (ts.isJsxExpression(a.initializer)) return a.initializer.expression ?? null;
+  if (ts.isJsxExpression(a.initializer))
+    return a.initializer.expression ?? null;
   return a.initializer;
 }
 
@@ -593,7 +602,10 @@ function vouchChildExports(ast: ts.SourceFile): string[] {
  * imports are deliberately excluded: see the "no unresolvable vouch" test,
  * which turns that blind spot into a failure rather than a silent pass.
  */
-function namedImports(fromFile: string, ast: ts.SourceFile): Map<string, string> {
+function namedImports(
+  fromFile: string,
+  ast: ts.SourceFile,
+): Map<string, string> {
   const out = new Map<string, string>();
   eachNode(ast, (node) => {
     if (!ts.isImportDeclaration(node)) return;
@@ -689,7 +701,10 @@ describe("view-only section banner coverage (#2160)", () => {
 
     // Controls that KEEP the per-button reason, per file.
     const exceptions = perFile
-      .map((f) => ({ rel: f.rel, n: f.sites - f.staticOptOuts - f.vouchedOptOuts }))
+      .map((f) => ({
+        rel: f.rel,
+        n: f.sites - f.staticOptOuts - f.vouchedOptOuts,
+      }))
       .filter((f) => f.n > 0);
 
     expect({
@@ -715,13 +730,13 @@ describe("view-only section banner coverage (#2160)", () => {
       // banner-bearing admin surfaces (the notices list page and the notice
       // editor), each with static opt-out ViewOnlyActionButtons covered by an
       // AdminViewOnlySectionBanner in the same file.
-      callSites: 268,
-      optOuts: 235,
-      staticOptOuts: 214,
+      callSites: 269,
+      optOuts: 236,
+      staticOptOuts: 215,
       vouchedOptOuts: 21,
       exceptions: 33,
       exceptionFiles: 16,
-      bannerComponents: 77,
+      bannerComponents: 78,
     });
 
     /*
@@ -907,7 +922,12 @@ describe("view-only section banner coverage (#2160)", () => {
           // `describeReason={!prop}` nests the expression inside a
           // JsxExpression inside the JsxAttribute; unwrap that one step so the
           // attribute name is what gets checked.
-          if (holder && ts.isJsxExpression(holder) && holder.parent && ts.isJsxAttribute(holder.parent)) {
+          if (
+            holder &&
+            ts.isJsxExpression(holder) &&
+            holder.parent &&
+            ts.isJsxAttribute(holder.parent)
+          ) {
             holder = holder.parent;
           }
           if (holder && ts.isJsxAttribute(holder)) {
@@ -923,7 +943,9 @@ describe("view-only section banner coverage (#2160)", () => {
             continue;
           }
         }
-        offenders.push(`${at(use)} used outside describeReason / the Notice guard`);
+        offenders.push(
+          `${at(use)} used outside describeReason / the Notice guard`,
+        );
       }
 
       if (vouched.length > 0 && defaulted !== 1) {
@@ -1173,7 +1195,9 @@ describe("view-only section banner coverage (#2160)", () => {
       test's view rather than fail it.
     */
     const bannerFiles = new Set(
-      files.filter((f) => f.source.includes("<AdminViewOnlySectionBanner")).map((f) => f.file),
+      files
+        .filter((f) => f.source.includes("<AdminViewOnlySectionBanner"))
+        .map((f) => f.file),
     );
 
     const offenders: string[] = [];
@@ -1184,12 +1208,14 @@ describe("view-only section banner coverage (#2160)", () => {
         /import\s+(?:type\s+)?\{([^}]*)\}\s*from\s*["']([^"']+)["']/g;
       for (const match of parent.source.matchAll(importRe)) {
         const target = resolveImport(parent.file, match[2]);
-        if (!target || !bannerFiles.has(target) || target === parent.file) continue;
+        if (!target || !bannerFiles.has(target) || target === parent.file)
+          continue;
 
         for (const raw of match[1].split(",")) {
           const spec = raw.trim();
           // `type Foo` / `Foo as Bar` are not renderable component bindings.
-          if (!spec || spec.startsWith("type ") || spec.includes(" as ")) continue;
+          if (!spec || spec.startsWith("type ") || spec.includes(" as "))
+            continue;
           if (!/^[A-Z]\w*$/.test(spec)) continue;
 
           const tags = openingTags(parent.source, spec);
@@ -1297,7 +1323,8 @@ describe("view-only section banner coverage (#2160)", () => {
         const mounts = branches.map((ret) =>
           sites.some(
             (site) =>
-              site.getStart() >= ret.getStart() && site.getEnd() <= ret.getEnd(),
+              site.getStart() >= ret.getStart() &&
+              site.getEnd() <= ret.getEnd(),
           ),
         );
         const firstMount = mounts.indexOf(true);
