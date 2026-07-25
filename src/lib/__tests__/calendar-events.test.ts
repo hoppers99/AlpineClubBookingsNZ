@@ -152,6 +152,7 @@ describe("serializeCalendarEvent", () => {
     isMeeting: false,
     meetingRoom: null,
     createdById: "member-1",
+    idempotencyKey: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     seriesId: null,

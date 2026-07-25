@@ -10,7 +10,7 @@ const mocks = vi.hoisted(() => ({
   event: null as Record<string, unknown> | null,
   buildMeetingJoinUrl: vi.fn((room: string) => `https://meet.example.org/join?room=${room}&token=jwt`),
   logAudit: vi.fn(),
-  findUnique: vi.fn(async () => mocks.event),
+  findUnique: vi.fn(async (..._args: unknown[]) => mocks.event),
 }));
 
 vi.mock("@/lib/session-guards", () => ({
