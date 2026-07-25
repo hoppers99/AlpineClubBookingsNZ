@@ -6,14 +6,16 @@ x-app-environment: &app-environment
   # burst on a 5-conn pool exhausts it and stalls every other request
   # (#1884, F17). Raised to 10 for headroom under ~100 concurrent users.
   #
-  # Postgres runs max_connections=30 (see the postgres service) with the
-  # default 3 superuser-reserved slots => 27 usable. The cron-leader (`app`)
+  # Postgres runs max_connections=40 (see the postgres service) with the
+  # default 3 superuser-reserved slots => 37 usable. The cron-leader (`app`)
   # overrides this to connection_limit=5 and `migrate` to =2, so the worst
-  # case fits: blue(10) + green(10) + cron(5) = 25 steady, + migrate(2) during
-  # a deploy window = 27 <= 27 usable. If a fork needs more web headroom, raise
-  # Postgres to max_connections=40 AND its mem_limit to ~768m rather than
-  # squeezing this ceiling (owner call — see docs/DEPLOYMENT.md "Connection
-  # pool sizing").
+  # case fits with headroom: blue(10) + green(10) + cron(5) = 25 steady,
+  # + migrate(2) during a deploy window = 27 <= 37 usable, leaving ~10 slots
+  # for admin/psql sessions and health probes. Raised from 30 (27 usable — a
+  # razor's-edge 27/27 at the deploy-window worst case) after production
+  # transiently brushed the ceiling with `FATAL: sorry, too many clients`. A
+  # constrained-VPS fork may lower this AND the postgres mem_limit, but keep
+  # sum(live pools) <= usable (see DEPLOYMENT.md "Connection pool sizing").
   DATABASE_URL: postgresql://tac:${DB_PASSWORD:?DB_PASSWORD is required}@postgres:5432/tacbookings?connection_limit=10&pool_timeout=10
   NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3000}
   NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
@@ -151,12 +153,19 @@ services:
       - "-c"
       - "effective_cache_size=256MB"
       - "-c"
-      - "max_connections=30"
+      # 40 total - 3 superuser-reserved = 37 usable. Sized so the deploy-window
+      # worst case (blue+green web + cron + migrate = 27) clears with ~10 slots
+      # of headroom for admin/psql sessions and health probes. See the
+      # connection-budget note on x-app-environment and DEPLOYMENT.md.
+      - "max_connections=40"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
       - "127.0.0.1:5432:5432"
-    mem_limit: 512m
+    # 768m (up from 512m) covers the extra backends allowed by max_connections=40
+    # plus their per-connection work_mem. ~256m more per host; negligible on any
+    # host with >1GiB free.
+    mem_limit: 768m
     cpus: 0.5
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U tac -d tacbookings"]
@@ -171,7 +180,7 @@ services:
       APP_RUNTIME_ROLE: cron-leader
       # Cron-leader keeps the original 5-conn pool: its workload is scheduled
       # background jobs, not the concurrent web burst the slots above size for.
-      # Holding it at 5 keeps the total within max_connections=30 (#1884, F17).
+      # Holding it at 5 keeps the total within max_connections=40 (#1884, F17).
       DATABASE_URL: postgresql://tac:${DB_PASSWORD:?DB_PASSWORD is required}@postgres:5432/tacbookings?connection_limit=5&pool_timeout=10
 
   app_blue:
@@ -235,7 +244,7 @@ services:
       TZ: Pacific/Auckland
       # Bound the deploy-window migrate pool to 2 so a blue/green overlap that
       # also runs migrations still fits: blue(10)+green(10)+cron(5)+migrate(2)
-      # = 27 <= 27 usable connections (max_connections=30 less 3 reserved)
+      # = 27 <= 37 usable connections (max_connections=40 less 3 reserved)
       # (#1884, F17). migrate only needs a couple of connections for
       # `prisma migrate deploy`.
       DATABASE_URL: postgresql://tac:${DB_PASSWORD:?DB_PASSWORD is required}@postgres:5432/tacbookings?connection_limit=2&pool_timeout=10
