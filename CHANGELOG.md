@@ -4,6 +4,21 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Postgres connection ceiling raised from 30 to 40 to stop intermittent
+  `FATAL: sorry, too many clients` when a deploy or backup overlaps normal
+  load.** At `max_connections=30` the app's connection pools already summed to 27
+  during a blue/green deploy window (two web slots + the cron leader + the
+  migration step), leaving almost no room for the other things that open their
+  own database connections — the nightly `pg_dump` backup, the deploy-time shadow
+  database, the health probe, and operator `psql` sessions. When those
+  overlapped, Postgres refused new connections and could lock operators out of
+  the database. The ceiling is now 40 (the database container's `mem_limit` is
+  raised 512m→768m to match); the per-container pool sizes are unchanged. This is
+  a shared default, so every deployment gains the extra headroom, and it takes
+  effect the next time the database container is recreated (any deploy).
+  Operators of very small hosts can lower both values together — see
+  `DEPLOYMENT.md` "Connection pool sizing".
+
 - **Image and configuration uploads can no longer be used to exhaust server
   memory (#2235).** Every upload form (member photos, the website image library,
   the Image Manager, and configuration-bundle import/preview/reseal) now reads
