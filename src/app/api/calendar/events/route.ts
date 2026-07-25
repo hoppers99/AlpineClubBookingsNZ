@@ -56,6 +56,10 @@ export async function GET(req: NextRequest) {
       },
       orderBy: { startsAt: "asc" },
       include: { series: true },
+      // Belt-and-braces row cap alongside the 400-day window: even a dense
+      // calendar renders far fewer than this, so it only bounds a pathological
+      // result set (e.g. a runaway recurrence) rather than truncating real use.
+      take: 2000,
     }),
     canManageCalendarEvents(guard.session.user),
   ]);
@@ -112,6 +116,19 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // Optional client-supplied dedup token (e.g. a form submit uuid). Validated
+  // loosely: a short string, or ignored. A duplicate replay returns the event
+  // the first call created instead of inserting another (see createCalendarEvent).
+  const rawKey = (json.body as { idempotencyKey?: unknown })?.idempotencyKey;
+  if (rawKey !== undefined && (typeof rawKey !== "string" || rawKey.length > 100)) {
+    return NextResponse.json(
+      { error: "idempotencyKey must be a string of at most 100 characters." },
+      { status: 400 },
+    );
+  }
+  const idempotencyKey =
+    typeof rawKey === "string" && rawKey.length > 0 ? rawKey : null;
+
   const event = await createCalendarEvent(
     {
       title: parsed.data.title,
@@ -124,6 +141,7 @@ export async function POST(req: NextRequest) {
       recurrence,
     },
     guard.session.user.id,
+    idempotencyKey,
   );
 
   logAudit({

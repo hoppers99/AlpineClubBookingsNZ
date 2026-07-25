@@ -24,6 +24,7 @@ const h = vi.hoisted(() => {
     updatedAt: Date;
     seriesId: string | null;
     detachedFromSeries: boolean;
+    idempotencyKey: string | null;
   }
   interface SeriesRow {
     id: string;
@@ -58,7 +59,30 @@ const h = vi.hoisted(() => {
     ) {
       return false;
     }
+    if (
+      where.idempotencyKey !== undefined &&
+      row.idempotencyKey !== where.idempotencyKey
+    ) {
+      return false;
+    }
     return true;
+  }
+
+  // A Prisma-shaped error carrying a code, matching the service's code-based
+  // detection (P2002 unique violation, P2025 record-not-found).
+  function prismaError(code: string): Error & { code: string } {
+    return Object.assign(new Error(`Prisma error ${code}`), { code });
+  }
+
+  // Enforce the CalendarEvent.idempotencyKey unique index. Postgres treats NULL
+  // keys as distinct, so only a non-null duplicate collides.
+  function assertKeyFree(key: string | null, ignoreId?: string) {
+    if (!key) return;
+    for (const row of events.values()) {
+      if (row.idempotencyKey === key && row.id !== ignoreId) {
+        throw prismaError("P2002");
+      }
+    }
   }
 
   function makeEventRow(data: Record<string, unknown>): EventRow {
@@ -78,6 +102,7 @@ const h = vi.hoisted(() => {
       updatedAt: now,
       seriesId: (data.seriesId as string | null) ?? null,
       detachedFromSeries: (data.detachedFromSeries as boolean) ?? false,
+      idempotencyKey: (data.idempotencyKey as string | null) ?? null,
     };
   }
 
@@ -86,10 +111,15 @@ const h = vi.hoisted(() => {
       where,
       include,
     }: {
-      where: { id: string };
+      where: { id?: string; idempotencyKey?: string };
       include?: { series?: boolean };
     }) => {
-      const row = events.get(where.id);
+      const row =
+        where.id !== undefined
+          ? events.get(where.id)
+          : [...events.values()].find(
+              (r) => r.idempotencyKey === where.idempotencyKey,
+            );
       if (!row) return null;
       const clone: Record<string, unknown> = { ...row };
       if (include?.series) {
@@ -118,15 +148,16 @@ const h = vi.hoisted(() => {
       [...events.values()].filter((r) => matchEvent(r, where)).map((r) => ({ ...r })),
     create: async ({ data }: { data: Record<string, unknown> }) => {
       const row = makeEventRow(data);
+      assertKeyFree(row.idempotencyKey);
       events.set(row.id, row);
       return { ...row };
     },
     createMany: async ({ data }: { data: Record<string, unknown>[] }) => {
-      for (const d of data) {
-        const row = makeEventRow(d);
-        events.set(row.id, row);
-      }
-      return { count: data.length };
+      const rows = data.map(makeEventRow);
+      // Enforce the unique idempotencyKey across the batch + existing rows.
+      for (const row of rows) assertKeyFree(row.idempotencyKey);
+      for (const row of rows) events.set(row.id, row);
+      return { count: rows.length };
     },
     update: async ({
       where,
@@ -136,14 +167,32 @@ const h = vi.hoisted(() => {
       data: Record<string, unknown>;
     }) => {
       const existing = events.get(where.id);
-      if (!existing) throw new Error(`event ${where.id} not found`);
+      // Prisma throws P2025 when the target row is gone — the service treats
+      // that as "already deleted" and 404s.
+      if (!existing) throw prismaError("P2025");
       const updated: EventRow = { ...existing, ...data, updatedAt: new Date() } as EventRow;
       events.set(where.id, updated);
       return { ...updated };
     },
+    updateMany: async ({
+      where,
+      data,
+    }: {
+      where?: Record<string, unknown>;
+      data: Record<string, unknown>;
+    }) => {
+      let count = 0;
+      for (const [id, row] of [...events.entries()]) {
+        if (matchEvent(row, where)) {
+          events.set(id, { ...row, ...data, updatedAt: new Date() } as EventRow);
+          count += 1;
+        }
+      }
+      return { count };
+    },
     delete: async ({ where }: { where: { id: string } }) => {
       const existing = events.get(where.id);
-      if (!existing) throw new Error(`event ${where.id} not found`);
+      if (!existing) throw prismaError("P2025");
       events.delete(where.id);
       return { ...existing };
     },
@@ -380,5 +429,140 @@ describe("deleteCalendarEvent", () => {
     expect(h.events.has(anchor.id)).toBe(false);
     // The now-empty series row is cleaned up.
     expect(h.series.has(seriesId)).toBe(false);
+  });
+
+  it("E3 keep: a whole-series delete orphans detached exceptions (seriesId → null) and they survive", async () => {
+    const anchor = await createCalendarEvent(
+      data({ recurrence: WEEKLY_3 }),
+      "member-1",
+    );
+    const seriesId = h.events.get(anchor.id)!.seriesId!;
+    const [, occ2] = occurrencesOf(seriesId);
+    // Turn the middle occurrence into a detached exception.
+    await updateCalendarEvent(
+      occ2.id,
+      data({ title: "Exception", recurrence: WEEKLY_3 }),
+      "single",
+      "member-1",
+    );
+
+    const res = await deleteCalendarEvent(anchor.id, "series", "keep");
+    expect(res?.scope).toBe("series");
+    // deletedCount counts only the non-detached occurrences (2 of 3).
+    expect(res?.deletedCount).toBe(2);
+    // The exception survives as a standalone event (series detached, row kept).
+    const survivor = h.events.get(occ2.id);
+    expect(survivor).toBeDefined();
+    expect(survivor!.seriesId).toBeNull();
+    expect(survivor!.title).toBe("Exception");
+    // The non-detached occurrences and the series row are gone.
+    expect(
+      [...h.events.values()].filter((e) => e.seriesId === seriesId),
+    ).toHaveLength(0);
+    expect(h.series.has(seriesId)).toBe(false);
+  });
+
+  it("E3 delete: a whole-series delete with exceptions=delete removes detached exceptions too", async () => {
+    const anchor = await createCalendarEvent(
+      data({ recurrence: WEEKLY_3 }),
+      "member-1",
+    );
+    const seriesId = h.events.get(anchor.id)!.seriesId!;
+    const [, occ2] = occurrencesOf(seriesId);
+    await updateCalendarEvent(
+      occ2.id,
+      data({ title: "Exception", recurrence: WEEKLY_3 }),
+      "single",
+      "member-1",
+    );
+
+    const res = await deleteCalendarEvent(anchor.id, "series", "delete");
+    // All three occurrences (including the exception) are removed.
+    expect(res?.deletedCount).toBe(3);
+    expect(h.events.has(occ2.id)).toBe(false);
+    expect(h.series.has(seriesId)).toBe(false);
+  });
+
+  it("treats a concurrent delete (P2025) as already gone → returns null", async () => {
+    const created = await createCalendarEvent(data(), "member-1");
+    // Simulate the row vanishing between the existence check and the delete.
+    const calendarEvent = h.prisma.calendarEvent as {
+      delete: (args: { where: { id: string } }) => Promise<unknown>;
+    };
+    const original = calendarEvent.delete;
+    calendarEvent.delete = async () => {
+      throw Object.assign(new Error("gone"), { code: "P2025" });
+    };
+    try {
+      expect(await deleteCalendarEvent(created.id, "single")).toBeNull();
+    } finally {
+      calendarEvent.delete = original;
+    }
+  });
+});
+
+describe("createCalendarEvent — idempotency", () => {
+  it("dedups on a repeated idempotencyKey: one event, the replay returns the first", async () => {
+    const first = await createCalendarEvent(data(), "member-1", "key-1");
+    const second = await createCalendarEvent(
+      data({ title: "Second attempt" }),
+      "member-1",
+      "key-1",
+    );
+    // Same event returned; the replay did not create a second row or mutate the
+    // first.
+    expect(second.id).toBe(first.id);
+    expect(second.title).toBe("Weekly standup");
+    expect(
+      [...h.events.values()].filter((e) => e.idempotencyKey === "key-1"),
+    ).toHaveLength(1);
+    expect(h.events.size).toBe(1);
+  });
+
+  it("different keys create distinct events", async () => {
+    const a = await createCalendarEvent(data(), "member-1", "key-a");
+    const b = await createCalendarEvent(data(), "member-1", "key-b");
+    expect(a.id).not.toBe(b.id);
+    expect(h.events.size).toBe(2);
+  });
+});
+
+describe("regenerateSeries — E2 meeting-room preservation", () => {
+  it("reuses the room slug for an unchanged date and mints a fresh one only for new dates", async () => {
+    // A weekly meeting series (each occurrence has its own room).
+    const anchor = await createCalendarEvent(
+      data({ isMeeting: true, recurrence: WEEKLY_3 }),
+      "member-1",
+    );
+    const seriesId = h.events.get(anchor.id)!.seriesId!;
+    const before = occurrencesOf(seriesId);
+    const roomByInstant = new Map(
+      before.map((o) => [o.startsAt.getTime(), o.meetingRoom]),
+    );
+    expect(before.every((o) => o.meetingRoom)).toBe(true);
+
+    // Extend the series (count 3 → 4): a pattern change → regenerate. The first
+    // three instants are unchanged; a fourth date is added.
+    await updateCalendarEvent(
+      anchor.id,
+      data({ isMeeting: true, recurrence: { ...WEEKLY_3, count: 4 } }),
+      "series",
+      "member-1",
+    );
+
+    const after = occurrencesOf(seriesId);
+    expect(after).toHaveLength(4);
+    for (const occ of after) {
+      const priorRoom = roomByInstant.get(occ.startsAt.getTime());
+      if (priorRoom) {
+        // An instant that existed before keeps its original room (join link
+        // preserved).
+        expect(occ.meetingRoom).toBe(priorRoom);
+      } else {
+        // The genuinely-new date got a fresh room distinct from every prior one.
+        expect(occ.meetingRoom).toBeTruthy();
+        expect([...roomByInstant.values()]).not.toContain(occ.meetingRoom);
+      }
+    }
   });
 });

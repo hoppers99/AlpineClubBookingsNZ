@@ -105,6 +105,12 @@ describe("calendar event PATCH/DELETE gate (committee is create-only)", () => {
     });
     const res = await DELETE(deleteReq("series") as never, { params });
     expect(res.status).toBe(200);
-    expect(mocks.deleteCalendarEvent).toHaveBeenCalledWith("evt-1", "series");
+    // The delete threads through the default exception mode ("keep") for a
+    // series delete when no ?exceptions param is supplied.
+    expect(mocks.deleteCalendarEvent).toHaveBeenCalledWith(
+      "evt-1",
+      "series",
+      "keep",
+    );
   });
 });

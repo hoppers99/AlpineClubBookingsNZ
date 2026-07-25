@@ -121,18 +121,21 @@ describe("buildMeetingJoinUrl", () => {
   });
 
   it("assumes https for a bare host with no scheme", () => {
-    delete process.env.MIROTALK_URL;
-    process.env.NEXT_PUBLIC_MIROTALK_URL = "meet.lwtc.org.nz";
+    process.env.MIROTALK_URL = "meet.lwtc.org.nz";
     expect(buildMeetingJoinUrl("xyz")).toBe(
       "https://meet.lwtc.org.nz/join/xyz",
     );
   });
 
-  it("prefers MIROTALK_URL over NEXT_PUBLIC_MIROTALK_URL", () => {
-    process.env.MIROTALK_URL = "https://runtime.example.org";
+  it("ignores the dead build-time NEXT_PUBLIC_MIROTALK_URL (only MIROTALK_URL is honoured)", () => {
+    // NEXT_PUBLIC_MIROTALK_URL is inlined at build time and never reached this
+    // server-only path; with MIROTALK_URL unset we fall back to the app-domain
+    // default, NOT the baked value.
+    delete process.env.MIROTALK_URL;
     process.env.NEXT_PUBLIC_MIROTALK_URL = "https://baked.example.org";
+    process.env.NEXTAUTH_URL = "https://lwtc.org.nz";
     expect(buildMeetingJoinUrl("xyz")).toBe(
-      "https://runtime.example.org/join/xyz",
+      "https://meet.lwtc.org.nz/join/xyz",
     );
   });
 });
@@ -155,25 +158,54 @@ describe("serializeCalendarEvent", () => {
     detachedFromSeries: false,
   };
 
-  it("omits a join URL for a non-meeting event", () => {
-    expect(serializeCalendarEvent(base).meetingUrl).toBeNull();
-  });
-
-  it("resolves the join URL for a meeting event with a room", () => {
+  it("never emits a meeting URL/token field — even for a meeting with a room", () => {
+    // SECURITY: the host token must not be served in the list payload. The DTO
+    // carries no join URL at all; the token is minted per click on the gated,
+    // audited join endpoint instead.
     const dto = serializeCalendarEvent({
       ...base,
       isMeeting: true,
       meetingRoom: "xyz",
     });
-    expect(dto.meetingUrl).toBe("http://localhost:3010/join/xyz");
+    expect(dto).not.toHaveProperty("meetingUrl");
+    // No value anywhere in the DTO leaks the room slug or a join link.
+    const serialised = JSON.stringify(dto);
+    expect(serialised).not.toContain("xyz");
+    expect(serialised).not.toContain("/join");
   });
 
-  it("has no join URL when a meeting flag lacks a room slug", () => {
+  it("still exposes isMeeting so the client can render a Join affordance", () => {
+    expect(serializeCalendarEvent({ ...base, isMeeting: true }).isMeeting).toBe(
+      true,
+    );
+    expect(serializeCalendarEvent(base).isMeeting).toBe(false);
+  });
+
+  it("summarises the recurrence rule for a series event", () => {
     const dto = serializeCalendarEvent({
       ...base,
-      isMeeting: true,
-      meetingRoom: null,
+      seriesId: "series-1",
+      series: {
+        id: "series-1",
+        frequency: "WEEKLY",
+        interval: 1,
+        until: null,
+        count: 5,
+        createdById: "member-1",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
     });
-    expect(dto.meetingUrl).toBeNull();
+    expect(dto.recurrence).toEqual({
+      frequency: "WEEKLY",
+      interval: 1,
+      endMode: "count",
+      until: null,
+      count: 5,
+    });
+  });
+
+  it("has a null recurrence for a one-off event", () => {
+    expect(serializeCalendarEvent(base).recurrence).toBeNull();
   });
 });

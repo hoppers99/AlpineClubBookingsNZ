@@ -123,7 +123,9 @@ export async function PATCH(
  * wipe an admin's event or `?scope=series` whole series (see
  * src/lib/calendar-access.ts and docs/guides/calendar.md). `?scope=series`
  * deletes every occurrence of the series; the default ("single") deletes just
- * this occurrence.
+ * this occurrence. For `?scope=series`, `?exceptions=keep` (default) orphans any
+ * detached per-occurrence exceptions into standalone events, while
+ * `?exceptions=delete` removes them along with the rest of the series.
  */
 export async function DELETE(
   req: NextRequest,
@@ -137,11 +139,15 @@ export async function DELETE(
   }
 
   const { id } = await params;
+  const searchParams = new URL(req.url).searchParams;
   const scope = calendarEditScopeSchema
     .catch("single")
-    .parse(new URL(req.url).searchParams.get("scope"));
+    .parse(searchParams.get("scope"));
+  // What a whole-series delete does with detached exceptions; default "keep".
+  const exceptionMode =
+    searchParams.get("exceptions") === "delete" ? "delete" : "keep";
 
-  const result = await deleteCalendarEvent(id, scope);
+  const result = await deleteCalendarEvent(id, scope, exceptionMode);
   if (!result) {
     return NextResponse.json({ error: "Event not found" }, { status: 404 });
   }
@@ -162,6 +168,7 @@ export async function DELETE(
       title: result.title,
       scope: result.scope,
       deletedCount: result.deletedCount,
+      exceptions: exceptionMode,
     },
   });
 

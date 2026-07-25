@@ -5211,6 +5211,10 @@ model CalendarEvent {
   endsAt      DateTime?
   isMeeting   Boolean   @default(false)
   meetingRoom String?
+  // Optional client-supplied dedup token for a create. A duplicate replay of the
+  // same key returns the first event instead of inserting another. NULLs are
+  // distinct in a Postgres unique index, so unkeyed events never collide.
+  idempotencyKey String? @unique
   createdById String
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
