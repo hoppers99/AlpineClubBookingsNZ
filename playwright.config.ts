@@ -23,10 +23,11 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   forbidOnly: !!process.env.CI,
-  // Retry flaky specs on CI only (Playwright's documented default). A single
-  // transient flake — e.g. the multi-step mock-Xero OAuth wizard exceeding a
-  // timeout on a loaded runner — should not fail an otherwise-green suite.
-  // Local runs keep 0 so flakiness stays visible while developing.
+  // Retry twice in CI. The server-side keepAliveTimeout raise
+  // (KEEP_ALIVE_TIMEOUT=65000 in docker-compose.staging.yml) removes the
+  // keep-alive socket-reset race at its source; retries are the pragmatic
+  // backstop for any residual transport-level `socket hang up` on a pooled
+  // API request. Kept at 0 locally so a real failure surfaces immediately.
   retries: process.env.CI ? 2 : 0,
   reporter: process.env.CI
     ? [["list"], ["html", { open: "never" }], ["github"]]

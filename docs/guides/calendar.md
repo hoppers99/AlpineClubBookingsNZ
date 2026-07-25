@@ -119,6 +119,12 @@ When you save or delete a repeating event you choose the scope:
   **repeat pattern** (frequency, interval, end, or moving the day) rebuilds the
   series from the edited occurrence, preserving any exceptions you made.
 
+When you **delete all events in the series** and some occurrences were edited
+individually (exceptions), you choose what happens to them: **Keep
+individually-edited events** leaves those occurrences as standalone one-off
+events, while **Delete everything** removes the whole series including the
+exceptions. Keeping them is the default.
+
 Turning **Repeat** back to **Does not repeat** on a whole-series edit collapses
 the series to a single event. Setting **Repeat** on an existing one-off event
 converts it into a series.
@@ -127,9 +133,9 @@ converts it into a series.
 
 Ticking **Video meeting (MiroTalk)** on an event attaches a self-hosted
 [MiroTalk](https://github.com/miroslavpejic85/mirotalk) meeting. Committee
-members and admins then see an **Open meeting link** button on the event that
-launches the meeting in a new tab; ordinary members do not (meetings are for the
-people running them).
+members and admins then see a **Join meeting** button when they open the event
+(and an **Open meeting link** button while editing it) that launches the meeting
+in a new tab; ordinary members do not (meetings are for the people running them).
 
 The app never embeds MiroTalk — it links out to it. Each meeting event stores an
 unguessable room slug, and the join URL is built server-side from `MIROTALK_URL`,
@@ -143,16 +149,12 @@ reads the token — the path form ignores it).
 MiroTalk is a **separate service** you self-host; it is not bundled with this
 app. Point the app at it with one environment variable:
 
-| Variable                   | What it is                         | Default                          |
-| -------------------------- | ---------------------------------- | -------------------------------- |
-| `MIROTALK_URL`             | Base URL of your MiroTalk instance | `https://meet.<your app domain>` |
-| `NEXT_PUBLIC_MIROTALK_URL` | Legacy fallback (build-time only)  | —                                |
+| Variable       | What it is                         | Default                          |
+| -------------- | ---------------------------------- | -------------------------------- |
+| `MIROTALK_URL` | Base URL of your MiroTalk instance | `https://meet.<your app domain>` |
 
-- **Prefer `MIROTALK_URL`.** The join link is built server-side, so this is a
-  **runtime** setting: set it in the app's environment and restart — no rebuild.
-- `NEXT_PUBLIC_MIROTALK_URL` is still read as a fallback, but `NEXT_PUBLIC_*`
-  values are inlined at **build time**, so a runtime `.env` change won't move a
-  pre-built image — use `MIROTALK_URL` instead.
+- **`MIROTALK_URL` is a runtime setting.** The join link is built server-side,
+  so set it in the app's environment and restart — no rebuild required.
 - **When unset, the base is derived from your app's own domain** (`NEXTAUTH_URL`)
   as `https://meet.<domain>` — so a production deploy that forgets to set it
   points at a real, same-domain host you control (a broken `meet.` subdomain is
