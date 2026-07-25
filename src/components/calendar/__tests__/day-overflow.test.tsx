@@ -19,7 +19,6 @@ function makeEvent(n: number): CalendarEventDTO {
     startsAt: `2026-08-15T0${n}:00:00.000Z`,
     endsAt: null,
     isMeeting: false,
-    meetingUrl: null,
     seriesId: null,
     detachedFromSeries: false,
     recurrence: null,

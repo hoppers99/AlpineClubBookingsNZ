@@ -62,20 +62,70 @@ export function monthGridRange(year: number, month: number): {
   return { from, to };
 }
 
-/** Group events by their (local) start-day key. */
+/**
+ * Cap on how many day-cells a single event may expand across. A well-formed
+ * event never spans a year; this guards against a malformed `endsAt` (e.g. a
+ * bad import putting the end centuries in the future) blowing up the loop and
+ * the grid. 370 comfortably covers any legitimate multi-day event.
+ */
+const MAX_EVENT_SPAN_DAYS = 370;
+
+/**
+ * Group events by their (local) day key. A multi-day / midnight-spanning event
+ * — one whose `endsAt` falls on a later LOCAL calendar day than its `startsAt`
+ * — is added to EVERY day it covers, from its start day through its end day
+ * inclusive, so it renders on each of those cells. Events with no `endsAt`, an
+ * invalid/earlier `endsAt`, or an `endsAt` on the same local day stay in a
+ * single bucket.
+ */
 export function groupEventsByDay(
   events: CalendarEventDTO[],
 ): Map<string, CalendarEventDTO[]> {
   const byDay = new Map<string, CalendarEventDTO[]>();
-  for (const event of events) {
-    const key = dateKey(new Date(event.startsAt));
+
+  const addToDay = (key: string, event: CalendarEventDTO) => {
     const bucket = byDay.get(key);
     if (bucket) {
       bucket.push(event);
     } else {
       byDay.set(key, [event]);
     }
+  };
+
+  for (const event of events) {
+    const start = new Date(event.startsAt);
+    const startKey = dateKey(start);
+
+    // Single-bucket fast paths: no end, unparseable dates, or an end that does
+    // not reach a later local day than the start.
+    if (!event.endsAt || Number.isNaN(start.getTime())) {
+      addToDay(startKey, event);
+      continue;
+    }
+    const end = new Date(event.endsAt);
+    const endKey = dateKey(end);
+    if (Number.isNaN(end.getTime()) || endKey <= startKey) {
+      // `endKey <= startKey` (lexicographic on zero-padded YYYY-MM-DD works as
+      // date order) covers same-day and any end-before-start data.
+      addToDay(startKey, event);
+      continue;
+    }
+
+    // Multi-day: walk local calendar days from the start day through the end
+    // day inclusive, capped so a pathological span can't run away.
+    const cursor = new Date(
+      start.getFullYear(),
+      start.getMonth(),
+      start.getDate(),
+    );
+    for (let i = 0; i <= MAX_EVENT_SPAN_DAYS; i++) {
+      const key = dateKey(cursor);
+      addToDay(key, event);
+      if (key === endKey) break;
+      cursor.setDate(cursor.getDate() + 1);
+    }
   }
+
   // All-day events first, then chronological.
   for (const bucket of byDay.values()) {
     bucket.sort((a, b) => {

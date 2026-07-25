@@ -15,6 +15,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import type {
   CalendarEditScope,
   CalendarEventDTO,
@@ -71,8 +78,13 @@ function todayDateValue(): string {
   return `${y}-${m}-${d}`;
 }
 
-const selectClasses =
-  "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50";
+/** Fresh idempotency key for a create submit; empty string if unavailable. */
+function freshIdempotencyKey(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return "";
+}
 
 export function EventDialog({
   open,
@@ -105,9 +117,21 @@ export function EventDialog({
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Joining a meeting mints a fresh host token per click via the join endpoint;
+  // no token is ever read off the event. `joining` disables the button during
+  // the fetch; `joinError` surfaces failures inline.
+  const [joining, setJoining] = useState(false);
+  const [joinError, setJoinError] = useState<string | null>(null);
+  // A create request carries a fresh idempotency key so a double-submit / retry
+  // cannot create duplicate events. Regenerated each time the create dialog
+  // (re)opens; never sent on PATCH.
+  const [idempotencyKey, setIdempotencyKey] = useState("");
   // When editing/deleting an occurrence of a series, ask which occurrences the
   // action applies to before committing.
   const [scopePrompt, setScopePrompt] = useState<"save" | "delete" | null>(null);
+  // Second step of the series-delete chooser: once "All events" is picked, ask
+  // whether individually-edited (detached) occurrences are kept or deleted too.
+  const [deleteAllStep, setDeleteAllStep] = useState(false);
   // Confirm dialogs (replacing native window.confirm): deleting a single event,
   // and discarding unsaved edits when closing the form.
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -120,9 +144,15 @@ export function EventDialog({
     if (!open) return;
     setError(null);
     setSaving(false);
+    setJoining(false);
+    setJoinError(null);
     setScopePrompt(null);
+    setDeleteAllStep(false);
     setConfirmDelete(false);
     setDiscardPrompt(false);
+    // A brand-new idempotency key per create-dialog opening; existing events
+    // (PATCH) never send one.
+    setIdempotencyKey(event ? "" : freshIdempotencyKey());
 
     const next = event
       ? {
@@ -174,6 +204,67 @@ export function EventDialog({
     // Record the just-loaded values as the clean baseline for dirty detection.
     setBaseline(JSON.stringify(next));
   }, [open, event, initialDate]);
+
+  // Join a meeting by minting a fresh host token on the server (never reading a
+  // link off the event). A blank tab is opened SYNCHRONOUSLY on the click so the
+  // browser attributes it to the user gesture — opening it after the await would
+  // trip pop-up blockers. Its `opener` is severed for `noopener` semantics while
+  // keeping the handle so we can point it at the join URL once minted.
+  async function joinMeeting(eventId: string) {
+    if (joining) return;
+    setJoinError(null);
+    const popup = window.open("", "_blank");
+    if (popup) {
+      try {
+        // noopener semantics without losing the reference (passing "noopener"
+        // to window.open would return null and defeat the pre-open).
+        popup.opener = null;
+      } catch {
+        // Some engines make `opener` read-only; the join URL is same-origin
+        // to a trusted meeting host, so this is best-effort hardening.
+      }
+    }
+    setJoining(true);
+    try {
+      const res = await fetch(`/api/calendar/events/${eventId}/join`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        popup?.close();
+        const body = (await res.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        setJoinError(
+          body?.error ?? "Could not open the meeting. Please try again.",
+        );
+        setJoining(false);
+        return;
+      }
+      const data = (await res.json().catch(() => null)) as {
+        joinUrl?: string;
+      } | null;
+      if (!data?.joinUrl) {
+        popup?.close();
+        setJoinError("Could not open the meeting. Please try again.");
+        setJoining(false);
+        return;
+      }
+      if (popup) {
+        popup.location.href = data.joinUrl;
+      } else {
+        // The pre-opened tab was blocked; we do NOT hijack the current tab for a
+        // new-tab intent — ask the member to allow pop-ups instead.
+        setJoinError(
+          "Your browser blocked the meeting tab. Please allow pop-ups for this site and try again.",
+        );
+      }
+      setJoining(false);
+    } catch {
+      popup?.close();
+      setJoinError("Could not open the meeting. Please try again.");
+      setJoining(false);
+    }
+  }
 
   // Read-only detail view: shown to ordinary members, and to managers on the
   // member calendar (where existing events are not editable). A meeting shows a
@@ -232,18 +323,21 @@ export function EventDialog({
             {!event.location && !event.details && !event.recurrence && (
               <p className="text-muted-foreground">No further details.</p>
             )}
+            {joinError && (
+              <p role="alert" className="text-sm font-medium text-destructive">
+                {joinError}
+              </p>
+            )}
           </div>
           <DialogFooter className="gap-2 sm:justify-between">
-            {canManage && event.isMeeting && event.meetingUrl ? (
-              <Button asChild>
-                <a
-                  href={event.meetingUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  <Video aria-hidden className="mr-2 h-4 w-4" />
-                  Join meeting
-                </a>
+            {canManage && event.isMeeting ? (
+              <Button
+                type="button"
+                onClick={() => joinMeeting(event.id)}
+                disabled={joining}
+              >
+                <Video aria-hidden className="mr-2 h-4 w-4" />
+                {joining ? "Opening…" : "Join meeting"}
               </Button>
             ) : (
               <span />
@@ -359,6 +453,9 @@ export function EventDialog({
         isMeeting,
         recurrence,
         scope,
+        // Dedup key for create only — a retry/double-submit reuses it so the
+        // server collapses duplicates. Never sent on PATCH.
+        ...(isEdit || !idempotencyKey ? {} : { idempotencyKey }),
       };
       const res = await fetch(
         isEdit ? `/api/calendar/events/${event.id}` : "/api/calendar/events",
@@ -394,18 +491,29 @@ export function EventDialog({
     submit("single");
   }
 
-  async function performDelete(scope: CalendarEditScope) {
+  async function performDelete(
+    scope: CalendarEditScope,
+    exceptions?: "keep" | "delete",
+  ) {
     if (!event) return;
     setSaving(true);
     try {
+      const params = new URLSearchParams({ scope });
+      // `exceptions` is only meaningful for a whole-series delete; it decides
+      // whether individually-edited (detached) occurrences survive as
+      // standalone events ("keep") or are removed too ("delete").
+      if (scope === "series") {
+        params.set("exceptions", exceptions ?? "keep");
+      }
       const res = await fetch(
-        `/api/calendar/events/${event.id}?scope=${scope}`,
+        `/api/calendar/events/${event.id}?${params.toString()}`,
         { method: "DELETE" },
       );
       if (!res.ok) {
         setError("Could not delete the event. Please try again.");
         setSaving(false);
         setScopePrompt(null);
+        setDeleteAllStep(false);
         setConfirmDelete(false);
         return;
       }
@@ -415,6 +523,7 @@ export function EventDialog({
       setError("Could not delete the event. Please try again.");
       setSaving(false);
       setScopePrompt(null);
+      setDeleteAllStep(false);
       setConfirmDelete(false);
     }
   }
@@ -511,18 +620,21 @@ export function EventDialog({
                 <Repeat aria-hidden className="h-4 w-4 text-muted-foreground" />
                 Repeat
               </Label>
-              <select
-                id="event-repeat"
-                className={selectClasses}
+              <Select
                 value={repeat}
-                onChange={(e) => setRepeat(e.target.value as RepeatValue)}
+                onValueChange={(v) => setRepeat(v as RepeatValue)}
               >
-                {repeatOptions.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
+                <SelectTrigger id="event-repeat">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {repeatOptions.map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               {isEdit && isSeriesEvent && (
                 <p className="text-xs text-muted-foreground">
                   Changing how this repeats applies when you choose “All events”
@@ -556,18 +668,21 @@ export function EventDialog({
 
                 <div className="space-y-1.5">
                   <Label htmlFor="event-end-mode">Ends</Label>
-                  <select
-                    id="event-end-mode"
-                    className={selectClasses}
+                  <Select
                     value={endMode}
-                    onChange={(e) =>
-                      setEndMode(e.target.value as RecurrenceEndMode)
+                    onValueChange={(v) =>
+                      setEndMode(v as RecurrenceEndMode)
                     }
                   >
-                    <option value="never">Never</option>
-                    <option value="until">On date</option>
-                    <option value="count">After N times</option>
-                  </select>
+                    <SelectTrigger id="event-end-mode">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="never">Never</SelectItem>
+                      <SelectItem value="until">On date</SelectItem>
+                      <SelectItem value="count">After N times</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
 
                 {endMode === "until" && (
@@ -637,18 +752,23 @@ export function EventDialog({
               </Label>
             </div>
 
-            {isEdit && event?.isMeeting && event.meetingUrl && (
-              <a
-                href={event.meetingUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-2 text-sm font-medium text-primary hover:underline"
+            {isEdit && event?.isMeeting && (
+              <button
+                type="button"
+                onClick={() => joinMeeting(event.id)}
+                disabled={joining}
+                className="inline-flex items-center gap-2 text-sm font-medium text-primary hover:underline disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <ExternalLink aria-hidden className="h-4 w-4" />
-                Open meeting link
-              </a>
+                {joining ? "Opening…" : "Open meeting link"}
+              </button>
             )}
 
+            {joinError && (
+              <p role="alert" className="text-sm font-medium text-destructive">
+                {joinError}
+              </p>
+            )}
             {error && (
               <p className="text-sm font-medium text-destructive">{error}</p>
             )}
@@ -686,54 +806,100 @@ export function EventDialog({
         </DialogContent>
       </Dialog>
 
-      {/* Scope chooser for recurring-event edits/deletes. */}
+      {/* Scope chooser for recurring-event edits/deletes. A whole-series DELETE
+          adds a second step for the fate of individually-edited occurrences. */}
       <Dialog
         open={scopePrompt !== null}
         onOpenChange={(v) => {
-          if (!v) setScopePrompt(null);
+          if (!v) {
+            setScopePrompt(null);
+            setDeleteAllStep(false);
+          }
         }}
       >
         <DialogContent className="sm:max-w-sm" showCloseButton={false}>
-          <DialogHeader>
-            <DialogTitle>
-              {scopePrompt === "delete" ? "Delete recurring event" : "Edit recurring event"}
-            </DialogTitle>
-            <DialogDescription>
-              This event is part of a series. Apply to just this occurrence, or
-              the whole series?
-            </DialogDescription>
-          </DialogHeader>
-          <div className="flex flex-col gap-2">
-            <Button
-              variant="outline"
-              disabled={saving}
-              onClick={() =>
-                scopePrompt === "delete"
-                  ? performDelete("single")
-                  : submit("single")
-              }
-            >
-              This event only
-            </Button>
-            <Button
-              variant={scopePrompt === "delete" ? "destructive" : "default"}
-              disabled={saving}
-              onClick={() =>
-                scopePrompt === "delete"
-                  ? performDelete("series")
-                  : submit("series")
-              }
-            >
-              All events in the series
-            </Button>
-            <Button
-              variant="ghost"
-              disabled={saving}
-              onClick={() => setScopePrompt(null)}
-            >
-              Cancel
-            </Button>
-          </div>
+          {scopePrompt === "delete" && deleteAllStep ? (
+            <>
+              <DialogHeader>
+                <DialogTitle>Delete the whole series</DialogTitle>
+                <DialogDescription>
+                  Some occurrences may have been edited on their own. Keep those
+                  as standalone events, or delete everything in the series?
+                </DialogDescription>
+              </DialogHeader>
+              <div className="flex flex-col gap-2">
+                <Button
+                  variant="outline"
+                  disabled={saving}
+                  onClick={() => performDelete("series", "keep")}
+                >
+                  Keep individually-edited events
+                </Button>
+                <Button
+                  variant="destructive"
+                  disabled={saving}
+                  onClick={() => performDelete("series", "delete")}
+                >
+                  Delete everything
+                </Button>
+                <Button
+                  variant="ghost"
+                  disabled={saving}
+                  onClick={() => setDeleteAllStep(false)}
+                >
+                  Back
+                </Button>
+              </div>
+            </>
+          ) : (
+            <>
+              <DialogHeader>
+                <DialogTitle>
+                  {scopePrompt === "delete"
+                    ? "Delete recurring event"
+                    : "Edit recurring event"}
+                </DialogTitle>
+                <DialogDescription>
+                  This event is part of a series. Apply to just this occurrence,
+                  or the whole series?
+                </DialogDescription>
+              </DialogHeader>
+              <div className="flex flex-col gap-2">
+                <Button
+                  variant="outline"
+                  disabled={saving}
+                  onClick={() =>
+                    scopePrompt === "delete"
+                      ? performDelete("single")
+                      : submit("single")
+                  }
+                >
+                  This event only
+                </Button>
+                <Button
+                  variant={scopePrompt === "delete" ? "destructive" : "default"}
+                  disabled={saving}
+                  onClick={() =>
+                    scopePrompt === "delete"
+                      ? setDeleteAllStep(true)
+                      : submit("series")
+                  }
+                >
+                  All events in the series
+                </Button>
+                <Button
+                  variant="ghost"
+                  disabled={saving}
+                  onClick={() => {
+                    setScopePrompt(null);
+                    setDeleteAllStep(false);
+                  }}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </>
+          )}
         </DialogContent>
       </Dialog>
 
