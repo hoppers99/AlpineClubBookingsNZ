@@ -6,16 +6,23 @@ x-app-environment: &app-environment
   # burst on a 5-conn pool exhausts it and stalls every other request
   # (#1884, F17). Raised to 10 for headroom under ~100 concurrent users.
   #
-  # Postgres runs max_connections=40 (see the postgres service) with the
-  # default 3 superuser-reserved slots => 37 usable. The cron-leader (`app`)
-  # overrides this to connection_limit=5 and `migrate` to =2, so the worst
-  # case fits with headroom: blue(10) + green(10) + cron(5) = 25 steady,
-  # + migrate(2) during a deploy window = 27 <= 37 usable, leaving ~10 slots
-  # for admin/psql sessions and health probes. Raised from 30 (27 usable — a
-  # razor's-edge 27/27 at the deploy-window worst case) after production
-  # transiently brushed the ceiling with `FATAL: sorry, too many clients`. A
-  # constrained-VPS fork may lower this AND the postgres mem_limit, but keep
-  # sum(live pools) <= usable (see DEPLOYMENT.md "Connection pool sizing").
+  # Postgres runs max_connections=40 (see the postgres service). The Prisma
+  # pools sum to blue(10) + green(10) + cron(5) = 25 steady, + migrate(2) in a
+  # deploy window = 27. Raised from 30 after production transiently hit `FATAL:
+  # sorry, too many clients`: at 30 the worst case (27) sat one slot under the
+  # ceiling, so a nightly pg_dump, the deploy-time shadow DB, a pg_isready
+  # probe, or an operator psql tipped it over.
+  #
+  # NOTE the app role `tac` is a Postgres SUPERUSER (POSTGRES_USER), so
+  # superuser_reserved_connections does NOT hold slots back from the app's own
+  # pools — once the pools fill the ceiling even an admin psql is refused (which
+  # is why the "reserved" slots gave no emergency headroom at 30). A dedicated
+  # NOSUPERUSER app role would restore a real reserved slot (tracked follow-up).
+  # So the 40 ceiling is raw headroom, not a reservation: budget EVERY consumer,
+  # not just the Prisma pools —
+  #   sum(pools) + pg_dump + shadow DB + probes + admin psql <= max_connections.
+  # A constrained-VPS fork may lower max_connections AND the postgres mem_limit
+  # together. See DEPLOYMENT.md "Connection pool sizing".
   DATABASE_URL: postgresql://tac:${DB_PASSWORD:?DB_PASSWORD is required}@postgres:5432/tacbookings?connection_limit=10&pool_timeout=10
   NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3000}
   NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
@@ -153,9 +160,10 @@ services:
       - "-c"
       - "effective_cache_size=256MB"
       - "-c"
-      # 40 total - 3 superuser-reserved = 37 usable. Sized so the deploy-window
-      # worst case (blue+green web + cron + migrate = 27) clears with ~10 slots
-      # of headroom for admin/psql sessions and health probes. See the
+      # Sized so the deploy-window pool worst case (blue+green web + cron +
+      # migrate = 27) clears with headroom for the NON-pool consumers (pg_dump,
+      # shadow DB, probes, admin psql). The app role is a superuser, so the 3
+      # superuser-reserved slots do NOT protect admin access — see the
       # connection-budget note on x-app-environment and DEPLOYMENT.md.
       - "max_connections=40"
     volumes:
@@ -244,7 +252,9 @@ services:
       TZ: Pacific/Auckland
       # Bound the deploy-window migrate pool to 2 so a blue/green overlap that
       # also runs migrations still fits: blue(10)+green(10)+cron(5)+migrate(2)
-      # = 27 <= 37 usable connections (max_connections=40 less 3 reserved)
+      # = 27, within the max_connections=40 ceiling. The headroom above 27 is
+      # for non-pool consumers (pg_dump / shadow DB / probes / psql), not a
+      # reserved admin slot — see the budget note on x-app-environment
       # (#1884, F17). migrate only needs a couple of connections for
       # `prisma migrate deploy`.
       DATABASE_URL: postgresql://tac:${DB_PASSWORD:?DB_PASSWORD is required}@postgres:5432/tacbookings?connection_limit=2&pool_timeout=10

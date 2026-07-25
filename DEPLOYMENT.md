@@ -39,30 +39,45 @@ Postgres `max_connections=40`:
 | `app` | cron leader + warm fallback web | 5 |
 | `migrate` | deploy-window migrations | 2 |
 
-Postgres keeps 3 superuser-reserved slots, leaving **37 usable**. The worst
-case is a blue/green handover (both web slots briefly live) that overlaps a
-migration:
+The worst case is a blue/green handover (both web slots briefly live) that
+overlaps a migration:
 
 ```
 app_blue(10) + app_green(10) + app(5) = 25 steady
-                                 + migrate(2) = 27  <=  37 usable
+                                 + migrate(2) = 27
 ```
 
-That clears with ~10 slots to spare for admin/`psql` sessions and health
-probes; steady state (one active web slot + cron leader) is far lower.
+That leaves the pools **13 slots** under the 40 ceiling — but those slots are
+**not** a protected admin reservation. The app connects as role `tac`, which the
+`postgres` image creates as a **superuser** (`POSTGRES_USER`), so
+`superuser_reserved_connections` (the 3 slots Postgres nominally holds back) does
+**not** fence the app's own pools off: once the pools reach the ceiling, even a
+superuser `psql` is refused. The headroom is therefore best-effort room for the
+**non-pool** consumers you must budget alongside the pools:
+
+- the nightly `pg_dump` backup (its own backend, outside every pool)
+- the deploy-window shadow/drift database and admin `psql`, on the same server
+- the `pg_isready` health probe (every 5s)
+- any operator `psql`
+
+So the real invariant is **sum(pools) + non-pool consumers ≤ `max_connections`**,
+not just the pools; steady state (one active web slot + cron leader) is far lower.
 
 `max_connections` was raised from 30 to 40 (and the `postgres` `mem_limit` from
 512m to 768m) after production transiently hit `FATAL: sorry, too many clients`:
-at 30 the deploy-window worst case sat at a razor's-edge **27 / 27 usable**, so a
-single concurrent admin connection or health-probe burst overflowed the ceiling
-and Postgres refused *all* new logins, including the superuser-reserved slots.
-The 768m `mem_limit` covers the extra backends plus their `work_mem` (~256m more
-per host — negligible above ~1 GiB free).
+at 30 the deploy-window pools (27) sat one slot under the ceiling, so a single
+overlapping backup, shadow DB, probe, or operator `psql` overflowed it — and
+because the app role is a superuser (above), Postgres then refused *all* new
+logins, the nominally-reserved slots included, locking operators out exactly when
+they needed to diagnose. 40 restores real headroom for those consumers. The 768m
+`mem_limit` covers the extra backends plus their `work_mem` (~256m more per host —
+negligible above ~1 GiB free).
 
-A constrained-VPS fork may lower both values, but keep the arithmetic (sum of all
-live pools ≤ usable connections) whenever you change a pool size, `max_connections`,
-or the replica count. Over-committing `connection_limit` beyond `max_connections`
-surfaces as `FATAL: sorry, too many clients` under load.
+A true protected admin slot would need a dedicated **`NOSUPERUSER`** application
+role (so `superuser_reserved_connections` can hold slots back from it) — tracked
+as a follow-up, not part of this sizing change. A constrained-VPS fork may lower
+both values, but keep the invariant above whenever you change a pool size,
+`max_connections`, or the replica count.
 
 ## Prerequisites
 
