@@ -60,6 +60,20 @@ x-app-environment: &app-environment
   SENTRY_ORG: ${SENTRY_ORG:-}
   SENTRY_PROJECT: ${SENTRY_PROJECT:-}
   SENTRY_AUTH_TOKEN: ${SENTRY_AUTH_TOKEN:-}
+  # MiroTalk video-meeting base URL (calendar events). Runtime, server-side only
+  # — join links are built as <MIROTALK_URL>/join/<room>. Empty is DERIVED in code
+  # from the app domain (NEXTAUTH_URL) as https://meet.<domain>, falling back to
+  # http://localhost:3010 only for a loopback app host.
+  MIROTALK_URL: ${MIROTALK_URL:-}
+  # MiroTalk JWT access (optional). When MIRO_JWT_KEY (matching MiroTalk's
+  # JWT_KEY) plus a HOST_USERS credential are set, the join link carries a
+  # short-lived signed token so committee members skip MiroTalk's host login.
+  # All server-side secrets — never exposed to the browser.
+  MIRO_JWT_KEY: ${MIRO_JWT_KEY:-}
+  MIRO_JWT_EXP: ${MIRO_JWT_EXP:-1h}
+  MIRO_MEETING_USERNAME: ${MIRO_MEETING_USERNAME:-}
+  MIRO_MEETING_PASSWORD: ${MIRO_MEETING_PASSWORD:-}
+  MIRO_MEETING_PRESENTER: ${MIRO_MEETING_PRESENTER:-true}
   # TEST-ONLY mock-Xero E2E harness (#2080). Empty in every real deployment, so
   # the mock endpoints 404 and the OAuth/org code path is unchanged. The E2E
   # staging stack sets API_ORIGIN to the BROWSER-reachable origin (the consent
@@ -186,6 +200,16 @@ services:
         max-file: "5"
     environment:
       DOMAIN: ${DOMAIN:-localhost}
+      # MiroTalk video-meeting reverse proxy (see the meet block in Caddyfile).
+      # MEET_HOST = the exact public hostname (e.g. meet.lwtc.org.nz).
+      # MIROTALK_UPSTREAM = where Caddy reaches MiroTalk (host.docker.internal:3010
+      # for a host `docker run`, or a compose service name).
+      MEET_HOST: ${MEET_HOST:-meet.localhost}
+      MIROTALK_UPSTREAM: ${MIROTALK_UPSTREAM:-host.docker.internal:3010}
+    # Lets the Caddy container reach a MiroTalk started with its own `docker run`
+    # via host.docker.internal (Linux needs this mapping).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "80:80"
       - "443:443"

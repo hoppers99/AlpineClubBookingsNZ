@@ -252,6 +252,11 @@ const ROUTE_AREA_PREFIXES: Array<{
       "/admin/work-parties",
       "/admin/lodge-instructions",
       "/admin/rooms-beds",
+      // Club events calendar (Lodge Operations). The page is lodge-area gated
+      // for admin visibility; write access is broadened to committee members in
+      // the calendar routes themselves (src/lib/calendar-access.ts), which do
+      // not run through this admin matrix.
+      "/admin/calendar",
       "/api/admin/hut-leaders",
       "/api/admin/roster",
       "/api/admin/chores",
@@ -277,6 +282,8 @@ const ROUTE_AREA_PREFIXES: Array<{
       "/admin/mountain-conditions",
       "/api/admin/page-content",
       "/api/admin/public-content-settings",
+      // Public Contact page committee-role selector (Club Contact panel).
+      "/api/admin/club-contact",
       // DB-first club identity + lodge-details editing (E3 #1929): site chrome.
       "/api/admin/club-identity",
       "/api/admin/site-banners",
