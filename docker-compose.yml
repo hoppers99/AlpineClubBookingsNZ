@@ -16,8 +16,10 @@ x-app-environment: &app-environment
   # NOTE the app role `tac` is a Postgres SUPERUSER (POSTGRES_USER), so
   # superuser_reserved_connections does NOT hold slots back from the app's own
   # pools — once the pools fill the ceiling even an admin psql is refused (which
-  # is why the "reserved" slots gave no emergency headroom at 30). A dedicated
-  # NOSUPERUSER app role would restore a real reserved slot (tracked follow-up).
+  # is why the "reserved" slots gave no emergency headroom at 30). Accepted here:
+  # the pools are hard-capped (27) well under 40, so the margin covers admin in
+  # practice; a dedicated NOSUPERUSER app role would restore a truly protected
+  # slot if a future change ever makes the margin tight.
   # So the 40 ceiling is raw headroom, not a reservation: budget EVERY consumer,
   # not just the Prisma pools —
   #   sum(pools) + pg_dump + shadow DB + probes + admin psql <= max_connections.

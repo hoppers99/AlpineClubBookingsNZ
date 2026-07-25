@@ -74,10 +74,15 @@ they needed to diagnose. 40 restores real headroom for those consumers. The 768m
 negligible above ~1 GiB free).
 
 A true protected admin slot would need a dedicated **`NOSUPERUSER`** application
-role (so `superuser_reserved_connections` can hold slots back from it) — tracked
-as a follow-up, not part of this sizing change. A constrained-VPS fork may lower
-both values, but keep the invariant above whenever you change a pool size,
-`max_connections`, or the replica count.
+role (so `superuser_reserved_connections` can hold slots back from it). This is a
+**consciously accepted limitation**: because the pools are hard-capped at 27 well
+under the 40 ceiling, the ~13-slot margin covers the non-pool consumers in
+practice, so the simpler single-superuser model is retained. Revisit the
+`NOSUPERUSER` split only if a future change makes the margin tight (a new pooled
+consumer, a much larger replica count, or enabling the audit-archive client via
+`AUDIT_ARCHIVE_DATABASE_URL`, which opens its own pool). A constrained-VPS fork
+may lower both values, but keep the invariant above whenever you change a pool
+size, `max_connections`, or the replica count.
 
 ## Prerequisites
 
