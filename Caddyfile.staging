@@ -4,9 +4,23 @@
 	request_body {
 		max_size 100MB
 	}
+	# X-Frame-Options is PATH-SCOPED; mirrors the production Caddyfile (#2246),
+	# where the reasoning is written out in full. In short: `src/lib/csp.ts` sets
+	# SAMEORIGIN on /display so the admin's own sandboxed preview surfaces can
+	# frame it, and a blanket edge DENY replaced that value. `path_regexp` is
+	# case-sensitive, so it mirrors the app's exact `pathname === "/display"`
+	# comparison; `/?` mirrors that file's trailing-slash normalisation. Every
+	# other path — including /images/* below — keeps a guaranteed DENY.
+	# Deliberately NOT the set-if-absent `?X-Frame-Options` form. The `>` prefix
+	# is a deferred set, so the edge value overwrites the app's rather than being
+	# appended alongside it as a second, conflicting header.
+	# Guarded by src/lib/__tests__/edge-frame-options-static.test.ts.
+	@display path_regexp ^/display/?$
+	@not_display not path_regexp ^/display/?$
+	header @display >X-Frame-Options "SAMEORIGIN"
+	header @not_display >X-Frame-Options "DENY"
 	header {
 		X-Content-Type-Options "nosniff"
-		X-Frame-Options "DENY"
 		# Disabled: the legacy XSS auditor is removed from modern browsers and
 		# enabling it could introduce information leaks in older ones. CSP is the control.
 		X-XSS-Protection "0"

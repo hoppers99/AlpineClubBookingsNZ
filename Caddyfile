@@ -1,7 +1,42 @@
 {$DOMAIN} {
+	# X-Frame-Options is PATH-SCOPED so the edge states the same intent the app
+	# does (#2246). /display is deliberately framed by the admin's own sandboxed
+	# preview surfaces (LTV-036, ADR-003 §5) and `src/lib/csp.ts` sets SAMEORIGIN
+	# on it, but a blanket edge DENY REPLACED that value — the previews worked
+	# only because CSP2 tells browsers to ignore X-Frame-Options when
+	# `frame-ancestors` is present. Scoping the header here removes that
+	# dependence on a browser precedence rule.
+	#
+	# Every other path keeps a GUARANTEED DENY set at the edge, including
+	# /finance-legacy* (a reverse-proxied third-party upstream) and /images/*,
+	# neither of which the app's own middleware covers. Deliberately NOT the
+	# set-if-absent `?X-Frame-Options` form: that would downgrade a guaranteed
+	# edge control into an advisory one on every route, so any upstream emitting
+	# a permissive value would win.
+	#
+	# `path_regexp`, not `path`, because it is case-SENSITIVE and so mirrors the
+	# app's own `pathname === "/display"` comparison exactly (Caddy's `path`
+	# matcher is case-insensitive, which would hand SAMEORIGIN to `/DISPLAY`);
+	# `/?` mirrors the trailing-slash normalisation in `src/lib/csp.ts`. Verified
+	# against caddy:2: matches /display and /display/ only — /display/foo,
+	# /display-foo and /DISPLAY all keep DENY. `header` runs ahead of `handle` in
+	# Caddy's directive order, so both matchers also cover the handled paths
+	# below.
+	#
+	# The `>` prefix is a DEFERRED set: it overwrites the upstream's own
+	# X-Frame-Options as the response is written. Without it Caddy sets the
+	# header before proxying and the app's value is APPENDED, so a response
+	# carries two conflicting X-Frame-Options values (verified against caddy:2:
+	# a plain set left `DENY, ALLOWALL` on a permissive upstream). Deferring
+	# makes the edge value the single authoritative one, which is the whole
+	# point of keeping this control at the edge.
+	# Guarded by src/lib/__tests__/edge-frame-options-static.test.ts.
+	@display path_regexp ^/display/?$
+	@not_display not path_regexp ^/display/?$
+	header @display >X-Frame-Options "SAMEORIGIN"
+	header @not_display >X-Frame-Options "DENY"
 	header {
 		X-Content-Type-Options "nosniff"
-		X-Frame-Options "DENY"
 		# Disabled: the legacy XSS auditor is removed from modern browsers and
 		# enabling it could introduce information leaks in older ones. CSP is the control.
 		X-XSS-Protection "0"
