@@ -3,8 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseDateOnly } from "@/lib/date-only";
 import {
   assertNoBookingMemberNightConflicts,
+  BookingMemberNightConflictError,
   findBookingMemberNightConflicts,
+  getBookingMemberNightConflictResponse,
   MEMBER_NIGHT_CONFLICT_BOOKING_STATUSES,
+  type BookingMemberNightConflict,
 } from "@/lib/booking-member-night-conflicts";
 
 function existingGuest(overrides: Record<string, unknown> = {}) {
@@ -213,5 +216,90 @@ describe("findBookingMemberNightConflicts", () => {
     // and the sorted acquisition puts member-1 before member-2.
     const lockOrder = lockValues.map((values) => values[1]);
     expect(lockOrder).toEqual(["member-1", "member-2"]);
+  });
+});
+
+// #2250 — the already-booked copy on both paths a member can hit it: the
+// advisory pre-check that builds a 409 body from a found conflict list
+// (getBookingMemberNightConflictResponse, what the booking wizard renders) and
+// the transactional guard that throws (BookingMemberNightConflictError, whose
+// message every 409 route surfaces). Both must say who, which nights, and what
+// to do next — without telling the requester about a booking they may not see.
+describe("booking member-night conflict messages", () => {
+  function conflictRow(
+    overrides: Partial<BookingMemberNightConflict> = {},
+  ): BookingMemberNightConflict {
+    return {
+      memberId: "member-2",
+      memberName: "Bob Jones",
+      bookingId: "booking-2",
+      bookingStatus: BookingStatus.PAYMENT_PENDING,
+      bookingOwnerName: "Carol Nguyen",
+      bookingCheckIn: "2026-06-10",
+      bookingCheckOut: "2026-06-13",
+      guestId: "guest-2",
+      conflictingNights: ["2026-06-11", "2026-06-12"],
+      isOwnBooking: false,
+      canOpenBooking: false,
+      canSelfRemove: false,
+      ...overrides,
+    };
+  }
+
+  it("tells the wizard path who, which nights, and what to do next", () => {
+    const body = getBookingMemberNightConflictResponse([conflictRow()]);
+
+    expect(body.code).toBe("BOOKING_MEMBER_NIGHT_CONFLICT");
+    expect(body.error).toBe(
+      "Bob Jones is already on a booking for 11 Jun 2026 and 12 Jun 2026. " +
+        "Ask whoever made that booking, or the club, to take them off it — or choose different dates.",
+    );
+  });
+
+  it("offers self-removal in the message when this viewer may take themselves off", () => {
+    const body = getBookingMemberNightConflictResponse([
+      conflictRow({ canSelfRemove: true, canOpenBooking: true }),
+    ]);
+
+    expect(body.error).toContain("You are already on another booking");
+    expect(body.error).toContain("Take yourself off that booking");
+  });
+
+  it("carries the same message on the transactional 409 path", () => {
+    const error = new BookingMemberNightConflictError([conflictRow()]);
+
+    expect(error.message).toBe(
+      getBookingMemberNightConflictResponse([conflictRow()]).error,
+    );
+    expect(error.name).toBe("BookingMemberNightConflictError");
+    expect(error.conflicts).toHaveLength(1);
+  });
+
+  it("never names the other booking's owner in a message a stranger receives", () => {
+    // The conflicts array still carries the fields it always did — this asserts
+    // only that the human-readable message does not restate them, because the
+    // 409 body goes to whoever made the request (possibly a member adding
+    // somebody else as a guest).
+    const body = getBookingMemberNightConflictResponse([conflictRow()]);
+
+    expect(body.error).not.toContain("Carol Nguyen");
+    expect(body.error).not.toContain("booking-2");
+    expect(body.error).not.toContain("payment pending");
+  });
+
+  it("names everyone and the union of the clashing nights when several members clash", () => {
+    const body = getBookingMemberNightConflictResponse([
+      conflictRow({ conflictingNights: ["2026-06-12"] }),
+      conflictRow({
+        memberId: "member-3",
+        memberName: "Dana Patel",
+        conflictingNights: ["2026-06-11"],
+      }),
+    ]);
+
+    expect(body.error).toBe(
+      "Bob Jones and Dana Patel are already on other bookings for 11 Jun 2026 and 12 Jun 2026. " +
+        "Nobody can be on two bookings for the same night, so take them off this booking or choose different dates.",
+    );
   });
 });

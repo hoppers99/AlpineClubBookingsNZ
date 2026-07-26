@@ -71,7 +71,13 @@ test("the same member cannot hold the same lodge night twice", async ({
 
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await expect(
-    page.getByText(/already (booked|has a booking|have a booking|part of)/i).first(),
+    // #2250 reworded the block ("… is already on a booking for 12 Jun 2026 …"),
+    // so the alternation carries the current wording alongside the older ones.
+    page
+      .getByText(
+        /already (booked|on a booking|on another booking|has a booking|have a booking|part of)/i,
+      )
+      .first(),
   ).toBeVisible();
   await expect(page.getByText("Booking Summary")).not.toBeVisible();
 });
