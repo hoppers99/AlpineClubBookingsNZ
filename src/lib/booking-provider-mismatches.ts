@@ -33,6 +33,8 @@ type MismatchBooking = {
   status: BookingStatus;
   deletedAt: Date | null;
   waitlistOfferedAt: Date | null;
+  // #2258: a deliberately-silenced booking is not a delivery failure.
+  noEmails: boolean;
   member: { email: string };
   payment: {
     id: string;
@@ -77,6 +79,7 @@ export async function getBookingProviderMismatches(
       status: true,
       deletedAt: true,
       waitlistOfferedAt: true,
+      noEmails: true,
       member: { select: { email: true } },
       payment: {
         select: {

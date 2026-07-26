@@ -158,6 +158,7 @@ describe("getStuckStateDashboard", () => {
         status: "WAITLIST_OFFERED",
         waitlistOfferedAt: new Date("2026-06-21T00:00:00.000Z"),
         waitlistOfferExpiresAt: new Date("2026-06-21T23:00:00.000Z"),
+        noEmails: false,
         member: { email: "one@example.org" },
       },
       {
@@ -165,6 +166,7 @@ describe("getStuckStateDashboard", () => {
         status: "WAITLIST_OFFERED",
         waitlistOfferedAt: new Date("2026-06-21T00:00:00.000Z"),
         waitlistOfferExpiresAt: new Date("2026-06-23T00:00:00.000Z"),
+        noEmails: false,
         member: { email: "two@example.org" },
       },
     ];
