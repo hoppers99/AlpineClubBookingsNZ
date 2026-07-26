@@ -10,6 +10,10 @@ import {
   wouldRemoveLastFullAdmin,
 } from "@/lib/admin-account-guards";
 import { requireAdmin } from "@/lib/session-guards";
+import {
+  DEPENDENT_LINK_INELIGIBILITY_ERRORS,
+  dependentLinkBlockers,
+} from "@/lib/dependent-link-eligibility";
 import { prisma } from "@/lib/prisma";
 import { validateInheritEmailSource } from "@/lib/member-email-inheritance";
 import {
@@ -201,20 +205,24 @@ export async function POST(
       if (!target) {
         throw new LinkDependentError("Member to link not found", 404);
       }
-      if (target.archivedAt) {
-        throw new LinkDependentError("Archived members cannot be linked into family groups", 422);
-      }
-      if (target.id === parent.id) {
-        throw new LinkDependentError("A member cannot be their own dependant", 422);
-      }
-      if (
-        target.parentMemberId === parent.id ||
-        target.secondaryParentId === parent.id
-      ) {
-        throw new LinkDependentError("This member is already linked to that parent", 422);
-      }
-      if (target.parentMemberId && target.secondaryParentId) {
-        throw new LinkDependentError("This member already has two parents linked", 422);
+      // #2254: the row-level guards below and the admin candidate SEARCH
+      // (`dependentLinkEligibleFor`) are now one predicate — see
+      // src/lib/dependent-link-eligibility.ts — so the search can never offer a
+      // candidate this route rejects, nor hide one it would accept.
+      const blockers = dependentLinkBlockers(parent.id, target);
+
+      // HAS_DEPENDANTS is deferred past the ancestry walk on purpose. Every
+      // ancestor of the parent necessarily has a dependant (the child on the
+      // path down to the parent), so checking it first would make the more
+      // specific "parent or ancestor" message unreachable.
+      const blockerBeforeAncestryWalk = blockers.find(
+        (reason) => reason !== "HAS_DEPENDANTS"
+      );
+      if (blockerBeforeAncestryWalk) {
+        throw new LinkDependentError(
+          DEPENDENT_LINK_INELIGIBILITY_ERRORS[blockerBeforeAncestryWalk],
+          422
+        );
       }
       if (
         await hasAncestorMember(
@@ -225,8 +233,11 @@ export async function POST(
       ) {
         throw new LinkDependentError("Cannot link a parent or ancestor as a dependant", 422);
       }
-      if ((target.dependents?.length ?? 0) > 0 || (target.secondaryDependents?.length ?? 0) > 0) {
-        throw new LinkDependentError("This member already has dependants and cannot be linked under another member", 422);
+      if (blockers.includes("HAS_DEPENDANTS")) {
+        throw new LinkDependentError(
+          DEPENDENT_LINK_INELIGIBILITY_ERRORS.HAS_DEPENDANTS,
+          422
+        );
       }
 
       if (data.disableLogin) {
