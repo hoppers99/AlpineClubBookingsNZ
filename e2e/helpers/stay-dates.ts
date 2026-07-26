@@ -128,6 +128,25 @@ export function stayWindow(index: number): StayWindow {
   );
 }
 
+// How the app renders a lodge night in prose, e.g. "17 Aug 2026" — the member-
+// night conflict copy (#2250) formats every night with
+// `formatNZDate(parseDateOnly(night))`, which is `Intl.DateTimeFormat` at
+// `dateStyle: "medium"` in the club locale and time zone. Computed here from
+// the same inputs rather than imported from `src/lib`, so the assertion is an
+// independent oracle instead of a restatement of the implementation. Locale and
+// zone are pinned exactly as `calendarDayLabel` below already pins them.
+//
+// This exists because these windows DRIFT with the run date (see stayWindow):
+// hardcoding a date in a spec produces an assertion that can only pass on the
+// week it was written.
+export function lodgeNightLabel(dateOnly: string): string {
+  const [y, m, d] = dateOnly.split("-").map(Number);
+  return new Intl.DateTimeFormat("en-NZ", {
+    timeZone: "Pacific/Auckland",
+    dateStyle: "medium",
+  }).format(new Date(Date.UTC(y, m - 1, d)));
+}
+
 // aria-label date fragment used by the booking calendar day buttons, e.g.
 // "Monday, 17 August 2026".
 export function calendarDayLabel(dateOnly: string): RegExp {
