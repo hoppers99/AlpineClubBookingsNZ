@@ -620,16 +620,29 @@ export function emailChangeNotificationTemplate(newEmail: string): string {
   `);
 }
 
+/**
+ * Chore-roster date: the deliberate long-weekday form ("Thursday, 16 April
+ * 2026") the roster emails have always used, NOT the house `formatNZDate`
+ * medium form. `date` is a lodge-night date-only string; parsing it with the
+ * `T00:00:00` suffix pins it to local midnight, which round-trips back to the
+ * same calendar date when formatted without a `timeZone` override. Do not
+ * change the format — subject line and body must stay identical, which is why
+ * this lives here and is shared with `src/lib/email/chores.ts` (#2256).
+ */
+export function formatChoreRosterDate(date: string): string {
+  return new Date(date + "T00:00:00").toLocaleDateString(
+    "en-NZ",
+    { weekday: "long", year: "numeric", month: "long", day: "numeric" }
+  );
+}
+
 export function choreRosterTemplate(
   guestName: string,
   date: string,
   chores: Array<{ name: string; description: string | null }>,
   choreLink?: string
 ): string {
-  const formattedDate = new Date(date + "T00:00:00").toLocaleDateString(
-    "en-NZ",
-    { weekday: "long", year: "numeric", month: "long", day: "numeric" }
-  );
+  const formattedDate = formatChoreRosterDate(date);
 
   const choreRows = chores.map((c) => ({
     label: escapeHtml(c.name),
@@ -2525,7 +2538,11 @@ export function setupIntentFailedTemplate(data: {
   checkIn: Date;
   checkOut: Date;
 }): string {
-  const dates = `${data.checkIn.toLocaleDateString("en-NZ")} – ${data.checkOut.toLocaleDateString("en-NZ")}`;
+  // #2256: these had the right locale but no `timeZone`, so they rendered in
+  // whatever zone the sending process happened to run in — a 2026-04-15T23:30Z
+  // check-in reads as 15 April from a UTC worker and 16 April in New Zealand.
+  // formatNZDate pins both the zone and the house "16 Apr 2026" format.
+  const dates = `${formatNZDate(data.checkIn)} – ${formatNZDate(data.checkOut)}`;
   return layout(`
     ${heading("Card Setup Failed")}
     ${paragraph("Hi " + escapeHtml(data.firstName) + ",")}

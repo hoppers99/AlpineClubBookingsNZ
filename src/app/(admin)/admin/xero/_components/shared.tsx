@@ -19,6 +19,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path"
+import { formatNZDateTime } from "@/lib/nzst-date"
 import { formatRedactedJson } from "@/lib/redact-sensitive-json"
 import { cn } from "@/lib/utils"
 import { CHIP_TONE_CLASSES, type SemanticTone } from "@/lib/chip-tones"
@@ -295,7 +296,10 @@ export function formatJson(value: unknown) {
 export function formatReferenceCacheLabel(label: string, cache: XeroReferenceCacheMeta | null) {
   if (!cache) return `${label}: no cache metadata yet`
   const sourceLabel = cache.source === "database" ? "shared cache" : cache.source === "memory" ? "memory cache" : "live Xero"
-  return `${label}: ${sourceLabel}, refreshed ${new Date(cache.lastRefreshedAt).toLocaleString()}, expires ${new Date(cache.expiresAt).toLocaleString()}`
+  // #2256: bare toLocaleString() rendered the cache stamps in the admin's own
+  // browser locale and zone ("4/16/2026, 11:30 AM"). Xero cache freshness is
+  // judged against the club's clock, so pin both to the app locale/time zone.
+  return `${label}: ${sourceLabel}, refreshed ${formatNZDateTime(new Date(cache.lastRefreshedAt))}, expires ${formatNZDateTime(new Date(cache.expiresAt))}`
 }
 
 export const ACCOUNT_MAPPING_KEYS: AccountMappingKey[] = [

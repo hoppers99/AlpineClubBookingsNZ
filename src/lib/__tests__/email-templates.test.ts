@@ -6,6 +6,8 @@ import {
   bookingBumpedTemplate,
   bookingCancelledTemplate,
   choreRosterTemplate,
+  formatChoreRosterDate,
+  setupIntentFailedTemplate,
   hutLeaderAssignmentTemplate,
   adminDailyDigestTemplate,
   adminPendingDeadlineTemplate,
@@ -442,6 +444,31 @@ describe("email-templates", () => {
     it("includes heater/fire safety reminder", () => {
       const html = choreRosterTemplate("Test", "2026-07-15", []);
       expect(html).toContain("heaters and fire");
+    });
+
+    it("keeps the deliberate long-weekday roster date (#2256)", () => {
+      // De-duplicating this formatter with src/lib/email/chores.ts must not
+      // change what the roster email says.
+      expect(formatChoreRosterDate("2026-07-15")).toBe("Wednesday, 15 July 2026");
+      expect(choreRosterTemplate("Bob", "2026-07-15", [])).toContain(
+        "Wednesday, 15 July 2026",
+      );
+    });
+  });
+
+  describe("setupIntentFailedTemplate (#2256)", () => {
+    it("renders the stay dates in the NZ calendar, not the server's zone", () => {
+      // 2026-04-15T23:30Z is 16 April in New Zealand; the old
+      // `toLocaleDateString("en-NZ")` had no timeZone, so a UTC worker sent
+      // "15/04/2026" while an NZ-pinned one sent "16/04/2026".
+      const html = setupIntentFailedTemplate({
+        firstName: "Ada",
+        checkIn: new Date("2026-04-15T23:30:00.000Z"),
+        checkOut: new Date("2026-04-17T23:30:00.000Z"),
+      });
+
+      expect(html).toContain("16 Apr 2026 – 18 Apr 2026");
+      expect(html).not.toContain("15/04/2026");
     });
   });
 
