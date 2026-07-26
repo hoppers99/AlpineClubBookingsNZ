@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path"
 import { formatAgeTierName } from "@/lib/use-age-tier-options"
 import { fetchJson, postJson } from "./api"
+import { GoToXeroButton } from "./go-to-xero-button"
 import {
   BudgetStatusChip,
   HealthStatCard,
@@ -27,6 +28,12 @@ import type {
 type Props = {
   connected: boolean
   currentXeroPath: string
+  /**
+   * Connected organisation short code for the section's "Go to Xero" link
+   * (#2261), or null when it could not be read — the link then falls back to
+   * the generic go.xero.com URL rather than disappearing.
+   */
+  orgShortCode: string | null
   healthOpen: boolean
   contactGroupMismatchesOpen: boolean
   contactLinkMismatchesOpen: boolean
@@ -40,6 +47,7 @@ type Props = {
 export function HealthAndDiagnosticsPanels({
   connected,
   currentXeroPath,
+  orgShortCode,
   healthOpen,
   contactGroupMismatchesOpen,
   contactLinkMismatchesOpen,
@@ -221,9 +229,14 @@ export function HealthAndDiagnosticsPanels({
         open={healthOpen}
         onToggle={(nextOpen) => onToggle("health", nextOpen)}
         actions={
-          <Button variant="outline" size="sm" onClick={() => void fetchHealth()} disabled={loadingHealth}>
-            {loadingHealth ? "Refreshing..." : "Refresh Health"}
-          </Button>
+          <>
+            {/* This section is only rendered while Xero is connected, so the
+                link can always promise the connected organisation (#2261). */}
+            <GoToXeroButton state="connected" shortCode={orgShortCode} />
+            <Button variant="outline" size="sm" onClick={() => void fetchHealth()} disabled={loadingHealth}>
+              {loadingHealth ? "Refreshing..." : "Refresh Health"}
+            </Button>
+          </>
         }
       >
         {healthError ? <p className="mb-3 text-sm text-danger">{healthError}</p> : null}
