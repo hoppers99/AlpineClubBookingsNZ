@@ -475,6 +475,27 @@ Future reviews and issues should cite this file when proposing changes.
   This person-night guard is separate from bed capacity: it checks draft,
   pending, confirmed/paid/completed, waitlist, offered, and admin-review
   bookings, but ignores cancelled, bumped, deleted, and expired draft rows.
+- A member put on somebody ELSE's booking may take their own place off it, and
+  only their own place. The rule is one shared server-side predicate
+  (`evaluateGuestSelfRemoval`, `booking-guest-self-removal.ts`): not the
+  booking's owner, the guest row is their own, the booking's status is one of
+  the eight self-removable ones, the stay is still in the future (NZ date-only
+  check-in strictly after today), and they are not the last guest. The
+  authoritative gate is `removeBookingGuestInTransaction`, which imports the
+  same status set and additionally refuses a quote-priced booking and a settled
+  booking whose refund/credit election only the owner or an admin may make.
+  Every surface that offers the action — the booking wizard's night-conflict
+  card and the booking detail page's own card (#2250) — drives its visibility
+  from that predicate rather than a client-side copy of it, so a member is never
+  shown a control the service would refuse; where it says no, the action is
+  hidden and the reason is stated instead.
+- The 409 the person-night guard returns is read by whoever made the request,
+  which may be a member adding somebody else as a guest. Its human-readable
+  message is therefore composed only from what that requester already supplied —
+  the member they tried to book and the nights they chose — plus the next step
+  their own `canSelfRemove` / `isOwnBooking` / `canOpenBooking` flags allow. The
+  clashing booking's owner, status, and id are stated only to a viewer the
+  server marked `canOpenBooking` (#2250).
 - The person-night guard is app-level enforcement by design (#1039 item 3): a
   database unique index cannot express it because liveness is booking-status
   dependent and spans `BookingGuest` to `Booking`, which a Postgres partial
