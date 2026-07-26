@@ -878,7 +878,9 @@ async function settleConfirmedChildrenAndNotify(
     const organiserName = `${organiser.firstName} ${organiser.lastName}`.trim();
     try {
       await sendGroupSettlementReceiptEmail({
-        bookingContext: { bookingId: organiserBooking.id },
+        bookingContext: {
+          bookingId: settlement.groupBooking.organiserBookingId,
+        },
         email: organiser.email,
         firstName: organiser.firstName,
         checkIn: organiserBooking.checkIn,
@@ -896,6 +898,8 @@ async function settleConfirmedChildrenAndNotify(
     const settledBookings = await prisma.booking.findMany({
       where: { id: { in: settled } },
       select: {
+        // #2258: each joiner's own booking id gates their settled-spot email.
+        id: true,
         checkIn: true,
         checkOut: true,
         member: { select: { email: true, firstName: true } },

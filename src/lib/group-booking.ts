@@ -1276,7 +1276,7 @@ export async function verifyAndCreateNonMemberJoin(
     // Reuses the booking-request pay-link email (same /pay/[token] flow); a
     // group-specific template is a follow-up.
     await sendBookingRequestApprovedEmail({
-      bookingContext: { bookingId: created.id },
+      bookingContext: { bookingId: created.bookingId },
       email: join.contactEmail,
       firstName: join.contactFirstName,
       lodgeId: groupLodgeId,

@@ -32,10 +32,12 @@ export async function setBookingNoEmails(params: {
   // acknowledgement, and a stuck switch must always be clearable.
   acknowledged: boolean;
   actorMemberId: string;
+  // Matches the nullable shape getAuditRequestContext() returns, so a route can
+  // hand it straight through.
   auditRequest?: {
-    id?: string;
-    ipAddress?: string;
-    userAgent?: string;
+    id?: string | null;
+    ipAddress?: string | null;
+    userAgent?: string | null;
   };
 }): Promise<SetBookingNoEmailsResult> {
   if (params.noEmails && params.acknowledged !== true) {

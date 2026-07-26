@@ -60,13 +60,7 @@ export async function POST(
       noEmails: parsed.data.noEmails,
       acknowledged: parsed.data.acknowledged === true,
       actorMemberId: session.user.id,
-      auditRequest: auditRequest
-        ? {
-            id: auditRequest.id,
-            ipAddress: auditRequest.ipAddress,
-            userAgent: auditRequest.userAgent,
-          }
-        : undefined,
+      auditRequest,
     });
 
     if (!result.ok) {

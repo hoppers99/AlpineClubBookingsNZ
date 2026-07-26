@@ -19,11 +19,6 @@ const { mockPrisma, mockTransporter, mockLogger } = vi.hoisted(() => {
     error: vi.fn(),
   };
   const mockPrisma = {
-    // #2258: the mailer reads the booking's "No emails" switch before every
-    // booking-scoped send; off means unchanged behaviour.
-    booking: {
-      findUnique: vi.fn().mockResolvedValue({ noEmails: false }),
-    },
     emailLog: {
       create: vi.fn().mockResolvedValue({ id: "log-1" }),
       update: vi.fn().mockResolvedValue({}),
@@ -47,6 +42,9 @@ const { mockPrisma, mockTransporter, mockLogger } = vi.hoisted(() => {
     },
     booking: {
       findMany: vi.fn().mockResolvedValue([]),
+      // #2258: the mailer reads the booking's "No emails" switch before every
+      // booking-scoped send. A null booking is the documented
+      // "nothing to suppress" case, so behaviour here is unchanged.
       findUnique: vi.fn().mockResolvedValue(null),
       update: vi.fn().mockResolvedValue({}),
       updateMany: vi.fn().mockResolvedValue({ count: 1 }),
