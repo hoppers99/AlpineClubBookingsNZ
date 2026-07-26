@@ -2211,8 +2211,12 @@ only the parent side requires `active` — and the dialog badges such a candidat
 "Inactive" rather than hiding them. The admin candidate SEARCH
 (`GET /api/admin/members?dependentLinkEligibleFor=…`) and those write-time
 guards are one predicate, `src/lib/dependent-link-eligibility.ts`, so a
-candidate the search offers is a candidate the write route accepts. Two rules
-about that file are load-bearing. First, the parent columns are **nullable**, so
+candidate the search offers is a candidate the write route accepts **on
+identity grounds** — subject to the request's own options, which the route
+still validates separately (family groups the parent does not belong to, an
+invalid inherit-email source, and the privileged-target and last-full-admin
+guards when "disable login" is ticked). Two rules about that file are
+load-bearing. First, the parent columns are **nullable**, so
 every "not this parent" clause must be written as
 `{ OR: [{ col: null }, { col: { not: id } }] }` — Prisma compiles a bare
 `{ not: id }` to `"col" <> $1`, and SQL's `NULL <> 'x'` is UNKNOWN, which

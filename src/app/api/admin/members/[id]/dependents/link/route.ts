@@ -11,6 +11,7 @@ import {
 } from "@/lib/admin-account-guards";
 import { requireAdmin } from "@/lib/session-guards";
 import {
+  DEPENDENT_LINK_CANDIDATE_SELECT,
   DEPENDENT_LINK_INELIGIBILITY_ERRORS,
   dependentLinkBlockers,
 } from "@/lib/dependent-link-eligibility";
@@ -170,13 +171,14 @@ export async function POST(
       const target = await tx.member.findUnique({
         where: { id: data.memberId },
         select: {
-          id: true,
+          // #2254: the eligibility predicate's own columns and relation probes
+          // come from the shared select, so trimming one here cannot silently
+          // disarm a guard below (notably the two-generation invariant).
+          ...DEPENDENT_LINK_CANDIDATE_SELECT,
           firstName: true,
           lastName: true,
           email: true,
           ageTier: true,
-          parentMemberId: true,
-          secondaryParentId: true,
           inheritEmailFromId: true,
           parent: {
             select: { id: true, inheritEmailFromId: true },
@@ -190,15 +192,6 @@ export async function POST(
           role: true,
           financeAccessLevel: true,
           accessRoles: { select: MEMBER_ACCESS_ROLE_SELECT },
-          archivedAt: true,
-          dependents: {
-            select: { id: true },
-            take: 1,
-          },
-          secondaryDependents: {
-            select: { id: true },
-            take: 1,
-          },
         },
       });
 

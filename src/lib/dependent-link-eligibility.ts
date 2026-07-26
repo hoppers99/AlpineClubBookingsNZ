@@ -14,7 +14,12 @@ import type { Prisma } from "@prisma/client";
  * whose parent columns were NULL (see `dependentLinkCandidateWhere` below), and
  * it offered archived members that the write route then rejected with a 422.
  * Both surfaces now derive from this module, so a candidate the search offers is
- * a candidate the write route accepts.
+ * a candidate the write route accepts ON IDENTITY GROUNDS. The route can still
+ * refuse on grounds that belong to the REQUEST rather than the candidate —
+ * family groups the parent is not in, an invalid inherit-email source, and the
+ * privileged-target / last-full-admin guards when `disableLogin` is ticked.
+ * Those are options the admin chose, not a candidate the dialog should never
+ * have offered.
  *
  * NOT expressed here: the recursive "is the target an ancestor of the parent?"
  * walk, which needs a query per generation and stays in the write route. It is
@@ -88,8 +93,14 @@ export type DependentLinkIneligibleMatch = {
 };
 
 /**
- * The columns and relation probes `dependentLinkBlockers` reads. Both the write
- * route and the search's diagnostic query select at least these.
+ * The columns and relation probes `dependentLinkBlockers` reads. Spread this
+ * into every select that feeds the predicate — the write route and the search's
+ * diagnostic query both do — rather than restating the fields. `dependents` and
+ * `secondaryDependents` are REQUIRED on `DependentLinkCandidate` for that
+ * reason: trimming either relation to save a join would otherwise make the
+ * two-generation invariant (`HAS_DEPENDANTS`) silently stop firing and let a
+ * member with children be linked under another parent. Required fields turn
+ * that into a compile error instead.
  */
 export const DEPENDENT_LINK_CANDIDATE_SELECT = {
   id: true,
@@ -105,9 +116,13 @@ export type DependentLinkCandidate = {
   archivedAt: Date | null;
   parentMemberId: string | null;
   secondaryParentId: string | null;
-  /** Selected with `take: 1` — only emptiness is read. */
-  dependents?: ReadonlyArray<unknown> | null;
-  secondaryDependents?: ReadonlyArray<unknown> | null;
+  /**
+   * Selected with `take: 1` — only emptiness is read. Both are required, not
+   * optional: an omitted relation would read as "no dependants" and quietly
+   * clear the two-generation invariant. See `DEPENDENT_LINK_CANDIDATE_SELECT`.
+   */
+  dependents: ReadonlyArray<unknown>;
+  secondaryDependents: ReadonlyArray<unknown>;
 };
 
 /**
@@ -137,8 +152,8 @@ export function dependentLinkBlockers(
     blockers.push("TWO_PARENTS");
   }
   if (
-    (candidate.dependents?.length ?? 0) > 0 ||
-    (candidate.secondaryDependents?.length ?? 0) > 0
+    candidate.dependents.length > 0 ||
+    candidate.secondaryDependents.length > 0
   ) {
     blockers.push("HAS_DEPENDANTS");
   }
