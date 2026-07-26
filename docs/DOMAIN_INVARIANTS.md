@@ -1283,6 +1283,62 @@ override requires an explicit `pricingMode`:
   booking-review **rejection** the shared cancellation email above (#1730) is
   the always-notify send, so a suppressed reject still emails the member the
   cancellation and withholds only the review-declined explainer.
+
+**Per-booking "No emails" switch (#2258, owner decision D10).** Separately from
+the per-action `notifyMember` choice above — which is a one-off decision made at
+the moment of a single admin action — a booking can carry a persistent
+`Booking.noEmails` switch that withholds **everything** the system would send
+about that booking for as long as it is on: confirmation, modification, payment,
+reminders, arrival information, cancellation, waitlist offers, chore rosters,
+and the Xero-sent invoice email. It is enforced in ONE place, the mailer
+(`sendEmail` in `src/lib/email/core.ts`), plus the three paths that bypass the
+mailer (the retry cron, and the two invoice emails Xero sends on our behalf).
+The rules are:
+
+- **Keyed strictly on the booking, never on the recipient address.** An
+  address-keyed switch would also swallow two-factor codes, password resets,
+  magic-link logins and email-change notices — account lockout, not a
+  preference. Every send therefore carries a REQUIRED, typed `bookingContext`
+  (`{ bookingId } | "none"`), so a new send site is a compile error until its
+  author states which it is.
+- **Admin-audience mail is never withheld.** The registry's
+  `EmailTemplateDefinition.audience` is the authority, so admin/system alerts
+  (payment failure, duplicate-capture refund, and the rest) still reach an
+  operator even when the booking is silenced.
+- **The read fails CLOSED.** Unlike the SES bounce check, which deliberately
+  fails open, an unreadable switch withholds the send: the mailer records the
+  row FAILED (so the retry cron re-evaluates it) and transmits nothing.
+- **Every withhold is auditable.** The withheld send is written as an `EmailLog`
+  row with status `SKIPPED_NO_EMAILS` and the booking's `bookingId`, with no
+  retained body — so the booking page can list exactly what was held back
+  (#2259), and the retry cron can never replay it.
+- **The retry cron re-evaluates before every replay.** A `FAILED` row can
+  predate the moment the switch was turned on, so `cron-email-retry.ts` re-reads
+  it from the row's `bookingId` and fails closed the same way.
+- **Waitlist candidacy excludes a silenced booking entirely.**
+  `processWaitlistForDates` skips it, so no offer clock is ever started for a
+  member who would not be told; and a withheld offer email has its own
+  `suppressed` visibility state, never reported as a delivery failure.
+- **Xero-sent invoice emails are gated too, which SUPERSEDES the #1705 carve-out
+  above for this switch only.** #1705 decided the Internet Banking invoice email
+  is outside the per-action `notifyMember` choice and always sent. D10 says the
+  per-booking switch "suppresses everything", so when it is on the
+  `emailInvoice` call is skipped and a withheld audit row is written naming the
+  invoice. **The invoice itself still exists in Xero and is unchanged** — only
+  the emailing is skipped, so an admin can email it from Xero, or clear the
+  switch. The per-action `notifyMember` carve-out is untouched: with the switch
+  off, the invoice email is still always sent. The group settlement invoice is
+  one combined bill addressed to and paid by the **organiser**, so it is gated on
+  the organiser's own booking and on nothing else — a joiner's switch does not
+  suppress the organiser's bill, and each joiner's own group emails are gated on
+  that joiner's child booking.
+- **Setting it requires an acknowledgement.** `POST
+  /api/admin/bookings/[id]/no-emails` is admin-only (403 otherwise) and refuses
+  an enable without `acknowledged: true` (400, nothing written). Both set and
+  clear are audited, and `noEmailsAt` / `noEmailsByMemberId` record who and
+  when, mirroring the `wholeLodgeHold` audit columns. Clearing needs no
+  acknowledgement — a stuck switch must always be clearable — and does **not**
+  re-send anything withheld while it was on.
 - **recalculate** — the existing full-reprice machinery with the locked-period
   clamps lifted, so locked-night pricing semantics are otherwise preserved
   (a night the guest already bought keeps its stored `BookingGuestNight` price).

@@ -4,6 +4,33 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **A booking can now be put on "No emails", and the system withholds
+  everything about it (#2258).** Sometimes the club needs a booking to be quiet
+  — a member who has asked not to be contacted, a booking being sorted out by
+  phone, a test or duplicate an officer is cleaning up. Turning "No emails" on
+  for a booking stops every message the system would send about that stay:
+  confirmations, changes, payment notices, reminders, arrival information,
+  cancellations, waitlist offers, chore rosters, and even the invoice email Xero
+  sends on the club's behalf (the invoice itself is still raised in Xero — only
+  the emailing stops, so an officer can still send it by hand). Turning it on
+  requires an explicit acknowledgement that the member will not be told, and who
+  turned it on and when is recorded.
+  Three things it deliberately does NOT do. It never touches sign-in security
+  mail — two-factor codes, password resets, sign-in links and email-change
+  notices always go through, because the switch is tied to the booking and never
+  to a person's email address; silencing those would lock a member out of their
+  own account. It never silences the club's own admin alerts, so an officer is
+  still told when a payment fails. And it never guesses: if the system cannot
+  read the setting for any reason it withholds the message rather than risk
+  sending one that was meant to be held back, and tries again later.
+  Everything withheld is recorded against the booking, so the booking page can
+  show a standing warning listing exactly what was not sent. A booking on "No
+  emails" is also skipped for waitlist offers entirely, so it can never sit on a
+  held bed for a whole offer window with the member never told, and the waitlist
+  board shows such an entry as deliberately withheld rather than as a failed
+  email. Turning the switch back off restores normal mail from that point on; it
+  does not re-send anything that was withheld.
+
 - **"Add Dependant → Link Existing" now finds the members it was hiding, and
   says why when it still finds nobody (#2254).** Searching for an existing
   member to link as a dependant reported "No eligible members found" for almost

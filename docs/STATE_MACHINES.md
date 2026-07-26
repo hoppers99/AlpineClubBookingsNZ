@@ -913,6 +913,10 @@ The admin waitlist view decorates active `WAITLIST_OFFERED` rows with the latest
 `waitlist-offer` EmailLog status. Failed, exhausted, bounced, or missing delivery
 records are surfaced beside the offer with a link to email-deliverability
 recovery, so state changes are not hidden behind best-effort email delivery.
+A booking carrying the per-booking "No emails" switch (#2258) is excluded from
+waitlist candidacy altogether, so no offer clock is ever started for a member who
+would not be told; if one is nonetheless found in `WAITLIST_OFFERED`, its offer
+email reports the distinct `suppressed` state rather than a delivery failure.
 
 ## Bed Allocation Lifecycle
 
