@@ -45,7 +45,9 @@ page — see [Family billing](#family-billing) below.
 1. Click **New Group**, set a **Group Name**, and add at least one member with the
    member search (primary, active members). Click **Create Group**.
 2. Use the edit icon on a group row to open the full editor, or the trash icon to
-   **Delete** it (members are unlinked, not deleted).
+   **Delete** it (members are unlinked, not deleted). The editor opens above the
+   group list, so the page scrolls up to it and the row you are editing is
+   highlighted and badged **Editing** until you close or save.
 
 ### Family billing
 

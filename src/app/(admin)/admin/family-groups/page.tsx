@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -21,6 +21,8 @@ import {
   type FamilyGroupSummary,
   type MemberOption,
 } from "@/lib/admin-family-group-ui-helpers";
+import { formatNZDate } from "@/lib/nzst-date";
+import { useScrollToFeedback } from "@/hooks/use-scroll-to-feedback";
 
 type PartnerInvite = {
   id: string;
@@ -52,6 +54,12 @@ export default function FamilyGroupsPage() {
   const [searching, setSearching] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  // #2256: the create/edit form renders ABOVE the groups table, so clicking a
+  // row's Edit button several screens down opened the editor entirely off-view
+  // and the page looked like it had ignored the click. Anchor the form region
+  // and move focus/viewport to it whenever edit mode opens.
+  const editorAnchorRef = useRef<HTMLDivElement>(null);
+  const { scrollToError } = useScrollToFeedback();
 
   // P3.1: Search and filter state
   const [filterQuery, setFilterQuery] = useState("");
@@ -213,6 +221,22 @@ export default function FamilyGroupsPage() {
       }
     });
   }, [fetchData, openEditForm, searchParams]);
+
+  const editingGroupId = editingGroup?.id ?? null;
+
+  // #2256: the row the editor is currently bound to says so, so edit mode stays
+  // unmistakable once the page has scrolled away from the row that was clicked.
+  const isRowBeingEdited = (id: string) => showForm && editingGroupId === id;
+
+  // #2256: bring the editor into view (and give it focus, so screen-reader and
+  // keyboard users land there too) each time a group is opened for editing.
+  // Keyed on the group id rather than on `showForm` alone so switching straight
+  // from one row's Edit to another's re-anchors the viewport, and so the create
+  // form — which sits next to its own trigger — is left alone.
+  useEffect(() => {
+    if (!showForm || !editingGroupId) return;
+    scrollToError(editorAnchorRef);
+  }, [showForm, editingGroupId, scrollToError]);
 
   function addMember(member: MemberOption) {
     if (!canEditMembership) return;
@@ -498,7 +522,10 @@ export default function FamilyGroupsPage() {
                         {invite.createdBy?.name || "Unknown"}
                       </td>
                       <td className="px-4 py-2 text-muted-foreground">
-                        {new Date(invite.expiresAt).toLocaleDateString()}
+                        {/* #2256: formatNZDate, not the browser's default
+                            locale/zone — an expiry read as "4/16/2026" (or a
+                            day early) is a real operational hazard here. */}
+                        {formatNZDate(new Date(invite.expiresAt))}
                       </td>
                       <td className="px-4 py-2 text-right">
                         <Button
@@ -520,7 +547,20 @@ export default function FamilyGroupsPage() {
         </CardContent>
       </Card>
 
-      {/* Create/Edit form */}
+      {/* Create/Edit form. Named region only while editing: focus lands here
+          from the row's Edit button, and the group name is what tells an
+          assistive-tech user which group they just opened. An unnamed empty
+          landmark would only add noise, so both role and label are conditional. */}
+      <div
+        ref={editorAnchorRef}
+        className="scroll-mt-20 focus:outline-none"
+        role={showForm && editingGroup ? "region" : undefined}
+        aria-label={
+          showForm && editingGroup
+            ? `Editing ${editingGroup.name || "Unnamed Group"}`
+            : undefined
+        }
+      >
       {showForm && (
         editingGroup ? (
           <FamilyGroupEditor
@@ -636,6 +676,7 @@ export default function FamilyGroupsPage() {
           </Card>
         )
       )}
+      </div>
 
       {/* Groups table */}
       <Card>
@@ -661,11 +702,20 @@ export default function FamilyGroupsPage() {
                 </thead>
                 <tbody>
                   {filteredGroups.map((g) => (
-                    <tr key={g.id} className="border-b hover:bg-accent">
+                    <tr
+                      key={g.id}
+                      className={`border-b hover:bg-accent ${isRowBeingEdited(g.id) ? "bg-accent" : ""}`}
+                      aria-current={isRowBeingEdited(g.id) ? "true" : undefined}
+                    >
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
                           <Users className="h-4 w-4 text-muted-foreground" />
                           <span className="font-medium">{g.name || "Unnamed Group"}</span>
+                          {isRowBeingEdited(g.id) && (
+                            <Badge className="bg-info-3 text-info-11 border-info-6 text-xs">
+                              Editing
+                            </Badge>
+                          )}
                           {g.pendingRequests > 0 && (
                             <Badge className="bg-warning-3 text-warning-11 border-warning-6 text-xs">
                               {g.pendingRequests} pending
@@ -701,7 +751,7 @@ export default function FamilyGroupsPage() {
                         </div>
                       </td>
                       <td className="px-4 py-3 text-muted-foreground">
-                        {new Date(g.createdAt).toLocaleDateString()}
+                        {formatNZDate(new Date(g.createdAt))}
                       </td>
                       <td className="px-4 py-3 text-right">
                         <div className="flex justify-end gap-1">
