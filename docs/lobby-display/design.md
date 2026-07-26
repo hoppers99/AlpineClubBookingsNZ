@@ -773,10 +773,64 @@ client-safe `css-tokens.ts` before they ship in the payload:
 > "previewing against <lodge>" line near the clock — the old silent default (#64)
 > is gone. The **simulated-date** input (LTV-017) is now a **sibling** of the
 > picker button (it was nested inside it — invalid HTML that stopped a native
-> selection applying, #65). CSP is relaxed **only** for these two same-origin
-> paths: `/display` gains `frame-ancestors 'self'` / `X-Frame-Options: SAMEORIGIN`
-> and its own origin in `connect-src` (so the opaque-origin frame can still fetch
-> the state API); `/admin/display/preview` gains `frame-src 'self'`. The layouts
+> selection applying, #65). CSP is relaxed **only** for named same-origin paths,
+> and the two relaxations are **separate exact-match allowlists** in
+> `src/lib/csp.ts` (never prefix matches, so no future `/admin/display/*` page
+> inherits either by accident):
+>
+> - `frame-src 'self'` — the admin pages that EMBED the `/display` iframe:
+>   `/admin/display/preview` and, since #2246, the Visual builder
+>   `/admin/display/builder` (its **Live preview**, ADR-004 §7 — previously the
+>   builder's own policy blocked its preview with "Content blocked").
+> - the tightened `img-src 'self' data:` (#161) — the routes that RENDER authored
+>   display markup: `/display` and `/admin/display/preview`. The builder is
+>   deliberately **excluded**: it is a full admin page inside the admin chrome,
+>   not a sandboxed display document, and the authored markup it previews runs in
+>   the `/display` frame, which carries the tightened policy itself.
+>
+> **A per-route CSP relaxation only applies on a HARD document load.** A CSP is a
+> property of the *document*, read from the response headers when it is parsed,
+> and it never changes for that document's life. A Next.js App Router `<Link>`
+> (or `router.push`) is a **soft** navigation — it swaps React trees inside the
+> same document — so the destination keeps whatever policy the **entry** document
+> was served with. With a single root layout, every `/admin/*` → `/admin/*`
+> `<Link>` is soft. This is a rule about **every** per-route relaxation in this
+> app, present and future, not a note about the builder: any route that depends
+> on a scoped policy must be **entered** by a hard navigation, or the relaxation
+> is silently inert. All three relaxed routes satisfy it today:
+>
+> - `/admin/display/builder` — a plain `<a href>` from the Lobby Display hub (the
+>   `hardNavigate` opt-in on the hub's section descriptor,
+>   `src/components/admin-hub-page.tsx`) and from the Layouts page, and
+>   `window.open(url, "_self")` from the Templates page. Never a `<Link>`.
+> - `/admin/display/preview` — `window.open(…, "_blank")` from the Templates
+>   page, which is why it has always worked.
+> - `/display` — a real frame navigation (the `<iframe src>` in both preview
+>   surfaces), a new tab from the Devices page's per-device **Preview** `<a
+>   target="_blank">`, or a TV browser opening the URL directly. All hard loads.
+>
+> The static guard `src/lib/__tests__/display-builder-csp-static.test.ts` is
+> driven from the allowlists themselves, so **adding** a path to a relaxation
+> fails the build until that path's entry points are hard navigations too.
+>
+> The inverse leak is true and accepted: an admin who hard-loads a relaxed route
+> and then soft-navigates onward carries that relaxation into the subsequent
+> documents until the next hard load. Impact is low — it permits only
+> *same-origin* framing on an admin page, and `X-Frame-Options: DENY` /
+> `frame-ancestors 'none'` still stop those pages being framed themselves — but
+> it is a property of soft navigation, not something an allowlist can prevent.
+>
+> `/display` additionally gains `frame-ancestors 'self'` /
+> `X-Frame-Options: SAMEORIGIN` and its own origin in `connect-src` (so the
+> opaque-origin frame can still fetch the state API). Since #2246 the reverse
+> proxy scopes its own `X-Frame-Options` to the same single path
+> (`Caddyfile`, `Caddyfile.staging`), so the edge states this intent explicitly
+> instead of setting a blanket `DENY` that replaced it — previously the previews
+> worked only because CSP2 requires browsers to ignore `X-Frame-Options` when
+> `frame-ancestors` is present. Every other path still receives a guaranteed
+> `DENY` at the edge. A trailing slash is folded before the exact-match
+> comparison on both sides (`^/display/?$` at the edge, `normalisePathname` in
+> `src/lib/csp.ts`), so the two cannot disagree on `/display/`. The layouts
 > page carries a muted note that a layout is previewed via a Template.
 > Direct-navigation previews (`?preview=1&templateId=…` / `?previewDevice=…` with
 > the admin's own session) still work for personal use.

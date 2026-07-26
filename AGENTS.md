@@ -461,7 +461,12 @@ CI-green → evidence**.
 - Prefer to **fix a follow-up inside the same PR** so everything lands at once,
   even if it slightly widens scope (re-open the PR to draft, add it, re-review
   the delta, re-green). Only defer to a **new GitHub issue** when the item needs
-  more scoping or an owner decision. File deferred items as issues at
+  more scoping or an owner decision. A **refuted change is not a fenced-off
+  file**: when review rejects one edit to a file or area, that verdict covers
+  that edit only — a different, correct change to the same place still belongs
+  in this PR, especially when the reviewer has already specified it. Writing a
+  known, small, specified fix into "Residual risks" instead of making it is a
+  deferral, not a disclosure. File deferred items as issues at
   PR-finalisation time (not "eventually"), each linked to its parent PR + epic,
   so they cannot be lost if the session ends before the owner merges.
 

@@ -9,6 +9,7 @@ import {
   CSP_NONCE_HEADER,
   CSP_REPORT_ONLY_HEADER,
   SECURITY_HEADERS,
+  setSecurityHeaders,
 } from "@/lib/csp";
 import { REQUEST_PATH_HEADER } from "@/lib/internal-return-path";
 import { FEATURE_ROUTE_RULES } from "@/config/feature-routes";
@@ -92,6 +93,133 @@ describe("CSP policy", () => {
       "frame-ancestors 'self'",
     );
     expect(directive(previewHostPolicy, "frame-src")).toContain("'self'");
+  });
+
+  // Issue #2246: the Visual builder frames /display for its Live preview, so it
+  // needs frame-src 'self' too — but it is a full admin page, not a sandboxed
+  // display document, so it must NOT inherit the #161 tightened img-src.
+  it("grants frame-src 'self' to the builder while keeping its normal img-src", () => {
+    const builderPolicy = buildContentSecurityPolicy("unit-test-nonce", {
+      pathname: "/admin/display/builder",
+    });
+
+    expect(directive(builderPolicy, "frame-src")).toContain("'self'");
+    // The admin chrome around the builder still loads blob: (member-photo crop,
+    // epic #171) and https: imagery.
+    expect(directive(builderPolicy, "img-src")).toBe(
+      "img-src 'self' data: blob: https: https://www.google-analytics.com https://*.google-analytics.com",
+    );
+    // Only /display itself may be framed by others.
+    expect(directive(builderPolicy, "frame-ancestors")).toBe(
+      "frame-ancestors 'none'",
+    );
+  });
+
+  // A trailing slash is the ONE thing normalised before the exact-match
+  // comparison (#2246). Next 308-redirects `/admin/display/builder/` to the
+  // canonical form, but this proxy runs before that redirect — so without
+  // normalisation the redirect response, and anything that ever bypassed it,
+  // carried the unrelaxed policy and the relaxation was silently inert.
+  it("treats a trailing slash as the canonical path on every allowlist", () => {
+    const builderPolicy = buildContentSecurityPolicy("unit-test-nonce", {
+      pathname: "/admin/display/builder/",
+    });
+    expect(directive(builderPolicy, "frame-src")).toContain("'self'");
+
+    // The same normalisation, applied to the OTHER allowlist and to /display's
+    // own relaxations — the two lists must never diverge on a trailing slash.
+    const displayPolicy = buildContentSecurityPolicy("unit-test-nonce", {
+      pathname: "/display/",
+      selfOrigin: "https://example.org",
+    });
+    expect(directive(displayPolicy, "img-src")).toBe("img-src 'self' data:");
+    expect(directive(displayPolicy, "frame-ancestors")).toBe(
+      "frame-ancestors 'self'",
+    );
+    expect(directive(displayPolicy, "connect-src")).toContain(
+      "https://example.org",
+    );
+
+    const headers = new Headers();
+    setSecurityHeaders(headers, "/display/");
+    expect(headers.get("X-Frame-Options")).toBe("SAMEORIGIN");
+  });
+
+  // The allowlists are exact-match, never prefixes: a prefix match would hand
+  // frame-src 'self' to every current and future /admin/display/* page. The
+  // normalisation above rewrites the INPUT only — it must admit nothing else.
+  it("does not grant frame-src 'self' to unlisted /admin/display/* paths", () => {
+    for (const pathname of [
+      "/admin/display/templates",
+      "/admin/display/devices",
+      "/admin/display/builder/extra",
+      "/admin/display/builder/extra/",
+      "/admin/display/builder-foo",
+      "/admin/display/builderfoo",
+      // A doubled leading slash is a different URL and is not canonicalised
+      // here; it fails closed, as does a doubled trailing slash (only ONE
+      // trailing slash is stripped).
+      "//admin/display/builder",
+      "/admin/display/builder//",
+      "/ADMIN/DISPLAY/BUILDER",
+      "/admin/display/previews",
+      "/admin/display",
+    ]) {
+      const policy = buildContentSecurityPolicy("unit-test-nonce", { pathname });
+
+      expect(
+        directive(policy, "frame-src"),
+        `${pathname} must not gain frame-src 'self'`,
+      ).toBe("frame-src https://js.stripe.com https://hooks.stripe.com");
+      expect(
+        directive(policy, "img-src"),
+        `${pathname} must keep the normal img-src`,
+      ).toBe(
+        "img-src 'self' data: blob: https: https://www.google-analytics.com https://*.google-analytics.com",
+      );
+    }
+  });
+
+  // Case sensitivity is load-bearing on BOTH sides (#2246). The app compares
+  // `normalisePathname(pathname) === "/display"`, and the Caddyfiles use
+  // `path_regexp` — not Caddy's case-INSENSITIVE `path` matcher — precisely so
+  // the edge agrees with it. `/DISPLAY` is therefore the case that pins the two
+  // together: if the app ever case-folded, the edge would silently start denying
+  // a path the app had relaxed.
+  it("keeps /DISPLAY fully denied, matching the case-sensitive edge matcher", () => {
+    for (const pathname of ["/DISPLAY", "/Display", "/DISPLAY/", "/displaY"]) {
+      const policy = buildContentSecurityPolicy("unit-test-nonce", { pathname });
+
+      expect(
+        directive(policy, "frame-ancestors"),
+        `${pathname} must not be framable`,
+      ).toBe("frame-ancestors 'none'");
+      expect(
+        directive(policy, "img-src"),
+        `${pathname} must keep the normal img-src`,
+      ).toBe(
+        "img-src 'self' data: blob: https: https://www.google-analytics.com https://*.google-analytics.com",
+      );
+
+      const headers = new Headers();
+      setSecurityHeaders(headers, pathname);
+      expect(
+        headers.get("X-Frame-Options"),
+        `${pathname} must keep the global DENY`,
+      ).toBe("DENY");
+    }
+
+    // …and the exact-case path really does relax, so the loop above is testing
+    // case sensitivity rather than a path that never relaxes at all.
+    const displayHeaders = new Headers();
+    setSecurityHeaders(displayHeaders, "/display");
+    expect(displayHeaders.get("X-Frame-Options")).toBe("SAMEORIGIN");
+    expect(
+      directive(
+        buildContentSecurityPolicy("unit-test-nonce", { pathname: "/display" }),
+        "frame-ancestors",
+      ),
+    ).toBe("frame-ancestors 'self'");
   });
 
   it("leaves every non-display route's CSP byte-identical to the pre-#161 policy", () => {
@@ -208,6 +336,24 @@ describe("CSP proxy", () => {
     ).toBe(
       "img-src 'self' data: blob: https: https://www.google-analytics.com https://*.google-analytics.com",
     );
+  });
+
+  it("serves frame-src 'self' on a real builder request and not on its siblings (issue #2246)", async () => {
+    const builderResponse = await proxy(
+      new NextRequest("https://example.org/admin/display/builder?templateId=tpl-1"),
+    );
+    const templatesResponse = await proxy(
+      new NextRequest("https://example.org/admin/display/templates"),
+    );
+
+    // The Live preview iframe is only reachable if the builder's own policy
+    // allows framing same-origin content.
+    expect(
+      directive(builderResponse.headers.get(CSP_HEADER) as string, "frame-src"),
+    ).toContain("'self'");
+    expect(
+      directive(templatesResponse.headers.get(CSP_HEADER) as string, "frame-src"),
+    ).not.toContain("'self'");
   });
 
   it("exposes the requested path to server components via a request header", async () => {

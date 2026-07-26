@@ -1,6 +1,73 @@
 {$DOMAIN} {
+	# X-Frame-Options is PATH-SCOPED so the edge states the same intent the app
+	# does (#2246). /display is deliberately framed by the admin's own sandboxed
+	# preview surfaces (LTV-036, ADR-003 §5) and `src/lib/csp.ts` sets SAMEORIGIN
+	# on it, but a blanket edge DENY REPLACED that value — the previews worked
+	# only because CSP2 tells browsers to ignore X-Frame-Options when
+	# `frame-ancestors` is present. Scoping the header here removes that
+	# dependence on a browser precedence rule.
+	#
+	# Every other path keeps a GUARANTEED DENY set at the edge, including
+	# /finance-legacy* (a reverse-proxied third-party upstream) and /images/*,
+	# neither of which the app's own middleware covers. Deliberately NOT the
+	# set-if-absent `?X-Frame-Options` form: that would downgrade a guaranteed
+	# edge control into an advisory one on every route, so any upstream emitting
+	# a permissive value would win.
+	#
+	# X-Frame-Options is set in TWO places and BOTH are load-bearing. Do not
+	# "de-duplicate" them — deleting either one is a regression:
+	#
+	#  1. The DEFERRED, scoped pair below (the `>` prefix). `>` rewrites the
+	#     header as the response is written, so the edge value REPLACES the
+	#     upstream's instead of sitting next to it. Without it Caddy sets the
+	#     header before proxying and the app's value is APPENDED, so a response
+	#     carries two conflicting X-Frame-Options values (measured against
+	#     caddy:2 with a permissive upstream: a plain set left both `DENY` and
+	#     `ALLOWALL` on the same response).
+	#  2. The EAGER `X-Frame-Options "DENY"` in the shared `header { }` block
+	#     below. The deferred rewrite lives in a ResponseWriter wrapper that is
+	#     unwound when a handler returns an ERROR, so Caddy's error chain writes
+	#     the response without it: a 502 when an upstream is down (including
+	#     /finance-legacy*), the 413 from the request_body cap below, any 5xx.
+	#     Those responses never reach Next either, so they carry no CSP and no
+	#     `frame-ancestors` fallback — the eager set is the only thing that makes
+	#     DENY GUARANTEED on them. On a normal proxied response the deferred pair
+	#     runs afterwards and overwrites it, so there is still exactly one value.
+	#
+	# Measured against caddy:2 with a permissive upstream, exactly one
+	# X-Frame-Options per response: /display and /display/ → SAMEORIGIN; /other,
+	# /DISPLAY, /display/foo, /display-foo, /images/* → DENY; 502 → DENY;
+	# 413 → DENY.
+	#
+	# `path_regexp`, not `path`, because it is case-SENSITIVE and so mirrors the
+	# app's own `pathname === "/display"` comparison (Caddy's `path` matcher is
+	# case-insensitive, which would hand SAMEORIGIN to `/DISPLAY`); `/?` mirrors
+	# the trailing-slash normalisation in `src/lib/csp.ts`.
+	#
+	# The matcher is NOT byte-identical to the app's comparison, and cannot be:
+	# Caddy matches on the CLEANED, PERCENT-DECODED path but forwards the RAW
+	# URI, so the app sees a different string. Measured divergences, where the
+	# edge relaxes to SAMEORIGIN but the app still sends DENY: //display,
+	# /display//, /%64isplay, /dis%70lay, /display%2F. That is acceptable — those
+	# responses still carry the app's own `frame-ancestors 'none'`, which
+	# browsers honour over X-Frame-Options, and SAMEORIGIN never permits more
+	# than same-origin framing. The dangerous inverse (app relaxes, edge denies,
+	# breaking the preview) is impossible, because both paths the app relaxes sit
+	# inside the edge's match set.
+	#
+	# `header` runs ahead of `handle` in Caddy's directive order, so both
+	# matchers also cover the handled paths below.
+	# Guarded by src/lib/__tests__/edge-frame-options-static.test.ts.
+	@display path_regexp ^/display/?$
+	@not_display not path_regexp ^/display/?$
+	header @display >X-Frame-Options "SAMEORIGIN"
+	header @not_display >X-Frame-Options "DENY"
 	header {
 		X-Content-Type-Options "nosniff"
+		# The eager guaranteed floor — point 2 of the note above. This is the
+		# value error responses (502/413/5xx) carry, because they bypass the
+		# deferred rewrite; the deferred pair replaces it on every normal
+		# response. Removing this line silently makes error pages framable.
 		X-Frame-Options "DENY"
 		# Disabled: the legacy XSS auditor is removed from modern browsers and
 		# enabling it could introduce information leaks in older ones. CSP is the control.

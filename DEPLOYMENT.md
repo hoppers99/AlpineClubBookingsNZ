@@ -291,6 +291,21 @@ old and new slots, so public abuse controls can be temporarily split across both
 runtimes during that drain. Do not run multiple publicly routed app replicas
 long-term unless the in-memory limiter is replaced with a shared store.
 
+**A `Caddyfile` change does not ship with an app deploy.** The blue/green runner
+rebuilds and cuts over the app slots; it does not reload Caddy. After pulling a
+release whose diff touches `Caddyfile` or `Caddyfile.staging` — request-body
+caps, security headers, routing — reload Caddy explicitly on the host, and check
+the config first so a typo cannot take the site down:
+
+```bash
+docker compose exec caddy caddy validate --config /etc/caddy/Caddyfile
+docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
+```
+
+`reload` is a graceful, zero-downtime config swap; it keeps existing
+connections and the TLS certificate cache. If `validate` fails, fix the file
+before reloading — the running config stays in place until a reload succeeds.
+
 The app trusts proxy-derived client IP headers only under that Caddy boundary.
 `getClientIp()` uses the rightmost `X-Forwarded-For` value, which is the peer
 Caddy appended closest to the app container, then falls back to `X-Real-IP`.

@@ -23,6 +23,11 @@ const sections: AdminHubSection[] = [
     description:
       "Compose a board by picking a shape and dropping modules into zones — no HTML. Writes a valid layout + template for you.",
     icon: LayoutTemplate,
+    // The builder's Live preview needs the route-scoped `frame-src 'self'`
+    // relaxation from `src/lib/csp.ts`, and CSP only changes on a hard document
+    // load — a soft `<Link>` navigation would carry this hub's stricter policy
+    // into the builder and the preview would show "Content blocked" (#2246).
+    hardNavigate: true,
   },
   {
     href: "/admin/display/layouts",

@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -465,9 +464,20 @@ export default function AdminDisplayLayoutsPage() {
         <p className="text-muted-foreground">
           This is the <strong>Advanced mode</strong> hand-editor. Most boards are
           easier to build in the{" "}
-          <Link className="underline" href="/admin/display/builder">
+          {/*
+            A plain <a>, not next/link, on purpose (#2246): the builder's Live
+            preview depends on the route-scoped `frame-src 'self'` relaxation in
+            `src/lib/csp.ts`, and a document's CSP is fixed at parse time from
+            its response headers. An App Router <Link> is a SOFT navigation — no
+            new document — so the builder would inherit THIS page's stricter
+            policy and its preview would show "Content blocked". A hard load
+            fetches the builder's own headers. Accessibility is unchanged: this
+            is still a real link.
+          */}
+          {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- the hard load is the point; see above. */}
+          <a className="underline" href="/admin/display/builder">
             visual builder
-          </Link>
+          </a>
           , which writes the layout and template for you; drop to Advanced mode
           for full control over the HTML body, CSS, and areas.
         </p>
