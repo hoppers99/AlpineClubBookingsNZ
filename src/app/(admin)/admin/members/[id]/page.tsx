@@ -174,6 +174,8 @@ export default function MemberDetailPage({
     dependentMode,
     linkDependentSearch,
     linkDependentSearchResults,
+    linkDependentIneligibleMatches,
+    linkDependentMatchedNobody,
     linkDependentSearching,
     selectedLinkDependent,
     linkDependentNotificationParentId,
@@ -1042,6 +1044,8 @@ export default function MemberDetailPage({
         linkSearch={linkDependentSearch}
         linkSearching={linkDependentSearching}
         linkSearchResults={linkDependentSearchResults}
+        linkIneligibleMatches={linkDependentIneligibleMatches}
+        linkSearchMatchedNobody={linkDependentMatchedNobody}
         linkSelected={selectedLinkDependent}
         linkNotificationParentId={linkDependentNotificationParentId}
         linkDisableLogin={linkDependentDisableLogin}
