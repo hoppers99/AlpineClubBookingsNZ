@@ -493,9 +493,21 @@ Future reviews and issues should cite this file when proposing changes.
   which may be a member adding somebody else as a guest. Its human-readable
   message is therefore composed only from what that requester already supplied —
   the member they tried to book and the nights they chose — plus the next step
-  their own `canSelfRemove` / `isOwnBooking` / `canOpenBooking` flags allow. The
-  clashing booking's owner, status, and id are stated only to a viewer the
-  server marked `canOpenBooking` (#2250).
+  their own `canSelfRemove` / `isOwnBooking` / `isSelfGuest` / `canOpenBooking`
+  flags allow. **This gates the rendered copy, not the payload.** The `conflicts`
+  array in the 409 body still carries every clashing booking's id, owner name,
+  status, and stay dates to every recipient, exactly as it did before #2250;
+  what changed is that `describeBookingMemberNightConflictBooking` returns null
+  — and the summary sentence names no booking at all — unless the server marked
+  this viewer `canOpenBooking`. Entitlement-scoping the payload itself is still
+  outstanding: treat any new consumer of `conflicts[]` as handling data the
+  reader may not be entitled to see (#2250).
+- The same 409 is produced by flows whose reader cannot change the dates (the
+  admin booking-request approve / hold / send-quote routes and the booking
+  modify routes), so the server-built message is flow-neutral. Only the booking
+  wizard — the one surface whose reader is choosing the dates — renders the next
+  step with `canChooseDifferentDates`, which is what adds "…or choose different
+  dates" (#2250).
 - The person-night guard is app-level enforcement by design (#1039 item 3): a
   database unique index cannot express it because liveness is booking-status
   dependent and spans `BookingGuest` to `Booking`, which a Postgres partial

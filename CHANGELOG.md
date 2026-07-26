@@ -4,6 +4,26 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **A member put on somebody else's booking can now take their own place off it
+  from the booking itself, and the "already booked on those nights" message
+  finally says what to do (#2250).** The self-removal action already existed, but
+  the only way to reach it was to start making a clashing booking of your own and
+  find the button on the wizard's conflict card — so most members never knew it
+  was there. The booking page now shows a short card to a member who is a guest
+  on someone else's booking: it says whose booking it is, offers "Remove me from
+  this booking" behind a confirmation, and — when the removal is not allowed —
+  hides the action and states the reason instead (the stay has started, the
+  booking is no longer in a changeable state, or you are the only person on it).
+  Eligibility is decided by one shared server-side rule, the same one the removal
+  service enforces, so a member is never shown a control the server would refuse.
+  The clash message itself was rewritten to name the nights, address the member
+  directly when the clash is their own place, and state the next step they can
+  actually take: an admin approving a booking request no longer reads advice to
+  "choose different dates", which only the person picking the dates can act on.
+  Nothing about who may remove whom has changed — only the owner, an admin, or
+  the person themselves can take a place off a booking, and the owner is emailed
+  and their total updated exactly as before.
+
 - **Postgres connection ceiling raised from 30 to 40 to stop intermittent
   `FATAL: sorry, too many clients` when a deploy or backup overlaps normal
   load.** At `max_connections=30` the app's connection pools already summed to 27
