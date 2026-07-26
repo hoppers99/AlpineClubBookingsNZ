@@ -197,10 +197,18 @@ describe("routes with a scoped CSP relaxation are entered by a HARD navigation (
       for (const { value, index, text } of hrefLiterals(source, "descriptor")) {
         if (!targetsRelaxedPath(value)) continue;
         descriptors += 1;
-        // The rest of the object literal this href belongs to.
-        const rest = source.slice(index);
-        const objectBody = rest.slice(0, rest.indexOf("},"));
-        if (!/hardNavigate:\s*true/.test(objectBody)) {
+        // The rest of the object literal this href belongs to: up to its closing
+        // `},` — or the next descriptor's `href:`, whichever comes first. Both
+        // bounds matter: without the first, a missing `},` would let the search
+        // run to end-of-file; without the second, a LATER sibling's
+        // `hardNavigate: true` could satisfy this one.
+        const rest = source.slice(index + text.length);
+        const end = Math.min(
+          ...[rest.indexOf("},"), rest.search(/\bhref:/)]
+            .filter((at) => at !== -1)
+            .concat(rest.length),
+        );
+        if (!/hardNavigate:\s*true/.test(rest.slice(0, end))) {
           offenders.push(`${path.relative(REPO_ROOT, file)}: ${text}`);
         }
       }

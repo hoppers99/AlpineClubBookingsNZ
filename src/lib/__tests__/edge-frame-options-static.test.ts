@@ -149,6 +149,10 @@ describe("edge and app X-Frame-Options agree (#2246)", () => {
     ];
 
     expect(relaxations.map(([, value]) => value)).toEqual(["SAMEORIGIN"]);
-    expect(csp).toContain('normalisePathname(pathname) === "/display"');
+    // …and that it is the NORMALISED path that is compared, which is what makes
+    // the edge's `/?` and the app's trailing-slash folding agree on `/display/`.
+    expect(csp).toMatch(
+      /normalisePathname\(pathname\)\s*===\s*"\/display"/,
+    );
   });
 });
