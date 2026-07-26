@@ -313,7 +313,9 @@ export interface LinkDependentSearchResult {
 /**
  * A member the dependant-link search matched but could not offer, with the
  * plain-English reason (#2254). Returned by `GET /api/admin/members` only when
- * a `dependentLinkEligibleFor` search came back empty.
+ * a `dependentLinkEligibleFor` search came back empty AND at least one match
+ * was excluded — never as an empty array, so an empty rendered list is not
+ * mistaken for "nothing matched your search".
  */
 export type LinkDependentIneligibleMatch = DependentLinkIneligibleMatch;
 
