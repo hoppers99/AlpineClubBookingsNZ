@@ -73,10 +73,7 @@ import { resolveInternalReturnPath } from "@/lib/internal-return-path";
 import { OPENABLE_ORGANISER_STATUSES } from "@/lib/group-booking";
 import { hasAdminAccess } from "@/lib/access-roles";
 import { SelfRemoveFromBookingCard } from "@/components/self-remove-from-booking-card";
-import {
-  describeGuestSelfRemovalBlocker,
-  evaluateGuestSelfRemoval,
-} from "@/lib/booking-guest-self-removal";
+import { resolveBookingSelfRemovalCard } from "@/lib/booking-guest-self-removal";
 import {
   bookingManagementAuthorizationRole,
   hasAdminAreaAccess,
@@ -327,21 +324,19 @@ export default async function BookingDetailPage({
   // Eligibility is the shared server-side rule (evaluateGuestSelfRemoval), the
   // same one that produces `canSelfRemove` on a night conflict and whose status
   // gate the removal service enforces — never re-derived in the browser.
-  const viewerGuest =
-    isLinkedGuestViewer && !booking.deletedAt
-      ? (booking.guests.find((guest) => guest.memberId === session.user.id) ??
-        null)
-      : null;
-  const viewerSelfRemoval = viewerGuest
-    ? evaluateGuestSelfRemoval({
-        actorMemberId: session.user.id,
-        guestMemberId: viewerGuest.memberId,
-        bookingOwnerMemberId: booking.memberId,
-        bookingStatus: booking.status,
-        bookingCheckIn: booking.checkIn,
-        bookingGuestCount: booking.guests.length,
-      })
-    : null;
+  // The gate itself lives in `resolveBookingSelfRemovalCard` so it is unit
+  // testable: rendering this card for an owner, a full admin, a non-participant,
+  // or a soft-deleted booking must fail a test, not just review.
+  const selfRemovalCard = resolveBookingSelfRemovalCard({
+    actorMemberId: session.user.id,
+    isBookingOwner,
+    isAdminViewer: isAdmin,
+    bookingDeletedAt: booking.deletedAt,
+    bookingOwnerMemberId: booking.memberId,
+    bookingStatus: booking.status,
+    bookingCheckIn: booking.checkIn,
+    guests: booking.guests,
+  });
 
   const bookingAuditLogs = await prisma.auditLog.findMany({
     where: {
@@ -1105,17 +1100,13 @@ export default async function BookingDetailPage({
           the action itself is hidden, with the reason stated, whenever the
           shared server-side rule says the removal service would refuse. No
           BOOKING_SECTIONS anchor: this is a short action card, not a section. */}
-      {viewerGuest && viewerSelfRemoval ? (
+      {selfRemovalCard ? (
         <SelfRemoveFromBookingCard
           bookingId={booking.id}
-          guestId={viewerGuest.id}
+          guestId={selfRemovalCard.guestId}
           ownerFirstName={booking.member.firstName}
-          canSelfRemove={viewerSelfRemoval.canSelfRemove}
-          blockedReason={
-            viewerSelfRemoval.blocker
-              ? describeGuestSelfRemovalBlocker(viewerSelfRemoval.blocker)
-              : null
-          }
+          canSelfRemove={selfRemovalCard.canSelfRemove}
+          blockedReason={selfRemovalCard.blockedReason}
         />
       ) : null}
 

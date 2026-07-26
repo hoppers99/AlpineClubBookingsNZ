@@ -4,6 +4,7 @@ import { parseDateOnly } from "@/lib/date-only";
 import {
   describeGuestSelfRemovalBlocker,
   evaluateGuestSelfRemoval,
+  resolveBookingSelfRemovalCard,
   SELF_REMOVABLE_GUEST_BOOKING_STATUSES,
   type GuestSelfRemovalBlocker,
 } from "@/lib/booking-guest-self-removal";
@@ -128,5 +129,108 @@ describe("describeGuestSelfRemovalBlocker", () => {
       "already started",
     );
     expect(describeGuestSelfRemovalBlocker("LAST_GUEST")).toContain("cancel it");
+  });
+});
+
+// #2250 — the booking detail page's own gate: WHO sees the card at all. The
+// page renders `<SelfRemoveFromBookingCard>` if and only if this returns a
+// value, so widening it (to the owner, to an admin, to a viewer with no guest
+// row, to a soft-deleted booking) has to fail here rather than only in review.
+describe("resolveBookingSelfRemovalCard", () => {
+  const GUESTS = [
+    { id: "guest-owner", memberId: "member-owner" },
+    { id: "guest-viewer", memberId: "member-guest" },
+    { id: "guest-nonmember", memberId: null },
+  ];
+
+  function resolve(overrides: Record<string, unknown> = {}) {
+    return resolveBookingSelfRemovalCard({
+      actorMemberId: "member-guest",
+      isBookingOwner: false,
+      isAdminViewer: false,
+      bookingDeletedAt: null,
+      bookingOwnerMemberId: "member-owner",
+      bookingStatus: BookingStatus.CONFIRMED,
+      bookingCheckIn: parseDateOnly("2026-06-10"),
+      guests: GUESTS,
+      today: TODAY,
+      ...overrides,
+    });
+  }
+
+  it("gives a linked guest their own guest row and the action", () => {
+    expect(resolve()).toEqual({
+      guestId: "guest-viewer",
+      canSelfRemove: true,
+      blockedReason: null,
+    });
+  });
+
+  it("shows nothing at all to the booking's owner", () => {
+    // The owner edits the guest list through the booking edit flow. Even with a
+    // guest row of their own on the booking, no card.
+    expect(
+      resolve({
+        actorMemberId: "member-owner",
+        isBookingOwner: true,
+      }),
+    ).toBeNull();
+  });
+
+  it("shows nothing at all to an admin viewer", () => {
+    expect(resolve({ isAdminViewer: true })).toBeNull();
+  });
+
+  it("shows nothing to a viewer who is not on the booking", () => {
+    expect(resolve({ actorMemberId: "member-stranger" })).toBeNull();
+  });
+
+  it("never matches a non-member guest row on a null actor id", () => {
+    // `guests` carries rows with memberId null; a lookup that compared loosely
+    // would hand a stranger somebody else's guest id.
+    expect(
+      resolve({ actorMemberId: null as unknown as string }),
+    ).toBeNull();
+  });
+
+  it("shows nothing on a soft-deleted booking", () => {
+    expect(resolve({ bookingDeletedAt: new Date("2026-05-01") })).toBeNull();
+  });
+
+  it("keeps the card but hides the action, with the reason, when the rule says no", () => {
+    expect(resolve({ bookingStatus: BookingStatus.CANCELLED })).toEqual({
+      guestId: "guest-viewer",
+      canSelfRemove: false,
+      blockedReason: describeGuestSelfRemovalBlocker("BOOKING_STATUS"),
+    });
+    expect(resolve({ bookingCheckIn: TODAY })).toEqual({
+      guestId: "guest-viewer",
+      canSelfRemove: false,
+      blockedReason: describeGuestSelfRemovalBlocker("STAY_NOT_FUTURE"),
+    });
+    expect(
+      resolve({ guests: [{ id: "guest-viewer", memberId: "member-guest" }] }),
+    ).toEqual({
+      guestId: "guest-viewer",
+      canSelfRemove: false,
+      blockedReason: describeGuestSelfRemovalBlocker("LAST_GUEST"),
+    });
+  });
+
+  it("counts every guest on the booking, not just the member-linked ones", () => {
+    // Two rows, one of them a non-member guest: removing the viewer still
+    // leaves somebody on the booking, so it is not the LAST_GUEST case.
+    expect(
+      resolve({
+        guests: [
+          { id: "guest-viewer", memberId: "member-guest" },
+          { id: "guest-nonmember", memberId: null },
+        ],
+      }),
+    ).toEqual({
+      guestId: "guest-viewer",
+      canSelfRemove: true,
+      blockedReason: null,
+    });
   });
 });

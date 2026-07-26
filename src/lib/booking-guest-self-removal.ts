@@ -108,3 +108,71 @@ export function describeGuestSelfRemovalBlocker(
       return "Only the person named on a place can take themselves off a booking.";
   }
 }
+
+export type BookingSelfRemovalCard = {
+  /** The viewer's own `BookingGuest` row on this booking. */
+  guestId: string;
+  canSelfRemove: boolean;
+  blockedReason: string | null;
+};
+
+/**
+ * Whether the booking detail page shows the self-removal card at all, and with
+ * what — the page-level gate, extracted so it is testable rather than living
+ * inline in a server component nobody can render in a unit test.
+ *
+ * Returns null (no card, not even an explanation) for anyone the action is not
+ * FOR: the booking's own owner and a full admin both edit the guest list
+ * through the booking edit flow instead, a viewer with no guest row on this
+ * booking has no place to give up, and a soft-deleted booking is admin-only
+ * archaeology. Everyone else gets the card, with the action itself driven by
+ * the shared `evaluateGuestSelfRemoval` predicate.
+ */
+export function resolveBookingSelfRemovalCard({
+  actorMemberId,
+  isBookingOwner,
+  isAdminViewer,
+  bookingDeletedAt,
+  bookingOwnerMemberId,
+  bookingStatus,
+  bookingCheckIn,
+  guests,
+  today,
+}: {
+  actorMemberId: string;
+  isBookingOwner: boolean;
+  /** A full admin, who manages the guest list through the admin tooling. */
+  isAdminViewer: boolean;
+  bookingDeletedAt: Date | null;
+  bookingOwnerMemberId: string;
+  bookingStatus: string;
+  bookingCheckIn: Date;
+  guests: readonly { id: string; memberId: string | null }[];
+  today?: Date;
+}): BookingSelfRemovalCard | null {
+  if (isBookingOwner || isAdminViewer) return null;
+  if (bookingDeletedAt) return null;
+  // `guests` carries non-member rows with a null `memberId`, so an absent actor
+  // id would match the first of them by equality and put somebody else's guest
+  // id on the page (the action itself would still be refused).
+  if (!actorMemberId) return null;
+
+  const viewerGuest = guests.find((guest) => guest.memberId === actorMemberId);
+  if (!viewerGuest) return null;
+
+  const { canSelfRemove, blocker } = evaluateGuestSelfRemoval({
+    actorMemberId,
+    guestMemberId: viewerGuest.memberId,
+    bookingOwnerMemberId,
+    bookingStatus,
+    bookingCheckIn,
+    bookingGuestCount: guests.length,
+    ...(today ? { today } : {}),
+  });
+
+  return {
+    guestId: viewerGuest.id,
+    canSelfRemove,
+    blockedReason: blocker ? describeGuestSelfRemovalBlocker(blocker) : null,
+  };
+}
