@@ -55,6 +55,26 @@ export function buildXeroReportsUrl(options?: XeroUrlOptions): string {
   return buildXeroUrl("/Reports/", options);
 }
 
+/**
+ * The connected organisation's Xero dashboard — the target of the single
+ * "Go to Xero" button in the admin Xero Sync page's header (#2261).
+ *
+ * With the organisation SHORT CODE the link routes through Xero's
+ * organisation-login redirect, which switches the signed-in Xero session to
+ * THIS club's organisation before landing on the dashboard, so an admin who
+ * belongs to several Xero organisations arrives in the right one. Without it —
+ * Xero not connected, or the organisation read failed — it degrades to the
+ * session-scoped classic path, which resolves against whichever organisation
+ * the admin is already signed in to and prompts a Xero login otherwise.
+ *
+ * Both forms are live URLs: this link is never dead, only less precise. The
+ * short code is never guessed from the tenant GUID we store — the GUID is not
+ * usable in a Xero URL at all (see the note on buildXeroReportsUrl).
+ */
+export function buildXeroDashboardUrl(options?: XeroUrlOptions): string {
+  return buildXeroUrl("/Dashboard/", options);
+}
+
 export function buildXeroObjectUrl(
   objectType: string,
   objectId: string,
