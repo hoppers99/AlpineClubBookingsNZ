@@ -1,10 +1,15 @@
 import { BookingStatus } from "@prisma/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseDateOnly } from "@/lib/date-only";
+import { describeBookingMemberNightConflictBooking } from "@/lib/booking-member-night-conflict-messages";
 import {
   assertNoBookingMemberNightConflicts,
+  BOOKING_MEMBER_NIGHT_CONFLICT_PRIVILEGED_FIELDS,
+  BookingMemberNightConflictError,
   findBookingMemberNightConflicts,
+  getBookingMemberNightConflictResponse,
   MEMBER_NIGHT_CONFLICT_BOOKING_STATUSES,
+  type BookingMemberNightConflict,
 } from "@/lib/booking-member-night-conflicts";
 
 function existingGuest(overrides: Record<string, unknown> = {}) {
@@ -72,6 +77,10 @@ describe("findBookingMemberNightConflicts", () => {
         isOwnBooking: true,
         canOpenBooking: true,
         canSelfRemove: false,
+        // #2250 — the clashing place is the actor's own, even though they may
+        // not self-remove from a booking they own. The copy needs this to
+        // address them directly instead of narrating them by name.
+        isSelfGuest: true,
       }),
     ]);
   });
@@ -116,6 +125,173 @@ describe("findBookingMemberNightConflicts", () => {
       isOwnBooking: false,
       canOpenBooking: true,
       canSelfRemove: true,
+      isSelfGuest: true,
+    });
+  });
+
+  it("does not mark somebody else's clashing place as the actor's own", async () => {
+    const db = conflictDb([existingGuest()]);
+
+    const conflicts = await findBookingMemberNightConflicts(db as any, {
+      actorMemberId: "member-9",
+      actorRole: "USER",
+      checkIn: parseDateOnly("2026-06-01"),
+      checkOut: parseDateOnly("2026-06-03"),
+      guests: [{ memberId: "member-1" }],
+    });
+
+    expect(conflicts[0]).toMatchObject({
+      memberId: "member-1",
+      isOwnBooking: false,
+      canOpenBooking: false,
+      canSelfRemove: false,
+      isSelfGuest: false,
+    });
+  });
+
+  // #2250 — the 409 PAYLOAD, not just the copy built from it. A member may
+  // legitimately have a family-group member who is a guest on a STRANGER's
+  // booking; a side-effect-free POST /api/bookings/quote must not hand them
+  // that stranger's name, whole stay range, or ids.
+  describe("entitlement-scoped payload", () => {
+    // The actor books their family member (member-2), who turns out to be a
+    // guest on member-9's booking. The actor owns nothing here and is not the
+    // clashing guest, so canOpenBooking is false.
+    function strangersBooking() {
+      return existingGuest({
+        id: "guest-77",
+        memberId: "member-2",
+        firstName: "Bob",
+        lastName: "Jones",
+        member: { firstName: "Bob", lastName: "Jones" },
+        booking: {
+          id: "booking-secret",
+          memberId: "member-9",
+          status: BookingStatus.PAID,
+          checkIn: parseDateOnly("2026-05-28"),
+          checkOut: parseDateOnly("2026-06-09"),
+          member: { firstName: "Carol", lastName: "Nguyen" },
+          guests: [
+            { id: "guest-77", memberId: "member-2" },
+            { id: "guest-78", memberId: "member-9" },
+          ],
+        },
+      });
+    }
+
+    async function conflictFor(actorMemberId: string, actorRole = "USER") {
+      const db = conflictDb([strangersBooking()]);
+      const conflicts = await findBookingMemberNightConflicts(db as any, {
+        actorMemberId,
+        actorRole,
+        checkIn: parseDateOnly("2026-06-01"),
+        checkOut: parseDateOnly("2026-06-03"),
+        guests: [{ memberId: "member-2" }],
+      });
+      expect(conflicts).toHaveLength(1);
+      return conflicts[0];
+    }
+
+    it("sends an unentitled requester nothing about the clashing booking", async () => {
+      const conflict = await conflictFor("member-1");
+
+      expect(conflict.canOpenBooking).toBe(false);
+      // A whitelist, not a spot-check: re-adding ANY booking field to the row
+      // fails here, which is the regression that let this sit.
+      expect(Object.keys(conflict).sort()).toEqual([
+        "canOpenBooking",
+        "canSelfRemove",
+        "conflictingNights",
+        "isOwnBooking",
+        "isSelfGuest",
+        "memberId",
+        "memberName",
+      ]);
+      for (const field of BOOKING_MEMBER_NIGHT_CONFLICT_PRIVILEGED_FIELDS) {
+        expect(field in conflict).toBe(false);
+      }
+      // What they keep is only what they already supplied or already know: the
+      // member they tried to book, and the intersection with the nights they
+      // chose — never the booking's own wider 28 May–9 Jun range.
+      expect(conflict.memberName).toBe("Bob Jones");
+      expect(conflict.conflictingNights).toEqual(["2026-06-01", "2026-06-02"]);
+    });
+
+    it("keeps every trace of the stranger's booking out of the 409 body", async () => {
+      const conflict = await conflictFor("member-1");
+      const body = JSON.stringify(
+        getBookingMemberNightConflictResponse([conflict]),
+      );
+
+      for (const secret of [
+        "Carol",
+        "Nguyen",
+        "booking-secret",
+        "guest-77",
+        "2026-05-28",
+        "2026-06-09",
+        "PAID",
+        "paid",
+      ]) {
+        expect(body).not.toContain(secret);
+      }
+    });
+
+    it("still sends the clashing guest themselves the full detail", async () => {
+      // member-2 IS the clashing guest, so canOpenBooking — they may open the
+      // booking and take their own place off it.
+      const conflict = await conflictFor("member-2");
+
+      expect(conflict.canOpenBooking).toBe(true);
+      expect(conflict).toMatchObject({
+        bookingId: "booking-secret",
+        bookingStatus: BookingStatus.PAID,
+        bookingOwnerName: "Carol Nguyen",
+        bookingCheckIn: "2026-05-28",
+        bookingCheckOut: "2026-06-09",
+        guestId: "guest-77",
+      });
+    });
+
+    it("leaves the admin conflict-resolution path with everything it renders", async () => {
+      // POST /api/admin/booking-requests/[id]/link-conflicts and the admin
+      // approve / hold / send-quote guards all pass actorRole "ADMIN"; the
+      // linking panel renders the owner and both stay dates.
+      const conflict = await conflictFor("admin-1", "ADMIN");
+
+      expect(conflict.canOpenBooking).toBe(true);
+      for (const field of BOOKING_MEMBER_NIGHT_CONFLICT_PRIVILEGED_FIELDS) {
+        expect(conflict[field]).toBeDefined();
+      }
+      expect(conflict.bookingOwnerName).toBe("Carol Nguyen");
+      expect(conflict.bookingCheckIn).toBe("2026-05-28");
+      expect(conflict.bookingCheckOut).toBe("2026-06-09");
+    });
+
+    it("sends the booking's own owner the full detail", async () => {
+      // The default fixture's booking belongs to member-1.
+      const db = conflictDb([
+        existingGuest({
+          id: "guest-3",
+          memberId: "member-2",
+          member: { firstName: "Bob", lastName: "Jones" },
+        }),
+      ]);
+      const conflicts = await findBookingMemberNightConflicts(db as any, {
+        actorMemberId: "member-1",
+        actorRole: "USER",
+        checkIn: parseDateOnly("2026-06-01"),
+        checkOut: parseDateOnly("2026-06-03"),
+        guests: [{ memberId: "member-2" }],
+      });
+
+      expect(conflicts[0]).toMatchObject({
+        isOwnBooking: true,
+        canOpenBooking: true,
+        bookingId: "booking-1",
+        bookingOwnerName: "Alice Smith",
+        guestId: "guest-3",
+      });
     });
   });
 
@@ -213,5 +389,167 @@ describe("findBookingMemberNightConflicts", () => {
     // and the sorted acquisition puts member-1 before member-2.
     const lockOrder = lockValues.map((values) => values[1]);
     expect(lockOrder).toEqual(["member-1", "member-2"]);
+  });
+});
+
+// #2250 — the already-booked copy on both paths a member can hit it: the
+// advisory pre-check that builds a 409 body from a found conflict list
+// (getBookingMemberNightConflictResponse, what the booking wizard renders) and
+// the transactional guard that throws (BookingMemberNightConflictError, whose
+// message every 409 route surfaces). Both must say who, which nights, and what
+// to do next — without telling the requester about a booking they may not see.
+describe("booking member-night conflict messages", () => {
+  function conflictRow(
+    overrides: Partial<BookingMemberNightConflict> = {},
+  ): BookingMemberNightConflict {
+    return {
+      memberId: "member-2",
+      memberName: "Bob Jones",
+      bookingId: "booking-2",
+      bookingStatus: BookingStatus.PAYMENT_PENDING,
+      bookingOwnerName: "Carol Nguyen",
+      bookingCheckIn: "2026-06-10",
+      bookingCheckOut: "2026-06-13",
+      guestId: "guest-2",
+      conflictingNights: ["2026-06-11", "2026-06-12"],
+      isOwnBooking: false,
+      canOpenBooking: false,
+      canSelfRemove: false,
+      isSelfGuest: false,
+      ...overrides,
+    };
+  }
+
+  it("tells the wizard path who, which nights, and what to do next", () => {
+    const body = getBookingMemberNightConflictResponse([conflictRow()]);
+
+    expect(body.code).toBe("BOOKING_MEMBER_NIGHT_CONFLICT");
+    expect(body.error).toBe(
+      "Bob Jones is already on a booking for 11 Jun 2026 and 12 Jun 2026. " +
+        "Ask whoever made that booking, or the club, to take them off it.",
+    );
+  });
+
+  it("keeps the 409 flow-neutral, because admin booking-request routes return it too", () => {
+    // approve / hold / send-quote all surface this body; "choose different
+    // dates" is advice only the person picking the dates can act on, and the
+    // booking wizard opts back into it when it renders the next step itself.
+    for (const conflicts of [
+      [conflictRow()],
+      [conflictRow({ canSelfRemove: true, isSelfGuest: true })],
+      [conflictRow(), conflictRow({ memberName: "Dana Patel" })],
+    ]) {
+      expect(getBookingMemberNightConflictResponse(conflicts).error).not.toContain(
+        "choose different dates",
+      );
+    }
+  });
+
+  it("offers self-removal in the message when this viewer may take themselves off", () => {
+    const body = getBookingMemberNightConflictResponse([
+      conflictRow({ canSelfRemove: true, isSelfGuest: true, canOpenBooking: true }),
+    ]);
+
+    expect(body.error).toContain("You are already on another booking");
+    expect(body.error).toContain("Take yourself off that booking");
+  });
+
+  it("addresses the member directly when they clash with their own earlier booking", () => {
+    const body = getBookingMemberNightConflictResponse([
+      conflictRow({
+        isSelfGuest: true,
+        isOwnBooking: true,
+        canOpenBooking: true,
+        canSelfRemove: false,
+      }),
+    ]);
+
+    expect(body.error).toBe(
+      "You are already on another booking for 11 Jun 2026 and 12 Jun 2026. " +
+        "Open that booking and change it.",
+    );
+    expect(body.error).not.toContain("Bob Jones");
+  });
+
+  it("carries the same message on the transactional 409 path", () => {
+    const error = new BookingMemberNightConflictError([conflictRow()]);
+
+    expect(error.message).toBe(
+      getBookingMemberNightConflictResponse([conflictRow()]).error,
+    );
+    expect(error.name).toBe("BookingMemberNightConflictError");
+    expect(error.conflicts).toHaveLength(1);
+  });
+
+  it("never names the other booking's owner in a message a stranger receives", () => {
+    // Belt and braces: `findBookingMemberNightConflicts` no longer puts these
+    // fields on an unentitled row at all (see "entitlement-scoped payload"),
+    // but the copy layer gates independently — hand it a row that DOES carry
+    // them with canOpenBooking false and the message must still not restate
+    // them.
+    const body = getBookingMemberNightConflictResponse([conflictRow()]);
+
+    expect(body.error).not.toContain("Carol Nguyen");
+    expect(body.error).not.toContain("booking-2");
+    expect(body.error).not.toContain("payment pending");
+  });
+
+  it("says nothing about the booking when an entitled row arrives without it", () => {
+    // Fail closed rather than rendering "It is a undefined booking." if a
+    // future producer ever marks a row canOpenBooking without the detail.
+    const scoped: BookingMemberNightConflict = {
+      memberId: "member-2",
+      memberName: "Bob Jones",
+      conflictingNights: ["2026-06-11"],
+      isOwnBooking: false,
+      canOpenBooking: true,
+      canSelfRemove: false,
+      isSelfGuest: false,
+    };
+
+    expect(describeBookingMemberNightConflictBooking(scoped)).toBeNull();
+    expect(
+      describeBookingMemberNightConflictBooking({
+        ...scoped,
+        bookingStatus: BookingStatus.PAID,
+      }),
+    ).toBeNull();
+    expect(
+      describeBookingMemberNightConflictBooking({
+        ...scoped,
+        bookingStatus: BookingStatus.PAID,
+        bookingOwnerName: "Carol Nguyen",
+      }),
+    ).toBe("It is a paid booking made by Carol Nguyen.");
+  });
+
+  it("names everyone and the union of the clashing nights when several members clash", () => {
+    const body = getBookingMemberNightConflictResponse([
+      conflictRow({ conflictingNights: ["2026-06-12"] }),
+      conflictRow({
+        memberId: "member-3",
+        memberName: "Dana Patel",
+        conflictingNights: ["2026-06-11"],
+      }),
+    ]);
+
+    expect(body.error).toBe(
+      "Bob Jones and Dana Patel are already on other bookings for 11 Jun 2026 and 12 Jun 2026. " +
+        "Nobody can be on two bookings for the same night, so somebody has to come off one of the bookings.",
+    );
+  });
+
+  it("agrees the verb with the number of PEOPLE, not the number of conflict rows", () => {
+    // One member on two different clashing bookings inside the requested window
+    // is two rows and one name — "Bob Jones are already" was reachable.
+    const body = getBookingMemberNightConflictResponse([
+      conflictRow({ bookingId: "booking-2", conflictingNights: ["2026-06-11"] }),
+      conflictRow({ bookingId: "booking-3", conflictingNights: ["2026-06-12"] }),
+    ]);
+
+    expect(body.error).toContain(
+      "Bob Jones is already on other bookings for 11 Jun 2026 and 12 Jun 2026.",
+    );
+    expect(body.error).not.toContain("Bob Jones are already");
   });
 });

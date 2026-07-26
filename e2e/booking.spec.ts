@@ -7,7 +7,7 @@ import {
   selectCalendarDay,
 } from "./helpers/booking";
 import { personas } from "./helpers/personas";
-import { stayWindow } from "./helpers/stay-dates";
+import { lodgeNightLabel, stayWindow } from "./helpers/stay-dates";
 
 // Critical row: member books a bed through /book with the capacity lock.
 // The persona signed in by auth.setup.ts creates a real booking through the
@@ -70,8 +70,32 @@ test("the same member cannot hold the same lodge night twice", async ({
   await expect(addedSelf).toBeVisible();
 
   await page.getByRole("button", { name: "Continue", exact: true }).click();
+  // #2250: the clash is deterministic — the booker against the booking they
+  // made in the previous test, over both of that window's nights — so assert
+  // the exact thing this rewrite added: the member addressed directly ("you",
+  // not their name) and the real nights named. A looser alternation would still
+  // pass if the night list fell back to "the nights you chose" or the
+  // second-person address regressed.
+  //
+  // The nights come from `window`, never hardcoded: stayWindow() walks forward
+  // from the RUN DATE, so a literal date is an assertion that passes only in
+  // the week it was written.
+  const [firstNight, secondNight] = window.nights.map(lodgeNightLabel);
   await expect(
-    page.getByText(/already (booked|has a booking|have a booking|part of)/i).first(),
+    page
+      .getByText(
+        // Test helper: built from formatted dates, not user input; no ReDoS.
+        // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
+        new RegExp(
+          `you are already on another booking for ${firstNight} and ${secondNight}`,
+          "i",
+        ),
+      )
+      .first(),
+  ).toBeVisible();
+  // The next step is stated too, and it is the wizard's date-picking variant.
+  await expect(
+    page.getByText(/choose different dates/i).first(),
   ).toBeVisible();
   await expect(page.getByText("Booking Summary")).not.toBeVisible();
 });

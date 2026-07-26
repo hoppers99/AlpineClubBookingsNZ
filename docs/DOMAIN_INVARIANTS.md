@@ -475,6 +475,51 @@ Future reviews and issues should cite this file when proposing changes.
   This person-night guard is separate from bed capacity: it checks draft,
   pending, confirmed/paid/completed, waitlist, offered, and admin-review
   bookings, but ignores cancelled, bumped, deleted, and expired draft rows.
+- A member put on somebody ELSE's booking may take their own place off it, and
+  only their own place. The rule is one shared server-side predicate
+  (`evaluateGuestSelfRemoval`, `booking-guest-self-removal.ts`): not the
+  booking's owner, the guest row is their own, the booking's status is one of
+  the eight self-removable ones, the stay is still in the future (NZ date-only
+  check-in strictly after today), and they are not the last guest. The
+  authoritative gate is `removeBookingGuestInTransaction`, which imports the
+  same status set and additionally refuses a quote-priced booking and a settled
+  booking whose refund/credit election only the owner or an admin may make.
+  Every surface that offers the action — the booking wizard's night-conflict
+  card and the booking detail page's own card (#2250) — drives its visibility
+  from that predicate rather than a client-side copy of it, so a member is never
+  shown a control the service would refuse; where it says no, the action is
+  hidden and the reason is stated instead. The booking detail page also passes
+  `isQuotePriced` (one indexed `isQuotePricedBooking` lookup, run only when the
+  action would otherwise be offered), so the quote-priced refusal is predicted
+  rather than discovered on submit. The settled-booking refund/credit election
+  stays server-only by design: predicting it needs the price delta of the
+  removal, which is the full repricing pass inside the removal transaction, and
+  a cheaper guess ("has a captured payment") would hide the action from members
+  the service would allow. That refusal surfaces as the service's own
+  plain-English 400, which the card shows verbatim.
+- The 409 the person-night guard returns is read by whoever made the request,
+  which may be a member adding somebody else as a guest. Its human-readable
+  message is therefore composed only from what that requester already supplied —
+  the member they tried to book and the nights they chose — plus the next step
+  their own `canSelfRemove` / `isOwnBooking` / `isSelfGuest` / `canOpenBooking`
+  flags allow. **The payload is scoped to match** (#2250): a conflict row carries
+  `bookingId`, `bookingStatus`, `bookingOwnerName`, `bookingCheckIn`,
+  `bookingCheckOut` and `guestId` only when the server marked this viewer
+  `canOpenBooking` — the booking's own owner, an admin, or the conflicting guest
+  themselves. An unentitled row carries nothing but the member the requester
+  tried to book, that member's name, the intersection with the nights they chose,
+  and the four viewer-aware booleans. The gate lives at the single assembly point
+  in `findBookingMemberNightConflicts`, because every route that returns this
+  body passes the array straight through; the copy layer
+  (`describeBookingMemberNightConflictBooking`) gates independently and fails
+  closed, so a row missing the detail says nothing rather than rendering
+  `undefined`.
+- The same 409 is produced by flows whose reader cannot change the dates (the
+  admin booking-request approve / hold / send-quote routes and the booking
+  modify routes), so the server-built message is flow-neutral. Only the booking
+  wizard — the one surface whose reader is choosing the dates — renders the next
+  step with `canChooseDifferentDates`, which is what adds "…or choose different
+  dates" (#2250).
 - The person-night guard is app-level enforcement by design (#1039 item 3): a
   database unique index cannot express it because liveness is booking-status
   dependent and spans `BookingGuest` to `Booking`, which a Postgres partial

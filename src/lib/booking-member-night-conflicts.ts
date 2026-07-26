@@ -8,6 +8,8 @@ import {
   isGuestActiveOnNight,
   type GuestStayRange,
 } from "@/lib/booking-guest-stay-ranges";
+import { evaluateGuestSelfRemoval } from "@/lib/booking-guest-self-removal";
+import { buildBookingMemberNightConflictMessage } from "@/lib/booking-member-night-conflict-messages";
 
 const BOOKING_MEMBER_NIGHT_CONFLICT_CODE =
   "BOOKING_MEMBER_NIGHT_CONFLICT";
@@ -70,17 +72,6 @@ export const MEMBER_NIGHT_CONFLICT_BOOKING_STATUSES = [
   BookingStatus.AWAITING_REVIEW,
 ] as const;
 
-const SELF_REMOVABLE_MEMBER_NIGHT_CONFLICT_STATUSES = new Set<string>([
-  BookingStatus.DRAFT,
-  BookingStatus.PENDING,
-  BookingStatus.PAYMENT_PENDING,
-  BookingStatus.CONFIRMED,
-  BookingStatus.PAID,
-  BookingStatus.WAITLISTED,
-  BookingStatus.WAITLIST_OFFERED,
-  BookingStatus.AWAITING_REVIEW,
-]);
-
 type ConflictDb =
   | Pick<PrismaClient, "bookingGuest">
   | Pick<Prisma.TransactionClient, "bookingGuest">;
@@ -89,28 +80,72 @@ type ConflictGuestInput = GuestStayRange & {
   memberId?: string | null;
 };
 
+/**
+ * ENTITLEMENT-SCOPED PAYLOAD (#2250). A member-night 409 goes to whoever made
+ * the request, and that requester is not necessarily entitled to see the
+ * clashing booking: a member may legitimately have a family-group member who is
+ * a guest on a STRANGER's booking, and a side-effect-free
+ * `POST /api/bookings/quote` would otherwise hand them that stranger's name,
+ * their whole stay range, and the booking id.
+ *
+ * So every field describing the OTHER booking (and the other guest row on it)
+ * is present only when the server marked this viewer `canOpenBooking` — the
+ * booking's own owner, an admin, or the conflicting guest themselves. The
+ * always-present fields are exactly the ones the requester already supplied or
+ * already knows: the member they tried to book, that member's name, and the
+ * intersection with the nights they chose.
+ *
+ * Gating the fields here rather than in each of the ~14 routes that return this
+ * body is deliberate: those routes pass the array straight through, so this
+ * assembly point is the only place the rule can be stated once.
+ */
 export type BookingMemberNightConflict = {
   memberId: string;
   memberName: string;
-  bookingId: string;
-  bookingStatus: BookingStatus;
-  bookingOwnerName: string;
-  bookingCheckIn: string;
-  bookingCheckOut: string;
-  guestId: string;
   conflictingNights: string[];
   isOwnBooking: boolean;
   canOpenBooking: boolean;
   canSelfRemove: boolean;
+  /**
+   * The clashing guest row is the actor's own place (#2250). Distinct from
+   * `canSelfRemove`, which is additionally gated on status/date/last-guest and
+   * is false for the commonest clash of all — the member against a booking they
+   * made themselves. The copy uses it to address the member directly rather
+   * than narrating them in the third person.
+   */
+  isSelfGuest: boolean;
+  /**
+   * The clashing booking and the clashing guest row on it. Present only when
+   * `canOpenBooking` — see the disclosure note above. `guestId` goes with them:
+   * on its own it addresses nothing (every guest route is scoped by its booking
+   * id), and keeping it would leave a stable handle on a stranger's guest row
+   * for no UI that is allowed to use it.
+   */
+  bookingId?: string;
+  bookingStatus?: BookingStatus;
+  bookingOwnerName?: string;
+  bookingCheckIn?: string;
+  bookingCheckOut?: string;
+  guestId?: string;
 };
+
+/** The disclosure-gated half of a conflict row, listed once so tests can assert it. */
+export const BOOKING_MEMBER_NIGHT_CONFLICT_PRIVILEGED_FIELDS = [
+  "bookingCheckIn",
+  "bookingCheckOut",
+  "bookingId",
+  "bookingOwnerName",
+  "bookingStatus",
+  "guestId",
+] as const;
 
 export class BookingMemberNightConflictError extends Error {
   constructor(public readonly conflicts: BookingMemberNightConflict[]) {
-    super(
-      conflicts.length === 1
-        ? `${conflicts[0].memberName} is already on a booking for one of these nights.`
-        : "One or more members are already on a booking for these nights.",
-    );
+    // #2250 — the message says who, which nights, and what to do next, built
+    // only from what the requester already supplied (the member they tried to
+    // book and the nights they chose). See the disclosure rule in
+    // booking-member-night-conflict-messages.ts.
+    super(buildBookingMemberNightConflictMessage(conflicts));
     this.name = "BookingMemberNightConflictError";
   }
 }
@@ -223,12 +258,20 @@ export async function findBookingMemberNightConflicts(
 
     const isOwnBooking = guest.booking.memberId === actorMemberId;
     const isSelfGuest = guest.memberId === actorMemberId;
-    const canSelfRemove =
-      !isOwnBooking &&
-      isSelfGuest &&
-      guest.booking.guests.length > 1 &&
-      guest.booking.checkIn > today &&
-      SELF_REMOVABLE_MEMBER_NIGHT_CONFLICT_STATUSES.has(guest.booking.status);
+    // #2250 — one server-side rule, shared with the booking detail page's
+    // affordance and with the removal service's own status gate, so no surface
+    // offers (or withholds) self-removal on its own private copy of the rule.
+    const { canSelfRemove } = evaluateGuestSelfRemoval({
+      actorMemberId,
+      guestMemberId: guest.memberId,
+      bookingOwnerMemberId: guest.booking.memberId,
+      bookingStatus: guest.booking.status,
+      bookingCheckIn: guest.booking.checkIn,
+      bookingGuestCount: guest.booking.guests.length,
+      today,
+    });
+
+    const canOpenBooking = isOwnBooking || actorRole === "ADMIN" || isSelfGuest;
 
     conflicts.push({
       memberId: guest.memberId,
@@ -236,19 +279,29 @@ export async function findBookingMemberNightConflicts(
         guest.member?.firstName ?? guest.firstName,
         guest.member?.lastName ?? guest.lastName,
       ),
-      bookingId: guest.booking.id,
-      bookingStatus: guest.booking.status,
-      bookingOwnerName: displayName(
-        guest.booking.member.firstName,
-        guest.booking.member.lastName,
-      ),
-      bookingCheckIn: formatDateOnly(guest.booking.checkIn),
-      bookingCheckOut: formatDateOnly(guest.booking.checkOut),
-      guestId: guest.id,
       conflictingNights: conflictingNights.sort(),
       isOwnBooking,
-      canOpenBooking: isOwnBooking || actorRole === "ADMIN" || isSelfGuest,
+      canOpenBooking,
       canSelfRemove,
+      isSelfGuest,
+      // #2250 — everything about the OTHER booking is attached only for a
+      // viewer entitled to it. The admin paths (booking-request approve / hold
+      // / send-quote / link-conflicts, and every admin-on-behalf create and
+      // modify) pass `actorRole: "ADMIN"`, so an admin resolving a conflict
+      // still receives the full detail their UI renders.
+      ...(canOpenBooking
+        ? {
+            bookingId: guest.booking.id,
+            bookingStatus: guest.booking.status,
+            bookingOwnerName: displayName(
+              guest.booking.member.firstName,
+              guest.booking.member.lastName,
+            ),
+            bookingCheckIn: formatDateOnly(guest.booking.checkIn),
+            bookingCheckOut: formatDateOnly(guest.booking.checkOut),
+            guestId: guest.id,
+          }
+        : {}),
     });
   }
 
@@ -286,10 +339,15 @@ export function getBookingMemberNightConflictResponse(
 ) {
   return {
     code: BOOKING_MEMBER_NIGHT_CONFLICT_CODE,
-    error:
-      conflicts.length === 1
-        ? `${conflicts[0].memberName} is already on a booking for one of these nights.`
-        : "One or more members are already on a booking for these nights.",
+    // #2250 — same message the thrown error carries, so the advisory pre-check
+    // (409 built from a found conflict list) and the transactional guard read
+    // identically to the member. Flow-neutral by default: this response is also
+    // returned by the admin booking-request approve/hold/quote routes, where
+    // "choose different dates" is advice the reader cannot act on. Surfaces
+    // that DO pick the dates (the booking wizard) opt back in by rendering
+    // `describeBookingMemberNightConflictNextStep` with
+    // `canChooseDifferentDates`.
+    error: buildBookingMemberNightConflictMessage(conflicts),
     conflicts,
   };
 }

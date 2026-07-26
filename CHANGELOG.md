@@ -62,6 +62,38 @@ All notable public reference-release changes should be recorded here.
   at most once a minute rather than on every page load, and the button says
   only "Opens Xero in a new tab" until the lookup settles — it never blames a
   failed read for a link that is still loading.
+- **A member put on somebody else's booking can now take their own place off it
+  from the booking itself, and the "already booked on those nights" message
+  finally says what to do (#2250).** The self-removal action already existed, but
+  the only way to reach it was to start making a clashing booking of your own and
+  find the button on the wizard's conflict card — so most members never knew it
+  was there. The booking page now shows a short card to a member who is a guest
+  on someone else's booking: it says whose booking it is, offers "Remove me from
+  this booking" behind a confirmation, and — when the removal is not allowed —
+  hides the action and states the reason instead (the stay has started, the
+  booking is no longer in a changeable state, you are the only person on it, or
+  the club priced the booking as a quote).
+  Eligibility is decided by one shared server-side rule, the same one the removal
+  service enforces, so a member is never shown a control the server would refuse.
+  The clash message itself was rewritten to name the nights, address the member
+  directly when the clash is their own place, and state the next step they can
+  actually take: an admin approving a booking request no longer reads advice to
+  "choose different dates", which only the person picking the dates can act on.
+  Nothing about who may remove whom has changed — only the owner, an admin, or
+  the person themselves can take a place off a booking, and the owner is emailed
+  and their total updated exactly as before.
+
+- **The "already booked on those nights" refusal no longer tells you about a
+  booking you are not part of (#2250).** A member can legitimately have a family
+  member who is a guest on a stranger's booking. Asking for a price on clashing
+  dates used to return that stranger's full name, the whole span of their stay,
+  and the booking's id — none of which the member could see anywhere else in the
+  app, and none of which was ever shown on screen. The refusal now carries only
+  who in your own party is already booked and which of your chosen nights clash.
+  Where you ARE entitled to the detail — it is your own booking, you are the
+  person double-booked, or you are an admin resolving the clash — nothing
+  changes, so the admin booking-request linking warning still shows the owner and
+  their dates as before.
 
 - **Postgres connection ceiling raised from 30 to 40 to stop intermittent
   `FATAL: sorry, too many clients` when a deploy or backup overlaps normal

@@ -13,6 +13,7 @@ import {
   type BookingErrorPaymentTarget,
 } from "@/lib/booking-error-payment-targets";
 import { formatLocalDateOnly } from "@/lib/date-only";
+import { buildBookingMemberNightConflictSummary } from "@/lib/booking-member-night-conflict-messages";
 import { shouldShowInviteFamilyGroupMembersLink } from "@/lib/family-booking";
 import { hasAccessRole, hasAdminAccess } from "@/lib/access-roles";
 import { isPaymentOwedBookingStatus } from "@/lib/booking-status";
@@ -45,15 +46,26 @@ interface GuestProfileRequiredMember {
 interface BookingMemberNightConflict {
   memberId: string;
   memberName: string;
-  bookingId: string;
-  bookingStatus: string;
-  bookingOwnerName: string;
-  bookingCheckIn: string;
-  bookingCheckOut: string;
-  guestId: string;
   conflictingNights: string[];
+  // #2250: the conflict card's copy picks its next step from these
+  // server-computed, viewer-aware flags rather than guessing in the browser.
+  isOwnBooking: boolean;
   canOpenBooking: boolean;
   canSelfRemove: boolean;
+  // The server has sent this since #2250 and the shared copy helpers read it to
+  // address the viewer as "you"; declaring it keeps this mirror honest.
+  isSelfGuest: boolean;
+  // #2250: the server sends these only to a viewer it marked `canOpenBooking`,
+  // so a member whose family member turns out to be on a stranger's booking
+  // never receives that stranger's name, stay dates, or ids. Optional here for
+  // the same reason — mirrors `BookingMemberNightConflict` in
+  // `@/lib/booking-member-night-conflicts`.
+  bookingId?: string;
+  bookingStatus?: string;
+  bookingOwnerName?: string;
+  bookingCheckIn?: string;
+  bookingCheckOut?: string;
+  guestId?: string;
 }
 
 interface AvailabilityNightDetail {
@@ -576,11 +588,19 @@ export function useBookingWizard() {
     error?: string;
     conflicts?: BookingMemberNightConflict[];
   }) {
+    // #2250 — the banner carries the SUMMARY only. `data.error` is the
+    // self-contained 409 sentence (summary + next step), and the wizard renders
+    // a per-conflict card underneath that already states the nights, the
+    // booking, the buttons, and this viewer's next step — so using it verbatim
+    // printed the same sentence twice on the single-conflict screen.
+    const conflicts = data.conflicts ?? [];
     setError(
-      data.error ||
-        "One or more members are already on a booking for these nights."
+      conflicts.length > 0
+        ? buildBookingMemberNightConflictSummary(conflicts)
+        : data.error ||
+          "Someone in this party is already booked on one or more of these nights."
     );
-    setMemberNightConflicts(data.conflicts || []);
+    setMemberNightConflicts(conflicts);
     setGuestProfileBlocks([]);
     setErrorPaymentTargets([]);
   }
@@ -607,18 +627,12 @@ export function useBookingWizard() {
     setErrorPaymentTargets(getBookingErrorPaymentTargets(data));
   }
 
-  function formatConflictNights(nights: string[]) {
-    if (nights.length === 0) return "the selected nights";
-    if (nights.length === 1) return nights[0];
-    if (nights.length === 2) return nights.join(" and ");
-    return `${nights.length} nights`;
-  }
-
-  function formatConflictStatus(status: string) {
-    return status.toLowerCase().split("_").join(" ");
-  }
-
   async function handleRemoveConflictGuest(conflict: BookingMemberNightConflict) {
+    // #2250: the ids arrive only for a viewer the server marked
+    // `canOpenBooking`, which `canSelfRemove` implies — and the button that
+    // calls this is gated on `canSelfRemove`. So this narrows the optional
+    // fields rather than adding a rule.
+    if (!conflict.bookingId || !conflict.guestId) return;
     setRemovingConflictGuestId(conflict.guestId);
     try {
       const res = await fetch(
@@ -643,7 +657,7 @@ export function useBookingWizard() {
       setMemberNightConflicts(nextConflicts);
       setError(
         nextConflicts.length > 0
-          ? "One or more members are already on a booking for these nights."
+          ? buildBookingMemberNightConflictSummary(nextConflicts)
           : "",
       );
 
@@ -1256,8 +1270,6 @@ export function useBookingWizard() {
     handleSaveAsDraft,
     getGuestProfileBlockMessage,
     getGuestProfileActionLabel,
-    formatConflictNights,
-    formatConflictStatus,
     nights,
     availableCreditCents,
     appliedCreditCents,

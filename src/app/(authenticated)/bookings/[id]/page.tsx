@@ -72,6 +72,9 @@ import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import { resolveInternalReturnPath } from "@/lib/internal-return-path";
 import { OPENABLE_ORGANISER_STATUSES } from "@/lib/group-booking";
 import { hasAdminAccess } from "@/lib/access-roles";
+import { SelfRemoveFromBookingCard } from "@/components/self-remove-from-booking-card";
+import { resolveBookingSelfRemovalCard } from "@/lib/booking-guest-self-removal";
+import { isQuotePricedBooking } from "@/lib/booking-modify-validation";
 import {
   bookingManagementAuthorizationRole,
   hasAdminAreaAccess,
@@ -316,6 +319,37 @@ export default async function BookingDetailPage({
   // admin) must not be addressed with owner second-person copy ("your place /
   // your stay") — issue #1289. Linked guests keep the member framing.
   const nonOwnerAdminViewer = !isBookingOwner && canViewAsAdmin;
+  // Issue #2250: a member put on somebody else's booking must be able to take
+  // themselves off it from the booking itself, not only from the wizard's
+  // night-conflict card while attempting a clashing booking of their own.
+  // Eligibility is the shared server-side rule (evaluateGuestSelfRemoval), the
+  // same one that produces `canSelfRemove` on a night conflict and whose status
+  // gate the removal service enforces — never re-derived in the browser.
+  // The gate itself lives in `resolveBookingSelfRemovalCard` so it is unit
+  // testable: rendering this card for an owner, a full admin, a non-participant,
+  // or a soft-deleted booking must fail a test, not just review.
+  const selfRemovalInput = {
+    actorMemberId: session.user.id,
+    isBookingOwner,
+    isAdminViewer: isAdmin,
+    bookingDeletedAt: booking.deletedAt,
+    bookingOwnerMemberId: booking.memberId,
+    bookingStatus: booking.status,
+    bookingCheckIn: booking.checkIn,
+    guests: booking.guests,
+  };
+  const selfRemovalCandidate = resolveBookingSelfRemovalCard(selfRemovalInput);
+  // The removal service also refuses a quote-priced booking
+  // (assertBookingNotQuotePriced), and unlike its settled-payment election that
+  // refusal is one indexed lookup — so predict it here rather than offering a
+  // control the server would reject. Only run when the action would otherwise
+  // be offered, so an ordinary booking view adds no query.
+  const selfRemovalCard = selfRemovalCandidate?.canSelfRemove
+    ? resolveBookingSelfRemovalCard({
+        ...selfRemovalInput,
+        isQuotePriced: await isQuotePricedBooking(prisma, booking.id),
+      })
+    : selfRemovalCandidate;
 
   const bookingAuditLogs = await prisma.auditLog.findMany({
     where: {
@@ -1072,6 +1106,22 @@ export default async function BookingDetailPage({
           canAdminOverride={canAdminOverride}
         />
       </section>
+
+      {/* #2250: the member's own way off somebody else's booking. Only ever
+          rendered for a linked guest viewer (never the owner, never an admin —
+          they change the guest list through the booking edit flow above), and
+          the action itself is hidden, with the reason stated, whenever the
+          shared server-side rule says the removal service would refuse. No
+          BOOKING_SECTIONS anchor: this is a short action card, not a section. */}
+      {selfRemovalCard ? (
+        <SelfRemoveFromBookingCard
+          bookingId={booking.id}
+          guestId={selfRemovalCard.guestId}
+          ownerFirstName={booking.member.firstName}
+          canSelfRemove={selfRemovalCard.canSelfRemove}
+          blockedReason={selfRemovalCard.blockedReason}
+        />
+      ) : null}
 
       {/* #1975: "Your non-member guests" — the parent card surfaces each genuine
           split child inline (status, differing dates, amount, link), so the
