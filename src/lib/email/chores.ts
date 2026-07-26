@@ -9,12 +9,17 @@ import {
 import { EMAIL_DEFAULT_LODGE_NAME } from "@/lib/email-message-settings";
 import { formatNZDate } from "../nzst-date";
 import { sendEmail } from "./core";
+import type { EmailBookingContext } from "@/lib/booking-email-suppression";
 
 // #1285: the "Chore Roster" notification preference is honored by the caller
 // (`admin-roster-service.ts` via `shouldSendChoreRoster`), before a chore
 // token is created — mirroring how check-in reminders are gated in their cron
 // caller. This sender stays a pure transport so it never double-gates.
 export async function sendChoreRosterEmail(
+  // Booking whose stay this roster covers (#2258). A roster is delivered per
+  // guest of a booking, so the per-booking "No emails" switch withholds it;
+  // `"none"` covers a roster generated outside any booking.
+  bookingContext: EmailBookingContext,
   email: string,
   guestName: string,
   date: string,
@@ -37,6 +42,7 @@ export async function sendChoreRosterEmail(
     to: email,
     subject: `Your chore roster for ${formattedDate} - ${EMAIL_DEFAULT_LODGE_NAME}`,
     html: choreRosterTemplate(guestName, date, chores, choreLink),
+    bookingContext,
     templateName: "chore-roster",
     templateData: {
       guestName,
@@ -64,6 +70,9 @@ export async function sendHutLeaderAssignmentEmail(params: {
     to: params.email,
     subject: `Your ${CLUB_NAME} ${CLUB_HUT_LEADER_LABEL.toLowerCase()} assignment`,
     html: hutLeaderAssignmentTemplate(params),
+    // Not booking-scoped: a hut-leader assignment is a roster duty spanning a
+    // date range, not a message about anyone's booking (#2258).
+    bookingContext: "none",
     templateName: "hut-leader-assignment",
     templateData: {
       firstName: params.firstName,

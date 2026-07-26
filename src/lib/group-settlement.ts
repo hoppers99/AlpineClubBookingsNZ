@@ -878,6 +878,7 @@ async function settleConfirmedChildrenAndNotify(
     const organiserName = `${organiser.firstName} ${organiser.lastName}`.trim();
     try {
       await sendGroupSettlementReceiptEmail({
+        bookingContext: { bookingId: organiserBooking.id },
         email: organiser.email,
         firstName: organiser.firstName,
         checkIn: organiserBooking.checkIn,
@@ -904,6 +905,7 @@ async function settleConfirmedChildrenAndNotify(
     for (const booking of settledBookings) {
       try {
         await sendGroupJoinSettledEmail({
+          bookingContext: { bookingId: booking.id },
           email: booking.member.email,
           firstName: booking.member.firstName,
           organiserName,

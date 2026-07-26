@@ -351,6 +351,8 @@ export async function reissuePaymentLinkForToken(
     priceCents: booking.finalPriceCents,
     bookingReference: booking.id,
     expiresAt,
+    // The pay link is about this booking (#2258).
+    bookingContext: { bookingId: booking.id } as const,
   };
   const emailOutcome = isSplitGuestLink
     ? await sendSplitGuestPaymentLinkEmail(emailParams)
@@ -818,6 +820,7 @@ export async function issueSplitGuestPaymentLink(
   let emailOutcome;
   try {
     emailOutcome = await sendSplitGuestPaymentLinkEmail({
+      bookingContext: { bookingId: booking.id },
       email: booking.member.email,
       firstName: booking.member.firstName,
       token: minted.token,

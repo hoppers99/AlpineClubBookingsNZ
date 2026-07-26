@@ -13,6 +13,7 @@ import {
 } from "../nzst-date";
 import { formatCents as formatMoneyCents } from "@/lib/utils";
 import { sendEmail } from "./core";
+import type { EmailBookingContext } from "@/lib/booking-email-suppression";
 
 /**
  * Verification email for a non-member joining a group booking. Reuses the
@@ -20,6 +21,10 @@ import { sendEmail } from "./core";
  * verify page (/join/verify/[token]) rather than the booking-request one.
  */
 export async function sendGroupBookingJoinVerificationEmail(params: {
+  // Booking this message belongs to (#2258). Explicit union: pass the real
+  // booking id so the per-booking "No emails" switch can withhold this message,
+  // or `"none"` when the flow genuinely has no booking yet.
+  bookingContext: EmailBookingContext;
   email: string;
   firstName: string;
   token: string;
@@ -42,6 +47,7 @@ export async function sendGroupBookingJoinVerificationEmail(params: {
       guestCount: params.guestCount,
       expiresAt: params.expiresAt,
     }),
+    bookingContext: params.bookingContext,
     templateName: "group-booking-join-verification",
     templateData: {
       firstName: params.firstName,
@@ -57,6 +63,10 @@ export async function sendGroupBookingJoinVerificationEmail(params: {
 
 /** Receipt to the organiser after they settle an ORGANISER_PAYS group bill. */
 export async function sendGroupSettlementReceiptEmail(params: {
+  // Booking this message belongs to (#2258). Explicit union: pass the real
+  // booking id so the per-booking "No emails" switch can withhold this message,
+  // or `"none"` when the flow genuinely has no booking yet.
+  bookingContext: EmailBookingContext;
   email: string;
   firstName: string;
   checkIn: Date;
@@ -74,6 +84,7 @@ export async function sendGroupSettlementReceiptEmail(params: {
       joinerCount: params.joinerCount,
       totalCents: params.totalCents,
     }),
+    bookingContext: params.bookingContext,
     templateName: "group-settlement-receipt",
     templateData: {
       firstName: params.firstName,
@@ -87,6 +98,10 @@ export async function sendGroupSettlementReceiptEmail(params: {
 
 /** Confirmation to a joiner whose spot the organiser has settled for them. */
 export async function sendGroupJoinSettledEmail(params: {
+  // Booking this message belongs to (#2258). Explicit union: pass the real
+  // booking id so the per-booking "No emails" switch can withhold this message,
+  // or `"none"` when the flow genuinely has no booking yet.
+  bookingContext: EmailBookingContext;
   email: string;
   firstName: string;
   organiserName: string;
@@ -104,6 +119,7 @@ export async function sendGroupJoinSettledEmail(params: {
       checkOut: params.checkOut,
       guestCount: params.guestCount,
     }),
+    bookingContext: params.bookingContext,
     templateName: "group-join-settled",
     templateData: {
       firstName: params.firstName,
@@ -117,6 +133,10 @@ export async function sendGroupJoinSettledEmail(params: {
 
 /** Organiser notice that their abandoned combined payment released the beds. */
 export async function sendGroupSettlementExpiredEmail(params: {
+  // Booking this message belongs to (#2258). Explicit union: pass the real
+  // booking id so the per-booking "No emails" switch can withhold this message,
+  // or `"none"` when the flow genuinely has no booking yet.
+  bookingContext: EmailBookingContext;
   email: string;
   firstName: string;
   checkIn: Date;
@@ -134,6 +154,7 @@ export async function sendGroupSettlementExpiredEmail(params: {
       joinerCount: params.joinerCount,
       totalCents: params.totalCents,
     }),
+    bookingContext: params.bookingContext,
     templateName: "group-settlement-expired",
     templateData: {
       firstName: params.firstName,
@@ -147,6 +168,10 @@ export async function sendGroupSettlementExpiredEmail(params: {
 
 /** Joiner notice that the organiser's abandoned payment released their bed. */
 export async function sendGroupJoinReleasedEmail(params: {
+  // Booking this message belongs to (#2258). Explicit union: pass the real
+  // booking id so the per-booking "No emails" switch can withhold this message,
+  // or `"none"` when the flow genuinely has no booking yet.
+  bookingContext: EmailBookingContext;
   email: string;
   firstName: string;
   organiserName: string;
@@ -162,6 +187,7 @@ export async function sendGroupJoinReleasedEmail(params: {
       checkIn: params.checkIn,
       checkOut: params.checkOut,
     }),
+    bookingContext: params.bookingContext,
     templateName: "group-join-released",
     templateData: {
       firstName: params.firstName,
@@ -178,6 +204,10 @@ export async function sendGroupJoinReleasedEmail(params: {
  * booking has been cancelled.
  */
 export async function sendGroupJoinCancelledEmail(params: {
+  // Booking this message belongs to (#2258). Explicit union: pass the real
+  // booking id so the per-booking "No emails" switch can withhold this message,
+  // or `"none"` when the flow genuinely has no booking yet.
+  bookingContext: EmailBookingContext;
   email: string;
   firstName: string;
   organiserName: string;
@@ -193,6 +223,7 @@ export async function sendGroupJoinCancelledEmail(params: {
       checkIn: params.checkIn,
       checkOut: params.checkOut,
     }),
+    bookingContext: params.bookingContext,
     templateName: "group-join-cancelled",
     templateData: {
       firstName: params.firstName,

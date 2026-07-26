@@ -142,6 +142,8 @@ export async function POST(request: Request) {
           </table>
         </div>
       `,
+      // Website contact form: no booking involved (#2258).
+      bookingContext: "none",
       templateName: "website-contact",
       templateData: {
         recipientLabel,
