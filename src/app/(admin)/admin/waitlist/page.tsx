@@ -29,7 +29,7 @@ import { buildHrefWithReturnTo, buildPathWithSearch } from "@/lib/internal-retur
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100] as const;
 
 interface OfferEmailDelivery {
-  status: "QUEUED" | "SENT" | "FAILED" | "BOUNCED" | "MISSING";
+  status: "QUEUED" | "SENT" | "FAILED" | "BOUNCED" | "SKIPPED_NO_EMAILS" | "MISSING";
   emailLogId: string | null;
   attempts: number | null;
   lastAttemptAt: string | null;
@@ -40,6 +40,8 @@ interface OfferEmailDelivery {
     | "retrying"
     | "exhausted"
     | "undeliverable"
+    // #2258: withheld on purpose by the booking's "No emails" switch.
+    | "suppressed"
     | "missing";
   needsOperatorAction: boolean;
 }
@@ -157,6 +159,8 @@ function getOfferEmailSummary(delivery: OfferEmailDelivery) {
       return "Offer email retry exhausted";
     case "undeliverable":
       return "Offer email undeliverable";
+    case "suppressed":
+      return "Offer email withheld (No emails)";
     case "missing":
       return "Offer email log missing";
   }
@@ -169,6 +173,12 @@ function getOfferEmailBadgeClass(delivery: OfferEmailDelivery) {
 
   if (delivery.retryState === "retrying" || delivery.retryState === "queued") {
     return "bg-warning-muted text-warning";
+  }
+
+  // #2258: deliberate silence is neither a success nor a problem — render it
+  // neutral so it never reads as "the member was told".
+  if (delivery.retryState === "suppressed") {
+    return "bg-muted text-muted-foreground";
   }
 
   return "bg-success-muted text-success";

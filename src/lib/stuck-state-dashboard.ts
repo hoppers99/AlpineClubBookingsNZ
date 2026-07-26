@@ -531,6 +531,8 @@ async function addWaitlistItems(
       status: true,
       waitlistOfferedAt: true,
       waitlistOfferExpiresAt: true,
+      // #2258: a deliberately-silenced booking is not a delivery failure.
+      noEmails: true,
       member: {
         select: {
           email: true,

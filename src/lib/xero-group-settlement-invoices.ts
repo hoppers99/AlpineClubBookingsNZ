@@ -22,6 +22,10 @@ import {
 import { BookingStatus, GroupBookingStatus } from "@prisma/client";
 import { prisma } from "./prisma";
 import logger from "@/lib/logger";
+import {
+  recordWithheldBookingEmail,
+  XERO_GROUP_SETTLEMENT_INVOICE_EMAIL_TEMPLATE,
+} from "@/lib/booking-email-suppression";
 import { getStayNights } from "./pricing";
 import { buildXeroInvoiceUrl } from "@/lib/xero-links";
 import {
@@ -470,7 +474,21 @@ export async function createXeroInvoiceForGroupSettlement(
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
         const fresh = await tx.groupBookingSettlement.findUnique({
           where: { id: settlement.id },
-          select: { groupBooking: { select: { status: true } } },
+          select: {
+            groupBooking: {
+              select: {
+                status: true,
+                organiserBookingId: true,
+                // #2258: the "No emails" switch on the ORGANISER'S booking.
+                organiserBooking: {
+                  select: {
+                    noEmails: true,
+                    member: { select: { email: true } },
+                  },
+                },
+              },
+            },
+          },
         });
         if (!fresh) {
           throw new Error(`Group settlement not found: ${settlementId}`);
@@ -479,7 +497,33 @@ export async function createXeroInvoiceForGroupSettlement(
           await enqueueXeroGroupSettlementInvoiceVoidOperation(settlement.id, {
             store: tx,
           });
-          return { cancelled: true, responseBody: null };
+          return { cancelled: true, responseBody: null, withheld: false };
+        }
+        // #2258 (owner decision D10). SEMANTICS, because a settlement invoice is
+        // not attributable to one booking: this ONE combined invoice covers the
+        // organiser plus every joiner, and it is addressed to and paid by the
+        // ORGANISER. It is therefore gated on the organiser's own booking —
+        // `groupBooking.organiserBookingId` — and on nothing else. A joiner who
+        // has "No emails" set on their child booking does NOT suppress the
+        // organiser's invoice (it is not their message, and suppressing it would
+        // stop the organiser being billed); conversely, when the organiser's
+        // booking has it set, the invoice is not emailed to anyone. The joiner's
+        // own group emails (join settled / released / cancelled) are separately
+        // gated on each joiner's child booking.
+        //
+        // The read happens inside this advisory-locked transaction, immediately
+        // before the provider call, so a switch flipped concurrently cannot
+        // interleave. If the read throws, the surrounding try/catch records an
+        // invoiceEmailError and NO email is sent — fail closed by construction.
+        // Only the EMAILING is withheld: the invoice is already raised in Xero.
+        if (fresh.groupBooking.organiserBooking.noEmails) {
+          return {
+            cancelled: false,
+            responseBody: null,
+            withheld: true,
+            organiserBookingId: fresh.groupBooking.organiserBookingId,
+            organiserEmail: fresh.groupBooking.organiserBooking.member.email,
+          };
         }
         const emailResponse = await callXeroApi(
           () =>
@@ -496,8 +540,35 @@ export async function createXeroInvoiceForGroupSettlement(
             context: `emailInvoice(group settlement ${settlementId})`,
           }
         );
-        return { cancelled: false, responseBody: emailResponse.body ?? null };
+        return {
+          cancelled: false,
+          responseBody: emailResponse.body ?? null,
+          withheld: false,
+        };
       });
+      if (emailGate.withheld) {
+        // Audit row outside the advisory-locked transaction so the lock is held
+        // for the provider fence only (the same reason the emailInvoice call is
+        // the sole non-DB work inside it).
+        await recordWithheldBookingEmail({
+          bookingId: emailGate.organiserBookingId!,
+          templateName: XERO_GROUP_SETTLEMENT_INVOICE_EMAIL_TEMPLATE,
+          subject: `Xero group settlement invoice ${
+            createdInvoice.invoiceNumber ?? createdInvoice.invoiceID ?? "(unnumbered)"
+          } for your group booking`,
+          to: emailGate.organiserEmail!,
+          detail:
+            'Withheld: the organiser's booking has the "No emails" switch turned on. The combined group settlement invoice exists in Xero but was not emailed.',
+        });
+        logger.warn(
+          {
+            settlementId,
+            invoiceId: createdInvoice.invoiceID,
+            organiserBookingId: emailGate.organiserBookingId,
+          },
+          'Skipped the Xero group settlement invoice email for an organiser booking with "No emails" turned on'
+        );
+      }
       if (emailGate.cancelled) {
         await voidCancelledGroupSettlementInvoice({
           settlementId: settlement.id,

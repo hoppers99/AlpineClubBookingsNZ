@@ -11,6 +11,13 @@ type WaitlistOfferEmailRetryState =
   | "retrying"
   | "exhausted"
   | "undeliverable"
+  // #2258: the offer email was deliberately withheld because the booking has
+  // the "No emails" switch on. Its OWN state, never folded into "missing" or
+  // "undeliverable": those two mean the member did not get a message we tried to
+  // send (an operator must act), while this one means an admin chose silence.
+  // needsOperatorAction is false for it, so the stuck-state dashboard and the
+  // booking-provider-mismatch board do not report a delivery failure.
+  | "suppressed"
   | "missing";
 
 export interface WaitlistOfferEmailDelivery {
@@ -27,6 +34,9 @@ type WaitlistOfferBooking = {
   id: string;
   status: BookingStatus;
   waitlistOfferedAt: Date | null;
+  // #2258: required, so a caller that assembles this shape by hand cannot
+  // silently report a deliberately-silenced booking as a delivery failure.
+  noEmails: boolean;
   member: {
     email: string;
   };
@@ -35,6 +45,7 @@ type WaitlistOfferBooking = {
 type WaitlistOfferEmailLog = {
   id: string;
   to: string;
+  bookingId: string | null;
   status: EmailLogStatus;
   attempts: number;
   lastAttemptAt: Date;
@@ -65,8 +76,12 @@ function chooseLatestEmailLog(
   const matching = emailLogs.filter((emailLog) =>
     emailLogMatchesBooking(emailLog, booking),
   );
-  const withBookingLink = matching.filter((emailLog) =>
-    emailLog.htmlBody?.includes(booking.id),
+  const withBookingLink = matching.filter(
+    (emailLog) =>
+      // #2258 added a real bookingId column; prefer it, and keep the historical
+      // body-scan fallback for rows written before it existed (and for withheld
+      // rows, which retain no body at all).
+      emailLog.bookingId === booking.id || emailLog.htmlBody?.includes(booking.id),
   );
   const candidates = withBookingLink.length > 0 ? withBookingLink : matching;
 
@@ -75,8 +90,25 @@ function chooseLatestEmailLog(
     .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0] ?? null;
 }
 
-function toDelivery(emailLog: WaitlistOfferEmailLog | null): WaitlistOfferEmailDelivery {
+function toDelivery(
+  emailLog: WaitlistOfferEmailLog | null,
+  booking: WaitlistOfferBooking,
+): WaitlistOfferEmailDelivery {
   if (!emailLog) {
+    // A suppressed booking never gets an offer email (processWaitlistForDates
+    // excludes it from candidacy), so an absent log here is expected rather than
+    // an operator problem. Reporting "missing" would be a false alarm.
+    if (booking.noEmails) {
+      return {
+        status: "MISSING",
+        emailLogId: null,
+        attempts: null,
+        lastAttemptAt: null,
+        errorMessage: null,
+        retryState: "suppressed",
+        needsOperatorAction: false,
+      };
+    }
     return {
       status: "MISSING",
       emailLogId: null,
@@ -85,6 +117,18 @@ function toDelivery(emailLog: WaitlistOfferEmailLog | null): WaitlistOfferEmailD
       errorMessage: null,
       retryState: "missing",
       needsOperatorAction: true,
+    };
+  }
+
+  if (emailLog.status === EmailLogStatus.SKIPPED_NO_EMAILS) {
+    return {
+      status: emailLog.status,
+      emailLogId: emailLog.id,
+      attempts: emailLog.attempts,
+      lastAttemptAt: emailLog.lastAttemptAt.toISOString(),
+      errorMessage: emailLog.errorMessage,
+      retryState: "suppressed",
+      needsOperatorAction: false,
     };
   }
 
@@ -154,7 +198,7 @@ export async function getWaitlistOfferEmailDeliveries(
 
   if (lookupBookings.length === 0) {
     for (const booking of offeredBookings) {
-      deliveries.set(booking.id, toDelivery(null));
+      deliveries.set(booking.id, toDelivery(null, booking));
     }
     return deliveries;
   }
@@ -181,6 +225,7 @@ export async function getWaitlistOfferEmailDeliveries(
     select: {
       id: true,
       to: true,
+      bookingId: true,
       status: true,
       attempts: true,
       lastAttemptAt: true,
@@ -194,8 +239,8 @@ export async function getWaitlistOfferEmailDeliveries(
     deliveries.set(
       booking.id,
       booking.waitlistOfferedAt
-        ? toDelivery(chooseLatestEmailLog(booking, emailLogs))
-        : toDelivery(null),
+        ? toDelivery(chooseLatestEmailLog(booking, emailLogs), booking)
+        : toDelivery(null, booking),
     );
   }
 

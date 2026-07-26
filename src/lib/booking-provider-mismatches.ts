@@ -143,6 +143,8 @@ export async function getBookingProviderMismatches(
         id: booking.id,
         status: booking.status,
         waitlistOfferedAt: booking.waitlistOfferedAt,
+        // #2258: a deliberately-silenced booking is not a delivery failure.
+        noEmails: booking.noEmails,
         member: { email: booking.member.email },
       },
     ]);

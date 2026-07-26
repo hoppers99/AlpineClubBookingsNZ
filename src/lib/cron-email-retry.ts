@@ -5,6 +5,7 @@ import { htmlToPlainText } from "./email-text";
 import logger from "@/lib/logger";
 import { resolveEmailDeliveryConfig } from "@/lib/email-delivery";
 import { getActiveEmailSuppression } from "@/lib/email-suppression";
+import { resolveBookingEmailGate } from "@/lib/booking-email-suppression";
 
 const MAX_ATTEMPTS = 3;
 const RETRY_FAILURE_ALERT_TEMPLATE = "admin-email-failure";
@@ -101,6 +102,58 @@ export async function retryFailedEmails(): Promise<{
       );
       // A suppressed skip is not a retry attempt.
       continue;
+    }
+
+    // #2258: this cron replays a retained body through its OWN nodemailer
+    // transport, so it never passes back through sendEmail's gate. A FAILED row
+    // can easily predate the moment an admin turned the booking's "No emails"
+    // switch on — including the fail-closed FAILED row the gate itself writes
+    // when it cannot read the switch — so re-evaluate the switch from the row's
+    // bookingId before EVERY replay, and fail closed the same way the mailer
+    // does. Rows with no bookingId (account, membership, admin mail) are
+    // untouched, and so are admin-audience templates.
+    if (emailLog.bookingId) {
+      const bookingGate = await resolveBookingEmailGate(
+        { bookingId: emailLog.bookingId },
+        emailLog.templateName,
+      );
+      if (bookingGate.decision === "unknown") {
+        // Fail closed: leave the row FAILED and untouched so a later run (with
+        // a healthy database) decides. Not a retry attempt.
+        logger.error(
+          { emailLogId: emailLog.id, bookingId: emailLog.bookingId },
+          'Skipped email retry: the booking's "No emails" switch could not be read',
+        );
+        continue;
+      }
+      if (bookingGate.decision === "withhold") {
+        await prisma.emailLog
+          .update({
+            where: { id: emailLog.id },
+            data: {
+              status: "SKIPPED_NO_EMAILS",
+              htmlBody: null,
+              errorMessage:
+                'Withheld: this booking has the "No emails" switch turned on',
+            },
+          })
+          .catch((err) => {
+            logger.error(
+              { err, emailLogId: emailLog.id },
+              "Failed to mark a retry as withheld for a no-emails booking",
+            );
+          });
+        logger.warn(
+          {
+            to: emailLog.to,
+            templateName: emailLog.templateName,
+            bookingId: emailLog.bookingId,
+          },
+          'Skipped email retry for a booking with "No emails" turned on',
+        );
+        // A withheld skip is not a retry attempt.
+        continue;
+      }
     }
 
     const newAttempts = emailLog.attempts + 1;
@@ -200,6 +253,8 @@ export async function retryFailedEmails(): Promise<{
               to: admin.email,
               subject: "Email delivery permanently failed",
               html: `<p>Email to ${emailLog.to} (template: ${emailLog.templateName}) has failed after ${newAttempts} attempts and will not be retried.</p>`,
+              // Admin failure alert: never withheld by a booking flag (#2258).
+              bookingContext: "none",
               templateName: RETRY_FAILURE_ALERT_TEMPLATE,
               templateData: {
                 originalRecipient: emailLog.to,
