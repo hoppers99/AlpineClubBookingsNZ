@@ -38,26 +38,38 @@ export interface XeroOrgShortCodeState {
  * wizard's rule that the org read only runs when there is a connection to read.
  *
  * Note that this DOES run on mount, unlike the click-only connection probe on
- * `/api/admin/xero/status?probe=1`, whose rule is specific to that probe. The
- * server-side cache is what bounds the cost here: an uncached read is the only
- * one that reaches Xero, and it happens at most once per server process per 12
- * hours (per minute while failing), not once per mount.
+ * `/api/admin/xero/status?probe=1`, whose rule is specific to that probe (an
+ * uncached live call, so it has to stay behind a button). The server-side cache
+ * is what bounds the cost here: an uncached read is the only one that reaches
+ * Xero, and it happens at most once per server process per 12 hours — or per 60
+ * seconds while the read is failing — not once per mount. That trade was made
+ * deliberately, so that the header button points at the right organisation on
+ * the admin's first click; see "Deep links into Xero" in
+ * `docs/xero/ARCHITECTURE.md`.
  */
 export function useXeroOrgShortCode(connected: boolean): XeroOrgShortCodeState {
-  // Start in the loading state when the page mounts already connected: the very
+  // Start in the loading state when the hook mounts already connected: the very
   // first paint must not claim the short code is unavailable.
   const [state, setState] = useState<XeroOrgShortCodeState>({
     shortCode: null,
     loading: connected,
   })
 
+  // The Xero Sync page mounts before its connection status has loaded, so
+  // `connected` flips false -> true one render later. Reset here, during
+  // render (React's "adjust state when a prop changes" pattern), rather than
+  // in the effect below: an effect runs after that render has been committed,
+  // so the button would show one frame of "the short code could not be read"
+  // before the read it is waiting for had even started (#2261).
+  const [connectedAtLastReset, setConnectedAtLastReset] = useState(connected)
+  if (connectedAtLastReset !== connected) {
+    setConnectedAtLastReset(connected)
+    setState({ shortCode: null, loading: connected })
+  }
+
   useEffect(() => {
-    if (!connected) {
-      setState({ shortCode: null, loading: false })
-      return
-    }
+    if (!connected) return
     let cancelled = false
-    setState((previous) => ({ shortCode: previous.shortCode, loading: true }))
     void (async () => {
       try {
         const res = await fetch("/api/admin/xero/organisation", {
