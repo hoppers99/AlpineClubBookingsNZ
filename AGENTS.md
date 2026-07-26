@@ -447,6 +447,42 @@ CI-green → evidence**.
   route-area matrices, dead-code/knip, the blue/green migration-safety ledger).
   Distinguish those real regressions from the repo's known-environmental failures
   by comparing against `main`'s own latest CI.
+- **Validation traps that have produced confident false results here.** Every one
+  of these has already cost a wave real time; treat a clean result that skipped
+  them as unverified.
+  - **Run `npm run db:generate` before you trust a typecheck.** The generated
+    Prisma client goes stale whenever the schema moves, and a stale client
+    *silently type-checks clean* while CI fails. An implementor reported
+    "typecheck exit 0" in good faith; regenerating surfaced a real blocker.
+  - **`npm test` does not typecheck, and `tsc --noEmit` without
+    `-p tsconfig.test.json` skips every test file.** Run `npm run typecheck`,
+    which covers both configs — that is what CI runs.
+  - **Known-environmental failures**, so nobody rediscovers them: `backup.test.ts`
+    (Windows path separators in `gunzip`/`aws` argument assertions),
+    `page-content-starter-backfill.test.ts` (seed-copy drift), and
+    `review-findings-contracts.test.ts` (timeouts — it shells out over the whole
+    migration tree and is load-sensitive). Prove non-involvement cheaply and
+    strongly by checking `git diff main --name-only` against those suites'
+    imports rather than by re-running on a stashed tree. **Never report the suite
+    as clean when it is not** — say what failed and why it is not yours.
+  - **Mutation-verify every new guard.** Break the thing the guard exists to
+    catch and confirm it fails. This repo has repeatedly shipped tests that
+    passed for the wrong reason — including a guard satisfied by an unrelated
+    block elsewhere in the same file, and assertions that pinned a bug as
+    expected behaviour (an ungrammatical string, and a payload leak). **When a
+    test agrees with behaviour that looks wrong, work out which of the two is
+    wrong** before changing either.
+  - **Fixes introduce new problems more often than expected.** In one wave, three
+    separate fixes each created a fresh defect — including a security regression
+    that dropped a header on error responses. The verify-fix pass above is what
+    caught every one; run it even when the fix looks obviously correct.
+- **Housekeeping that bites parallel lanes.** Every branch adds a `CHANGELOG.md`
+  entry at the top of `## Unreleased`, so concurrent lanes reliably conflict
+  there — resolve by keeping **both** entries with an ordinary merge commit, never
+  a force-push, and consider writing the changelog entry as the last commit before
+  flipping to ready. Note also that GitHub honours `Closes #NNN` **only in the PR
+  description**, not in comments, so a linked issue referenced only in a comment
+  will stay open after merge.
 - **PRs open as drafts and stay drafts** through review → fix → CI. Flip to
   ready-for-review only when the PR is fully reviewed, all confirmed findings are
   fixed, and **CI is green**. At that point post an **owner-addressed "merge
