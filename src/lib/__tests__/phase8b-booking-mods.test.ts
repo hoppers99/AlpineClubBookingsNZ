@@ -1401,15 +1401,20 @@ describe("POST /api/bookings/[id]/guests", () => {
     const body = await res.json();
 
     expect(res.status).toBe(409);
+    // #2250: the actor owns bk1 but is neither the clashing guest nor an admin,
+    // so the row names the member they tried to add and their clashing nights —
+    // and nothing at all about "other-owner"'s booking.
     expect(body).toMatchObject({
       code: "BOOKING_MEMBER_NIGHT_CONFLICT",
       conflicts: [
         expect.objectContaining({
           memberId: "guest-member-1",
-          bookingId: "existing-booking",
+          canOpenBooking: false,
         }),
       ],
     });
+    expect(body.conflicts[0].bookingId).toBeUndefined();
+    expect(JSON.stringify(body)).not.toContain("Other Owner");
     expect(tx.bookingGuest.create).not.toHaveBeenCalled();
   });
 
