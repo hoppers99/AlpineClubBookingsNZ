@@ -13,6 +13,7 @@ import {
   type BookingErrorPaymentTarget,
 } from "@/lib/booking-error-payment-targets";
 import { formatLocalDateOnly } from "@/lib/date-only";
+import { buildBookingMemberNightConflictMessage } from "@/lib/booking-member-night-conflict-messages";
 import { shouldShowInviteFamilyGroupMembersLink } from "@/lib/family-booking";
 import { hasAccessRole, hasAdminAccess } from "@/lib/access-roles";
 import { isPaymentOwedBookingStatus } from "@/lib/booking-status";
@@ -52,6 +53,9 @@ interface BookingMemberNightConflict {
   bookingCheckOut: string;
   guestId: string;
   conflictingNights: string[];
+  // #2250: the conflict card's copy picks its next step from these
+  // server-computed, viewer-aware flags rather than guessing in the browser.
+  isOwnBooking: boolean;
   canOpenBooking: boolean;
   canSelfRemove: boolean;
 }
@@ -577,8 +581,7 @@ export function useBookingWizard() {
     conflicts?: BookingMemberNightConflict[];
   }) {
     setError(
-      data.error ||
-        "One or more members are already on a booking for these nights."
+      data.error || buildBookingMemberNightConflictMessage(data.conflicts ?? [])
     );
     setMemberNightConflicts(data.conflicts || []);
     setGuestProfileBlocks([]);
@@ -607,17 +610,6 @@ export function useBookingWizard() {
     setErrorPaymentTargets(getBookingErrorPaymentTargets(data));
   }
 
-  function formatConflictNights(nights: string[]) {
-    if (nights.length === 0) return "the selected nights";
-    if (nights.length === 1) return nights[0];
-    if (nights.length === 2) return nights.join(" and ");
-    return `${nights.length} nights`;
-  }
-
-  function formatConflictStatus(status: string) {
-    return status.toLowerCase().split("_").join(" ");
-  }
-
   async function handleRemoveConflictGuest(conflict: BookingMemberNightConflict) {
     setRemovingConflictGuestId(conflict.guestId);
     try {
@@ -643,7 +635,7 @@ export function useBookingWizard() {
       setMemberNightConflicts(nextConflicts);
       setError(
         nextConflicts.length > 0
-          ? "One or more members are already on a booking for these nights."
+          ? buildBookingMemberNightConflictMessage(nextConflicts)
           : "",
       );
 
@@ -1256,8 +1248,6 @@ export function useBookingWizard() {
     handleSaveAsDraft,
     getGuestProfileBlockMessage,
     getGuestProfileActionLabel,
-    formatConflictNights,
-    formatConflictStatus,
     nights,
     availableCreditCents,
     appliedCreditCents,

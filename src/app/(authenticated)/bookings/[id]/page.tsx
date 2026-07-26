@@ -72,6 +72,11 @@ import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import { resolveInternalReturnPath } from "@/lib/internal-return-path";
 import { OPENABLE_ORGANISER_STATUSES } from "@/lib/group-booking";
 import { hasAdminAccess } from "@/lib/access-roles";
+import { SelfRemoveFromBookingCard } from "@/components/self-remove-from-booking-card";
+import {
+  describeGuestSelfRemovalBlocker,
+  evaluateGuestSelfRemoval,
+} from "@/lib/booking-guest-self-removal";
 import {
   bookingManagementAuthorizationRole,
   hasAdminAreaAccess,
@@ -316,6 +321,27 @@ export default async function BookingDetailPage({
   // admin) must not be addressed with owner second-person copy ("your place /
   // your stay") — issue #1289. Linked guests keep the member framing.
   const nonOwnerAdminViewer = !isBookingOwner && canViewAsAdmin;
+  // Issue #2250: a member put on somebody else's booking must be able to take
+  // themselves off it from the booking itself, not only from the wizard's
+  // night-conflict card while attempting a clashing booking of their own.
+  // Eligibility is the shared server-side rule (evaluateGuestSelfRemoval), the
+  // same one that produces `canSelfRemove` on a night conflict and whose status
+  // gate the removal service enforces — never re-derived in the browser.
+  const viewerGuest =
+    isLinkedGuestViewer && !booking.deletedAt
+      ? (booking.guests.find((guest) => guest.memberId === session.user.id) ??
+        null)
+      : null;
+  const viewerSelfRemoval = viewerGuest
+    ? evaluateGuestSelfRemoval({
+        actorMemberId: session.user.id,
+        guestMemberId: viewerGuest.memberId,
+        bookingOwnerMemberId: booking.memberId,
+        bookingStatus: booking.status,
+        bookingCheckIn: booking.checkIn,
+        bookingGuestCount: booking.guests.length,
+      })
+    : null;
 
   const bookingAuditLogs = await prisma.auditLog.findMany({
     where: {
@@ -1072,6 +1098,26 @@ export default async function BookingDetailPage({
           canAdminOverride={canAdminOverride}
         />
       </section>
+
+      {/* #2250: the member's own way off somebody else's booking. Only ever
+          rendered for a linked guest viewer (never the owner, never an admin —
+          they change the guest list through the booking edit flow above), and
+          the action itself is hidden, with the reason stated, whenever the
+          shared server-side rule says the removal service would refuse. No
+          BOOKING_SECTIONS anchor: this is a short action card, not a section. */}
+      {viewerGuest && viewerSelfRemoval ? (
+        <SelfRemoveFromBookingCard
+          bookingId={booking.id}
+          guestId={viewerGuest.id}
+          ownerFirstName={booking.member.firstName}
+          canSelfRemove={viewerSelfRemoval.canSelfRemove}
+          blockedReason={
+            viewerSelfRemoval.blocker
+              ? describeGuestSelfRemovalBlocker(viewerSelfRemoval.blocker)
+              : null
+          }
+        />
+      ) : null}
 
       {/* #1975: "Your non-member guests" — the parent card surfaces each genuine
           split child inline (status, differing dates, amount, link), so the
