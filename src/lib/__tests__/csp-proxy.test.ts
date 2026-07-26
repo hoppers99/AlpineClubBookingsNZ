@@ -94,6 +94,51 @@ describe("CSP policy", () => {
     expect(directive(previewHostPolicy, "frame-src")).toContain("'self'");
   });
 
+  // Issue #2246: the Visual builder frames /display for its Live preview, so it
+  // needs frame-src 'self' too — but it is a full admin page, not a sandboxed
+  // display document, so it must NOT inherit the #161 tightened img-src.
+  it("grants frame-src 'self' to the builder while keeping its normal img-src", () => {
+    const builderPolicy = buildContentSecurityPolicy("unit-test-nonce", {
+      pathname: "/admin/display/builder",
+    });
+
+    expect(directive(builderPolicy, "frame-src")).toContain("'self'");
+    // The admin chrome around the builder still loads blob: (member-photo crop,
+    // epic #171) and https: imagery.
+    expect(directive(builderPolicy, "img-src")).toBe(
+      "img-src 'self' data: blob: https: https://www.google-analytics.com https://*.google-analytics.com",
+    );
+    // Only /display itself may be framed by others.
+    expect(directive(builderPolicy, "frame-ancestors")).toBe(
+      "frame-ancestors 'none'",
+    );
+  });
+
+  // The allowlists are exact-match, never prefixes: a prefix match would hand
+  // frame-src 'self' to every current and future /admin/display/* page.
+  it("does not grant frame-src 'self' to unlisted /admin/display/* paths", () => {
+    for (const pathname of [
+      "/admin/display/templates",
+      "/admin/display/devices",
+      "/admin/display/builder/extra",
+      "/admin/display/previews",
+      "/admin/display",
+    ]) {
+      const policy = buildContentSecurityPolicy("unit-test-nonce", { pathname });
+
+      expect(
+        directive(policy, "frame-src"),
+        `${pathname} must not gain frame-src 'self'`,
+      ).toBe("frame-src https://js.stripe.com https://hooks.stripe.com");
+      expect(
+        directive(policy, "img-src"),
+        `${pathname} must keep the normal img-src`,
+      ).toBe(
+        "img-src 'self' data: blob: https: https://www.google-analytics.com https://*.google-analytics.com",
+      );
+    }
+  });
+
   it("leaves every non-display route's CSP byte-identical to the pre-#161 policy", () => {
     // A pinned expected policy string — any accidental change to a non-display
     // route's CSP (not just img-src) fails this test, not just a directive-by-
@@ -208,6 +253,24 @@ describe("CSP proxy", () => {
     ).toBe(
       "img-src 'self' data: blob: https: https://www.google-analytics.com https://*.google-analytics.com",
     );
+  });
+
+  it("serves frame-src 'self' on a real builder request and not on its siblings (issue #2246)", async () => {
+    const builderResponse = await proxy(
+      new NextRequest("https://example.org/admin/display/builder?templateId=tpl-1"),
+    );
+    const templatesResponse = await proxy(
+      new NextRequest("https://example.org/admin/display/templates"),
+    );
+
+    // The Live preview iframe is only reachable if the builder's own policy
+    // allows framing same-origin content.
+    expect(
+      directive(builderResponse.headers.get(CSP_HEADER) as string, "frame-src"),
+    ).toContain("'self'");
+    expect(
+      directive(templatesResponse.headers.get(CSP_HEADER) as string, "frame-src"),
+    ).not.toContain("'self'");
   });
 
   it("exposes the requested path to server components via a request header", async () => {
