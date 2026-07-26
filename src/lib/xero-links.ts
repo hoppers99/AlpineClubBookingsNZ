@@ -56,8 +56,8 @@ export function buildXeroReportsUrl(options?: XeroUrlOptions): string {
 }
 
 /**
- * The connected organisation's Xero dashboard — the target of the "Go to Xero"
- * buttons on the admin Xero Sync page and its Health Snapshot (#2261).
+ * The connected organisation's Xero dashboard — the target of the single
+ * "Go to Xero" button in the admin Xero Sync page's header (#2261).
  *
  * With the organisation SHORT CODE the link routes through Xero's
  * organisation-login redirect, which switches the signed-in Xero session to

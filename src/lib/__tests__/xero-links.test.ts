@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { buildXeroDashboardUrl, buildXeroReportsUrl } from "@/lib/xero-links";
 
-// #2261: the "Go to Xero" buttons on the Xero Sync page and its Health
-// Snapshot. Both forms must be live URLs — the short code only makes the link
-// land in the RIGHT organisation, its absence must never produce a dead link.
+// #2261: the "Go to Xero" button in the Xero Sync page header. Both forms must
+// be live URLs — the short code only makes the link land in the RIGHT
+// organisation, its absence must never produce a dead link.
 describe("buildXeroDashboardUrl", () => {
   it("links to the session-scoped Xero dashboard without a short code", () => {
     expect(buildXeroDashboardUrl()).toBe("https://go.xero.com/Dashboard/");

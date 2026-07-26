@@ -46,6 +46,21 @@ export interface XeroOrgShortCodeState {
  * deliberately, so that the header button points at the right organisation on
  * the admin's first click; see "Deep links into Xero" in
  * `docs/xero/ARCHITECTURE.md`.
+ *
+ * KNOWN RESIDUAL — the server's reconnect guard bounds the CACHE, not a value
+ * already handed out. `xero-organisation.ts` refuses to let a read that started
+ * before a connect/disconnect write itself into the freshly cleared cache, but
+ * that read is still RESOLVED to the callers already waiting on it, so a request
+ * that joined it moments before a reconnect receives the previous
+ * organisation's short code. This hook fetches once per mount, so such a value
+ * sticks for the lifetime of that mount: a second admin tab left open across a
+ * reconnect can keep deep-linking to the OLD organisation until it is
+ * reloaded. Exposure is small in practice — the OAuth round-trip redirects back
+ * to `/admin/xero`, which remounts this hook and re-reads — and the link is a
+ * navigation aid, never an identifier anything is written against. Closing the
+ * gap would need cross-tab invalidation (polling or a broadcast channel), which
+ * is not worth its machinery here; just do not read the server-side guard as
+ * total.
  */
 export function useXeroOrgShortCode(connected: boolean): XeroOrgShortCodeState {
   // Start in the loading state when the hook mounts already connected: the very

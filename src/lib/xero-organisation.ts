@@ -75,11 +75,14 @@ export async function getXeroFinancialYearEndMonth(
 // #2261 adds the org SHORT CODE to the same summary — the only identifier the
 // Xero web app accepts in a deep link (the tenant GUID we store is not usable
 // in a Xero URL). It rides along on the getOrganisations response this summary
-// already fetches, so the "Go to Xero" buttons cost no extra Xero call: one
-// live read per server process per TTL backs every consumer of this summary
-// (the setup wizard's org confirmation, the Xero Sync page's deep links, and
-// the subscription-lockout settings panel, which all read
-// `/api/admin/xero/organisation`).
+// already fetches, so widening the summary with it costs no extra Xero call —
+// but the Xero Sync page is a NEW caller of the summary, so its "Go to Xero"
+// button does cost one live read per server process per TTL (the first load
+// after a restart, after the TTL expires, or after a connect/disconnect; every
+// load after that costs none). That one read backs every consumer of this
+// summary: the setup wizard's org confirmation, the Xero Sync page's deep link,
+// and the subscription-lockout settings panel, which all read
+// `/api/admin/xero/organisation`.
 //
 // #2261 review (F1/F2) hardened the "one read per TTL" claim for the case that
 // actually matters — a connection that is PRESENT but FAILING (revoked refresh
