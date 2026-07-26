@@ -24,11 +24,19 @@ const LABELS: Record<XeroLinkState, string> = {
   disconnected: "Log in to Xero",
 }
 
-function describe(state: XeroLinkState, shortCode: string | null): string {
+function describeLink(
+  state: XeroLinkState,
+  shortCode: string | null,
+  shortCodeLoading: boolean,
+): string {
   if (state === "connected") {
-    return shortCode
-      ? "Opens this club's Xero organisation in a new tab."
-      : "Opens Xero in a new tab. The club organisation's short code could not be read, so Xero lands you in whichever organisation you last used."
+    if (shortCode) return "Opens this club's Xero organisation in a new tab."
+    // Not yet known is not the same as unavailable. On a cold server-side org
+    // cache the read is a live Xero call, so this window is not instant —
+    // claiming the short code "could not be read" while it is still being read
+    // would be a falsehood shown at exactly the wrong moment (#2261 review).
+    if (shortCodeLoading) return "Opens Xero in a new tab."
+    return "Opens Xero in a new tab. The club organisation's short code could not be read, so Xero lands you in whichever organisation you last used."
   }
   if (state === "needsReentry") {
     return "Opens Xero in a new tab. This only signs you in to Xero — reconnect Xero here to restore syncing."
@@ -52,19 +60,20 @@ function describe(state: XeroLinkState, shortCode: string | null): string {
 export function GoToXeroButton({
   state,
   shortCode,
-  className,
+  shortCodeLoading = false,
 }: {
   state: XeroLinkState
   shortCode: string | null
-  className?: string
+  /** True while the short code is still being read (see `useXeroOrgShortCode`). */
+  shortCodeLoading?: boolean
 }) {
   return (
-    <Button asChild variant="outline" size="sm" className={className}>
+    <Button asChild variant="outline" size="sm">
       <a
         href={buildXeroDashboardUrl({ shortCode })}
         target="_blank"
         rel="noopener noreferrer"
-        title={describe(state, shortCode)}
+        title={describeLink(state, shortCode, shortCodeLoading)}
       >
         <ExternalLink aria-hidden />
         {LABELS[state]}

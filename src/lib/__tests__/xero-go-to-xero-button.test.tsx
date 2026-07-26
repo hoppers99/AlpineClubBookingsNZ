@@ -36,6 +36,33 @@ describe("GoToXeroButton", () => {
     expect(link().getAttribute("title")).toMatch(/short code could not be read/i);
   });
 
+  // #2261 review: while the short code is still being read the link is already
+  // the generic one, but the explanation must not blame a read that has not
+  // failed — the admin would be told the org could not be identified at the one
+  // moment that is not yet true.
+  it("stays neutral while the short code is still loading", () => {
+    render(
+      <GoToXeroButton state="connected" shortCode={null} shortCodeLoading />,
+    );
+
+    expect(link().getAttribute("href")).toBe("https://go.xero.com/Dashboard/");
+    expect(link().textContent).toContain("Go to Xero");
+    expect(link().getAttribute("title")).toBe("Opens Xero in a new tab.");
+    expect(link().getAttribute("title")).not.toMatch(/could not be read/i);
+  });
+
+  it("still explains a genuinely failed read once loading settles", () => {
+    render(
+      <GoToXeroButton
+        state="connected"
+        shortCode={null}
+        shortCodeLoading={false}
+      />,
+    );
+
+    expect(link().getAttribute("title")).toMatch(/short code could not be read/i);
+  });
+
   it("offers a plain Xero sign-in when Xero is disconnected", () => {
     render(<GoToXeroButton state="disconnected" shortCode={null} />);
 

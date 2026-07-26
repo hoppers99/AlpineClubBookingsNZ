@@ -50,9 +50,11 @@ export default function XeroPage() {
 
   const connected = status?.connected === true
   // Org short code for the "Go to Xero" deep links. Only read once connected,
-  // and served from the server-side 12h org cache, so it adds no live Xero call
-  // to a normal page load (#2261).
-  const orgShortCode = useXeroOrgShortCode(connected)
+  // and served from the server-side org cache, so a cold cache costs at most
+  // one live getOrganisations call per server process per 12 hours (a minute
+  // while that read is failing) and every later page load costs none (#2261).
+  const { shortCode: orgShortCode, loading: orgShortCodeLoading } =
+    useXeroOrgShortCode(connected)
   const refreshDiagnostics = () => setDiagnosticsRefreshToken((value) => value + 1)
   const refreshOperations = () => setOperationsRefreshToken((value) => value + 1)
   const publishMessage = (message: string) => {
@@ -80,7 +82,11 @@ export default function XeroPage() {
     <div className="max-w-6xl p-6">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-bold">Xero Sync</h1>
-        <GoToXeroButton state={xeroLinkState(status)} shortCode={orgShortCode} />
+        <GoToXeroButton
+          state={xeroLinkState(status)}
+          shortCode={orgShortCode}
+          shortCodeLoading={orgShortCodeLoading}
+        />
       </div>
       <p className="mb-2 text-muted-foreground">
         Monitor the Xero connection, run contact and membership syncs, and review operations and usage.
@@ -110,6 +116,7 @@ export default function XeroPage() {
             connected={connected}
             currentXeroPath={currentXeroPath}
             orgShortCode={orgShortCode}
+            orgShortCodeLoading={orgShortCodeLoading}
             healthOpen={sectionOpen.health}
             contactGroupMismatchesOpen={sectionOpen.contactGroupMismatches}
             contactLinkMismatchesOpen={sectionOpen.contactLinkMismatches}

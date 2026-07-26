@@ -34,6 +34,8 @@ type Props = {
    * the generic go.xero.com URL rather than disappearing.
    */
   orgShortCode: string | null
+  /** True while that short code is still being read — see `useXeroOrgShortCode`. */
+  orgShortCodeLoading?: boolean
   healthOpen: boolean
   contactGroupMismatchesOpen: boolean
   contactLinkMismatchesOpen: boolean
@@ -48,6 +50,7 @@ export function HealthAndDiagnosticsPanels({
   connected,
   currentXeroPath,
   orgShortCode,
+  orgShortCodeLoading = false,
   healthOpen,
   contactGroupMismatchesOpen,
   contactLinkMismatchesOpen,
@@ -230,9 +233,11 @@ export function HealthAndDiagnosticsPanels({
         onToggle={(nextOpen) => onToggle("health", nextOpen)}
         actions={
           <>
-            {/* This section is only rendered while Xero is connected, so the
-                link can always promise the connected organisation (#2261). */}
-            <GoToXeroButton state="connected" shortCode={orgShortCode} />
+            <GoToXeroButton
+              state={connected ? "connected" : "disconnected"}
+              shortCode={orgShortCode}
+              shortCodeLoading={orgShortCodeLoading}
+            />
             <Button variant="outline" size="sm" onClick={() => void fetchHealth()} disabled={loadingHealth}>
               {loadingHealth ? "Refreshing..." : "Refresh Health"}
             </Button>
