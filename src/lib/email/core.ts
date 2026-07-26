@@ -13,6 +13,10 @@ import {
   getActiveEmailSuppression,
   normalizeEmailAddress,
 } from "@/lib/email-suppression";
+import {
+  resolveBookingEmailGate,
+  type EmailBookingContext,
+} from "@/lib/booking-email-suppression";
 import { isPlaceholderContactEmail } from "@/lib/placeholder-contact-email";
 import {
   getEmailTransporter,
@@ -38,6 +42,21 @@ export type EmailSendOutcome =
       status: "skipped_placeholder_recipient";
       emailLogId: null;
       reason: string;
+    }
+  // #2258 (owner decision D10): the booking this message belongs to carries the
+  // per-booking "No emails" switch, so nothing was transmitted. `reason`
+  // separates the deliberate case from the fail-closed one:
+  //   booking_no_emails      — the switch is on (EmailLog SKIPPED_NO_EMAILS)
+  //   booking_flag_unreadable — the switch could not be read, so the gate
+  //                             withheld the send anyway (EmailLog FAILED, so
+  //                             the retry cron re-evaluates it later)
+  // Callers are NOT expected to act on this: almost every booking send is an
+  // un-awaited `.catch(log)`, so the mailer records the outcome itself.
+  | {
+      status: "withheld_for_booking";
+      emailLogId: string | null;
+      bookingId: string;
+      reason: "booking_no_emails" | "booking_flag_unreadable";
     };
 
 function assertNoCrlf(value: string, field: string) {
@@ -66,6 +85,7 @@ export async function sendEmail({
   attachments,
   logRecipient,
   lodgeId,
+  bookingContext,
 }: {
   to: string;
   subject: string;
@@ -78,6 +98,12 @@ export async function sendEmail({
   // Lodge whose identity this message carries (multi-lodge phase 8);
   // omitted/null resolves the club's default lodge identity.
   lodgeId?: string | null;
+  // Which booking this message belongs to (#2258). REQUIRED and a discriminated
+  // union on purpose: every new send site is a compile error until its author
+  // states either the real booking id or the explicit `"none"`. A booking-scoped
+  // message that passes `"none"` escapes the per-booking "No emails" switch, so
+  // thread the real id wherever one exists.
+  bookingContext: EmailBookingContext;
 }): Promise<EmailSendOutcome> {
   const prepared = await prepareEmailMessage({
     templateName,
@@ -132,11 +158,72 @@ export async function sendEmail({
         htmlBody: persistHtmlBody ? prepared.html : null,
         status: "QUEUED",
         lastAttemptAt: new Date(),
+        // #2258: booking attribution on every booking-scoped message, not just
+        // withheld ones — the retry cron re-evaluates the switch from this
+        // column before it replays a FAILED row.
+        bookingId: bookingContext === "none" ? null : bookingContext.bookingId,
       },
     });
     emailLogId = log.id;
   } catch (err) {
     logger.error({ err }, "Failed to create EmailLog record");
+  }
+
+  // ---------------------------------------------------------------------
+  // Per-booking "No emails" switch (#2258, owner decision D10).
+  //
+  // Runs BEFORE the SES bounce check and before the dev-mode short-circuit, so
+  // no code path below can transmit. Note the deliberate asymmetry with the
+  // bounce check further down: THAT one fails open (`.catch(... return null)`)
+  // because an unreachable suppression table must not stop the club's mail.
+  // This one fails CLOSED — see booking-email-suppression.ts.
+  // ---------------------------------------------------------------------
+  const bookingGate = await resolveBookingEmailGate(bookingContext, templateName);
+  if (bookingGate.decision !== "send") {
+    const withheld = bookingGate.decision === "withhold";
+    const errorMessage = withheld
+      ? 'Withheld: this booking has the "No emails" switch turned on'
+      : 'Withheld: the booking\'s "No emails" switch could not be read, so the send failed closed';
+    if (emailLogId) {
+      try {
+        await prisma.emailLog.update({
+          where: { id: emailLogId },
+          data: {
+            // A deliberate withhold is terminal and must never be replayed, so
+            // it gets its own status and its body is dropped. An unreadable
+            // switch is a transient fault: FAILED lets the retry cron pick the
+            // row up again, and that cron re-checks the switch before replaying.
+            status: withheld ? "SKIPPED_NO_EMAILS" : "FAILED",
+            ...(withheld ? { htmlBody: null } : {}),
+            errorMessage,
+          },
+        });
+      } catch (err) {
+        logger.error(
+          { err, to: emailLogRecipient, templateName },
+          "Failed to update EmailLog for a withheld booking email",
+        );
+      }
+    }
+
+    logger.warn(
+      {
+        to: emailLogRecipient,
+        templateName,
+        bookingId: bookingGate.bookingId,
+        failClosed: !withheld,
+      },
+      withheld
+        ? 'Withheld email for a booking with "No emails" turned on'
+        : 'Withheld email: the booking\'s "No emails" switch could not be read',
+    );
+
+    return {
+      status: "withheld_for_booking",
+      emailLogId,
+      bookingId: bookingGate.bookingId,
+      reason: withheld ? "booking_no_emails" : "booking_flag_unreadable",
+    };
   }
 
   const activeSuppression = await getActiveEmailSuppression(
