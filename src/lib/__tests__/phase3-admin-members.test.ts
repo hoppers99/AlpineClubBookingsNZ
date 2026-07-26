@@ -992,10 +992,67 @@ describe("Phase 3: Admin Member Management", () => {
           explanation: "is archived",
         },
       ]);
+      // Members DID match the text search, so the dialog must not claim
+      // otherwise.
+      expect(body).not.toHaveProperty("dependentLinkSearchMatchedNobody");
       // The diagnostic query re-uses the text search but drops the eligibility
       // filter, so it can see the members the candidate query excluded.
       const diagnosticCall = vi.mocked(prisma.member.findMany).mock.calls[1][0]!;
       expect(diagnosticCall.where).not.toHaveProperty("AND");
+    });
+
+    it("says nobody matched only when the text search really matched nobody", async () => {
+      mockedAuth.mockResolvedValue(adminSession);
+      vi.mocked(prisma.member.findMany)
+        .mockResolvedValueOnce([])
+        // The diagnostic finds nothing either: the name simply is not in the
+        // database.
+        .mockResolvedValueOnce([]);
+      mockSessionAndMemberListCounts(0);
+
+      const res = await getMembers(
+        new NextRequest(
+          "http://localhost/api/admin/members?q=nobody&dependentLinkEligibleFor=parent-1",
+        ),
+      );
+      const body = await res.json();
+
+      expect(body.dependentLinkSearchMatchedNobody).toBe(true);
+      expect(body).not.toHaveProperty("dependentLinkIneligible");
+    });
+
+    it("omits the ineligible list rather than sending an empty one", async () => {
+      mockedAuth.mockResolvedValue(adminSession);
+      vi.mocked(prisma.member.findMany)
+        .mockResolvedValueOnce([])
+        // A text match with no blockers at all. Unreachable today — the two
+        // queries differ only by the eligibility filter — but if that ever
+        // stopped holding, an empty array would read to the dialog as "nobody
+        // matched your search", which is exactly wrong.
+        .mockResolvedValueOnce([
+          {
+            id: "m-eligible",
+            firstName: "Ada",
+            lastName: "Smith",
+            email: "ada@example.com",
+            archivedAt: null,
+            parentMemberId: null,
+            secondaryParentId: null,
+            dependents: [],
+            secondaryDependents: [],
+          },
+        ] as any);
+      mockSessionAndMemberListCounts(0);
+
+      const res = await getMembers(
+        new NextRequest(
+          "http://localhost/api/admin/members?q=smith&dependentLinkEligibleFor=parent-1",
+        ),
+      );
+      const body = await res.json();
+
+      expect(body).not.toHaveProperty("dependentLinkIneligible");
+      expect(body).not.toHaveProperty("dependentLinkSearchMatchedNobody");
     });
 
     it("stays silent when the search found eligible candidates", async () => {

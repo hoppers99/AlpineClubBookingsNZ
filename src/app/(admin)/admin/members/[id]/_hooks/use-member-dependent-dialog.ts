@@ -77,6 +77,11 @@ export function useMemberDependentDialog({
     linkDependentIneligibleMatches,
     setLinkDependentIneligibleMatches,
   ] = useState<LinkDependentIneligibleMatch[]>([]);
+  // #2254: set only when the server tells us the text search matched no member
+  // at all. The rendered results list is NOT that signal — it is filtered
+  // client-side — so the empty state must not infer "nobody matched" from it.
+  const [linkDependentMatchedNobody, setLinkDependentMatchedNobody] =
+    useState(false);
   const [selectedLinkDependent, setSelectedLinkDependent] =
     useState<LinkDependentSearchResult | null>(null);
   const [linkDependentInheritEmail, setLinkDependentInheritEmail] =
@@ -94,6 +99,7 @@ export function useMemberDependentDialog({
     if (!dependentOpen || dependentMode !== "link" || !memberId) {
       setLinkDependentSearchResults([]);
       setLinkDependentIneligibleMatches([]);
+      setLinkDependentMatchedNobody(false);
       setLinkDependentSearching(false);
       return;
     }
@@ -102,6 +108,7 @@ export function useMemberDependentDialog({
     if (query.length < 2) {
       setLinkDependentSearchResults([]);
       setLinkDependentIneligibleMatches([]);
+      setLinkDependentMatchedNobody(false);
       setLinkDependentSearching(false);
       return;
     }
@@ -128,6 +135,9 @@ export function useMemberDependentDialog({
             (data.dependentLinkIneligible ??
               []) as LinkDependentIneligibleMatch[],
           );
+          setLinkDependentMatchedNobody(
+            data.dependentLinkSearchMatchedNobody === true,
+          );
           setLinkDependentSearchResults(
             (data.members ?? [])
               .map((candidate: LinkDependentSearchResult) => ({
@@ -151,6 +161,7 @@ export function useMemberDependentDialog({
         if (!cancelled) {
           setLinkDependentSearchResults([]);
           setLinkDependentIneligibleMatches([]);
+          setLinkDependentMatchedNobody(false);
           setDependentFormError(
             error instanceof Error ? error.message : "Failed to search members",
           );
@@ -224,6 +235,7 @@ export function useMemberDependentDialog({
     setLinkDependentSearch("");
     setLinkDependentSearchResults([]);
     setLinkDependentIneligibleMatches([]);
+    setLinkDependentMatchedNobody(false);
     setLinkDependentSearching(false);
     setSelectedLinkDependent(null);
     setLinkDependentInheritEmail(false);
@@ -318,6 +330,7 @@ export function useMemberDependentDialog({
     setLinkDependentSearch("");
     setLinkDependentSearchResults([]);
     setLinkDependentIneligibleMatches([]);
+    setLinkDependentMatchedNobody(false);
     setDependentFormError("");
   };
 
@@ -332,6 +345,7 @@ export function useMemberDependentDialog({
     setLinkDependentSearch("");
     setLinkDependentSearchResults([]);
     setLinkDependentIneligibleMatches([]);
+    setLinkDependentMatchedNobody(false);
     setDependentFormError("");
   };
 
@@ -406,6 +420,7 @@ export function useMemberDependentDialog({
     linkDependentSearch,
     linkDependentSearchResults,
     linkDependentIneligibleMatches,
+    linkDependentMatchedNobody,
     linkDependentSearching,
     selectedLinkDependent,
     linkDependentNotificationParentId,

@@ -65,6 +65,13 @@ interface MemberDependentDialogProps {
    * (#2254). Only populated when the eligible list is empty.
    */
   linkIneligibleMatches: LinkDependentIneligibleMatch[];
+  /**
+   * #2254: the server's own "the text search matched no member at all" signal.
+   * The rendered results list cannot stand in for it — it is filtered
+   * client-side — so the empty state only claims nobody matched when this says
+   * so.
+   */
+  linkSearchMatchedNobody: boolean;
   linkSelected: LinkDependentSearchResult | null;
   linkNotificationParentId: string;
   linkDisableLogin: boolean;
@@ -96,6 +103,7 @@ export function MemberDependentDialog({
   linkSearching,
   linkSearchResults,
   linkIneligibleMatches,
+  linkSearchMatchedNobody,
   linkSelected,
   linkNotificationParentId,
   linkDisableLogin,
@@ -408,7 +416,9 @@ export function MemberDependentDialog({
                   <p className="text-sm text-muted-foreground">
                     {linkIneligibleMatches.length > 0
                       ? "No eligible members found. These members matched your search but cannot be linked:"
-                      : "No members matched your search."}
+                      : linkSearchMatchedNobody
+                        ? "No members matched your search."
+                        : "No eligible members found."}
                   </p>
                   {linkIneligibleMatches.length > 0 && (
                     <ul className="space-y-1 rounded-md border border-border p-3">

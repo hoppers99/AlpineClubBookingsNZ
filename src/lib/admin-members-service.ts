@@ -798,38 +798,48 @@ export async function listAdminMembers(
   // archived exclusion) lifted, and label each match with the first reason it
   // was excluded. Bounded to a handful of rows, and only ever runs on the
   // otherwise-empty result, so the normal search still costs two queries.
-  const dependentLinkIneligible: DependentLinkIneligibleMatch[] | undefined =
-    dependentLinkEligibleFor && textSearchCondition && total === 0
-      ? (
-          await prisma.member.findMany({
-            where: textSearchCondition,
-            orderBy,
-            take: DEPENDENT_LINK_INELIGIBLE_EXPLANATION_LIMIT,
-            select: {
-              ...DEPENDENT_LINK_CANDIDATE_SELECT,
-              firstName: true,
-              lastName: true,
-              email: true,
-            },
-          })
-        ).flatMap((candidate) => {
-          const [reason] = dependentLinkBlockers(
-            dependentLinkEligibleFor,
-            candidate,
-          );
-          if (!reason) return [];
-          return [
-            {
-              id: candidate.id,
-              firstName: candidate.firstName,
-              lastName: candidate.lastName,
-              email: candidate.email,
-              reason,
-              explanation: DEPENDENT_LINK_INELIGIBILITY_EXPLANATIONS[reason],
-            },
-          ];
-        })
-      : undefined;
+  let dependentLinkIneligible: DependentLinkIneligibleMatch[] | undefined;
+  // Distinct from "the list is empty": the dialog may only say "No members
+  // matched your search" when the text search really did match nobody. Sent
+  // only when that is what happened.
+  let dependentLinkSearchMatchedNobody: true | undefined;
+
+  if (dependentLinkEligibleFor && textSearchCondition && total === 0) {
+    const textMatches = await prisma.member.findMany({
+      where: textSearchCondition,
+      orderBy,
+      take: DEPENDENT_LINK_INELIGIBLE_EXPLANATION_LIMIT,
+      select: {
+        ...DEPENDENT_LINK_CANDIDATE_SELECT,
+        firstName: true,
+        lastName: true,
+        email: true,
+      },
+    });
+
+    const explained = textMatches.flatMap((candidate) => {
+      const [reason] = dependentLinkBlockers(dependentLinkEligibleFor, candidate);
+      if (!reason) return [];
+      return [
+        {
+          id: candidate.id,
+          firstName: candidate.firstName,
+          lastName: candidate.lastName,
+          email: candidate.email,
+          reason,
+          explanation: DEPENDENT_LINK_INELIGIBILITY_EXPLANATIONS[reason],
+        },
+      ];
+    });
+
+    // Never an empty array. `where` here is the text search alone; if a future
+    // filter or a second caller ever made the two queries disagree, a match
+    // could clear every blocker and be dropped by the flatMap, leaving a
+    // present-but-empty key the dialog would read as "nobody matched".
+    dependentLinkIneligible = explained.length > 0 ? explained : undefined;
+    dependentLinkSearchMatchedNobody =
+      textMatches.length === 0 ? true : undefined;
+  }
 
   let xeroContactGroups: Record<
     string,
@@ -942,6 +952,9 @@ export async function listAdminMembers(
     // Only present for a dependant-link search that came back empty; omitted
     // from every other members-list response.
     ...(dependentLinkIneligible ? { dependentLinkIneligible } : {}),
+    ...(dependentLinkSearchMatchedNobody
+      ? { dependentLinkSearchMatchedNobody }
+      : {}),
   });
 }
 
