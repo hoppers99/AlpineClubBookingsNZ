@@ -28,6 +28,13 @@ import { getXeroApiErrorInfo } from "@/lib/xero-api-errors";
 import { copyStreetAddressToPostal } from "@/lib/member-address";
 import { validateInheritEmailSource } from "@/lib/member-email-inheritance";
 import { buildParentLinks } from "@/lib/member-parent-links";
+import {
+  DEPENDENT_LINK_CANDIDATE_SELECT,
+  DEPENDENT_LINK_INELIGIBILITY_EXPLANATIONS,
+  dependentLinkBlockers,
+  dependentLinkCandidateWhere,
+  type DependentLinkIneligibleMatch,
+} from "@/lib/dependent-link-eligibility";
 import { isXeroLiveMemberGroupLookupsEnabled } from "@/lib/xero-feature-flags";
 import { getMemberSetupInviteExpiryDate } from "@/lib/member-setup-invite";
 import { ensureDefaultSeasonSubscriptionForNewMember } from "@/lib/member-subscription-defaults";
@@ -158,6 +165,13 @@ const SUBSCRIPTION_STATUS_FILTERS = [
   "OVERDUE",
   "NOT_INVOICED",
 ] as const;
+/**
+ * How many excluded matches the dependant-link search explains when it finds no
+ * eligible candidate (#2254). Enough to name the person the admin was looking
+ * for, small enough that the extra query stays trivial.
+ */
+const DEPENDENT_LINK_INELIGIBLE_EXPLANATION_LIMIT = 5;
+
 const MEMBER_LIFECYCLE_STATUS_FILTERS = [
   "active",
   "inactive",
@@ -352,30 +366,35 @@ export async function listAdminMembers(
   const where: Record<string, unknown> = {};
   const andConditions: Record<string, unknown>[] = [];
 
-  // Text search
-  if (trimmedQuery) {
-    const queryTerms = trimmedQuery.split(/\s+/).filter(Boolean);
-    andConditions.push({
-      OR: [
-        { id: { startsWith: trimmedQuery } },
-        { firstName: { contains: trimmedQuery, mode: "insensitive" } },
-        { lastName: { contains: trimmedQuery, mode: "insensitive" } },
-        { email: { contains: trimmedQuery, mode: "insensitive" } },
-        ...(queryTerms.length > 1
-          ? [
-              {
-                AND: queryTerms.map((term) => ({
-                  OR: [
-                    { firstName: { contains: term, mode: "insensitive" } },
-                    { lastName: { contains: term, mode: "insensitive" } },
-                    { email: { contains: term, mode: "insensitive" } },
-                  ],
-                })),
-              },
-            ]
-          : []),
-      ],
-    });
+  // Text search. Held in a variable as well as pushed, because the
+  // dependant-link diagnostic query below re-uses exactly this condition to
+  // explain WHY a search that matched people returned no eligible candidates.
+  const queryTerms = trimmedQuery?.split(/\s+/).filter(Boolean) ?? [];
+  const textSearchCondition = trimmedQuery
+    ? {
+        OR: [
+          { id: { startsWith: trimmedQuery } },
+          { firstName: { contains: trimmedQuery, mode: "insensitive" } },
+          { lastName: { contains: trimmedQuery, mode: "insensitive" } },
+          { email: { contains: trimmedQuery, mode: "insensitive" } },
+          ...(queryTerms.length > 1
+            ? [
+                {
+                  AND: queryTerms.map((term) => ({
+                    OR: [
+                      { firstName: { contains: term, mode: "insensitive" } },
+                      { lastName: { contains: term, mode: "insensitive" } },
+                      { email: { contains: term, mode: "insensitive" } },
+                    ],
+                  })),
+                },
+              ]
+            : []),
+        ],
+      }
+    : null;
+  if (textSearchCondition) {
+    andConditions.push(textSearchCondition);
   }
 
   if (inheritEmailEligible) {
@@ -391,15 +410,13 @@ export async function listAdminMembers(
     andConditions.push({ id: { not: excludeId } });
   }
 
+  // Dependant-link candidates (#2254): the SQL half of the shared eligibility
+  // predicate, so this search and the write route
+  // (POST /api/admin/members/[id]/dependents/link) cannot drift apart again.
+  // See src/lib/dependent-link-eligibility.ts for the NULL-semantics and
+  // active/archived reasoning.
   if (dependentLinkEligibleFor) {
-    andConditions.push(
-      { id: { not: dependentLinkEligibleFor } },
-      { parentMemberId: { not: dependentLinkEligibleFor } },
-      { secondaryParentId: { not: dependentLinkEligibleFor } },
-      { OR: [{ parentMemberId: null }, { secondaryParentId: null }] },
-      { dependents: { none: {} } },
-      { secondaryDependents: { none: {} } },
-    );
+    andConditions.push(...dependentLinkCandidateWhere(dependentLinkEligibleFor));
   }
 
   if (parentLinkEligibleFor) {
@@ -769,6 +786,46 @@ export async function listAdminMembers(
     prisma.member.count({ where }),
   ]);
 
+  // #2254: a dependant-link search that finds nobody eligible used to render a
+  // bare "No eligible members found.", which told the admin nothing — and hid a
+  // real bug for as long as it shipped. When the eligible set is empty, re-run
+  // the SAME text search with the eligibility conditions (and the default
+  // archived exclusion) lifted, and label each match with the first reason it
+  // was excluded. Bounded to a handful of rows, and only ever runs on the
+  // otherwise-empty result, so the normal search still costs two queries.
+  const dependentLinkIneligible: DependentLinkIneligibleMatch[] | undefined =
+    dependentLinkEligibleFor && textSearchCondition && total === 0
+      ? (
+          await prisma.member.findMany({
+            where: textSearchCondition,
+            orderBy,
+            take: DEPENDENT_LINK_INELIGIBLE_EXPLANATION_LIMIT,
+            select: {
+              ...DEPENDENT_LINK_CANDIDATE_SELECT,
+              firstName: true,
+              lastName: true,
+              email: true,
+            },
+          })
+        ).flatMap((candidate) => {
+          const [reason] = dependentLinkBlockers(
+            dependentLinkEligibleFor,
+            candidate,
+          );
+          if (!reason) return [];
+          return [
+            {
+              id: candidate.id,
+              firstName: candidate.firstName,
+              lastName: candidate.lastName,
+              email: candidate.email,
+              reason,
+              explanation: DEPENDENT_LINK_INELIGIBILITY_EXPLANATIONS[reason],
+            },
+          ];
+        })
+      : undefined;
+
   let xeroContactGroups: Record<
     string,
     Array<{ id: string; name: string }>
@@ -877,6 +934,9 @@ export async function listAdminMembers(
     page,
     pageSize,
     totalPages: Math.ceil(total / pageSize),
+    // Only present for a dependant-link search that came back empty; omitted
+    // from every other members-list response.
+    ...(dependentLinkIneligible ? { dependentLinkIneligible } : {}),
   });
 }
 
