@@ -4,6 +4,18 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **A "Go to Xero" button on the Xero Sync page and its Health Snapshot (#2261).**
+  When an admin spots a problem on **Admin → Finance → Xero Sync** they can now
+  jump straight into Xero from the page header, or from the Health Snapshot's own
+  header, instead of hunting for a Xero tab. Where the club's Xero organisation
+  can be identified the link opens *that* organisation's dashboard — which
+  matters for a login that covers several Xero organisations. Where it cannot,
+  or Xero is not connected here, the button becomes a plain **Log in to Xero**
+  sign-in link rather than disappearing or greying out, since opening Xero is
+  exactly what is wanted when the connection is broken. The organisation
+  identifier Xero URLs need is read from the existing, 12-hour-cached
+  organisation lookup, so the buttons add no new Xero API traffic to a page load.
+
 - **Postgres connection ceiling raised from 30 to 40 to stop intermittent
   `FATAL: sorry, too many clients` when a deploy or backup overlaps normal
   load.** At `max_connections=30` the app's connection pools already summed to 27

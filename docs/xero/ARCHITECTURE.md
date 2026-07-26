@@ -148,9 +148,9 @@ this (#1208). Shared JSON-guard micro-helpers (`asRecord`/`readString`/
 | `xero-api-usage` | Daily budget constant and usage recording/summary. |
 | `xero-api-errors`, `xero-error-shape` | Error classification helpers (status code, body message, headers). |
 | `xero-error-alert` | Ops email on sync errors, deduplicated to one per hour via `EmailLog`. |
-| `xero-links`, `xero-record-links`, `xero-record-types` | Deep links into the Xero UI and into local admin pages; shared record-activity types. |
+| `xero-links`, `xero-record-links`, `xero-record-types` | Deep links into the Xero UI and into local admin pages; shared record-activity types. See "Deep links into Xero" below for why the tenant GUID cannot be used in a Xero URL. |
 | `xero-feature-flags` | `XERO_ENABLE_DAILY_MEMBERSHIP_REFRESH`, `XERO_ENABLE_LIVE_MEMBER_GROUP_LOOKUPS`, `XERO_ENABLE_AUTOLOAD_XERO_CONTACT_GROUPS`. |
-| `xero-organisation` | Cached financial-year-end month of the connected org. |
+| `xero-organisation` | Cached connected-org facts: financial-year-end month, org name, lock dates, and the deep-link **short code**. |
 
 ### Reconciliation ledger core
 
@@ -568,8 +568,9 @@ Stripe (C4) and Google (C5) reuse the same shell with their own steps:
    `xero-credentials-section`.
 3. **Connect** — the existing OAuth flow, then confirms the connected
    organisation **name** (via `/api/admin/xero/organisation`, extended to return
-   the name). The connect route accepts a sanitised `?return=/admin/...` so the
-   callback resumes on the wizard rather than the Sync page.
+   the name and, since #2261, the deep-link short code). The connect route
+   accepts a sanitised `?return=/admin/...` so the callback resumes on the
+   wizard rather than the Sync page.
 
 Each step gates on **live server truth** (`isVerified(context)`); a small
 `IntegrationWizardProgress` row persists only a resume cursor (advisory), so a
@@ -582,6 +583,43 @@ to gated `/api/testing/xero-mock/*` endpoints for the wizard happy-path
 Playwright spec. It is **production-inert**: with the env var unset (every real
 deployment) the OAuth/organisation code path is unchanged and the mock endpoints
 404. C3 extends the harness with a webhook-validation ping and chart of accounts.
+
+## Deep links into Xero (#2261)
+
+Admin pages link out to Xero in two shapes, both built by `xero-links.ts`:
+
+- **Object links** — a contact, invoice, or credit note, keyed on the Xero
+  object's own id (`buildXeroContactUrl`, `buildXeroInvoiceUrl`,
+  `buildXeroCreditNoteUrl`).
+- **Organisation links** — the report centre (`buildXeroReportsUrl`) and the
+  **"Go to Xero" buttons** on the Xero Sync page header and its Health Snapshot
+  (`buildXeroDashboardUrl`).
+
+The identifier a Xero URL needs is the organisation **short code** (`!aBc12`),
+*not* the tenant GUID stored on the `XeroToken` row. The GUID is not usable in a
+Xero URL at all, so a link built from it would 404 — the reason every builder
+takes an optional `shortCode` and degrades to a session-scoped `go.xero.com`
+path without it. Both forms are live URLs; the short code only decides whether
+the admin lands in **this club's** organisation or in whichever organisation
+their Xero session last used.
+
+The short code is read only from Xero's `getOrganisations` response, so it is
+surfaced on **`/api/admin/xero/organisation`** (alongside the org name and
+financial-year-end month), behind `getXeroConnectedOrganisation`'s 12-hour
+in-process cache. It is deliberately **not** on `/api/admin/xero/status`:
+status is a pure `XeroToken`-row read that every admin surface gating on Xero
+hits (`useXeroStatus`), and hanging a live Xero call off it would spend API
+budget on pages that only ask "is Xero connected?". The Xero Sync page reads the
+organisation route once, and only when connected (`useXeroOrgShortCode`), so a
+cold cache costs at most one `getOrganisations` call per server process per 12
+hours. The finance dashboard makes the opposite trade and links without a short
+code rather than fetching one.
+
+Cache invalidation is unchanged by the added field: the summary cache entry
+holds the whole object, and `resetXeroOrganisationCaches` (fired from the
+token store's connect/disconnect via `xero-organisation-cache-bus`) nulls it
+wholesale, so a reconnect to a different organisation can never keep pointing
+"Go to Xero" at the old org.
 
 ## Refactor opportunities (ranked)
 
