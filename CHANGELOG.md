@@ -4,6 +4,30 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Dates no longer change shape (or day) depending on whose computer is
+  looking at them, and the family-group "Edit" button visibly does something
+  (#2256).** A handful of screens printed dates using whatever the *viewer's*
+  own computer was set to instead of the club's settings. On a machine set to
+  United States English, "16 Apr 2026" came out as "4/16/2026"; on a machine in
+  a time zone behind New Zealand it could come out as the day *before* the real
+  one. The affected places were the family-group request queue (the "Requested"
+  stamps and every date of birth on a review card), the family-groups list
+  (partner-invite expiry dates and the "Created" column), the induction records
+  (sign-off and completion dates, on screen and on the printed sheet), and the
+  Xero settings page's "cache last refreshed / expires" line. The
+  card-setup-failed email had the same problem in a quieter form — it named the
+  right country but not the right time zone, so the stay dates it quoted
+  depended on where the sending server happened to be. All of these now use the
+  club's own date settings, so everyone sees the same date, written the same
+  way, wherever they are. Chore-roster emails are deliberately unchanged: they
+  keep their long "Wednesday, 15 July 2026" wording.
+- **Family groups: pressing the edit (pencil) icon on a group used to look like
+  it had done nothing (#2256).** The editor opens *above* the list of groups,
+  so if you scrolled down to a group and clicked edit, the editor opened
+  somewhere off the top of the screen and nothing you could see changed. The
+  page now scrolls up to the editor and puts the keyboard cursor in it, and the
+  group you are editing is highlighted in the list and badged "Editing" until
+  you save or close. Nothing about who may edit a group has changed.
 - **"Add Dependant → Link Existing" now finds the members it was hiding, and
   says why when it still finds nobody (#2254).** Searching for an existing
   member to link as a dependant reported "No eligible members found" for almost
