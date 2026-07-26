@@ -10,8 +10,13 @@ All notable public reference-release changes should be recorded here.
   app's own content-security policy granted that permission only to the separate
   full-screen preview page, so the browser blocked the builder's frame. The
   permission now covers both preview surfaces, matched on the exact page address
-  so no other admin page gains it. **Operators: nothing to do — the preview
-  simply works; no configuration, and no change to what a display can show.**
+  so no other admin page gains it. Because a page's security policy is fixed the
+  moment the browser loads it, the two in-app links into the builder (the
+  **Visual builder** card on the Lobby Display page, and the "visual builder"
+  link on the Layouts page) now load the page fresh rather than switching to it
+  in place — otherwise the builder inherited the previous page's policy and the
+  preview stayed blocked. **Operators: nothing to do — the preview simply works;
+  no configuration, and no change to what a display can show.**
 - **Postgres connection ceiling raised from 30 to 40 to stop intermittent
   `FATAL: sorry, too many clients` when a deploy or backup overlaps normal
   load.** At `max_connections=30` the app's connection pools already summed to 27

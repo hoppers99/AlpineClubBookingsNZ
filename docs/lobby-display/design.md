@@ -788,6 +788,28 @@ client-safe `css-tokens.ts` before they ship in the payload:
 >   not a sandboxed display document, and the authored markup it previews runs in
 >   the `/display` frame, which carries the tightened policy itself.
 >
+> **A per-route CSP relaxation only applies on a HARD document load.** A CSP is a
+> property of the *document*, read from the response headers when it is parsed,
+> and it never changes for that document's life. A Next.js App Router `<Link>`
+> (or `router.push`) is a **soft** navigation — it swaps React trees inside the
+> same document — so the destination keeps whatever policy the **entry** document
+> was served with. With a single root layout, every `/admin/*` → `/admin/*`
+> `<Link>` is soft. So any route that depends on a scoped relaxation must be
+> **entered** by a hard navigation: the Visual builder is reached by a plain
+> `<a href>` from the Lobby Display hub (the `hardNavigate` opt-in on the hub's
+> section descriptor, `src/components/admin-hub-page.tsx`) and from the Layouts
+> page, and by `window.open(url, "_self")` from the Templates page — never by
+> `<Link>`. A static guard test
+> (`src/lib/__tests__/display-builder-csp-static.test.ts`) fails if a `<Link>` is
+> reintroduced; the full-screen preview host has always worked because it is
+> opened with `window.open(…, "_blank")`, also a hard load. The inverse is true
+> and accepted: an admin who hard-loads the builder and then soft-navigates on to
+> another admin page carries `frame-src 'self'` into those documents until the
+> next hard load. Impact is low — it permits only *same-origin* framing on an
+> admin page, and `X-Frame-Options: DENY`/`frame-ancestors 'none'` still stop
+> those pages being framed themselves — but it is a property of soft navigation,
+> not something the allowlist can prevent.
+>
 > `/display` additionally gains `frame-ancestors 'self'` /
 > `X-Frame-Options: SAMEORIGIN` and its own origin in `connect-src` (so the
 > opaque-origin frame can still fetch the state API). The layouts
