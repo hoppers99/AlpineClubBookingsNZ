@@ -115,8 +115,6 @@ export default function XeroPage() {
           <HealthAndDiagnosticsPanels
             connected={connected}
             currentXeroPath={currentXeroPath}
-            orgShortCode={orgShortCode}
-            orgShortCodeLoading={orgShortCodeLoading}
             healthOpen={sectionOpen.health}
             contactGroupMismatchesOpen={sectionOpen.contactGroupMismatches}
             contactLinkMismatchesOpen={sectionOpen.contactLinkMismatches}
