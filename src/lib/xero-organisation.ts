@@ -71,11 +71,42 @@ export async function getXeroFinancialYearEndMonth(
 // setup wizard's step 3 can confirm the operator linked the RIGHT Xero org after
 // the OAuth round-trip. Cached in-process with the same long TTL as the
 // year-end read; a status/summary read must never mutate the DB.
+//
+// #2261 adds the org SHORT CODE to the same summary — the only identifier the
+// Xero web app accepts in a deep link (the tenant GUID we store is not usable
+// in a Xero URL). It rides along on the getOrganisations response this summary
+// already fetches, so the "Go to Xero" buttons cost no extra Xero call: one
+// live read per server process per TTL still backs every consumer.
 // ---------------------------------------------------------------------------
 
 export interface XeroConnectedOrganisation {
   name: string | null;
   financialYearEndMonth: number | null;
+  /**
+   * Xero's organisation short code (e.g. `!aBc12`), or null when unavailable.
+   * Callers must treat null as "build the generic go.xero.com link" — never as
+   * a reason to hide or disable the link.
+   */
+  shortCode: string | null;
+}
+
+/** Empty summary: the shape a failed/never-run read degrades to. */
+const EMPTY_ORG_SUMMARY: XeroConnectedOrganisation = {
+  name: null,
+  financialYearEndMonth: null,
+  shortCode: null,
+};
+
+/**
+ * Normalise Xero's `Organisation.shortCode` to a usable value or null. Same
+ * extraction as `findDuplicateContacts` (`xero-duplicate-contacts.ts`), except
+ * that this returns null rather than "" so the deep-link builders' falsy check
+ * and the API contract agree on one absent value.
+ */
+function normaliseShortCode(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
 }
 
 interface OrgSummaryCacheEntry {
@@ -86,9 +117,15 @@ interface OrgSummaryCacheEntry {
 let orgSummaryCache: OrgSummaryCacheEntry | null = null;
 
 /**
- * Returns the connected Xero organisation's name and financial year-end month,
- * or nulls when Xero is not connected / unavailable. Never throws — a failed
- * read falls back to the last cached summary (or nulls). Cached in-process.
+ * Returns the connected Xero organisation's name, financial year-end month and
+ * deep-link short code, or nulls when Xero is not connected / unavailable.
+ * Never throws — a failed read falls back to the last cached summary (or
+ * nulls). Cached in-process.
+ *
+ * The cache entry holds the whole summary object, so widening
+ * {@link XeroConnectedOrganisation} needs no cache-shape change and no change
+ * to {@link resetXeroOrganisationCaches} (which nulls the entry wholesale) or
+ * to the connect/disconnect invalidation bus.
  *
  * Honours the test-only mock-Xero harness (#2080): inert in production.
  */
@@ -106,7 +143,12 @@ export async function getXeroConnectedOrganisation(
   // Server-side fetch — use the in-container origin (see getXeroMockInternalOrigin).
   const mockOrigin = getXeroMockInternalOrigin();
   if (mockOrigin) {
-    const summary = await fetchMockXeroOrganisation(mockOrigin);
+    const mock = await fetchMockXeroOrganisation(mockOrigin);
+    const summary: XeroConnectedOrganisation = {
+      name: mock.name,
+      financialYearEndMonth: mock.financialYearEndMonth,
+      shortCode: normaliseShortCode(mock.shortCode),
+    };
     orgSummaryCache = { summary, fetchedAt: Date.now() };
     return summary;
   }
@@ -130,6 +172,7 @@ export async function getXeroConnectedOrganisation(
         typeof rawMonth === "number" && rawMonth >= 1 && rawMonth <= 12
           ? rawMonth
           : null,
+      shortCode: normaliseShortCode(org?.shortCode),
     };
     orgSummaryCache = { summary, fetchedAt: Date.now() };
     return summary;
@@ -138,7 +181,7 @@ export async function getXeroConnectedOrganisation(
       { err: error },
       "Failed to read Xero connected organisation summary",
     );
-    return orgSummaryCache?.summary ?? { name: null, financialYearEndMonth: null };
+    return orgSummaryCache?.summary ?? EMPTY_ORG_SUMMARY;
   }
 }
 
