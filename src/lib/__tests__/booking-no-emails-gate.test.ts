@@ -44,7 +44,10 @@ vi.mock("@/lib/email-suppression", () => ({
   normalizeEmailAddress: (value: string) => value.trim().toLowerCase(),
 }));
 vi.mock("@/lib/email/internal", () => ({
-  getEmailTransporter: () => ({ sendMail: mocks.sendMail }),
+  getEmailTransporter: () => ({
+    transporter: { sendMail: mocks.sendMail },
+    modeLabel: "test",
+  }),
   shouldPersistEmailHtml: () => true,
 }));
 
