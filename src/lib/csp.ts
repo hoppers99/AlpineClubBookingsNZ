@@ -42,33 +42,67 @@ export function setSecurityHeaders(headers: Headers, pathname?: string) {
   }
 }
 
+/**
+ * Admin pages that EMBED the sandboxed /display iframe, and so need
+ * `frame-src 'self'`: the Templates preview host (LTV-036, ADR-003 §5) and the
+ * Visual builder's Live preview (ADR-004 §7, issue #2246).
+ *
+ * Matched by EXACT equality, never by prefix — a prefix match would silently
+ * hand `frame-src 'self'` to `/admin/display/templates` and every future
+ * `/admin/display/*` page, which is precisely the blanket relaxation the scoped
+ * design avoids.
+ */
+const FRAME_SRC_SELF_PATHS: readonly string[] = [
+  "/admin/display/preview",
+  "/admin/display/builder",
+];
+
+/**
+ * Routes whose img-src drops the `https:` wildcard (issue #161, ADR-003
+ * residual): admin-authored display HTML/CSS can embed an <img>, and the global
+ * img-src otherwise allows any https host — an authoring admin could exfiltrate
+ * the display's own token values (config, occupancy, …) via an image-beacon
+ * `src`. These are the routes that RENDER authored display markup: /display
+ * itself, and the minimal preview host whose whole body is that iframe.
+ *
+ * Deliberately NOT the Visual builder: it is a full admin page inside the admin
+ * chrome (avatars, uploaded images, the rest of the admin UI), not a sandboxed
+ * display document, so dropping `blob:`/`https:` there would break unrelated
+ * admin imagery for no gain — the authored markup it previews runs in the
+ * opaque-origin /display frame, which carries the tightened policy itself.
+ * Exact equality only, for the same reason as above.
+ */
+const TIGHT_IMG_SRC_PATHS: readonly string[] = [
+  "/display",
+  "/admin/display/preview",
+];
+
 export function buildContentSecurityPolicy(nonce: string, options: CspOptions = {}) {
   const isDev = process.env.NODE_ENV === "development";
   const { pathname, selfOrigin } = options;
 
-  // Two scoped relaxations for the sandboxed template preview (LTV-036):
-  //  • /display: frame-ancestors 'self' so our own admin preview page can frame
-  //    it (every other route stays 'none'), and connect-src gains this site's
-  //    explicit origin so the opaque-origin framed document can still fetch the
-  //    state API.
-  //  • /admin/display/preview: frame-src 'self' so it may embed the /display
-  //    iframe.
-  // A third, TIGHTER relaxation applies to both (issue #161, ADR-003 residual):
-  // admin-authored display HTML/CSS can embed an <img>, and the global img-src
-  // otherwise allows any https host — an authoring admin could exfiltrate the
-  // display's own token values (config, occupancy, …) via an image-beacon `src`.
-  // /display and /admin/display/preview drop the `https:` wildcard, leaving only
-  // `'self' data:`; every other route's img-src is unchanged.
+  // Scoped relaxations for the sandboxed display preview (LTV-036, ADR-004 §7):
+  //  • /display: frame-ancestors 'self' so our own admin preview surfaces can
+  //    frame it (every other route stays 'none'), and connect-src gains this
+  //    site's explicit origin so the opaque-origin framed document can still
+  //    fetch the state API.
+  //  • the FRAME_SRC_SELF_PATHS hosts: frame-src 'self' so they may embed the
+  //    /display iframe.
+  //  • the TIGHT_IMG_SRC_PATHS routes: a tighter img-src (see above).
+  // The frame-src and img-src sets are deliberately SEPARATE lists: framing
+  // /display and rendering authored display markup are unrelated needs, and one
+  // shared boolean would force every new preview host to accept the tightened
+  // img-src as the price of an iframe.
   const isDisplay = pathname === "/display";
-  const isPreviewHost = pathname === "/admin/display/preview";
+  const framesDisplay = pathname !== undefined && FRAME_SRC_SELF_PATHS.includes(pathname);
+  const tightensImgSrc = pathname !== undefined && TIGHT_IMG_SRC_PATHS.includes(pathname);
   // `blob:` is required for the member-photo crop UI (epic #171): it previews the
   // locally-selected file by loading its `URL.createObjectURL(...)` blob into an
   // <img>. blob: URLs are same-origin and page-created — no exfiltration vector,
   // unlike the `https:` wildcard the display route deliberately drops.
-  const imgSrc =
-    isDisplay || isPreviewHost
-      ? "img-src 'self' data:"
-      : "img-src 'self' data: blob: https: https://www.google-analytics.com https://*.google-analytics.com";
+  const imgSrc = tightensImgSrc
+    ? "img-src 'self' data:"
+    : "img-src 'self' data: blob: https: https://www.google-analytics.com https://*.google-analytics.com";
 
   const directives = [
     "default-src 'self'",
@@ -97,7 +131,7 @@ export function buildContentSecurityPolicy(nonce: string, options: CspOptions = 
     ].join(" "),
     [
       "frame-src",
-      ...(isPreviewHost ? ["'self'"] : []),
+      ...(framesDisplay ? ["'self'"] : []),
       "https://js.stripe.com",
       "https://hooks.stripe.com",
     ].join(" "),
