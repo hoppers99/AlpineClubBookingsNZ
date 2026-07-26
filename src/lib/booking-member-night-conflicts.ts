@@ -93,6 +93,14 @@ export type BookingMemberNightConflict = {
   isOwnBooking: boolean;
   canOpenBooking: boolean;
   canSelfRemove: boolean;
+  /**
+   * The clashing guest row is the actor's own place (#2250). Distinct from
+   * `canSelfRemove`, which is additionally gated on status/date/last-guest and
+   * is false for the commonest clash of all — the member against a booking they
+   * made themselves. The copy uses it to address the member directly rather
+   * than narrating them in the third person.
+   */
+  isSelfGuest: boolean;
 };
 
 export class BookingMemberNightConflictError extends Error {
@@ -246,6 +254,7 @@ export async function findBookingMemberNightConflicts(
       isOwnBooking,
       canOpenBooking: isOwnBooking || actorRole === "ADMIN" || isSelfGuest,
       canSelfRemove,
+      isSelfGuest,
     });
   }
 
@@ -285,7 +294,12 @@ export function getBookingMemberNightConflictResponse(
     code: BOOKING_MEMBER_NIGHT_CONFLICT_CODE,
     // #2250 — same message the thrown error carries, so the advisory pre-check
     // (409 built from a found conflict list) and the transactional guard read
-    // identically to the member.
+    // identically to the member. Flow-neutral by default: this response is also
+    // returned by the admin booking-request approve/hold/quote routes, where
+    // "choose different dates" is advice the reader cannot act on. Surfaces
+    // that DO pick the dates (the booking wizard) opt back in by rendering
+    // `describeBookingMemberNightConflictNextStep` with
+    // `canChooseDifferentDates`.
     error: buildBookingMemberNightConflictMessage(conflicts),
     conflicts,
   };

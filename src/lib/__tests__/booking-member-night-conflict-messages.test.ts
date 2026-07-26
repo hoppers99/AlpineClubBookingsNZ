@@ -1,15 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
   buildBookingMemberNightConflictMessage,
+  buildBookingMemberNightConflictSummary,
   describeBookingMemberNightConflictBooking,
   describeBookingMemberNightConflictNextStep,
   describeBookingMemberNightConflictNights,
   type BookingMemberNightConflictCopyInput,
 } from "@/lib/booking-member-night-conflict-messages";
+import { formatNZDate } from "@/lib/nzst-date";
+import { parseDateOnly } from "@/lib/date-only";
 
 // #2250 — the already-booked copy must say WHO is already booked, WHICH nights,
 // and WHAT to do next, without telling a viewer about a booking they are not
-// entitled to see.
+// entitled to see, and without offering advice the reader cannot act on.
 
 function conflict(
   overrides: Partial<BookingMemberNightConflictCopyInput> = {},
@@ -22,6 +25,7 @@ function conflict(
     isOwnBooking: false,
     canOpenBooking: false,
     canSelfRemove: false,
+    isSelfGuest: false,
     ...overrides,
   };
 }
@@ -33,12 +37,52 @@ describe("buildBookingMemberNightConflictMessage", () => {
     expect(message).toContain("Alice Smith");
     expect(message).toContain("1 Jun 2026 and 2 Jun 2026");
     expect(message).toContain("Ask whoever made that booking");
-    expect(message).toContain("choose different dates");
+  });
+
+  it("stays flow-neutral by default and only offers other dates when the reader picks them", () => {
+    // Every producer routes through getBookingMemberNightConflictResponse,
+    // including the admin booking-request approve/hold/send-quote routes. An
+    // admin approving a request cannot "choose different dates".
+    for (const viewer of [
+      conflict(),
+      conflict({ canOpenBooking: true }),
+      conflict({ isOwnBooking: true, canOpenBooking: true }),
+      conflict({
+        canSelfRemove: true,
+        isSelfGuest: true,
+        canOpenBooking: true,
+      }),
+    ]) {
+      expect(buildBookingMemberNightConflictMessage([viewer])).not.toContain(
+        "choose different dates",
+      );
+      expect(
+        buildBookingMemberNightConflictMessage([viewer], {
+          canChooseDifferentDates: true,
+        }),
+      ).toContain("choose different dates");
+    }
+  });
+
+  it("keeps the multi-person next step flow-neutral too", () => {
+    const conflicts = [
+      conflict({ conflictingNights: ["2026-06-02"] }),
+      conflict({ memberName: "Cara Lee", conflictingNights: ["2026-06-01"] }),
+    ];
+
+    expect(buildBookingMemberNightConflictMessage(conflicts)).not.toContain(
+      "choose different dates",
+    );
+    expect(
+      buildBookingMemberNightConflictMessage(conflicts, {
+        canChooseDifferentDates: true,
+      }),
+    ).toContain("choose different dates");
   });
 
   it("addresses the member in the second person when they can take themselves off", () => {
     const message = buildBookingMemberNightConflictMessage([
-      conflict({ canSelfRemove: true, canOpenBooking: true }),
+      conflict({ canSelfRemove: true, isSelfGuest: true, canOpenBooking: true }),
     ]);
 
     expect(message).toContain("You are already on another booking");
@@ -46,7 +90,28 @@ describe("buildBookingMemberNightConflictMessage", () => {
     expect(message).toContain("Take yourself off that booking");
   });
 
-  it("sends the member to their own clashing booking when they own it", () => {
+  it("addresses the member directly when the clash is their OWN earlier booking", () => {
+    // The commonest clash of all: the member against a booking they made
+    // themselves. canSelfRemove is false there (self-removal is for somebody
+    // else's booking), so keying the second person off it narrated the member
+    // to their own face — "Alice Smith is already on a booking…".
+    const message = buildBookingMemberNightConflictMessage([
+      conflict({
+        isSelfGuest: true,
+        isOwnBooking: true,
+        canOpenBooking: true,
+        canSelfRemove: false,
+      }),
+    ]);
+
+    expect(message).toContain("You are already on another booking");
+    expect(message).not.toContain("Alice Smith");
+    expect(message).toContain("Open that booking and change it");
+  });
+
+  it("keeps the third person when the clashing place belongs to somebody else on the viewer's own booking", () => {
+    // The viewer owns the clashing booking but the clashing guest is another
+    // member — "you" would be wrong.
     const message = buildBookingMemberNightConflictMessage([
       conflict({ isOwnBooking: true, canOpenBooking: true }),
     ]);
@@ -61,19 +126,42 @@ describe("buildBookingMemberNightConflictMessage", () => {
       conflict({ memberName: "Cara Lee", conflictingNights: ["2026-06-01"] }),
     ]);
 
-    expect(message).toContain("Alice Smith and Cara Lee");
+    expect(message).toContain("Alice Smith and Cara Lee are already");
     expect(message).toContain("1 Jun 2026 and 2 Jun 2026");
     expect(message).toContain("Nobody can be on two bookings for the same night");
   });
 
-  it("does not repeat a member who clashes on more than one booking", () => {
+  it("agrees the verb with the de-duplicated name count, not the row count", () => {
+    // One member on two DIFFERENT clashing bookings is two conflict rows and
+    // one name. The person-night guard forbids the same night twice, not two
+    // bookings inside one requested window, so this is reachable.
     const message = buildBookingMemberNightConflictMessage([
       conflict({ conflictingNights: ["2026-06-01"] }),
       conflict({ conflictingNights: ["2026-06-05"] }),
     ]);
 
-    expect(message).toContain("Alice Smith are already");
+    expect(message).toContain(
+      "Alice Smith is already on other bookings for 1 Jun 2026 and 5 Jun 2026.",
+    );
+    expect(message).not.toContain("Alice Smith are already");
     expect(message).not.toContain("Alice Smith and Alice Smith");
+  });
+
+  it("says 'you' rather than the viewer's own name across several clashes", () => {
+    const own = buildBookingMemberNightConflictMessage([
+      conflict({ conflictingNights: ["2026-06-01"], isSelfGuest: true }),
+      conflict({ conflictingNights: ["2026-06-05"], isSelfGuest: true }),
+    ]);
+    expect(own).toBe(
+      "You are already on other bookings for 1 Jun 2026 and 5 Jun 2026. " +
+        "Nobody can be on two bookings for the same night, so somebody has to come off one of the bookings.",
+    );
+
+    const mixed = buildBookingMemberNightConflictMessage([
+      conflict({ conflictingNights: ["2026-06-01"], isSelfGuest: true }),
+      conflict({ memberName: "Cara Lee", conflictingNights: ["2026-06-05"] }),
+    ]);
+    expect(mixed).toContain("You and Cara Lee are already on other bookings");
   });
 
   it("summarises a long clash rather than listing every night", () => {
@@ -97,7 +185,7 @@ describe("buildBookingMemberNightConflictMessage", () => {
   it("never leaks the other booking's owner, id, or stay dates into the summary", () => {
     for (const viewer of [
       conflict(),
-      conflict({ canSelfRemove: true, canOpenBooking: true }),
+      conflict({ canSelfRemove: true, isSelfGuest: true, canOpenBooking: true }),
       conflict({ isOwnBooking: true, canOpenBooking: true }),
     ]) {
       const message = buildBookingMemberNightConflictMessage([viewer]);
@@ -112,6 +200,23 @@ describe("buildBookingMemberNightConflictMessage", () => {
     expect(buildBookingMemberNightConflictMessage([])).toContain(
       "already booked",
     );
+  });
+});
+
+describe("buildBookingMemberNightConflictSummary", () => {
+  it("states the situation without the next step, so the wizard banner does not repeat its own card", () => {
+    // use-booking-wizard sets the banner from this while the per-conflict card
+    // underneath renders describeBookingMemberNightConflictNextStep itself.
+    const summary = buildBookingMemberNightConflictSummary([conflict()]);
+
+    expect(summary).toBe(
+      "Alice Smith is already on a booking for 1 Jun 2026 and 2 Jun 2026.",
+    );
+    expect(summary).not.toContain("Ask whoever made that booking");
+    expect(summary).not.toContain("choose different dates");
+    expect(
+      buildBookingMemberNightConflictMessage([conflict()]).startsWith(summary),
+    ).toBe(true);
   });
 });
 
@@ -144,9 +249,22 @@ describe("describeBookingMemberNightConflictNights", () => {
     );
     expect(
       describeBookingMemberNightConflictNights(
-        conflict({ conflictingNights: ["2026-12-25"], canSelfRemove: true }),
+        conflict({ conflictingNights: ["2026-12-25"], isSelfGuest: true }),
       ),
     ).toBe("Already on another booking for 25 Dec 2026.");
+  });
+
+  it("formats nights with the shared app date helper rather than its own month table", () => {
+    // formatNZDate follows APP_LOCALE / APP_TIME_ZONE, which are env
+    // configurable; a hardcoded English month list would silently stop matching
+    // every other date on the page under a different locale.
+    for (const night of ["2026-01-05", "2026-06-01", "2026-12-25"]) {
+      expect(
+        describeBookingMemberNightConflictNights(
+          conflict({ conflictingNights: [night] }),
+        ),
+      ).toBe(`Already on a booking for ${formatNZDate(parseDateOnly(night))}.`);
+    }
   });
 
   it("falls back gracefully when no nights were reported", () => {
@@ -155,6 +273,11 @@ describe("describeBookingMemberNightConflictNights", () => {
         conflict({ conflictingNights: [] }),
       ),
     ).toContain("the nights you chose");
+    expect(
+      describeBookingMemberNightConflictNights(
+        conflict({ conflictingNights: ["not-a-date"] }),
+      ),
+    ).toContain("not-a-date");
   });
 });
 
@@ -164,19 +287,37 @@ describe("describeBookingMemberNightConflictNextStep", () => {
       describeBookingMemberNightConflictNextStep(
         conflict({ canSelfRemove: true, canOpenBooking: true }),
       ),
-    ).toContain("Take yourself off that booking");
+    ).toBe("Take yourself off that booking to free those nights.");
     expect(
       describeBookingMemberNightConflictNextStep(
         conflict({ isOwnBooking: true, canOpenBooking: true }),
       ),
-    ).toContain("Open that booking and change it");
+    ).toBe("Open that booking and change it.");
     expect(
       describeBookingMemberNightConflictNextStep(
         conflict({ canOpenBooking: true }),
       ),
-    ).toContain("Open that booking to sort it out");
-    expect(describeBookingMemberNightConflictNextStep(conflict())).toContain(
-      "Ask whoever made that booking",
+    ).toBe("Open that booking to sort it out.");
+    expect(describeBookingMemberNightConflictNextStep(conflict())).toBe(
+      "Ask whoever made that booking, or the club, to take them off it.",
+    );
+  });
+
+  it("adds the date alternative only for a reader who is choosing the dates", () => {
+    const dates = { canChooseDifferentDates: true } as const;
+
+    expect(
+      describeBookingMemberNightConflictNextStep(
+        conflict({ canSelfRemove: true, canOpenBooking: true }),
+        dates,
+      ),
+    ).toBe(
+      "Take yourself off that booking to free those nights, or choose different dates.",
+    );
+    expect(
+      describeBookingMemberNightConflictNextStep(conflict(), dates),
+    ).toBe(
+      "Ask whoever made that booking, or the club, to take them off it — or choose different dates.",
     );
   });
 });

@@ -75,6 +75,10 @@ describe("findBookingMemberNightConflicts", () => {
         isOwnBooking: true,
         canOpenBooking: true,
         canSelfRemove: false,
+        // #2250 — the clashing place is the actor's own, even though they may
+        // not self-remove from a booking they own. The copy needs this to
+        // address them directly instead of narrating them by name.
+        isSelfGuest: true,
       }),
     ]);
   });
@@ -119,6 +123,27 @@ describe("findBookingMemberNightConflicts", () => {
       isOwnBooking: false,
       canOpenBooking: true,
       canSelfRemove: true,
+      isSelfGuest: true,
+    });
+  });
+
+  it("does not mark somebody else's clashing place as the actor's own", async () => {
+    const db = conflictDb([existingGuest()]);
+
+    const conflicts = await findBookingMemberNightConflicts(db as any, {
+      actorMemberId: "member-9",
+      actorRole: "USER",
+      checkIn: parseDateOnly("2026-06-01"),
+      checkOut: parseDateOnly("2026-06-03"),
+      guests: [{ memberId: "member-1" }],
+    });
+
+    expect(conflicts[0]).toMatchObject({
+      memberId: "member-1",
+      isOwnBooking: false,
+      canOpenBooking: false,
+      canSelfRemove: false,
+      isSelfGuest: false,
     });
   });
 
@@ -242,6 +267,7 @@ describe("booking member-night conflict messages", () => {
       isOwnBooking: false,
       canOpenBooking: false,
       canSelfRemove: false,
+      isSelfGuest: false,
       ...overrides,
     };
   }
@@ -252,17 +278,49 @@ describe("booking member-night conflict messages", () => {
     expect(body.code).toBe("BOOKING_MEMBER_NIGHT_CONFLICT");
     expect(body.error).toBe(
       "Bob Jones is already on a booking for 11 Jun 2026 and 12 Jun 2026. " +
-        "Ask whoever made that booking, or the club, to take them off it — or choose different dates.",
+        "Ask whoever made that booking, or the club, to take them off it.",
     );
+  });
+
+  it("keeps the 409 flow-neutral, because admin booking-request routes return it too", () => {
+    // approve / hold / send-quote all surface this body; "choose different
+    // dates" is advice only the person picking the dates can act on, and the
+    // booking wizard opts back into it when it renders the next step itself.
+    for (const conflicts of [
+      [conflictRow()],
+      [conflictRow({ canSelfRemove: true, isSelfGuest: true })],
+      [conflictRow(), conflictRow({ memberName: "Dana Patel" })],
+    ]) {
+      expect(getBookingMemberNightConflictResponse(conflicts).error).not.toContain(
+        "choose different dates",
+      );
+    }
   });
 
   it("offers self-removal in the message when this viewer may take themselves off", () => {
     const body = getBookingMemberNightConflictResponse([
-      conflictRow({ canSelfRemove: true, canOpenBooking: true }),
+      conflictRow({ canSelfRemove: true, isSelfGuest: true, canOpenBooking: true }),
     ]);
 
     expect(body.error).toContain("You are already on another booking");
     expect(body.error).toContain("Take yourself off that booking");
+  });
+
+  it("addresses the member directly when they clash with their own earlier booking", () => {
+    const body = getBookingMemberNightConflictResponse([
+      conflictRow({
+        isSelfGuest: true,
+        isOwnBooking: true,
+        canOpenBooking: true,
+        canSelfRemove: false,
+      }),
+    ]);
+
+    expect(body.error).toBe(
+      "You are already on another booking for 11 Jun 2026 and 12 Jun 2026. " +
+        "Open that booking and change it.",
+    );
+    expect(body.error).not.toContain("Bob Jones");
   });
 
   it("carries the same message on the transactional 409 path", () => {
@@ -299,7 +357,21 @@ describe("booking member-night conflict messages", () => {
 
     expect(body.error).toBe(
       "Bob Jones and Dana Patel are already on other bookings for 11 Jun 2026 and 12 Jun 2026. " +
-        "Nobody can be on two bookings for the same night, so take them off this booking or choose different dates.",
+        "Nobody can be on two bookings for the same night, so somebody has to come off one of the bookings.",
     );
+  });
+
+  it("agrees the verb with the number of PEOPLE, not the number of conflict rows", () => {
+    // One member on two different clashing bookings inside the requested window
+    // is two rows and one name — "Bob Jones are already" was reachable.
+    const body = getBookingMemberNightConflictResponse([
+      conflictRow({ bookingId: "booking-2", conflictingNights: ["2026-06-11"] }),
+      conflictRow({ bookingId: "booking-3", conflictingNights: ["2026-06-12"] }),
+    ]);
+
+    expect(body.error).toContain(
+      "Bob Jones is already on other bookings for 11 Jun 2026 and 12 Jun 2026.",
+    );
+    expect(body.error).not.toContain("Bob Jones are already");
   });
 });

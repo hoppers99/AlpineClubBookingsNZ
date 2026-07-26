@@ -7,7 +7,7 @@
  * Every message here answers all three — WHO is already booked, WHICH nights,
  * and WHAT to do about it — with the next step chosen from the actor-aware
  * flags the server already computed for this viewer (`canSelfRemove`,
- * `isOwnBooking`, `canOpenBooking`).
+ * `isOwnBooking`, `canOpenBooking`, `isSelfGuest`).
  *
  * DISCLOSURE RULE. A 409 body goes to whoever made the request, which may be a
  * member adding somebody else as a guest — they are not necessarily entitled to
@@ -19,9 +19,22 @@
  * admin, or the conflicting guest themselves). Nothing here widens what
  * `findBookingMemberNightConflicts` puts on the wire.
  *
- * No Prisma or date-only imports: the booking wizard renders this copy in the
- * browser bundle.
+ * FLOW RULE. Every producer of a member-night 409 routes through
+ * `getBookingMemberNightConflictResponse` — the booking wizard, but also
+ * `admin/booking-requests/[id]/approve|hold|send-quote` and the modify routes.
+ * "…or choose different dates" is advice only the person *choosing* the dates
+ * can act on, so it is opt-in via `canChooseDifferentDates` and the
+ * server-built message stays flow-neutral.
+ *
+ * No Prisma import: the booking wizard renders this copy in the browser bundle.
+ * `@/lib/date-only` and `@/lib/nzst-date` import only `@/config/operational`,
+ * so both are client-safe — several client components already import them, and
+ * `admin-booking-calendar.tsx` does exactly this `formatNZDate(parseDateOnly())`
+ * pairing in the browser.
  */
+
+import { parseDateOnly } from "@/lib/date-only";
+import { formatNZDate } from "@/lib/nzst-date";
 
 export type BookingMemberNightConflictCopyInput = {
   memberName: string;
@@ -31,36 +44,41 @@ export type BookingMemberNightConflictCopyInput = {
   isOwnBooking?: boolean;
   canOpenBooking?: boolean;
   canSelfRemove?: boolean;
+  /**
+   * The clashing guest row IS the viewer. Set independently of
+   * `canSelfRemove`, which is false for the most common clash of all — the
+   * member against a booking they made themselves — and would otherwise leave
+   * them addressed in the third person.
+   */
+  isSelfGuest?: boolean;
 };
 
-const MONTH_ABBREVIATIONS = [
-  "Jan",
-  "Feb",
-  "Mar",
-  "Apr",
-  "May",
-  "Jun",
-  "Jul",
-  "Aug",
-  "Sep",
-  "Oct",
-  "Nov",
-  "Dec",
-];
+/** Where the copy is read, as opposed to who reads it. */
+export type BookingMemberNightConflictCopyOptions = {
+  /**
+   * The reader is picking the dates (the booking wizard). Only then may the
+   * copy suggest choosing different ones: an admin approving, holding, or
+   * quoting a booking request reads the same 409 and cannot act on that advice.
+   */
+  canChooseDifferentDates?: boolean;
+};
 
-// Date-only lodge nights are plain "YYYY-MM-DD" strings; parse them as text so
-// the rendered night never shifts with the reader's browser time zone.
+// Date-only lodge nights are plain "YYYY-MM-DD" strings. `parseDateOnly` pins
+// them to UTC midnight and `formatNZDate` renders them in the club time zone,
+// so the night never shifts with the reader's browser time zone AND it follows
+// the app's configured locale rather than a hardcoded English month table.
 function formatNight(night: string): string {
-  const parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(night);
-  if (!parts) return night;
-  const month = MONTH_ABBREVIATIONS[Number(parts[2]) - 1];
-  if (!month) return night;
-  return `${Number(parts[3])} ${month} ${parts[1]}`;
+  const parsed = parseDateOnly(night);
+  return Number.isNaN(parsed.getTime()) ? night : formatNZDate(parsed);
 }
 
 function joinWithAnd(items: string[]): string {
   if (items.length === 1) return items[0];
   return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
+
+function capitaliseFirst(sentence: string): string {
+  return sentence.charAt(0).toUpperCase() + sentence.slice(1);
 }
 
 function formatNightList(nights: readonly string[]): string {
@@ -77,6 +95,17 @@ function formatBookingStatus(status: string): string {
 }
 
 /**
+ * Does this row describe the VIEWER? `canSelfRemove` is only ever true for the
+ * viewer's own guest row (see `evaluateGuestSelfRemoval`), so it implies self
+ * even where a producer has not set `isSelfGuest`.
+ */
+function isViewersOwnPlace(
+  conflict: BookingMemberNightConflictCopyInput,
+): boolean {
+  return Boolean(conflict.isSelfGuest || conflict.canSelfRemove);
+}
+
+/**
  * "Already on another booking for 1 Jun 2026 and 2 Jun 2026." — the nights half
  * of the conflict card, sitting under the member's name.
  */
@@ -84,7 +113,7 @@ export function describeBookingMemberNightConflictNights(
   conflict: BookingMemberNightConflictCopyInput,
 ): string {
   const nights = formatNightList(conflict.conflictingNights);
-  return conflict.canSelfRemove
+  return isViewersOwnPlace(conflict)
     ? `Already on another booking for ${nights}.`
     : `Already on a booking for ${nights}.`;
 }
@@ -107,45 +136,86 @@ export function describeBookingMemberNightConflictBooking(
 /** What this particular viewer can actually do about the clash. */
 export function describeBookingMemberNightConflictNextStep(
   conflict: BookingMemberNightConflictCopyInput,
+  { canChooseDifferentDates = false }: BookingMemberNightConflictCopyOptions = {},
 ): string {
+  const orOtherDates = canChooseDifferentDates
+    ? ", or choose different dates"
+    : "";
   if (conflict.canSelfRemove) {
-    return "Take yourself off that booking to free those nights, or choose different dates.";
+    return `Take yourself off that booking to free those nights${orOtherDates}.`;
   }
   if (conflict.isOwnBooking) {
-    return "Open that booking and change it, or choose different dates.";
+    return `Open that booking and change it${orOtherDates}.`;
   }
   if (conflict.canOpenBooking) {
-    return "Open that booking to sort it out, or choose different dates.";
+    return `Open that booking to sort it out${orOtherDates}.`;
   }
-  return "Ask whoever made that booking, or the club, to take them off it — or choose different dates.";
+  // This sentence already carries a comma, so the alternative hangs off a dash.
+  return `Ask whoever made that booking, or the club, to take them off it${
+    canChooseDifferentDates ? " — or choose different dates" : ""
+  }.`;
 }
 
 /**
- * The single sentence-pair used as the `error` on a 409 and as the wizard's
- * banner: who is already booked, which nights, and what to do next.
+ * WHO is already booked and for WHICH nights — no next step. The wizard uses
+ * this as its banner because the per-conflict cards underneath state the next
+ * step for each clash themselves; the full message below is for callers that
+ * render nothing but a single sentence.
  */
-export function buildBookingMemberNightConflictMessage(
+export function buildBookingMemberNightConflictSummary(
   conflicts: readonly BookingMemberNightConflictCopyInput[],
 ): string {
   if (conflicts.length === 0) {
     // Defensive: every caller builds this from a non-empty conflict list.
-    return "Someone in this party is already booked on one or more of these nights. Nobody can be on two bookings for the same night, so choose different dates.";
+    return "Someone in this party is already booked on one or more of these nights.";
   }
 
   if (conflicts.length === 1) {
     const conflict = conflicts[0];
     const nights = formatNightList(conflict.conflictingNights);
-    const situation = conflict.canSelfRemove
+    return isViewersOwnPlace(conflict)
       ? `You are already on another booking for ${nights}.`
       : `${conflict.memberName} is already on a booking for ${nights}.`;
-    return `${situation} ${describeBookingMemberNightConflictNextStep(conflict)}`;
   }
 
-  const names = joinWithAnd([
-    ...new Set(conflicts.map((conflict) => conflict.memberName)),
-  ]);
+  // The viewer is addressed as "you" wherever they appear in the list, and the
+  // verb agrees with the DE-DUPLICATED name count: one member on two clashing
+  // bookings is two rows but still one person ("Alice Smith IS already on…").
+  const viewerName = conflicts.find(isViewersOwnPlace)?.memberName;
+  const names = [...new Set(conflicts.map((conflict) => conflict.memberName))];
+  const labels = names.map((name) => (name === viewerName ? "you" : name));
   const nights = formatNightList([
     ...new Set(conflicts.flatMap((conflict) => conflict.conflictingNights)),
   ]);
-  return `${names} are already on other bookings for ${nights}. Nobody can be on two bookings for the same night, so take them off this booking or choose different dates.`;
+
+  if (labels.length === 1) {
+    const verb = labels[0] === "you" ? "are" : "is";
+    return capitaliseFirst(
+      `${labels[0]} ${verb} already on other bookings for ${nights}.`,
+    );
+  }
+  return capitaliseFirst(
+    `${joinWithAnd(labels)} are already on other bookings for ${nights}.`,
+  );
+}
+
+/**
+ * The self-contained sentence-pair used as the `error` on a 409: who is already
+ * booked, which nights, and what to do next. Flow-neutral unless the caller
+ * says the reader is choosing the dates.
+ */
+export function buildBookingMemberNightConflictMessage(
+  conflicts: readonly BookingMemberNightConflictCopyInput[],
+  options: BookingMemberNightConflictCopyOptions = {},
+): string {
+  const summary = buildBookingMemberNightConflictSummary(conflicts);
+
+  if (conflicts.length === 1) {
+    return `${summary} ${describeBookingMemberNightConflictNextStep(conflicts[0], options)}`;
+  }
+
+  const nextStep = options.canChooseDifferentDates
+    ? "Nobody can be on two bookings for the same night, so take them off this booking or choose different dates."
+    : "Nobody can be on two bookings for the same night, so somebody has to come off one of the bookings.";
+  return `${summary} ${nextStep}`;
 }
