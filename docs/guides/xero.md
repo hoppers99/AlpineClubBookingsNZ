@@ -45,8 +45,9 @@ idempotent — retrying the same work never double-charges.
    detection, and finance syncs until you reconnect (your data inside Xero is not
    changed).
 
-3. **Go to Xero** (top right of the page, and on the **Health Snapshot** header)
-   opens Xero in a new tab so you can chase up whatever you just spotted. When
+3. **Go to Xero** (top right of the page) opens Xero in a new tab so you can
+   chase up whatever you just spotted. It sits in the page header, so it is
+   there whichever sections you have expanded. When
    the club's Xero organisation is known, the link takes you straight into *that*
    organisation's dashboard — useful if your Xero login covers several
    organisations. If the app cannot read the organisation, or Xero is not

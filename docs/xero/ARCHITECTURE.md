@@ -592,8 +592,9 @@ The `xero-links.ts` builders cover two shapes of outbound link:
   object's own id (`buildXeroContactUrl`, `buildXeroInvoiceUrl`,
   `buildXeroCreditNoteUrl`).
 - **Organisation links** — the report centre (`buildXeroReportsUrl`) and the
-  **"Go to Xero" buttons** on the Xero Sync page header and its Health Snapshot
-  (`buildXeroDashboardUrl`).
+  **"Go to Xero" button** in the Xero Sync page header (`buildXeroDashboardUrl`).
+  There is one such button, in the page header rather than inside a section, so
+  it is present whichever sections the admin has expanded.
 
 They are **not** the only outbound links, though: about twenty inline
 `https://go.xero.com/…` strings across ten admin components (member detail and
@@ -636,6 +637,22 @@ concurrent cold-cache callers await a single shared read, and this read passes
 `maxRetries: 0` so it never waits out a 429 for minutes on a page-decoration
 call. Any later success replaces the negative entry and restores the 12-hour
 TTL.
+
+**This read fires on mount of `/admin/xero`**, and that is a deliberate,
+accepted exception to the usual reflex that live Xero calls hang off a click.
+The click-only rule written on `/api/admin/xero/status` is scoped to the
+**`?probe=1` connection-health probe** (#2105) and is untouched — a probe is an
+uncached live call, so it must stay behind the "Check connection" button. The
+organisation read is a different shape: it is cached in-process, so mounts do
+not multiply calls. An uncached read is the only one that reaches Xero, and the
+cache bounds that to **at most one `getOrganisations` call per server process
+per 12 hours** — or per **60 seconds** while the read is failing, via the
+negative cache below. A cold cache is also the only case that could stall the
+link, and it degrades to the generic `go.xero.com` URL rather than blocking the
+page. That was judged an acceptable price for a header button that always
+points at the right organisation; hanging it off a click instead would mean the
+admin's first click went to the wrong organisation. `useXeroOrgShortCode`'s doc
+comment carries the same note for anyone who arrives from the client side.
 
 Cache invalidation is unchanged by the added field: the summary cache entry
 holds the whole object, and `resetXeroOrganisationCaches` (fired from the
