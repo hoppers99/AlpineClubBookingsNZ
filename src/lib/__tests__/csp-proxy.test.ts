@@ -9,6 +9,7 @@ import {
   CSP_NONCE_HEADER,
   CSP_REPORT_ONLY_HEADER,
   SECURITY_HEADERS,
+  setSecurityHeaders,
 } from "@/lib/csp";
 import { REQUEST_PATH_HEADER } from "@/lib/internal-return-path";
 import { FEATURE_ROUTE_RULES } from "@/config/feature-routes";
@@ -114,13 +115,53 @@ describe("CSP policy", () => {
     );
   });
 
+  // A trailing slash is the ONE thing normalised before the exact-match
+  // comparison (#2246). Next 308-redirects `/admin/display/builder/` to the
+  // canonical form, but this proxy runs before that redirect — so without
+  // normalisation the redirect response, and anything that ever bypassed it,
+  // carried the unrelaxed policy and the relaxation was silently inert.
+  it("treats a trailing slash as the canonical path on every allowlist", () => {
+    const builderPolicy = buildContentSecurityPolicy("unit-test-nonce", {
+      pathname: "/admin/display/builder/",
+    });
+    expect(directive(builderPolicy, "frame-src")).toContain("'self'");
+
+    // The same normalisation, applied to the OTHER allowlist and to /display's
+    // own relaxations — the two lists must never diverge on a trailing slash.
+    const displayPolicy = buildContentSecurityPolicy("unit-test-nonce", {
+      pathname: "/display/",
+      selfOrigin: "https://example.org",
+    });
+    expect(directive(displayPolicy, "img-src")).toBe("img-src 'self' data:");
+    expect(directive(displayPolicy, "frame-ancestors")).toBe(
+      "frame-ancestors 'self'",
+    );
+    expect(directive(displayPolicy, "connect-src")).toContain(
+      "https://example.org",
+    );
+
+    const headers = new Headers();
+    setSecurityHeaders(headers, "/display/");
+    expect(headers.get("X-Frame-Options")).toBe("SAMEORIGIN");
+  });
+
   // The allowlists are exact-match, never prefixes: a prefix match would hand
-  // frame-src 'self' to every current and future /admin/display/* page.
+  // frame-src 'self' to every current and future /admin/display/* page. The
+  // normalisation above rewrites the INPUT only — it must admit nothing else.
   it("does not grant frame-src 'self' to unlisted /admin/display/* paths", () => {
     for (const pathname of [
       "/admin/display/templates",
       "/admin/display/devices",
       "/admin/display/builder/extra",
+      "/admin/display/builder/extra/",
+      "/admin/display/builder-foo",
+      "/admin/display/builderfoo",
+      // A doubled leading slash is a different URL and is not canonicalised
+      // here; it fails closed, as does a doubled trailing slash (only ONE
+      // trailing slash is stripped).
+      "//admin/display/builder",
+      "/admin/display/builder//",
+      "/ADMIN/DISPLAY/BUILDER",
       "/admin/display/previews",
       "/admin/display",
     ]) {

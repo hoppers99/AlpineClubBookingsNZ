@@ -29,6 +29,29 @@ export interface CspOptions {
   selfOrigin?: string;
 }
 
+/**
+ * Canonicalises a pathname before it is compared against the exact-match
+ * allowlists below. It strips ONE trailing slash, and only from a path longer
+ * than "/".
+ *
+ * Why: Next redirects `/admin/display/builder/` to the canonical no-slash form
+ * with a 308, but this proxy runs BEFORE that redirect — so the redirect
+ * response itself, and anything that ever reached the route without being
+ * redirected, would be served the unrelaxed policy and the scoped relaxation
+ * would be silently inert (issue #2246).
+ *
+ * This normalises the INPUT only; the comparison itself stays exact equality, so
+ * nothing new is admitted. `/admin/display/builder/extra`,
+ * `/admin/display/builder-foo`, `//admin/display/builder` and a double trailing
+ * slash all still fail closed — see the path matrix in
+ * `src/lib/__tests__/csp-proxy.test.ts`.
+ */
+function normalisePathname(pathname: string) {
+  return pathname.length > 1 && pathname.endsWith("/")
+    ? pathname.slice(0, -1)
+    : pathname;
+}
+
 export function setSecurityHeaders(headers: Headers, pathname?: string) {
   for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
     headers.set(name, value);
@@ -36,8 +59,9 @@ export function setSecurityHeaders(headers: Headers, pathname?: string) {
   // /display may be embedded in the same-origin sandboxed template preview
   // (LTV-036, ADR-003 §5). SAMEORIGIN keeps third-party clickjacking blocked
   // while letting our own admin preview host frame it; every other route keeps
-  // the global DENY.
-  if (pathname === "/display") {
+  // the global DENY. The reverse proxy scopes its own X-Frame-Options to the
+  // same single path so the edge cannot override this — see `Caddyfile`.
+  if (pathname !== undefined && normalisePathname(pathname) === "/display") {
     headers.set("X-Frame-Options", "SAMEORIGIN");
   }
 }
@@ -47,12 +71,17 @@ export function setSecurityHeaders(headers: Headers, pathname?: string) {
  * `frame-src 'self'`: the Templates preview host (LTV-036, ADR-003 §5) and the
  * Visual builder's Live preview (ADR-004 §7, issue #2246).
  *
- * Matched by EXACT equality, never by prefix — a prefix match would silently
- * hand `frame-src 'self'` to `/admin/display/templates` and every future
- * `/admin/display/*` page, which is precisely the blanket relaxation the scoped
- * design avoids.
+ * Matched by EXACT equality against `normalisePathname(pathname)`, never by
+ * prefix — a prefix match would silently hand `frame-src 'self'` to
+ * `/admin/display/templates` and every future `/admin/display/*` page, which is
+ * precisely the blanket relaxation the scoped design avoids.
+ *
+ * Exported as a test seam: `display-builder-csp-static.test.ts` drives its
+ * hard-navigation guard from these lists, so adding a path here automatically
+ * requires that path's entry points to be hard navigations (issue #2279).
  */
-const FRAME_SRC_SELF_PATHS: readonly string[] = [
+// test seam
+export const FRAME_SRC_SELF_PATHS: readonly string[] = [
   "/admin/display/preview",
   "/admin/display/builder",
 ];
@@ -70,9 +99,11 @@ const FRAME_SRC_SELF_PATHS: readonly string[] = [
  * display document, so dropping `blob:`/`https:` there would break unrelated
  * admin imagery for no gain — the authored markup it previews runs in the
  * opaque-origin /display frame, which carries the tightened policy itself.
- * Exact equality only, for the same reason as above.
+ * Exact equality against the normalised pathname only, for the same reason as
+ * above. Exported as the same test seam.
  */
-const TIGHT_IMG_SRC_PATHS: readonly string[] = [
+// test seam
+export const TIGHT_IMG_SRC_PATHS: readonly string[] = [
   "/display",
   "/admin/display/preview",
 ];
@@ -93,9 +124,15 @@ export function buildContentSecurityPolicy(nonce: string, options: CspOptions = 
   // /display and rendering authored display markup are unrelated needs, and one
   // shared boolean would force every new preview host to accept the tightened
   // img-src as the price of an iframe.
-  const isDisplay = pathname === "/display";
-  const framesDisplay = pathname !== undefined && FRAME_SRC_SELF_PATHS.includes(pathname);
-  const tightensImgSrc = pathname !== undefined && TIGHT_IMG_SRC_PATHS.includes(pathname);
+  // One normalisation, applied to every allowlist below, so they cannot diverge
+  // on a trailing slash (a route that gained `frame-src 'self'` on `/…/builder/`
+  // but not the matching tightened `img-src` would be a policy nobody designed).
+  const canonicalPath = pathname === undefined ? undefined : normalisePathname(pathname);
+  const isDisplay = canonicalPath === "/display";
+  const framesDisplay =
+    canonicalPath !== undefined && FRAME_SRC_SELF_PATHS.includes(canonicalPath);
+  const tightensImgSrc =
+    canonicalPath !== undefined && TIGHT_IMG_SRC_PATHS.includes(canonicalPath);
   // `blob:` is required for the member-photo crop UI (epic #171): it previews the
   // locally-selected file by loading its `URL.createObjectURL(...)` blob into an
   // <img>. blob: URLs are same-origin and page-created — no exfiltration vector,
