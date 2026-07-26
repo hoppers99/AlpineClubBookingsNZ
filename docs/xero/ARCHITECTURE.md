@@ -586,7 +586,7 @@ deployment) the OAuth/organisation code path is unchanged and the mock endpoints
 
 ## Deep links into Xero (#2261)
 
-Admin pages link out to Xero in two shapes, both built by `xero-links.ts`:
+The `xero-links.ts` builders cover two shapes of outbound link:
 
 - **Object links** — a contact, invoice, or credit note, keyed on the Xero
   object's own id (`buildXeroContactUrl`, `buildXeroInvoiceUrl`,
@@ -594,6 +594,15 @@ Admin pages link out to Xero in two shapes, both built by `xero-links.ts`:
 - **Organisation links** — the report centre (`buildXeroReportsUrl`) and the
   **"Go to Xero" buttons** on the Xero Sync page header and its Health Snapshot
   (`buildXeroDashboardUrl`).
+
+They are **not** the only outbound links, though: about twenty inline
+`https://go.xero.com/…` strings across ten admin components (member detail and
+table, payments, subscriptions, `sync-results-panel`, `shared.tsx`, and two in
+`health-diagnostics-panel.tsx` itself) never import `xero-links.ts`. They are
+per-contact / per-invoice links that resolve for a signed-in Xero user;
+consolidating them behind the builders — which would also let them carry the
+short code — is an open follow-up. A change to `xero-links.ts` therefore should
+not be assumed to reach every admin link into Xero.
 
 The identifier a Xero URL needs is the organisation **short code** (`!aBc12`),
 *not* the tenant GUID stored on the `XeroToken` row. The GUID is not usable in a
@@ -610,16 +619,30 @@ in-process cache. It is deliberately **not** on `/api/admin/xero/status`:
 status is a pure `XeroToken`-row read that every admin surface gating on Xero
 hits (`useXeroStatus`), and hanging a live Xero call off it would spend API
 budget on pages that only ask "is Xero connected?". The Xero Sync page reads the
-organisation route once, and only when connected (`useXeroOrgShortCode`), so a
-cold cache costs at most one `getOrganisations` call per server process per 12
-hours. The finance dashboard makes the opposite trade and links without a short
-code rather than fetching one.
+organisation route once, and only when connected (`useXeroOrgShortCode`); it is
+one of several callers of that route (the setup wizard's org confirmation and
+the subscription-lockout settings panel read it too), and they all share the one
+in-process cache, so a cold cache costs at most one `getOrganisations` call per
+server process per 12 hours. The finance dashboard makes the opposite trade and
+links without a short code rather than fetching one.
+
+`getXeroConnectedOrganisation` is single-flight and caches **failures** as well
+as successes. A present-but-failing connection (revoked refresh token awaiting
+re-entry, an org read 500, a per-minute 429 raised by a concurrent bulk sync)
+would otherwise leave the cache permanently cold, so every admin page load would
+re-attempt a live call — the state in which admins reload most. A failed read is
+therefore cached for **60 seconds** (serving the last known summary, or nulls),
+concurrent cold-cache callers await a single shared read, and this read passes
+`maxRetries: 0` so it never waits out a 429 for minutes on a page-decoration
+call. Any later success replaces the negative entry and restores the 12-hour
+TTL.
 
 Cache invalidation is unchanged by the added field: the summary cache entry
 holds the whole object, and `resetXeroOrganisationCaches` (fired from the
 token store's connect/disconnect via `xero-organisation-cache-bus`) nulls it
-wholesale, so a reconnect to a different organisation can never keep pointing
-"Go to Xero" at the old org.
+wholesale — negative entries included, and abandoning any read in flight — so a
+reconnect to a different organisation can never keep pointing "Go to Xero" at
+the old org.
 
 ## Refactor opportunities (ranked)
 

@@ -13,7 +13,9 @@ import { getXeroConnectedOrganisation } from "@/lib/xero-organisation";
  * status is a pure token-row read that every admin surface gating on Xero hits
  * (`useXeroStatus`), and it must stay free of live Xero calls. This route
  * already makes exactly the `getOrganisations` call the short code rides on,
- * behind the 12-hour in-process cache.
+ * behind the in-process cache (12 hours on success, one minute on failure) that
+ * bounds it for every caller of this route — the setup wizard, the Xero Sync
+ * page's deep links, and the subscription-lockout settings panel.
  */
 export async function GET(request?: NextRequest) {
   const guard = await requireAdmin();

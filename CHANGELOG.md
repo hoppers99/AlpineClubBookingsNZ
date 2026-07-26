@@ -13,8 +13,13 @@ All notable public reference-release changes should be recorded here.
   or Xero is not connected here, the button becomes a plain **Log in to Xero**
   sign-in link rather than disappearing or greying out, since opening Xero is
   exactly what is wanted when the connection is broken. The organisation
-  identifier Xero URLs need is read from the existing, 12-hour-cached
-  organisation lookup, so the buttons add no new Xero API traffic to a page load.
+  identifier Xero URLs need comes from the existing organisation lookup, which
+  is cached on the server: the first page load after a restart, after 12 hours,
+  or after connecting/disconnecting Xero costs one extra Xero API call, and
+  every load after that costs none. While that lookup is failing it is retried
+  at most once a minute rather than on every page load, and the button says
+  only "Opens Xero in a new tab" until the lookup settles — it never blames a
+  failed read for a link that is still loading.
 
 - **Postgres connection ceiling raised from 30 to 40 to stop intermittent
   `FATAL: sorry, too many clients` when a deploy or backup overlaps normal
