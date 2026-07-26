@@ -4,6 +4,14 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **The Lodge TV Visual builder's Live preview works again (#2246).** Clicking
+  **Live preview** in the builder showed a "Content blocked" error instead of the
+  board. The builder embeds a sandboxed frame of the display page, but the
+  app's own content-security policy granted that permission only to the separate
+  full-screen preview page, so the browser blocked the builder's frame. The
+  permission now covers both preview surfaces, matched on the exact page address
+  so no other admin page gains it. **Operators: nothing to do — the preview
+  simply works; no configuration, and no change to what a display can show.**
 - **Postgres connection ceiling raised from 30 to 40 to stop intermittent
   `FATAL: sorry, too many clients` when a deploy or backup overlaps normal
   load.** At `max_connections=30` the app's connection pools already summed to 27
