@@ -10,6 +10,7 @@ import type {
   AuditLogEntry,
   ParentLinkSummary,
 } from "@/lib/admin-member-detail-helpers";
+import type { DependentLinkIneligibleMatch } from "@/lib/dependent-link-eligibility";
 import type { MemberAddressValues } from "@/lib/member-address";
 import type { MembershipTypeAgeExemption } from "@/lib/membership-types";
 import type { AppRole } from "@/lib/member-roles";
@@ -308,6 +309,13 @@ export interface LinkDependentSearchResult {
   dateOfBirth: string | null;
   parentLinks: ParentLinkSummary[];
 }
+
+/**
+ * A member the dependant-link search matched but could not offer, with the
+ * plain-English reason (#2254). Returned by `GET /api/admin/members` only when
+ * a `dependentLinkEligibleFor` search came back empty.
+ */
+export type LinkDependentIneligibleMatch = DependentLinkIneligibleMatch;
 
 export interface LinkParentSearchResult extends ParentMemberSummary {
   dateOfBirth: string | null;
