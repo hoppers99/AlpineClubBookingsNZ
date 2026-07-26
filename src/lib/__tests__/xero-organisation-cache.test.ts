@@ -277,6 +277,52 @@ describe("connected-organisation summary: live read (#2261 review F1/F2)", () =>
     );
   });
 
+  // The reconnect (generation) guard. A read that started BEFORE a
+  // connect/disconnect describes the OLD organisation, so it must not write
+  // itself into the freshly cleared cache — otherwise the next admin would be
+  // deep-linked into a PREVIOUS company's books, which is the whole reason the
+  // deep link is short-code-scoped in the first place.
+  it("drops a read that started before a reconnect instead of caching the old org", async () => {
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    live.getAuthenticatedXeroClient.mockResolvedValue({
+      xero: { accountingApi: { getOrganisations: live.getOrganisations } },
+      tenantId: "tenant-1",
+    });
+    live.callXeroApi.mockImplementation(async (fn: () => Promise<unknown>) =>
+      fn(),
+    );
+    live.getOrganisations.mockImplementation(async () => {
+      await gate;
+      return {
+        body: { organisations: [{ name: "Old Org", shortCode: "!oldOrg" }] },
+      };
+    });
+
+    // A read is in flight against the OLD connection...
+    const inFlight = getXeroConnectedOrganisation();
+    // ...when the admin reconnects to a different Xero organisation.
+    invalidateXeroOrganisationCaches();
+    release?.();
+
+    // Its own caller is still served (see the known residual documented on
+    // useXeroOrgShortCode) — the guard bounds the CACHE, not this value.
+    expect((await inFlight).shortCode).toBe("!oldOrg");
+    expect(live.getOrganisations).toHaveBeenCalledTimes(1);
+
+    // The next caller must go live again and see the NEW organisation: nothing
+    // from the abandoned read may have landed in the cleared cache.
+    live.getOrganisations.mockResolvedValue({
+      body: { organisations: [{ name: "New Org", shortCode: "!newOrg" }] },
+    });
+
+    const after = await getXeroConnectedOrganisation();
+    expect(live.getOrganisations).toHaveBeenCalledTimes(2);
+    expect(after.shortCode).toBe("!newOrg");
+    expect(after.name).toBe("New Org");
+  });
 
   // F1: the bug. A present-but-failing connection (revoked refresh token,
   // org read 500, per-minute 429) cached nothing, so an admin reloading
