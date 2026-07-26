@@ -60,8 +60,6 @@ export async function sendToAdmins({
 }: {
   subject: string;
   html: string;
-  // Admin-audience alerts are never withheld by a booking flag (#2258).
-  bookingContext: "none",
   templateName: string;
   preferenceKey: AdminNotificationPreferenceKey;
   templateData?: EmailTemplateData;
@@ -84,6 +82,11 @@ export async function sendToAdmins({
           to: email,
           subject,
           html,
+          // Admin-audience alerts are NEVER withheld by a booking flag (#2258).
+          // Belt and braces: the gate also exempts them by registry audience, so
+          // even a future caller that threaded a bookingId here could not
+          // silence an operator alert.
+          bookingContext: "none",
           templateName,
           templateData,
           attachments,
