@@ -180,6 +180,48 @@ describe("CSP policy", () => {
     }
   });
 
+  // Case sensitivity is load-bearing on BOTH sides (#2246). The app compares
+  // `normalisePathname(pathname) === "/display"`, and the Caddyfiles use
+  // `path_regexp` — not Caddy's case-INSENSITIVE `path` matcher — precisely so
+  // the edge agrees with it. `/DISPLAY` is therefore the case that pins the two
+  // together: if the app ever case-folded, the edge would silently start denying
+  // a path the app had relaxed.
+  it("keeps /DISPLAY fully denied, matching the case-sensitive edge matcher", () => {
+    for (const pathname of ["/DISPLAY", "/Display", "/DISPLAY/", "/displaY"]) {
+      const policy = buildContentSecurityPolicy("unit-test-nonce", { pathname });
+
+      expect(
+        directive(policy, "frame-ancestors"),
+        `${pathname} must not be framable`,
+      ).toBe("frame-ancestors 'none'");
+      expect(
+        directive(policy, "img-src"),
+        `${pathname} must keep the normal img-src`,
+      ).toBe(
+        "img-src 'self' data: blob: https: https://www.google-analytics.com https://*.google-analytics.com",
+      );
+
+      const headers = new Headers();
+      setSecurityHeaders(headers, pathname);
+      expect(
+        headers.get("X-Frame-Options"),
+        `${pathname} must keep the global DENY`,
+      ).toBe("DENY");
+    }
+
+    // …and the exact-case path really does relax, so the loop above is testing
+    // case sensitivity rather than a path that never relaxes at all.
+    const displayHeaders = new Headers();
+    setSecurityHeaders(displayHeaders, "/display");
+    expect(displayHeaders.get("X-Frame-Options")).toBe("SAMEORIGIN");
+    expect(
+      directive(
+        buildContentSecurityPolicy("unit-test-nonce", { pathname: "/display" }),
+        "frame-ancestors",
+      ),
+    ).toBe("frame-ancestors 'self'");
+  });
+
   it("leaves every non-display route's CSP byte-identical to the pre-#161 policy", () => {
     // A pinned expected policy string — any accidental change to a non-display
     // route's CSP (not just img-src) fails this test, not just a directive-by-
