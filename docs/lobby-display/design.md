@@ -773,10 +773,24 @@ client-safe `css-tokens.ts` before they ship in the payload:
 > "previewing against <lodge>" line near the clock — the old silent default (#64)
 > is gone. The **simulated-date** input (LTV-017) is now a **sibling** of the
 > picker button (it was nested inside it — invalid HTML that stopped a native
-> selection applying, #65). CSP is relaxed **only** for these two same-origin
-> paths: `/display` gains `frame-ancestors 'self'` / `X-Frame-Options: SAMEORIGIN`
-> and its own origin in `connect-src` (so the opaque-origin frame can still fetch
-> the state API); `/admin/display/preview` gains `frame-src 'self'`. The layouts
+> selection applying, #65). CSP is relaxed **only** for named same-origin paths,
+> and the two relaxations are **separate exact-match allowlists** in
+> `src/lib/csp.ts` (never prefix matches, so no future `/admin/display/*` page
+> inherits either by accident):
+>
+> - `frame-src 'self'` — the admin pages that EMBED the `/display` iframe:
+>   `/admin/display/preview` and, since #2246, the Visual builder
+>   `/admin/display/builder` (its **Live preview**, ADR-004 §7 — previously the
+>   builder's own policy blocked its preview with "Content blocked").
+> - the tightened `img-src 'self' data:` (#161) — the routes that RENDER authored
+>   display markup: `/display` and `/admin/display/preview`. The builder is
+>   deliberately **excluded**: it is a full admin page inside the admin chrome,
+>   not a sandboxed display document, and the authored markup it previews runs in
+>   the `/display` frame, which carries the tightened policy itself.
+>
+> `/display` additionally gains `frame-ancestors 'self'` /
+> `X-Frame-Options: SAMEORIGIN` and its own origin in `connect-src` (so the
+> opaque-origin frame can still fetch the state API). The layouts
 > page carries a muted note that a layout is previewed via a Template.
 > Direct-navigation previews (`?preview=1&templateId=…` / `?previewDevice=…` with
 > the admin's own session) still work for personal use.

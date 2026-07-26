@@ -127,6 +127,11 @@ glance. For the deeper design and operating detail, see the
 
    ![Template preview page showing the "No template to preview" prompt and the Reload preview button](../images/admin/admin-display-preview.png)
 
+2. The Visual builder's **Live preview** button uses the same sandboxed frame for
+   your unsaved draft, so it is isolated from your admin session in exactly the
+   same way. If a draft has a problem, the builder lists what to fix instead of
+   opening a frame.
+
 ## Settings reference
 
 | Page / card | What it controls | Notes / constraints |
