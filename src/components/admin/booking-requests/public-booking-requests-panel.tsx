@@ -196,6 +196,12 @@ interface UiMemberLink {
 // Advisory-only member-night conflict surfaced when the admin links a guest to
 // a real member (issue #1226). Purely informational — the hard block stays at
 // approve/hold time — so we only carry the fields the warning renders.
+//
+// These stay REQUIRED even though `BookingMemberNightConflict` now makes the
+// booking half optional (#2250): the only producer of this payload,
+// `POST /api/admin/booking-requests/[id]/link-conflicts`, runs behind
+// `requireAdmin` and passes `actorRole: "ADMIN"`, so every row it returns is
+// `canOpenBooking` and carries the owner and stay dates this warning renders.
 interface LinkMemberNightConflict {
   memberId: string;
   memberName: string;

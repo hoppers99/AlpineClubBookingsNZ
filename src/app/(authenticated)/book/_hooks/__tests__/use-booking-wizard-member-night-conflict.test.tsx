@@ -150,6 +150,46 @@ describe("booking wizard member-night conflict banner (#2250)", () => {
     expect(result.current.error).not.toBe(SERVER_ERROR);
   });
 
+  // #2250 — an unentitled row (the requester's family member turns out to be a
+  // guest on a stranger's booking) arrives with NO booking or guest ids at all,
+  // because the server scopes the payload to what this viewer may see.
+  it("handles a scoped conflict row that carries no booking detail", async () => {
+    const result = await seatedWizard({
+      code: "BOOKING_MEMBER_NIGHT_CONFLICT",
+      error:
+        "Bob Jones is already on a booking for 11 Jun 2026. " +
+        "Ask whoever made that booking, or the club, to take them off it.",
+      conflicts: [
+        {
+          memberId: "member-2",
+          memberName: "Bob Jones",
+          conflictingNights: ["2026-06-11"],
+          isOwnBooking: false,
+          canOpenBooking: false,
+          canSelfRemove: false,
+          isSelfGuest: false,
+        },
+      ],
+    });
+
+    expect(result.current.memberNightConflicts).toHaveLength(1);
+    expect(result.current.error).toBe(
+      "Bob Jones is already on a booking for 11 Jun 2026.",
+    );
+
+    // Neither button renders for such a row, and the removal call refuses to
+    // build a URL out of undefined ids even if one somehow fired.
+    const fetchMock = vi.mocked(globalThis.fetch);
+    fetchMock.mockClear();
+    await act(async () => {
+      await result.current.handleRemoveConflictGuest(
+        result.current.memberNightConflicts[0],
+      );
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.current.memberNightConflicts).toHaveLength(1);
+  });
+
   it("falls back to the server's own sentence when the 409 carries no conflict rows", async () => {
     const result = await seatedWizard({
       code: "BOOKING_MEMBER_NIGHT_CONFLICT",

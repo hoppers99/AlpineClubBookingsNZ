@@ -80,15 +80,28 @@ type ConflictGuestInput = GuestStayRange & {
   memberId?: string | null;
 };
 
+/**
+ * ENTITLEMENT-SCOPED PAYLOAD (#2250). A member-night 409 goes to whoever made
+ * the request, and that requester is not necessarily entitled to see the
+ * clashing booking: a member may legitimately have a family-group member who is
+ * a guest on a STRANGER's booking, and a side-effect-free
+ * `POST /api/bookings/quote` would otherwise hand them that stranger's name,
+ * their whole stay range, and the booking id.
+ *
+ * So every field describing the OTHER booking (and the other guest row on it)
+ * is present only when the server marked this viewer `canOpenBooking` — the
+ * booking's own owner, an admin, or the conflicting guest themselves. The
+ * always-present fields are exactly the ones the requester already supplied or
+ * already knows: the member they tried to book, that member's name, and the
+ * intersection with the nights they chose.
+ *
+ * Gating the fields here rather than in each of the ~14 routes that return this
+ * body is deliberate: those routes pass the array straight through, so this
+ * assembly point is the only place the rule can be stated once.
+ */
 export type BookingMemberNightConflict = {
   memberId: string;
   memberName: string;
-  bookingId: string;
-  bookingStatus: BookingStatus;
-  bookingOwnerName: string;
-  bookingCheckIn: string;
-  bookingCheckOut: string;
-  guestId: string;
   conflictingNights: string[];
   isOwnBooking: boolean;
   canOpenBooking: boolean;
@@ -101,7 +114,30 @@ export type BookingMemberNightConflict = {
    * than narrating them in the third person.
    */
   isSelfGuest: boolean;
+  /**
+   * The clashing booking and the clashing guest row on it. Present only when
+   * `canOpenBooking` — see the disclosure note above. `guestId` goes with them:
+   * on its own it addresses nothing (every guest route is scoped by its booking
+   * id), and keeping it would leave a stable handle on a stranger's guest row
+   * for no UI that is allowed to use it.
+   */
+  bookingId?: string;
+  bookingStatus?: BookingStatus;
+  bookingOwnerName?: string;
+  bookingCheckIn?: string;
+  bookingCheckOut?: string;
+  guestId?: string;
 };
+
+/** The disclosure-gated half of a conflict row, listed once so tests can assert it. */
+export const BOOKING_MEMBER_NIGHT_CONFLICT_PRIVILEGED_FIELDS = [
+  "bookingCheckIn",
+  "bookingCheckOut",
+  "bookingId",
+  "bookingOwnerName",
+  "bookingStatus",
+  "guestId",
+] as const;
 
 export class BookingMemberNightConflictError extends Error {
   constructor(public readonly conflicts: BookingMemberNightConflict[]) {
@@ -235,26 +271,37 @@ export async function findBookingMemberNightConflicts(
       today,
     });
 
+    const canOpenBooking = isOwnBooking || actorRole === "ADMIN" || isSelfGuest;
+
     conflicts.push({
       memberId: guest.memberId,
       memberName: displayName(
         guest.member?.firstName ?? guest.firstName,
         guest.member?.lastName ?? guest.lastName,
       ),
-      bookingId: guest.booking.id,
-      bookingStatus: guest.booking.status,
-      bookingOwnerName: displayName(
-        guest.booking.member.firstName,
-        guest.booking.member.lastName,
-      ),
-      bookingCheckIn: formatDateOnly(guest.booking.checkIn),
-      bookingCheckOut: formatDateOnly(guest.booking.checkOut),
-      guestId: guest.id,
       conflictingNights: conflictingNights.sort(),
       isOwnBooking,
-      canOpenBooking: isOwnBooking || actorRole === "ADMIN" || isSelfGuest,
+      canOpenBooking,
       canSelfRemove,
       isSelfGuest,
+      // #2250 — everything about the OTHER booking is attached only for a
+      // viewer entitled to it. The admin paths (booking-request approve / hold
+      // / send-quote / link-conflicts, and every admin-on-behalf create and
+      // modify) pass `actorRole: "ADMIN"`, so an admin resolving a conflict
+      // still receives the full detail their UI renders.
+      ...(canOpenBooking
+        ? {
+            bookingId: guest.booking.id,
+            bookingStatus: guest.booking.status,
+            bookingOwnerName: displayName(
+              guest.booking.member.firstName,
+              guest.booking.member.lastName,
+            ),
+            bookingCheckIn: formatDateOnly(guest.booking.checkIn),
+            bookingCheckOut: formatDateOnly(guest.booking.checkOut),
+            guestId: guest.id,
+          }
+        : {}),
     });
   }
 

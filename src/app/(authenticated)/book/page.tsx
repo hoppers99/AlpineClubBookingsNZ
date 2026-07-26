@@ -223,7 +223,12 @@ export default function BookPage() {
             <div className="mt-3 space-y-3">
               {memberNightConflicts.map((conflict) => (
                 <div
-                  key={`${conflict.bookingId}-${conflict.guestId}`}
+                  // #2250: an unentitled row carries no booking or guest id, so
+                  // the key falls back to what every row always has.
+                  key={
+                    conflict.guestId ??
+                    `${conflict.memberId}-${conflict.conflictingNights[0]}`
+                  }
                   className="rounded-md border border-danger-6 bg-card p-3"
                 >
                   <p className="font-medium text-danger-11">
@@ -256,7 +261,7 @@ export default function BookPage() {
                     })}
                   </p>
                   <div className="mt-3 flex flex-wrap gap-2">
-                    {conflict.canOpenBooking && (
+                    {conflict.canOpenBooking && conflict.bookingId && (
                       <Button
                         asChild
                         size="sm"

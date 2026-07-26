@@ -17,7 +17,9 @@
  * `describeBookingMemberNightConflictBooking`, which returns null unless the
  * server marked this viewer `canOpenBooking` (the booking's own owner, an
  * admin, or the conflicting guest themselves). Nothing here widens what
- * `findBookingMemberNightConflicts` puts on the wire.
+ * `findBookingMemberNightConflicts` puts on the wire — and since #2250 the two
+ * agree exactly: an unentitled conflict row carries no booking fields at all,
+ * so this copy has nothing to leak even if a future edit forgets the flag.
  *
  * FLOW RULE. Every producer of a member-night 409 routes through
  * `getBookingMemberNightConflictResponse` — the booking wizard, but also
@@ -39,8 +41,13 @@ import { formatNZDate } from "@/lib/nzst-date";
 export type BookingMemberNightConflictCopyInput = {
   memberName: string;
   conflictingNights: string[];
-  bookingStatus: string;
-  bookingOwnerName: string;
+  /**
+   * Optional because the 409 payload omits them for a viewer the server did not
+   * mark `canOpenBooking` — see the disclosure rule above. Every sentence that
+   * reads them is behind that same flag, and fails closed if one is missing.
+   */
+  bookingStatus?: string;
+  bookingOwnerName?: string;
   isOwnBooking?: boolean;
   canOpenBooking?: boolean;
   canSelfRemove?: boolean;
@@ -127,10 +134,16 @@ export function describeBookingMemberNightConflictBooking(
   conflict: BookingMemberNightConflictCopyInput,
 ): string | null {
   if (!conflict.canOpenBooking) return null;
+  // Fail closed. An entitled row always carries these, so a missing one means
+  // the payload was scoped — say nothing rather than "It is a undefined
+  // booking."
+  if (!conflict.bookingStatus) return null;
+  const status = formatBookingStatus(conflict.bookingStatus);
   if (conflict.isOwnBooking) {
-    return `It is your own ${formatBookingStatus(conflict.bookingStatus)} booking.`;
+    return `It is your own ${status} booking.`;
   }
-  return `It is a ${formatBookingStatus(conflict.bookingStatus)} booking made by ${conflict.bookingOwnerName}.`;
+  if (!conflict.bookingOwnerName) return null;
+  return `It is a ${status} booking made by ${conflict.bookingOwnerName}.`;
 }
 
 /** What this particular viewer can actually do about the clash. */

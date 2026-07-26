@@ -46,18 +46,23 @@ interface GuestProfileRequiredMember {
 interface BookingMemberNightConflict {
   memberId: string;
   memberName: string;
-  bookingId: string;
-  bookingStatus: string;
-  bookingOwnerName: string;
-  bookingCheckIn: string;
-  bookingCheckOut: string;
-  guestId: string;
   conflictingNights: string[];
   // #2250: the conflict card's copy picks its next step from these
   // server-computed, viewer-aware flags rather than guessing in the browser.
   isOwnBooking: boolean;
   canOpenBooking: boolean;
   canSelfRemove: boolean;
+  // #2250: the server sends these only to a viewer it marked `canOpenBooking`,
+  // so a member whose family member turns out to be on a stranger's booking
+  // never receives that stranger's name, stay dates, or ids. Optional here for
+  // the same reason — mirrors `BookingMemberNightConflict` in
+  // `@/lib/booking-member-night-conflicts`.
+  bookingId?: string;
+  bookingStatus?: string;
+  bookingOwnerName?: string;
+  bookingCheckIn?: string;
+  bookingCheckOut?: string;
+  guestId?: string;
 }
 
 interface AvailabilityNightDetail {
@@ -620,6 +625,11 @@ export function useBookingWizard() {
   }
 
   async function handleRemoveConflictGuest(conflict: BookingMemberNightConflict) {
+    // #2250: the ids arrive only for a viewer the server marked
+    // `canOpenBooking`, which `canSelfRemove` implies — and the button that
+    // calls this is gated on `canSelfRemove`. So this narrows the optional
+    // fields rather than adding a rule.
+    if (!conflict.bookingId || !conflict.guestId) return;
     setRemovingConflictGuestId(conflict.guestId);
     try {
       const res = await fetch(
