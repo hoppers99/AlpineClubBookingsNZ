@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { AGE_TIER_VALUES, ageTierEnum } from "@/lib/age-tier-schema";
 import { genderEnum, titleEnum } from "@/lib/member-enums-schema";
-import type { AgeTier } from "@prisma/client";
+import type { AgeTier, Prisma } from "@prisma/client";
 import { hash } from "bcryptjs";
 import { randomBytes } from "crypto";
 import { prisma } from "@/lib/prisma";
@@ -370,7 +370,10 @@ export async function listAdminMembers(
   // dependant-link diagnostic query below re-uses exactly this condition to
   // explain WHY a search that matched people returned no eligible candidates.
   const queryTerms = trimmedQuery?.split(/\s+/).filter(Boolean) ?? [];
-  const textSearchCondition = trimmedQuery
+  // Annotated rather than inferred: the diagnostic query below passes this
+  // straight to Prisma as a `where`, and an inferred literal widens
+  // `mode: "insensitive"` to `string`, which is not `Prisma.QueryMode`.
+  const textSearchCondition: Prisma.MemberWhereInput | null = trimmedQuery
     ? {
         OR: [
           { id: { startsWith: trimmedQuery } },
@@ -380,7 +383,9 @@ export async function listAdminMembers(
           ...(queryTerms.length > 1
             ? [
                 {
-                  AND: queryTerms.map((term) => ({
+                  // Annotated because a spread inside a conditional does not
+                  // carry the outer contextual type into the callback.
+                  AND: queryTerms.map((term): Prisma.MemberWhereInput => ({
                     OR: [
                       { firstName: { contains: term, mode: "insensitive" } },
                       { lastName: { contains: term, mode: "insensitive" } },
