@@ -19,6 +19,11 @@ const { mockPrisma, mockTransporter, mockLogger } = vi.hoisted(() => {
     error: vi.fn(),
   };
   const mockPrisma = {
+    // #2258: the mailer reads the booking's "No emails" switch before every
+    // booking-scoped send; off means unchanged behaviour.
+    booking: {
+      findUnique: vi.fn().mockResolvedValue({ noEmails: false }),
+    },
     emailLog: {
       create: vi.fn().mockResolvedValue({ id: "log-1" }),
       update: vi.fn().mockResolvedValue({}),
@@ -94,6 +99,7 @@ describe("N-10: EmailLog tracking", () => {
     const { sendEmail } = await import("../email");
 
     await sendEmail({
+      bookingContext: "none",
       to: "test@example.com",
       subject: "Test",
       html: "<p>Test</p>",
@@ -120,6 +126,7 @@ describe("N-10: EmailLog tracking", () => {
     const { sendEmail } = await import("../email");
 
     await sendEmail({
+      bookingContext: "none",
       to: "test@example.com",
       subject: "Reset your password",
       html: '<a href="https://example.org/reset-password?token=live-secret">Reset</a>',
@@ -152,6 +159,7 @@ describe("N-10: EmailLog tracking", () => {
         const { sendEmail } = await import("../email");
 
         await sendEmail({
+          bookingContext: "none",
           to: "test@example.com",
           subject: "Complete your action",
           html,
@@ -180,6 +188,7 @@ describe("N-10: EmailLog tracking", () => {
     const { sendEmail } = await import("../email");
 
     await sendEmail({
+      bookingContext: "none",
       to: "private-committee@example.com",
       subject: "Website Contact",
       html: "<p>Contact message</p>",
@@ -216,6 +225,7 @@ describe("N-10: EmailLog tracking", () => {
     const { sendEmail } = await import("../email");
 
     await sendEmail({
+      bookingContext: "none",
       to: "test@example.com",
       subject: "Reset your password",
       html: '<a href="https://example.org/reset-password?token=live-secret">Reset</a>',
@@ -243,6 +253,7 @@ describe("N-10: EmailLog tracking", () => {
     const { sendEmail } = await import("../email");
 
     await sendEmail({
+      bookingContext: "none",
       to: "test@example.com",
       subject: "Test",
       html: "<p>Test</p>",
@@ -275,6 +286,7 @@ describe("N-10: EmailLog tracking", () => {
 
     await expect(
       sendEmail({
+        bookingContext: "none",
         to: "test@example.com",
         subject: "Test",
         html: "<p>Test</p>",
@@ -301,6 +313,7 @@ describe("N-10: EmailLog tracking", () => {
 
     await expect(
       sendEmail({
+        bookingContext: "none",
         to: "test@example.com",
         subject: "Test",
         html: "<p>Test</p>",
@@ -339,6 +352,7 @@ describe("N-10: EmailLog tracking", () => {
     const { sendEmail } = await import("../email");
 
     await sendEmail({
+      bookingContext: "none",
       to: "Test@Example.com",
       subject: "Test",
       html: "<p>Test</p>",
@@ -413,6 +427,7 @@ describe("N-10: EmailLog tracking", () => {
 
     await expect(
       sendEmail({
+        bookingContext: "none",
         to: "test@example.com",
         subject: "Test",
         html: "<p>Test</p>",
@@ -441,6 +456,7 @@ describe("N-10: EmailLog tracking", () => {
 
     // Should not throw even though logging failed
     await sendEmail({
+      bookingContext: "none",
       to: "test@example.com",
       subject: "Test",
       html: "<p>Test</p>",
@@ -459,6 +475,7 @@ describe("N-10: EmailLog tracking", () => {
     const { sendEmail } = await import("../email");
 
     await sendEmail({
+      bookingContext: "none",
       to: "test@example.com",
       subject: "Test",
       html: "<p>Test</p>",
@@ -480,6 +497,7 @@ describe("N-10: EmailLog tracking", () => {
     const { sendBookingPendingEmail } = await import("../email");
 
     await sendBookingPendingEmail(
+      { bookingId: "bk_test" },
       "member@example.com",
       "Casey",
       new Date("2026-07-15"),

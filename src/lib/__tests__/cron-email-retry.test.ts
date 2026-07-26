@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  bookingFindUnique: vi.fn(),
   findMany: vi.fn(),
   update: vi.fn(),
   updateMany: vi.fn(),
@@ -20,6 +21,11 @@ vi.mock("@/lib/prisma", () => ({
     },
     member: {
       findMany: mocks.memberFindMany,
+    },
+    // #2258: the retry cron re-reads the booking's "No emails" switch before
+    // every replay.
+    booking: {
+      findUnique: mocks.bookingFindUnique,
     },
   },
 }));
@@ -81,6 +87,7 @@ describe("retryFailedEmails (issue #820)", () => {
     mocks.updateMany.mockResolvedValue({ count: 1 });
     mocks.memberFindMany.mockResolvedValue([]);
     mocks.getActiveEmailSuppression.mockResolvedValue(null);
+    mocks.bookingFindUnique.mockResolvedValue({ noEmails: false });
   });
 
   it("only queries retryable failures: FAILED, under max attempts, with a retained HTML body", async () => {
@@ -230,5 +237,88 @@ describe("retryFailedEmails (issue #820)", () => {
 
     await expect(retryFailedEmails()).rejects.toThrow(/delivery config invalid/);
     expect(mocks.findMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('retryFailedEmails and the per-booking "No emails" switch (#2258)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.resolveEmailDeliveryConfig.mockReturnValue({
+      ok: true,
+      transportOptions: { host: "smtp.example.test" },
+      issues: [],
+    });
+    mocks.update.mockResolvedValue({});
+    mocks.updateMany.mockResolvedValue({ count: 1 });
+    mocks.memberFindMany.mockResolvedValue([]);
+    mocks.getActiveEmailSuppression.mockResolvedValue(null);
+    mocks.bookingFindUnique.mockResolvedValue({ noEmails: false });
+    mocks.sendMail.mockResolvedValue({ messageId: "msg_1" });
+  });
+
+  it("does NOT replay a FAILED email whose booking now has the switch on", async () => {
+    // The exact hole the gate exists for: the row was queued and failed BEFORE
+    // an admin turned the switch on, so the pre-send check in core.ts passed.
+    mocks.findMany.mockResolvedValue([failedEmail({ bookingId: "bk_1" })]);
+    mocks.bookingFindUnique.mockResolvedValue({ noEmails: true });
+
+    const result = await retryFailedEmails();
+
+    expect(mocks.sendMail).not.toHaveBeenCalled();
+    // Not claimed, so it is not counted as a retry attempt.
+    expect(mocks.updateMany).not.toHaveBeenCalled();
+    expect(result).toEqual({ retried: 0, succeeded: 0, failed: 0 });
+    expect(mocks.update).toHaveBeenCalledWith({
+      where: { id: "email_1" },
+      data: expect.objectContaining({
+        status: "SKIPPED_NO_EMAILS",
+        htmlBody: null,
+      }),
+    });
+  });
+
+  it("fails closed and leaves the row untouched when the switch cannot be read", async () => {
+    mocks.findMany.mockResolvedValue([failedEmail({ bookingId: "bk_1" })]);
+    mocks.bookingFindUnique.mockRejectedValue(new Error("connection reset"));
+
+    const result = await retryFailedEmails();
+
+    expect(mocks.sendMail).not.toHaveBeenCalled();
+    expect(mocks.update).not.toHaveBeenCalled();
+    expect(mocks.updateMany).not.toHaveBeenCalled();
+    expect(result).toEqual({ retried: 0, succeeded: 0, failed: 0 });
+  });
+
+  it("replays normally when the booking's switch is off", async () => {
+    mocks.findMany.mockResolvedValue([failedEmail({ bookingId: "bk_1" })]);
+
+    const result = await retryFailedEmails();
+
+    expect(mocks.bookingFindUnique).toHaveBeenCalledWith({
+      where: { id: "bk_1" },
+      select: { noEmails: true },
+    });
+    expect(mocks.sendMail).toHaveBeenCalledTimes(1);
+    expect(result.succeeded).toBe(1);
+  });
+
+  it("never consults the switch for a row with no booking, and never for an admin-audience template", async () => {
+    mocks.findMany.mockResolvedValue([
+      failedEmail({ id: "email_1", bookingId: null }),
+      failedEmail({
+        id: "email_2",
+        bookingId: "bk_1",
+        templateName: "admin-new-booking",
+      }),
+    ]);
+    mocks.bookingFindUnique.mockResolvedValue({ noEmails: true });
+
+    const result = await retryFailedEmails();
+
+    // Neither row reads the switch: the first has no bookingId, and the second
+    // is short-circuited by its admin audience before the read. BOTH replay.
+    expect(mocks.bookingFindUnique).not.toHaveBeenCalled();
+    expect(mocks.sendMail).toHaveBeenCalledTimes(2);
+    expect(result.succeeded).toBe(2);
   });
 });

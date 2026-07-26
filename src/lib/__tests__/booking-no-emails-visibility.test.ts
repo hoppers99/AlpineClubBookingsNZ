@@ -1,0 +1,119 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+/**
+ * #2258: a waitlist offer withheld by the per-booking "No emails" switch must
+ * get its OWN visibility state. Folding it into "missing" / "undeliverable"
+ * would tell an operator the member was not reached because something broke,
+ * when in fact an admin chose silence — and would light up the stuck-state
+ * dashboard and the booking-provider-mismatch board with a false alarm.
+ */
+
+const mocks = vi.hoisted(() => ({
+  emailLogFindMany: vi.fn(),
+}));
+
+vi.mock("@/lib/prisma", () => ({
+  prisma: { emailLog: { findMany: mocks.emailLogFindMany } },
+}));
+
+import { BookingStatus } from "@prisma/client";
+import { getWaitlistOfferEmailDeliveries } from "@/lib/waitlist-offer-email-visibility";
+
+const OFFERED_AT = new Date("2026-07-20T10:00:00.000Z");
+
+function booking(overrides: { id?: string; noEmails?: boolean } = {}) {
+  return {
+    id: overrides.id ?? "bk_1",
+    status: BookingStatus.WAITLIST_OFFERED,
+    waitlistOfferedAt: OFFERED_AT,
+    noEmails: overrides.noEmails ?? false,
+    member: { email: "member@example.com" },
+  };
+}
+
+function emailLog(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "log_1",
+    to: "member@example.com",
+    bookingId: "bk_1",
+    status: "SENT",
+    attempts: 1,
+    lastAttemptAt: OFFERED_AT,
+    errorMessage: null,
+    createdAt: OFFERED_AT,
+    htmlBody: null,
+    ...overrides,
+  };
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  mocks.emailLogFindMany.mockResolvedValue([]);
+});
+
+describe("waitlist offer email visibility and the No emails switch (#2258)", () => {
+  it("reports a withheld offer email as 'suppressed', not as a delivery failure", async () => {
+    mocks.emailLogFindMany.mockResolvedValue([
+      emailLog({
+        status: "SKIPPED_NO_EMAILS",
+        errorMessage: 'Withheld: this booking has the "No emails" switch turned on',
+      }),
+    ]);
+
+    const deliveries = await getWaitlistOfferEmailDeliveries([
+      booking({ noEmails: true }),
+    ]);
+
+    const delivery = deliveries.get("bk_1")!;
+    expect(delivery.retryState).toBe("suppressed");
+    expect(delivery.needsOperatorAction).toBe(false);
+    expect(delivery.status).toBe("SKIPPED_NO_EMAILS");
+  });
+
+  it("reports a suppressed booking with NO log row as 'suppressed', not 'missing'", async () => {
+    // The normal shape: candidacy exclusion means no offer email was ever
+    // attempted, so there is no EmailLog row at all.
+    mocks.emailLogFindMany.mockResolvedValue([]);
+
+    const deliveries = await getWaitlistOfferEmailDeliveries([
+      booking({ noEmails: true }),
+    ]);
+
+    const delivery = deliveries.get("bk_1")!;
+    expect(delivery.retryState).toBe("suppressed");
+    expect(delivery.needsOperatorAction).toBe(false);
+  });
+
+  it("still reports a genuinely missing offer email on an unsuppressed booking", async () => {
+    mocks.emailLogFindMany.mockResolvedValue([]);
+
+    const deliveries = await getWaitlistOfferEmailDeliveries([booking()]);
+
+    const delivery = deliveries.get("bk_1")!;
+    expect(delivery.retryState).toBe("missing");
+    expect(delivery.needsOperatorAction).toBe(true);
+  });
+
+  it("keeps a bounce distinguishable from a deliberate withhold", async () => {
+    mocks.emailLogFindMany.mockResolvedValue([
+      emailLog({ status: "BOUNCED", errorMessage: "hard bounce" }),
+    ]);
+
+    const deliveries = await getWaitlistOfferEmailDeliveries([booking()]);
+
+    const delivery = deliveries.get("bk_1")!;
+    expect(delivery.retryState).toBe("undeliverable");
+    expect(delivery.needsOperatorAction).toBe(true);
+  });
+
+  it("matches the log row to the booking by bookingId", async () => {
+    mocks.emailLogFindMany.mockResolvedValue([
+      emailLog({ id: "log_other", bookingId: "bk_other", status: "SENT" }),
+      emailLog({ id: "log_mine", bookingId: "bk_1", status: "BOUNCED" }),
+    ]);
+
+    const deliveries = await getWaitlistOfferEmailDeliveries([booking()]);
+
+    expect(deliveries.get("bk_1")!.emailLogId).toBe("log_mine");
+  });
+});

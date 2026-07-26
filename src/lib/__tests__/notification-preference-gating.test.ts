@@ -30,6 +30,8 @@ const { mockPrisma, mockTransporter } = vi.hoisted(() => {
     },
     booking: {
       findMany: vi.fn().mockResolvedValue([]),
+      // #2258: "No emails" switch off — unchanged behaviour.
+      findUnique: vi.fn().mockResolvedValue({ noEmails: false }),
     },
     notificationPreference: {
       findUnique: vi.fn().mockResolvedValue(null),
@@ -245,6 +247,7 @@ describe("#1285 must-send transactional mail is never suppressible", () => {
 
     const { sendBookingCancelledEmail } = await import("../email");
     await sendBookingCancelledEmail(
+      { bookingId: "bk_test" },
       "mia@example.com",
       "Mia",
       new Date("2026-04-10T00:00:00.000Z"),
