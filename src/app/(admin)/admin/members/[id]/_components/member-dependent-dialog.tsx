@@ -34,6 +34,7 @@ import type { MemberAddressValues } from "@/lib/member-address";
 import type {
   DependentDialogMode,
   DependentForm,
+  LinkDependentIneligibleMatch,
   LinkDependentSearchResult,
   MemberDetail,
 } from "../_types";
@@ -59,6 +60,18 @@ interface MemberDependentDialogProps {
   linkSearch: string;
   linkSearching: boolean;
   linkSearchResults: LinkDependentSearchResult[];
+  /**
+   * Members the search matched but could not offer, each with the reason
+   * (#2254). Only populated when the eligible list is empty.
+   */
+  linkIneligibleMatches: LinkDependentIneligibleMatch[];
+  /**
+   * #2254: the server's own "the text search matched no member at all" signal.
+   * The rendered results list cannot stand in for it — it is filtered
+   * client-side — so the empty state only claims nobody matched when this says
+   * so.
+   */
+  linkSearchMatchedNobody: boolean;
   linkSelected: LinkDependentSearchResult | null;
   linkNotificationParentId: string;
   linkDisableLogin: boolean;
@@ -89,6 +102,8 @@ export function MemberDependentDialog({
   linkSearch,
   linkSearching,
   linkSearchResults,
+  linkIneligibleMatches,
+  linkSearchMatchedNobody,
   linkSelected,
   linkNotificationParentId,
   linkDisableLogin,
@@ -397,9 +412,30 @@ export function MemberDependentDialog({
                   ))}
                 </div>
               ) : linkSearch.trim().length >= 2 && !linkSearching ? (
-                <p className="text-sm text-muted-foreground">
-                  No eligible members found.
-                </p>
+                <div className="space-y-2">
+                  <p className="text-sm text-muted-foreground">
+                    {linkIneligibleMatches.length > 0
+                      ? "No eligible members found. These members matched your search but cannot be linked:"
+                      : linkSearchMatchedNobody
+                        ? "No members matched your search."
+                        : "No eligible members found."}
+                  </p>
+                  {linkIneligibleMatches.length > 0 && (
+                    <ul className="space-y-1 rounded-md border border-border p-3">
+                      {linkIneligibleMatches.map((candidate) => (
+                        <li
+                          key={candidate.id}
+                          className="text-xs text-muted-foreground"
+                        >
+                          <span className="font-medium text-foreground">
+                            {candidate.firstName} {candidate.lastName}
+                          </span>{" "}
+                          ({candidate.email}) {candidate.explanation}.
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
               ) : (
                 <p className="text-sm text-muted-foreground">
                   Start typing at least 2 characters to search.
