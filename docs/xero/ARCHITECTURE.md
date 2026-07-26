@@ -655,10 +655,29 @@ callers on a cold or failing cache collapse to one underlying Xero call instead
 of N, at the cost only that a joiner shares the leader's outcome rather than
 making its own attempt. Negative caching is the half that is not free here —
 this is a money-adjacent value, so a connection an admin has just fixed must be
-picked up by the very next call, not up to a minute later. Both reads share one
-generation counter, so a read in flight across a connect/disconnect is served to
-its own callers and then dropped rather than written into the freshly cleared
-cache.
+picked up by the very next call, not up to a minute later.
+
+All three organisation reads in that module — the year-end month, the
+connected-org summary, and `getXeroLockDates` — share **one generation
+counter**, because they share one invalidation. A read that started before a
+connect/disconnect must not write the old organisation's answer into the
+freshly cleared cache. Be precise about what that guarantees: it bounds the
+**cache**, not the value already in flight. The abandoned read still resolves to
+the single caller that started it, and for the year-end month that caller may be
+`refreshFinancialYearConfig`, which passes what it was handed to
+`setFinancialYearEndMonth` — a module global in `financial-year.ts` with no TTL
+and no generation, held until the next refresh. That residual is single-request
+and pre-existing; the counter's job is to stop a stale answer being **repeated**
+for a whole TTL.
+
+The lock-dates read is where that matters most. It is the fail-closed one: a
+retroactive booking whose check-in falls on or before the effective lock date is
+rejected at create time, and the read throws rather than degrading so the guard
+can never be silently skipped. Without the generation check, a read in flight
+across a reconnect would repopulate the just-cleared 5-minute cache with the
+**previous** organisation's lock dates, and a booking that should have been
+rejected would pass the guard and post its invoice into a locked period in the
+organisation now connected.
 
 **This read fires on mount of `/admin/xero`**, and that is a deliberate,
 accepted exception to the usual reflex that live Xero calls hang off a click.

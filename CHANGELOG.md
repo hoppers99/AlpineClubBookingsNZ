@@ -4,6 +4,29 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Fixed: after switching the connected Xero organisation, the club's financial
+  year and period-lock checks could keep using the PREVIOUS organisation's
+  settings (#2261).** The app remembers a few things it reads from Xero — the
+  organisation's financial year-end month, its name, and its accounting lock
+  dates — so it does not re-ask Xero on every page load. Connecting or
+  disconnecting Xero already cleared that memory. What it did not handle was a
+  read that was *already underway* at that moment: it finished a fraction of a
+  second later and quietly re-filled the memory it had just been cleared from,
+  with the old organisation's answers.
+  The financial year-end month is the one that costs money. It decides which
+  membership season a date falls in, how a part-year subscription is charged,
+  and which window membership invoices are searched over. Refilled with the
+  wrong month it would have stayed wrong for up to 12 hours: a $200 annual fee
+  worked out on a mid-May decision date comes to roughly $183 under a June
+  year-end but roughly $33 under a March one — the same member, the same date,
+  five times the difference. The accounting lock dates matter for the same
+  reason in the other direction: they are what stops a backdated booking being
+  invoiced into a period the accountant has already closed, and stale ones could
+  let such a booking through. Both now refuse to save an answer that arrived
+  from an organisation the club is no longer connected to, so the next read goes
+  back to Xero and gets the right one. Nothing changes for clubs that have not
+  switched Xero organisations; there is no configuration to update.
+
 - **A "Go to Xero" button in the Xero Sync page header (#2261).**
   When an admin spots a problem on **Admin → Finance → Xero Sync** they can now
   jump straight into Xero from the page header instead of hunting for a Xero
