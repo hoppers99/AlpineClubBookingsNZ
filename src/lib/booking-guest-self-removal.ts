@@ -33,7 +33,8 @@ export type GuestSelfRemovalBlocker =
   | "OWN_BOOKING"
   | "BOOKING_STATUS"
   | "STAY_NOT_FUTURE"
-  | "LAST_GUEST";
+  | "LAST_GUEST"
+  | "QUOTE_PRICED";
 
 export type GuestSelfRemovalEligibility = {
   canSelfRemove: boolean;
@@ -44,11 +45,21 @@ export type GuestSelfRemovalEligibility = {
  * The self-removal rule, evaluated server-side and shared by every surface that
  * offers (or explains the absence of) the action.
  *
- * Deliberately NOT exhaustive: the removal service additionally refuses a
- * quote-priced booking (`assertBookingNotQuotePriced`) and a settled booking
- * whose refund/credit election a self-remover may not make on the owner's
- * behalf. Both need a database read the caller may not have and both return a
- * plain-English 400 the caller surfaces verbatim, so they stay server-only.
+ * One refusal stays server-only: a SETTLED booking whose reduction needs an
+ * explicit refund-vs-account-credit election, which the owner (not a departing
+ * guest) must make. Predicting it would mean knowing the price delta of
+ * removing this guest, and that is the full repricing pass — season rates,
+ * group discount, promo revalidation — which only runs inside the removal
+ * transaction. Guessing from "has a captured payment" would hide the action
+ * from members the server would in fact allow (a cancellation tier that
+ * returns nothing needs no election), so the page shows the action and the
+ * card surfaces the service's plain-English 400 verbatim if it is refused.
+ *
+ * The quote-priced refusal (`isQuotePricedBooking`) IS predictable — one
+ * indexed lookup — and callers that can afford it pass `isQuotePriced`. It
+ * defaults to false so the callers that cannot (the member-night guard, which
+ * runs inside the booking-write transaction and must not add a per-conflict
+ * query) behave exactly as before.
  */
 export function evaluateGuestSelfRemoval({
   actorMemberId,
@@ -57,6 +68,7 @@ export function evaluateGuestSelfRemoval({
   bookingStatus,
   bookingCheckIn,
   bookingGuestCount,
+  isQuotePriced = false,
   today = getTodayDateOnly(),
 }: {
   actorMemberId: string;
@@ -66,6 +78,12 @@ export function evaluateGuestSelfRemoval({
   bookingStatus: string;
   bookingCheckIn: Date;
   bookingGuestCount: number;
+  /**
+   * The booking keeps a negotiated booking-request price
+   * (`isQuotePricedBooking`). Defaults to false — "not known to be quote
+   * priced" — for callers that cannot afford the lookup.
+   */
+  isQuotePriced?: boolean;
   today?: Date;
 }): GuestSelfRemovalEligibility {
   // Self-removal is the path for someone ELSE's booking. An owner (and an
@@ -84,6 +102,12 @@ export function evaluateGuestSelfRemoval({
   }
   if (bookingGuestCount <= 1) {
     return { canSelfRemove: false, blocker: "LAST_GUEST" };
+  }
+  // Last, exactly where `removeBookingGuestInTransaction` runs
+  // `assertBookingNotQuotePriced` — so the reason a member is shown is the one
+  // the server would actually have raised.
+  if (isQuotePriced) {
+    return { canSelfRemove: false, blocker: "QUOTE_PRICED" };
   }
   return { canSelfRemove: true, blocker: null };
 }
@@ -106,6 +130,8 @@ export function describeGuestSelfRemovalBlocker(
       return "This is your own booking — edit the guest list, or cancel it, from the booking details above.";
     case "NOT_THEIR_OWN_GUEST":
       return "Only the person named on a place can take themselves off a booking.";
+    case "QUOTE_PRICED":
+      return "This booking was priced by the club as a quote, so its places cannot be changed here. Ask the person who made the booking, or the club, to take you off it.";
   }
 }
 
@@ -137,6 +163,7 @@ export function resolveBookingSelfRemovalCard({
   bookingStatus,
   bookingCheckIn,
   guests,
+  isQuotePriced,
   today,
 }: {
   actorMemberId: string;
@@ -148,6 +175,8 @@ export function resolveBookingSelfRemovalCard({
   bookingStatus: string;
   bookingCheckIn: Date;
   guests: readonly { id: string; memberId: string | null }[];
+  /** See `evaluateGuestSelfRemoval` — the booking detail page supplies this. */
+  isQuotePriced?: boolean;
   today?: Date;
 }): BookingSelfRemovalCard | null {
   if (isBookingOwner || isAdminViewer) return null;
@@ -167,6 +196,7 @@ export function resolveBookingSelfRemovalCard({
     bookingStatus,
     bookingCheckIn,
     bookingGuestCount: guests.length,
+    isQuotePriced: isQuotePriced ?? false,
     ...(today ? { today } : {}),
   });
 

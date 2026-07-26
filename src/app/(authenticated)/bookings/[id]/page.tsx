@@ -74,6 +74,7 @@ import { OPENABLE_ORGANISER_STATUSES } from "@/lib/group-booking";
 import { hasAdminAccess } from "@/lib/access-roles";
 import { SelfRemoveFromBookingCard } from "@/components/self-remove-from-booking-card";
 import { resolveBookingSelfRemovalCard } from "@/lib/booking-guest-self-removal";
+import { isQuotePricedBooking } from "@/lib/booking-modify-validation";
 import {
   bookingManagementAuthorizationRole,
   hasAdminAreaAccess,
@@ -327,7 +328,7 @@ export default async function BookingDetailPage({
   // The gate itself lives in `resolveBookingSelfRemovalCard` so it is unit
   // testable: rendering this card for an owner, a full admin, a non-participant,
   // or a soft-deleted booking must fail a test, not just review.
-  const selfRemovalCard = resolveBookingSelfRemovalCard({
+  const selfRemovalInput = {
     actorMemberId: session.user.id,
     isBookingOwner,
     isAdminViewer: isAdmin,
@@ -336,7 +337,19 @@ export default async function BookingDetailPage({
     bookingStatus: booking.status,
     bookingCheckIn: booking.checkIn,
     guests: booking.guests,
-  });
+  };
+  const selfRemovalCandidate = resolveBookingSelfRemovalCard(selfRemovalInput);
+  // The removal service also refuses a quote-priced booking
+  // (assertBookingNotQuotePriced), and unlike its settled-payment election that
+  // refusal is one indexed lookup — so predict it here rather than offering a
+  // control the server would reject. Only run when the action would otherwise
+  // be offered, so an ordinary booking view adds no query.
+  const selfRemovalCard = selfRemovalCandidate?.canSelfRemove
+    ? resolveBookingSelfRemovalCard({
+        ...selfRemovalInput,
+        isQuotePriced: await isQuotePricedBooking(prisma, booking.id),
+      })
+    : selfRemovalCandidate;
 
   const bookingAuditLogs = await prisma.auditLog.findMany({
     where: {

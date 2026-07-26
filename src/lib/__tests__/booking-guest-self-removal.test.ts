@@ -85,6 +85,36 @@ describe("evaluateGuestSelfRemoval", () => {
     });
   });
 
+  // #2250 — the removal service's LAST gate, assertBookingNotQuotePriced. The
+  // booking detail page can afford the one indexed lookup, so it predicts the
+  // refusal instead of offering a button the server would reject.
+  it("refuses a quote-priced booking, after every other gate", () => {
+    expect(evaluate({ isQuotePriced: true })).toEqual({
+      canSelfRemove: false,
+      blocker: "QUOTE_PRICED",
+    });
+    // Order matters: the reason the member reads must be the one the service
+    // would have raised first, and the service checks status/date/last-guest
+    // before the quote-priced lookup.
+    expect(
+      evaluate({ isQuotePriced: true, bookingStatus: BookingStatus.CANCELLED }),
+    ).toEqual({ canSelfRemove: false, blocker: "BOOKING_STATUS" });
+    expect(evaluate({ isQuotePriced: true, bookingGuestCount: 1 })).toEqual({
+      canSelfRemove: false,
+      blocker: "LAST_GUEST",
+    });
+  });
+
+  it("defaults to not-quote-priced for callers that cannot afford the lookup", () => {
+    // The member-night guard runs inside the booking-write transaction and
+    // must not add a per-conflict query, so it omits the flag and keeps its
+    // pre-#2250 behaviour exactly.
+    expect(evaluate({ isQuotePriced: undefined })).toEqual({
+      canSelfRemove: true,
+      blocker: null,
+    });
+  });
+
   it("covers exactly the eight statuses the removal service self-removes from", () => {
     expect([...SELF_REMOVABLE_GUEST_BOOKING_STATUSES].sort()).toEqual(
       [
@@ -114,6 +144,7 @@ describe("describeGuestSelfRemovalBlocker", () => {
     "BOOKING_STATUS",
     "STAY_NOT_FUTURE",
     "LAST_GUEST",
+    "QUOTE_PRICED",
   ];
 
   it("gives every blocker a plain-English member-facing reason", () => {
@@ -129,6 +160,11 @@ describe("describeGuestSelfRemovalBlocker", () => {
       "already started",
     );
     expect(describeGuestSelfRemovalBlocker("LAST_GUEST")).toContain("cancel it");
+    // Member-facing, not the operator-facing QUOTE_PRICED_EDIT_BLOCK_MESSAGE:
+    // "re-price from its booking request" is advice a member cannot act on.
+    const quotePriced = describeGuestSelfRemovalBlocker("QUOTE_PRICED");
+    expect(quotePriced).toContain("Ask the person who made the booking");
+    expect(quotePriced).not.toContain("season rates");
   });
 });
 
@@ -214,6 +250,14 @@ describe("resolveBookingSelfRemovalCard", () => {
       guestId: "guest-viewer",
       canSelfRemove: false,
       blockedReason: describeGuestSelfRemovalBlocker("LAST_GUEST"),
+    });
+  });
+
+  it("hides the action on a quote-priced booking and says why", () => {
+    expect(resolve({ isQuotePriced: true })).toEqual({
+      guestId: "guest-viewer",
+      canSelfRemove: false,
+      blockedReason: describeGuestSelfRemovalBlocker("QUOTE_PRICED"),
     });
   });
 
