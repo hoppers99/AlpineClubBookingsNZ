@@ -26,20 +26,41 @@ interface OrgYearEndCacheEntry {
 let cached: OrgYearEndCacheEntry | null = null;
 
 /**
- * Returns the Xero organisation's financial year-end month (1-12), or null if
- * Xero is not connected or the value is unavailable. Cached in-process.
+ * The year-end read currently in flight, shared by every caller that arrives
+ * while it runs (#2261 review). Same single-flight shape as the summary read
+ * below — one mechanism, not two divergent ones.
  */
-export async function getXeroFinancialYearEndMonth(
-  forceRefresh = false,
-): Promise<number | null> {
-  if (
-    !forceRefresh &&
-    cached &&
-    Date.now() - cached.fetchedAt < ORG_CACHE_TTL_MS
-  ) {
-    return cached.month;
-  }
+let yearEndInFlight: Promise<number | null> | null = null;
 
+/**
+ * Bumped on every cache reset, and read by ALL THREE organisation reads
+ * (year-end month, connected-org summary, lock dates): a read that started
+ * before a connect/disconnect invalidation describes the OLD organisation, so
+ * it must not write itself into the freshly cleared cache.
+ *
+ * What the guard does NOT do: it bounds the CACHE, not the value already being
+ * returned. A read in flight at the moment of the invalidation still resolves
+ * to its own caller with the old organisation's answer — and for the year-end
+ * month that caller may be `refreshFinancialYearConfig`, which writes what it
+ * was handed into the module global in `financial-year.ts` (no TTL, no
+ * generation) where it persists until the next refresh. That residual is
+ * bounded and pre-existing; the guard's job is to stop it repeating for the
+ * whole of the next TTL.
+ */
+let orgReadGeneration = 0;
+
+/**
+ * One live year-end read. Never throws: a failure degrades to the last cached
+ * month (or null), exactly as the previous inline body did.
+ *
+ * Note what this deliberately does NOT do: negative-cache the failure, unlike
+ * the connected-org summary below. This month feeds membership financial-year
+ * resolution, so a connection an admin has just fixed must be picked up by the
+ * very next call rather than up to a minute later. De-duplication is free of
+ * that trade — it caches nothing, so there is nothing to wait out.
+ */
+async function readXeroFinancialYearEndMonth(): Promise<number | null> {
+  const generation = orgReadGeneration;
   try {
     const { xero, tenantId } = await getAuthenticatedXeroClient();
     const response = await callXeroApi(
@@ -54,16 +75,54 @@ export async function getXeroFinancialYearEndMonth(
     const raw = response.body.organisations?.[0]?.financialYearEndMonth;
     const month =
       typeof raw === "number" && raw >= 1 && raw <= 12 ? raw : null;
-    cached = { month, fetchedAt: Date.now() };
+    if (generation === orgReadGeneration) {
+      cached = { month, fetchedAt: Date.now() };
+    }
     return month;
   } catch (error) {
     logger.warn(
       { err: error },
       "Failed to read Xero organisation financial year-end month",
     );
-    // Fall back to the last cached value if we have one, otherwise null.
+    // Fall back to the last cached value if we have one, otherwise null. (After
+    // an invalidation there is none, so this cannot resurrect the old org's
+    // month either.)
     return cached?.month ?? null;
   }
+}
+
+/**
+ * Returns the Xero organisation's financial year-end month (1-12), or null if
+ * Xero is not connected or the value is unavailable. Cached in-process, and
+ * concurrent cold-cache callers share a single underlying read.
+ *
+ * The single flight matters most while the connection is present but FAILING:
+ * nothing is cached then (see above), so without it N concurrent requests meant
+ * N live Xero calls in exactly the state where Xero is least able to serve
+ * them. The one consequence worth naming is that a joiner now shares the
+ * leader's failure instead of making its own attempt that might have succeeded;
+ * both outcomes resolve to the same fallback month, and N calls into a failing
+ * Xero is the worse of the two.
+ */
+export async function getXeroFinancialYearEndMonth(
+  forceRefresh = false,
+): Promise<number | null> {
+  if (!forceRefresh) {
+    if (cached && Date.now() - cached.fetchedAt < ORG_CACHE_TTL_MS) {
+      return cached.month;
+    }
+    if (yearEndInFlight) return yearEndInFlight;
+  }
+
+  // `readXeroFinancialYearEndMonth` never rejects, so a joiner can never be
+  // handed a rejection; the `finally` still clears the slot defensively so a
+  // future failure mode cannot wedge this into "permanently in flight".
+  const inFlight: Promise<number | null> =
+    readXeroFinancialYearEndMonth().finally(() => {
+      if (yearEndInFlight === inFlight) yearEndInFlight = null;
+    });
+  yearEndInFlight = inFlight;
+  return inFlight;
 }
 
 // ---------------------------------------------------------------------------
@@ -71,47 +130,135 @@ export async function getXeroFinancialYearEndMonth(
 // setup wizard's step 3 can confirm the operator linked the RIGHT Xero org after
 // the OAuth round-trip. Cached in-process with the same long TTL as the
 // year-end read; a status/summary read must never mutate the DB.
+//
+// #2261 adds the org SHORT CODE to the same summary — the only identifier the
+// Xero web app accepts in a deep link (the tenant GUID we store is not usable
+// in a Xero URL). It rides along on the getOrganisations response this summary
+// already fetches, so widening the summary with it costs no extra Xero call —
+// but the Xero Sync page is a NEW caller of the summary, so its "Go to Xero"
+// button does cost one live read per server process per TTL (the first load
+// after a restart, after the TTL expires, or after a connect/disconnect; every
+// load after that costs none). That one read backs every consumer of this
+// summary: the setup wizard's org confirmation, the Xero Sync page's deep link,
+// and the subscription-lockout settings panel, which all read
+// `/api/admin/xero/organisation`.
+//
+// #2261 review (F1/F2) hardened the "one read per TTL" claim for the case that
+// actually matters — a connection that is PRESENT but FAILING (revoked refresh
+// token awaiting re-entry, an org read 500, a per-minute 429 during a bulk
+// sync). Before, a failed read cached nothing, so every admin page load
+// re-attempted a live call in exactly the state where admins reload most. Now a
+// failure is cached under a short NEGATIVE TTL, concurrent cold-cache callers
+// share one in-flight read, and the read itself does not retry.
 // ---------------------------------------------------------------------------
 
 export interface XeroConnectedOrganisation {
   name: string | null;
   financialYearEndMonth: number | null;
+  /**
+   * Xero's organisation short code (e.g. `!aBc12`), or null when unavailable.
+   * Callers must treat null as "build the generic go.xero.com link" — never as
+   * a reason to hide or disable the link.
+   */
+  shortCode: string | null;
 }
+
+/** Empty summary: the shape a failed/never-run read degrades to. */
+const EMPTY_ORG_SUMMARY: XeroConnectedOrganisation = {
+  name: null,
+  financialYearEndMonth: null,
+  shortCode: null,
+};
+
+/**
+ * Normalise Xero's `Organisation.shortCode` to a usable value or null. Same
+ * extraction as `findDuplicateContacts` (`xero-duplicate-contacts.ts`), except
+ * that this returns null rather than "" so the deep-link builders' falsy check
+ * and the API contract agree on one absent value.
+ */
+function normaliseShortCode(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+/**
+ * How long a FAILED organisation read is remembered (#2261 review, F1).
+ *
+ * Short enough that an admin who fixes the connection (re-entering credentials,
+ * reconnecting, waiting out a per-minute 429) sees the org come back on the
+ * next page load or two, but long enough that a page an admin is reloading
+ * while Xero is broken cannot turn into one live Xero call per request.
+ */
+const ORG_SUMMARY_FAILURE_TTL_MS = 60 * 1000; // 60 seconds
 
 interface OrgSummaryCacheEntry {
   summary: XeroConnectedOrganisation;
   fetchedAt: number;
+  /**
+   * True when this entry records a FAILED read. Failed entries expire under
+   * {@link ORG_SUMMARY_FAILURE_TTL_MS} instead of the 12-hour TTL, and any
+   * later successful read replaces them outright — so a negative entry can
+   * never pin a stale summary for hours.
+   */
+  failed: boolean;
 }
 
 let orgSummaryCache: OrgSummaryCacheEntry | null = null;
 
 /**
- * Returns the connected Xero organisation's name and financial year-end month,
- * or nulls when Xero is not connected / unavailable. Never throws — a failed
- * read falls back to the last cached summary (or nulls). Cached in-process.
- *
- * Honours the test-only mock-Xero harness (#2080): inert in production.
+ * The read currently in flight, shared by every caller that arrives while it
+ * runs (#2261 review, F2) — same single-flight shape as the token-refresh mutex
+ * in `xero-api-client` (`_tokenRefreshPromise`). Without it, N concurrent
+ * cold-cache requests make N `getOrganisations` calls; with F1's negative cache
+ * the window is bounded, but the two fixes belong together: while Xero is
+ * failing the cache is cold most often, which is exactly when a stampede hurts.
  */
-export async function getXeroConnectedOrganisation(
-  forceRefresh = false,
-): Promise<XeroConnectedOrganisation> {
-  if (
-    !forceRefresh &&
-    orgSummaryCache &&
-    Date.now() - orgSummaryCache.fetchedAt < ORG_CACHE_TTL_MS
-  ) {
-    return orgSummaryCache.summary;
-  }
+let orgSummaryInFlight: Promise<XeroConnectedOrganisation> | null = null;
 
-  // Server-side fetch — use the in-container origin (see getXeroMockInternalOrigin).
-  const mockOrigin = getXeroMockInternalOrigin();
-  if (mockOrigin) {
-    const summary = await fetchMockXeroOrganisation(mockOrigin);
-    orgSummaryCache = { summary, fetchedAt: Date.now() };
+/** The cached summary if it is still fresh for its kind, otherwise null. */
+function freshOrgSummary(): XeroConnectedOrganisation | null {
+  if (!orgSummaryCache) return null;
+  const ttl = orgSummaryCache.failed
+    ? ORG_SUMMARY_FAILURE_TTL_MS
+    : ORG_CACHE_TTL_MS;
+  return Date.now() - orgSummaryCache.fetchedAt < ttl
+    ? orgSummaryCache.summary
+    : null;
+}
+
+/**
+ * One live (or mocked) organisation read. Never throws: both the mock and the
+ * live path funnel failures into the same catch, which caches the failure under
+ * the short negative TTL and degrades to the last known summary (or nulls).
+ */
+async function readXeroConnectedOrganisation(): Promise<XeroConnectedOrganisation> {
+  const generation = orgReadGeneration;
+  const remember = (
+    summary: XeroConnectedOrganisation,
+    failed: boolean,
+  ): XeroConnectedOrganisation => {
+    if (generation === orgReadGeneration) {
+      orgSummaryCache = { summary, fetchedAt: Date.now(), failed };
+    }
     return summary;
-  }
+  };
 
   try {
+    // Server-side fetch — use the in-container origin (see getXeroMockInternalOrigin).
+    const mockOrigin = getXeroMockInternalOrigin();
+    if (mockOrigin) {
+      const mock = await fetchMockXeroOrganisation(mockOrigin);
+      return remember(
+        {
+          name: mock.name,
+          financialYearEndMonth: mock.financialYearEndMonth,
+          shortCode: normaliseShortCode(mock.shortCode),
+        },
+        false,
+      );
+    }
+
     const { xero, tenantId } = await getAuthenticatedXeroClient();
     const response = await callXeroApi(
       () => xero.accountingApi.getOrganisations(tenantId),
@@ -120,26 +267,81 @@ export async function getXeroConnectedOrganisation(
         resourceType: "ORGANISATION",
         workflow: "setupWizardOrgConfirmation",
         context: "xero-organisation getConnectedOrganisation",
+        // Do not wait out a RATE LIMIT (#2261 review, F1): this read only
+        // decorates a page — a slow one is worth less than the admin request it
+        // holds open. withXeroRetry would otherwise wait out a per-minute 429 up
+        // to three times (capped at 120s each), holding the request open for
+        // minutes and competing for the same minute budget as the sync that
+        // caused the 429. One attempt, cached failure, try again in a minute.
+        maxRetries: 0,
+        // But KEEP the transient (5xx/408) budget at withXeroRetry's default of
+        // 1, because `maxTransientRetries` otherwise defaults to
+        // `min(maxRetries, 1)` — so `maxRetries: 0` alone would also zero it.
+        // That matters far beyond this read: exhausting the transient budget
+        // calls `rememberXeroTransientOutage`, the PROCESS-GLOBAL breaker that
+        // fails every subsequent Xero call fast for two minutes, invoicing and
+        // sync included. A decorative read must not be able to trip that on its
+        // own first 5xx; with the budget intact it takes two consecutive
+        // transient failures, exactly as it did before this feature existed.
+        maxTransientRetries: 1,
       },
     );
     const org = response.body.organisations?.[0];
     const rawMonth = org?.financialYearEndMonth;
-    const summary: XeroConnectedOrganisation = {
-      name: org?.name ?? null,
-      financialYearEndMonth:
-        typeof rawMonth === "number" && rawMonth >= 1 && rawMonth <= 12
-          ? rawMonth
-          : null,
-    };
-    orgSummaryCache = { summary, fetchedAt: Date.now() };
-    return summary;
+    return remember(
+      {
+        name: org?.name ?? null,
+        financialYearEndMonth:
+          typeof rawMonth === "number" && rawMonth >= 1 && rawMonth <= 12
+            ? rawMonth
+            : null,
+        shortCode: normaliseShortCode(org?.shortCode),
+      },
+      false,
+    );
   } catch (error) {
     logger.warn(
       { err: error },
       "Failed to read Xero connected organisation summary",
     );
-    return orgSummaryCache?.summary ?? { name: null, financialYearEndMonth: null };
+    // Negative-cache the failure, keeping the last known summary as the served
+    // value so a transient blip does not blank a name we already have.
+    return remember(orgSummaryCache?.summary ?? EMPTY_ORG_SUMMARY, true);
   }
+}
+
+/**
+ * Returns the connected Xero organisation's name, financial year-end month and
+ * deep-link short code, or nulls when Xero is not connected / unavailable.
+ * Never throws — a failed read falls back to the last cached summary (or
+ * nulls). Cached in-process: 12 hours for a successful read, one minute for a
+ * failed one, with concurrent cold-cache callers sharing a single read.
+ *
+ * The cache entry holds the whole summary object, so widening
+ * {@link XeroConnectedOrganisation} needs no cache-shape change and no change
+ * to {@link resetXeroOrganisationCaches} (which nulls the entry wholesale,
+ * negative entries included) or to the connect/disconnect invalidation bus.
+ *
+ * Honours the test-only mock-Xero harness (#2080): inert in production.
+ */
+export async function getXeroConnectedOrganisation(
+  forceRefresh = false,
+): Promise<XeroConnectedOrganisation> {
+  if (!forceRefresh) {
+    const fresh = freshOrgSummary();
+    if (fresh) return fresh;
+    if (orgSummaryInFlight) return orgSummaryInFlight;
+  }
+
+  // `readXeroConnectedOrganisation` never rejects, so joining callers can never
+  // be handed a rejection; the `finally` still clears the slot defensively so a
+  // future failure mode cannot wedge the cache into "permanently in flight".
+  const inFlight: Promise<XeroConnectedOrganisation> =
+    readXeroConnectedOrganisation().finally(() => {
+      if (orgSummaryInFlight === inFlight) orgSummaryInFlight = null;
+    });
+  orgSummaryInFlight = inFlight;
+  return inFlight;
 }
 
 // ---------------------------------------------------------------------------
@@ -212,10 +414,20 @@ function parseXeroLockDate(value: string | Date | undefined | null): Date | null
  * Unlike getXeroFinancialYearEndMonth, this THROWS on a fetch failure when no
  * fresh cache is available: the retroactive-booking route fails closed rather
  * than silently skipping the lock-date guard.
+ *
+ * Carries the same reconnect (generation) guard as the two reads above, and it
+ * matters most here. A read in flight when an admin reconnects to a DIFFERENT
+ * Xero organisation carries the old org's lock dates; caching those would let
+ * the fail-closed guard evaluate against the wrong organisation for the whole
+ * TTL — returning "not locked" for a retroactive booking whose invoice then
+ * posts into a locked period in the org that is actually connected. The guard
+ * stops the cache write; the abandoned read is still served to its own single
+ * caller (one booking), which is the same bounded residual as above.
  */
 export async function getXeroLockDates(
   forceRefresh = false,
 ): Promise<XeroLockDates> {
+  const generation = orgReadGeneration;
   if (
     !forceRefresh &&
     lockDatesCache &&
@@ -240,7 +452,12 @@ export async function getXeroLockDates(
       periodLockDate: parseXeroLockDate(org?.periodLockDate),
       endOfYearLockDate: parseXeroLockDate(org?.endOfYearLockDate),
     };
-    lockDatesCache = { lockDates, fetchedAt: Date.now() };
+    // Only cache these lock dates if they still describe the CONNECTED
+    // organisation (see the generation counter above). Serving them to this
+    // caller is the bounded residual; pinning them for the TTL is not.
+    if (generation === orgReadGeneration) {
+      lockDatesCache = { lockDates, fetchedAt: Date.now() };
+    }
     return lockDates;
   } catch (error) {
     // Fail closed: a fresh cache satisfies the caller, otherwise re-throw so
@@ -288,8 +505,24 @@ export function resetXeroLockDatesCacheForTests(): void {
 /** Reset every in-process organisation cache (name/FYE, summary, lock dates). */
 function resetXeroOrganisationCaches(): void {
   cached = null;
+  // Nulls positive AND negative summary entries: after a reconnect the next
+  // read must go live even if the last attempt failed seconds ago.
   orgSummaryCache = null;
   lockDatesCache = null;
+  // Abandon any read already in flight — summary, year-end or lock dates: it
+  // describes the old connection, so its CACHE WRITE must not survive. The
+  // generation bump is what stops the write; nulling the slots stops a caller
+  // arriving after the reconnect from JOINING the old connection's read.
+  //
+  // What is NOT stopped: the in-flight read still resolves to the caller that
+  // started it, with the old organisation's answer. For the year-end month that
+  // value can be written on into `financial-year.ts`'s module global (see the
+  // generation counter's own comment above); for lock dates it decides one
+  // in-progress retroactive booking. Both are single-request and bounded — the
+  // reset's guarantee is that nothing stale is REPEATED for a whole TTL.
+  orgSummaryInFlight = null;
+  yearEndInFlight = null;
+  orgReadGeneration += 1;
 }
 
 registerXeroOrganisationCacheInvalidator(resetXeroOrganisationCaches);
