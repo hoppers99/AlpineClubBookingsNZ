@@ -212,14 +212,23 @@ async function readXeroConnectedOrganisation(): Promise<XeroConnectedOrganisatio
         resourceType: "ORGANISATION",
         workflow: "setupWizardOrgConfirmation",
         context: "xero-organisation getConnectedOrganisation",
-        // Do not retry (#2261 review, F1): this read only decorates a page —
-        // its failure mode is a generic Xero link and a missing org name, never
-        // a wrong booking or a wrong invoice. withXeroRetry would otherwise
-        // wait out a per-minute 429 up to three times (capped at 120s each),
-        // holding an admin request open for minutes and competing for the same
-        // minute budget as the sync that caused the 429. One attempt, cached
-        // failure, try again in a minute.
+        // Do not wait out a RATE LIMIT (#2261 review, F1): this read only
+        // decorates a page — a slow one is worth less than the admin request it
+        // holds open. withXeroRetry would otherwise wait out a per-minute 429 up
+        // to three times (capped at 120s each), holding the request open for
+        // minutes and competing for the same minute budget as the sync that
+        // caused the 429. One attempt, cached failure, try again in a minute.
         maxRetries: 0,
+        // But KEEP the transient (5xx/408) budget at withXeroRetry's default of
+        // 1, because `maxTransientRetries` otherwise defaults to
+        // `min(maxRetries, 1)` — so `maxRetries: 0` alone would also zero it.
+        // That matters far beyond this read: exhausting the transient budget
+        // calls `rememberXeroTransientOutage`, the PROCESS-GLOBAL breaker that
+        // fails every subsequent Xero call fast for two minutes, invoicing and
+        // sync included. A decorative read must not be able to trip that on its
+        // own first 5xx; with the budget intact it takes two consecutive
+        // transient failures, exactly as it did before this feature existed.
+        maxTransientRetries: 1,
       },
     );
     const org = response.body.organisations?.[0];

@@ -261,6 +261,23 @@ describe("connected-organisation summary: live read (#2261 review F1/F2)", () =>
     );
   });
 
+  // `maxTransientRetries` defaults to `min(maxRetries, 1)` in withXeroRetry, so
+  // `maxRetries: 0` alone would ALSO zero the transient budget — and exhausting
+  // that budget arms `rememberXeroTransientOutage`, the process-global breaker
+  // that fails every Xero call (invoicing and sync included) for two minutes.
+  // This decorative read must never be one 5xx away from stopping invoicing.
+  it("keeps the transient budget so one 5xx cannot trip the global outage breaker", async () => {
+    stubLiveOrg({ name: "Live Org", shortCode: "!live1" });
+
+    await getXeroConnectedOrganisation();
+
+    expect(live.callXeroApi).toHaveBeenCalledWith(
+      expect.any(Function),
+      expect.objectContaining({ maxTransientRetries: 1 }),
+    );
+  });
+
+
   // F1: the bug. A present-but-failing connection (revoked refresh token,
   // org read 500, per-minute 429) cached nothing, so an admin reloading
   // /admin/xero re-attempted a live Xero call on every single request.
