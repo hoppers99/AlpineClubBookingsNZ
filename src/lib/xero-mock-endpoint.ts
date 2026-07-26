@@ -28,6 +28,10 @@ const MOCK_BASE_PATH = "/api/testing/xero-mock";
 export const MOCK_XERO_TENANT_ID = "mock-tenant-0001";
 export const MOCK_XERO_ORG_NAME = "Alpine Test Club Ltd";
 export const MOCK_XERO_ORG_FINANCIAL_YEAR_END_MONTH = 3;
+// Organisation short code (#2261): the identifier Xero deep links need. Shaped
+// like a real one (`!` + alphanumerics) so the E2E harness exercises the same
+// URL-encoding path as production.
+export const MOCK_XERO_ORG_SHORT_CODE = "!mock1";
 
 /**
  * True in a REAL production runtime (never the E2E staging stack). Used as a
@@ -208,15 +212,27 @@ export async function fetchMockXeroItems(
 export interface MockXeroOrganisation {
   name: string | null;
   financialYearEndMonth: number | null;
+  /** Deep-link short code (#2261); absent on older mock payloads. */
+  shortCode?: string | null;
 }
 
-/** Mock organisation read for the step-3 "right org?" confirmation. */
+/**
+ * Mock organisation read for the step-3 "right org?" confirmation.
+ *
+ * THROWS when the mock endpoint errors, mirroring the live `getOrganisations`
+ * path so both failure modes reach the same handler in `xero-organisation`
+ * (which degrades to nulls and negative-caches the failure). Returning a silent
+ * all-null summary here instead would make the mock the only path whose
+ * failures are cached like a success — the asymmetry that hid #2261's F1.
+ */
 export async function fetchMockXeroOrganisation(
   origin: string,
 ): Promise<MockXeroOrganisation> {
   const res = await fetch(mockUrl(origin, "/organisation"));
   if (!res.ok) {
-    return { name: null, financialYearEndMonth: null };
+    throw new Error(
+      `Mock Xero organisation read failed (HTTP ${res.status}).`,
+    );
   }
   const body = (await res.json()) as MockXeroOrganisation;
   const month =
@@ -225,5 +241,9 @@ export async function fetchMockXeroOrganisation(
     body.financialYearEndMonth <= 12
       ? body.financialYearEndMonth
       : null;
-  return { name: body.name ?? null, financialYearEndMonth: month };
+  return {
+    name: body.name ?? null,
+    financialYearEndMonth: month,
+    shortCode: typeof body.shortCode === "string" ? body.shortCode : null,
+  };
 }

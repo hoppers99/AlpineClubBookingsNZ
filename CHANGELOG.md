@@ -4,6 +4,65 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **"Add Dependant → Link Existing" now finds the members it was hiding, and
+  says why when it still finds nobody (#2254).** Searching for an existing
+  member to link as a dependant reported "No eligible members found" for almost
+  everybody: the search silently dropped every member who had no parent recorded
+  — the overwhelming majority of valid candidates — so admins could not link an
+  existing member at all without first giving them an unrelated parent. The
+  search now returns those members. When a search genuinely has no one to offer,
+  the dialog no longer stops at a bare "not found": it lists the members whose
+  names matched and the reason each cannot be linked ("already has two parents
+  recorded", "has dependants of their own", "is archived", "is already linked to
+  this member"), and only says "No members matched your search" when nobody
+  matched at all. The search and the save step are now driven by one shared rule,
+  so the dialog can no longer offer a member that saving then refuses, nor hide
+  one that saving would have accepted. Who may be linked is unchanged — at most
+  two parents, no linking someone who already has dependants of their own, no
+  archived members — and inactive members remain linkable, badged "Inactive", as
+  before.
+- **Fixed: after switching the connected Xero organisation, the club's financial
+  year and period-lock checks could keep using the PREVIOUS organisation's
+  settings (#2261).** The app remembers a few things it reads from Xero — the
+  organisation's financial year-end month, its name, and its accounting lock
+  dates — so it does not re-ask Xero on every page load. Connecting or
+  disconnecting Xero already cleared that memory. What it did not handle was a
+  read that was *already underway* at that moment: it finished a fraction of a
+  second later and quietly re-filled the memory it had just been cleared from,
+  with the old organisation's answers.
+  The financial year-end month is the one that costs money. It decides which
+  membership season a date falls in, how a part-year subscription is charged,
+  and which window membership invoices are searched over. Refilled with the
+  wrong month it would have stayed wrong for up to 12 hours: a $200 annual fee
+  worked out on a mid-May decision date comes to roughly $183 under a June
+  year-end but roughly $33 under a March one — the same member, the same date,
+  five times the difference. The accounting lock dates matter for the same
+  reason in the other direction: they are what stops a backdated booking being
+  invoiced into a period the accountant has already closed, and stale ones could
+  let such a booking through. Both now refuse to save an answer that arrived
+  from an organisation the club is no longer connected to, so the next read goes
+  back to Xero and gets the right one. Nothing changes for clubs that have not
+  switched Xero organisations; there is no configuration to update.
+
+- **A "Go to Xero" button in the Xero Sync page header (#2261).**
+  When an admin spots a problem on **Admin → Finance → Xero Sync** they can now
+  jump straight into Xero from the page header instead of hunting for a Xero
+  tab. It sits in the header rather than inside a section, so it is there
+  whether or not the Health Snapshot is expanded. Where the club's Xero
+  organisation can be identified the link opens *that* organisation's
+  dashboard — which
+  matters for a login that covers several Xero organisations. Where it cannot,
+  or Xero is not connected here, the button becomes a plain **Log in to Xero**
+  sign-in link rather than disappearing or greying out, since opening Xero is
+  exactly what is wanted when the connection is broken. The organisation
+  identifier Xero URLs need comes from the existing organisation lookup, which
+  is cached on the server: the first page load after a restart, after 12 hours,
+  or after connecting/disconnecting Xero costs one extra Xero API call, and
+  every load after that costs none. While that lookup is failing it is retried
+  at most once a minute rather than on every page load, and the button says
+  only "Opens Xero in a new tab" until the lookup settles — it never blames a
+  failed read for a link that is still loading.
+
 - **The Lodge TV Visual builder's Live preview works again (#2246).** Clicking
   **Live preview** in the builder showed a "Content blocked" error instead of the
   board. The builder embeds a sandboxed frame of the display page, but the
