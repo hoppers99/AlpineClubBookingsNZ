@@ -41,6 +41,13 @@
 		Strict-Transport-Security "max-age=63072000; includeSubDomains"
 		# CSP is emitted by Next proxy so script nonces are generated per request.
 		# style-src intentionally keeps 'unsafe-inline' there while Tailwind/Radix runtime styles are audited.
+		# Defensive baseline: only applied if Next omits the header (e.g. middleware regression).
+		# Caddy's `?` prefix means "set if not already present" so it never intersects with Next's policy.
+		# Because it is set-if-absent it is a no-op in the normal case: its only
+		# effect is on failure, where a bare `default-src 'self'` breaks every
+		# nonce'd script and so makes a proxy/middleware regression LOUD on
+		# staging instead of silent. That is what staging is for.
+		?Content-Security-Policy "default-src 'self'"
 	}
 
 	# Rewrite legacy /images/* requests to the runtime-serving API route.
