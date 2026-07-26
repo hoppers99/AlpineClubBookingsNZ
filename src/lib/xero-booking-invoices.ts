@@ -684,7 +684,7 @@ export async function createXeroInvoiceForBooking(
         detail:
           invoiceEmailGate!.decision === "withhold"
             ? 'Withheld: this booking has the "No emails" switch turned on. The invoice exists in Xero but was not emailed.'
-            : 'Withheld: the booking's "No emails" switch could not be read, so the Xero invoice email failed closed. The invoice exists in Xero but was not emailed.',
+            : "Withheld: the booking's \"No emails\" switch could not be read, so the Xero invoice email failed closed. The invoice exists in Xero but was not emailed.",
       });
       logger.warn(
         {
@@ -772,7 +772,10 @@ export async function createXeroInvoiceForBooking(
         paymentSkipReason: paymentSkipped ? paymentSkipReason : null,
         invoiceEmail: invoiceEmailResponseBody,
         invoiceEmailError,
-        invoiceEmailSkipped: !shouldEmailInvoice,
+        invoiceEmailSkipped: !shouldEmailInvoice || invoiceEmailWithheld,
+        // #2258: distinguishes a deliberate withhold from the ordinary
+        // "this payment source raises no emailed invoice" skip above.
+        invoiceEmailWithheldByNoEmails: invoiceEmailWithheld,
       },
       xeroObjectType: "INVOICE",
       xeroObjectId: createdInvoice.invoiceID,

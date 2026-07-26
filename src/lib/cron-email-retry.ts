@@ -122,7 +122,7 @@ export async function retryFailedEmails(): Promise<{
         // a healthy database) decides. Not a retry attempt.
         logger.error(
           { emailLogId: emailLog.id, bookingId: emailLog.bookingId },
-          'Skipped email retry: the booking's "No emails" switch could not be read',
+          "Skipped email retry: the booking's \"No emails\" switch could not be read",
         );
         continue;
       }

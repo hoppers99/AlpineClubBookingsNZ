@@ -462,6 +462,9 @@ export async function createXeroInvoiceForGroupSettlement(
     // cancellation commit.
     let invoiceEmailResponseBody: unknown = null;
     let invoiceEmailError: unknown = null;
+    // #2258: set when the organiser's "No emails" switch withheld the invoice
+    // email. Recorded on the sync operation so the skip is never silent.
+    let invoiceEmailWithheld = false;
     const invoiceEmailIdempotencyKey = buildXeroIdempotencyKey(
       "group-settlement",
       settlementId,
@@ -497,7 +500,13 @@ export async function createXeroInvoiceForGroupSettlement(
           await enqueueXeroGroupSettlementInvoiceVoidOperation(settlement.id, {
             store: tx,
           });
-          return { cancelled: true, responseBody: null, withheld: false };
+          return {
+            cancelled: true,
+            responseBody: null,
+            withheld: false,
+            organiserBookingId: null as string | null,
+            organiserEmail: null as string | null,
+          };
         }
         // #2258 (owner decision D10). SEMANTICS, because a settlement invoice is
         // not attributable to one booking: this ONE combined invoice covers the
@@ -544,21 +553,24 @@ export async function createXeroInvoiceForGroupSettlement(
           cancelled: false,
           responseBody: emailResponse.body ?? null,
           withheld: false,
+          organiserBookingId: null as string | null,
+          organiserEmail: null as string | null,
         };
       });
-      if (emailGate.withheld) {
+      invoiceEmailWithheld = emailGate.withheld;
+      if (emailGate.withheld && emailGate.organiserBookingId) {
         // Audit row outside the advisory-locked transaction so the lock is held
         // for the provider fence only (the same reason the emailInvoice call is
         // the sole non-DB work inside it).
         await recordWithheldBookingEmail({
-          bookingId: emailGate.organiserBookingId!,
+          bookingId: emailGate.organiserBookingId,
           templateName: XERO_GROUP_SETTLEMENT_INVOICE_EMAIL_TEMPLATE,
           subject: `Xero group settlement invoice ${
             createdInvoice.invoiceNumber ?? createdInvoice.invoiceID ?? "(unnumbered)"
           } for your group booking`,
-          to: emailGate.organiserEmail!,
+          to: emailGate.organiserEmail ?? "",
           detail:
-            'Withheld: the organiser's booking has the "No emails" switch turned on. The combined group settlement invoice exists in Xero but was not emailed.',
+            "Withheld: the organiser's booking has the \"No emails\" switch turned on. The combined group settlement invoice exists in Xero but was not emailed.",
         });
         logger.warn(
           {
@@ -594,6 +606,7 @@ export async function createXeroInvoiceForGroupSettlement(
         invoice: response.body,
         invoiceEmail: invoiceEmailResponseBody,
         invoiceEmailError,
+        invoiceEmailWithheldByNoEmails: invoiceEmailWithheld,
       },
       xeroObjectType: "INVOICE",
       xeroObjectId: createdInvoice.invoiceID,
