@@ -797,7 +797,7 @@ client-safe `css-tokens.ts` before they ship in the payload:
 > `<Link>` is soft. This is a rule about **every** per-route relaxation in this
 > app, present and future, not a note about the builder: any route that depends
 > on a scoped policy must be **entered** by a hard navigation, or the relaxation
-> is silently inert. All three relaxed routes satisfy it today —
+> is silently inert. All three relaxed routes satisfy it today:
 >
 > - `/admin/display/builder` — a plain `<a href>` from the Lobby Display hub (the
 >   `hardNavigate` opt-in on the hub's section descriptor,
@@ -809,8 +809,8 @@ client-safe `css-tokens.ts` before they ship in the payload:
 >   surfaces), a new tab from the Devices page's per-device **Preview** `<a
 >   target="_blank">`, or a TV browser opening the URL directly. All hard loads.
 >
-> — and the static guard `src/lib/__tests__/display-builder-csp-static.test.ts`
-> is driven from the allowlists themselves, so **adding** a path to a relaxation
+> The static guard `src/lib/__tests__/display-builder-csp-static.test.ts` is
+> driven from the allowlists themselves, so **adding** a path to a relaxation
 > fails the build until that path's entry points are hard navigations too.
 >
 > The inverse leak is true and accepted: an admin who hard-loads a relaxed route
