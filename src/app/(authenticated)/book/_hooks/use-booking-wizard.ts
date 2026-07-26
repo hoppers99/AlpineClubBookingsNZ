@@ -52,6 +52,9 @@ interface BookingMemberNightConflict {
   isOwnBooking: boolean;
   canOpenBooking: boolean;
   canSelfRemove: boolean;
+  // The server has sent this since #2250 and the shared copy helpers read it to
+  // address the viewer as "you"; declaring it keeps this mirror honest.
+  isSelfGuest: boolean;
   // #2250: the server sends these only to a viewer it marked `canOpenBooking`,
   // so a member whose family member turns out to be on a stranger's booking
   // never receives that stranger's name, stay dates, or ids. Optional here for
