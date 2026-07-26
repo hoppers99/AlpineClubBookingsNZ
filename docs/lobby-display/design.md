@@ -794,25 +794,43 @@ client-safe `css-tokens.ts` before they ship in the payload:
 > (or `router.push`) is a **soft** navigation — it swaps React trees inside the
 > same document — so the destination keeps whatever policy the **entry** document
 > was served with. With a single root layout, every `/admin/*` → `/admin/*`
-> `<Link>` is soft. So any route that depends on a scoped relaxation must be
-> **entered** by a hard navigation: the Visual builder is reached by a plain
-> `<a href>` from the Lobby Display hub (the `hardNavigate` opt-in on the hub's
-> section descriptor, `src/components/admin-hub-page.tsx`) and from the Layouts
-> page, and by `window.open(url, "_self")` from the Templates page — never by
-> `<Link>`. A static guard test
-> (`src/lib/__tests__/display-builder-csp-static.test.ts`) fails if a `<Link>` is
-> reintroduced; the full-screen preview host has always worked because it is
-> opened with `window.open(…, "_blank")`, also a hard load. The inverse is true
-> and accepted: an admin who hard-loads the builder and then soft-navigates on to
-> another admin page carries `frame-src 'self'` into those documents until the
-> next hard load. Impact is low — it permits only *same-origin* framing on an
-> admin page, and `X-Frame-Options: DENY`/`frame-ancestors 'none'` still stop
-> those pages being framed themselves — but it is a property of soft navigation,
-> not something the allowlist can prevent.
+> `<Link>` is soft. This is a rule about **every** per-route relaxation in this
+> app, present and future, not a note about the builder: any route that depends
+> on a scoped policy must be **entered** by a hard navigation, or the relaxation
+> is silently inert. All three relaxed routes satisfy it today —
+>
+> - `/admin/display/builder` — a plain `<a href>` from the Lobby Display hub (the
+>   `hardNavigate` opt-in on the hub's section descriptor,
+>   `src/components/admin-hub-page.tsx`) and from the Layouts page, and
+>   `window.open(url, "_self")` from the Templates page. Never a `<Link>`.
+> - `/admin/display/preview` — `window.open(…, "_blank")` from the Templates
+>   page, which is why it has always worked.
+> - `/display` — a real frame navigation (the `<iframe src>` in both preview
+>   surfaces), a new tab from the Devices page's per-device **Preview** `<a
+>   target="_blank">`, or a TV browser opening the URL directly. All hard loads.
+>
+> — and the static guard `src/lib/__tests__/display-builder-csp-static.test.ts`
+> is driven from the allowlists themselves, so **adding** a path to a relaxation
+> fails the build until that path's entry points are hard navigations too.
+>
+> The inverse leak is true and accepted: an admin who hard-loads a relaxed route
+> and then soft-navigates onward carries that relaxation into the subsequent
+> documents until the next hard load. Impact is low — it permits only
+> *same-origin* framing on an admin page, and `X-Frame-Options: DENY` /
+> `frame-ancestors 'none'` still stop those pages being framed themselves — but
+> it is a property of soft navigation, not something an allowlist can prevent.
 >
 > `/display` additionally gains `frame-ancestors 'self'` /
 > `X-Frame-Options: SAMEORIGIN` and its own origin in `connect-src` (so the
-> opaque-origin frame can still fetch the state API). The layouts
+> opaque-origin frame can still fetch the state API). Since #2246 the reverse
+> proxy scopes its own `X-Frame-Options` to the same single path
+> (`Caddyfile`, `Caddyfile.staging`), so the edge states this intent explicitly
+> instead of setting a blanket `DENY` that replaced it — previously the previews
+> worked only because CSP2 requires browsers to ignore `X-Frame-Options` when
+> `frame-ancestors` is present. Every other path still receives a guaranteed
+> `DENY` at the edge. A trailing slash is folded before the exact-match
+> comparison on both sides (`^/display/?$` at the edge, `normalisePathname` in
+> `src/lib/csp.ts`), so the two cannot disagree on `/display/`. The layouts
 > page carries a muted note that a layout is previewed via a Template.
 > Direct-navigation previews (`?preview=1&templateId=…` / `?previewDevice=…` with
 > the admin's own session) still work for personal use.

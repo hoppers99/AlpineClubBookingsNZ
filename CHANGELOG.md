@@ -15,8 +15,28 @@ All notable public reference-release changes should be recorded here.
   **Visual builder** card on the Lobby Display page, and the "visual builder"
   link on the Layouts page) now load the page fresh rather than switching to it
   in place — otherwise the builder inherited the previous page's policy and the
-  preview stayed blocked. **Operators: nothing to do — the preview simply works;
-  no configuration, and no change to what a display can show.**
+  preview stayed blocked. The same "load the page fresh" requirement applies to
+  every page that has its own security policy, so the automated check that
+  guards it is now driven from the list of such pages: adding a page to that
+  list fails the build until its links load the page fresh too, instead of the
+  page quietly not getting the policy it asked for.
+- **The reverse proxy no longer contradicts the app about which pages may be
+  framed (#2246).** The web server in front of the app told browsers "never
+  frame any page", overriding the app's own "the display board may be framed by
+  our admin preview". The previews worked anyway only because browsers are
+  required to prefer the app's newer-style policy when the two disagree — so the
+  feature depended on a browser tie-break rather than on the site actually
+  saying what it meant. The web server now says the same thing the app does: the
+  display board may be framed by this site, and **every** other address —
+  including the legacy finance dashboard and uploaded images, which the app
+  itself does not cover — is still guaranteed unframeable at the edge.
+  **Operators: this one needs a manual step.** The change is in `Caddyfile` and
+  `Caddyfile.staging`, which are *not* applied by an app deploy. After taking
+  this release, reload Caddy on the host — `docker compose exec caddy caddy
+  validate --config /etc/caddy/Caddyfile` then `... caddy reload --config
+  /etc/caddy/Caddyfile` (a graceful, zero-downtime swap). See `DEPLOYMENT.md`.
+  Until you do, nothing breaks — the previews keep working on the browser
+  tie-break exactly as they do today.
 - **Postgres connection ceiling raised from 30 to 40 to stop intermittent
   `FATAL: sorry, too many clients` when a deploy or backup overlaps normal
   load.** At `max_connections=30` the app's connection pools already summed to 27

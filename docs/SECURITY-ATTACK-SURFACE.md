@@ -838,9 +838,10 @@ Accepted residual risk:
 
 `src/lib/csp.ts` scopes two relaxations to named exact paths (`frame-src 'self'`
 for the two admin pages that embed the sandboxed `/display` iframe; the tightened
-`img-src 'self' data:` for the routes that render authored display markup, #161).
-Reviewing #2246 surfaced a property of route-scoped headers that applies to any
-future scoped policy, not just this one:
+`img-src 'self' data:` for the routes that render authored display markup, #161),
+plus `frame-ancestors 'self'` / `X-Frame-Options: SAMEORIGIN` on `/display`
+itself. Reviewing #2246 surfaced a property of route-scoped headers that applies
+to **any** scoped policy this app adds in future, not just these (#2279):
 
 - **A scoped CSP only takes effect on a hard document load.** The policy is a
   property of the *document*, parsed from its response headers and fixed for that
@@ -854,12 +855,24 @@ future scoped policy, not just this one:
   `/admin/display/builder` were `<Link>`s. They are now a plain `<a href>` (hub
   card via the `hardNavigate` opt-in in `src/components/admin-hub-page.tsx`, and
   the Layouts page), joining the Templates page's existing
-  `window.open(url, "_self")`. A static guard,
-  `src/lib/__tests__/display-builder-csp-static.test.ts`, fails if a `<Link>` or
-  `router.push` to that route is reintroduced.
-- **Accepted residual — relaxation leaks forward, never backward.** The same
-  mechanism means an admin who hard-loads `/admin/display/builder` and then
-  soft-navigates on to other admin pages carries `frame-src 'self'` into those
+  `window.open(url, "_self")`.
+- **Every relaxed route was audited, and the guard now enforces the rule for
+  future ones.** The other two relaxed paths were checked rather than assumed:
+  `/admin/display/preview` is only ever entered by `window.open(…, "_blank")`
+  from the Templates page, and `/display` only by a real frame navigation (the
+  `<iframe src>` in both preview surfaces), a `target="_blank"` anchor on the
+  Devices page, or a TV browser opening the URL. All are hard loads; neither has
+  a `<Link>`, a `router.push`, or a server `redirect()` pointing at it. The
+  static guard `src/lib/__tests__/display-builder-csp-static.test.ts` is driven
+  from `FRAME_SRC_SELF_PATHS` and `TIGHT_IMG_SRC_PATHS` themselves, so adding a
+  path to a relaxation fails until that path's entry points are hard
+  navigations. It requires a relaxed `href` to sit on a plain `<a>` (any
+  component wrapper fails, not just `<Link>`), forbids `router.push`/`replace`
+  at a relaxed path, and requires any hub/nav descriptor pointing at one to carry
+  `hardNavigate: true` — the variable-`href` case a literal scan cannot see.
+- **Accepted residual — a relaxation leaks forward, never backward.** The same
+  mechanism means an admin who hard-loads *any* relaxed route and then
+  soft-navigates on to other admin pages carries that relaxation into those
   documents until the next hard load. Impact is low: it permits only
   *same-origin* framing on an authenticated admin page, adds no third-party
   origin, and the global `X-Frame-Options: DENY` / `frame-ancestors 'none'`
@@ -878,6 +891,35 @@ future scoped policy, not just this one:
   `dangerouslySetInnerHTML`, `srcDoc`, `innerHTML` or injected `<style>`. A
   future in-canvas WYSIWYG preview would otherwise reinstate the #161
   image-beacon exfiltration channel with nothing failing.
+- **A trailing slash is folded before the exact match.** `src/lib/csp.ts` strips
+  one trailing slash from a path longer than `/` before comparing. Next
+  308-redirects `/admin/display/builder/` to the canonical form, but the proxy
+  runs *before* that redirect, so without this the redirect response — and
+  anything that ever reached the route without being redirected — carried the
+  unrelaxed policy. Only the input is normalised; the comparison stays exact
+  equality, so `/…/builder/extra`, `/…/builder-foo`, `//admin/display/builder`
+  and a doubled trailing slash all still fail closed. The one normalisation
+  feeds every allowlist, so they cannot diverge on a trailing slash.
+- **The edge no longer overrides the app's `X-Frame-Options`.** `Caddyfile` and
+  `Caddyfile.staging` used to set `X-Frame-Options "DENY"` unconditionally,
+  replacing the `SAMEORIGIN` the app deliberately sets on `/display`. Both
+  preview surfaces therefore worked only because CSP2 requires browsers to
+  ignore `X-Frame-Options` when `frame-ancestors` is present — a browser
+  precedence rule, not the header the app intends to send. The edge header is
+  now path-scoped to the same single path (`path_regexp ^/display/?$`, which is
+  case-sensitive and so mirrors the app's exact comparison; Caddy's `path`
+  matcher is case-*in*sensitive and would have relaxed `/DISPLAY`). Every other
+  path keeps a **guaranteed** `DENY` set at the edge, including
+  `/finance-legacy*` (a reverse-proxied third-party upstream) and `/images/*`,
+  neither of which the app's own middleware covers. Caddy's set-if-absent
+  `?X-Frame-Options` form was considered and rejected in review: it would
+  downgrade a guaranteed edge control into an advisory one on every route, so
+  any upstream emitting a permissive value would win. The directive uses the
+  deferred `>` prefix so the edge value *overwrites* the app's rather than being
+  appended as a second, conflicting header. `src/lib/__tests__/edge-frame-options-static.test.ts`
+  pins all of this, including that the edge relaxes exactly the path the app
+  relaxes. **Operators: a Caddyfile change only takes effect after Caddy is
+  reloaded on the host — it does not ship with the app deploy.**
 
 ## Follow-Up Mapping
 
