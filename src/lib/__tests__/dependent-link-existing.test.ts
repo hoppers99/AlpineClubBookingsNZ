@@ -27,6 +27,7 @@ import {
   LAST_FULL_ADMIN_GUARD_MESSAGE,
   PRIVILEGED_TARGET_GUARD_MESSAGE,
 } from "@/lib/admin-account-guards";
+import { dependentLinkBlockers } from "@/lib/dependent-link-eligibility";
 
 type MockAccessRole = { role: string | null; roleDefinitionId?: string | null; roleDefinition?: unknown };
 
@@ -37,6 +38,7 @@ type MockMember = {
   email: string;
   ageTier: "INFANT" | "CHILD" | "YOUTH" | "ADULT";
   active: boolean;
+  archivedAt: Date | null;
   parentMemberId: string | null;
   secondaryParentId: string | null;
   inheritEmailFromId: string | null;
@@ -70,6 +72,7 @@ function makeParent(overrides: Partial<MockMember> = {}): MockMember {
     email: "parent@example.com",
     ageTier: "ADULT",
     active: true,
+    archivedAt: null,
     parentMemberId: null,
     secondaryParentId: null,
     inheritEmailFromId: null,
@@ -92,6 +95,7 @@ function makeMember(overrides: Partial<MockMember> = {}): MockMember {
     email: "target@example.com",
     ageTier: "CHILD",
     active: true,
+    archivedAt: null,
     parentMemberId: null,
     secondaryParentId: null,
     inheritEmailFromId: null,
@@ -358,6 +362,139 @@ describe("POST /api/admin/members/[id]/dependents/link", () => {
     expect(res.status).toBe(422);
     expect((await res.json()).error).toMatch(/family groups the parent belongs to/i);
     expect(tx.member.update).not.toHaveBeenCalled();
+  });
+
+  // #2254: the route's row-level guards and the admin candidate SEARCH
+  // (`dependentLinkEligibleFor` in admin-members-service) are one predicate.
+  // These cases pin the route half; the SQL half — including the NULL
+  // semantics that made the search hide valid members — is pinned against real
+  // generated SQL in dependent-link-eligibility.test.ts.
+  describe("shared eligibility predicate (#2254)", () => {
+    it("rejects an archived target", async () => {
+      const tx = setupTransaction([
+        makeParent(),
+        makeMember({ archivedAt: new Date("2026-01-01T00:00:00.000Z") }),
+      ]);
+
+      const res = await linkDependent({
+        memberId: "target-1",
+        inheritEmail: false,
+        disableLogin: false,
+        addToFamilyGroupIds: [],
+      });
+
+      expect(res.status).toBe(422);
+      expect((await res.json()).error).toMatch(/archived/i);
+      expect(tx.member.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects a target already linked to this parent", async () => {
+      const tx = setupTransaction([
+        makeParent(),
+        makeMember({ parentMemberId: "parent-1" }),
+      ]);
+
+      const res = await linkDependent({
+        memberId: "target-1",
+        inheritEmail: false,
+        disableLogin: false,
+        addToFamilyGroupIds: [],
+      });
+
+      expect(res.status).toBe(422);
+      expect((await res.json()).error).toMatch(/already linked to that parent/i);
+      expect(tx.member.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects a target already linked to this parent as the second parent", async () => {
+      const tx = setupTransaction([
+        makeParent(),
+        makeMember({ parentMemberId: "other-parent", secondaryParentId: "parent-1" }),
+      ]);
+
+      const res = await linkDependent({
+        memberId: "target-1",
+        inheritEmail: false,
+        disableLogin: false,
+        addToFamilyGroupIds: [],
+      });
+
+      expect(res.status).toBe(422);
+      expect((await res.json()).error).toMatch(/already linked to that parent/i);
+      expect(tx.member.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects the parent as their own dependant", async () => {
+      const tx = setupTransaction([makeParent()]);
+
+      const res = await linkDependent({
+        memberId: "parent-1",
+        inheritEmail: false,
+        disableLogin: false,
+        addToFamilyGroupIds: [],
+      });
+
+      expect(res.status).toBe(422);
+      expect((await res.json()).error).toMatch(/their own dependant/i);
+      expect(tx.member.update).not.toHaveBeenCalled();
+    });
+
+    // The deliberate #2254 decision: the write route rejects an archived
+    // target but NOT an inactive one, so the candidate search must keep
+    // offering inactive members (the dialog badges them "Inactive"). If this
+    // ever starts failing, the search's `active` filter has to change with it.
+    it("accepts an inactive target", async () => {
+      const tx = setupTransaction([
+        makeParent(),
+        makeMember({ active: false }),
+      ]);
+
+      const res = await linkDependent({
+        memberId: "target-1",
+        inheritEmail: false,
+        disableLogin: false,
+        addToFamilyGroupIds: [],
+      });
+
+      expect(res.status).toBe(200);
+      expect(tx.member.update).toHaveBeenCalled();
+    });
+
+    it("accepts every shape the shared predicate clears, and no other", async () => {
+      const shapes: Array<Partial<MockMember>> = [
+        {},
+        { active: false },
+        { parentMemberId: "other-parent" },
+        { secondaryParentId: "other-parent" },
+        { parentMemberId: "other-parent", secondaryParentId: "another-parent" },
+        { dependents: [{ id: "grandchild-1" }] },
+        { secondaryDependents: [{ id: "grandchild-2" }] },
+        { archivedAt: new Date("2026-01-01T00:00:00.000Z") },
+        { parentMemberId: "parent-1" },
+      ];
+
+      for (const shape of shapes) {
+        vi.clearAllMocks();
+        vi.mocked(auth).mockResolvedValue(adminSession);
+        const target = makeMember(shape);
+        setupTransaction([makeParent(), target]);
+
+        const res = await linkDependent({
+          memberId: "target-1",
+          inheritEmail: false,
+          disableLogin: false,
+          addToFamilyGroupIds: [],
+        });
+
+        expect({
+          shape,
+          accepted: res.status === 200,
+        }).toEqual({
+          shape,
+          accepted: dependentLinkBlockers("parent-1", target).length === 0,
+        });
+      }
+    });
   });
 
   describe("admin-account guards (#1604/#1622)", () => {

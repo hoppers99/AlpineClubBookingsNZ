@@ -134,6 +134,7 @@ vi.mock("bcryptjs", () => ({ hash: vi.fn().mockResolvedValue("hashed") }));
 import { prisma } from "@/lib/prisma";
 import { auth } from "@/lib/auth";
 import { createAuditLog, logAudit } from "@/lib/audit";
+import { dependentLinkCandidateWhere } from "@/lib/dependent-link-eligibility";
 import { sendMemberSetupInviteEmail } from "@/lib/email";
 import { GET as getMembers, POST as createMember } from "@/app/api/admin/members/route";
 import { GET as exportMembers } from "@/app/api/admin/members/export/route";
@@ -866,6 +867,166 @@ describe("Phase 3: Admin Member Management", () => {
       });
     });
 
+  });
+
+  // ── Dependant-link candidate search (#2254) ──
+
+  describe("dependentLinkEligibleFor - dependant-link candidates", () => {
+    it("uses the shared, NULL-safe eligibility predicate", async () => {
+      mockedAuth.mockResolvedValue(adminSession);
+      vi.mocked(prisma.member.findMany).mockResolvedValue([]);
+      mockSessionAndMemberListCounts(0);
+
+      await getMembers(
+        new NextRequest(
+          "http://localhost/api/admin/members?q=smith&dependentLinkEligibleFor=parent-1",
+        ),
+      );
+
+      const call = vi.mocked(prisma.member.findMany).mock.calls[0][0]!;
+      // The service must push the shared predicate verbatim. `{ not: id }` on
+      // the nullable parent columns compiled to a bare `<> $1`, which drops
+      // every NULL row — that is the #2254 bug. The generated SQL itself is
+      // pinned in dependent-link-eligibility.test.ts.
+      expect(call.where?.AND).toEqual(
+        expect.arrayContaining(dependentLinkCandidateWhere("parent-1")),
+      );
+      expect(call.where?.AND).not.toEqual(
+        expect.arrayContaining([{ parentMemberId: { not: "parent-1" } }]),
+      );
+      expect(call.where?.AND).not.toEqual(
+        expect.arrayContaining([{ secondaryParentId: { not: "parent-1" } }]),
+      );
+    });
+
+    it("does not filter on active — the write route accepts inactive targets", async () => {
+      mockedAuth.mockResolvedValue(adminSession);
+      vi.mocked(prisma.member.findMany).mockResolvedValue([]);
+      mockSessionAndMemberListCounts(0);
+
+      await getMembers(
+        new NextRequest(
+          "http://localhost/api/admin/members?q=smith&dependentLinkEligibleFor=parent-1",
+        ),
+      );
+
+      const call = vi.mocked(prisma.member.findMany).mock.calls[0][0]!;
+      expect(call.where?.AND).not.toEqual(
+        expect.arrayContaining([{ active: true }]),
+      );
+    });
+
+    it("explains each excluded match when nothing is eligible", async () => {
+      mockedAuth.mockResolvedValue(adminSession);
+      vi.mocked(prisma.member.findMany)
+        // The eligible-candidate query comes back empty ...
+        .mockResolvedValueOnce([])
+        // ... so the service runs the diagnostic query.
+        .mockResolvedValueOnce([
+          {
+            id: "m-two-parents",
+            firstName: "Jane",
+            lastName: "Smith",
+            email: "jane@example.com",
+            archivedAt: null,
+            parentMemberId: "mum-1",
+            secondaryParentId: "dad-1",
+            dependents: [],
+            secondaryDependents: [],
+          },
+          {
+            id: "m-has-dependants",
+            firstName: "Bob",
+            lastName: "Smith",
+            email: "bob@example.com",
+            archivedAt: null,
+            parentMemberId: null,
+            secondaryParentId: null,
+            dependents: [{ id: "kid-1" }],
+            secondaryDependents: [],
+          },
+          {
+            id: "m-archived",
+            firstName: "Old",
+            lastName: "Smith",
+            email: "old@example.com",
+            archivedAt: new Date("2026-01-01"),
+            parentMemberId: null,
+            secondaryParentId: null,
+            dependents: [],
+            secondaryDependents: [],
+          },
+        ] as any);
+      mockSessionAndMemberListCounts(0);
+
+      const res = await getMembers(
+        new NextRequest(
+          "http://localhost/api/admin/members?q=smith&dependentLinkEligibleFor=parent-1",
+        ),
+      );
+      const body = await res.json();
+
+      expect(body.dependentLinkIneligible).toEqual([
+        {
+          id: "m-two-parents",
+          firstName: "Jane",
+          lastName: "Smith",
+          email: "jane@example.com",
+          reason: "TWO_PARENTS",
+          explanation: "already has two parents recorded",
+        },
+        {
+          id: "m-has-dependants",
+          firstName: "Bob",
+          lastName: "Smith",
+          email: "bob@example.com",
+          reason: "HAS_DEPENDANTS",
+          explanation: "has dependants of their own",
+        },
+        {
+          id: "m-archived",
+          firstName: "Old",
+          lastName: "Smith",
+          email: "old@example.com",
+          reason: "ARCHIVED",
+          explanation: "is archived",
+        },
+      ]);
+      // The diagnostic query re-uses the text search but drops the eligibility
+      // filter, so it can see the members the candidate query excluded.
+      const diagnosticCall = vi.mocked(prisma.member.findMany).mock.calls[1][0]!;
+      expect(diagnosticCall.where).not.toHaveProperty("AND");
+    });
+
+    it("stays silent when the search found eligible candidates", async () => {
+      mockedAuth.mockResolvedValue(adminSession);
+      vi.mocked(prisma.member.findMany).mockResolvedValue([]);
+      mockSessionAndMemberListCounts(3);
+
+      const res = await getMembers(
+        new NextRequest(
+          "http://localhost/api/admin/members?q=smith&dependentLinkEligibleFor=parent-1",
+        ),
+      );
+      const body = await res.json();
+
+      expect(body).not.toHaveProperty("dependentLinkIneligible");
+      expect(vi.mocked(prisma.member.findMany)).toHaveBeenCalledTimes(1);
+    });
+
+    it("is absent from an ordinary members-list response", async () => {
+      mockedAuth.mockResolvedValue(adminSession);
+      vi.mocked(prisma.member.findMany).mockResolvedValue([]);
+      mockSessionAndMemberListCounts(0);
+
+      const res = await getMembers(
+        new NextRequest("http://localhost/api/admin/members?q=smith"),
+      );
+      const body = await res.json();
+
+      expect(body).not.toHaveProperty("dependentLinkIneligible");
+      expect(vi.mocked(prisma.member.findMany)).toHaveBeenCalledTimes(1);
+    });
   });
 
   // ── A3: CSV Export ──
