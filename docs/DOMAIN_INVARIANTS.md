@@ -488,20 +488,32 @@ Future reviews and issues should cite this file when proposing changes.
   card and the booking detail page's own card (#2250) — drives its visibility
   from that predicate rather than a client-side copy of it, so a member is never
   shown a control the service would refuse; where it says no, the action is
-  hidden and the reason is stated instead.
+  hidden and the reason is stated instead. The booking detail page also passes
+  `isQuotePriced` (one indexed `isQuotePricedBooking` lookup, run only when the
+  action would otherwise be offered), so the quote-priced refusal is predicted
+  rather than discovered on submit. The settled-booking refund/credit election
+  stays server-only by design: predicting it needs the price delta of the
+  removal, which is the full repricing pass inside the removal transaction, and
+  a cheaper guess ("has a captured payment") would hide the action from members
+  the service would allow. That refusal surfaces as the service's own
+  plain-English 400, which the card shows verbatim.
 - The 409 the person-night guard returns is read by whoever made the request,
   which may be a member adding somebody else as a guest. Its human-readable
   message is therefore composed only from what that requester already supplied —
   the member they tried to book and the nights they chose — plus the next step
   their own `canSelfRemove` / `isOwnBooking` / `isSelfGuest` / `canOpenBooking`
-  flags allow. **This gates the rendered copy, not the payload.** The `conflicts`
-  array in the 409 body still carries every clashing booking's id, owner name,
-  status, and stay dates to every recipient, exactly as it did before #2250;
-  what changed is that `describeBookingMemberNightConflictBooking` returns null
-  — and the summary sentence names no booking at all — unless the server marked
-  this viewer `canOpenBooking`. Entitlement-scoping the payload itself is still
-  outstanding: treat any new consumer of `conflicts[]` as handling data the
-  reader may not be entitled to see (#2250).
+  flags allow. **The payload is scoped to match** (#2250): a conflict row carries
+  `bookingId`, `bookingStatus`, `bookingOwnerName`, `bookingCheckIn`,
+  `bookingCheckOut` and `guestId` only when the server marked this viewer
+  `canOpenBooking` — the booking's own owner, an admin, or the conflicting guest
+  themselves. An unentitled row carries nothing but the member the requester
+  tried to book, that member's name, the intersection with the nights they chose,
+  and the four viewer-aware booleans. The gate lives at the single assembly point
+  in `findBookingMemberNightConflicts`, because every route that returns this
+  body passes the array straight through; the copy layer
+  (`describeBookingMemberNightConflictBooking`) gates independently and fails
+  closed, so a row missing the detail says nothing rather than rendering
+  `undefined`.
 - The same 409 is produced by flows whose reader cannot change the dates (the
   admin booking-request approve / hold / send-quote routes and the booking
   modify routes), so the server-built message is flow-neutral. Only the booking

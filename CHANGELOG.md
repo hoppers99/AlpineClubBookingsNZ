@@ -13,7 +13,8 @@ All notable public reference-release changes should be recorded here.
   on someone else's booking: it says whose booking it is, offers "Remove me from
   this booking" behind a confirmation, and — when the removal is not allowed —
   hides the action and states the reason instead (the stay has started, the
-  booking is no longer in a changeable state, or you are the only person on it).
+  booking is no longer in a changeable state, you are the only person on it, or
+  the club priced the booking as a quote).
   Eligibility is decided by one shared server-side rule, the same one the removal
   service enforces, so a member is never shown a control the server would refuse.
   The clash message itself was rewritten to name the nights, address the member
@@ -23,6 +24,18 @@ All notable public reference-release changes should be recorded here.
   Nothing about who may remove whom has changed — only the owner, an admin, or
   the person themselves can take a place off a booking, and the owner is emailed
   and their total updated exactly as before.
+
+- **The "already booked on those nights" refusal no longer tells you about a
+  booking you are not part of (#2250).** A member can legitimately have a family
+  member who is a guest on a stranger's booking. Asking for a price on clashing
+  dates used to return that stranger's full name, the whole span of their stay,
+  and the booking's id — none of which the member could see anywhere else in the
+  app, and none of which was ever shown on screen. The refusal now carries only
+  who in your own party is already booked and which of your chosen nights clash.
+  Where you ARE entitled to the detail — it is your own booking, you are the
+  person double-booked, or you are an admin resolving the clash — nothing
+  changes, so the admin booking-request linking warning still shows the owner and
+  their dates as before.
 
 - **Postgres connection ceiling raised from 30 to 40 to stop intermittent
   `FATAL: sorry, too many clients` when a deploy or backup overlaps normal
