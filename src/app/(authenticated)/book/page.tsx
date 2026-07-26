@@ -242,6 +242,19 @@ export default function BookPage() {
                       .filter(Boolean)
                       .join(" ")}
                   </p>
+                  {/* #2250: the next step is always stated, not only when no
+                      button is available — a member who has never seen "Remove
+                      me from this booking" needs telling what it does, so it
+                      sits ABOVE the buttons it describes. This is the booking
+                      wizard, the one surface whose reader is actually choosing
+                      the dates, so it is also the one place allowed to offer
+                      "choose different dates" (the admin booking-request routes
+                      return the same 409 and cannot). */}
+                  <p className="mt-2 text-danger-11">
+                    {describeBookingMemberNightConflictNextStep(conflict, {
+                      canChooseDifferentDates: true,
+                    })}
+                  </p>
                   <div className="mt-3 flex flex-wrap gap-2">
                     {conflict.canOpenBooking && (
                       <Button
@@ -272,12 +285,6 @@ export default function BookPage() {
                       </Button>
                     )}
                   </div>
-                  {/* #2250: the next step is always stated, not only when no
-                      button is available — a member who has never seen "Remove
-                      me from this booking" needs telling what it does. */}
-                  <p className="mt-2 text-danger-11">
-                    {describeBookingMemberNightConflictNextStep(conflict)}
-                  </p>
                 </div>
               ))}
             </div>

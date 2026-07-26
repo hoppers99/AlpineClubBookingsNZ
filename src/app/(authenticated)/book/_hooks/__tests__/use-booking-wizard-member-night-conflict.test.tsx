@@ -1,0 +1,164 @@
+// @vitest-environment jsdom
+
+import { act, renderHook, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+// #2250 — the wizard's member-night 409 banner. The 409's own `error` is the
+// SELF-CONTAINED sentence (situation + next step) written for callers that
+// render nothing else; the wizard renders a per-conflict card underneath that
+// states the nights, the booking, the buttons, and this viewer's next step. So
+// the banner must carry the situation only, or the same sentence appears twice
+// on the single-conflict screen.
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+}));
+
+vi.mock("next-auth/react", () => ({
+  useSession: () => ({
+    data: { user: { id: "member-1", role: "MEMBER", accessRoles: [] } },
+  }),
+}));
+
+vi.mock("@/lib/access-roles", () => ({
+  hasAdminAccess: () => false,
+  hasAccessRole: () => true,
+}));
+
+vi.mock("@/components/club-identity-provider", () => ({
+  useClubIdentity: () => ({ lodgeCapacity: 20 }),
+}));
+
+vi.mock("@/components/lodge-select", () => ({
+  useLodgeOptions: () => ({ lodges: [], loading: false }),
+}));
+
+vi.mock("sonner", () => ({
+  toast: { info: vi.fn() },
+}));
+
+import { useBookingWizard } from "@/app/(authenticated)/book/_hooks/use-booking-wizard";
+
+const CONFLICT = {
+  memberId: "member-1",
+  memberName: "Jo Member",
+  bookingId: "booking-2",
+  bookingStatus: "PAYMENT_PENDING",
+  bookingOwnerName: "Jo Member",
+  bookingCheckIn: "2026-06-11",
+  bookingCheckOut: "2026-06-13",
+  guestId: "guest-2",
+  conflictingNights: ["2026-06-11"],
+  isOwnBooking: true,
+  canOpenBooking: true,
+  canSelfRemove: false,
+  isSelfGuest: true,
+};
+
+// What the server actually puts on the wire: the self-contained sentence.
+const SERVER_ERROR =
+  "You are already on another booking for 11 Jun 2026. Open that booking and change it.";
+
+function jsonResponse(body: unknown, ok = true, status = 200) {
+  return { ok, status, json: async () => body } as Response;
+}
+
+function stubFetch(conflictBody: Record<string, unknown>) {
+  const fetchMock = vi.fn(async (url: string) => {
+    const u = String(url);
+    if (u.includes("/api/members/family")) {
+      return jsonResponse({
+        familyMembers: [
+          {
+            id: "member-1",
+            firstName: "Jo",
+            lastName: "Member",
+            ageTier: "ADULT",
+            relationship: "self",
+            canLogin: true,
+            canBeBooked: true,
+            missingFields: [],
+          },
+        ],
+      });
+    }
+    if (u.includes("/api/payments/options")) {
+      return jsonResponse({
+        methods: {
+          stripe: { enabled: true, default: true },
+          internetBanking: { enabled: false },
+        },
+        groupBookingsEnabled: false,
+      });
+    }
+    if (u.includes("/api/member/subscription-status")) {
+      return jsonResponse({
+        status: "PAID",
+        seasonDisplay: "2026",
+        invoiceUrl: null,
+        invoiceNumber: null,
+      });
+    }
+    if (u.includes("/api/booking-messages")) return jsonResponse({ messages: {} });
+    if (u.includes("/api/bookings/rooms"))
+      return jsonResponse({ enabled: false, rooms: [] });
+    if (u.includes("/api/bookings/quote"))
+      return jsonResponse(conflictBody, false, 409);
+    return jsonResponse({}, false);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+async function seatedWizard(conflictBody: Record<string, unknown>) {
+  stubFetch(conflictBody);
+  const { result } = renderHook(() => useBookingWizard());
+  await waitFor(() => expect(result.current.guests).toHaveLength(1));
+
+  act(() => {
+    result.current.handleDateSelect(
+      new Date("2026-06-11T00:00:00.000Z"),
+      new Date("2026-06-12T00:00:00.000Z"),
+    );
+  });
+  await act(async () => {
+    await result.current.handleGuestsDone();
+  });
+  return result;
+}
+
+describe("booking wizard member-night conflict banner (#2250)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it("shows the situation only, leaving the next step to the conflict card below", async () => {
+    const result = await seatedWizard({
+      code: "BOOKING_MEMBER_NIGHT_CONFLICT",
+      error: SERVER_ERROR,
+      conflicts: [CONFLICT],
+    });
+
+    expect(result.current.memberNightConflicts).toHaveLength(1);
+    expect(result.current.error).toBe(
+      "You are already on another booking for 11 Jun 2026.",
+    );
+    // The card renders this itself; repeating it in the banner printed the same
+    // sentence twice on the single-conflict screen.
+    expect(result.current.error).not.toContain("Open that booking and change it");
+    expect(result.current.error).not.toBe(SERVER_ERROR);
+  });
+
+  it("falls back to the server's own sentence when the 409 carries no conflict rows", async () => {
+    const result = await seatedWizard({
+      code: "BOOKING_MEMBER_NIGHT_CONFLICT",
+      error: SERVER_ERROR,
+      conflicts: [],
+    });
+
+    expect(result.current.memberNightConflicts).toHaveLength(0);
+    // Nothing renders underneath, so the banner must carry the whole thing.
+    expect(result.current.error).toBe(SERVER_ERROR);
+  });
+});

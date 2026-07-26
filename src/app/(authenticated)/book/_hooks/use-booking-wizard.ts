@@ -13,7 +13,7 @@ import {
   type BookingErrorPaymentTarget,
 } from "@/lib/booking-error-payment-targets";
 import { formatLocalDateOnly } from "@/lib/date-only";
-import { buildBookingMemberNightConflictMessage } from "@/lib/booking-member-night-conflict-messages";
+import { buildBookingMemberNightConflictSummary } from "@/lib/booking-member-night-conflict-messages";
 import { shouldShowInviteFamilyGroupMembersLink } from "@/lib/family-booking";
 import { hasAccessRole, hasAdminAccess } from "@/lib/access-roles";
 import { isPaymentOwedBookingStatus } from "@/lib/booking-status";
@@ -580,10 +580,19 @@ export function useBookingWizard() {
     error?: string;
     conflicts?: BookingMemberNightConflict[];
   }) {
+    // #2250 — the banner carries the SUMMARY only. `data.error` is the
+    // self-contained 409 sentence (summary + next step), and the wizard renders
+    // a per-conflict card underneath that already states the nights, the
+    // booking, the buttons, and this viewer's next step — so using it verbatim
+    // printed the same sentence twice on the single-conflict screen.
+    const conflicts = data.conflicts ?? [];
     setError(
-      data.error || buildBookingMemberNightConflictMessage(data.conflicts ?? [])
+      conflicts.length > 0
+        ? buildBookingMemberNightConflictSummary(conflicts)
+        : data.error ||
+          "Someone in this party is already booked on one or more of these nights."
     );
-    setMemberNightConflicts(data.conflicts || []);
+    setMemberNightConflicts(conflicts);
     setGuestProfileBlocks([]);
     setErrorPaymentTargets([]);
   }
@@ -635,7 +644,7 @@ export function useBookingWizard() {
       setMemberNightConflicts(nextConflicts);
       setError(
         nextConflicts.length > 0
-          ? buildBookingMemberNightConflictMessage(nextConflicts)
+          ? buildBookingMemberNightConflictSummary(nextConflicts)
           : "",
       );
 

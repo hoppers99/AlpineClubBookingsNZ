@@ -71,13 +71,16 @@ test("the same member cannot hold the same lodge night twice", async ({
 
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await expect(
-    // #2250 reworded the block ("… is already on a booking for 12 Jun 2026 …"),
-    // so the alternation carries the current wording alongside the older ones.
-    page
-      .getByText(
-        /already (booked|on a booking|on another booking|has a booking|have a booking|part of)/i,
-      )
-      .first(),
+    // #2250: the clash is deterministic — the booker against the booking they
+    // made in the previous test — so assert the exact thing this rewrite added:
+    // the member addressed directly and the actual night named. A looser
+    // alternation would still pass if the night list fell back to "the nights
+    // you chose" or the second-person address regressed.
+    page.getByText(/you are already on another booking for 12 Jun 2026/i).first(),
+  ).toBeVisible();
+  // The next step is stated too, and it is the wizard's date-picking variant.
+  await expect(
+    page.getByText(/choose different dates/i).first(),
   ).toBeVisible();
   await expect(page.getByText("Booking Summary")).not.toBeVisible();
 });
