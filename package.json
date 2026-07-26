@@ -84,7 +84,7 @@
     "@stripe/react-stripe-js": "^6.6.0",
     "@stripe/stripe-js": "^9.8.0",
     "bcryptjs": "^3.0.3",
-    "bezier-easing": "2.1.0",
+    "bezier-easing": "3.0.1",
     "busboy": "^1.6.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
