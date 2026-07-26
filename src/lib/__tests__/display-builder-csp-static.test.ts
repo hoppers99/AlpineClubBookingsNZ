@@ -1,19 +1,33 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { FRAME_SRC_SELF_PATHS, TIGHT_IMG_SRC_PATHS } from "@/lib/csp";
 
 /**
- * Static guards for the two invariants that make the Visual builder's
- * route-scoped CSP relaxation (`src/lib/csp.ts`, issue #2246) actually work and
- * actually stay safe. Both are source assertions in the house static-test style
- * (see `email-settings-panel-static.test.ts`) because neither can be observed
- * from a rendered unit test: one is about how a document is ENTERED, the other
- * about what a future edit might add.
+ * Static guards for the invariants that make this app's route-scoped CSP
+ * relaxations (`src/lib/csp.ts`, issues #2246 / #2279) actually work and
+ * actually stay safe. They are source assertions in the house static-test style
+ * (see `email-settings-panel-static.test.ts`) because none can be observed from
+ * a rendered unit test: they are about how a document is ENTERED, and about what
+ * a future edit might add.
+ *
+ * The guards are driven from the allowlists themselves, not from a hardcoded
+ * route, so ADDING a path to a relaxation automatically requires that path's
+ * entry points to be hard navigations — which is the general failure this
+ * protects against, not just the one instance of it that was found.
  */
 
-const BUILDER_ROUTE = "/admin/display/builder";
+/**
+ * Every path that carries a route-scoped CSP relaxation today. Deduped because
+ * a path may legitimately appear on both lists.
+ */
+const RELAXED_PATHS = [
+  ...new Set([...FRAME_SRC_SELF_PATHS, ...TIGHT_IMG_SRC_PATHS]),
+].sort();
+
 const REPO_ROOT = process.cwd();
 const BUILDER_SOURCE = "src/app/(admin)/admin/display/builder/display-builder.tsx";
+const HUB_RENDERER = "src/components/admin-hub-page.tsx";
 
 const SOURCE_EXTENSIONS = new Set([".ts", ".tsx"]);
 const SKIPPED_DIRECTORIES = new Set([
@@ -35,7 +49,7 @@ function collectSourceFiles(directory: string, found: string[] = []) {
     }
     if (!entry.isFile()) continue;
     if (!SOURCE_EXTENSIONS.has(path.extname(entry.name))) continue;
-    // Tests legitimately mention the route as a string (asserting a
+    // Tests legitimately mention a relaxed route as a string (asserting a
     // `window.open(..., "_self")` target, a CSP pathname, …); they render no
     // navigation of their own.
     if (/\.test\.tsx?$/.test(entry.name)) continue;
@@ -45,9 +59,56 @@ function collectSourceFiles(directory: string, found: string[] = []) {
   return found;
 }
 
-describe("Visual builder is entered by a HARD navigation (#2246)", () => {
+/**
+ * Does a link target resolve to one of the relaxed routes?
+ *
+ * `raw` is the literal text of a URL as written in the source, so it may carry a
+ * query string, a fragment, or a `${…}` interpolation. Only the leading path
+ * segment counts, and it must match a relaxed path in FULL — `/display` must not
+ * be read out of `/admin/display/layouts` or ``/admin/lodges/${id}/display``.
+ * A trailing slash is folded exactly as `src/lib/csp.ts` folds it.
+ */
+function targetsRelaxedPath(raw: string) {
+  const [pathPart = ""] = raw.split(/[?#]|\$\{|["'`]/, 1);
+  const normalised =
+    pathPart.length > 1 && pathPart.endsWith("/")
+      ? pathPart.slice(0, -1)
+      : pathPart;
+  return RELAXED_PATHS.includes(normalised);
+}
+
+/** Every `href=` / `href:` literal in a source file, with its offset. */
+function hrefLiterals(source: string, form: "jsx" | "descriptor") {
+  const pattern =
+    form === "jsx"
+      ? /href=\{?[`"']([^`"']*)/g
+      : /href:\s*[`"']([^`"']*)/g;
+  return [...source.matchAll(pattern)].map((match) => ({
+    value: match[1],
+    index: match.index,
+    text: match[0],
+  }));
+}
+
+/**
+ * The JSX opening tag a given source offset sits inside — found by walking back
+ * to the nearest `<Tag`. Scanning backwards from the `href` rather than forwards
+ * from the tag is deliberate: a forward `<Tag[^>]*>` scan is truncated by the
+ * `>` in any arrow function among the attributes, which would silently turn this
+ * guard into a no-op on exactly the kind of component most likely to hide one.
+ */
+function enclosingJsxTag(source: string, index: number) {
+  const before = source.slice(0, index);
+  const opener = before.lastIndexOf("<");
+  if (opener === -1) return null;
+  return /^<([A-Za-z][A-Za-z0-9.]*)/.exec(before.slice(opener))?.[1] ?? null;
+}
+
+const sourceFiles = collectSourceFiles(path.join(REPO_ROOT, "src"));
+
+describe("routes with a scoped CSP relaxation are entered by a HARD navigation (#2246, #2279)", () => {
   /*
-   * WHY THIS TEST EXISTS — do not "simplify" the guarded links back to <Link>.
+   * WHY THESE TESTS EXIST — do not "simplify" the guarded links back to <Link>.
    *
    * A Content-Security-Policy is a property of the DOCUMENT. The browser takes
    * it from the response headers when the document is parsed and it never
@@ -56,37 +117,30 @@ describe("Visual builder is entered by a HARD navigation (#2246)", () => {
    * CSP stays whatever the ENTRY document was served with. There is a single
    * root layout here, so every /admin/* -> /admin/* <Link> is soft.
    *
-   * `src/lib/csp.ts` grants `frame-src 'self'` to the builder route alone so its
-   * **Live preview** can embed the sandboxed /display iframe. That grant is
-   * INERT if the builder is reached by <Link> from another admin page — the
-   * previous document's `frame-src` (Stripe hosts only, no 'self') is still in
-   * force and the preview shows "Content blocked", which is the exact bug #2246
-   * fixed. Only a hard document load fetches the builder's own headers.
-   *
-   * So every in-app route to the builder must be a hard navigation: a plain
-   * `<a href>` (still a real link — same role, keyboard activation and
-   * ctrl/middle-click behaviour as <Link>), or `window.open(url, "_self")` as
-   * `src/app/(admin)/admin/display/templates/page.tsx` already does.
+   * So EVERY relaxation in `src/lib/csp.ts` is inert unless its route is entered
+   * by a hard document load: a plain `<a href>` (still a real link — same role,
+   * keyboard activation and ctrl/middle-click behaviour as <Link>), a
+   * `window.open(url, …)`, or a real frame/tab navigation. `frame-src 'self'`
+   * for the Visual builder was exactly this bug: the grant was correct and the
+   * Live preview still showed "Content blocked", because both in-app links to
+   * the builder were <Link>s.
    */
-  const sourceFiles = collectSourceFiles(path.join(REPO_ROOT, "src"));
 
-  it("finds source files to scan", () => {
+  it("has allowlisted paths to scan", () => {
     expect(sourceFiles.length).toBeGreaterThan(100);
+    expect(RELAXED_PATHS.length).toBeGreaterThan(0);
   });
 
-  it("routes no <Link>-family component at the builder", () => {
-    // Any JSX opening tag whose component name ends in "Link" — next/link's
-    // default `Link`, and the wrappers around it such as `BackLink`, all of
-    // which navigate softly.
-    const linkTag = /<([A-Z][A-Za-z0-9]*)?Link\b[^>]*>/g;
+  it("routes no client-side router push/replace at a relaxed path", () => {
+    // `router.push`/`router.replace` are soft for the same reason a <Link> is.
+    const routerNavigation = /\.(?:push|replace)\(\s*[`"']([^`"']*)/g;
     const offenders: string[] = [];
 
     for (const file of sourceFiles) {
       const source = fs.readFileSync(file, "utf8");
-      if (!source.includes(BUILDER_ROUTE)) continue;
-      for (const [tag] of source.matchAll(linkTag)) {
-        if (tag.includes(BUILDER_ROUTE)) {
-          offenders.push(`${path.relative(REPO_ROOT, file)}: ${tag}`);
+      for (const match of source.matchAll(routerNavigation)) {
+        if (targetsRelaxedPath(match[1])) {
+          offenders.push(`${path.relative(REPO_ROOT, file)}: ${match[0]}`);
         }
       }
     }
@@ -94,40 +148,73 @@ describe("Visual builder is entered by a HARD navigation (#2246)", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("routes no client-side router push/replace at the builder", () => {
-    // `router.push`/`router.replace` are soft for the same reason a <Link> is.
-    const routerNavigation = /\.(?:push|replace)\(\s*[`"'][^`"']*\/admin\/display\/builder/g;
+  it("puts every JSX href at a relaxed path on a plain <a>, never a component", () => {
+    /*
+     * This is the generalisation of "no <Link> at the builder": a plain <a> is
+     * the ONLY tag that guarantees a document load. `<Link>`, `<BackLink>` and
+     * any other component wrapper may route however they like, so all of them
+     * fail here — no allowlist of soft-navigating component names to maintain.
+     *
+     * Known limit: an href passed through a variable (`const to = "/display";
+     * <Link href={to}>`) is invisible to any literal scan. The descriptor test
+     * below covers the one such indirection that exists in this codebase.
+     */
     const offenders: string[] = [];
+    let sites = 0;
 
     for (const file of sourceFiles) {
       const source = fs.readFileSync(file, "utf8");
-      for (const [call] of source.matchAll(routerNavigation)) {
-        offenders.push(`${path.relative(REPO_ROOT, file)}: ${call}`);
+      for (const { value, index, text } of hrefLiterals(source, "jsx")) {
+        if (!targetsRelaxedPath(value)) continue;
+        sites += 1;
+        const tag = enclosingJsxTag(source, index);
+        if (tag !== "a") {
+          offenders.push(`${path.relative(REPO_ROOT, file)}: <${tag ?? "?"} ${text}…`);
+        }
       }
     }
 
     expect(offenders).toEqual([]);
+    // Positive control: a scan that matched nothing would pass silently. Two
+    // sites exist today — the Layouts page's builder link and the Devices page's
+    // per-device /display preview.
+    expect(sites).toBeGreaterThanOrEqual(2);
   });
 
-  it("keeps the hub card's builder entry opted in to a hard navigation", () => {
-    const hub = fs.readFileSync(
-      path.join(REPO_ROOT, "src/app/(admin)/admin/display/page.tsx"),
-      "utf8",
-    );
-    // The generic hub renderer (`src/components/admin-hub-page.tsx`) keeps
-    // <Link> for every other card; only the section descriptor that opts in
-    // renders a plain <a>. Losing the flag would silently restore the bug.
-    const builderSection = hub.slice(hub.indexOf(`href: "${BUILDER_ROUTE}"`));
-    expect(builderSection.slice(0, builderSection.indexOf("},"))).toMatch(
-      /hardNavigate:\s*true/,
-    );
+  it("marks every hub/nav descriptor pointing at a relaxed path hardNavigate", () => {
+    /*
+     * The variable-href case a literal scan cannot see: `admin-hub-page.tsx`
+     * renders `<Link href={href}>` from a descriptor object, so the relaxed
+     * path never appears next to a `<Link>` in the source at all. The descriptor
+     * must opt in instead, and the test below pins that the opt-in still emits
+     * a plain <a>.
+     */
+    const offenders: string[] = [];
+    let descriptors = 0;
+
+    for (const file of sourceFiles) {
+      const source = fs.readFileSync(file, "utf8");
+      for (const { value, index, text } of hrefLiterals(source, "descriptor")) {
+        if (!targetsRelaxedPath(value)) continue;
+        descriptors += 1;
+        // The rest of the object literal this href belongs to.
+        const rest = source.slice(index);
+        const objectBody = rest.slice(0, rest.indexOf("},"));
+        if (!/hardNavigate:\s*true/.test(objectBody)) {
+          offenders.push(`${path.relative(REPO_ROOT, file)}: ${text}`);
+        }
+      }
+    }
+
+    expect(offenders).toEqual([]);
+    // Positive control, as above: the Lobby Display hub's Visual builder card.
+    expect(descriptors).toBeGreaterThanOrEqual(1);
   });
 
-  it("still renders a plain anchor when a section opts in", () => {
-    const hubRenderer = fs.readFileSync(
-      path.join(REPO_ROOT, "src/components/admin-hub-page.tsx"),
-      "utf8",
-    );
+  it("still renders a plain anchor when a descriptor opts in", () => {
+    const hubRenderer = fs.readFileSync(path.join(REPO_ROOT, HUB_RENDERER), "utf8");
+    // Losing this would make the `hardNavigate` opt-in above a no-op, and the
+    // relaxation silently inert again.
     expect(hubRenderer).toMatch(/hardNavigate\s*\?\s*\(\s*<a\b/);
   });
 });
@@ -152,6 +239,13 @@ describe("Visual builder renders no authored markup itself (#161, #2246)", () =>
    * failing, the fix is not to delete it: either keep the preview inside the
    * sandboxed frame, or add the builder to TIGHT_IMG_SRC_PATHS and re-review.
    */
+  it("keeps the builder out of the tightened img-src allowlist", () => {
+    // The premise of the assertion below. If the builder is ever added to
+    // TIGHT_IMG_SRC_PATHS this test should be re-reviewed, not silently kept.
+    expect(TIGHT_IMG_SRC_PATHS).not.toContain("/admin/display/builder");
+    expect(FRAME_SRC_SELF_PATHS).toContain("/admin/display/builder");
+  });
+
   it("uses no HTML-injection sink in the builder component", () => {
     const source = fs.readFileSync(path.join(REPO_ROOT, BUILDER_SOURCE), "utf8");
 
