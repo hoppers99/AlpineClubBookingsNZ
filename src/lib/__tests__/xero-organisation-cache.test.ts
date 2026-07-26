@@ -21,6 +21,7 @@ vi.mock("@/lib/logger", () => ({
 
 import {
   getXeroConnectedOrganisation,
+  getXeroFinancialYearEndMonth,
   resetXeroOrganisationCachesForTests,
 } from "@/lib/xero-organisation";
 import { invalidateXeroOrganisationCaches } from "@/lib/xero-organisation-cache-bus";
@@ -433,5 +434,138 @@ describe("connected-organisation summary: live read (#2261 review F1/F2)", () =>
 
     expect(live.getAuthenticatedXeroClient).toHaveBeenCalledTimes(1);
     expect(results.every((r) => r.name === null)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The year-end read (#2283, single-flight half). It feeds membership
+// financial-year resolution, so it is deliberately NOT negative-cached: an
+// admin who has just fixed the connection must be picked up by the very next
+// call. De-duplication carries none of that cost, and without it a
+// present-but-failing connection turned N concurrent requests into N live Xero
+// calls in exactly the state where Xero can least serve them.
+// ---------------------------------------------------------------------------
+describe("financial year-end month: single flight (#2283)", () => {
+  const originalOrigin = process.env.XERO_MOCK_API_ORIGIN;
+  const originalInternalOrigin = process.env.XERO_MOCK_INTERNAL_ORIGIN;
+
+  function stubLiveClient() {
+    live.getAuthenticatedXeroClient.mockResolvedValue({
+      xero: { accountingApi: { getOrganisations: live.getOrganisations } },
+      tenantId: "tenant-1",
+    });
+    live.callXeroApi.mockImplementation(async (fn: () => Promise<unknown>) =>
+      fn(),
+    );
+  }
+
+  beforeEach(() => {
+    vi.stubEnv("NODE_ENV", "test");
+    // The year-end read has no mock-Xero branch: it is always the live path.
+    delete process.env.XERO_MOCK_API_ORIGIN;
+    delete process.env.XERO_MOCK_INTERNAL_ORIGIN;
+    vi.clearAllMocks();
+    resetXeroOrganisationCachesForTests();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    resetXeroOrganisationCachesForTests();
+    if (originalOrigin === undefined) delete process.env.XERO_MOCK_API_ORIGIN;
+    else process.env.XERO_MOCK_API_ORIGIN = originalOrigin;
+    if (originalInternalOrigin === undefined)
+      delete process.env.XERO_MOCK_INTERNAL_ORIGIN;
+    else process.env.XERO_MOCK_INTERNAL_ORIGIN = originalInternalOrigin;
+  });
+
+  it("collapses concurrent cold-cache callers into ONE Xero read", async () => {
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    stubLiveClient();
+    live.getOrganisations.mockImplementation(async () => {
+      await gate;
+      return { body: { organisations: [{ financialYearEndMonth: 6 }] } };
+    });
+
+    const inFlight = Promise.all(
+      Array.from({ length: 5 }, () => getXeroFinancialYearEndMonth()),
+    );
+    release?.();
+
+    expect(await inFlight).toEqual(Array(5).fill(6));
+    expect(live.getOrganisations).toHaveBeenCalledTimes(1);
+  });
+
+  it("shares one read while Xero is FAILING, and every joiner still resolves", async () => {
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    live.getAuthenticatedXeroClient.mockImplementation(async () => {
+      await gate;
+      throw new Error("invalid_grant");
+    });
+
+    const inFlight = Promise.all(
+      Array.from({ length: 5 }, () => getXeroFinancialYearEndMonth()),
+    );
+    release?.();
+
+    // No joiner sees a rejection: the shared read degrades to null for all.
+    expect(await inFlight).toEqual(Array(5).fill(null));
+    expect(live.getAuthenticatedXeroClient).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT negative-cache: the next call after a failure tries again", async () => {
+    live.getAuthenticatedXeroClient.mockRejectedValueOnce(new Error("boom"));
+    expect(await getXeroFinancialYearEndMonth()).toBeNull();
+
+    // The admin fixes the connection; no TTL to wait out.
+    stubLiveClient();
+    live.getOrganisations.mockResolvedValue({
+      body: { organisations: [{ financialYearEndMonth: 3 }] },
+    });
+    expect(await getXeroFinancialYearEndMonth()).toBe(3);
+    expect(live.getAuthenticatedXeroClient).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears the in-flight slot so a later caller is never wedged", async () => {
+    stubLiveClient();
+    live.getOrganisations.mockResolvedValue({
+      body: { organisations: [{ financialYearEndMonth: 9 }] },
+    });
+
+    expect(await getXeroFinancialYearEndMonth()).toBe(9);
+    // Cached now, so no second read; after invalidation a cold call must work.
+    invalidateXeroOrganisationCaches();
+    expect(await getXeroFinancialYearEndMonth()).toBe(9);
+    expect(live.getOrganisations).toHaveBeenCalledTimes(2);
+  });
+
+  // Same reconnect guard as the summary read: the two share one generation
+  // counter, because they share one invalidation.
+  it("drops a read that started before a reconnect instead of caching the old month", async () => {
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    stubLiveClient();
+    live.getOrganisations.mockImplementation(async () => {
+      await gate;
+      return { body: { organisations: [{ financialYearEndMonth: 6 }] } };
+    });
+
+    const inFlight = getXeroFinancialYearEndMonth();
+    invalidateXeroOrganisationCaches();
+    release?.();
+    expect(await inFlight).toBe(6);
+
+    live.getOrganisations.mockResolvedValue({
+      body: { organisations: [{ financialYearEndMonth: 3 }] },
+    });
+    expect(await getXeroFinancialYearEndMonth()).toBe(3);
+    expect(live.getOrganisations).toHaveBeenCalledTimes(2);
   });
 });

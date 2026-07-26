@@ -26,20 +26,32 @@ interface OrgYearEndCacheEntry {
 let cached: OrgYearEndCacheEntry | null = null;
 
 /**
- * Returns the Xero organisation's financial year-end month (1-12), or null if
- * Xero is not connected or the value is unavailable. Cached in-process.
+ * The year-end read currently in flight, shared by every caller that arrives
+ * while it runs (#2261 review). Same single-flight shape as the summary read
+ * below — one mechanism, not two divergent ones.
  */
-export async function getXeroFinancialYearEndMonth(
-  forceRefresh = false,
-): Promise<number | null> {
-  if (
-    !forceRefresh &&
-    cached &&
-    Date.now() - cached.fetchedAt < ORG_CACHE_TTL_MS
-  ) {
-    return cached.month;
-  }
+let yearEndInFlight: Promise<number | null> | null = null;
 
+/**
+ * Bumped on every cache reset, and read by BOTH organisation reads: a read that
+ * started before a connect/disconnect invalidation describes the OLD
+ * organisation, so it must not write itself into the freshly cleared cache — it
+ * is served to its own callers and then dropped.
+ */
+let orgReadGeneration = 0;
+
+/**
+ * One live year-end read. Never throws: a failure degrades to the last cached
+ * month (or null), exactly as the previous inline body did.
+ *
+ * Note what this deliberately does NOT do: negative-cache the failure, unlike
+ * the connected-org summary below. This month feeds membership financial-year
+ * resolution, so a connection an admin has just fixed must be picked up by the
+ * very next call rather than up to a minute later. De-duplication is free of
+ * that trade — it caches nothing, so there is nothing to wait out.
+ */
+async function readXeroFinancialYearEndMonth(): Promise<number | null> {
+  const generation = orgReadGeneration;
   try {
     const { xero, tenantId } = await getAuthenticatedXeroClient();
     const response = await callXeroApi(
@@ -54,16 +66,54 @@ export async function getXeroFinancialYearEndMonth(
     const raw = response.body.organisations?.[0]?.financialYearEndMonth;
     const month =
       typeof raw === "number" && raw >= 1 && raw <= 12 ? raw : null;
-    cached = { month, fetchedAt: Date.now() };
+    if (generation === orgReadGeneration) {
+      cached = { month, fetchedAt: Date.now() };
+    }
     return month;
   } catch (error) {
     logger.warn(
       { err: error },
       "Failed to read Xero organisation financial year-end month",
     );
-    // Fall back to the last cached value if we have one, otherwise null.
+    // Fall back to the last cached value if we have one, otherwise null. (After
+    // an invalidation there is none, so this cannot resurrect the old org's
+    // month either.)
     return cached?.month ?? null;
   }
+}
+
+/**
+ * Returns the Xero organisation's financial year-end month (1-12), or null if
+ * Xero is not connected or the value is unavailable. Cached in-process, and
+ * concurrent cold-cache callers share a single underlying read.
+ *
+ * The single flight matters most while the connection is present but FAILING:
+ * nothing is cached then (see above), so without it N concurrent requests meant
+ * N live Xero calls in exactly the state where Xero is least able to serve
+ * them. The one consequence worth naming is that a joiner now shares the
+ * leader's failure instead of making its own attempt that might have succeeded;
+ * both outcomes resolve to the same fallback month, and N calls into a failing
+ * Xero is the worse of the two.
+ */
+export async function getXeroFinancialYearEndMonth(
+  forceRefresh = false,
+): Promise<number | null> {
+  if (!forceRefresh) {
+    if (cached && Date.now() - cached.fetchedAt < ORG_CACHE_TTL_MS) {
+      return cached.month;
+    }
+    if (yearEndInFlight) return yearEndInFlight;
+  }
+
+  // `readXeroFinancialYearEndMonth` never rejects, so a joiner can never be
+  // handed a rejection; the `finally` still clears the slot defensively so a
+  // future failure mode cannot wedge this into "permanently in flight".
+  const inFlight: Promise<number | null> =
+    readXeroFinancialYearEndMonth().finally(() => {
+      if (yearEndInFlight === inFlight) yearEndInFlight = null;
+    });
+  yearEndInFlight = inFlight;
+  return inFlight;
 }
 
 // ---------------------------------------------------------------------------
@@ -157,13 +207,6 @@ let orgSummaryCache: OrgSummaryCacheEntry | null = null;
  */
 let orgSummaryInFlight: Promise<XeroConnectedOrganisation> | null = null;
 
-/**
- * Bumped on every cache reset. A read that started before a connect/disconnect
- * invalidation describes the OLD organisation, so it must not write itself into
- * the freshly cleared cache — it is served to its own callers and dropped.
- */
-let orgSummaryGeneration = 0;
-
 /** The cached summary if it is still fresh for its kind, otherwise null. */
 function freshOrgSummary(): XeroConnectedOrganisation | null {
   if (!orgSummaryCache) return null;
@@ -181,12 +224,12 @@ function freshOrgSummary(): XeroConnectedOrganisation | null {
  * the short negative TTL and degrades to the last known summary (or nulls).
  */
 async function readXeroConnectedOrganisation(): Promise<XeroConnectedOrganisation> {
-  const generation = orgSummaryGeneration;
+  const generation = orgReadGeneration;
   const remember = (
     summary: XeroConnectedOrganisation,
     failed: boolean,
   ): XeroConnectedOrganisation => {
-    if (generation === orgSummaryGeneration) {
+    if (generation === orgReadGeneration) {
       orgSummaryCache = { summary, fetchedAt: Date.now(), failed };
     }
     return summary;
@@ -442,10 +485,13 @@ function resetXeroOrganisationCaches(): void {
   // read must go live even if the last attempt failed seconds ago.
   orgSummaryCache = null;
   lockDatesCache = null;
-  // Abandon any summary read already in flight: it describes the old
-  // connection, so neither its result nor its cache write may survive.
+  // Abandon any read already in flight — summary or year-end: it describes the
+  // old connection, so neither its result nor its cache write may survive. The
+  // generation bump is what stops the write; nulling the slots stops a caller
+  // arriving after the reconnect from JOINING the old connection's read.
   orgSummaryInFlight = null;
-  orgSummaryGeneration += 1;
+  yearEndInFlight = null;
+  orgReadGeneration += 1;
 }
 
 registerXeroOrganisationCacheInvalidator(resetXeroOrganisationCaches);

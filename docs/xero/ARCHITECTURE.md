@@ -638,6 +638,28 @@ concurrent cold-cache callers await a single shared read, and this read passes
 call. Any later success replaces the negative entry and restores the 12-hour
 TTL.
 
+It passes `maxTransientRetries: 1` alongside that, and the pairing is
+load-bearing: `withXeroRetry` defaults the transient budget to
+`min(maxRetries, 1)`, so `maxRetries: 0` on its own would also zero it — and
+exhausting the transient budget arms `rememberXeroTransientOutage`, the
+**process-global** breaker that fails every subsequent Xero call fast for two
+minutes, invoicing and sync included. A read that exists only to decorate a
+button must not be one 5xx away from that, so the transient budget is left at
+its default and it still takes two consecutive transient failures to trip the
+breaker.
+
+`getXeroFinancialYearEndMonth` (same module, feeding membership
+financial-year resolution) is **single-flight but deliberately not
+negative-cached**. The de-duplication is the half that is free: concurrent
+callers on a cold or failing cache collapse to one underlying Xero call instead
+of N, at the cost only that a joiner shares the leader's outcome rather than
+making its own attempt. Negative caching is the half that is not free here —
+this is a money-adjacent value, so a connection an admin has just fixed must be
+picked up by the very next call, not up to a minute later. Both reads share one
+generation counter, so a read in flight across a connect/disconnect is served to
+its own callers and then dropped rather than written into the freshly cleared
+cache.
+
 **This read fires on mount of `/admin/xero`**, and that is a deliberate,
 accepted exception to the usual reflex that live Xero calls hang off a click.
 The click-only rule written on `/api/admin/xero/status` is scoped to the
