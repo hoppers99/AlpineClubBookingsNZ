@@ -385,13 +385,15 @@ export async function listAdminMembers(
                 {
                   // Annotated because a spread inside a conditional does not
                   // carry the outer contextual type into the callback.
-                  AND: queryTerms.map((term): Prisma.MemberWhereInput => ({
-                    OR: [
-                      { firstName: { contains: term, mode: "insensitive" } },
-                      { lastName: { contains: term, mode: "insensitive" } },
-                      { email: { contains: term, mode: "insensitive" } },
-                    ],
-                  })),
+                  AND: queryTerms.map(
+                    (term): Prisma.MemberWhereInput => ({
+                      OR: [
+                        { firstName: { contains: term, mode: "insensitive" } },
+                        { lastName: { contains: term, mode: "insensitive" } },
+                        { email: { contains: term, mode: "insensitive" } },
+                      ],
+                    }),
+                  ),
                 },
               ]
             : []),
@@ -818,7 +820,10 @@ export async function listAdminMembers(
     });
 
     const explained = textMatches.flatMap((candidate) => {
-      const [reason] = dependentLinkBlockers(dependentLinkEligibleFor, candidate);
+      const [reason] = dependentLinkBlockers(
+        dependentLinkEligibleFor,
+        candidate,
+      );
       if (!reason) return [];
       return [
         {
