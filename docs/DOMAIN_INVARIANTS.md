@@ -2244,6 +2244,34 @@ keeps its specific conflict errors. A link claim conflict on token claim (either
 partner, inviter no longer eligible) skips the link without failing the
 family-group join, and the skip is audited.
 
+Parent/dependant links (`Member.parentMemberId` and `Member.secondaryParentId`)
+are limited to **two generations and two parents**: a member may have at most
+two parents recorded, and a member who is already someone's parent cannot be
+linked under another member. Admin "Add Dependant → Link Existing"
+(`POST /api/admin/members/[id]/dependents/link`) enforces that, together with:
+the parent must be an active, non-archived adult; the target must not be
+archived, must not already be linked to that parent, and must not be an
+ancestor of the parent. An **inactive** target is deliberately still linkable —
+only the parent side requires `active` — and the dialog badges such a candidate
+"Inactive" rather than hiding them. The admin candidate SEARCH
+(`GET /api/admin/members?dependentLinkEligibleFor=…`) and those write-time
+guards are one predicate, `src/lib/dependent-link-eligibility.ts`, so a
+candidate the search offers is a candidate the write route accepts **on
+identity grounds** — subject to the request's own options, which the route
+still validates separately (family groups the parent does not belong to, an
+invalid inherit-email source, and the privileged-target and last-full-admin
+guards when "disable login" is ticked). Two rules about that file are
+load-bearing. First, the parent columns are **nullable**, so
+every "not this parent" clause must be written as
+`{ OR: [{ col: null }, { col: { not: id } }] }` — Prisma compiles a bare
+`{ not: id }` to `"col" <> $1`, and SQL's `NULL <> 'x'` is UNKNOWN, which
+silently hid every parentless member from the search (#2254). Second, the only
+guard that stays outside the shared predicate is the recursive ancestor walk,
+which needs a query per generation; it is unreachable from the search anyway,
+because every ancestor of the parent necessarily has a dependant and is already
+excluded by the two-generation clause. Relaxing the two-generation rule is an
+owner decision, tracked separately (#2255).
+
 Pending nomination states must have an expiry, reminder, admin refresh,
 replacement, rejection, or other documented recovery path so applications do
 not remain permanently blocked by stale action links.

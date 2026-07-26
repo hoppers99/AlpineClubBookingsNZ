@@ -4,6 +4,23 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **"Add Dependant → Link Existing" now finds the members it was hiding, and
+  says why when it still finds nobody (#2254).** Searching for an existing
+  member to link as a dependant reported "No eligible members found" for almost
+  everybody: the search silently dropped every member who had no parent recorded
+  — the overwhelming majority of valid candidates — so admins could not link an
+  existing member at all without first giving them an unrelated parent. The
+  search now returns those members. When a search genuinely has no one to offer,
+  the dialog no longer stops at a bare "not found": it lists the members whose
+  names matched and the reason each cannot be linked ("already has two parents
+  recorded", "has dependants of their own", "is archived", "is already linked to
+  this member"), and only says "No members matched your search" when nobody
+  matched at all. The search and the save step are now driven by one shared rule,
+  so the dialog can no longer offer a member that saving then refuses, nor hide
+  one that saving would have accepted. Who may be linked is unchanged — at most
+  two parents, no linking someone who already has dependants of their own, no
+  archived members — and inactive members remain linkable, badged "Inactive", as
+  before.
 - **A member put on somebody else's booking can now take their own place off it
   from the booking itself, and the "already booked on those nights" message
   finally says what to do (#2250).** The self-removal action already existed, but
