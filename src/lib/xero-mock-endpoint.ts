@@ -216,13 +216,23 @@ export interface MockXeroOrganisation {
   shortCode?: string | null;
 }
 
-/** Mock organisation read for the step-3 "right org?" confirmation. */
+/**
+ * Mock organisation read for the step-3 "right org?" confirmation.
+ *
+ * THROWS when the mock endpoint errors, mirroring the live `getOrganisations`
+ * path so both failure modes reach the same handler in `xero-organisation`
+ * (which degrades to nulls and negative-caches the failure). Returning a silent
+ * all-null summary here instead would make the mock the only path whose
+ * failures are cached like a success — the asymmetry that hid #2261's F1.
+ */
 export async function fetchMockXeroOrganisation(
   origin: string,
 ): Promise<MockXeroOrganisation> {
   const res = await fetch(mockUrl(origin, "/organisation"));
   if (!res.ok) {
-    return { name: null, financialYearEndMonth: null, shortCode: null };
+    throw new Error(
+      `Mock Xero organisation read failed (HTTP ${res.status}).`,
+    );
   }
   const body = (await res.json()) as MockXeroOrganisation;
   const month =

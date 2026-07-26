@@ -1,4 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// Only the Xero client infrastructure is stubbed, so the LIVE branch of
+// getXeroConnectedOrganisation (short-code normalisation, negative caching,
+// single flight) runs for real. Every other case in this file drives the
+// mock-Xero origin instead and never reaches these.
+const live = vi.hoisted(() => ({
+  getAuthenticatedXeroClient: vi.fn(),
+  callXeroApi: vi.fn(),
+  getOrganisations: vi.fn(),
+}));
+
+vi.mock("@/lib/xero-api-client", () => ({
+  getAuthenticatedXeroClient: live.getAuthenticatedXeroClient,
+  callXeroApi: (fn: () => unknown, options: unknown) =>
+    live.callXeroApi(fn, options),
+}));
+vi.mock("@/lib/logger", () => ({
+  default: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
+}));
+
 import {
   getXeroConnectedOrganisation,
   resetXeroOrganisationCachesForTests,
@@ -122,5 +142,233 @@ describe("xero-organisation cache invalidation (#2080 F1)", () => {
       expect(summary.name).toBeNull();
       expect(summary.financialYearEndMonth).toBeNull();
     });
+  });
+
+  // #2261 review F1 (mock-path parity): the mock path used to cache a failed
+  // read as if it had SUCCEEDED (12 hours of nulls), which is why no E2E could
+  // ever have caught the live path caching nothing at all. Both paths must now
+  // land on the same short negative TTL.
+  it("negative-caches a FAILED mock read for a minute, then re-attempts", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-26T00:00:00.000Z"));
+    const fetchMock = vi.fn(async () => ({
+      ok: false,
+      status: 503,
+      json: async () => ({}),
+    }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    expect((await getXeroConnectedOrganisation()).name).toBeNull();
+    expect((await getXeroConnectedOrganisation()).name).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    vi.setSystemTime(new Date(Date.now() + 61_000));
+    expect((await getXeroConnectedOrganisation()).name).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    vi.useRealTimers();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2261 review: the LIVE branch (no mock origin) — its short-code read had no
+// coverage at all, and a failing-but-present Xero connection re-attempted a
+// live call on EVERY request because failures were never cached.
+// ---------------------------------------------------------------------------
+describe("connected-organisation summary: live read (#2261 review F1/F2)", () => {
+  const originalOrigin = process.env.XERO_MOCK_API_ORIGIN;
+  const originalInternalOrigin = process.env.XERO_MOCK_INTERNAL_ORIGIN;
+
+  function stubLiveOrg(org: Record<string, unknown> | undefined) {
+    live.getAuthenticatedXeroClient.mockResolvedValue({
+      xero: { accountingApi: { getOrganisations: live.getOrganisations } },
+      tenantId: "tenant-1",
+    });
+    live.callXeroApi.mockImplementation(async (fn: () => Promise<unknown>) =>
+      fn(),
+    );
+    live.getOrganisations.mockResolvedValue({
+      body: { organisations: org ? [org] : [] },
+    });
+  }
+
+  beforeEach(() => {
+    vi.stubEnv("NODE_ENV", "test");
+    // No mock origin: force the real getOrganisations code path.
+    delete process.env.XERO_MOCK_API_ORIGIN;
+    delete process.env.XERO_MOCK_INTERNAL_ORIGIN;
+    vi.clearAllMocks();
+    resetXeroOrganisationCachesForTests();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+    resetXeroOrganisationCachesForTests();
+    if (originalOrigin === undefined) delete process.env.XERO_MOCK_API_ORIGIN;
+    else process.env.XERO_MOCK_API_ORIGIN = originalOrigin;
+    if (originalInternalOrigin === undefined)
+      delete process.env.XERO_MOCK_INTERNAL_ORIGIN;
+    else process.env.XERO_MOCK_INTERNAL_ORIGIN = originalInternalOrigin;
+  });
+
+  it("reads name, year-end month and a trimmed short code from Xero", async () => {
+    stubLiveOrg({
+      name: "Live Org",
+      financialYearEndMonth: 3,
+      shortCode: "  !live1  ",
+    });
+
+    await expect(getXeroConnectedOrganisation()).resolves.toEqual({
+      name: "Live Org",
+      financialYearEndMonth: 3,
+      shortCode: "!live1",
+    });
+    expect(live.getOrganisations).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns a null short code when the live organisation has none", async () => {
+    stubLiveOrg({ name: "Live Org", financialYearEndMonth: 13 });
+
+    const summary = await getXeroConnectedOrganisation();
+    expect(summary.name).toBe("Live Org");
+    expect(summary.shortCode).toBeNull();
+    // 13 is out of range, so the month degrades to null too.
+    expect(summary.financialYearEndMonth).toBeNull();
+  });
+
+  it("returns nulls when Xero reports no organisation at all", async () => {
+    stubLiveOrg(undefined);
+
+    await expect(getXeroConnectedOrganisation()).resolves.toEqual({
+      name: null,
+      financialYearEndMonth: null,
+      shortCode: null,
+    });
+  });
+
+  it("does not retry: a page-decoration read must not wait out a 429", async () => {
+    stubLiveOrg({ name: "Live Org", shortCode: "!live1" });
+
+    await getXeroConnectedOrganisation();
+
+    expect(live.callXeroApi).toHaveBeenCalledWith(
+      expect.any(Function),
+      expect.objectContaining({
+        operation: "getOrganisations",
+        maxRetries: 0,
+      }),
+    );
+  });
+
+  // F1: the bug. A present-but-failing connection (revoked refresh token,
+  // org read 500, per-minute 429) cached nothing, so an admin reloading
+  // /admin/xero re-attempted a live Xero call on every single request.
+  it("caches a FAILED read for a minute instead of re-calling Xero per request", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-26T00:00:00.000Z"));
+    live.getAuthenticatedXeroClient.mockRejectedValue(
+      new Error("invalid_grant"),
+    );
+
+    await expect(getXeroConnectedOrganisation()).resolves.toEqual({
+      name: null,
+      financialYearEndMonth: null,
+      shortCode: null,
+    });
+    expect(live.getAuthenticatedXeroClient).toHaveBeenCalledTimes(1);
+
+    // Reload, reload, reload: still exactly one live attempt.
+    await getXeroConnectedOrganisation();
+    await getXeroConnectedOrganisation();
+    expect(live.getAuthenticatedXeroClient).toHaveBeenCalledTimes(1);
+
+    // Past the negative TTL the next caller does try again.
+    vi.setSystemTime(new Date(Date.now() + 61_000));
+    await getXeroConnectedOrganisation();
+    expect(live.getAuthenticatedXeroClient).toHaveBeenCalledTimes(2);
+  });
+
+  it("lets a later success replace the negative entry and restore the long TTL", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-26T00:00:00.000Z"));
+    live.getAuthenticatedXeroClient.mockRejectedValue(new Error("boom"));
+
+    expect((await getXeroConnectedOrganisation()).name).toBeNull();
+
+    vi.setSystemTime(new Date(Date.now() + 61_000));
+    stubLiveOrg({ name: "Back Online", shortCode: "!back1" });
+
+    const recovered = await getXeroConnectedOrganisation();
+    expect(recovered.name).toBe("Back Online");
+    expect(recovered.shortCode).toBe("!back1");
+    expect(live.getOrganisations).toHaveBeenCalledTimes(1);
+
+    // The success is cached for the LONG TTL: a minute later, no new call.
+    vi.setSystemTime(new Date(Date.now() + 61_000));
+    expect((await getXeroConnectedOrganisation()).name).toBe("Back Online");
+    expect(live.getOrganisations).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears a negative entry on connect/disconnect invalidation", async () => {
+    live.getAuthenticatedXeroClient.mockRejectedValue(new Error("boom"));
+    expect((await getXeroConnectedOrganisation()).name).toBeNull();
+    expect((await getXeroConnectedOrganisation()).name).toBeNull();
+    expect(live.getAuthenticatedXeroClient).toHaveBeenCalledTimes(1);
+
+    // The admin re-enters credentials: the reconnect must not wait out the
+    // negative TTL before the org (and its deep links) come back.
+    stubLiveOrg({ name: "Org After Reconnect", shortCode: "!new1" });
+    invalidateXeroOrganisationCaches();
+
+    const summary = await getXeroConnectedOrganisation();
+    expect(summary.name).toBe("Org After Reconnect");
+    expect(summary.shortCode).toBe("!new1");
+  });
+
+  // F2: N concurrent cold-cache callers must share ONE underlying read.
+  it("shares a single in-flight read across concurrent cold-cache callers", async () => {
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    live.getAuthenticatedXeroClient.mockResolvedValue({
+      xero: { accountingApi: { getOrganisations: live.getOrganisations } },
+      tenantId: "tenant-1",
+    });
+    live.callXeroApi.mockImplementation(async (fn: () => Promise<unknown>) =>
+      fn(),
+    );
+    live.getOrganisations.mockImplementation(async () => {
+      await gate;
+      return {
+        body: { organisations: [{ name: "Org A", shortCode: "!orgA1" }] },
+      };
+    });
+
+    const inFlight = Promise.all(
+      Array.from({ length: 5 }, () => getXeroConnectedOrganisation()),
+    );
+    release?.();
+    const results = await inFlight;
+
+    expect(live.getOrganisations).toHaveBeenCalledTimes(1);
+    expect(results.map((r) => r.shortCode)).toEqual(Array(5).fill("!orgA1"));
+
+    // The shared promise is released afterwards, so a later cold call still works.
+    invalidateXeroOrganisationCaches();
+    expect((await getXeroConnectedOrganisation()).name).toBe("Org A");
+    expect(live.getOrganisations).toHaveBeenCalledTimes(2);
+  });
+
+  it("shares one read even while Xero is failing (no stampede on a cold cache)", async () => {
+    live.getAuthenticatedXeroClient.mockRejectedValue(new Error("boom"));
+
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => getXeroConnectedOrganisation()),
+    );
+
+    expect(live.getAuthenticatedXeroClient).toHaveBeenCalledTimes(1);
+    expect(results.every((r) => r.name === null)).toBe(true);
   });
 });
