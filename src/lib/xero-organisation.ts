@@ -33,10 +33,19 @@ let cached: OrgYearEndCacheEntry | null = null;
 let yearEndInFlight: Promise<number | null> | null = null;
 
 /**
- * Bumped on every cache reset, and read by BOTH organisation reads: a read that
- * started before a connect/disconnect invalidation describes the OLD
- * organisation, so it must not write itself into the freshly cleared cache — it
- * is served to its own callers and then dropped.
+ * Bumped on every cache reset, and read by ALL THREE organisation reads
+ * (year-end month, connected-org summary, lock dates): a read that started
+ * before a connect/disconnect invalidation describes the OLD organisation, so
+ * it must not write itself into the freshly cleared cache.
+ *
+ * What the guard does NOT do: it bounds the CACHE, not the value already being
+ * returned. A read in flight at the moment of the invalidation still resolves
+ * to its own caller with the old organisation's answer — and for the year-end
+ * month that caller may be `refreshFinancialYearConfig`, which writes what it
+ * was handed into the module global in `financial-year.ts` (no TTL, no
+ * generation) where it persists until the next refresh. That residual is
+ * bounded and pre-existing; the guard's job is to stop it repeating for the
+ * whole of the next TTL.
  */
 let orgReadGeneration = 0;
 
@@ -405,10 +414,20 @@ function parseXeroLockDate(value: string | Date | undefined | null): Date | null
  * Unlike getXeroFinancialYearEndMonth, this THROWS on a fetch failure when no
  * fresh cache is available: the retroactive-booking route fails closed rather
  * than silently skipping the lock-date guard.
+ *
+ * Carries the same reconnect (generation) guard as the two reads above, and it
+ * matters most here. A read in flight when an admin reconnects to a DIFFERENT
+ * Xero organisation carries the old org's lock dates; caching those would let
+ * the fail-closed guard evaluate against the wrong organisation for the whole
+ * TTL — returning "not locked" for a retroactive booking whose invoice then
+ * posts into a locked period in the org that is actually connected. The guard
+ * stops the cache write; the abandoned read is still served to its own single
+ * caller (one booking), which is the same bounded residual as above.
  */
 export async function getXeroLockDates(
   forceRefresh = false,
 ): Promise<XeroLockDates> {
+  const generation = orgReadGeneration;
   if (
     !forceRefresh &&
     lockDatesCache &&
@@ -433,7 +452,12 @@ export async function getXeroLockDates(
       periodLockDate: parseXeroLockDate(org?.periodLockDate),
       endOfYearLockDate: parseXeroLockDate(org?.endOfYearLockDate),
     };
-    lockDatesCache = { lockDates, fetchedAt: Date.now() };
+    // Only cache these lock dates if they still describe the CONNECTED
+    // organisation (see the generation counter above). Serving them to this
+    // caller is the bounded residual; pinning them for the TTL is not.
+    if (generation === orgReadGeneration) {
+      lockDatesCache = { lockDates, fetchedAt: Date.now() };
+    }
     return lockDates;
   } catch (error) {
     // Fail closed: a fresh cache satisfies the caller, otherwise re-throw so
@@ -485,10 +509,17 @@ function resetXeroOrganisationCaches(): void {
   // read must go live even if the last attempt failed seconds ago.
   orgSummaryCache = null;
   lockDatesCache = null;
-  // Abandon any read already in flight — summary or year-end: it describes the
-  // old connection, so neither its result nor its cache write may survive. The
+  // Abandon any read already in flight — summary, year-end or lock dates: it
+  // describes the old connection, so its CACHE WRITE must not survive. The
   // generation bump is what stops the write; nulling the slots stops a caller
   // arriving after the reconnect from JOINING the old connection's read.
+  //
+  // What is NOT stopped: the in-flight read still resolves to the caller that
+  // started it, with the old organisation's answer. For the year-end month that
+  // value can be written on into `financial-year.ts`'s module global (see the
+  // generation counter's own comment above); for lock dates it decides one
+  // in-progress retroactive booking. Both are single-request and bounded — the
+  // reset's guarantee is that nothing stale is REPEATED for a whole TTL.
   orgSummaryInFlight = null;
   yearEndInFlight = null;
   orgReadGeneration += 1;

@@ -22,6 +22,7 @@ vi.mock("@/lib/logger", () => ({
 import {
   getXeroConnectedOrganisation,
   getXeroFinancialYearEndMonth,
+  getXeroLockDates,
   resetXeroOrganisationCachesForTests,
 } from "@/lib/xero-organisation";
 import { invalidateXeroOrganisationCaches } from "@/lib/xero-organisation-cache-bus";
@@ -567,5 +568,119 @@ describe("financial year-end month: single flight (#2283)", () => {
     });
     expect(await getXeroFinancialYearEndMonth()).toBe(3);
     expect(live.getOrganisations).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The lock-dates read is the THIRD cache on the same invalidation path, and the
+// one with the worst failure mode. It backs the retroactive-booking guard,
+// which fails CLOSED: a booking whose check-in falls on or before the effective
+// lock date is rejected so its invoice never posts into a locked period. A read
+// in flight across a reconnect that repopulated the cleared cache would make
+// that guard evaluate the PREVIOUS organisation's lock dates for up to the full
+// 5-minute TTL — and the dangerous direction is the quiet one: old org unlocked,
+// new org locked, so the guard returns instead of throwing and the invoice
+// lands in a locked period in the org that is actually connected.
+// ---------------------------------------------------------------------------
+describe("lock dates: reconnect guard (#2283)", () => {
+  const originalOrigin = process.env.XERO_MOCK_API_ORIGIN;
+  const originalInternalOrigin = process.env.XERO_MOCK_INTERNAL_ORIGIN;
+
+  const iso = (d: Date | null) => d?.toISOString().slice(0, 10) ?? null;
+
+  function stubLiveClient() {
+    live.getAuthenticatedXeroClient.mockResolvedValue({
+      xero: { accountingApi: { getOrganisations: live.getOrganisations } },
+      tenantId: "tenant-1",
+    });
+    live.callXeroApi.mockImplementation(async (fn: () => Promise<unknown>) =>
+      fn(),
+    );
+  }
+
+  /** A gated read of the OLD org, which has NO lock dates set. */
+  function startUnlockedOldOrgRead() {
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    stubLiveClient();
+    live.getOrganisations.mockImplementation(async () => {
+      await gate;
+      return { body: { organisations: [{}] } };
+    });
+    const inFlight = getXeroLockDates();
+    return { inFlight, release: () => release?.() };
+  }
+
+  beforeEach(() => {
+    vi.stubEnv("NODE_ENV", "test");
+    // The lock-dates read has no mock-Xero branch: it is always the live path.
+    delete process.env.XERO_MOCK_API_ORIGIN;
+    delete process.env.XERO_MOCK_INTERNAL_ORIGIN;
+    vi.clearAllMocks();
+    resetXeroOrganisationCachesForTests();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    resetXeroOrganisationCachesForTests();
+    if (originalOrigin === undefined) delete process.env.XERO_MOCK_API_ORIGIN;
+    else process.env.XERO_MOCK_API_ORIGIN = originalOrigin;
+    if (originalInternalOrigin === undefined)
+      delete process.env.XERO_MOCK_INTERNAL_ORIGIN;
+    else process.env.XERO_MOCK_INTERNAL_ORIGIN = originalInternalOrigin;
+  });
+
+  it("does not cache lock dates read before a reconnect: the next booking sees the NEW org's lock", async () => {
+    const { inFlight, release } = startUnlockedOldOrgRead();
+
+    // The admin reconnects to a DIFFERENT organisation mid-read...
+    invalidateXeroOrganisationCaches();
+    release();
+
+    // ...the abandoned read still answers its own caller (bounded residual).
+    await expect(inFlight).resolves.toEqual({
+      periodLockDate: null,
+      endOfYearLockDate: null,
+    });
+    expect(live.getOrganisations).toHaveBeenCalledTimes(1);
+
+    // The organisation now connected HAS a period lock. Nothing from the
+    // abandoned read may be serving "unlocked" from the cleared cache.
+    live.getOrganisations.mockResolvedValue({
+      body: { organisations: [{ periodLockDate: "2026-06-30" }] },
+    });
+
+    const after = await getXeroLockDates();
+    expect(live.getOrganisations).toHaveBeenCalledTimes(2);
+    expect(iso(after.periodLockDate)).toBe("2026-06-30");
+  });
+
+  it("still fails closed after a reconnect: the abandoned read leaves nothing to fall back on", async () => {
+    const { inFlight, release } = startUnlockedOldOrgRead();
+
+    invalidateXeroOrganisationCaches();
+    release();
+    await inFlight;
+
+    // Xero is now unreachable. With no cache entry for the CURRENT connection,
+    // the read must throw so the route returns a retryable error rather than
+    // skipping the guard on the old org's "no lock dates".
+    live.getAuthenticatedXeroClient.mockRejectedValue(
+      new Error("xero unavailable"),
+    );
+    await expect(getXeroLockDates()).rejects.toThrow("xero unavailable");
+  });
+
+  it("keeps caching within the TTL when no reconnect intervenes", async () => {
+    stubLiveClient();
+    live.getOrganisations.mockResolvedValue({
+      body: { organisations: [{ periodLockDate: "2026-06-30" }] },
+    });
+
+    expect(iso((await getXeroLockDates()).periodLockDate)).toBe("2026-06-30");
+    expect(iso((await getXeroLockDates()).periodLockDate)).toBe("2026-06-30");
+    expect(live.getOrganisations).toHaveBeenCalledTimes(1);
   });
 });
