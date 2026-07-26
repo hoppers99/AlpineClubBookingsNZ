@@ -8,6 +8,8 @@ import {
   isGuestActiveOnNight,
   type GuestStayRange,
 } from "@/lib/booking-guest-stay-ranges";
+import { evaluateGuestSelfRemoval } from "@/lib/booking-guest-self-removal";
+import { buildBookingMemberNightConflictMessage } from "@/lib/booking-member-night-conflict-messages";
 
 const BOOKING_MEMBER_NIGHT_CONFLICT_CODE =
   "BOOKING_MEMBER_NIGHT_CONFLICT";
@@ -70,17 +72,6 @@ export const MEMBER_NIGHT_CONFLICT_BOOKING_STATUSES = [
   BookingStatus.AWAITING_REVIEW,
 ] as const;
 
-const SELF_REMOVABLE_MEMBER_NIGHT_CONFLICT_STATUSES = new Set<string>([
-  BookingStatus.DRAFT,
-  BookingStatus.PENDING,
-  BookingStatus.PAYMENT_PENDING,
-  BookingStatus.CONFIRMED,
-  BookingStatus.PAID,
-  BookingStatus.WAITLISTED,
-  BookingStatus.WAITLIST_OFFERED,
-  BookingStatus.AWAITING_REVIEW,
-]);
-
 type ConflictDb =
   | Pick<PrismaClient, "bookingGuest">
   | Pick<Prisma.TransactionClient, "bookingGuest">;
@@ -106,11 +97,11 @@ export type BookingMemberNightConflict = {
 
 export class BookingMemberNightConflictError extends Error {
   constructor(public readonly conflicts: BookingMemberNightConflict[]) {
-    super(
-      conflicts.length === 1
-        ? `${conflicts[0].memberName} is already on a booking for one of these nights.`
-        : "One or more members are already on a booking for these nights.",
-    );
+    // #2250 — the message says who, which nights, and what to do next, built
+    // only from what the requester already supplied (the member they tried to
+    // book and the nights they chose). See the disclosure rule in
+    // booking-member-night-conflict-messages.ts.
+    super(buildBookingMemberNightConflictMessage(conflicts));
     this.name = "BookingMemberNightConflictError";
   }
 }
@@ -223,12 +214,18 @@ export async function findBookingMemberNightConflicts(
 
     const isOwnBooking = guest.booking.memberId === actorMemberId;
     const isSelfGuest = guest.memberId === actorMemberId;
-    const canSelfRemove =
-      !isOwnBooking &&
-      isSelfGuest &&
-      guest.booking.guests.length > 1 &&
-      guest.booking.checkIn > today &&
-      SELF_REMOVABLE_MEMBER_NIGHT_CONFLICT_STATUSES.has(guest.booking.status);
+    // #2250 — one server-side rule, shared with the booking detail page's
+    // affordance and with the removal service's own status gate, so no surface
+    // offers (or withholds) self-removal on its own private copy of the rule.
+    const { canSelfRemove } = evaluateGuestSelfRemoval({
+      actorMemberId,
+      guestMemberId: guest.memberId,
+      bookingOwnerMemberId: guest.booking.memberId,
+      bookingStatus: guest.booking.status,
+      bookingCheckIn: guest.booking.checkIn,
+      bookingGuestCount: guest.booking.guests.length,
+      today,
+    });
 
     conflicts.push({
       memberId: guest.memberId,
@@ -286,10 +283,10 @@ export function getBookingMemberNightConflictResponse(
 ) {
   return {
     code: BOOKING_MEMBER_NIGHT_CONFLICT_CODE,
-    error:
-      conflicts.length === 1
-        ? `${conflicts[0].memberName} is already on a booking for one of these nights.`
-        : "One or more members are already on a booking for these nights.",
+    // #2250 — same message the thrown error carries, so the advisory pre-check
+    // (409 built from a found conflict list) and the transactional guard read
+    // identically to the member.
+    error: buildBookingMemberNightConflictMessage(conflicts),
     conflicts,
   };
 }
