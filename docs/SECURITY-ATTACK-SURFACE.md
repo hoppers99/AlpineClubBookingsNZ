@@ -914,12 +914,46 @@ to **any** scoped policy this app adds in future, not just these (#2279):
   neither of which the app's own middleware covers. Caddy's set-if-absent
   `?X-Frame-Options` form was considered and rejected in review: it would
   downgrade a guaranteed edge control into an advisory one on every route, so
-  any upstream emitting a permissive value would win. The directive uses the
-  deferred `>` prefix so the edge value *overwrites* the app's rather than being
-  appended as a second, conflicting header. `src/lib/__tests__/edge-frame-options-static.test.ts`
-  pins all of this, including that the edge relaxes exactly the path the app
-  relaxes. **Operators: a Caddyfile change only takes effect after Caddy is
-  reloaded on the host — it does not ship with the app deploy.**
+  any upstream emitting a permissive value would win.
+  - **Two directives, both load-bearing — do not de-duplicate them.** The scoped
+    pair uses the deferred `>` prefix so the edge value *overwrites* the app's
+    rather than being appended as a second, conflicting header (measured against
+    `caddy:2` with a permissive upstream, a plain set left both `DENY` and
+    `ALLOWALL` on one response). But that deferred rewrite lives in a
+    `ResponseWriter` wrapper which is unwound when a handler returns an **error**,
+    so Caddy's error chain writes the response without it: a 502 when an upstream
+    is down (including `/finance-legacy*`), the 413 from the `request_body` cap,
+    any 5xx. Those responses never reach Next either, so they carry no CSP and no
+    `frame-ancestors` fallback. An **eager** unscoped `X-Frame-Options "DENY"`
+    therefore stays in the shared `header { }` block as the floor; the deferred
+    pair overwrites it on every normal proxied response. Measured against
+    `caddy:2`, exactly one `X-Frame-Options` per response: `/display` →
+    `SAMEORIGIN`; `/other`, `/DISPLAY`, `/images/*` → `DENY`; 502, 413 and 500 →
+    `DENY`.
+  - **The edge matcher is not byte-identical to the app's comparison, and cannot
+    be.** Caddy matches on the *cleaned, percent-decoded* path but forwards the
+    *raw* URI, so the app compares a different string. Measured divergences where
+    the edge relaxes to `SAMEORIGIN` while the app still sends `DENY`:
+    `//display`, `/display//`, `/%64isplay`, `/dis%70lay`, `/display%2F`.
+    Accepted: those responses still carry the app's own `frame-ancestors 'none'`,
+    which browsers honour over `X-Frame-Options`, and `SAMEORIGIN` never permits
+    more than same-origin framing. The dangerous inverse — the app relaxing where
+    the edge denies, which would break the preview — is impossible, because both
+    paths the app relaxes sit inside the edge's match set.
+
+  `src/lib/__tests__/edge-frame-options-static.test.ts`
+  pins all of this, including the eager floor and that the edge relaxes exactly
+  the path the app relaxes. **Operators: a Caddyfile change only takes effect
+  after Caddy is reloaded on the host — it does not ship with the app deploy.**
+- **Staging gained production's defensive CSP baseline.** `Caddyfile.staging` now
+  carries the same `?Content-Security-Policy "default-src 'self'"` the production
+  `Caddyfile` has. Because `?` is set-if-absent it is a no-op whenever the Next
+  proxy emits its own policy, so it never intersects with the real CSP; its only
+  effect is on failure. There it is deliberately loud — a bare `default-src
+  'self'` breaks every nonce'd script — so a proxy/middleware regression fails
+  visibly on staging instead of silently shipping an unprotected page to
+  production. Measured against `caddy:2`: with an upstream emitting a CSP the
+  header is untouched; with an upstream emitting none the baseline appears.
 
 ## Follow-Up Mapping
 
