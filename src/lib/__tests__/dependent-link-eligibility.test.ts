@@ -77,7 +77,11 @@ async function compileMemberWhereToSql(
   const prisma = new PrismaClient({
     adapter: recordingAdapterFactory(captured) as never,
   });
-  await prisma.member.findMany({ where, select: { id: true } });
+  try {
+    await prisma.member.findMany({ where, select: { id: true } });
+  } finally {
+    await prisma.$disconnect();
+  }
   expect(captured).toHaveLength(1);
   return captured[0];
 }
@@ -138,6 +142,8 @@ const FIXTURES: Array<{ member: Fixture; eligible: boolean; why: string }> = [
       archivedAt: null,
       parentMemberId: null,
       secondaryParentId: null,
+      dependents: [],
+      secondaryDependents: [],
     },
   },
   {
@@ -150,6 +156,8 @@ const FIXTURES: Array<{ member: Fixture; eligible: boolean; why: string }> = [
       archivedAt: null,
       parentMemberId: "other-parent",
       secondaryParentId: null,
+      dependents: [],
+      secondaryDependents: [],
     },
   },
   {
@@ -162,6 +170,8 @@ const FIXTURES: Array<{ member: Fixture; eligible: boolean; why: string }> = [
       archivedAt: null,
       parentMemberId: null,
       secondaryParentId: "other-parent",
+      dependents: [],
+      secondaryDependents: [],
     },
   },
   {
@@ -174,6 +184,8 @@ const FIXTURES: Array<{ member: Fixture; eligible: boolean; why: string }> = [
       archivedAt: null,
       parentMemberId: null,
       secondaryParentId: null,
+      dependents: [],
+      secondaryDependents: [],
     },
   },
   {
@@ -186,6 +198,8 @@ const FIXTURES: Array<{ member: Fixture; eligible: boolean; why: string }> = [
       archivedAt: null,
       parentMemberId: "has-dependants",
       secondaryParentId: null,
+      dependents: [],
+      secondaryDependents: [],
     },
   },
   {
@@ -198,6 +212,8 @@ const FIXTURES: Array<{ member: Fixture; eligible: boolean; why: string }> = [
       archivedAt: null,
       parentMemberId: "other-parent",
       secondaryParentId: "another-parent",
+      dependents: [],
+      secondaryDependents: [],
     },
   },
   {
@@ -211,6 +227,41 @@ const FIXTURES: Array<{ member: Fixture; eligible: boolean; why: string }> = [
       parentMemberId: null,
       secondaryParentId: null,
       dependents: [{ id: "child-of-has-dependants" }],
+      secondaryDependents: [],
+    },
+  },
+  {
+    // The clause `{ secondaryDependents: { none: {} } }` is only decisive for a
+    // row like this one: in a two-parent family the SECOND parent has an empty
+    // `dependents` and a populated `secondaryDependents`. Without this fixture
+    // the clause could be deleted with the whole suite still green — the only
+    // other fixture with a secondary dependant is the parent themself, who is
+    // already excluded by `id <> $1`. See the decisiveness test below.
+    why: "is only someone's SECOND parent — dependants through the secondary slot",
+    eligible: false,
+    member: {
+      id: "second-parent-only",
+      firstName: "SecondParentOnly",
+      active: true,
+      archivedAt: null,
+      parentMemberId: null,
+      secondaryParentId: null,
+      dependents: [],
+      secondaryDependents: [{ id: "child-of-second-parent" }],
+    },
+  },
+  {
+    why: "that family's child, whose second parent slot points at second-parent-only",
+    eligible: false,
+    member: {
+      id: "child-of-second-parent",
+      firstName: "SecondParentChild",
+      active: true,
+      archivedAt: null,
+      parentMemberId: "has-dependants",
+      secondaryParentId: "second-parent-only",
+      dependents: [],
+      secondaryDependents: [],
     },
   },
   {
@@ -223,6 +274,8 @@ const FIXTURES: Array<{ member: Fixture; eligible: boolean; why: string }> = [
       archivedAt: new Date("2026-01-01T00:00:00.000Z"),
       parentMemberId: null,
       secondaryParentId: null,
+      dependents: [],
+      secondaryDependents: [],
     },
   },
   {
@@ -235,6 +288,8 @@ const FIXTURES: Array<{ member: Fixture; eligible: boolean; why: string }> = [
       archivedAt: null,
       parentMemberId: PARENT_ID,
       secondaryParentId: null,
+      dependents: [],
+      secondaryDependents: [],
     },
   },
   {
@@ -247,6 +302,8 @@ const FIXTURES: Array<{ member: Fixture; eligible: boolean; why: string }> = [
       archivedAt: null,
       parentMemberId: "other-parent",
       secondaryParentId: PARENT_ID,
+      dependents: [],
+      secondaryDependents: [],
     },
   },
   {
@@ -260,6 +317,7 @@ const FIXTURES: Array<{ member: Fixture; eligible: boolean; why: string }> = [
       parentMemberId: null,
       secondaryParentId: null,
       dependents: [{ id: "already-linked" }],
+      secondaryDependents: [{ id: "already-linked-secondary" }],
     },
   },
 ];
@@ -267,6 +325,16 @@ const FIXTURES: Array<{ member: Fixture; eligible: boolean; why: string }> = [
 const ELIGIBLE_IDS = FIXTURES.filter((row) => row.eligible).map(
   (row) => row.member.id,
 );
+
+/**
+ * Fixtures are addressed by id, never by index: this table grows, and a
+ * positional lookup would silently re-point an assertion at a different member.
+ */
+function fixture(id: string): Fixture {
+  const row = FIXTURES.find((entry) => entry.member.id === id);
+  if (!row) throw new Error(`no fixture with id ${id}`);
+  return row.member;
+}
 
 function seedFixtureDatabase() {
   const db = new DatabaseSync(":memory:");
@@ -321,21 +389,26 @@ describe("dependentLinkBlockers", () => {
   }
 
   it("names the specific reason, most specific first", () => {
-    expect(dependentLinkBlockers(PARENT_ID, FIXTURES[5].member)).toEqual([
+    expect(dependentLinkBlockers(PARENT_ID, fixture("two-parents"))).toEqual([
       "TWO_PARENTS",
     ]);
-    expect(dependentLinkBlockers(PARENT_ID, FIXTURES[6].member)).toEqual([
+    expect(dependentLinkBlockers(PARENT_ID, fixture("has-dependants"))).toEqual([
       "HAS_DEPENDANTS",
     ]);
-    expect(dependentLinkBlockers(PARENT_ID, FIXTURES[7].member)).toEqual([
+    // Dependants through the SECOND parent slot count the same as through the
+    // first — a second parent is still a parent.
+    expect(
+      dependentLinkBlockers(PARENT_ID, fixture("second-parent-only")),
+    ).toEqual(["HAS_DEPENDANTS"]);
+    expect(dependentLinkBlockers(PARENT_ID, fixture("archived"))).toEqual([
       "ARCHIVED",
     ]);
-    expect(dependentLinkBlockers(PARENT_ID, FIXTURES[8].member)).toEqual([
+    expect(dependentLinkBlockers(PARENT_ID, fixture("already-linked"))).toEqual([
       "ALREADY_LINKED_TO_PARENT",
     ]);
     // The parent themself trips SELF before the dependants clause, and SELF is
     // what the admin needs to read.
-    expect(dependentLinkBlockers(PARENT_ID, FIXTURES[10].member)[0]).toBe(
+    expect(dependentLinkBlockers(PARENT_ID, fixture(PARENT_ID))[0]).toBe(
       "SELF",
     );
   });
@@ -347,6 +420,7 @@ describe("dependentLinkBlockers", () => {
       parentMemberId: PARENT_ID,
       secondaryParentId: "other",
       dependents: [{ id: "x" }],
+      secondaryDependents: [],
     });
     expect(everyBlocker).toEqual([...DEPENDENT_LINK_INELIGIBILITY_REASONS]);
   });
@@ -398,6 +472,26 @@ describe("dependentLinkCandidateWhere", () => {
       AND: dependentLinkCandidateWhere(PARENT_ID),
     });
     expect(returned.sort()).toEqual([...ELIGIBLE_IDS].sort());
+  });
+
+  it("excludes a member who is only someone's SECOND parent", async () => {
+    // Real-world shape: in a two-parent family, Dad holds the child through
+    // `secondaryParentId`, so his `dependents` relation is empty. If the search
+    // only checked `dependents`, the dialog would offer Dad as a linkable
+    // dependant and the write route would then 422 — the exact search/write
+    // drift this predicate exists to prevent.
+    const clauses = dependentLinkCandidateWhere(PARENT_ID);
+    const returned = await runWhereAgainstFixtures({ AND: clauses });
+    expect(returned).not.toContain("second-parent-only");
+
+    // Mutation check, kept executable: drop ONLY the secondaryDependents clause
+    // and the row comes back. Without this assertion (and its fixture pair) the
+    // clause is inert over the fixture set and could be deleted with every
+    // other test in this suite still passing.
+    const withoutSecondaryDependants = await runWhereAgainstFixtures({
+      AND: clauses.filter((clause) => !("secondaryDependents" in clause)),
+    });
+    expect(withoutSecondaryDependants).toContain("second-parent-only");
   });
 
   it("agrees row-for-row with the row-level predicate (search/write parity)", async () => {
