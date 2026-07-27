@@ -16,6 +16,7 @@ import { getSeasonYear } from "@/lib/utils";
 import {
   buildParentLinks,
   matchParentLinkIdForNotification,
+  NO_INHERITABLE_EMAIL_SOURCE_MESSAGE,
   resolveInheritedEmailSourceId,
 } from "@/lib/member-parent-links";
 import {
@@ -449,8 +450,8 @@ export async function reviewAdminFamilyGroupRequest(params: {
       canLogin: false;
       role: "USER";
       parentMemberId: string;
-      inheritParentEmail: true;
-      inheritEmailFromId: string;
+      inheritParentEmail: boolean;
+      inheritEmailFromId: string | null;
       passwordHash: string;
       emailVerified: true;
       phoneCountryCode: string | null;
@@ -560,20 +561,39 @@ export async function reviewAdminFamilyGroupRequest(params: {
 
         // #2255: same transitive resolution as every other link path — the
         // requester may be a middle generation with no mailbox of their own.
-        const { sourceId: inheritEmailFromId } =
-          await resolveInheritedEmailSourceId(prisma, request.requesterId);
-        if (!inheritEmailFromId) {
-          return jsonResult(
-            {
-              error:
-                "No parent or ancestor in this family has a real email address to inherit. Record an email address for the requester first.",
-            },
-            { status: 422 }
-          );
-        }
-        const validation = await validateInheritEmailSource({ inheritEmailFromId });
-        if (!validation.ok) {
-          return jsonResult({ error: validation.error }, { status: validation.status });
+        //
+        // The OPT-OUT is honoured here too. This branch used to resolve
+        // inheritance unconditionally, which was harmless while resolution
+        // could not fail; once a chain with no reachable mailbox became a hard
+        // 422, "approve without inheriting" — which the operator guide promises
+        // and the link-existing branch has always supported — stopped being
+        // reachable on the create branch, and an admin with a placeholder-only
+        // family had no way through at all. Same wire contract as the sibling
+        // branch: `inheritEmailFromId: ""` means "use the child's own email"
+        // (the request-review UI's `<option value="">`), and an ABSENT field
+        // still means "inherit", so no client changes and no rolling-deploy
+        // break.
+        const optedOutOfInheritance =
+          Object.prototype.hasOwnProperty.call(data, "inheritEmailFromId") &&
+          !data.inheritEmailFromId?.trim();
+
+        let inheritEmailFromId: string | null = null;
+        if (!optedOutOfInheritance) {
+          inheritEmailFromId = (
+            await resolveInheritedEmailSourceId(prisma, request.requesterId)
+          ).sourceId;
+          if (!inheritEmailFromId) {
+            return jsonResult(
+              { error: NO_INHERITABLE_EMAIL_SOURCE_MESSAGE },
+              { status: 422 }
+            );
+          }
+          const validation = await validateInheritEmailSource({
+            inheritEmailFromId,
+          });
+          if (!validation.ok) {
+            return jsonResult({ error: validation.error }, { status: validation.status });
+          }
         }
 
         childMemberCreateData = {
@@ -586,7 +606,7 @@ export async function reviewAdminFamilyGroupRequest(params: {
           canLogin: false,
           role: "USER",
           parentMemberId: request.requesterId,
-          inheritParentEmail: true,
+          inheritParentEmail: !optedOutOfInheritance,
           inheritEmailFromId,
           passwordHash: await hash(randomBytes(32).toString("hex"), 13),
           emailVerified: true,
@@ -818,9 +838,7 @@ export async function reviewAdminFamilyGroupRequest(params: {
                 .sourceId
             : null;
           if (selectedNotificationParentId && !resolvedInheritEmailFromId) {
-            throw new ReviewRequestError(
-              "No parent or ancestor in this family has a real email address to inherit. Record an email address for the parent first."
-            );
+            throw new ReviewRequestError(NO_INHERITABLE_EMAIL_SOURCE_MESSAGE);
           }
           if (resolvedInheritEmailFromId) {
             const validation = await validateInheritEmailSource(

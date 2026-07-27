@@ -26,8 +26,13 @@ import logger from "@/lib/logger";
 import { isPrismaUniqueConstraintError } from "@/lib/prisma-errors";
 import { getXeroApiErrorInfo } from "@/lib/xero-api-errors";
 import { copyStreetAddressToPostal } from "@/lib/member-address";
+import { PLACEHOLDER_CONTACT_EMAIL_DOMAINS } from "@/lib/placeholder-contact-email";
 import { validateInheritEmailSource } from "@/lib/member-email-inheritance";
-import { buildParentLinks } from "@/lib/member-parent-links";
+import {
+  buildParentLinks,
+  NO_INHERITABLE_EMAIL_SOURCE_MESSAGE,
+  resolveInheritedEmailSourceId,
+} from "@/lib/member-parent-links";
 import {
   allowedParentAncestorGenerations,
   ancestorDepthWithinWhere,
@@ -420,9 +425,24 @@ export async function listAdminMembers(
     // a real mailbox is routinely a MIDDLE generation, an adult who is both
     // someone's child and someone's parent. Keeping them here would have left
     // the picker unable to offer the very source the write route now accepts.
-    // The two guarantees that matter are unchanged and still mirrored exactly:
-    // the source is an ADULT, and it is TERMINAL (does not itself inherit).
-    andConditions.push({ ageTier: "ADULT" }, { inheritEmailFromId: null });
+    // The guarantees that matter are unchanged and still mirrored exactly: the
+    // source is an ADULT, it is TERMINAL (does not itself inherit), and — added
+    // with the check that made it load-bearing — it has a REAL address. Without
+    // the last clause the picker offers walk-in placeholder contacts that
+    // `validateInheritEmailSource` now 422s on, which is the same
+    // search-offers-what-the-write-refuses drift #2254 existed to close.
+    andConditions.push(
+      { ageTier: "ADULT" },
+      { inheritEmailFromId: null },
+      // Both club-internal `.invalid` domains, because both are what
+      // `isPlaceholderContactEmail` — and therefore the write route — rejects.
+      // Listing one would re-open the drift in the other direction.
+      ...PLACEHOLDER_CONTACT_EMAIL_DOMAINS.map(
+        (domain): Prisma.MemberWhereInput => ({
+          NOT: { email: { endsWith: `@${domain}`, mode: "insensitive" } },
+        }),
+      ),
+    );
   }
 
   if (excludeId) {
@@ -1127,6 +1147,17 @@ export async function createAdminMember(
     // target does not exist yet. A brand-new member has no dependants, so only
     // the parent's own chain can breach the cap — but it can, and unchecked this
     // is the easiest way to create a fifth generation.
+    //
+    // READ COMMITTED CAVEAT, stated rather than hidden: this whole function
+    // validates on the base client and only opens its transaction at the write,
+    // so the walk and the insert see different snapshots. A concurrent link that
+    // deepens the parent's chain between the two could let a fifth generation
+    // through. The window is milliseconds and the outcome is a too-deep chain
+    // rather than lost data or money, so it is accepted here rather than
+    // restructuring an unrelated function; the routes that write links
+    // interactively (the admin link route, the family-group reviewer, and
+    // nomination approval) all walk inside their own transaction and have no
+    // such window.
     const parentSide = await describeParentSideDepth(
       prisma,
       parentMember.id,
@@ -1144,11 +1175,26 @@ export async function createAdminMember(
     }
   }
 
-  const resolvedInheritEmailFromId =
-    requestedInheritEmailFromId ||
-    (data.inheritParentEmail && parentMember
-      ? parentMember.inheritEmailFromId || parentMember.id
-      : null);
+  // #2255: `parentMember.inheritEmailFromId || parentMember.id` was a ONE-HOP
+  // read, so creating a dependant under a parent whose only address is a
+  // placeholder resolved to that placeholder and 422'd — while the link route,
+  // given the same parent, walks up and succeeds. Two routes, same family, two
+  // answers. Both now use the transitive resolver, and a chain with no reachable
+  // mailbox is refused with the shared message rather than a misleading one.
+  let resolvedInheritEmailFromId = requestedInheritEmailFromId;
+  if (!resolvedInheritEmailFromId && data.inheritParentEmail && parentMember) {
+    const resolution = await resolveInheritedEmailSourceId(
+      prisma,
+      parentMember.id,
+    );
+    if (!resolution.sourceId) {
+      return jsonResult(
+        { error: NO_INHERITABLE_EMAIL_SOURCE_MESSAGE },
+        { status: 422 },
+      );
+    }
+    resolvedInheritEmailFromId = resolution.sourceId;
+  }
 
   if (resolvedInheritEmailFromId) {
     const validation = await validateInheritEmailSource({
