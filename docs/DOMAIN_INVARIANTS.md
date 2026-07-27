@@ -2264,9 +2264,29 @@ nesting. **Every writer of a parent link enforces it**: the admin link route
 (`POST /api/admin/members/[id]/dependents/link`), admin member-create
 (`POST /api/admin/members` with `parentMemberId`), the family-group
 `CHILD_REQUEST` approval on both its link-existing and create-child branches,
-and the membership-application/nomination family-member approval on both its
-map-existing and create branches. The last three never saw the previous rule at
-all.
+the membership-application/nomination family-member approval on both its
+map-existing and create branches, and **member merge**. The last four never saw
+the previous rule at all.
+
+Merge is a parent-link writer by consequence rather than by intent, which is how
+it went ungated: it never creates a link, but re-pointing the loser's inbound
+links onto the master collapses two nodes into one and JOINS their family
+chains. Two things the link-time cap forbids become reachable that way — a
+merged node spanning six generations, and a cycle when master and loser are
+already related by parentage in either direction (`nullSelfRelationCycles` does
+not catch the second: it only nulls MASTER columns equal to the loser id, so a
+loop closed through a third member survives it). `evaluateMemberMergeGuards`
+therefore refuses both, as the `family_link_cycle` and `family_link_depth`
+blockers, telling the admin to unlink first. Refusing is deliberate: which link
+to drop is a statement about who is responsible for whom, and that belongs to
+the admin.
+
+The one writer that validates on the base client and writes in a later
+transaction is admin member-create, so under READ COMMITTED a concurrent link
+could deepen the parent's chain between its walk and its insert. The window is
+milliseconds and the worst outcome is an over-deep chain rather than lost data;
+every interactive link writer walks inside its own transaction and has no such
+window.
 
 The walks are deliberately robust on data that predates the cap. They are
 level-bounded (so a cyclic or over-deep graph terminates rather than hanging),
@@ -2363,29 +2383,83 @@ points straight at the mailbox, never at a middleman. That is what lets every
 reader (`getMemberEmail`, `member-email.ts`, the roster, the age-up cron, Xero
 contact sync, the preference resolver in `email/core.ts`) keep its single
 `inheritEmailFrom` join and stay correct at any depth. Do not "simplify" this by
-storing a pointer at the direct parent. `validateInheritEmailSource` enforces
-the two guarantees that follow: the source is an adult with a real address, and
-the source does not itself inherit. Its former "must point to a **primary**
-adult member" rule (the source must have no parents) is retired — it barred
-exactly the middle-generation source the four-generation model needs — and the
-"inherit email from" candidate search was relaxed to match, so the picker cannot
-hide a source the write route accepts. If the walk finds nobody, the link is
-**refused** rather than quietly stored as "no inheritance": the admin asked for
-the dependant's mail to reach a parent, and silently leaving it on the
-dependant's own address is how a family stops hearing from the club without
-anyone noticing.
+storing a pointer at the direct parent — and note that **every writer must go
+through the resolver**, not just the ones that felt like link operations: the
+nomination approval and admin member-create both stored one-hop pointers until
+#2255, and the Xero contact import wrote one with no validation at all.
 
-**Approving a membership cancellation detaches, and declares.** The approval
-clears one level of links — the cancelled member's own parent links, and every
-link pointing at them. With four generations the cancelled member is often a
-middle generation, so that sweep leaves their dependants without a parent link
-and anyone inheriting their address without a mailbox. Those dependants are
-deliberately **not** re-parented onto the grandparent: who is responsible for a
-member is a real-world fact, and promoting it as a side effect of someone else
-leaving the club would record a relationship nobody asserted. Instead the
-approval returns `orphanedLinks` (always present, empty arrays when nothing was
-linked), names the same members in the audit metadata, and the admin
-cancellations page states who was detached and what to check.
+`validateInheritEmailSource` enforces the guarantees that follow: the source is
+an adult, with a real address, who does not itself inherit. Its former "must
+point to a **primary** adult member" rule (the source must have no parents) is
+retired — it barred exactly the middle-generation source the four-generation
+model needs — and the "inherit email from" candidate search was relaxed to match
+AND tightened to exclude placeholder addresses, so the picker can neither hide a
+source the write route accepts nor offer one it refuses. "Real address" means
+neither club-internal `.invalid` domain: a walk-in `@no-email.invalid` (#1935,
+silently dropped by `sendEmail`) or a deletion-anonymised `@deleted.invalid`
+(which hard-bounces). Both are matched by `isPlaceholderContactEmail`; the second
+was added in #2255 because a grandchild could otherwise keep resolving to an
+anonymised grandparent forever. If the walk finds nobody, the link is **refused**
+rather than quietly stored as "no inheritance": the admin asked for the
+dependant's mail to reach a parent, and silently leaving it on the dependant's
+own address is how a family stops hearing from the club without anyone noticing.
+The family-group create-child branch keeps the explicit opt-out
+(`inheritEmailFromId: ""`, "use the child's own email") its sibling branch has,
+so that refusal never becomes a dead end.
+
+A stored pointer is a snapshot of a past decision, so the resolver **re-reads the
+member it names** before trusting it and keeps walking if that member has since
+been archived, anonymised, or left with a placeholder address.
+
+**Provenance, not identity, decides what unlinking clears.** Every pointer this
+system derives from a parent link carries `inheritParentEmail: true`; a
+hand-picked source carries `false`. The unlink route reads that flag rather than
+asking whether the stored pointer names the parent being removed — a one-hop
+test that was correct only while resolution was one hop, and that (before it was
+fixed in #2255) left a member with no parent link and a permanent inheritance
+from a great-grandparent, while reporting `clearedEmailInheritance: false`.
+
+**Re-resolution on change is deliberately narrow, and this is the open edge.**
+Exactly one automatic event re-points derived pointers: age-up. When a member
+ages up, their own inheritance is cleared — they now have an address and a login
+of their own — and their dependants' DERIVED pointers are re-resolved through
+them, because those pointers only walked past them in the first place for want of
+an address. Without that, a parent with both a mailbox and a login would never
+receive their own child's notifications. **The general case is NOT handled**: if
+an ancestor's email address changes, or a middle generation gains an address by
+some other route, existing pointers keep naming whoever they named. That is
+recorded here as a known limitation and flagged for the owner (2026-07-27, #2255)
+because the fix is a consent question — silently moving a family's contact of
+record is not obviously better than leaving it where the admin put it.
+
+**Removing a member detaches, and declares.** Cancellation approval, archive
+approval and deletion anonymisation all clear links pointing at the member being
+removed. With four generations that member is often a middle generation, so the
+sweep leaves their dependants without a parent link and anyone inheriting their
+address without a mailbox. Those dependants are deliberately **not** re-parented
+onto the grandparent: who is responsible for a member is a real-world fact, and
+promoting it as a side effect of someone else leaving the club would record a
+relationship nobody asserted.
+
+All three therefore read who they are about to detach BEFORE nulling the columns
+— afterwards there is no record of the links at all — through the one shared
+helper, `src/lib/member-family-link-orphans.ts`. Cancellation and archive return
+`orphanedLinks` (always present, empty arrays when nothing was linked) and the
+admin page states who was detached; all three name the same members in their
+audit metadata. Deletion anonymisation additionally **sweeps the inheritance
+pointers aimed at the member**, which it previously did not: it overwrites the
+member's address with `@deleted.invalid` and nulled only their own pointer, so
+dependants and grandchildren kept resolving club email to an address that hard
+bounces on every send. Its parent LINKS are deliberately left in place — the row
+survives for history, so the family structure is still true; it is only the
+mailbox that must stop being used.
+
+The notice deliberately does **not** claim the affected members now receive club
+email at a working address. Several paths (`confirm-email-change`, the
+family-group login-holder route, nomination) COPY a source's address into an
+inheritor's own `email` column, so "their own address" is frequently a copy of
+the removed member's, and it may be a placeholder that receives nothing. The copy
+says so and asks the admin to check.
 
 Pending nomination states must have an expiry, reminder, admin refresh,
 replacement, rejection, or other documented recovery path so applications do

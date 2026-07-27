@@ -16,22 +16,35 @@ All notable public reference-release changes should be recorded here.
   dependants, but never looked at the parent's own parents, so a longer chain
   could be built downwards one person at a time and nothing stopped it. Every
   place that creates a parent link now enforces the limit, including admin
-  member-create, family-group child requests, and membership-application
-  approval — three paths the old rule never covered at all. A link that would
-  make the chain longer, or that would loop a family back on itself, is refused
-  with an explanation naming the limit. **Where club email goes** follows the
-  family further too: if a dependent inherits their parent's email address and
-  that parent has no real address of their own, the club now uses the nearest
-  person above them who does, instead of leaving that generation's children
-  unreachable — and the member's admin page says whose address is being used
-  when it comes from beyond the direct parent. **Cancelling a membership** in
-  the middle of a family now tells you what it detached: the cancelled member's
-  own dependants are left without a parent link (they are deliberately not moved
-  up to a grandparent — who is responsible for a member is not something to
+  member-create, family-group child requests, membership-application approval,
+  and **merging two duplicate member records** — four paths the old rule never
+  covered at all. (Merging is the surprising one: it never creates a link, but
+  joining two records joins their families, which could produce a six-generation
+  chain or link a family back on itself. Such a merge is now refused, and asks
+  you to unlink first.) A link that would make the chain longer, or that would
+  loop a family back on itself, is refused with an explanation naming the limit.
+  **Where club email goes** follows the family further too: if a dependent
+  inherits their parent's email address and that parent has no real address of
+  their own, the club now uses the nearest person above them who does, instead
+  of leaving that generation's children unreachable. Both the member's admin
+  page and the family's own profile page say whose address is being used when it
+  comes from beyond the direct parent, since that is the family whose consent is
+  at stake. When a young member reaches adult age and gets their own login,
+  their children's notifications now follow them instead of staying with the
+  grandparent. **Removing a member** — cancelling, archiving, or approving an
+  account deletion — now tells you what it detached: their own dependants are
+  left without a parent link (they are deliberately not moved up to a
+  grandparent, because who is responsible for a member is not something to
   change automatically), and both they and anyone who was receiving email at the
-  cancelled member's address are listed on screen and in the audit log. Who is
-  **billed** is unchanged: parent links record responsibility and grant no fee
-  coverage, which comes from family groups and membership types as before.
+  removed member's address are listed on screen and in the audit log. Approving
+  a deletion also stops club email being sent to the anonymised address, which
+  it previously kept attempting forever. Who is **billed** is unchanged by the
+  link rules themselves: parent links record responsibility and grant no fee
+  coverage, which comes from family groups and membership types as before. There
+  is one indirect route worth knowing about, though — approvals that add someone
+  to a family GROUP still change that group's composition, and group composition
+  is a fee-model input, so an approval that was previously refused can now
+  compose a group the fee rules classify as a Family.
 - **"Add Dependant → Link Existing" now finds the members it was hiding, and
   says why when it still finds nobody (#2254).** Searching for an existing
   member to link as a dependant reported "No eligible members found" for almost

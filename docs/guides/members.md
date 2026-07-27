@@ -115,9 +115,13 @@ prose here rather than with a screenshot:
   two parents recorded per member. A member who has dependants of their own can
   still be linked under a parent, as long as the whole chain stays within four
   generations; a link that would make it longer, or that would loop a family
-  back on itself, is refused with an explanation. Parent links record who is
-  responsible for a member. They do **not** decide who is billed or who a family
-  fee covers — that comes from family groups and membership types.
+  back on itself, is refused with an explanation. The same limit applies when you
+  **merge** two duplicate records: merging joins their families, so a merge that
+  would produce a chain longer than four generations — or link a family back on
+  itself — is refused and asks you to remove the link between them first. Parent
+  links record who is responsible for a member. They do **not** decide who is
+  billed or who a family fee covers — that comes from family groups and
+  membership types.
 - **Membership** — life-member status, the seasonal membership-type change
   (preview + admin reason required before saving), and subscription history.
 - **Finance** — account credit (request an adjustment for a second admin to
