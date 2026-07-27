@@ -15,6 +15,7 @@ import {
 import { listDisplayConditions } from "@/lib/lodge-display/conditions";
 import { listDisplayCssTokens } from "@/lib/lodge-display/css-tokens";
 import { isBuiltInDisplayLayoutKey } from "@/lib/lodge-display/built-in-seeds";
+import { DISPLAY_TERM_LAYOUT } from "@/lib/lodge-display/display-terminology";
 
 // Lobby display LAYOUT authoring (fork issue #78, LTV-032, ADR-003 §1). An
 // admin authors the structural template: an HTML body with `{{area:key}}`
@@ -482,7 +483,9 @@ export default function AdminDisplayLayoutsPage() {
           for full control over the HTML body, CSS, and areas.
         </p>
         <p className="text-muted-foreground mt-1">
-          Author the structural skeleton of a lobby display: an HTML body with{" "}
+          {/* The shared definition (#2247) — same words as the hub card, the
+              Reference page and the operator guide. */}
+          {DISPLAY_TERM_LAYOUT.oneLiner} Here that means an HTML body with{" "}
           <code className="bg-muted rounded px-1">{"{{area:key}}"}</code>{" "}
           placeholders, a default CSS block, and the named areas each Template
           will fill.

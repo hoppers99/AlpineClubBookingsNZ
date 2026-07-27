@@ -128,9 +128,11 @@ compose one. The authoring model behind the split is
    switched off, or your admin role lacking lodge view access — are named on
    screen when they are what happened.
 3. To use a built-in as a starting point, open it and **duplicate it to
-   customise** — editing a built-in in place warns you, because built-ins are
-   re-seeded on upgrade and an in-place edit would be overwritten. A custom copy is
-   yours to keep.
+   customise** — editing a built-in in place warns you, because a built-in is
+   rewritten from code whenever the seed runs again or **Restore built-in
+   boards** is pressed, and an in-place edit would be overwritten. A custom copy
+   is yours to keep, and its key cannot be one of the seven reserved built-in
+   keys (the create form refuses those, for the same reason).
 4. To build one, set a lower-case **Key** (fixed after creation) and **Name**,
    choose the **Layout** it fills (locked once created), add optional **CSS
    overrides**, and a **Footer HTML**. Content and footers use `{{config:key}}`
@@ -176,8 +178,12 @@ compose one. The authoring model behind the split is
 | Preview | Renders a template in a sandboxed frame against a chosen lodge | Isolated from the admin session; opened from a template's Preview |
 | Per-lodge display values | Guest-name granularity, committee notice, `{{config:key}}` values | Edited on each lodge (**Admin → Lodges → [a lodge] → display**), not on this hub |
 
-> Built-in layouts and templates are **code-managed** and re-seeded on upgrade.
-> Customise by duplicating a built-in, not by editing it in place. The full
+> Built-in layouts and templates are **code-managed**: they are written by the
+> database seed, and rewritten from code whenever the seed runs again or an
+> admin presses **Restore built-in boards** — *not* by upgrading the app, which
+> re-runs neither. Customise by duplicating a built-in, not by editing it in
+> place, and note that the seven built-in keys are reserved: a layout or
+> template of your own cannot be saved under one. The full
 > catalogue of built-in boards and embeddable modules is documented in the
 > [Lobby Display feature hub](../lobby-display/README.md).
 
@@ -190,7 +196,9 @@ compose one. The authoring model behind the split is
 | A screen shows another lodge's board | The device is bound to the wrong lodge | Re-pair/assign the device to the correct lodge on **Devices** |
 | An area on the board is blank | Its template leaves the slot empty, or its condition is false | Check the template's areas and the **Reference** page's live condition status |
 | My CSS or a link didn't take effect on save | External URLs, `@import`, and scripts are stripped for safety | Use the provided `var(--display-…)`/brand tokens and inline content only |
-| Editing a built-in warns me | Built-ins are re-seeded on upgrade | Duplicate the built-in to a custom template and edit the copy |
+| Editing a built-in warns me | Built-ins are rewritten from code whenever the seed runs again or **Restore built-in boards** is pressed | Duplicate the built-in to a custom template and edit the copy |
+| A key I want is refused as "reserved for a built-in board" | The seven built-in keys (`everyday-board`, `whole-lodge`, `singles-house`, `room-by-room`, `nights-ahead`, `operations-board`, `welcome-kiosk`) are reserved, because **Restore built-in boards** overwrites whatever is saved under them | Choose a different key — e.g. `foyer-board` |
+| The gallery is empty and my club is an older install | The built-in boards are only created by the database seed, which upgrading does not re-run | Press **Restore built-in boards** on the **Templates** page |
 
 ## Related links
 

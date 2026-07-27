@@ -4,8 +4,14 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
-import { DISPLAY_GLOSSARY } from "@/lib/lodge-display/display-terminology";
+import {
+  DISPLAY_GLOSSARY,
+  DISPLAY_GLOSSARY_LEAD,
+  DISPLAY_TERM_LAYOUT,
+  DISPLAY_TERM_TEMPLATE,
+} from "@/lib/lodge-display/display-terminology";
 import { listDisplayConditions } from "@/lib/lodge-display/conditions";
+import { BUILT_IN_DISPLAY_TEMPLATE_KEYS } from "@/lib/lodge-display/built-in-seeds";
 
 // #2247 (was A4). The admin used three words — Layout, Template, "board" — for
 // two database rows and defined none of them. The definitions now live once in
@@ -20,6 +26,27 @@ vi.mock("@/lib/module-settings", () => ({
   loadEffectiveModuleFlags: vi.fn().mockResolvedValue({ lobbyDisplay: true }),
 }));
 
+// The Layouts/Templates pages read the session permission matrix for view-only
+// gating; the definitions they carry are in the header either way.
+vi.mock("next-auth/react", () => ({
+  useSession: () => ({
+    data: {
+      user: {
+        id: "admin-1",
+        adminPermissionMatrix: {
+          overview: "edit",
+          bookings: "edit",
+          membership: "edit",
+          finance: "edit",
+          lodge: "edit",
+          content: "edit",
+          support: "edit",
+        },
+      },
+    },
+  }),
+}));
+
 const fetchMock = vi.fn();
 
 beforeEach(() => {
@@ -27,10 +54,26 @@ beforeEach(() => {
     if (url.startsWith("/api/admin/lodges")) {
       return Promise.resolve({
         ok: true,
+        status: 200,
         json: () => Promise.resolve({ lodges: [] }),
       });
     }
+    if (url.startsWith("/api/admin/display/layouts")) {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ layouts: [] }),
+      });
+    }
+    if (url.startsWith("/api/admin/display/templates")) {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ templates: [] }),
+      });
+    }
     return Promise.resolve({
+      status: 200,
       ok: true,
       json: () =>
         Promise.resolve({
@@ -90,12 +133,8 @@ describe("Layout / Template / board are defined consistently (#2247)", () => {
   });
 
   it("the operator guide quotes the same definitions", () => {
-    const guide = readFileSync(
-      path.join(process.cwd(), "docs/guides/display.md"),
-      "utf8"
-    );
     // Markdown hard-wraps, so compare on collapsed whitespace.
-    const flat = guide.replace(/\s+/g, " ");
+    const flat = guideSource().replace(/\s+/g, " ");
     for (const entry of DISPLAY_GLOSSARY) {
       expect(
         flat,
@@ -103,4 +142,64 @@ describe("Layout / Template / board are defined consistently (#2247)", () => {
       ).toContain(entry.oneLiner);
     }
   });
+
+  // The pages that AUTHOR each thing are where the word is most likely to be
+  // met, and each previously carried its own hand-written paraphrase (or, on
+  // Layouts, no definition at all).
+  it("the Templates page states the shared Template definition", async () => {
+    const { default: AdminDisplayTemplatesPage } = await import(
+      "../templates/page"
+    );
+    const { container } = render(<AdminDisplayTemplatesPage />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(container.textContent ?? "").toContain(
+      DISPLAY_TERM_TEMPLATE.oneLiner
+    );
+  });
+
+  it("the Layouts page states the shared Layout definition", async () => {
+    const { default: AdminDisplayLayoutsPage } = await import(
+      "../layouts/page"
+    );
+    const { container } = render(<AdminDisplayLayoutsPage />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(container.textContent ?? "").toContain(DISPLAY_TERM_LAYOUT.oneLiner);
+  });
+
+  // The hub header used to carry a FOURTH paraphrase of all three words, in
+  // the very file that imports the constants. It now names them without
+  // redefining them, and the lead-in itself is owned by the module.
+  it("the hub header names the words without adding a fourth definition", async () => {
+    const { default: DisplayHubPage } = await import("../page");
+    const { container } = render(await DisplayHubPage());
+    expect(container.textContent ?? "").toContain(DISPLAY_GLOSSARY_LEAD);
+  });
 });
+
+describe("the reserved built-in keys are documented where they bite (#2247)", () => {
+  it("names every reserved key in the operator guide", () => {
+    // The create routes now refuse these keys, so an operator who hits that
+    // 409 must be able to find the list. Derived from the seeds, so adding an
+    // eighth built-in fails here rather than silently leaving the guide short.
+    const guide = guideSource();
+    for (const key of BUILT_IN_DISPLAY_TEMPLATE_KEYS) {
+      expect(guide, `docs/guides/display.md does not name "${key}"`).toContain(
+        key
+      );
+    }
+  });
+
+  // The guide used to say built-ins are "re-seeded on upgrade", which is the
+  // opposite of the bug this issue fixes: upgrading re-runs neither the seed
+  // nor the restore.
+  it("no longer claims an upgrade re-seeds the built-ins", () => {
+    expect(guideSource()).not.toMatch(/re-seeded on upgrade/i);
+  });
+});
+
+function guideSource(): string {
+  return readFileSync(
+    path.join(process.cwd(), "docs/guides/display.md"),
+    "utf8"
+  );
+}

@@ -2,11 +2,14 @@
 // definitions of the three words the admin uses for two database rows (#2247).
 //
 // The admin surfaces used "Layout", "Template" and "board" interchangeably and
-// defined none of them, so nobody could tell a Template from a Layout. The
-// definitions themselves are not new — they are ADR-003 §1
+// defined none of them, so nobody could tell a Template from a Layout. Layout
+// and Template are ADR-003 §1
 // (`docs/lobby-display/decisions/ADR-003-layout-template-authoring-model.md`)
-// restated in operator language; this module exists so the hub cards, the
-// Reference page and `docs/guides/display.md` cannot drift apart again.
+// restated in operator language. "Board" is NOT in that ADR — it is the word
+// the admin and the built-in names grew afterwards, and defining it is this
+// module's own contribution (see the decision note below). What the module
+// exists for is that the hub cards, the Layouts/Templates pages, the Reference
+// page and `docs/guides/display.md` cannot drift apart again.
 //
 // Decision recorded for "board" (#2247): the word is KEPT, not removed. It is
 // the operator-facing word for *what a TV shows* — the thing the Visual builder
@@ -50,3 +53,17 @@ export const DISPLAY_GLOSSARY: readonly DisplayTerm[] = [
   DISPLAY_TERM_TEMPLATE,
   DISPLAY_TERM_BOARD,
 ];
+
+/**
+ * The Lobby Display hub's lead-in line.
+ *
+ * Deliberately NAMES the three words without defining any of them: each hub
+ * card opens with the definition of the one it is about, and the Reference page
+ * gathers all three. A fourth paraphrase in the header — which is what this
+ * replaced — is exactly the drift this module exists to prevent, so the lead-in
+ * is held here rather than typed into the page.
+ */
+export const DISPLAY_GLOSSARY_LEAD =
+  "Three words, two of them stored: a Layout, a Template built on it, and " +
+  "the board a screen shows. Each card below opens with the one it is about, " +
+  "and the Reference card gathers all three.";

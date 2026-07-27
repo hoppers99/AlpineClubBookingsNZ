@@ -5,6 +5,7 @@ import {
 } from "@/components/admin-hub-page";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import {
+  DISPLAY_GLOSSARY_LEAD,
   DISPLAY_TERM_BOARD,
   DISPLAY_TERM_LAYOUT,
   DISPLAY_TERM_TEMPLATE,
@@ -66,7 +67,7 @@ export default async function DisplayHubPage() {
   return (
     <AdminHubPage
       title="Lobby Display"
-      description="Pair the screens in your lodges and author what they show. Three words, two of them database rows: a Layout is the shape, a Template is that shape filled in, and a board is what the screen actually shows — a Template rendered on its Layout for the lodge the screen is paired to. The Reference card spells all three out."
+      description={`Pair the screens in your lodges and author what they show. ${DISPLAY_GLOSSARY_LEAD}`}
       sections={sections}
       features={features}
     />
