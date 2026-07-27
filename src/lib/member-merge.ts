@@ -919,10 +919,18 @@ export async function evaluateMemberMergeGuards(params: {
  *
  * Refusing is the right answer rather than repairing: which link to drop is a
  * statement about who is responsible for whom, and that is the admin's to make.
- * The post-merge shape is simulated conservatively from the two members' own
- * chains — the merged node inherits the deeper side of each — rather than by
- * re-implementing the mover, so the check cannot drift out of step with it by
- * being subtly more permissive.
+ *
+ * The post-merge shape is simulated from the two members' own chains rather
+ * than by re-implementing the mover, so the check cannot drift out of step with
+ * it by being subtly more permissive. On the DESCENDANT side that simulation is
+ * exact — inbound links move, so the merged node really does carry the deeper
+ * of the two subtrees. On the ANCESTOR side it deliberately OVER-counts: the
+ * loser's own parent columns die with the hard-deleted row, so the merged node
+ * actually keeps only the MASTER's ancestors, and taking the max of the two can
+ * refuse a merge that would in fact have fitted. That is the direction to err
+ * in — it fails closed, and the refusal is actionable (unlink one of them
+ * first), whereas an under-count would silently create the fifth generation the
+ * whole cap exists to prevent.
  */
 async function evaluateFamilyLinkGraphBlockers(
   db: MergeDbClient,
