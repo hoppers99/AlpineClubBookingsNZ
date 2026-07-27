@@ -5,7 +5,10 @@ import { htmlToPlainText } from "./email-text";
 import logger from "@/lib/logger";
 import { resolveEmailDeliveryConfig } from "@/lib/email-delivery";
 import { getActiveEmailSuppression } from "@/lib/email-suppression";
-import { resolveBookingEmailGate } from "@/lib/booking-email-suppression";
+import {
+  ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES,
+  resolveBookingEmailGate,
+} from "@/lib/booking-email-suppression";
 
 const MAX_ATTEMPTS = 3;
 const RETRY_FAILURE_ALERT_TEMPLATE = "admin-email-failure";
@@ -110,9 +113,31 @@ export async function retryFailedEmails(): Promise<{
     // switch on — including the fail-closed FAILED row the gate itself writes
     // when it cannot read the switch — so re-evaluate the switch from the row's
     // bookingId before EVERY replay, and fail closed the same way the mailer
-    // does. Rows with no bookingId (account, membership, admin mail) are
-    // untouched, and so are admin-audience templates.
-    if (emailLog.bookingId) {
+    // does.
+    //
+    // Rows with NO bookingId fall into two groups. Most are account, security,
+    // membership, family and admin mail, which the switch must never touch and
+    // which replay unchanged. But EmailLog.bookingId did not exist before the
+    // #2258 migration, so every row queued by the previous release is NULL —
+    // including booking-scoped ones. In the window after deploy such a row could
+    // otherwise replay a confirmation for a booking that has since been
+    // silenced. When the template is one that is ALWAYS about a booking, refuse
+    // the replay and leave the row FAILED, so it stays in the operator's
+    // email-failure review queue instead of going out or vanishing.
+    if (!emailLog.bookingId) {
+      if (ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES.has(emailLog.templateName)) {
+        logger.warn(
+          {
+            emailLogId: emailLog.id,
+            templateName: emailLog.templateName,
+            to: emailLog.to,
+          },
+          "Skipped replaying a booking-scoped email with no recorded booking (queued before #2258); it cannot be checked against the booking's \"No emails\" switch",
+        );
+        // Not a retry attempt: the row is untouched and stays FAILED.
+        continue;
+      }
+    } else {
       const bookingGate = await resolveBookingEmailGate(
         { bookingId: emailLog.bookingId },
         emailLog.templateName,

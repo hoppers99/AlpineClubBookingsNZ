@@ -70,6 +70,9 @@ function failedEmail(overrides: Record<string, unknown> = {}) {
     subject: "Booking update",
     htmlBody: "<p>hello</p>",
     templateName: "booking-confirmed",
+    // #2258: rows written since the migration carry their booking. The
+    // NULL-bookingId cases (pre-migration rows) are exercised explicitly below.
+    bookingId: "bk_1",
     attempts: 0,
     ...overrides,
   };
@@ -302,9 +305,43 @@ describe('retryFailedEmails and the per-booking "No emails" switch (#2258)', () 
     expect(result.succeeded).toBe(1);
   });
 
+  // #2258 review finding: EmailLog.bookingId did not exist before the migration,
+  // so EVERY row queued by the previous release is NULL — including booking
+  // ones. Replaying those blind in the post-deploy window would send a
+  // confirmation for a booking that has since been silenced.
+  it("refuses to replay a NULL-bookingId row whose template is always booking-scoped", async () => {
+    mocks.findMany.mockResolvedValue([
+      failedEmail({ id: "email_1", bookingId: null, templateName: "booking-confirmed" }),
+    ]);
+
+    const result = await retryFailedEmails();
+
+    expect(mocks.sendMail).not.toHaveBeenCalled();
+    // Left exactly as found: still FAILED, so it stays in the operator's
+    // email-failure review queue rather than being sent or silently resolved.
+    expect(mocks.update).not.toHaveBeenCalled();
+    expect(mocks.updateMany).not.toHaveBeenCalled();
+    expect(result).toEqual({ retried: 0, succeeded: 0, failed: 0 });
+  });
+
+  it("still replays NULL-bookingId account, membership and admin rows untouched", async () => {
+    mocks.findMany.mockResolvedValue([
+      failedEmail({ id: "e1", bookingId: null, templateName: "password-reset" }),
+      failedEmail({ id: "e2", bookingId: null, templateName: "membership-approved" }),
+      failedEmail({ id: "e3", bookingId: null, templateName: "admin-new-booking" }),
+      // Genuinely pre-booking: a public request has no booking to silence.
+      failedEmail({ id: "e4", bookingId: null, templateName: "booking-request-verification" }),
+    ]);
+
+    const result = await retryFailedEmails();
+
+    expect(mocks.sendMail).toHaveBeenCalledTimes(4);
+    expect(result.succeeded).toBe(4);
+  });
+
   it("never consults the switch for a row with no booking, and never for an admin-audience template", async () => {
     mocks.findMany.mockResolvedValue([
-      failedEmail({ id: "email_1", bookingId: null }),
+      failedEmail({ id: "email_1", bookingId: null, templateName: "password-reset" }),
       failedEmail({
         id: "email_2",
         bookingId: "bk_1",
