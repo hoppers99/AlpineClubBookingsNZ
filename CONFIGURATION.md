@@ -184,6 +184,23 @@ provisional non-member portion story on a split parent and nothing otherwise
 booking-confirmed body must keep this token, or split-parent confirmations
 silently lose the "held provisionally / charged later" explanation.
 
+Promo pricing on the booking-confirmed email works the same way through the
+pre-composed `{{promoSummary}}` token: when a promo code changed the price it
+renders the whole explanatory block — a `Subtotal:` line plus a signed
+`Promo adjustment (CODE):` line (`-$30.00` for a discount, `+$1,370.00` for a
+promo such as an exclusive-use flat rate that *raises* the price) — and
+renders nothing at all when no promo applied. Each line carries its own
+trailing line break, so the default body places it hard against the total line
+(`{{promoSummary}}Total Paid: {{totalPaid}}`); keep that placement in an
+override or the block renders detached from the money it explains. An operator
+who overrides the booking-confirmed body should keep `{{promoSummary}}`, or
+members whose promo changed the price get a total with no explanation. The
+older per-piece tokens (`{{subtotal}}`, `{{discount}}`, `{{promoCode}}`,
+`{{promoAdjustment}}`) remain valid for existing overrides, but only
+`{{promoSummary}}` handles all promo shapes cleanly — `{{discount}}` is empty
+for a price-raising promo, and `{{promoAdjustment}}` carries its own `+`/`-`
+sign, so never write a manual minus in front of it.
+
 | Field                                              | Required | Description                                                                                                      |
 | -------------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------- |
 | `name`                                             | yes      | Full public club name.                                                                                           |
