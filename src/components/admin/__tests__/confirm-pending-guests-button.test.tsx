@@ -250,4 +250,70 @@ describe("ConfirmPendingGuestsButton", () => {
       within(dialog).getByRole("button", { name: "Confirm" })
     ).not.toBeNull();
   });
+
+  /*
+    #2259 honesty rule. With the booking's "No emails" switch on the mailer
+    withholds the confirmation whatever is chosen here, so the choice is not
+    offered: the dialog states the position and confirms down the send-nothing
+    path. Re-offering "Confirm and email member" would invite the admin to
+    believe the member was told.
+  */
+  it("offers no email choice while the booking's No emails switch is on (#2259)", async () => {
+    const fetchMock = stubFetch({ ok: true, body: { success: true } });
+    render(
+      <ConfirmPendingGuestsButton
+        bookingId="b1"
+        hasSavedPaymentMethod
+        finalPriceCents={10000}
+        noEmails
+      />
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Confirm pending guests" })
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Charge and confirm" }));
+
+    const suppressButton = await screen.findByRole("button", {
+      name: "Confirm without emailing",
+    });
+    // The affirmative choice is gone, and the reason is stated in its place.
+    expect(
+      screen.queryByRole("button", { name: "Confirm and email member" })
+    ).toBeNull();
+    expect(
+      screen.getByText(/Emails are off for this booking/i)
+    ).not.toBeNull();
+
+    fireEvent.click(suppressButton);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/admin/bookings/b1/confirm-pending-guests",
+      expect.objectContaining({
+        body: JSON.stringify({ notifyMember: false }),
+      })
+    );
+  });
+
+  it("still offers the email choice on an ordinary booking (#2259 control)", async () => {
+    stubFetch({ ok: true, body: { success: true } });
+    render(
+      <ConfirmPendingGuestsButton
+        bookingId="b1"
+        hasSavedPaymentMethod
+        finalPriceCents={10000}
+        noEmails={false}
+      />
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Confirm pending guests" })
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Charge and confirm" }));
+
+    expect(
+      await screen.findByRole("button", { name: "Confirm and email member" })
+    ).not.toBeNull();
+    expect(screen.queryByText(/Emails are off for this booking/i)).toBeNull();
+  });
 });

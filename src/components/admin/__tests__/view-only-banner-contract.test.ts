@@ -730,12 +730,17 @@ describe("view-only section banner coverage (#2160)", () => {
       // banner-bearing admin surfaces (the notices list page and the notice
       // editor), each with static opt-out ViewOnlyActionButtons covered by an
       // AdminViewOnlySectionBanner in the same file.
-      callSites: 269,
+      // +1 vs 269 / exceptions +1 vs 33: #2259 adds the per-booking "No emails"
+      // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into
+      // the Admin tools card's layout — the same shape as the capacity- and
+      // exclusive-hold controls beside it, so it keeps its own per-button
+      // reason rather than opting out under a banner it cannot prove renders.
+      callSites: 270,
       optOuts: 236,
       staticOptOuts: 215,
       vouchedOptOuts: 21,
-      exceptions: 33,
-      exceptionFiles: 16,
+      exceptions: 34,
+      exceptionFiles: 17,
       bannerComponents: 78,
     });
 
@@ -796,7 +801,8 @@ describe("view-only section banner coverage (#2160)", () => {
       // view-only would get no banner at all.
       memberDetailCards: { controls: 4, files: 1 },
       separateA11yContainer: { controls: 9, files: 4 },
-      leaves: { controls: 20, files: 11 },
+      // +1 control / +1 file vs 20/11: the #2259 "No emails" switch, above.
+      leaves: { controls: 21, files: 12 },
     });
   });
 
