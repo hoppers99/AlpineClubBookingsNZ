@@ -133,8 +133,33 @@ describe("sendMembershipPaymentRecordedEmail (#2260)", () => {
     sendEmailMock.mockReset();
   });
 
+  it("returns the send outcome instead of swallowing it", async () => {
+    const outcome = {
+      status: "skipped_placeholder_recipient",
+      emailLogId: null,
+      reason: "placeholder",
+    };
+    sendEmailMock.mockResolvedValue(outcome);
+
+    // The caller has to be able to tell a dispatched receipt from one the
+    // mailer never sent; a void return would leave it asserting delivery.
+    await expect(
+      sendMembershipPaymentRecordedEmail({
+        email: "walkin@club.invalid",
+        firstName: "Ada",
+        seasonYear: 2026,
+        amountCents: null,
+        recordedAt: RECORDED_AT,
+      }),
+    ).resolves.toBe(outcome);
+  });
+
   it('sends with bookingContext "none" — a subscription is not a booking', async () => {
-    sendEmailMock.mockResolvedValue(undefined);
+    sendEmailMock.mockResolvedValue({
+      status: "sent",
+      emailLogId: "log-1",
+      messageId: "msg-1",
+    });
 
     await sendMembershipPaymentRecordedEmail({
       email: "ada@example.org",
@@ -161,7 +186,7 @@ describe("sendMembershipPaymentRecordedEmail (#2260)", () => {
   });
 
   it("passes an empty amount token when no fee amount is recorded", async () => {
-    sendEmailMock.mockResolvedValue(undefined);
+    sendEmailMock.mockResolvedValue({ status: "sent", emailLogId: "log-1", messageId: "msg-1" });
 
     await sendMembershipPaymentRecordedEmail({
       email: "ada@example.org",

@@ -19,7 +19,7 @@ import {
 } from "@/config/club-identity";
 import { formatNZDate, formatNZDateTime } from "../nzst-date";
 import { formatCents } from "@/lib/utils";
-import { sendEmail } from "./core";
+import { sendEmail, type EmailSendOutcome } from "./core";
 
 export async function sendNominationRequestEmail(params: {
   email: string;
@@ -61,9 +61,10 @@ export async function sendNominationRequestEmail(params: {
  * hand. Sent only when the admin picks "Mark paid and email member" on the
  * manual mark-paid dialog; never on the reversal to unpaid.
  *
- * `amountCents` is null when the club has no recorded fee amount for the season
- * (no active charge coverage, or a no-invoice fee), and the amount line is then
- * omitted rather than guessed.
+ * `amountCents` is null whenever the caller cannot attribute an amount to this
+ * one member's subscription (no active charge coverage, a no-invoice fee, or a
+ * charge that covers a whole family), and the amount line is then omitted
+ * rather than guessed.
  */
 export async function sendMembershipPaymentRecordedEmail(params: {
   email: string;
@@ -71,8 +72,11 @@ export async function sendMembershipPaymentRecordedEmail(params: {
   seasonYear: number;
   amountCents: number | null;
   recordedAt: Date;
-}) {
-  await sendEmail({
+}): Promise<EmailSendOutcome> {
+  // The outcome is returned, not swallowed: the admin who chose "email member"
+  // is told what actually happened, and a suppressed or placeholder recipient
+  // never reads back as "the member has been emailed".
+  return sendEmail({
     to: params.email,
     subject: `Your ${params.seasonYear} membership payment has been recorded — ${CLUB_NAME}`,
     html: membershipPaymentRecordedTemplate({

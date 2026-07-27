@@ -63,6 +63,7 @@ beforeEach(() => {
     status: "PAID",
     direction: "paid",
     memberNotified: true,
+    receipt: "queued",
   });
 });
 
@@ -100,6 +101,7 @@ describe("POST /api/admin/subscriptions/[id]/manual-payment (#2260)", () => {
         status: "PAID",
         direction: "paid",
         memberNotified: notifyMember,
+        receipt: notifyMember ? "queued" : "not_requested",
       });
 
       const response = await POST(
@@ -123,7 +125,7 @@ describe("POST /api/admin/subscriptions/[id]/manual-payment (#2260)", () => {
       // The response says which way it went, so the admin is never left
       // guessing whether the member heard about it.
       expect((await response.json()).message).toContain(
-        notifyMember ? "has been emailed" : "was not emailed",
+        notifyMember ? "is being emailed" : "was not emailed",
       );
     },
   );
@@ -136,6 +138,7 @@ describe("POST /api/admin/subscriptions/[id]/manual-payment (#2260)", () => {
       status: "NOT_INVOICED",
       direction: "unpaid",
       memberNotified: false,
+      receipt: "not_requested",
     });
 
     const response = await POST(
@@ -152,6 +155,33 @@ describe("POST /api/admin/subscriptions/[id]/manual-payment (#2260)", () => {
       actingMemberId: "admin-1",
     });
     expect("notifyMember" in call).toBe(false);
+  });
+
+  it("never reports a receipt as sent when the mailer did not send it", async () => {
+    mocks.applyManualSubscriptionPayment.mockResolvedValue({
+      id: "sub-1",
+      memberId: "m-1",
+      seasonYear: 2026,
+      status: "PAID",
+      direction: "paid",
+      // The admin asked for the email; the mailer suppressed it, hit a
+      // club-internal placeholder address, or failed outright.
+      memberNotified: true,
+      receipt: "not_delivered",
+    });
+
+    const response = await POST(
+      makeRequest({ direction: "paid", confirmed: true, notifyMember: true }),
+      { params },
+    );
+
+    const message = (await response.json()).message;
+    expect(response.status).toBe(200);
+    expect(message).toContain("could not be sent");
+    // The whole point: no wording that lets the admin walk away believing the
+    // member was told.
+    expect(message).not.toContain("is being emailed");
+    expect(message).not.toContain("has been emailed");
   });
 
   it("still 400s a malformed body before the notify contract is considered", async () => {

@@ -104,11 +104,18 @@ export async function POST(
     return NextResponse.json({
       success: true,
       subscription: result,
+      // #2260: report what became of the receipt, never a delivery claim the
+      // code cannot make. "queued" means the mailer accepted it — a suppressed
+      // recipient, a club-internal placeholder address or an outright failure
+      // all come back as not_delivered and say so, so an admin is never left
+      // believing a member was told when they were not.
       message:
         result.direction === "paid"
-          ? result.memberNotified
-            ? "Subscription marked paid. The member has been emailed a receipt."
-            : "Subscription marked paid. The member was not emailed."
+          ? result.receipt === "queued"
+            ? "Subscription marked paid. A receipt is being emailed to the member."
+            : result.receipt === "not_delivered"
+              ? "Subscription marked paid, but the receipt could not be sent — check the member's email address."
+              : "Subscription marked paid. The member was not emailed."
           : "Manual payment reversed.",
     });
   } catch (error) {
