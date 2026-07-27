@@ -584,7 +584,10 @@ function sampleValue(token: string): string {
   }
   if (token.toLowerCase().includes("count")) return "2";
   if (token.toLowerCase().includes("date") || token.endsWith("At")) {
-    return "1 July 2026";
+    // Matches what the senders actually produce: formatNZDate renders the
+    // medium NZ style ("1 Jul 2026"), so an admin previewing an override sees
+    // the shape their members will read, not a longer one it never emits.
+    return "1 Jul 2026";
   }
   if (token === "s") return "s";
   if (token === "token") return "sample-token";
