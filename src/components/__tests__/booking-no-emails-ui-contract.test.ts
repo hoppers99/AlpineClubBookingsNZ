@@ -122,6 +122,49 @@ function eachNode(root: ts.Node, visit: (node: ts.Node) => void): void {
   root.forEachChild((child) => eachNode(child, visit));
 }
 
+/**
+ * `source` with every comment blanked out, using TypeScript's own parser rather
+ * than a regex — the same technique, and for the same reason, as
+ * `view-only-banner-contract.test.ts`.
+ *
+ * The closed-world scan below asks "does this file touch `notifyMember`", and
+ * raw text cannot tell a call site from prose about one. Several of these files
+ * discuss the flag at length, and `booking-no-emails-notice.tsx` — which does
+ * not touch it at all — explains the whole honesty rule in its module comment.
+ * Matching raw text enrolled it as a notify-prompt surface.
+ */
+function stripComments(source: string): string {
+  const sourceFile = ts.createSourceFile(
+    "in-memory.tsx",
+    source,
+    ts.ScriptTarget.Latest,
+    /* setParentNodes */ true,
+    ts.ScriptKind.TSX,
+  );
+  const chars = source.split("");
+  const blank = (start: number, end: number) => {
+    for (let i = start; i < end; i += 1) {
+      if (chars[i] !== "\n") chars[i] = " ";
+    }
+  };
+  const visit = (node: ts.Node): void => {
+    const children = node.getChildren(sourceFile);
+    if (children.length > 0) {
+      for (const child of children) visit(child);
+      return;
+    }
+    for (const range of ts.getLeadingCommentRanges(source, node.getFullStart()) ??
+      []) {
+      blank(range.pos, range.end);
+    }
+    for (const range of ts.getTrailingCommentRanges(source, node.getEnd()) ?? []) {
+      blank(range.pos, range.end);
+    }
+  };
+  visit(sourceFile);
+  return chars.join("");
+}
+
 type JsxTag = ts.JsxOpeningElement | ts.JsxSelfClosingElement;
 
 function isJsxTag(node: ts.Node): node is JsxTag {
@@ -265,50 +308,86 @@ describe("No emails UI is admin-only (#2259)", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("never hands a member the switch state on the wire", () => {
+  it("never hands a member the switch KEY, let alone its value, on the wire", () => {
     /*
-      Every `noEmails` value the page produces has to be gated, whether it is
-      drawn or not: the booking editor data and the cancel button's prop are
-      serialised into client-component payloads a member can read.
+      Stronger than "gate the value", and the difference is the whole point.
+
+      React Flight serialises the property NAME as well as the value. A
+      conditional VALUE still ships the key: `noEmails={admin ? x : false}`
+      lands as `"noEmails":false` in a member's payload and
+      `noEmails: admin ? x : undefined` lands as `"noEmails":"$undefined"`.
+      Either way a member who reads the wire learns the switch exists — they
+      merely do not learn its state, which is not the guarantee #2258/#2259
+      makes.
+
+      So the only accepted shape is a conditional SPREAD, which omits the key
+      entirely. Every `noEmails` produced on this page must either be inside an
+      admin-gated spread or inside an object that is itself only built for an
+      admin (`noEmailsState`, whose own declaration is proved above).
     */
     const offenders: string[] = [];
 
-    // JSX props named `noEmails`.
+    /*
+      A JSX attribute literally named `noEmails` ships its key — UNLESS the
+      element carrying it is itself only rendered for an admin, in which case
+      the element (and every key on it) is absent from a member's payload
+      entirely. The admin-tools card and the withheld-emails banner are in that
+      position, and demanding a spread there would be cargo cult.
+
+      The two the review caught were the opposite case: `CancelBookingButton`
+      and the booking-editor data are rendered for EVERY viewer, so their keys
+      shipped to members. Those must use the conditional spread.
+    */
     eachNode(ast, (node) => {
       if (!isJsxTag(node)) return;
+      const renderGated = guardTexts(ast, node).some((guard) =>
+        ADMIN_GATES.some((gate) => gate.test(guard)),
+      );
+      if (renderGated) return;
       for (const prop of node.attributes.properties) {
         if (!ts.isJsxAttribute(prop)) continue;
         if (prop.name.getText(ast) !== "noEmails") continue;
-        const text = prop.initializer?.getText(ast) ?? "";
-        const gated =
-          ADMIN_GATES.some((gate) => gate.test(text)) ||
-          guardTexts(ast, node).some((guard) =>
-            ADMIN_GATES.some((gate) => gate.test(guard)),
-          );
-        if (!gated) {
-          offenders.push(
-            `page.tsx:${lineOf(ast, prop)} noEmails=${text} on <${node.tagName.getText(ast)}>`,
-          );
-        }
+        offenders.push(
+          `page.tsx:${lineOf(ast, prop)} <${node.tagName.getText(ast)} noEmails=…> ` +
+            `is rendered for members too — use a conditional spread so their ` +
+            `payload has no such key`,
+        );
       }
     });
 
-    // Object properties named `noEmails` — the booking editor data literal, and
-    // the admin-only state object. Either the value itself carries the gate or
-    // the whole object literal is built under one.
+    // The same rule for object literals: a bare `noEmails:` property is only
+    // safe inside an object that does not exist for a member at all.
     let propertiesSeen = 0;
     eachNode(ast, (node) => {
       if (!ts.isPropertyAssignment(node)) return;
       if (node.name.getText(ast) !== "noEmails") return;
       propertiesSeen += 1;
-      const text = node.initializer.getText(ast);
-      const gated =
-        ADMIN_GATES.some((gate) => gate.test(text)) ||
-        guardTexts(ast, node).some((guard) =>
-          ADMIN_GATES.some((gate) => gate.test(guard)),
+      // Inside an admin-gated conditional (e.g. the `noEmailsState` literal),
+      // the whole object is absent for a member, so the key cannot leak.
+      const inGatedObject = guardTexts(ast, node).some((guard) =>
+        ADMIN_GATES.some((gate) => gate.test(guard)),
+      );
+      // …or inside a conditional spread, whose parent is the `? :` that
+      // chooses between `{ noEmails: … }` and `{}`.
+      const inConditionalSpread = (() => {
+        let cur: ts.Node = node;
+        while (cur.parent) {
+          if (ts.isSpreadAssignment(cur.parent)) return true;
+          if (
+            ts.isConditionalExpression(cur.parent) &&
+            ts.isSpreadAssignment(cur.parent.parent ?? cur.parent)
+          ) {
+            return true;
+          }
+          cur = cur.parent;
+        }
+        return false;
+      })();
+      if (!inGatedObject && !inConditionalSpread) {
+        offenders.push(
+          `page.tsx:${lineOf(ast, node)} noEmails: ${node.initializer.getText(ast)} ` +
+            `— ships the key to a member; use a conditional spread`,
         );
-      if (!gated) {
-        offenders.push(`page.tsx:${lineOf(ast, node)} noEmails: ${text}`);
       }
     });
 
@@ -318,10 +397,31 @@ describe("No emails UI is admin-only (#2259)", () => {
     ).toBeGreaterThan(0);
     expect(
       offenders,
-      `These produce the booking's "No emails" state without an admin ` +
-        `predicate. Even an undrawn prop is serialised into the RSC payload, ` +
-        `so a member could read the switch's existence off the wire.`,
+      `React Flight serialises the KEY as well as the value, so a gated value ` +
+        `is not enough: "noEmails":false in a member's payload still tells ` +
+        `them the switch exists. Use {...(admin ? { noEmails } : {})}.`,
     ).toEqual([]);
+  });
+
+  it("proves the sanctioned spread form is actually in use", () => {
+    // Guards the rule above against becoming vacuous by deletion: if the
+    // spreads disappeared, the "no bare key" checks would pass trivially.
+    const spreads: ts.Node[] = [];
+    eachNode(ast, (node) => {
+      if (!ts.isSpreadAssignment(node) && !ts.isJsxSpreadAttribute(node)) return;
+      if (!/noEmails/.test(node.getText(ast))) return;
+      spreads.push(node);
+    });
+    expect(
+      spreads.length,
+      "the member-safe conditional-spread form is no longer used anywhere",
+    ).toBeGreaterThanOrEqual(2);
+    for (const spread of spreads) {
+      expect(
+        ADMIN_GATES.some((gate) => gate.test(spread.getText(ast))),
+        `page.tsx:${lineOf(ast, spread)} spreads noEmails without an admin gate`,
+      ).toBe(true);
+    }
   });
 
   it("does not even query the withheld list for a member", () => {
@@ -329,7 +429,7 @@ describe("No emails UI is admin-only (#2259)", () => {
     eachNode(ast, (node) => {
       if (
         ts.isCallExpression(node) &&
-        node.expression.getText(ast) === "getWithheldBookingEmails"
+        node.expression.getText(ast) === "getWithheldBookingEmailSummary"
       ) {
         calls.push(node);
       }
@@ -362,7 +462,13 @@ describe("No emails honesty rule (#2259)", () => {
     */
     const found = sourceFiles()
       .filter((file) =>
-        /\bnotifyMember\b|\bnotifyRequester\b/.test(readFileSync(file, "utf8")),
+        // Comments stripped first: raw text cannot tell a call site from prose
+        // about one, and `booking-no-emails-notice.tsx` — which never touches
+        // the flag — explains this very rule in its module comment. Matching
+        // raw text enrolled it as a notify-prompt surface.
+        /\bnotifyMember\b|\bnotifyRequester\b/.test(
+          stripComments(readFileSync(file, "utf8")),
+        ),
       )
       .map((file) => relative(SRC, file).split(sep).join("/"));
 
@@ -442,6 +548,75 @@ describe("No emails honesty rule (#2259)", () => {
         `whichever button the admin presses. Offering the choice therefore ` +
         `invites a false belief that the member was told — the exact harm ` +
         `D10's acknowledgement is the compensating control for.`,
+    ).toEqual([]);
+  });
+
+  it("never lets the suppressed path skip the send that records the withhold", () => {
+    /*
+      H1 — the compensating control must not blind itself.
+
+      `notifyMember: false` tells the ROUTE not to send at all. The mailer's
+      gate therefore never runs, no `SKIPPED_NO_EMAILS` row is written, and the
+      booking's withheld-list banner cannot name the cancellation (or
+      confirmation, or modification) the officer just performed silently. On an
+      otherwise quiet booking the banner would say "Nothing has been withheld
+      yet" immediately after a silent cancellation — while the operator guide
+      tells the officer to work down that list.
+
+      So the silenced path must send NO flag: the send is attempted, the gate
+      withholds it, and the row is recorded. Member outcome is identical either
+      way; only the audit trail differs, and only in the direction that makes
+      the banner true.
+
+      Mechanically: every `noEmails`-conditional expression in these files that
+      chooses a `notifyMember` value must select `undefined` on the silenced
+      side, never `false`.
+    */
+    const offenders: string[] = [];
+
+    for (const rel of BOOKING_NOTIFY_PROMPTS) {
+      const file = join(SRC, ...rel.split("/"));
+      const ast = parse(file);
+      let conditionals = 0;
+
+      eachNode(ast, (node) => {
+        if (!ts.isConditionalExpression(node)) return;
+        const condition = node.condition.getText(ast);
+        if (!/noEmails/i.test(condition)) return;
+        // Which branch runs when the booking IS silenced.
+        const negated = condition.trimStart().startsWith("!");
+        const silencedBranch = negated ? node.whenFalse : node.whenTrue;
+        const text = silencedBranch.getText(ast).trim();
+        // Only conditionals that pick a notify value are in scope; the copy
+        // ternaries (labels, titles) are strings and are ignored.
+        if (!/^(true|false|undefined)$/.test(text)) return;
+        conditionals += 1;
+        if (text !== "undefined") {
+          offenders.push(
+            `${rel}:${lineOf(ast, node)} sends notifyMember=${text} on the ` +
+              `silenced path — the route then skips the send and nothing is recorded`,
+          );
+        }
+      });
+
+      // Two of the six dispatch through a named `confirmSilenced()` helper
+      // instead of an inline ternary, so a zero count is only a defect when
+      // neither shape is present.
+      if (conditionals === 0 && !ast.getFullText().includes("confirmSilenced")) {
+        offenders.push(
+          `${rel} has neither a silenced-path ternary nor a confirmSilenced() ` +
+            `dispatch — nothing proves it stops sending notifyMember:false`,
+        );
+      }
+    }
+
+    expect(
+      offenders,
+      `The silenced path must let the send be ATTEMPTED so the mailer's gate ` +
+        `withholds AND RECORDS it. notifyMember:false makes the route skip the ` +
+        `send outright, which leaves the withheld-list banner blind to the ` +
+        `action the officer just performed — the banner the operator guide ` +
+        `tells them to rely on.`,
     ).toEqual([]);
   });
 });

@@ -151,14 +151,14 @@ afterEach(() => {
 });
 
 describe("EditBookingPanel — No emails honesty rule (#2259)", () => {
-  it("offers no email choice while the switch is on, and saves without emailing", async () => {
+  it("offers no email choice while the switch is on, and saves without a notify flag", async () => {
     render(
       <EditBookingPanel booking={makeBooking({ noEmails: true })} onDone={vi.fn()} />,
     );
     await openSaveDialog();
 
     const suppress = await screen.findByRole("button", {
-      name: "Save without emailing",
+      name: "Save changes",
     });
     expect(
       screen.queryByRole("button", { name: "Save and email member" }),
@@ -167,7 +167,12 @@ describe("EditBookingPanel — No emails honesty rule (#2259)", () => {
 
     fireEvent.click(suppress);
     await waitFor(() => expect(modifyCalls()).toHaveLength(1));
-    expect(modifyCalls()[0].body).toMatchObject({ notifyMember: false });
+    /*
+      #2259 H1: no notifyMember at all. `false` makes the route skip the send,
+      so the mailer's gate never runs and the modification never reaches the
+      booking's withheld list.
+    */
+    expect(modifyCalls()[0].body).not.toHaveProperty("notifyMember");
   });
 
   it("still offers the choice on an ordinary booking", async () => {

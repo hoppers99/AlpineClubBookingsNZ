@@ -86,6 +86,7 @@ function renderControls(props: Partial<{
   noEmailsAt: string | null;
   setByName: string | null;
   hasLiveWaitlistOffer: boolean;
+  isWaitlisted: boolean;
 }> = {}) {
   return render(
     <BookingNoEmailsControls
@@ -94,6 +95,7 @@ function renderControls(props: Partial<{
       noEmailsAt={props.noEmailsAt ?? null}
       setByName={props.setByName ?? null}
       hasLiveWaitlistOffer={props.hasLiveWaitlistOffer ?? false}
+      isWaitlisted={props.isWaitlisted ?? false}
     />,
   );
 }
@@ -222,6 +224,82 @@ describe("BookingNoEmailsControls (#2259)", () => {
     // Clearing carries no acknowledgement: a stuck switch must always be
     // clearable, and restoring normal behaviour needs no undertaking.
     expect(fetchCalls[0].body).toEqual({ noEmails: false });
+  });
+
+  it("tells the truth about a live offer: already sent, still acceptable", async () => {
+    /*
+      Candidacy exclusion means a live offer can only PREDATE the switch, so
+      the offer email already went out — the member HAS been told and CAN still
+      accept. Saying otherwise is worse than saying nothing: an officer who
+      believed the bed was dead might reassign it out from under a member who
+      is still entitled to it.
+    */
+    installFetch();
+    renderControls({ hasLiveWaitlistOffer: true });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Turn off all emails" }),
+    );
+
+    const dialog = screen.getByRole("dialog");
+    expect(
+      within(dialog).getByText(/can still accept it, so do not reassign the bed/i),
+    ).toBeInTheDocument();
+    // …and must NOT claim the member cannot accept.
+    expect(dialog.textContent).not.toMatch(/cannot accept/i);
+    expect(dialog.textContent).not.toMatch(/never be told the offer was made/i);
+  });
+
+  it("states the waitlist consequence nothing else can record", async () => {
+    /*
+      A silenced WAITLISTED entry is skipped for offers ENTIRELY, so no offer
+      is made, nothing is withheld and no row is ever written. The banner is
+      structurally blind to it, so the dialog is the only place it can be said.
+    */
+    installFetch();
+    const { unmount } = renderControls({ isWaitlisted: true });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Turn off all emails" }),
+    );
+    expect(
+      within(screen.getByRole("dialog")).getByText(
+        /passed over for waitlist offers/i,
+      ),
+    ).toBeInTheDocument();
+    unmount();
+
+    renderControls({ isWaitlisted: false });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Turn off all emails" }),
+    );
+    expect(
+      within(screen.getByRole("dialog")).queryByText(
+        /passed over for waitlist offers/i,
+      ),
+    ).toBeNull();
+  });
+
+  it("shows a failed write inside the dialog, not behind its overlay", async () => {
+    installFetch({ ok: false, body: { error: "Booking not found" } });
+    renderControls();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Turn off all emails" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Yes — I will tell the member myself" }),
+    );
+
+    // The dialog stays open on failure, so the error has to live inside it.
+    const dialog = await screen.findByRole("dialog");
+    await waitFor(() =>
+      expect(within(dialog).getByRole("alert")).toHaveTextContent(
+        "Booking not found",
+      ),
+    );
+
+    // …and cancelling clears it, so a stale error never sits under the button.
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
   });
 
   it("surfaces the route's refusal instead of claiming success", async () => {

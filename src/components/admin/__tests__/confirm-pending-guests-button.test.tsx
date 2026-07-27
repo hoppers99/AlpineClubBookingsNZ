@@ -274,24 +274,37 @@ describe("ConfirmPendingGuestsButton", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Charge and confirm" }));
 
-    const suppressButton = await screen.findByRole("button", {
-      name: "Confirm without emailing",
+    // The dialog's action carries the same label as the trigger behind it, so
+    // scope the query to the dialog (as the sibling tests above do).
+    const dialog = await screen.findByRole("dialog");
+    const suppressButton = within(dialog).getByRole("button", {
+      name: "Confirm pending guests",
     });
     // The affirmative choice is gone, and the reason is stated in its place.
     expect(
-      screen.queryByRole("button", { name: "Confirm and email member" })
+      within(dialog).queryByRole("button", { name: "Confirm and email member" })
     ).toBeNull();
     expect(
-      screen.getByText(/Emails are off for this booking/i)
+      within(dialog).getByText(/Emails are off for this booking/i)
     ).not.toBeNull();
 
     fireEvent.click(suppressButton);
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    /*
+      #2259 H1 — the load-bearing assertion. The body must carry NO
+      notifyMember at all. `notifyMember: false` would make the route skip the
+      send, so the mailer's gate never runs, no SKIPPED_NO_EMAILS row is
+      written, and the booking's withheld list would omit the very confirmation
+      this action suppressed. Absent lets the send be attempted and WITHHELD.
+    */
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/admin/bookings/b1/confirm-pending-guests",
-      expect.objectContaining({
-        body: JSON.stringify({ notifyMember: false }),
-      })
+      expect.objectContaining({ body: JSON.stringify({}) })
+    );
+    await waitFor(() =>
+      expect(toastSuccess).toHaveBeenCalledWith(
+        "Pending guests confirmed. Emails are off for this booking, so nothing was sent."
+      )
     );
   });
 

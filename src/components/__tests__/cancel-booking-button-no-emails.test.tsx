@@ -75,7 +75,7 @@ beforeEach(installFetch);
 afterEach(() => vi.restoreAllMocks());
 
 describe("CancelBookingButton — No emails honesty rule (#2259)", () => {
-  it("offers no email choice while the switch is on, and cancels without emailing", async () => {
+  it("offers no email choice while the switch is on, and cancels without a notify flag", async () => {
     render(
       <CancelBookingButton
         bookingId={BOOKING_ID}
@@ -87,7 +87,7 @@ describe("CancelBookingButton — No emails honesty rule (#2259)", () => {
     await openPreview();
 
     const suppress = await screen.findByRole("button", {
-      name: "Cancel without emailing",
+      name: "Cancel booking",
     });
     expect(
       screen.queryByRole("button", { name: "Cancel and email member" }),
@@ -96,7 +96,18 @@ describe("CancelBookingButton — No emails honesty rule (#2259)", () => {
 
     fireEvent.click(suppress);
     await waitFor(() => expect(cancelPosts()).toHaveLength(1));
-    expect(cancelPosts()[0].body).toMatchObject({ notifyMember: false });
+    /*
+      #2259 H1: no notifyMember at all. `false` makes the cancel route skip the
+      send outright, so the mailer's gate never runs and no withheld row is
+      recorded — the banner would then be silent about the cancellation the
+      member most needs to hear about.
+    */
+    expect(cancelPosts()[0].body).not.toHaveProperty("notifyMember");
+
+    // …and the success panel must not promise an email that will not arrive.
+    await waitFor(() =>
+      expect(screen.queryByText(/receive a confirmation email/i)).toBeNull(),
+    );
   });
 
   it("still offers the choice on an ordinary booking", async () => {
