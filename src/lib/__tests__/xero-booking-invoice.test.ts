@@ -509,9 +509,28 @@ describe("createXeroInvoiceForBooking", () => {
     expect(
       mocks.xeroClientInstance.accountingApi.createInvoices
     ).toHaveBeenCalled();
+    // A DELIBERATE withhold is a complete, intended outcome: no error, and the
+    // flag distinguishes it from the ordinary "this source raises no emailed
+    // invoice" skip.
+    expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
+      "op_1",
+      expect.objectContaining({
+        status: "SUCCEEDED",
+        responsePayload: expect.objectContaining({
+          invoiceEmailError: null,
+          invoiceEmailWithheldByNoEmails: true,
+        }),
+      })
+    );
   });
 
-  it("fails closed and skips the Xero invoice email when the switch cannot be read (#2258)", async () => {
+  // The corrected contract (#2258 review finding): an unreadable switch is a
+  // FAULT, not a deliberate withhold. Filing it as SKIPPED_NO_EMAILS would put a
+  // false "the admin asked for silence" line on a booking whose switch is OFF
+  // (#2259's banner), and reporting the sync operation SUCCEEDED would strand an
+  // unpaid internet-banking invoice the member was never told about, with no
+  // re-drive path — the exact #1705 harm.
+  it("reports an unreadable switch as a FAULT: PARTIAL sync op, no withheld row, no email (#2258)", async () => {
     const bookingRow = {
       id: "booking_1",
       memberId: "mem_1",
@@ -550,14 +569,21 @@ describe("createXeroInvoiceForBooking", () => {
     expect(
       mocks.xeroClientInstance.accountingApi.emailInvoice
     ).not.toHaveBeenCalled();
-    expect(mocks.prisma.emailLog.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        bookingId: "booking_1",
-        templateName: "xero-booking-invoice-email",
-        status: "SKIPPED_NO_EMAILS",
-      }),
-      select: { id: true },
-    });
+    // NOT filed as a deliberate withhold.
+    expect(mocks.prisma.emailLog.create).not.toHaveBeenCalled();
+    // Visible and re-drivable: the operation completes PARTIAL with a populated
+    // invoiceEmailError, exactly as a failed emailInvoice call would.
+    expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
+      "op_1",
+      expect.objectContaining({
+        status: "PARTIAL",
+        responsePayload: expect.objectContaining({
+          invoiceEmailError: expect.any(Error),
+          invoiceEmailSkipped: true,
+          invoiceEmailWithheldByNoEmails: false,
+        }),
+      })
+    );
   });
 
   it("emails Internet Banking invoices and updates the Internet Banking transaction", async () => {

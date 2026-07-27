@@ -47,6 +47,62 @@ export const XERO_GROUP_SETTLEMENT_INVOICE_EMAIL_TEMPLATE =
   "xero-group-settlement-invoice-email";
 
 /**
+ * Templates that are ALWAYS about one specific booking — every wrapper that
+ * emits one requires a real booking id and cannot be handed `"none"`.
+ *
+ * This exists for exactly one job: `EmailLog.bookingId` did not exist before the
+ * #2258 migration, so every row queued by a previous release has a NULL
+ * bookingId — including booking-scoped ones. Those rows are still replayable by
+ * the retry cron in the window after deploy, and a NULL bookingId means the
+ * cron cannot tell whether their booking is now silenced. Rather than replay
+ * blind, the cron refuses to replay a NULL-bookingId row whose template is in
+ * this set (see cron-email-retry.ts). The row is left FAILED, so it stays in the
+ * operator's email-failure review queue rather than vanishing.
+ *
+ * Deliberately EXCLUDED, because they are genuinely sent before any booking
+ * exists and so can never belong to a silenced one — blocking them would
+ * withhold mail for no benefit:
+ *   booking-request-verification, booking-request-quote,
+ *   booking-request-declined, group-booking-join-verification
+ * Also excluded, and this is the point of naming them: every account, security,
+ * membership and family template. Nothing in this set touches them.
+ */
+export const ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES: ReadonlySet<string> =
+  new Set([
+    // src/lib/email/booking.ts — every sender, all take { bookingId }
+    "booking-confirmed",
+    "booking-pending",
+    "booking-bumped",
+    "booking-guests-cancelled",
+    "booking-cancelled",
+    "split-guest-portion-cancelled",
+    "booking-review-approved",
+    "booking-review-rejected",
+    "checkin-reminder",
+    "pre-arrival-reminder",
+    "booking-modified",
+    "setup-intent-failed",
+    // src/lib/email/waitlist.ts — a waitlist entry IS a booking row
+    "waitlist-confirmation",
+    "waitlist-offer",
+    "waitlist-offer-expired",
+    // src/lib/email/chores.ts — ChoreAssignment.bookingId is NOT NULL
+    "chore-roster",
+    // Union-typed wrappers whose every call site passes a real booking id
+    "booking-request-approved",
+    "split-guest-payment-link",
+    "booking-request-payment-expired",
+    "school-attendee-confirmation",
+    "group-settlement-receipt",
+    "group-join-settled",
+    "group-settlement-expired",
+    "group-join-released",
+    "group-join-cancelled",
+    // Admin refund-appeal outcome, sent to the member about their booking
+    "refund-request-resolved",
+  ]);
+
+/**
  * Whether the "No emails" switch may withhold this template at all.
  *
  * Admin- and system-audience templates are exempt without exception (rule 2
@@ -124,12 +180,32 @@ export async function recordWithheldBookingEmail(params: {
   subject: string;
   to: string;
   detail?: string;
+  // Write at most ONE row per (booking, template). Used by the split-guest
+  // payment-link paths, which are re-driven by a cron every run: without this
+  // the withheld list (and the operator's view of it) fills with identical
+  // repeats and buries the withholds that matter.
+  once?: boolean;
 }): Promise<string | null> {
+  // Subjects here interpolate provider-controlled strings (a Xero invoice
+  // number). EmailLog subjects are read back into operator screens, so strip
+  // CR/LF and collapse whitespace the same way the mailer does before storing.
+  const subject = params.subject.replace(/[\r\n]+/g, " ").trim();
   try {
+    if (params.once) {
+      const existing = await prisma.emailLog.findFirst({
+        where: {
+          bookingId: params.bookingId,
+          templateName: params.templateName,
+          status: EmailLogStatus.SKIPPED_NO_EMAILS,
+        },
+        select: { id: true },
+      });
+      if (existing) return existing.id;
+    }
     const log = await prisma.emailLog.create({
       data: {
         to: params.to,
-        subject: params.subject,
+        subject,
         templateName: params.templateName,
         htmlBody: null,
         status: EmailLogStatus.SKIPPED_NO_EMAILS,

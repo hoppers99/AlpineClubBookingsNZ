@@ -530,8 +530,10 @@ export async function createXeroInvoiceForGroupSettlement(
             cancelled: false,
             responseBody: null,
             withheld: true,
-            organiserBookingId: fresh.groupBooking.organiserBookingId,
-            organiserEmail: fresh.groupBooking.organiserBooking.member.email,
+            organiserBookingId: fresh.groupBooking
+              .organiserBookingId as string | null,
+            organiserEmail: fresh.groupBooking.organiserBooking.member
+              .email as string | null,
           };
         }
         const emailResponse = await callXeroApi(
@@ -558,7 +560,11 @@ export async function createXeroInvoiceForGroupSettlement(
         };
       });
       invoiceEmailWithheld = emailGate.withheld;
-      if (emailGate.withheld && emailGate.organiserBookingId) {
+      if (
+        emailGate.withheld &&
+        emailGate.organiserBookingId &&
+        emailGate.organiserEmail
+      ) {
         // Audit row outside the advisory-locked transaction so the lock is held
         // for the provider fence only (the same reason the emailInvoice call is
         // the sole non-DB work inside it).
@@ -568,7 +574,7 @@ export async function createXeroInvoiceForGroupSettlement(
           subject: `Xero group settlement invoice ${
             createdInvoice.invoiceNumber ?? createdInvoice.invoiceID ?? "(unnumbered)"
           } for your group booking`,
-          to: emailGate.organiserEmail ?? "",
+          to: emailGate.organiserEmail,
           detail:
             "Withheld: the organiser's booking has the \"No emails\" switch turned on. The combined group settlement invoice exists in Xero but was not emailed.",
         });
