@@ -28,6 +28,10 @@ const mocks = vi.hoisted(() => {
     checkCapacityForGuestRanges: vi.fn(),
     findOverlappingCapacityHoldingBookings: vi.fn(),
     findOverlappingOverriddenNonHoldingBookings: vi.fn(),
+    // ADR-001 bed-allocation short-circuit (#2285): the toggle reconciles the
+    // booking's BedAllocation rows on both directions (SET prunes, CLEAR
+    // re-plans), inside the route's transaction.
+    reconcileBedAllocations: vi.fn(),
     loggerError: vi.fn(),
   };
 });
@@ -61,6 +65,14 @@ vi.mock("@/lib/logger", () => ({
   default: {
     error: mocks.loggerError,
   },
+}));
+
+// #2285: the lifecycle reconcile is mocked so these route tests stay focused on
+// the toggle's contract (when it is called, on which client, and what the audit
+// records); the reconcile's own held-booking semantics are covered by
+// bed-allocation-lifecycle.test.ts and held-booking-allocation-agreement.test.ts.
+vi.mock("@/lib/bed-allocation-lifecycle", () => ({
+  reconcileBedAllocationsForBooking: mocks.reconcileBedAllocations,
 }));
 
 import { POST } from "@/app/api/admin/bookings/[id]/exclusive-hold/route";
@@ -119,6 +131,12 @@ beforeEach(() => {
   mocks.tx.auditLog.create.mockResolvedValue({});
   mocks.findOverlappingCapacityHoldingBookings.mockResolvedValue([]);
   mocks.findOverlappingOverriddenNonHoldingBookings.mockResolvedValue([]);
+  mocks.reconcileBedAllocations.mockResolvedValue({
+    enabled: true,
+    deletedCount: 0,
+    createdCount: 0,
+    promotedCount: 0,
+  });
 });
 
 describe("POST /api/admin/bookings/[id]/exclusive-hold", () => {
@@ -591,5 +609,108 @@ describe("POST /api/admin/bookings/[id]/exclusive-hold", () => {
 
     expect(response.status).toBe(403);
     expect(mocks.transaction).not.toHaveBeenCalled();
+  });
+
+  // ADR-001 bed-allocation short-circuit (#2285): a held booking owns NO
+  // BedAllocation rows. The toggle route reconciles on BOTH directions, on the
+  // SAME transaction client as the flag write, so the flag and the rows can
+  // never commit apart: SET prunes the booking's rows (including legacy rows
+  // an older lifecycle wrongly created), CLEAR re-plans its guests.
+  describe("bed-allocation reconcile on the hold toggle (#2285)", () => {
+    it("SET reconciles on the tx AFTER the flag write and BEFORE the audit, and audits the prune", async () => {
+      mocks.reconcileBedAllocations.mockResolvedValue({
+        enabled: true,
+        deletedCount: 3,
+        createdCount: 0,
+        promotedCount: 1,
+      });
+
+      const response = await POST(holdRequest({ hold: true }), routeParams());
+      expect(response.status).toBe(200);
+
+      // Same tx client as the flag write: prune + flag are atomic.
+      expect(mocks.reconcileBedAllocations).toHaveBeenCalledTimes(1);
+      expect(mocks.reconcileBedAllocations).toHaveBeenCalledWith(
+        expect.objectContaining({ bookingId: "booking-1", db: mocks.tx }),
+      );
+
+      // Ordering: flag write → reconcile → audit (the audit metadata carries
+      // the reconcile counts, so the reconcile must resolve first).
+      const writeOrder = mocks.tx.booking.updateMany.mock.invocationCallOrder[0];
+      const reconcileOrder =
+        mocks.reconcileBedAllocations.mock.invocationCallOrder[0];
+      const auditOrder = mocks.tx.auditLog.create.mock.invocationCallOrder[0];
+      expect(writeOrder).toBeLessThan(reconcileOrder);
+      expect(reconcileOrder).toBeLessThan(auditOrder);
+
+      const audit = mocks.tx.auditLog.create.mock.calls[0][0].data;
+      expect(audit.metadata).toMatchObject({
+        bedAllocationReconcile: {
+          enabled: true,
+          deletedCount: 3,
+          createdCount: 0,
+          promotedCount: 1,
+        },
+      });
+    });
+
+    it("CLEAR reconciles on the tx too (release re-plans the booking) and audits the counts", async () => {
+      mocks.tx.booking.findUnique.mockResolvedValue(
+        booking({ wholeLodgeHold: true }),
+      );
+      mocks.reconcileBedAllocations.mockResolvedValue({
+        enabled: true,
+        deletedCount: 0,
+        createdCount: 4,
+        promotedCount: 0,
+      });
+
+      const response = await POST(holdRequest({ hold: false }), routeParams());
+      expect(response.status).toBe(200);
+
+      expect(mocks.reconcileBedAllocations).toHaveBeenCalledTimes(1);
+      expect(mocks.reconcileBedAllocations).toHaveBeenCalledWith(
+        expect.objectContaining({ bookingId: "booking-1", db: mocks.tx }),
+      );
+      const audit = mocks.tx.auditLog.create.mock.calls[0][0].data;
+      expect(audit.metadata).toMatchObject({
+        bedAllocationReconcile: expect.objectContaining({ createdCount: 4 }),
+      });
+    });
+
+    it("never reconciles when the CAS write matched zero rows (issue #186 refusal)", async () => {
+      mocks.tx.booking.updateMany.mockResolvedValue({ count: 0 });
+
+      const response = await POST(holdRequest({ hold: true }), routeParams());
+
+      expect(response.status).toBe(409);
+      expect(mocks.reconcileBedAllocations).not.toHaveBeenCalled();
+    });
+
+    it("never reconciles on the pre-write refusals (double set, nothing to clear, status gate)", async () => {
+      // Double set.
+      mocks.tx.booking.findUnique.mockResolvedValue(
+        booking({ wholeLodgeHold: true }),
+      );
+      expect(
+        (await POST(holdRequest({ hold: true }), routeParams())).status,
+      ).toBe(409);
+
+      // Nothing to clear.
+      mocks.tx.booking.findUnique.mockResolvedValue(booking());
+      expect(
+        (await POST(holdRequest({ hold: false }), routeParams())).status,
+      ).toBe(409);
+
+      // Non-capacity-holding status gate (issue #173).
+      mocks.tx.booking.findUnique.mockResolvedValue(
+        booking({ status: "WAITLISTED" }),
+      );
+      expect(
+        (await POST(holdRequest({ hold: true }), routeParams())).status,
+      ).toBe(409);
+
+      expect(mocks.reconcileBedAllocations).not.toHaveBeenCalled();
+    });
   });
 });

@@ -2748,3 +2748,146 @@ describe("sweepFuturePartnerSharedAllocations (#1756)", () => {
     expect(db.bedAllocation.deleteMany).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Exclusive whole-lodge hold (ADR-001, #2285)
+//
+// A booking with `wholeLodgeHold: true` implicitly occupies EVERY bed, so the
+// lifecycle must own ZERO BedAllocation rows for it: reconcile prunes any
+// existing rows (whole-booking sweep — this is what self-heals legacy rows an
+// older lifecycle wrongly created, with no data migration) and never feeds the
+// booking to the planner. Keyed on the flag, NOT the status: a held booking
+// sits in an ordinary BED_ALLOCATABLE status (PAID here). The board applies
+// the same exclusion (admin-bed-allocation heldSpans); the two-paths agreement
+// is locked down in held-booking-allocation-agreement.test.ts.
+// ---------------------------------------------------------------------------
+describe("exclusive whole-lodge hold (ADR-001, #2285)", () => {
+  const HOLD_CHECK_IN = parseDateOnly("2026-07-01");
+  const HOLD_CHECK_OUT = parseDateOnly("2026-07-02");
+
+  function holdGuest(id: string) {
+    return {
+      id,
+      bookingId: "booking-held",
+      ageTier: "ADULT",
+      stayStart: HOLD_CHECK_IN,
+      stayEnd: HOLD_CHECK_OUT,
+    };
+  }
+
+  // A fixture that WOULD auto-place both guests if the booking were ordinary:
+  // auto-allocation on, a room with two free beds, no existing allocations.
+  // The control test below proves that potency, so the held test's "nothing
+  // created" cannot pass vacuously.
+  function holdScenarioDb(wholeLodgeHold: boolean) {
+    const db = makeDb({
+      bedAllocationSettings: {
+        findUnique: vi.fn().mockResolvedValue({ autoAllocationEnabled: true }),
+      },
+      lodgeRoom: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: "room-a",
+            name: "Room A",
+            sortOrder: 1,
+            active: true,
+            beds: [
+              { id: "bed-a1", roomId: "room-a", name: "A1", sortOrder: 1, active: true },
+              { id: "bed-a2", roomId: "room-a", name: "A2", sortOrder: 2, active: true },
+            ],
+          },
+        ]),
+      },
+    });
+    db.booking.findUnique.mockResolvedValue({
+      id: "booking-held",
+      status: BookingStatus.PAID,
+      deletedAt: null,
+      checkIn: HOLD_CHECK_IN,
+      checkOut: HOLD_CHECK_OUT,
+      lodgeId: null,
+      wholeLodgeHold,
+      guests: [holdGuest("guest-1"), holdGuest("guest-2")],
+    });
+    db.booking.findMany.mockResolvedValue([
+      {
+        id: "booking-held",
+        createdAt: new Date("2026-06-01T00:00:00.000Z"),
+        requestedRoomId: null,
+        checkIn: HOLD_CHECK_IN,
+        checkOut: HOLD_CHECK_OUT,
+        status: BookingStatus.PAID,
+        originBookingRequest: null,
+        heldForBookingRequest: null,
+        adminCapacityHoldAt: null,
+        wholeLodgeHold,
+        guests: [holdGuest("guest-1"), holdGuest("guest-2")],
+      },
+    ]);
+    return db;
+  }
+
+  it("prunes EVERY allocation row (whole-booking sweep) and never reaches the planner for a held booking", async () => {
+    const db = holdScenarioDb(true);
+    db.bedAllocation.deleteMany.mockResolvedValue({ count: 3 });
+
+    const result = await reconcileBedAllocationsForBooking({
+      bookingId: "booking-held",
+      db: db as any,
+    });
+
+    // Whole-booking sweep, not the stale-guest-night scoped prune: a held
+    // booking owns no rows at all, so legacy rows self-heal here (#2285).
+    expect(db.bedAllocation.deleteMany).toHaveBeenCalledWith({
+      where: { bookingId: "booking-held" },
+    });
+    // The planner is skipped entirely — its room/occupancy loads never run and
+    // nothing is created, even though auto-allocation is enabled and beds are
+    // free (the control below proves this fixture would otherwise place).
+    expect(db.lodgeRoom.findMany).not.toHaveBeenCalled();
+    expect(db.bedAllocation.createMany).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      enabled: true,
+      deletedCount: 3,
+      createdCount: 0,
+      promotedCount: 0,
+    });
+  });
+
+  it("control: the identical booking WITHOUT the hold is scope-pruned and auto-placed (fixture potency)", async () => {
+    const db = holdScenarioDb(false);
+    db.bedAllocation.createMany.mockResolvedValue({ count: 2 });
+
+    const result = await reconcileBedAllocationsForBooking({
+      bookingId: "booking-held",
+      db: db as any,
+    });
+
+    // Ordinary path: the prune is the guest-night-scoped sweep...
+    expect(db.bedAllocation.deleteMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        bookingId: "booking-held",
+        OR: expect.any(Array),
+      }),
+    });
+    // ...and the planner places both guests in the free room.
+    expect(db.bedAllocation.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
+          bookingId: "booking-held",
+          bookingGuestId: "guest-1",
+          stayDate: HOLD_CHECK_IN,
+          source: "AUTO",
+        }),
+        expect.objectContaining({
+          bookingId: "booking-held",
+          bookingGuestId: "guest-2",
+          stayDate: HOLD_CHECK_IN,
+          source: "AUTO",
+        }),
+      ],
+      skipDuplicates: true,
+    });
+    expect(result.createdCount).toBe(2);
+  });
+});
