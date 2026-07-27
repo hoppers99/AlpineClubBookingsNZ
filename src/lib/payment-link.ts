@@ -27,6 +27,7 @@ import {
   sendBookingRequestApprovedEmail,
   sendSplitGuestPaymentLinkEmail,
 } from "@/lib/email";
+import { recordWithheldBookingEmail } from "@/lib/booking-email-suppression";
 import logger from "@/lib/logger";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import { markBookingPaymentSucceeded } from "@/lib/payment-reconciliation";
@@ -373,6 +374,20 @@ export async function reissuePaymentLinkForToken(
     return { emailed: false };
   }
 
+  if (emailOutcome.status === "withheld_for_booking") {
+    // #2258: nothing was sent. `emailed: false` is the ONLY thing the member is
+    // told — the caller renders the same neutral "we couldn't email it, please
+    // contact the club" wording it uses for an undeliverable address. The member
+    // must never learn that a per-booking switch exists, let alone that theirs
+    // is set; that is an internal club decision and surfacing it would both leak
+    // an admin control and invite the member to argue with it.
+    logger.warn(
+      { bookingId: booking.id, reason: emailOutcome.reason },
+      "Fresh payment link issued but the email was withheld by the booking's email gate"
+    );
+    return { emailed: false };
+  }
+
   return { emailed: true };
 }
 
@@ -685,10 +700,17 @@ export async function revokePaymentLinkById(
   return revoked.count;
 }
 
+/** Registry template the split-guest pay-link email ships as (#1967). */
+const SPLIT_GUEST_PAYMENT_LINK_TEMPLATE = "split-guest-payment-link";
+
 export type IssueSplitGuestPaymentLinkResult =
   | { outcome: "sent" }
   | { outcome: "just_sent" }
   | { outcome: "suppressed" }
+  // #2258: the booking carries the "No emails" switch, so no link was minted
+  // and nothing was sent. Distinct from `suppressed` (an undeliverable address,
+  // an operator problem) — this one is deliberate.
+  | { outcome: "withheld" }
   | { outcome: "not_payable" };
 
 /**
@@ -737,6 +759,34 @@ export async function issueSplitGuestPaymentLink(
     booking.finalPriceCents <= 0
   ) {
     return { outcome: "not_payable" };
+  }
+
+  // #2258: check the "No emails" switch BEFORE minting. Minting first and
+  // discovering the withhold at send time would revoke-and-re-mint on every
+  // attempt — unbounded PaymentLink and EmailLog churn whose repeats bury, in
+  // the booking's withheld list, the very withholds an operator needs to see. A
+  // withheld send is NOT a revoke-and-retry condition: nothing changes until an
+  // admin clears the switch.
+  //
+  // Read from the row already loaded above rather than issuing a second query:
+  // if that read had failed we would not be here at all, and the authoritative,
+  // fail-closed gate still runs inside sendEmail at send time. The withhold is
+  // recorded at most once per booking so repeat attempts stay quiet.
+  if (booking.noEmails) {
+    await recordWithheldBookingEmail({
+      bookingId: booking.id,
+      templateName: SPLIT_GUEST_PAYMENT_LINK_TEMPLATE,
+      subject: "Pay for your guests to confirm their place",
+      to: booking.member.email,
+      detail:
+        'Withheld: this booking has the "No emails" switch turned on. No payment link was created.',
+      once: true,
+    });
+    logger.warn(
+      { bookingId: booking.id },
+      'Did not mint a split guest payment link: the booking has "No emails" turned on',
+    );
+    return { outcome: "withheld" };
   }
 
   // #1967 FIX-5: a saved card (its own, or inherited from the parent payment)
@@ -842,6 +892,25 @@ export async function issueSplitGuestPaymentLink(
       )
     );
     throw err;
+  }
+
+  if (emailOutcome.status === "withheld_for_booking") {
+    // #2258: the switch was flipped between the pre-mint gate above and this
+    // send. Revoke the just-minted (unreachable) token exactly as for any other
+    // undelivered send, but do NOT report it as a retryable failure: there is
+    // nothing to retry until an admin clears the switch, and re-minting every
+    // run is the churn this path exists to avoid.
+    await revokePaymentLinkById(minted.paymentLinkId).catch((revokeErr) =>
+      logger.error(
+        { err: revokeErr, bookingId: booking.id, paymentLinkId: minted.paymentLinkId },
+        "Failed to revoke split guest payment link after a withheld email"
+      )
+    );
+    logger.warn(
+      { bookingId: booking.id, reason: emailOutcome.reason },
+      "Split guest payment link email withheld by the booking's email gate; link revoked"
+    );
+    return { outcome: "withheld" };
   }
 
   if (emailOutcome.status !== "sent") {
