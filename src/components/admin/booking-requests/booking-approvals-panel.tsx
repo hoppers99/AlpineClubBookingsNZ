@@ -21,6 +21,7 @@ import {
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action";
 import { ADMIN_VIEW_ONLY_ACTION_REASON } from "@/hooks/use-admin-area-edit-access";
+import { BookingNoEmailsNotice } from "@/components/booking-no-emails-notice";
 import { formatNZDate, formatNZDateTime } from "@/lib/nzst-date";
 import { formatCents } from "@/lib/utils";
 
@@ -43,6 +44,12 @@ interface BookingReviewData {
   adminReviewNotes: string | null;
   adminReviewedAt: string | null;
   createdAt: string;
+  // #2259: the booking's "No emails" switch. The review outcome emails
+  // (`booking-review-approved` / `booking-review-rejected`) are booking-scoped,
+  // so the mailer withholds them while it is on and the notify prompt stops
+  // offering the choice. Served by `/api/admin/booking-reviews`, which is
+  // admin-only, so the field never reaches a member.
+  noEmails: boolean;
   member: {
     id: string;
     firstName: string;
@@ -123,7 +130,11 @@ export function BookingApprovalsPanel({
   // mounted through its exit animation) so the copy never flickers to the other
   // decision's wording.
   const [notifyChoice, setNotifyChoice] = useState<
-    { bookingId: string; decision: "APPROVED" | "REJECTED" } | null
+    {
+      bookingId: string;
+      decision: "APPROVED" | "REJECTED";
+      noEmails: boolean;
+    } | null
   >(null);
   const [notifyDialogOpen, setNotifyDialogOpen] = useState(false);
   const currentPath = buildBookingApprovalsPath(
@@ -170,7 +181,14 @@ export function BookingApprovalsPanel({
       return;
     }
     setError("");
-    setNotifyChoice({ bookingId, decision });
+    // #2259: carry the booking's "No emails" state into the choice, read off
+    // the already-loaded queue row rather than fetched per action.
+    setNotifyChoice({
+      bookingId,
+      decision,
+      noEmails:
+        bookings.find((booking) => booking.id === bookingId)?.noEmails === true,
+    });
     setNotifyDialogOpen(true);
   }
 
@@ -444,16 +462,29 @@ export function BookingApprovalsPanel({
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
-              {notifyChoice?.decision === "REJECTED"
-                ? "Email the member about this decline?"
-                : "Email the member about this approval?"}
+              {notifyChoice?.noEmails
+                ? notifyChoice.decision === "REJECTED"
+                  ? "Decline this booking without emailing?"
+                  : "Approve this booking without emailing?"
+                : notifyChoice?.decision === "REJECTED"
+                  ? "Email the member about this decline?"
+                  : "Email the member about this approval?"}
             </DialogTitle>
             <DialogDescription>
-              {notifyChoice?.decision === "REJECTED"
-                ? "The booking is declined and cancelled either way, and the member always receives the standard cancellation notice. Choose whether they also receive the review-declined explainer email — your choice is recorded in the audit log."
-                : "The booking is approved either way. Choose whether the member receives the standard review-approved email — your choice is recorded in the audit log."}
+              {notifyChoice?.noEmails
+                ? notifyChoice.decision === "REJECTED"
+                  ? "The booking is declined and cancelled either way. Nothing is sent to the member — not even the standard cancellation notice — because emails are off for this booking. Your choice is recorded in the audit log."
+                  : "The booking is approved either way. Your choice is recorded in the audit log."
+                : notifyChoice?.decision === "REJECTED"
+                  ? "The booking is declined and cancelled either way, and the member always receives the standard cancellation notice. Choose whether they also receive the review-declined explainer email — your choice is recorded in the audit log."
+                  : "The booking is approved either way. Choose whether the member receives the standard review-approved email — your choice is recorded in the audit log."}
             </DialogDescription>
           </DialogHeader>
+          {/* #2259: with the booking's "No emails" switch on, the review
+              outcome email is withheld whatever is chosen — and so, on the
+              reject path, is the cancellation notice the copy above would
+              otherwise promise. No choice is offered. */}
+          {notifyChoice?.noEmails && <BookingNoEmailsNotice />}
           <DialogFooter className="gap-2 sm:gap-2">
             <Button
               variant="outline"
@@ -464,14 +495,16 @@ export function BookingApprovalsPanel({
                 ? "Reject without emailing"
                 : "Approve without emailing"}
             </Button>
-            <Button
-              disabled={reviewingId !== null}
-              onClick={() => confirmNotify(true)}
-            >
-              {notifyChoice?.decision === "REJECTED"
-                ? "Reject and email member"
-                : "Approve and email member"}
-            </Button>
+            {!notifyChoice?.noEmails && (
+              <Button
+                disabled={reviewingId !== null}
+                onClick={() => confirmNotify(true)}
+              >
+                {notifyChoice?.decision === "REJECTED"
+                  ? "Reject and email member"
+                  : "Approve and email member"}
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -11,6 +11,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { BookingNoEmailsNotice } from "@/components/booking-no-emails-notice";
 
 interface CancelPreview {
   refundAmountCents: number;
@@ -33,6 +34,7 @@ export function CancelBookingButton({
   refundAppealDescription,
   onBehalfOfMember = false,
   canChooseMemberEmail = false,
+  noEmails = false,
 }: {
   bookingId: string;
   refundAppealDescription?: string;
@@ -49,6 +51,16 @@ export function CancelBookingButton({
   // dialog shows exactly when the server will honour the choice. A member
   // self-cancel keeps the immediate always-notify confirm.
   canChooseMemberEmail?: boolean;
+  /**
+   * #2259 honesty rule: the booking's "No emails" switch. With it on, the
+   * cancellation email is withheld by the mailer whatever the admin picks, so
+   * the dialog stops offering the choice and states the position instead.
+   *
+   * Only ever read alongside {@link canChooseMemberEmail}, which is admin-only.
+   * A member self-cancelling their own silenced booking sees the ordinary
+   * always-notify confirm and learns nothing about the switch.
+   */
+  noEmails?: boolean;
 }) {
   const [step, setStep] = useState<"idle" | "loading" | "preview" | "cancelling" | "success" | "error">("idle");
   const [preview, setPreview] = useState<CancelPreview | null>(null);
@@ -60,6 +72,9 @@ export function CancelBookingButton({
   const [notifyDialogOpen, setNotifyDialogOpen] = useState(false);
   const [notifiedMember, setNotifiedMember] = useState<boolean | null>(null);
   const router = useRouter();
+  // #2259: the notify choice only exists on the admin path, so the suppression
+  // is scoped to it too — a member self-cancel never evaluates the switch.
+  const noEmailsSuppressesChoice = canChooseMemberEmail && noEmails;
 
   async function handleShowPreview() {
     setStep("loading");
@@ -357,18 +372,29 @@ export function CancelBookingButton({
         {/* Owner decision (#1705, extending #1668/#1696): the admin explicitly
             chooses, per cancellation, whether the member is emailed. Both
             choices cancel the booking; the choice itself is recorded in the
-            audit log. */}
+            audit log.
+
+            #2259: with the booking's "No emails" switch on there is no choice
+            to make — the mailer withholds the cancellation email either way —
+            so the dialog states that and offers only the send-nothing action.
+            This is the case the acknowledgement dialog warns about by name. */}
         <Dialog open={notifyDialogOpen} onOpenChange={setNotifyDialogOpen}>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Email the member about this cancellation?</DialogTitle>
+              <DialogTitle>
+                {noEmailsSuppressesChoice
+                  ? "Cancel this booking without emailing?"
+                  : "Email the member about this cancellation?"}
+              </DialogTitle>
               <DialogDescription>
                 The booking will be cancelled either way, and any refund or
-                account credit is applied regardless. Choose whether the member
-                receives the standard cancellation email — your choice is
-                recorded in the audit log.
+                account credit is applied regardless.{" "}
+                {noEmailsSuppressesChoice
+                  ? "Your choice is recorded in the audit log."
+                  : "Choose whether the member receives the standard cancellation email — your choice is recorded in the audit log."}
               </DialogDescription>
             </DialogHeader>
+            {noEmailsSuppressesChoice && <BookingNoEmailsNotice />}
             <DialogFooter className="gap-2 sm:gap-2">
               <Button
                 variant="outline"
@@ -379,15 +405,17 @@ export function CancelBookingButton({
               >
                 Cancel without emailing
               </Button>
-              <Button
-                variant="destructive"
-                onClick={() => {
-                  setNotifyDialogOpen(false);
-                  void performCancel(true);
-                }}
-              >
-                Cancel and email member
-              </Button>
+              {!noEmailsSuppressesChoice && (
+                <Button
+                  variant="destructive"
+                  onClick={() => {
+                    setNotifyDialogOpen(false);
+                    void performCancel(true);
+                  }}
+                >
+                  Cancel and email member
+                </Button>
+              )}
             </DialogFooter>
           </DialogContent>
         </Dialog>

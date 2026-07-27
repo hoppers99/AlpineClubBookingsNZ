@@ -16,6 +16,7 @@ import {
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
+import { BookingNoEmailsNotice } from "@/components/booking-no-emails-notice";
 import {
   TableBody,
   TableCell,
@@ -258,9 +259,13 @@ export default function AdminWaitlistPage() {
   } | null>(null);
   // #1769b: the per-action email-choice dialog, shown before a force-confirm
   // that would actually send the member a confirmation email.
-  const [notifyDialog, setNotifyDialog] = useState<{ bookingId: string } | null>(
-    null
-  );
+  // #2259: `noEmails` rides along with the booking id so the dialog can drop
+  // the email choice for a silenced booking — the entry row already carries the
+  // switch, so nothing extra is fetched per action.
+  const [notifyDialog, setNotifyDialog] = useState<{
+    bookingId: string;
+    noEmails: boolean;
+  } | null>(null);
   const [forceConfirmReport, setForceConfirmReport] =
     useState<ForceConfirmReport | null>(null);
   const [error, setError] = useState("");
@@ -635,18 +640,26 @@ export default function AdminWaitlistPage() {
           resolved) sends the member a confirmation email. The admin chooses,
           per action, whether that email is sent; both choices confirm the
           booking identically and the choice is recorded in the audit log.
-          Shown only when an email would actually be sent. */}
+          Shown only when an email would actually be sent.
+
+          #2259: with the booking's "No emails" switch on there is no choice to
+          make — the mailer withholds the confirmation either way — so the
+          prompt states that and offers only the send-nothing action. */}
       {notifyDialog && (
         <Card className="border-warning/20 bg-warning-muted">
           <CardContent className="pt-6 space-y-3">
             <p className="font-medium text-warning">
-              Email the member about this confirmation?
+              {notifyDialog.noEmails
+                ? "Force-confirm this booking without emailing?"
+                : "Email the member about this confirmation?"}
             </p>
             <p className="text-sm text-warning">
-              Force-confirming this booking confirms it as paid. Choose whether
-              the member receives the standard booking confirmation email — your
-              choice is recorded in the audit log.
+              Force-confirming this booking confirms it as paid.{" "}
+              {notifyDialog.noEmails
+                ? "Your choice is recorded in the audit log."
+                : "Choose whether the member receives the standard booking confirmation email — your choice is recorded in the audit log."}
             </p>
+            {notifyDialog.noEmails && <BookingNoEmailsNotice />}
             <div className="flex flex-wrap gap-3">
               <Button variant="outline" onClick={() => setNotifyDialog(null)}>
                 Cancel
@@ -660,14 +673,16 @@ export default function AdminWaitlistPage() {
               >
                 Confirm without emailing
               </Button>
-              <Button
-                onClick={() =>
-                  handleForceConfirm(notifyDialog.bookingId, false, true)
-                }
-                disabled={forceConfirming === notifyDialog.bookingId}
-              >
-                Confirm and email member
-              </Button>
+              {!notifyDialog.noEmails && (
+                <Button
+                  onClick={() =>
+                    handleForceConfirm(notifyDialog.bookingId, false, true)
+                  }
+                  disabled={forceConfirming === notifyDialog.bookingId}
+                >
+                  Confirm and email member
+                </Button>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -802,7 +817,10 @@ export default function AdminWaitlistPage() {
                         entry.finalPriceCents === 0 &&
                         (!entry.requiresAdminReview ||
                           entry.adminReviewStatus === "APPROVED")
-                          ? setNotifyDialog({ bookingId: entry.id })
+                          ? setNotifyDialog({
+                              bookingId: entry.id,
+                              noEmails: entry.noEmails,
+                            })
                           : handleForceConfirm(entry.id)
                       }
                       disabled={forceConfirming === entry.id}
