@@ -137,36 +137,55 @@ export default function AdminDisplayTemplatesPage() {
     draft.id !== null && isBuiltInDisplayTemplateKey(draft.key);
 
   const refresh = useCallback(async () => {
-    // Every fetch is catch-wrapped: an un-caught transport failure used to
-    // reject out of `refresh` before `setLoading(false)`, leaving the page on
-    // "Loading…" for ever — the exact blank screen this issue removes (#2247).
-    const [templatesRes, layoutsRes, lodgesRes] = await Promise.all([
-      fetch("/api/admin/display/templates").catch(() => null),
-      fetch("/api/admin/display/layouts").catch(() => null),
-      // Same source the Devices page uses: the admin lodges list. When more
-      // than one active lodge exists the preview lodge selector appears (a
-      // template is lodge-agnostic, so its preview lodge must be chosen).
-      fetch("/api/admin/lodges").catch(() => null),
-    ]);
-    // No response at all → status 0, which maps to the "unreachable" state.
-    setLoadState(templatesLoadStateForStatus(templatesRes?.status ?? 0));
-    if (templatesRes?.ok) {
-      const body = (await templatesRes.json()) as { templates: TemplateListItem[] };
-      setTemplates(body.templates ?? []);
+    // NOTHING in here may leave the page on "Loading…" — that permanent blank
+    // screen is the bug this issue exists to remove (#2247), so the exit is
+    // guaranteed in `finally` rather than by every path remembering to reach
+    // the last line. Two failure shapes have to be survived, not just one:
+    // the fetch REJECTING (transport), and a response that is fine by status
+    // but whose BODY will not parse — a proxy error page served as 200, a
+    // truncated payload. Both are caught, and both land the gallery in a state
+    // that explains itself instead of spinning.
+    try {
+      const [templatesRes, layoutsRes, lodgesRes] = await Promise.all([
+        fetch("/api/admin/display/templates").catch(() => null),
+        fetch("/api/admin/display/layouts").catch(() => null),
+        // Same source the Devices page uses: the admin lodges list. When more
+        // than one active lodge exists the preview lodge selector appears (a
+        // template is lodge-agnostic, so its preview lodge must be chosen).
+        fetch("/api/admin/lodges").catch(() => null),
+      ]);
+      // No response at all → status 0, which maps to the "unreachable" state.
+      setLoadState(templatesLoadStateForStatus(templatesRes?.status ?? 0));
+
+      if (templatesRes?.ok) {
+        const body = (await templatesRes.json().catch(() => null)) as {
+          templates?: TemplateListItem[];
+        } | null;
+        // A 200 whose body is not JSON is a broken response, not an empty
+        // gallery: saying "no templates yet — restore the built-ins" there
+        // would be a confident lie. It reads as the unexplained failure it is.
+        if (body === null) setLoadState("error");
+        else setTemplates(body.templates ?? []);
+      }
+      if (layoutsRes?.ok) {
+        const body = (await layoutsRes.json().catch(() => null)) as {
+          layouts?: LayoutOption[];
+        } | null;
+        setLayouts(body?.layouts ?? []);
+      }
+      if (lodgesRes?.ok) {
+        const body = (await lodgesRes.json().catch(() => null)) as {
+          lodges?: Array<{ id: string; name: string; active?: boolean }>;
+        } | null;
+        const active = (body?.lodges ?? []).filter(
+          (lodge) => lodge.active !== false
+        );
+        setLodges(active.map((lodge) => ({ id: lodge.id, name: lodge.name })));
+        setPreviewLodgeId((current) => current || active[0]?.id || "");
+      }
+    } finally {
+      setLoading(false);
     }
-    if (layoutsRes?.ok) {
-      const body = (await layoutsRes.json()) as { layouts: LayoutOption[] };
-      setLayouts(body.layouts ?? []);
-    }
-    if (lodgesRes?.ok) {
-      const body = (await lodgesRes.json()) as {
-        lodges?: Array<{ id: string; name: string; active?: boolean }>;
-      };
-      const active = (body.lodges ?? []).filter((lodge) => lodge.active !== false);
-      setLodges(active.map((lodge) => ({ id: lodge.id, name: lodge.name })));
-      setPreviewLodgeId((current) => current || active[0]?.id || "");
-    }
-    setLoading(false);
   }, []);
 
   useEffect(() => {

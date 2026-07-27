@@ -140,6 +140,33 @@ describe("Display templates — empty state names the cause (#2247)", () => {
     expect(screen.queryByText("Loading…")).toBeNull();
   });
 
+  // A 200 whose body will not parse — a proxy error page, a truncated
+  // payload — used to reject inside `refresh` after the status had already
+  // been read as fine, so the page spun on "Loading…" for ever: the same
+  // permanent blank screen, reached the other way.
+  it("a 200 with an unparseable body ends the loading state and is not called empty", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === "/api/admin/display/templates") {
+        return new Response("<html>gateway error</html>", {
+          status: 200,
+          headers: { "content-type": "text/html" },
+        });
+      }
+      return json({});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<AdminDisplayTemplatesPage />);
+
+    await screen.findByText(/could not be loaded/i);
+    expect(screen.queryByText("Loading…")).toBeNull();
+    // It must NOT claim the database was never seeded — that would be a
+    // confident lie about a response we could not read.
+    expect(screen.queryByText(/not even the built-in boards/i)).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Restore built-in boards" })
+    ).toBeNull();
+  });
+
   // In these states the POST fails by construction — the same proxy, guard or
   // transport that refused the list refuses the restore — and the copy tells
   // the operator to do something else first.
@@ -224,17 +251,76 @@ describe("Restore built-in boards (#2247)", () => {
       "[role='status']"
     );
     expect(live).not.toBeNull();
-    // Focus survives the dialog closing: the trigger is never disabled in the
-    // same turn Radix restores focus to it, so focus cannot land on <body>.
-    const trigger = screen.getByRole("button", {
-      name: /Restore built-in boards|Restoring…/,
-    }) as HTMLButtonElement;
-    expect(trigger.disabled).toBe(false);
     // The list is re-read so the new boards appear without a manual reload.
     expect(
       calls.filter(
         (c) => c.url === "/api/admin/display/templates" && c.method === "GET"
       ).length
     ).toBeGreaterThan(1);
+  });
+
+  /*
+    The trigger is deliberately NOT disabled while the restore is in flight:
+    Radix restores focus to it as the dialog closes, and a trigger disabled in
+    that same turn cannot take focus, so focus falls to <body> and a keyboard
+    user loses their place.
+
+    That leaves re-entrancy to be held by the hook's ref instead, which is what
+    this pins — a second press mid-flight must not fire a second POST. Pinning
+    `disabled === false` after the restore settles proved nothing: it is false
+    under the old code too by then.
+  */
+  it("a second press mid-flight fires no second restore, and marks itself busy", async () => {
+    let releasePost: (() => void) | null = null;
+    const calls: Array<{ url: string; method: string }> = [];
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      calls.push({ url, method });
+      if (url === "/api/admin/display/built-ins/restore" && method === "POST") {
+        // Hold the request open so the second press lands genuinely mid-flight.
+        await new Promise<void>((resolve) => {
+          releasePost = resolve;
+        });
+        return json({ layouts: 7, templates: 7 });
+      }
+      if (url === "/api/admin/display/templates" && method === "GET") {
+        return json({ templates: [] });
+      }
+      return json({});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<AdminDisplayTemplatesPage />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Restore built-in boards" })
+    );
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Restore built-in boards" })
+    );
+
+    // In flight: the label carries the busy state, aria-busy marks it, and the
+    // control is still focusable.
+    const trigger = (await screen.findByRole("button", {
+      name: "Restoring…",
+    })) as HTMLButtonElement;
+    expect(trigger.getAttribute("aria-busy")).toBe("true");
+    expect(trigger.disabled).toBe(false);
+
+    // Press it again while the first POST is still open.
+    fireEvent.click(trigger);
+    fireEvent.click(trigger);
+
+    releasePost!();
+    await screen.findByText(/Restored the built-in boards/);
+
+    expect(
+      calls.filter(
+        (c) =>
+          c.url === "/api/admin/display/built-ins/restore" && c.method === "POST"
+      )
+    ).toHaveLength(1);
+    // …and no second confirm dialog was opened by those presses either.
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 });
