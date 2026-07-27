@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { logAudit } from "@/lib/audit";
 import {
   BUILT_IN_DISPLAY_LAYOUTS,
+  BUILT_IN_DISPLAY_TEMPLATE_KEYS,
   BUILT_IN_DISPLAY_TEMPLATES,
   ensureBuiltInDisplays,
 } from "@/lib/lodge-display/built-in-seeds";
@@ -30,6 +31,12 @@ import {
 //  • WRITE — gated on `lodge:edit`, matching POST /api/admin/display/templates
 //    (the sibling reads use `lodge:view`). The route resolves to the `lodge`
 //    permission area via the `/api/admin/display` prefix.
+//  • ATOMIC — the 14 upserts run inside one `$transaction`, so a database error
+//    part-way through rolls the whole restore back rather than leaving a
+//    half-restored library that nothing recorded. `ensureBuiltInDisplays` takes
+//    a narrow client interface precisely so a transaction client can be passed,
+//    and it makes no external provider calls, so nothing slow is held inside the
+//    transaction.
 //  • Idempotent — upsert by `key`, so a second run changes nothing and returns
 //    the same counts. Safe to press twice.
 //  • Convergent — an edited `builtin-*` row is rewritten back to its shipped
@@ -48,10 +55,21 @@ export async function POST() {
   const templates = BUILT_IN_DISPLAY_TEMPLATES.length;
 
   try {
-    await ensureBuiltInDisplays(prisma);
+    // 14 upserts of sizeable authored HTML/CSS; the default 5s interactive
+    // timeout is tight enough on a loaded box to fail a restore that would
+    // otherwise succeed, so give it room. Nothing external runs inside.
+    await prisma.$transaction((tx) => ensureBuiltInDisplays(tx), {
+      timeout: 30_000,
+    });
   } catch {
+    // The transaction rolled back, so the library is exactly as it was — say
+    // so, because this string is what the operator reads verbatim.
     return NextResponse.json(
-      { error: "Could not restore the built-in boards" },
+      {
+        error:
+          "Could not restore the built-in boards — nothing was changed. " +
+          "Safe to try again.",
+      },
       { status: 500 }
     );
   }
@@ -64,11 +82,16 @@ export async function POST() {
     actorMemberId: guard.session.user.id,
     category: "lodge",
     severity: "important",
+    // The reserved keys are NAMED rather than described as "builtin-*": that
+    // prefix is the seeded row id, and matches no key at all, so a later
+    // "was our board overwritten?" could not be answered from it.
     details:
       `Restored the built-in lobby display boards from code: ${layouts} ` +
-      `layouts and ${templates} templates re-seeded. Any in-place edits to ` +
-      `built-in (builtin-*) layouts/templates were overwritten; custom ` +
-      `layouts and templates were untouched.`,
+      `layouts and ${templates} templates re-seeded under the reserved keys ` +
+      `${BUILT_IN_DISPLAY_TEMPLATE_KEYS.join(", ")}. Anything saved under ` +
+      `those keys was overwritten — including a built-in customised in place ` +
+      `or by an imported configuration bundle. Layouts and templates under ` +
+      `any other key were untouched.`,
   });
 
   return NextResponse.json({ layouts, templates });

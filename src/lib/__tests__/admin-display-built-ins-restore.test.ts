@@ -24,8 +24,15 @@ interface Row {
   [field: string]: unknown;
 }
 
-function makeStore() {
-  const rows = new Map<string, Row>();
+function makeStore(initial?: Map<string, Row>) {
+  // Deep-ish copy so a draft's writes cannot mutate the committed rows through
+  // a shared object reference — otherwise "rolled back" would be untestable.
+  const rows = new Map<string, Row>(
+    [...(initial ?? new Map<string, Row>())].map(([key, row]) => [
+      key,
+      { ...row },
+    ])
+  );
   return {
     rows,
     upsert: vi.fn(
@@ -57,6 +64,12 @@ const { mockPrisma, mockRequireAdmin, mockLogAudit } = vi.hoisted(() => ({
   mockPrisma: {
     displayLayout: { upsert: vi.fn() },
     displayTemplate: { upsert: vi.fn() },
+    // The restore runs inside one transaction so a mid-sequence failure cannot
+    // leave a half-restored library. The double runs the callback against a
+    // SNAPSHOT and only commits it if the callback resolves — the property
+    // under test is all-or-nothing, so a passthrough `$transaction` would make
+    // the transaction assertions vacuous.
+    $transaction: vi.fn(),
   },
   mockRequireAdmin: vi.fn(),
   mockLogAudit: vi.fn(),
@@ -74,12 +87,35 @@ vi.mock("@/lib/audit", () => ({
 let layoutStore: ReturnType<typeof makeStore>;
 let templateStore: ReturnType<typeof makeStore>;
 
+/**
+ * A `$transaction` double with REAL rollback: the callback is handed a client
+ * writing into copies of the two stores, and the copies are published back only
+ * when it resolves. If it throws, the committed stores are untouched — which is
+ * what "atomic" has to mean for the partial-failure test to prove anything.
+ */
+function installTransaction() {
+  mockPrisma.$transaction.mockImplementation(
+    async (fn: (tx: unknown) => Promise<unknown>) => {
+      const layoutDraft = makeStore(new Map(layoutStore.rows));
+      const templateDraft = makeStore(new Map(templateStore.rows));
+      const result = await fn({
+        displayLayout: { upsert: layoutDraft.upsert },
+        displayTemplate: { upsert: templateDraft.upsert },
+      });
+      layoutStore.rows = layoutDraft.rows;
+      templateStore.rows = templateDraft.rows;
+      return result;
+    }
+  );
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   layoutStore = makeStore();
   templateStore = makeStore();
   mockPrisma.displayLayout.upsert = layoutStore.upsert;
   mockPrisma.displayTemplate.upsert = templateStore.upsert;
+  installTransaction();
   mockRequireAdmin.mockResolvedValue({
     ok: true,
     session: { user: { id: "admin-1" } },
@@ -111,9 +147,15 @@ describe("POST /api/admin/display/built-ins/restore", () => {
     const res = await post();
 
     expect(res.status).toBe(403);
-    expect(layoutStore.upsert).not.toHaveBeenCalled();
-    expect(templateStore.upsert).not.toHaveBeenCalled();
+    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+    expect(layoutStore.rows.size).toBe(0);
+    expect(templateStore.rows.size).toBe(0);
     expect(mockLogAudit).not.toHaveBeenCalled();
+  });
+
+  it("writes every row inside ONE transaction", async () => {
+    await post();
+    expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
   });
 
   it("creates every built-in layout and template on an unseeded database", async () => {
@@ -140,8 +182,15 @@ describe("POST /api/admin/display/built-ins/restore", () => {
     expect(entry.action).toBe("DISPLAY_BUILT_INS_RESTORED");
     expect(entry.actorMemberId).toBe("admin-1");
     // The overwrite is the part an operator will later query the log about, so
-    // the details line has to say it happened.
+    // the details line has to say it happened…
     expect(String(entry.details)).toMatch(/overwritten/i);
+    // …and has to name the keys it rewrote. "builtin-*" (the seeded ROW ID
+    // prefix) matches no key at all and could not answer "was our board one of
+    // them?", so the reserved KEYS are named instead.
+    expect(String(entry.details)).not.toMatch(/builtin-\*/);
+    for (const key of BUILT_IN_DISPLAY_TEMPLATES.map((t) => t.key)) {
+      expect(String(entry.details)).toContain(key);
+    }
   });
 
   it("is idempotent — a second run changes nothing", async () => {
@@ -221,17 +270,41 @@ describe("POST /api/admin/display/built-ins/restore", () => {
     });
   });
 
-  it("reports a database failure as a 500 and audits nothing", async () => {
-    mockPrisma.displayLayout.upsert = vi.fn(async () => {
-      throw new Error("connection refused");
-    });
+  it("rolls the whole restore back when the database fails part-way", async () => {
+    // Fail on the FOURTH layout upsert, i.e. genuinely mid-sequence: three
+    // layouts have already been written inside the transaction. Without the
+    // transaction those three would survive as a half-restored library that
+    // nothing recorded — the failure mode this test exists for.
+    mockPrisma.$transaction.mockImplementation(
+      async (fn: (tx: unknown) => Promise<unknown>) => {
+        const layoutDraft = makeStore(new Map(layoutStore.rows));
+        const templateDraft = makeStore(new Map(templateStore.rows));
+        let writes = 0;
+        const result = await fn({
+          displayLayout: {
+            upsert: async (args: Parameters<typeof layoutDraft.upsert>[0]) => {
+              if (++writes === 4) throw new Error("connection reset");
+              return layoutDraft.upsert(args);
+            },
+          },
+          displayTemplate: { upsert: templateDraft.upsert },
+        });
+        layoutStore.rows = layoutDraft.rows;
+        templateStore.rows = templateDraft.rows;
+        return result;
+      }
+    );
 
     const res = await post();
 
     expect(res.status).toBe(500);
-    expect(await res.json()).toEqual({
-      error: "Could not restore the built-in boards",
-    });
+    // All-or-nothing: the committed stores never saw the three partial writes.
+    expect(layoutStore.rows.size).toBe(0);
+    expect(templateStore.rows.size).toBe(0);
+    // …and the operator is told it is safe to retry, because it truly is.
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/nothing was changed/i);
+    expect(body.error).toMatch(/safe to try again/i);
     expect(mockLogAudit).not.toHaveBeenCalled();
   });
 });
