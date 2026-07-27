@@ -128,7 +128,8 @@ export default function AdminDisplayTemplatesPage() {
   const cssTokens = useMemo(() => listDisplayCssTokens(), []);
 
   // A built-in template is code-managed scaffolding: `ensureBuiltInDisplays`
-  // refreshes it from code on every re-seed/upgrade (owner decision A, #111), so
+  // refreshes it from code on every re-seed — the database seed, or the
+  // Restore built-in boards action (owner decision A, #111; #2247) — so
   // an in-place edit does not survive. Detected by the reserved KEY (the seed
   // matches on key). Only an EXISTING row can be a built-in. Drives the
   // persistent notice + the not-upgrade-safe save confirm (#156).
@@ -195,7 +196,7 @@ export default function AdminDisplayTemplatesPage() {
 
   // Fork the opened built-in into a NEW custom template (id cleared → a create),
   // carrying its layout binding, slots, CSS, and footer but a fresh key/name so
-  // the admin customises the copy instead of the upgrade-clobbered original
+  // the admin customises the copy instead of the re-seed-clobbered original
   // (#156, design.md §3/§8). The built-in itself is untouched until the copy is
   // saved; with the id cleared the layout binding becomes editable again.
   function duplicateTemplate() {

@@ -195,6 +195,45 @@ describe("the reserved built-in keys are documented where they bite (#2247)", ()
   it("no longer claims an upgrade re-seeds the built-ins", () => {
     expect(guideSource()).not.toMatch(/re-seeded on upgrade/i);
   });
+
+  /*
+    …and the same claim is gone from the ADMIN COPY, not just the guide. The
+    sentence lived in five app strings across three files; fixing the guide and
+    one page while a sibling page still told the operator that upgrading
+    rewrites their edits is the drift this whole issue is about.
+
+    Scope is the surfaces #2247 owns. `display-builder.tsx` and `builder/page.tsx`
+    are deliberately EXCLUDED: #2248 rewrites both, so #2247 left their copy
+    alone to keep the rebase surface small, and that carry-forward is recorded on
+    the PR rather than hidden behind a green test. Delete the exclusion when
+    #2248 lands.
+  */
+  const STALE_RESEED_CLAIMS = [
+    /re-seeded on upgrade/i,
+    /the app is upgraded/i,
+    /re-seed(ed)?\/upgrade/i,
+  ];
+
+  it.each([
+    "templates/page.tsx",
+    "layouts/page.tsx",
+    "page.tsx",
+    "templates/restore-built-ins.tsx",
+    "reference/page.tsx",
+  ])("no admin copy in %s claims an upgrade re-seeds the built-ins", (rel) => {
+    const source = readFileSync(
+      path.join(process.cwd(), "src/app/(admin)/admin/display", rel),
+      "utf8"
+    );
+    for (const claim of STALE_RESEED_CLAIMS) {
+      expect(
+        source,
+        `${rel} still tells the operator an upgrade rewrites a built-in. ` +
+          `Upgrading re-runs neither the seed nor the restore — name the real ` +
+          `mechanism (the seed running again, or Restore built-in boards).`
+      ).not.toMatch(claim);
+    }
+  });
 });
 
 function guideSource(): string {
