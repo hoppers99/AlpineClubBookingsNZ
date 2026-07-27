@@ -30,7 +30,10 @@ const SELECT_ITALIC = "data-[placeholder]:italic";
 /**
  * Any class string that paints placeholder text, in either the input or the
  * Radix-trigger form. Deliberately a PREFIX match, so a divergent value (a raw
- * colour, the retired muted role, some new token) is still discovered.
+ * colour, the retired muted role, some new token) is still discovered —
+ * within the placeholder:text-* / data-[placeholder]:text-* utility shapes;
+ * other forms (placeholder-*, placeholder:opacity-*, [&::placeholder]:*) and
+ * .css files are outside this contract.
  */
 const STYLES_PLACEHOLDER = /placeholder:text-|data-\[placeholder\]:text-/;
 

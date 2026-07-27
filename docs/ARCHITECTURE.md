@@ -572,14 +572,17 @@ and carries **zero** raw colour utilities, so P3 left it untouched.
 **An example value belongs UNDER a field, not inside it.** Grey example text in
 a control reads as a value the form already holds, and it disappears the moment
 the operator starts typing — exactly when the example is still wanted. Every
-`placeholder` that carried an example was moved to helper text rendered by
+`placeholder` that carried an example of a name or value the operator invents
+was moved to helper text rendered by
 `FieldHint` (`src/components/ui/field-hint.tsx`), with one consistent phrasing:
 `Example: <value>` (prefixed with the field name — `Version example: 2026.1` —
 in the one place where the layout forces the hint away from its field). What
-remains in a `placeholder` is everything that is not an EXAMPLE OF A NAME the
-operator invents: instructions ("First name", "Search name or email",
-"Optional — defaults to the club name") and format samples
-("member@example.com", "0.00"). Those are unchanged in wording here and are
+remains in a `placeholder` is everything else: instructions ("First name",
+"Search name or email", "Optional — defaults to the club name") and format
+samples ("member@example.com", "0.00"). Two example-bearing placeholders
+survive on screens excluded from this pass (the display Templates page's HTML
+sample, and the page-content panel's "Width (px, e.g. 300)") — they belong to
+the #2248 rewrite and the #2264 sweep respectively. Those are unchanged in wording here and are
 #2264's problem, which is why the italic restyle matters — it covers the ones
 this issue does not move.
 
@@ -621,9 +624,10 @@ therefore **inert** — `<SelectValue placeholder="…" />` rendered in full
 foreground ink, indistinguishable from a chosen value. It now styles through
 `data-[placeholder]:`, which is the attribute Radix actually stamps.
 
-The repo-wide sweep of the remaining non-example placeholders is **#2264**; the
-two display-builder screens are rewritten by **#2248** and adopt `FieldHint`
-there.
+The repo-wide sweep of the remaining placeholders (including the raw
+`<input>`/`<textarea>` elements that bypass the styled primitives) is
+**#2264**; the display screens are rewritten by **#2248** and adopt
+`FieldHint` there.
 
 ## Module Boundaries
 

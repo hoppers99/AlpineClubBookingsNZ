@@ -14,10 +14,12 @@ All notable public reference-release changes should be recorded here.
   keystroke, and it can now sit alongside a validation error or a "you can view
   this but not change it" note rather than competing with them — where a field
   has more than one of those, the error or the view-only note is announced
-  first. Every placeholder that is still shown — instructions like "First name"
-  or "Search name or email", and format samples such as "member@example.com" or
-  "0.00" — is now drawn in italics so it reads as a prompt rather than as
-  content. Drop-down buttons that said "Select item…" were the worst offender:
+  first. Placeholders still shown in fields built on the shared input, textarea,
+  search and drop-down components — instructions like "First name", format
+  samples such as "member@example.com" or "0.00" — are now drawn in italics so
+  they read as prompts rather than as content. A handful of admin fields use
+  raw browser inputs and keep the browser's default placeholder look for now;
+  they are part of the #2264 sweep. Drop-down buttons that said "Select item…" were the worst offender:
   they were drawn in ordinary text colour, identical to a real selection, and
   are now styled as placeholders too. Reviewing the remaining placeholders
   across the rest of the app is tracked separately (#2264).
