@@ -538,6 +538,28 @@ describe("Phase 3: Admin Member Management", () => {
       expect(call.where?.AND).not.toEqual(
         expect.arrayContaining([{ secondaryParentId: null }])
       );
+
+      // #2255: and the clauses that REPLACED them are pinned exactly, not with
+      // `arrayContaining`. They exist for one reason — the write route now 422s
+      // on a placeholder address, so a picker that still offered walk-in and
+      // deletion-anonymised contacts would re-open the very search-offers-what-
+      // the-write-refuses drift #2254 closed. With `arrayContaining` alone both
+      // could be deleted and this test would stay green.
+      const placeholderExclusions = (call.where?.AND as unknown[]).filter(
+        (clause) => JSON.stringify(clause).includes("endsWith"),
+      );
+      expect(placeholderExclusions).toEqual([
+        {
+          NOT: {
+            email: { endsWith: "@no-email.invalid", mode: "insensitive" },
+          },
+        },
+        {
+          NOT: {
+            email: { endsWith: "@deleted.invalid", mode: "insensitive" },
+          },
+        },
+      ]);
     });
 
     it("filters to active adult parent-link candidates and excludes the current member", async () => {
