@@ -1,10 +1,14 @@
 // @vitest-environment jsdom
 
-// #2256: on /admin/family-groups the create/edit form renders ABOVE the groups
-// table, so pressing a row's Edit button several screens down opened the editor
-// entirely off-screen — the viewport never moved and the button looked dead.
-// These cases pin the fix: opening edit mode moves focus and the viewport to
-// the editor region, and the row that is being edited says so.
+// #2256: on /admin/family-groups the create/edit form renders in one anchor
+// below the filter card and the two queue cards, while its triggers sit
+// elsewhere — New Group in the page header, Edit on a row in the groups table
+// below. Either way the form could open entirely off-screen: the viewport never
+// moved and the button looked dead. These cases pin the fix — every open (first
+// open, same group re-opened, close-then-reopen, switching groups, and the
+// create form) moves the viewport and focus to the form, the row being edited
+// says so, focus goes back to the trigger on close, and the landmark/tabstop
+// exist only while the form is open.
 
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -164,6 +168,117 @@ describe("FamilyGroupsPage edit focus (#2256)", () => {
     ).not.toHaveAttribute("aria-current");
   });
 
+  it("re-anchors when the SAME row's Edit is clicked again", async () => {
+    // The groups table sits below the editor, so an admin routinely scrolls
+    // back down and clicks the same row again. Nothing the effect depends on
+    // changes on that second click unless the open is explicitly nonce'd, so
+    // the page would sit still and look broken a second time.
+    render(<FamilyGroupsPage />);
+
+    const edit = await screen.findByRole("button", { name: /Edit Kea Family/i });
+    fireEvent.click(edit);
+    await screen.findByRole("region", { name: /Editing Kea Family/i });
+    const callsAfterFirst = scrollIntoView.mock.calls.length;
+
+    // Simulate the admin scrolling back down to the row and clicking it again.
+    edit.focus();
+    fireEvent.click(edit);
+
+    await waitFor(() =>
+      expect(scrollIntoView.mock.calls.length).toBeGreaterThan(callsAfterFirst),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("region", { name: /Editing Kea Family/i }),
+      ).toHaveFocus(),
+    );
+  });
+
+  it("re-anchors after the form is closed and the same group re-opened", async () => {
+    render(<FamilyGroupsPage />);
+
+    const edit = await screen.findByRole("button", { name: /Edit Kea Family/i });
+    fireEvent.click(edit);
+    await screen.findByRole("region", { name: /Editing Kea Family/i });
+
+    fireEvent.click(await screen.findByRole("button", { name: /^Cancel$/ }));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("region", { name: /Editing Kea Family/i }),
+      ).not.toBeInTheDocument(),
+    );
+    const callsAfterClose = scrollIntoView.mock.calls.length;
+
+    fireEvent.click(screen.getByRole("button", { name: /Edit Kea Family/i }));
+
+    const region = await screen.findByRole("region", {
+      name: /Editing Kea Family/i,
+    });
+    await waitFor(() =>
+      expect(scrollIntoView.mock.calls.length).toBeGreaterThan(callsAfterClose),
+    );
+    await waitFor(() => expect(region).toHaveFocus());
+  });
+
+  it("returns focus to the trigger when the form is closed", async () => {
+    // We took focus on open, so we hand it back on close — otherwise the form
+    // unmounts under the keyboard cursor and focus drops to <body>.
+    render(<FamilyGroupsPage />);
+
+    const edit = await screen.findByRole("button", { name: /Edit Kea Family/i });
+    fireEvent.click(edit);
+    await screen.findByRole("region", { name: /Editing Kea Family/i });
+
+    fireEvent.click(await screen.findByRole("button", { name: /^Cancel$/ }));
+
+    await waitFor(() => expect(edit).toHaveFocus());
+    expect(document.body).not.toHaveFocus();
+  });
+
+  it("scrolls to the create form too, and names the region", async () => {
+    // New Group sits in the page header, but the form renders below the filter
+    // card and both queue cards — with a populated queue that is several
+    // screens down, exactly the same defect as the row Edit button.
+    render(<FamilyGroupsPage />);
+
+    const newGroup = await screen.findByRole("button", { name: /New Group/i });
+    expect(
+      screen.queryByRole("region", { name: /New family group/i }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(newGroup);
+
+    const region = await screen.findByRole("region", {
+      name: /New family group/i,
+    });
+    await waitFor(() => expect(region).toHaveFocus());
+    expect(scrollIntoView.mock.instances).toContain(region);
+    // No group is being edited, so no row is marked.
+    expect(screen.queryByText("Editing")).not.toBeInTheDocument();
+  });
+
+  it("drops the landmark and its tabstop when the form is closed", async () => {
+    render(<FamilyGroupsPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /New Group/i }));
+    const region = await screen.findByRole("region", {
+      name: /New family group/i,
+    });
+    expect(region).toHaveAttribute("tabindex", "-1");
+
+    fireEvent.click(screen.getByRole("button", { name: /^Cancel$/ }));
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("region", { name: /New family group/i }),
+      ).not.toBeInTheDocument(),
+    );
+    // The anchor stays in the DOM but must not linger as an unnamed landmark
+    // or a stray tab stop.
+    expect(region).not.toHaveAttribute("role");
+    expect(region).not.toHaveAttribute("tabindex");
+  });
+
   it("re-anchors when the admin switches straight to another group's Edit", async () => {
     render(<FamilyGroupsPage />);
 
@@ -191,5 +306,33 @@ describe("FamilyGroupsPage edit focus (#2256)", () => {
     // would render "4/16/2026" (US locale) or "15/04/2026" (behind NZ).
     const created = await screen.findAllByText("16 Apr 2026");
     expect(created.length).toBeGreaterThan(0);
+  });
+
+  it("degrades on a malformed stored date instead of crashing the table", async () => {
+    // Intl.DateTimeFormat throws RangeError on an invalid Date, so the date
+    // cells must go through the guarded helper, not a raw formatter.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : String(input);
+        if (url.startsWith("/api/admin/family-groups/requests")) {
+          return jsonResponse({ requests: [] });
+        }
+        if (url.startsWith("/api/admin/family-groups/partner-invites")) {
+          return jsonResponse({ invites: [] });
+        }
+        if (url.startsWith("/api/admin/family-groups")) {
+          return jsonResponse({
+            familyGroups: [{ ...KEA, createdAt: "not-a-date" }],
+          });
+        }
+        throw new Error(`Unstubbed fetch in test: ${url}`);
+      }),
+    );
+
+    render(<FamilyGroupsPage />);
+
+    expect(await screen.findByText("Kea Family")).toBeInTheDocument();
+    expect(screen.getByText("Not provided")).toBeInTheDocument();
   });
 });

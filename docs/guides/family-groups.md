@@ -43,11 +43,16 @@ page — see [Family billing](#family-billing) below.
 ### Create or edit a group
 
 1. Click **New Group**, set a **Group Name**, and add at least one member with the
-   member search (primary, active members). Click **Create Group**.
+   member search (primary, active members). Click **Create Group**. The form
+   appears below the search bar and the two queue cards (pending changes and
+   outstanding partner invitations) rather than next to the button, so the page
+   scrolls down to it for you.
 2. Use the edit icon on a group row to open the full editor, or the trash icon to
-   **Delete** it (members are unlinked, not deleted). The editor opens above the
-   group list, so the page scrolls up to it and the row you are editing is
-   highlighted and badged **Editing** until you close or save.
+   **Delete** it (members are unlinked, not deleted). The editor opens in that
+   same place — above the group list — so the page scrolls to it, and the row
+   you are editing is highlighted and badged **Editing** until you close or
+   save. Closing or saving puts the keyboard cursor back on the button you
+   started from.
 
 ### Family billing
 
