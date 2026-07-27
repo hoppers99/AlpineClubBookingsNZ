@@ -1,7 +1,13 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CancelBookingButton } from "@/components/cancel-booking-button";
 
@@ -86,13 +92,22 @@ describe("CancelBookingButton — No emails honesty rule (#2259)", () => {
     );
     await openPreview();
 
-    const suppress = await screen.findByRole("button", {
+    // Both the preview panel and the dialog now say emails are off — the
+    // preview because promising a choice the dialog then withholds was its own
+    // defect — so scope the dialog assertion rather than matching globally.
+    const dialog = await screen.findByRole("dialog");
+    const suppress = within(dialog).getByRole("button", {
       name: "Cancel booking",
     });
     expect(
-      screen.queryByRole("button", { name: "Cancel and email member" }),
+      within(dialog).queryByRole("button", { name: "Cancel and email member" }),
     ).toBeNull();
-    expect(screen.getByText(/Emails are off for this booking/i)).toBeInTheDocument();
+    expect(
+      within(dialog).getByText(/Emails are off for this booking/i),
+    ).toBeInTheDocument();
+    // …and the dialog must not promise a choice or an audit entry.
+    expect(dialog.textContent).not.toMatch(/recorded in the audit log/i);
+    expect(dialog.textContent).not.toMatch(/either way/i);
 
     fireEvent.click(suppress);
     await waitFor(() => expect(cancelPosts()).toHaveLength(1));
@@ -108,6 +123,30 @@ describe("CancelBookingButton — No emails honesty rule (#2259)", () => {
     await waitFor(() =>
       expect(screen.queryByText(/receive a confirmation email/i)).toBeNull(),
     );
+  });
+
+  it("does not promise a choice in the preview it will not offer", async () => {
+    // The preview used to say "you will choose whether the member is emailed
+    // when you confirm" for any admin — contradicted a click later.
+    render(
+      <CancelBookingButton
+        bookingId={BOOKING_ID}
+        onBehalfOfMember
+        canChooseMemberEmail
+        noEmails
+      />,
+    );
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /Cancel (Booking|on behalf of member)/i,
+      }),
+    );
+    const confirm = await screen.findByRole("button", {
+      name: "Confirm Cancellation",
+    });
+    const preview = confirm.closest("div")?.parentElement;
+    expect(preview?.textContent).not.toMatch(/you will choose whether/i);
+    expect(preview?.textContent).toMatch(/Emails are off for this booking/i);
   });
 
   it("still offers the choice on an ordinary booking", async () => {
