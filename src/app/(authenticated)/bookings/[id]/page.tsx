@@ -20,7 +20,7 @@ import { AdditionalPaymentCard } from "@/components/additional-payment-card";
 import { ConfirmDraftButton } from "@/components/confirm-draft-button";
 import { AdminBookingToolsCard } from "@/components/admin/admin-booking-tools-card";
 import { BookingWithheldEmailsBanner } from "@/components/admin/booking-withheld-emails-banner";
-import { getWithheldBookingEmails, withheldEmailDisplayName } from "@/lib/booking-email-suppression";
+import { getWithheldBookingEmailSummary } from "@/lib/booking-email-suppression";
 import { bookingHasLiveWaitlistOffer } from "@/lib/booking-no-emails-service";
 import { ScrollToHash } from "@/components/scroll-to-hash";
 import { SectionNav, type SectionNavItem } from "@/components/section-nav";
@@ -620,14 +620,22 @@ export default async function BookingDetailPage({
     // trip; see resolveModifyReviewUpdate).
     requiresAdminReview: booking.requiresAdminReview,
     adminReviewStatus: booking.adminReviewStatus,
-    // #2259: consumed only by the edit panel's admin-only notify dialog. Gated
-    // on the SAME predicate the panel gates its read on, and gated HERE rather
-    // than only in the panel, because this object is serialised into the RSC
-    // payload of a client component: a member must not be able to learn the
-    // switch exists by reading the wire, let alone the screen. A member gets
-    // `undefined` — indistinguishable from the prop never having been threaded.
-    noEmails:
-      viewerAuthorizationRole === "ADMIN" ? booking.noEmails : undefined,
+    /*
+      #2259: consumed only by the edit panel's admin-only notify dialog. Gated
+      on the SAME predicate the panel gates its read on, and gated HERE rather
+      than only in the panel, because this object is serialised into the RSC
+      payload of a client component.
+
+      A conditional SPREAD, not a conditional value. React Flight serialises the
+      KEY as well as the value, so `noEmails: undefined` ships `"noEmails":
+      "$undefined"` and `noEmails: false` ships `"noEmails":false` — either way a
+      member reading the wire learns the switch exists, even though they never
+      learn its state. The spread omits the key entirely, so the payload of a
+      member's booking is byte-for-byte what it was before this feature.
+    */
+    ...(viewerAuthorizationRole === "ADMIN"
+      ? { noEmails: booking.noEmails }
+      : {}),
     editPolicy: {
       // This is the member (non-override) policy, so mode is never
       // "admin-override" here; the ternary only narrows the widened union.
@@ -893,13 +901,16 @@ export default async function BookingDetailPage({
     which are inside the same guarantee.
   */
   const withheldEmails = canSeeAdminTools
-    ? (await getWithheldBookingEmails(booking.id)).map((row) => ({
-        id: row.id,
-        label: withheldEmailDisplayName(row.templateName),
-        subject: row.subject,
-        createdAt: row.createdAt.toISOString(),
-      }))
-    : [];
+    ? await getWithheldBookingEmailSummary(booking.id)
+    : { total: 0, groups: [] };
+  const withheldEmailGroups = withheldEmails.groups.map((group) => ({
+    templateName: group.templateName,
+    label: group.label,
+    count: group.count,
+    subject: group.subject,
+    latestAt: group.latestAt.toISOString(),
+    nothingToForward: group.nothingToForward,
+  }));
   const noEmailsState = canSeeAdminTools
     ? {
         noEmails: booking.noEmails,
@@ -910,6 +921,9 @@ export default async function BookingDetailPage({
         // Same predicate the setter evaluates, so the dialog's warning and the
         // route's response flag cannot disagree about what "live" means.
         hasLiveWaitlistOffer: bookingHasLiveWaitlistOffer(booking),
+        // A silenced WAITLISTED entry is skipped for offers entirely, so that
+        // consequence produces no withheld row and has to be stated up front.
+        isWaitlisted: booking.status === "WAITLISTED",
       }
     : null;
 
@@ -1051,7 +1065,9 @@ export default async function BookingDetailPage({
       {canSeeAdminTools && noEmailsState && (
         <BookingWithheldEmailsBanner
           noEmails={noEmailsState.noEmails}
-          withheld={withheldEmails}
+          isWaitlisted={noEmailsState.isWaitlisted}
+          total={withheldEmails.total}
+          groups={withheldEmailGroups}
         />
       )}
 
@@ -1640,13 +1656,13 @@ export default async function BookingDetailPage({
           // booking-management role the route resolves for its 403 gate.
           canChooseMemberEmail={viewerAuthorizationRole === "ADMIN"}
           // #2259: with the switch on there is no email choice to honour, so
-          // the dialog states that instead of asking. Gated on the same
-          // admin predicate as the dialog itself — and gated here, on the
-          // server, because this prop is serialised into a client component's
-          // payload: a member must not learn the switch exists from the wire.
-          noEmails={
-            viewerAuthorizationRole === "ADMIN" ? booking.noEmails : false
-          }
+          // the dialog states that instead of asking. Spread rather than a
+          // conditional value, so a member's payload carries no `noEmails` KEY
+          // at all — React Flight serialises the key too, and `noEmails:false`
+          // would still tell a member the switch exists.
+          {...(viewerAuthorizationRole === "ADMIN"
+            ? { noEmails: booking.noEmails }
+            : {})}
         />
       )}
 
