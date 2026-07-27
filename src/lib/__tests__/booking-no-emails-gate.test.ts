@@ -55,7 +55,10 @@ vi.mock("@/lib/email/internal", () => ({
   shouldPersistEmailHtml: () => true,
 }));
 
-import { sendEmail } from "@/lib/email/core";
+import {
+  sendEmail,
+  __resetFailClosedAlertThrottle,
+} from "@/lib/email/core";
 
 // Every member-facing message class the owner named in D10.
 const MEMBER_TEMPLATES = [
@@ -78,6 +81,9 @@ beforeEach(() => {
   mocks.sendMail.mockResolvedValue({ messageId: "msg_1" });
   mocks.bookingFindUnique.mockResolvedValue({ noEmails: false });
   mocks.getAdminEmails.mockResolvedValue([]);
+  // The throttle is module state; without this a booking id reused across tests
+  // fails confusingly.
+  __resetFailClosedAlertThrottle();
   vi.stubEnv("NODE_ENV", "production");
 });
 
@@ -378,5 +384,70 @@ describe("fail-closed withholds are surfaced to an operator (#2258)", () => {
 
     expect(outcome.status).toBe("withheld_for_booking");
     expect(mocks.sendMail).not.toHaveBeenCalled();
+  });
+
+  // The throttle must arm on SUCCESS, not on attempt. Arming up front meant
+  // that in the very scenario the alert exists for — a database outage, where
+  // the admin lookup is itself a failing prisma call — the first attempt threw,
+  // the key stayed armed for the cooldown, and nobody was ever told.
+  it("does not arm the throttle when the alert itself failed", async () => {
+    mocks.bookingFindUnique.mockRejectedValue(new Error("connection reset"));
+    mocks.getAdminEmails.mockRejectedValueOnce(new Error("admin lookup failed"));
+
+    await sendEmail({
+      to: "member@example.com",
+      subject: "Confirmed",
+      html: "<p>body</p>",
+      templateName: "booking-confirmed",
+      bookingContext: { bookingId: "bk_retry_alert" },
+    });
+    expect(mocks.sendMail).not.toHaveBeenCalled();
+
+    // The database recovers enough to look admins up: the alert must still go.
+    mocks.getAdminEmails.mockResolvedValue(["a@club.test"]);
+    await sendEmail({
+      to: "member@example.com",
+      subject: "Confirmed",
+      html: "<p>body</p>",
+      templateName: "booking-confirmed",
+      bookingContext: { bookingId: "bk_retry_alert" },
+    });
+
+    expect(mocks.sendMail).toHaveBeenCalledTimes(1);
+  });
+
+  it("caps alerts globally so a broad fault cannot fan out to every admin", async () => {
+    mocks.getAdminEmails.mockResolvedValue(["a@club.test"]);
+    mocks.bookingFindUnique.mockRejectedValue(new Error("connection reset"));
+
+    // Ten DIFFERENT bookings: the per-key throttle does not apply, only the cap.
+    for (let i = 0; i < 10; i += 1) {
+      await sendEmail({
+        to: "member@example.com",
+        subject: "Confirmed",
+        html: "<p>body</p>",
+        templateName: "booking-confirmed",
+        bookingContext: { bookingId: `bk_cap_${i}` },
+      });
+    }
+
+    expect(mocks.sendMail).toHaveBeenCalledTimes(5);
+  });
+
+  it("supplies the registry-required attemptCount token", async () => {
+    mocks.getAdminEmails.mockResolvedValue(["a@club.test"]);
+    mocks.bookingFindUnique.mockRejectedValue(new Error("connection reset"));
+
+    await sendEmail({
+      to: "member@example.com",
+      subject: "Confirmed",
+      html: "<p>body</p>",
+      templateName: "booking-confirmed",
+      bookingContext: { bookingId: "bk_token" },
+    });
+
+    expect(mocks.emailLogCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({ templateName: "admin-email-failure" }),
+    });
   });
 });

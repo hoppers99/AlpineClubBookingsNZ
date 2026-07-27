@@ -98,7 +98,21 @@ function sanitizeEmailSubject(subject: string) {
 // Throttled per booking+template so a database outage — where EVERY send fails
 // closed — cannot turn one fault into an alert storm.
 const FAIL_CLOSED_ALERT_COOLDOWN_MS = 15 * 60 * 1000;
+// Global ceiling as well as the per-key one: a partial database fault silences
+// MANY bookings at once, and the per-key throttle alone lets N bookings x M
+// templates each fan out to every admin, awaited inline in the send path.
+const FAIL_CLOSED_ALERT_GLOBAL_WINDOW_MS = 15 * 60 * 1000;
+const FAIL_CLOSED_ALERT_GLOBAL_MAX = 5;
 const failClosedAlertSentAt = new Map<string, number>();
+let failClosedAlertWindowStart = 0;
+let failClosedAlertWindowCount = 0;
+
+/** Test seam: the throttle is module state and must not leak between tests. */
+export function __resetFailClosedAlertThrottle() {
+  failClosedAlertSentAt.clear();
+  failClosedAlertWindowStart = 0;
+  failClosedAlertWindowCount = 0;
+}
 
 async function alertAdminsOfFailClosedWithhold(params: {
   bookingId: string;
@@ -109,12 +123,17 @@ async function alertAdminsOfFailClosedWithhold(params: {
   const now = Date.now();
   const last = failClosedAlertSentAt.get(key);
   if (last != null && now - last < FAIL_CLOSED_ALERT_COOLDOWN_MS) return;
-  failClosedAlertSentAt.set(key, now);
-  // Bound the map: this process can see many bookings over its lifetime.
-  if (failClosedAlertSentAt.size > 500) {
-    for (const [entryKey, at] of failClosedAlertSentAt) {
-      if (now - at >= FAIL_CLOSED_ALERT_COOLDOWN_MS) failClosedAlertSentAt.delete(entryKey);
-    }
+
+  if (now - failClosedAlertWindowStart >= FAIL_CLOSED_ALERT_GLOBAL_WINDOW_MS) {
+    failClosedAlertWindowStart = now;
+    failClosedAlertWindowCount = 0;
+  }
+  if (failClosedAlertWindowCount >= FAIL_CLOSED_ALERT_GLOBAL_MAX) {
+    logger.error(
+      { bookingId: params.bookingId, templateName: params.templateName },
+      "Suppressed a fail-closed withhold alert: the global alert ceiling for this window is reached (a broad database fault is withholding many emails)",
+    );
+    return;
   }
 
   const { getAdminEmails } = await import("./admin-alerts-shared");
@@ -135,11 +154,31 @@ async function alertAdminsOfFailClosedWithhold(params: {
         originalTemplateName: params.templateName,
         bookingId: params.bookingId,
         originalRecipient: params.recipient,
+        // Required by the admin-email-failure registry template. This alert is
+        // raised on the FIRST fail-closed withhold, so the count is 1.
+        attemptCount: 1,
       },
       // Admin audience: unsuppressible by design, and this alert exists
       // precisely because a booking-scoped send could not be evaluated.
       bookingContext: "none",
     });
+  }
+
+  // Arm the throttle only AFTER a successful send. Arming it up front meant
+  // that in the very scenario this alert exists for — a database outage, where
+  // getAdminEmails() is itself a failing prisma call — the first attempt threw,
+  // the key stayed armed for the whole cooldown, and the operator was never
+  // told about anything withheld during the outage.
+  failClosedAlertSentAt.set(key, Date.now());
+  failClosedAlertWindowCount += 1;
+  // Bound the map: this process can see many bookings over its lifetime.
+  if (failClosedAlertSentAt.size > 500) {
+    const cutoff = Date.now();
+    for (const [entryKey, at] of failClosedAlertSentAt) {
+      if (cutoff - at >= FAIL_CLOSED_ALERT_COOLDOWN_MS) {
+        failClosedAlertSentAt.delete(entryKey);
+      }
+    }
   }
 }
 
