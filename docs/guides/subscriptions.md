@@ -174,11 +174,17 @@ stored exceptions.
    only offered when the member is unpaid and has no Xero invoice. **Mark as
    unpaid** reverses a manual payment.
 2. The confirmation dialog asks the standard email question. **Mark paid and
-   email member** sends the member a short receipt — the season, the amount (only
-   when the club has a recorded fee amount for that season), and the date you
-   recorded it. **Mark paid without emailing** records exactly the same payment
-   and tells nobody. The subscription is marked paid either way, and your choice
-   is written to the audit log.
+   email member** sends the member a short receipt — the season, the amount, and
+   the date you recorded it. **Mark paid without emailing** records exactly the
+   same payment and tells nobody. The subscription is marked paid either way, and
+   your choice is written to the audit log.
+   The receipt shows an amount only when the club has one recorded for that
+   member alone. A family fee is left off, because that figure is the whole
+   family's bill and the other members may still owe theirs; so are a
+   no-invoice fee and a season with no charge recorded at all.
+   The confirmation banner tells you what actually happened: a receipt "is being
+   emailed", or could **not** be sent (a placeholder or suppressed address). The
+   payment is recorded either way — a failed email never undoes it.
 3. The note is for the club's records only (for example "cash", "cheque #123").
    The member never sees it.
 4. Reversing a manual payment never emails the member — there is no

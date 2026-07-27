@@ -15,9 +15,18 @@ All notable public reference-release changes should be recorded here.
   and tells nobody. The subscription is marked paid either way, and which way
   the treasurer chose is written to the audit log, so a later "did we tell
   them?" has an answer. Because a manual payment is cash the system never saw,
-  the receipt never invents a figure: with no recorded fee amount it simply
-  leaves the amount out. It mentions no invoice, no payment link and no Xero
+  the receipt never invents a figure: it shows an amount only where the club has
+  one recorded for that member alone, and leaves it out otherwise. A family
+  membership fee is deliberately left out — that figure is the whole family's
+  bill, and telling one member it was recorded against them (with "nothing
+  further to pay") while their relatives still owe theirs would be worse than
+  saying nothing. It mentions no invoice, no payment link and no Xero
   reference, because manual mark-paid only exists where there is no invoice.
+  The message the treasurer gets back says what actually happened rather than
+  what was asked for: a receipt "is being emailed" only if it really was handed
+  over for sending, and there is a plain "the receipt could not be sent" when
+  the member's address cannot receive it. The payment stays recorded either
+  way — a failed email never quietly undoes it.
   Reversing a manual payment never emails the member — there is no
   "your payment was un-recorded" notice worth sending.
   The confirmation itself is now a proper dialog with a note box, replacing the
