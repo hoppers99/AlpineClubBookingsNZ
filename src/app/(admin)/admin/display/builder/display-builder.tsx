@@ -909,9 +909,13 @@ function ZoneDrawer(props: ZoneDrawerProps) {
     <Sheet open onOpenChange={(open) => (!open ? props.onClose() : undefined)}>
       <SheetContent
         className="w-full overflow-y-auto sm:max-w-md"
-        // Escape inside the token picker closes the picker only, never the
+        // Escape inside an OPEN token picker closes the picker only, never the
         // drawer — Radix's document-level capture listener would otherwise
-        // dismiss the Sheet before the picker's own handler runs (#2248).
+        // dismiss the Sheet before the picker's own handler runs (#2248). The
+        // marker sits on the assistant's root wrapper (trigger + popover) only
+        // while the picker is open, so this also covers Escape pressed with
+        // focus on the trigger button, and never blocks a normal drawer
+        // dismiss when the picker is closed.
         onEscapeKeyDown={(event) => {
           const target = event.target as HTMLElement | null;
           if (target?.closest?.(`[${DISPLAY_TOKEN_POPOVER_ATTR}]`)) {

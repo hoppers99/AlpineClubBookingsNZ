@@ -56,10 +56,13 @@ import {
 // the picker is additive (decision 4).
 
 /**
- * Marker attribute on the open popover. The zone drawer's Radix Sheet checks it
- * in `onEscapeKeyDown` so Escape pressed inside the picker closes the picker
- * only, never the whole drawer (Radix's document-capture listener fires before
- * this component's own handler can stop propagation).
+ * Marker attribute carried by the assistant's root wrapper (trigger button +
+ * popover) WHILE the picker is open. The zone drawer's Radix Sheet checks it in
+ * `onEscapeKeyDown` so Escape pressed anywhere in an open picker — including on
+ * the trigger itself, reachable via Shift+Tab — closes the picker only, never
+ * the whole drawer (Radix's document-capture listener fires before this
+ * component's own handler can stop propagation). With the picker closed the
+ * attribute is absent, so Escape dismisses the drawer as normal.
  */
 export const DISPLAY_TOKEN_POPOVER_ATTR = "data-display-token-popover";
 
@@ -136,7 +139,9 @@ export interface DisplayTokenTextareaProps {
   mode: "html" | "css";
   value: string;
   onValueChange: (next: string) => void;
-  disabled?: boolean;
+  /** Required, never truthy-defaulted (#2065 house convention): every caller
+   * must state its access decision explicitly, typically `disabled={!canEdit}`. */
+  disabled: boolean;
   placeholder?: string;
   /** Extra textarea classes (typically a min-height like `min-h-20`). */
   textareaClassName?: string;
@@ -170,6 +175,8 @@ export function DisplayTokenTextarea(props: DisplayTokenTextareaProps) {
    * (then inserts append at the end rather than guessing position 0). */
   const selectionRef = useRef<{ start: number; end: number } | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  /** Alternates an invisible announcement suffix so repeat inserts re-announce. */
+  const announceTickRef = useRef(false);
 
   const cssTokens = useMemo(
     () => (mode === "css" ? listDisplayCssInsertTokens() : []),
@@ -197,16 +204,50 @@ export function DisplayTokenTextarea(props: DisplayTokenTextareaProps) {
   function insertToken(text: string) {
     const fallback = { start: props.value.length, end: props.value.length };
     const sel = selectionRef.current ?? fallback;
+    // A stale selectionRef (e.g. the parent reset `value` under us) is safe:
+    // String.slice and setSelectionRange both clamp out-of-range offsets to the
+    // value's end, so the worst case is an append, never a crash.
     const start = Math.min(sel.start, sel.end);
     const end = Math.max(sel.start, sel.end);
     // At the caret, replacing any selection — never appended to the end.
-    props.onValueChange(props.value.slice(0, start) + text + props.value.slice(end));
+    //
+    // Two write paths on purpose. Preferred: `execCommand("insertText")` on the
+    // focused textarea (the page-content-panel precedent) so the browser's
+    // NATIVE UNDO STACK survives the insert — React's onChange still fires from
+    // the resulting input event, so the controlled value stays in sync. Writing
+    // through the controlled value directly would reset undo history, so that
+    // path is kept only as a fallback where execCommand is unavailable or
+    // refuses (jsdom implements no execCommand, so tests exercise the
+    // fallback). Both paths end in the same pendingSelection restore, so the
+    // focus/selection behaviour is identical either way.
+    let inserted = false;
+    const el = textareaRef.current;
+    if (el && typeof document.execCommand === "function") {
+      el.focus();
+      el.setSelectionRange(Math.min(start, el.value.length), Math.min(end, el.value.length));
+      try {
+        inserted = document.execCommand("insertText", false, text);
+      } catch {
+        inserted = false;
+      }
+    }
+    if (!inserted) {
+      props.onValueChange(
+        props.value.slice(0, start) + text + props.value.slice(end)
+      );
+    }
     setPendingSelection({ start, end: start + text.length });
     setOpen(false);
     setQuery("");
     // The visual highlight (the run is left selected) is not enough on its own;
-    // announce the insert politely for screen-reader users.
-    setAnnouncement(`Inserted ${text}`);
+    // announce the insert politely for screen-reader users. The alternating
+    // invisible suffix (nbsp) keeps a REPEAT insert of the same token from
+    // being a no-op state update — identical strings would bail out of the
+    // re-render and the live region would stay silent the second time.
+    announceTickRef.current = !announceTickRef.current;
+    setAnnouncement(
+      `Inserted ${text}${announceTickRef.current ? "\u00A0" : ""}`
+    );
   }
 
   // Restore focus with the inserted run selected AFTER the controlled value has
@@ -239,12 +280,31 @@ export function DisplayTokenTextarea(props: DisplayTokenTextareaProps) {
   }
 
   const q = query.trim().toLowerCase();
+  const popoverId = `${props.id}-token-popover`;
 
   return (
     <>
       <div className="flex items-center justify-between gap-2">
         <Label htmlFor={props.id}>{props.label}</Label>
-        <div ref={rootRef} className="relative" onBlur={onRootBlur}>
+        <div
+          ref={rootRef}
+          className="relative"
+          onBlur={onRootBlur}
+          // While open, the whole assistant (trigger + popover) is marked for
+          // the zone drawer's Sheet Escape guard — see DISPLAY_TOKEN_POPOVER_ATTR.
+          {...(open ? { [DISPLAY_TOKEN_POPOVER_ATTR]: "" } : {})}
+          // Escape is handled here on the ROOT wrapper, not the popover, so it
+          // also covers focus resting on the trigger button (Shift+Tab from the
+          // search input) — closing the picker only, never a surrounding
+          // drawer/dialog. With the picker closed, Escape passes through.
+          onKeyDown={(event) => {
+            if (event.key === "Escape" && open) {
+              event.preventDefault();
+              event.stopPropagation();
+              closeAndRestore();
+            }
+          }}
+        >
           <Button
             type="button"
             variant="outline"
@@ -257,6 +317,7 @@ export function DisplayTokenTextarea(props: DisplayTokenTextareaProps) {
             }
             aria-haspopup="dialog"
             aria-expanded={open}
+            aria-controls={open ? popoverId : undefined}
             onClick={() => {
               setQuery("");
               setOpen((current) => !current);
@@ -269,17 +330,10 @@ export function DisplayTokenTextarea(props: DisplayTokenTextareaProps) {
           </Button>
           {open && (
             <div
-              {...{ [DISPLAY_TOKEN_POPOVER_ATTR]: "" }}
+              id={popoverId}
               role="dialog"
               aria-label={mode === "css" ? "Insert theme token" : "Insert token"}
               className="absolute right-0 top-full z-50 mt-1 w-[21rem] max-w-[85vw] rounded-md border bg-popover text-popover-foreground shadow-md"
-              onKeyDown={(event) => {
-                if (event.key === "Escape") {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  closeAndRestore();
-                }
-              }}
             >
               <Command shouldFilter={false}>
                 <CommandInput

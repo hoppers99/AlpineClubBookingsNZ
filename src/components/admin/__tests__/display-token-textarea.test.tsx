@@ -7,6 +7,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -34,7 +35,10 @@ function Harness({
   mode = "html",
   initial = "",
   configSource,
-  disabled,
+  // `disabled` is a required prop on the component (#2065 house convention:
+  // access decisions are stated explicitly, never truthy-defaulted); the
+  // harness supplies the "editable" default only for test brevity.
+  disabled = false,
 }: {
   mode?: "html" | "css";
   initial?: string;
@@ -219,6 +223,89 @@ describe("DisplayTokenTextarea", () => {
     expect(document.activeElement).toBe(textarea());
     expect(textarea().selectionStart).toBe(3);
     expect(textarea().value).toBe("abcdef");
+  });
+
+  it("Escape on the TRIGGER of an open picker closes the picker only, without propagating", async () => {
+    // Focus can rest on the trigger with the popover open (Shift+Tab from the
+    // search input). Escape there must close the picker — and must not reach
+    // an enclosing container (in the app, the zone drawer's Sheet).
+    const outerKeyDown = vi.fn();
+    render(
+      <div onKeyDown={outerKeyDown}>
+        <Harness initial="abc" configSource={readySource()} />
+      </div>
+    );
+    placeCaret(2);
+    openPicker();
+    expect(screen.queryByRole("dialog")).not.toBeNull();
+
+    const trigger = screen.getByRole("button", { name: /insert token/i });
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: "Escape" });
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    // Closed the picker only: nothing bubbled to the surrounding container,
+    // and the field is untouched with focus back at the old caret.
+    expect(outerKeyDown).not.toHaveBeenCalled();
+    expect(textarea().value).toBe("abc");
+    expect(document.activeElement).toBe(textarea());
+    expect(textarea().selectionStart).toBe(2);
+  });
+
+  it("marks the assistant root for the Sheet Escape guard only while open", () => {
+    // The zone drawer's Sheet matches `closest([data-display-token-popover])`
+    // in onEscapeKeyDown; the marker must cover the trigger too (F1) and must
+    // vanish when closed so Escape can dismiss the drawer normally.
+    render(<Harness configSource={readySource()} />);
+    const trigger = screen.getByRole("button", { name: /insert token/i });
+    expect(trigger.closest("[data-display-token-popover]")).toBeNull();
+
+    openPicker();
+    expect(trigger.closest("[data-display-token-popover]")).not.toBeNull();
+    expect(
+      searchInput().closest("[data-display-token-popover]")
+    ).not.toBeNull();
+
+    fireEvent.keyDown(searchInput(), { key: "Escape" });
+    expect(trigger.closest("[data-display-token-popover]")).toBeNull();
+  });
+
+  it("announces a repeat insert of the same token again", async () => {
+    render(<Harness configSource={readySource()} />);
+    openPicker();
+    fireEvent.click(screen.getByText("{{lodge-name}}"));
+    await waitFor(() =>
+      expect(screen.getByRole("status").textContent).toContain(
+        "Inserted {{lodge-name}}"
+      )
+    );
+    const first = screen.getByRole("status").textContent;
+
+    openPicker();
+    // Scoped to the dialog: the textarea itself now also contains the token.
+    fireEvent.click(
+      within(screen.getByRole("dialog")).getByText("{{lodge-name}}")
+    );
+
+    // The alternating invisible suffix makes the second announcement a real
+    // state change — identical strings would bail out of the update and leave
+    // screen readers silent on the repeat insert.
+    await waitFor(() => {
+      const second = screen.getByRole("status").textContent;
+      expect(second).toContain("Inserted {{lodge-name}}");
+      expect(second).not.toBe(first);
+    });
+  });
+
+  it("links the trigger to the open popover via aria-controls", () => {
+    render(<Harness configSource={readySource()} />);
+    const trigger = screen.getByRole("button", { name: /insert token/i });
+    expect(trigger.getAttribute("aria-controls")).toBeNull();
+
+    openPicker();
+    const dialog = screen.getByRole("dialog");
+    expect(trigger.getAttribute("aria-controls")).toBe(dialog.id);
+    expect(dialog.id).not.toBe("");
   });
 
   it("disables the trigger (not hides it) for a view-only admin", () => {
