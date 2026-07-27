@@ -25,8 +25,8 @@ All notable public reference-release changes should be recorded here.
   breaks the naming rules is refused with the rules (and a fixed-up
   suggestion) instead of silently inserting something the screen would never
   match. The whole picker is keyboard operable, the existing explanatory text
-  under each field stays put, and one shared component drives all four
-  surfaces so their behaviour cannot drift apart.
+  under each field stays put, and one shared component drives all five
+  fields so their behaviour cannot drift apart.
 
 - **The lobby display's built-in boards can be restored on a club that never
   got them, and the three words the screen uses are finally defined (#2247).**
