@@ -180,11 +180,16 @@ export async function recordWithheldBookingEmail(params: {
   subject: string;
   to: string;
   detail?: string;
-  // Write at most ONE row per (booking, template). Used by the split-guest
-  // payment-link paths, which are re-driven by a cron every run: without this
-  // the withheld list (and the operator's view of it) fills with identical
-  // repeats and buries the withholds that matter.
+  // Write at most ONE row per (booking, template) PER EPISODE. Used by the
+  // split-guest payment-link paths, which a cron re-drives every run: without
+  // it the withheld list (and the operator's view of it) fills with identical
+  // repeats and buries the withholds that matter. Scoped to the episode via
+  // `sinceAt` so an off -> on -> off -> on cycle does not keep returning the
+  // FIRST episode's row and show #2259 a stale timestamp.
   once?: boolean;
+  // When the current episode began (`Booking.noEmailsAt`). Only rows created at
+  // or after this are treated as belonging to it.
+  sinceAt?: Date | null;
 }): Promise<string | null> {
   // Subjects here interpolate provider-controlled strings (a Xero invoice
   // number). EmailLog subjects are read back into operator screens, so strip
@@ -197,6 +202,7 @@ export async function recordWithheldBookingEmail(params: {
           bookingId: params.bookingId,
           templateName: params.templateName,
           status: EmailLogStatus.SKIPPED_NO_EMAILS,
+          ...(params.sinceAt ? { createdAt: { gte: params.sinceAt } } : {}),
         },
         select: { id: true },
       });

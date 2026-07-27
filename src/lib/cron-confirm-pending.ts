@@ -188,6 +188,9 @@ type HoldResolution =
       // run — an operator must still learn the guest portion is unpaid — but no
       // PaymentLink row is created and no member email is attempted.
       emailWithheld: boolean;
+      // When the current "No emails" episode began, so the withheld record is
+      // written once per episode rather than once ever (#2258).
+      noEmailsAt: Date | null;
     }
   | {
       // A genuine split child with no saved card whose PARENT is not settled
@@ -745,7 +748,7 @@ async function resolveHoldWindowUnderLock(
         // admin clears the switch.
         const emailGate = await tx.booking.findUnique({
           where: { id: booking.id },
-          select: { noEmails: true },
+          select: { noEmails: true, noEmailsAt: true },
         });
         if (emailGate?.noEmails) {
           return {
@@ -754,6 +757,7 @@ async function resolveHoldWindowUnderLock(
             extendedHoldUntil,
             mintedLink: null,
             emailWithheld: true,
+            noEmailsAt: emailGate.noEmailsAt,
           };
         }
 
@@ -770,6 +774,7 @@ async function resolveHoldWindowUnderLock(
           extendedHoldUntil,
           mintedLink,
           emailWithheld: false,
+          noEmailsAt: null,
         };
       }
 
@@ -1270,6 +1275,8 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
             detail:
               'Withheld: this booking has the "No emails" switch turned on. No payment link was created.',
             once: true,
+            // Scope the once-check to THIS episode, so a re-enable records afresh.
+            sinceAt: resolution.noEmailsAt,
           }).catch((err) =>
             logger.error(
               { err, bookingId: resolution.booking.id, job: "confirmPendingBookings" },
@@ -1304,9 +1311,13 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
             delivered = emailOutcome.status === "sent";
             // #2258: the switch can be flipped between the pre-mint gate and
             // this send. The unreachable token is still revoked below, but a
-            // withhold must NOT be reported as a retryable delivery failure —
-            // nothing changes until an admin clears the switch.
-            withheld = emailOutcome.status === "withheld_for_booking";
+            // DELIBERATE withhold must not be reported as a retryable delivery
+            // failure — nothing changes until an admin clears the switch. A
+            // fail-closed withhold (the setting could not be READ) is the
+            // opposite: a transient fault, so it keeps retry semantics.
+            withheld =
+              emailOutcome.status === "withheld_for_booking" &&
+              emailOutcome.reason === "booking_no_emails";
             if (!delivered) {
               logger.warn(
                 {
