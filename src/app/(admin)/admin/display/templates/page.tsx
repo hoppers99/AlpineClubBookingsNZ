@@ -6,6 +6,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { BackLink } from "@/components/admin/back-link";
+import {
+  DisplayTokenTextarea,
+  useDisplayLodgeConfig,
+} from "@/components/admin/display-token-textarea";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import {
   ADMIN_FORBIDDEN_SAVE_REASON,
@@ -126,6 +130,11 @@ export default function AdminDisplayTemplatesPage() {
   // Closed registries surfaced read-only into the editor (client-safe pure data).
   const modules = useMemo(() => listDisplayModules(), []);
   const cssTokens = useMemo(() => listDisplayCssTokens(), []);
+
+  // The preview lodge's live {{config:…}} keys for the token assistant (#2248,
+  // decision 2: the picker follows the existing preview-lodge selector — it
+  // only helps you type; a template stays lodge-agnostic).
+  const previewLodgeConfig = useDisplayLodgeConfig(previewLodgeId);
 
   // A built-in template is code-managed scaffolding: `ensureBuiltInDisplays`
   // refreshes it from code on every re-seed — the database seed, or the
@@ -561,7 +570,7 @@ export default function AdminDisplayTemplatesPage() {
                     <select
                       className={selectClass}
                       aria-label="Preview lodge"
-                      title="Lodge to preview this template against"
+                      title="Lodge to preview this template against — the Insert token picker lists this lodge's saved config keys"
                       value={previewLodgeId}
                       onChange={(event) => setPreviewLodgeId(event.target.value)}
                     >
@@ -923,20 +932,19 @@ export default function AdminDisplayTemplatesPage() {
           )}
 
           <div className="space-y-1">
-            <Label htmlFor="template-css">CSS overrides</Label>
-            <textarea
+            {/* Token assistant on the label row (#2248); the static token
+                sentence below stays — the picker is additive (decision 4). */}
+            <DisplayTokenTextarea
               id="template-css"
-              className={`${textareaClass} min-h-24`}
-              spellCheck={false}
+              label="CSS overrides"
+              mode="css"
+              value={draft.cssOverrides}
+              onValueChange={(next) =>
+                setDraft((current) => ({ ...current, cssOverrides: next }))
+              }
               disabled={!canEdit}
               placeholder={".board { color: var(--brand-gold); }"}
-              value={draft.cssOverrides}
-              onChange={(event) =>
-                setDraft((current) => ({
-                  ...current,
-                  cssOverrides: event.target.value,
-                }))
-              }
+              textareaClassName="min-h-24"
             />
             <p className="text-muted-foreground text-xs">
               Layered after the layout default. Theme tokens you can reach for:{" "}
@@ -954,20 +962,20 @@ export default function AdminDisplayTemplatesPage() {
           </div>
 
           <div className="space-y-1">
-            <Label htmlFor="template-footer">Footer HTML</Label>
-            <textarea
+            {/* Token assistant on the label row (#2248); the static token
+                sentence below stays — the picker is additive (decision 4). */}
+            <DisplayTokenTextarea
               id="template-footer"
-              className={`${textareaClass} min-h-20`}
-              spellCheck={false}
+              label="Footer HTML"
+              mode="html"
+              value={draft.footerHtml}
+              onValueChange={(next) =>
+                setDraft((current) => ({ ...current, footerHtml: next }))
+              }
               disabled={!canEdit}
               placeholder={"Wi-Fi: {{config:wifi-code}} · {{lodge-name}}"}
-              value={draft.footerHtml}
-              onChange={(event) =>
-                setDraft((current) => ({
-                  ...current,
-                  footerHtml: event.target.value,
-                }))
-              }
+              textareaClassName="min-h-20"
+              configSource={previewLodgeConfig}
             />
             <p className="text-muted-foreground text-xs">
               The page footer. HTML with the same tokens, or a{" "}
