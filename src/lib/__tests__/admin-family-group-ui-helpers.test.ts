@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   buildInitialRequestNotificationParents,
   buildInitialRequestSelections,
   buildSharedEmailClusters,
+  formatFamilyGroupDate,
   getFamilyGroupRequestSummary,
   getFamilyGroupRequestTypeLabel,
   mapFamilyGroupRequestSearchResults,
@@ -204,5 +205,55 @@ describe("admin-family-group-ui-helpers", () => {
     ).toBe("Ada Parent wants to create the new family group New Family.");
     // GROUP_CREATE never seeds a member-record selection.
     expect(buildInitialRequestSelections([groupCreateRequest], {})).toEqual({});
+  });
+});
+
+// #2256: formatFamilyGroupDate used to be a bare `toLocaleDateString()` — no
+// locale, no time zone — so the six family-group surfaces that render through
+// it (request "Requested" stamps, dates of birth on the review card) showed
+// "4/16/2026" to a US-locale admin and could show the wrong calendar day to any
+// admin whose machine sat behind New Zealand. These cases pin both halves:
+// the rendered format, and independence from the runtime's own zone.
+describe("formatFamilyGroupDate (#2256)", () => {
+  // 2026-04-15T23:30:00Z is 2026-04-16 11:30 in Pacific/Auckland, so the NZ
+  // calendar date differs from the UTC one at this instant.
+  const INSTANT = "2026-04-15T23:30:00.000Z";
+  const RUNTIME_TZ = process.env.TZ;
+
+  afterEach(() => {
+    // Node re-reads process.env.TZ, so leaving it set would leak the fake zone
+    // into every later test in this worker.
+    if (RUNTIME_TZ === undefined) delete process.env.TZ;
+    else process.env.TZ = RUNTIME_TZ;
+  });
+
+  it("renders the NZ calendar date in the app's standard medium format", () => {
+    expect(formatFamilyGroupDate(INSTANT)).toBe("16 Apr 2026");
+  });
+
+  it("renders a date-only value (a date of birth) as that same calendar day", () => {
+    expect(formatFamilyGroupDate("2018-01-01")).toBe("1 Jan 2018");
+    expect(formatFamilyGroupDate("2014-08-28")).toBe("28 Aug 2014");
+  });
+
+  it("ignores the runtime's own time zone on both sides of the NZ date", () => {
+    // UTC is behind NZ (still 15 April at this instant) and Kiritimati is ahead
+    // of it (already 16 April, two hours later) — a formatter that leaned on the
+    // ambient zone could not answer "16 Apr 2026" to both.
+    process.env.TZ = "UTC";
+    expect(formatFamilyGroupDate(INSTANT)).toBe("16 Apr 2026");
+    process.env.TZ = "America/New_York";
+    expect(formatFamilyGroupDate(INSTANT)).toBe("16 Apr 2026");
+    process.env.TZ = "Pacific/Kiritimati";
+    expect(formatFamilyGroupDate(INSTANT)).toBe("16 Apr 2026");
+  });
+
+  it("keeps the placeholder for missing values and never throws on a bad one", () => {
+    expect(formatFamilyGroupDate(null)).toBe("Not provided");
+    expect(formatFamilyGroupDate(undefined)).toBe("Not provided");
+    expect(formatFamilyGroupDate("")).toBe("Not provided");
+    // Intl.DateTimeFormat throws RangeError on an invalid Date, which would
+    // take the whole request-review card down; the guard degrades instead.
+    expect(formatFamilyGroupDate("not-a-date")).toBe("Not provided");
   });
 });
