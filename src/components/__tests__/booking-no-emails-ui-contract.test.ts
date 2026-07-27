@@ -551,6 +551,100 @@ describe("No emails honesty rule (#2259)", () => {
     ).toEqual([]);
   });
 
+  it("never promises a choice or an audit entry on the silenced path", () => {
+    /*
+      The rule above polices BUTTON LABELS. That is not enough, and two rounds
+      of review proved it: the labels were correct while the surrounding copy
+      still said "your choice is recorded in the audit log" on the silenced
+      branch of five dialogs, the cancel success panel, and the cancel preview.
+
+      Since H1 the silenced path sends no `notifyMember` at all, so there IS no
+      choice and no recorded choice — pointing an officer at an audit entry
+      that does not exist is worse than saying nothing, because the message
+      they are hunting for is the cancellation the member never received.
+      "Either way" is banned on the same branch for the same reason: it asserts
+      a fork that no longer exists.
+
+      Mechanically: collect every subtree that only renders when the booking IS
+      silenced, and forbid this vocabulary inside it.
+    */
+    const BANNED =
+      /recorded in the audit log|choose whether|will choose|your choice|either way/i;
+
+    const offenders: string[] = [];
+
+    for (const rel of BOOKING_NOTIFY_PROMPTS) {
+      const file = join(SRC, ...rel.split("/"));
+      const ast = parse(file);
+      const silencedSubtrees: ts.Node[] = [];
+
+      eachNode(ast, (node) => {
+        // `noEmails ? <silenced> : <normal>` / `!noEmails ? <normal> : <silenced>`
+        if (ts.isConditionalExpression(node)) {
+          const condition = node.condition.getText(ast);
+          if (!/noEmails/i.test(condition)) return;
+          const negated = condition.trimStart().startsWith("!");
+          silencedSubtrees.push(negated ? node.whenFalse : node.whenTrue);
+          return;
+        }
+        // `noEmails && <silenced>` — but NOT `!noEmails && <normal>`.
+        if (
+          ts.isBinaryExpression(node) &&
+          node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken
+        ) {
+          const left = node.left.getText(ast);
+          if (!/noEmails/i.test(left)) return;
+          if (left.trimStart().startsWith("!")) return;
+          /*
+            A DISJUNCTION only means "maybe silenced", so its body is not a
+            silenced-path subtree. The waitlist force-confirm report is guarded
+            by `notifiedMember === false || noEmails` precisely because it
+            serves both cases, and its audit-log sentence is correct for the
+            ordinary one — the inner `noEmails ? … : …` is what separates them,
+            and that ternary IS policed above.
+
+            The narrow cost: banned copy written unconditionally inside such a
+            card is not caught here. That is the honest reading of the guard
+            rather than a hole to paper over, and the ternary rule covers the
+            shape this family actually uses.
+          */
+          if (/\|\|/.test(left)) return;
+          silencedSubtrees.push(node.right);
+        }
+      });
+
+      if (silencedSubtrees.length === 0) {
+        offenders.push(`${rel} has no silenced-path branch to police`);
+        continue;
+      }
+
+      for (const subtree of silencedSubtrees) {
+        eachNode(subtree, (node) => {
+          const text = ts.isJsxText(node)
+            ? node.getText(ast)
+            : ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)
+              ? node.text
+              : null;
+          if (text === null) return;
+          const match = text.match(BANNED);
+          if (!match) return;
+          offenders.push(
+            `${rel}:${lineOf(ast, node)} silenced-path copy says "${match[0]}"`,
+          );
+        });
+      }
+    }
+
+    expect(
+      offenders,
+      `With the switch on there is no email choice and no recorded choice — ` +
+        `the silenced path sends no notifyMember at all. Copy promising ` +
+        `either sends the officer hunting for an audit entry that does not ` +
+        `exist, instead of at the withheld list that names what the member ` +
+        `never received. Say what happened and point at the banner.`,
+    ).toEqual([]);
+  });
+
   it("never lets the suppressed path skip the send that records the withhold", () => {
     /*
       H1 — the compensating control must not blind itself.

@@ -29,7 +29,7 @@ function group(over: Partial<WithheldEmailGroupView>): WithheldEmailGroupView {
     count: 1,
     subject: "Your booking has been cancelled",
     latestAt: "2026-07-20T02:00:00.000Z",
-    nothingToForward: false,
+    remedy: "relay" as const,
     ...over,
   };
 }
@@ -108,7 +108,7 @@ describe("BookingWithheldEmailsBanner (#2259)", () => {
             label: "Chore Roster",
             count: 56,
             subject: "Your chore for Saturday",
-            nothingToForward: true,
+            remedy: "resend-roster",
           }),
           group({}),
         ]}
@@ -136,7 +136,7 @@ describe("BookingWithheldEmailsBanner (#2259)", () => {
             templateName: "split-guest-payment-link",
             label: "Split Guest Payment Link",
             subject: "Your payment link",
-            nothingToForward: true,
+            remedy: "auto-regenerates",
           }),
         ]}
       />,
@@ -144,6 +144,52 @@ describe("BookingWithheldEmailsBanner (#2259)", () => {
     expect(
       screen.getByText(/Nothing was created to forward/i),
     ).toBeInTheDocument();
+    expect(screen.getByText(/re-sent automatically/i)).toBeInTheDocument();
+  });
+
+  it("gives the chore roster its own, harder remedy", () => {
+    /*
+      The roster is NOT the same case as the payment link, and conflating them
+      was a real defect: the roster service deletes the guest's existing chore
+      token, mints a fresh one, then sends — so a live link exists, the guest's
+      old link is destroyed, and `sendChoreRosterEmail` has no cron behind it.
+      "Clear the switch and it regenerates" would be false twice over.
+    */
+    render(
+      <BookingWithheldEmailsBanner
+        noEmails
+        total={1}
+        groups={[
+          group({
+            templateName: "chore-roster",
+            label: "Chore Roster",
+            subject: "Your chore for Saturday",
+            remedy: "resend-roster",
+          }),
+        ]}
+      />,
+    );
+    expect(
+      screen.getByText(/re-send the roster from the Roster page/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/their old link no longer works/i),
+    ).toBeInTheDocument();
+    // …and must NOT claim anything regenerates on its own.
+    expect(screen.queryByText(/re-sent automatically/i)).toBeNull();
+  });
+
+  it("omits the subject cleanly when none was read", () => {
+    render(
+      <BookingWithheldEmailsBanner
+        noEmails
+        total={1}
+        groups={[group({ subject: "" })]}
+      />,
+    );
+    const item = screen.getByRole("listitem");
+    expect(item.textContent).toContain("Booking Cancelled");
+    expect(item.textContent).not.toContain("—");
   });
 
   it("does not add that note to a message the officer really can relay", () => {
