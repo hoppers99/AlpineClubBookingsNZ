@@ -1254,7 +1254,8 @@ override requires an explicit `pricingMode`:
   refund/credit settlement, audit, booking events, waitlist processing, and the
   admin-facing alerts are never affected by the choice. **The Xero invoice
   email on the Internet Banking path is deliberately outside this choice and is
-  ALWAYS sent** — it is the member's payment instruction (invoice number + bank
+  ALWAYS sent** (superseded for the per-booking "No emails" switch — see
+  that section below) — it is the member's payment instruction (invoice number + bank
   details), so suppressing it could strand an unpaid invoice the member was
   never told about (owner decision on #1705). Three further cancellation
   emails are **deliberately always-notify** and outside the choice (owner
@@ -1284,7 +1285,30 @@ override requires an explicit `pricingMode`:
   the always-notify send, so a suppressed reject still emails the member the
   cancellation and withholds only the review-declined explainer.
 
-**Per-booking "No emails" switch (#2258, owner decision D10).** Separately from
+- **recalculate** — the existing full-reprice machinery with the locked-period
+  clamps lifted, so locked-night pricing semantics are otherwise preserved
+  (a night the guest already bought keeps its stored `BookingGuestNight` price).
+
+Under an override, an over-capacity target is **warn-and-confirm** rather than a
+hard block: the first apply raises `OverCapacityConfirmationRequiredError`
+(HTTP 409, code `OVER_CAPACITY_CONFIRM_REQUIRED`, with the over-capacity nights),
+and the admin must resubmit with `confirmOverCapacity: true`. The capacity lock
+is still acquired, and the confirmed overbooking is recorded (`capacityOverridden`
+on the modification's `newData` and in the audit trail). Statuses outside the
+active lifecycle (DRAFT, WAITLISTED, WAITLIST_OFFERED, BUMPED) hold no capacity,
+so both pricing modes skip the capacity decision for them entirely — a move that
+cannot overbook must never prompt for (or record) an overbooking confirm. Every override move is
+audited as `booking.modify.admin_override` with before/after dates, `pricingMode`,
+and `confirmOverCapacity`, and is linked (best-effort, post-transaction) to the
+booking's most recent APPROVED-but-unlinked `BookingChangeRequest` **that the
+move actually fulfils** — the request must be date-only (no guest changes) and
+every date it names must equal the applied value, so an unrelated move can never
+mark a different ask as applied — closing the approve → apply trail. The modify-quote preview mirrors apply exactly for the
+same input (same date resolution, capacity signal, and member-night conflict
+check), so the operator never sees a clean preview for a move that would fail.
+
+**Per-booking "No emails" switch (#2258, owner decision D10, 2026-07-27).**
+Separately from
 the per-action `notifyMember` choice above — which is a one-off decision made at
 the moment of a single admin action — a booking can carry a persistent
 `Booking.noEmails` switch that withholds **everything** the system would send
@@ -1311,14 +1335,37 @@ The rules are:
 - **Every withhold is auditable.** The withheld send is written as an `EmailLog`
   row with status `SKIPPED_NO_EMAILS` and the booking's `bookingId`, with no
   retained body — so the booking page can list exactly what was held back
-  (#2259), and the retry cron can never replay it.
+  (#2259), and the retry cron cannot replay it (its query requires a retained
+  body, and the status is terminal).
 - **The retry cron re-evaluates before every replay.** A `FAILED` row can
   predate the moment the switch was turned on, so `cron-email-retry.ts` re-reads
   it from the row's `bookingId` and fails closed the same way.
-- **Waitlist candidacy excludes a silenced booking entirely.**
-  `processWaitlistForDates` skips it, so no offer clock is ever started for a
-  member who would not be told; and a withheld offer email has its own
-  `suppressed` visibility state, never reported as a delivery failure.
+- **Waitlist candidacy excludes a silenced booking.**
+  `processWaitlistForDates` filters on `noEmails: false`, so no NEW offer is
+  made to a silenced entry and, in the ordinary case, no offer clock starts for
+  a member who would not be told. That exclusion is not retroactive and does not
+  cover every ordering, so two cases remain and both are surfaced rather than
+  denied:
+  - the switch is turned **on while an offer is already live** — the clock keeps
+    running and the offer is not retracted (`setBookingNoEmails` returns
+    `hasLiveWaitlistOffer` so the admin is warned before confirming);
+  - the **post-commit race** — `processWaitlistForDates` commits the offer and
+    fires the email un-awaited afterwards, so a switch flipped in between leaves
+    a live offer with a withheld send. (The retry cron can likewise rewrite an
+    already-FAILED offer row to `SKIPPED_NO_EMAILS`.)
+
+  In both, the entry is holding a bed the member was never told about, so the
+  admin waitlist board reports the distinct `suppressed_live_offer` state with
+  `needsOperatorAction: true`. A withheld offer on an entry whose offer has
+  already lapsed is the benign `suppressed` state and needs no action. A
+  silenced entry that is still `WAITLISTED` produces no EmailLog row at all, so
+  the board marks it from the flag ("silenced — will not be offered").
+- **A silenced waitlist entry keeps its place in the queue.** It is skipped for
+  offers but is NOT removed, and it still counts toward the position quoted to
+  the members behind it — the position numbers other members see are unchanged
+  by anyone's switch. (Deliberate: position is member-visible, and silently
+  re-numbering a queue because of an internal admin setting would be a worse
+  surprise than a stalled entry an officer can see and fix.)
 - **Xero-sent invoice emails are gated too, which SUPERSEDES the #1705 carve-out
   above for this switch only.** #1705 decided the Internet Banking invoice email
   is outside the per-action `notifyMember` choice and always sent. D10 says the
@@ -1339,27 +1386,7 @@ The rules are:
   when, mirroring the `wholeLodgeHold` audit columns. Clearing needs no
   acknowledgement — a stuck switch must always be clearable — and does **not**
   re-send anything withheld while it was on.
-- **recalculate** — the existing full-reprice machinery with the locked-period
-  clamps lifted, so locked-night pricing semantics are otherwise preserved
-  (a night the guest already bought keeps its stored `BookingGuestNight` price).
 
-Under an override, an over-capacity target is **warn-and-confirm** rather than a
-hard block: the first apply raises `OverCapacityConfirmationRequiredError`
-(HTTP 409, code `OVER_CAPACITY_CONFIRM_REQUIRED`, with the over-capacity nights),
-and the admin must resubmit with `confirmOverCapacity: true`. The capacity lock
-is still acquired, and the confirmed overbooking is recorded (`capacityOverridden`
-on the modification's `newData` and in the audit trail). Statuses outside the
-active lifecycle (DRAFT, WAITLISTED, WAITLIST_OFFERED, BUMPED) hold no capacity,
-so both pricing modes skip the capacity decision for them entirely — a move that
-cannot overbook must never prompt for (or record) an overbooking confirm. Every override move is
-audited as `booking.modify.admin_override` with before/after dates, `pricingMode`,
-and `confirmOverCapacity`, and is linked (best-effort, post-transaction) to the
-booking's most recent APPROVED-but-unlinked `BookingChangeRequest` **that the
-move actually fulfils** — the request must be date-only (no guest changes) and
-every date it names must equal the applied value, so an unrelated move can never
-mark a different ask as applied — closing the approve → apply trail. The modify-quote preview mirrors apply exactly for the
-same input (same date resolution, capacity signal, and member-night conflict
-check), so the operator never sees a clean preview for a move that would fail.
 
 Booking **creation** is normally today-or-future: `POST /api/bookings` and the
 create service both reject a past check-in ("Cannot book in the past"). Issue

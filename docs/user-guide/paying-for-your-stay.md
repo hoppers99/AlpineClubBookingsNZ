@@ -43,8 +43,11 @@ If your club has internet banking enabled and your stay is far enough ahead of
 the club's lead-time cutoff, you can choose **Internet Banking** instead of card:
 
 1. Choose the internet-banking option. The club raises a **Xero invoice** and
-   emails you the payment instructions. That invoice email is always sent — it is
-   your instruction to pay — regardless of any other notification choice.
+   emails you the payment instructions. That invoice email is your instruction to
+   pay, so it is sent whatever your other notification settings say. (Very
+   occasionally the club arranges a booking's details with you directly instead
+   of by email — if you are expecting an invoice and nothing arrives, get in
+   touch and we will sort it out.)
 2. Pay the invoice by bank transfer using the reference on it. Your bed is held
    under the club's internet-banking lead-time rules while the transfer clears.
 
