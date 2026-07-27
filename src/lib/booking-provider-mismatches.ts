@@ -162,7 +162,7 @@ export async function getBookingProviderMismatches(
         id: "waitlist-offer-email-failed",
         label: "Waitlist offer email undelivered",
         description:
-          "A place has been offered, but the offer email is missing, bounced, or exhausted its retries — the member may not know their offer is ticking down.",
+          "A place has been offered, but the offer email is missing, bounced, exhausted its retries, or was withheld because the booking is set to send no emails — the member may not know their offer is ticking down.",
         href: "/admin/waitlist",
         linkLabel: "Open waitlist queue",
       });

@@ -760,14 +760,27 @@ export default function AdminWaitlistPage() {
                             {formatOfferEmailDetail(entry.offerEmailDelivery)}
                           </p>
                         )}
-                        {entry.offerEmailDelivery.needsOperatorAction && (
-                          <Link
-                            href="/admin/email-deliverability"
-                            className="block text-xs text-primary hover:underline"
-                          >
-                            Review email recovery
-                          </Link>
-                        )}
+                        {entry.offerEmailDelivery.needsOperatorAction &&
+                          (entry.offerEmailDelivery.retryState ===
+                          "suppressed_live_offer" ? (
+                            // #2258: nothing failed to deliver, so email
+                            // recovery is the wrong place to send an officer.
+                            // The fix is on the booking itself.
+                            <Link
+                              href={`/admin/bookings/${entry.id}`}
+                              className="block text-xs text-primary hover:underline"
+                            >
+                              Open the booking — turn emails back on or retract
+                              the offer
+                            </Link>
+                          ) : (
+                            <Link
+                              href="/admin/email-deliverability"
+                              className="block text-xs text-primary hover:underline"
+                            >
+                              Review email recovery
+                            </Link>
+                          ))}
                       </div>
                     )}
                   </TableCell>
