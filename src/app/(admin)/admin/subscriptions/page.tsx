@@ -53,6 +53,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
+import { useConfirm } from "@/components/confirm-dialog";
 import { SubscriptionBillingPanel } from "./_components/subscription-billing-panel";
 import {
   ManualPaymentDialog,
@@ -181,6 +182,7 @@ export default function SubscriptionsPage() {
   const searchParams = useSearchParams();
   const ageTierOptions = useAgeTierOptions();
   const canEditFinance = useAdminAreaEditAccess("finance");
+  const { confirm, confirmDialog } = useConfirm();
   const [seasonYear, setSeasonYear] = useState(() => parseSeasonYearParam(searchParams.get("seasonYear")));
   const [status, setStatus] = useState(searchParams.get("status") || "all");
   const [ageTier, setAgeTier] = useState<AgeTier | "all">(
@@ -201,11 +203,23 @@ export default function SubscriptionsPage() {
   const [xeroContactGroupsLoaded, setXeroContactGroupsLoaded] = useState(true);
 
   async function handleSync(mode: MembershipSyncMode) {
-    const label =
+    // #2260: the last browser confirm() on this page. Plain confirmation with
+    // no email choice, so the shared useConfirm helper is the right idiom here.
+    const confirmed = await confirm(
       mode === "incremental"
-        ? "Run the incremental Xero subscription refresh for this season?"
-        : "Run the repair backfill for linked members still showing Not Invoiced? This checks a broader stale-member set and may take longer.";
-    if (!confirm(label)) return;
+        ? {
+            title: "Run the incremental Xero refresh?",
+            description: `This re-reads paid status from Xero for linked members in the ${seasonYear} season.`,
+            confirmLabel: "Run refresh",
+          }
+        : {
+            title: "Run the repair backfill?",
+            description:
+              "This checks a broader stale-member set for linked members still showing Not Invoiced, and may take longer.",
+            confirmLabel: "Run repair",
+          },
+    );
+    if (!confirmed) return;
     setSyncing(mode);
     setSyncMessage(null);
     try {
@@ -411,6 +425,7 @@ export default function SubscriptionsPage() {
 
   return (
     <div className="space-y-6">
+      {confirmDialog}
       <AdminPageHeader
         title="Subscriptions"
         description="Track member subscription status by season"
