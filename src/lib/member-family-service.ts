@@ -48,6 +48,12 @@ const FAMILY_MEMBER_PROFILE_SELECT = {
   detailsConfirmedByMemberId: true,
   onboardingConfirmedAt: true,
   inheritEmailFromId: true,
+  // #2255: the member the family's notifications actually reach. Under a
+  // four-generation cap that is often NOT one of the two parents below — the
+  // resolution walks up past any generation without a mailbox of its own — and
+  // the family whose consent is at stake could otherwise see no indication at
+  // all of where their child's club email goes.
+  inheritEmailFrom: { select: { id: true, firstName: true, lastName: true } },
   parent: {
     select: {
       id: true,
@@ -90,6 +96,11 @@ type FamilyMemberRecord = MemberProfileCompletenessInput & {
   role: string;
   accessRoles?: Array<{ role: string | null }>;
   inheritEmailFromId?: string | null;
+  inheritEmailFrom?: {
+    id: string;
+    firstName: string;
+    lastName: string;
+  } | null;
   parent?: Parameters<typeof buildParentLinks>[0]["parent"];
   secondaryParent?: Parameters<typeof buildParentLinks>[0]["secondaryParent"];
   familyGroupMemberships?: Array<{
@@ -409,7 +420,35 @@ export async function getMemberFamily(memberId: string): Promise<JsonRouteResult
     familyGroupIds: string[];
     parentLinks: ReturnType<typeof buildParentLinks>;
     notificationEmailFromId: string | null;
+    /**
+     * #2255: who the notification address belongs to, when that is somebody
+     * other than a listed parent. Null when the source IS a listed parent (the
+     * per-parent marker covers it) or when there is no inheritance at all.
+     */
+    notificationEmailFromName: string | null;
   }> = [];
+
+  /**
+   * #2255. The per-parent "(notifications)" marker in the profile family list
+   * only fires when the source IS one of the listed parents, which was true
+   * while inheritance was one hop. It no longer is: resolution walks past any
+   * generation with no mailbox of its own, so a child's club email routinely
+   * goes to a grandparent who does not appear in that list at all — and the
+   * family saw nothing. Returns the source's name only in that case, so the two
+   * displays never say the same thing twice.
+   */
+  function notificationSourceBeyondParents(
+    member: FamilyMemberRecord,
+  ): string | null {
+    const source = member.inheritEmailFrom;
+    if (!source || !member.inheritEmailFromId) return null;
+    const isListedParent = buildParentLinks(member).some(
+      (parent) =>
+        parent.id === source.id || parent.inheritEmailFromId === source.id,
+    );
+    if (isListedParent) return null;
+    return `${source.firstName} ${source.lastName}`.trim() || null;
+  }
 
   function addMember(member: FamilyMemberRecord, relationship: FamilyMemberRelationship) {
     if (seen.has(member.id)) return;
@@ -485,6 +524,7 @@ export async function getMemberFamily(memberId: string): Promise<JsonRouteResult
       familyGroupIds: sharedFamilyGroupIds,
       parentLinks: buildParentLinks(member),
       notificationEmailFromId: member.inheritEmailFromId ?? null,
+      notificationEmailFromName: notificationSourceBeyondParents(member),
     });
   }
 
