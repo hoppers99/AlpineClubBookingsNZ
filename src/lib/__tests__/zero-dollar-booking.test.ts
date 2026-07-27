@@ -361,7 +361,7 @@ describe("Booking Creation Route: zero-dollar handling", () => {
     await POST(req);
 
     expect(sendBookingConfirmedEmail).toHaveBeenCalledWith(
-      { bookingId: expect.any(String) },
+      { bookingId: "bk1" },
       "alice@example.com",
       "Alice",
       expect.any(Date),
@@ -392,7 +392,7 @@ describe("Booking Creation Route: zero-dollar handling", () => {
     await POST(req);
 
     expect(sendBookingConfirmedEmail).toHaveBeenCalledWith(
-      { bookingId: expect.any(String) },
+      { bookingId: "bk1" },
       "alice@example.com",
       "Alice",
       expect.any(Date),
@@ -628,7 +628,7 @@ describe("Cron Confirm Pending: zero-dollar handling", () => {
     await confirmPendingBookings();
 
     expect(sendBookingConfirmedEmail).toHaveBeenCalledWith(
-      { bookingId: expect.any(String) },
+      { bookingId: "b1" },
       "b1@example.com",
       "Test",
       booking.checkIn,

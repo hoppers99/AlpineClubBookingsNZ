@@ -370,7 +370,7 @@ describe("processWaitlistForDates", () => {
     expect(mockTx.bookingGuest.update).toHaveBeenCalledTimes(2);
     // The offer email states the price the member will pay on confirmation.
     expect(sendWaitlistOfferEmail).toHaveBeenCalledWith(
-      { bookingId: expect.any(String) },
+      { bookingId: "booking1" },
       "test@test.com",
       "John",
       candidate.checkIn,
@@ -426,7 +426,7 @@ describe("processWaitlistForDates", () => {
       })
     );
     expect(sendWaitlistOfferEmail).toHaveBeenCalledWith(
-      { bookingId: expect.any(String) },
+      { bookingId: "booking1" },
       expect.anything(),
       expect.anything(),
       expect.anything(),
@@ -532,7 +532,7 @@ describe("processWaitlistForDates", () => {
       })
     );
     expect(sendWaitlistOfferEmail).toHaveBeenCalledWith(
-      { bookingId: expect.any(String) },
+      { bookingId: "booking1" },
       expect.anything(),
       expect.anything(),
       expect.anything(),
