@@ -115,6 +115,8 @@ export async function sendNoticePublishedEmails(
         to: recipient.email,
         subject: `New notice: ${notice.title}`,
         html: noticePublishedTemplate(firstName, notice.title, noticeUrl),
+        // Member notices are club-wide, not about any booking (#2258).
+        bookingContext: "none",
         templateName: "notice-published",
         templateData: {
           firstName,

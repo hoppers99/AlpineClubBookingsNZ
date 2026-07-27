@@ -654,6 +654,8 @@ export async function sendBookingRequestQuote(input: {
   let emailDelivered = true;
   try {
     await sendBookingRequestQuoteEmail({
+      // A quote is sent before any booking exists (#2258).
+      bookingContext: "none",
       email: quote.bookingRequest.contactEmail,
       firstName: quote.bookingRequest.contactFirstName,
       lodgeId: quote.bookingRequest.lodgeId ?? null,

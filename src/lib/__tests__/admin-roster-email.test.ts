@@ -89,6 +89,7 @@ describe("PUT /api/admin/roster/[date] email action", () => {
   it("returns partial-failure details instead of failing the whole request", async () => {
     mockChoreAssignmentFindMany.mockResolvedValue([
       {
+        bookingId: "booking-1",
         choreTemplate: { name: "Kitchen", description: null },
         bookingGuest: {
           id: "guest-1",
@@ -102,6 +103,7 @@ describe("PUT /api/admin/roster/[date] email action", () => {
         },
       },
       {
+        bookingId: "booking-1",
         choreTemplate: { name: "Bathrooms", description: null },
         bookingGuest: {
           id: "guest-2",
@@ -146,6 +148,7 @@ describe("PUT /api/admin/roster/[date] email action", () => {
   it("threads the dependent's memberId + inheritEmailFromId into the resolver and sends when allowed (#1285)", async () => {
     mockChoreAssignmentFindMany.mockResolvedValue([
       {
+        bookingId: "booking-1",
         choreTemplate: { name: "Kitchen", description: null },
         bookingGuest: {
           id: "guest-1",
@@ -180,6 +183,8 @@ describe("PUT /api/admin/roster/[date] email action", () => {
     // Delivery follows the inherited email (the primary's inbox), and the sender
     // is a pure transport — no preference arg is passed to it anymore.
     expect(mockSendChoreRosterEmail).toHaveBeenCalledWith(
+      // #2258: the roster is attributed to the booking whose stay it covers.
+      { bookingId: "booking-1" },
       "primary@test.com",
       "Dana Young",
       "2026-04-10",
@@ -194,6 +199,7 @@ describe("PUT /api/admin/roster/[date] email action", () => {
   it("suppresses an opted-out recipient before creating a token — no orphaned token, counted as skipped (#1285)", async () => {
     mockChoreAssignmentFindMany.mockResolvedValue([
       {
+        bookingId: "booking-1",
         choreTemplate: { name: "Kitchen", description: null },
         bookingGuest: {
           id: "guest-1",
@@ -236,6 +242,7 @@ describe("PUT /api/admin/roster/[date] email action", () => {
   it("sends and reissues tokens by default (absent notifyMember) and writes no audit record (#1785)", async () => {
     mockChoreAssignmentFindMany.mockResolvedValue([
       {
+        bookingId: "booking-1",
         choreTemplate: { name: "Kitchen", description: null },
         bookingGuest: {
           id: "guest-1",
@@ -276,6 +283,7 @@ describe("PUT /api/admin/roster/[date] email action", () => {
   it("suppresses the whole send with notifyMember:false, leaves tokens untouched, and audits notifyMember:false (#1785)", async () => {
     mockChoreAssignmentFindMany.mockResolvedValue([
       {
+        bookingId: "booking-1",
         choreTemplate: { name: "Kitchen", description: null },
         bookingGuest: {
           id: "guest-1",
@@ -321,6 +329,7 @@ describe("PUT /api/admin/roster/[date] email action", () => {
   it("sends with notifyMember:true and writes no audit record (#1785)", async () => {
     mockChoreAssignmentFindMany.mockResolvedValue([
       {
+        bookingId: "booking-1",
         choreTemplate: { name: "Kitchen", description: null },
         bookingGuest: {
           id: "guest-1",

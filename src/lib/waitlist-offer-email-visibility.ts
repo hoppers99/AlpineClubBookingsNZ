@@ -11,6 +11,20 @@ type WaitlistOfferEmailRetryState =
   | "retrying"
   | "exhausted"
   | "undeliverable"
+  // #2258: the offer email was deliberately withheld because the booking has
+  // the "No emails" switch on. Its OWN state, never folded into "missing" or
+  // "undeliverable": those two mean the member did not get a message we tried to
+  // send (an operator must act), while this one means an admin chose silence.
+  // needsOperatorAction is false for it.
+  | "suppressed"
+  // #2258: a silenced booking that is nonetheless sitting on a LIVE, unexpired
+  // offer. Candidacy exclusion means this should not normally arise, but two
+  // real paths reach it — the switch being turned on AFTER an offer was made,
+  // and the post-commit race where the offer commits before the send is gated —
+  // and the consequence is severe: the entry holds a bed for the whole offer
+  // window while the member is never told, then lapses. This is the ONE
+  // suppression state with needsOperatorAction: true.
+  | "suppressed_live_offer"
   | "missing";
 
 export interface WaitlistOfferEmailDelivery {
@@ -27,6 +41,13 @@ type WaitlistOfferBooking = {
   id: string;
   status: BookingStatus;
   waitlistOfferedAt: Date | null;
+  // #2258: required, so a caller that assembles this shape by hand cannot
+  // silently report a deliberately-silenced booking as a delivery failure.
+  noEmails: boolean;
+  // #2258: needed to tell a silenced entry sitting on a LIVE offer (an operator
+  // problem — a held bed nobody was told about) from one whose offer has already
+  // lapsed (nothing left to do).
+  waitlistOfferExpiresAt: Date | null;
   member: {
     email: string;
   };
@@ -35,6 +56,7 @@ type WaitlistOfferBooking = {
 type WaitlistOfferEmailLog = {
   id: string;
   to: string;
+  bookingId: string | null;
   status: EmailLogStatus;
   attempts: number;
   lastAttemptAt: Date;
@@ -65,8 +87,12 @@ function chooseLatestEmailLog(
   const matching = emailLogs.filter((emailLog) =>
     emailLogMatchesBooking(emailLog, booking),
   );
-  const withBookingLink = matching.filter((emailLog) =>
-    emailLog.htmlBody?.includes(booking.id),
+  const withBookingLink = matching.filter(
+    (emailLog) =>
+      // #2258 added a real bookingId column; prefer it, and keep the historical
+      // body-scan fallback for rows written before it existed (and for withheld
+      // rows, which retain no body at all).
+      emailLog.bookingId === booking.id || emailLog.htmlBody?.includes(booking.id),
   );
   const candidates = withBookingLink.length > 0 ? withBookingLink : matching;
 
@@ -75,8 +101,41 @@ function chooseLatestEmailLog(
     .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0] ?? null;
 }
 
-function toDelivery(emailLog: WaitlistOfferEmailLog | null): WaitlistOfferEmailDelivery {
+function hasLiveOffer(booking: WaitlistOfferBooking, now: Date) {
+  return (
+    booking.waitlistOfferExpiresAt != null &&
+    booking.waitlistOfferExpiresAt.getTime() > now.getTime()
+  );
+}
+
+function suppressedState(
+  booking: WaitlistOfferBooking,
+  now: Date,
+): { retryState: WaitlistOfferEmailRetryState; needsOperatorAction: boolean } {
+  return hasLiveOffer(booking, now)
+    ? { retryState: "suppressed_live_offer", needsOperatorAction: true }
+    : { retryState: "suppressed", needsOperatorAction: false };
+}
+
+function toDelivery(
+  emailLog: WaitlistOfferEmailLog | null,
+  booking: WaitlistOfferBooking,
+  now: Date,
+): WaitlistOfferEmailDelivery {
   if (!emailLog) {
+    // A suppressed booking never gets an offer email (processWaitlistForDates
+    // excludes it from candidacy), so an absent log here is expected rather than
+    // an operator problem. Reporting "missing" would be a false alarm.
+    if (booking.noEmails) {
+      return {
+        status: "MISSING",
+        emailLogId: null,
+        attempts: null,
+        lastAttemptAt: null,
+        errorMessage: null,
+        ...suppressedState(booking, now),
+      };
+    }
     return {
       status: "MISSING",
       emailLogId: null,
@@ -85,6 +144,17 @@ function toDelivery(emailLog: WaitlistOfferEmailLog | null): WaitlistOfferEmailD
       errorMessage: null,
       retryState: "missing",
       needsOperatorAction: true,
+    };
+  }
+
+  if (emailLog.status === EmailLogStatus.SKIPPED_NO_EMAILS) {
+    return {
+      status: emailLog.status,
+      emailLogId: emailLog.id,
+      attempts: emailLog.attempts,
+      lastAttemptAt: emailLog.lastAttemptAt.toISOString(),
+      errorMessage: emailLog.errorMessage,
+      ...suppressedState(booking, now),
     };
   }
 
@@ -147,6 +217,7 @@ export async function getWaitlistOfferEmailDeliveries(
     (booking) => booking.waitlistOfferedAt,
   );
   const deliveries = new Map<string, WaitlistOfferEmailDelivery>();
+  const now = new Date();
 
   if (offeredBookings.length === 0) {
     return deliveries;
@@ -154,7 +225,7 @@ export async function getWaitlistOfferEmailDeliveries(
 
   if (lookupBookings.length === 0) {
     for (const booking of offeredBookings) {
-      deliveries.set(booking.id, toDelivery(null));
+      deliveries.set(booking.id, toDelivery(null, booking, now));
     }
     return deliveries;
   }
@@ -181,6 +252,7 @@ export async function getWaitlistOfferEmailDeliveries(
     select: {
       id: true,
       to: true,
+      bookingId: true,
       status: true,
       attempts: true,
       lastAttemptAt: true,
@@ -194,8 +266,8 @@ export async function getWaitlistOfferEmailDeliveries(
     deliveries.set(
       booking.id,
       booking.waitlistOfferedAt
-        ? toDelivery(chooseLatestEmailLog(booking, emailLogs))
-        : toDelivery(null),
+        ? toDelivery(chooseLatestEmailLog(booking, emailLogs), booking, now)
+        : toDelivery(null, booking, now),
     );
   }
 

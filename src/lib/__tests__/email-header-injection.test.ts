@@ -5,6 +5,11 @@ const { mockPrisma, mockTransporter, mockLogger } = vi.hoisted(() => {
     sendMail: vi.fn().mockResolvedValue({ messageId: "msg-header-test" }),
   };
   const mockPrisma = {
+    // #2258: the mailer reads the booking's "No emails" switch before every
+    // booking-scoped send; off means unchanged behaviour.
+    booking: {
+      findUnique: vi.fn().mockResolvedValue({ noEmails: false }),
+    },
     emailLog: {
       create: vi.fn().mockResolvedValue({ id: "log-header-test" }),
       update: vi.fn().mockResolvedValue({}),
@@ -61,6 +66,7 @@ describe("email header CRLF injection protections", () => {
   ])("rejects CR/LF in to before sending", async ({ to }) => {
     await expect(
       sendEmail({
+        bookingContext: "none",
         to,
         subject: "Hello",
         html: "<p>Hello</p>",
@@ -79,6 +85,7 @@ describe("email header CRLF injection protections", () => {
   ])("sanitizes CR/LF from subject and still sends", async ({ subject }) => {
     vi.stubEnv("NODE_ENV", "production");
     await sendEmail({
+      bookingContext: "none",
       to: "member@example.com",
       subject,
       html: "<p>Hello</p>",

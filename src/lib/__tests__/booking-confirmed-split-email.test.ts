@@ -37,6 +37,7 @@ describe("sendBookingConfirmedEmail split provisional section (#1942)", () => {
     const { sendBookingConfirmedEmail } = await import("../email/booking");
 
     await sendBookingConfirmedEmail(
+      { bookingId: "bk_test" },
       "member@example.org",
       "Sam",
       checkIn,
@@ -65,6 +66,7 @@ describe("sendBookingConfirmedEmail split provisional section (#1942)", () => {
     const { sendBookingConfirmedEmail } = await import("../email/booking");
 
     await sendBookingConfirmedEmail(
+      { bookingId: "bk_test" },
       "member@example.org",
       "Sam",
       checkIn,

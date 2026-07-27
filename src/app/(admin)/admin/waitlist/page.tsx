@@ -29,7 +29,7 @@ import { buildHrefWithReturnTo, buildPathWithSearch } from "@/lib/internal-retur
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100] as const;
 
 interface OfferEmailDelivery {
-  status: "QUEUED" | "SENT" | "FAILED" | "BOUNCED" | "MISSING";
+  status: "QUEUED" | "SENT" | "FAILED" | "BOUNCED" | "SKIPPED_NO_EMAILS" | "MISSING";
   emailLogId: string | null;
   attempts: number | null;
   lastAttemptAt: string | null;
@@ -40,6 +40,10 @@ interface OfferEmailDelivery {
     | "retrying"
     | "exhausted"
     | "undeliverable"
+    // #2258: withheld on purpose by the booking's "No emails" switch.
+    | "suppressed"
+    // #2258: silenced AND still holding a live offer — an operator must act.
+    | "suppressed_live_offer"
     | "missing";
   needsOperatorAction: boolean;
 }
@@ -62,6 +66,8 @@ interface WaitlistEntry {
   // (and emails the member). A $0 no-adult booking that is APPROVED lands PAID
   // even though requiresAdminReview is still set, so the notify dialog must show.
   adminReviewStatus: string | null;
+  // #2258: the per-booking "No emails" switch.
+  noEmails: boolean;
   finalPriceCents: number;
   createdAt: string;
   offerEmailDelivery: OfferEmailDelivery | null;
@@ -138,6 +144,17 @@ function getWaitlistActionContext(entry: WaitlistEntry) {
     return expires ? `Offer expires ${expires}` : "Offer sent; no expiry recorded";
   }
 
+  // #2258: a silenced entry is deliberately excluded from offers, so it will sit
+  // here indefinitely. Say so plainly — otherwise it reads as an ordinary entry
+  // waiting its turn, and an officer wonders why it is never offered. It still
+  // occupies its place in the queue and still counts toward the position shown
+  // to the members behind it (see docs/DOMAIN_INVARIANTS.md).
+  if (entry.noEmails) {
+    return entry.waitlistPosition
+      ? `Position #${entry.waitlistPosition} — silenced, will not be offered`
+      : "Silenced — will not be offered while emails are off";
+  }
+
   if (entry.waitlistPosition) {
     return `Position #${entry.waitlistPosition} waiting for capacity`;
   }
@@ -157,6 +174,10 @@ function getOfferEmailSummary(delivery: OfferEmailDelivery) {
       return "Offer email retry exhausted";
     case "undeliverable":
       return "Offer email undeliverable";
+    case "suppressed":
+      return "Offer email withheld (No emails)";
+    case "suppressed_live_offer":
+      return "Offer live but emails are off — member not told";
     case "missing":
       return "Offer email log missing";
   }
@@ -169,6 +190,12 @@ function getOfferEmailBadgeClass(delivery: OfferEmailDelivery) {
 
   if (delivery.retryState === "retrying" || delivery.retryState === "queued") {
     return "bg-warning-muted text-warning";
+  }
+
+  // #2258: deliberate silence is neither a success nor a problem — render it
+  // neutral so it never reads as "the member was told".
+  if (delivery.retryState === "suppressed") {
+    return "bg-muted text-muted-foreground";
   }
 
   return "bg-success-muted text-success";
@@ -733,14 +760,27 @@ export default function AdminWaitlistPage() {
                             {formatOfferEmailDetail(entry.offerEmailDelivery)}
                           </p>
                         )}
-                        {entry.offerEmailDelivery.needsOperatorAction && (
-                          <Link
-                            href="/admin/email-deliverability"
-                            className="block text-xs text-primary hover:underline"
-                          >
-                            Review email recovery
-                          </Link>
-                        )}
+                        {entry.offerEmailDelivery.needsOperatorAction &&
+                          (entry.offerEmailDelivery.retryState ===
+                          "suppressed_live_offer" ? (
+                            // #2258: nothing failed to deliver, so email
+                            // recovery is the wrong place to send an officer.
+                            // The fix is on the booking itself.
+                            <Link
+                              href={`/admin/bookings/${entry.id}`}
+                              className="block text-xs text-primary hover:underline"
+                            >
+                              Open the booking — turn emails back on or retract
+                              the offer
+                            </Link>
+                          ) : (
+                            <Link
+                              href="/admin/email-deliverability"
+                              className="block text-xs text-primary hover:underline"
+                            >
+                              Review email recovery
+                            </Link>
+                          ))}
                       </div>
                     )}
                   </TableCell>

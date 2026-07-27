@@ -37,15 +37,27 @@ export function SendGuestPaymentLinkButton({ bookingId }: { bookingId: string })
           data.error || "Unable to send the payment link right now."
         );
       }
+      // #2258: a booking can have several provisional children, and some may not
+      // have been emailed. Claiming unqualified success would leave the booker
+      // believing every guest is covered when they are not — so name the
+      // shortfall, without naming its cause. The server sends only this
+      // aggregate to a non-admin; the cause-specific counts are admin-only.
+      const notDelivered = Number(data.notDelivered ?? 0);
+      const shortfall =
+        notDelivered > 0
+          ? ` ${notDelivered} of your guest bookings could not be emailed — please contact the club about ${notDelivered === 1 ? "it" : "them"}.`
+          : "";
       if (data.sent > 0) {
         setSentOnce(true);
         setDone(
-          "We've emailed you a secure link to pay for your guests. Any earlier link no longer works."
+          `We've emailed you a secure link to pay for your guests. Any earlier link no longer works.${shortfall}`
         );
       } else if (data.justSent > 0) {
         setSentOnce(true);
+        // The cooldown branch needs the shortfall too: a second click on a
+        // booking with a partial send must not report unqualified success.
         setDone(
-          "A payment link was sent moments ago — check your email (and spam folder). You can request a fresh one in a minute."
+          `A payment link was sent moments ago — check your email (and spam folder). You can request a fresh one in a minute.${shortfall}`
         );
       } else {
         setDone("Your guests' payment is already taken care of.");

@@ -1742,6 +1742,7 @@ describe("cancelBooking credit refunds", () => {
     // The tiered restored amount is threaded to the cancellation email (7th arg)
     // so the member sees the policy-adjusted restore, not the full applied sum.
     expect(mocks.sendBookingCancelledEmail).toHaveBeenCalledWith(
+      { bookingId: "booking_credit" },
       "member@example.com",
       "Alice",
       expect.anything(),
@@ -1912,8 +1913,8 @@ describe("cancelBooking credit refunds", () => {
       const emailCalls = mocks.sendBookingCancelledEmail.mock.calls;
       expect(emailCalls).toHaveLength(2);
       expect(emailCalls[0]).toEqual(emailCalls[1]);
-      expect(emailCalls[0][0]).toBe("member@example.com");
-      expect(emailCalls[0][4]).toBe(5000);
+      expect(emailCalls[0][1]).toBe("member@example.com");
+      expect(emailCalls[0][5]).toBe(5000);
 
       // Same audit — identical details + settlement metadata + subjectMemberId
       // (the booking owner); ONLY the actor `memberId` differs.
@@ -2156,8 +2157,8 @@ describe("cancelBooking credit refunds", () => {
         })
       );
       const emailCall = mocks.sendBookingCancelledEmail.mock.calls[0];
-      expect(emailCall[5]).toBe("card");
-      expect(emailCall[6]).toBe(2000);
+      expect(emailCall[6]).toBe("card");
+      expect(emailCall[7]).toBe(2000);
     });
 
     it("returns 409 and restores nothing when the under-lock re-read finds the booking already CANCELLED", async () => {
@@ -2608,6 +2609,7 @@ describe("cancelBooking detaches the held booking-request pointer (issue #1254)"
 
     expect(result.status).toBe(200);
     expect(mocks.sendBookingCancelledEmail).toHaveBeenCalledWith(
+      { bookingId: "held-1" },
       "req@example.com",
       "Req",
       heldBooking.checkIn,
@@ -2828,6 +2830,7 @@ describe("cancelBooking no-payment claim-first (issue #1311)", () => {
     // Email uses the UNDER-LOCK member + dates, never the stale outer read.
     expect(mocks.sendBookingCancelledEmail).toHaveBeenCalledTimes(1);
     expect(mocks.sendBookingCancelledEmail).toHaveBeenCalledWith(
+      { bookingId: "held-1" },
       "fresh@example.com",
       "Fresh",
       freshCheckIn,
@@ -2838,6 +2841,7 @@ describe("cancelBooking no-payment claim-first (issue #1311)", () => {
       "lodge-fresh",
     );
     expect(mocks.sendBookingCancelledEmail).not.toHaveBeenCalledWith(
+      { bookingId: "held-1" },
       "stale@example.com",
       expect.anything(),
       expect.anything(),

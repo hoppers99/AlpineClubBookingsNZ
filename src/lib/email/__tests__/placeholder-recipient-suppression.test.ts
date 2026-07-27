@@ -50,6 +50,7 @@ beforeEach(() => {
 describe("sendEmail placeholder recipient suppression (#1935)", () => {
   it("never sends to a walk-in placeholder owner and creates no EmailLog row", async () => {
     const outcome = await sendEmail({
+      bookingContext: "none",
       to: buildPlaceholderContactEmail(),
       subject: "Your booking is on hold",
       html: "<p>hold</p>",
@@ -64,6 +65,7 @@ describe("sendEmail placeholder recipient suppression (#1935)", () => {
 
   it("still processes a real recipient normally", async () => {
     const outcome = await sendEmail({
+      bookingContext: "none",
       to: "real.person@example.com",
       subject: "Your booking is on hold",
       html: "<p>hold</p>",

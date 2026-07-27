@@ -33,6 +33,10 @@ type MismatchBooking = {
   status: BookingStatus;
   deletedAt: Date | null;
   waitlistOfferedAt: Date | null;
+  waitlistOfferExpiresAt: Date | null;
+  // #2258: a deliberately-silenced booking is not a delivery failure — unless
+  // it is sitting on a live offer, which needs the expiry to detect.
+  noEmails: boolean;
   member: { email: string };
   payment: {
     id: string;
@@ -77,6 +81,8 @@ export async function getBookingProviderMismatches(
       status: true,
       deletedAt: true,
       waitlistOfferedAt: true,
+      waitlistOfferExpiresAt: true,
+      noEmails: true,
       member: { select: { email: true } },
       payment: {
         select: {
@@ -143,6 +149,10 @@ export async function getBookingProviderMismatches(
         id: booking.id,
         status: booking.status,
         waitlistOfferedAt: booking.waitlistOfferedAt,
+        waitlistOfferExpiresAt: booking.waitlistOfferExpiresAt,
+        // #2258: a deliberately-silenced booking is not a delivery failure —
+        // unless its offer is still live, which the expiry decides.
+        noEmails: booking.noEmails,
         member: { email: booking.member.email },
       },
     ]);
@@ -152,7 +162,7 @@ export async function getBookingProviderMismatches(
         id: "waitlist-offer-email-failed",
         label: "Waitlist offer email undelivered",
         description:
-          "A place has been offered, but the offer email is missing, bounced, or exhausted its retries — the member may not know their offer is ticking down.",
+          "A place has been offered, but the offer email is missing, bounced, exhausted its retries, or was withheld because the booking is set to send no emails — the member may not know their offer is ticking down.",
         href: "/admin/waitlist",
         linkLabel: "Open waitlist queue",
       });

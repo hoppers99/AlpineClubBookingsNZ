@@ -40,6 +40,8 @@ export async function sendNominationRequestEmail(params: {
       familyMemberCount: params.familyMemberCount,
       expiresAt: params.expiresAt,
     }),
+    // Membership/subscription mail is not about any booking (#2258).
+    bookingContext: "none",
     templateName: "nomination-request",
     templateData: {
       nominatorName: params.nominatorName,
@@ -70,6 +72,8 @@ export async function sendInductionSignOffRequestEmail(params: {
       signerRoleLabel: params.signerRoleLabel,
       inductionUrl,
     }),
+    // Membership/subscription mail is not about any booking (#2258).
+    bookingContext: "none",
     templateName: "induction-sign-off-request",
     templateData: {
       signerName: params.signerName,
@@ -97,6 +101,8 @@ export async function sendMembershipApplicationApprovedEmail(params: {
       resetUrl,
       params.adminNotes,
     ),
+    // Membership/subscription mail is not about any booking (#2258).
+    bookingContext: "none",
     templateName: "membership-application-approved",
     templateData: {
       firstName: params.firstName,
@@ -119,6 +125,8 @@ export async function sendMembershipApplicationRejectedEmail(params: {
       params.firstName,
       params.adminNotes,
     ),
+    // Membership/subscription mail is not about any booking (#2258).
+    bookingContext: "none",
     templateName: "membership-application-rejected",
     templateData: {
       firstName: params.firstName,
@@ -145,6 +153,8 @@ export async function sendMembershipCancellationSubmittedEmail(params: {
       reason: params.reason,
       reviewUrl,
     }),
+    // Membership/subscription mail is not about any booking (#2258).
+    bookingContext: "none",
     templateName: "membership-cancellation-submitted",
     templateData: {
       firstName: params.firstName,
@@ -176,6 +186,8 @@ export async function sendMembershipCancellationConfirmationEmail(params: {
       confirmationUrl,
       expiresAt: params.expiresAt,
     }),
+    // Membership/subscription mail is not about any booking (#2258).
+    bookingContext: "none",
     templateName: "membership-cancellation-confirmation",
     templateData: {
       firstName: params.firstName,
@@ -200,6 +212,8 @@ export async function sendMembershipCancellationApprovedEmail(params: {
     to: params.email,
     subject: `Membership cancellation approved — ${CLUB_BOOKINGS_NAME}`,
     html: membershipCancellationApprovedTemplate(params),
+    // Membership/subscription mail is not about any booking (#2258).
+    bookingContext: "none",
     templateName: "membership-cancellation-approved",
     templateData: {
       firstName: params.firstName,
@@ -221,6 +235,8 @@ export async function sendMemberArchiveApprovedEmail(params: {
     to: params.email,
     subject: `Membership archive completed — ${CLUB_BOOKINGS_NAME}`,
     html: memberArchiveApprovedTemplate(params),
+    // Membership/subscription mail is not about any booking (#2258).
+    bookingContext: "none",
     templateName: "member-archive-approved",
     templateData: {
       firstName: params.firstName,
@@ -240,6 +256,8 @@ export async function sendMemberArchiveRejectedEmail(params: {
     to: params.email,
     subject: `Membership archive request update — ${CLUB_BOOKINGS_NAME}`,
     html: memberArchiveRejectedTemplate(params),
+    // Membership/subscription mail is not about any booking (#2258).
+    bookingContext: "none",
     templateName: "member-archive-rejected",
     templateData: {
       firstName: params.firstName,
@@ -260,6 +278,8 @@ export async function sendMembershipCancellationRejectedEmail(params: {
     to: params.email,
     subject: `Membership cancellation update — ${CLUB_BOOKINGS_NAME}`,
     html: membershipCancellationRejectedTemplate(params),
+    // Membership/subscription mail is not about any booking (#2258).
+    bookingContext: "none",
     templateName: "membership-cancellation-rejected",
     templateData: {
       firstName: params.firstName,
@@ -296,6 +316,8 @@ export async function sendAgeUpInvitationEmail(
     html: ageUpInvitationTemplate(firstName, resetUrl, {
       targetAgeTierLabel,
     }),
+    // Membership/subscription mail is not about any booking (#2258).
+    bookingContext: "none",
     templateName: "age-up-invitation",
     templateData: {
       firstName,
@@ -340,6 +362,8 @@ export async function sendAgeUpParentEmailHandoffEmail(
       memberLastName: context.memberLastName,
       targetAgeTierLabel,
     }),
+    // Membership/subscription mail is not about any booking (#2258).
+    bookingContext: "none",
     templateName: "age-up-parent-email-handoff",
     templateData: {
       recipientName: context.recipientName,

@@ -195,6 +195,8 @@ export async function sendAdminMemberDeleteApprovedEmail(params: {
     to: params.email,
     subject: `Member delete approved: ${params.memberName}`,
     html: adminMemberDeleteApprovedTemplate(params),
+    // Admin-audience alert: never booking-scoped and never withheld (#2258).
+    bookingContext: "none",
     templateName: "admin-member-delete-approved",
     templateData: {
       requesterName: params.requesterName,
@@ -232,6 +234,8 @@ export async function sendAdminMemberDeleteRejectedEmail(params: {
       reviewNote: params.reviewNote,
       reviewUrl,
     }),
+    // Admin-audience alert: never booking-scoped and never withheld (#2258).
+    bookingContext: "none",
     templateName: "admin-member-delete-rejected",
     templateData: {
       requesterName: params.requesterName,

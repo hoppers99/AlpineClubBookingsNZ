@@ -933,6 +933,9 @@ export async function createNonMemberJoinRequest(
 
   try {
     await sendGroupBookingJoinVerificationEmail({
+      // No joiner booking exists yet — it is created only after this contact
+      // verifies their email, so there is nothing to suppress (#2258).
+      bookingContext: "none",
       email: contactEmail,
       firstName: contactFirstName,
       token,
@@ -1273,6 +1276,7 @@ export async function verifyAndCreateNonMemberJoin(
     // Reuses the booking-request pay-link email (same /pay/[token] flow); a
     // group-specific template is a follow-up.
     await sendBookingRequestApprovedEmail({
+      bookingContext: { bookingId: created.bookingId },
       email: join.contactEmail,
       firstName: join.contactFirstName,
       lodgeId: groupLodgeId,

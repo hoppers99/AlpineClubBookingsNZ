@@ -1900,6 +1900,14 @@ Editable subjects reject secret-bearing tokens (including nomination, quote
 response, and optional chore links), and the render path strips bearer-link
 aliases from legacy stored overrides before SMTP, `EmailLog`, or application
 logging receives the subject.
+Every send carries a REQUIRED, typed `bookingContext` (`{ bookingId } | "none"`)
+so the mailer knows which booking a message belongs to; that is the choke point
+for the per-booking "No emails" switch (`Booking.noEmails`, #2258), which
+withholds every member-facing message for a booking, records each withhold as an
+`EmailLog` row with status `SKIPPED_NO_EMAILS`, never touches admin-audience or
+account/security mail, and fails closed if the switch cannot be read. The retry
+cron and the two Xero-sent invoice emails re-check the same switch because they
+bypass `sendEmail`. See `docs/DOMAIN_INVARIANTS.md` for the full contract.
 If an admin/system alert cannot be delivered to any opted-in admin recipient
 because every send is suppressed or fails, the app records a critical
 communication audit event and surfaces it in Admin Email Deliverability.

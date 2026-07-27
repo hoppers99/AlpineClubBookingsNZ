@@ -913,6 +913,17 @@ The admin waitlist view decorates active `WAITLIST_OFFERED` rows with the latest
 `waitlist-offer` EmailLog status. Failed, exhausted, bounced, or missing delivery
 records are surfaced beside the offer with a link to email-deliverability
 recovery, so state changes are not hidden behind best-effort email delivery.
+A booking carrying the per-booking "No emails" switch (#2258) is excluded from
+waitlist candidacy, so no NEW offer is made to a member who would not be told.
+The exclusion is not retroactive: a switch turned on while an offer is already
+live does not retract it, and the offer commits before its email is sent, so a
+flip in between leaves a live offer with a withheld send. An entry in
+`WAITLIST_OFFERED` whose offer is still unexpired therefore reports
+`suppressed_live_offer` with `needsOperatorAction: true` (a held bed the member
+was never told about); one whose offer has already lapsed reports the benign
+`suppressed`. A silenced entry still in `WAITLISTED` has no EmailLog row at all
+and is marked on the board from the flag; it keeps its queue place and still
+counts toward other members' positions.
 
 ## Bed Allocation Lifecycle
 

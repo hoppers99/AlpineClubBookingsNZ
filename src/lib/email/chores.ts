@@ -16,6 +16,11 @@ import { sendEmail } from "./core";
 // token is created — mirroring how check-in reminders are gated in their cron
 // caller. This sender stays a pure transport so it never double-gates.
 export async function sendChoreRosterEmail(
+  // Booking whose stay this roster covers (#2258). A roster is delivered per
+  // guest of a booking and ChoreAssignment.bookingId is NOT NULL, so there is
+  // no roster without a booking and `"none"` is deliberately not offered: the
+  // per-booking "No emails" switch must always be able to withhold it.
+  bookingContext: { bookingId: string },
   email: string,
   guestName: string,
   date: string,
@@ -32,6 +37,7 @@ export async function sendChoreRosterEmail(
     to: email,
     subject: `Your chore roster for ${formattedDate} - ${EMAIL_DEFAULT_LODGE_NAME}`,
     html: choreRosterTemplate(guestName, date, chores, choreLink),
+    bookingContext,
     templateName: "chore-roster",
     templateData: {
       guestName,
@@ -59,6 +65,9 @@ export async function sendHutLeaderAssignmentEmail(params: {
     to: params.email,
     subject: `Your ${CLUB_NAME} ${CLUB_HUT_LEADER_LABEL.toLowerCase()} assignment`,
     html: hutLeaderAssignmentTemplate(params),
+    // Not booking-scoped: a hut-leader assignment is a roster duty spanning a
+    // date range, not a message about anyone's booking (#2258).
+    bookingContext: "none",
     templateName: "hut-leader-assignment",
     templateData: {
       firstName: params.firstName,

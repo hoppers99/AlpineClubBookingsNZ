@@ -516,6 +516,23 @@ async function addEmailItems(
   });
 }
 
+/**
+ * Projection for the waitlist-offer email visibility read (#2258). Declared
+ * separately so it can be checked against WaitlistOfferBooking below: the `db`
+ * dependency is loosely typed, so an inline select plus a cast would let a
+ * dropped column through silently.
+ */
+const WAITLIST_OFFER_BOOKING_SELECT = {
+  id: true,
+  status: true,
+  waitlistOfferedAt: true,
+  waitlistOfferExpiresAt: true,
+  // A deliberately-silenced booking is not a delivery failure — unless its
+  // offer is still live, which the expiry decides.
+  noEmails: true,
+  member: { select: { email: true } },
+} as const;
+
 async function addWaitlistItems(
   items: StuckStateItem[],
   deps: StuckStateDashboardDependencies,
@@ -526,20 +543,19 @@ async function addWaitlistItems(
       status: "WAITLIST_OFFERED",
       deletedAt: null,
     },
-    select: {
-      id: true,
-      status: true,
-      waitlistOfferedAt: true,
-      waitlistOfferExpiresAt: true,
-      member: {
-        select: {
-          email: true,
-        },
-      },
-    },
+    select: WAITLIST_OFFER_BOOKING_SELECT,
     orderBy: [{ waitlistOfferExpiresAt: "asc" }, { createdAt: "asc" }],
     take: 500,
   })) as WaitlistOfferBooking[];
+  // #2258: the cast above satisfies the loose `db` dependency type, so it would
+  // happily swallow a dropped column. Pin the projection separately: removing a
+  // field from the select above (waitlistOfferExpiresAt, noEmails, ...) now
+  // fails to compile here instead of silently degrading the board to the
+  // benign state.
+  void (WAITLIST_OFFER_BOOKING_SELECT satisfies Record<
+    keyof Omit<WaitlistOfferBooking, "member">| "member",
+    true | { select: { email: true } }
+  >);
   const deliveries = await deps.getWaitlistOfferEmailDeliveries(bookings);
   const offerEmailFailures = [...deliveries.values()].filter(
     (delivery) => delivery.needsOperatorAction,
@@ -561,7 +577,7 @@ async function addWaitlistItems(
     summary: `${offerEmailFailures} active waitlist ${plural(
       offerEmailFailures,
       "offer",
-    )} have missing, bounced, or exhausted offer-email delivery.`,
+    )} have missing, bounced, or exhausted offer-email delivery, or are silenced by the booking's "No emails" switch while their offer is still live.`,
   });
   addItem(items, {
     id: "waitlist-expired-offers",

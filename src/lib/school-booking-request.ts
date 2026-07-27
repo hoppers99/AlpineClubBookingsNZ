@@ -372,6 +372,8 @@ export async function createSchoolBookingRequest(
 
   try {
     await sendBookingRequestVerificationEmail({
+      // A school request has no booking until it is approved (#2258).
+      bookingContext: "none",
       email: contactEmail,
       firstName: contactFirstName,
       token,
