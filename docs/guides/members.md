@@ -109,8 +109,24 @@ prose here rather than with a screenshot:
   comments (a privileged member's login email is Full-Admin-only to change).
 - **Account & Access** — user type, login, access roles, status, induction, and
   lodge access.
-- **Family** — family groups, the billing family selector (finance edit), parent
-  links, partner, and dependents. Parent links can run up to **four
+- **Family** — the family tree, family groups, the billing family selector
+  (finance edit), parent links, partner, and dependents. The **family tree** at
+  the top of the section is a read-only picture of the whole connected family:
+  it follows every recorded parent, second-parent, and confirmed-partner link
+  transitively — across households — and draws each person once, capped at four
+  generations above and below the member you are viewing. Relationships that
+  are not stored anywhere (siblings, half-siblings, cousins, aunts/uncles, a
+  dependant's other parent) are worked out from the links and marked
+  **Derived** with a dashed outline; a solid rail is a recorded parent link, a
+  dashed rail a second-parent link, and a double rule a confirmed partner.
+  Half-siblings are separated from full siblings by *which* parents are shared,
+  not how many. Where a member's club email is inherited, the tree repeats the
+  stored answer ("Club email goes to …", naming the person and, when the
+  mailbox is beyond the direct parent, the relationship) — it never derives its
+  own. Archived members stay in the tree, badged, with contact details hidden.
+  Nothing in the tree can be edited: change the links in the Parent Links,
+  Partner, and Dependents cards below it and the tree follows. Parent links can
+  run up to **four
   generations** — great-grandparent, grandparent, parent, child — with at most
   two parents recorded per member. A member who has dependants of their own can
   still be linked under a parent, as long as the whole chain stays within four
