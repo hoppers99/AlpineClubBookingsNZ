@@ -743,15 +743,17 @@ describe("view-only section banner coverage (#2160)", () => {
                made these numbers true and the earlier prose is what a reader
                would otherwise try (and fail) to add up.
           270  +1  #2259 adds the per-booking "No emails" switch.
+          271  +1  #2247 adds "Restore built-in boards" to the display Templates
+               page — a static opt-out under that page's existing banner.
       */
       // #2259 adds the per-booking "No emails"
       // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into
       // the Admin tools card's layout — the same shape as the capacity- and
       // exclusive-hold controls beside it, so it keeps its own per-button
       // reason rather than opting out under a banner it cannot prove renders.
-      callSites: 270,
-      optOuts: 236,
-      staticOptOuts: 215,
+      callSites: 271,
+      optOuts: 237,
+      staticOptOuts: 216,
       vouchedOptOuts: 21,
       exceptions: 34,
       exceptionFiles: 17,

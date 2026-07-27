@@ -23,6 +23,12 @@ import {
   type OptionDraft,
   type SlotDraft,
 } from "./template-slots";
+import {
+  DisplayTemplatesEmptyState,
+  templatesLoadStateForStatus,
+  useRestoreBuiltInBoards,
+  type TemplatesLoadState,
+} from "./restore-built-ins";
 
 // Lobby display TEMPLATE authoring (fork issue #79, LTV-033, ADR-003 §1). A
 // Template is built on a Layout: it fills each declared slot with content or an
@@ -102,6 +108,8 @@ export default function AdminDisplayTemplatesPage() {
   const [lodges, setLodges] = useState<LodgeOption[]>([]);
   const [previewLodgeId, setPreviewLodgeId] = useState("");
   const [loading, setLoading] = useState(true);
+  // Why the gallery is empty, when it is (#2247) — see restore-built-ins.tsx.
+  const [loadState, setLoadState] = useState<TemplatesLoadState>("loading");
   const [draft, setDraft] = useState<TemplateDraft>(emptyDraft);
   const [message, setMessage] = useState<string | null>(null);
   const [errors, setErrors] = useState<ValidationIssue[]>([]);
@@ -134,6 +142,7 @@ export default function AdminDisplayTemplatesPage() {
       // template is lodge-agnostic, so its preview lodge must be chosen).
       fetch("/api/admin/lodges").catch(() => null),
     ]);
+    setLoadState(templatesLoadStateForStatus(templatesRes.status));
     if (templatesRes.ok) {
       const body = (await templatesRes.json()) as { templates: TemplateListItem[] };
       setTemplates(body.templates ?? []);
@@ -156,6 +165,20 @@ export default function AdminDisplayTemplatesPage() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // "Restore built-in boards" (#2247): re-seeds the code-managed `builtin-*`
+  // layouts/templates for an install whose database predates the display
+  // feature (nothing but the seed ever creates them). Convergent, so the hook
+  // confirms the overwrite first.
+  const restoreBuiltIns = useRestoreBuiltInBoards({
+    onResult: useCallback(
+      (text: string, restored: boolean) => {
+        setMessage(text);
+        if (restored) void refresh();
+      },
+      [refresh]
+    ),
+  });
 
   function startNew() {
     setDraft(emptyDraft());
@@ -472,9 +495,7 @@ export default function AdminDisplayTemplatesPage() {
         <CardContent>
           {loading && <p className="text-muted-foreground text-sm">Loading…</p>}
           {!loading && templates.length === 0 && (
-            <p className="text-muted-foreground text-sm">
-              No templates yet. Author one below.
-            </p>
+            <DisplayTemplatesEmptyState state={loadState} />
           )}
           <div className="space-y-3">
             {templates.map((item) => (
@@ -546,10 +567,23 @@ export default function AdminDisplayTemplatesPage() {
               </div>
             ))}
           </div>
-          <div className="mt-4">
+          <div className="mt-4 flex flex-wrap items-center gap-2">
             <Button variant="outline" onClick={startNew}>
               New template
             </Button>
+            {restoreBuiltIns.confirmDialog}
+            <ViewOnlyActionButton
+              canEdit={canEdit}
+              describeReason={false}
+              variant="outline"
+              disabled={restoreBuiltIns.running}
+              title="Create (or re-create) the built-in layouts and templates that ship with the app"
+              onClick={() => void restoreBuiltIns.run()}
+            >
+              {restoreBuiltIns.running
+                ? "Restoring…"
+                : "Restore built-in boards"}
+            </ViewOnlyActionButton>
           </div>
         </CardContent>
       </Card>
