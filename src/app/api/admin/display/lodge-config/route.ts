@@ -4,14 +4,19 @@ import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import { getDefaultLodgeId } from "@/lib/lodges";
 import { createAuditLog } from "@/lib/audit";
+import { DISPLAY_CONFIG_KEY_PATTERN } from "@/lib/lodge-display/display-token-catalogue";
 
 // Per-lodge display settings (fork issue #34): the {{config:<key>}} glob and
 // the name-granularity override. Validation mirrors the serialiser's
 // sanitiser exactly (issue #31 note): keys lower-case slugs <= 64 chars,
 // string values <= 500 chars — violations are explicit 400s, never silently
 // dropped at the edit surface (AC4).
+//
+// The key pattern is shared with the token assistant's catalogue (#2248) so the
+// picker's free-text key validation can never drift from what this route
+// accepts on save.
 
-const CONFIG_KEY_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const CONFIG_KEY_PATTERN = DISPLAY_CONFIG_KEY_PATTERN;
 const CONFIG_VALUE_MAX = 500;
 
 const putSchema = z.object({
