@@ -4,6 +4,21 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Example text in admin forms no longer looks like an answer somebody already
+  typed (#2257).** Fields such as Season Name, Promo Code, Chore Name, Group
+  Name and Banner Message used to show their example inside the box in grey —
+  "e.g. Winter 2026" — which reads as a value the form has already accepted, and
+  which vanishes the moment you start typing. Those examples now sit as a short
+  line of helper text UNDER the field ("Example: Winter 2026"), where they stay
+  visible while you type. Screen readers announce the example when the field is
+  focused, which they did not do before; when a field also has an error or a
+  "you can view this but not change it" note, the error or note is read first.
+  Placeholders that remain are genuine short instructions ("First name", "Search
+  name or email") and are now shown in italics so they cannot be mistaken for
+  content. Drop-down buttons that said "Select item…" were the worst offender —
+  they were drawn in ordinary text colour, identical to a real selection — and
+  are now styled as placeholders too.
+
 - **"Add Dependant → Link Existing" now finds the members it was hiding, and
   says why when it still finds nobody (#2254).** Searching for an existing
   member to link as a dependant reported "No eligible members found" for almost
