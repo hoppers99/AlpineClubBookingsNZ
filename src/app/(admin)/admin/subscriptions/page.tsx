@@ -54,6 +54,11 @@ import {
 } from "lucide-react";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import { SubscriptionBillingPanel } from "./_components/subscription-billing-panel";
+import {
+  ManualPaymentDialog,
+  type ManualPaymentSubmission,
+  type ManualPaymentTarget,
+} from "./_components/manual-payment-dialog";
 
 function getSeasonYear(date: Date): number {
   return date.getMonth() >= 3 ? date.getFullYear() : date.getFullYear() - 1;
@@ -231,33 +236,50 @@ export default function SubscriptionsPage() {
   // Manual mark-paid / mark-unpaid (E14 #1944). Finance-edit only — the whole
   // action column is hidden for finance-view users (E1 gating pattern). The
   // endpoint never calls Xero; it only writes local status + provenance.
+  //
+  // #2260: confirmation (and the note, and the "email the member or not"
+  // choice on the paid path) now happens in ManualPaymentDialog instead of the
+  // browser's confirm()/prompt().
   const [manualWorkingId, setManualWorkingId] = useState<string | null>(null);
-  async function handleManualPayment(sub: Subscription, direction: "paid" | "unpaid") {
+  const [manualTarget, setManualTarget] = useState<ManualPaymentTarget | null>(
+    null,
+  );
+
+  function openManualPayment(sub: Subscription, direction: "paid" | "unpaid") {
     // Synthetic NOT_REQUIRED rows have no real subscription row to write to.
     if (sub.id.startsWith("not-required:")) return;
-    const who = `${sub.member.firstName} ${sub.member.lastName}`.trim();
-    let note: string | null = null;
-    if (direction === "paid") {
-      if (!confirm(`Mark ${who}'s ${sub.seasonYear} subscription as paid (manual)? This records a payment made outside Xero and does not create an invoice.`)) {
-        return;
-      }
-      // Cancelling the note prompt aborts the whole action (F6) — null means
-      // "Cancel", the empty string means "OK with no note". Truncate client-side
-      // to the API cap so a long note never surfaces as a generic 400.
-      const rawNote = window.prompt("Optional note (e.g. cash, cheque #123). Leave blank to skip.");
-      if (rawNote === null) return;
-      note = rawNote.trim().slice(0, 500) || null;
-    } else if (!confirm(`Reverse the manual payment for ${who}? The subscription returns to its unpaid state.`)) {
-      return;
-    }
-    setManualWorkingId(sub.id);
+    setManualTarget({
+      subscriptionId: sub.id,
+      memberName: `${sub.member.firstName} ${sub.member.lastName}`.trim(),
+      seasonYear: sub.seasonYear,
+      direction,
+    });
+  }
+
+  async function submitManualPayment(submission: ManualPaymentSubmission) {
+    const target = manualTarget;
+    if (!target) return;
+    setManualTarget(null);
+    setManualWorkingId(target.subscriptionId);
     setSyncMessage(null);
     try {
-      const res = await fetch(`/api/admin/subscriptions/${sub.id}/manual-payment`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ direction, note, confirmed: true }),
-      });
+      const res = await fetch(
+        `/api/admin/subscriptions/${target.subscriptionId}/manual-payment`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            direction: target.direction,
+            note: submission.note,
+            confirmed: true,
+            // The API requires the choice on "paid" and rejects it on
+            // "unpaid", so send exactly what the dialog collected.
+            ...(submission.notifyMember === undefined
+              ? {}
+              : { notifyMember: submission.notifyMember }),
+          }),
+        },
+      );
       const json = await res.json();
       if (res.ok) {
         setSyncMessage({ type: "success", text: json.message || "Subscription updated." });
@@ -638,7 +660,7 @@ export default function SubscriptionsPage() {
                         variant="outline"
                         size="sm"
                         disabled={manualWorkingId === sub.id}
-                        onClick={() => handleManualPayment(sub, "unpaid")}
+                        onClick={() => openManualPayment(sub, "unpaid")}
                       >
                         <Undo2 className="h-4 w-4 mr-1" />
                         Mark as unpaid
@@ -653,7 +675,7 @@ export default function SubscriptionsPage() {
                         variant="outline"
                         size="sm"
                         disabled={manualWorkingId === sub.id}
-                        onClick={() => handleManualPayment(sub, "paid")}
+                        onClick={() => openManualPayment(sub, "paid")}
                       >
                         <CheckCircle2 className="h-4 w-4 mr-1" />
                         Mark as paid (manual)
@@ -668,6 +690,13 @@ export default function SubscriptionsPage() {
           )}
         </TableBody>
       </AdminDataTable>
+
+      <ManualPaymentDialog
+        target={manualTarget}
+        submitting={manualWorkingId !== null}
+        onCancel={() => setManualTarget(null)}
+        onSubmit={submitManualPayment}
+      />
 
       <Pagination
         as="div"
