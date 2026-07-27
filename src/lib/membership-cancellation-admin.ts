@@ -22,6 +22,11 @@ import {
   loadMembershipCancellationBlockersByMemberId,
   type MembershipCancellationBlocker,
 } from "@/lib/membership-cancellation-blockers";
+import {
+  EMPTY_ORPHANED_FAMILY_LINKS,
+  readFamilyLinkOrphans,
+  type OrphanedFamilyLinks,
+} from "@/lib/member-family-link-orphans";
 import { loadMembershipCancellationSettings } from "@/lib/membership-cancellation-settings";
 import {
   cleanText,
@@ -56,18 +61,6 @@ type AdminCancellationRequestRecord =
       };
     };
   }>;
-
-/**
- * Members whose family links were cleared as a side effect of approving a
- * cancellation (#2255). Not an error and not a blocker — a declaration, so the
- * admin sees the collateral instead of discovering it later. `dependants` lost
- * a parent link to the cancelled member; `emailInheritors` lost the mailbox
- * their notifications were being delivered to.
- */
-export type MembershipCancellationOrphanedLinks = {
-  dependants: Array<{ id: string; name: string; email: string }>;
-  emailInheritors: Array<{ id: string; name: string; email: string }>;
-};
 
 export type AdminCancellationStatusFilter =
   | MembershipCancellationRequestStatus
@@ -531,10 +524,7 @@ export async function reviewMembershipCancellationParticipant({
   // #2255: filled inside the transaction, read after it. Declared out here
   // because the family links it describes no longer exist by the time the
   // transaction commits — this is the only record of what the sweep detached.
-  let orphanedByCancellation: MembershipCancellationOrphanedLinks = {
-    dependants: [],
-    emailInheritors: [],
-  };
+  let orphanedByCancellation: OrphanedFamilyLinks = EMPTY_ORPHANED_FAMILY_LINKS;
 
   const now = new Date();
   await prisma.$transaction(async (tx) => {
@@ -583,35 +573,10 @@ export async function reviewMembershipCancellationParticipant({
       // "detached and DECLARED" — captured here, before the sweep, and returned
       // to the caller so the admin sees exactly who was left without a parent
       // link or without a notification mailbox.
-      const [detachedDependants, detachedEmailInheritors] = await Promise.all([
-        tx.member.findMany({
-          where: {
-            OR: [
-              { parentMemberId: participant.memberId },
-              { secondaryParentId: participant.memberId },
-            ],
-          },
-          select: { id: true, firstName: true, lastName: true, email: true },
-          orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
-        }),
-        tx.member.findMany({
-          where: { inheritEmailFromId: participant.memberId },
-          select: { id: true, firstName: true, lastName: true, email: true },
-          orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
-        }),
-      ]);
-      orphanedByCancellation = {
-        dependants: detachedDependants.map((member) => ({
-          id: member.id,
-          name: memberName(member),
-          email: member.email,
-        })),
-        emailInheritors: detachedEmailInheritors.map((member) => ({
-          id: member.id,
-          name: memberName(member),
-          email: member.email,
-        })),
-      };
+      orphanedByCancellation = await readFamilyLinkOrphans(
+        tx,
+        participant.memberId,
+      );
 
       await tx.member.update({
         where: { id: participant.memberId },

@@ -10,6 +10,10 @@ import { getTodayDateOnly } from "@/lib/date-only";
 import { prisma } from "@/lib/prisma";
 import { cancelBooking } from "@/lib/booking-cancel";
 import { logAudit } from "@/lib/audit";
+import {
+  EMPTY_ORPHANED_FAMILY_LINKS,
+  readFamilyLinkOrphans,
+} from "@/lib/member-family-link-orphans";
 import { isFullAdmin, memberHoldsPrivilegedRole } from "@/lib/access-roles";
 import {
   AdminAccountGuardError,
@@ -274,6 +278,8 @@ export async function POST(
     // 4-7: Anonymise atomically in a single transaction
     const anonymisedEmail = `deleted-${member.id.substring(0, 8)}@deleted.invalid`;
     let sweptShares: SweptPartnerSharedAllocation[] = [];
+    // #2255: who was still pointed at this member when we anonymised them.
+    let detachedFamilyLinks = EMPTY_ORPHANED_FAMILY_LINKS;
     await prisma.$transaction(async (tx) => {
       // Race-safe re-check of the last-admin invariant inside the mutation
       // transaction (issue #1604): the fail-fast check above ran before the
@@ -332,6 +338,25 @@ export async function POST(
         where: { memberId: member.id },
       });
 
+      // #2255: anonymisation nulled this member's OWN inheritance pointer but
+      // left every pointer aimed AT them untouched, so their dependants — and,
+      // at four generations, their grandchildren — kept resolving club email to
+      // the `@deleted.invalid` address this route had just written. That is a
+      // hard bounce on every send, forever, with nothing on any screen saying
+      // so. The lifecycle paths (cancellation, archive) already sweep those
+      // pointers; this one now does too, and names who it detached in the audit
+      // rather than only counting them.
+      //
+      // The parent LINKS are deliberately left in place: anonymisation keeps
+      // the member row for history, so the family structure is still true even
+      // though the person's details are gone. It is only the mailbox that has
+      // to stop being used.
+      detachedFamilyLinks = await readFamilyLinkOrphans(tx, member.id);
+      await tx.member.updateMany({
+        where: { inheritEmailFromId: member.id },
+        data: { inheritEmailFromId: null, inheritParentEmail: false },
+      });
+
       // 5. Anonymise BookingGuest names for this member's guest appearances
       await tx.bookingGuest.updateMany({
         where: { memberId: member.id },
@@ -377,11 +402,20 @@ export async function POST(
       targetId: member.id,
       details: `Account anonymised. Cancelled ${cancelledBookingIds.length} future bookings.${body.note ? ` Note: ${body.note}` : ""}`,
       ipAddress: ip,
+      metadata: {
+        detachedEmailInheritorIds: detachedFamilyLinks.emailInheritors.map(
+          (inheritor) => inheritor.id,
+        ),
+        dependantIds: detachedFamilyLinks.dependants.map(
+          (dependant) => dependant.id,
+        ),
+      },
     });
 
     return NextResponse.json({
       message: "Account deletion approved. Member data has been anonymised.",
       cancelledBookings: cancelledBookingIds.length,
+      orphanedLinks: detachedFamilyLinks,
     });
   } catch (err) {
     if (err instanceof AdminAccountGuardError) {

@@ -25,6 +25,30 @@ import { randomUUID } from "crypto";
 export const PLACEHOLDER_CONTACT_EMAIL_DOMAIN = "no-email.invalid";
 
 /**
+ * The other club-internal `.invalid` address this codebase mints: the
+ * anonymised address written over a member's real one when a self-service
+ * deletion request is approved (`deleted-xxxxxxxx@deleted.invalid`, see
+ * `POST /api/admin/deletion-requests/[id]`).
+ *
+ * It was never recognised as undeliverable, which mattered once email
+ * inheritance could resolve to an ancestor several generations up (#2255): a
+ * grandchild could keep resolving to an anonymised grandparent and hard-bounce
+ * on every send. It is deliverability-equivalent to a walk-in placeholder — a
+ * reserved-TLD address nobody reads — so it is treated as one.
+ */
+export const DELETED_CONTACT_EMAIL_DOMAIN = "deleted.invalid";
+
+/**
+ * Every domain {@link isPlaceholderContactEmail} rejects. Exported so a SQL
+ * filter that has to mirror that predicate (the admin "inherit email from"
+ * candidate search) cannot list a subset and drift out of step with it.
+ */
+export const PLACEHOLDER_CONTACT_EMAIL_DOMAINS = [
+  PLACEHOLDER_CONTACT_EMAIL_DOMAIN,
+  DELETED_CONTACT_EMAIL_DOMAIN,
+] as const;
+
+/**
  * Mint a fresh, unique placeholder address for a walk-in contact. Uniqueness
  * keeps distinct walk-ins on distinct stored strings even though the partial
  * `Member_email_login_unique` index (canLogin = true only) never applies to
@@ -35,15 +59,20 @@ export function buildPlaceholderContactEmail(): string {
 }
 
 /**
- * True when the address is a club-internal walk-in placeholder rather than a
- * real address. Case/whitespace-insensitive; matches on the reserved domain.
+ * True when the address is a club-internal placeholder rather than a real one —
+ * a walk-in contact who gave no address, or a member anonymised by an approved
+ * deletion request. Case/whitespace-insensitive; matches on the reserved
+ * domains.
+ *
+ * Callers use this to decide whether an address can RECEIVE mail, and both
+ * domains answer "no", so both belong here rather than only the walk-in one.
  */
 export function isPlaceholderContactEmail(
   email: string | null | undefined
 ): boolean {
   if (!email) return false;
-  return email
-    .trim()
-    .toLowerCase()
-    .endsWith(`@${PLACEHOLDER_CONTACT_EMAIL_DOMAIN}`);
+  const normalized = email.trim().toLowerCase();
+  return PLACEHOLDER_CONTACT_EMAIL_DOMAINS.some((domain) =>
+    normalized.endsWith(`@${domain}`)
+  );
 }
