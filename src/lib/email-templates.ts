@@ -308,6 +308,35 @@ export function twoFactorCodeTemplate(params: {
   `);
 }
 
+/**
+ * #2267: the single source of truth for how a promo shows on money emails —
+ * shared by the hand-built HTML confirmation (bookingConfirmedTemplate) and the
+ * flat {{promoSummary}} token the admin-editable body renders, so the two
+ * paths cannot drift apart again (the 31651e00 failure mode).
+ *
+ * `promoAdjustmentCents` is the signed pricing-policy adjustment
+ * (priceAdjustmentCents): negative for a discount, positive for a
+ * FIXED_NIGHTLY/SET_PRICE promo that raises the price. Empty when zero — no
+ * promo means no rows at all, never ragged "Subtotal:"/"Promo adjustment ():"
+ * lines. Values are unescaped plain text; the HTML path escapes at the edge.
+ */
+export function promoAdjustmentSummaryRows(
+  totalCents: number,
+  promoAdjustmentCents: number,
+  promoCode?: string,
+): Array<{ label: string; value: string }> {
+  if (promoAdjustmentCents === 0) return [];
+  const subtotalCents = totalCents - promoAdjustmentCents;
+  const adjustmentPrefix = promoAdjustmentCents > 0 ? "+" : "-";
+  return [
+    { label: "Subtotal", value: formatMoneyCents(subtotalCents) },
+    {
+      label: promoCode ? `Promo adjustment (${promoCode})` : "Promo adjustment",
+      value: `${adjustmentPrefix}${formatMoneyCents(Math.abs(promoAdjustmentCents))}`,
+    },
+  ];
+}
+
 export function bookingConfirmedTemplate(
   firstName: string,
   checkIn: Date,
@@ -354,17 +383,15 @@ export function bookingConfirmedTemplate(
     { label: "Guests", value: String(guestCount) },
   ];
 
-  if (promoAdjustmentCents !== 0) {
-    const subtotalCents = totalCents - promoAdjustmentCents;
-    rows.push({ label: "Subtotal", value: formatCents(subtotalCents) });
-    const promoLabel = options?.promoCode
-      ? `Promo adjustment (${escapeHtml(options.promoCode)})`
-      : "Promo adjustment";
-    const adjustmentPrefix = promoAdjustmentCents > 0 ? "+" : "-";
-    rows.push({
-      label: promoLabel,
-      value: `${adjustmentPrefix}${formatCents(Math.abs(promoAdjustmentCents))}`,
-    });
+  for (const row of promoAdjustmentSummaryRows(
+    totalCents,
+    promoAdjustmentCents,
+    options?.promoCode,
+  )) {
+    // The shared rows are unescaped plain text (the flat token path needs them
+    // raw); the promo code inside the label is club-entered data, so escape at
+    // this HTML edge.
+    rows.push({ label: escapeHtml(row.label), value: escapeHtml(row.value) });
   }
 
   rows.push({ label: "Total Paid", value: formatCents(totalCents) });

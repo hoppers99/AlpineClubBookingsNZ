@@ -11,6 +11,7 @@ import {
   setupIntentFailedTemplate,
   preArrivalReminderTemplate,
   splitGuestPortionCancelledTemplate,
+  promoAdjustmentSummaryRows,
 } from "../email-templates";
 import { CLUB_NAME } from "@/config/club-identity";
 import { EMAIL_DEFAULT_LODGE_NAME } from "@/lib/email-message-settings";
@@ -62,6 +63,22 @@ export async function sendBookingConfirmedEmail(
       ? -options.discountCents
       : 0);
   const promoAdjustmentPrefix = promoAdjustmentCents > 0 ? "+" : "-";
+  // #2267: pre-composed {{promoSummary}} block for the admin-editable body —
+  // the provisionalGuestsNote precedent, built from the same rows as the HTML
+  // template so both paths always tell the same money story. Each row becomes
+  // a "Label: value" line WITH its own trailing newline, so the default body
+  // can write "{{promoSummary}}Total Paid: {{totalPaid}}" and render a clean
+  // contiguous block for a promo and no leftover blank line without one. The
+  // adjustment value carries its own sign (-$12.00 discount, +$1,370.00 for a
+  // price-raising FIXED_NIGHTLY/SET_PRICE promo), so the body must never
+  // prefix a minus of its own.
+  const promoSummary = promoAdjustmentSummaryRows(
+    totalCents,
+    promoAdjustmentCents,
+    options?.promoCode,
+  )
+    .map((row) => `${row.label}: ${row.value}\n`)
+    .join("");
   const provisionalGuests = options?.provisionalGuests;
   // Composed sentence for the {{provisionalGuestsNote}} token — the same story
   // the FILE template renders, so an operator override keeps parity. Empty when
@@ -100,6 +117,12 @@ export async function sendBookingConfirmedEmail(
       checkOut: formatNZDate(checkOut),
       guestCount,
       provisionalGuestsNote,
+      promoSummary,
+      // Legacy per-piece promo tokens, kept supplied so a saved override that
+      // still references them keeps rendering (#2267). New bodies should use
+      // {{promoSummary}}: {{discount}} can only express a price cut (it is
+      // empty for a price-raising promo), which is exactly the bug that
+      // produced a dangling "Discount: -" line on surcharge promos.
       subtotal:
         promoAdjustmentCents !== 0
           ? formatMoneyCents(totalCents - promoAdjustmentCents)

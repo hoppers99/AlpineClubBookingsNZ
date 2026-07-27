@@ -114,7 +114,21 @@ const EXTRA_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>> =
   "admin-capacity-warning": ["lodgeName"],
   // Split-booking parent (#738): a pre-composed sentence describing the
   // provisional non-member portion; empty for a non-split confirmation.
-  "booking-confirmed": ["provisionalGuestsNote"],
+  // #2267: the legacy per-piece promo tokens left the default body when it
+  // moved to the pre-composed {{promoSummary}} block, but the send still
+  // supplies them, so an existing saved override that references them stays
+  // valid and re-savable. {{promoAdjustment}} is the signed value
+  // ("-$12.00" / "+$1,370.00"); {{discount}} can only express a price cut.
+  "booking-confirmed": [
+    "discount",
+    "promoAdjustment",
+    "promoCode",
+    "provisionalGuestsNote",
+    "subtotal",
+  ],
+  // #2267: since the ragged "[only when …]" lines were removed, the default
+  // body leans on the pre-composed {{paymentNote}} for the additional-payment
+  // story; these per-piece tokens stay allowed (and supplied) for overrides.
   "booking-modified": [
     "additionalPaymentMethod",
     "paymentReference",
@@ -575,6 +589,16 @@ function sampleValue(token: string): string {
   if (token === "LODGE_CAPACITY") return String(FALLBACK_LODGE_CAPACITY);
   if (token === "doorCode") return "1234";
   if (token === "expectedArrivalTime") return "16:30";
+  // #2267: mirror what sendBookingConfirmedEmail composes — each row carries
+  // its own trailing newline so the default body's
+  // "{{promoSummary}}Total Paid: …" previews as a contiguous block.
+  if (token === "promoSummary") {
+    return "Subtotal: $150.00\nPromo adjustment (PROMO2026): -$30.00\n";
+  }
+  if (token === "promoAdjustment") return "-$30.00";
+  if (token === "promoCode") return "PROMO2026";
+  if (token === "discount") return "$30.00";
+  if (token === "subtotal") return "$150.00";
   if (token.endsWith("Email") || token === "email") return "member@example.org";
   if (token.endsWith("Url") || token.endsWith("URL")) {
     return "https://bookings.example.org/admin";
@@ -763,7 +787,15 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "participantSummary",
   "pin",
   "position",
+  // #2267: signed promo value ("-$12.00" discount, "+$1,370.00" for a
+  // price-raising FIXED_NIGHTLY/SET_PRICE promo). Unusable by admins before
+  // #2267 even though the send supplied it — the one token that could explain
+  // a surcharge promo.
+  "promoAdjustment",
   "promoCode",
+  // #2267: pre-composed multi-line Subtotal + signed Promo adjustment block
+  // (empty without a promo); the provisionalGuestsNote precedent.
+  "promoSummary",
   "provisionalGuestsNote",
   "quoteOptions",
   "reason",
