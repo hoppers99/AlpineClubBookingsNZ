@@ -22,6 +22,25 @@ glance. For the deeper design and operating detail, see the
 [Lobby Display feature hub](../lobby-display/README.md) and its
 [operating guide](../lobby-display/operating.md) rather than duplicating them here.
 
+## Three words you will meet
+
+The admin uses three words for what is really two stored things. They are
+defined the same way here, on the **Lobby Display** hub cards, and on the
+**Reference** page:
+
+- **Layout** — A Layout is the structural skeleton of a board: an HTML body with
+  named areas and a default CSS block. It sets the shape, not the words.
+- **Template** — A Template is a Layout filled in: content or an embedded module
+  in each area, CSS layered over the layout default, and the footer. A Template
+  is what you bind to a screen.
+- **Board** — A board is what a lobby screen actually shows: a Template rendered
+  on its Layout for the lodge that screen is paired to.
+
+Only Layouts and Templates are stored — a board is the two of them on a screen,
+which is why the **Visual builder** saves a Layout *and* a Template when you
+compose one. The authoring model behind the split is
+[ADR-003](../lobby-display/decisions/ADR-003-layout-template-authoring-model.md).
+
 ## When you'd use it
 
 - You are hanging a new TV in the lodge lobby and need to pair it.
@@ -96,21 +115,34 @@ glance. For the deeper design and operating detail, see the
 
    ![Display Templates page showing the seven built-in templates — Everyday board, Whole lodge, Singles house, Room by room, Nights ahead, Lodge operations, and Welcome kiosk — each with Preview, Builder, Edit (Advanced), and Delete actions, above the New template form](../images/admin/admin-display-templates.png)
 
-2. To use a built-in as a starting point, open it and **duplicate it to
+2. **If the gallery is empty, it now tells you why** rather than showing
+   nothing. The built-in boards are created by the database seed, and upgrading
+   the app does not re-run the seed — so a club whose database predates the
+   lobby display has none of them. **Restore built-in boards** (next to *New
+   template*) creates all seven, and can be pressed again safely. It asks first,
+   because it is a *restore*: every built-in is rewritten to the design that
+   ships with the app, so any change made to a built-in in place is lost. Your
+   own layouts and templates are never touched, screens stay bound to whatever
+   they already show, and the action is written to the audit log. The other two
+   things an empty gallery can mean — the **Lobby TV display** module being
+   switched off, or your admin role lacking lodge view access — are named on
+   screen when they are what happened.
+3. To use a built-in as a starting point, open it and **duplicate it to
    customise** — editing a built-in in place warns you, because built-ins are
    re-seeded on upgrade and an in-place edit would be overwritten. A custom copy is
    yours to keep.
-3. To build one, set a lower-case **Key** (fixed after creation) and **Name**,
+4. To build one, set a lower-case **Key** (fixed after creation) and **Name**,
    choose the **Layout** it fills (locked once created), add optional **CSS
    overrides**, and a **Footer HTML**. Content and footers use `{{config:key}}`
    tokens (per-lodge values) and `{{module:name}}` embeds; external URLs,
    `@import`, and scripts are stripped on save.
-4. Bind the finished template to a screen on the **Devices** page — a template
+5. Bind the finished template to a screen on the **Devices** page — a template
    renders against whichever lodge its display is bound to.
 
 ### 6. Look up the vocabulary (Reference)
 
 1. Open the **Reference** card — a read-only page (nothing here changes a setting)
+   opening with the **Layout vs Template** definitions above, then
    listing the embeddable **modules** (`{{module:…}}`) and their CSS hooks, the
    **conditions** that gate areas (with a live true/false status for the selected
    lodge), and the **CSS tokens** (`var(--display-…)` and club brand tokens) you
