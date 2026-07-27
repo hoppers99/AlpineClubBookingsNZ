@@ -1218,11 +1218,23 @@ Finance editors can mark a member's current-season subscription paid without the
 Xero pipeline, from the row actions on `/admin/subscriptions` (finance-view users
 see no action). "Mark as paid (manual)" sets the subscription to `PAID`, records
 `manuallyMarkedPaidAt`, the acting admin, and an optional free-text note (up to
-500 characters; cancelling the note prompt aborts the action), and is audited.
+500 characters, entered in the confirmation dialog and kept for club records
+only — the member never sees it), and is audited.
 It never calls Xero and never creates or voids an invoice. A manually
 marked-paid member is then paid-up everywhere the app enforces it: lodge booking,
 membership nomination, and the member's own subscription status. The status chip
 shows a `(manual)` suffix and a provenance tooltip.
+
+The confirmation dialog also asks the club's standard email question, and the
+answer is required — the API rejects a mark-paid that does not state it (422),
+so the choice is never made by default. "Mark paid and email member" sends the
+`membership-payment-recorded` receipt: the season, the amount (only when the
+club has a recorded fee amount for that season — a manual payment is cash the
+app never saw, so no figure is invented), and the date it was recorded, all in
+NZ time. "Mark paid without emailing" records the identical payment silently.
+Either way the decision is written to the audit entry. A membership
+subscription is not a booking, so the per-booking "No emails" switch does not
+apply to this receipt.
 
 Manual mark-paid is for cash payments where no Xero invoice exists. The action
 is not offered — and the API rejects it — when the row already carries a Xero
@@ -1233,6 +1245,8 @@ pay).
 "Mark as unpaid" reverses a manual payment: it restores the row's unpaid state
 (`NOT_INVOICED`; `UNPAID` on a legacy row that still carries a Xero invoice
 link), clears the provenance columns, and is audited with the previous status.
+A reversal never emails the member (there is no "your payment was un-recorded"
+notice), so the API rejects a reversal that carries the email flag at all.
 Reversal is available only on a row that was manually marked paid — a
 Xero-owned `PAID` is never overwritten here. The annual-invoice sweep never
 re-invoices a subscription that is already `PAID`, a queued invoice charge

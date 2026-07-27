@@ -173,6 +173,16 @@ stored exceptions.
    made outside Xero (with an optional note) without creating an invoice. It is
    only offered when the member is unpaid and has no Xero invoice. **Mark as
    unpaid** reverses a manual payment.
+2. The confirmation dialog asks the standard email question. **Mark paid and
+   email member** sends the member a short receipt — the season, the amount (only
+   when the club has a recorded fee amount for that season), and the date you
+   recorded it. **Mark paid without emailing** records exactly the same payment
+   and tells nobody. The subscription is marked paid either way, and your choice
+   is written to the audit log.
+3. The note is for the club's records only (for example "cash", "cheque #123").
+   The member never sees it.
+4. Reversing a manual payment never emails the member — there is no
+   "your payment was un-recorded" notice.
 
 ## Settings reference
 
@@ -187,6 +197,7 @@ stored exceptions.
 | Confirm and queue annual batch | Snapshot the previewed charges and queue Xero work | — | Freezes fee/recipient/amount; cannot be undone by later changes |
 | Retry (charge) | Re-attempt a failed/queued charge | — | Idempotent per charge |
 | Mark as paid (manual) / unpaid | Record/reverse a non-Xero payment | — | Only when unpaid with no Xero invoice; never calls Xero |
+| Email the member on mark-paid | Sends the member a payment receipt | no default — you must choose | Paid only; the choice is audited. Reversals never email |
 | Mark family as already invoiced / Unmark | Suppress/restore a per-family charge you know is already covered | — | Finance edit; idempotent; keeps an audit row on unmark |
 
 ## Troubleshooting
