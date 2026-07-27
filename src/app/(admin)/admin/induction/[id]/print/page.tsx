@@ -37,6 +37,11 @@ export default function InductionPrintPage() {
   if (error) return <p className="text-sm text-destructive">{error}</p>;
   if (!induction) return <p className="text-sm text-muted-foreground">Loading…</p>;
 
+  // #2256: formatInductionDate returns null for a missing or unparseable value,
+  // which a template literal would print as the literal string "null" on the
+  // record sheet.
+  const completedOn = formatInductionDate(induction.completedAt);
+
   return (
     <div className="mx-auto max-w-3xl space-y-6 bg-white p-2 text-slate-900">
       <div className="flex items-center justify-between print:hidden">
@@ -53,8 +58,7 @@ export default function InductionPrintPage() {
         <p className="text-sm text-slate-600">
           {INDUCTION_KIND_LABELS[induction.kind]} ·{" "}
           {INDUCTION_STATUS_LABELS[induction.status]}
-          {induction.completedAt &&
-            ` · Completed ${formatInductionDate(induction.completedAt)}`}
+          {completedOn && ` · Completed ${completedOn}`}
         </p>
         <p className="text-xs text-slate-500">
           {induction.template.name} v{induction.template.version}
