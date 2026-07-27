@@ -21,7 +21,7 @@ import { Message } from "./_components/message"
 import { WebhookAmberBadge } from "./_components/webhook-amber-badge"
 import { SECTION_DEFAULTS, type SectionKey, type SyncResult } from "./_components/types"
 import { useXeroConnection } from "./_hooks/use-xero-connection"
-import { useXeroOrgShortCode } from "./_hooks/use-xero-org-short-code"
+import { useXeroOrgShortCode } from "@/hooks/use-xero-org-short-code"
 
 export default function XeroPage() {
   const club = useClubIdentity()
