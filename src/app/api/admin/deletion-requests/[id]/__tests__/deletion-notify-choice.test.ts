@@ -19,7 +19,14 @@ const h = vi.hoisted(() => ({
   prisma: {
     deletionRequest: { findUnique: vi.fn(), update: vi.fn() },
     booking: { findMany: vi.fn() },
-    member: { update: vi.fn() },
+    // #2255: `findMany` reads who the anonymisation is about to detach and
+    // `updateMany` sweeps their inheritance pointers, so club email stops being
+    // aimed at the @deleted.invalid address the route has just written.
+    member: {
+      update: vi.fn(),
+      updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+      findMany: vi.fn().mockResolvedValue([]),
+    },
     familyGroupMember: { deleteMany: vi.fn() },
     bookingGuest: { updateMany: vi.fn() },
     $transaction: vi.fn(),

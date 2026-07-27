@@ -175,6 +175,11 @@ function mockTransaction() {
         update: prisma.member.update,
         updateMany: prisma.member.updateMany,
         count: prisma.member.count,
+        // #2255: deletion anonymisation now reads who it is about to detach
+        // (before nulling their pointers) and sweeps the inheritance aimed at
+        // the anonymised member, so it would otherwise keep hard-bouncing club
+        // email off the @deleted.invalid address forever.
+        findMany: prisma.member.findMany,
       },
       memberAccessRole: {
         createMany: prisma.memberAccessRole.createMany,
