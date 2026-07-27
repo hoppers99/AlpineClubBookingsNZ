@@ -21,8 +21,8 @@ All notable public reference-release changes should be recorded here.
   club's own date settings, so everyone sees the same date, written the same
   way, wherever they are. Chore-roster emails are deliberately unchanged: they
   keep their long "Wednesday, 15 July 2026" wording.
-- **Family groups: pressing the edit (pencil) icon on a group — or **New
-  Group** — used to look like it had done nothing (#2256).** Both forms open in
+- **Family groups: pressing the edit (pencil) icon on a group — or New
+  Group — used to look like it had done nothing (#2256).** Both forms open in
   the same place: below the search bar and the two queue cards, and *above* the
   list of groups. So if you scrolled down to a group and clicked edit, the
   editor opened off the top of the screen; and with a busy queue, New Group

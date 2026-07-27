@@ -51,8 +51,8 @@ page — see [Family billing](#family-billing) below.
    **Delete** it (members are unlinked, not deleted). The editor opens in that
    same place — above the group list — so the page scrolls to it, and the row
    you are editing is highlighted and badged **Editing** until you close or
-   save. Closing or saving puts the keyboard cursor back on the button you
-   started from.
+   save. When you opened the editor from this page, closing or saving puts the
+   keyboard cursor back on the button you started from.
 
 ### Family billing
 

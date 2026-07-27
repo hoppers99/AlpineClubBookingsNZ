@@ -33,9 +33,12 @@ vi.mock("next-auth/react", () => ({
 }));
 
 const routerReplace = vi.fn();
+const stableSearchParams = new URLSearchParams();
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ replace: routerReplace, push: vi.fn(), refresh: vi.fn() }),
-  useSearchParams: () => new URLSearchParams(),
+  // One stable instance: the page's mount effect depends on the searchParams
+  // identity, and a fresh object per render would refetch in a loop.
+  useSearchParams: () => stableSearchParams,
 }));
 
 // Imported after the mocks are registered.

@@ -30,6 +30,15 @@ describe("formatReferenceCacheLabel (#2256)", () => {
     expect(label).not.toContain("15 Apr 2026");
   });
 
+  it("degrades to 'unknown' on an unparseable stamp instead of throwing", () => {
+    const label = formatReferenceCacheLabel("Accounts", {
+      ...CACHE,
+      expiresAt: "not-a-date",
+    });
+    expect(label).toContain("refreshed 16 Apr 2026");
+    expect(label).toContain("expires unknown");
+  });
+
   it("keeps the no-metadata message", () => {
     expect(formatReferenceCacheLabel("Items", null)).toBe(
       "Items: no cache metadata yet",

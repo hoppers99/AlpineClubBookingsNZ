@@ -578,10 +578,12 @@ export default function FamilyGroupsPage() {
           lands here from New Group or a row's Edit button, and the label is
           what tells an assistive-tech user what they just opened. An unnamed
           empty landmark would only add noise, so role, label and tabIndex are
-          all conditional on the form being open. */}
+          all conditional on the form being open. While closed the div must be
+          `hidden`, not merely empty: an empty box would still be a `space-y-6`
+          child and double the gap between the cards around it. */}
       <div
         ref={editorAnchorRef}
-        className="scroll-mt-20 focus:outline-none"
+        className={showForm ? "scroll-mt-20 focus:outline-none" : "hidden"}
         role={showForm ? "region" : undefined}
         aria-label={showForm ? formRegionLabel : undefined}
         tabIndex={showForm ? -1 : undefined}
