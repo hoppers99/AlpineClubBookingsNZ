@@ -3,7 +3,6 @@ import { z } from "zod";
 import { requireAdmin } from "@/lib/session-guards";
 import { getAuditRequestContext } from "@/lib/audit";
 import { setBookingNoEmails } from "@/lib/booking-no-emails-service";
-import { getWithheldBookingEmails } from "@/lib/booking-email-suppression";
 import logger from "@/lib/logger";
 
 const noEmailsSchema = z.object({
@@ -67,10 +66,11 @@ export async function POST(
       return NextResponse.json({ error: result.error }, { status: result.status });
     }
 
-    // What has been withheld so far, so the caller can render the persistent
-    // warning without a second round trip (#2259).
-    const withheld = await getWithheldBookingEmails(bookingId);
-
+    // The withheld list is deliberately NOT returned. #2259's client refreshes
+    // the server-rendered booking page after a successful write, so the banner
+    // re-reads it there — returning a second copy here only added a query whose
+    // result was discarded, and a second shape of the same truth to keep in
+    // step with the banner.
     return NextResponse.json({
       success: true,
       noEmails: result.noEmails,
@@ -80,7 +80,6 @@ export async function POST(
       // #2258: the caller warns the admin that a live waitlist offer keeps
       // ticking down while the member will not be told (#2259's dialog).
       hasLiveWaitlistOffer: result.hasLiveWaitlistOffer,
-      withheldEmails: withheld,
     });
   } catch (err) {
     logger.error({ err, bookingId }, 'Failed to update the booking "No emails" switch');

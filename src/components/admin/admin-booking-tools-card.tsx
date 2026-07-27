@@ -84,6 +84,7 @@ export function AdminBookingToolsCard({
     noEmailsAt: string | null;
     setByName: string | null;
     hasLiveWaitlistOffer: boolean;
+    isWaitlisted: boolean;
   };
 }) {
   const returnTo = `/bookings/${bookingId}`;
@@ -153,6 +154,7 @@ export function AdminBookingToolsCard({
               noEmailsAt={noEmails.noEmailsAt}
               setByName={noEmails.setByName}
               hasLiveWaitlistOffer={noEmails.hasLiveWaitlistOffer}
+              isWaitlisted={noEmails.isWaitlisted}
             />
           )}
           {!isDeleted && (

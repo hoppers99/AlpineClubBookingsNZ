@@ -19,15 +19,28 @@
  * must never learn the switch exists.
  */
 const BOOKING_NO_EMAILS_PROMPT_NOTE =
-  "Emails are off for this booking, so nothing will be sent to the member. You are responsible for telling them directly.";
+  "Emails are off for this booking, so nothing will be sent to the member. You are responsible for telling them directly. The message is still recorded on the booking's withheld list.";
+
+/**
+ * The stale-page caveat. This state is read when the page renders, so a
+ * colleague who cleared the switch a moment ago leaves this notice showing on
+ * an open tab — and the admin then loses an email option they should have had.
+ * The direction is the safe one (the member gets an email either way once the
+ * switch is off, because the suppressed path sends no `notifyMember` at all),
+ * but the admin's own expectation would be wrong, so say so rather than let
+ * them wonder where the choice went.
+ */
+const BOOKING_NO_EMAILS_STALE_NOTE =
+  "If emails were turned back on for this booking just now, refresh the page to get the email choice back.";
 
 export function BookingNoEmailsNotice({ className }: { className?: string }) {
   return (
-    <p
+    <div
       data-testid="booking-no-emails-notice"
-      className={`rounded-md border border-warning-6 bg-warning-3 px-3 py-2 text-sm text-warning-11 ${className ?? ""}`}
+      className={`space-y-1 rounded-md border border-warning-6 bg-warning-3 px-3 py-2 text-sm text-warning-11 ${className ?? ""}`}
     >
-      {BOOKING_NO_EMAILS_PROMPT_NOTE}
-    </p>
+      <p>{BOOKING_NO_EMAILS_PROMPT_NOTE}</p>
+      <p className="text-xs">{BOOKING_NO_EMAILS_STALE_NOTE}</p>
+    </div>
   );
 }

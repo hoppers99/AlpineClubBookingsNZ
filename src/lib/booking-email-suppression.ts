@@ -11,7 +11,7 @@ import { getEmailTemplateDefinition } from "@/lib/email-message-registry";
  * reminders, arrival information, cancellation, waitlist offers, chore rosters,
  * and even the invoice email Xero would send on our behalf. This module owns the
  * mechanism; the booking-page warning banner that lists what was withheld is
- * issue #2259 and reads {@link getWithheldBookingEmails}.
+ * issue #2259 and reads {@link getWithheldBookingEmailSummary}.
  *
  * Three rules make this safe:
  *
@@ -233,12 +233,26 @@ export async function recordWithheldBookingEmail(params: {
   }
 }
 
-export interface WithheldBookingEmail {
-  id: string;
-  templateName: string;
-  subject: string;
-  createdAt: Date;
-}
+/**
+ * Withheld messages for which there is genuinely NOTHING for the officer to
+ * forward, so the banner must not imply otherwise (#2259).
+ *
+ * Both carry a freshly-minted, short-lived artefact rather than information:
+ * the split-guest payment link is decided BEFORE it is minted (so no link
+ * exists), and a chore-roster email issues each guest a fresh 48-hour chore
+ * link (so no link was issued). No body is retained for any withheld message,
+ * so for these two there is no text to relay and no URL to paste — the honest
+ * instruction is "clear the switch and let it regenerate", not "tell the
+ * member what this said".
+ *
+ * Everything else in the list IS relayable: a cancellation, a confirmation or a
+ * modification is information the officer can simply state, and the Xero
+ * invoice still exists in Xero and can be sent from there by hand.
+ */
+const NOTHING_TO_FORWARD_TEMPLATE_NAMES: ReadonlySet<string> = new Set([
+  "split-guest-payment-link",
+  "chore-roster",
+]);
 
 /**
  * A human name for a withheld message, for #2259's banner.
@@ -260,18 +274,79 @@ export function withheldEmailDisplayName(templateName: string): string {
   return getEmailTemplateDefinition(templateName)?.label ?? templateName;
 }
 
+export interface WithheldBookingEmailGroup {
+  templateName: string;
+  /** Registry display name, never a raw slug. */
+  label: string;
+  /** How many of this kind were withheld. EXACT — not a page count. */
+  count: number;
+  /** The most recent one's subject, representative of the group. */
+  subject: string;
+  /** When the most recent one was withheld. */
+  latestAt: Date;
+  /** Nothing exists for the officer to forward (see the set above). */
+  nothingToForward: boolean;
+}
+
+export interface WithheldBookingEmailSummary {
+  /** Exact total number of withheld messages. */
+  total: number;
+  /** One entry per KIND of message, most recently withheld first. */
+  groups: WithheldBookingEmailGroup[];
+}
+
 /**
- * Everything withheld for a booking, newest first — the read behind #2259's
+ * What was withheld for a booking, grouped by kind — the read behind #2259's
  * persistent "these messages were not sent" warning.
+ *
+ * Grouped rather than listed one row at a time, and that is a correctness
+ * property rather than a presentational one. A chore-roster send fans out to
+ * one row per guest per date (a week for a party of eight is ~56 rows), so a
+ * flat newest-first list buries the single cancellation the member most needs
+ * to hear about under dozens of identical roster lines. It also removes the
+ * previous silent `take: 100` cap: the number of DISTINCT templates is bounded
+ * by the registry, so every kind is always shown, and `count`/`total` are read
+ * with aggregates so they stay exact however many rows exist.
  */
-export async function getWithheldBookingEmails(
+export async function getWithheldBookingEmailSummary(
   bookingId: string,
-  options?: { limit?: number },
-): Promise<WithheldBookingEmail[]> {
-  return prisma.emailLog.findMany({
-    where: { bookingId, status: EmailLogStatus.SKIPPED_NO_EMAILS },
-    orderBy: { createdAt: "desc" },
-    take: options?.limit ?? 100,
-    select: { id: true, templateName: true, subject: true, createdAt: true },
-  });
+): Promise<WithheldBookingEmailSummary> {
+  const where = {
+    bookingId,
+    status: EmailLogStatus.SKIPPED_NO_EMAILS,
+  } as const;
+
+  const [total, counts, latestPerTemplate] = await Promise.all([
+    prisma.emailLog.count({ where }),
+    prisma.emailLog.groupBy({
+      by: ["templateName"],
+      where,
+      _count: { _all: true },
+    }),
+    // The newest row for each distinct template, for a representative subject.
+    prisma.emailLog.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      distinct: ["templateName"],
+      select: { templateName: true, subject: true, createdAt: true },
+    }),
+  ]);
+
+  const countByTemplate = new Map(
+    counts.map((row) => [row.templateName, row._count._all]),
+  );
+
+  return {
+    total,
+    groups: latestPerTemplate.map((row) => ({
+      templateName: row.templateName,
+      label: withheldEmailDisplayName(row.templateName),
+      // Fall back to 1 rather than 0: the row in hand proves at least one
+      // exists, so a groupBy that somehow missed it must not render "×0".
+      count: countByTemplate.get(row.templateName) ?? 1,
+      subject: row.subject,
+      latestAt: row.createdAt,
+      nothingToForward: NOTHING_TO_FORWARD_TEMPLATE_NAMES.has(row.templateName),
+    })),
+  };
 }

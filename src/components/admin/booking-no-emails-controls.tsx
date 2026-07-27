@@ -39,6 +39,7 @@ export function BookingNoEmailsControls({
   noEmailsAt,
   setByName,
   hasLiveWaitlistOffer,
+  isWaitlisted = false,
 }: {
   bookingId: string;
   noEmails: boolean;
@@ -59,6 +60,13 @@ export function BookingNoEmailsControls({
    * drives the toast below, so a page that has gone stale still surfaces it.
    */
   hasLiveWaitlistOffer: boolean;
+  /**
+   * Whether the booking is still WAITLISTED (no offer made yet). Candidacy
+   * exclusion means a silenced entry is passed over for offers entirely, so
+   * nothing is withheld and nothing is recorded — the banner can never show
+   * this consequence, so the dialog has to state it before the admin commits.
+   */
+  isWaitlisted?: boolean;
 }) {
   const router = useRouter();
   // Writes /api/admin/bookings/[id]/no-emails, which requires bookings:edit —
@@ -141,8 +149,13 @@ export function BookingNoEmailsControls({
           </p>
         </div>
       )}
-      {error && (
-        <div className="rounded-md bg-danger-3 p-3 text-sm text-danger-11">
+      {/* The dialog carries its own copy of the error (it renders above the
+          page and would hide this one); this is the resting-state slot. */}
+      {error && !dialogOpen && (
+        <div
+          role="alert"
+          className="rounded-md bg-danger-3 p-3 text-sm text-danger-11"
+        >
           {error}
         </div>
       )}
@@ -175,27 +188,72 @@ export function BookingNoEmailsControls({
                 : "No emails will be sent for this booking, including cancellation notices and payment reminders. The member will not be told anything about it. You are responsible for telling the member directly."}
             </DialogDescription>
           </DialogHeader>
-          {/* The dialog warns about an outstanding offer BEFORE the admin
-              confirms: turning the switch on does not retract the offer, so
-              the bed stays held on a clock the member cannot see. */}
+          {/*
+            Warned BEFORE the admin confirms, because it changes the decision.
+
+            Note what this does and does not say. Candidacy exclusion means a
+            live offer can only PREDATE the switch, so the offer email already
+            went out and the member HAS been told and CAN still accept. What
+            they will not get is the expiry notice or an acceptance
+            confirmation. Saying "they cannot accept" would be worse than
+            saying nothing: an officer who believed the bed was dead might
+            reassign it out from under a member who is still entitled to it.
+          */}
           {!noEmails && hasLiveWaitlistOffer && (
             <div className="rounded-md border border-warning-6 bg-warning-3 px-3 py-2 text-sm text-warning-11">
               <p className="font-medium">
                 This booking is holding a live waitlist offer
               </p>
               <p>
-                The bed stays held and the offer keeps counting down to its
-                expiry. Turning emails off does not retract it, and the member
-                will never be told the offer was made — so they cannot accept
-                it unless you contact them.
+                The member was already emailed this offer and can still accept
+                it, so do not reassign the bed. The offer keeps counting down
+                and turning emails off does not retract it — but the member
+                will now get no expiry warning and no confirmation if they do
+                accept, so follow it up yourself.
               </p>
+            </div>
+          )}
+          {/*
+            The consequence the banner is structurally blind to: a silenced
+            WAITLISTED entry is skipped for offers entirely, so no offer is
+            made, nothing is withheld, and no row is ever recorded. If it is not
+            said here it is said nowhere.
+          */}
+          {!noEmails && isWaitlisted && (
+            <div className="rounded-md border border-warning-6 bg-warning-3 px-3 py-2 text-sm text-warning-11">
+              <p className="font-medium">
+                This booking will be passed over for waitlist offers
+              </p>
+              <p>
+                While emails are off it is skipped when beds are handed out, so
+                no offer is made at all. It keeps its place in the queue and
+                does not hold anyone else up, and nothing will appear in the
+                withheld list to remind you — there is no offer to withhold.
+              </p>
+            </div>
+          )}
+          {/*
+            Nit fix: the error used to render behind the dialog's own overlay,
+            so a failed write looked like nothing happening at all.
+          */}
+          {error && (
+            <div
+              role="alert"
+              className="rounded-md bg-danger-3 p-3 text-sm text-danger-11"
+            >
+              {error}
             </div>
           )}
           <DialogFooter className="gap-2 sm:gap-2">
             <Button
               variant="outline"
               disabled={busy}
-              onClick={() => setDialogOpen(false)}
+              onClick={() => {
+                setDialogOpen(false);
+                // Clear on cancel: a stale error from a previous attempt must
+                // not sit under the resting-state button as if it were current.
+                setError("");
+              }}
             >
               Cancel
             </Button>
