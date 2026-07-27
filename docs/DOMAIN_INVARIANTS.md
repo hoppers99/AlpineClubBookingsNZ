@@ -1426,14 +1426,30 @@ The rules are:
   presentational one: a chore-roster send fans out to one row per guest per
   date (~56 for a week for a party of eight), so a flat newest-first list both
   buried the single cancellation that mattered and could hit the old
-  undisclosed `take: 100` cap. The number of DISTINCT templates is bounded by
-  the registry, so the cap is gone rather than merely disclosed.
-  Two classes are marked `nothingToForward` — `split-guest-payment-link` and
-  `chore-roster` — because their content is a freshly minted, short-lived link
-  that was never created (the split-guest link is decided BEFORE minting), so
-  there is nothing for the officer to relay and the honest instruction is to
-  clear the switch and let it regenerate. Everything else IS relayable, the
-  Xero invoice included: it still exists in Xero and can be sent by hand.
+  undisclosed `take: 100` cap. The groups come from a database-side `groupBy`,
+  which returns one row per distinct template; representative subjects are then
+  fetched by matching the per-template maxima under an explicit cap, and a
+  group is never dropped for want of a subject because the aggregate — not the
+  row read — produces the list. (An earlier attempt used
+  `findMany({ distinct })`; Prisma only pushes `distinct` into the query when it
+  LEADS the `orderBy`, so ordering by `createdAt` fetched every withheld row for
+  the booking and deduped in memory — the same unbounded read the `take: 100`
+  had been masking, under a comment claiming the registry bounded it.)
+  Each group carries a `remedy` saying what the officer must actually DO, and
+  the three values are not interchangeable:
+  - `relay` (the default) — the content is information the officer can simply
+    state. The Xero invoice is here: it still exists in Xero and can be sent by
+    hand from there.
+  - `auto-regenerates` — `split-guest-payment-link` only. The link is decided
+    BEFORE it is minted, so none exists, and the settlement cron re-mints and
+    re-sends once the switch is off. Clearing the switch is the whole remedy.
+  - `resend-roster` — `chore-roster`, which was briefly and wrongly treated as
+    the case above. `admin-roster-service.ts` DELETES the guest's existing chore
+    token, mints a fresh one, and only then sends: a live 48-hour link exists,
+    the guest's previous link was destroyed, and the guest currently holds
+    nothing that works. `sendChoreRosterEmail` has exactly one caller — the
+    admin roster action, with no cron behind it — so nothing regenerates it and
+    the officer must re-send the roster by hand.
   The banner also points at the email-failure queue, because three classes are
   structurally absent from it: a send that failed closed on an unreadable
   switch, a withheld send whose own `EmailLog` write failed, and rows queued

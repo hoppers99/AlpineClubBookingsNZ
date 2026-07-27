@@ -112,10 +112,13 @@ While the switch is on:
 - the booking shows a **red banner** listing what was actually withheld,
   grouped by kind with a count (so a week of chore-roster emails is one line
   reading "Chore Roster ×56" rather than 56 lines burying the cancellation
-  underneath). Work down that list when you contact the member. Two kinds are
-  marked **"nothing was created to forward"** — the split-guest payment link
-  and the chore roster — because those emails carry a freshly generated link
-  that was never made; clear the switch and the next run regenerates it;
+  underneath). Work down that list when you contact the member. Two kinds carry
+  a link rather than information, and they need different things from you:
+  the **split-guest payment link** was never generated at all, so clearing the
+  switch is enough — it is re-sent automatically. The **chore roster** is not
+  the same: the guest's old chore link was replaced before the email was
+  withheld, so it no longer works, and nothing re-sends the new one. Clear the
+  switch, then re-send the roster from the Roster page by hand;
 - the banner also points at **Admin → Email deliverability**. The list covers
   messages the system *deliberately* withheld; a message that failed for some
   other reason shows up there instead, so check both before telling a member

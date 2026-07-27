@@ -741,7 +741,7 @@ covers them: **215** pass the literal
 `describeReason={false}` and are covered by a banner in the same file, and **21**
 pass `describeReason={!ancestorRendersViewOnlyBanner}` and are covered by a
 verified vouching parent (see *Vouching for a child's coverage* below). The
-remaining **32 controls across 15 files deliberately keep the per-button
+remaining **34 controls across 17 files deliberately keep the per-button
 default** (`describeReason` left at `true`), in three shapes:
 
 - **Controls inside a dialog, sheet, popover, or dropdown menu.** These live in

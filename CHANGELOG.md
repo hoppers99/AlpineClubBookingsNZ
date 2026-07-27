@@ -25,9 +25,12 @@ All notable public reference-release changes should be recorded here.
   invoice email Xero would have sent. Grouping by kind is deliberate: a week of
   chore-roster emails for a large party is dozens of near-identical records,
   and listed flat they would bury the one cancellation that matters. Two kinds
-  are marked as having nothing to forward, because the email they carry is a
-  freshly generated link that was never created; clearing the switch
-  regenerates it. The banner also points at the email-failure queue, since it
+  carry a link rather than information and each says what to do about it: the
+  split-guest payment link was never generated, so clearing the switch is
+  enough and it re-sends itself; the chore roster replaced the guest's working
+  link before the email was withheld, so that guest currently has nothing that
+  works and an officer has to re-send the roster by hand. The banner also
+  points at the email-failure queue, since it
   lists only what was withheld deliberately and not what failed for other
   reasons. It keeps showing after the switch is turned back off, in amber
   rather than red: turning emails back on re-sends nothing, so a member who

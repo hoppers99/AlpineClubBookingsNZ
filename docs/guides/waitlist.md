@@ -78,16 +78,17 @@ A booking with **No emails** switched on
 ([Bookings](bookings.md#turn-off-all-emails-for-one-booking)) behaves
 differently on this board, and the badges say which case you are looking at:
 
-- **"silenced — will not be offered"** — the entry is skipped when beds are
-  handed out, so no offer is made at all. It keeps its place in the queue and
-  does not hold up the members behind it; the position numbers everyone else
-  sees are unchanged.
-- **"silenced"** — an offer email was withheld, and that offer has since
-  lapsed. Nothing needs doing.
-- **"silenced — live offer, needs attention"** — the entry is holding a bed on
-  an offer that is still running, and the member will get no expiry warning
-  and no confirmation if they accept. This one needs an officer: the member
-  was emailed the offer before the switch went on, so they **can** still
+- **"Position #N — silenced, will not be offered"** (or **"Silenced — will not
+  be offered while emails are off"** when it has no position yet) — the entry is
+  skipped when beds are handed out, so no offer is made at all. It keeps its
+  place in the queue and does not hold up the members behind it; the position
+  numbers everyone else sees are unchanged.
+- **"Offer email withheld (No emails)"** — an offer email was withheld, and that
+  offer has since lapsed. Nothing needs doing.
+- **"Offer live but emails are off — member not told"** — the entry is holding a
+  bed on an offer that is still running, and the member will get no expiry
+  warning and no confirmation if they accept. This one needs an officer: the
+  member was emailed the offer before the switch went on, so they **can** still
   accept it. Do not reassign the bed — contact them.
 
 Force-confirming any of these skips the email choice, as described above.
