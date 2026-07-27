@@ -15,6 +15,25 @@ import { BookingStatus, type Prisma } from "@prisma/client";
  * enable the switch without one.
  */
 
+/**
+ * Whether a booking is sitting on a LIVE (made, unexpired) waitlist offer.
+ *
+ * Exported so #2259's acknowledgement dialog can warn about the outstanding
+ * offer BEFORE the admin confirms, without re-deriving the rule: the booking
+ * page evaluates the same predicate the setter below evaluates, so the dialog's
+ * warning and the response flag can never disagree about what "live" means.
+ */
+export function bookingHasLiveWaitlistOffer(booking: {
+  status: BookingStatus;
+  waitlistOfferExpiresAt: Date | null;
+}): boolean {
+  return (
+    booking.status === BookingStatus.WAITLIST_OFFERED &&
+    booking.waitlistOfferExpiresAt != null &&
+    booking.waitlistOfferExpiresAt.getTime() > Date.now()
+  );
+}
+
 export type SetBookingNoEmailsResult =
   | {
       ok: true;
@@ -74,10 +93,7 @@ export async function setBookingNoEmails(params: {
         return { ok: false, status: 404, error: "Booking not found" };
       }
 
-      const hasLiveWaitlistOffer =
-        booking.status === BookingStatus.WAITLIST_OFFERED &&
-        booking.waitlistOfferExpiresAt != null &&
-        booking.waitlistOfferExpiresAt.getTime() > Date.now();
+      const hasLiveWaitlistOffer = bookingHasLiveWaitlistOffer(booking);
 
       // Idempotent: setting the switch to the value it already has is a no-op
       // that reports success without rewriting the audit columns, so the

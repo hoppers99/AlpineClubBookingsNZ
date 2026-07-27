@@ -261,7 +261,21 @@ describe("POST /api/admin/bookings/[id]/no-emails", () => {
     ).toBe(404);
   });
 
-  it("returns what has already been withheld so the banner can render it", async () => {
+  it("does not read or return the withheld list (#2259)", async () => {
+    /*
+      Reversed from the original expectation, deliberately.
+
+      This route used to compute the withheld list and return it so a caller
+      could render the banner "without a second round trip". #2259's client
+      never consumed it: on success it calls `router.refresh()`, and the banner
+      is server-rendered from `getWithheldBookingEmailSummary` on the booking
+      page. The route's copy was therefore a query whose result was discarded,
+      plus a second shape of the same truth to keep in step with the banner —
+      and the two had already diverged, since the banner now groups per
+      template with exact counts while this returned flat rows.
+
+      Pinned as an absence so the dead query cannot quietly come back.
+    */
     mocks.emailLogFindMany.mockResolvedValue([
       {
         id: "log_1",
@@ -275,13 +289,12 @@ describe("POST /api/admin/bookings/[id]/no-emails", () => {
       params,
     });
 
-    await expect(res.json()).resolves.toMatchObject({
-      withheldEmails: [expect.objectContaining({ templateName: "booking-confirmed" })],
-    });
-    expect(mocks.emailLogFindMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { bookingId: "bk_1", status: "SKIPPED_NO_EMAILS" },
-      }),
-    );
+    const body = await res.json();
+    expect(body).not.toHaveProperty("withheldEmails");
+    // The switch state and the live-offer flag ARE still returned — the client
+    // uses the latter for its post-write warning.
+    expect(body).toMatchObject({ success: true, noEmails: true });
+    expect(body).toHaveProperty("hasLiveWaitlistOffer");
+    expect(mocks.emailLogFindMany).not.toHaveBeenCalled();
   });
 });

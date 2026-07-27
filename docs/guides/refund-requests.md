@@ -40,6 +40,13 @@ a refund is capped at the remaining refundable amount on the payment.
 2. Click **Approve & Refund** — a dialog asks whether to email the member; the
    refund is processed either way and your choice is recorded in the audit log. Or
    click **Reject** (also with an email choice).
+
+   If the appeal's booking has **No emails** switched on
+   ([Bookings](bookings.md#turn-off-all-emails-for-one-booking)), the outcome
+   email cannot be sent either way, so the dialog says so and offers only
+   **Approve refund** / **Reject appeal**. The money still moves exactly as it
+   would have; the withheld outcome email is listed on the booking for you to
+   relay.
 3. The settlement shows how much went **to card** versus **as credit**, including
    any restored prior credit.
 

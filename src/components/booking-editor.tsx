@@ -65,6 +65,11 @@ export interface BookingEditorData {
   // reason on the FIRST no-adult trip).
   requiresAdminReview: boolean;
   adminReviewStatus: string | null;
+  // #2259: threaded so the edit panel's admin notify dialog stops offering an
+  // email choice the mailer will not honour. Optional so pre-existing fixtures
+  // stay valid. Nothing on this member-facing editor renders from it — only
+  // the panel's admin-only dialog reads it.
+  noEmails?: boolean;
 }
 
 
@@ -108,6 +113,7 @@ export function BookingEditor({
           editPolicy: booking.editPolicy,
           requiresAdminReview: booking.requiresAdminReview,
           adminReviewStatus: booking.adminReviewStatus,
+          noEmails: booking.noEmails,
         }}
         canAdminOverride={canAdminOverride}
         onDone={() => setEditing(false)}

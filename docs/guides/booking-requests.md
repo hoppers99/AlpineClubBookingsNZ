@@ -25,7 +25,12 @@ appears under **Admin → Needs Attention → Booking Requests**.
 
 Money is integer cents (shown as dollars); dates are NZ date-only lodge nights.
 Every approve/reject/decline flow asks whether to email the member, and records
-your choice in the audit log.
+your choice in the audit log — except on a booking that has **No emails**
+switched on ([Bookings](bookings.md#turn-off-all-emails-for-one-booking)), where
+nothing can be sent either way, so the dialog says so instead of asking. On a
+silenced booking a **reject** emails the member nothing at all: the cancellation
+notice that normally always goes out is withheld too, and the withheld messages
+are listed on the booking for you to relay.
 
 ## When you'd use it
 
