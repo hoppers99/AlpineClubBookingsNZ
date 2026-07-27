@@ -58,6 +58,13 @@ let orgReadGeneration = 0;
  * resolution, so a connection an admin has just fixed must be picked up by the
  * very next call rather than up to a minute later. De-duplication is free of
  * that trade — it caches nothing, so there is nothing to wait out.
+ *
+ * What it DOES share with the summary read is the retry posture (#2283,
+ * decision item 9 option A): one attempt, no rate-limit retries, transient
+ * budget intact. Failure handling is "degrade now, try again on the next
+ * call", so waiting out a 429 for minutes inside this call buys nothing the
+ * next call would not get for free — and it competes for the same per-minute
+ * Xero budget as whatever caused the 429.
  */
 async function readXeroFinancialYearEndMonth(): Promise<number | null> {
   const generation = orgReadGeneration;
@@ -70,6 +77,20 @@ async function readXeroFinancialYearEndMonth(): Promise<number | null> {
         resourceType: "ORGANISATION",
         workflow: "membershipFinancialYear",
         context: "xero-organisation getFinancialYearEndMonth",
+        // Do not wait out a RATE LIMIT (#2283, same rationale as the summary
+        // read below): this read degrades to the cached month on failure and
+        // re-attempts on the very next call, so retrying inside the call only
+        // holds the request open and spends the minute budget the failing sync
+        // needs. One attempt, immediate degrade, fresh attempt next call.
+        maxRetries: 0,
+        // But KEEP the transient (5xx/408) budget at withXeroRetry's default
+        // of 1 — `maxRetries: 0` alone would zero it via the
+        // `min(maxRetries, 1)` default, and exhausting the transient budget
+        // arms `rememberXeroTransientOutage`, the PROCESS-GLOBAL breaker that
+        // fails every Xero call (invoicing and sync included) for two
+        // minutes. This read must not be able to trip that on its own first
+        // 5xx. See the summary read below for the full account.
+        maxTransientRetries: 1,
       },
     );
     const raw = response.body.organisations?.[0]?.financialYearEndMonth;

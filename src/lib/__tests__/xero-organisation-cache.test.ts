@@ -439,14 +439,14 @@ describe("connected-organisation summary: live read (#2261 review F1/F2)", () =>
 });
 
 // ---------------------------------------------------------------------------
-// The year-end read (#2283, single-flight half). It feeds membership
+// The year-end read (#2283: single flight + retry caps). It feeds membership
 // financial-year resolution, so it is deliberately NOT negative-cached: an
 // admin who has just fixed the connection must be picked up by the very next
 // call. De-duplication carries none of that cost, and without it a
 // present-but-failing connection turned N concurrent requests into N live Xero
 // calls in exactly the state where Xero can least serve them.
 // ---------------------------------------------------------------------------
-describe("financial year-end month: single flight (#2283)", () => {
+describe("financial year-end month: single flight + retry caps (#2283)", () => {
   const originalOrigin = process.env.XERO_MOCK_API_ORIGIN;
   const originalInternalOrigin = process.env.XERO_MOCK_INTERNAL_ORIGIN;
 
@@ -517,6 +517,47 @@ describe("financial year-end month: single flight (#2283)", () => {
     // No joiner sees a rejection: the shared read degrades to null for all.
     expect(await inFlight).toEqual(Array(5).fill(null));
     expect(live.getAuthenticatedXeroClient).toHaveBeenCalledTimes(1);
+  });
+
+  // #2283 (decision item 9, option A): the year-end read aligns with the
+  // summary read's retry posture. It has no negative cache (recovery must be
+  // immediate — see the test below), so its only storm-control is "one attempt
+  // per call": it must never wait out a per-minute 429 inside the call.
+  it("does not retry: a failing read degrades now rather than waiting out a 429", async () => {
+    stubLiveClient();
+    live.getOrganisations.mockResolvedValue({
+      body: { organisations: [{ financialYearEndMonth: 6 }] },
+    });
+
+    await getXeroFinancialYearEndMonth();
+
+    expect(live.callXeroApi).toHaveBeenCalledWith(
+      expect.any(Function),
+      expect.objectContaining({
+        operation: "getOrganisations",
+        workflow: "membershipFinancialYear",
+        maxRetries: 0,
+      }),
+    );
+  });
+
+  // `maxTransientRetries` defaults to `min(maxRetries, 1)`, so `maxRetries: 0`
+  // alone would ALSO zero the transient budget — and exhausting that budget
+  // arms `rememberXeroTransientOutage`, the process-global breaker that fails
+  // every Xero call (invoicing and sync included) for two minutes. The
+  // year-end read must not be one 5xx away from stopping invoicing.
+  it("keeps the transient budget so one 5xx cannot trip the global outage breaker", async () => {
+    stubLiveClient();
+    live.getOrganisations.mockResolvedValue({
+      body: { organisations: [{ financialYearEndMonth: 6 }] },
+    });
+
+    await getXeroFinancialYearEndMonth();
+
+    expect(live.callXeroApi).toHaveBeenCalledWith(
+      expect.any(Function),
+      expect.objectContaining({ maxTransientRetries: 1 }),
+    );
   });
 
   it("does NOT negative-cache: the next call after a failure tries again", async () => {
