@@ -39,8 +39,15 @@ export function SendGuestPaymentLinkButton({ bookingId }: { bookingId: string })
       }
       if (data.sent > 0) {
         setSentOnce(true);
+        // #2258: a booking can have several provisional children, and some may
+        // not have been emailed. Claiming unqualified success would leave the
+        // booker believing every guest is covered when they are not — so name
+        // the shortfall, without naming its cause.
+        const notDelivered = Number(data.notDelivered ?? 0);
         setDone(
-          "We've emailed you a secure link to pay for your guests. Any earlier link no longer works."
+          notDelivered > 0
+            ? `We've emailed you a secure link to pay for your guests. Any earlier link no longer works. ${notDelivered} of your guest bookings could not be emailed — please contact the club about ${notDelivered === 1 ? "it" : "them"}.`
+            : "We've emailed you a secure link to pay for your guests. Any earlier link no longer works."
         );
       } else if (data.justSent > 0) {
         setSentOnce(true);

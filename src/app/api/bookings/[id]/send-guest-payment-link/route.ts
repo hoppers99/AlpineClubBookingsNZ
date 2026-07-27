@@ -59,7 +59,10 @@ export async function POST(
   if (!booking || booking.deletedAt) {
     return NextResponse.json({ error: "Booking not found" }, { status: 404 });
   }
-  if (booking.memberId !== session.user.id && !hasAdminAccess(session.user)) {
+  // #2258: the caller may be the BOOKER, not an officer. Remember which, so a
+  // withheld outcome discloses its cause to an admin and never to a member.
+  const isAdmin = hasAdminAccess(session.user);
+  if (booking.memberId !== session.user.id && !isAdmin) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
@@ -99,14 +102,19 @@ export async function POST(
 
   if (withheld > 0 && sent === 0 && justSent === 0) {
     // #2258: nothing was minted or sent because this booking is set to receive
-    // no email. Not a 502 — nothing is broken and retrying changes nothing, so
-    // say plainly what happened and what would change it. Checked BEFORE the
-    // suppressed branch so a withheld booking is never misreported as an
-    // undeliverable address.
+    // no email. Not a 502 — nothing is broken and retrying changes nothing.
+    //
+    // THIS ROUTE IS NOT ADMIN-ONLY: the booker calls it for their own booking
+    // (see the authorisation above), and the only client renders `error`
+    // verbatim. So the cause is disclosed ONLY to an admin. A member gets the
+    // same cause-free wording the /pay refresh page uses, because naming the
+    // switch would both reveal an internal admin control and invite them to ask
+    // for it to be changed.
     return NextResponse.json(
       {
-        error:
-          "This booking is set to send no emails, so no payment link was sent. Turn emails back on for the booking first, or arrange payment with the member directly.",
+        error: isAdmin
+          ? "This booking is set to send no emails, so no payment link was sent. Turn emails back on for the booking first, or arrange payment with the member directly."
+          : "We weren't able to email the link. Please contact the club and we'll help you complete payment.",
       },
       { status: 409 }
     );
@@ -124,5 +132,15 @@ export async function POST(
     );
   }
 
-  return NextResponse.json({ sent, justSent, suppressed, withheld });
+  // Mixed outcome: at least one child was emailed and at least one was not.
+  // Reporting a bare 200 let the client claim unqualified success for a booking
+  // whose guests are not all covered, so say how many did not go out (without
+  // saying why — same non-disclosure rule as above).
+  return NextResponse.json({
+    sent,
+    justSent,
+    suppressed,
+    withheld,
+    notDelivered: suppressed + withheld,
+  });
 }

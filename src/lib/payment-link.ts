@@ -308,6 +308,22 @@ export async function reissuePaymentLinkForToken(
     );
   }
 
+  // #2258: decide BEFORE the revoke-and-mint below. This path REPLACES the
+  // member's existing link (raw tokens are unrecoverable, so re-sending means
+  // minting a new one and revoking the old). Discovering the withhold only at
+  // send time therefore did not merely churn — it destroyed a link that still
+  // worked and left an unreachable one in its place. Read from the row already
+  // loaded; the authoritative, fail-closed gate still runs inside sendEmail.
+  if (booking.noEmails) {
+    logger.warn(
+      { bookingId: booking.id },
+      'Did not re-issue a payment link: the booking has "No emails" turned on'
+    );
+    // The member is told only that nothing could be emailed (see the outcome
+    // handling below) — never why. Their existing link is left untouched.
+    return { emailed: false };
+  }
+
   const { token: freshToken, tokenHash } = issueActionToken();
 
   await prisma.$transaction(async (tx) => {
@@ -781,6 +797,8 @@ export async function issueSplitGuestPaymentLink(
       detail:
         'Withheld: this booking has the "No emails" switch turned on. No payment link was created.',
       once: true,
+      // Scope the once-check to THIS episode, so a re-enable records afresh.
+      sinceAt: booking.noEmailsAt,
     });
     logger.warn(
       { bookingId: booking.id },
@@ -895,20 +913,29 @@ export async function issueSplitGuestPaymentLink(
   }
 
   if (emailOutcome.status === "withheld_for_booking") {
-    // #2258: the switch was flipped between the pre-mint gate above and this
-    // send. Revoke the just-minted (unreachable) token exactly as for any other
-    // undelivered send, but do NOT report it as a retryable failure: there is
-    // nothing to retry until an admin clears the switch, and re-minting every
-    // run is the churn this path exists to avoid.
+    // The unreachable token is revoked either way, but the OUTCOME depends on
+    // WHY (#2258): `booking_no_emails` is a deliberate, standing decision with
+    // nothing to retry until an admin clears it, whereas
+    // `booking_flag_unreadable` is a transient database fault — treating that
+    // as "the switch is on" would tell an operator (and, through the route
+    // above, a member) something false about a booking whose switch is OFF.
     await revokePaymentLinkById(minted.paymentLinkId).catch((revokeErr) =>
       logger.error(
         { err: revokeErr, bookingId: booking.id, paymentLinkId: minted.paymentLinkId },
-        "Failed to revoke split guest payment link after a withheld email"
+        "Failed to revoke split guest payment link after an undelivered email"
       )
     );
+    if (emailOutcome.reason === "booking_flag_unreadable") {
+      logger.error(
+        { bookingId: booking.id },
+        "Split guest payment link email failed closed (the booking's email setting could not be read); link revoked so a later attempt re-mints"
+      );
+      // Retryable: the next cron run or button press mints and sends again.
+      return { outcome: "suppressed" };
+    }
     logger.warn(
-      { bookingId: booking.id, reason: emailOutcome.reason },
-      "Split guest payment link email withheld by the booking's email gate; link revoked"
+      { bookingId: booking.id },
+      'Split guest payment link email withheld: the booking has "No emails" turned on; link revoked'
     );
     return { outcome: "withheld" };
   }
