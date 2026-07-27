@@ -13,6 +13,7 @@ import {
 import logger from "./logger";
 import { issueActionToken } from "./action-tokens";
 import { triggerMemberXeroContactGroupSync } from "./xero-contact-groups";
+import { resolveInheritedEmailSourceId } from "@/lib/member-parent-links";
 
 const AGE_UP_PARENT_EMAIL_HANDOFF_AUDIT_ACTION =
   "member.age_up.parent_email_handoff_sent";
@@ -378,6 +379,43 @@ export async function checkAgeUpMembers(): Promise<{
             inheritParentEmail: false,
           },
         });
+
+        // #2255: age-up is the one AUTOMATIC event that can leave a derived
+        // pointer pointing at the wrong person. Clearing this member's own
+        // inheritance makes them stand alone with their own address and login —
+        // but their dependants' pointers were resolved THROUGH them, and had to
+        // walk past them precisely because they had no address of their own.
+        // Those pointers still name the grandparent, so a parent who now has
+        // both a mailbox and a login would never receive their own child's
+        // notifications, and nothing on any screen would say so.
+        //
+        // Only DERIVED pointers are re-resolved (`inheritParentEmail: true`); a
+        // manually-chosen source is the admin's decision and is left alone. The
+        // walk now starts at this member and stops here, because they qualify.
+        const derivedDependants = await tx.member.findMany({
+          where: {
+            inheritParentEmail: true,
+            OR: [
+              { parentMemberId: member.id },
+              { secondaryParentId: member.id },
+            ],
+          },
+          select: { id: true },
+        });
+        if (derivedDependants.length > 0) {
+          // One resolution for the whole set: every one of them inherits
+          // through THIS member, so they all land on the same mailbox. It is
+          // read after the update above, so the walk sees the aged-up member as
+          // an adult and normally stops on them — unless their own address is a
+          // placeholder, in which case it keeps climbing, which is right.
+          const { sourceId } = await resolveInheritedEmailSourceId(tx, member.id);
+          if (sourceId) {
+            await tx.member.updateMany({
+              where: { id: { in: derivedDependants.map((row) => row.id) } },
+              data: { inheritEmailFromId: sourceId, inheritParentEmail: true },
+            });
+          }
+        }
 
         const { token, tokenHash } = issueActionToken();
         const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
