@@ -65,5 +65,6 @@ export const DISPLAY_GLOSSARY: readonly DisplayTerm[] = [
  */
 export const DISPLAY_GLOSSARY_LEAD =
   "Three words, two of them stored: a Layout, a Template built on it, and " +
-  "the board a screen shows. Each card below opens with the one it is about, " +
-  "and the Reference card gathers all three.";
+  "the board a screen shows. The Visual builder, Layouts and Templates cards " +
+  "each open with the one they are about, and the Reference card gathers all " +
+  "three.";

@@ -485,15 +485,14 @@ export default function AdminDisplayLayoutsPage() {
         </p>
         <p className="text-muted-foreground mt-1">
           {/* The shared definition (#2247) — same words as the hub card, the
-              Reference page and the operator guide. */}
+              Reference page and the operator guide — then ONLY what is specific
+              to this page. The two sentences that used to follow restated the
+              definition in different words, which is the drift the shared
+              constant exists to prevent. */}
           {DISPLAY_TERM_LAYOUT.oneLiner} Here that means an HTML body with{" "}
           <code className="bg-muted rounded px-1">{"{{area:key}}"}</code>{" "}
           placeholders, a default CSS block, and the named areas each Template
           will fill.
-        </p>
-        <p className="text-muted-foreground mt-1 text-sm">
-          A finished layout is chosen and filled in by a <strong>Template</strong>.
-          Layouts define the shape; Templates supply the content.
         </p>
         <p className="text-muted-foreground mt-1 text-sm">
           Layouts are previewed through a Template: build a Template on this
