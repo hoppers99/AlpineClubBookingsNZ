@@ -4,6 +4,26 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Recording a membership payment by hand now asks whether to tell the member
+  — and can actually tell them (#2260).** When a treasurer marks a member's
+  subscription paid for a cash, cheque or internet-banking payment, the club
+  had no way to send that member any acknowledgement: the action wrote the
+  status and emailed nobody, ever. It now offers the club's usual choice.
+  "Mark paid and email member" sends a short receipt — the season, the amount
+  (only where the club has a recorded fee amount for that season), and the date
+  it was recorded. "Mark paid without emailing" records the identical payment
+  and tells nobody. The subscription is marked paid either way, and which way
+  the treasurer chose is written to the audit log, so a later "did we tell
+  them?" has an answer. Because a manual payment is cash the system never saw,
+  the receipt never invents a figure: with no recorded fee amount it simply
+  leaves the amount out. It mentions no invoice, no payment link and no Xero
+  reference, because manual mark-paid only exists where there is no invoice.
+  Reversing a manual payment never emails the member — there is no
+  "your payment was un-recorded" notice worth sending.
+  The confirmation itself is now a proper dialog with a note box, replacing the
+  three bare browser pop-ups this action used to rely on (including the one
+  where cancelling the note prompt silently abandoned the whole action).
+
 - **"No emails" is now something an officer can actually switch on, and the
   booking says what it cost (#2259).** The mechanism landed in #2258; this is
   the part an officer touches. The switch sits in the **Admin tools** card on a
