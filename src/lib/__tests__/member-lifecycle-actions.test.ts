@@ -398,6 +398,75 @@ describe("member delete lifecycle actions", () => {
     );
   });
 
+  /**
+   * #2255 (D9). Delete eligibility counts DIRECT dependants only — members
+   * whose `parentMemberId` or `secondaryParentId` names this member. Four
+   * generations do not change that, and the reasoning is worth pinning because
+   * "counts direct only" looks like an oversight until you follow it through:
+   *
+   *  - a MIDDLE generation with dependants of their own is still blocked, so a
+   *    delete can never strand a grandchild whose only recorded parent it was;
+   *  - a GRANDPARENT is blocked while their child is still linked to them, and
+   *    becomes deletable once that one link is cleared — at which point the
+   *    grandchildren are untouched, because they were never linked to the
+   *    grandparent in the first place. There is nothing dangling to protect.
+   *
+   * Counting descendants transitively instead would block deleting a
+   * great-grandparent who has no remaining link to anyone, for the sake of a
+   * relationship the database no longer records.
+   */
+  describe("dependants blocker at depth (#2255)", () => {
+    it("blocks a middle generation who still holds dependants", async () => {
+      mockPrisma.member.count.mockResolvedValue(1);
+
+      const eligibility = await getMemberDeleteEligibility({
+        memberId: "member-1",
+        currentAdminMemberId: "admin-2",
+      });
+
+      expect(eligibility.eligible).toBe(false);
+      expect(eligibility.blockers).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ code: "dependants", count: 1 }),
+        ]),
+      );
+    });
+
+    it("counts only DIRECT links, through either parent column", async () => {
+      await getMemberDeleteEligibility({
+        memberId: "member-1",
+        currentAdminMemberId: "admin-2",
+      });
+
+      // Not `dependents: { some: { dependents: { some: {} } } }` or any other
+      // transitive shape: exactly the two columns that name this member.
+      expect(mockPrisma.member.count).toHaveBeenCalledWith({
+        where: {
+          OR: [
+            { parentMemberId: "member-1" },
+            { secondaryParentId: "member-1" },
+          ],
+        },
+      });
+    });
+
+    it("clears a grandparent once their own child link is gone, grandchildren and all", async () => {
+      // No member names this one as a parent any more. Their former child may
+      // still head a family of their own; that is that member's business.
+      mockPrisma.member.count.mockResolvedValue(0);
+
+      const eligibility = await getMemberDeleteEligibility({
+        memberId: "member-1",
+        currentAdminMemberId: "admin-2",
+      });
+
+      expect(eligibility.blockers).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ code: "dependants" })]),
+      );
+      expect(eligibility.eligible).toBe(true);
+    });
+  });
+
   it("ignores placeholder subscription rows without invoice or payment history", async () => {
     const eligibility = await getMemberDeleteEligibility({
       memberId: "member-1",

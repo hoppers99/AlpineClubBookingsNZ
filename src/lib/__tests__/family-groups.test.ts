@@ -1312,10 +1312,28 @@ describe("Admin Family Group Join Requests", () => {
             findUnique: vi.fn().mockResolvedValue({
               id: "parent-1",
               ageTier: "ADULT",
+              email: "parent@test.com",
+              archivedAt: null,
               parentMemberId: null,
               secondaryParentId: null,
               inheritEmailFromId: null,
             }),
+            // #2255: the approval now walks the family chain (depth cap +
+            // cycle guard) and resolves the notification mailbox by walking
+            // up from the requester. Both read `member.findMany`.
+            findMany: vi.fn().mockImplementation(async ({ where }: any) =>
+              where?.id?.in
+                ? where.id.in.map((id: string) => ({
+                    id,
+                    email: `${id}@test.com`,
+                    ageTier: "ADULT",
+                    archivedAt: null,
+                    inheritEmailFromId: null,
+                    parentMemberId: null,
+                    secondaryParentId: null,
+                  }))
+                : []
+            ),
             update: txMemberUpdate,
           },
           familyGroupMember: { upsert: txUpsert },
@@ -1413,6 +1431,26 @@ describe("Admin Family Group Join Requests", () => {
         inheritEmailFromId: null,
       } as any);
 
+      // #2255: before building the create payload the service resolves the
+      // child's notification mailbox by walking up from the requester, on the
+      // base client. Alice is an active adult with a real address, so the walk
+      // stops on her — the same answer the one-hop rule gave.
+      mockedPrisma.member.findMany.mockImplementation((async ({ where }: any) =>
+        where?.id?.in?.includes("parent-1")
+          ? [
+              {
+                id: "parent-1",
+                email: "Alice@Test.com",
+                ageTier: "ADULT",
+                archivedAt: null,
+                inheritEmailFromId: null,
+                parentMemberId: null,
+                secondaryParentId: null,
+              },
+            ]
+          : []) as never
+      );
+
       const txMemberCreate = vi.fn().mockResolvedValue({ id: "child-created" });
       const txUpsert = vi.fn();
       const txUpdate = vi.fn();
@@ -1421,7 +1459,12 @@ describe("Admin Family Group Join Requests", () => {
           // #1936 member-lifecycle advisory lock ($executeRaw) — no
           // pre-existing member on the create path, but the call site exists.
           $executeRaw: vi.fn().mockResolvedValue(undefined),
-          member: { create: txMemberCreate },
+          member: {
+            create: txMemberCreate,
+            // #2255: the create branch checks the requester's own ancestry
+            // against the four-generation cap before inserting the child.
+            findMany: vi.fn().mockResolvedValue([]),
+          },
           familyGroupMember: { upsert: txUpsert },
           familyGroupJoinRequest: { update: txUpdate },
         })
@@ -1733,10 +1776,26 @@ describe("Admin Family Group Join Requests", () => {
               findUnique: vi.fn().mockResolvedValue({
                 id: "parent-1",
                 ageTier: "ADULT",
+                email: "parent@test.com",
+                archivedAt: null,
                 parentMemberId: null,
                 secondaryParentId: null,
                 inheritEmailFromId: null,
               }),
+              // #2255: family-chain walks (see the sibling fixture above).
+              findMany: vi.fn().mockImplementation(async ({ where }: any) =>
+                where?.id?.in
+                  ? where.id.in.map((id: string) => ({
+                      id,
+                      email: `${id}@test.com`,
+                      ageTier: "ADULT",
+                      archivedAt: null,
+                      inheritEmailFromId: null,
+                      parentMemberId: null,
+                      secondaryParentId: null,
+                    }))
+                  : []
+              ),
               update: vi.fn(),
             },
             familyGroupMember: { upsert: vi.fn() },

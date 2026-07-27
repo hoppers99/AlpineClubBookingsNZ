@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   getParentEmailSourceId,
   buildParentLinks,
-  resolveParentNotificationSourceId,
+  matchParentLinkIdForNotification,
 } from "@/lib/member-parent-links";
 
 describe("getParentEmailSourceId", () => {
@@ -23,7 +23,16 @@ describe("getParentEmailSourceId", () => {
   });
 });
 
-describe("resolveParentNotificationSourceId", () => {
+/**
+ * #2255 renamed this from `resolveParentNotificationSourceId` and narrowed what
+ * it decides. It used to return the MAILBOX, computed one hop from the selected
+ * parent. Under four generations the mailbox can be several hops up, which needs
+ * database reads, so this now answers only "which linked parent did the admin
+ * pick?" and the caller walks from there. Every selection-matching case below is
+ * carried over unchanged — the three-way null / undefined / id contract is what
+ * the callers branch on.
+ */
+describe("matchParentLinkIdForNotification", () => {
   const links = [
     { id: "parent-1", inheritEmailFromId: null },
     { id: "parent-2", inheritEmailFromId: "grandparent-9" },
@@ -35,32 +44,36 @@ describe("resolveParentNotificationSourceId", () => {
   // own email. Callers rely on this coercion (see admin-family-group-requests-service
   // and the reviewFamilyGroupRequestSchema `.or(z.literal(""))`), so lock it in.
   it("treats an empty string as 'no inheritance' (use own email → null)", () => {
-    expect(resolveParentNotificationSourceId(links, "")).toBeNull();
+    expect(matchParentLinkIdForNotification(links, "")).toBeNull();
   });
 
   it("treats whitespace-only, null, and undefined the same as empty (null)", () => {
-    expect(resolveParentNotificationSourceId(links, "   ")).toBeNull();
-    expect(resolveParentNotificationSourceId(links, null)).toBeNull();
-    expect(resolveParentNotificationSourceId(links, undefined)).toBeNull();
+    expect(matchParentLinkIdForNotification(links, "   ")).toBeNull();
+    expect(matchParentLinkIdForNotification(links, null)).toBeNull();
+    expect(matchParentLinkIdForNotification(links, undefined)).toBeNull();
   });
 
-  it("resolves a selected parent id to that parent's email-source id", () => {
-    // parent-1 inherits from no one → its own id is the source
-    expect(resolveParentNotificationSourceId(links, "parent-1")).toBe("parent-1");
-    // parent-2 itself inherits from grandparent-9 → follow the chain
-    expect(resolveParentNotificationSourceId(links, "parent-2")).toBe("grandparent-9");
+  it("matches a selected parent id to that parent", () => {
+    expect(matchParentLinkIdForNotification(links, "parent-1")).toBe("parent-1");
+    expect(matchParentLinkIdForNotification(links, "parent-2")).toBe("parent-2");
   });
 
-  it("accepts a selection that already names a parent's email-source id", () => {
-    expect(resolveParentNotificationSourceId(links, "grandparent-9")).toBe("grandparent-9");
+  it("accepts a selection that names a parent's already-flattened source", () => {
+    // The admin UI round-trips the MAILBOX for a parent who themselves inherits,
+    // so the selection may be the grandparent's id rather than the parent's.
+    expect(matchParentLinkIdForNotification(links, "grandparent-9")).toBe(
+      "parent-2",
+    );
   });
 
   it("returns undefined for a selection matching no linked parent", () => {
-    expect(resolveParentNotificationSourceId(links, "stranger-1")).toBeUndefined();
+    expect(matchParentLinkIdForNotification(links, "stranger-1")).toBeUndefined();
   });
 
   it("trims a padded but valid selection before matching", () => {
-    expect(resolveParentNotificationSourceId(links, "  parent-1  ")).toBe("parent-1");
+    expect(matchParentLinkIdForNotification(links, "  parent-1  ")).toBe(
+      "parent-1",
+    );
   });
 });
 

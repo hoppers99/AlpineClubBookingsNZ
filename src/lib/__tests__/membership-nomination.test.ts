@@ -172,6 +172,11 @@ describe("membership nomination workflow", () => {
       $executeRaw: vi.fn().mockResolvedValue(undefined),
       member: {
         findFirst: vi.fn().mockResolvedValue(null),
+        // #2255: creating a family dependant under the applicant checks the
+        // applicant's own ancestry against the four-generation cap. The
+        // applicant here is a new member with no parents, so the walk stops
+        // immediately.
+        findMany: vi.fn().mockResolvedValue([]),
       },
       memberApplication: {
         findFirst: vi.fn().mockResolvedValue(null),
@@ -342,6 +347,11 @@ describe("membership nomination workflow", () => {
       $executeRaw: vi.fn().mockResolvedValue(undefined),
       member: {
         findFirst: vi.fn().mockResolvedValue(null),
+        // #2255: creating a family dependant under the applicant checks the
+        // applicant's own ancestry against the four-generation cap. The
+        // applicant here is a new member with no parents, so the walk stops
+        // immediately.
+        findMany: vi.fn().mockResolvedValue([]),
       },
       memberApplication: {
         findFirst: vi.fn().mockResolvedValue({ id: "app-existing" }),
@@ -607,6 +617,10 @@ describe("membership nomination workflow", () => {
       $executeRaw: vi.fn().mockResolvedValue(undefined),
       member: {
         findFirst: vi.fn().mockResolvedValue(null),
+        // #2255: each family dependant created under the applicant is checked
+        // against the four-generation cap, which walks up from the applicant.
+        // The applicant is created in this same transaction and has no parents.
+        findMany: vi.fn().mockResolvedValue([]),
         create: vi
           .fn()
           .mockResolvedValueOnce({

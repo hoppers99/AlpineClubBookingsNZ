@@ -24,7 +24,11 @@ vi.mock("@/lib/prisma", () => ({
       count: vi.fn().mockResolvedValue(1),
       findUnique: vi.fn(),
       findFirst: vi.fn(),
-      findMany: vi.fn(),
+      // #2255: creating a member under a parent now walks the parent's own
+      // family chain to check the four-generation cap. Defaulted to "no rows"
+      // so a fixture that says nothing about ancestry means exactly that,
+      // rather than crashing the walk on an undefined result.
+      findMany: vi.fn().mockResolvedValue([]),
       update: vi.fn(),
       create: vi.fn(),
     },
@@ -552,12 +556,97 @@ describe("Admin: Create dependent member", () => {
     expect(body.error).toContain("adult");
   });
 
-  it("rejects inheritEmailFromId pointing to a dependent adult", async () => {
+  /**
+   * #2255 (D9) replaces the assertion that used to live here: "rejects
+   * inheritEmailFromId pointing to a dependent adult", i.e. the source had to be
+   * a member with no parents of their own ("must point to a primary adult
+   * member").
+   *
+   * Under a four-generation cap that rule refuses the very source the club
+   * needs. A middle generation — an adult who is someone's child AND someone's
+   * parent — is routinely the nearest person with a real mailbox, and barring
+   * them left the generation below with no reachable contact at all. The rule is
+   * gone by owner decision, so the test that pinned it goes too rather than
+   * being bent to keep passing. The two guarantees that actually protect
+   * delivery are pinned in its place.
+   */
+  it("accepts an inheritEmailFromId source who is themselves someone's dependant", async () => {
     vi.mocked(auth).mockResolvedValue(adminSession);
+    vi.mocked(prisma.member.findFirst).mockResolvedValue(null);
     vi.mocked(prisma.member.findUnique).mockResolvedValue({
       id: "adult-dependent",
       ageTier: "ADULT",
+      email: "middle@test.com",
+      archivedAt: null,
       parentMemberId: "primary-adult",
+      inheritEmailFromId: null,
+    } as any);
+    const txMember = {
+      id: "kid-1", firstName: "Kid", lastName: "Smith", email: "kid@test.com",
+      role: "MEMBER", ageTier: "CHILD", active: true, canLogin: false,
+      parentMemberId: null, inheritParentEmail: true,
+      inheritEmailFromId: "adult-dependent", xeroContactId: null,
+      joinedDate: null, createdAt: new Date(),
+      phoneCountryCode: "64", phoneAreaCode: "27", phoneNumber: "4224115",
+      dateOfBirth: new Date("2020-01-01"),
+    };
+    vi.mocked(prisma.$transaction).mockImplementation(async (cb: any) =>
+      cb({
+        member: { create: vi.fn().mockResolvedValue(txMember) },
+        familyGroupMember: { createMany: vi.fn() },
+      }),
+    );
+
+    const res = await createMember(makePostRequest({
+      email: "kid@test.com",
+      firstName: "Kid",
+      lastName: "Smith",
+      dateOfBirth: "2020-06-15",
+      inheritEmailFromId: "adult-dependent",
+      canLogin: false,
+      streetAddressLine1: "123 Main St",
+      streetCity: "Example",
+      postalSameAsPhysical: true,
+    }));
+
+    expect(res.status).toBe(201);
+  });
+
+  it("still rejects an inheritEmailFromId source who themselves inherits", async () => {
+    // Stored inheritance must stay FLAT: `inheritEmailFromId` always points
+    // straight at the mailbox, which is what lets every reader keep its single
+    // one-hop join and stay correct at any depth.
+    vi.mocked(auth).mockResolvedValue(adminSession);
+    vi.mocked(prisma.member.findUnique).mockResolvedValue({
+      id: "middle-adult",
+      ageTier: "ADULT",
+      email: "middle@test.com",
+      archivedAt: null,
+      inheritEmailFromId: "grandparent-1",
+    } as any);
+
+    const res = await createMember(makePostRequest({
+      email: "kid@test.com",
+      firstName: "Kid",
+      lastName: "Smith",
+      inheritEmailFromId: "middle-adult",
+    }));
+
+    expect(res.status).toBe(422);
+    expect((await res.json()).error).toContain("chain through another");
+  });
+
+  it("rejects an inheritEmailFromId source with a walk-in placeholder address", async () => {
+    // #2255: with the structural "no parents" clause gone, nothing else implied
+    // the address was deliverable. A `@no-email.invalid` placeholder (#1935) is
+    // silently dropped by sendEmail, so inheriting one would show an
+    // inheritance in the admin UI while the family received nothing.
+    vi.mocked(auth).mockResolvedValue(adminSession);
+    vi.mocked(prisma.member.findUnique).mockResolvedValue({
+      id: "walk-in-adult",
+      ageTier: "ADULT",
+      email: "walk-in-abc@no-email.invalid",
+      archivedAt: null,
       inheritEmailFromId: null,
     } as any);
 
@@ -565,12 +654,11 @@ describe("Admin: Create dependent member", () => {
       email: "kid@test.com",
       firstName: "Kid",
       lastName: "Smith",
-      inheritEmailFromId: "adult-dependent",
+      inheritEmailFromId: "walk-in-adult",
     }));
 
     expect(res.status).toBe(422);
-    const body = await res.json();
-    expect(body.error).toContain("primary adult");
+    expect((await res.json()).error).toContain("real email address");
   });
 });
 
