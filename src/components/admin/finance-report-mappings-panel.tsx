@@ -19,6 +19,10 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  FieldHint,
+  describedByFieldHint,
+} from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { XeroAccountMultiSelect } from "@/components/admin/xero-account-multi-select";
@@ -80,6 +84,22 @@ const KIND_CLASS_FILTER: Record<CategoryKind, string> = {
 };
 
 let keyCounter = 0;
+/*
+  #2257 — the subtype field's id and its hint id, each spelled EXACTLY ONCE.
+  These rows render inside a `.map()`, so a hook cannot be called per row and the
+  ids must be derived from the row key (a cuid, or the `new-N` counter below, so
+  always id-safe). Deriving them at each use site would mean the same template
+  literal written twice, where a typo in either copy silently orphans the hint
+  with nothing failing.
+*/
+function subtypeFieldId(categoryKey: string) {
+  return `finance-subtype-${categoryKey}`;
+}
+
+function subtypeHintId(categoryKey: string) {
+  return `finance-subtype-hint-${categoryKey}`;
+}
+
 function nextKey() {
   keyCounter += 1;
   return `new-${keyCounter}`;
@@ -592,12 +612,21 @@ export function FinanceReportMappingsPanel() {
                               />
                             </div>
                             <div className="space-y-1.5">
-                              <Label>Subtype</Label>
+                              {/* #2257 — the Label carried no `htmlFor` and the
+                                  Input no `id`, so the field had no accessible
+                                  NAME for the new description to attach to.
+                                  Both are supplied here. */}
+                              <Label htmlFor={subtypeFieldId(category.key)}>
+                                Subtype
+                              </Label>
                               <Input
+                                id={subtypeFieldId(category.key)}
                                 list={`finance-subtypes-${kind}`}
                                 value={category.subtype ?? ""}
-                                placeholder="e.g. Operating"
                                 disabled={!canEdit}
+                                aria-describedby={describedByFieldHint(
+                                  subtypeHintId(category.key),
+                                )}
                                 onChange={(event) =>
                                   updateCategory(category.key, {
                                     subtype: event.target.value
@@ -606,6 +635,9 @@ export function FinanceReportMappingsPanel() {
                                   })
                                 }
                               />
+                              <FieldHint id={subtypeHintId(category.key)}>
+                                Example: Operating
+                              </FieldHint>
                             </div>
                             <div className="space-y-1.5">
                               <Label>Order</Label>
