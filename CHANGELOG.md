@@ -21,13 +21,18 @@ All notable public reference-release changes should be recorded here.
   club's own date settings, so everyone sees the same date, written the same
   way, wherever they are. Chore-roster emails are deliberately unchanged: they
   keep their long "Wednesday, 15 July 2026" wording.
-- **Family groups: pressing the edit (pencil) icon on a group used to look like
-  it had done nothing (#2256).** The editor opens *above* the list of groups,
-  so if you scrolled down to a group and clicked edit, the editor opened
-  somewhere off the top of the screen and nothing you could see changed. The
-  page now scrolls up to the editor and puts the keyboard cursor in it, and the
-  group you are editing is highlighted in the list and badged "Editing" until
-  you save or close. Nothing about who may edit a group has changed.
+- **Family groups: pressing the edit (pencil) icon on a group — or **New
+  Group** — used to look like it had done nothing (#2256).** Both forms open in
+  the same place: below the search bar and the two queue cards, and *above* the
+  list of groups. So if you scrolled down to a group and clicked edit, the
+  editor opened off the top of the screen; and with a busy queue, New Group
+  opened the form well below the button you had just pressed. Either way
+  nothing you could see changed. The page now scrolls to the form and puts the
+  keyboard cursor in it every time it is opened — including when you re-open
+  the same group you were just editing, which previously did nothing at all.
+  The group you are editing is highlighted in the list and badged "Editing"
+  until you save or close, and closing puts the keyboard cursor back on the
+  button you started from. Nothing about who may edit a group has changed.
 - **"Add Dependant → Link Existing" now finds the members it was hiding, and
   says why when it still finds nobody (#2254).** Searching for an existing
   member to link as a dependant reported "No eligible members found" for almost
