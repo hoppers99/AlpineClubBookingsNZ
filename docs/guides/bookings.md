@@ -78,6 +78,51 @@ date-only lodge night (no times), matching the rules in
    [Book on Behalf](book.md) wizard. If your admin role is view-only for
    bookings, this button is disabled.
 
+### Turn off all emails for one booking
+
+Sometimes you are already dealing with a member directly — over the phone, in
+person, or by a long email thread — and the club's automatic messages would
+only confuse things. The **No emails** switch on a single booking stops the
+system sending that member *anything* about it.
+
+> **This is a promise you make, not one the system keeps.** Nothing withheld is
+> ever sent later. If you turn the switch on and the booking is then cancelled,
+> the member is never told about the cancellation by the club. Telling them is
+> your job from that moment on.
+
+1. Open the booking (click the status chip on its row in the table above).
+2. In the **Admin tools** card, click **Turn off all emails**.
+3. Read the dialog. It states the consequence plainly: no emails at all for
+   this booking, including cancellation notices and payment reminders. If the
+   booking is holding a live waitlist offer, the dialog also warns you that the
+   bed stays held on a countdown the member will never see — so if you want them
+   to have the chance to accept it, you must contact them yourself.
+4. Click **Yes — I will tell the member myself**. Nothing is saved until you
+   do; **Cancel** leaves the booking exactly as it was.
+
+While the switch is on:
+
+- the booking shows a **red banner** listing every message that was actually
+  withheld — its name, its subject line, and when it would have gone out. Work
+  down that list when you contact the member;
+- every action that would normally ask "email the member about this?" stops
+  asking and tells you emails are off instead;
+- **account and security email is not affected.** Two-factor codes, password
+  resets, magic-link sign-ins and email-change notices all still work. The
+  switch is attached to the booking, never to the member's address;
+- **admin alerts still reach you.** Payment failures, capacity warnings and the
+  rest are unaffected;
+- **the Xero invoice email is withheld too.** The invoice itself is still
+  created in Xero and is unchanged — only the emailing stops, so send it from
+  Xero by hand if the member needs it.
+
+To undo it, click **Turn emails back on**. That takes no acknowledgement (a
+stuck switch must always be clearable), but it does **not** re-send anything
+that was withheld — which is why the banner keeps listing what was missed.
+
+Both turning it on and turning it off are written to the
+[Audit Log](audit-log.md), with who did it and when.
+
 ## Settings reference
 
 The bookings list is a working queue, not a settings page. The controls below
@@ -112,6 +157,9 @@ lives in [`STATE_MACHINES.md`](../STATE_MACHINES.md#booking-lifecycle).
 | A row shows a **Review** chip | The booking needs admin review (for example a minor without an adult) | Click the chip to open the [Booking Requests → Approvals](booking-requests.md) queue |
 | The Beds filter is missing | The bed-allocation module is off | Enable it under **Admin → Setup → Modules** (`bedAllocation`) — see [`CONFIGURATION.md`](../../CONFIGURATION.md#module-controls-and-admin-modules) |
 | **+ Create Booking** is greyed out | Your admin role can view bookings but not edit them | Ask a full admin to grant bookings edit access |
+| A member says they never got a confirmation, reminder, or cancellation notice | The booking may have the **No emails** switch on | Open the booking; if the red withheld-emails banner is there, it lists exactly what was held back — relay it, then decide whether to turn emails back on |
+| **Turn off all emails** is greyed out | Your admin role can view bookings but not edit them | Ask a full admin to grant bookings edit access |
+| A booking still shows the withheld-emails warning after emails were turned back on | Correct — turning the switch back on never re-sends anything | The banner is the record of what the member was never told; work through it with them |
 
 ## Related links
 

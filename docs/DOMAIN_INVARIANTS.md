@@ -1350,8 +1350,10 @@ The rules are:
   denied:
   - the switch is turned **on while an offer is already live** — the clock keeps
     running and the offer is not retracted. `setBookingNoEmails` returns
-    `hasLiveWaitlistOffer` so a caller CAN warn before confirming; nothing
-    consumes it yet, and the warning dialog itself lands with #2259;
+    `hasLiveWaitlistOffer`, and #2259's acknowledgement dialog warns on it
+    **before** the admin confirms (from the same predicate,
+    `bookingHasLiveWaitlistOffer`, so the warning and the route's answer cannot
+    disagree about what "live" means) as well as after the write;
   - the **post-commit race** — `processWaitlistForDates` commits the offer and
     fires the email un-awaited afterwards, so a switch flipped in between leaves
     a live offer with a withheld send. (The retry cron can likewise rewrite an
@@ -1397,6 +1399,46 @@ The rules are:
   when, mirroring the `wholeLodgeHold` audit columns. Clearing needs no
   acknowledgement — a stuck switch must always be clearable — and does **not**
   re-send anything withheld while it was on.
+- **The acknowledgement is a real admin decision, not just a request field
+  (#2259).** The control lives in the Admin tools card on the booking detail
+  page and is gated on `bookings:edit`. Turning it on opens a two-button dialog
+  ("Yes — I will tell the member myself" / "Cancel") carrying the plain
+  consequence — no emails at all for this booking, including cancellation
+  notices and payment reminders, and the admin is responsible for telling the
+  member directly. It is deliberately **not** a checkbox: a checkbox is missable
+  and the consequence is a member who is never told their booking was cancelled.
+  Nothing is written until the dialog is answered.
+- **The booking carries a persistent warning listing what was ACTUALLY withheld
+  (#2259).** Read from the `SKIPPED_NO_EMAILS` audit rows, not a fixed sentence:
+  the admin has to know WHICH messages the member never received in order to
+  relay them, and the list includes the Xero-sent invoice emails, which are
+  inside the same guarantee. Each row shows the template's registry display name
+  (`withheldEmailDisplayName`), its subject and its timestamp. The banner
+  **keeps warning after the switch is cleared** whenever withheld rows exist,
+  because clearing re-sends nothing — a member never told about a cancellation
+  is still never told.
+- **A member must never learn the switch exists.** The booking detail page
+  serves members and admins from one file, so the control, the banner, and every
+  `noEmails` value the page produces sit behind the page's admin predicate — and
+  the withheld list is not even QUERIED for a member. Gating the render alone is
+  insufficient: a prop threaded unconditionally is serialised into the RSC
+  payload, so the switch would be readable off the wire with nothing drawing it.
+  `booking-no-emails-ui-contract.test.ts` enforces both over the AST.
+- **The per-action `notifyMember` prompts are not offered while the switch is
+  on (#2259 honesty rule).** The rule behind that prompt family (#1769a) is that
+  an admin is only asked a question the system will honour; with the switch on
+  the message is withheld either way, so asking invites the admin to choose
+  "…and email member" and believe the member was told. Every booking-bound
+  prompt therefore drops to the send-nothing path and states the position
+  instead: confirm-pending-guests, the admin edit, the admin cancel, the booking
+  review queue, the waitlist force-confirm, and the refund-appeal review. The
+  same contract test asserts the closed world — a new prompt must be classified
+  booking-bound or not, with its reason, rather than silently escaping the rule.
+  Deliberately EXCLUDED and why: the chore-roster send (per DATE, fanning out
+  across many bookings, where the mailer's own gate silences each one
+  individually), the public booking-request decline and the admin create flow
+  (no `Booking` row to be silenced yet), and every membership, family, deletion
+  and application prompt (keyed on a member, not a booking).
 
 
 Booking **creation** is normally today-or-future: `POST /api/bookings` and the

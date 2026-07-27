@@ -4,6 +4,38 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **"No emails" is now something an officer can actually switch on, and the
+  booking says what it cost (#2259).** The mechanism landed in #2258; this is
+  the part an officer touches. The switch sits in the **Admin tools** card on a
+  booking, and turning it on opens a dialog that states the consequence in plain
+  words — no emails at all for this booking, including cancellation notices and
+  payment reminders, and you are responsible for telling the member yourself —
+  with a button that says exactly that. It is deliberately not a tick-box you
+  can skim past, and nothing is saved until it is answered. If the booking is
+  holding a live waitlist offer, the dialog warns about that first: the bed
+  stays held on a countdown the member will never see, so unless the officer
+  contacts them the offer simply expires.
+  Once it is on, the booking carries a standing warning listing what was
+  actually withheld — each message by name, its subject, and when it would have
+  gone out — including the invoice email Xero would have sent. That list is
+  built from what really happened rather than being a fixed sentence, because
+  the point of it is to tell an officer which messages to relay. It keeps
+  showing after the switch is turned back off, for the same reason: turning
+  emails back on re-sends nothing, so a member who was never told about a
+  cancellation is still never told.
+  Every admin action on that booking that would normally ask "email the member
+  about this?" now stops asking. With the switch on the message is withheld
+  whichever button is pressed, so the question was misleading — it invited an
+  officer to choose "and email member" and walk away believing the member had
+  been told. Confirming pending guests, editing, cancelling, approving or
+  declining a review, force-confirming from the waitlist, and deciding a refund
+  appeal all now say plainly that emails are off and carry on without sending.
+  The chore-roster send is unchanged, because it goes out per night across many
+  bookings at once; a silenced booking's own roster email is still withheld
+  individually.
+  A member sees no sign of any of this — not the switch, not the warning, not so
+  much as a field in the page's data.
+
 - **A booking can now be put on "No emails", and the system withholds
   everything about it (#2258).** Sometimes the club needs a booking to be quiet
   — a member who has asked not to be contacted, a booking being sorted out by
