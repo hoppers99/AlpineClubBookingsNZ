@@ -114,6 +114,7 @@ export default function XeroPage() {
         <>
           <HealthAndDiagnosticsPanels
             connected={connected}
+            shortCode={orgShortCode}
             currentXeroPath={currentXeroPath}
             healthOpen={sectionOpen.health}
             contactGroupMismatchesOpen={sectionOpen.contactGroupMismatches}
@@ -163,7 +164,7 @@ export default function XeroPage() {
             onRefreshDiagnostics={refreshDiagnostics}
             refreshToken={diagnosticsRefreshToken}
           />
-          <SyncResultsPanel syncResult={syncResult} currentXeroPath={currentXeroPath} />
+          <SyncResultsPanel syncResult={syncResult} shortCode={orgShortCode} currentXeroPath={currentXeroPath} />
           <UsagePanel connected={connected} open={sectionOpen.usage} onToggle={setSectionState} refreshToken={usageRefreshToken} />
         </>
       )}
