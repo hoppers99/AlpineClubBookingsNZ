@@ -1170,7 +1170,12 @@ export async function reviewMemberDeleteRequest({
       );
     }
 
-    return { request: serializeMemberLifecycleActionRequest(rejected) };
+    // Uniform shape on both branches: a caller must never have to check
+    // whether the key exists before reading it. A rejection detaches nothing.
+    return {
+      request: serializeMemberLifecycleActionRequest(rejected),
+      orphanedLinks: EMPTY_ORPHANED_FAMILY_LINKS,
+    };
   }
 
   const approved = await prisma.$transaction(async (tx) => {
