@@ -674,7 +674,17 @@ export async function createXeroInvoiceForBooking(
     // booking's withheld list for a booking whose switch is OFF, #2259) and it
     // must not let the sync operation report SUCCEEDED. It therefore populates
     // invoiceEmailError, exactly as a failed emailInvoice call would, so the
-    // operation completes PARTIAL and stays visible/re-drivable.
+    // operation completes PARTIAL and stays VISIBLE to an operator.
+    //
+    // Visible, not automatically recoverable: re-driving this workflow will not
+    // resend, because the function short-circuits at the top on
+    // payment.xeroInvoiceId (persisted later in this same run) and never
+    // reaches the email block, and the emailInvoice idempotency key would
+    // no-op anyway. The truthful remediation is to send the invoice from Xero
+    // by hand. The operations panel's payment repair must NOT be used on an
+    // email-only PARTIAL — it records a payment against an unpaid
+    // Internet Banking invoice — and is refused for exactly that case
+    // (partialInvoiceOperationHasPaymentFault in xero-operation-retry.ts).
     const invoiceEmailGate = shouldEmailInvoice
       ? await resolveBookingEmailGate(
           { bookingId },
