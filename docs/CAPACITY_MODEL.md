@@ -335,6 +335,16 @@ banner instead. The admin bookings list reports a held booking's bed-state as
 `complete`. No `BedAllocation` rows are generated or demanded for a held
 booking.
 
+The lifecycle auto-allocator enforces the same rule (#2285): keyed on
+`wholeLodgeHold` (not status), `reconcileBedAllocationsForBooking` prunes ALL
+of a held booking's allocation rows (whole-booking sweep — legacy rows an
+older lifecycle created self-heal on any reconcile, no data migration) and
+never feeds a held booking to the planner. The admin exclusive-hold toggle
+reconciles on both directions inside its transaction: setting the hold prunes
+the booking's rows; releasing it re-plans the guests like any ordinary
+lifecycle change. The board/lifecycle agreement is tested in
+`src/lib/__tests__/held-booking-allocation-agreement.test.ts`.
+
 ### Persisted capacity override (#1771)
 
 Every over-capacity admission above **persists** the decision on the booking:

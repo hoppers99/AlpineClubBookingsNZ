@@ -188,6 +188,23 @@ per-bed allocation needed" board banner). The admin bookings list's per-booking
 bed-state also reports a held booking as `complete`. No `BedAllocation` rows are
 generated or demanded for held bookings.
 
+- **#2285 follow-up — the lifecycle half now enforces the rule too.** As
+  originally built, only the board honoured this short-circuit; the lifecycle
+  auto-allocator (`reconcileBedAllocationsForBooking` /
+  `autoAllocateMissingBedNights`, `src/lib/bed-allocation-lifecycle.ts`) had no
+  `wholeLodgeHold` awareness and kept creating real `BedAllocation` rows for
+  held bookings — rows the board deliberately hid. The rule itself is
+  unchanged; the lifecycle now implements it, keyed on the flag (not status —
+  a held booking sits in an ordinary bed-allocatable status): reconcile
+  **prunes** all of a held booking's allocation rows (whole-booking sweep, so
+  legacy rows self-heal on any reconcile with no data migration) and never
+  feeds a held booking to the planner. The admin exclusive-hold toggle route
+  reconciles on **both** directions inside its transaction — setting the hold
+  prunes the rows, releasing it re-plans the guests — so a released hold
+  leaves the booking in a coherent, ordinary allocation state. The two paths
+  are locked in agreement by
+  `src/lib/__tests__/held-booking-allocation-agreement.test.ts`.
+
 ## Post-implementation decisions (owner, 2026-07-14)
 
 Recorded as the children landed, to keep the design of record accurate:

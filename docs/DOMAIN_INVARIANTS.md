@@ -569,6 +569,13 @@ Future reviews and issues should cite this file when proposing changes.
   exactly as an ordinary full lodge (decision 6); only admin surfaces are told
   a hold is in effect. Full scenario table in `docs/CAPACITY_MODEL.md`,
   "Exclusive whole-lodge hold — a non-bypassable block".
+- **A held booking owns no `BedAllocation` rows (ADR-001 §Bed allocation,
+  #2285):** the group implicitly occupies every bed, so both allocation paths
+  skip it — the admin board excludes it from the awaiting-allocation set and
+  the planner, and the lifecycle reconcile prunes its rows and never
+  auto-places it (keyed on the flag, not status). The exclusive-hold toggle
+  reconciles both directions: set prunes, release re-plans. Divergence guard:
+  `src/lib/__tests__/held-booking-allocation-agreement.test.ts`.
 
 ## Payment And Settlement
 
