@@ -90,6 +90,20 @@ vi.mock("@/lib/admin-modules", () => ({
   isEffectiveModuleEnabled: vi.fn().mockResolvedValue(true),
 }));
 
+// #2285 (ADR-001 bed-allocation short-circuit): an exclusivity approval prunes
+// the booking's per-bed rows via the flag-keyed lifecycle reconcile — a held
+// conversion preserves pre-assigned beds (#1254), which is wrong once the
+// booking is whole-lodge-held. Mocked here; the prune semantics themselves are
+// covered by bed-allocation-lifecycle.test.ts.
+vi.mock("@/lib/bed-allocation-lifecycle", () => ({
+  reconcileBedAllocationsForBooking: vi.fn().mockResolvedValue({
+    enabled: true,
+    deletedCount: 0,
+    createdCount: 0,
+    promotedCount: 0,
+  }),
+}));
+
 vi.mock("@/lib/logger", () => ({
   default: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
@@ -121,6 +135,7 @@ import {
   findOverlappingCapacityHoldingBookings,
 } from "@/lib/capacity";
 import { logAudit } from "@/lib/audit";
+import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 import { getLodgeCapacity } from "@/lib/lodge-capacity";
 import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
 import {
@@ -768,6 +783,14 @@ describe("approveSchoolBookingRequest", () => {
       entityType: "Booking",
       entityId: "booking-1",
     });
+
+    // #2285 (ADR-001 short-circuit): granting exclusivity prunes any per-bed
+    // rows the booking carries (a held conversion preserves pre-assigned beds,
+    // #1254, which is wrong once whole-lodge-held). With the flag freshly
+    // stamped, the flag-keyed reconcile is a pure whole-booking prune.
+    expect(reconcileBedAllocationsForBooking).toHaveBeenCalledWith(
+      expect.objectContaining({ bookingId: "booking-1" }),
+    );
   });
 
   it("surfaces overlapping conflicts when a hold is set at approval, without refusing (issue #119)", async () => {
@@ -827,6 +850,10 @@ describe("approveSchoolBookingRequest", () => {
       .map((call) => call[0])
       .find((entry) => entry.action === "booking.exclusiveHold.set");
     expect(setAudit).toBeUndefined();
+
+    // #2285: no exclusivity → no allocation prune. The #1254 bed-preservation
+    // behaviour of an ordinary approval is untouched.
+    expect(reconcileBedAllocationsForBooking).not.toHaveBeenCalled();
   });
 
   it("creates the booking at the request's lodge instead of the default lodge", async () => {

@@ -342,7 +342,9 @@ older lifecycle created self-heal on any reconcile, no data migration) and
 never feeds a held booking to the planner. The admin exclusive-hold toggle
 reconciles on both directions inside its transaction: setting the hold prunes
 the booking's rows; releasing it re-plans the guests like any ordinary
-lifecycle change. The board/lifecycle agreement is tested in
+lifecycle change. A school approval that grants exclusivity runs the same
+prune after stamping the hold on the converted booking. The board/lifecycle
+agreement is tested in
 `src/lib/__tests__/held-booking-allocation-agreement.test.ts`.
 
 ### Persisted capacity override (#1771)

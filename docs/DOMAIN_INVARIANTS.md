@@ -574,8 +574,9 @@ Future reviews and issues should cite this file when proposing changes.
   skip it — the admin board excludes it from the awaiting-allocation set and
   the planner, and the lifecycle reconcile prunes its rows and never
   auto-places it (keyed on the flag, not status). The exclusive-hold toggle
-  reconciles both directions: set prunes, release re-plans. Divergence guard:
-  `src/lib/__tests__/held-booking-allocation-agreement.test.ts`.
+  reconciles both directions (set prunes, release re-plans), and a school
+  approval granting exclusivity prunes after stamping the hold. Divergence
+  guard: `src/lib/__tests__/held-booking-allocation-agreement.test.ts`.
 
 ## Payment And Settlement
 

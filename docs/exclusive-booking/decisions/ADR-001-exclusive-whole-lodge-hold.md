@@ -201,7 +201,10 @@ generated or demanded for held bookings.
   feeds a held booking to the planner. The admin exclusive-hold toggle route
   reconciles on **both** directions inside its transaction — setting the hold
   prunes the rows, releasing it re-plans the guests — so a released hold
-  leaves the booking in a coherent, ordinary allocation state. The two paths
+  leaves the booking in a coherent, ordinary allocation state. A school
+  approval that grants exclusivity runs the same flag-keyed reconcile after
+  stamping the hold (a held conversion otherwise preserves pre-assigned beds
+  across the guest swap, #1254 — wrong once whole-lodge-held). The two paths
   are locked in agreement by
   `src/lib/__tests__/held-booking-allocation-agreement.test.ts`.
 

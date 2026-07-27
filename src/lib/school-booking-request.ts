@@ -38,6 +38,7 @@ import { z } from "zod";
 import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
 import { issueActionToken } from "@/lib/action-tokens";
 import { logAudit } from "@/lib/audit";
+import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 import {
   assertMappableOwnerContact,
   BOOKING_REQUEST_VERIFICATION_TTL_MS,
@@ -944,6 +945,23 @@ export async function approveSchoolBookingRequest(input: {
             },
           },
           select: { id: true },
+        });
+      }
+
+      // ADR-001 bed-allocation short-circuit (#2285): a hold granted at
+      // approval means the booking must own NO per-bed rows. The held
+      // conversion above deliberately preserves pre-assigned beds across the
+      // guest swap (#1254) — right for an ordinary approval, but rows on a
+      // now-held booking would be invisible on the board and contradict the
+      // invariant. Run the same flag-keyed reconcile the admin toggle uses:
+      // with wholeLodgeHold freshly stamped it is a pure whole-booking prune
+      // (no placement). Fresh creates own no rows yet, so there it is an
+      // idempotent no-op. Non-exclusive approvals are untouched — their
+      // #1254 bed preservation stands.
+      if (request.exclusivityRequested) {
+        await reconcileBedAllocationsForBooking({
+          bookingId: booking.id,
+          db: tx,
         });
       }
 
