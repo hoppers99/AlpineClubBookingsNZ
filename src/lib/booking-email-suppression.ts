@@ -234,25 +234,39 @@ export async function recordWithheldBookingEmail(params: {
 }
 
 /**
- * Withheld messages for which there is genuinely NOTHING for the officer to
- * forward, so the banner must not imply otherwise (#2259).
+ * What an officer actually has to DO about a withheld message (#2259).
  *
- * Both carry a freshly-minted, short-lived artefact rather than information:
- * the split-guest payment link is decided BEFORE it is minted (so no link
- * exists), and a chore-roster email issues each guest a fresh 48-hour chore
- * link (so no link was issued). No body is retained for any withheld message,
- * so for these two there is no text to relay and no URL to paste — the honest
- * instruction is "clear the switch and let it regenerate", not "tell the
- * member what this said".
+ * No body is retained for any withheld send, so "forward it" is never literally
+ * possible — but for most kinds the CONTENT is information the officer can
+ * simply state ("your booking was cancelled"), and that is the common case. Two
+ * kinds carry a freshly-minted, short-lived artefact instead, and they differ
+ * from each other in a way the banner must not blur:
  *
- * Everything else in the list IS relayable: a cancellation, a confirmation or a
- * modification is information the officer can simply state, and the Xero
- * invoice still exists in Xero and can be sent from there by hand.
+ *  - `split-guest-payment-link` — the link is decided BEFORE it is minted, so
+ *    none exists; the settlement cron re-mints and re-sends on its next run
+ *    once the switch is off. Clearing the switch really is the whole remedy.
+ *
+ *  - `chore-roster` — NOT the same, and it was wrong to treat it as such.
+ *    `admin-roster-service.ts` DELETES the guest's existing chore token, mints
+ *    a fresh one, and only then sends. So a live 48-hour link does exist, the
+ *    guest's previous link was destroyed, and the guest is currently holding
+ *    nothing that works. And `sendChoreRosterEmail` has exactly one caller —
+ *    the admin roster action — with no cron behind it, so nothing regenerates
+ *    it: the officer must re-send the roster by hand.
  */
-const NOTHING_TO_FORWARD_TEMPLATE_NAMES: ReadonlySet<string> = new Set([
-  "split-guest-payment-link",
-  "chore-roster",
-]);
+export type WithheldEmailRemedy =
+  /** The message's content can simply be relayed by the officer. */
+  | "relay"
+  /** Nothing was minted; a cron re-sends once the switch is off. */
+  | "auto-regenerates"
+  /** A link exists but was never delivered, and only a manual re-send fixes it. */
+  | "resend-roster";
+
+const WITHHELD_EMAIL_REMEDIES: ReadonlyMap<string, WithheldEmailRemedy> =
+  new Map([
+    ["split-guest-payment-link", "auto-regenerates" as const],
+    ["chore-roster", "resend-roster" as const],
+  ]);
 
 /**
  * A human name for a withheld message, for #2259's banner.
@@ -276,16 +290,25 @@ export function withheldEmailDisplayName(templateName: string): string {
 
 export interface WithheldBookingEmailGroup {
   templateName: string;
-  /** Registry display name, never a raw slug. */
+  /**
+   * Human name for the kind. The registry label where one exists; for an
+   * UNREGISTERED template this is deliberately the raw name — an honest "this
+   * was withheld and here is what it was called" beats inventing a friendly
+   * name for a message nobody has registered.
+   */
   label: string;
   /** How many of this kind were withheld. EXACT — not a page count. */
   count: number;
-  /** The most recent one's subject, representative of the group. */
+  /**
+   * The most recent one's subject, representative of the group. Empty when the
+   * bounded subject read below did not reach this group's row; the group itself
+   * is never dropped, because it comes from the aggregate.
+   */
   subject: string;
   /** When the most recent one was withheld. */
   latestAt: Date;
-  /** Nothing exists for the officer to forward (see the set above). */
-  nothingToForward: boolean;
+  /** What the officer actually has to do about it (see the map above). */
+  remedy: WithheldEmailRemedy;
 }
 
 export interface WithheldBookingEmailSummary {
@@ -296,6 +319,18 @@ export interface WithheldBookingEmailSummary {
 }
 
 /**
+ * How many rows the representative-subject read may fetch.
+ *
+ * The subject query matches rows whose `createdAt` is one of the per-template
+ * maxima, so it needs one row per group plus headroom for exact-timestamp ties
+ * (two templates withheld in the same millisecond, or several rows of one
+ * template sharing its maximum). Generous against the registry, which is the
+ * real ceiling on distinct templates, and small enough that the bound is a
+ * bound rather than a formality.
+ */
+const WITHHELD_SUBJECT_READ_LIMIT = 256;
+
+/**
  * What was withheld for a booking, grouped by kind — the read behind #2259's
  * persistent "these messages were not sent" warning.
  *
@@ -303,10 +338,17 @@ export interface WithheldBookingEmailSummary {
  * property rather than a presentational one. A chore-roster send fans out to
  * one row per guest per date (a week for a party of eight is ~56 rows), so a
  * flat newest-first list buries the single cancellation the member most needs
- * to hear about under dozens of identical roster lines. It also removes the
- * previous silent `take: 100` cap: the number of DISTINCT templates is bounded
- * by the registry, so every kind is always shown, and `count`/`total` are read
- * with aggregates so they stay exact however many rows exist.
+ * to hear about under dozens of identical roster lines.
+ *
+ * Every read here is BOUNDED, which the first version only claimed to be. It
+ * used `findMany({ distinct })`, and Prisma applies `distinct` in memory unless
+ * it leads the `orderBy` — so ordering by `createdAt` meant fetching every
+ * withheld row for the booking and deduping client-side, exactly the unbounded
+ * read the removed `take: 100` had been hiding. The groups now come from a
+ * database-side `groupBy`, which returns one row per distinct template and
+ * nothing else; subjects are then fetched by matching those maxima under an
+ * explicit cap. A group is never dropped for want of a subject, because the
+ * aggregate — not the row read — is what produces the list.
  */
 export async function getWithheldBookingEmailSummary(
   bookingId: string,
@@ -316,37 +358,49 @@ export async function getWithheldBookingEmailSummary(
     status: EmailLogStatus.SKIPPED_NO_EMAILS,
   } as const;
 
-  const [total, counts, latestPerTemplate] = await Promise.all([
+  const [total, grouped] = await Promise.all([
     prisma.emailLog.count({ where }),
     prisma.emailLog.groupBy({
       by: ["templateName"],
       where,
       _count: { _all: true },
-    }),
-    // The newest row for each distinct template, for a representative subject.
-    prisma.emailLog.findMany({
-      where,
-      orderBy: { createdAt: "desc" },
-      distinct: ["templateName"],
-      select: { templateName: true, subject: true, createdAt: true },
+      _max: { createdAt: true },
     }),
   ]);
 
-  const countByTemplate = new Map(
-    counts.map((row) => [row.templateName, row._count._all]),
-  );
+  const latestAts = grouped
+    .map((row) => row._max.createdAt)
+    .filter((value): value is Date => value != null);
+
+  // Representative subjects: only rows sitting on a per-template maximum.
+  const subjectRows = latestAts.length
+    ? await prisma.emailLog.findMany({
+        where: { ...where, createdAt: { in: latestAts } },
+        select: { templateName: true, subject: true },
+        take: WITHHELD_SUBJECT_READ_LIMIT,
+      })
+    : [];
+  const subjectByTemplate = new Map<string, string>();
+  for (const row of subjectRows) {
+    if (!subjectByTemplate.has(row.templateName)) {
+      subjectByTemplate.set(row.templateName, row.subject);
+    }
+  }
 
   return {
     total,
-    groups: latestPerTemplate.map((row) => ({
-      templateName: row.templateName,
-      label: withheldEmailDisplayName(row.templateName),
-      // Fall back to 1 rather than 0: the row in hand proves at least one
-      // exists, so a groupBy that somehow missed it must not render "×0".
-      count: countByTemplate.get(row.templateName) ?? 1,
-      subject: row.subject,
-      latestAt: row.createdAt,
-      nothingToForward: NOTHING_TO_FORWARD_TEMPLATE_NAMES.has(row.templateName),
-    })),
+    groups: grouped
+      .map((row) => ({
+        templateName: row.templateName,
+        label: withheldEmailDisplayName(row.templateName),
+        // Fall back to 1 rather than 0: the aggregate row proves at least one
+        // exists, so a count that came back empty must not render "×0".
+        count: row._count._all || 1,
+        subject: subjectByTemplate.get(row.templateName) ?? "",
+        latestAt: row._max.createdAt ?? new Date(0),
+        remedy: WITHHELD_EMAIL_REMEDIES.get(row.templateName) ?? "relay",
+      }))
+      // groupBy makes no ordering promise; the banner reads newest-first.
+      .sort((a, b) => b.latestAt.getTime() - a.latestAt.getTime()),
   };
 }

@@ -26,18 +26,40 @@
  */
 import Link from "next/link";
 import { formatNZDateTime } from "@/lib/nzst-date";
+import type { WithheldEmailRemedy } from "@/lib/booking-email-suppression";
 
 export interface WithheldEmailGroupView {
   templateName: string;
-  /** Registry display name, never a raw slug. */
+  /**
+   * Human name for the kind — the registry label where one exists, and
+   * deliberately the raw template name where none does, rather than inventing
+   * a friendly name for a message nobody has registered.
+   */
   label: string;
   /** Exact number of this kind withheld. */
   count: number;
+  /** Representative subject; empty when none was read. */
   subject: string;
   /** ISO timestamp of the most recent one. */
   latestAt: string;
-  /** Nothing exists for the officer to forward for this kind. */
-  nothingToForward: boolean;
+  /** What the officer has to do about this kind. */
+  remedy: WithheldEmailRemedy;
+}
+
+/**
+ * The per-kind remedy line. Only two kinds need one, and they need DIFFERENT
+ * ones — treating them alike is what made the first version of this banner
+ * tell an officer to clear the switch and wait for a chore link that nothing
+ * regenerates.
+ */
+function remedyNote(remedy: WithheldEmailRemedy): string | null {
+  if (remedy === "auto-regenerates") {
+    return "Nothing was created to forward — clear the switch and it is re-sent automatically.";
+  }
+  if (remedy === "resend-roster") {
+    return "The guest's chore link was replaced but never delivered, so their old link no longer works. Clear the switch, then re-send the roster from the Roster page — nothing re-sends this on its own.";
+  }
+  return null;
 }
 
 export function BookingWithheldEmailsBanner({
@@ -116,16 +138,19 @@ export function BookingWithheldEmailsBanner({
               <li key={group.templateName}>
                 <span className="font-medium">{group.label}</span>
                 {group.count > 1 ? <span> &times;{group.count}</span> : null}
-                {" — "}
-                <span>{group.subject}</span>
+                {group.subject ? (
+                  <>
+                    {" — "}
+                    <span>{group.subject}</span>
+                  </>
+                ) : null}
                 {" ("}
                 {group.count > 1 ? "most recent " : ""}
                 {formatNZDateTime(new Date(group.latestAt))}
                 {")"}
-                {group.nothingToForward ? (
+                {remedyNote(group.remedy) ? (
                   <span className="mt-0.5 block pl-5 italic">
-                    Nothing was created to forward — clear the switch to have it
-                    regenerated.
+                    {remedyNote(group.remedy)}
                   </span>
                 ) : null}
               </li>

@@ -909,7 +909,7 @@ export default async function BookingDetailPage({
     count: group.count,
     subject: group.subject,
     latestAt: group.latestAt.toISOString(),
-    nothingToForward: group.nothingToForward,
+    remedy: group.remedy,
   }));
   const noEmailsState = canSeeAdminTools
     ? {
