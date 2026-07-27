@@ -4,6 +4,48 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Families can now be recorded across four generations, not two (#2255).**
+  A member who already had dependants could not be recorded as anyone's child,
+  so a grandparent, parent and child could not all be linked in one line — the
+  club had to leave a real relationship unrecorded. Parent links now run up to
+  **four generations** (great-grandparent, grandparent, parent, child), still
+  with at most two parents each. The limit is checked when a link is made, from
+  both ends at once, so it no longer depends on the order the links happened to
+  be created in — which is worth saying plainly, because the old "two
+  generations" rule did depend on it: it refused to attach a member who had
+  dependants, but never looked at the parent's own parents, so a longer chain
+  could be built downwards one person at a time and nothing stopped it. Every
+  place that creates a parent link now enforces the limit, including admin
+  member-create, family-group child requests, membership-application approval,
+  and **merging two duplicate member records** — four paths the old rule never
+  covered at all. (Merging is the surprising one: it never creates a link, but
+  joining two records joins their families, which could produce a six-generation
+  chain or link a family back on itself. Such a merge is now refused, and asks
+  you to unlink first.) A link that would make the chain longer, or that would
+  loop a family back on itself, is refused with an explanation naming the limit.
+  **Where club email goes** follows the family further too: if a dependent
+  inherits their parent's email address and that parent has no real address of
+  their own, the club now uses the nearest person above them who does, instead
+  of leaving that generation's children unreachable. Both the member's admin
+  page and the family's own profile page say whose address is being used when it
+  comes from beyond the direct parent, since that is the family whose consent is
+  at stake. When a young member reaches adult age and gets their own login,
+  their children's notifications now follow them instead of staying with the
+  grandparent. **Removing a member** — cancelling, archiving, approving an
+  account deletion, or hard-deleting the record — now tells you what it
+  detached: their own dependants are
+  left without a parent link (they are deliberately not moved up to a
+  grandparent, because who is responsible for a member is not something to
+  change automatically), and both they and anyone who was receiving email at the
+  removed member's address are listed on screen and in the audit log. Approving
+  a deletion also stops club email being sent to the anonymised address, which
+  it previously kept attempting forever. Who is **billed** is unchanged by the
+  link rules themselves: parent links record responsibility and grant no fee
+  coverage, which comes from family groups and membership types as before. There
+  is one indirect route worth knowing about, though — approvals that add someone
+  to a family GROUP still change that group's composition, and group composition
+  is a fee-model input, so an approval that was previously refused can now
+  compose a group the fee rules classify as a Family.
 - **Recording a membership payment by hand now asks whether to tell the member
   — and can actually tell them (#2260).** When a treasurer marks a member's
   subscription paid for a cash, cheque or internet-banking payment, the club
@@ -164,14 +206,16 @@ All notable public reference-release changes should be recorded here.
   search now returns those members. When a search genuinely has no one to offer,
   the dialog no longer stops at a bare "not found": it lists the members whose
   names matched and the reason each cannot be linked ("already has two parents
-  recorded", "has dependants of their own", "is archived", "is already linked to
-  this member"), and only says "No members matched your search" when nobody
-  matched at all. The search and the save step are now driven by one shared rule,
-  so the dialog can no longer offer a member that saving then refuses, nor hide
-  one that saving would have accepted. Who may be linked is unchanged — at most
-  two parents, no linking someone who already has dependants of their own, no
-  archived members — and inactive members remain linkable, badged "Inactive", as
-  before.
+  recorded", "is archived", "is already linked to this member"), and only says
+  "No members matched your search" when nobody matched at all. The search and
+  the save step are now driven by one shared rule, so the dialog can no longer
+  offer a member that saving then refuses, nor hide one that saving would have
+  accepted. Who may be linked was unchanged by this fix — at most two parents, no
+  linking someone who already has dependants of their own, no archived members —
+  and inactive members remain linkable, badged "Inactive", as before. (The
+  "already has dependants" part of that was then replaced in the same release by
+  the four-generation limit above, which also added a "would make the family
+  chain more than 4 generations deep" reason to the same list.)
 - **Fixed: after switching the connected Xero organisation, the club's financial
   year and period-lock checks could keep using the PREVIOUS organisation's
   settings (#2261).** The app remembers a few things it reads from Xero — the

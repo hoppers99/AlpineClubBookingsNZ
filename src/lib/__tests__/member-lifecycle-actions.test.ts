@@ -378,6 +378,12 @@ describe("member delete lifecycle actions", () => {
     for (const delegate of countDelegates) {
       delegate.count.mockResolvedValue(0);
     }
+    // #2255: the hard delete now reads who it is about to detach (before the
+    // row goes and `onDelete: SetNull` erases the evidence) and clears the
+    // `inheritParentEmail: true` flag those members would otherwise be left
+    // holding beside a NULL pointer.
+    mockPrisma.member.findMany.mockResolvedValue([]);
+    mockPrisma.member.updateMany.mockResolvedValue({ count: 0 });
   });
 
   it("reports blockers for meaningful member history", async () => {
@@ -396,6 +402,75 @@ describe("member delete lifecycle actions", () => {
         expect.objectContaining({ code: "credits", count: 2 }),
       ]),
     );
+  });
+
+  /**
+   * #2255 (D9). Delete eligibility counts DIRECT dependants only — members
+   * whose `parentMemberId` or `secondaryParentId` names this member. Four
+   * generations do not change that, and the reasoning is worth pinning because
+   * "counts direct only" looks like an oversight until you follow it through:
+   *
+   *  - a MIDDLE generation with dependants of their own is still blocked, so a
+   *    delete can never strand a grandchild whose only recorded parent it was;
+   *  - a GRANDPARENT is blocked while their child is still linked to them, and
+   *    becomes deletable once that one link is cleared — at which point the
+   *    grandchildren are untouched, because they were never linked to the
+   *    grandparent in the first place. There is nothing dangling to protect.
+   *
+   * Counting descendants transitively instead would block deleting a
+   * great-grandparent who has no remaining link to anyone, for the sake of a
+   * relationship the database no longer records.
+   */
+  describe("dependants blocker at depth (#2255)", () => {
+    it("blocks a middle generation who still holds dependants", async () => {
+      mockPrisma.member.count.mockResolvedValue(1);
+
+      const eligibility = await getMemberDeleteEligibility({
+        memberId: "member-1",
+        currentAdminMemberId: "admin-2",
+      });
+
+      expect(eligibility.eligible).toBe(false);
+      expect(eligibility.blockers).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ code: "dependants", count: 1 }),
+        ]),
+      );
+    });
+
+    it("counts only DIRECT links, through either parent column", async () => {
+      await getMemberDeleteEligibility({
+        memberId: "member-1",
+        currentAdminMemberId: "admin-2",
+      });
+
+      // Not `dependents: { some: { dependents: { some: {} } } }` or any other
+      // transitive shape: exactly the two columns that name this member.
+      expect(mockPrisma.member.count).toHaveBeenCalledWith({
+        where: {
+          OR: [
+            { parentMemberId: "member-1" },
+            { secondaryParentId: "member-1" },
+          ],
+        },
+      });
+    });
+
+    it("clears a grandparent once their own child link is gone, grandchildren and all", async () => {
+      // No member names this one as a parent any more. Their former child may
+      // still head a family of their own; that is that member's business.
+      mockPrisma.member.count.mockResolvedValue(0);
+
+      const eligibility = await getMemberDeleteEligibility({
+        memberId: "member-1",
+        currentAdminMemberId: "admin-2",
+      });
+
+      expect(eligibility.blockers).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ code: "dependants" })]),
+      );
+      expect(eligibility.eligible).toBe(true);
+    });
   });
 
   it("ignores placeholder subscription rows without invoice or payment history", async () => {
@@ -588,6 +663,97 @@ describe("member delete lifecycle actions", () => {
         ],
         photoOfMembers: { none: { id: { not: "member-1" } } },
       },
+    });
+  });
+
+  /**
+   * #2255 (R5a). Hard delete is the FOURTH removal path, and the only one that
+   * left the detaching to the database. `onDelete: SetNull` does clear the
+   * dependants' parent columns and their `inheritEmailFromId` — but silently,
+   * and it leaves `inheritParentEmail: true` standing beside a NULL pointer,
+   * a combination no writer produces and no reader expects.
+   */
+  describe("declares and tidies the family links it detaches (#2255)", () => {
+    function detaching(
+      dependants: Array<{ id: string; firstName: string; lastName: string; email: string }>,
+      inheritors: Array<{ id: string; firstName: string; lastName: string; email: string }> = [],
+    ) {
+      mockPrisma.member.findMany.mockImplementation(async ({ where }: any) =>
+        where?.inheritEmailFromId ? inheritors : dependants,
+      );
+    }
+
+    it("returns and audits the members it detached", async () => {
+      detaching(
+        [{ id: "kid-1", firstName: "Ana", lastName: "Smith", email: "ana@example.org" }],
+        [{ id: "kid-2", firstName: "Ben", lastName: "Smith", email: "ben@example.org" }],
+      );
+
+      const result = await reviewMemberDeleteRequest({
+        requestId: "request-1",
+        reviewedByMemberId: "admin-2",
+        action: "approve",
+        reviewNote: "Checked",
+      });
+
+      expect(result.orphanedLinks.dependants).toEqual([
+        { id: "kid-1", name: "Ana Smith", email: "ana@example.org" },
+      ]);
+      expect(result.orphanedLinks.emailInheritors).toEqual([
+        { id: "kid-2", name: "Ben Smith", email: "ben@example.org" },
+      ]);
+    });
+
+    it("clears the inheritParentEmail flag SetNull would have stranded", async () => {
+      detaching(
+        [],
+        [{ id: "kid-2", firstName: "Ben", lastName: "Smith", email: "ben@example.org" }],
+      );
+
+      await reviewMemberDeleteRequest({
+        requestId: "request-1",
+        reviewedByMemberId: "admin-2",
+        action: "approve",
+        reviewNote: "Checked",
+      });
+
+      // Guarded on the pointer already being NULL, so it can only ever tidy a
+      // flag the delete itself stranded — never a live inheritance.
+      expect(mockPrisma.member.updateMany).toHaveBeenCalledWith({
+        where: { id: { in: ["kid-2"] }, inheritEmailFromId: null },
+        data: { inheritParentEmail: false },
+      });
+    });
+
+    it("reads the links BEFORE the row is deleted", async () => {
+      // Afterwards there is nothing left to read: the FK cascade has already
+      // nulled every column that named this member.
+      detaching([{ id: "kid-1", firstName: "Ana", lastName: "Smith", email: "a@e.org" }]);
+
+      await reviewMemberDeleteRequest({
+        requestId: "request-1",
+        reviewedByMemberId: "admin-2",
+        action: "approve",
+        reviewNote: "Checked",
+      });
+
+      const readOrder = mockPrisma.member.findMany.mock.invocationCallOrder[0];
+      const deleteOrder = mockPrisma.member.delete.mock.invocationCallOrder[0];
+      expect(readOrder).toBeLessThan(deleteOrder);
+    });
+
+    it("reports empty lists rather than omitting them", async () => {
+      const result = await reviewMemberDeleteRequest({
+        requestId: "request-1",
+        reviewedByMemberId: "admin-2",
+        action: "approve",
+        reviewNote: "Checked",
+      });
+
+      expect(result.orphanedLinks).toEqual({
+        dependants: [],
+        emailInheritors: [],
+      });
     });
   });
 

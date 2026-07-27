@@ -85,6 +85,9 @@ Whether families are billed together is not set here — it is the club-level
 | --- | --- | --- |
 | The request queue is read-only ("… can view family group requests but cannot approve or reject them") | Your admin role has membership view but not edit | Ask a full admin for membership edit access |
 | I can't approve a child/adult request | No member record is linked | Choose the member record to link, or create a new non-login member |
+| "Family links are limited to 4 generations…" | Approving would make the family chain longer than great-grandparent → grandparent → parent → child | Link the member under a nearer relative, or unlink a generation that no longer needs recording |
+| "Cannot link a parent or ancestor as a dependant" | The chosen member is already further up this family, so the link would loop back on itself | Check who is already recorded as whose parent on the member detail pages |
+| "No parent or ancestor in this family has a real email address to inherit" | Nobody up the chain has a real (non-placeholder) address, so club email would go nowhere | Record an email address for the requester first, or choose **Use child's own email** to approve without inheriting |
 | A revoke fails | The invitation was just claimed or already revoked | Refresh; it may have been accepted |
 | A family isn't being invoiced | It has no active billing member (in billing-member mode) | Set its billing member on the member's detail Family card or the [Fees](fees.md) family-billing panel |
 
