@@ -37,13 +37,18 @@ import AdminDisplayTemplatesPage from "./page";
 //  2. The restore is a CONVERGENT re-seed: it rewrites every built-in from
 //     code. It must state that before it runs.
 
-/** Templates GET answers with `status`; everything else is benign. */
+/**
+ * Templates GET answers with `status`; everything else is benign. `status: 0`
+ * means the fetch itself REJECTS, the transport failure that used to hang the
+ * page on "Loading…" for ever.
+ */
 function installFetch(status: number, templates: unknown[] = []) {
   const calls: Array<{ url: string; method: string }> = [];
   const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
     const method = (init?.method ?? "GET").toUpperCase();
     calls.push({ url, method });
     if (url === "/api/admin/display/templates" && method === "GET") {
+      if (status === 0) throw new TypeError("Failed to fetch");
       return new Response(JSON.stringify(status === 200 ? { templates } : {}), {
         status,
         headers: { "content-type": "application/json" },
@@ -114,6 +119,45 @@ describe("Display templates — empty state names the cause (#2247)", () => {
     expect(screen.queryByText(/not even the built-in boards/i)).toBeNull();
     expect(screen.queryByText(/module looks switched off/i)).toBeNull();
   });
+
+  it("a 401 is reported as an expired session", async () => {
+    installFetch(401);
+    render(<AdminDisplayTemplatesPage />);
+
+    await screen.findByText(/session has expired/i);
+    expect(screen.getByText(/sign in again/i)).toBeDefined();
+    expect(screen.queryByText(/not even the built-in boards/i)).toBeNull();
+  });
+
+  // The page used to leave "Loading…" up for ever when the fetch rejected —
+  // the very blank screen this issue removes.
+  it("a transport failure ends the loading state and names the connection", async () => {
+    installFetch(0);
+    render(<AdminDisplayTemplatesPage />);
+
+    await screen.findByText(/could not be fetched/i);
+    expect(screen.getByText(/never reached the server/i)).toBeDefined();
+    expect(screen.queryByText("Loading…")).toBeNull();
+  });
+
+  // In these states the POST fails by construction — the same proxy, guard or
+  // transport that refused the list refuses the restore — and the copy tells
+  // the operator to do something else first.
+  it.each([
+    ["module off", 404],
+    ["forbidden", 403],
+    ["signed out", 401],
+    ["unreachable", 0],
+    ["server error", 500],
+  ])("does not offer a restore that cannot work (%s)", async (_label, status) => {
+    installFetch(status);
+    render(<AdminDisplayTemplatesPage />);
+
+    await screen.findByRole("button", { name: "New template" });
+    expect(
+      screen.queryByRole("button", { name: "Restore built-in boards" })
+    ).toBeNull();
+  });
 });
 
 describe("Restore built-in boards (#2247)", () => {
@@ -127,8 +171,15 @@ describe("Restore built-in boards (#2247)", () => {
 
     const dialog = await screen.findByRole("dialog");
     expect(dialog.textContent).toMatch(/OVERWRITTEN/);
-    expect(dialog.textContent).toMatch(/lost/i);
     expect(dialog.textContent).toMatch(/not touched/i);
+    // The three things an operator can actually lose, all stated up front:
+    // a reserved-key row, an in-place edit, and an imported customisation…
+    expect(dialog.textContent).toMatch(/reserved built-in keys/i);
+    expect(dialog.textContent).toMatch(/edited in place/i);
+    expect(dialog.textContent).toMatch(/imported/i);
+    // …plus the knock-on nobody expects: a custom board on a built-in layout
+    // follows that layout's restored shape.
+    expect(dialog.textContent).toMatch(/built on a built-in LAYOUT/i);
     // Nothing has been written yet — the warning precedes the action.
     expect(calls.some((c) => c.method === "POST")).toBe(false);
   });
@@ -168,6 +219,17 @@ describe("Restore built-in boards (#2247)", () => {
           c.url === "/api/admin/display/built-ins/restore" && c.method === "POST"
       )
     ).toHaveLength(1);
+    // The outcome is announced, not merely displayed.
+    const live = screen.getByText(/Restored the built-in boards/).closest(
+      "[role='status']"
+    );
+    expect(live).not.toBeNull();
+    // Focus survives the dialog closing: the trigger is never disabled in the
+    // same turn Radix restores focus to it, so focus cannot land on <body>.
+    const trigger = screen.getByRole("button", {
+      name: /Restore built-in boards|Restoring…/,
+    }) as HTMLButtonElement;
+    expect(trigger.disabled).toBe(false);
     // The list is re-read so the new boards appear without a manual reload.
     expect(
       calls.filter(

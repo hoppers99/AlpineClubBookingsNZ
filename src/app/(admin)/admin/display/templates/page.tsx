@@ -25,10 +25,12 @@ import {
 } from "./template-slots";
 import {
   DisplayTemplatesEmptyState,
+  shouldOfferBuiltInRestore,
   templatesLoadStateForStatus,
   useRestoreBuiltInBoards,
   type TemplatesLoadState,
 } from "./restore-built-ins";
+import { DISPLAY_TERM_TEMPLATE } from "@/lib/lodge-display/display-terminology";
 
 // Lobby display TEMPLATE authoring (fork issue #79, LTV-033, ADR-003 §1). A
 // Template is built on a Layout: it fills each declared slot with content or an
@@ -134,20 +136,24 @@ export default function AdminDisplayTemplatesPage() {
     draft.id !== null && isBuiltInDisplayTemplateKey(draft.key);
 
   const refresh = useCallback(async () => {
+    // Every fetch is catch-wrapped: an un-caught transport failure used to
+    // reject out of `refresh` before `setLoading(false)`, leaving the page on
+    // "Loading…" for ever — the exact blank screen this issue removes (#2247).
     const [templatesRes, layoutsRes, lodgesRes] = await Promise.all([
-      fetch("/api/admin/display/templates"),
-      fetch("/api/admin/display/layouts"),
+      fetch("/api/admin/display/templates").catch(() => null),
+      fetch("/api/admin/display/layouts").catch(() => null),
       // Same source the Devices page uses: the admin lodges list. When more
       // than one active lodge exists the preview lodge selector appears (a
       // template is lodge-agnostic, so its preview lodge must be chosen).
       fetch("/api/admin/lodges").catch(() => null),
     ]);
-    setLoadState(templatesLoadStateForStatus(templatesRes.status));
-    if (templatesRes.ok) {
+    // No response at all → status 0, which maps to the "unreachable" state.
+    setLoadState(templatesLoadStateForStatus(templatesRes?.status ?? 0));
+    if (templatesRes?.ok) {
       const body = (await templatesRes.json()) as { templates: TemplateListItem[] };
       setTemplates(body.templates ?? []);
     }
-    if (layoutsRes.ok) {
+    if (layoutsRes?.ok) {
       const body = (await layoutsRes.json()) as { layouts: LayoutOption[] };
       setLayouts(body.layouts ?? []);
     }
@@ -332,10 +338,10 @@ export default function AdminDisplayTemplatesPage() {
         window.confirm(
           `"${draft.name || draft.key}" is a built-in template and is ` +
             "read-only — in-place edits can't be saved (they would be " +
-            "overwritten the next time the built-in designs are re-seeded or " +
-            "the app is upgraded). Duplicate it to a new custom template to " +
-            "keep your changes?\n\nOK duplicates it now; Cancel leaves the " +
-            "built-in open."
+            "overwritten the next time the database is seeded or someone " +
+            "presses Restore built-in boards). Duplicate it to a new custom " +
+            "template to keep your changes?\n\nOK duplicates it now; Cancel " +
+            "leaves the built-in open."
         )
       ) {
         duplicateTemplate();
@@ -462,7 +468,7 @@ export default function AdminDisplayTemplatesPage() {
     <AdminViewOnlySectionBanner canEdit={canEdit} className="mb-6">
       Your admin role can view the lobby display templates but cannot change
       them. Lodge edit access is required to author, edit, or delete a
-      template. Preview stays available.
+      template, or to restore the built-in boards. Preview stays available.
     </AdminViewOnlySectionBanner>
   );
 
@@ -474,9 +480,9 @@ export default function AdminDisplayTemplatesPage() {
         <BackLink href="/admin/display" label="Lobby Display" />
         <h1 className="mt-2 text-2xl font-bold">Display Templates</h1>
         <p className="text-muted-foreground">
-          A Template fills a <strong>Layout</strong>&apos;s slots with content or
-          embedded modules, layers CSS overrides on the layout default, and
-          carries the footer. Bind a Template to a display on the{" "}
+          {/* The shared definition (#2247) — same words as the hub card, the
+              Reference page and the operator guide. */}
+          {DISPLAY_TERM_TEMPLATE.oneLiner} Bind one to a display on the{" "}
           <strong>Devices</strong> page.
         </p>
         <p className="text-muted-foreground mt-1 text-sm">
@@ -486,7 +492,16 @@ export default function AdminDisplayTemplatesPage() {
         </p>
       </div>
 
-      {message && <p className="text-sm font-medium">{message}</p>}
+      {/*
+        Permanently-mounted polite live region (#2247), the house idiom: the
+        outcome of a save, a delete, or a built-in restore is announced rather
+        than only appearing. A region injected already-populated is silently
+        dropped by some screen-reader/browser pairings, so the wrapper is
+        mounted unconditionally and only its content is gated.
+      */}
+      <div role="status" aria-live="polite">
+        {message && <p className="text-sm font-medium">{message}</p>}
+      </div>
 
       <Card>
         <CardHeader>
@@ -495,7 +510,7 @@ export default function AdminDisplayTemplatesPage() {
         <CardContent>
           {loading && <p className="text-muted-foreground text-sm">Loading…</p>}
           {!loading && templates.length === 0 && (
-            <DisplayTemplatesEmptyState state={loadState} />
+            <DisplayTemplatesEmptyState state={loadState} canEdit={canEdit} />
           )}
           <div className="space-y-3">
             {templates.map((item) => (
@@ -572,18 +587,31 @@ export default function AdminDisplayTemplatesPage() {
               New template
             </Button>
             {restoreBuiltIns.confirmDialog}
-            <ViewOnlyActionButton
-              canEdit={canEdit}
-              describeReason={false}
-              variant="outline"
-              disabled={restoreBuiltIns.running}
-              title="Create (or re-create) the built-in layouts and templates that ship with the app"
-              onClick={() => void restoreBuiltIns.run()}
-            >
-              {restoreBuiltIns.running
-                ? "Restoring…"
-                : "Restore built-in boards"}
-            </ViewOnlyActionButton>
+            {/*
+              Offered only where it could actually work: with the module off,
+              the session expired, the guard refusing, or the server
+              unreachable, the POST fails by construction and the empty state
+              already says what to do instead (#2247).
+
+              NOT disabled while running — Radix restores focus to the trigger
+              as the dialog closes, and a trigger disabled in that same turn
+              drops focus to <body>. The label carries the busy state and the
+              hook drops a re-entrant press.
+            */}
+            {shouldOfferBuiltInRestore(loadState) && (
+              <ViewOnlyActionButton
+                canEdit={canEdit}
+                describeReason={false}
+                variant="outline"
+                aria-busy={restoreBuiltIns.running}
+                title="Create (or re-create) the built-in layouts and templates that ship with the app"
+                onClick={() => void restoreBuiltIns.run()}
+              >
+                {restoreBuiltIns.running
+                  ? "Restoring…"
+                  : "Restore built-in boards"}
+              </ViewOnlyActionButton>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -603,9 +631,10 @@ export default function AdminDisplayTemplatesPage() {
               <p className="font-medium">This is a built-in template.</p>
               <p>
                 In-place edits to a built-in are{" "}
-                <strong>overwritten</strong> the next time the built-in designs
-                are re-seeded or the app is upgraded. To keep your changes,
-                duplicate this template and customise the copy instead.
+                <strong>overwritten</strong> the next time the database is
+                seeded or someone presses <strong>Restore built-in boards</strong>.
+                To keep your changes, duplicate this template and customise the
+                copy instead.
               </p>
               <ViewOnlyActionButton
                 canEdit={canEdit}

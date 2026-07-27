@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState, type ReactNode } from "react";
+import { useCallback, useRef, useState, type ReactNode } from "react";
 import { useConfirm } from "@/components/confirm-dialog";
 import { ADMIN_FORBIDDEN_SAVE_REASON } from "@/components/admin/view-only-action";
 import {
@@ -15,8 +15,8 @@ import {
 //
 // The built-in boards are created ONLY by the database seed, and no deploy or
 // upgrade path re-runs the seed, so a club whose database predates the
-// lobby-display feature has no `builtin-*` rows at all: the gallery is empty,
-// says nothing, and offers no way out. This is the way out.
+// lobby-display feature has no built-in rows at all: the gallery is empty, says
+// nothing, and offers no way out. This is the way out.
 
 const LAYOUT_COUNT = BUILT_IN_DISPLAY_LAYOUTS.length;
 const TEMPLATE_COUNT = BUILT_IN_DISPLAY_TEMPLATES.length;
@@ -24,34 +24,60 @@ const TEMPLATE_COUNT = BUILT_IN_DISPLAY_TEMPLATES.length;
 /**
  * Why the templates list is empty, as far as the BROWSER can honestly tell.
  *
- * The three causes named in #2247 are told apart by the status the templates
- * GET returns, because that response is the only evidence this page has:
+ * The causes are told apart by the status the templates GET returns, because
+ * that response is the only evidence this page has:
+ *  • `unreachable` — the fetch itself failed, so there is no status. Without
+ *    this the page sat on "Loading…" for ever, which is the very blank screen
+ *    this issue exists to remove.
+ *  • `signed-out` — 401. The session expired under an open tab; nothing is
+ *    wrong with the data or with the role.
+ *  • `forbidden` — 403 from the route's `lodge:view` guard. The browser is told
+ *    only that the request was refused, never WHICH permission was missing, so
+ *    the copy names the likely cause and says how it was inferred instead of
+ *    asserting a role state it cannot read.
  *  • `module-off` — 404. The proxy 404s all of `/api/admin/display/*` while the
  *    `lobbyDisplay` module is off (and it is off by default). Normally the PAGE
  *    404s with it, so reaching this state means the flag went off under an
  *    already-open tab. The copy says "looks switched off" rather than asserting
  *    it, because a 404 is also what a genuinely missing route would return.
- *  • `forbidden` — 403 from the route's `lodge:view` guard. The browser is told
- *    only that the request was refused, never WHICH permission was missing, so
- *    the copy names the likely cause and says how it was inferred instead of
- *    asserting a role state it cannot read.
- *  • `empty` — a successful but genuinely empty list. This is the never-seeded
- *    case the restore action fixes.
+ *  • `loaded` — the list came back fine. If it is ALSO empty, that is the
+ *    never-seeded case the restore action fixes.
  *  • `error` — anything else, named as unknown rather than blamed on a guess.
  */
 export type TemplatesLoadState =
   | "loading"
-  | "empty"
+  | "loaded"
+  | "unreachable"
+  | "signed-out"
   | "module-off"
   | "forbidden"
   | "error";
 
-/** Map the templates GET status to the empty-state cause. */
-export function templatesLoadStateForStatus(status: number): TemplatesLoadState {
-  if (status === 404) return "module-off";
+/**
+ * Map the templates GET status to the load state. Pass `0` (the shape a failed
+ * fetch is normalised to) when no response was produced at all.
+ */
+export function templatesLoadStateForStatus(
+  status: number
+): TemplatesLoadState {
+  if (status === 401) return "signed-out";
   if (status === 403) return "forbidden";
-  if (status >= 200 && status < 300) return "empty";
+  if (status === 404) return "module-off";
+  if (status >= 200 && status < 300) return "loaded";
+  if (status < 100) return "unreachable";
   return "error";
+}
+
+/**
+ * Whether to offer the restore at all.
+ *
+ * In `module-off`, `forbidden`, `signed-out` and `unreachable` the POST would
+ * fail by construction — the same proxy, guard or transport that refused the
+ * list refuses the restore — and the empty-state copy tells the operator to do
+ * something else first. Offering a button that cannot work would contradict it.
+ */
+export function shouldOfferBuiltInRestore(state: TemplatesLoadState): boolean {
+  return state === "loaded";
 }
 
 /**
@@ -60,10 +86,33 @@ export function templatesLoadStateForStatus(status: number): TemplatesLoadState 
  */
 export function DisplayTemplatesEmptyState({
   state,
+  canEdit,
 }: {
   state: TemplatesLoadState;
+  /** Tri-state (#2065): `undefined` while the session is still resolving. */
+  canEdit: boolean | undefined;
 }) {
   if (state === "loading") return null;
+
+  if (state === "unreachable") {
+    return (
+      <EmptyStateBox heading="The templates list could not be fetched.">
+        The request never reached the server, so this is a connection problem
+        rather than anything about your club&apos;s boards. Check the network
+        and reload the page.
+      </EmptyStateBox>
+    );
+  }
+
+  if (state === "signed-out") {
+    return (
+      <EmptyStateBox heading="Your session has expired.">
+        The templates list returned <strong>401 Unauthorised</strong>. Sign in
+        again and reopen this page — nothing is wrong with the boards
+        themselves.
+      </EmptyStateBox>
+    );
+  }
 
   if (state === "module-off") {
     return (
@@ -103,13 +152,24 @@ export function DisplayTemplatesEmptyState({
     );
   }
 
-  // state === "empty": the list loaded fine and there is genuinely nothing in it.
+  // state === "loaded": the list loaded fine and there is genuinely nothing in
+  // it — the never-seeded case.
   return (
     <EmptyStateBox heading="No display templates yet — not even the built-in boards.">
       The {TEMPLATE_COUNT} built-in boards are created by the database seed, and
       upgrading the app does not re-run the seed — so a club whose database
-      predates the lobby display starts with none. Use{" "}
-      <strong>Restore built-in boards</strong> below to create them.
+      predates the lobby display starts with none.{" "}
+      {canEdit === false ? (
+        <>
+          <strong>Restore built-in boards</strong> below would create them, but
+          it is disabled for your role: restoring needs lodge edit access, so
+          ask an administrator who has it to press it.
+        </>
+      ) : (
+        <>
+          Use <strong>Restore built-in boards</strong> below to create them.
+        </>
+      )}
     </EmptyStateBox>
   );
 }
@@ -132,10 +192,11 @@ function EmptyStateBox({
 /**
  * Runs the convergent built-in re-seed behind an explicit confirmation.
  *
- * The confirmation is not ceremony: `ensureBuiltInDisplays` REWRITES every
- * `builtin-*` row to its shipped definition, so an operator who edited a
- * built-in in place loses that edit. The dialog states that before it runs
- * (#2247), and the server audits the action.
+ * The confirmation is not ceremony: `ensureBuiltInDisplays` REWRITES every row
+ * under a reserved built-in key to its shipped definition, so an operator who
+ * edited a built-in in place — or imported a customised one through a
+ * config-transfer bundle — loses that content. The dialog states all of that
+ * before it runs (#2247), and the server audits the action.
  *
  * Returned as a hook rather than a button so the button itself stays a
  * `ViewOnlyActionButton` in `templates/page.tsx`, under that page's single
@@ -148,32 +209,47 @@ export function useRestoreBuiltInBoards(options: {
 }): { run: () => Promise<void>; running: boolean; confirmDialog: ReactNode } {
   const { confirm, confirmDialog } = useConfirm();
   const [running, setRunning] = useState(false);
+  // Re-entrancy is guarded HERE rather than by disabling the trigger. Radix
+  // restores focus to the trigger as the dialog closes; a trigger disabled in
+  // that same turn cannot take focus, so focus falls to <body> and a keyboard
+  // user loses their place — the exact failure the house rules call out for
+  // gated controls leaving the tab order. The button therefore stays enabled
+  // and only its label changes, and a second press mid-flight is dropped here.
+  const runningRef = useRef(false);
   const { onResult } = options;
 
   const run = useCallback(async () => {
+    if (runningRef.current) return;
+
     const confirmed = await confirm({
       title: "Restore the built-in boards?",
       description:
         `This rewrites the ${LAYOUT_COUNT} built-in layouts and ` +
         `${TEMPLATE_COUNT} built-in templates back to the designs that ship ` +
-        `with the app. Missing ones are created; any that already exist are ` +
-        `OVERWRITTEN, so changes made to a built-in in place are lost. Your ` +
-        `own layouts and templates are not touched, and screens stay bound to ` +
-        `whatever they already show.`,
+        `with the app. Missing ones are created; anything already saved under ` +
+        `one of the seven reserved built-in keys is OVERWRITTEN — including a ` +
+        `built-in edited in place, and one customised by an imported ` +
+        `configuration bundle. Layouts and templates under your own keys are ` +
+        `not touched, though a board of yours built on a built-in LAYOUT will ` +
+        `follow that layout's restored shape. Screens stay bound to whatever ` +
+        `they already show.`,
       confirmLabel: "Restore built-in boards",
       destructive: true,
     });
     if (!confirmed) return;
 
+    runningRef.current = true;
     setRunning(true);
     const response = await fetch("/api/admin/display/built-ins/restore", {
       method: "POST",
     }).catch(() => null);
+    runningRef.current = false;
     setRunning(false);
 
     if (!response) {
       onResult(
-        "Could not reach the server to restore the built-in boards.",
+        "Could not reach the server to restore the built-in boards. Nothing " +
+          "was changed — safe to try again.",
         false
       );
       return;
