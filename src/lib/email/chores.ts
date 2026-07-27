@@ -9,7 +9,6 @@ import {
 import { EMAIL_DEFAULT_LODGE_NAME } from "@/lib/email-message-settings";
 import { formatNZDate } from "../nzst-date";
 import { sendEmail } from "./core";
-import type { EmailBookingContext } from "@/lib/booking-email-suppression";
 
 // #1285: the "Chore Roster" notification preference is honored by the caller
 // (`admin-roster-service.ts` via `shouldSendChoreRoster`), before a chore
@@ -17,9 +16,10 @@ import type { EmailBookingContext } from "@/lib/booking-email-suppression";
 // caller. This sender stays a pure transport so it never double-gates.
 export async function sendChoreRosterEmail(
   // Booking whose stay this roster covers (#2258). A roster is delivered per
-  // guest of a booking, so the per-booking "No emails" switch withholds it;
-  // `"none"` covers a roster generated outside any booking.
-  bookingContext: EmailBookingContext,
+  // guest of a booking and ChoreAssignment.bookingId is NOT NULL, so there is
+  // no roster without a booking and `"none"` is deliberately not offered: the
+  // per-booking "No emails" switch must always be able to withhold it.
+  bookingContext: { bookingId: string },
   email: string,
   guestName: string,
   date: string,
