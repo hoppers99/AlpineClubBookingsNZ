@@ -165,7 +165,13 @@ export function CancelBookingButton({
     const isCredit = result?.refundMethod === "credit";
     // Issue #1705: when the admin chose "Cancel without emailing", the standard
     // email-promise copy would be untrue — state the recorded choice instead.
-    const emailSuppressed = notifiedMember === false;
+    //
+    // #2259: the switch has to count here too. Since H1 the suppressed path
+    // sends NO choice (so the mailer records the withhold), which leaves
+    // `notifiedMember` null — and null used to mean "emails normally". Without
+    // this disjunct the panel would promise a confirmation email for the one
+    // booking guaranteed not to get one.
+    const emailSuppressed = notifiedMember === false || noEmailsSuppressesChoice;
     return (
       <div className="rounded-md border border-success-6 bg-success-3 p-4 space-y-1">
         <p className="text-sm font-medium text-success-11">
@@ -383,7 +389,7 @@ export function CancelBookingButton({
             <DialogHeader>
               <DialogTitle>
                 {noEmailsSuppressesChoice
-                  ? "Cancel this booking without emailing?"
+                  ? "Cancel this booking?"
                   : "Email the member about this cancellation?"}
               </DialogTitle>
               <DialogDescription>
@@ -397,13 +403,22 @@ export function CancelBookingButton({
             {noEmailsSuppressesChoice && <BookingNoEmailsNotice />}
             <DialogFooter className="gap-2 sm:gap-2">
               <Button
-                variant="outline"
+                variant={noEmailsSuppressesChoice ? "destructive" : "outline"}
                 onClick={() => {
                   setNotifyDialogOpen(false);
-                  void performCancel(false);
+                  // #2259 H1: with the switch on, send NO choice rather than
+                  // notifyMember:false. `false` makes the route skip the send,
+                  // so the mailer's gate never runs and no withheld row is
+                  // recorded — the banner would then be silent about the very
+                  // cancellation the member most needs to be told about.
+                  void performCancel(
+                    noEmailsSuppressesChoice ? undefined : false,
+                  );
                 }}
               >
-                Cancel without emailing
+                {noEmailsSuppressesChoice
+                  ? "Cancel booking"
+                  : "Cancel without emailing"}
               </Button>
               {!noEmailsSuppressesChoice && (
                 <Button

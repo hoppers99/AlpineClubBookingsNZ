@@ -202,10 +202,29 @@ export function BookingApprovalsPanel({
     void performDecision(choice.bookingId, choice.decision, notify);
   }
 
+  /**
+   * #2259 H1: dispatch the silenced path with NO notify choice at all.
+   *
+   * `notifyMember: false` makes the route skip the send outright, so the
+   * mailer's gate never runs and no `SKIPPED_NO_EMAILS` row is recorded — the
+   * booking's withheld-list banner would then omit the very approval or
+   * decline just performed. Omitting the flag lets the send be ATTEMPTED and
+   * withheld, which records the row and, because the route only audits an
+   * explicit `false`, leaves the audit trail honestly showing that the admin
+   * made no choice, because none was offered.
+   */
+  function confirmSilenced() {
+    const choice = notifyChoice;
+    setNotifyDialogOpen(false);
+    if (!choice) return;
+    void performDecision(choice.bookingId, choice.decision, undefined, true);
+  }
+
   async function performDecision(
     bookingId: string,
     decision: "APPROVED" | "REJECTED",
-    notifyMember: boolean,
+    notifyMember: boolean | undefined,
+    noEmails = false,
   ) {
     const adminNotes = notesById[bookingId]?.trim() ?? "";
     setReviewingId(bookingId);
@@ -214,7 +233,13 @@ export function BookingApprovalsPanel({
       const response = await fetch(`/api/admin/bookings/${bookingId}/review`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: decision, adminNotes, notifyMember }),
+        body: JSON.stringify({
+          status: decision,
+          adminNotes,
+          // Absent = notify (the route's documented default), which is what
+          // lets the gate withhold and record on a silenced booking.
+          ...(notifyMember !== undefined ? { notifyMember } : {}),
+        }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
@@ -230,8 +255,13 @@ export function BookingApprovalsPanel({
       // cancellation flow, whose cancellation notice is deliberately
       // always-notify (#1730, DOMAIN_INVARIANTS), so a suppressed reject only
       // withholds the review-declined explainer — the member is still emailed.
-      const suppressedNote =
-        notifyMember === false
+      //
+      // #2259: with the switch on, the cancellation notice the reject branch
+      // above relies on is withheld too, so "the member is still emailed" is
+      // false — say nothing was sent at all.
+      const suppressedNote = noEmails
+        ? " Emails are off for this booking, so nothing was sent — the withheld messages are listed on the booking."
+        : notifyMember === false
           ? decision === "APPROVED"
             ? " The member was not emailed."
             : " The review-declined email was not sent."
@@ -464,8 +494,8 @@ export function BookingApprovalsPanel({
             <DialogTitle>
               {notifyChoice?.noEmails
                 ? notifyChoice.decision === "REJECTED"
-                  ? "Decline this booking without emailing?"
-                  : "Approve this booking without emailing?"
+                  ? "Decline this booking?"
+                  : "Approve this booking?"
                 : notifyChoice?.decision === "REJECTED"
                   ? "Email the member about this decline?"
                   : "Email the member about this approval?"}
@@ -489,11 +519,17 @@ export function BookingApprovalsPanel({
             <Button
               variant="outline"
               disabled={reviewingId !== null}
-              onClick={() => confirmNotify(false)}
+              onClick={() =>
+                notifyChoice?.noEmails ? confirmSilenced() : confirmNotify(false)
+              }
             >
-              {notifyChoice?.decision === "REJECTED"
-                ? "Reject without emailing"
-                : "Approve without emailing"}
+              {notifyChoice?.noEmails
+                ? notifyChoice.decision === "REJECTED"
+                  ? "Reject booking"
+                  : "Approve booking"
+                : notifyChoice?.decision === "REJECTED"
+                  ? "Reject without emailing"
+                  : "Approve without emailing"}
             </Button>
             {!notifyChoice?.noEmails && (
               <Button

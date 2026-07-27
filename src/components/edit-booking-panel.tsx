@@ -2125,7 +2125,7 @@ export function EditBookingPanel({
           <DialogHeader>
             <DialogTitle>
               {noEmailsOn
-                ? "Save this change without emailing?"
+                ? "Save this change?"
                 : "Email the member about this change?"}
             </DialogTitle>
             <DialogDescription>
@@ -2142,10 +2142,14 @@ export function EditBookingPanel({
               disabled={saving}
               onClick={() => {
                 setNotifyDialogOpen(false);
-                void handleSave(false);
+                // #2259 H1: with the switch on, send NO choice rather than
+                // notifyMember:false. `false` makes the route skip the send, so
+                // the mailer's gate never runs and no withheld row is recorded —
+                // the banner would then omit the very change just made.
+                void handleSave(noEmailsOn ? undefined : false);
               }}
             >
-              Save without emailing
+              {noEmailsOn ? "Save changes" : "Save without emailing"}
             </Button>
             {!noEmailsOn && (
               <Button

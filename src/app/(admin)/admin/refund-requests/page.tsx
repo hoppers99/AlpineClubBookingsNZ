@@ -234,10 +234,28 @@ export default function RefundRequestsPage() {
     void handleRefundReview(choice.id, choice.status, notifyMember)
   }
 
+  /**
+   * #2259 H1: dispatch the silenced path with NO notify choice at all.
+   *
+   * `notifyMember: false` makes the route skip the send outright, so the
+   * mailer's gate never runs and no `SKIPPED_NO_EMAILS` row is recorded — the
+   * booking's withheld-list banner would then omit the refund outcome the
+   * member was never told about. Omitting the flag lets the send be ATTEMPTED
+   * and withheld, which records the row and leaves the audit trail honestly
+   * showing that no officer choice was made, because none was offered.
+   */
+  function confirmSilenced() {
+    const choice = notifyChoice
+    setNotifyDialogOpen(false)
+    if (!choice) return
+    void handleRefundReview(choice.id, choice.status, undefined, true)
+  }
+
   async function handleRefundReview(
     id: string,
     status: "APPROVED" | "REJECTED",
-    notifyMember: boolean
+    notifyMember: boolean | undefined,
+    noEmails = false
   ) {
     setProcessingRefund(true)
     setError("")
@@ -247,7 +265,9 @@ export default function RefundRequestsPage() {
         status,
         adminNotes: adminNotes || undefined,
         // #1792: absent = notify (default), false = suppress the outcome email.
-        notifyMember,
+        // #2259: the silenced path deliberately sends ABSENT, so the mailer's
+        // gate withholds AND records rather than the route skipping the send.
+        ...(notifyMember !== undefined ? { notifyMember } : {}),
       }
 
       if (status === "APPROVED") {
@@ -278,7 +298,11 @@ export default function RefundRequestsPage() {
         (status === "APPROVED"
           ? "Refund approved and processed"
           : "Appeal rejected") +
-          (notifyMember === false ? " The member was not emailed." : "")
+          (noEmails
+            ? " Emails are off for this booking, so nothing was sent — the withheld message is listed on the booking."
+            : notifyMember === false
+              ? " The member was not emailed."
+              : "")
       )
       await fetchRequests()
     } catch (err) {
@@ -789,8 +813,8 @@ export default function RefundRequestsPage() {
             <DialogTitle>
               {notifyChoice?.noEmails
                 ? notifyChoice.status === "REJECTED"
-                  ? "Reject this appeal without emailing?"
-                  : "Process this refund without emailing?"
+                  ? "Reject this appeal?"
+                  : "Process this refund?"
                 : notifyChoice?.status === "REJECTED"
                   ? "Email the member about this decision?"
                   : "Email the member about this refund?"}
@@ -811,11 +835,17 @@ export default function RefundRequestsPage() {
             <Button
               variant="outline"
               disabled={processingRefund}
-              onClick={() => confirmNotify(false)}
+              onClick={() =>
+                notifyChoice?.noEmails ? confirmSilenced() : confirmNotify(false)
+              }
             >
-              {notifyChoice?.status === "REJECTED"
-                ? "Reject without emailing"
-                : "Approve without emailing"}
+              {notifyChoice?.noEmails
+                ? notifyChoice.status === "REJECTED"
+                  ? "Reject appeal"
+                  : "Approve refund"
+                : notifyChoice?.status === "REJECTED"
+                  ? "Reject without emailing"
+                  : "Approve without emailing"}
             </Button>
             {!notifyChoice?.noEmails && (
               <Button disabled={processingRefund} onClick={() => confirmNotify(true)}>

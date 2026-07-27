@@ -88,6 +88,8 @@ interface ForceConfirmReport {
   // means no choice was made (the force-confirm never sends an email, e.g. a
   // priced or parked-for-review outcome). false = the member was not emailed.
   notifiedMember: boolean | null;
+  // #2259: the booking's "No emails" switch decided, not the admin.
+  noEmails: boolean;
 }
 
 function parsePositiveInteger(value: string | null, fallback: number) {
@@ -256,6 +258,9 @@ export default function AdminWaitlistPage() {
     // #1769b: carry the admin's email choice through a capacity-exceeded retry
     // so the overbook confirm preserves it.
     notifyMember?: boolean;
+    // #2259: and carry the silenced flag, so the retry's post-action copy
+    // still says the switch decided rather than falling back to "no choice".
+    noEmails?: boolean;
   } | null>(null);
   // #1769b: the per-action email-choice dialog, shown before a force-confirm
   // that would actually send the member a confirmation email.
@@ -400,7 +405,12 @@ export default function AdminWaitlistPage() {
   async function handleForceConfirm(
     bookingId: string,
     allowOverbook = false,
-    notifyMember?: boolean
+    notifyMember?: boolean,
+    // #2259: whether the switch, rather than the admin, decided. Carried
+    // separately from `notifyMember` because the suppressed path deliberately
+    // sends NO choice (see the dialog) — so "no choice made" and "silenced"
+    // would otherwise be indistinguishable in the post-action copy.
+    noEmails = false
   ) {
     setForceConfirming(bookingId);
     setError("");
@@ -427,13 +437,19 @@ export default function AdminWaitlistPage() {
         auditAction: readString(data.auditAction),
         unpaidFinishedStay: data.unpaidFinishedStay === true,
         notifiedMember: notifyMember ?? null,
+        noEmails,
       });
       await loadEntries();
     } else if (data.error === "CAPACITY_EXCEEDED" && data.overbookDates) {
       setForceConfirmReport(null);
       setNotifyDialog(null);
       // Preserve the admin's email choice into the overbook retry (#1769b).
-      setOverbookDialog({ bookingId, dates: data.overbookDates, notifyMember });
+      setOverbookDialog({
+        bookingId,
+        dates: data.overbookDates,
+        notifyMember,
+        noEmails,
+      });
     } else {
       setForceConfirmReport(null);
       setError(data.error || "Failed to force-confirm booking");
@@ -504,15 +520,17 @@ export default function AdminWaitlistPage() {
       {/* #1769b: honest post-action copy when the admin suppressed the
           confirmation email. The booking still landed PAID; only the member
           email was skipped, and the choice is in the audit log. */}
-      {forceConfirmReport?.notifiedMember === false && (
+      {(forceConfirmReport?.notifiedMember === false ||
+        forceConfirmReport?.noEmails) && (
         <Card className="border-success/20 bg-success-muted">
           <CardContent className="pt-6 space-y-1">
             <p className="font-medium text-success">
               Booking force-confirmed
             </p>
             <p className="text-sm text-success">
-              The member was not emailed — your choice is recorded in the audit
-              log.
+              {forceConfirmReport?.noEmails
+                ? "The member was not emailed: emails are off for this booking. The withheld confirmation is listed on the booking page — tell the member yourself."
+                : "The member was not emailed — your choice is recorded in the audit log."}
             </p>
           </CardContent>
         </Card>
@@ -621,7 +639,8 @@ export default function AdminWaitlistPage() {
                   handleForceConfirm(
                     overbookDialog.bookingId,
                     true,
-                    overbookDialog.notifyMember
+                    overbookDialog.notifyMember,
+                    overbookDialog.noEmails ?? false
                   )
                 }
                 disabled={forceConfirming === overbookDialog.bookingId}
@@ -650,7 +669,7 @@ export default function AdminWaitlistPage() {
           <CardContent className="pt-6 space-y-3">
             <p className="font-medium text-warning">
               {notifyDialog.noEmails
-                ? "Force-confirm this booking without emailing?"
+                ? "Force-confirm this booking?"
                 : "Email the member about this confirmation?"}
             </p>
             <p className="text-sm text-warning">
@@ -667,11 +686,23 @@ export default function AdminWaitlistPage() {
               <Button
                 variant="outline"
                 onClick={() =>
-                  handleForceConfirm(notifyDialog.bookingId, false, false)
+                  // #2259 H1: with the switch on, send NO choice rather than
+                  // notifyMember:false. `false` makes the route skip the send,
+                  // so the mailer's gate never runs and no withheld row is
+                  // recorded — the booking's banner would then omit the very
+                  // confirmation this action suppressed.
+                  handleForceConfirm(
+                    notifyDialog.bookingId,
+                    false,
+                    notifyDialog.noEmails ? undefined : false,
+                    notifyDialog.noEmails
+                  )
                 }
                 disabled={forceConfirming === notifyDialog.bookingId}
               >
-                Confirm without emailing
+                {notifyDialog.noEmails
+                  ? "Force-confirm booking"
+                  : "Confirm without emailing"}
               </Button>
               {!notifyDialog.noEmails && (
                 <Button

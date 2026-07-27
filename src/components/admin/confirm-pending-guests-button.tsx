@@ -104,9 +104,11 @@ export function ConfirmPendingGuestsButton({
 
       if (res.ok) {
         toast.success(
-          notifyMember === false
-            ? "Pending guests confirmed. The member was not emailed."
-            : "Pending guests confirmed."
+          noEmails
+            ? "Pending guests confirmed. Emails are off for this booking, so nothing was sent."
+            : notifyMember === false
+              ? "Pending guests confirmed. The member was not emailed."
+              : "Pending guests confirmed."
         );
         router.refresh();
         return;
@@ -190,7 +192,7 @@ export function ConfirmPendingGuestsButton({
           <DialogHeader>
             <DialogTitle>
               {noEmails
-                ? "Confirm pending guests without emailing?"
+                ? "Confirm pending guests?"
                 : "Email the member about this confirmation?"}
             </DialogTitle>
             <DialogDescription>
@@ -208,10 +210,18 @@ export function ConfirmPendingGuestsButton({
               variant="outline"
               onClick={() => {
                 setNotifyDialogOpen(false);
-                void performConfirm(false);
+                // #2259 H1: with the switch on, send NO choice at all rather
+                // than notifyMember:false. `false` makes the route skip the
+                // send outright, so the mailer's gate never runs and no
+                // withheld row is recorded — the banner would then omit the
+                // very confirmation the admin just suppressed. Omitting the
+                // flag lets the send be attempted and WITHHELD, which both
+                // produces the audit row and records honestly that the admin
+                // made no choice, because none was offered.
+                void performConfirm(noEmails ? undefined : false);
               }}
             >
-              Confirm without emailing
+              {noEmails ? "Confirm pending guests" : "Confirm without emailing"}
             </Button>
             {!noEmails && (
               <Button
