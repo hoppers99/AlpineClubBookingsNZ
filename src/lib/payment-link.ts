@@ -727,6 +727,12 @@ export type IssueSplitGuestPaymentLinkResult =
   // and nothing was sent. Distinct from `suppressed` (an undeliverable address,
   // an operator problem) — this one is deliberate.
   | { outcome: "withheld" }
+  // #2258: the booking's email setting could not be READ, so the send failed
+  // closed. Kept apart from `suppressed` because that outcome means "this
+  // address is undeliverable" — telling a member that about a transient
+  // database fault is misinformation, and it points an officer at the wrong
+  // diagnosis. Retryable: the next attempt sends normally.
+  | { outcome: "transient_failure" }
   | { outcome: "not_payable" };
 
 /**
@@ -930,8 +936,8 @@ export async function issueSplitGuestPaymentLink(
         { bookingId: booking.id },
         "Split guest payment link email failed closed (the booking's email setting could not be read); link revoked so a later attempt re-mints"
       );
-      // Retryable: the next cron run or button press mints and sends again.
-      return { outcome: "suppressed" };
+      // Retryable, and NOT `suppressed`: nothing is wrong with the address.
+      return { outcome: "transient_failure" };
     }
     logger.warn(
       { bookingId: booking.id },

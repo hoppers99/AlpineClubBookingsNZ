@@ -106,6 +106,44 @@ describe("send-guest-payment-link withheld disclosure (#2258)", () => {
     const body = await res.json();
 
     expect(res.status).toBe(200);
+    expect(body).toMatchObject({ sent: 1, notDelivered: 1 });
+  });
+
+  // The FIELD NAME is disclosure too: a `withheld` key in devtools tells a
+  // member the shortfall was deliberate, which is exactly what the error
+  // strings are careful never to say.
+  it("never sends cause-specific counts to a member, only the aggregate", async () => {
+    mocks.bookingFindUnique.mockResolvedValue({
+      memberId: "member-1",
+      deletedAt: null,
+      linkedBookings: [{ id: "child-1" }, { id: "child-2" }],
+    });
+    mocks.issueSplitGuestPaymentLink
+      .mockResolvedValueOnce({ outcome: "sent" })
+      .mockResolvedValueOnce({ outcome: "withheld" });
+
+    const body = await (await POST(request(), { params })).json();
+
+    expect(body).not.toHaveProperty("withheld");
+    expect(body).not.toHaveProperty("suppressed");
+    expect(body).not.toHaveProperty("transientFailure");
+    // The client only ever reads these two, so nothing breaks.
+    expect(body).toMatchObject({ sent: 1, notDelivered: 1 });
+  });
+
+  it("does give an admin the cause-specific counts", async () => {
+    mocks.hasAdminAccess.mockReturnValue(true);
+    mocks.bookingFindUnique.mockResolvedValue({
+      memberId: "someone-else",
+      deletedAt: null,
+      linkedBookings: [{ id: "child-1" }, { id: "child-2" }],
+    });
+    mocks.issueSplitGuestPaymentLink
+      .mockResolvedValueOnce({ outcome: "sent" })
+      .mockResolvedValueOnce({ outcome: "withheld" });
+
+    const body = await (await POST(request(), { params })).json();
+
     expect(body).toMatchObject({ sent: 1, withheld: 1, notDelivered: 1 });
   });
 
@@ -115,5 +153,35 @@ describe("send-guest-payment-link withheld disclosure (#2258)", () => {
     const body = await (await POST(request(), { params })).json();
 
     expect(body).toMatchObject({ sent: 1, notDelivered: 0 });
+  });
+
+  // A transient read failure is not an undeliverable address: reporting the 502
+  // would misinform the member and point an officer at the wrong diagnosis.
+  it("reports an unreadable-setting failure as retryable, not as undeliverable", async () => {
+    mocks.issueSplitGuestPaymentLink.mockResolvedValue({
+      outcome: "transient_failure",
+    });
+
+    const res = await POST(request(), { params });
+    const body = await res.json();
+
+    expect(res.status).toBe(503);
+    const error = String(body.error).toLowerCase();
+    expect(error).toContain("try again");
+    expect(error).not.toContain("undeliverable");
+    for (const term of DISCLOSING_TERMS) {
+      expect(error, `error disclosed "${term}"`).not.toContain(term);
+    }
+  });
+
+  it("keeps the undeliverable-address 502 for a genuinely suppressed address", async () => {
+    mocks.issueSplitGuestPaymentLink.mockResolvedValue({ outcome: "suppressed" });
+
+    const res = await POST(request(), { params });
+
+    expect(res.status).toBe(502);
+    expect(String((await res.json()).error).toLowerCase()).toContain(
+      "undeliverable",
+    );
   });
 });

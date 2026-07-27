@@ -81,6 +81,10 @@ export async function POST(
   // tell the admin the member has the link; folding it into `suppressed` would
   // blame the member's address for a choice the club made.
   let withheld = 0;
+  // #2258: the switch could not be READ, so the send failed closed. Separate
+  // again — a transient database fault must never be reported as an
+  // undeliverable address.
+  let transientFailure = 0;
   for (const child of children) {
     try {
       const result = await issueSplitGuestPaymentLink(child.id);
@@ -88,6 +92,7 @@ export async function POST(
       else if (result.outcome === "just_sent") justSent += 1;
       else if (result.outcome === "suppressed") suppressed += 1;
       else if (result.outcome === "withheld") withheld += 1;
+      else if (result.outcome === "transient_failure") transientFailure += 1;
     } catch (err) {
       logger.error(
         { err, bookingId: child.id, parentBookingId: id },
@@ -120,6 +125,21 @@ export async function POST(
     );
   }
 
+  if (transientFailure > 0 && sent === 0 && justSent === 0) {
+    // #2258: the booking's email setting could not be read, so the send failed
+    // closed. Nothing is wrong with the address and nothing was decided — this
+    // is a transient fault, so the wording is cause-free for everyone (an admin
+    // gains nothing from "the setting could not be read") and the status says
+    // "try again", not "undeliverable".
+    return NextResponse.json(
+      {
+        error:
+          "We weren't able to email the link just now. Please try again in a few minutes, or contact the club and we'll help you complete payment.",
+      },
+      { status: 503 }
+    );
+  }
+
   if (suppressed > 0 && sent === 0) {
     // Every recipient address is SES-suppressed (prior bounce/complaint): the
     // link was minted but nothing was delivered, so tell the truth (F25/#1885).
@@ -134,13 +154,17 @@ export async function POST(
 
   // Mixed outcome: at least one child was emailed and at least one was not.
   // Reporting a bare 200 let the client claim unqualified success for a booking
-  // whose guests are not all covered, so say how many did not go out (without
-  // saying why — same non-disclosure rule as above).
+  // whose guests are not all covered, so say how many did not go out.
+  //
+  // How many, never why. The cause-specific counts are ADMIN-ONLY, and that
+  // includes the FIELD NAMES: a member reading devtools would learn from a
+  // `withheld` key alone that the shortfall was deliberate — the same
+  // disclosure the error strings are careful to avoid. Non-admins get only the
+  // aggregate, which is all the client renders anyway.
   return NextResponse.json({
     sent,
     justSent,
-    suppressed,
-    withheld,
-    notDelivered: suppressed + withheld,
+    notDelivered: suppressed + withheld + transientFailure,
+    ...(isAdmin ? { suppressed, withheld, transientFailure } : {}),
   });
 }
