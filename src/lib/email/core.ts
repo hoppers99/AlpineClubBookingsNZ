@@ -75,6 +75,74 @@ function sanitizeEmailSubject(subject: string) {
   return subject.replace(/[\r\n]+/g, " ").trim();
 }
 
+
+// ---------------------------------------------------------------------
+// #2258 FAIL-CLOSED ALERT.
+//
+// A deliberate withhold is visible: it lands in the booking's withheld list.
+// A fail-CLOSED withhold is not. It writes a FAILED EmailLog row so the retry
+// cron can re-evaluate it — but for the sensitive, body-less templates
+// (SENSITIVE_EMAIL_LOG_TEMPLATES, which includes booking-confirmed) the cron's
+// query requires a retained htmlBody, so it never sees the row; attempts stays
+// at 1, so it never reaches the >=3 exhausted-retry review queue either. The
+// member is silently owed an email nobody knows about. Tell an operator.
+//
+// Sent as `admin-email-failure`, the locked system template already used for
+// "this email will not be delivered and will not be retried", to every active
+// admin — the same direct shape cron-email-retry uses for it. Deliberately NOT
+// routed through sendToAdmins/a notification preference: this template is in
+// LOCKED_DELIVERY_TEMPLATE_NAMES precisely because an admin must not be able to
+// mute it, and a preference key would let them.
+//
+// Imported dynamically because admin-alerts-shared imports this module.
+// Throttled per booking+template so a database outage — where EVERY send fails
+// closed — cannot turn one fault into an alert storm.
+const FAIL_CLOSED_ALERT_COOLDOWN_MS = 15 * 60 * 1000;
+const failClosedAlertSentAt = new Map<string, number>();
+
+async function alertAdminsOfFailClosedWithhold(params: {
+  bookingId: string;
+  templateName: string;
+  recipient: string;
+}) {
+  const key = `${params.bookingId}:${params.templateName}`;
+  const now = Date.now();
+  const last = failClosedAlertSentAt.get(key);
+  if (last != null && now - last < FAIL_CLOSED_ALERT_COOLDOWN_MS) return;
+  failClosedAlertSentAt.set(key, now);
+  // Bound the map: this process can see many bookings over its lifetime.
+  if (failClosedAlertSentAt.size > 500) {
+    for (const [entryKey, at] of failClosedAlertSentAt) {
+      if (now - at >= FAIL_CLOSED_ALERT_COOLDOWN_MS) failClosedAlertSentAt.delete(entryKey);
+    }
+  }
+
+  const { getAdminEmails } = await import("./admin-alerts-shared");
+  const admins = await getAdminEmails();
+  const html =
+    `<p>An email to a member was NOT sent and will NOT be retried automatically.</p>` +
+    `<p>Template: <strong>${params.templateName}</strong><br/>` +
+    `Booking: <strong>${params.bookingId}</strong></p>` +
+    `<p>The booking's "No emails" setting could not be read, so the system withheld the message rather than risk sending one that was meant to be held back. ` +
+    `The setting itself may well be off — check the booking, then re-send the message if it is.</p>`;
+  for (const admin of admins) {
+    await sendEmail({
+      to: admin,
+      subject: "An email to a member could not be sent",
+      html,
+      templateName: "admin-email-failure",
+      templateData: {
+        originalTemplateName: params.templateName,
+        bookingId: params.bookingId,
+        originalRecipient: params.recipient,
+      },
+      // Admin audience: unsuppressible by design, and this alert exists
+      // precisely because a booking-scoped send could not be evaluated.
+      bookingContext: "none",
+    });
+  }
+}
+
 export async function sendEmail({
   to,
   subject,
@@ -217,6 +285,21 @@ export async function sendEmail({
         ? 'Withheld email for a booking with "No emails" turned on'
         : 'Withheld email: the booking\'s "No emails" switch could not be read',
     );
+
+    if (!withheld) {
+      // Fire-and-forget: the alert must never turn a withheld send into a
+      // thrown error for the caller, and most callers do not await this at all.
+      await alertAdminsOfFailClosedWithhold({
+        bookingId: bookingGate.bookingId,
+        templateName,
+        recipient: emailLogRecipient,
+      }).catch((alertErr) =>
+        logger.error(
+          { err: alertErr, bookingId: bookingGate.bookingId, templateName },
+          "Failed to alert admins about a fail-closed withheld email",
+        ),
+      );
+    }
 
     return {
       status: "withheld_for_booking",

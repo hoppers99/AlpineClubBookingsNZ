@@ -11,6 +11,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
  */
 
 const mocks = vi.hoisted(() => ({
+  getAdminEmails: vi.fn(),
   emailLogCreate: vi.fn(),
   emailLogUpdate: vi.fn(),
   bookingFindUnique: vi.fn(),
@@ -43,6 +44,9 @@ vi.mock("@/lib/email-suppression", () => ({
   getActiveEmailSuppression: mocks.getActiveEmailSuppression,
   normalizeEmailAddress: (value: string) => value.trim().toLowerCase(),
 }));
+vi.mock("@/lib/email/admin-alerts-shared", () => ({
+  getAdminEmails: mocks.getAdminEmails,
+}));
 vi.mock("@/lib/email/internal", () => ({
   getEmailTransporter: () => ({
     transporter: { sendMail: mocks.sendMail },
@@ -73,6 +77,7 @@ beforeEach(() => {
   mocks.getActiveEmailSuppression.mockResolvedValue(null);
   mocks.sendMail.mockResolvedValue({ messageId: "msg_1" });
   mocks.bookingFindUnique.mockResolvedValue({ noEmails: false });
+  mocks.getAdminEmails.mockResolvedValue([]);
   vi.stubEnv("NODE_ENV", "production");
 });
 
@@ -296,5 +301,82 @@ describe("sendEmail gate: fail closed", () => {
       where: { id: "log_1" },
       data: expect.objectContaining({ status: "SENT" }),
     });
+  });
+});
+
+describe("fail-closed withholds are surfaced to an operator (#2258)", () => {
+  // Without this, a fail-closed withhold of a body-less sensitive template is
+  // invisible: no retained htmlBody means the retry cron's query never sees the
+  // FAILED row, and attempts stays at 1 so it never reaches the >=3 exhausted
+  // review queue either. The member is silently owed an email nobody knows of.
+  it("alerts every admin, naming the template and booking, when the switch cannot be read", async () => {
+    mocks.getAdminEmails.mockResolvedValue(["a@club.test", "b@club.test"]);
+    mocks.bookingFindUnique.mockRejectedValue(new Error("connection reset"));
+
+    await sendEmail({
+      to: "member@example.com",
+      subject: "Confirmed",
+      html: "<p>body</p>",
+      templateName: "booking-confirmed",
+      bookingContext: { bookingId: "bk_alert_1" },
+    });
+
+    const alerts = mocks.sendMail.mock.calls.map((call) => call[0]);
+    expect(alerts).toHaveLength(2);
+    expect(alerts.map((a) => a.to).sort()).toEqual(["a@club.test", "b@club.test"]);
+    for (const alert of alerts) {
+      expect(alert.html).toContain("booking-confirmed");
+      expect(alert.html).toContain("bk_alert_1");
+    }
+    // The member's own message is still NOT sent — only the admin alert went out.
+    expect(alerts.every((a) => a.to !== "member@example.com")).toBe(true);
+  });
+
+  it("does NOT alert for a deliberate withhold (that one is already visible on the booking)", async () => {
+    mocks.getAdminEmails.mockResolvedValue(["a@club.test"]);
+    mocks.bookingFindUnique.mockResolvedValue({ noEmails: true });
+
+    await sendEmail({
+      to: "member@example.com",
+      subject: "Confirmed",
+      html: "<p>body</p>",
+      templateName: "booking-confirmed",
+      bookingContext: { bookingId: "bk_alert_2" },
+    });
+
+    expect(mocks.sendMail).not.toHaveBeenCalled();
+  });
+
+  it("throttles the alert per booking+template so a database outage cannot storm admins", async () => {
+    mocks.getAdminEmails.mockResolvedValue(["a@club.test"]);
+    mocks.bookingFindUnique.mockRejectedValue(new Error("connection reset"));
+
+    for (let i = 0; i < 4; i += 1) {
+      await sendEmail({
+        to: "member@example.com",
+        subject: "Confirmed",
+        html: "<p>body</p>",
+        templateName: "booking-confirmed",
+        bookingContext: { bookingId: "bk_throttle" },
+      });
+    }
+
+    expect(mocks.sendMail).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not let an alert failure change the withheld outcome", async () => {
+    mocks.getAdminEmails.mockRejectedValue(new Error("admin lookup failed"));
+    mocks.bookingFindUnique.mockRejectedValue(new Error("connection reset"));
+
+    const outcome = await sendEmail({
+      to: "member@example.com",
+      subject: "Confirmed",
+      html: "<p>body</p>",
+      templateName: "booking-confirmed",
+      bookingContext: { bookingId: "bk_alert_3" },
+    });
+
+    expect(outcome.status).toBe("withheld_for_booking");
+    expect(mocks.sendMail).not.toHaveBeenCalled();
   });
 });
