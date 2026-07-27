@@ -46,6 +46,11 @@ const BILLING_AND_COVERAGE_MODULES = [
   "booking-member-guest-subscriptions.ts",
   "resolve-member-family.ts",
   "family-booking.ts",
+  "seasonal-membership-assignments.ts",
+  "xero-membership-sync.ts",
+  "admin-payment-invoice-service.ts",
+  "membership-cancellation-xero.ts",
+  "member-credit.ts",
 ];
 
 /**
@@ -66,9 +71,21 @@ const BILLING_AND_COVERAGE_MODULES = [
 const PARENT_LINK_READS = [
   /\bparentMemberId\b/,
   /\bsecondaryParentId\b/,
-  /\bdependents\s*:\s*\{/,
+  // `dependents:` with no `{` requirement. `include: { dependents: true }`,
+  // `select: { dependents: true }` and `_count: { select: { dependents: true } }`
+  // are all reads of the relation, and the narrower `dependents\s*:\s*\{` form
+  // matched none of them — a billing module could have started reading the
+  // parent graph in any of those three spellings without tripping this
+  // contract. Verified safe against the one legitimate use of the word in this
+  // area: xero-entrance-fee-invoices writes `const dependents =`, never
+  // `dependents:`.
+  /\bdependents\s*:/,
   /\bsecondaryDependents\b/,
-  /\bsecondaryParent\s*:\s*\{/,
+  /\bsecondaryParent\s*:/,
+  // Consuming the family-link WALKS is the same thing one level up: a billing
+  // module that imports the depth helpers is reading the parent graph even if
+  // it never names a column.
+  /member-family-link-depth/,
 ];
 
 function readModule(fileName: string) {
@@ -93,16 +110,61 @@ describe("family links do not reach the billing or coverage code (#2255)", () =>
     });
   }
 
-  it("the patterns it searches for would actually fire", () => {
-    // Mutation guard. Without this the whole suite passes if the patterns are
-    // subtly wrong (a stray anchor, a typo'd column name) — every file would
-    // report zero hits for the best possible reason and the worst one alike.
-    const known = readModule("dependent-link-eligibility.ts");
-    for (const pattern of PARENT_LINK_READS.slice(0, 2)) {
-      expect(pattern.test(known)).toBe(true);
+  it("EVERY pattern it searches for would actually fire", () => {
+    // Mutation guard. Without it the whole suite passes when a pattern is
+    // subtly wrong — a stray anchor, a typo'd column name, a `{` the real call
+    // sites do not have — and every file reports zero hits for the best
+    // possible reason and the worst one alike.
+    //
+    // `.every`, not `.some`: one live pattern used to vouch for all of them,
+    // which is exactly the "guard satisfied by an unrelated block" shape this
+    // repo has shipped before.
+    //
+    // Each pattern is fired against a snippet written to be the thing it is
+    // meant to catch, rather than against a file that happens to contain it —
+    // a file-content check passes or fails for reasons that have nothing to do
+    // with the pattern (someone rewording a comment would "break" it).
+    const SAMPLES: Array<[RegExp, string]> = [
+      [PARENT_LINK_READS[0], "where: { parentMemberId: memberId }"],
+      [PARENT_LINK_READS[1], "where: { secondaryParentId: memberId }"],
+      [PARENT_LINK_READS[2], "include: { dependents: true }"],
+      [PARENT_LINK_READS[3], "select: { secondaryDependents: { select: { id: true } } }"],
+      [PARENT_LINK_READS[4], "where: { secondaryParent: { is: { id: x } } }"],
+      [
+        PARENT_LINK_READS[5],
+        'import { describeChildSideDepth } from "@/lib/member-family-link-depth";',
+      ],
+    ];
+    // Nothing may be added to the pattern list without a sample proving it works.
+    expect(SAMPLES).toHaveLength(PARENT_LINK_READS.length);
+
+    for (const [pattern, sample] of SAMPLES) {
+      expect({ pattern: String(pattern), fires: pattern.test(sample) }).toEqual({
+        pattern: String(pattern),
+        fires: true,
+      });
     }
-    const depth = readModule("member-family-link-depth.ts");
-    expect(PARENT_LINK_READS.some((pattern) => pattern.test(depth))).toBe(true);
+  });
+
+  it("matches the relation-read spellings a select or include would use", () => {
+    // The forms the narrower `dependents\s*:\s*\{` pattern silently missed.
+    const dependentsPattern = PARENT_LINK_READS[2];
+    for (const snippet of [
+      "include: { dependents: true }",
+      "select: { dependents: true, id: true }",
+      "_count: { select: { dependents: true } }",
+      "dependents: { some: {} }",
+    ]) {
+      expect({ snippet, matched: dependentsPattern.test(snippet) }).toEqual({
+        snippet,
+        matched: true,
+      });
+    }
+    // And the local-variable use it must NOT match — which is why the bare word
+    // "dependents" is not the pattern.
+    expect(
+      dependentsPattern.test("const dependents = groupMembers.filter("),
+    ).toBe(false);
   });
 
   it("names the inputs coverage IS allowed to use, so the boundary is explicit", () => {

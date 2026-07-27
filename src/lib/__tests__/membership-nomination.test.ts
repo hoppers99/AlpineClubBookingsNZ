@@ -618,9 +618,24 @@ describe("membership nomination workflow", () => {
       member: {
         findFirst: vi.fn().mockResolvedValue(null),
         // #2255: each family dependant created under the applicant is checked
-        // against the four-generation cap, which walks up from the applicant.
-        // The applicant is created in this same transaction and has no parents.
-        findMany: vi.fn().mockResolvedValue([]),
+        // against the four-generation cap (a walk UP from the applicant) and
+        // its inherited mailbox is resolved the same way. The applicant is
+        // created in this same transaction, has no parents, and is an adult
+        // with a real address — so the depth walk stops immediately and the
+        // email walk stops on them.
+        findMany: vi.fn(async ({ where }: any) =>
+          where?.id?.in
+            ? where.id.in.map((id: string) => ({
+                id,
+                email: "jane@test.com",
+                ageTier: "ADULT",
+                archivedAt: null,
+                inheritEmailFromId: null,
+                parentMemberId: null,
+                secondaryParentId: null,
+              }))
+            : []
+        ),
         create: vi
           .fn()
           .mockResolvedValueOnce({
@@ -801,6 +816,98 @@ describe("membership nomination workflow", () => {
       memberIds: ["member-1", "member-2"],
       approvedByMemberId: "admin-1",
     });
+  });
+
+  /**
+   * #2255 (M10). Application approval creates family dependants under the
+   * applicant, which is a parent-link write, and this path never saw the old
+   * rule at all. Nothing exercised the new gate either — the stub above reports
+   * "no ancestors", so deleting the guard left the suite green. Here the
+   * applicant is MAPPED onto an existing member who already sits three
+   * parent-links deep, so their new dependant would be a fifth generation.
+   */
+  it("refuses creating a family dependant under an applicant who already fills the cap", async () => {
+    vi.mocked(prisma.memberApplication.findUnique).mockResolvedValue({
+      id: "app-deep",
+      applicantFirstName: "Jane",
+      applicantLastName: "Doe",
+      applicantEmail: "jane@test.com",
+      applicantDateOfBirth: new Date("1990-05-01T00:00:00.000Z"),
+      applicantPhone: "64 21 5551234",
+      applicantAddress: null,
+      familyMembers: [
+        { firstName: "Sam", lastName: "Doe", dateOfBirth: "2018-06-01" },
+      ],
+      nominator1Email: "nominator1@test.com",
+      nominator2Email: "nominator2@test.com",
+      nominator1Id: "nom-1",
+      nominator2Id: "nom-2",
+      nominator1ConfirmedAt: new Date("2026-04-12T01:00:00.000Z"),
+      nominator2ConfirmedAt: new Date("2026-04-12T02:00:00.000Z"),
+      status: "PENDING_ADMIN",
+      adminNotes: null,
+      reviewedBy: null,
+      reviewedAt: null,
+      createdAt: new Date("2026-04-12T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-12T00:00:00.000Z"),
+    } as never);
+    vi.mocked(prisma.memberApplication.findFirst).mockResolvedValue(null as never);
+
+    // gggp -> ggp -> gp -> member-1 (the applicant created below).
+    const parentsById: Record<string, string | null> = {
+      "member-1": "gp",
+      gp: "ggp",
+      ggp: "gggp",
+      gggp: null,
+    };
+    const memberCreate = vi
+      .fn()
+      .mockResolvedValueOnce({
+        id: "member-1",
+        email: "jane@test.com",
+        firstName: "Jane",
+        lastName: "Doe",
+      });
+    const tx = {
+      $executeRaw: vi.fn().mockResolvedValue(undefined),
+      member: {
+        findFirst: vi.fn().mockResolvedValue(null),
+        findMany: vi.fn(async ({ where }: any) =>
+          where?.id?.in
+            ? where.id.in.map((id: string) => ({
+                id,
+                email: `${id}@test.com`,
+                ageTier: "ADULT",
+                archivedAt: null,
+                inheritEmailFromId: null,
+                parentMemberId: parentsById[id] ?? null,
+                secondaryParentId: null,
+              }))
+            : []
+        ),
+        create: memberCreate,
+        update: vi.fn().mockResolvedValue({ id: "member-1" }),
+      },
+      familyGroup: { create: vi.fn().mockResolvedValue({ id: "fg-1" }) },
+      familyGroupMember: { create: vi.fn().mockResolvedValue(undefined) },
+      passwordResetToken: { deleteMany: vi.fn(), create: vi.fn() },
+      memberApplication: {
+        findFirst: vi.fn().mockResolvedValue(null),
+        update: vi.fn().mockResolvedValue({ id: "app-deep", status: "APPROVED" }),
+      },
+      xeroOperationOutbox: { create: vi.fn().mockResolvedValue({ id: "op-1" }) },
+      auditLog: { create: vi.fn().mockResolvedValue({}) },
+    };
+    vi.mocked(prisma.$transaction).mockImplementation(async (callback: any) =>
+      callback(tx)
+    );
+
+    await expect(
+      approveMemberApplication("app-deep", "admin-1", "Welcome aboard")
+    ).rejects.toMatchObject({ status: 422 });
+
+    // The applicant was created; the fifth-generation dependant was not.
+    expect(memberCreate).toHaveBeenCalledTimes(1);
   });
 
   it("enqueues the entrance-fee outbox row inside the approval transaction and kicks the worker only after commit (#1886, F22)", async () => {

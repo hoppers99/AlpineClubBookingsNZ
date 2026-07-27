@@ -120,6 +120,13 @@ describe("resolveInheritedEmailSourceId", () => {
             .map((id) => byId.get(id))
             .filter((row): row is Row => Boolean(row));
         },
+        // #2255: the walk re-reads a stored pointer's TARGET before trusting
+        // it, so a pointer at an archived or anonymised member is not
+        // propagated onward as though it were still a live mailbox.
+        async findUnique({ where }: { where: { id: string } }) {
+          queries += 1;
+          return byId.get(where.id) ?? null;
+        },
       },
       get queryCount() {
         return queries;
@@ -134,7 +141,7 @@ describe("resolveInheritedEmailSourceId", () => {
 
   it("uses the parent when the parent can receive mail", async () => {
     const result = await resolveInheritedEmailSourceId(db([{ id: "p" }]), "p");
-    expect(result).toEqual({ sourceId: "p", generationsAboveParent: 0 });
+    expect(result).toEqual({ sourceId: "p" });
   });
 
   it("short-circuits on the parent's own already-flattened source", async () => {
@@ -145,7 +152,7 @@ describe("resolveInheritedEmailSourceId", () => {
       db([{ id: "p", inheritEmailFromId: "gp" }, { id: "gp" }]),
       "p",
     );
-    expect(result).toEqual({ sourceId: "gp", generationsAboveParent: 0 });
+    expect(result).toEqual({ sourceId: "gp" });
   });
 
   it("walks up past a parent whose only address is a placeholder", async () => {
@@ -156,7 +163,7 @@ describe("resolveInheritedEmailSourceId", () => {
       ]),
       "p",
     );
-    expect(result).toEqual({ sourceId: "gp", generationsAboveParent: 1 });
+    expect(result).toEqual({ sourceId: "gp" });
   });
 
   it("walks up past a non-adult and past an archived ancestor", async () => {
@@ -169,7 +176,7 @@ describe("resolveInheritedEmailSourceId", () => {
       ]),
       "p",
     );
-    expect(result).toEqual({ sourceId: "ggp", generationsAboveParent: 3 });
+    expect(result).toEqual({ sourceId: "ggp" });
   });
 
   it("prefers the nearer ancestor, and the primary edge within a level", async () => {
@@ -218,12 +225,38 @@ describe("resolveInheritedEmailSourceId", () => {
     expect(client.queryCount).toBeLessThanOrEqual(3);
   });
 
+  it("does not trust a stored pointer whose target can no longer receive mail", async () => {
+    // A stored pointer is a snapshot of a past decision. The member it names
+    // can have been archived or anonymised since, and following it blindly
+    // would hand a dead mailbox to a NEW dependant and call it resolved.
+    const result = await resolveInheritedEmailSourceId(
+      db([
+        { id: "p", email: placeholder, inheritEmailFromId: "gone", parentMemberId: "gp" },
+        { id: "gone", archivedAt: new Date("2026-01-01") },
+        { id: "gp" },
+      ]),
+      "p",
+    );
+    expect(result).toEqual({ sourceId: "gp" });
+  });
+
+  it("treats a deletion-anonymised address as unreachable", async () => {
+    const result = await resolveInheritedEmailSourceId(
+      db([
+        { id: "p", email: "deleted-abc12345@deleted.invalid", parentMemberId: "gp" },
+        { id: "gp" },
+      ]),
+      "p",
+    );
+    expect(result).toEqual({ sourceId: "gp" });
+  });
+
   it("returns null when nobody in reach can receive mail", async () => {
     const result = await resolveInheritedEmailSourceId(
       db([{ id: "p", email: placeholder }]),
       "p",
     );
-    expect(result).toEqual({ sourceId: null, generationsAboveParent: 0 });
+    expect(result).toEqual({ sourceId: null });
   });
 });
 

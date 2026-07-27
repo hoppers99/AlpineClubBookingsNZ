@@ -646,13 +646,17 @@ describe("dependentLinkCandidateWhere", () => {
         dependents: { some: { dependents: { some: { dependents: { some: {} } } } } },
       },
     };
+    // Addressed by CONTENT, not by index: `clauses[4]` would silently start
+    // removing a different clause the moment the builder's order changed, and
+    // the mutation check would then pass for the wrong reason.
+    const depthClause = descendantDepthWithinWhere(2);
+    const withoutDepthClause = clauses.filter(
+      (clause) => JSON.stringify(clause) !== JSON.stringify(depthClause),
+    );
+    expect(withoutDepthClause).toHaveLength(clauses.length - 1);
+
     const withoutSecondaryBranch = await runWhereAgainstFixtures({
-      AND: [
-        ...clauses.filter(
-          (clause) => JSON.stringify(clause) !== JSON.stringify(clauses[4]),
-        ),
-        primaryOnlyDepth,
-      ],
+      AND: [...withoutDepthClause, primaryOnlyDepth],
     });
     expect(withoutSecondaryBranch).toContain("sec-1");
   });
@@ -724,6 +728,93 @@ describe("dependentLinkCandidateWhere", () => {
 });
 
 // ── The mirror-image clause used by the "Add Parent" search ─────────────────
+
+/**
+ * #2255. The acceptance criterion says the cap holds in EITHER direction, and
+ * only the dependant direction had executed-SQL parity. The "Add Parent" search
+ * is the mirror: the searched-for member becomes the PARENT, so the member's own
+ * dependants eat into the budget and the candidate's ANCESTOR chain must fit in
+ * what is left. Same rule, same numbers, reflected — so the same executed check.
+ */
+describe("parent-direction (Add Parent) search/write parity", () => {
+  /**
+   * The SQL half of the parent-direction search, assembled exactly as
+   * `admin-members-service` assembles it, so this test cannot pass against a
+   * predicate the service does not actually issue.
+   */
+  function parentCandidateWhereFor(memberId: string): Prisma.MemberWhereInput[] {
+    const below = descendantGenerationsOf(memberId);
+    const descendants = FIXTURES.map(({ member }) => member.id).filter((id) =>
+      ancestorsOf(id).ids.includes(memberId),
+    );
+    return [
+      { id: { notIn: [memberId, ...descendants] } },
+      ancestorDepthWithinWhere(MAX_PARENT_LINK_CHAIN_LENGTH - 1 - below),
+    ];
+  }
+
+  /** The row-level verdict for "may `candidate` become `member`'s parent?" */
+  function parentLinkAllowed(memberId: string, candidateId: string): boolean {
+    if (candidateId === memberId) return false;
+    // A descendant becoming a parent is a cycle.
+    if (ancestorsOf(candidateId).ids.includes(memberId)) return false;
+    return (
+      ancestorsOf(candidateId).generations +
+        1 +
+        descendantGenerationsOf(memberId) <=
+      MAX_PARENT_LINK_CHAIN_LENGTH
+    );
+  }
+
+  it("agrees row-for-row with the row-level verdict, at every depth", async () => {
+    for (const memberId of ["gen-1", "gen-2", "gen-3", "gen-4", "sec-2", "parentless-adult"]) {
+      const offered = new Set(
+        await runWhereAgainstFixtures({ AND: parentCandidateWhereFor(memberId) }),
+      );
+
+      for (const { member } of FIXTURES) {
+        expect({
+          memberId,
+          candidate: member.id,
+          offeredBySearch: offered.has(member.id),
+        }).toEqual({
+          memberId,
+          candidate: member.id,
+          offeredBySearch: parentLinkAllowed(memberId, member.id),
+        });
+      }
+    }
+  });
+
+  it("offers nobody a parent to a member who already heads four generations", async () => {
+    // gen-1 has three generations beneath them, so any parent above would be a
+    // fifth. The budget goes negative and the clause must be unsatisfiable.
+    expect(
+      await runWhereAgainstFixtures({ AND: parentCandidateWhereFor("gen-1") }),
+    ).toEqual([]);
+  });
+
+  it("never offers one of the member's own descendants as a parent", async () => {
+    const offered = await runWhereAgainstFixtures({
+      AND: parentCandidateWhereFor("gen-3"),
+    });
+    expect(offered).not.toContain("gen-4");
+  });
+
+  it("shrinks the candidate's allowed ancestor depth as the member's own family grows", async () => {
+    // A childless member can take a parent who is themselves a grandchild;
+    // a member with two generations below them can only take a root.
+    const childless = await runWhereAgainstFixtures({
+      AND: parentCandidateWhereFor("parentless-adult"),
+    });
+    expect(childless).toContain("gen-3");
+
+    const twoBelow = await runWhereAgainstFixtures({
+      AND: parentCandidateWhereFor("gen-2"),
+    });
+    expect(twoBelow).not.toContain("gen-3");
+  });
+});
 
 describe("ancestorDepthWithinWhere", () => {
   it("selects members whose own ancestor chain is short enough", async () => {

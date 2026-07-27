@@ -526,6 +526,54 @@ describe("Admin: Create dependent member", () => {
     expect(body.error).toContain("adult");
   });
 
+  /**
+   * #2255 (M10). The gate this pins had no behavioural test at all: every suite
+   * stubs the family-link walk to "no ancestors", so deleting the guard left
+   * the whole suite green. The fixture below is the smallest one that actually
+   * exercises it — a parent who is already three parent-links deep, so the new
+   * member would be a fifth generation.
+   */
+  it("refuses creating a dependant under a parent who already fills the cap", async () => {
+    vi.mocked(auth).mockResolvedValue(adminSession);
+    vi.mocked(prisma.member.findFirst).mockResolvedValue(null);
+    vi.mocked(prisma.member.findUnique).mockResolvedValue({
+      id: "parent1",
+      ageTier: "ADULT",
+      active: true,
+      archivedAt: null,
+      inheritEmailFromId: null,
+    } as any);
+    // gggp -> ggp -> gp -> parent1: the walk up from parent1 finds three
+    // generations, so parent1 + a new child would be the fifth.
+    const parentsById: Record<string, string | null> = {
+      parent1: "gp",
+      gp: "ggp",
+      ggp: "gggp",
+      gggp: null,
+    };
+    vi.mocked(prisma.member.findMany).mockImplementation((async ({
+      where,
+    }: any) =>
+      (where?.id?.in ?? []).map((id: string) => ({
+        parentMemberId: parentsById[id] ?? null,
+        secondaryParentId: null,
+      }))) as never);
+
+    const res = await createMember(makePostRequest({
+      email: "fifth@test.com",
+      firstName: "Fifth",
+      lastName: "Generation",
+      dateOfBirth: "2020-06-15",
+      parentMemberId: "parent1",
+      canLogin: false,
+    }));
+
+    expect(res.status).toBe(422);
+    expect((await res.json()).error).toMatch(/4 generations/i);
+    // The refusal happens before anything is written.
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
   it("rejects inheritParentEmail without parentMemberId", async () => {
     vi.mocked(auth).mockResolvedValue(adminSession);
 
