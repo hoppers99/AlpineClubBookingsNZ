@@ -13,6 +13,7 @@ import {
 import logger from "./logger";
 import { issueActionToken } from "./action-tokens";
 import { triggerMemberXeroContactGroupSync } from "./xero-contact-groups";
+import { describeParentSideDepth } from "@/lib/member-family-link-depth";
 import { resolveInheritedEmailSourceId } from "@/lib/member-parent-links";
 
 const AGE_UP_PARENT_EMAIL_HANDOFF_AUDIT_ACTION =
@@ -389,12 +390,28 @@ export async function checkAgeUpMembers(): Promise<{
         // both a mailbox and a login would never receive their own child's
         // notifications, and nothing on any screen would say so.
         //
-        // Only DERIVED pointers are re-resolved (`inheritParentEmail: true`); a
-        // manually-chosen source is the admin's decision and is left alone. The
-        // walk now starts at this member and stops here, because they qualify.
+        // SCOPED TO POINTERS THAT ACTUALLY CAME THROUGH THIS MEMBER. Being a
+        // dependant of the aged-up member is not enough on its own: a child with
+        // two parents may hold a pointer resolved through the OTHER parent, or
+        // one an admin explicitly chose. `inheritParentEmail` cannot tell those
+        // apart — "derived by default" and "the admin picked parent Q" both
+        // store `true` — so selecting on the flag alone would silently move the
+        // family's contact of record off Q and onto this member, which is
+        // exactly the consent question this job must not answer by itself.
+        //
+        // What IS knowable is where a pointer resolved through this member could
+        // possibly point. Before age-up they were a non-login minor, so the walk
+        // could never stop on them; it climbed to one of their own ancestors.
+        // Anything naming a member outside that set was resolved through some
+        // other branch of the family and is left alone.
+        const ownSourceCandidates = [
+          member.id,
+          ...(await describeParentSideDepth(tx, member.id)).ancestorIds,
+        ];
         const derivedDependants = await tx.member.findMany({
           where: {
             inheritParentEmail: true,
+            inheritEmailFromId: { in: ownSourceCandidates },
             OR: [
               { parentMemberId: member.id },
               { secondaryParentId: member.id },

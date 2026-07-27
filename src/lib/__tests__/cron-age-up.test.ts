@@ -138,7 +138,10 @@ describe("checkAgeUpMembers", () => {
    * has a mailbox would never receive their own child's notifications.
    */
   describe("dependants' inherited email follows the member up (#2255)", () => {
-    function agingMemberWithDependant(dependants: Array<{ id: string }>) {
+    function agingMemberWithDependant(
+      dependants: Array<{ id: string; inheritEmailFromId?: string }>,
+      ancestorsOfAgingMember: string[] = [],
+    ) {
       mockedFindMany.mockResolvedValue([
         {
           id: "m1",
@@ -155,10 +158,25 @@ describe("checkAgeUpMembers", () => {
       mockedCreateToken.mockResolvedValue({} as any);
       mockedSendEmail.mockResolvedValue(undefined);
       mockTxMemberFindMany.mockImplementation(async ({ where }: any) => {
-        // The derived-dependant lookup.
-        if (where?.inheritParentEmail === true) return dependants;
-        // The email resolver walking up from the aged-up member, who now
-        // qualifies as a source in their own right.
+        // The derived-dependant lookup, now additionally scoped to pointers
+        // that could only have been resolved through this member.
+        if (where?.inheritParentEmail === true) {
+          // Models the DATABASE, not the intent: an ABSENT `inheritEmailFromId`
+          // clause is no constraint at all, so every dependant matches. Getting
+          // this backwards (filtering when the clause is missing) makes the
+          // regression this scoping exists to fix look fixed — the mutation
+          // that deletes the clause would return nothing and the test would
+          // pass for exactly the wrong reason.
+          const allowedSources: string[] | null =
+            where.inheritEmailFromId?.in ?? null;
+          if (!allowedSources) return dependants;
+          return dependants.filter((dependant: any) =>
+            allowedSources.includes(dependant.inheritEmailFromId),
+          );
+        }
+        // Two readers of the "these ids" shape: the ancestor walk that builds
+        // the allowed-source set, and the email resolver walking up from the
+        // aged-up member, who now qualifies as a source in their own right.
         if (where?.id?.in) {
           return where.id.in.map((id: string) => ({
             id,
@@ -166,7 +184,8 @@ describe("checkAgeUpMembers", () => {
             ageTier: "ADULT",
             archivedAt: null,
             inheritEmailFromId: null,
-            parentMemberId: null,
+            parentMemberId:
+              id === "m1" ? (ancestorsOfAgingMember[0] ?? null) : null,
             secondaryParentId: null,
           }));
         }
@@ -175,7 +194,10 @@ describe("checkAgeUpMembers", () => {
     }
 
     it("re-points a dependant's derived pointer at the newly-adult parent", async () => {
-      agingMemberWithDependant([{ id: "kid-1" }, { id: "kid-2" }]);
+      agingMemberWithDependant([
+        { id: "kid-1", inheritEmailFromId: "m1" },
+        { id: "kid-2", inheritEmailFromId: "m1" },
+      ]);
 
       await checkAgeUpMembers();
 
@@ -186,7 +208,7 @@ describe("checkAgeUpMembers", () => {
     });
 
     it("only looks at DERIVED pointers, never hand-picked ones", async () => {
-      agingMemberWithDependant([{ id: "kid-1" }]);
+      agingMemberWithDependant([{ id: "kid-1", inheritEmailFromId: "m1" }]);
 
       await checkAgeUpMembers();
 
@@ -195,10 +217,7 @@ describe("checkAgeUpMembers", () => {
       const derivedLookup = mockTxMemberFindMany.mock.calls
         .map(([args]: any) => args?.where)
         .find((where: any) => where?.inheritParentEmail !== undefined);
-      expect(derivedLookup).toEqual({
-        inheritParentEmail: true,
-        OR: [{ parentMemberId: "m1" }, { secondaryParentId: "m1" }],
-      });
+      expect(derivedLookup).toMatchObject({ inheritParentEmail: true });
     });
 
     it("writes nothing when the member has no dependants", async () => {
@@ -210,6 +229,64 @@ describe("checkAgeUpMembers", () => {
         ([args]: any) => args?.data?.inheritEmailFromId !== undefined,
       );
       expect(inheritanceWrites).toEqual([]);
+    });
+
+    /**
+     * A dependant of the aged-up member is not automatically a dependant whose
+     * pointer came THROUGH them. With two parents recorded, the pointer may name
+     * the other parent — either because resolution went that way, or because an
+     * admin picked that parent explicitly. `inheritParentEmail` cannot tell those
+     * two apart (both store `true`), so the selection is scoped by WHERE the
+     * pointer currently points instead: only a member this one's own chain could
+     * have produced is re-pointed.
+     */
+    it("re-points a pointer at its own grandparent", async () => {
+      agingMemberWithDependant(
+        [{ id: "kid-1", inheritEmailFromId: "gran-1" }],
+        ["gran-1"],
+      );
+
+      await checkAgeUpMembers();
+
+      expect(mockTxMemberUpdateMany).toHaveBeenCalledWith({
+        where: { id: { in: ["kid-1"] } },
+        data: { inheritEmailFromId: "m1", inheritParentEmail: true },
+      });
+    });
+
+    it("leaves a pointer at the OTHER parent alone", async () => {
+      // Q is the child's second parent and is not in m1's own chain, so the
+      // pointer was resolved through Q's side (or chosen by an admin) — either
+      // way it is not this job's to move.
+      agingMemberWithDependant(
+        [{ id: "kid-1", inheritEmailFromId: "parent-q" }],
+        ["gran-1"],
+      );
+
+      await checkAgeUpMembers();
+
+      const inheritanceWrites = mockTxMemberUpdateMany.mock.calls.filter(
+        ([args]: any) => args?.data?.inheritEmailFromId !== undefined,
+      );
+      expect(inheritanceWrites).toEqual([]);
+    });
+
+    it("scopes the lookup to sources this member's own chain could produce", async () => {
+      agingMemberWithDependant(
+        [{ id: "kid-1", inheritEmailFromId: "gran-1" }],
+        ["gran-1"],
+      );
+
+      await checkAgeUpMembers();
+
+      const derivedLookup = mockTxMemberFindMany.mock.calls
+        .map(([args]: any) => args?.where)
+        .find((where: any) => where?.inheritParentEmail !== undefined);
+      expect(derivedLookup).toEqual({
+        inheritParentEmail: true,
+        inheritEmailFromId: { in: ["m1", "gran-1"] },
+        OR: [{ parentMemberId: "m1" }, { secondaryParentId: "m1" }],
+      });
     });
   });
 
