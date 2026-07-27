@@ -15,9 +15,16 @@ type WaitlistOfferEmailRetryState =
   // the "No emails" switch on. Its OWN state, never folded into "missing" or
   // "undeliverable": those two mean the member did not get a message we tried to
   // send (an operator must act), while this one means an admin chose silence.
-  // needsOperatorAction is false for it, so the stuck-state dashboard and the
-  // booking-provider-mismatch board do not report a delivery failure.
+  // needsOperatorAction is false for it.
   | "suppressed"
+  // #2258: a silenced booking that is nonetheless sitting on a LIVE, unexpired
+  // offer. Candidacy exclusion means this should not normally arise, but two
+  // real paths reach it — the switch being turned on AFTER an offer was made,
+  // and the post-commit race where the offer commits before the send is gated —
+  // and the consequence is severe: the entry holds a bed for the whole offer
+  // window while the member is never told, then lapses. This is the ONE
+  // suppression state with needsOperatorAction: true.
+  | "suppressed_live_offer"
   | "missing";
 
 export interface WaitlistOfferEmailDelivery {
@@ -37,6 +44,10 @@ type WaitlistOfferBooking = {
   // #2258: required, so a caller that assembles this shape by hand cannot
   // silently report a deliberately-silenced booking as a delivery failure.
   noEmails: boolean;
+  // #2258: needed to tell a silenced entry sitting on a LIVE offer (an operator
+  // problem — a held bed nobody was told about) from one whose offer has already
+  // lapsed (nothing left to do).
+  waitlistOfferExpiresAt: Date | null;
   member: {
     email: string;
   };
@@ -90,9 +101,26 @@ function chooseLatestEmailLog(
     .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0] ?? null;
 }
 
+function hasLiveOffer(booking: WaitlistOfferBooking, now: Date) {
+  return (
+    booking.waitlistOfferExpiresAt != null &&
+    booking.waitlistOfferExpiresAt.getTime() > now.getTime()
+  );
+}
+
+function suppressedState(
+  booking: WaitlistOfferBooking,
+  now: Date,
+): { retryState: WaitlistOfferEmailRetryState; needsOperatorAction: boolean } {
+  return hasLiveOffer(booking, now)
+    ? { retryState: "suppressed_live_offer", needsOperatorAction: true }
+    : { retryState: "suppressed", needsOperatorAction: false };
+}
+
 function toDelivery(
   emailLog: WaitlistOfferEmailLog | null,
   booking: WaitlistOfferBooking,
+  now: Date,
 ): WaitlistOfferEmailDelivery {
   if (!emailLog) {
     // A suppressed booking never gets an offer email (processWaitlistForDates
@@ -105,8 +133,7 @@ function toDelivery(
         attempts: null,
         lastAttemptAt: null,
         errorMessage: null,
-        retryState: "suppressed",
-        needsOperatorAction: false,
+        ...suppressedState(booking, now),
       };
     }
     return {
@@ -127,8 +154,7 @@ function toDelivery(
       attempts: emailLog.attempts,
       lastAttemptAt: emailLog.lastAttemptAt.toISOString(),
       errorMessage: emailLog.errorMessage,
-      retryState: "suppressed",
-      needsOperatorAction: false,
+      ...suppressedState(booking, now),
     };
   }
 
@@ -191,6 +217,7 @@ export async function getWaitlistOfferEmailDeliveries(
     (booking) => booking.waitlistOfferedAt,
   );
   const deliveries = new Map<string, WaitlistOfferEmailDelivery>();
+  const now = new Date();
 
   if (offeredBookings.length === 0) {
     return deliveries;
@@ -198,7 +225,7 @@ export async function getWaitlistOfferEmailDeliveries(
 
   if (lookupBookings.length === 0) {
     for (const booking of offeredBookings) {
-      deliveries.set(booking.id, toDelivery(null, booking));
+      deliveries.set(booking.id, toDelivery(null, booking, now));
     }
     return deliveries;
   }
@@ -239,8 +266,8 @@ export async function getWaitlistOfferEmailDeliveries(
     deliveries.set(
       booking.id,
       booking.waitlistOfferedAt
-        ? toDelivery(chooseLatestEmailLog(booking, emailLogs), booking)
-        : toDelivery(null, booking),
+        ? toDelivery(chooseLatestEmailLog(booking, emailLogs), booking, now)
+        : toDelivery(null, booking, now),
     );
   }
 

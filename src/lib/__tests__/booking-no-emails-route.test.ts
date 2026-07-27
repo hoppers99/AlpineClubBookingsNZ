@@ -65,6 +65,7 @@ function bookingRow(overrides: Record<string, unknown> = {}) {
     noEmails: false,
     noEmailsAt: null,
     noEmailsByMemberId: null,
+    waitlistOfferExpiresAt: null,
     ...overrides,
   };
 }
@@ -197,6 +198,51 @@ describe("POST /api/admin/bookings/[id]/no-emails", () => {
     });
     expect(mocks.tx.booking.update).not.toHaveBeenCalled();
     expect(mocks.createAuditLog).not.toHaveBeenCalled();
+  });
+
+  // #2258 review finding: candidacy exclusion only stops FUTURE offers. Turning
+  // the switch on over a live offer leaves the clock running with the member
+  // never told, so the caller must be able to warn before the admin confirms.
+  it("reports a live waitlist offer so the dialog can warn the admin", async () => {
+    mocks.tx.booking.findUnique.mockResolvedValue(
+      bookingRow({
+        status: "WAITLIST_OFFERED",
+        waitlistOfferExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      }),
+    );
+
+    const res = await POST(request({ noEmails: true, acknowledged: true }), {
+      params,
+    });
+
+    await expect(res.json()).resolves.toMatchObject({ hasLiveWaitlistOffer: true });
+  });
+
+  it("reports no live offer once the offer has lapsed", async () => {
+    mocks.tx.booking.findUnique.mockResolvedValue(
+      bookingRow({
+        status: "WAITLIST_OFFERED",
+        waitlistOfferExpiresAt: new Date(Date.now() - 60 * 60 * 1000),
+      }),
+    );
+
+    const res = await POST(request({ noEmails: true, acknowledged: true }), {
+      params,
+    });
+
+    await expect(res.json()).resolves.toMatchObject({ hasLiveWaitlistOffer: false });
+  });
+
+  it("reports no live offer for a booking that is not WAITLIST_OFFERED", async () => {
+    mocks.tx.booking.findUnique.mockResolvedValue(
+      bookingRow({ waitlistOfferExpiresAt: new Date(Date.now() + 60 * 60 * 1000) }),
+    );
+
+    const res = await POST(request({ noEmails: true, acknowledged: true }), {
+      params,
+    });
+
+    await expect(res.json()).resolves.toMatchObject({ hasLiveWaitlistOffer: false });
   });
 
   it("404s an unknown or deleted booking", async () => {

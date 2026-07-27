@@ -42,6 +42,8 @@ interface OfferEmailDelivery {
     | "undeliverable"
     // #2258: withheld on purpose by the booking's "No emails" switch.
     | "suppressed"
+    // #2258: silenced AND still holding a live offer — an operator must act.
+    | "suppressed_live_offer"
     | "missing";
   needsOperatorAction: boolean;
 }
@@ -64,6 +66,8 @@ interface WaitlistEntry {
   // (and emails the member). A $0 no-adult booking that is APPROVED lands PAID
   // even though requiresAdminReview is still set, so the notify dialog must show.
   adminReviewStatus: string | null;
+  // #2258: the per-booking "No emails" switch.
+  noEmails: boolean;
   finalPriceCents: number;
   createdAt: string;
   offerEmailDelivery: OfferEmailDelivery | null;
@@ -140,6 +144,17 @@ function getWaitlistActionContext(entry: WaitlistEntry) {
     return expires ? `Offer expires ${expires}` : "Offer sent; no expiry recorded";
   }
 
+  // #2258: a silenced entry is deliberately excluded from offers, so it will sit
+  // here indefinitely. Say so plainly — otherwise it reads as an ordinary entry
+  // waiting its turn, and an officer wonders why it is never offered. It still
+  // occupies its place in the queue and still counts toward the position shown
+  // to the members behind it (see docs/DOMAIN_INVARIANTS.md).
+  if (entry.noEmails) {
+    return entry.waitlistPosition
+      ? `Position #${entry.waitlistPosition} — silenced, will not be offered`
+      : "Silenced — will not be offered while emails are off";
+  }
+
   if (entry.waitlistPosition) {
     return `Position #${entry.waitlistPosition} waiting for capacity`;
   }
@@ -161,6 +176,8 @@ function getOfferEmailSummary(delivery: OfferEmailDelivery) {
       return "Offer email undeliverable";
     case "suppressed":
       return "Offer email withheld (No emails)";
+    case "suppressed_live_offer":
+      return "Offer live but emails are off — member not told";
     case "missing":
       return "Offer email log missing";
   }

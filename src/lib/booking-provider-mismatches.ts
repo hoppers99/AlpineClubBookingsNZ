@@ -33,7 +33,9 @@ type MismatchBooking = {
   status: BookingStatus;
   deletedAt: Date | null;
   waitlistOfferedAt: Date | null;
-  // #2258: a deliberately-silenced booking is not a delivery failure.
+  waitlistOfferExpiresAt: Date | null;
+  // #2258: a deliberately-silenced booking is not a delivery failure — unless
+  // it is sitting on a live offer, which needs the expiry to detect.
   noEmails: boolean;
   member: { email: string };
   payment: {
@@ -79,6 +81,7 @@ export async function getBookingProviderMismatches(
       status: true,
       deletedAt: true,
       waitlistOfferedAt: true,
+      waitlistOfferExpiresAt: true,
       noEmails: true,
       member: { select: { email: true } },
       payment: {
@@ -146,7 +149,9 @@ export async function getBookingProviderMismatches(
         id: booking.id,
         status: booking.status,
         waitlistOfferedAt: booking.waitlistOfferedAt,
-        // #2258: a deliberately-silenced booking is not a delivery failure.
+        waitlistOfferExpiresAt: booking.waitlistOfferExpiresAt,
+        // #2258: a deliberately-silenced booking is not a delivery failure —
+        // unless its offer is still live, which the expiry decides.
         noEmails: booking.noEmails,
         member: { email: booking.member.email },
       },

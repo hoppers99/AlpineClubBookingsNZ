@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { createAuditLog } from "@/lib/audit";
-import type { Prisma } from "@prisma/client";
+import { BookingStatus, type Prisma } from "@prisma/client";
 
 /**
  * Server-side setter for the per-booking "No emails" switch (#2258).
@@ -22,6 +22,12 @@ export type SetBookingNoEmailsResult =
       noEmailsAt: Date | null;
       noEmailsByMemberId: string | null;
       changed: boolean;
+      // #2258: true when the booking is sitting on a LIVE (unexpired) waitlist
+      // offer. Turning the switch on here does NOT retract that offer — the
+      // clock keeps running and the member will never be told — so #2259's
+      // dialog warns the admin before they confirm. Candidacy exclusion only
+      // prevents FUTURE offers; it cannot undo one already made.
+      hasLiveWaitlistOffer: boolean;
     }
   | { ok: false; status: 400 | 404; error: string };
 
@@ -61,11 +67,17 @@ export async function setBookingNoEmails(params: {
           noEmails: true,
           noEmailsAt: true,
           noEmailsByMemberId: true,
+          waitlistOfferExpiresAt: true,
         },
       });
       if (!booking || booking.deletedAt) {
         return { ok: false, status: 404, error: "Booking not found" };
       }
+
+      const hasLiveWaitlistOffer =
+        booking.status === BookingStatus.WAITLIST_OFFERED &&
+        booking.waitlistOfferExpiresAt != null &&
+        booking.waitlistOfferExpiresAt.getTime() > Date.now();
 
       // Idempotent: setting the switch to the value it already has is a no-op
       // that reports success without rewriting the audit columns, so the
@@ -78,6 +90,7 @@ export async function setBookingNoEmails(params: {
           noEmailsAt: booking.noEmailsAt,
           noEmailsByMemberId: booking.noEmailsByMemberId,
           changed: false,
+          hasLiveWaitlistOffer,
         };
       }
 
@@ -141,6 +154,7 @@ export async function setBookingNoEmails(params: {
         noEmailsAt: params.noEmails ? setAt : null,
         noEmailsByMemberId: params.noEmails ? params.actorMemberId : null,
         changed: true,
+        hasLiveWaitlistOffer,
       };
     },
   );

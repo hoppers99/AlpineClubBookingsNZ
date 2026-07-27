@@ -21,14 +21,30 @@ import { getWaitlistOfferEmailDeliveries } from "@/lib/waitlist-offer-email-visi
 
 const OFFERED_AT = new Date("2026-07-20T10:00:00.000Z");
 
-function booking(overrides: { id?: string; noEmails?: boolean } = {}) {
+function booking(
+  overrides: {
+    id?: string;
+    noEmails?: boolean;
+    // Default: the offer has already lapsed, so a withhold is benign.
+    offerExpiresAt?: Date | null;
+  } = {},
+) {
   return {
     id: overrides.id ?? "bk_1",
     status: BookingStatus.WAITLIST_OFFERED,
     waitlistOfferedAt: OFFERED_AT,
+    waitlistOfferExpiresAt:
+      overrides.offerExpiresAt === undefined
+        ? new Date("2026-07-21T10:00:00.000Z")
+        : overrides.offerExpiresAt,
     noEmails: overrides.noEmails ?? false,
     member: { email: "member@example.com" },
   };
+}
+
+/** An offer that has NOT expired: far enough ahead to stay live in CI. */
+function liveOfferExpiry() {
+  return new Date(Date.now() + 60 * 60 * 1000);
 }
 
 function emailLog(overrides: Record<string, unknown> = {}) {
@@ -115,5 +131,60 @@ describe("waitlist offer email visibility and the No emails switch (#2258)", () 
     const deliveries = await getWaitlistOfferEmailDeliveries([booking()]);
 
     expect(deliveries.get("bk_1")!.emailLogId).toBe("log_mine");
+  });
+});
+
+describe("a silenced booking sitting on a LIVE offer needs operator action (#2258)", () => {
+  // Candidacy exclusion stops NEW offers, but it is not retroactive and it does
+  // not cover the post-commit race, so this state is reachable — and it is the
+  // bad one: a bed held for the whole offer window with the member never told,
+  // which then simply lapses.
+  it("reports suppressed_live_offer with needsOperatorAction when the offer is unexpired", async () => {
+    mocks.emailLogFindMany.mockResolvedValue([]);
+
+    const deliveries = await getWaitlistOfferEmailDeliveries([
+      booking({ noEmails: true, offerExpiresAt: liveOfferExpiry() }),
+    ]);
+
+    const delivery = deliveries.get("bk_1")!;
+    expect(delivery.retryState).toBe("suppressed_live_offer");
+    expect(delivery.needsOperatorAction).toBe(true);
+  });
+
+  it("does the same when a withheld offer-email row exists for a live offer", async () => {
+    mocks.emailLogFindMany.mockResolvedValue([
+      emailLog({ status: "SKIPPED_NO_EMAILS" }),
+    ]);
+
+    const deliveries = await getWaitlistOfferEmailDeliveries([
+      booking({ noEmails: true, offerExpiresAt: liveOfferExpiry() }),
+    ]);
+
+    const delivery = deliveries.get("bk_1")!;
+    expect(delivery.retryState).toBe("suppressed_live_offer");
+    expect(delivery.needsOperatorAction).toBe(true);
+  });
+
+  it("stays the benign suppressed state once the offer has lapsed", async () => {
+    mocks.emailLogFindMany.mockResolvedValue([]);
+
+    const deliveries = await getWaitlistOfferEmailDeliveries([
+      booking({ noEmails: true, offerExpiresAt: new Date("2026-07-21T10:00:00.000Z") }),
+    ]);
+
+    const delivery = deliveries.get("bk_1")!;
+    expect(delivery.retryState).toBe("suppressed");
+    expect(delivery.needsOperatorAction).toBe(false);
+  });
+
+  it("stays benign when no expiry was ever recorded", async () => {
+    mocks.emailLogFindMany.mockResolvedValue([]);
+
+    const deliveries = await getWaitlistOfferEmailDeliveries([
+      booking({ noEmails: true, offerExpiresAt: null }),
+    ]);
+
+    expect(deliveries.get("bk_1")!.retryState).toBe("suppressed");
+    expect(deliveries.get("bk_1")!.needsOperatorAction).toBe(false);
   });
 });

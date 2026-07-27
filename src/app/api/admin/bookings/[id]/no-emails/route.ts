@@ -77,6 +77,9 @@ export async function POST(
       noEmailsAt: result.noEmailsAt,
       noEmailsByMemberId: result.noEmailsByMemberId,
       changed: result.changed,
+      // #2258: the caller warns the admin that a live waitlist offer keeps
+      // ticking down while the member will not be told (#2259's dialog).
+      hasLiveWaitlistOffer: result.hasLiveWaitlistOffer,
       withheldEmails: withheld,
     });
   } catch (err) {
