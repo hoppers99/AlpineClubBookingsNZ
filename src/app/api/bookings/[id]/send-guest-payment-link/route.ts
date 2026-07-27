@@ -74,12 +74,17 @@ export async function POST(
   let sent = 0;
   let justSent = 0;
   let suppressed = 0;
+  // #2258: deliberately withheld is its own count. Folding it into `sent` would
+  // tell the admin the member has the link; folding it into `suppressed` would
+  // blame the member's address for a choice the club made.
+  let withheld = 0;
   for (const child of children) {
     try {
       const result = await issueSplitGuestPaymentLink(child.id);
       if (result.outcome === "sent") sent += 1;
       else if (result.outcome === "just_sent") justSent += 1;
       else if (result.outcome === "suppressed") suppressed += 1;
+      else if (result.outcome === "withheld") withheld += 1;
     } catch (err) {
       logger.error(
         { err, bookingId: child.id, parentBookingId: id },
@@ -90,6 +95,21 @@ export async function POST(
         { status: 500 }
       );
     }
+  }
+
+  if (withheld > 0 && sent === 0 && justSent === 0) {
+    // #2258: nothing was minted or sent because this booking is set to receive
+    // no email. Not a 502 — nothing is broken and retrying changes nothing, so
+    // say plainly what happened and what would change it. Checked BEFORE the
+    // suppressed branch so a withheld booking is never misreported as an
+    // undeliverable address.
+    return NextResponse.json(
+      {
+        error:
+          "This booking is set to send no emails, so no payment link was sent. Turn emails back on for the booking first, or arrange payment with the member directly.",
+      },
+      { status: 409 }
+    );
   }
 
   if (suppressed > 0 && sent === 0) {
@@ -104,5 +124,5 @@ export async function POST(
     );
   }
 
-  return NextResponse.json({ sent, justSent, suppressed });
+  return NextResponse.json({ sent, justSent, suppressed, withheld });
 }
