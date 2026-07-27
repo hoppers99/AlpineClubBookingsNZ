@@ -5,6 +5,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const mockPrismaTransaction = vi.fn();
 const mockTxMemberFindUnique = vi.fn();
 const mockTxMemberUpdateMany = vi.fn();
+const mockTxMemberFindMany = vi.fn();
 const mockTxTokenDeleteMany = vi.fn();
 
 vi.mock("../prisma", () => ({
@@ -92,6 +93,12 @@ beforeEach(() => {
           findUnique: mockTxMemberFindUnique,
           update: mockedUpdate,
           updateMany: mockTxMemberUpdateMany,
+          // #2255: after clearing the aged-up member's own inheritance, the job
+          // re-resolves their dependants' DERIVED pointers through them — those
+          // pointers had walked PAST this member precisely because they had no
+          // address. Defaulted to "no dependants", which is what most fixtures
+          // here describe; the dedicated case below overrides it.
+          findMany: mockTxMemberFindMany,
         },
         passwordResetToken: {
           create: mockedCreateToken,
@@ -110,6 +117,7 @@ beforeEach(() => {
     parentMemberId: null,
   });
   mockTxMemberUpdateMany.mockResolvedValue({ count: 1 });
+  mockTxMemberFindMany.mockResolvedValue([]);
   mockTxTokenDeleteMany.mockResolvedValue({ count: 1 });
 });
 
@@ -121,6 +129,90 @@ function dobForAge(age: number): Date {
 }
 
 describe("checkAgeUpMembers", () => {
+  /**
+   * #2255 (M3). Age-up is the one AUTOMATIC event that leaves a derived email
+   * pointer aimed at the wrong person. Clearing the aged-up member's own
+   * inheritance gives them an address and a login of their own — but their
+   * dependants' pointers had walked PAST them precisely because they had
+   * neither, so those pointers still name the grandparent, and a parent who now
+   * has a mailbox would never receive their own child's notifications.
+   */
+  describe("dependants' inherited email follows the member up (#2255)", () => {
+    function agingMemberWithDependant(dependants: Array<{ id: string }>) {
+      mockedFindMany.mockResolvedValue([
+        {
+          id: "m1",
+          email: "youth@example.com",
+          firstName: "Alice",
+          lastName: "Smith",
+          dateOfBirth: dobForAge(18),
+          inheritEmailFromId: null,
+          inheritEmailFrom: null,
+        },
+      ] as any);
+      mockedEmailLogFind.mockResolvedValue(null);
+      mockedUpdate.mockResolvedValue({} as any);
+      mockedCreateToken.mockResolvedValue({} as any);
+      mockedSendEmail.mockResolvedValue(undefined);
+      mockTxMemberFindMany.mockImplementation(async ({ where }: any) => {
+        // The derived-dependant lookup.
+        if (where?.inheritParentEmail === true) return dependants;
+        // The email resolver walking up from the aged-up member, who now
+        // qualifies as a source in their own right.
+        if (where?.id?.in) {
+          return where.id.in.map((id: string) => ({
+            id,
+            email: "youth@example.com",
+            ageTier: "ADULT",
+            archivedAt: null,
+            inheritEmailFromId: null,
+            parentMemberId: null,
+            secondaryParentId: null,
+          }));
+        }
+        return [];
+      });
+    }
+
+    it("re-points a dependant's derived pointer at the newly-adult parent", async () => {
+      agingMemberWithDependant([{ id: "kid-1" }, { id: "kid-2" }]);
+
+      await checkAgeUpMembers();
+
+      expect(mockTxMemberUpdateMany).toHaveBeenCalledWith({
+        where: { id: { in: ["kid-1", "kid-2"] } },
+        data: { inheritEmailFromId: "m1", inheritParentEmail: true },
+      });
+    });
+
+    it("only looks at DERIVED pointers, never hand-picked ones", async () => {
+      agingMemberWithDependant([{ id: "kid-1" }]);
+
+      await checkAgeUpMembers();
+
+      // A manually-chosen source is the admin's decision; the query must not
+      // be able to pick one up in the first place.
+      const derivedLookup = mockTxMemberFindMany.mock.calls
+        .map(([args]: any) => args?.where)
+        .find((where: any) => where?.inheritParentEmail !== undefined);
+      expect(derivedLookup).toEqual({
+        inheritParentEmail: true,
+        OR: [{ parentMemberId: "m1" }, { secondaryParentId: "m1" }],
+      });
+    });
+
+    it("writes nothing when the member has no dependants", async () => {
+      agingMemberWithDependant([]);
+
+      await checkAgeUpMembers();
+
+      const inheritanceWrites = mockTxMemberUpdateMany.mock.calls.filter(
+        ([args]: any) => args?.data?.inheritEmailFromId !== undefined,
+      );
+      expect(inheritanceWrites).toEqual([]);
+    });
+  });
+
   it("should upgrade a YOUTH member who turned 18", async () => {
     const member = {
       id: "m1",

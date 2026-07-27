@@ -1503,6 +1503,17 @@ describe("Admin Family Group Join Requests", () => {
         familyGroup: { id: "fg1", name: "Smith Family" },
       } as any);
       mockedPrisma.familyGroupMember.count.mockResolvedValue(1);
+      // The create branch resolves and VALIDATES the child's mailbox before the
+      // transaction opens, so the source has to read back as usable — otherwise
+      // the approval fails on the email rule and never reaches the depth gate
+      // this test is about.
+      mockedPrisma.member.findUnique.mockResolvedValue({
+        id: "parent-1",
+        ageTier: "ADULT",
+        email: "alice@test.com",
+        archivedAt: null,
+        inheritEmailFromId: null,
+      } as any);
       const txMemberCreate = vi.fn();
       deepRequesterTx({ create: txMemberCreate });
 

@@ -617,6 +617,15 @@ describe("membership nomination workflow", () => {
       $executeRaw: vi.fn().mockResolvedValue(undefined),
       member: {
         findFirst: vi.fn().mockResolvedValue(null),
+        // #2255: the resolved source is validated before it is stored, which
+        // reads the source row back on the same client.
+        findUnique: vi.fn(async ({ where }: any) => ({
+          id: where.id,
+          email: "jane@test.com",
+          ageTier: "ADULT",
+          archivedAt: null,
+          inheritEmailFromId: null,
+        })),
         // #2255: each family dependant created under the applicant is checked
         // against the four-generation cap (a walk UP from the applicant) and
         // its inherited mailbox is resolved the same way. The applicant is
@@ -827,7 +836,7 @@ describe("membership nomination workflow", () => {
    * parent-links deep, so their new dependant would be a fifth generation.
    */
   it("refuses creating a family dependant under an applicant who already fills the cap", async () => {
-    vi.mocked(prisma.memberApplication.findUnique).mockResolvedValue({
+    const deepApplication = {
       id: "app-deep",
       applicantFirstName: "Jane",
       applicantLastName: "Doe",
@@ -850,7 +859,10 @@ describe("membership nomination workflow", () => {
       reviewedAt: null,
       createdAt: new Date("2026-04-12T00:00:00.000Z"),
       updatedAt: new Date("2026-04-12T00:00:00.000Z"),
-    } as never);
+    };
+    vi.mocked(prisma.memberApplication.findUnique).mockResolvedValue(
+      deepApplication as never
+    );
     vi.mocked(prisma.memberApplication.findFirst).mockResolvedValue(null as never);
 
     // gggp -> ggp -> gp -> member-1 (the applicant created below).
@@ -885,6 +897,13 @@ describe("membership nomination workflow", () => {
               }))
             : []
         ),
+        findUnique: vi.fn(async ({ where }: any) => ({
+          id: where.id,
+          email: `${where.id}@test.com`,
+          ageTier: "ADULT",
+          archivedAt: null,
+          inheritEmailFromId: null,
+        })),
         create: memberCreate,
         update: vi.fn().mockResolvedValue({ id: "member-1" }),
       },
@@ -893,6 +912,10 @@ describe("membership nomination workflow", () => {
       passwordResetToken: { deleteMany: vi.fn(), create: vi.fn() },
       memberApplication: {
         findFirst: vi.fn().mockResolvedValue(null),
+        // The re-read INSIDE the transaction: the same row, not a stub of it —
+        // the approval re-validates against this copy, so trimming it here
+        // would fail the approval for reasons unrelated to the depth cap.
+        findUnique: vi.fn().mockResolvedValue(deepApplication),
         update: vi.fn().mockResolvedValue({ id: "app-deep", status: "APPROVED" }),
       },
       xeroOperationOutbox: { create: vi.fn().mockResolvedValue({ id: "op-1" }) },

@@ -452,22 +452,40 @@ describe("Admin: Create dependent member", () => {
   it("defaults dependent email inheritance to the parent's existing email source", async () => {
     vi.mocked(auth).mockResolvedValue(adminSession);
     vi.mocked(prisma.member.findFirst).mockResolvedValue(null);
-    vi.mocked(prisma.member.findUnique)
-      .mockResolvedValueOnce({
+    // #2255: routed by the id asked for, not by call ORDER. The resolver now
+    // makes an extra read (it re-reads a stored pointer's target before
+    // trusting it), and an ordered `mockResolvedValueOnce` chain both answered
+    // the wrong question here AND leaked its unconsumed entry into the next
+    // test, which then silently passed a non-adult parent as an adult.
+    const membersById: Record<string, any> = {
+      parent1: {
         id: "parent1",
         ageTier: "ADULT",
         active: true,
         archivedAt: null,
+        email: "parent@test.com",
         inheritEmailFromId: "lead-adult",
-      } as any)
-      .mockResolvedValueOnce({
+      },
+      "lead-adult": {
         id: "lead-adult",
         ageTier: "ADULT",
         active: true,
         archivedAt: null,
+        email: "lead@test.com",
         parentMemberId: null,
+        secondaryParentId: null,
         inheritEmailFromId: null,
-      } as any);
+      },
+    };
+    vi.mocked(prisma.member.findUnique).mockImplementation((async ({
+      where,
+    }: any) => membersById[where.id] ?? null) as never);
+    vi.mocked(prisma.member.findMany).mockImplementation((async ({
+      where,
+    }: any) =>
+      (where?.id?.in ?? [])
+        .map((id: string) => membersById[id])
+        .filter(Boolean)) as never);
 
     const txMemberCreate = vi.fn().mockResolvedValue({
       id: "dep2",

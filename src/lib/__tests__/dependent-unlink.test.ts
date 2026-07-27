@@ -89,7 +89,21 @@ function setupTransaction(members: MockMember[]) {
   const tx = {
     member: {
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
-        return membersById.get(where.id) ?? null;
+        const member = membersById.get(where.id);
+        if (!member) return null;
+        // The route selects the parent RELATIONS, not just the columns, so the
+        // stub has to project them — derived from the columns rather than
+        // hand-set on each fixture, so a fixture cannot claim a parent link in
+        // one place and deny it in the other. Without this the route saw
+        // `secondaryParent: undefined` for a member that plainly had one and
+        // silently took the "no remaining parent" branch.
+        const relation = (id: string | null) =>
+          id ? (membersById.get(id) ?? null) : null;
+        return {
+          ...member,
+          parent: relation(member.parentMemberId),
+          secondaryParent: relation(member.secondaryParentId),
+        };
       }),
       // #2255: the transitive email resolver re-reads the remaining parent's
       // chain a level at a time. Only the "these ids" shape is issued here.
