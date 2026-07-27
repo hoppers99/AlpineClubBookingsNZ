@@ -52,8 +52,15 @@ interface FamilyMemberStatus {
     firstName: string;
     lastName: string;
     parentLinkType: "PRIMARY" | "SECONDARY";
+    /** The parent's own already-flattened source, when they inherit too. */
+    inheritEmailFromId?: string | null;
   }>;
   notificationEmailFromId?: string | null;
+  /**
+   * #2255: the name behind `notificationEmailFromId` when it is somebody other
+   * than a listed parent. Null when a parent marker already covers it.
+   */
+  notificationEmailFromName?: string | null;
 }
 
 interface PendingFamilyRequest {
@@ -609,10 +616,24 @@ export function FamilyGroupSection({ familyGroups, canManage = false }: FamilyGr
                                 <p className="text-xs text-muted-foreground">
                                   Parents: {status.parentLinks.map((parent) => {
                                     const label = `${parent.firstName} ${parent.lastName}`.trim();
-                                    return parent.id === status.notificationEmailFromId
+                                    return parent.id === status.notificationEmailFromId ||
+                                      parent.inheritEmailFromId === status.notificationEmailFromId
                                       ? `${label} (notifications)`
                                       : label;
                                   }).join(", ")}
+                                </p>
+                              )}
+                              {/* #2255: the marker above only fires for a LISTED parent.
+                                  Family links now run to four generations and the
+                                  notification address is resolved by walking up past any
+                                  generation without one, so the mailbox is often a
+                                  grandparent who is not in that list — and this is the
+                                  family whose consent is at stake, so it is said plainly
+                                  rather than left to be inferred from a missing marker. */}
+                              {status?.notificationEmailFromName && (
+                                <p className="text-xs text-muted-foreground">
+                                  Club email for {member.firstName} goes to{" "}
+                                  {status.notificationEmailFromName}.
                                 </p>
                               )}
                             </div>

@@ -187,6 +187,7 @@ export type MappingTargetRecord = {
   archivedAt: Date | null;
   canLogin: boolean;
   parentMemberId: string | null;
+  secondaryParentId: string | null;
   inheritParentEmail: boolean;
   inheritEmailFromId: string | null;
   phoneCountryCode: string | null;
@@ -245,6 +246,9 @@ export async function loadApprovalMappingTargets(
       archivedAt: true,
       canLogin: true,
       parentMemberId: true,
+      // #2255: read so the nomination approval can refuse writing the applicant
+      // into BOTH parent slots of a member they are already the second parent of.
+      secondaryParentId: true,
       inheritParentEmail: true,
       inheritEmailFromId: true,
       phoneCountryCode: true,

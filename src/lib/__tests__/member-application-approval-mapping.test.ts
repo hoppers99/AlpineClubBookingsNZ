@@ -148,7 +148,27 @@ const SCOPED_ADMIN_ROW = {
 function findManyFor(targets: Array<Record<string, unknown>>) {
   return vi.fn(async (args: { where?: { id?: { in?: string[] } } }) => {
     if (args?.where?.id?.in) {
-      return targets.filter((row) => args.where!.id!.in!.includes(row.id as string));
+      const wanted = args.where.id.in;
+      const byId = new Map(targets.map((row) => [row.id as string, row]));
+      // #2255: the family-link depth walk and the email resolver both read
+      // "these ids", and both are asked about the APPLICANT, who is created in
+      // this transaction and is not one of the mapping targets. Returning
+      // nothing for them made the applicant look like a member with no email at
+      // all, and the approval 422'd on "nothing to inherit". Anyone not in
+      // `targets` is therefore modelled as what the applicant is: an ordinary
+      // parentless adult with a real address.
+      return wanted.map(
+        (id) =>
+          byId.get(id) ?? {
+            id,
+            email: "jane@test.com",
+            ageTier: "ADULT",
+            archivedAt: null,
+            inheritEmailFromId: null,
+            parentMemberId: null,
+            secondaryParentId: null,
+          },
+      );
     }
     return [];
   });
@@ -176,9 +196,26 @@ function makeTx(overrides: {
       member: {
         findMany: findManyFor(overrides.targets),
         findFirst: vi.fn().mockResolvedValue(overrides.loginHolder ?? null),
-        findUnique: vi.fn().mockResolvedValue(
-          overrides.actingAdmin === undefined ? FULL_ADMIN_ROW : overrides.actingAdmin,
-        ),
+        // Routed by id, not a single blanket row: the #1026 gate re-reads the
+        // ACTING ADMIN here, and #2255 added a second reader —
+        // `validateInheritEmailSource` reads the resolved email SOURCE back
+        // before it is stored. Answering both with the admin row made the
+        // source look like a member with no age tier and failed the approval on
+        // "must point to an adult member".
+        findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
+          if (where.id === "admin-1") {
+            return overrides.actingAdmin === undefined
+              ? FULL_ADMIN_ROW
+              : overrides.actingAdmin;
+          }
+          return {
+            id: where.id,
+            email: "jane@test.com",
+            ageTier: "ADULT",
+            archivedAt: null,
+            inheritEmailFromId: null,
+          };
+        }),
         create: vi.fn().mockResolvedValue({ id: "member-1", email: "jane@test.com", firstName: "Jane", lastName: "Doe" }),
         update,
       },

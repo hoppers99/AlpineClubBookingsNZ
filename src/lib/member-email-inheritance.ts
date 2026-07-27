@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
+import { isPlaceholderContactEmail } from "@/lib/placeholder-contact-email";
 
 type InheritanceValidationResult =
   | { ok: true }
@@ -18,8 +19,7 @@ export async function validateInheritEmailSource(input: {
     select: {
       id: true,
       ageTier: true,
-      parentMemberId: true,
-      secondaryParentId: true,
+      email: true,
       inheritEmailFromId: true,
       archivedAt: true,
     },
@@ -49,13 +49,14 @@ export async function validateInheritEmailSource(input: {
     };
   }
 
-  if (inheritEmailFrom.parentMemberId || inheritEmailFrom.secondaryParentId) {
-    return {
-      ok: false,
-      status: 422,
-      error: "Email inheritance must point to a primary adult member",
-    };
-  }
+  // #2255 (D9): the source may now itself have parents. Family links run to
+  // four generations, so the nearest ancestor with a real mailbox is often a
+  // MIDDLE generation — an adult who is someone's child and someone's parent at
+  // once. The old "must point to a primary adult member" clause (source has no
+  // parents) made that source unusable and left the third generation's children
+  // with no reachable contact, which is the whole reason D9 asks for transitive
+  // resolution. The two guarantees that actually matter are kept below and
+  // unchanged: the source must be an ADULT, and it must be TERMINAL.
 
   if (inheritEmailFrom.inheritEmailFromId) {
     return {
@@ -70,6 +71,20 @@ export async function validateInheritEmailSource(input: {
       ok: false,
       status: 422,
       error: "Email inheritance cannot point to an archived member",
+    };
+  }
+
+  // #2255 (D9): with the "source has no parents" clause gone, the remaining
+  // structural guards no longer imply a DELIVERABLE address, so check it
+  // directly. A walk-in placeholder (`@no-email.invalid`, #1935) is silently
+  // dropped by `sendEmail`, so inheriting one would leave the dependant with no
+  // reachable contact at all while the admin UI showed an inheritance in place.
+  if (isPlaceholderContactEmail(inheritEmailFrom.email)) {
+    return {
+      ok: false,
+      status: 422,
+      error:
+        "Email inheritance must point to a member with a real email address",
     };
   }
 

@@ -736,10 +736,29 @@ describe("reviewAdminFamilyGroupRequest — CHILD_REQUEST memberless-group guard
           findUnique: vi.fn().mockResolvedValue({
             id: "member-1",
             ageTier: "ADULT",
+            email: "member-1@test.com",
+            archivedAt: null,
             parentMemberId: null,
             secondaryParentId: null,
             inheritEmailFromId: null,
           }),
+          // #2255: the approval walks the family chain (four-generation cap +
+          // cycle guard) and resolves the notification mailbox upwards; both
+          // read `member.findMany`. Nobody here has a parent, so the walks
+          // terminate on the requester.
+          findMany: vi.fn().mockImplementation(async ({ where }: any) =>
+            where?.id?.in
+              ? where.id.in.map((id: string) => ({
+                  id,
+                  email: `${id}@test.com`,
+                  ageTier: "ADULT",
+                  archivedAt: null,
+                  inheritEmailFromId: null,
+                  parentMemberId: null,
+                  secondaryParentId: null,
+                }))
+              : []
+          ),
           update: txMemberUpdate,
         },
         familyGroupMember: { upsert: txUpsert },

@@ -1,4 +1,11 @@
 import type { Prisma } from "@prisma/client";
+import {
+  allowedChildDescendantGenerations,
+  descendantDepthWithinWhere,
+  exceedsFamilyLinkGenerationLimit,
+  FAMILY_LINK_GENERATION_LIMIT_ERROR,
+  FAMILY_LINK_GENERATION_LIMIT_EXPLANATION,
+} from "@/lib/member-family-link-depth";
 
 /**
  * Shared eligibility contract for "Add Dependant -> Link Existing" (#2254).
@@ -21,11 +28,23 @@ import type { Prisma } from "@prisma/client";
  * Those are options the admin chose, not a candidate the dialog should never
  * have offered.
  *
- * NOT expressed here: the recursive "is the target an ancestor of the parent?"
- * walk, which needs a query per generation and stays in the write route. It is
- * unreachable from the search anyway — every ancestor of the parent necessarily
- * has at least one dependant (the child on the path down to the parent), so the
- * `HAS_DEPENDANTS` clause already excludes the whole ancestor set.
+ * GRAPH FACTS ARE AN INPUT, NOT A SELECT (#2255). Two of the rules below are
+ * properties of the whole link graph rather than of the candidate row: whether
+ * the candidate is an ancestor of the parent, and how deep the merged chain
+ * would be. Neither can be read off a single row, and neither can be expressed
+ * as a `take: 1` relation probe — depth needs the DEEPEST child chain, and
+ * `take: 1` returns an arbitrary one. Both surfaces therefore compute them once
+ * with the bounded walks in `src/lib/member-family-link-depth.ts` and hand the
+ * results in as {@link DependentLinkGraphFacts}. That object is a REQUIRED
+ * argument for the same reason the relation probes used to be required select
+ * fields: a caller that forgets it fails to compile rather than silently
+ * dropping the cycle and depth guards.
+ *
+ * Before #2255 neither rule needed this. The old two-generation cap ("a member
+ * with dependants cannot be linked under anyone") excluded the whole ancestor
+ * set as a side effect, because every ancestor of the parent necessarily has a
+ * dependant — the child on the path down to the parent. Relaxing the cap
+ * removed that accidental cover, so the ancestor rule is now stated outright.
  */
 
 /**
@@ -37,7 +56,8 @@ export const DEPENDENT_LINK_INELIGIBILITY_REASONS = [
   "SELF",
   "ALREADY_LINKED_TO_PARENT",
   "TWO_PARENTS",
-  "HAS_DEPENDANTS",
+  "ANCESTOR_OF_PARENT",
+  "EXCEEDS_GENERATION_LIMIT",
 ] as const;
 
 export type DependentLinkIneligibilityReason =
@@ -57,8 +77,8 @@ export const DEPENDENT_LINK_INELIGIBILITY_ERRORS: Record<
   SELF: "A member cannot be their own dependant",
   ALREADY_LINKED_TO_PARENT: "This member is already linked to that parent",
   TWO_PARENTS: "This member already has two parents linked",
-  HAS_DEPENDANTS:
-    "This member already has dependants and cannot be linked under another member",
+  ANCESTOR_OF_PARENT: "Cannot link a parent or ancestor as a dependant",
+  EXCEEDS_GENERATION_LIMIT: FAMILY_LINK_GENERATION_LIMIT_ERROR,
 };
 
 /**
@@ -75,7 +95,8 @@ export const DEPENDENT_LINK_INELIGIBILITY_EXPLANATIONS: Record<
   SELF: "is the member you are editing",
   ALREADY_LINKED_TO_PARENT: "is already linked to this member",
   TWO_PARENTS: "already has two parents recorded",
-  HAS_DEPENDANTS: "has dependants of their own",
+  ANCESTOR_OF_PARENT: "is already an ancestor of this member",
+  EXCEEDS_GENERATION_LIMIT: FAMILY_LINK_GENERATION_LIMIT_EXPLANATION,
 };
 
 /**
@@ -93,22 +114,23 @@ export type DependentLinkIneligibleMatch = {
 };
 
 /**
- * The columns and relation probes `dependentLinkBlockers` reads. Spread this
+ * The columns `dependentLinkBlockers` reads off the candidate row. Spread this
  * into every select that feeds the predicate — the write route and the search's
- * diagnostic query both do — rather than restating the fields. `dependents` and
- * `secondaryDependents` are REQUIRED on `DependentLinkCandidate` for that
- * reason: trimming either relation to save a join would otherwise make the
- * two-generation invariant (`HAS_DEPENDANTS`) silently stop firing and let a
- * member with children be linked under another parent. Required fields turn
- * that into a compile error instead.
+ * diagnostic query both do — rather than restating the fields.
+ *
+ * The `dependents` / `secondaryDependents` relation probes that used to live
+ * here are gone (#2255). They existed to arm the old `HAS_DEPENDANTS` rule, and
+ * they were selected `take: 1` because only emptiness was read. Depth needs the
+ * DEEPEST chain under the candidate, and `take: 1` returns an arbitrary child,
+ * so keeping them would have been an answer that looked right and was not. The
+ * compile-time protection they gave the invariant now sits on the required
+ * {@link DependentLinkGraphFacts} argument instead.
  */
 export const DEPENDENT_LINK_CANDIDATE_SELECT = {
   id: true,
   archivedAt: true,
   parentMemberId: true,
   secondaryParentId: true,
-  dependents: { select: { id: true }, take: 1 },
-  secondaryDependents: { select: { id: true }, take: 1 },
 } satisfies Prisma.MemberSelect;
 
 export type DependentLinkCandidate = {
@@ -116,23 +138,39 @@ export type DependentLinkCandidate = {
   archivedAt: Date | null;
   parentMemberId: string | null;
   secondaryParentId: string | null;
+};
+
+/**
+ * Whole-graph facts the row cannot supply, computed once per request by the
+ * caller with `src/lib/member-family-link-depth.ts` and shared across every
+ * candidate in that request.
+ */
+export type DependentLinkGraphFacts = {
   /**
-   * Selected with `take: 1` — only emptiness is read. Both are required, not
-   * optional: an omitted relation would read as "no dependants" and quietly
-   * clear the two-generation invariant. See `DEPENDENT_LINK_CANDIDATE_SELECT`.
+   * Ids of every ancestor of the parent (the parent excluded). A candidate in
+   * this set would close a loop. From `describeParentSideDepth`.
    */
-  dependents: ReadonlyArray<unknown>;
-  secondaryDependents: ReadonlyArray<unknown>;
+  parentAncestorIds: ReadonlyArray<string>;
+  /** Longest chain of parent-links above the parent; 0 when it has none. */
+  parentAncestorGenerations: number;
+  /**
+   * Longest chain of parent-links BELOW this candidate. Per candidate, so a
+   * caller explaining several rows walks each one. From `describeChildSideDepth`.
+   */
+  candidateDescendantGenerations: number;
 };
 
 /**
  * Every reason this candidate cannot be linked under `parentMemberId`, in
- * `DEPENDENT_LINK_INELIGIBILITY_REASONS` order. Empty means eligible (subject to
- * the write route's ancestry walk).
+ * `DEPENDENT_LINK_INELIGIBILITY_REASONS` order. Empty means eligible.
+ *
+ * Unlike before #2255 this is the WHOLE predicate: no guard is left over in the
+ * write route, because the graph walks the route used to own are now inputs.
  */
 export function dependentLinkBlockers(
   parentMemberId: string,
   candidate: DependentLinkCandidate,
+  graph: DependentLinkGraphFacts,
 ): DependentLinkIneligibilityReason[] {
   const blockers: DependentLinkIneligibilityReason[] = [];
 
@@ -151,11 +189,16 @@ export function dependentLinkBlockers(
   if (candidate.parentMemberId && candidate.secondaryParentId) {
     blockers.push("TWO_PARENTS");
   }
+  if (graph.parentAncestorIds.includes(candidate.id)) {
+    blockers.push("ANCESTOR_OF_PARENT");
+  }
   if (
-    candidate.dependents.length > 0 ||
-    candidate.secondaryDependents.length > 0
+    exceedsFamilyLinkGenerationLimit({
+      parentAncestorGenerations: graph.parentAncestorGenerations,
+      childDescendantGenerations: graph.candidateDescendantGenerations,
+    })
   ) {
-    blockers.push("HAS_DEPENDANTS");
+    blockers.push("EXCEEDS_GENERATION_LIMIT");
   }
 
   return blockers;
@@ -184,12 +227,24 @@ export function dependentLinkBlockers(
  * candidate — filtering here would hide members the route is happy to link.
  * (The parent-side search, `parentLinkEligibleFor`, does filter `active: true`,
  * because there the searched-for member becomes the parent.)
+ *
+ * DEPTH (#2255). The generation cap is expressed here as bounded relation
+ * nesting — "this candidate has no dependant chain longer than N" — with N
+ * derived from how much of the cap the parent's own ancestors already use.
+ * `parentAncestorIds` excludes the ancestor set outright: with the old
+ * two-generation clause gone, an ancestor of the parent is no longer excluded
+ * as a side effect of having dependants, and would otherwise be offered as a
+ * candidate the write route then refuses as a cycle.
  */
 export function dependentLinkCandidateWhere(
   parentMemberId: string,
+  graph: Pick<
+    DependentLinkGraphFacts,
+    "parentAncestorIds" | "parentAncestorGenerations"
+  >,
 ): Prisma.MemberWhereInput[] {
   return [
-    { id: { not: parentMemberId } },
+    { id: { notIn: [parentMemberId, ...graph.parentAncestorIds] } },
     {
       OR: [
         { parentMemberId: null },
@@ -204,11 +259,9 @@ export function dependentLinkCandidateWhere(
     },
     // At most two parents: at least one of the two columns must still be free.
     { OR: [{ parentMemberId: null }, { secondaryParentId: null }] },
-    // Two-generation invariant: a member who is already someone's parent cannot
-    // be linked under another member. Mirrors the write route's 422 and the
-    // family-group request reviewer; relaxing it is owner-gated (#2255).
-    { dependents: { none: {} } },
-    { secondaryDependents: { none: {} } },
+    descendantDepthWithinWhere(
+      allowedChildDescendantGenerations(graph.parentAncestorGenerations),
+    ),
     { archivedAt: null },
   ];
 }

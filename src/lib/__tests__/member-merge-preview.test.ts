@@ -231,3 +231,151 @@ describe("buildMemberMergePreview warnings", () => {
     ).toBe(true);
   });
 });
+
+/**
+ * #2255 (M1). Merge is a parent-link writer by consequence rather than by
+ * intent, which is how it stayed ungated: it never creates a link, but
+ * re-pointing the loser's inbound links onto the master collapses two nodes
+ * into one and JOINS their family chains.
+ */
+describe("family-link graph blockers on merge (#2255)", () => {
+  /**
+   * A member delegate backed by a real little family graph, so the two bounded
+   * walks answer from the same edges rather than from per-test constants.
+   * `edges[child] = parent`.
+   */
+  function familyGraphMemberDelegate(edges: Record<string, string | null>) {
+    const idsBelow = (parentId: string) =>
+      Object.entries(edges)
+        .filter(([, parent]) => parent === parentId)
+        .map(([child]) => child);
+
+    return {
+      ...defaultDelegate(),
+      findUnique: vi.fn(({ where }: { where: { id: string } }) =>
+        Promise.resolve(
+          where.id === MASTER_ID
+            ? makeMember(MASTER_ID)
+            : where.id === LOSER_ID
+              ? makeMember(LOSER_ID)
+              : null,
+        ),
+      ),
+      count: vi.fn(({ where }: { where: { id?: string } }) =>
+        Promise.resolve(where?.id === ACTOR_ID ? 1 : 0),
+      ),
+      findMany: vi.fn(({ where }: { where: any }) => {
+        // Walking UP: "these ids".
+        if (where?.id?.in) {
+          return Promise.resolve(
+            where.id.in.map((id: string) => ({
+              id,
+              parentMemberId: edges[id] ?? null,
+              secondaryParentId: null,
+            })),
+          );
+        }
+        // Walking DOWN: "children of these ids".
+        if (where?.OR) {
+          const parents: string[] = where.OR.flatMap((clause: any) => [
+            ...(clause.parentMemberId?.in ?? []),
+            ...(clause.secondaryParentId?.in ?? []),
+          ]);
+          return Promise.resolve(
+            parents.flatMap((id) => idsBelow(id).map((child) => ({ id: child }))),
+          );
+        }
+        return Promise.resolve([]);
+      }),
+    };
+  }
+
+  const blockerCodes = (result: { blockers: Array<{ code: string }> }) =>
+    result.blockers.map((blocker) => blocker.code);
+
+  it("refuses a merge that would join two chains past four generations", async () => {
+    // master-1 sits three links below ggp; loser-1 heads two generations of its
+    // own. Neither breaches the cap alone; merged they span six.
+    const result = await preview({
+      overrides: {
+        member: familyGraphMemberDelegate({
+          [MASTER_ID]: "gp",
+          gp: "ggp",
+          ggp: "gggp",
+          gggp: null,
+          "kid-1": LOSER_ID,
+          "grandkid-1": "kid-1",
+        }),
+      },
+    });
+
+    expect(blockerCodes(result)).toContain("family_link_depth");
+    expect(
+      result.blockers.find((blocker) => blocker.code === "family_link_depth")
+        ?.label,
+    ).toMatch(/4 generations/i);
+  });
+
+  it("refuses a merge between members already related by parentage", async () => {
+    // master-1 is the parent of X, and X is the parent of loser-1. Merging
+    // loser into master makes X both master's child and master's parent.
+    // `nullSelfRelationCycles` cannot see this: it only nulls MASTER columns
+    // equal to the loser id, and the loop here is closed through X.
+    const result = await preview({
+      overrides: {
+        member: familyGraphMemberDelegate({
+          [MASTER_ID]: null,
+          x: MASTER_ID,
+          [LOSER_ID]: "x",
+        }),
+      },
+    });
+
+    expect(blockerCodes(result)).toContain("family_link_cycle");
+  });
+
+  it("refuses it in the other direction too", async () => {
+    const result = await preview({
+      overrides: {
+        member: familyGraphMemberDelegate({
+          [LOSER_ID]: null,
+          x: LOSER_ID,
+          [MASTER_ID]: "x",
+        }),
+      },
+    });
+
+    expect(blockerCodes(result)).toContain("family_link_cycle");
+  });
+
+  it("allows a merge whose combined family still fits", async () => {
+    // master-1 one link below gp, loser-1 with one generation beneath: the
+    // merged node spans three generations, which is inside the cap.
+    const result = await preview({
+      overrides: {
+        member: familyGraphMemberDelegate({
+          [MASTER_ID]: "gp",
+          gp: null,
+          "kid-1": LOSER_ID,
+        }),
+      },
+    });
+
+    expect(blockerCodes(result)).not.toContain("family_link_depth");
+    expect(blockerCodes(result)).not.toContain("family_link_cycle");
+  });
+
+  it("allows a merge between two unrelated members with no family at all", async () => {
+    const result = await preview({
+      overrides: {
+        member: familyGraphMemberDelegate({
+          [MASTER_ID]: null,
+          [LOSER_ID]: null,
+        }),
+      },
+    });
+
+    expect(blockerCodes(result)).not.toContain("family_link_depth");
+    expect(blockerCodes(result)).not.toContain("family_link_cycle");
+  });
+});
