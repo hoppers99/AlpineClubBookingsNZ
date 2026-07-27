@@ -2245,32 +2245,147 @@ partner, inviter no longer eligible) skips the link without failing the
 family-group join, and the skip is audited.
 
 Parent/dependant links (`Member.parentMemberId` and `Member.secondaryParentId`)
-are limited to **two generations and two parents**: a member may have at most
-two parents recorded, and a member who is already someone's parent cannot be
-linked under another member. Admin "Add Dependant → Link Existing"
-(`POST /api/admin/members/[id]/dependents/link`) enforces that, together with:
-the parent must be an active, non-archived adult; the target must not be
-archived, must not already be linked to that parent, and must not be an
-ancestor of the parent. An **inactive** target is deliberately still linkable —
-only the parent side requires `active` — and the dialog badges such a candidate
-"Inactive" rather than hiding them. The admin candidate SEARCH
+are limited to **four generations and two parents**: a member may have at most
+two parents recorded, and the longest root-to-leaf chain of parent links may be
+at most three links long — great-grandparent → grandparent → parent → child.
+
+The cap is checked **symmetrically** at link time, which is what makes it
+independent of the order links were created in. Linking child C under parent P
+joins two chains, so the rule is
+
+```text
+ancestorGenerations(P) + 1 + descendantGenerations(C) <= 3
+```
+
+and that total, not either half, is what must fit. `src/lib/member-family-link-depth.ts`
+owns the constants, the two bounded graph walks, the shared 422 message, and the
+Prisma `where` builders that express the same cap in SQL as bounded relation
+nesting. **Every writer of a parent link enforces it**: the admin link route
+(`POST /api/admin/members/[id]/dependents/link`), admin member-create
+(`POST /api/admin/members` with `parentMemberId`), the family-group
+`CHILD_REQUEST` approval on both its link-existing and create-child branches,
+and the membership-application/nomination family-member approval on both its
+map-existing and create branches. The last three never saw the previous rule at
+all.
+
+The walks are deliberately robust on data that predates the cap. They are
+level-bounded (so a cyclic or over-deep graph terminates rather than hanging),
+they report the **longest** path rather than the shortest (a member reachable at
+two depths counts at its deeper one, because that is the chain that would grow),
+and a walk that hits the bound reports "at least bound+1", which refuses the new
+link rather than accepting it on incomplete information.
+
+Alongside the cap, the admin link route requires: the parent must be an active,
+non-archived adult; the target must not be archived, must not already be linked
+to that parent, must not already have two parents, and **must not be an ancestor
+of the parent**. That last one is now stated in its own right. Under the old
+two-generation rule it was enforced only as a side effect — every ancestor of
+the parent necessarily has a dependant, so the "already has dependants" clause
+excluded the whole ancestor set — and relaxing the cap removed that cover. The
+same explicit cycle check was added to the family-group `CHILD_REQUEST`
+approval, which previously had no ancestry guard of its own for exactly that
+reason. An **inactive** target is deliberately still linkable — only the parent
+side requires `active` — and the dialog badges such a candidate "Inactive"
+rather than hiding them.
+
+The admin candidate SEARCH
 (`GET /api/admin/members?dependentLinkEligibleFor=…`) and those write-time
 guards are one predicate, `src/lib/dependent-link-eligibility.ts`, so a
 candidate the search offers is a candidate the write route accepts **on
 identity grounds** — subject to the request's own options, which the route
 still validates separately (family groups the parent does not belong to, an
 invalid inherit-email source, and the privileged-target and last-full-admin
-guards when "disable login" is ticked). Two rules about that file are
-load-bearing. First, the parent columns are **nullable**, so
-every "not this parent" clause must be written as
+guards when "disable login" is ticked). The mirror-image "Add Parent" search
+(`parentLinkEligibleFor`) applies the cap the other way round: the member's own
+dependants eat into the budget, the candidate parent's ancestors must fit in
+what is left, and the member's descendants are excluded outright so the dialog
+cannot offer a cycle.
+
+Three rules about that predicate are load-bearing. First, the parent columns are
+**nullable**, so every "not this parent" clause must be written as
 `{ OR: [{ col: null }, { col: { not: id } }] }` — Prisma compiles a bare
 `{ not: id }` to `"col" <> $1`, and SQL's `NULL <> 'x'` is UNKNOWN, which
-silently hid every parentless member from the search (#2254). Second, the only
-guard that stays outside the shared predicate is the recursive ancestor walk,
-which needs a query per generation; it is unreachable from the search anyway,
-because every ancestor of the parent necessarily has a dependant and is already
-excluded by the two-generation clause. Relaxing the two-generation rule is an
-owner decision, tracked separately (#2255).
+silently hid every parentless member from the search (#2254). Second, the two
+graph-shaped facts (is the candidate an ancestor of the parent, and how deep is
+the candidate's own chain) cannot be read off a single row and are therefore a
+**required argument** to `dependentLinkBlockers`, so a caller that forgets them
+fails to compile — the same protection the old required relation probes gave,
+which had to go because `take: 1` returns an arbitrary child and depth needs the
+deepest. Third, an unsatisfiable depth budget must be expressed as a clause no
+row can match, never as an omitted filter: `{ NOT: {} }` is a no-op in Prisma
+and would fail open.
+
+Two decisions here were taken by the delivering agent under D9's remit rather
+than by the owner, and are **flagged for owner confirmation** (2026-07-27,
+#2255): the depth number itself (four generations) and transitive email
+inheritance as described below.
+
+Delete eligibility counts **direct** dependants only, and that stays correct at
+four generations. A middle generation holding dependants is still blocked, so a
+delete can never strand a member whose only recorded parent it was; a
+grandparent is blocked while their child is still linked to them, and becomes
+deletable once that one link is cleared, at which point the grandchildren are
+untouched because they were never linked to the grandparent. Counting
+descendants transitively would instead block deleting a great-grandparent who
+has no remaining link to anyone.
+
+Family links grant **no billing or fee coverage**. Money-side coverage derives
+from `FamilyGroup`/`FamilyGroupMember`, `Member.familyGroupId`,
+`Member.billingFamilyGroupId`, `SeasonalMembershipAssignment` and the fee
+schedules — never from the parent columns — so a three- or four-generation chain
+bills exactly as the same members with no links at all. That isolation is
+enforced by a source contract,
+`src/lib/__tests__/family-link-billing-isolation.test.ts`, because it is one
+`include: { dependents: … }` away from quietly ceasing to hold and the symptom
+would be a mis-invoiced family.
+
+**Email inheritance is resolved transitively but STORED FLAT** (#2255, D9 —
+flagged for owner confirmation alongside the depth number). When a dependant is
+set to inherit a parent's email, resolution walks UP from the chosen parent to
+the nearest ancestor who can actually receive mail: an **adult**, not archived,
+whose address is not a walk-in placeholder (`@no-email.invalid`, #1935 — those
+are silently dropped by `sendEmail`). One hop is no longer enough, because with
+four generations the direct parent is routinely a middle generation with no
+address of their own, and resolving only one hop would leave that generation's
+children with no reachable contact at all.
+
+The walk is **nearest-first**: a closer ancestor always beats a further one, and
+where two are equally near, the one reached through **primary**-parent edges
+wins. Every member is visited at most once, so it is cycle-safe, and it is
+bounded by the same depth cap as the links. The adult gate survives #2282
+("parentage may be recorded at any age"): recording that a 16-year-old is a
+parent is a fact about the family, whereas being the club's contact of record
+for someone else is a responsibility function, and those stay adult-gated — so a
+non-adult ancestor is walked past rather than used.
+
+What it stores is the **terminal** source: `Member.inheritEmailFromId` always
+points straight at the mailbox, never at a middleman. That is what lets every
+reader (`getMemberEmail`, `member-email.ts`, the roster, the age-up cron, Xero
+contact sync, the preference resolver in `email/core.ts`) keep its single
+`inheritEmailFrom` join and stay correct at any depth. Do not "simplify" this by
+storing a pointer at the direct parent. `validateInheritEmailSource` enforces
+the two guarantees that follow: the source is an adult with a real address, and
+the source does not itself inherit. Its former "must point to a **primary**
+adult member" rule (the source must have no parents) is retired — it barred
+exactly the middle-generation source the four-generation model needs — and the
+"inherit email from" candidate search was relaxed to match, so the picker cannot
+hide a source the write route accepts. If the walk finds nobody, the link is
+**refused** rather than quietly stored as "no inheritance": the admin asked for
+the dependant's mail to reach a parent, and silently leaving it on the
+dependant's own address is how a family stops hearing from the club without
+anyone noticing.
+
+**Approving a membership cancellation detaches, and declares.** The approval
+clears one level of links — the cancelled member's own parent links, and every
+link pointing at them. With four generations the cancelled member is often a
+middle generation, so that sweep leaves their dependants without a parent link
+and anyone inheriting their address without a mailbox. Those dependants are
+deliberately **not** re-parented onto the grandparent: who is responsible for a
+member is a real-world fact, and promoting it as a side effect of someone else
+leaving the club would record a relationship nobody asserted. Instead the
+approval returns `orphanedLinks` (always present, empty arrays when nothing was
+linked), names the same members in the audit metadata, and the admin
+cancellations page states who was detached and what to check.
 
 Pending nomination states must have an expiry, reminder, admin refresh,
 replacement, rejection, or other documented recovery path so applications do

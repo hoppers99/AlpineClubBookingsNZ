@@ -1198,15 +1198,26 @@ member creates group -> memberless FamilyGroup + PENDING GROUP_CREATE (+ bundled
 create-group names an unregistered partner email -> single-use PartnerInviteToken minted + emailed (see Partner Invite Token Lifecycle) instead of an invitedMemberId
 create-group marks the named partner as a declared partner (#1742) -> registered partner gets a PENDING MemberPartnerLink request; unregistered partner's token carries createPartnerLink (see Partner Link Lifecycle)
 dependent inherits email or has explicit email inheritance source
+parent link requested -> ancestors(parent) + 1 + descendants(child) <= 3 links -> linked | 422 (four-generation cap) | 422 (would close a family loop)
+dependent inherits email -> walk up from the chosen parent to the nearest adult, non-archived, real-address ancestor -> store that terminal source | 422 (nobody reachable)
 family removal/cancellation/delete -> relationship cleanup while preserving history
+cancellation approved for a middle generation -> its dependants' links cleared, NOT re-parented -> detached members named in the response and the audit log
 ```
 
 A `CHILD_REQUEST` whose family group still has zero memberships (a bundled
 group-creation child) cannot be approved until the `GROUP_CREATE` request for
 that group is approved first (422 guard).
 
+Family links run to at most **four generations** (great-grandparent →
+grandparent → parent → child) and two parents per member, checked symmetrically
+at link time so the verdict does not depend on the order links were created in.
+See `docs/DOMAIN_INVARIANTS.md` → parent/dependant links for the rule, the
+writers that enforce it, and the transitive-but-flat email inheritance that goes
+with it.
+
 To verify: non-login adult confirmation, dependent age-up behavior, inherited
-email changes, and Xero contact synchronization.
+email changes, the four-generation cap and its cycle guard at depth, and Xero
+contact synchronization.
 
 ## Email Retry Lifecycle
 

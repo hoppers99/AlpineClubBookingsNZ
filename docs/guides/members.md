@@ -110,7 +110,14 @@ prose here rather than with a screenshot:
 - **Account & Access** — user type, login, access roles, status, induction, and
   lodge access.
 - **Family** — family groups, the billing family selector (finance edit), parent
-  links, partner, and dependents.
+  links, partner, and dependents. Parent links can run up to **four
+  generations** — great-grandparent, grandparent, parent, child — with at most
+  two parents recorded per member. A member who has dependants of their own can
+  still be linked under a parent, as long as the whole chain stays within four
+  generations; a link that would make it longer, or that would loop a family
+  back on itself, is refused with an explanation. Parent links record who is
+  responsible for a member. They do **not** decide who is billed or who a family
+  fee covers — that comes from family groups and membership types.
 - **Membership** — life-member status, the seasonal membership-type change
   (preview + admin reason required before saving), and subscription history.
 - **Finance** — account credit (request an adjustment for a second admin to
