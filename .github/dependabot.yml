@@ -14,6 +14,11 @@ updates:
       # Remove this when the app runtime moves beyond Node 24.
       - dependency-name: "@types/node"
         versions: [">=25"]
+      # colorjs.io 0.6+ types colour coords as (number | null), which breaks
+      # scripts/theme/vendor/generate-radix-colors.tsx and src/lib/theme.
+      # Remove once the migration in issue #2303 lands.
+      - dependency-name: colorjs.io
+        versions: [">=0.6.0"]
     groups:
       npm-minor-and-patch:
         update-types:
