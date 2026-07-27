@@ -21,6 +21,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
@@ -109,6 +110,8 @@ export default function AdminWorkPartiesPage() {
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<EventFormState>(emptyForm);
+  // #2257 — the example lives UNDER the field, not inside it as grey pseudo-content.
+  const nameHint = useFieldHint();
   const [saving, setSaving] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [details, setDetails] = useState<Record<string, EventDetail>>({});
@@ -332,8 +335,11 @@ export default function AdminWorkPartiesPage() {
                   id="wp-name"
                   value={form.name}
                   onChange={(e) => setForm({ ...form, name: e.target.value })}
-                  placeholder="e.g. Spring working bee"
+                  {...nameHint.fieldProps}
                 />
+                <FieldHint {...nameHint.hintProps}>
+                  Example: Spring working bee
+                </FieldHint>
               </div>
               <div className="space-y-2">
                 <Label htmlFor="wp-discount">Discount %</Label>

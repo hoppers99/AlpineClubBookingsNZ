@@ -567,6 +567,68 @@ already paints via its own `--display-*` CSS custom properties in
 `src/app/display/display.css` (a non-Tailwind, already-principled CSS-var surface)
 and carries **zero** raw colour utilities, so P3 left it untouched.
 
+### Form field hints and placeholder ink (#2257)
+
+**An example value belongs UNDER a field, not inside it.** Grey example text in
+a control reads as a value the form already holds, and it disappears the moment
+the operator starts typing — exactly when the example is still wanted. Every
+`placeholder` that carried an example of a name or value the operator invents
+was moved to helper text rendered by
+`FieldHint` (`src/components/ui/field-hint.tsx`), with one consistent phrasing:
+`Example: <value>` (prefixed with the field name — `Version example: 2026.1` —
+in the one place where the layout forces the hint away from its field). What
+remains in a `placeholder` is everything else: instructions ("First name",
+"Search name or email", "Optional — defaults to the club name") and format
+samples ("member@example.com", "0.00"). Two example-bearing placeholders
+survive on screens excluded from this pass (the display Templates page's HTML
+sample, and the page-content panel's "Width (px, e.g. 300)") — they belong to
+the #2248 rewrite and the #2264 sweep respectively. Those are unchanged in wording here and are
+#2264's problem, which is why the italic restyle matters — it covers the ones
+this issue does not move.
+
+`FieldHint` exists because the visually-obvious half of that move is the easy
+half. A `<p>` sitting below an input is invisible to a screen reader focused on
+that input, so the primitive owns the association: `useFieldHint()` returns
+`hintProps` (the generated id) and `fieldProps` (the matching
+`aria-describedby`), which can only be spread as a pair. `aria-describedby` is a
+LIST — a validation error, a view-only reason (#2160) and a hint can all describe
+one field — so ids passed to `useFieldHint(...)` are announced BEFORE the hint;
+"this is wrong" must be heard ahead of "here is an example". Rows rendered inside
+a `.map()` cannot call a hook per row and pass a deterministic id to
+`describedByFieldHint()` instead. `id` is required on `FieldHint`, which removes
+the "hint with no id to point at" state — it cannot prove association, because
+the type system cannot see across from the hint to the input. The one remaining
+failure mode, a caller that spreads `hintProps` and forgets `fieldProps`, is
+caught by a count contract in `field-hint.test.tsx`: `useFieldHint(`,
+`.fieldProps` and `.hintProps` must occur the same number of times across
+`src/`.
+
+**Placeholder ink is its own token.** `--placeholder-foreground` is declared in
+every scope that restates `--muted-foreground` — a `var()`-bearing custom
+property is substituted on the element that DECLARES it and then inherits as
+that fixed value, so a single `:root` entry would freeze the base palette inside
+`.app-theme-scope` / `.website-theme` / `.dark`. Its value deliberately TRACKS
+`--muted-foreground` rather than going lighter: placeholder text is text, WCAG
+1.4.3 applies to it, and every `--muted-foreground` here already sits on the
+4.5:1 floor (`deriveAppMutedForeground` steps back until it just clears). The
+"not content" signal is carried by **italics** instead, which costs no contrast
+and survives colour-blindness and forced-colours modes. The token remains the
+seam a fork retunes without touching the muted labels and captions
+`--muted-foreground` also paints.
+
+Placeholder styling is hand-copied across five files, so
+`src/components/ui/__tests__/placeholder-styling-contract.test.ts` pins them.
+Note the `SelectTrigger` case: it is a Radix `<button>`, `::placeholder` exists
+only on `<input>`/`<textarea>`, and the `placeholder:` utility copied there was
+therefore **inert** — `<SelectValue placeholder="…" />` rendered in full
+foreground ink, indistinguishable from a chosen value. It now styles through
+`data-[placeholder]:`, which is the attribute Radix actually stamps.
+
+The repo-wide sweep of the remaining placeholders (including the raw
+`<input>`/`<textarea>` elements that bypass the styled primitives) is
+**#2264**; the display screens are rewritten by **#2248** and adopt
+`FieldHint` there.
+
 ## Module Boundaries
 
 This application is intentionally still a single Next.js monolith. The

@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
@@ -134,6 +135,9 @@ export function FamilyGroupSection({ familyGroups, canManage = false }: FamilyGr
   const [showJoinForm, setShowJoinForm] = useState(false);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [createGroupName, setCreateGroupName] = useState("");
+  // #2257 — the suggested group name lives UNDER the field, not inside it: a
+  // grey "Smith Family" in the box reads as a name the form has already taken.
+  const createGroupNameHint = useFieldHint();
   const [createPartnerEmail, setCreatePartnerEmail] = useState("");
   const [createDeclarePartner, setCreateDeclarePartner] = useState(false);
   const [createChildren, setCreateChildren] = useState<CreateChildRow[]>([]);
@@ -968,12 +972,14 @@ export function FamilyGroupSection({ familyGroups, canManage = false }: FamilyGr
                   value={createGroupName}
                   onChange={(e) => setCreateGroupName(e.target.value)}
                   maxLength={100}
-                  placeholder={
-                    familyStatuses[0]?.lastName
-                      ? `${familyStatuses[0].lastName} Family`
-                      : "e.g. Smith Family"
-                  }
+                  {...createGroupNameHint.fieldProps}
                 />
+                <FieldHint {...createGroupNameHint.hintProps}>
+                  Example:{" "}
+                  {familyStatuses[0]?.lastName
+                    ? `${familyStatuses[0].lastName} Family`
+                    : "Smith Family"}
+                </FieldHint>
               </div>
               <div>
                 <Label htmlFor="create-partner-email">Partner&apos;s email address (optional)</Label>

@@ -5,6 +5,7 @@ import { ViewOnlyActionButton } from "@/components/admin/view-only-action"
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -57,6 +58,10 @@ export function MemberCreditCard({
   className,
 }: MemberCreditCardProps) {
   const { data: session } = useSession()
+  // #2257 — the example moved out of the placeholder and folded into the
+  // sign-convention note that was already here, so ONE properly associated hint
+  // describes the field instead of a grey pseudo-value plus an orphan <p>.
+  const adjustmentAmountHint = useFieldHint()
   const currentAdminId = session?.user?.id
   // Credit adjustments write the finance-remapped members/[id]/credits route; a
   // view-only finance admin sees the balance but cannot request/approve (#1997).
@@ -90,11 +95,13 @@ export function MemberCreditCard({
                   id="adj-amount"
                   type="number"
                   step="0.01"
-                  placeholder="e.g. 25.00 or -10.00"
                   value={adjustmentAmount}
                   onChange={(e) => onChangeAdjustmentAmount(e.target.value)}
+                  {...adjustmentAmountHint.fieldProps}
                 />
-                <p className="text-xs text-muted-foreground">Positive = add credit, negative = deduct</p>
+                <FieldHint {...adjustmentAmountHint.hintProps}>
+                  Positive = add credit, negative = deduct. Example: 25.00 or -10.00
+                </FieldHint>
               </div>
               <div className="space-y-1">
                 <Label htmlFor="adj-desc">Description *</Label>
