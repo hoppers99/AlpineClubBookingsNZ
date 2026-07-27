@@ -409,6 +409,10 @@ export const EMAIL_AUDIT_DEFAULTS = {
   "group-join-cancelled": {
     "defaultSubject": "Your group booking has been cancelled — {{CLUB_NAME}}",
     "defaultBody": "Your Group Booking Has Been Cancelled\n\nHi {{firstName}}, the combined group payment {{organiserName}} started for your stay at {{CLUB_NAME}}'s lodge was never completed, so your pending booking has now been cancelled. Nothing has been charged to you.\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\n\nIf you still want to come, you can make your own booking for these dates — or talk to the organiser about starting a fresh group trip.\n\nIf you have any questions, contact the club at {{SUPPORT_EMAIL}}."
+  },
+  "membership-payment-recorded": {
+    "defaultSubject": "Your {{seasonYear}} membership payment has been recorded — {{CLUB_NAME}}",
+    "defaultBody": "Membership Payment Recorded\n\nHi {{firstName}}, thank you — {{CLUB_NAME}} has recorded your membership subscription payment for the {{seasonYear}} season.\n\nSeason: {{seasonYear}}\nAmount recorded: {{amount}}   [only when the club has a recorded fee amount for this season]\nDate recorded: {{date}}\n\nYour membership is now marked paid for the season, so there is nothing further for you to pay.\n\nIf anything looks wrong, contact the club at {{SUPPORT_EMAIL}}."
   }
 } as const;
 

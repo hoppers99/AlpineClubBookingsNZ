@@ -4,6 +4,35 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Recording a membership payment by hand now asks whether to tell the member
+  — and can actually tell them (#2260).** When a treasurer marks a member's
+  subscription paid for a cash, cheque or internet-banking payment, the club
+  had no way to send that member any acknowledgement: the action wrote the
+  status and emailed nobody, ever. It now offers the club's usual choice.
+  "Mark paid and email member" sends a short receipt — the season, the amount
+  (only where the club has a recorded fee amount for that season), and the date
+  it was recorded. "Mark paid without emailing" records the identical payment
+  and tells nobody. The subscription is marked paid either way, and which way
+  the treasurer chose is written to the audit log, so a later "did we tell
+  them?" has an answer. Because a manual payment is cash the system never saw,
+  the receipt never invents a figure: it shows an amount only where the club has
+  one recorded for that member alone, and leaves it out otherwise. A family
+  membership fee is deliberately left out — that figure is the whole family's
+  bill, and telling one member it was recorded against them (with "nothing
+  further to pay") while their relatives still owe theirs would be worse than
+  saying nothing. It mentions no invoice, no payment link and no Xero
+  reference, because manual mark-paid only exists where there is no invoice.
+  The message the treasurer gets back says what actually happened rather than
+  what was asked for: a receipt "is being emailed" only if it really was handed
+  over for sending, and there is a plain "the receipt could not be sent" when
+  the member's address cannot receive it. The payment stays recorded either
+  way — a failed email never quietly undoes it.
+  Reversing a manual payment never emails the member — there is no
+  "your payment was un-recorded" notice worth sending.
+  The confirmation itself is now a proper dialog with a note box, replacing the
+  three bare browser pop-ups this action used to rely on (including the one
+  where cancelling the note prompt silently abandoned the whole action).
+
 - **"No emails" is now something an officer can actually switch on, and the
   booking says what it cost (#2259).** The mechanism landed in #2258; this is
   the part an officer touches. The switch sits in the **Admin tools** card on a

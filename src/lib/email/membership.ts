@@ -1,4 +1,5 @@
 import {
+  membershipPaymentRecordedTemplate,
   inductionSignOffRequestTemplate,
   nominationRequestTemplate,
   membershipApplicationApprovedTemplate,
@@ -16,8 +17,9 @@ import {
   CLUB_BOOKINGS_NAME,
   CLUB_NAME,
 } from "@/config/club-identity";
-import { formatNZDateTime } from "../nzst-date";
-import { sendEmail } from "./core";
+import { formatNZDate, formatNZDateTime } from "../nzst-date";
+import { formatCents } from "@/lib/utils";
+import { sendEmail, type EmailSendOutcome } from "./core";
 
 export async function sendNominationRequestEmail(params: {
   email: string;
@@ -50,6 +52,53 @@ export async function sendNominationRequestEmail(params: {
       reviewUrl,
       familyMemberCount: params.familyMemberCount,
       expiresAt: formatNZDateTime(params.expiresAt),
+    },
+  });
+}
+
+/**
+ * #2260 — receipt for a membership subscription payment an admin recorded by
+ * hand. Sent only when the admin picks "Mark paid and email member" on the
+ * manual mark-paid dialog; never on the reversal to unpaid.
+ *
+ * `amountCents` is null whenever the caller cannot attribute an amount to this
+ * one member's subscription (no active charge coverage, a no-invoice fee, or a
+ * charge that covers a whole family), and the amount line is then omitted
+ * rather than guessed.
+ */
+export async function sendMembershipPaymentRecordedEmail(params: {
+  email: string;
+  firstName: string;
+  seasonYear: number;
+  amountCents: number | null;
+  recordedAt: Date;
+}): Promise<EmailSendOutcome> {
+  // The outcome is returned, not swallowed: the admin who chose "email member"
+  // is told what actually happened, and a suppressed or placeholder recipient
+  // never reads back as "the member has been emailed".
+  return sendEmail({
+    to: params.email,
+    subject: `Your ${params.seasonYear} membership payment has been recorded — ${CLUB_NAME}`,
+    html: membershipPaymentRecordedTemplate({
+      firstName: params.firstName,
+      seasonYear: params.seasonYear,
+      amountCents: params.amountCents,
+      recordedAt: params.recordedAt,
+    }),
+    // A membership subscription is not a booking, so there is no booking whose
+    // "No emails" switch could apply here (#2258): bookingContext is "none" and
+    // the per-booking gate short-circuits. The admin's own per-send choice on
+    // the mark-paid dialog is what decides whether this sender is called at all.
+    bookingContext: "none",
+    templateName: "membership-payment-recorded",
+    templateData: {
+      firstName: params.firstName,
+      seasonYear: String(params.seasonYear),
+      // Integer cents rendered through the repo's one money formatter; empty
+      // when no fee amount is recorded, so an override's {{amount}} renders to
+      // nothing instead of a made-up figure.
+      amount: params.amountCents !== null ? formatCents(params.amountCents) : "",
+      date: formatNZDate(params.recordedAt),
     },
   });
 }

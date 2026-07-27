@@ -3184,3 +3184,39 @@ export function schoolAttendeeConfirmationTemplate(data: {
     ${supportContactSentence("If you have any questions, contact the club at ")}
   `);
 }
+
+/**
+ * #2260 — member-facing receipt for a membership subscription payment an admin
+ * recorded by hand (cash, cheque, internet banking), sent only when the admin
+ * chooses to email on mark-paid. Manual mark-paid only exists for subscriptions
+ * with NO Xero invoice, so this deliberately mentions no invoice, no payment
+ * link and no Xero reference — there is nothing left for the member to do.
+ *
+ * `amountCents` is null whenever no amount can be attributed to this one
+ * member's subscription — no active charge coverage, a no-invoice fee, or a
+ * charge that covers a whole family — in which case the amount line is omitted
+ * rather than guessed: a manual payment is cash the app never saw, and a
+ * family total printed as one member's receipt would be a false one.
+ */
+export function membershipPaymentRecordedTemplate(data: {
+  firstName: string;
+  seasonYear: number;
+  amountCents: number | null;
+  recordedAt: Date;
+}): string {
+  return layout(`
+    ${heading("Membership Payment Recorded")}
+    ${paragraph(
+      `Hi ${escapeHtml(data.firstName)}, thank you — ${escapeHtml(CLUB_NAME)} has recorded your membership subscription payment for the ${escapeHtml(String(data.seasonYear))} season.`,
+    )}
+    ${infoTable([
+      { label: "Season", value: escapeHtml(String(data.seasonYear)) },
+      ...(data.amountCents !== null
+        ? [{ label: "Amount recorded", value: formatCents(data.amountCents) }]
+        : []),
+      { label: "Date recorded", value: formatNZDate(data.recordedAt) },
+    ])}
+    ${paragraph("Your membership is now marked paid for the season, so there is nothing further for you to pay.")}
+    ${supportContactSentence("If anything looks wrong, contact the club at ")}
+  `);
+}
