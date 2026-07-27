@@ -47,6 +47,19 @@ type RequestFilter =
   | "COMPLETED"
   | "ALL";
 
+/**
+ * Family links the approval detached (#2255). Approving a cancellation clears
+ * one level of parent links, so cancelling a MIDDLE generation of a
+ * three- or four-generation family leaves that member's own dependants without
+ * a parent link — and anyone inheriting their email without a mailbox. Neither
+ * is re-parented automatically, so the admin is told who to look at.
+ */
+type OrphanedLinkMember = { id: string; name: string; email: string };
+type OrphanedLinks = {
+  dependants: OrphanedLinkMember[];
+  emailInheritors: OrphanedLinkMember[];
+};
+
 type Blocker = {
   type: "owned_booking" | "guest_appearance";
   bookingId: string;
@@ -248,6 +261,9 @@ export default function MembershipCancellationsPage() {
   );
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  // #2255: survives the reload that follows an approval, and is cleared at the
+  // start of the next review, so it always describes the most recent action.
+  const [orphanedLinks, setOrphanedLinks] = useState<OrphanedLinks | null>(null);
   // #1787: which cancellation-review action is waiting on the admin's
   // notify-or-not choice, and whether that dialog is open. Every approve and
   // reject fires a member outcome email, so both route through this dialog. The
@@ -377,6 +393,7 @@ export default function MembershipCancellationsPage() {
     setSubmittingId(`${participantId}:${action}`);
     setError("");
     setMessage("");
+    setOrphanedLinks(null);
 
     try {
       const response = await fetch(
@@ -410,6 +427,14 @@ export default function MembershipCancellationsPage() {
         emailSuppressed
           ? `${base} The member was not emailed — your choice is recorded in the audit log.`
           : base,
+      );
+      // #2255: only shown when something was actually detached.
+      const detached: OrphanedLinks | undefined = body.orphanedLinks;
+      setOrphanedLinks(
+        detached &&
+          (detached.dependants.length > 0 || detached.emailInheritors.length > 0)
+          ? detached
+          : null,
       );
       await loadRequests();
     } catch (err) {
@@ -534,6 +559,40 @@ export default function MembershipCancellationsPage() {
           {message}
         </div>
       )}
+      {/* The live region is mounted permanently and only its CONTENT is gated:
+          a polite region injected already-populated is dropped outright by some
+          screen-reader/browser pairings, and this text is the only notice an
+          admin gets that a family was detached. */}
+      <div role="status">
+        {orphanedLinks && (
+        <div className="space-y-2 rounded-md border border-warning-6 bg-warning-3 px-4 py-3 text-sm text-warning-11">
+          <p className="font-medium">
+            Family links were cleared by this cancellation.
+          </p>
+          {orphanedLinks.dependants.length > 0 && (
+            <p>
+              No longer linked to a parent member:{" "}
+              {orphanedLinks.dependants
+                .map((member) => `${member.name} (${member.email})`)
+                .join(", ")}
+              . They were not re-linked to a grandparent — who is responsible
+              for a member is not changed automatically. Link them under another
+              parent if that is right for this family.
+            </p>
+          )}
+          {orphanedLinks.emailInheritors.length > 0 && (
+            <p>
+              No longer inheriting a notification email address:{" "}
+              {orphanedLinks.emailInheritors
+                .map((member) => `${member.name} (${member.email})`)
+                .join(", ")}
+              . Club email now goes to each member&apos;s own address, so check
+              those addresses are real.
+            </p>
+          )}
+        </div>
+        )}
+      </div>
 
       <Card>
         <CardHeader>
