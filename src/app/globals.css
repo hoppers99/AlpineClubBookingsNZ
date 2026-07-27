@@ -15,6 +15,14 @@
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
+  /* #2257 — a DEDICATED placeholder ink, so placeholder text can be retuned
+     without dragging every muted label, caption and helper line with it. It is
+     `inline`, like every entry in this block, so `placeholder:text-placeholder-
+     foreground` compiles to `var(--placeholder-foreground)` and re-resolves
+     inside `.app-theme-scope` / `.website-theme` / `.dark` instead of freezing
+     `:root`'s value. See the token blocks below for why the VALUE matches
+     `--muted-foreground` and the distinction is carried by italics. */
+  --color-placeholder-foreground: var(--placeholder-foreground);
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
@@ -269,6 +277,31 @@
   --secondary-foreground: oklch(0.205 0 0);
   --muted: oklch(0.97 0 0);
   --muted-foreground: oklch(0.556 0 0);
+  /* #2257 (D7/D12) — placeholder ink. Andy reported that grey example text
+     inside a field "looks like a field is already filled in", so a placeholder
+     must be visibly NOT-CONTENT.
+
+     The obvious move — make it lighter than `--muted-foreground` — is NOT
+     available, and that is a deliberate finding rather than an oversight.
+     Placeholder text is text, so WCAG 1.4.3 applies to it, and every
+     `--muted-foreground` in this stylesheet already sits ON the 4.5:1 floor:
+     `:root`'s oklch(0.556) is ~4.5:1 on white, and the app scope's value is
+     produced by `deriveAppMutedForeground`, which steps BACK toward the
+     foreground until it just clears 4.5:1. There is no headroom to spend.
+
+     So the value tracks `--muted-foreground` and the "not content" signal is
+     carried by ITALICS instead (`placeholder:italic` on the primitives), which
+     costs no contrast and works for the colour-blind and in high-contrast
+     modes. The token still exists as a real seam: a fork that wants a different
+     placeholder ink retunes this one line per scope, with no effect on the muted
+     labels/captions that `--muted-foreground` also paints.
+
+     It must be RESTATED in every scope that restates `--muted-foreground`
+     (`.dark`, `.website-theme`, `.app-theme-scope`, `.dark .app-theme-scope`):
+     a custom property containing `var()` is substituted on the element that
+     DECLARES it and then inherits as that fixed value, so a single `:root`
+     declaration would freeze the base palette everywhere. */
+  --placeholder-foreground: var(--muted-foreground);
   --accent: oklch(0.97 0 0);
   --accent-foreground: oklch(0.205 0 0);
   --destructive: oklch(0.577 0.245 27.325);
@@ -352,6 +385,8 @@
     --secondary-foreground: oklch(0.985 0 0);
     --muted: oklch(0.32 0 0);
     --muted-foreground: oklch(0.708 0 0);
+    /* #2257 — restated per scope; see the `:root` note. */
+    --placeholder-foreground: var(--muted-foreground);
     --accent: oklch(0.32 0 0);
     --accent-foreground: oklch(0.985 0 0);
     --destructive: oklch(0.396 0.141 25.723);
@@ -427,6 +462,8 @@
   --secondary-foreground: #1c211d;
   --muted: #e9ebe9;
   --muted-foreground: #595e5a;
+  /* #2257 — restated per scope; see the `:root` note. */
+  --placeholder-foreground: var(--muted-foreground);
   --accent: #e0e3e1;
   --accent-foreground: #1c211d;
   --destructive: oklch(0.577 0.245 27.325);
@@ -685,6 +722,10 @@
      stylesheet is injected; it is pinned in app-theme-layout-contract.test.ts
      so the two cannot drift. */
   --muted-foreground: var(--app-muted-foreground, #5a635e);
+  /* #2257 — restated per scope; see the `:root` note. Tracking the DERIVED
+     muted tone (rather than a literal) keeps the placeholder ink on the same
+     measured-AA value the contrast gate already checks for this scope. */
+  --placeholder-foreground: var(--muted-foreground);
   --accent: var(--gen-accent, #e0e3e1);
   --accent-foreground: var(--gen-accent-foreground, #1c211d);
   --app-accent-text: var(--gen-app-accent-text, #1c211d);
@@ -869,6 +910,8 @@
        excluding this block from print leaves the LIGHT derived tone standing on
        paper — the #2146 pairing invariant is preserved. */
     --muted-foreground: var(--app-muted-foreground-dark, #b3b8b5);
+    /* #2257 — restated per scope; see the `:root` note. */
+    --placeholder-foreground: var(--muted-foreground);
     --accent: var(--gen-accent-dark, #292c2a);
     --accent-foreground: var(--gen-accent-foreground-dark, #eceeed);
     --app-accent-text: var(--gen-app-accent-text-dark, #eceeed);

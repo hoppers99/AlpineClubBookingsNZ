@@ -1,5 +1,6 @@
 import {
   choreRosterTemplate,
+  formatChoreRosterDate,
   hutLeaderAssignmentTemplate,
 } from "../email-templates";
 import {
@@ -28,15 +29,9 @@ export async function sendChoreRosterEmail(
   // Booking's lodge (multi-lodge phase 8): see sendBookingConfirmedEmail.
   lodgeId?: string | null,
 ) {
-  const formattedDate = new Date(date + "T00:00:00").toLocaleDateString(
-    "en-NZ",
-    {
-      weekday: "long",
-      year: "numeric",
-      month: "long",
-      day: "numeric",
-    },
-  );
+  // #2256: was a byte-identical copy of the template's own formatter; both now
+  // call the one exported helper so the subject and the body can never drift.
+  const formattedDate = formatChoreRosterDate(date);
 
   await sendEmail({
     to: email,

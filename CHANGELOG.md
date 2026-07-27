@@ -77,7 +77,55 @@ All notable public reference-release changes should be recorded here.
   waitlist board flags that booking for attention until someone sorts it out.
   Turning the switch back off restores normal mail from that point on; it does
   not re-send anything that was withheld.
+- **Example text in admin forms no longer looks like an answer somebody already
+  typed (#2257).** Fields such as Season Name, Promo Code, Chore Name, Group
+  Name and Banner Message used to show their example inside the box in grey —
+  "e.g. Winter 2026" — which reads as a value the form has already accepted.
+  Those examples now sit as a short line of helper text UNDER the field
+  ("Example: Winter 2026"). That means the example stays visible while you type
+  and after the field is filled in, instead of disappearing at the first
+  keystroke, and it can now sit alongside a validation error or a "you can view
+  this but not change it" note rather than competing with them — where a field
+  has more than one of those, the error or the view-only note is announced
+  first. Placeholders still shown in fields built on the shared input, textarea,
+  search and drop-down components — instructions like "First name", format
+  samples such as "member@example.com" or "0.00" — are now drawn in italics so
+  they read as prompts rather than as content. A handful of admin fields use
+  raw browser inputs and keep the browser's default placeholder look for now;
+  they are part of the #2264 sweep. Drop-down buttons that said "Select item…" were the worst offender:
+  they were drawn in ordinary text colour, identical to a real selection, and
+  are now styled as placeholders too. Reviewing the remaining placeholders
+  across the rest of the app is tracked separately (#2264).
 
+- **Dates no longer change shape (or day) depending on whose computer is
+  looking at them, and the family-group "Edit" button visibly does something
+  (#2256).** A handful of screens printed dates using whatever the *viewer's*
+  own computer was set to instead of the club's settings. On a machine set to
+  United States English, "16 Apr 2026" came out as "4/16/2026"; on a machine in
+  a time zone behind New Zealand it could come out as the day *before* the real
+  one. The affected places were the family-group request queue (the "Requested"
+  stamps and every date of birth on a review card), the family-groups list
+  (partner-invite expiry dates and the "Created" column), the induction records
+  (sign-off and completion dates, on screen and on the printed sheet), and the
+  Xero settings page's "cache last refreshed / expires" line. The
+  card-setup-failed email had the same problem in a quieter form — it named the
+  right country but not the right time zone, so the stay dates it quoted
+  depended on where the sending server happened to be. All of these now use the
+  club's own date settings, so everyone sees the same date, written the same
+  way, wherever they are. Chore-roster emails are deliberately unchanged: they
+  keep their long "Wednesday, 15 July 2026" wording.
+- **Family groups: pressing the edit (pencil) icon on a group — or New
+  Group — used to look like it had done nothing (#2256).** Both forms open in
+  the same place: below the search bar and the two queue cards, and *above* the
+  list of groups. So if you scrolled down to a group and clicked edit, the
+  editor opened off the top of the screen; and with a busy queue, New Group
+  opened the form well below the button you had just pressed. Either way
+  nothing you could see changed. The page now scrolls to the form and puts the
+  keyboard cursor in it every time it is opened — including when you re-open
+  the same group you were just editing, which previously did nothing at all.
+  The group you are editing is highlighted in the list and badged "Editing"
+  until you save or close, and closing puts the keyboard cursor back on the
+  button you started from. Nothing about who may edit a group has changed.
 - **"Add Dependant → Link Existing" now finds the members it was hiding, and
   says why when it still finds nobody (#2254).** Searching for an existing
   member to link as a dependant reported "No eligible members found" for almost
