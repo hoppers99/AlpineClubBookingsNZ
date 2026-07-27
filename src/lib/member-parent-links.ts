@@ -39,8 +39,10 @@ export function getParentEmailSourceId(
 
 /**
  * A member who can actually receive a dependant's notifications: an adult, not
- * archived, with a real address rather than a walk-in placeholder
- * (`@no-email.invalid`, #1935 — `sendEmail` silently drops those).
+ * archived, with a real address rather than a club-internal placeholder — a
+ * walk-in contact's `@no-email.invalid` (#1935) or a deletion-anonymised
+ * `@deleted.invalid` (#2255). `sendEmail` silently drops the first and the
+ * second hard-bounces, so neither can be a family's contact of record.
  *
  * The adult gate is deliberate and survives #2282 ("parentage may be recorded
  * at any age"): recording that a 16-year-old is a parent is a fact about the
@@ -59,16 +61,19 @@ function isUsableEmailSource(member: {
   );
 }
 
+/**
+ * What every writer says when a dependant was meant to inherit a parent's email
+ * and no ancestor in reach has a real address. Refused rather than silently
+ * stored as "no inheritance": the admin asked for the mail to reach a parent,
+ * and quietly leaving it on the dependant's own (often placeholder) address is
+ * how a family stops receiving anything without anyone noticing.
+ */
+export const NO_INHERITABLE_EMAIL_SOURCE_MESSAGE =
+  "No parent or ancestor in this family has a real email address to inherit. Record an email address for the parent first, or link without inheriting.";
+
 export type InheritedEmailSourceResolution = {
   /** The member whose address the dependant should inherit; null if none. */
   sourceId: string | null;
-  /**
-   * How far above the direct parent the source sits. 0 = the parent themselves
-   * (or the parent's own already-flattened source); ≥ 1 means the notification
-   * address comes from further up the family chain, which the admin member
-   * detail page states explicitly rather than leaving to be inferred.
-   */
-  generationsAboveParent: number;
 };
 
 /**
@@ -103,7 +108,12 @@ export async function resolveInheritedEmailSourceId(
   const visited = new Set<string>([parentId]);
   let frontier: string[] = [parentId];
 
-  for (let level = 0; level <= MAX_PARENT_LINK_CHAIN_LENGTH; level += 1) {
+  // `< MAX_PARENT_LINK_CHAIN_LENGTH + 1` reads as MAX+1 LEVELS: level 0 is the
+  // parent themselves and levels 1..MAX are their ancestors, so the walk covers
+  // exactly the chain the cap permits above a parent and no further. The
+  // previous `<=` ran one level past that, reaching a fifth generation the link
+  // rules would never have allowed to exist.
+  for (let level = 0; level < MAX_PARENT_LINK_CHAIN_LENGTH + 1; level += 1) {
     if (frontier.length === 0) break;
 
     // Ordered by the queue, then re-ordered to the queue's order below: Prisma
@@ -131,11 +141,26 @@ export async function resolveInheritedEmailSourceId(
       // An already-flattened pointer is itself terminal, so it short-circuits
       // the walk: this is the hop that keeps a non-login middle generation's
       // children pointed at the same mailbox as the middle generation.
+      //
+      // TRUSTED ONLY IF STILL VALID. A stored pointer is a snapshot of a past
+      // decision, and the member it names can have been archived, aged into a
+      // placeholder address, or deleted since. Following it blindly would
+      // propagate a dead mailbox to a new dependant and call it resolved, so
+      // the target is re-read and, if it no longer qualifies, the walk carries
+      // on upward as though the pointer were absent.
       if (row.inheritEmailFromId) {
-        return { sourceId: row.inheritEmailFromId, generationsAboveParent: level };
-      }
-      if (isUsableEmailSource(row)) {
-        return { sourceId: row.id, generationsAboveParent: level };
+        const storedSource = await db.member.findUnique({
+          where: { id: row.inheritEmailFromId },
+          select: { id: true, email: true, ageTier: true, archivedAt: true },
+        });
+        if (storedSource && isUsableEmailSource(storedSource)) {
+          return { sourceId: storedSource.id };
+        }
+        // Falls through to the parents rather than to this row's own address: a
+        // member who inherits is not a source, and their `email` column is
+        // typically a stale copy of the very mailbox just rejected.
+      } else if (isUsableEmailSource(row)) {
+        return { sourceId: row.id };
       }
 
       for (const nextId of [row.parentMemberId, row.secondaryParentId]) {
@@ -148,7 +173,7 @@ export async function resolveInheritedEmailSourceId(
     frontier = nextFrontier;
   }
 
-  return { sourceId: null, generationsAboveParent: 0 };
+  return { sourceId: null };
 }
 
 export function buildParentLinks(member: {

@@ -30,6 +30,11 @@ import {
   exceedsFamilyLinkGenerationLimit,
   FAMILY_LINK_GENERATION_LIMIT_ERROR,
 } from "@/lib/member-family-link-depth";
+import { validateInheritEmailSource } from "@/lib/member-email-inheritance";
+import {
+  NO_INHERITABLE_EMAIL_SOURCE_MESSAGE,
+  resolveInheritedEmailSourceId,
+} from "@/lib/member-parent-links";
 import { checkNominatorEligibility } from "@/lib/nominator-eligibility";
 import { prisma } from "@/lib/prisma";
 import { getSeasonYear } from "@/lib/utils";
@@ -1751,6 +1756,26 @@ export async function approveMemberApplication(
         // member with no existing parent; never touch auth/email on a
         // login-capable target (hard invariant). The preview noted the skip.
         if (outcome.setParentLink) {
+          // #2255: the identity guards every other writer has, which this one
+          // lacked. The mapping predicate only checks that `parentMemberId` is
+          // null, so a target whose SECONDARY parent is already the applicant
+          // would be written into the primary slot as well — the same person in
+          // both parent columns, which reads as "two parents" everywhere else in
+          // the system and is unreachable from any other route. A target that
+          // IS the applicant is the degenerate case of the same gap.
+          if (target.id === applicantMember.id) {
+            throw new MembershipApplicationError(
+              "A member cannot be their own parent",
+              422
+            );
+          }
+          if (target.secondaryParentId === applicantMember.id) {
+            throw new MembershipApplicationError(
+              "This member is already linked to that parent",
+              422
+            );
+          }
+
           // #2255 (D9): mapping onto an EXISTING member is a parent-link write,
           // and this path never saw the old two-generation guard — the mapping
           // predicate only checks that the target has no parent, not that it has
@@ -1765,9 +1790,35 @@ export async function approveMemberApplication(
             throw new MembershipApplicationError(linkVerdict.error, 422);
           }
 
+          // #2255: `applicantMember.id` is a pointer at the DIRECT PARENT,
+          // which the flat-terminal rule forbids. On the keep-auth branch the
+          // applicant is an existing member who may themselves inherit, so the
+          // stored pointer could chain — and on the placeholder-address case it
+          // would name a mailbox that silently discards mail. Resolve it the way
+          // every other writer does, and validate the result.
+          const resolvedSourceId = (
+            await resolveInheritedEmailSourceId(tx, applicantMember.id)
+          ).sourceId;
+          if (!resolvedSourceId) {
+            throw new MembershipApplicationError(
+              NO_INHERITABLE_EMAIL_SOURCE_MESSAGE,
+              422
+            );
+          }
+          const sourceValidation = await validateInheritEmailSource(
+            { memberId: target.id, inheritEmailFromId: resolvedSourceId },
+            tx
+          );
+          if (!sourceValidation.ok) {
+            throw new MembershipApplicationError(
+              sourceValidation.error,
+              sourceValidation.status
+            );
+          }
+
           dependentUpdate.parentMemberId = applicantMember.id;
           dependentUpdate.inheritParentEmail = true;
-          dependentUpdate.inheritEmailFromId = applicantMember.id;
+          dependentUpdate.inheritEmailFromId = resolvedSourceId;
         }
         await tx.member.update({
           where: { id: target.id },
@@ -1821,6 +1872,28 @@ export async function approveMemberApplication(
         );
       }
 
+      // #2255: same flat-terminal rule as the map branch above — never store a
+      // pointer at the direct parent.
+      const createdDependentSourceId = (
+        await resolveInheritedEmailSourceId(tx, applicantMember.id)
+      ).sourceId;
+      if (!createdDependentSourceId) {
+        throw new MembershipApplicationError(
+          NO_INHERITABLE_EMAIL_SOURCE_MESSAGE,
+          422
+        );
+      }
+      const createdDependentSourceValidation = await validateInheritEmailSource(
+        { inheritEmailFromId: createdDependentSourceId },
+        tx
+      );
+      if (!createdDependentSourceValidation.ok) {
+        throw new MembershipApplicationError(
+          createdDependentSourceValidation.error,
+          createdDependentSourceValidation.status
+        );
+      }
+
       const dependent = await tx.member.create({
         data: {
           email: lockedApplication.applicantEmail,
@@ -1835,7 +1908,7 @@ export async function approveMemberApplication(
           canLogin: false,
           parentMemberId: applicantMember.id,
           inheritParentEmail: true,
-          inheritEmailFromId: applicantMember.id,
+          inheritEmailFromId: createdDependentSourceId,
           phoneCountryCode: applicantPhone.phoneCountryCode,
           phoneAreaCode: applicantPhone.phoneAreaCode,
           phoneNumber: applicantPhone.phoneNumber,

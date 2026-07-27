@@ -23,18 +23,10 @@ import {
 } from "@/lib/member-family-link-depth";
 import {
   matchParentLinkIdForNotification,
+  NO_INHERITABLE_EMAIL_SOURCE_MESSAGE,
   resolveInheritedEmailSourceId,
 } from "@/lib/member-parent-links";
 import logger from "@/lib/logger";
-
-/**
- * Refused rather than silently stored as "no inheritance": the admin asked for
- * the dependant's mail to reach a parent, and quietly leaving it on the
- * dependant's own (often placeholder) address is how a family stops receiving
- * anything without anyone noticing.
- */
-const NO_INHERITABLE_EMAIL_SOURCE_MESSAGE =
-  "No parent or ancestor in this family has a real email address to inherit. Record an email address for the parent first, or link without inheriting.";
 
 const linkDependentSchema = z.object({
   memberId: z.string().min(1, "Member is required"),

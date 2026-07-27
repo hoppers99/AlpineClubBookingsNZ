@@ -33,6 +33,7 @@ import { randomBytes } from "crypto";
 import { hash } from "bcryptjs";
 import type { AgeTier } from "@prisma/client";
 import { prisma } from "./prisma";
+import { validateInheritEmailSource } from "@/lib/member-email-inheritance";
 import logger from "@/lib/logger";
 import { sendPasswordResetEmail } from "./email";
 import { issueActionToken } from "./action-tokens";
@@ -725,7 +726,23 @@ export async function importMembersFromXeroGroups(
               active: true,
               emailVerified: true,
               canLogin: false,
-              inheritEmailFromId: existingPrimary.id,
+              // #2255: the import writes email inheritance directly, and used to
+              // do it with no validation at all. `existingPrimary` is matched on
+              // `email` + `canLogin`, which guarantees neither that they are an
+              // adult, nor that they are TERMINAL (a member who themselves
+              // inherits would make this a chained pointer, which every reader's
+              // single-hop join then resolves to the wrong mailbox), nor that
+              // their address is real. Refuse the inheritance rather than write
+              // a bad pointer — the dependant is still created and still joins
+              // the family group, it simply keeps its own address, which for an
+              // import row is the same address anyway.
+              inheritEmailFromId: (
+                await validateInheritEmailSource({
+                  inheritEmailFromId: existingPrimary.id,
+                })
+              ).ok
+                ? existingPrimary.id
+                : null,
             },
           });
 
