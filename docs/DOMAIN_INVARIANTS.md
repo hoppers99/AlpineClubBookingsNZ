@@ -1285,7 +1285,11 @@ override requires an explicit `pricingMode`:
   **approved/quote** emails (they carry the payment/quote link). On a
   booking-review **rejection** the shared cancellation email above (#1730) is
   the always-notify send, so a suppressed reject still emails the member the
-  cancellation and withholds only the review-declined explainer.
+  cancellation and withholds only the review-declined explainer (superseded for
+  the per-booking "No emails" switch — see that section below — which withholds
+  the cancellation notice too, so a reject on a silenced booking emails the
+  member nothing at all; #2259's review dialog says exactly that rather than
+  repeating the promise above).
 
 - **recalculate** — the existing full-reprice machinery with the locked-period
   clamps lifted, so locked-night pricing semantics are otherwise preserved
@@ -1417,6 +1421,36 @@ The rules are:
   **keeps warning after the switch is cleared** whenever withheld rows exist,
   because clearing re-sends nothing — a member never told about a cancellation
   is still never told.
+  Rows are **grouped per template with an exact count**, read with aggregates
+  (`getWithheldBookingEmailSummary`). That is a correctness property, not a
+  presentational one: a chore-roster send fans out to one row per guest per
+  date (~56 for a week for a party of eight), so a flat newest-first list both
+  buried the single cancellation that mattered and could hit the old
+  undisclosed `take: 100` cap. The number of DISTINCT templates is bounded by
+  the registry, so the cap is gone rather than merely disclosed.
+  Two classes are marked `nothingToForward` — `split-guest-payment-link` and
+  `chore-roster` — because their content is a freshly minted, short-lived link
+  that was never created (the split-guest link is decided BEFORE minting), so
+  there is nothing for the officer to relay and the honest instruction is to
+  clear the switch and let it regenerate. Everything else IS relayable, the
+  Xero invoice included: it still exists in Xero and can be sent by hand.
+  The banner also points at the email-failure queue, because three classes are
+  structurally absent from it: a send that failed closed on an unreadable
+  switch, a withheld send whose own `EmailLog` write failed, and rows queued
+  before the feature shipped.
+- **Two consequences are stated in the acknowledgement dialog because nothing
+  can record them.** A **live waitlist offer** can only PREDATE the switch
+  (candidacy exclusion prevents new ones), so its offer email already went out:
+  the member HAS been told and CAN still accept, and the dialog says not to
+  reassign the bed. What is lost is the expiry warning and the acceptance
+  confirmation. Saying "the member cannot accept" would be worse than silence —
+  an officer believing the bed dead might reassign it out from under a member
+  still entitled to it. A **still-WAITLISTED** booking is skipped for offers
+  ENTIRELY, so no offer is made, nothing is withheld, and no row is ever
+  written; the dialog states it before the officer commits and the banner
+  repeats it, and "waitlist offers" is deliberately absent from the banner's
+  withheld-categories sentence, which would otherwise imply an offer was made
+  and only its email held back.
 - **A member must never learn the switch exists.** The booking detail page
   serves members and admins from one file, so the control, the banner, and every
   `noEmails` value the page produces sit behind the page's admin predicate — and
@@ -1434,6 +1468,22 @@ The rules are:
   review queue, the waitlist force-confirm, and the refund-appeal review. The
   same contract test asserts the closed world — a new prompt must be classified
   booking-bound or not, with its reason, rather than silently escaping the rule.
+- **The silenced path sends NO `notifyMember` flag, never `false`.** This is a
+  correctness requirement, not a style choice, and the contract test enforces
+  it. `notifyMember: false` tells the ROUTE not to send at all, so the mailer's
+  gate never runs, no `SKIPPED_NO_EMAILS` row is written, and the withheld-list
+  banner cannot name the cancellation the officer just performed in silence —
+  on an otherwise quiet booking it would read "Nothing has been withheld yet"
+  immediately afterwards, while the operator guide tells the officer to work
+  down that list. The compensating control would be blind to its own trigger.
+  Sending no flag lets the send be ATTEMPTED and withheld, which records the
+  row. The member's outcome is identical either way. It is also the honest
+  audit record: `false` would say the officer declined and `true` would say
+  they opted in, and with the choice removed neither happened — every one of
+  these routes treats an absent flag as "no explicit choice", and only audits
+  an explicit one. That the SWITCH decided is durably recorded by the withheld
+  `EmailLog` row plus the `booking.noEmails.set` audit entry, so no new field
+  was added to six money- and booking-critical routes to state it twice.
   Deliberately EXCLUDED and why: the chore-roster send (per DATE, fanning out
   across many bookings, where the mailer's own gate silences each one
   individually), the public booking-request decline and the admin create flow

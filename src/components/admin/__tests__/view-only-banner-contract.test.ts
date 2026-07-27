@@ -724,13 +724,27 @@ describe("view-only section banner coverage (#2160)", () => {
         (f) => bannerRenderSites(f.ast).length > 0,
       ).length,
     }).toEqual({
-      // +1 vs upstream's 263: member-photos (hoppers#171) adds the committee
-      // photo-display control — a leaf exception that keeps its own reason.
-      // +4 vs 264 / +2 banners vs 75: the Member Notices feature adds two
-      // banner-bearing admin surfaces (the notices list page and the notice
-      // editor), each with static opt-out ViewOnlyActionButtons covered by an
-      // AdminViewOnlySectionBanner in the same file.
-      // +1 vs 269 / exceptions +1 vs 33: #2259 adds the per-booking "No emails"
+      /*
+        The delta chain from upstream, so the figures reconcile rather than
+        merely being asserted. Every step is a MEASURED re-run, not arithmetic:
+
+          263  upstream.
+          264  +1  member-photos (hoppers#171) adds the committee photo-display
+               control — a leaf exception that keeps its own reason.
+          268  +4  the Member Notices feature (#2238) adds banner-bearing admin
+               surfaces (the notices list page and the notice editor) with
+               static opt-out ViewOnlyActionButtons covered in the same file.
+          269  +1  commit 427200eb ("Build Fix") re-measured after that merge
+               and found one call site and one banner component MORE than the
+               +4/+2 written above — so the Notices feature really contributed
+               5 call sites and 3 banner components (263 -> 269, 75 -> 78), and
+               the prose deltas for it undercount by one. Recorded here rather
+               than silently corrected, because 427200eb is the commit that
+               made these numbers true and the earlier prose is what a reader
+               would otherwise try (and fail) to add up.
+          270  +1  #2259 adds the per-booking "No emails" switch.
+      */
+      // #2259 adds the per-booking "No emails"
       // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into
       // the Admin tools card's layout — the same shape as the capacity- and
       // exclusive-hold controls beside it, so it keeps its own per-button

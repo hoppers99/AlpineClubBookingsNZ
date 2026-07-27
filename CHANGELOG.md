@@ -12,17 +12,26 @@ All notable public reference-release changes should be recorded here.
   payment reminders, and you are responsible for telling the member yourself —
   with a button that says exactly that. It is deliberately not a tick-box you
   can skim past, and nothing is saved until it is answered. If the booking is
-  holding a live waitlist offer, the dialog warns about that first: the bed
-  stays held on a countdown the member will never see, so unless the officer
-  contacts them the offer simply expires.
+  holding a live waitlist offer, the dialog says so before you confirm: that
+  offer was emailed before the switch went on, so the member **can still accept
+  it** and the bed must not be reassigned — what they lose is the expiry
+  warning and the confirmation if they accept, so an officer has to follow it
+  up. If the booking is still waitlisted with no offer yet, the dialog says
+  that instead: while emails are off it is passed over when beds are handed
+  out, keeps its place in the queue, and holds nobody else up.
   Once it is on, the booking carries a standing warning listing what was
-  actually withheld — each message by name, its subject, and when it would have
-  gone out — including the invoice email Xero would have sent. That list is
-  built from what really happened rather than being a fixed sentence, because
-  the point of it is to tell an officer which messages to relay. It keeps
-  showing after the switch is turned back off, for the same reason: turning
-  emails back on re-sends nothing, so a member who was never told about a
-  cancellation is still never told.
+  actually withheld — each kind of message by name, how many of it, its
+  subject, and when the most recent one would have gone out — including the
+  invoice email Xero would have sent. Grouping by kind is deliberate: a week of
+  chore-roster emails for a large party is dozens of near-identical records,
+  and listed flat they would bury the one cancellation that matters. Two kinds
+  are marked as having nothing to forward, because the email they carry is a
+  freshly generated link that was never created; clearing the switch
+  regenerates it. The banner also points at the email-failure queue, since it
+  lists only what was withheld deliberately and not what failed for other
+  reasons. It keeps showing after the switch is turned back off, in amber
+  rather than red: turning emails back on re-sends nothing, so a member who
+  was never told about a cancellation is still never told.
   Every admin action on that booking that would normally ask "email the member
   about this?" now stops asking. With the switch on the message is withheld
   whichever button is pressed, so the question was misleading — it invited an
@@ -33,8 +42,9 @@ All notable public reference-release changes should be recorded here.
   The chore-roster send is unchanged, because it goes out per night across many
   bookings at once; a silenced booking's own roster email is still withheld
   individually.
-  A member sees no sign of any of this — not the switch, not the warning, not so
-  much as a field in the page's data.
+  A member sees no sign of any of this — not the switch, not the warning, and
+  no value in the page's data that varies with it. The page they are served
+  carries no trace of the setting at all, not even an empty one.
 
 - **A booking can now be put on "No emails", and the system withholds
   everything about it (#2258).** Sometimes the club needs a booking to be quiet

@@ -93,18 +93,33 @@ system sending that member *anything* about it.
 1. Open the booking (click the status chip on its row in the table above).
 2. In the **Admin tools** card, click **Turn off all emails**.
 3. Read the dialog. It states the consequence plainly: no emails at all for
-   this booking, including cancellation notices and payment reminders. If the
-   booking is holding a live waitlist offer, the dialog also warns you that the
-   bed stays held on a countdown the member will never see — so if you want them
-   to have the chance to accept it, you must contact them yourself.
+   this booking, including cancellation notices and payment reminders. Two
+   extra warnings appear when they apply:
+   - **the booking is holding a live waitlist offer.** The member was already
+     emailed that offer and **can still accept it**, so do not reassign the
+     bed. What they lose is the expiry warning and the confirmation if they
+     do accept — so follow it up yourself.
+   - **the booking is still waitlisted** (no offer made yet). While emails are
+     off it is skipped when beds are handed out, so no offer is made at all.
+     It keeps its place in the queue and holds nobody else up. Nothing about
+     this appears in the withheld list later, because there is no offer to
+     withhold — this dialog is the only place you are told.
 4. Click **Yes — I will tell the member myself**. Nothing is saved until you
    do; **Cancel** leaves the booking exactly as it was.
 
 While the switch is on:
 
-- the booking shows a **red banner** listing every message that was actually
-  withheld — its name, its subject line, and when it would have gone out. Work
-  down that list when you contact the member;
+- the booking shows a **red banner** listing what was actually withheld,
+  grouped by kind with a count (so a week of chore-roster emails is one line
+  reading "Chore Roster ×56" rather than 56 lines burying the cancellation
+  underneath). Work down that list when you contact the member. Two kinds are
+  marked **"nothing was created to forward"** — the split-guest payment link
+  and the chore roster — because those emails carry a freshly generated link
+  that was never made; clear the switch and the next run regenerates it;
+- the banner also points at **Admin → Email deliverability**. The list covers
+  messages the system *deliberately* withheld; a message that failed for some
+  other reason shows up there instead, so check both before telling a member
+  you have the full picture;
 - every action that would normally ask "email the member about this?" stops
   asking and tells you emails are off instead;
 - **account and security email is not affected.** Two-factor codes, password
@@ -118,7 +133,9 @@ While the switch is on:
 
 To undo it, click **Turn emails back on**. That takes no acknowledgement (a
 stuck switch must always be clearable), but it does **not** re-send anything
-that was withheld — which is why the banner keeps listing what was missed.
+that was withheld — which is why the banner keeps listing what was missed. It
+stays on the booking after the switch is cleared, turning **amber** instead of
+red: the messages are still ones the member never received.
 
 Both turning it on and turning it off are written to the
 [Audit Log](audit-log.md), with who did it and when.
@@ -157,7 +174,7 @@ lives in [`STATE_MACHINES.md`](../STATE_MACHINES.md#booking-lifecycle).
 | A row shows a **Review** chip | The booking needs admin review (for example a minor without an adult) | Click the chip to open the [Booking Requests → Approvals](booking-requests.md) queue |
 | The Beds filter is missing | The bed-allocation module is off | Enable it under **Admin → Setup → Modules** (`bedAllocation`) — see [`CONFIGURATION.md`](../../CONFIGURATION.md#module-controls-and-admin-modules) |
 | **+ Create Booking** is greyed out | Your admin role can view bookings but not edit them | Ask a full admin to grant bookings edit access |
-| A member says they never got a confirmation, reminder, or cancellation notice | The booking may have the **No emails** switch on | Open the booking; if the red withheld-emails banner is there, it lists exactly what was held back — relay it, then decide whether to turn emails back on |
+| A member says they never got a confirmation, reminder, or cancellation notice | The booking may have the **No emails** switch on | Open the booking; if the withheld-emails banner is there — **red** while emails are off, **amber** once they are back on — it lists exactly what was held back. Relay it, and check **Admin → Email deliverability** too for messages that failed for other reasons |
 | **Turn off all emails** is greyed out | Your admin role can view bookings but not edit them | Ask a full admin to grant bookings edit access |
 | A booking still shows the withheld-emails warning after emails were turned back on | Correct — turning the switch back on never re-sends anything | The banner is the record of what the member was never told; work through it with them |
 
