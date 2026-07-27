@@ -13,14 +13,24 @@ All notable public reference-release changes should be recorded here.
   things is actually true — the **Lobby TV display** module is switched off,
   your admin role cannot see display templates, or the boards were never
   created — and where the boards are missing, **Restore built-in boards**
-  creates all seven in one press. Pressing it again is safe. It asks first,
-  because it is a genuine restore: every built-in goes back to the design that
-  ships with the app, so a change made to a built-in in place is undone. Your
-  own layouts and templates are never touched, screens keep showing whatever
-  they already show, and who pressed it is written to the audit log. It is
-  deliberately a button rather than something the upgrade does by itself —
-  running it automatically would quietly undo a club's edits to a built-in
-  every release.
+  creates all seven in one press. Pressing it again is safe, and if the
+  database fails part-way the whole restore is rolled back rather than leaving
+  half a library. It asks first, because it is a genuine restore: every
+  built-in goes back to the design that ships with the app, so a change made to
+  a built-in in place is undone — including one that arrived in an imported
+  configuration bundle. Layouts and templates saved under your own names are
+  never touched, though a board of yours built on a built-in layout will follow
+  that layout's restored shape; screens keep showing whatever they already
+  show; and who pressed it, with the seven names it rewrote, is written to the
+  audit log. It is deliberately a button rather than something the upgrade does
+  by itself — running it automatically would quietly undo a club's edits to a
+  built-in every release.
+  Relatedly, the seven built-in names are now **reserved**: saving a layout or
+  template of your own under one is refused, with a message saying why. They
+  were never protected on a club that had no built-ins yet, which is exactly
+  the club this feature is for — so a board could be built under one of those
+  names and then be silently overwritten by the very restore that promises not
+  to touch your work.
   The same screens used three words for two things and explained none of them.
   A **Layout** is the shape of a board, a **Template** is that shape filled in
   and is what you point a screen at, and a **board** is what the screen actually
