@@ -497,6 +497,10 @@ export async function updateAdminRosterForDate(params: {
       // Group assignments by guest, resolving effective email for dependents
       const byGuest = new Map<string, {
         email: string | null
+        // #2258: the booking whose stay this roster covers, so the per-booking
+        // "No emails" switch can withhold the roster mail. NOT NULL on
+        // ChoreAssignment, so a roster is always attributable to a booking.
+        bookingId: string
         // #1285: the guest's own member id (null for non-member guests) plus the
         // member they inherit their email from (if any), so the roster send can
         // resolve the effective choreRoster preference (Option C hybrid).
@@ -515,6 +519,7 @@ export async function updateAdminRosterForDate(params: {
             : null
           byGuest.set(guestId, {
             email: effectiveEmail,
+            bookingId: a.bookingId,
             memberId: a.bookingGuest.member?.id ?? null,
             inheritEmailFromId: a.bookingGuest.member?.inheritEmailFromId ?? null,
             name: `${a.bookingGuest.firstName} ${a.bookingGuest.lastName}`,
@@ -562,6 +567,7 @@ export async function updateAdminRosterForDate(params: {
             const token = await createGuestChoreToken(guestId, date)
             const choreLink = `${baseUrl}/chores/${token}`
             await sendChoreRosterEmail(
+              { bookingId: guest.bookingId },
               recipientEmail,
               guest.name,
               dateStr,

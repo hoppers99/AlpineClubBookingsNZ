@@ -1254,7 +1254,8 @@ override requires an explicit `pricingMode`:
   refund/credit settlement, audit, booking events, waitlist processing, and the
   admin-facing alerts are never affected by the choice. **The Xero invoice
   email on the Internet Banking path is deliberately outside this choice and is
-  ALWAYS sent** — it is the member's payment instruction (invoice number + bank
+  ALWAYS sent** (superseded for the per-booking "No emails" switch — see
+  that section below) — it is the member's payment instruction (invoice number + bank
   details), so suppressing it could strand an unpaid invoice the member was
   never told about (owner decision on #1705). Three further cancellation
   emails are **deliberately always-notify** and outside the choice (owner
@@ -1262,7 +1263,9 @@ override requires an explicit `pricingMode`:
   cancels** the group, the member email on an **admin review-rejection**
   cancel, and the cancellation emails sent by **deletion-request cleanup** —
   in each, the recipient is losing a booking they own, and a missed email
-  risks a member arriving for a stay that no longer exists.
+  risks a member arriving for a stay that no longer exists. (All three are
+  nonetheless withheld by the per-booking "No emails" switch — see that section
+  below — which overrides every always-notify rule on this page.)
   The #1780/#1769b sweep extends this same per-action choice to every remaining
   admin-initiated member email — membership application approve/reject (#1786),
   membership cancellation review (#1787), member archive review and
@@ -1282,7 +1285,12 @@ override requires an explicit `pricingMode`:
   **approved/quote** emails (they carry the payment/quote link). On a
   booking-review **rejection** the shared cancellation email above (#1730) is
   the always-notify send, so a suppressed reject still emails the member the
-  cancellation and withholds only the review-declined explainer.
+  cancellation and withholds only the review-declined explainer (superseded for
+  the per-booking "No emails" switch — see that section below — which withholds
+  the cancellation notice too, so a reject on a silenced booking emails the
+  member nothing at all; #2259's review dialog says exactly that rather than
+  repeating the promise above).
+
 - **recalculate** — the existing full-reprice machinery with the locked-period
   clamps lifted, so locked-night pricing semantics are otherwise preserved
   (a night the guest already bought keeps its stored `BookingGuestNight` price).
@@ -1304,6 +1312,200 @@ every date it names must equal the applied value, so an unrelated move can never
 mark a different ask as applied — closing the approve → apply trail. The modify-quote preview mirrors apply exactly for the
 same input (same date resolution, capacity signal, and member-night conflict
 check), so the operator never sees a clean preview for a move that would fail.
+
+**Per-booking "No emails" switch (#2258, owner decision D10, 2026-07-27).**
+Separately from
+the per-action `notifyMember` choice above — which is a one-off decision made at
+the moment of a single admin action — a booking can carry a persistent
+`Booking.noEmails` switch that withholds **everything** the system would send
+about that booking for as long as it is on: confirmation, modification, payment,
+reminders, arrival information, cancellation, waitlist offers, chore rosters,
+and the Xero-sent invoice email. It is enforced in ONE place, the mailer
+(`sendEmail` in `src/lib/email/core.ts`), plus the three paths that bypass the
+mailer (the retry cron, and the two invoice emails Xero sends on our behalf).
+The rules are:
+
+- **Keyed strictly on the booking, never on the recipient address.** An
+  address-keyed switch would also swallow two-factor codes, password resets,
+  magic-link logins and email-change notices — account lockout, not a
+  preference. Every send therefore carries a REQUIRED, typed `bookingContext`
+  (`{ bookingId } | "none"`), so a new send site is a compile error until its
+  author states which it is.
+- **Admin-audience mail is never withheld.** The registry's
+  `EmailTemplateDefinition.audience` is the authority, so admin/system alerts
+  (payment failure, duplicate-capture refund, and the rest) still reach an
+  operator even when the booking is silenced.
+- **The read fails CLOSED.** Unlike the SES bounce check, which deliberately
+  fails open, an unreadable switch withholds the send: the mailer records the
+  row FAILED (so the retry cron re-evaluates it) and transmits nothing.
+- **Every withhold is auditable.** The withheld send is written as an `EmailLog`
+  row with status `SKIPPED_NO_EMAILS` and the booking's `bookingId`, with no
+  retained body — so the booking page can list exactly what was held back
+  (#2259), and the retry cron cannot replay it (its query requires a retained
+  body, and the status is terminal).
+- **The retry cron re-evaluates before every replay.** A `FAILED` row can
+  predate the moment the switch was turned on, so `cron-email-retry.ts` re-reads
+  it from the row's `bookingId` and fails closed the same way.
+- **Waitlist candidacy excludes a silenced booking.**
+  `processWaitlistForDates` filters on `noEmails: false`, so no NEW offer is
+  made to a silenced entry and, in the ordinary case, no offer clock starts for
+  a member who would not be told. That exclusion is not retroactive and does not
+  cover every ordering, so two cases remain and both are surfaced rather than
+  denied:
+  - the switch is turned **on while an offer is already live** — the clock keeps
+    running and the offer is not retracted. `setBookingNoEmails` returns
+    `hasLiveWaitlistOffer`, and #2259's acknowledgement dialog warns on it
+    **before** the admin confirms (from the same predicate,
+    `bookingHasLiveWaitlistOffer`, so the warning and the route's answer cannot
+    disagree about what "live" means) as well as after the write;
+  - the **post-commit race** — `processWaitlistForDates` commits the offer and
+    fires the email un-awaited afterwards, so a switch flipped in between leaves
+    a live offer with a withheld send. (The retry cron can likewise rewrite an
+    already-FAILED offer row to `SKIPPED_NO_EMAILS`.)
+
+  In both, the entry is holding a bed the member was never told about, so the
+  admin waitlist board reports the distinct `suppressed_live_offer` state with
+  `needsOperatorAction: true`. A withheld offer on an entry whose offer has
+  already lapsed is the benign `suppressed` state and needs no action. A
+  silenced entry that is still `WAITLISTED` produces no EmailLog row at all, so
+  the board marks it from the flag ("silenced — will not be offered").
+- **A silenced waitlist entry keeps its place in the queue.** It is skipped for
+  offers but is NOT removed, and it still counts toward the position quoted to
+  the members behind it — the position numbers other members see are unchanged
+  by anyone's switch. (Deliberate: position is member-visible, and silently
+  re-numbering a queue because of an internal admin setting would be a worse
+  surprise than a stalled entry an officer can see and fix.)
+- **Xero-sent invoice emails are gated too, which SUPERSEDES the #1705 carve-out
+  above for this switch only.** #1705 decided the Internet Banking invoice email
+  is outside the per-action `notifyMember` choice and always sent. D10 says the
+  per-booking switch "suppresses everything", so when it is on the
+  `emailInvoice` call is skipped and a withheld audit row is written naming the
+  invoice. **The invoice itself still exists in Xero and is unchanged** — only
+  the emailing is skipped, so an admin sends it **from Xero by hand**. Clearing
+  the switch does NOT resend it: invoice creation short-circuits on the stored
+  `payment.xeroInvoiceId` and never reaches the email step again, and the
+  `emailInvoice` idempotency key would no-op regardless. When the switch could
+  not be READ (as opposed to being on) the sync operation is left PARTIAL so an
+  operator sees it — but the operations panel's payment repair must never be run
+  on an email-only PARTIAL: every one of them is an Internet Banking booking
+  whose Xero payment is deliberately skipped, so recording a payment would
+  falsely settle an unpaid invoice. That repair is refused for email-only
+  PARTIALs. The per-action `notifyMember` carve-out is untouched: with the switch
+  off, the invoice email is still always sent. The group settlement invoice is
+  one combined bill addressed to and paid by the **organiser**, so it is gated on
+  the organiser's own booking and on nothing else — a joiner's switch does not
+  suppress the organiser's bill, and each joiner's own group emails are gated on
+  that joiner's child booking.
+- **Setting it requires an acknowledgement.** `POST
+  /api/admin/bookings/[id]/no-emails` is admin-only (403 otherwise) and refuses
+  an enable without `acknowledged: true` (400, nothing written). Both set and
+  clear are audited, and `noEmailsAt` / `noEmailsByMemberId` record who and
+  when, mirroring the `wholeLodgeHold` audit columns. Clearing needs no
+  acknowledgement — a stuck switch must always be clearable — and does **not**
+  re-send anything withheld while it was on.
+- **The acknowledgement is a real admin decision, not just a request field
+  (#2259).** The control lives in the Admin tools card on the booking detail
+  page and is gated on `bookings:edit`. Turning it on opens a two-button dialog
+  ("Yes — I will tell the member myself" / "Cancel") carrying the plain
+  consequence — no emails at all for this booking, including cancellation
+  notices and payment reminders, and the admin is responsible for telling the
+  member directly. It is deliberately **not** a checkbox: a checkbox is missable
+  and the consequence is a member who is never told their booking was cancelled.
+  Nothing is written until the dialog is answered.
+- **The booking carries a persistent warning listing what was ACTUALLY withheld
+  (#2259).** Read from the `SKIPPED_NO_EMAILS` audit rows, not a fixed sentence:
+  the admin has to know WHICH messages the member never received in order to
+  relay them, and the list includes the Xero-sent invoice emails, which are
+  inside the same guarantee. Each row shows the template's registry display name
+  (`withheldEmailDisplayName`), its subject and its timestamp. The banner
+  **keeps warning after the switch is cleared** whenever withheld rows exist,
+  because clearing re-sends nothing — a member never told about a cancellation
+  is still never told.
+  Rows are **grouped per template with an exact count**, read with aggregates
+  (`getWithheldBookingEmailSummary`). That is a correctness property, not a
+  presentational one: a chore-roster send fans out to one row per guest per
+  date (~56 for a week for a party of eight), so a flat newest-first list both
+  buried the single cancellation that mattered and could hit the old
+  undisclosed `take: 100` cap. The groups come from a database-side `groupBy`,
+  which returns one row per distinct template; representative subjects are then
+  fetched by matching the per-template maxima under an explicit cap, and a
+  group is never dropped for want of a subject because the aggregate — not the
+  row read — produces the list. (An earlier attempt used
+  `findMany({ distinct })`; Prisma only pushes `distinct` into the query when it
+  LEADS the `orderBy`, so ordering by `createdAt` fetched every withheld row for
+  the booking and deduped in memory — the same unbounded read the `take: 100`
+  had been masking, under a comment claiming the registry bounded it.)
+  Each group carries a `remedy` saying what the officer must actually DO, and
+  the three values are not interchangeable:
+  - `relay` (the default) — the content is information the officer can simply
+    state. The Xero invoice is here: it still exists in Xero and can be sent by
+    hand from there.
+  - `auto-regenerates` — `split-guest-payment-link` only. The link is decided
+    BEFORE it is minted, so none exists, and the settlement cron re-mints and
+    re-sends once the switch is off. Clearing the switch is the whole remedy.
+  - `resend-roster` — `chore-roster`, which was briefly and wrongly treated as
+    the case above. `admin-roster-service.ts` DELETES the guest's existing chore
+    token, mints a fresh one, and only then sends: a live 48-hour link exists,
+    the guest's previous link was destroyed, and the guest currently holds
+    nothing that works. `sendChoreRosterEmail` has exactly one caller — the
+    admin roster action, with no cron behind it — so nothing regenerates it and
+    the officer must re-send the roster by hand.
+  The banner also points at the email-failure queue, because three classes are
+  structurally absent from it: a send that failed closed on an unreadable
+  switch, a withheld send whose own `EmailLog` write failed, and rows queued
+  before the feature shipped.
+- **Two consequences are stated in the acknowledgement dialog because nothing
+  can record them.** A **live waitlist offer** can only PREDATE the switch
+  (candidacy exclusion prevents new ones), so its offer email already went out:
+  the member HAS been told and CAN still accept, and the dialog says not to
+  reassign the bed. What is lost is the expiry warning and the acceptance
+  confirmation. Saying "the member cannot accept" would be worse than silence —
+  an officer believing the bed dead might reassign it out from under a member
+  still entitled to it. A **still-WAITLISTED** booking is skipped for offers
+  ENTIRELY, so no offer is made, nothing is withheld, and no row is ever
+  written; the dialog states it before the officer commits and the banner
+  repeats it, and "waitlist offers" is deliberately absent from the banner's
+  withheld-categories sentence, which would otherwise imply an offer was made
+  and only its email held back.
+- **A member must never learn the switch exists.** The booking detail page
+  serves members and admins from one file, so the control, the banner, and every
+  `noEmails` value the page produces sit behind the page's admin predicate — and
+  the withheld list is not even QUERIED for a member. Gating the render alone is
+  insufficient: a prop threaded unconditionally is serialised into the RSC
+  payload, so the switch would be readable off the wire with nothing drawing it.
+  `booking-no-emails-ui-contract.test.ts` enforces both over the AST.
+- **The per-action `notifyMember` prompts are not offered while the switch is
+  on (#2259 honesty rule).** The rule behind that prompt family (#1769a) is that
+  an admin is only asked a question the system will honour; with the switch on
+  the message is withheld either way, so asking invites the admin to choose
+  "…and email member" and believe the member was told. Every booking-bound
+  prompt therefore drops to the send-nothing path and states the position
+  instead: confirm-pending-guests, the admin edit, the admin cancel, the booking
+  review queue, the waitlist force-confirm, and the refund-appeal review. The
+  same contract test asserts the closed world — a new prompt must be classified
+  booking-bound or not, with its reason, rather than silently escaping the rule.
+- **The silenced path sends NO `notifyMember` flag, never `false`.** This is a
+  correctness requirement, not a style choice, and the contract test enforces
+  it. `notifyMember: false` tells the ROUTE not to send at all, so the mailer's
+  gate never runs, no `SKIPPED_NO_EMAILS` row is written, and the withheld-list
+  banner cannot name the cancellation the officer just performed in silence —
+  on an otherwise quiet booking it would read "Nothing has been withheld yet"
+  immediately afterwards, while the operator guide tells the officer to work
+  down that list. The compensating control would be blind to its own trigger.
+  Sending no flag lets the send be ATTEMPTED and withheld, which records the
+  row. The member's outcome is identical either way. It is also the honest
+  audit record: `false` would say the officer declined and `true` would say
+  they opted in, and with the choice removed neither happened — every one of
+  these routes treats an absent flag as "no explicit choice", and only audits
+  an explicit one. That the SWITCH decided is durably recorded by the withheld
+  `EmailLog` row plus the `booking.noEmails.set` audit entry, so no new field
+  was added to six money- and booking-critical routes to state it twice.
+  Deliberately EXCLUDED and why: the chore-roster send (per DATE, fanning out
+  across many bookings, where the mailer's own gate silences each one
+  individually), the public booking-request decline and the admin create flow
+  (no `Booking` row to be silenced yet), and every membership, family, deletion
+  and application prompt (keyed on a member, not a booking).
+
 
 Booking **creation** is normally today-or-future: `POST /api/bookings` and the
 create service both reject a past check-in ("Cannot book in the past"). Issue

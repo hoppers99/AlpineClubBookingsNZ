@@ -26,6 +26,7 @@ import {
   ADMIN_VIEW_ONLY_ACTION_REASON,
   useAdminAreaEditAccess,
 } from "@/hooks/use-admin-area-edit-access"
+import { BookingNoEmailsNotice } from "@/components/booking-no-emails-notice"
 import { getCancellationSettlementBreakdown } from "@/lib/payment-status-display"
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path"
 
@@ -53,6 +54,10 @@ interface RefundRequestData {
     checkOut: string
     finalPriceCents: number
     status: string
+    // #2259: the per-booking "No emails" switch. A refund outcome email
+    // (`refund-request-resolved`) is booking-scoped, so the mailer withholds it
+    // while the switch is on — the notify prompt stops offering the choice.
+    noEmails: boolean
     creditsFromCancellation: Array<{
       amountCents: number
       description: string | null
@@ -145,7 +150,7 @@ export default function RefundRequestsPage() {
   // #1769a honesty rule ("only ask when an email would send") is satisfied here
   // by the fact that an email always would.
   const [notifyChoice, setNotifyChoice] = useState<
-    { id: string; status: "APPROVED" | "REJECTED" } | null
+    { id: string; status: "APPROVED" | "REJECTED"; noEmails: boolean } | null
   >(null)
   const [notifyDialogOpen, setNotifyDialogOpen] = useState(false)
   const currentRefundRequestsPath =
@@ -207,7 +212,16 @@ export default function RefundRequestsPage() {
         return
       }
     }
-    setNotifyChoice({ id, status })
+    // #2259: carry the appeal's booking-level "No emails" state into the choice
+    // so the dialog can drop an email option the mailer will not honour. Read
+    // off the already-loaded queue row — no extra fetch per action.
+    setNotifyChoice({
+      id,
+      status,
+      noEmails:
+        refundRequests.find((request) => request.id === id)?.booking
+          .noEmails === true,
+    })
     setNotifyDialogOpen(true)
   }
 
@@ -220,10 +234,28 @@ export default function RefundRequestsPage() {
     void handleRefundReview(choice.id, choice.status, notifyMember)
   }
 
+  /**
+   * #2259 H1: dispatch the silenced path with NO notify choice at all.
+   *
+   * `notifyMember: false` makes the route skip the send outright, so the
+   * mailer's gate never runs and no `SKIPPED_NO_EMAILS` row is recorded — the
+   * booking's withheld-list banner would then omit the refund outcome the
+   * member was never told about. Omitting the flag lets the send be ATTEMPTED
+   * and withheld, which records the row and leaves the audit trail honestly
+   * showing that no officer choice was made, because none was offered.
+   */
+  function confirmSilenced() {
+    const choice = notifyChoice
+    setNotifyDialogOpen(false)
+    if (!choice) return
+    void handleRefundReview(choice.id, choice.status, undefined, true)
+  }
+
   async function handleRefundReview(
     id: string,
     status: "APPROVED" | "REJECTED",
-    notifyMember: boolean
+    notifyMember: boolean | undefined,
+    noEmails = false
   ) {
     setProcessingRefund(true)
     setError("")
@@ -233,7 +265,9 @@ export default function RefundRequestsPage() {
         status,
         adminNotes: adminNotes || undefined,
         // #1792: absent = notify (default), false = suppress the outcome email.
-        notifyMember,
+        // #2259: the silenced path deliberately sends ABSENT, so the mailer's
+        // gate withholds AND records rather than the route skipping the send.
+        ...(notifyMember !== undefined ? { notifyMember } : {}),
       }
 
       if (status === "APPROVED") {
@@ -264,7 +298,11 @@ export default function RefundRequestsPage() {
         (status === "APPROVED"
           ? "Refund approved and processed"
           : "Appeal rejected") +
-          (notifyMember === false ? " The member was not emailed." : "")
+          (noEmails
+            ? " Emails are off for this booking, so nothing was sent — the withheld message is listed on the booking."
+            : notifyMember === false
+              ? " The member was not emailed."
+              : "")
       )
       await fetchRequests()
     } catch (err) {
@@ -773,31 +811,50 @@ export default function RefundRequestsPage() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
-              {notifyChoice?.status === "REJECTED"
-                ? "Email the member about this decision?"
-                : "Email the member about this refund?"}
+              {notifyChoice?.noEmails
+                ? notifyChoice.status === "REJECTED"
+                  ? "Reject this appeal?"
+                  : "Process this refund?"
+                : notifyChoice?.status === "REJECTED"
+                  ? "Email the member about this decision?"
+                  : "Email the member about this refund?"}
             </DialogTitle>
             <DialogDescription>
-              {notifyChoice?.status === "REJECTED"
-                ? "The appeal is rejected either way. Choose whether the member receives the standard refund-appeal outcome email — your choice is recorded in the audit log."
-                : "The refund is processed either way. Choose whether the member receives the standard refund-appeal outcome email — your choice is recorded in the audit log."}
+              {notifyChoice?.noEmails
+                ? notifyChoice.status === "REJECTED"
+                  ? "The appeal will be rejected."
+                  : "The refund will be processed."
+                : notifyChoice?.status === "REJECTED"
+                  ? "The appeal is rejected either way. Choose whether the member receives the standard refund-appeal outcome email — your choice is recorded in the audit log."
+                  : "The refund is processed either way. Choose whether the member receives the standard refund-appeal outcome email — your choice is recorded in the audit log."}
             </DialogDescription>
           </DialogHeader>
+          {/* #2259: with the booking's "No emails" switch on the outcome email
+              is withheld whatever is chosen, so the choice is not offered. */}
+          {notifyChoice?.noEmails && <BookingNoEmailsNotice />}
           <DialogFooter className="gap-2 sm:gap-2">
             <Button
               variant="outline"
               disabled={processingRefund}
-              onClick={() => confirmNotify(false)}
+              onClick={() =>
+                notifyChoice?.noEmails ? confirmSilenced() : confirmNotify(false)
+              }
             >
-              {notifyChoice?.status === "REJECTED"
-                ? "Reject without emailing"
-                : "Approve without emailing"}
+              {notifyChoice?.noEmails
+                ? notifyChoice.status === "REJECTED"
+                  ? "Reject appeal"
+                  : "Approve refund"
+                : notifyChoice?.status === "REJECTED"
+                  ? "Reject without emailing"
+                  : "Approve without emailing"}
             </Button>
-            <Button disabled={processingRefund} onClick={() => confirmNotify(true)}>
-              {notifyChoice?.status === "REJECTED"
-                ? "Reject and email member"
-                : "Approve and email member"}
-            </Button>
+            {!notifyChoice?.noEmails && (
+              <Button disabled={processingRefund} onClick={() => confirmNotify(true)}>
+                {notifyChoice?.status === "REJECTED"
+                  ? "Reject and email member"
+                  : "Approve and email member"}
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -22,6 +22,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -162,6 +163,8 @@ export function SiteBannersPanel() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
+  // #2257 — the example lives UNDER the field, not inside it as grey pseudo-content.
+  const messageHint = useFieldHint();
   const [saving, setSaving] = useState(false);
   const [busyBannerId, setBusyBannerId] = useState<string | null>(null);
   const { confirm, confirmDialog } = useConfirm();
@@ -477,12 +480,15 @@ export function SiteBannersPanel() {
                 value={form.message}
                 maxLength={SITE_BANNER_MESSAGE_MAX_LENGTH}
                 rows={3}
-                placeholder="e.g. The mountain is closed due to volcanic activity."
                 readOnly={!canEdit}
                 onChange={(event) =>
                   setForm((prev) => ({ ...prev, message: event.target.value }))
                 }
+                {...messageHint.fieldProps}
               />
+              <FieldHint {...messageHint.hintProps}>
+                Example: The mountain is closed due to volcanic activity.
+              </FieldHint>
               <p className="text-right text-xs text-muted-foreground">
                 {form.message.length}/{SITE_BANNER_MESSAGE_MAX_LENGTH}
               </p>

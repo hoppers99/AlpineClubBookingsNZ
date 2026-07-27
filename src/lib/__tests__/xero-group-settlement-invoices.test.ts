@@ -48,6 +48,8 @@ vi.mock("@/lib/prisma", () => ({
       findUnique: mocks.settlementFindUnique,
     },
     booking: { findMany: vi.fn() },
+    // #2258: the withheld-send audit row for the organiser's settlement invoice.
+    emailLog: { create: vi.fn().mockResolvedValue({ id: "emaillog_1" }) },
     season: { findFirst: vi.fn().mockResolvedValue(null) },
     xeroSyncOperation: { update: vi.fn() },
   },
@@ -126,7 +128,12 @@ function settlement(status: GroupBookingStatus) {
       status,
       organiserMemberId: "member-1",
       organiserBookingId: "organiser-booking-1",
-      organiserBooking: { checkIn: new Date("2026-07-01") },
+      organiserBooking: {
+        checkIn: new Date("2026-07-01"),
+        // #2258: the pre-email fence re-reads the ORGANISER'S booking switch.
+        noEmails: false,
+        member: { email: "organiser@example.test" },
+      },
     },
   };
 }
@@ -232,7 +239,14 @@ describe("createXeroInvoiceForGroupSettlement cancellation fence", () => {
     mocks.settlementFindUnique
       .mockResolvedValueOnce(settlement(GroupBookingStatus.OPEN))
       .mockResolvedValueOnce({
-        groupBooking: { status: GroupBookingStatus.CANCELLED },
+        groupBooking: {
+          status: GroupBookingStatus.CANCELLED,
+          organiserBookingId: "organiser-booking-1",
+          organiserBooking: {
+            noEmails: false,
+            member: { email: "organiser@example.test" },
+          },
+        },
       });
 
     await expect(
@@ -308,8 +322,26 @@ describe("createXeroInvoiceForGroupSettlement cancellation fence", () => {
   it("holds the lifecycle fence for the single bounded invoice email call", async () => {
     mocks.settlementFindUnique
       .mockResolvedValueOnce(settlement(GroupBookingStatus.OPEN))
-      .mockResolvedValueOnce({ groupBooking: { status: GroupBookingStatus.OPEN } })
-      .mockResolvedValueOnce({ groupBooking: { status: GroupBookingStatus.OPEN } });
+      .mockResolvedValueOnce({
+        groupBooking: {
+          status: GroupBookingStatus.OPEN,
+          organiserBookingId: "organiser-booking-1",
+          organiserBooking: {
+            noEmails: false,
+            member: { email: "organiser@example.test" },
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        groupBooking: {
+          status: GroupBookingStatus.OPEN,
+          organiserBookingId: "organiser-booking-1",
+          organiserBooking: {
+            noEmails: false,
+            member: { email: "organiser@example.test" },
+          },
+        },
+      });
     mocks.accountingApi.emailInvoice.mockImplementation(async () => {
       expect(mocks.transactionDepth).toBe(1);
       return { body: { sent: true } };
@@ -325,14 +357,77 @@ describe("createXeroInvoiceForGroupSettlement cancellation fence", () => {
     expect(mocks.enqueueVoid).not.toHaveBeenCalled();
   });
 
+  // #2258 semantics: the settlement invoice is ONE combined bill addressed to
+  // and paid by the ORGANISER, so it is gated on the organiser's own booking and
+  // on nothing else. A joiner's switch does not suppress it.
+  it("does not let Xero email the settlement invoice when the ORGANISER'S booking has No emails on", async () => {
+    mocks.settlementFindUnique
+      .mockResolvedValueOnce(settlement(GroupBookingStatus.OPEN))
+      .mockResolvedValueOnce({
+        groupBooking: {
+          status: GroupBookingStatus.OPEN,
+          organiserBookingId: "organiser-booking-1",
+          organiserBooking: {
+            noEmails: false,
+            member: { email: "organiser@example.test" },
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        groupBooking: {
+          status: GroupBookingStatus.OPEN,
+          organiserBookingId: "organiser-booking-1",
+          organiserBooking: {
+            noEmails: true,
+            member: { email: "organiser@example.test" },
+          },
+        },
+      });
+
+    await expect(
+      createXeroInvoiceForGroupSettlement("settle-1", {
+        syncOperationId: "op-1",
+      })
+    ).resolves.toBe("inv-1");
+
+    expect(mocks.accountingApi.emailInvoice).not.toHaveBeenCalled();
+    // The invoice itself is still raised and never voided — only the email is
+    // withheld, and the withhold is attributed to the organiser's booking.
+    expect(mocks.accountingApi.createInvoices).toHaveBeenCalledTimes(1);
+    expect(mocks.enqueueVoid).not.toHaveBeenCalled();
+    expect(vi.mocked(prisma.emailLog.create)).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        bookingId: "organiser-booking-1",
+        templateName: "xero-group-settlement-invoice-email",
+        status: "SKIPPED_NO_EMAILS",
+        to: "organiser@example.test",
+      }),
+      select: { id: true },
+    });
+  });
+
   it("voids durably and suppresses email when cancellation commits after the post-create check", async () => {
     mocks.settlementFindUnique
       .mockResolvedValueOnce(settlement(GroupBookingStatus.OPEN))
       .mockResolvedValueOnce({
-        groupBooking: { status: GroupBookingStatus.OPEN },
+        groupBooking: {
+          status: GroupBookingStatus.OPEN,
+          organiserBookingId: "organiser-booking-1",
+          organiserBooking: {
+            noEmails: false,
+            member: { email: "organiser@example.test" },
+          },
+        },
       })
       .mockResolvedValueOnce({
-        groupBooking: { status: GroupBookingStatus.CANCELLED },
+        groupBooking: {
+          status: GroupBookingStatus.CANCELLED,
+          organiserBookingId: "organiser-booking-1",
+          organiserBooking: {
+            noEmails: false,
+            member: { email: "organiser@example.test" },
+          },
+        },
       });
 
     await expect(

@@ -210,6 +210,7 @@ export async function PATCH(
   // only the rejection notice — the shared cancelBooking flow is untouched.
   if (parsed.data.notifyMember !== false) {
     sendBookingReviewRejectedEmail({
+      bookingId: booking.id,
       email: booking.member.email,
       firstName: booking.member.firstName,
       checkIn: booking.checkIn,

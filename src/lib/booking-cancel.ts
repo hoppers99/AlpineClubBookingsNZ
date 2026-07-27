@@ -333,6 +333,7 @@ async function cancelLinkedProvisionalChildBookings(
     // provisional child cancelled alongside their booking.
     if (notifyMember) {
       sendBookingCancelledEmail(
+        { bookingId: child.id },
         child.member.email,
         child.member.firstName,
         child.checkIn,
@@ -636,6 +637,7 @@ async function performBookingCancellation(
     // per-cancel email choice suppresses the same email.
     if (!suppressCustomerNotification && notifyMember) {
       sendBookingCancelledEmail(
+        { bookingId: fresh.id },
         fresh.member.email,
         fresh.member.firstName,
         fresh.checkIn,
@@ -767,6 +769,7 @@ async function performBookingCancellation(
 
     if (notifyMember) {
       sendBookingCancelledEmail(
+        { bookingId: fresh.id },
         fresh.member.email,
         fresh.member.firstName,
         fresh.checkIn,
@@ -1110,6 +1113,7 @@ async function performBookingCancellation(
 
     if (notifyMember) {
       sendBookingCancelledEmail(
+        { bookingId: fresh.id },
         fresh.member.email,
         fresh.member.firstName,
         fresh.checkIn,
@@ -1562,6 +1566,7 @@ async function performBookingCancellation(
 
     if (notifyMember) {
       sendBookingCancelledEmail(
+        { bookingId: fresh.id },
         fresh.member.email,
         fresh.member.firstName,
         fresh.checkIn,
@@ -1732,6 +1737,7 @@ async function performBookingCancellation(
 
     if (notifyMember) {
       sendBookingCancelledEmail(
+        { bookingId: fresh.id },
         fresh.member.email,
         fresh.member.firstName,
         fresh.checkIn,
@@ -1795,6 +1801,7 @@ async function performBookingCancellation(
 
   if (notifyMember) {
     sendBookingCancelledEmail(
+      { bookingId: fresh.id },
       fresh.member.email,
       fresh.member.firstName,
       fresh.checkIn,

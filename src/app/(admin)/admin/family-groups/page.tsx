@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
@@ -17,10 +18,12 @@ import {
   useAdminAreaEditAccess,
 } from "@/hooks/use-admin-area-edit-access";
 import {
+  formatFamilyGroupDate,
   type FamilyGroupRequest,
   type FamilyGroupSummary,
   type MemberOption,
 } from "@/lib/admin-family-group-ui-helpers";
+import { useScrollToFeedback } from "@/hooks/use-scroll-to-feedback";
 
 type PartnerInvite = {
   id: string;
@@ -46,12 +49,30 @@ export default function FamilyGroupsPage() {
   const [showForm, setShowForm] = useState(false);
   const [editingGroup, setEditingGroup] = useState<FamilyGroupSummary | null>(null);
   const [formName, setFormName] = useState("");
+  // #2257 — the example lives UNDER the field, not inside it as grey pseudo-content.
+  const groupNameHint = useFieldHint();
   const [memberSearch, setMemberSearch] = useState("");
   const [searchResults, setSearchResults] = useState<MemberOption[]>([]);
   const [selectedMembers, setSelectedMembers] = useState<MemberOption[]>([]);
   const [searching, setSearching] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  // #2256: the create/edit form renders in the anchor below the filter card and
+  // the two queue cards (pending changes, outstanding partner invites), while
+  // its triggers sit elsewhere — New Group in the page header, Edit on a row in
+  // the groups table below. With a populated queue either trigger can be
+  // several screens away from the form it opens, so the page used to look like
+  // it had ignored the click. Anchor the form region and move focus/viewport to
+  // it whenever the form opens.
+  const editorAnchorRef = useRef<HTMLDivElement>(null);
+  // The control that opened the form, so focus can go back to it on close
+  // rather than dropping to <body> when the form unmounts.
+  const formTriggerRef = useRef<HTMLElement | null>(null);
+  // Bumped on every open. Without it, re-opening the SAME group (or re-opening
+  // the create form) changes no state the effect depends on, so an admin who
+  // scrolled back down to the table and clicked Edit again got nothing.
+  const [formOpenNonce, setFormOpenNonce] = useState(0);
+  const { scrollToError } = useScrollToFeedback();
 
   // P3.1: Search and filter state
   const [filterQuery, setFilterQuery] = useState("");
@@ -179,8 +200,9 @@ export default function FamilyGroupsPage() {
     setFilterHasPending(false);
   }
 
-  function openCreateForm() {
+  function openCreateForm(event?: React.MouseEvent<HTMLElement>) {
     if (!canEditMembership) return;
+    formTriggerRef.current = event?.currentTarget ?? null;
     setEditingGroup(null);
     setFormName("");
     setSelectedMembers([]);
@@ -188,6 +210,7 @@ export default function FamilyGroupsPage() {
     setSearchResults([]);
     setError("");
     setShowForm(true);
+    setFormOpenNonce((nonce) => nonce + 1);
   }
 
   const openEditForm = useCallback((group: FamilyGroupSummary) => {
@@ -201,6 +224,7 @@ export default function FamilyGroupsPage() {
     setSearchResults([]);
     setError("");
     setShowForm(true);
+    setFormOpenNonce((nonce) => nonce + 1);
   }, []);
 
   // On mount: fetch data, then auto-open edit dialog if ?edit=GROUP_ID is set.
@@ -213,6 +237,27 @@ export default function FamilyGroupsPage() {
       }
     });
   }, [fetchData, openEditForm, searchParams]);
+
+  const editingGroupId = editingGroup?.id ?? null;
+
+  // #2256: the row the editor is currently bound to says so, so edit mode stays
+  // unmistakable once the page has scrolled away from the row that was clicked.
+  const isRowBeingEdited = (id: string) => showForm && editingGroupId === id;
+
+  const formRegionLabel = editingGroup
+    ? `Editing ${editingGroup.name || "Unnamed Group"}`
+    : "New family group";
+
+  // #2256: bring the form into view (and give it focus, so screen-reader and
+  // keyboard users land there too) every time it is opened — create as well as
+  // edit, since both triggers can be screens away from where the form renders.
+  // Keyed on the open nonce rather than on `showForm`/the group id, so
+  // re-opening the same group, or the create form, re-anchors the viewport
+  // instead of silently doing nothing.
+  useEffect(() => {
+    if (!showForm) return;
+    scrollToError(editorAnchorRef);
+  }, [showForm, formOpenNonce, scrollToError]);
 
   function addMember(member: MemberOption) {
     if (!canEditMembership) return;
@@ -228,6 +273,13 @@ export default function FamilyGroupsPage() {
 
   function closeForm() {
     setShowForm(false);
+    // #2256: we took focus on open, so we hand it back on close. Without this
+    // the form unmounts under the keyboard cursor and focus drops to <body>,
+    // stranding keyboard and screen-reader users at the top of the document.
+    // The trigger lives outside the form, so it is still mounted here.
+    const trigger = formTriggerRef.current;
+    formTriggerRef.current = null;
+    if (trigger && document.contains(trigger)) trigger.focus();
     // Remove ?edit param from URL when closing
     const params = new URLSearchParams(searchParams.toString());
     params.delete("edit");
@@ -498,7 +550,12 @@ export default function FamilyGroupsPage() {
                         {invite.createdBy?.name || "Unknown"}
                       </td>
                       <td className="px-4 py-2 text-muted-foreground">
-                        {new Date(invite.expiresAt).toLocaleDateString()}
+                        {/* #2256: the club's locale/zone, not the browser's —
+                            an expiry read as "4/16/2026" (or a day early) is a
+                            real operational hazard here. The shared helper also
+                            guards a malformed value, which Intl would otherwise
+                            throw a RangeError on. */}
+                        {formatFamilyGroupDate(invite.expiresAt)}
                       </td>
                       <td className="px-4 py-2 text-right">
                         <Button
@@ -520,7 +577,20 @@ export default function FamilyGroupsPage() {
         </CardContent>
       </Card>
 
-      {/* Create/Edit form */}
+      {/* Create/Edit form. Named region only while the form is open: focus
+          lands here from New Group or a row's Edit button, and the label is
+          what tells an assistive-tech user what they just opened. An unnamed
+          empty landmark would only add noise, so role, label and tabIndex are
+          all conditional on the form being open. While closed the div must be
+          `hidden`, not merely empty: an empty box would still be a `space-y-6`
+          child and double the gap between the cards around it. */}
+      <div
+        ref={editorAnchorRef}
+        className={showForm ? "scroll-mt-20 focus:outline-none" : "hidden"}
+        role={showForm ? "region" : undefined}
+        aria-label={showForm ? formRegionLabel : undefined}
+        tabIndex={showForm ? -1 : undefined}
+      >
       {showForm && (
         editingGroup ? (
           <FamilyGroupEditor
@@ -550,10 +620,13 @@ export default function FamilyGroupsPage() {
                     id="groupName"
                     value={formName}
                     onChange={(e) => setFormName(e.target.value)}
-                    placeholder='e.g., "Smith Family"'
                     required
                     disabled={canEditMembership !== true}
+                    {...groupNameHint.fieldProps}
                   />
+                  <FieldHint {...groupNameHint.hintProps}>
+                    Example: Smith Family
+                  </FieldHint>
                 </div>
 
                 <div>
@@ -636,6 +709,7 @@ export default function FamilyGroupsPage() {
           </Card>
         )
       )}
+      </div>
 
       {/* Groups table */}
       <Card>
@@ -661,11 +735,25 @@ export default function FamilyGroupsPage() {
                 </thead>
                 <tbody>
                   {filteredGroups.map((g) => (
-                    <tr key={g.id} className="border-b hover:bg-accent">
+                    <tr
+                      key={g.id}
+                      // #2256: the edited row uses the info tone that matches
+                      // its "Editing" badge, NOT the hover token — a row that
+                      // looks merely hovered does not read as a state. Keeping
+                      // it off `hover:bg-accent` stops the hover colour
+                      // overwriting the state colour under the cursor.
+                      className={`border-b ${isRowBeingEdited(g.id) ? "bg-info-3" : "hover:bg-accent"}`}
+                      aria-current={isRowBeingEdited(g.id) ? "true" : undefined}
+                    >
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
                           <Users className="h-4 w-4 text-muted-foreground" />
                           <span className="font-medium">{g.name || "Unnamed Group"}</span>
+                          {isRowBeingEdited(g.id) && (
+                            <Badge className="bg-info-3 text-info-11 border-info-6 text-xs">
+                              Editing
+                            </Badge>
+                          )}
                           {g.pendingRequests > 0 && (
                             <Badge className="bg-warning-3 text-warning-11 border-warning-6 text-xs">
                               {g.pendingRequests} pending
@@ -701,7 +789,7 @@ export default function FamilyGroupsPage() {
                         </div>
                       </td>
                       <td className="px-4 py-3 text-muted-foreground">
-                        {new Date(g.createdAt).toLocaleDateString()}
+                        {formatFamilyGroupDate(g.createdAt)}
                       </td>
                       <td className="px-4 py-3 text-right">
                         <div className="flex justify-end gap-1">
@@ -713,7 +801,12 @@ export default function FamilyGroupsPage() {
                           <Button
                             variant="ghost"
                             size="sm"
-                            onClick={() => openEditForm(g)}
+                            onClick={(event) => {
+                              // Remember the trigger so closeForm can hand
+                              // focus back to it (#2256).
+                              formTriggerRef.current = event.currentTarget;
+                              openEditForm(g);
+                            }}
                             aria-label={`Edit ${g.name || "Unnamed Group"}`}
                           >
                             <Edit2 className="h-4 w-4" />

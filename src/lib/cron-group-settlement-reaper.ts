@@ -544,6 +544,7 @@ async function finishExpiry({
 
     try {
       await sendGroupJoinCancelledEmail({
+        bookingContext: { bookingId: child.id },
         email: child.memberEmail,
         firstName: child.memberFirstName,
         organiserName,
@@ -579,6 +580,8 @@ async function finishReap({
     stripePaymentIntentId: string | null;
     groupBookingId: string;
     groupBooking: {
+      // #2258: the organiser's own booking id gates the settlement emails.
+      organiserBookingId: string;
       organiserMember: { email: string; firstName: string; lastName: string };
       organiserBooking: { checkIn: Date; checkOut: Date };
     };
@@ -629,6 +632,7 @@ async function finishReap({
 
   try {
     await sendGroupSettlementExpiredEmail({
+      bookingContext: { bookingId: settlement.groupBooking.organiserBookingId },
       email: organiser.email,
       firstName: organiser.firstName,
       checkIn: organiserBooking.checkIn,
@@ -646,6 +650,7 @@ async function finishReap({
   for (const child of released) {
     try {
       await sendGroupJoinReleasedEmail({
+        bookingContext: { bookingId: child.id },
         email: child.memberEmail,
         firstName: child.memberFirstName,
         organiserName,

@@ -178,6 +178,8 @@ const mockPaymentTransactionFindMany = vi.fn();
 const mockPromoRedemptionFindUnique = vi.fn();
 // #1993 Part A: the terminal branch records a CANCELLED booking event in-tx.
 const mockBookingEventCreate = vi.fn().mockResolvedValue({ id: "evt_1" });
+const mockEmailLogFindFirst = vi.fn().mockResolvedValue(null);
+const mockEmailLogCreate = vi.fn().mockResolvedValue({ id: "emaillog_1" });
 const mockPrismaTransaction = vi.fn();
 const mockExecuteRaw = vi.fn();
 
@@ -204,6 +206,12 @@ vi.mock("../prisma", () => ({
     // the lock transaction.
     bookingEvent: {
       create: (...args: unknown[]) => mockBookingEventCreate(...args),
+    },
+    // #2258: the withheld-send audit row for a split guest link that was never
+    // minted because the booking has "No emails" turned on.
+    emailLog: {
+      findFirst: (...args: unknown[]) => mockEmailLogFindFirst(...args),
+      create: (...args: unknown[]) => mockEmailLogCreate(...args),
     },
     $transaction: (...args: unknown[]) => mockPrismaTransaction(...args),
   },
@@ -522,6 +530,7 @@ describe("Cron: Confirm Pending Bookings", () => {
     });
 
     expect(mockSendConfirmedEmail).toHaveBeenCalledWith(
+      { bookingId: "b1" },
       "b1@example.com",
       "Test",
       booking.checkIn,
@@ -1572,6 +1581,145 @@ describe("Cron: Confirm Pending Bookings", () => {
       expect.objectContaining({ parentUnpaid: false })
     );
     expect(result.failedBookingIds).toEqual([]);
+  });
+
+  // #2258: before this, the cron minted a link, found the email withheld, and
+  // revoked it — every run, forever, filling the booking's withheld list with
+  // identical rows.
+  it("mints no split guest link at all when the booking has No emails on, and records the withhold once", async () => {
+    const booking = makePendingBooking("child_1", {
+      hasPaymentMethod: false,
+      parentBookingId: "parent_1",
+      parentBooking: IB_SETTLED_PARENT,
+      finalPriceCents: 12000,
+      guestCount: 2,
+    });
+    mockPendingBookings([booking]);
+    mockCheckCapacityForGuestRanges.mockResolvedValue({
+      available: true,
+      minAvailable: 5,
+      nightDetails: [],
+    });
+    mockEmailLogFindFirst.mockResolvedValue(null);
+    // The pre-mint gate reads only the switch columns.
+    mockBookingFindUnique.mockImplementation(
+      async ({ select }: { select?: Record<string, unknown> }) =>
+        select?.noEmails
+          ? { noEmails: true, noEmailsAt: new Date("2026-07-08T00:00:00.000Z") }
+          : booking
+    );
+
+    await confirmPendingBookings();
+
+    expect(mockMintSplitGuestPaymentLinkIfAbsent).not.toHaveBeenCalled();
+    expect(mockSendSplitGuestPaymentLinkEmail).not.toHaveBeenCalled();
+    expect(mockRevokePaymentLinkById).not.toHaveBeenCalled();
+    expect(mockEmailLogCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          bookingId: "child_1",
+          templateName: "split-guest-payment-link",
+          status: "SKIPPED_NO_EMAILS",
+        }),
+      })
+    );
+    // The hold is still extended and the operator is still told the guest
+    // portion is unpaid — silencing the member must not silence the club.
+    expect(mockSendAdminSplitSettlementUnpaidAlert).toHaveBeenCalled();
+  });
+
+  it("writes no second withheld row when this episode already recorded one", async () => {
+    const booking = makePendingBooking("child_1", {
+      hasPaymentMethod: false,
+      parentBookingId: "parent_1",
+      parentBooking: IB_SETTLED_PARENT,
+      finalPriceCents: 12000,
+      guestCount: 2,
+    });
+    mockPendingBookings([booking]);
+    mockCheckCapacityForGuestRanges.mockResolvedValue({
+      available: true,
+      minAvailable: 5,
+      nightDetails: [],
+    });
+    mockBookingFindUnique.mockImplementation(
+      async ({ select }: { select?: Record<string, unknown> }) =>
+        select?.noEmails
+          ? { noEmails: true, noEmailsAt: new Date("2026-07-08T00:00:00.000Z") }
+          : booking
+    );
+    mockEmailLogFindFirst.mockResolvedValue({ id: "emaillog_existing" });
+
+    await confirmPendingBookings();
+
+    expect(mockEmailLogCreate).not.toHaveBeenCalled();
+    // The once-check is scoped to THIS episode, so a later re-enable records
+    // afresh rather than returning the first episode's stale row.
+    expect(mockEmailLogFindFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          createdAt: { gte: new Date("2026-07-08T00:00:00.000Z") },
+        }),
+      })
+    );
+  });
+
+  // The flip race: the switch goes on between the pre-mint gate and the send.
+  it("revokes the token but does not re-mint next run when the send is withheld mid-flight", async () => {
+    const booking = makePendingBooking("child_1", {
+      hasPaymentMethod: false,
+      parentBookingId: "parent_1",
+      parentBooking: IB_SETTLED_PARENT,
+      finalPriceCents: 12000,
+      guestCount: 2,
+    });
+    mockPendingBookings([booking]);
+    mockCheckCapacityForGuestRanges.mockResolvedValue({
+      available: true,
+      minAvailable: 5,
+      nightDetails: [],
+    });
+    mockSendSplitGuestPaymentLinkEmail.mockResolvedValue({
+      status: "withheld_for_booking",
+      emailLogId: "log_1",
+      bookingId: "child_1",
+      reason: "booking_no_emails",
+    });
+
+    await confirmPendingBookings();
+
+    // The unreachable token is still cleaned up...
+    expect(mockRevokePaymentLinkById).toHaveBeenCalledWith("pl_split_1");
+    // ...and the operator is still told.
+    expect(mockSendAdminSplitSettlementUnpaidAlert).toHaveBeenCalled();
+  });
+
+  // A fail-CLOSED withhold is a transient fault, not a standing decision, so it
+  // keeps ordinary retry semantics (#2258 R5).
+  it("treats an unreadable switch mid-flight as a retryable failure, not a withhold", async () => {
+    const booking = makePendingBooking("child_1", {
+      hasPaymentMethod: false,
+      parentBookingId: "parent_1",
+      parentBooking: IB_SETTLED_PARENT,
+      finalPriceCents: 12000,
+      guestCount: 2,
+    });
+    mockPendingBookings([booking]);
+    mockCheckCapacityForGuestRanges.mockResolvedValue({
+      available: true,
+      minAvailable: 5,
+      nightDetails: [],
+    });
+    mockSendSplitGuestPaymentLinkEmail.mockResolvedValue({
+      status: "withheld_for_booking",
+      emailLogId: "log_1",
+      bookingId: "child_1",
+      reason: "booking_flag_unreadable",
+    });
+
+    await confirmPendingBookings();
+
+    expect(mockRevokePaymentLinkById).toHaveBeenCalledWith("pl_split_1");
   });
 
   it("revokes the just-minted link when the member email is suppressed (#1967 FIX-3a)", async () => {

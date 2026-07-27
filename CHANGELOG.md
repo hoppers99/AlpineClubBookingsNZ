@@ -46,6 +46,157 @@ All notable public reference-release changes should be recorded here.
   to a family GROUP still change that group's composition, and group composition
   is a fee-model input, so an approval that was previously refused can now
   compose a group the fee rules classify as a Family.
+- **Recording a membership payment by hand now asks whether to tell the member
+  — and can actually tell them (#2260).** When a treasurer marks a member's
+  subscription paid for a cash, cheque or internet-banking payment, the club
+  had no way to send that member any acknowledgement: the action wrote the
+  status and emailed nobody, ever. It now offers the club's usual choice.
+  "Mark paid and email member" sends a short receipt — the season, the amount
+  (only where the club has a recorded fee amount for that season), and the date
+  it was recorded. "Mark paid without emailing" records the identical payment
+  and tells nobody. The subscription is marked paid either way, and which way
+  the treasurer chose is written to the audit log, so a later "did we tell
+  them?" has an answer. Because a manual payment is cash the system never saw,
+  the receipt never invents a figure: it shows an amount only where the club has
+  one recorded for that member alone, and leaves it out otherwise. A family
+  membership fee is deliberately left out — that figure is the whole family's
+  bill, and telling one member it was recorded against them (with "nothing
+  further to pay") while their relatives still owe theirs would be worse than
+  saying nothing. It mentions no invoice, no payment link and no Xero
+  reference, because manual mark-paid only exists where there is no invoice.
+  The message the treasurer gets back says what actually happened rather than
+  what was asked for: a receipt "is being emailed" only if it really was handed
+  over for sending, and there is a plain "the receipt could not be sent" when
+  the member's address cannot receive it. The payment stays recorded either
+  way — a failed email never quietly undoes it.
+  Reversing a manual payment never emails the member — there is no
+  "your payment was un-recorded" notice worth sending.
+  The confirmation itself is now a proper dialog with a note box, replacing the
+  three bare browser pop-ups this action used to rely on (including the one
+  where cancelling the note prompt silently abandoned the whole action).
+
+- **"No emails" is now something an officer can actually switch on, and the
+  booking says what it cost (#2259).** The mechanism landed in #2258; this is
+  the part an officer touches. The switch sits in the **Admin tools** card on a
+  booking, and turning it on opens a dialog that states the consequence in plain
+  words — no emails at all for this booking, including cancellation notices and
+  payment reminders, and you are responsible for telling the member yourself —
+  with a button that says exactly that. It is deliberately not a tick-box you
+  can skim past, and nothing is saved until it is answered. If the booking is
+  holding a live waitlist offer, the dialog says so before you confirm: that
+  offer was emailed before the switch went on, so the member **can still accept
+  it** and the bed must not be reassigned — what they lose is the expiry
+  warning and the confirmation if they accept, so an officer has to follow it
+  up. If the booking is still waitlisted with no offer yet, the dialog says
+  that instead: while emails are off it is passed over when beds are handed
+  out, keeps its place in the queue, and holds nobody else up.
+  Once it is on, the booking carries a standing warning listing what was
+  actually withheld — each kind of message by name, how many of it, its
+  subject, and when the most recent one would have gone out — including the
+  invoice email Xero would have sent. Grouping by kind is deliberate: a week of
+  chore-roster emails for a large party is dozens of near-identical records,
+  and listed flat they would bury the one cancellation that matters. Two kinds
+  carry a link rather than information and each says what to do about it: the
+  split-guest payment link was never generated, so clearing the switch is
+  enough and it re-sends itself; the chore roster replaced the guest's working
+  link before the email was withheld, so that guest currently has nothing that
+  works and an officer has to re-send the roster by hand. The banner also
+  points at the email-failure queue, since it
+  lists only what was withheld deliberately and not what failed for other
+  reasons. It keeps showing after the switch is turned back off, in amber
+  rather than red: turning emails back on re-sends nothing, so a member who
+  was never told about a cancellation is still never told.
+  Every admin action on that booking that would normally ask "email the member
+  about this?" now stops asking. With the switch on the message is withheld
+  whichever button is pressed, so the question was misleading — it invited an
+  officer to choose "and email member" and walk away believing the member had
+  been told. Confirming pending guests, editing, cancelling, approving or
+  declining a review, force-confirming from the waitlist, and deciding a refund
+  appeal all now say plainly that emails are off and carry on without sending.
+  The chore-roster send is unchanged, because it goes out per night across many
+  bookings at once; a silenced booking's own roster email is still withheld
+  individually.
+  A member sees no sign of any of this — not the switch, not the warning, and
+  no value in the page's data that varies with it. The page they are served
+  carries no trace of the setting at all, not even an empty one.
+
+- **A booking can now be put on "No emails", and the system withholds
+  everything about it (#2258).** Sometimes the club needs a booking to be quiet
+  — a member who has asked not to be contacted, a booking being sorted out by
+  phone, a test or duplicate an officer is cleaning up. Turning "No emails" on
+  for a booking stops every message the system would send about that stay:
+  confirmations, changes, payment notices, reminders, arrival information,
+  cancellations, waitlist offers, chore rosters, and even the invoice email Xero
+  sends on the club's behalf (the invoice itself is still raised in Xero — only
+  the emailing stops, so an officer can still send it by hand). Turning it on
+  requires an explicit acknowledgement that the member will not be told, and who
+  turned it on and when is recorded.
+  Three things it deliberately does NOT do. It never touches sign-in security
+  mail — two-factor codes, password resets, sign-in links and email-change
+  notices always go through, because the switch is tied to the booking and never
+  to a person's email address; silencing those would lock a member out of their
+  own account. It never silences the club's own admin alerts, so an officer is
+  still told when a payment fails. And it never guesses: if the system cannot
+  read the setting for any reason it withholds the message rather than risk
+  sending one that was meant to be held back, and tries again later.
+  Everything withheld is recorded against the booking, so the booking page can
+  show a standing warning listing exactly what was not sent. A booking on "No
+  emails" is also skipped when waitlist places are handed out, so it is not
+  offered a bed it would never hear about, and the waitlist board shows such an
+  entry as deliberately silenced rather than as a failed email. Turning the
+  switch on does not withdraw an offer the member has already been made — the
+  waitlist board flags that booking for attention until someone sorts it out.
+  Turning the switch back off restores normal mail from that point on; it does
+  not re-send anything that was withheld.
+- **Example text in admin forms no longer looks like an answer somebody already
+  typed (#2257).** Fields such as Season Name, Promo Code, Chore Name, Group
+  Name and Banner Message used to show their example inside the box in grey —
+  "e.g. Winter 2026" — which reads as a value the form has already accepted.
+  Those examples now sit as a short line of helper text UNDER the field
+  ("Example: Winter 2026"). That means the example stays visible while you type
+  and after the field is filled in, instead of disappearing at the first
+  keystroke, and it can now sit alongside a validation error or a "you can view
+  this but not change it" note rather than competing with them — where a field
+  has more than one of those, the error or the view-only note is announced
+  first. Placeholders still shown in fields built on the shared input, textarea,
+  search and drop-down components — instructions like "First name", format
+  samples such as "member@example.com" or "0.00" — are now drawn in italics so
+  they read as prompts rather than as content. A handful of admin fields use
+  raw browser inputs and keep the browser's default placeholder look for now;
+  they are part of the #2264 sweep. Drop-down buttons that said "Select item…" were the worst offender:
+  they were drawn in ordinary text colour, identical to a real selection, and
+  are now styled as placeholders too. Reviewing the remaining placeholders
+  across the rest of the app is tracked separately (#2264).
+
+- **Dates no longer change shape (or day) depending on whose computer is
+  looking at them, and the family-group "Edit" button visibly does something
+  (#2256).** A handful of screens printed dates using whatever the *viewer's*
+  own computer was set to instead of the club's settings. On a machine set to
+  United States English, "16 Apr 2026" came out as "4/16/2026"; on a machine in
+  a time zone behind New Zealand it could come out as the day *before* the real
+  one. The affected places were the family-group request queue (the "Requested"
+  stamps and every date of birth on a review card), the family-groups list
+  (partner-invite expiry dates and the "Created" column), the induction records
+  (sign-off and completion dates, on screen and on the printed sheet), and the
+  Xero settings page's "cache last refreshed / expires" line. The
+  card-setup-failed email had the same problem in a quieter form — it named the
+  right country but not the right time zone, so the stay dates it quoted
+  depended on where the sending server happened to be. All of these now use the
+  club's own date settings, so everyone sees the same date, written the same
+  way, wherever they are. Chore-roster emails are deliberately unchanged: they
+  keep their long "Wednesday, 15 July 2026" wording.
+- **Family groups: pressing the edit (pencil) icon on a group — or New
+  Group — used to look like it had done nothing (#2256).** Both forms open in
+  the same place: below the search bar and the two queue cards, and *above* the
+  list of groups. So if you scrolled down to a group and clicked edit, the
+  editor opened off the top of the screen; and with a busy queue, New Group
+  opened the form well below the button you had just pressed. Either way
+  nothing you could see changed. The page now scrolls to the form and puts the
+  keyboard cursor in it every time it is opened — including when you re-open
+  the same group you were just editing, which previously did nothing at all.
+  The group you are editing is highlighted in the list and badged "Editing"
+  until you save or close, and closing puts the keyboard cursor back on the
+  button you started from. Nothing about who may edit a group has changed.
 - **"Add Dependant → Link Existing" now finds the members it was hiding, and
   says why when it still finds nobody (#2254).** Searching for an existing
   member to link as a dependant reported "No eligible members found" for almost

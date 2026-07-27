@@ -247,6 +247,7 @@ describe("settleGroupBookingOnOrganiserCancel", () => {
     });
     expect(mocks.reconcileBedAllocations).toHaveBeenCalledTimes(2);
     expect(mocks.sendBookingCancelledEmail).toHaveBeenCalledWith(
+      { bookingId: "child-1" },
       "joiner@example.com",
       "Jo",
       CHECK_IN,
@@ -327,6 +328,7 @@ describe("settleGroupBookingOnOrganiserCancel", () => {
     });
     // Joiners emailed with their refund amount.
     expect(mocks.sendBookingCancelledEmail).toHaveBeenCalledWith(
+      { bookingId: "child-1" },
       "joiner@example.com",
       "Jo",
       CHECK_IN,
@@ -412,6 +414,7 @@ describe("settleGroupBookingOnOrganiserCancel", () => {
       },
     });
     expect(mocks.sendBookingCancelledEmail).toHaveBeenCalledWith(
+      { bookingId: "child-1" },
       "joiner@example.com",
       "Jo",
       CHECK_IN,
@@ -997,6 +1000,7 @@ describe("settleGroupBookingOnOrganiserCancel re-drivability (#1236)", () => {
     expect(mocks.paymentUpdate).not.toHaveBeenCalled();
     expect(mocks.enqueueXeroRefund).not.toHaveBeenCalled();
     expect(mocks.sendBookingCancelledEmail).toHaveBeenCalledWith(
+      { bookingId: "child-1" },
       "joiner@example.com",
       "Jo",
       CHECK_IN,

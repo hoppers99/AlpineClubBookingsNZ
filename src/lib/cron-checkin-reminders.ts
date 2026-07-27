@@ -95,6 +95,7 @@ export async function sendCheckinReminders(): Promise<{ sent: number; skipped: n
 
     try {
       await sendCheckinReminderEmail(
+        { bookingId: booking.id },
         booking.member.email,
         booking.member.firstName,
         booking.checkIn,

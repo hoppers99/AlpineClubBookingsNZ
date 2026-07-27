@@ -59,7 +59,10 @@ export async function POST(
   if (!booking || booking.deletedAt) {
     return NextResponse.json({ error: "Booking not found" }, { status: 404 });
   }
-  if (booking.memberId !== session.user.id && !hasAdminAccess(session.user)) {
+  // #2258: the caller may be the BOOKER, not an officer. Remember which, so a
+  // withheld outcome discloses its cause to an admin and never to a member.
+  const isAdmin = hasAdminAccess(session.user);
+  if (booking.memberId !== session.user.id && !isAdmin) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
@@ -74,12 +77,22 @@ export async function POST(
   let sent = 0;
   let justSent = 0;
   let suppressed = 0;
+  // #2258: deliberately withheld is its own count. Folding it into `sent` would
+  // tell the admin the member has the link; folding it into `suppressed` would
+  // blame the member's address for a choice the club made.
+  let withheld = 0;
+  // #2258: the switch could not be READ, so the send failed closed. Separate
+  // again — a transient database fault must never be reported as an
+  // undeliverable address.
+  let transientFailure = 0;
   for (const child of children) {
     try {
       const result = await issueSplitGuestPaymentLink(child.id);
       if (result.outcome === "sent") sent += 1;
       else if (result.outcome === "just_sent") justSent += 1;
       else if (result.outcome === "suppressed") suppressed += 1;
+      else if (result.outcome === "withheld") withheld += 1;
+      else if (result.outcome === "transient_failure") transientFailure += 1;
     } catch (err) {
       logger.error(
         { err, bookingId: child.id, parentBookingId: id },
@@ -90,6 +103,41 @@ export async function POST(
         { status: 500 }
       );
     }
+  }
+
+  if (withheld > 0 && sent === 0 && justSent === 0) {
+    // #2258: nothing was minted or sent because this booking is set to receive
+    // no email. Not a 502 — nothing is broken and retrying changes nothing.
+    //
+    // THIS ROUTE IS NOT ADMIN-ONLY: the booker calls it for their own booking
+    // (see the authorisation above), and the only client renders `error`
+    // verbatim. So the cause is disclosed ONLY to an admin. A member gets the
+    // same cause-free wording the /pay refresh page uses, because naming the
+    // switch would both reveal an internal admin control and invite them to ask
+    // for it to be changed.
+    return NextResponse.json(
+      {
+        error: isAdmin
+          ? "This booking is set to send no emails, so no payment link was sent. Turn emails back on for the booking first, or arrange payment with the member directly."
+          : "We weren't able to email the link. Please contact the club and we'll help you complete payment.",
+      },
+      { status: 409 }
+    );
+  }
+
+  if (transientFailure > 0 && sent === 0 && justSent === 0) {
+    // #2258: the booking's email setting could not be read, so the send failed
+    // closed. Nothing is wrong with the address and nothing was decided — this
+    // is a transient fault, so the wording is cause-free for everyone (an admin
+    // gains nothing from "the setting could not be read") and the status says
+    // "try again", not "undeliverable".
+    return NextResponse.json(
+      {
+        error:
+          "We weren't able to email the link just now. Please try again in a few minutes, or contact the club and we'll help you complete payment.",
+      },
+      { status: 503 }
+    );
   }
 
   if (suppressed > 0 && sent === 0) {
@@ -104,5 +152,19 @@ export async function POST(
     );
   }
 
-  return NextResponse.json({ sent, justSent, suppressed });
+  // Mixed outcome: at least one child was emailed and at least one was not.
+  // Reporting a bare 200 let the client claim unqualified success for a booking
+  // whose guests are not all covered, so say how many did not go out.
+  //
+  // How many, never why. The cause-specific counts are ADMIN-ONLY, and that
+  // includes the FIELD NAMES: a member reading devtools would learn from a
+  // `withheld` key alone that the shortfall was deliberate — the same
+  // disclosure the error strings are careful to avoid. Non-admins get only the
+  // aggregate, which is all the client renders anyway.
+  return NextResponse.json({
+    sent,
+    justSent,
+    notDelivered: suppressed + withheld + transientFailure,
+    ...(isAdmin ? { suppressed, withheld, transientFailure } : {}),
+  });
 }

@@ -100,7 +100,7 @@ function spec(
 }
 
 /**
- * The authoritative classification of all 76 Member FK-owning relations. The
+ * The authoritative classification of all 77 Member FK-owning relations. The
  * DMMF/schema completeness test (member-merge-dmmf.test.ts) fails CI if the
  * schema grows a Member relation that is missing here (or if a key here no
  * longer exists in the schema), so a new relation cannot silently escape merge
@@ -172,6 +172,10 @@ export const MEMBER_MERGE_RELATION_SPECS: readonly MemberMergeRelationSpec[] = [
   spec("Booking", "adminCapacityHoldBy", "adminCapacityHoldByMemberId", "move"),
   spec("Booking", "capacityOverriddenBy", "capacityOverriddenByMemberId", "move"),
   spec("Booking", "wholeLodgeHoldBy", "wholeLodgeHoldByMemberId", "move"),
+  // #2258: who turned the per-booking "No emails" switch on. An actor
+  // back-reference exactly like the three hold columns above, so it moves
+  // with the surviving member and the audit trail stays readable.
+  spec("Booking", "noEmailsBy", "noEmailsByMemberId", "move"),
   spec("BookingGuest", "member", "memberId", "move"),
   spec("GroupBooking", "organiserMember", "organiserMemberId", "move"),
   spec("GroupBookingJoin", "joinerMember", "joinerMemberId", "resolve", {

@@ -19,6 +19,7 @@ import {
 import { formatCents } from "@/lib/utils";
 import { getAgeTierLabel, useAgeTierOptions } from "@/lib/use-age-tier-options";
 import { GuestNightGrid } from "@/components/guest-night-grid";
+import { BookingNoEmailsNotice } from "@/components/booking-no-emails-notice";
 import { useScrollToFeedback } from "@/hooks/use-scroll-to-feedback";
 
 // #2104: mirror of requiresAdultSupervisionReview (src/lib/booking-review.ts).
@@ -112,6 +113,14 @@ interface BookingData {
   // pre-existing fixtures/callers stay valid.
   requiresAdminReview?: boolean;
   adminReviewStatus?: string | null;
+  // #2259 honesty rule: the booking's "No emails" switch. With it on, the
+  // change-notification email is withheld by the mailer whatever the admin
+  // picks, so the notify dialog stops offering the choice and states the
+  // position instead. Optional so pre-existing fixtures/callers stay valid;
+  // the booking page sets it. NEVER surfaced on a member-facing control — a
+  // member must not learn the switch exists — and the panel only reads it on
+  // the admin (`actingAsAdmin`) dialog path.
+  noEmails?: boolean;
 }
 
 interface NewGuest {
@@ -901,6 +910,9 @@ export function EditBookingPanel({
   // dialog shows exactly when the server will honour the choice. Member
   // self-edits keep the immediate always-notify save.
   const actingAsAdmin = booking.viewerRole === "ADMIN";
+  // #2259: read only alongside the admin dialog path below, so a member editing
+  // their own booking never renders anything derived from the switch.
+  const noEmailsOn = actingAsAdmin && booking.noEmails === true;
 
   // #2104: does the post-edit guest set (remaining + added) leave minors with no
   // adult? The server (resolveModifyReviewUpdate) only demands a written reason
@@ -2100,40 +2112,55 @@ export function EditBookingPanel({
 
       {/* Owner decision (#1668/#1696): the admin explicitly chooses, per edit,
           whether the member is emailed. Both choices save the booking; the
-          choice itself is recorded in the audit log. */}
+          choice itself is recorded in the audit log.
+
+          #2259: with the booking's "No emails" switch on there is no choice to
+          make — the mailer withholds the change notification either way — so
+          the dialog states that and offers only the send-nothing action. */}
       <Dialog
         open={notifyDialogOpen}
         onOpenChange={(open) => !saving && setNotifyDialogOpen(open)}
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Email the member about this change?</DialogTitle>
+            <DialogTitle>
+              {noEmailsOn
+                ? "Save this change?"
+                : "Email the member about this change?"}
+            </DialogTitle>
             <DialogDescription>
-              The booking will be updated either way. Choose whether the member
-              receives the standard change-notification email — your choice is
-              recorded in the audit log.
+              {noEmailsOn
+                ? "The booking will be updated."
+                : "The booking will be updated either way. Choose whether the member receives the standard change-notification email — your choice is recorded in the audit log."}
             </DialogDescription>
           </DialogHeader>
+          {noEmailsOn && <BookingNoEmailsNotice />}
           <DialogFooter className="gap-2 sm:gap-2">
             <Button
               variant="outline"
               disabled={saving}
               onClick={() => {
                 setNotifyDialogOpen(false);
-                void handleSave(false);
+                // #2259 H1: with the switch on, send NO choice rather than
+                // notifyMember:false. `false` makes the route skip the send, so
+                // the mailer's gate never runs and no withheld row is recorded —
+                // the banner would then omit the very change just made.
+                void handleSave(noEmailsOn ? undefined : false);
               }}
             >
-              Save without emailing
+              {noEmailsOn ? "Save changes" : "Save without emailing"}
             </Button>
-            <Button
-              disabled={saving}
-              onClick={() => {
-                setNotifyDialogOpen(false);
-                void handleSave(true);
-              }}
-            >
-              Save and email member
-            </Button>
+            {!noEmailsOn && (
+              <Button
+                disabled={saving}
+                onClick={() => {
+                  setNotifyDialogOpen(false);
+                  void handleSave(true);
+                }}
+              >
+                Save and email member
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

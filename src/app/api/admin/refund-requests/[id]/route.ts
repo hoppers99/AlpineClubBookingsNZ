@@ -294,6 +294,9 @@ export async function PUT(
           checkIn: booking.checkIn,
           checkOut: booking.checkOut,
         }),
+        // Member-facing and booking-scoped: the per-booking "No emails"
+        // switch withholds it (#2258).
+        bookingContext: { bookingId: booking.id },
         templateName: "refund-request-resolved",
         templateData: {
           firstName: refundRequest.member.firstName,
@@ -366,6 +369,9 @@ export async function PUT(
           checkIn: booking.checkIn,
           checkOut: booking.checkOut,
         }),
+        // Member-facing and booking-scoped: the per-booking "No emails"
+        // switch withholds it (#2258).
+        bookingContext: { bookingId: booking.id },
         templateName: "refund-request-resolved",
         templateData: {
           firstName: refundRequest.member.firstName,
