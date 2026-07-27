@@ -19,6 +19,10 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  FieldHint,
+  describedByFieldHint,
+} from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { XeroAccountMultiSelect } from "@/components/admin/xero-account-multi-select";
@@ -593,11 +597,19 @@ export function FinanceReportMappingsPanel() {
                             </div>
                             <div className="space-y-1.5">
                               <Label>Subtype</Label>
+                              {/* #2257 — the example moved out of the
+                                  placeholder. These rows are rendered inside a
+                                  .map(), so a hook cannot be called per row: the
+                                  hint id is derived from the row key instead,
+                                  which is a cuid or a `new-N` counter and so is
+                                  always id-safe. */}
                               <Input
                                 list={`finance-subtypes-${kind}`}
                                 value={category.subtype ?? ""}
-                                placeholder="e.g. Operating"
                                 disabled={!canEdit}
+                                aria-describedby={describedByFieldHint(
+                                  `finance-subtype-hint-${category.key}`,
+                                )}
                                 onChange={(event) =>
                                   updateCategory(category.key, {
                                     subtype: event.target.value
@@ -606,6 +618,11 @@ export function FinanceReportMappingsPanel() {
                                   })
                                 }
                               />
+                              <FieldHint
+                                id={`finance-subtype-hint-${category.key}`}
+                              >
+                                Example: Operating
+                              </FieldHint>
                             </div>
                             <div className="space-y-1.5">
                               <Label>Order</Label>

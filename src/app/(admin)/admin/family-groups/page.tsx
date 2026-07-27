@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useMemo } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
@@ -46,6 +47,8 @@ export default function FamilyGroupsPage() {
   const [showForm, setShowForm] = useState(false);
   const [editingGroup, setEditingGroup] = useState<FamilyGroupSummary | null>(null);
   const [formName, setFormName] = useState("");
+  // #2257 — the example lives UNDER the field, not inside it as grey pseudo-content.
+  const groupNameHint = useFieldHint();
   const [memberSearch, setMemberSearch] = useState("");
   const [searchResults, setSearchResults] = useState<MemberOption[]>([]);
   const [selectedMembers, setSelectedMembers] = useState<MemberOption[]>([]);
@@ -550,10 +553,13 @@ export default function FamilyGroupsPage() {
                     id="groupName"
                     value={formName}
                     onChange={(e) => setFormName(e.target.value)}
-                    placeholder='e.g., "Smith Family"'
                     required
                     disabled={canEditMembership !== true}
+                    {...groupNameHint.fieldProps}
                   />
+                  <FieldHint {...groupNameHint.hintProps}>
+                    Example: Smith Family
+                  </FieldHint>
                 </div>
 
                 <div>

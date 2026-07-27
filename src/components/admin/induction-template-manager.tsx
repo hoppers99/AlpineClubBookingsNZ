@@ -13,6 +13,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -106,6 +107,8 @@ export function InductionTemplateManager() {
   const [saving, setSaving] = useState(false);
   const [newName, setNewName] = useState("Lodge Induction Checklist");
   const [newVersion, setNewVersion] = useState("");
+  // #2257 — the example lives UNDER the field, not inside it as grey pseudo-content.
+  const versionHint = useFieldHint();
   const [newKind, setNewKind] = useState<InductionKind>("NEW_MEMBER");
   const [activeTemplate, setActiveTemplate] = useState<ActiveTemplate | null>(null);
   const [showActiveTemplate, setShowActiveTemplate] = useState(false);
@@ -542,9 +545,10 @@ export function InductionTemplateManager() {
                 value={newVersion}
                 disabled={!canEdit}
                 onChange={(e) => setNewVersion(e.target.value)}
-                placeholder="e.g. 2026.1"
                 className="w-32"
+                {...versionHint.fieldProps}
               />
+              <FieldHint {...versionHint.hintProps}>Example: 2026.1</FieldHint>
             </div>
             <ViewOnlyActionButton
               canEdit={canEdit}
