@@ -3175,10 +3175,11 @@ export function schoolAttendeeConfirmationTemplate(data: {
  * with NO Xero invoice, so this deliberately mentions no invoice, no payment
  * link and no Xero reference — there is nothing left for the member to do.
  *
- * `amountCents` is null whenever the club has no recorded fee amount for this
- * season (no active charge coverage, or a no-invoice fee), in which case the
- * amount line is omitted rather than guessed: a manual payment is cash the app
- * never saw, so inventing a figure would be a false receipt.
+ * `amountCents` is null whenever no amount can be attributed to this one
+ * member's subscription — no active charge coverage, a no-invoice fee, or a
+ * charge that covers a whole family — in which case the amount line is omitted
+ * rather than guessed: a manual payment is cash the app never saw, and a
+ * family total printed as one member's receipt would be a false one.
  */
 export function membershipPaymentRecordedTemplate(data: {
   firstName: string;
@@ -3188,7 +3189,9 @@ export function membershipPaymentRecordedTemplate(data: {
 }): string {
   return layout(`
     ${heading("Membership Payment Recorded")}
-    ${paragraph("Hi " + escapeHtml(data.firstName) + ", thank you — " + escapeHtml(CLUB_NAME) + " has recorded your membership subscription payment for the " + escapeHtml(String(data.seasonYear)) + " season.")}
+    ${paragraph(
+      `Hi ${escapeHtml(data.firstName)}, thank you — ${escapeHtml(CLUB_NAME)} has recorded your membership subscription payment for the ${escapeHtml(String(data.seasonYear))} season.`,
+    )}
     ${infoTable([
       { label: "Season", value: escapeHtml(String(data.seasonYear)) },
       ...(data.amountCents !== null

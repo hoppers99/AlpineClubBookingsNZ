@@ -1,6 +1,6 @@
 import "server-only";
 
-import type { SubscriptionStatus } from "@prisma/client";
+import type { MembershipFeeBillingBasis, SubscriptionStatus } from "@prisma/client";
 import { createAuditLog } from "@/lib/audit";
 import { sendMembershipPaymentRecordedEmail } from "@/lib/email/membership";
 import logger from "@/lib/logger";
@@ -60,12 +60,25 @@ export type ManualSubscriptionPaymentResult = {
   direction: ManualPaymentDirection;
   /**
    * The admin's email decision as recorded in the audit log. Always false on
-   * the unpaid path (no reversal notice exists). On the paid path it is the
-   * decision, not a delivery receipt — a later send failure is retried and
-   * alerted by the email layer, never by silently rewriting this.
+   * the unpaid path (no reversal notice exists). This is the DECISION, not a
+   * delivery receipt — read `receipt` for what became of it.
    */
   memberNotified: boolean;
+  /**
+   * What actually became of the receipt, so no caller can turn a decision into
+   * a claim that the member was emailed:
+   *   not_requested — the admin declined it, or this was a reversal
+   *   queued        — handed to the mailer for delivery (not proof of arrival)
+   *   not_delivered — the mailer suppressed it, the address was a club-internal
+   *                   placeholder, or the send failed outright
+   */
+  receipt: ManualPaymentReceiptOutcome;
 };
+
+export type ManualPaymentReceiptOutcome =
+  | "not_requested"
+  | "queued"
+  | "not_delivered";
 
 /**
  * Discriminated on `direction` so the "email the member or not" choice cannot
@@ -88,6 +101,42 @@ export type ApplyManualSubscriptionPaymentInput =
       notifyMember?: never;
     };
 
+/**
+ * The amount to print on the member's receipt, or null to omit the line.
+ *
+ * The frozen charge snapshot carries the CHARGE's total, which is only this
+ * member's own fee when the charge is about this member alone. Two independent
+ * conditions have to hold, and both are allow-list shaped so anything
+ * unfamiliar degrades to the omission branch (which the receipt already
+ * handles) rather than to a wrong figure:
+ *
+ *  - `billingBasis === "PER_MEMBER"`. An allow-list, not a "not PER_FAMILY"
+ *    deny-list: a basis added to the enum later must not start printing shared
+ *    totals just because nobody remembered this file. NO_INVOICE is excluded
+ *    here as well as by the zero check below.
+ *  - Exactly one coverage row on the charge. The basis says what the amount
+ *    MEANS; the fan-out says what it actually paid for. Counting rows rather
+ *    than active rows on purpose — releasing a family member's claim (#2147)
+ *    must not make a family total start looking like a personal one.
+ *
+ * …and a zero total is never printed: a no-invoice fee is nothing to receipt,
+ * and "$0.00 recorded" reads as a bug to the member either way.
+ */
+function receiptAmountCents(
+  charge:
+    | {
+        chargedAmountCents: number;
+        billingBasis: MembershipFeeBillingBasis;
+        _count: { coverage: number };
+      }
+    | undefined,
+): number | null {
+  if (!charge) return null;
+  if (charge.billingBasis !== "PER_MEMBER") return null;
+  if (charge._count.coverage !== 1) return null;
+  return charge.chargedAmountCents > 0 ? charge.chargedAmountCents : null;
+}
+
 export async function applyManualSubscriptionPayment(
   input: ApplyManualSubscriptionPaymentInput,
 ): Promise<ManualSubscriptionPaymentResult> {
@@ -108,13 +157,28 @@ export async function applyManualSubscriptionPayment(
         xeroInvoiceId: true,
         manuallyMarkedPaidAt: true,
         member: { select: { firstName: true, email: true } },
-        // #2260: the only amount this app can honestly put on a manual-payment
-        // receipt. A manual payment is cash the app never saw, so the figure
-        // comes from the frozen charge snapshot of the season's ACTIVE coverage
-        // claim (releasedAt IS NULL) when there is one — never from a guess.
+        // #2260: a manual payment is cash the app never saw, so any figure on
+        // the receipt has to come from a frozen snapshot — the season's ACTIVE
+        // coverage claim (releasedAt IS NULL) — never from a guess.
+        //
+        // `chargedAmountCents` is the CHARGE's total, not this member's share.
+        // A PER_FAMILY charge covers every family member's subscription with
+        // one amount, so printing it here would tell one member the whole
+        // family's fee was recorded against them ("nothing further to pay")
+        // while their relatives' subscriptions are still unpaid. So the basis
+        // and the coverage fan-out are read too, and the amount is printed only
+        // when the snapshot is unambiguously about this one subscription.
         chargeCoverage: {
           where: { releasedAt: null },
-          select: { charge: { select: { chargedAmountCents: true } } },
+          select: {
+            charge: {
+              select: {
+                chargedAmountCents: true,
+                billingBasis: true,
+                _count: { select: { coverage: true } },
+              },
+            },
+          },
           take: 1,
         },
       },
@@ -210,8 +274,9 @@ export async function applyManualSubscriptionPayment(
       );
       // The receipt needs the amount and the recipient read before commit;
       // the send itself happens after the transaction returns.
-      const amountCents =
-        subscription.chargeCoverage?.[0]?.charge.chargedAmountCents ?? null;
+      const amountCents = receiptAmountCents(
+        subscription.chargeCoverage?.[0]?.charge,
+      );
       return {
         result: {
           ...updated,
@@ -219,7 +284,7 @@ export async function applyManualSubscriptionPayment(
           memberNotified: notifyMember,
         },
         recipient:
-          notifyMember && subscription.member?.email
+          subscription.member?.email
             ? {
                 email: subscription.member.email,
                 firstName: subscription.member.firstName,
@@ -228,11 +293,7 @@ export async function applyManualSubscriptionPayment(
                 // same timestamp written to manuallyMarkedPaidAt/paidAt, not a
                 // second clock read after the transaction.
                 recordedAt: now,
-                // A no-invoice (zero-cent) fee carries no amount worth
-                // printing, so it is reported as "unknown" and the receipt
-                // simply omits the line.
-                amountCents:
-                  amountCents !== null && amountCents > 0 ? amountCents : null,
+                amountCents,
               }
             : null,
       };
@@ -297,8 +358,10 @@ export async function applyManualSubscriptionPayment(
           hasXeroInvoiceLink: Boolean(subscription.xeroInvoiceId),
           // #2260: a reversal never emails the member — there is no
           // "your payment was un-recorded" notice, and inventing one would be
-          // worse than silence. Pinned in the log so the absence is a decision.
-          notifyMember: false,
+          // worse than silence. Recorded under its OWN key so a raw metadata
+          // render cannot be misread as an admin having declined the choice on
+          // the paid path: here no choice was ever offered.
+          notifyMemberOffered: false,
         },
       },
       tx,
@@ -314,24 +377,51 @@ export async function applyManualSubscriptionPayment(
   });
 
   // #2260: dispatched only on the paid path, and only when the admin chose it.
-  // A send failure must never undo or 500 the committed money state — the email
-  // layer already logs, retries and alerts on its own failures.
-  if (recipient) {
-    try {
-      await sendMembershipPaymentRecordedEmail({
-        email: recipient.email,
-        firstName: recipient.firstName,
-        seasonYear: recipient.seasonYear,
-        amountCents: recipient.amountCents,
-        recordedAt: recipient.recordedAt,
-      });
-    } catch (error) {
-      logger.error(
-        { err: error, subscriptionId: input.subscriptionId },
-        "Manual subscription payment recorded, but the member receipt failed to send",
+  // A send failure must never undo or 500 the committed money state — but it
+  // must never be swallowed either, or the admin is told a receipt went out
+  // when nothing did. Every branch that ends without a queued send says so,
+  // both in the log and in the returned `receipt`.
+  let receipt: ManualPaymentReceiptOutcome = "not_requested";
+  if (notifyMember) {
+    if (!recipient) {
+      // Member.email is non-nullable, so this is the "should not happen" arm —
+      // it must still be audible rather than a wordless skip.
+      logger.warn(
+        { subscriptionId: input.subscriptionId },
+        "Manual subscription payment: a receipt was requested but the member has no address to send it to",
       );
+      receipt = "not_delivered";
+    } else {
+      try {
+        const outcome = await sendMembershipPaymentRecordedEmail({
+          email: recipient.email,
+          firstName: recipient.firstName,
+          seasonYear: recipient.seasonYear,
+          amountCents: recipient.amountCents,
+          recordedAt: recipient.recordedAt,
+        });
+        // "sent" means the mailer accepted and dispatched it. Anything else —
+        // a suppression, a club-internal placeholder address — means the member
+        // will not read this, and the admin has to hear that.
+        receipt = outcome.status === "sent" ? "queued" : "not_delivered";
+        if (receipt === "not_delivered") {
+          logger.warn(
+            {
+              subscriptionId: input.subscriptionId,
+              outcome: outcome.status,
+            },
+            "Manual subscription payment recorded, but the member receipt was not sent",
+          );
+        }
+      } catch (error) {
+        logger.error(
+          { err: error, subscriptionId: input.subscriptionId },
+          "Manual subscription payment recorded, but the member receipt failed to send",
+        );
+        receipt = "not_delivered";
+      }
     }
   }
 
-  return result;
+  return { ...result, receipt };
 }

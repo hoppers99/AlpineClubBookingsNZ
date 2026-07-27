@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // reversal status logic, and the invariant that NO Xero module is ever imported
 // or called on this path.
 
-const { prismaMock, auditMock, emailMock } = vi.hoisted(() => ({
+const { prismaMock, auditMock, emailMock, loggerMock } = vi.hoisted(() => ({
   prismaMock: {
     $transaction: vi.fn(),
     memberSubscription: {
@@ -17,13 +17,14 @@ const { prismaMock, auditMock, emailMock } = vi.hoisted(() => ({
   },
   auditMock: { createAuditLog: vi.fn() },
   emailMock: { sendMembershipPaymentRecordedEmail: vi.fn() },
+  loggerMock: { error: vi.fn(), warn: vi.fn(), info: vi.fn() },
 }));
 
 vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
 vi.mock("@/lib/audit", () => auditMock);
 vi.mock("@/lib/email/membership", () => emailMock);
 vi.mock("@/lib/logger", () => ({
-  default: { error: vi.fn(), warn: vi.fn(), info: vi.fn() },
+  default: loggerMock,
 }));
 vi.mock("server-only", () => ({}));
 
@@ -37,6 +38,7 @@ vi.mock("@/lib/xero-subscription-invoices", () => new Proxy({}, { get: () => xer
 import { prisma } from "@/lib/prisma";
 import { createAuditLog } from "@/lib/audit";
 import { sendMembershipPaymentRecordedEmail } from "@/lib/email/membership";
+import logger from "@/lib/logger";
 import {
   applyManualSubscriptionPayment,
   ManualSubscriptionPaymentError,
@@ -257,6 +259,15 @@ describe("applyManualSubscriptionPayment (#1944)", () => {
 // Both choices mark the subscription paid identically; the choice itself is
 // recorded in the audit log, and a reversal never emails anyone.
 describe("manual mark-paid member notification (#2260)", () => {
+  const charge = (overrides: Record<string, unknown> = {}) => ({
+    charge: {
+      chargedAmountCents: 12345,
+      billingBasis: "PER_MEMBER",
+      _count: { coverage: 1 },
+      ...overrides,
+    },
+  });
+
   const paidRow = (overrides: Record<string, unknown> = {}) => ({
     id: "sub-1",
     memberId: "m-1",
@@ -265,13 +276,18 @@ describe("manual mark-paid member notification (#2260)", () => {
     xeroInvoiceId: null,
     manuallyMarkedPaidAt: null,
     member: { firstName: "Ada", email: "ada@example.org" },
-    chargeCoverage: [{ charge: { chargedAmountCents: 12345 } }],
+    chargeCoverage: [charge()],
     ...overrides,
   });
 
   beforeEach(() => {
     vi.clearAllMocks();
     xeroCall.mockReset();
+    vi.mocked(sendMembershipPaymentRecordedEmail).mockResolvedValue({
+      status: "sent",
+      emailLogId: "log-1",
+      messageId: "msg-1",
+    });
   });
 
   it("emails the member a receipt when the admin chooses to, with the season, the frozen charge amount in cents and the recorded timestamp", async () => {
@@ -284,7 +300,7 @@ describe("manual mark-paid member notification (#2260)", () => {
       notifyMember: true,
     });
 
-    expect(result.memberNotified).toBe(true);
+    expect(result).toMatchObject({ memberNotified: true, receipt: "queued" });
     expect(sendMembershipPaymentRecordedEmail).toHaveBeenCalledTimes(1);
     const sent = vi.mocked(sendMembershipPaymentRecordedEmail).mock.calls[0][0];
     expect(sent).toMatchObject({
@@ -310,7 +326,11 @@ describe("manual mark-paid member notification (#2260)", () => {
       notifyMember: false,
     });
 
-    expect(result).toMatchObject({ status: "PAID", memberNotified: false });
+    expect(result).toMatchObject({
+      status: "PAID",
+      memberNotified: false,
+      receipt: "not_requested",
+    });
     expect(tx.memberSubscription.updateMany.mock.calls[0][0].data.status).toBe("PAID");
     expect(sendMembershipPaymentRecordedEmail).not.toHaveBeenCalled();
   });
@@ -354,9 +374,60 @@ describe("manual mark-paid member notification (#2260)", () => {
     );
   });
 
+  it("omits the amount when the charge covers a whole family, not this member", async () => {
+    // F2: chargedAmountCents is the CHARGE's total. A PER_FAMILY charge covers
+    // every family member's subscription with one figure, so printing it here
+    // would tell one member — possibly a dependent — that the whole family's
+    // fee was recorded against them and there is nothing further to pay, while
+    // their relatives' subscriptions are still unpaid.
+    wireTransaction(
+      paidRow({
+        chargeCoverage: [
+          charge({ billingBasis: "PER_FAMILY", _count: { coverage: 3 } }),
+        ],
+      }),
+    );
+
+    await applyManualSubscriptionPayment({
+      subscriptionId: "sub-1",
+      direction: "paid",
+      actingMemberId: "admin-1",
+      notifyMember: true,
+    });
+
+    expect(sendMembershipPaymentRecordedEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ amountCents: null }),
+    );
+  });
+
+  it("omits the amount when one charge fans out over several subscriptions, whatever its basis", async () => {
+    // The basis says what the amount MEANS; the coverage fan-out says what it
+    // actually paid for. Either one being wrong is enough to withhold it.
+    wireTransaction(
+      paidRow({
+        chargeCoverage: [charge({ _count: { coverage: 2 } })],
+      }),
+    );
+
+    await applyManualSubscriptionPayment({
+      subscriptionId: "sub-1",
+      direction: "paid",
+      actingMemberId: "admin-1",
+      notifyMember: true,
+    });
+
+    expect(sendMembershipPaymentRecordedEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ amountCents: null }),
+    );
+  });
+
   it("omits the amount for a zero-cent (no-invoice) fee rather than printing $0.00", async () => {
     wireTransaction(
-      paidRow({ chargeCoverage: [{ charge: { chargedAmountCents: 0 } }] }),
+      paidRow({
+        chargeCoverage: [
+          charge({ chargedAmountCents: 0, billingBasis: "NO_INVOICE" }),
+        ],
+      }),
     );
 
     await applyManualSubscriptionPayment({
@@ -396,25 +467,34 @@ describe("manual mark-paid member notification (#2260)", () => {
       actingMemberId: "admin-1",
     });
 
-    expect(result.memberNotified).toBe(false);
+    expect(result).toMatchObject({
+      memberNotified: false,
+      receipt: "not_requested",
+    });
     expect(sendMembershipPaymentRecordedEmail).not.toHaveBeenCalled();
-    expect(createAuditLog).toHaveBeenCalledWith(
-      expect.objectContaining({
-        action: "membership-subscription.manual-payment.mark-unpaid",
-        metadata: expect.objectContaining({ notifyMember: false }),
-      }),
-      expect.anything(),
-    );
+    // Its OWN key: "no choice was offered here" is a different fact from an
+    // admin's decline on the paid path, and a raw metadata render must not
+    // blur the two.
+    const metadata = vi
+      .mocked(createAuditLog)
+      .mock.calls.find(
+        (call) =>
+          call[0].action ===
+          "membership-subscription.manual-payment.mark-unpaid",
+      )?.[0].metadata;
+    expect(metadata).toMatchObject({ notifyMemberOffered: false });
+    expect(metadata).not.toHaveProperty("notifyMember");
   });
 
-  it("keeps the committed money state when the receipt fails to send", async () => {
+  it("keeps the committed money state when the receipt fails to send, and reports it unsent", async () => {
     wireTransaction(paidRow());
     vi.mocked(sendMembershipPaymentRecordedEmail).mockRejectedValueOnce(
       new Error("SES down"),
     );
 
     // The status write has already committed; a mail failure must not turn a
-    // successful mark-paid into an error the admin has to re-attempt.
+    // successful mark-paid into an error the admin has to re-attempt — but it
+    // must not read back as a delivered receipt either.
     const result = await applyManualSubscriptionPayment({
       subscriptionId: "sub-1",
       direction: "paid",
@@ -422,7 +502,53 @@ describe("manual mark-paid member notification (#2260)", () => {
       notifyMember: true,
     });
 
-    expect(result).toMatchObject({ status: "PAID", memberNotified: true });
+    expect(result).toMatchObject({
+      status: "PAID",
+      memberNotified: true,
+      receipt: "not_delivered",
+    });
+  });
+
+  it.each(["suppressed", "skipped_placeholder_recipient"] as const)(
+    "reports a %s recipient as not delivered, never as emailed",
+    async (status) => {
+      wireTransaction(paidRow());
+      vi.mocked(sendMembershipPaymentRecordedEmail).mockResolvedValueOnce({
+        status,
+        emailLogId: null,
+        reason: "test",
+        ...(status === "suppressed" ? { emailSuppressionId: "sup-1" } : {}),
+      } as never);
+
+      const result = await applyManualSubscriptionPayment({
+        subscriptionId: "sub-1",
+        direction: "paid",
+        actingMemberId: "admin-1",
+        notifyMember: true,
+      });
+
+      // The admin chose to email; the mailer did not send. Saying "emailed"
+      // here is the false belief this whole feature exists to avoid.
+      expect(result).toMatchObject({
+        memberNotified: true,
+        receipt: "not_delivered",
+      });
+    },
+  );
+
+  it("says so, loudly, when a receipt is requested for a member with no address", async () => {
+    wireTransaction(paidRow({ member: { firstName: "Ada", email: "" } }));
+
+    const result = await applyManualSubscriptionPayment({
+      subscriptionId: "sub-1",
+      direction: "paid",
+      actingMemberId: "admin-1",
+      notifyMember: true,
+    });
+
+    expect(result.receipt).toBe("not_delivered");
+    expect(sendMembershipPaymentRecordedEmail).not.toHaveBeenCalled();
+    expect(vi.mocked(logger.warn)).toHaveBeenCalled();
   });
 
   it("does not email when the marking never happened (a rejected mark-paid)", async () => {
