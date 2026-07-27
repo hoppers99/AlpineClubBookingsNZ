@@ -60,6 +60,14 @@ type OrphanedLinks = {
   emailInheritors: OrphanedLinkMember[];
 };
 
+/** Only worth showing when something was actually detached. */
+function pickDetachedLinks(value: OrphanedLinks | undefined): OrphanedLinks | null {
+  if (!value) return null;
+  return value.dependants.length > 0 || value.emailInheritors.length > 0
+    ? value
+    : null;
+}
+
 type Blocker = {
   type: "owned_booking" | "guest_appearance";
   bookingId: string;
@@ -428,14 +436,7 @@ export default function MembershipCancellationsPage() {
           ? `${base} The member was not emailed — your choice is recorded in the audit log.`
           : base,
       );
-      // #2255: only shown when something was actually detached.
-      const detached: OrphanedLinks | undefined = body.orphanedLinks;
-      setOrphanedLinks(
-        detached &&
-          (detached.dependants.length > 0 || detached.emailInheritors.length > 0)
-          ? detached
-          : null,
-      );
+      setOrphanedLinks(pickDetachedLinks(body.orphanedLinks));
       await loadRequests();
     } catch (err) {
       setError(
@@ -455,6 +456,7 @@ export default function MembershipCancellationsPage() {
     setArchiveSubmittingId(`${requestId}:${action}`);
     setError("");
     setMessage("");
+    setOrphanedLinks(null);
 
     try {
       const response = await fetch(
@@ -479,6 +481,9 @@ export default function MembershipCancellationsPage() {
           ? "Member archived."
           : "Archive request rejected.",
       );
+      // #2255: archive runs the same family-link sweep as cancellation, so it
+      // gets the same declaration rather than only a count in the audit.
+      setOrphanedLinks(pickDetachedLinks(body.orphanedLinks));
       await loadArchiveRequests();
     } catch (err) {
       setError(
@@ -567,7 +572,7 @@ export default function MembershipCancellationsPage() {
         {orphanedLinks && (
         <div className="space-y-2 rounded-md border border-warning-6 bg-warning-3 px-4 py-3 text-sm text-warning-11">
           <p className="font-medium">
-            Family links were cleared by this cancellation.
+            Family links were cleared by this change.
           </p>
           {orphanedLinks.dependants.length > 0 && (
             <p>
@@ -586,8 +591,9 @@ export default function MembershipCancellationsPage() {
               {orphanedLinks.emailInheritors
                 .map((member) => `${member.name} (${member.email})`)
                 .join(", ")}
-              . Club email now goes to each member&apos;s own address, so check
-              those addresses are real.
+              . Club email now goes to their own recorded address — which may
+              still be a copy of the removed member&apos;s, or a placeholder that
+              receives nothing, so check it.
             </p>
           )}
         </div>
