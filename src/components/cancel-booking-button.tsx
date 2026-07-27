@@ -201,10 +201,19 @@ export function CancelBookingButton({
               : "You will receive a confirmation email shortly."}
           </p>
         )}
+        {/*
+          #2259: with the switch on there was no choice to record — the send was
+          attempted and withheld — so pointing at "your choice in the audit log"
+          would send the officer looking for an entry that does not exist. This
+          is the most consequential message in the flow: the member has just
+          lost a booking and will hear nothing, so point at the list that names
+          the withheld notice instead.
+        */}
         {emailSuppressed && (
           <p className="text-sm text-success-11">
-            The member was not emailed about this cancellation — your choice is
-            recorded in the audit log.
+            {noEmailsSuppressesChoice
+              ? "The member was not emailed: emails are off for this booking. The withheld cancellation notice is listed on the booking — tell the member yourself."
+              : "The member was not emailed about this cancellation — your choice is recorded in the audit log."}
           </p>
         )}
       </div>
@@ -244,9 +253,16 @@ export function CancelBookingButton({
           <p className="text-sm text-danger-11">
             You are cancelling this booking on behalf of the member. Any refund
             or account credit is applied to the member&apos;s account
-            {canChooseMemberEmail
-              ? " — you will choose whether the member is emailed when you confirm."
-              : " and they are notified by email."}
+            {/*
+              #2259: three cases, not two. With the switch on there is no
+              choice to be offered at confirm time, so promising one here would
+              be contradicted by the dialog a click later.
+            */}
+            {noEmailsSuppressesChoice
+              ? ". Emails are off for this booking, so the member will not be told — that is yours to do."
+              : canChooseMemberEmail
+                ? " — you will choose whether the member is emailed when you confirm."
+                : " and they are notified by email."}
           </p>
         )}
 
@@ -393,11 +409,9 @@ export function CancelBookingButton({
                   : "Email the member about this cancellation?"}
               </DialogTitle>
               <DialogDescription>
-                The booking will be cancelled either way, and any refund or
-                account credit is applied regardless.{" "}
                 {noEmailsSuppressesChoice
-                  ? "Your choice is recorded in the audit log."
-                  : "Choose whether the member receives the standard cancellation email — your choice is recorded in the audit log."}
+                  ? "The booking will be cancelled and any refund or account credit applied as usual."
+                  : "The booking will be cancelled either way, and any refund or account credit is applied regardless. Choose whether the member receives the standard cancellation email — your choice is recorded in the audit log."}
               </DialogDescription>
             </DialogHeader>
             {noEmailsSuppressesChoice && <BookingNoEmailsNotice />}

@@ -820,12 +820,13 @@ export default function RefundRequestsPage() {
                   : "Email the member about this refund?"}
             </DialogTitle>
             <DialogDescription>
-              {notifyChoice?.status === "REJECTED"
-                ? "The appeal is rejected either way. "
-                : "The refund is processed either way. "}
               {notifyChoice?.noEmails
-                ? "Your choice is recorded in the audit log."
-                : "Choose whether the member receives the standard refund-appeal outcome email — your choice is recorded in the audit log."}
+                ? notifyChoice.status === "REJECTED"
+                  ? "The appeal will be rejected."
+                  : "The refund will be processed."
+                : notifyChoice?.status === "REJECTED"
+                  ? "The appeal is rejected either way. Choose whether the member receives the standard refund-appeal outcome email — your choice is recorded in the audit log."
+                  : "The refund is processed either way. Choose whether the member receives the standard refund-appeal outcome email — your choice is recorded in the audit log."}
             </DialogDescription>
           </DialogHeader>
           {/* #2259: with the booking's "No emails" switch on the outcome email

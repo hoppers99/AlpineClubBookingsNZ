@@ -503,8 +503,8 @@ export function BookingApprovalsPanel({
             <DialogDescription>
               {notifyChoice?.noEmails
                 ? notifyChoice.decision === "REJECTED"
-                  ? "The booking is declined and cancelled either way. Nothing is sent to the member — not even the standard cancellation notice — because emails are off for this booking. Your choice is recorded in the audit log."
-                  : "The booking is approved either way. Your choice is recorded in the audit log."
+                  ? "The booking will be declined and cancelled. Nothing at all is emailed to the member — not even the standard cancellation notice."
+                  : "The booking will be approved."
                 : notifyChoice?.decision === "REJECTED"
                   ? "The booking is declined and cancelled either way, and the member always receives the standard cancellation notice. Choose whether they also receive the review-declined explainer email — your choice is recorded in the audit log."
                   : "The booking is approved either way. Choose whether the member receives the standard review-approved email — your choice is recorded in the audit log."}

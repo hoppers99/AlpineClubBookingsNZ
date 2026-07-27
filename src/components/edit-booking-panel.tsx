@@ -2129,10 +2129,9 @@ export function EditBookingPanel({
                 : "Email the member about this change?"}
             </DialogTitle>
             <DialogDescription>
-              The booking will be updated either way.{" "}
               {noEmailsOn
-                ? "Your choice is recorded in the audit log."
-                : "Choose whether the member receives the standard change-notification email — your choice is recorded in the audit log."}
+                ? "The booking will be updated."
+                : "The booking will be updated either way. Choose whether the member receives the standard change-notification email — your choice is recorded in the audit log."}
             </DialogDescription>
           </DialogHeader>
           {noEmailsOn && <BookingNoEmailsNotice />}

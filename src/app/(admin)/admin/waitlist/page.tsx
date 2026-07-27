@@ -675,7 +675,7 @@ export default function AdminWaitlistPage() {
             <p className="text-sm text-warning">
               Force-confirming this booking confirms it as paid.{" "}
               {notifyDialog.noEmails
-                ? "Your choice is recorded in the audit log."
+                ? ""
                 : "Choose whether the member receives the standard booking confirmation email — your choice is recorded in the audit log."}
             </p>
             {notifyDialog.noEmails && <BookingNoEmailsNotice />}

@@ -196,12 +196,19 @@ export function ConfirmPendingGuestsButton({
                 : "Email the member about this confirmation?"}
             </DialogTitle>
             <DialogDescription>
-              The booking will be confirmed either way{willCharge
-                ? ", and the saved card is charged regardless"
-                : ""}.{" "}
-              {noEmails
-                ? "Your choice is recorded in the audit log."
-                : "Choose whether the member receives the standard booking confirmation email — your choice is recorded in the audit log."}
+              {noEmails ? (
+                <>
+                  The pending guests will be confirmed
+                  {willCharge ? ", and the saved card charged" : ""}.
+                </>
+              ) : (
+                <>
+                  The booking will be confirmed either way
+                  {willCharge ? ", and the saved card is charged regardless" : ""}
+                  . Choose whether the member receives the standard booking
+                  confirmation email — your choice is recorded in the audit log.
+                </>
+              )}
             </DialogDescription>
           </DialogHeader>
           {noEmails && <BookingNoEmailsNotice />}
