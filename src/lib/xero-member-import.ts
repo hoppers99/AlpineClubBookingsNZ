@@ -34,6 +34,41 @@ import { hash } from "bcryptjs";
 import type { AgeTier } from "@prisma/client";
 import { prisma } from "./prisma";
 import { validateInheritEmailSource } from "@/lib/member-email-inheritance";
+
+/**
+ * #2255: the Xero contact import writes email inheritance directly and used to
+ * do it with no validation at all. `existingPrimary` is matched on
+ * `email` + `canLogin`, which guarantees neither that they are an adult, nor
+ * that they are TERMINAL (a member who themselves inherits would make this a
+ * chained pointer, which every reader's single-hop join then resolves to the
+ * wrong mailbox), nor that their address is real.
+ *
+ * A bad source drops the inheritance rather than failing the import row: the
+ * dependant is still created and still joins the family group, it just keeps
+ * its own address — which for an import row is the same address anyway. The
+ * fallback is LOGGED because it is otherwise invisible: an operator reviewing
+ * an import has no other way to learn that some rows came out without the
+ * inheritance the import normally sets.
+ */
+async function resolveImportInheritance(
+  existingPrimary: { id: string },
+  xeroContactId: string | null,
+): Promise<string | null> {
+  const validation = await validateInheritEmailSource({
+    inheritEmailFromId: existingPrimary.id,
+  });
+  if (validation.ok) return existingPrimary.id;
+
+  logger.info(
+    {
+      sourceMemberId: existingPrimary.id,
+      xeroContactId,
+      reason: validation.error,
+    },
+    "Xero import created a dependant without email inheritance",
+  );
+  return null;
+}
 import logger from "@/lib/logger";
 import { sendPasswordResetEmail } from "./email";
 import { issueActionToken } from "./action-tokens";
@@ -736,13 +771,10 @@ export async function importMembersFromXeroGroups(
               // a bad pointer — the dependant is still created and still joins
               // the family group, it simply keeps its own address, which for an
               // import row is the same address anyway.
-              inheritEmailFromId: (
-                await validateInheritEmailSource({
-                  inheritEmailFromId: existingPrimary.id,
-                })
-              ).ok
-                ? existingPrimary.id
-                : null,
+              inheritEmailFromId: await resolveImportInheritance(
+                existingPrimary,
+                contact.contactId,
+              ),
             },
           });
 

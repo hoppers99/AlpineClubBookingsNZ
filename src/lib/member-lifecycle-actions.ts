@@ -1072,6 +1072,9 @@ export async function reviewMemberDeleteRequest({
 }: LifecycleReviewInput) {
   const note = cleanText(reviewNote);
   const request = await loadDeleteRequestById(requestId);
+  // #2255: filled inside the transaction, read after it — the links it
+  // describes are gone by the time it commits.
+  let orphanedByHardDelete: OrphanedFamilyLinks = EMPTY_ORPHANED_FAMILY_LINKS;
 
   if (request.status !== MemberLifecycleActionRequestStatus.REQUESTED) {
     throw new MemberLifecycleActionError(
@@ -1254,7 +1257,28 @@ export async function reviewMemberDeleteRequest({
       photoImageId: memberBeforeDelete.photoImageId,
     });
 
+    // #2255: the FOURTH removal path, and the only one that relied on the
+    // database to do the detaching. `onDelete: SetNull` nulls the dependants'
+    // parent columns and their `inheritEmailFromId` as the row goes, so the
+    // links really are cleared — but silently, with no declaration, and it
+    // leaves `inheritParentEmail: true` standing beside a NULL pointer. That
+    // combination reads as "inherits from nobody", which no writer produces and
+    // no reader expects. Captured before the delete (afterwards there is
+    // nothing left to read) and the stranded flag cleared after it.
+    const orphanedByDelete = await readFamilyLinkOrphans(tx, request.memberId);
+    orphanedByHardDelete = orphanedByDelete;
+
     await tx.member.delete({ where: { id: request.memberId } });
+
+    if (orphanedByDelete.emailInheritors.length > 0) {
+      await tx.member.updateMany({
+        where: {
+          id: { in: orphanedByDelete.emailInheritors.map((row) => row.id) },
+          inheritEmailFromId: null,
+        },
+        data: { inheritParentEmail: false },
+      });
+    }
 
     await createAuditLog(
       {
@@ -1275,6 +1299,12 @@ export async function reviewMemberDeleteRequest({
           requestReason: request.reason,
           snapshotStored: true,
           memberPhotoBlobsDeleted: photoReconcile.deleted,
+          // #2255: named, not just counted — the same declaration the other
+          // three removal paths make.
+          detachedDependantIds: orphanedByDelete.dependants.map((row) => row.id),
+          detachedEmailInheritorIds: orphanedByDelete.emailInheritors.map(
+            (row) => row.id,
+          ),
         },
         ipAddress,
       },
@@ -1299,7 +1329,12 @@ export async function reviewMemberDeleteRequest({
     );
   }
 
-  return { request: serializeMemberLifecycleActionRequest(approved) };
+  return {
+    request: serializeMemberLifecycleActionRequest(approved),
+    // Always present (empty arrays when nothing was linked), matching the
+    // cancellation and archive contracts.
+    orphanedLinks: orphanedByHardDelete,
+  };
 }
 
 // test seam
