@@ -4,6 +4,30 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **The lobby display's built-in boards can be restored on a club that never
+  got them, and the three words the screen uses are finally defined (#2247).**
+  A club whose database was created before the lobby display existed had none
+  of the seven boards that ship with the app: they are only ever created when
+  the database is first seeded, and upgrading does not re-do that. The Templates
+  gallery simply sat empty and said nothing. It now says which of the three
+  things is actually true — the **Lobby TV display** module is switched off,
+  your admin role cannot see display templates, or the boards were never
+  created — and where the boards are missing, **Restore built-in boards**
+  creates all seven in one press. Pressing it again is safe. It asks first,
+  because it is a genuine restore: every built-in goes back to the design that
+  ships with the app, so a change made to a built-in in place is undone. Your
+  own layouts and templates are never touched, screens keep showing whatever
+  they already show, and who pressed it is written to the audit log. It is
+  deliberately a button rather than something the upgrade does by itself —
+  running it automatically would quietly undo a club's edits to a built-in
+  every release.
+  The same screens used three words for two things and explained none of them.
+  A **Layout** is the shape of a board, a **Template** is that shape filled in
+  and is what you point a screen at, and a **board** is what the screen actually
+  shows: a Template on its Layout, for the lodge that screen belongs to. Those
+  three sentences now appear, in the same words, on the Lobby Display hub cards,
+  on the Reference page, on the Visual builder, and in the operator guide.
+
 - **Recording a membership payment by hand now asks whether to tell the member
   — and can actually tell them (#2260).** When a treasurer marks a member's
   subscription paid for a cash, cheque or internet-banking payment, the club
