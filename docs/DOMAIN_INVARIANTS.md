@@ -1263,7 +1263,9 @@ override requires an explicit `pricingMode`:
   cancels** the group, the member email on an **admin review-rejection**
   cancel, and the cancellation emails sent by **deletion-request cleanup** —
   in each, the recipient is losing a booking they own, and a missed email
-  risks a member arriving for a stay that no longer exists.
+  risks a member arriving for a stay that no longer exists. (All three are
+  nonetheless withheld by the per-booking "No emails" switch — see that section
+  below — which overrides every always-notify rule on this page.)
   The #1780/#1769b sweep extends this same per-action choice to every remaining
   admin-initiated member email — membership application approve/reject (#1786),
   membership cancellation review (#1787), member archive review and
@@ -1347,8 +1349,9 @@ The rules are:
   cover every ordering, so two cases remain and both are surfaced rather than
   denied:
   - the switch is turned **on while an offer is already live** — the clock keeps
-    running and the offer is not retracted (`setBookingNoEmails` returns
-    `hasLiveWaitlistOffer` so the admin is warned before confirming);
+    running and the offer is not retracted. `setBookingNoEmails` returns
+    `hasLiveWaitlistOffer` so a caller CAN warn before confirming; nothing
+    consumes it yet, and the warning dialog itself lands with #2259;
   - the **post-commit race** — `processWaitlistForDates` commits the offer and
     fires the email un-awaited afterwards, so a switch flipped in between leaves
     a live offer with a withheld send. (The retry cron can likewise rewrite an
@@ -1372,8 +1375,16 @@ The rules are:
   per-booking switch "suppresses everything", so when it is on the
   `emailInvoice` call is skipped and a withheld audit row is written naming the
   invoice. **The invoice itself still exists in Xero and is unchanged** — only
-  the emailing is skipped, so an admin can email it from Xero, or clear the
-  switch. The per-action `notifyMember` carve-out is untouched: with the switch
+  the emailing is skipped, so an admin sends it **from Xero by hand**. Clearing
+  the switch does NOT resend it: invoice creation short-circuits on the stored
+  `payment.xeroInvoiceId` and never reaches the email step again, and the
+  `emailInvoice` idempotency key would no-op regardless. When the switch could
+  not be READ (as opposed to being on) the sync operation is left PARTIAL so an
+  operator sees it — but the operations panel's payment repair must never be run
+  on an email-only PARTIAL: every one of them is an Internet Banking booking
+  whose Xero payment is deliberately skipped, so recording a payment would
+  falsely settle an unpaid invoice. That repair is refused for email-only
+  PARTIALs. The per-action `notifyMember` carve-out is untouched: with the switch
   off, the invoice email is still always sent. The group settlement invoice is
   one combined bill addressed to and paid by the **organiser**, so it is gated on
   the organiser's own booking and on nothing else — a joiner's switch does not

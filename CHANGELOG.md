@@ -28,10 +28,10 @@ All notable public reference-release changes should be recorded here.
   emails" is also skipped when waitlist places are handed out, so it is not
   offered a bed it would never hear about, and the waitlist board shows such an
   entry as deliberately silenced rather than as a failed email. Turning the
-  switch on does not withdraw an offer the member has already been made: the
-  officer is warned when that is the case, and the waitlist board flags that
-  booking for attention until someone sorts it out. Turning the switch back off restores normal mail from that point on; it
-  does not re-send anything that was withheld.
+  switch on does not withdraw an offer the member has already been made — the
+  waitlist board flags that booking for attention until someone sorts it out.
+  Turning the switch back off restores normal mail from that point on; it does
+  not re-send anything that was withheld.
 
 - **"Add Dependant → Link Existing" now finds the members it was hiding, and
   says why when it still finds nobody (#2254).** Searching for an existing
