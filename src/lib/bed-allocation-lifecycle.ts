@@ -253,6 +253,11 @@ async function loadBookingForBedAllocation(
       checkIn: true,
       checkOut: true,
       lodgeId: true,
+      // ADR-001 bed-allocation short-circuit (#2285): a whole-lodge-held
+      // booking implicitly occupies every bed, so the lifecycle must neither
+      // create nor keep per-bed rows for it. Keyed on the flag, NOT the
+      // status — a held booking sits in an ordinary allocatable status.
+      wholeLodgeHold: true,
       guests: {
         select: {
           id: true,
@@ -305,12 +310,18 @@ async function pruneAllocationsForBooking(
     !booking ||
     booking.deletedAt ||
     !isAllocatableBookingStatus(booking.status) ||
+    // ADR-001 short-circuit (#2285): a whole-lodge-held booking owns NO
+    // per-bed rows — the group implicitly occupies the whole lodge. Sweeping
+    // here (not just skipping creation) is what makes legacy rows self-heal:
+    // any reconcile that touches a held booking removes rows an older
+    // lifecycle wrongly created, with no data migration needed.
+    booking.wholeLodgeHold ||
     booking.guests.length === 0
   ) {
-    // Whole-booking sweep (cancelled / soft-deleted / non-allocatable / no
-    // guests): cancelling the primary's booking orphans a partner sitting on
-    // ANOTHER booking (sharing eligibility is member-level), so promote after
-    // the sweep (#1750).
+    // Whole-booking sweep (cancelled / soft-deleted / non-allocatable /
+    // whole-lodge-held / no guests): cancelling the primary's booking orphans
+    // a partner sitting on ANOTHER booking (sharing eligibility is
+    // member-level), so promote after the sweep (#1750).
     return sweepAllocationsWithPromotion(db, { bookingId });
   }
 
@@ -431,6 +442,9 @@ async function autoAllocateMissingBedNights({
         originBookingRequest: { select: { id: true, type: true } },
         heldForBookingRequest: { select: { type: true } },
         adminCapacityHoldAt: true,
+        // ADR-001 short-circuit (#2285): a whole-lodge-held booking is never
+        // auto-placed (deep guard in the planner-bookings filter below).
+        wholeLodgeHold: true,
         // Whole-stay planning (issue #1677): load every guest of an
         // overlapping booking, not just the reconcile-range slice — guest
         // stays sit inside the booking envelope, which is inside the widened
@@ -523,7 +537,14 @@ async function autoAllocateMissingBedNights({
     // envelope (#1677) and see/displace their occupancy (#1387), but their own
     // missing guest-nights are never opportunistically drafted here — lodge-
     // wide re-planning belongs exclusively to the explicit board action.
-    .filter((booking) => booking.id === bookingId)
+    //
+    // ADR-001 short-circuit (#2285), deep guard: a whole-lodge-held booking is
+    // NEVER auto-placed, even if a caller reaches this planner with a held
+    // bookingId directly. reconcileBedAllocationsForBooking already skips the
+    // planner for held bookings; this keeps the invariant local to the code
+    // that writes BedAllocation rows. The board planner applies the same
+    // exclusion (admin-bed-allocation.ts heldSpans / unallocatedGuestNights).
+    .filter((booking) => booking.id === bookingId && !booking.wholeLodgeHold)
     .map((booking): BedAllocationBooking | null => {
       const guests: BedAllocationBooking["guests"] = [];
 
@@ -770,8 +791,16 @@ export async function reconcileBedAllocationsForBooking({
   // missing, soft-deleted, non-allocatable status (cancelled etc.), or an
   // empty range — skip the planner entirely: it would deterministically place
   // nothing, and cancel/delete flows call this inside their transactions.
+  // ADR-001 short-circuit (#2285): a whole-lodge-held booking must never be
+  // fed to the planner — the board already excludes it (admin-bed-allocation
+  // heldSpans), and the lifecycle must agree. Keyed on the flag, not the
+  // status: a held booking sits in an ordinary allocatable status, so
+  // BED_ALLOCATABLE_BOOKING_STATUSES alone cannot express this.
   const bookingCanReceiveAllocations = Boolean(
-    booking && !booking.deletedAt && isAllocatableBookingStatus(booking.status),
+    booking &&
+      !booking.deletedAt &&
+      !booking.wholeLodgeHold &&
+      isAllocatableBookingStatus(booking.status),
   );
   const currentRange = normalizeRange(
     bookingCanReceiveAllocations && booking

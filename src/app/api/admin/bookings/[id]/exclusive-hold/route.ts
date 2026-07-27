@@ -12,6 +12,7 @@ import {
   bookingHoldsCapacity,
   capacityHoldingBookingFilter,
 } from "@/lib/booking-status";
+import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 import logger from "@/lib/logger";
 import { z } from "zod";
 
@@ -206,6 +207,26 @@ export async function POST(
         };
       }
 
+      // ADR-001 bed-allocation short-circuit (#2285): a held booking owns NO
+      // BedAllocation rows — it implicitly occupies the whole lodge. Reconcile
+      // on BOTH toggle directions, on this same transaction, so the flag and
+      // the allocation rows can never commit apart:
+      // - SET: the lifecycle now treats the booking as held, so reconcile
+      //   prunes every existing per-bed row (including legacy rows an older
+      //   lifecycle wrongly created) and creates none.
+      // - CLEAR: the booking is ordinary again, so reconcile re-plans its
+      //   guests' missing bed-nights exactly like any other lifecycle change.
+      // DB-only work (the same in-transaction pattern as force-confirm /
+      // booking-cancel); no external provider is called here.
+      const allocationReconcile = await reconcileBedAllocationsForBooking({
+        bookingId: booking.id,
+        db: tx,
+        previousRange: {
+          checkIn: booking.checkIn,
+          checkOut: booking.checkOut,
+        },
+      });
+
       // ADR-001 decision 1 conflict surfacing (issue #119): when SETTING the
       // hold, list the existing capacity-holding bookings that overlap its
       // nights so the officer sees the clash. Read-only and informational —
@@ -266,6 +287,16 @@ export async function POST(
             hold,
             checkIn: booking.checkIn.toISOString(),
             checkOut: booking.checkOut.toISOString(),
+            // #2285: allocation reconcile on the hold toggle — rows pruned on
+            // SET (held bookings own no per-bed rows), rows re-planned on
+            // CLEAR. enabled=false means the bed-allocation module is off and
+            // nothing was touched.
+            bedAllocationReconcile: {
+              enabled: allocationReconcile.enabled,
+              deletedCount: allocationReconcile.deletedCount,
+              createdCount: allocationReconcile.createdCount,
+              promotedCount: allocationReconcile.promotedCount,
+            },
             ...(hold
               ? {
                   // Conflict surfacing (issue #119): record how many existing
