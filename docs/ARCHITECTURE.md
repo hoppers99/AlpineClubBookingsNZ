@@ -574,8 +574,14 @@ a control reads as a value the form already holds, and it disappears the moment
 the operator starts typing — exactly when the example is still wanted. Every
 `placeholder` that carried an example was moved to helper text rendered by
 `FieldHint` (`src/components/ui/field-hint.tsx`), with one consistent phrasing:
-`Example: <value>`. A placeholder is now only for a short genuine instruction
-("First name", "Search name or email").
+`Example: <value>` (prefixed with the field name — `Version example: 2026.1` —
+in the one place where the layout forces the hint away from its field). What
+remains in a `placeholder` is everything that is not an EXAMPLE OF A NAME the
+operator invents: instructions ("First name", "Search name or email",
+"Optional — defaults to the club name") and format samples
+("member@example.com", "0.00"). Those are unchanged in wording here and are
+#2264's problem, which is why the italic restyle matters — it covers the ones
+this issue does not move.
 
 `FieldHint` exists because the visually-obvious half of that move is the easy
 half. A `<p>` sitting below an input is invisible to a screen reader focused on
@@ -586,8 +592,13 @@ LIST — a validation error, a view-only reason (#2160) and a hint can all descr
 one field — so ids passed to `useFieldHint(...)` are announced BEFORE the hint;
 "this is wrong" must be heard ahead of "here is an example". Rows rendered inside
 a `.map()` cannot call a hook per row and pass a deterministic id to
-`describedByFieldHint()` instead. `id` is required on `FieldHint`, so an
-unassociated hint does not compile.
+`describedByFieldHint()` instead. `id` is required on `FieldHint`, which removes
+the "hint with no id to point at" state — it cannot prove association, because
+the type system cannot see across from the hint to the input. The one remaining
+failure mode, a caller that spreads `hintProps` and forgets `fieldProps`, is
+caught by a count contract in `field-hint.test.tsx`: `useFieldHint(`,
+`.fieldProps` and `.hintProps` must occur the same number of times across
+`src/`.
 
 **Placeholder ink is its own token.** `--placeholder-foreground` is declared in
 every scope that restates `--muted-foreground` — a `var()`-bearing custom

@@ -7,17 +7,20 @@ All notable public reference-release changes should be recorded here.
 - **Example text in admin forms no longer looks like an answer somebody already
   typed (#2257).** Fields such as Season Name, Promo Code, Chore Name, Group
   Name and Banner Message used to show their example inside the box in grey —
-  "e.g. Winter 2026" — which reads as a value the form has already accepted, and
-  which vanishes the moment you start typing. Those examples now sit as a short
-  line of helper text UNDER the field ("Example: Winter 2026"), where they stay
-  visible while you type. Screen readers announce the example when the field is
-  focused, which they did not do before; when a field also has an error or a
-  "you can view this but not change it" note, the error or note is read first.
-  Placeholders that remain are genuine short instructions ("First name", "Search
-  name or email") and are now shown in italics so they cannot be mistaken for
-  content. Drop-down buttons that said "Select item…" were the worst offender —
-  they were drawn in ordinary text colour, identical to a real selection — and
-  are now styled as placeholders too.
+  "e.g. Winter 2026" — which reads as a value the form has already accepted.
+  Those examples now sit as a short line of helper text UNDER the field
+  ("Example: Winter 2026"). That means the example stays visible while you type
+  and after the field is filled in, instead of disappearing at the first
+  keystroke, and it can now sit alongside a validation error or a "you can view
+  this but not change it" note rather than competing with them — where a field
+  has more than one of those, the error or the view-only note is announced
+  first. Every placeholder that is still shown — instructions like "First name"
+  or "Search name or email", and format samples such as "member@example.com" or
+  "0.00" — is now drawn in italics so it reads as a prompt rather than as
+  content. Drop-down buttons that said "Select item…" were the worst offender:
+  they were drawn in ordinary text colour, identical to a real selection, and
+  are now styled as placeholders too. Reviewing the remaining placeholders
+  across the rest of the app is tracked separately (#2264).
 
 - **"Add Dependant → Link Existing" now finds the members it was hiding, and
   says why when it still finds nobody (#2254).** Searching for an existing

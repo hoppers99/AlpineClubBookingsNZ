@@ -505,6 +505,12 @@ export function InductionTemplateManager() {
 
         <div className="space-y-2 rounded-md border bg-muted p-3">
           <p className="text-sm font-medium">Create a new version</p>
+          {/* #2257 — `items-end` bottom-aligns every cell, so a hint rendered
+              INSIDE the Version cell would become that cell's bottom edge and
+              lift its input clear of the select, the name input and the
+              buttons. `basis-full` puts the hint on its own wrapped flex line:
+              cross-axis alignment is per line, so the control line keeps its
+              baseline and the hint hangs below the row. */}
           <div className="flex flex-wrap items-end gap-2">
             <div className="space-y-1">
               <Label htmlFor="new-kind" className="text-xs">
@@ -548,7 +554,6 @@ export function InductionTemplateManager() {
                 className="w-32"
                 {...versionHint.fieldProps}
               />
-              <FieldHint {...versionHint.hintProps}>Example: 2026.1</FieldHint>
             </div>
             <ViewOnlyActionButton
               canEdit={canEdit}
@@ -572,6 +577,9 @@ export function InductionTemplateManager() {
             >
               Create blank
             </ViewOnlyActionButton>
+            <FieldHint {...versionHint.hintProps} className="basis-full">
+              Version example: 2026.1
+            </FieldHint>
           </div>
         </div>
 

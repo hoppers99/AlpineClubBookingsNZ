@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import {
@@ -109,5 +111,68 @@ describe("FieldHint / useFieldHint", () => {
     expect(screen.getByText("Example: Winter 2026").className).toContain(
       "text-muted-foreground",
     );
+  });
+});
+
+/*
+  The half-wiring guard. `FieldHint` requiring an `id` stops a hint existing with
+  nothing to point at, but nothing in the type system stops a caller spreading
+  `hintProps` onto the hint and forgetting `fieldProps` on the control: that
+  compiles, renders identically, and is silently inaccessible.
+
+  Every `useFieldHint()` call must therefore be matched by exactly one
+  `.fieldProps` spread and one `.hintProps` spread. Comparing the three counts
+  catches a half-wired addition without pinning a number that every future
+  conversion would have to bump.
+*/
+function conversionSources(dir = "src"): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(join(process.cwd(), dir))) {
+    const rel = `${dir}/${entry}`;
+    if (statSync(join(process.cwd(), rel)).isDirectory()) {
+      if (entry === "__tests__") continue;
+      out.push(...conversionSources(rel));
+    } else if (/\.tsx?$/.test(entry) && rel !== FIELD_HINT_MODULE) {
+      out.push(rel);
+    }
+  }
+  return out;
+}
+
+/** The primitive itself: it names all three in its own doc comment. */
+const FIELD_HINT_MODULE = "src/components/ui/field-hint.tsx";
+
+function countAcrossSrc(needle: string): number {
+  return conversionSources().reduce((total, path) => {
+    const text = readFileSync(join(process.cwd(), path), "utf8");
+    return total + text.split(needle).length - 1;
+  }, 0);
+}
+
+describe("FieldHint wiring contract", () => {
+  it("matches every useFieldHint() with one fieldProps and one hintProps spread", () => {
+    const hooks = countAcrossSrc("useFieldHint(");
+    const fieldProps = countAcrossSrc(".fieldProps");
+    const hintProps = countAcrossSrc(".hintProps");
+
+    expect(hooks).toBeGreaterThan(0);
+    expect(
+      fieldProps,
+      "a useFieldHint() whose fieldProps never reaches a control renders a hint no screen reader will announce",
+    ).toBe(hooks);
+    expect(
+      hintProps,
+      "a useFieldHint() whose hintProps never reaches a FieldHint points aria-describedby at nothing",
+    ).toBe(hooks);
+  });
+
+  it("keeps the .map() sites on describedByFieldHint, counted in the same total", () => {
+    // Rows inside a `.map()` cannot call the hook, so they do not appear in the
+    // counts above. They are the only other way a field gets a hint, and both
+    // are covered by their own render tests
+    // (finance-report-mappings-panel.test.tsx, club-identity-panel.test.tsx).
+    const derived = countAcrossSrc("describedByFieldHint(");
+    expect(derived).toBeGreaterThan(0);
+    expect(countAcrossSrc("useFieldHint(") + derived).toBeGreaterThanOrEqual(21);
   });
 });
