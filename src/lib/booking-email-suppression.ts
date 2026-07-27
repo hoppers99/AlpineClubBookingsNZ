@@ -241,6 +241,26 @@ export interface WithheldBookingEmail {
 }
 
 /**
+ * A human name for a withheld message, for #2259's banner.
+ *
+ * The registry already carries a display `label` for every template we render
+ * ourselves. The two Xero pseudo-templates above are NOT registry entries — we
+ * never render or transmit them — so they are named here rather than being
+ * shown to an operator as a raw slug. Anything else unknown falls back to the
+ * template name itself: an honest "we withheld this and here is what it was
+ * called" beats inventing a friendly name for a message nobody has registered.
+ */
+export function withheldEmailDisplayName(templateName: string): string {
+  if (templateName === XERO_BOOKING_INVOICE_EMAIL_TEMPLATE) {
+    return "Xero invoice email";
+  }
+  if (templateName === XERO_GROUP_SETTLEMENT_INVOICE_EMAIL_TEMPLATE) {
+    return "Xero group settlement invoice email";
+  }
+  return getEmailTemplateDefinition(templateName)?.label ?? templateName;
+}
+
+/**
  * Everything withheld for a booking, newest first — the read behind #2259's
  * persistent "these messages were not sent" warning.
  */
