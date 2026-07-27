@@ -1013,10 +1013,13 @@ describe("POST /api/admin/members/[id]/dependents/link", () => {
       expect(tx.member.update).not.toHaveBeenCalled();
     });
 
-    it("terminates on a family loop instead of hanging", async () => {
-      // Data predating the cap could contain a loop. The walk visits each member
-      // once, so it ends — with a refusal, because nobody in the loop can
-      // receive mail.
+    it("refuses a pre-existing family loop before email resolution is reached", async () => {
+      // Data predating the cap could contain a loop. On THIS route the depth
+      // walk sees it first and refuses, so the email walk never runs — which is
+      // why the cycle-safety of the resolver itself is pinned where it is
+      // reachable, as a unit, in member-parent-links.test.ts. Both matter: the
+      // resolver is also called from the unlink route and the family-group
+      // reviewer, neither of which runs a depth check first.
       const tx = setupTransaction([
         makeParent({ email: placeholder, parentMemberId: "loop-a" }),
         makeMember({
@@ -1035,7 +1038,7 @@ describe("POST /api/admin/members/[id]/dependents/link", () => {
         addToFamilyGroupIds: [],
       });
 
-      expect(res.status).toBe(422);
+      expect((await res.json()).error).toMatch(/4 generations/i);
       expect(tx.member.update).not.toHaveBeenCalled();
     });
   });

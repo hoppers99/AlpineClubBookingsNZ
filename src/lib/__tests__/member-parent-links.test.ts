@@ -3,6 +3,7 @@ import {
   getParentEmailSourceId,
   buildParentLinks,
   matchParentLinkIdForNotification,
+  resolveInheritedEmailSourceId,
 } from "@/lib/member-parent-links";
 
 describe("getParentEmailSourceId", () => {
@@ -74,6 +75,155 @@ describe("matchParentLinkIdForNotification", () => {
     expect(matchParentLinkIdForNotification(links, "  parent-1  ")).toBe(
       "parent-1",
     );
+  });
+});
+
+/**
+ * #2255 (D9): the transitive resolution itself, exercised directly rather than
+ * through a route. It has to be pinned here as well as at the route, because
+ * two of its three callers — the unlink route and the family-group reviewer —
+ * run no depth check beforehand, so this walk is the only thing that has to
+ * cope with a family loop or an over-deep chain on those paths.
+ */
+describe("resolveInheritedEmailSourceId", () => {
+  type Row = {
+    id: string;
+    email: string;
+    ageTier: string;
+    archivedAt: Date | null;
+    inheritEmailFromId: string | null;
+    parentMemberId: string | null;
+    secondaryParentId: string | null;
+  };
+
+  function db(rows: Array<Partial<Row> & { id: string }>) {
+    const byId = new Map<string, Row>(
+      rows.map((row) => [
+        row.id,
+        {
+          email: `${row.id}@example.org`,
+          ageTier: "ADULT",
+          archivedAt: null,
+          inheritEmailFromId: null,
+          parentMemberId: null,
+          secondaryParentId: null,
+          ...row,
+        } as Row,
+      ]),
+    );
+    let queries = 0;
+    const client = {
+      member: {
+        async findMany({ where }: { where: { id: { in: string[] } } }) {
+          queries += 1;
+          return where.id.in
+            .map((id) => byId.get(id))
+            .filter((row): row is Row => Boolean(row));
+        },
+      },
+      get queryCount() {
+        return queries;
+      },
+    };
+    return client as unknown as Parameters<typeof resolveInheritedEmailSourceId>[0] & {
+      queryCount: number;
+    };
+  }
+
+  const placeholder = "walk-in-1@no-email.invalid";
+
+  it("uses the parent when the parent can receive mail", async () => {
+    const result = await resolveInheritedEmailSourceId(db([{ id: "p" }]), "p");
+    expect(result).toEqual({ sourceId: "p", generationsAboveParent: 0 });
+  });
+
+  it("short-circuits on the parent's own already-flattened source", async () => {
+    // Stored inheritance is always terminal, so this hop needs no further walk —
+    // and taking it is what keeps a non-login middle generation's children
+    // pointed at the same mailbox as the middle generation itself.
+    const result = await resolveInheritedEmailSourceId(
+      db([{ id: "p", inheritEmailFromId: "gp" }, { id: "gp" }]),
+      "p",
+    );
+    expect(result).toEqual({ sourceId: "gp", generationsAboveParent: 0 });
+  });
+
+  it("walks up past a parent whose only address is a placeholder", async () => {
+    const result = await resolveInheritedEmailSourceId(
+      db([
+        { id: "p", email: placeholder, parentMemberId: "gp" },
+        { id: "gp" },
+      ]),
+      "p",
+    );
+    expect(result).toEqual({ sourceId: "gp", generationsAboveParent: 1 });
+  });
+
+  it("walks up past a non-adult and past an archived ancestor", async () => {
+    const result = await resolveInheritedEmailSourceId(
+      db([
+        { id: "p", email: placeholder, parentMemberId: "youth" },
+        { id: "youth", ageTier: "YOUTH", parentMemberId: "archived" },
+        { id: "archived", archivedAt: new Date("2026-01-01"), parentMemberId: "ggp" },
+        { id: "ggp" },
+      ]),
+      "p",
+    );
+    expect(result).toEqual({ sourceId: "ggp", generationsAboveParent: 3 });
+  });
+
+  it("prefers the nearer ancestor, and the primary edge within a level", async () => {
+    const result = await resolveInheritedEmailSourceId(
+      db([
+        {
+          id: "p",
+          email: placeholder,
+          parentMemberId: "primary-gp",
+          secondaryParentId: "secondary-gp",
+        },
+        { id: "primary-gp" },
+        { id: "secondary-gp" },
+      ]),
+      "p",
+    );
+    expect(result.sourceId).toBe("primary-gp");
+  });
+
+  it("stops at the depth cap rather than walking a long chain", async () => {
+    const result = await resolveInheritedEmailSourceId(
+      db([
+        { id: "p", email: placeholder, parentMemberId: "a" },
+        { id: "a", email: placeholder, parentMemberId: "b" },
+        { id: "b", email: placeholder, parentMemberId: "c" },
+        { id: "c", email: placeholder, parentMemberId: "far" },
+        { id: "far" },
+      ]),
+      "p",
+    );
+    expect(result.sourceId).toBeNull();
+  });
+
+  it("visits each member once on a family loop instead of circling", async () => {
+    // Terminating is not enough on its own to show the walk is cycle-SAFE: a
+    // level bound alone would also terminate, after a round trip per level. The
+    // query count is what distinguishes the two, so it is asserted.
+    const client = db([
+      { id: "p", email: placeholder, parentMemberId: "a" },
+      { id: "a", email: placeholder, parentMemberId: "p" },
+    ]);
+
+    const result = await resolveInheritedEmailSourceId(client, "p");
+
+    expect(result.sourceId).toBeNull();
+    expect(client.queryCount).toBeLessThanOrEqual(3);
+  });
+
+  it("returns null when nobody in reach can receive mail", async () => {
+    const result = await resolveInheritedEmailSourceId(
+      db([{ id: "p", email: placeholder }]),
+      "p",
+    );
+    expect(result).toEqual({ sourceId: null, generationsAboveParent: 0 });
   });
 });
 
