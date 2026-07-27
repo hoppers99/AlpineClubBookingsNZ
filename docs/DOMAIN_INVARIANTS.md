@@ -2409,7 +2409,12 @@ so that refusal never becomes a dead end.
 
 A stored pointer is a snapshot of a past decision, so the resolver **re-reads the
 member it names** before trusting it and keeps walking if that member has since
-been archived, anonymised, or left with a placeholder address.
+been archived, anonymised, left with a placeholder address, or **themselves been
+linked as an inheriting dependant**. That last one is not optional politeness:
+returning a chaining source makes a validating writer 422 with "cannot chain
+through another inherited member" — naming a member the admin never chose — and
+the unlink route, which has no validator behind it, would store the chained
+pointer and break the flat-terminal invariant outright.
 
 **Provenance, not identity, decides what unlinking clears.** Every pointer this
 system derives from a parent link carries `inheritParentEmail: true`; a
@@ -2425,28 +2430,44 @@ ages up, their own inheritance is cleared — they now have an address and a log
 of their own — and their dependants' DERIVED pointers are re-resolved through
 them, because those pointers only walked past them in the first place for want of
 an address. Without that, a parent with both a mailbox and a login would never
-receive their own child's notifications. **The general case is NOT handled**: if
+receive their own child's notifications.
+
+That sweep is scoped by WHERE the pointer currently points, not merely by who
+the dependant's parents are. `inheritParentEmail` records that a pointer is
+derived, but it cannot distinguish "derived by default" from "the admin
+explicitly chose parent Q" — both store `true`. So a child with two parents whose
+pointer names the other parent must be left alone, and the only sound test is
+whether the current pointer names somebody the aged-up member's own chain could
+have produced (themselves or one of their ancestors, since as a non-login minor
+the walk could never have stopped on them). Selecting on the flag alone silently
+moves a family's contact of record, which is the very consent question this job
+must not answer by itself. **The general case is NOT handled**: if
 an ancestor's email address changes, or a middle generation gains an address by
 some other route, existing pointers keep naming whoever they named. That is
 recorded here as a known limitation and flagged for the owner (2026-07-27, #2255)
 because the fix is a consent question — silently moving a family's contact of
 record is not obviously better than leaving it where the admin put it.
 
-**Removing a member detaches, and declares.** Cancellation approval, archive
-approval and deletion anonymisation all clear links pointing at the member being
-removed. With four generations that member is often a middle generation, so the
+**Removing a member detaches, and declares.** All FOUR removal paths —
+cancellation approval, archive approval, deletion anonymisation, and the
+two-admin hard delete — clear links pointing at the member being removed. With four generations that member is often a middle generation, so the
 sweep leaves their dependants without a parent link and anyone inheriting their
 address without a mailbox. Those dependants are deliberately **not** re-parented
 onto the grandparent: who is responsible for a member is a real-world fact, and
 promoting it as a side effect of someone else leaving the club would record a
 relationship nobody asserted.
 
-All three therefore read who they are about to detach BEFORE nulling the columns
+All four therefore read who they are about to detach BEFORE nulling the columns
 — afterwards there is no record of the links at all — through the one shared
-helper, `src/lib/member-family-link-orphans.ts`. Cancellation and archive return
-`orphanedLinks` (always present, empty arrays when nothing was linked) and the
-admin page states who was detached; all three name the same members in their
-audit metadata. Deletion anonymisation additionally **sweeps the inheritance
+helper, `src/lib/member-family-link-orphans.ts`. Cancellation, archive and hard
+delete return `orphanedLinks` (always present, empty arrays when nothing was
+linked), the admin page states who was detached, and all four name the same
+members in their audit metadata. The hard delete is the one that leaves the
+clearing itself to the database (`onDelete: SetNull`), which nulls the columns
+but leaves `inheritParentEmail: true` standing beside a NULL pointer — a
+combination no writer produces and no reader expects — so it also clears that
+flag, guarded on the pointer already being null so it can never touch a live
+inheritance. Deletion anonymisation additionally **sweeps the inheritance
 pointers aimed at the member**, which it previously did not: it overwrites the
 member's address with `@deleted.invalid` and nulled only their own pointer, so
 dependants and grandchildren kept resolving club email to an address that hard

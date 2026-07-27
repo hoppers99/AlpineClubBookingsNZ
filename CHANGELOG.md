@@ -31,8 +31,9 @@ All notable public reference-release changes should be recorded here.
   comes from beyond the direct parent, since that is the family whose consent is
   at stake. When a young member reaches adult age and gets their own login,
   their children's notifications now follow them instead of staying with the
-  grandparent. **Removing a member** — cancelling, archiving, or approving an
-  account deletion — now tells you what it detached: their own dependants are
+  grandparent. **Removing a member** — cancelling, archiving, approving an
+  account deletion, or hard-deleting the record — now tells you what it
+  detached: their own dependants are
   left without a parent link (they are deliberately not moved up to a
   grandparent, because who is responsible for a member is not something to
   change automatically), and both they and anyone who was receiving email at the
