@@ -240,6 +240,27 @@ describe("resolveInheritedEmailSourceId", () => {
     expect(result).toEqual({ sourceId: "gp" });
   });
 
+  it("does not trust a stored pointer whose target now inherits (terminality)", async () => {
+    // P->X was valid when written; X was later linked as a dependant and now
+    // inherits from Y. Returning X would break the flat-terminal invariant every
+    // one-hop reader depends on — and the two callers fail differently and both
+    // badly: a validating writer 422s with "cannot chain through another
+    // inherited member", naming a member the admin never chose, while the unlink
+    // route has no validator and would simply store the chained pointer.
+    const result = await resolveInheritedEmailSourceId(
+      db([
+        { id: "p", email: placeholder, inheritEmailFromId: "x", parentMemberId: "gp" },
+        { id: "x", inheritEmailFromId: "y" },
+        { id: "y" },
+        { id: "gp" },
+      ]),
+      "p",
+    );
+    // Walks ON rather than returning the chaining X — to P's own parent, which
+    // is the next candidate the walk would have considered anyway.
+    expect(result).toEqual({ sourceId: "gp" });
+  });
+
   it("treats a deletion-anonymised address as unreachable", async () => {
     const result = await resolveInheritedEmailSourceId(
       db([

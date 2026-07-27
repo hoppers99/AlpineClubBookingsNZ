@@ -294,6 +294,43 @@ describe("DELETE /api/admin/members/[id]/dependents/[dependentId]", () => {
       );
     });
 
+    it("never stores a CHAINED pointer when the remaining parent's source now inherits", async () => {
+      // #2255 (R2). parent-2's stored source is gp-2, but gp-2 has since been
+      // linked as a dependant and inherits from ggp-2. This route has no
+      // validator behind it, so an un-terminal answer from the resolver would be
+      // written straight to the database and quietly break the flat-terminal
+      // invariant that lets every reader resolve email in ONE hop.
+      const tx = setupTransaction([
+        makeParent(),
+        makeParent({
+          id: "parent-2",
+          email: "walk-in-2@no-email.invalid",
+          inheritEmailFromId: "gp-2",
+          parentMemberId: "gp-2",
+        }),
+        makeParent({
+          id: "gp-2",
+          email: "gp2@example.com",
+          inheritEmailFromId: "ggp-2",
+          parentMemberId: "ggp-2",
+        }),
+        makeParent({ id: "ggp-2", email: "ggp2@example.com" }),
+        makeDependent({ secondaryParentId: "parent-2" }),
+      ]);
+
+      const res = await unlinkDependent();
+
+      expect(res.status).toBe(200);
+      expect(tx.member.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            inheritParentEmail: true,
+            inheritEmailFrom: { connect: { id: "ggp-2" } },
+          }),
+        })
+      );
+    });
+
     it("still leaves a MANUAL source alone even when it names an ancestor", async () => {
       // The distinguishing case for the provenance flag: the stored id is one
       // the derived path could also have produced, but the admin chose it, so

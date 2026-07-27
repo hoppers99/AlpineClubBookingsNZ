@@ -144,16 +144,37 @@ export async function resolveInheritedEmailSourceId(
       //
       // TRUSTED ONLY IF STILL VALID. A stored pointer is a snapshot of a past
       // decision, and the member it names can have been archived, aged into a
-      // placeholder address, or deleted since. Following it blindly would
-      // propagate a dead mailbox to a new dependant and call it resolved, so
-      // the target is re-read and, if it no longer qualifies, the walk carries
-      // on upward as though the pointer were absent.
+      // placeholder address, deleted, or — the case terminality catches —
+      // themselves been linked as an inheriting dependant since. Following it
+      // blindly would propagate a dead or CHAINED mailbox to a new dependant and
+      // call it resolved, so the target is re-read and, if it no longer
+      // qualifies, the walk carries on upward as though the pointer were absent.
+      //
+      // Terminality is checked here and nowhere else in this branch because it
+      // is only reachable here: the `else` below runs on rows whose own
+      // `inheritEmailFromId` is null, so those are terminal by construction.
+      // Without it the resolver hands back a chaining source, and the two
+      // callers fail differently and both badly — a validating writer 422s with
+      // "cannot chain through another inherited member", naming a member the
+      // admin never chose, while the unlink route (which has no validator)
+      // simply STORES it and breaks the flat-terminal invariant every one-hop
+      // reader depends on.
       if (row.inheritEmailFromId) {
         const storedSource = await db.member.findUnique({
           where: { id: row.inheritEmailFromId },
-          select: { id: true, email: true, ageTier: true, archivedAt: true },
+          select: {
+            id: true,
+            email: true,
+            ageTier: true,
+            archivedAt: true,
+            inheritEmailFromId: true,
+          },
         });
-        if (storedSource && isUsableEmailSource(storedSource)) {
+        if (
+          storedSource &&
+          !storedSource.inheritEmailFromId &&
+          isUsableEmailSource(storedSource)
+        ) {
           return { sourceId: storedSource.id };
         }
         // Falls through to the parents rather than to this row's own address: a
