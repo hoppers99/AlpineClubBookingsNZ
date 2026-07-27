@@ -126,15 +126,40 @@ export async function retryFailedEmails(): Promise<{
     // email-failure review queue instead of going out or vanishing.
     if (!emailLog.bookingId) {
       if (ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES.has(emailLog.templateName)) {
+        // Retire the row TERMINALLY rather than leaving it as found. Leaving it
+        // at attempts < 3 would have been the worst of both worlds: the row is
+        // below the >=3 threshold the operator review queue reads, so it would
+        // surface NOWHERE; and it stays inside this cron's selection window
+        // (status FAILED, attempts < MAX, retained body) forever, so once fifty
+        // such rows exist the batch of 50 is refilled with the same stuck rows
+        // every run and retry dies for every newer email behind them.
+        // Pushing attempts to MAX_ATTEMPTS drops it out of the query and lands
+        // it in the review queue, which is what the operator needs.
+        await prisma.emailLog
+          .update({
+            where: { id: emailLog.id },
+            data: {
+              attempts: MAX_ATTEMPTS,
+              lastAttemptAt: new Date(),
+              errorMessage:
+                "Not retried: this booking email predates the per-booking \"No emails\" switch (#2258) and carries no booking, so it cannot be checked against it. Re-send it by hand if the booking still needs it.",
+            },
+          })
+          .catch((err) => {
+            logger.error(
+              { err, emailLogId: emailLog.id },
+              "Failed to retire an unattributable booking email",
+            );
+          });
         logger.warn(
           {
             emailLogId: emailLog.id,
             templateName: emailLog.templateName,
             to: emailLog.to,
           },
-          "Skipped replaying a booking-scoped email with no recorded booking (queued before #2258); it cannot be checked against the booking's \"No emails\" switch",
+          "Retired a booking-scoped email with no recorded booking (queued before #2258); it cannot be checked against the booking's \"No emails\" switch",
         );
-        // Not a retry attempt: the row is untouched and stays FAILED.
+        // Not a retry attempt: nothing was sent.
         continue;
       }
     } else {

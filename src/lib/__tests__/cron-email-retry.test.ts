@@ -317,11 +317,40 @@ describe('retryFailedEmails and the per-booking "No emails" switch (#2258)', () 
     const result = await retryFailedEmails();
 
     expect(mocks.sendMail).not.toHaveBeenCalled();
-    // Left exactly as found: still FAILED, so it stays in the operator's
-    // email-failure review queue rather than being sent or silently resolved.
-    expect(mocks.update).not.toHaveBeenCalled();
+    // Not claimed, so not counted as a retry attempt...
     expect(mocks.updateMany).not.toHaveBeenCalled();
     expect(result).toEqual({ retried: 0, succeeded: 0, failed: 0 });
+    // ...but RETIRED, not left as found: attempts goes to the max so the row
+    // leaves this cron's selection window and enters the >=3 operator review
+    // queue, with an errorMessage saying what to do about it.
+    expect(mocks.update).toHaveBeenCalledWith({
+      where: { id: "email_1" },
+      data: expect.objectContaining({
+        attempts: 3,
+        errorMessage: expect.stringContaining("No emails"),
+      }),
+    });
+  });
+
+  // The reason retiring matters, not just tidiness: the query is
+  // status=FAILED + attempts<3 + retained body, ordered oldest-first, take 50.
+  // Rows left below the threshold stay selectable forever, so a backlog of them
+  // refills the same batch every run and retry dies for everything newer.
+  it("does not let refused rows starve the queue: they leave the selection window", async () => {
+    const stuck = Array.from({ length: 50 }, (_, i) =>
+      failedEmail({ id: `stuck_${i}`, bookingId: null, templateName: "booking-confirmed" }),
+    );
+    mocks.findMany.mockResolvedValue(stuck);
+
+    await retryFailedEmails();
+
+    // Every one of them is retired in this single run, so the next run's batch
+    // is free for newer mail rather than re-selecting these.
+    expect(mocks.update).toHaveBeenCalledTimes(50);
+    for (const call of mocks.update.mock.calls) {
+      expect(call[0].data.attempts).toBe(3);
+    }
+    expect(mocks.sendMail).not.toHaveBeenCalled();
   });
 
   it("still replays NULL-bookingId account, membership and admin rows untouched", async () => {
