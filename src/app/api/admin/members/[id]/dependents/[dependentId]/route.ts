@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
-import { getParentEmailSourceId } from "@/lib/member-parent-links";
+import { resolveInheritedEmailSourceId } from "@/lib/member-parent-links";
 import logger from "@/lib/logger";
 
 class UnlinkDependentError extends Error {
@@ -78,8 +78,15 @@ export async function DELETE(
       const remainingParent = isPrimaryParent
         ? dependent.secondaryParent
         : dependent.parent;
+      // #2255: hand the remaining parent to the same transitive resolver the
+      // link route uses, so a dependant who falls back onto a middle-generation
+      // parent with no mailbox of their own lands on that parent's nearest
+      // reachable ancestor rather than on nothing. A one-hop read here would
+      // silently clear inheritance instead.
       const nextEmailSourceId = shouldClearEmailInheritance
-        ? getParentEmailSourceId(remainingParent)
+        ? remainingParent
+          ? (await resolveInheritedEmailSourceId(tx, remainingParent.id)).sourceId
+          : null
         : dependent.inheritEmailFromId;
 
       const updateData = {

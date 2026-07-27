@@ -29,6 +29,15 @@ import { copyStreetAddressToPostal } from "@/lib/member-address";
 import { validateInheritEmailSource } from "@/lib/member-email-inheritance";
 import { buildParentLinks } from "@/lib/member-parent-links";
 import {
+  allowedParentAncestorGenerations,
+  ancestorDepthWithinWhere,
+  describeChildSideDepth,
+  describeParentSideDepth,
+  exceedsFamilyLinkGenerationLimit,
+  FAMILY_LINK_GENERATION_LIMIT_ERROR,
+  type ParentSideDepth,
+} from "@/lib/member-family-link-depth";
+import {
   DEPENDENT_LINK_CANDIDATE_SELECT,
   DEPENDENT_LINK_INELIGIBILITY_EXPLANATIONS,
   dependentLinkBlockers,
@@ -405,12 +414,15 @@ export async function listAdminMembers(
   }
 
   if (inheritEmailEligible) {
-    andConditions.push(
-      { ageTier: "ADULT" },
-      { parentMemberId: null },
-      { secondaryParentId: null },
-      { inheritEmailFromId: null },
-    );
+    // #2255 (D9): the two parent-column clauses are gone. They mirrored
+    // `validateInheritEmailSource`'s old "must point to a primary adult member"
+    // rule, which the four-generation model retires — the nearest ancestor with
+    // a real mailbox is routinely a MIDDLE generation, an adult who is both
+    // someone's child and someone's parent. Keeping them here would have left
+    // the picker unable to offer the very source the write route now accepts.
+    // The two guarantees that matter are unchanged and still mirrored exactly:
+    // the source is an ADULT, and it is TERMINAL (does not itself inherit).
+    andConditions.push({ ageTier: "ADULT" }, { inheritEmailFromId: null });
   }
 
   if (excludeId) {
@@ -422,8 +434,22 @@ export async function listAdminMembers(
   // (POST /api/admin/members/[id]/dependents/link) cannot drift apart again.
   // See src/lib/dependent-link-eligibility.ts for the NULL-semantics and
   // active/archived reasoning.
+  //
+  // #2255: the depth cap and the ancestor exclusion both depend on the PARENT's
+  // own chain, so that one walk happens here and is reused by the diagnostic
+  // pass below rather than being recomputed per candidate.
+  let dependentLinkParentSide: ParentSideDepth | null = null;
   if (dependentLinkEligibleFor) {
-    andConditions.push(...dependentLinkCandidateWhere(dependentLinkEligibleFor));
+    dependentLinkParentSide = await describeParentSideDepth(
+      prisma,
+      dependentLinkEligibleFor,
+    );
+    andConditions.push(
+      ...dependentLinkCandidateWhere(dependentLinkEligibleFor, {
+        parentAncestorIds: dependentLinkParentSide.ancestorIds,
+        parentAncestorGenerations: dependentLinkParentSide.ancestorGenerations,
+      }),
+    );
   }
 
   if (parentLinkEligibleFor) {
@@ -431,13 +457,24 @@ export async function listAdminMembers(
       where: { id: parentLinkEligibleFor },
       select: { parentMemberId: true, secondaryParentId: true },
     });
+    // #2255: the mirror-image constraint. Here the SEARCHED-FOR member becomes
+    // the parent, so it is the member's own dependant chain that eats into the
+    // cap, and the candidate's ANCESTOR chain that must fit in what is left.
+    // The member's descendants are excluded outright: with the old
+    // "no dependants" clause gone they are no longer incidentally filtered, and
+    // offering one would be offering a cycle the write route then refuses.
+    const childSide = await describeChildSideDepth(prisma, parentLinkEligibleFor);
     const excludedParentIds = [
       parentLinkEligibleFor,
       target?.parentMemberId,
       target?.secondaryParentId,
+      ...childSide.descendantIds,
     ].filter((memberId): memberId is string => Boolean(memberId));
     andConditions.push(
       { id: { notIn: excludedParentIds } },
+      ancestorDepthWithinWhere(
+        allowedParentAncestorGenerations(childSide.descendantGenerations),
+      ),
       { active: true },
       { ageTier: "ADULT" },
     );
@@ -806,7 +843,13 @@ export async function listAdminMembers(
   // only when that is what happened.
   let dependentLinkSearchMatchedNobody: true | undefined;
 
-  if (dependentLinkEligibleFor && textSearchCondition && total === 0) {
+  if (
+    dependentLinkEligibleFor &&
+    dependentLinkParentSide &&
+    textSearchCondition &&
+    total === 0
+  ) {
+    const parentSide = dependentLinkParentSide;
     const textMatches = await prisma.member.findMany({
       where: textSearchCondition,
       orderBy,
@@ -819,10 +862,23 @@ export async function listAdminMembers(
       },
     });
 
-    const explained = textMatches.flatMap((candidate) => {
+    // #2255: depth is per-candidate, so each explained row needs its own
+    // downward walk. Bounded to DEPENDENT_LINK_INELIGIBLE_EXPLANATION_LIMIT
+    // rows on an already-empty result, which is the only path that reaches here.
+    const candidateDepths = await Promise.all(
+      textMatches.map((candidate) => describeChildSideDepth(prisma, candidate.id)),
+    );
+
+    const explained = textMatches.flatMap((candidate, index) => {
       const [reason] = dependentLinkBlockers(
         dependentLinkEligibleFor,
         candidate,
+        {
+          parentAncestorIds: parentSide.ancestorIds,
+          parentAncestorGenerations: parentSide.ancestorGenerations,
+          candidateDescendantGenerations:
+            candidateDepths[index].descendantGenerations,
+        },
       );
       if (!reason) return [];
       return [
@@ -1062,6 +1118,27 @@ export async function createAdminMember(
     ) {
       return jsonResult(
         { error: "Dependents can only be created under active adult members" },
+        { status: 422 },
+      );
+    }
+
+    // #2255: admin member-create is a parent-link WRITER too, and it was never
+    // covered by the old "target already has dependants" guard because the
+    // target does not exist yet. A brand-new member has no dependants, so only
+    // the parent's own chain can breach the cap — but it can, and unchecked this
+    // is the easiest way to create a fifth generation.
+    const parentSide = await describeParentSideDepth(
+      prisma,
+      parentMember.id,
+    );
+    if (
+      exceedsFamilyLinkGenerationLimit({
+        parentAncestorGenerations: parentSide.ancestorGenerations,
+        childDescendantGenerations: 0,
+      })
+    ) {
+      return jsonResult(
+        { error: FAMILY_LINK_GENERATION_LIMIT_ERROR },
         { status: 422 },
       );
     }

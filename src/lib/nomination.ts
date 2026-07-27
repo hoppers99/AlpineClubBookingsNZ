@@ -24,6 +24,12 @@ import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import { resolveMembershipTypePolicyForMember } from "@/lib/membership-type-policy";
 import logger from "@/lib/logger";
 import { copyStreetAddressToPostal } from "@/lib/member-address";
+import {
+  checkParentLinkDepthAndCycle,
+  describeParentSideDepth,
+  exceedsFamilyLinkGenerationLimit,
+  FAMILY_LINK_GENERATION_LIMIT_ERROR,
+} from "@/lib/member-family-link-depth";
 import { checkNominatorEligibility } from "@/lib/nominator-eligibility";
 import { prisma } from "@/lib/prisma";
 import { getSeasonYear } from "@/lib/utils";
@@ -1745,6 +1751,20 @@ export async function approveMemberApplication(
         // member with no existing parent; never touch auth/email on a
         // login-capable target (hard invariant). The preview noted the skip.
         if (outcome.setParentLink) {
+          // #2255 (D9): mapping onto an EXISTING member is a parent-link write,
+          // and this path never saw the old two-generation guard — the mapping
+          // predicate only checks that the target has no parent, not that it has
+          // no dependants. Under a four-generation cap both halves matter: the
+          // applicant may be someone's child, and the target may already have
+          // children of their own.
+          const linkVerdict = await checkParentLinkDepthAndCycle(tx, {
+            parentId: applicantMember.id,
+            childId: target.id,
+          });
+          if (linkVerdict) {
+            throw new MembershipApplicationError(linkVerdict.error, 422);
+          }
+
           dependentUpdate.parentMemberId = applicantMember.id;
           dependentUpdate.inheritParentEmail = true;
           dependentUpdate.inheritEmailFromId = applicantMember.id;
@@ -1783,6 +1803,22 @@ export async function approveMemberApplication(
           });
         }
         continue;
+      }
+
+      // #2255 (D9): a brand-new dependant has no chain of its own, so only the
+      // applicant's ancestors can breach the cap — which they can, now that an
+      // applicant may themselves be recorded as someone's child.
+      const applicantSide = await describeParentSideDepth(tx, applicantMember.id);
+      if (
+        exceedsFamilyLinkGenerationLimit({
+          parentAncestorGenerations: applicantSide.ancestorGenerations,
+          childDescendantGenerations: 0,
+        })
+      ) {
+        throw new MembershipApplicationError(
+          FAMILY_LINK_GENERATION_LIMIT_ERROR,
+          422
+        );
       }
 
       const dependent = await tx.member.create({
