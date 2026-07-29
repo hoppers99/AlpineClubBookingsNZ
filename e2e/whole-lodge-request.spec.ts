@@ -121,38 +121,33 @@ test("the acknowledgement is byte-identical whether the lodge is clear, full, or
   test.setTimeout(180_000);
 
   // --- World C setup: make HELD_WINDOW exclusively held ---------------------
-  // An admin books the window on behalf of a member, then sets the exclusive
-  // whole-lodge hold on it. From that moment every OTHER member sees those
-  // nights as simply unavailable — the same word a genuinely full lodge gets,
-  // which is the rule this whole test exists to prove is not observable.
-  // Read the member id from the member's OWN session rather than an admin
-  // lookup endpoint — one fewer API contract for this spec to depend on.
-  const holdOwnerSession = (await (
-    await wandaContext.request.get("/api/auth/session")
-  ).json()) as { user?: { id?: string } };
-  const holdOwnerId = holdOwnerSession.user?.id;
-  expect(holdOwnerId, "seeded hold-owner persona was not signed in").toBeTruthy();
-
-  const holdBookingResponse = await adminContext.request.post("/api/bookings", {
+  // A member books the window as an ordinary stay, then an admin sets the
+  // exclusive whole-lodge hold on it. From that moment every OTHER member sees
+  // those nights as simply unavailable — the same word a genuinely full lodge
+  // gets, which is the rule this whole test exists to prove is not observable.
+  //
+  // The booking is created from a MEMBER session with no payment method (the
+  // same shape e2e/waitlist.spec.ts uses): the admin on-behalf route's
+  // internet-banking branch is not enabled on the staging stack, and this world
+  // only needs a capacity-holding booking to hang the hold on.
+  const holdBookingResponse = await wandaContext.request.post("/api/bookings", {
     data: {
-      forMemberId: holdOwnerId,
       checkIn: HELD_WINDOW.checkIn,
       checkOut: HELD_WINDOW.checkOut,
       guests: [
         {
-          firstName: "Held",
-          lastName: "Group",
+          firstName: WAITLISTER.firstName,
+          lastName: WAITLISTER.lastName,
           ageTier: "ADULT",
-          isMember: false,
+          isMember: true,
         },
       ],
-      paymentMethod: "internet_banking",
     },
   });
   expect(
-    holdBookingResponse.ok(),
+    holdBookingResponse.status(),
     `could not create the booking to hold: ${await holdBookingResponse.text()}`,
-  ).toBe(true);
+  ).toBe(201);
   const holdBooking = (await holdBookingResponse.json()) as {
     booking?: { id?: string };
     id?: string;
