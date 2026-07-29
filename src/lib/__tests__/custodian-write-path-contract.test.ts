@@ -147,6 +147,22 @@ describe("custodian write-path contract (#2286)", () => {
     expect(guardAt).toBeLessThan(upsertAt);
   });
 
+  it("keeps utilisation reporting deliberately custodian-FREE, with the reason at the loop", () => {
+    // The include/exclude split is a decision, not an accident
+    // (docs/CAPACITY_MODEL.md): every ADMISSION path and the capacity-warnings
+    // cron count the custodian; the utilisation report does not, because it
+    // measures how much the lodge was BOOKED. Pinned here so a later "fix" that
+    // adds the custodian to the report has to change this test and re-read the
+    // decision first.
+    const reports = readRepoFile("src/app/api/admin/reports/route.ts");
+    expect(reports).not.toContain("custodian-occupancy");
+    expect(reports).toContain("deliberately EXCLUDED");
+
+    // And the other way round: the cron DOES count it.
+    const cron = readRepoFile("src/lib/cron-capacity-warnings.ts");
+    expect(cron).toContain("buildLodgeCustodianNightCounter");
+  });
+
   it("takes the per-lodge advisory lock in every self-wrapped placement transaction", () => {
     const source = readRepoFile("src/lib/admin-bed-allocation.ts");
     // The guard's read and the write must sit inside the SAME lock the
