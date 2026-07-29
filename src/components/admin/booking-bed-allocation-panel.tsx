@@ -398,8 +398,8 @@ export function BookingBedAllocationPanel({
   // Absent from the dashboard payload AND not held: the booking cannot carry
   // bed allocations at all. The owner's decision is that the panel stays and
   // says so, rather than vanishing and leaving the officer to wonder.
-  const notAllocatable = Boolean(payload) && !bookingRow && !hold;
   const held = Boolean(hold) || wholeLodgeHold;
+  const notAllocatable = Boolean(payload) && !bookingRow && !held;
 
   const boardHref = buildHrefWithReturnTo(
     `/admin/bed-allocation?${new URLSearchParams({
