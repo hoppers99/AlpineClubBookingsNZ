@@ -284,10 +284,13 @@ export function BookingManualPaymentControls({
                 <DialogDescription>
                   The booking goes back to being unpaid and the manual payment
                   record is cleared. It is NOT cancelled. The member is not
-                  emailed — there is no reversal notice. This is only possible
-                  while nothing has happened since that a reversal could not
-                  undo: no refund, no card payment, no open refund task, and no
-                  Xero invoice.
+                  emailed — there is no reversal notice. A booking restored to
+                  awaiting-payment stops holding its beds, so other bookings
+                  can take them — and recording the payment again later can be
+                  refused if the lodge has filled in the meantime. This is only
+                  possible while nothing has happened since that a reversal
+                  could not undo: no refund, no card payment, no open refund
+                  task, and no Xero invoice.
                 </DialogDescription>
               </DialogHeader>
               <div className="space-y-2">
