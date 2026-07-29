@@ -9,6 +9,15 @@
 --  * one composite btree index,
 --  * one nullable foreign key to Member (ON DELETE SET NULL).
 -- Nothing is dropped, renamed, retyped or backfilled.
+--
+-- Timestamp coordination (Prisma applies migrations in lexical directory order,
+-- so two branches must never claim the same stamp). Concurrently open branches
+-- at the time of writing: #2265 20260729120000, #2262 20260729180000, #2322
+-- 20260730120000 + 20260730130000, and #2306 (MG1) 20260731120000 +
+-- 20260731120100. This migration is stamped 20260730140000 — strictly after
+-- every stamp already claimed on 2026-07-30 and strictly before MG1's
+-- 2026-07-31 pair, so it is unique and its ordering is stable whichever of
+-- those branches lands first.
 
 ALTER TABLE "BookingRequest" ADD COLUMN "requestedByMemberId" TEXT;
 

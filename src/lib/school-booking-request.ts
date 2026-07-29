@@ -1379,7 +1379,7 @@ export const memberWholeLodgeApprovalSchema = z.object({
   pricedHeadcount: z.number().int().min(1).max(500).optional(),
   /**
    * Manual total price in integer cents. MANDATORY fallback when no active
-   * season covers the requested dates â€” without it the season-rate branch has
+   * season covers the requested dates — without it the season-rate branch has
    * nothing to price from and the approval 409s (the member-request path has no
    * quote/price op to fall back on, so this field is the only way through).
    * Split across the guest rows by splitPriceAcrossGuests.
@@ -1403,7 +1403,7 @@ type ApproveMemberWholeLodgeRequestOutcome =
        * Existing capacity-holding bookings overlapping the approved booking's
        * nights, computed post-commit. ADMIN-ONLY (ADR-001 decision 6): this
        * never reaches a member surface, and the approval never refuses or
-       * displaces on account of it (decision 1) â€” the officer resolves it.
+       * displaces on account of it (decision 1) — the officer resolves it.
        */
       exclusiveHoldConflicts: HoldConflictBooking[];
     }
@@ -1421,7 +1421,7 @@ type ApproveMemberWholeLodgeRequestOutcome =
  *
  * School parity, deliberately:
  *   - the booking is created **CONFIRMED**, which is capacity-holding in its own
- *     right (CAPACITY_HOLDING_BOOKING_STATUSES) â€” no dependence on the PENDING
+ *     right (CAPACITY_HOLDING_BOOKING_STATUSES) — no dependence on the PENDING
  *     `originBookingRequest` clause;
  *   - `paymentSource: INTERNET_BANKING` with a PENDING Payment row, so the
  *     finance surfaces see the receivable;
@@ -1507,7 +1507,7 @@ export async function approveMemberWholeLodgeRequest(input: {
       : buildMemberWholeLodgePlaceholderGuests(headcount);
 
   // Owner decision OD-A: the placeholder guests are unnamed and unlinked, so
-  // they price at NON-MEMBER rates â€” the same engine, rate class and group
+  // they price at NON-MEMBER rates — the same engine, rate class and group
   // discount the school path uses. `priceSchoolGuests` returns null when no
   // active season covers the dates.
   const price = await priceSchoolGuests({
@@ -1522,7 +1522,7 @@ export async function approveMemberWholeLodgeRequest(input: {
   let guestPriceCents: number[];
   if (priceOverrideCents != null) {
     // Officer's manual total wins, split in integer cents with the remainder on
-    // the first guest (splitPriceAcrossGuests) â€” no bespoke arithmetic.
+    // the first guest (splitPriceAcrossGuests) — no bespoke arithmetic.
     totalPriceCents = priceOverrideCents;
     guestPriceCents = splitPriceAcrossGuests(totalPriceCents, guests.length);
   } else if (price && price.guests.length === guests.length) {
@@ -1540,7 +1540,7 @@ export async function approveMemberWholeLodgeRequest(input: {
 
   const reviewedAt = new Date();
   // ADR-001 decision 1: the hold is stamped regardless of any existing
-  // overlapping bookings â€” never an empty-lodge precondition. Stamped by the
+  // overlapping bookings — never an empty-lodge precondition. Stamped by the
   // approving admin, because granting exclusivity is the ADMIN's capacity
   // action; the member request only recorded the ASK.
   const exclusiveHoldData = {
@@ -1560,7 +1560,7 @@ export async function approveMemberWholeLodgeRequest(input: {
   try {
     conversion = await prisma.$transaction(async (tx) => {
       // Fresh create only (no held booking is reachable here, guarded above), so
-      // the per-lodge capacity lock alone is the right scope â€” exactly as the
+      // the per-lodge capacity lock alone is the right scope — exactly as the
       // school fresh-create branch does. Taking the global lifecycle lock too
       // would needlessly serialise unrelated lodges.
       const bookingLodgeId = request.lodgeId ?? (await getDefaultLodgeId(tx));
@@ -1639,7 +1639,7 @@ export async function approveMemberWholeLodgeRequest(input: {
 
       // The booking's OWN admission is capacity-checked, school parity. ADR-001
       // decision 1 governs only what happens to OTHER bookings on the held
-      // nights (nothing â€” they are surfaced, never displaced); it does not
+      // nights (nothing — they are surfaced, never displaced); it does not
       // license admitting this booking over capacity.
       const capacity = await checkCapacityForGuestRanges(
         bookingLodgeId,
@@ -1673,7 +1673,7 @@ export async function approveMemberWholeLodgeRequest(input: {
 
       const guestCreates = await buildApprovalGuestCreates(tx, {
         guests,
-        // A member whole-lodge request carries no admin guest links â€” the guests
+        // A member whole-lodge request carries no admin guest links — the guests
         // are unnamed placeholders, which is what makes them NON_MEMBER-rated
         // (OD-A).
         linkedMembers: new Map<number, string>(),
@@ -1695,7 +1695,7 @@ export async function approveMemberWholeLodgeRequest(input: {
           totalPriceCents,
           finalPriceCents: totalPriceCents,
           // OD-A: the placeholder guests are NON_MEMBER-rated, so the booking
-          // genuinely carries non-members. No nonMemberHoldUntil â€” see the
+          // genuinely carries non-members. No nonMemberHoldUntil — see the
           // function docstring.
           hasNonMembers: true,
           notes: request.message,
@@ -1708,7 +1708,7 @@ export async function approveMemberWholeLodgeRequest(input: {
 
       // ADR-001 bed-allocation short-circuit (#2285): a booking granted an
       // exclusive hold must own NO per-bed rows. A fresh create owns none yet,
-      // so this is an idempotent no-op here â€” it is run anyway, and audited on
+      // so this is an idempotent no-op here — it is run anyway, and audited on
       // the same terms as the school path, so the invariant is enforced by the
       // same call on every approval route rather than by an assumption about
       // which branch created the booking.
@@ -1892,7 +1892,7 @@ export async function approveMemberWholeLodgeRequest(input: {
 
     // Member-facing confirmation. Deliberately the ordinary booking-confirmed
     // message: it carries dates, guest count and total and NOTHING about
-    // occupancy, exclusivity or the conflicts above â€” a member is never told the
+    // occupancy, exclusivity or the conflicts above — a member is never told the
     // lodge is exclusively held (ADR-001 decision 6). It is booking-scoped, so
     // the per-booking "No emails" switch can withhold it (#2258).
     sendBookingConfirmedEmail(
