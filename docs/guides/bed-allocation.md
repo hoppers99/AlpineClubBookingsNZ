@@ -113,6 +113,50 @@ booking, covering the range you asked for, what was written, and what was
 refused. It records the counts and the dates, not other members' names: those
 appear on screen for you, and are not filed away.
 
+### Allocate from inside a booking
+
+You do not have to go to the board at all. Open the booking (**Admin → Bookings
+→** the booking, or from anywhere that links to it) and scroll to the
+**Bed allocation** card — it also has its own entry in the section list down the
+side. Only admins who can edit bookings see it: members never do, not even the
+person whose booking it is.
+
+The card shows one row per guest on the booking — their stay window, how many of
+their nights have a bed and how many do not, and each bed they are on as a run
+of nights rather than a line per night.
+
+- **Assign…** opens the same range dialog the board uses, prefilled with that
+  guest's own stay. Everything above about ranges applies unchanged, including
+  the warning that assigning a range confirms those beds straight away.
+- **Remove** takes a run of nights off a bed. If those are the last confirmed
+  nights on the booking, the panel warns you first: removing them re-opens the
+  member's room request for editing. The room-request lock is not one-way.
+- **Confirm draft beds** approves every draft bed night on **this booking and no
+  other**. It does not place anybody — if some nights still have nobody on a bed,
+  the card says so above the button — and it does not email anyone. What it does
+  do is lock the member out of changing their requested room, which under range
+  assignment may already have happened.
+- **Open on the board** takes you to the board for the same nights, with the
+  booking in focus, and back again.
+
+Some things the card deliberately will not pretend about:
+
+- **A stay longer than 31 nights is shown a page at a time**, because that is
+  the longest window the allocation read allows. The page is always labelled
+  ("Nights 32–61 of 61"), and **Confirm** says plainly that it covers the draft
+  nights on the pages you cannot currently see as well.
+- **A booking that cannot hold beds keeps the card** and says why — cancelled,
+  deleted, or a status that is never allocated beds. The card does not vanish
+  and leave you guessing.
+- **A booking with an exclusive whole-lodge hold** shows the hold instead of
+  rows, with no assign or confirm buttons at all: it takes the lodge, so it
+  needs no individual beds.
+- **Removing a run is one night at a time**, so if it stops half way the message
+  tells you exactly how many nights actually went.
+
+Confirming from a booking records a **BED_ALLOCATION_APPROVED** entry against
+that booking, so the booking's own **Audit log** link finds it.
+
 ## Settings reference
 
 | Control | What it does | Default | Notes / constraints |
@@ -127,6 +171,8 @@ appear on screen for you, and are not filed away.
 | Approve Visible | Approve the visible draft allocations | — | Disabled when nothing is unapproved |
 | Select bed / Allocate | Place a guest on a chosen bed | — | Needs bookings edit access |
 | Refresh | Reload the board | — | — |
+| Bed allocation card (on a booking) | Assign, remove and confirm this booking's beds without leaving it | — | Admin-only; needs bookings edit access; long stays are paged 31 nights at a time |
+| Confirm draft beds (on a booking) | Approve every draft bed night on that booking | — | Never touches another booking's drafts; locks the member's room request |
 | Lodge selector | Which lodge's board is shown | first/only lodge | Only shown with more than one active lodge |
 
 Notes: bed types (single, bunk top/bottom, double) are descriptive and do not
@@ -157,6 +203,10 @@ you place them yourself.
 | A range assign is refused on every night | This booking has an exclusive whole-lodge hold | Held bookings take the whole lodge and get no individual beds — remove the hold first if that is wrong |
 | "That took too long to save" | The range was large enough for the save to time out; nothing was written | Split it into shorter ranges and assign them one after the other |
 | The member says they can no longer change their requested room | A range assign approved their beds | That is expected: confirming beds locks the room request. Removing every approved allocation re-opens it |
+| The Bed allocation card is missing from a booking | The `bedAllocation` module is off, or your admin role can view but not edit bookings | Enable the module under **Admin → Setup → Modules**, or ask a full admin for bookings edit access — the board is still readable meanwhile |
+| The card says this booking "cannot hold beds" | The booking is cancelled, deleted, or in a status that is never allocated beds | Nothing to do — any beds it once held were released |
+| **Confirm draft beds** is greyed out | Nothing on this booking is still in draft | Everything is already confirmed; range assignments confirm as they are written |
+| The card shows fewer nights than the stay | The stay is longer than the 31-night read window, so it is paged | Step forward with › — the label tells you which nights you are looking at |
 
 ## Related links
 

@@ -4,6 +4,45 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Beds can now be allocated and confirmed from inside a booking, without going
+  to the board at all (#2252).** Until now, answering "where is this party
+  sleeping, and is it settled?" meant leaving the booking, opening the
+  bed-allocation board, setting the date window to that booking's nights, and
+  picking its chips out from among everyone else's. An admin viewing a booking
+  now gets a **Bed allocation** card on the booking itself — its own section, in
+  the section list down the side — with one row per guest: their stay, how many
+  of their nights have a bed and how many do not, and each bed they are on shown
+  as a run of nights rather than a line per night.
+
+  **Assign…** opens the same range dialog the board uses, prefilled with that
+  guest's own stay, so everything it does there it does here — including
+  confirming those beds as it writes them. **Remove** takes a run of nights off
+  a bed. **Confirm draft beds** approves every draft bed night on that booking
+  and, importantly, on no other: the board's existing "approve everything in
+  this window" action would have swept up other people's bookings, so confirming
+  from a booking now selects by the booking itself. That approval is recorded
+  against the booking, so the booking's own **Audit log** link finds it.
+
+  The card is deliberately honest about the things it cannot do or cannot show.
+  Confirming beds locks the member out of changing their requested room — and
+  under range assignment that lock has usually already happened, so the card
+  says so rather than implying the button is the trigger. The lock is also not
+  one-way: removing a booking's last confirmed night re-opens the member's room
+  request, and the card warns before it does. A stay longer than the 31-night
+  window the allocation view allows is shown a page at a time, with the page
+  always labelled ("Nights 32–61 of 61") and Confirm stating plainly that it
+  reaches the nights you cannot currently see. A booking that cannot hold beds —
+  cancelled, deleted, or a status that is never allocated — keeps the card and
+  says why, instead of vanishing and leaving you to wonder. A booking holding
+  the whole lodge shows the hold instead of rows, with no buttons at all,
+  because it needs no individual beds. And because removing a run is one night
+  at a time, a removal that stops half way tells you exactly how many nights
+  actually went.
+
+  Members see none of this, including on their own booking, and neither do
+  read-only admins — every control on the card is a change, and the board is one
+  click away for anyone who only needs to look.
+
 - **A guest can now be put in one bed for a whole long stay in a single action,
   and the board can be browsed a month at a time (#2251).** The bed-allocation
   board shows 31 nights at once, and until now that was also as far as you could
