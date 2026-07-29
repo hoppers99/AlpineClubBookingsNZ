@@ -243,6 +243,61 @@ const VOUCH_PROP = "ancestorRendersViewOnlyBanner";
 const BANNER = "AdminViewOnlySectionBanner";
 const NOTICE = "AdminViewOnlyNotice";
 
+/* ------------------------------------------------------------------------ *
+   #2324 — the THIRD coverage rule: the wizard shell vouching for its steps.
+
+   #2168 gave a parent an explicit way to vouch for a child, verified at the
+   child's JSX render site. The shared guided-setup shell (`IntegrationWizard`,
+   #2080 — the frame behind the Xero, Stripe, Google, backup and Lodge Display
+   setups) cannot use it, and not by oversight: a step is supplied by the
+   provider's config as a `render(context, helpers)` callback and CALLED from
+   the shell's file, so nowhere in the source does a parent element sit above a
+   step's control. Both #2160 rules (banner in the same file, or a vouch at the
+   render site) are blind to the relationship.
+
+   The result was a shell where the easiest thing to write was the least
+   accessible one: the display wizard's steps carried per-button reasons and sat
+   in the exception list, while the other four used a plain disabled `Button`
+   that said nothing at all.
+
+   The owner's decision on #2324 (option A + A1) closes it WITHOUT inventing a
+   third spelling of `describeReason`. There are still exactly two — the closed
+   world below is unchanged, and a third spelling is still a failure. What is
+   new is the CHANNEL the existing vouch travels down, and it is narrow:
+
+     - `WizardStepHelpers` carries `ancestorRendersViewOnlyBanner: true`, typed
+       as the required LITERAL `true`, so the shell cannot hand a step a false
+       vouch and a provider cannot fabricate one from something weaker;
+     - the shell sets it because it renders the banner in EVERY branch;
+     - a provider config forwards it, at the step's render site, as
+       `ancestorRendersViewOnlyBanner={helpers.ancestorRendersViewOnlyBanner}`
+       — where `helpers` is that `WizardStepConfig.render` callback's OWN second
+       parameter;
+     - the step body then reads it in the ordinary #2168 shape: a prop
+       defaulting to false, used only as `describeReason={!prop}`.
+
+   `wizardVouchExpression` recognises that one spelling; `wizardStepRenderArrow`
+   is what makes it un-spreadable to ordinary pages, because it insists the
+   render site really is inside a `WizardStepConfig.render`. The test itself then
+   re-proves the shell's half rather than trusting it — the flag's type, the
+   shell setting it, and the banner appearing unconditionally in every branch the
+   shell can return.
+
+   Scope stays the reviewer's job, as it is for #2168: the banner states ONE
+   permission area (whatever the provider passed as `canEdit`), so a control
+   gated on a narrower one must NOT be handed the vouch. Xero's, Stripe's,
+   Google's and the backups' credential writes need Full Admin on top of the
+   wizard's area and keep their own reason for that reason; the display wizard's
+   `support`-gated module switch does too. That is the same judgement that keeps
+   `member-credit-card.tsx` un-vouched, and it is not statically decidable.
+ * ------------------------------------------------------------------------ */
+
+const WIZARD_SHELL = "IntegrationWizard";
+const WIZARD_HELPERS_TYPE = "WizardStepHelpers";
+const WIZARD_SHELL_REL =
+  "components/admin/integration-wizard/integration-wizard.tsx";
+const WIZARD_TYPES_REL = "components/admin/integration-wizard/types.ts";
+
 interface AdminFile {
   file: string;
   rel: string;
@@ -598,6 +653,97 @@ function vouchChildExports(ast: ts.SourceFile): string[] {
 }
 
 /**
+ * The `X.ancestorRendersViewOnlyBanner` form (#2324), or null. This is the ONLY
+ * shape the wizard channel is recognised in: a property access off a plain
+ * identifier. Whether that identifier really is a `WizardStepConfig.render`
+ * callback's own `helpers` parameter is settled by `wizardStepRenderArrow` plus
+ * the parameter-name check in the #2324 test — this helper only tells the two
+ * vouch channels apart, so the #2168 render-site rule can hand its wizard sites
+ * over instead of rejecting them as "non-literal".
+ */
+function wizardVouchExpression(
+  expr: ts.Expression,
+): ts.PropertyAccessExpression | null {
+  if (!ts.isPropertyAccessExpression(expr)) return null;
+  if (expr.name.text !== VOUCH_PROP) return null;
+  if (!ts.isIdentifier(expr.expression)) return null;
+  return expr;
+}
+
+/**
+ * The `WizardStepConfig.render` callback `node` sits inside, or null.
+ *
+ * "A `render` property whose object literal also declares `id` and `isVerified`"
+ * is what pins this to a real step config rather than to any object with a
+ * `render` key. Both of those are REQUIRED members of `WizardStepConfig`, so a
+ * step cannot avoid them, and an unrelated `{ render: … }` cannot fake its way
+ * in without also claiming to be a wizard step.
+ */
+function wizardStepRenderArrow(
+  node: ts.Node,
+): ts.ArrowFunction | ts.FunctionExpression | null {
+  let cur: ts.Node | undefined = node;
+  while (cur) {
+    const fn = cur;
+    if (
+      (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) &&
+      fn.parent &&
+      ts.isPropertyAssignment(fn.parent) &&
+      fn.parent.initializer === fn &&
+      fn.parent.name.getText(fn.getSourceFile()) === "render" &&
+      ts.isObjectLiteralExpression(fn.parent.parent)
+    ) {
+      const keys = fn.parent.parent.properties.map((p) =>
+        p.name ? p.name.getText(fn.getSourceFile()) : "",
+      );
+      if (keys.includes("id") && keys.includes("isVerified")) return fn;
+    }
+    cur = cur.parent;
+  }
+  return null;
+}
+
+/**
+ * The nearest enclosing function that DECLARES `VOUCH_PROP` among its own
+ * destructured parameters, and whether it defaults it to `false`.
+ *
+ * Per-ATTRIBUTE rather than per-file, which #2324 forced and which is stronger
+ * anyway. One file can hold several vouched components — `display-wizard-steps`
+ * exports six wizard step bodies and three of them take the vouch — so the
+ * file-level "destructured exactly once" count this replaces would have read
+ * three correct components as a violation. Tying each opt-out to the component
+ * that declares it also catches the shape the old count could not see: an
+ * opt-out written in a component that never declared the prop at all, taking it
+ * from an outer scope.
+ */
+function vouchDeclarer(
+  node: ts.Node,
+): { defaultsFalse: boolean } | null {
+  let cur: ts.Node | undefined = node;
+  while (cur) {
+    if (
+      ts.isFunctionDeclaration(cur) ||
+      ts.isFunctionExpression(cur) ||
+      ts.isArrowFunction(cur)
+    ) {
+      for (const param of cur.parameters) {
+        if (!ts.isObjectBindingPattern(param.name)) continue;
+        for (const element of param.name.elements) {
+          if (!ts.isIdentifier(element.name)) continue;
+          if (element.name.text !== VOUCH_PROP) continue;
+          return {
+            defaultsFalse:
+              element.initializer?.kind === ts.SyntaxKind.FalseKeyword,
+          };
+        }
+      }
+    }
+    cur = cur.parent;
+  }
+  return null;
+}
+
+/**
  * Named imports in `ast`, as `localName -> resolved file`. Aliased and default
  * imports are deliberately excluded: see the "no unresolvable vouch" test,
  * which turns that blind spot into a failure rather than a silent pass.
@@ -747,28 +893,77 @@ describe("view-only section banner coverage (#2160)", () => {
                page — a static opt-out under that page's existing banner.
           275  +4  #2249's Lodge Display setup wizard steps (restore the
                built-in boards, turn the module on, save the lodge details,
-               pair the screen). All four KEEP their own reason: the banner
-               that covers them is rendered by the shared `IntegrationWizard`
-               shell, in another file, and the shell renders its step bodies
-               through a `render(context, helpers)` callback supplied by the
-               wizard CONFIG — so there is no render site at which a parent
-               could pass `ancestorRendersViewOnlyBanner`, and neither
-               coverage rule can see it. The per-button reason is the honest
-               state, not an oversight. (The Xero/Stripe/Google/backup wizard
-               steps sidestep this by using a plain disabled `Button`, which
-               says nothing at all; these say why.)
+               pair the screen). All four KEPT their own reason at that point:
+               the banner that covers them is rendered by the shared
+               `IntegrationWizard` shell, in another file, and the shell renders
+               its step bodies through a `render(context, helpers)` callback
+               supplied by the wizard CONFIG — so there was no render site at
+               which a parent could pass `ancestorRendersViewOnlyBanner`, and
+               neither coverage rule could see it. (The Xero/Stripe/Google/
+               backup wizard steps sidestepped it by using a plain disabled
+               `Button`, which says nothing at all; these said why.)
+          285 +10  #2324 gives the shell a vouch channel and converts all five
+               setup flows together, so the ten controls that were plain
+               disabled `Button`s become real, counted, policed call sites:
+               Xero credentials + webhook key (2), Stripe keys + signing
+               secret (2), Google credentials + verify (2), backups
+               credentials + destination + turn-it-on + run-verification (4).
+               Nothing else in the tree changed, and no call site was removed —
+               the whole +10 is those four provider wizards' step files
+               becoming visible to this suite for the first time.
+
+        And how the other figures moved with it, each re-measured:
+
+          optOuts  237 -> 242 (+5)   the controls the vouch NOW covers, all of
+               them gated on the wizard's OWN area, which is exactly what its
+               banner states: Lodge Display's restore-boards, save-lodge-details
+               and pair-the-screen (3, `lodge`), and backups' turn-it-on and
+               run-verification (2, `support`). staticOptOuts is untouched at
+               216 — #2324 adds no `describeReason={false}`.
+          exceptions 38 -> 43 (+5)   +8 -3. The +8 are the credential-ish
+               writes that KEEP their own reason because their gate is NARROWER
+               than the banner's: Xero credentials + webhook key, Stripe keys +
+               signing secret, Google credentials + verify, backups credentials
+               + destination all additionally require Full Admin, so an admin
+               with the wizard's area but not Full Admin meets no banner and a
+               dead button. They now say "Full Admin" instead of saying nothing.
+               The -3 are the display-wizard controls that moved into the vouched
+               bucket. Display's fourth control — the module switch — stays an
+               exception: it is `support`-gated under a `lodge` banner, the same
+               scope mismatch that keeps `member-credit-card.tsx` un-vouched.
+          exceptionFiles 18 -> 23 (+5)   the four provider wizards' five step
+               files (`xero-wizard-steps`, `xero-completion-steps`,
+               `stripe-wizard-steps`, `google-wizard-steps`,
+               `backup-wizard-steps`). `display-wizard-steps` was already an
+               exception file and stays one on the module switch alone, so it
+               is neither added nor removed.
+          bannerComponents 78, unchanged   #2324 adds no banner. The shell's
+               existing one now covers more, which is the entire point.
+
+        Not converted, deliberately, and each is a scope judgement no static
+        rule can make:
+
+          - `xero/_components/connection-status-panel.tsx` — the connect /
+            reconnect / disconnect buttons ARE finance-gated, matching the Xero
+            wizard's banner, but the panel is a GRANDCHILD (the Connect step
+            renders it) and is also used standalone outside the wizard.
+            Forwarding the vouch through two hops is forbidden by the #2168
+            rule above, so its plain `Button`s stay as they are.
+          - the disabled `Input`s and `select`s inside the wizard steps. This
+            suite polices `ViewOnlyActionButton`; text inputs have never been in
+            its scope, and the display wizard has always left its own that way.
       */
       // #2259 adds the per-booking "No emails"
       // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into
       // the Admin tools card's layout — the same shape as the capacity- and
       // exclusive-hold controls beside it, so it keeps its own per-button
       // reason rather than opting out under a banner it cannot prove renders.
-      callSites: 275,
-      optOuts: 237,
+      callSites: 285,
+      optOuts: 242,
       staticOptOuts: 216,
-      vouchedOptOuts: 21,
-      exceptions: 38,
-      exceptionFiles: 18,
+      vouchedOptOuts: 26,
+      exceptions: 43,
+      exceptionFiles: 23,
       bannerComponents: 78,
     });
 
@@ -831,9 +1026,13 @@ describe("view-only section banner coverage (#2160)", () => {
       separateA11yContainer: { controls: 9, files: 4 },
       // +1 control / +1 file vs 20/11: the #2259 "No emails" switch; then
       // +4 controls / +1 file: the four #2249 display-wizard step controls,
-      // which the shell's render-callback indirection puts out of reach of
-      // both coverage rules (see the delta chain above).
-      leaves: { controls: 25, files: 13 },
+      // which the shell's render-callback indirection put out of reach of both
+      // coverage rules; then #2324 moves three of those four into the vouched
+      // bucket (-3) and brings the four provider wizards' Full-Admin writes into
+      // this one (+8 controls / +5 files) — see the delta chain above. Every
+      // wizard control left here is a SCOPE exception, not an indirection one:
+      // its gate is narrower than the banner its shell renders.
+      leaves: { controls: 30, files: 18 },
     });
   });
 
@@ -925,20 +1124,28 @@ describe("view-only section banner coverage (#2160)", () => {
       const at = (node: ts.Node) =>
         `${f.rel}:${f.ast.getLineAndCharacterOfPosition(node.getStart(f.ast)).line + 1}`;
 
-      let defaulted = 0;
       for (const use of uses) {
         const parent = use.parent;
         // (a) the destructured parameter, which must default to false.
         if (ts.isBindingElement(parent) && parent.name === use) {
           if (parent.initializer?.kind !== ts.SyntaxKind.FalseKeyword) {
             offenders.push(`${at(use)} declared without \`= false\``);
-          } else {
-            defaulted += 1;
           }
           continue;
         }
-        // (b) the prop-type declaration in view-only-action.tsx.
+        // (b) the prop-type declaration in view-only-action.tsx, and the shell's
+        //     own `WizardStepHelpers` member (#2324) — both are declarations of
+        //     the channel, not uses of it.
         if (ts.isPropertySignature(parent) && parent.name === use) continue;
+        // (c') the PROPERTY NAME in `helpers.ancestorRendersViewOnlyBanner`,
+        //      which is the shell channel being read at a step's render site.
+        if (ts.isPropertyAccessExpression(parent) && parent.name === use)
+          continue;
+        // (c'') the shell SETTING the channel (`ancestorRendersViewOnlyBanner:
+        //       true` in the `WizardStepHelpers` object it builds). Both of these
+        //       are verified by the #2324 test, which checks the shell really
+        //       renders the banner it is claiming to.
+        if (ts.isPropertyAssignment(parent) && parent.name === use) continue;
         // (c) the ATTRIBUTE NAME at a parent's render site — that is the
         //     vouching side, verified by the two tests below, not here.
         if (ts.isJsxAttribute(parent) && parent.name === use) continue;
@@ -985,11 +1192,24 @@ describe("view-only section banner coverage (#2160)", () => {
         );
       }
 
-      if (vouched.length > 0 && defaulted !== 1) {
-        offenders.push(
-          `${f.rel} opts ${vouched.length} control(s) out via the prop but ` +
-            `destructures it with a \`= false\` default ${defaulted} time(s)`,
-        );
+      // …and each opt-out must be declared by the COMPONENT it sits in, with the
+      // `= false` default. Checked per attribute rather than per file (#2324):
+      // `display-wizard-steps.tsx` holds six step bodies and three of them take
+      // the vouch, so a file-level count of one would fail correct code — and
+      // would miss an opt-out reading the prop from an outer scope.
+      for (const a of vouched) {
+        const declarer = vouchDeclarer(a);
+        if (!declarer) {
+          offenders.push(
+            `${at(a)} opts out via the prop but no enclosing component ` +
+              `destructures it as its own`,
+          );
+        } else if (!declarer.defaultsFalse) {
+          offenders.push(
+            `${at(a)} opts out via the prop but the component declaring it ` +
+              `does not default it to false`,
+          );
+        }
       }
     }
 
@@ -1089,6 +1309,14 @@ describe("view-only section banner coverage (#2160)", () => {
         if (!vouch) continue; // not vouched: the child explains itself. Safe.
 
         const expr = attrExpression(vouch);
+        // #2324: a vouch travelling down the wizard shell's `helpers` channel is
+        // proved by the NEXT test instead — the shell renders the banner, and no
+        // JSX render site in this file could. It is still counted as vouched
+        // here, so the "mechanism must not be inert" check below stays honest.
+        if (expr !== null && wizardVouchExpression(expr)) {
+          vouchedSomewhere.add(`${target}#${name}`);
+          continue;
+        }
         if (expr !== null && expr.kind !== ts.SyntaxKind.TrueKeyword) {
           offenders.push(
             `${at} vouches for <${name}> with a non-literal value ` +
@@ -1163,6 +1391,314 @@ describe("view-only section banner coverage (#2160)", () => {
       `These components declare ${VOUCH_PROP} but no parent ever passes it, so ` +
         `the opt-out never happens and the prop only misleads.`,
     ).toEqual([]);
+  });
+
+  it("only lets the wizard shell vouch for the step bodies it renders (#2324)", () => {
+    /*
+      The third coverage rule, and both halves of it are proved here rather than
+      trusted (see the #2324 block at the top of this file for why the shell
+      cannot use the #2168 render-site rule at all).
+
+      THE SHELL'S HALF — three things, in order of what would break first:
+
+        1. `WizardStepHelpers.ancestorRendersViewOnlyBanner` is REQUIRED and
+           typed as the literal `true`. Making it optional, or widening it to
+           `boolean`, would let a provider hand a step a false vouch, or forget
+           it and have the step silently keep its reason while the docs claim
+           otherwise. The type is what makes the forwarding expression at each
+           render site compiler-proved rather than merely plausible.
+        2. the shell sets it to the literal `true` in the helpers object it
+           builds. If it stopped, every step's opt-out would still COMPILE (the
+           prop defaults to false) and would silently revert to a per-button
+           reason — a quiet regression, not a failure, which is exactly what a
+           contract test is for.
+        3. the shell renders an unconditional `AdminViewOnlySectionBanner` in
+           EVERY branch it can return — the loading early-return included. This
+           is the substance of the vouch: without it the shell is promising
+           coverage it does not provide. The generic live-region test below also
+           walks the shell, but it asks a different question ("is the banner
+           mounted in every branch below the first one that mounts it") and
+           accepts a conditional const. This one insists on the strict form for
+           every branch, because it is the proof five setup flows rest on.
+
+      THE STEPS' HALF — for every render site that forwards the channel:
+
+        - it must sit inside a real `WizardStepConfig.render` callback (an object
+          literal that also declares `id` and `isVerified`), so the spelling
+          cannot spread to an ordinary page. This is decision A1: the vouch is
+          honoured for step bodies and nowhere else.
+        - the value must be read from THAT callback's own second parameter, not
+          from a captured variable, a helper function, or an outer scope — the
+          shell is the only thing that constructs a `WizardStepHelpers`, so
+          reading it from the parameter is what ties the vouch to the shell.
+        - the file must actually render `<IntegrationWizard>`. A config file that
+          forwards helpers into a step body but hands the steps to something
+          else is not covered by this shell's banner.
+        - a JSX spread at the render site is rejected, exactly as in #2168:
+          `{...props}` could carry the prop invisibly.
+        - the child must resolve through a named, non-aliased import to a file
+          that declares the prop with a `= false` default (the global
+          resolvability rule below then catches any import form this cannot see).
+        - the shell's `canEdit` must not be hardcoded to the literal `true`, and
+          a `viewOnlyBanner` sentence must be supplied. A banner that can never
+          render its sentence, or renders only the generic heading, leaves the
+          controls it vouches for with less explanation than they gave up.
+
+      WHAT THIS STILL DOES NOT CLAIM, and it is the same gap #2168 documents:
+      WHICH permission the banner names. The shell's banner states the area the
+      provider passed as `canEdit`; a step control gated on a narrower one (Full
+      Admin, or the display wizard's `support`-gated module switch) must keep its
+      own reason, and nothing here can tell that it did. Those are review
+      judgements, written out at each call site and in `docs/ARCHITECTURE.md`.
+    */
+    const offenders: string[] = [];
+
+    // ---- the shell's half -------------------------------------------------
+    const typesFile = join(SRC, ...WIZARD_TYPES_REL.split("/"));
+    expect(
+      existsSync(typesFile),
+      `${WIZARD_TYPES_REL} not found — the wizard shell contract moved, so ` +
+        `every check below would be vacuous.`,
+    ).toBe(true);
+    const typesAst = ts.createSourceFile(
+      typesFile,
+      readFileSync(typesFile, "utf8"),
+      ts.ScriptTarget.Latest,
+      /* setParentNodes */ true,
+      ts.ScriptKind.TS,
+    );
+    // Collected into an array rather than a `let`: an assignment inside the
+    // visitor callback is invisible to TS's narrowing, so a nullable local would
+    // read as `null` at every use below.
+    const declarations: ts.PropertySignature[] = [];
+    eachNode(typesAst, (node) => {
+      if (!ts.isInterfaceDeclaration(node)) return;
+      if (node.name.text !== WIZARD_HELPERS_TYPE) return;
+      for (const member of node.members) {
+        if (!ts.isPropertySignature(member)) continue;
+        if (member.name.getText(typesAst) !== VOUCH_PROP) continue;
+        declarations.push(member);
+      }
+    });
+    expect(
+      declarations.length,
+      `${WIZARD_HELPERS_TYPE} must declare ${VOUCH_PROP} exactly once — it is ` +
+        `the only channel the shell has to a step.`,
+    ).toBe(1);
+    const declaration = declarations[0];
+    expect(
+      declaration.questionToken,
+      `${VOUCH_PROP} must be REQUIRED on ${WIZARD_HELPERS_TYPE}: an optional ` +
+        `vouch can be forgotten, and a step's opt-out would silently revert.`,
+    ).toBeUndefined();
+    const declaredType = declaration.type;
+    expect(
+      declaredType !== undefined &&
+        ts.isLiteralTypeNode(declaredType) &&
+        declaredType.literal.kind === ts.SyntaxKind.TrueKeyword,
+      `${VOUCH_PROP} must be typed as the LITERAL \`true\`, not \`boolean\` — ` +
+        `that is what stops a provider handing a step a false vouch. Found: ` +
+        `${declaredType ? declaredType.getText(typesAst) : "no type"}`,
+    ).toBe(true);
+
+    const shell = astFiles.find((f) => f.rel === WIZARD_SHELL_REL);
+    expect(
+      shell,
+      `${WIZARD_SHELL_REL} not found among the scanned admin files.`,
+    ).toBeDefined();
+    if (!shell) return;
+
+    // The shell SETS the flag, on the object it types as WizardStepHelpers.
+    const shellHelperObjects: ts.ObjectLiteralExpression[] = [];
+    eachNode(shell.ast, (node) => {
+      if (!ts.isVariableDeclaration(node) || !node.initializer) return;
+      const type = node.type;
+      if (
+        !type ||
+        !ts.isTypeReferenceNode(type) ||
+        type.typeName.getText(shell.ast) !== WIZARD_HELPERS_TYPE
+      ) {
+        return;
+      }
+      if (ts.isObjectLiteralExpression(node.initializer)) {
+        shellHelperObjects.push(node.initializer);
+      }
+    });
+    expect(
+      shellHelperObjects.length,
+      `${WIZARD_SHELL_REL} must build exactly one \`${WIZARD_HELPERS_TYPE}\` ` +
+        `object literal — that object is the vouch channel.`,
+    ).toBe(1);
+    const setsVouch = shellHelperObjects[0].properties.some(
+      (p) =>
+        ts.isPropertyAssignment(p) &&
+        p.name.getText(shell.ast) === VOUCH_PROP &&
+        p.initializer.kind === ts.SyntaxKind.TrueKeyword,
+    );
+    expect(
+      setsVouch,
+      `${WIZARD_SHELL_REL} must set \`${VOUCH_PROP}: true\` on the helpers it ` +
+        `hands each step. Without it every step's opt-out silently reverts to ` +
+        `a per-button reason while the docs claim the vouch covers them.`,
+    ).toBe(true);
+
+    // …and the banner really is there, unconditionally, in every branch.
+    const shellBanners = bannerRenderSites(shell.ast);
+    const shellComponents = new Set(
+      shellBanners
+        .map((site) => enclosingFunction(site))
+        .filter((fn): fn is ts.Node => fn !== null),
+    );
+    expect(
+      shellComponents.size,
+      `${WIZARD_SHELL_REL} must render <${BANNER}> from exactly one component.`,
+    ).toBe(1);
+    for (const fn of shellComponents) {
+      const branches = renderReturns(fn);
+      expect(
+        branches.length,
+        `${WIZARD_SHELL_REL} must keep its loading early-return as a distinct ` +
+          `render branch, so "every branch" means something.`,
+      ).toBeGreaterThan(1);
+      for (const ret of branches) {
+        const covered = shellBanners.some(
+          (site) =>
+            site.getStart() >= ret.getStart() &&
+            site.getEnd() <= ret.getEnd() &&
+            unconditionalFrom(site, ret),
+        );
+        if (!covered) {
+          const line =
+            shell.ast.getLineAndCharacterOfPosition(ret.getStart()).line + 1;
+          offenders.push(
+            `${shell.rel}:${line} is a shell render branch with no ` +
+              `unconditional <${BANNER}> — the vouch it makes to every step ` +
+              `is not true there`,
+          );
+        }
+      }
+    }
+    const shellBannerCanEditHardcoded = shellBanners.some((site) => {
+      const bannerTag = bannerTagOf(shell.ast, site);
+      if (!bannerTag) return false;
+      const canEdit = attr(bannerTag, "canEdit");
+      if (!canEdit) return true;
+      const value = attrExpression(canEdit);
+      return value === null || value.kind === ts.SyntaxKind.TrueKeyword;
+    });
+    expect(
+      shellBannerCanEditHardcoded,
+      `${WIZARD_SHELL_REL}'s <${BANNER}> must take \`canEdit\` from the ` +
+        `provider. Hardcoded to true (or omitted) it never renders its ` +
+        `sentence, and every vouched step control is left with nothing.`,
+    ).toBe(false);
+
+    // ---- the steps' half --------------------------------------------------
+    const vouchChildren = new Map<string, Set<string>>();
+    for (const f of astFiles) {
+      const names = vouchChildExports(f.ast);
+      if (names.length > 0) vouchChildren.set(f.file, new Set(names));
+    }
+
+    let wizardVouchSites = 0;
+    for (const f of astFiles) {
+      const imports = namedImports(f.file, f.ast);
+      const shellTags = jsxTags(f.ast, WIZARD_SHELL);
+
+      for (const tag of jsxTags(f.ast)) {
+        const vouch = attr(tag, VOUCH_PROP);
+        if (!vouch) continue;
+        const expr = attrExpression(vouch);
+        if (expr === null) continue; // bare `prop` — the #2168 literal form
+        const channel = wizardVouchExpression(expr);
+        if (!channel) continue; // literal / other — #2168's rules own it
+
+        const name = tagName(tag);
+        const at = `${f.rel}:${f.ast.getLineAndCharacterOfPosition(tag.getStart(f.ast)).line + 1}`;
+
+        if (hasSpread(tag)) {
+          offenders.push(`${at} forwards the shell's vouch with a JSX spread`);
+          continue;
+        }
+        const target = imports.get(name);
+        if (!target || !vouchChildren.get(target)?.has(name)) {
+          offenders.push(
+            `${at} forwards the shell's vouch to <${name}>, which this test ` +
+              `cannot resolve to a file declaring the prop`,
+          );
+          continue;
+        }
+        const arrow = wizardStepRenderArrow(tag);
+        if (!arrow) {
+          offenders.push(
+            `${at} forwards the shell's vouch outside a ` +
+              `WizardStepConfig.render callback`,
+          );
+          continue;
+        }
+        const helpersParam = arrow.parameters[1];
+        const helpersName =
+          helpersParam && ts.isIdentifier(helpersParam.name)
+            ? helpersParam.name.text
+            : null;
+        if (
+          helpersName === null ||
+          channel.expression.getText(f.ast) !== helpersName
+        ) {
+          offenders.push(
+            `${at} reads the vouch from \`${channel.expression.getText(f.ast)}\`` +
+              `, not from its render callback's own helpers parameter`,
+          );
+          continue;
+        }
+        if (shellTags.length === 0) {
+          offenders.push(
+            `${at} forwards the shell's vouch but this file never renders ` +
+              `<${WIZARD_SHELL}>`,
+          );
+          continue;
+        }
+        const alwaysEditable = shellTags.some((t) => {
+          const canEdit = attr(t, "canEdit");
+          if (!canEdit) return true;
+          const value = attrExpression(canEdit);
+          return value === null || value.kind === ts.SyntaxKind.TrueKeyword;
+        });
+        if (alwaysEditable) {
+          offenders.push(
+            `${at} forwards the shell's vouch under an <${WIZARD_SHELL}> whose ` +
+              `canEdit is hardcoded true (or missing), so its banner never ` +
+              `renders a sentence`,
+          );
+          continue;
+        }
+        if (shellTags.some((t) => !attr(t, "viewOnlyBanner"))) {
+          offenders.push(
+            `${at} forwards the shell's vouch under an <${WIZARD_SHELL}> with ` +
+              `no viewOnlyBanner sentence, so the opt-outs are covered by the ` +
+              `generic heading alone`,
+          );
+          continue;
+        }
+        wizardVouchSites += 1;
+      }
+    }
+
+    expect(
+      offenders,
+      `The wizard shell's vouch (#2324) is honoured only inside a real ` +
+        `WizardStepConfig.render, read from that callback's own helpers ` +
+        `parameter, in a file that renders <${WIZARD_SHELL}> with a real ` +
+        `canEdit and its own banner sentence.`,
+    ).toEqual([]);
+
+    // …and it must not be inert. A channel nothing travels down would read, to
+    // the next person, as though the wizard steps were already covered.
+    expect(
+      wizardVouchSites,
+      `No step forwards ${VOUCH_PROP} from the shell, so the channel is dead ` +
+        `plumbing and every wizard step control is back to its own reason.`,
+    ).toBeGreaterThan(0);
   });
 
   it("never lets the vouch prop reach a component this test cannot resolve (#2168)", () => {
