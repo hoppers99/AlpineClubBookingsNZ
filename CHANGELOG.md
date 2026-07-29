@@ -107,6 +107,32 @@ All notable public reference-release changes should be recorded here.
   the board and the automatic allocator in agreement so they cannot drift
   apart again.
 
+- **Every hand-written "open in Xero" link on the admin screens now lands in
+  the club's own Xero organisation (#2283).** Twenty-one links across ten admin
+  screens — member records and the members table, payments, subscriptions, and
+  the Xero Sync panels — were plain Xero web addresses that did not say *which*
+  organisation they meant. For an admin whose Xero login can see more than one
+  organisation (an accountant, or a treasurer for two clubs), Xero answers such
+  an address with whichever organisation they last had open, so a link could
+  quietly open **another organisation's books**. All of these links are now
+  built the same way as the Xero Sync page's "Go to Xero" button: for an admin
+  with finance access, when the club's Xero connection is healthy they carry
+  the organisation's short code and Xero switches to the right organisation
+  before showing the page; otherwise they fall back to the plain address — the
+  link always works, it is just less precise. Links that Xero sync itself
+  recorded earlier (the ones shown against a record's Xero activity, the sync
+  operations and inbound event lists, and suggested or duplicate contacts) are
+  **not** covered yet and still open in the last-used organisation; deciding
+  how those should work is tracked as #2314. A new automated check stops future
+  code from reintroducing an unqualified hand-written Xero link. Behind the
+  scenes, the read of the organisation's financial year-end month (used to
+  default the membership year) no longer retries against a rate-limited Xero
+  connection: it degrades immediately, reuses the year-end month already known
+  from the connection summary instead of silently falling back to March, waits
+  a few seconds before trying Xero again so a struggling connection is not made
+  worse, and an admin re-checking the connection still gets a live read
+  straight away.
+
 - **Writing a Lodge TV footer or CSS override no longer means remembering the
   tokens (#2248).** Every field where a board's HTML or CSS is typed by hand —
   the Visual builder's **Footer HTML**, **CSS overrides** and a zone's **HTML
