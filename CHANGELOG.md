@@ -4,6 +4,34 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Every dead button in the five guided setup wizards now says why it is dead
+  (#2324).** The Xero, Stripe, Google sign-in, Backups and Lodge Display setup
+  paths all share one wizard frame, and that frame already showed a **"You have
+  view-only access to this area"** banner at the top. What it could not do was
+  let the controls inside a step lean on it: the frame calls each step from
+  another file, so nothing in the code proved the banner was really above them.
+  The result was a split — the Lodge Display steps repeated the reason on every
+  button, while the Xero, Stripe, Google and Backups steps had **Save** buttons
+  that were simply grey and silent. Both halves are fixed. The frame now vouches
+  for its steps, so a control gated on the same access the banner names stops
+  repeating it (restoring boards, saving lodge details and pairing a screen; and
+  turning nightly backups on and running a verification backup). And every
+  control that needs **more** than the banner's access now says so instead of
+  saying nothing: entering or replacing the Xero, Stripe, Google and S3
+  credentials, the Xero webhook key, the Stripe signing secret, the backup
+  destination and Google verification all need **Full Admin**, and each button
+  now carries that reason, because an admin who has the wizard's area but not
+  Full Admin never sees the banner at all. Turning the Lobby TV display module
+  on keeps its own reason for the same reason — it needs system-settings access,
+  not lodge access. Nothing about who can do what changed; only what a dead
+  button tells you. A screen reader also no longer meets the same sentence twice
+  beside the backups verification button, and that duplicate no longer flashes
+  at admins who *can* run a backup while the page is still working out who they
+  are. The published banner-coverage figures were re-measured with it: **285**
+  gated admin controls, **242** of them covered by a banner (216 in their own
+  file, 26 by a verified vouching parent — 5 of those through the wizard frame),
+  and **43** across 23 files deliberately keeping their own reason.
+
 - **Setting up a lodge TV is now one guided path instead of five cards and a
   guess (#2249).** **Admin → Lobby Display** leads with a **Guided setup** card
   whenever your club has no boards or no working screen, and it opens a six-step

@@ -201,11 +201,14 @@ before changing Next.js APIs or conventions.
   itself a load, it unmounts the very `PolicyScopeSelect` the admin just used,
   dropping keyboard focus to `<body>` mid-interaction. Started in the five
   Booking Policies sections (#2142) and rolled across most of the admin tree
-  (#2160, extended by #2168): 237 of 271 `ViewOnlyActionButton` call sites now
-  opt out — 216 covered by a banner in the SAME file, 21 by a verified vouching
-  parent — and 34 keep the per-button reason: dialog/popover contents, leaf
-  toolbars, and `member-credit-card.tsx`, whose finance scope differs from the
-  member detail page banner's membership scope. The banner is stated once per
+  (#2160, extended by #2168 and #2324): 242 of 285 `ViewOnlyActionButton` call
+  sites now
+  opt out — 216 covered by a banner in the SAME file, 26 by a verified vouching
+  parent (21 at a JSX render site, 5 through the guided-setup shell) — and 43
+  keep the per-button reason: dialog/popover contents, leaf
+  toolbars, `member-credit-card.tsx`, whose finance scope differs from the
+  member detail page banner's membership scope, and the setup wizards' writes
+  that need Full Admin on top of the wizard's own area. The banner is stated once per
   SECTION, and never twice over the same controls: a banner-bearing component
   may not render another banner-bearing component, so when a covering parent
   renders such a child, the child takes `renderViewOnlyBanner={false}` at the
@@ -216,7 +219,13 @@ before changing Next.js APIs or conventions.
   `describeReason={!ancestorRendersViewOnlyBanner}`, and only a parent that
   demonstrably renders an unconditional banner in the same returned tree may
   pass the literal `true`. Never widen the per-file coverage rule instead; an
-  opt-out with no covering banner deletes the explanation outright. It is NOT
+  opt-out with no covering banner deletes the explanation outright. The one
+  further channel is the guided-setup shell (#2324): `IntegrationWizard` calls
+  each step through a `render(context, helpers)` callback, so no JSX render site
+  exists for the vouch — it travels on `WizardStepHelpers` as a required literal
+  `true` instead, and is honoured ONLY inside a real `WizardStepConfig.render`.
+  A step control gated on a NARROWER permission than the wizard's banner states
+  (a Full Admin credential write, say) must keep its own reason. It is NOT
   once per screen — sibling sections on one page each keep their own banner, and
   `/admin/security` and `/admin/booking-requests` each show three; #2168 settled
   that only for `/admin/members/[id]`, so collapsing sibling banners elsewhere
