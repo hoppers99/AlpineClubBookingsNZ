@@ -302,10 +302,18 @@ export async function POST(request: NextRequest) {
         ),
       );
 
+      // Best-effort like the rest: the settlement is already committed, so a
+      // queueing failure must be logged, not turned into a 500 that tells the
+      // member their paid booking failed.
       await queueXeroInvoiceForPaidBooking({
         bookingId: booking.id,
         createdByMemberId: session.user.id,
-      });
+      }).catch((err) =>
+        logger.error(
+          { err, bookingId: booking.id },
+          "Failed to queue Xero invoice for credit-covered booking",
+        ),
+      );
 
       await drainSupersededPrimaryIntents({
         bookingId: booking.id,
