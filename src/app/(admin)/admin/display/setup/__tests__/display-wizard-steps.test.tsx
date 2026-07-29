@@ -569,7 +569,11 @@ describe("step 5 — one screen record, whatever goes wrong (M1/M2)", () => {
         return { ok: true, body: { device: { id: "dev-9" } } };
       }
       if (init?.method === "PATCH") {
-        return { ok: false, status: 500, body: { error: "Template not found" } };
+        return {
+          ok: false,
+          status: 500,
+          body: { error: "Template not found" },
+        };
       }
       return { ok: true, body: {} };
     });
@@ -642,6 +646,54 @@ describe("step 5 — one screen record, whatever goes wrong (M1/M2)", () => {
       ]);
     });
   });
+
+  it("keeps re-arming the NEW screen after choosing to create one", async () => {
+    // The older pending row must not quietly take the next press back: that is
+    // the screen the operator explicitly chose to leave alone.
+    const calls = mockFetch((url, init) => {
+      if (url === "/api/admin/display/devices" && init?.method === "POST") {
+        return { ok: true, body: { device: { id: "dev-new" } } };
+      }
+      if (url.endsWith("/pairing")) {
+        return { ok: false, status: 400, body: { error: "Bad code" } };
+      }
+      return { ok: true, body: {} };
+    });
+    render(
+      <PairStep
+        context={makeContext({
+          devices: [
+            pendingDevice({
+              templateId: "tpl-2",
+              templateName: "Nights ahead",
+            }),
+          ],
+        })}
+        helpers={makeHelpers()}
+        chosenTemplateId="tpl-1"
+        onChoose={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /create a new screen instead/i }),
+    );
+    fireEvent.change(screen.getByLabelText(/code on the tv/i), {
+      target: { value: "WRONG1" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /pair this screen/i }));
+    await waitFor(() => expect(screen.getByText(/bad code/i)).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /pair this screen/i }));
+
+    await waitFor(() => {
+      expect(
+        calls.filter((call) => call.url.endsWith("/dev-new/pairing")),
+      ).toHaveLength(2);
+    });
+    expect(
+      calls.filter((call) => call.url.includes("dev-pending")),
+    ).toHaveLength(0);
+  });
 });
 
 describe("step 5 — the board pick survives a resume (M3)", () => {
@@ -656,7 +708,11 @@ describe("step 5 — the board pick survives a resume (M3)", () => {
               id: "tpl-2",
               key: "nights-ahead",
               name: "Nights ahead",
-              layout: { id: "lay-2", key: "nights-ahead", name: "Nights ahead" },
+              layout: {
+                id: "lay-2",
+                key: "nights-ahead",
+                name: "Nights ahead",
+              },
               deviceCount: 0,
             },
           ],

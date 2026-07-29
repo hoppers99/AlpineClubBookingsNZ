@@ -847,11 +847,13 @@ export function PairStep({
   const [forceNewDevice, setForceNewDevice] = useState(false);
   const [displayUrl, setDisplayUrl] = useState("");
 
-  // The screen record THIS step created, kept across renders. Without it every
-  // retry after a failed pairing POSTed another device, because the context list
-  // has not refreshed yet and the local `pending` lookup was per-render: a
-  // mistyped code three times left three half-created screens (#2249 review M1).
-  const createdDeviceIdRef = useRef<string | null>(null);
+  // The screen record THIS step created. Held in STATE (not a ref) because the
+  // render reads it too, and a ref read during render is both a lint error and a
+  // real staleness hazard. Without it every retry after a failed pairing POSTed
+  // another device: the context list has not refreshed yet, and the local
+  // `pending` lookup was per-render — a mistyped code three times left three
+  // half-created screens (#2249 review M1).
+  const [createdDeviceId, setCreatedDeviceId] = useState<string | null>(null);
 
   useEffect(() => {
     setDisplayUrl(`${window.location.origin}/display`);
@@ -871,8 +873,27 @@ export function PairStep({
   // creates ONE and re-arms it, so a mistyped code does not litter the club with
   // half-created screens. Never adopts a device at another lodge — an unresolved
   // lodge yields null rather than "anyone's screen" (#2249 review M4).
+  //
+  // A screen created BY this step always wins over the generic lookup, so
+  // "create a new screen instead" cannot silently hand the next press back to
+  // the older pending row it was chosen to leave alone.
   const pendingForLodge = pendingDeviceForLodge(context);
-  const pending = forceNewDevice ? null : pendingForLodge;
+  const createdPending = createdDeviceId
+    ? (context.devices.find(
+        (device) =>
+          device.id === createdDeviceId && !device.paired && !device.revoked,
+      ) ?? null)
+    : null;
+  const pending = createdPending ?? (forceNewDevice ? null : pendingForLodge);
+
+  // Once the screen this step created is paired (or has been revoked), forget
+  // it: the next press is a new job, and re-arming a live screen from here would
+  // be a surprise.
+  useEffect(() => {
+    if (!createdDeviceId) return;
+    const row = context.devices.find((device) => device.id === createdDeviceId);
+    if (row && (row.paired || row.revoked)) setCreatedDeviceId(null);
+  }, [context.devices, createdDeviceId]);
 
   // Re-reading server truth while the code is armed is what makes this step tick
   // over on its own: the TV claims its token on its own ~4-second poll, and
@@ -917,7 +938,9 @@ export function PairStep({
     setBusy(true);
     setMessage(null);
     setBindWarning(null);
-    let deviceId = pending?.id ?? createdDeviceIdRef.current ?? null;
+    // The row this step created wins: a retry must re-arm THAT screen, even
+    // before the device list has caught up with it.
+    let deviceId = createdDeviceId ?? pending?.id ?? null;
     let createdNow = false;
 
     if (!deviceId) {
@@ -946,7 +969,7 @@ export function PairStep({
       deviceId = body.device?.id ?? null;
       createdNow = deviceId !== null;
       // Remember it BEFORE anything else can fail, so a retry re-arms this row.
-      createdDeviceIdRef.current = deviceId;
+      setCreatedDeviceId(deviceId);
       if (forceNewDevice) setForceNewDevice(false);
     }
 
