@@ -380,7 +380,8 @@ describe("in-booking bed allocation panel visibility (#2252)", () => {
 
   it("withholds it from an admin scoped away from bookings", () => {
     expect(canSeePanel(["ADMIN_MEMBERSHIP"])).toBe(false);
-    expect(canSeePanel(["ADMIN_FINANCE"])).toBe(false);
+    expect(canSeePanel(["ADMIN_CONTENT"])).toBe(false);
+    expect(canSeePanel(["FINANCE_ADMIN"])).toBe(false);
   });
 
   it("renders the panel only behind canSeeAdminTools AND the bedAllocation module flag", () => {

@@ -2944,7 +2944,7 @@ describe("bed allocation lock semantics are two-way (#2252)", () => {
 
     const db = {
       bedAllocation: {
-        findFirst: vi.fn(async () => rows[0] ?? null),
+        findFirst: vi.fn(async (_args: unknown) => rows[0] ?? null),
         delete: vi.fn(async ({ where }: { where: { id: string } }) => {
           const removed = rows.find((row) => row.id === where.id);
           rows = rows.filter((row) => row.id !== where.id);
@@ -2961,7 +2961,7 @@ describe("bed allocation lock semantics are two-way (#2252)", () => {
         db: db as never,
       }),
     ).resolves.toBe(true);
-    expect(db.bedAllocation.findFirst.mock.calls[0][0]).toMatchObject({
+    expect(db.bedAllocation.findFirst.mock.calls[0]?.[0]).toMatchObject({
       where: { bookingId: "booking-1", approvedAt: { not: null } },
     });
 
