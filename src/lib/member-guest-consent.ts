@@ -167,7 +167,9 @@ export const MEMBER_GUEST_CONSENT_SUB_STATES = [
       "requestedAt AND a null respondedBy is the signature — it is what tells a " +
       "later reader that this consent was never actually solicited. It is " +
       "deliberately NOT written as FAMILY_OR_LEGACY: the guest IS cross-family " +
-      "and that must stay visible.",
+      "and that must stay visible. expiresAt is null because nothing is being " +
+      "waited for: a CONFIRMED row carrying an expiry would look to MG2's sweep " +
+      "like a hold with a deadline, so it is not a legal shape.",
   },
   {
     id: "ADMIN_ASSIGNED",
@@ -185,17 +187,24 @@ export const MEMBER_GUEST_CONSENT_SUB_STATES = [
       "row keeps a CONFIRMED status naming the admin who stood behind it. This " +
       "is also the booking-copy rule — consent is NOT transitive across " +
       "bookings, so a copied cross-family guest is re-stamped here against the " +
-      "copying admin and never inherits the source row's TARGET_APPROVED.",
+      "copying admin and never inherits the source row's TARGET_APPROVED. " +
+      "expiresAt is null for the same reason as NOTIFY_ONLY_AUTO_CONFIRMED: " +
+      "nobody is being waited for, so there is no deadline to record.",
   },
   {
     id: "DECLINED",
     status: "DECLINED",
     requestedAt: "set",
     respondedAt: "set",
-    respondedBy: "any",
+    /** Non-null, but the model does not care WHICH of them refused. */
+    respondedBy: "set",
     expiresAt: "any",
     reachableInMg1: false,
-    note: "The target (or their delegate) said no. Terminal for that request.",
+    note:
+      "The target (or their delegate) said no. Terminal for that request. A " +
+      "refusal is an ATTRIBUTED act, so respondedBy must name somebody: MG4's " +
+      "audit rides that column, and a decline nobody is recorded as making is " +
+      "a broken row, not an anonymous one.",
   },
   {
     id: "EXPIRED",
@@ -258,7 +267,11 @@ export function classifyMemberGuestConsent(
   if (consentStatus === "CONFIRMED") {
     if (!requested) {
       // Never solicited: either the club runs notify-only, or an admin placed
-      // the guest. The presence of a responder is what tells them apart.
+      // the guest. The presence of a responder is what tells them apart —
+      // and NEITHER shape is waiting for anything, so a set expiresAt is a
+      // stale hold deadline on an already-settled row, i.e. a broken row. Both
+      // table rows say `expiresAt: "null"`, and this is where that is enforced.
+      if (consentExpiresAt !== null) return null;
       if (!responded && responder === null) return "NOTIFY_ONLY_AUTO_CONFIRMED";
       if (responded && responder !== null) return "ADMIN_ASSIGNED";
       return null;
@@ -268,7 +281,10 @@ export function classifyMemberGuestConsent(
   }
 
   if (consentStatus === "DECLINED") {
-    return requested && responded ? "DECLINED" : null;
+    // A refusal is an attributed act (MG4's audit rides respondedBy), so a
+    // decline with nobody recorded as refusing is not an anonymous decline —
+    // it is a row no writer should have produced.
+    return requested && responded && responder !== null ? "DECLINED" : null;
   }
 
   // EXPIRED

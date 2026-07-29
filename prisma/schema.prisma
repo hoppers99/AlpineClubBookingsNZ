@@ -1826,15 +1826,21 @@ model BookingGuest {
   //
   // The full sub-state discriminator table (which columns are set in each
   // reachable combination) is the single source of truth in
-  // MEMBER_GUEST_CONSENT_SUB_STATES (src/lib/member-guest-consent.ts), mirrored
-  // in docs/DOMAIN_INVARIANTS.md and pinned by a test. In summary:
-  //   family / legacy      -> every column NULL
-  //   awaiting the target  -> PENDING   + requestedAt + expiresAt
-  //   target approved      -> CONFIRMED + requestedAt + respondedAt + respondedBy = the target
-  //   delegate approved    -> CONFIRMED + requestedAt + respondedAt + respondedBy != the target
-  //   notify-only auto-ok  -> CONFIRMED + requestedAt NULL, respondedAt NULL, respondedBy NULL
-  //   admin / copy / pipeline -> CONFIRMED + requestedAt NULL, respondedAt set, respondedBy = the admin
-  //   declined / expired   -> DECLINED / EXPIRED, with respondedAt (DECLINED) or expiresAt (EXPIRED)
+  // MEMBER_GUEST_CONSENT_SUB_STATES (src/lib/member-guest-consent.ts) and is
+  // mirrored in docs/DOMAIN_INVARIANTS.md. The eight lines below are GENERATED
+  // from that table by src/lib/__tests__/member-guest-consent.test.ts, which
+  // fails unless this comment contains each of them verbatim — so they cannot
+  // go stale. "null" = the column must be NULL, "set" = it must be non-NULL,
+  // "any" = either is legal, and target / other / admin say WHO the responder
+  // is:
+  //   FAMILY_OR_LEGACY: status NULL / requestedAt null / respondedAt null / respondedBy null / expiresAt null
+  //   AWAITING_TARGET: status PENDING / requestedAt set / respondedAt null / respondedBy null / expiresAt set
+  //   TARGET_APPROVED: status CONFIRMED / requestedAt set / respondedAt set / respondedBy target / expiresAt any
+  //   DELEGATE_APPROVED: status CONFIRMED / requestedAt set / respondedAt set / respondedBy other / expiresAt any
+  //   NOTIFY_ONLY_AUTO_CONFIRMED: status CONFIRMED / requestedAt null / respondedAt null / respondedBy null / expiresAt null
+  //   ADMIN_ASSIGNED: status CONFIRMED / requestedAt null / respondedAt set / respondedBy admin / expiresAt null
+  //   DECLINED: status DECLINED / requestedAt set / respondedAt set / respondedBy set / expiresAt any
+  //   EXPIRED: status EXPIRED / requestedAt set / respondedAt null / respondedBy null / expiresAt set
   //
   // In THIS release every one of these columns is inert: no code path writes a
   // non-null consentStatus, because cross-family adds are still refused

@@ -991,7 +991,13 @@ any actor. The invariants below are the contract MG2 (#2307) onwards must hold.
   is the discriminator: it is set only when the club actually asked. Notify-only
   auto-confirms and admin/copy/pipeline rows are `CONFIRMED` with a null
   `consentRequestedAt`, and are still *not* written as all-nulls, because the
-  guest genuinely is cross-family and that must stay visible.
+  guest genuinely is cross-family and that must stay visible. Neither shape is
+  waiting for an answer, so neither carries a `consentExpiresAt`: a settled row
+  with a live hold deadline on it is a broken row, not a variant.
+- **A refusal names who refused.** `DECLINED` requires a non-null
+  `consentRespondedByMemberId`. Declining is an attributed act — MG4's audit
+  reads that column to say who turned the add down — so an unattributed decline
+  is not an anonymous decline, it is a row no writer should produce.
 - **Who answered is audited separately from who was asked.**
   `consentRespondedByMemberId` may equal the guest (self-approval), differ from
   them (a delegate approving for a target with no login, D-5/D-10), or name the
@@ -1011,7 +1017,10 @@ any actor. The invariants below are the contract MG2 (#2307) onwards must hold.
   `consentRespondedByMemberId` is an FK-less snapshot and keeps the id of
   whoever actually answered at the time, even after that member is merged away.
 
-The eight legal column shapes, and only those eight, are:
+The eight legal column shapes, and only those eight, are. In the four column
+cells, **null** means the column must be `NULL`, **set** means it must be
+non-`NULL`, and **any** means either is legal; where the responder's identity
+also matters it is named instead.
 
 | Sub-state | `consentStatus` | `requestedAt` | `respondedAt` | `respondedByMemberId` | `expiresAt` |
 | --- | --- | --- | --- | --- | --- |
@@ -1021,13 +1030,16 @@ The eight legal column shapes, and only those eight, are:
 | `DELEGATE_APPROVED` | `CONFIRMED` | set | set | someone other than the guest | any |
 | `NOTIFY_ONLY_AUTO_CONFIRMED` | `CONFIRMED` | null | null | null | null |
 | `ADMIN_ASSIGNED` | `CONFIRMED` | null | set | the acting admin | null |
-| `DECLINED` | `DECLINED` | set | set | any | any |
+| `DECLINED` | `DECLINED` | set | set | set | any |
 | `EXPIRED` | `EXPIRED` | set | null | null | set |
 
 This table is the same data as `MEMBER_GUEST_CONSENT_SUB_STATES` in
 `src/lib/member-guest-consent.ts`, whose `classifyMemberGuestConsent` returns
-`null` for any other combination; both are pinned by
-`src/lib/__tests__/member-guest-consent.test.ts`.
+`null` for any other combination. It is not merely "kept in step" by hand:
+`src/lib/__tests__/member-guest-consent.test.ts` GENERATES each row above from
+the code table (one mapping of set / null / any / the responder words) and fails
+unless this file contains it verbatim, so a shape that changes in code cannot
+leave a stale row here.
 
 ## Booking Modifications
 

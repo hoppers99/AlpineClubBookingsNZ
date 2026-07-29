@@ -27,12 +27,12 @@ import {
   classifyMemberGuestConsent,
   type MemberGuestConsentColumns,
 } from "@/lib/member-guest-consent";
+import { normalizeMemberGuestSettings } from "@/lib/member-guest-settings";
 import {
+  DEFAULT_MEMBER_GUEST_SETTINGS,
   MEMBER_GUEST_PENDING_HOLD_EXPIRY_DAYS_MAX,
   MEMBER_GUEST_PENDING_HOLD_EXPIRY_DAYS_MIN,
-  normalizeMemberGuestSettings,
-} from "@/lib/member-guest-settings";
-import { DEFAULT_MEMBER_GUEST_SETTINGS } from "@/config/club-settings-defaults";
+} from "@/config/club-settings-defaults";
 
 // Test helper: reads a fixed repo file under process.cwd(); the path is
 // test-controlled, not user input.
@@ -101,6 +101,20 @@ describe("consent sub-state table", () => {
     expect(notifyOnly.respondedBy).toBe("null");
     expect(adminAssigned.respondedAt).toBe("set");
     expect(adminAssigned.respondedBy).toBe("admin");
+
+    // Neither is waiting for an answer, so neither carries a hold deadline.
+    // The classifier enforces this; without it, "CONFIRMED with an expiry"
+    // would classify happily and MG2's sweep would meet a settled row that
+    // looks like a live hold.
+    expect(notifyOnly.expiresAt).toBe("null");
+    expect(adminAssigned.expiresAt).toBe("null");
+  });
+
+  it("requires a decline to name who refused", () => {
+    // Declining is an attributed act: MG4's audit reads respondedBy to say who
+    // turned the add down, so "any" would let an unattributed refusal through.
+    const declined = MEMBER_GUEST_CONSENT_SUB_STATES.find((s) => s.id === "DECLINED")!;
+    expect(declined.respondedBy).toBe("set");
   });
 });
 
@@ -188,6 +202,21 @@ describe("classifyMemberGuestConsent", () => {
       ["solicited confirm with nobody recorded as answering", row({ consentStatus: "CONFIRMED", consentRequestedAt: T, consentRespondedAt: T })],
       ["expired that names a responder", row({ consentStatus: "EXPIRED", consentRequestedAt: T, consentExpiresAt: T, consentRespondedByMemberId: TARGET })],
       ["decline that was never requested", row({ consentStatus: "DECLINED", consentRespondedAt: T })],
+      // A refusal is an attributed act — MG4's audit rides respondedBy.
+      ["decline with nobody recorded as refusing", row({ consentStatus: "DECLINED", consentRequestedAt: T, consentRespondedAt: T })],
+      // Both never-solicited shapes say expiresAt: "null" in the table. A
+      // settled row carrying a live hold deadline is a broken row, not a
+      // variant — MG2's sweep reads expiresAt and must never meet one.
+      ["notify-only auto-confirm carrying a hold expiry", row({ consentStatus: "CONFIRMED", consentExpiresAt: T })],
+      [
+        "admin assignment carrying a hold expiry",
+        row({
+          consentStatus: "CONFIRMED",
+          consentRespondedAt: T,
+          consentRespondedByMemberId: ADMIN,
+          consentExpiresAt: T,
+        }),
+      ],
     ];
     for (const [label, columns] of illegal) {
       expect(classifyMemberGuestConsent(columns, TARGET), label).toBeNull();
@@ -204,19 +233,94 @@ describe("classifyMemberGuestConsent", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// The two mirrors, GENERATED rather than eyeballed
+// ---------------------------------------------------------------------------
+// Asserting only that each sub-state ID appears somewhere in the docs proved
+// nothing: a planted mutant that swapped a doc row's columns (or left a row
+// stale after the code changed) passed happily, because the LABEL was still
+// there. So each mirror line is now generated from the code table through the
+// one mapping below and asserted verbatim. A shape that changes in code and not
+// in the mirror fails here.
+type SubState = (typeof MEMBER_GUEST_CONSENT_SUB_STATES)[number];
+
+/** The vocabulary the table may use for a column's nullness. */
+const NULLNESS_WORDS = ["set", "null", "any"] as const;
+
+/** How each `respondedBy` word is spelled in the DOMAIN_INVARIANTS table. */
+const RESPONDER_DOC_WORDS: Record<string, string> = {
+  null: "null",
+  set: "set",
+  any: "any",
+  target: "the guest themselves",
+  other: "someone other than the guest",
+  admin: "the acting admin",
+};
+
+function statusWord(state: SubState): string {
+  return state.status === null ? "NULL" : state.status;
+}
+
+/** One row of the eight-row table in docs/DOMAIN_INVARIANTS.md. */
+function docTableRow(state: SubState): string {
+  const status = state.status === null ? "`NULL`" : `\`${state.status}\``;
+  return [
+    "",
+    `\`${state.id}\``,
+    status,
+    state.requestedAt,
+    state.respondedAt,
+    RESPONDER_DOC_WORDS[state.respondedBy],
+    state.expiresAt,
+    "",
+  ].join(" | ").trim();
+}
+
+/** One summary line of the `BookingGuest` schema comment. */
+function schemaSummaryLine(state: SubState): string {
+  return (
+    `${state.id}: status ${statusWord(state)}` +
+    ` / requestedAt ${state.requestedAt}` +
+    ` / respondedAt ${state.respondedAt}` +
+    ` / respondedBy ${state.respondedBy}` +
+    ` / expiresAt ${state.expiresAt}`
+  );
+}
+
 describe("the documented model matches the shipped one", () => {
-  it("is mirrored in docs/DOMAIN_INVARIANTS.md", () => {
-    const invariants = readRepoFile("docs/DOMAIN_INVARIANTS.md");
+  it("uses only the declared vocabulary for every column", () => {
+    // The generators below are only meaningful while every word they translate
+    // is one they know about.
     for (const state of MEMBER_GUEST_CONSENT_SUB_STATES) {
-      expect(invariants, `${state.id} missing from DOMAIN_INVARIANTS`).toContain(state.id);
+      expect(NULLNESS_WORDS, state.id).toContain(state.requestedAt);
+      expect(NULLNESS_WORDS, state.id).toContain(state.respondedAt);
+      expect(NULLNESS_WORDS, state.id).toContain(state.expiresAt);
+      expect(
+        Object.keys(RESPONDER_DOC_WORDS),
+        `${state.id}: no doc spelling for respondedBy "${state.respondedBy}"`,
+      ).toContain(state.respondedBy);
     }
   });
 
-  it("is quoted on the BookingGuest schema block", () => {
+  it("is mirrored row-for-row in docs/DOMAIN_INVARIANTS.md", () => {
+    const invariants = readRepoFile("docs/DOMAIN_INVARIANTS.md");
+    for (const state of MEMBER_GUEST_CONSENT_SUB_STATES) {
+      expect(
+        invariants,
+        `${state.id}: DOMAIN_INVARIANTS is missing or stale for\n  ${docTableRow(state)}`,
+      ).toContain(docTableRow(state));
+    }
+  });
+
+  it("is mirrored line-for-line on the BookingGuest schema block", () => {
     const schema = readRepoFile("prisma/schema.prisma");
     expect(schema).toContain("MEMBER_GUEST_CONSENT_SUB_STATES");
-    // The enum exists and every label the table names is registered.
     for (const state of MEMBER_GUEST_CONSENT_SUB_STATES) {
+      expect(
+        schema,
+        `${state.id}: schema.prisma is missing or stale for\n  ${schemaSummaryLine(state)}`,
+      ).toContain(schemaSummaryLine(state));
+      // ...and every label the table names is a registered enum value.
       if (state.status !== null) {
         expect(schema).toMatch(new RegExp(`^\\s+${state.status}$`, "m"));
       }
@@ -329,16 +433,38 @@ describe("migrations", () => {
     expect(sql).not.toMatch(/REFERENCES/i);
   });
 
-  it("registers the enum labels without using one", () => {
-    // What makes Prisma's per-migration transaction safe, and what makes the
-    // reverse blue/green direction safe a release later.
+  it("uses a label only where the type it belongs to was just CREATEd", () => {
+    // The honest version of what used to be asserted here. The index predicate
+    // DOES name 'PENDING', so "registers the labels and never uses one" was
+    // false — and the old assertion only passed because it exempted
+    // CREATE INDEX, i.e. it exempted the single line that could have failed it.
+    //
+    // The real rationale is narrower and still holds: PostgreSQL refuses to use
+    // a label added by ALTER TYPE ... ADD VALUE in the same transaction, but a
+    // type created by CREATE TYPE in that transaction is usable straight away.
+    // So what matters is that this migration CREATEs the type (it is brand new)
+    // rather than ALTERing an existing one, and that the CREATE precedes the use.
     const sql = readRepoFile(MIGRATIONS[1]);
-    expect(sql).toContain('CREATE TYPE "MemberGuestConsentStatus"');
     const statements = sql.split(/\r?\n/).filter((l) => !l.trim().startsWith("--"));
-    const usesALabel = statements.some(
-      (line) => /'PENDING'/.test(line) && !/CREATE TYPE|CREATE INDEX/.test(line),
+
+    expect(sql).toContain('CREATE TYPE "MemberGuestConsentStatus"');
+    expect(sql, "an ALTER TYPE ADD VALUE label could not be used in this transaction")
+      .not.toMatch(/ALTER TYPE/i);
+
+    // Exactly one statement names a label, and it is the index predicate.
+    const labelUses = statements.filter(
+      (line) => /'PENDING'/.test(line) && !/^CREATE TYPE/.test(line.trim()),
     );
-    expect(usesALabel).toBe(false);
+    expect(labelUses).toHaveLength(1);
+    expect(labelUses[0]).toContain(
+      'CREATE INDEX "BookingGuest_pendingConsent_expiresAt_idx"',
+    );
+    expect(sql.indexOf("CREATE TYPE")).toBeLessThan(sql.indexOf(labelUses[0]));
+
+    // And no DML, so no row ever carries a label in this migration — which is
+    // what keeps the REVERSE blue/green direction safe (an old-colour client
+    // can never read a value it cannot deserialise).
+    expect(statements.join("\n")).not.toMatch(/\bINSERT\b|\bUPDATE\b/i);
   });
 
   it("records the partial index in the manifest Prisma cannot see", () => {
