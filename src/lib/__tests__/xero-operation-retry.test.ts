@@ -476,9 +476,10 @@ describe("retryXeroSyncOperation", () => {
     });
   });
 
-  it("replays booking invoice creation through the booking payment relationship", async () => {
+  it("replays booking invoice creation through the booking payment relationship, CLAIMING the row first (#2262 H3)", async () => {
     mocks.findUniqueOperation.mockResolvedValue(makeOperation());
     mocks.findUniquePayment.mockResolvedValue({ bookingId: "book_123" });
+    mocks.createXeroInvoiceForBooking.mockResolvedValue("inv_1");
 
     await expect(
       retryXeroSyncOperation("op_123", { createdByMemberId: "admin_1" })
@@ -486,9 +487,49 @@ describe("retryXeroSyncOperation", () => {
       message: "Retried Xero booking invoice creation.",
     });
 
+    // The claim makes the retry visible to the manual mark-paid settle-time
+    // fence (RUNNING is in its in-flight set) for the whole execution, and the
+    // threaded syncOperationId means completion lands on THIS row.
+    expect(mocks.updateManyOperation).toHaveBeenCalledWith({
+      where: { id: "op_123", status: { in: ["FAILED", "PARTIAL"] } },
+      data: { status: "RUNNING", startedAt: expect.any(Date) },
+    });
     expect(mocks.createXeroInvoiceForBooking).toHaveBeenCalledWith("book_123", {
       createdByMemberId: "admin_1",
       repairExistingLink: true,
+      syncOperationId: "op_123",
+    });
+    // The claim strictly precedes the mint call.
+    expect(
+      mocks.updateManyOperation.mock.invocationCallOrder[0]
+    ).toBeLessThan(mocks.createXeroInvoiceForBooking.mock.invocationCallOrder[0]);
+  });
+
+  it("409s a booking-invoice retry whose claim lost (already queued or claimed elsewhere) without calling Xero (#2262 H3)", async () => {
+    mocks.findUniqueOperation.mockResolvedValue(makeOperation());
+    mocks.findUniquePayment.mockResolvedValue({ bookingId: "book_123" });
+    mocks.updateManyOperation.mockResolvedValue({ count: 0 });
+
+    await expect(
+      retryXeroSyncOperation("op_123", { createdByMemberId: "admin_1" })
+    ).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining("already claimed"),
+    });
+    expect(mocks.createXeroInvoiceForBooking).not.toHaveBeenCalled();
+  });
+
+  it("reports the manual mark-paid abandon honestly instead of a false 'Retried' success (#2262 H3)", async () => {
+    mocks.findUniqueOperation.mockResolvedValue(makeOperation());
+    mocks.findUniquePayment.mockResolvedValue({ bookingId: "book_123" });
+    // The handler's provenance re-check abandoned the mint (returns null after
+    // closing the operation CANCELLED itself).
+    mocks.createXeroInvoiceForBooking.mockResolvedValue(null);
+
+    await expect(
+      retryXeroSyncOperation("op_123", { createdByMemberId: "admin_1" })
+    ).resolves.toEqual({
+      message: expect.stringContaining("No invoice was created"),
     });
   });
 

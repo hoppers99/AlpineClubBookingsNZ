@@ -380,6 +380,23 @@ export async function createXeroInvoiceForBooking(
       bookingId,
       options?.createdByMemberId
     );
+    // #2262 H3 — a CLAIMED operation (the operator retry claims FAILED/PARTIAL
+    // -> RUNNING before calling in; the outbox claims PENDING -> RUNNING) must
+    // not be stranded RUNNING when the invoice already exists: close it
+    // SUCCEEDED against the existing invoice so the ops panel reads true.
+    if (options?.syncOperationId) {
+      await completeXeroSyncOperation(options.syncOperationId, {
+        status: "SUCCEEDED",
+        responsePayload: {
+          skipped: true,
+          reason: "Invoice already exists for this payment; link re-asserted.",
+        },
+        xeroObjectType: "INVOICE",
+        xeroObjectId: booking.payment.xeroInvoiceId,
+        xeroObjectNumber: booking.payment.xeroInvoiceNumber ?? null,
+        xeroObjectUrl: buildXeroInvoiceUrl(booking.payment.xeroInvoiceId),
+      });
+    }
     return booking.payment.xeroInvoiceId;
   }
 
@@ -549,6 +566,38 @@ export async function createXeroInvoiceForBooking(
       createdByMemberId: options?.createdByMemberId ?? null,
     });
     operationId = operation.id;
+  }
+
+  // #2262 H3 — provenance RE-ASSERTED after the operation exists, from a fresh
+  // read. The top-of-function check reads a snapshot taken before the contact
+  // and account-mapping round-trips; a manual mark-paid can commit in those
+  // seconds (its settle-time fence only refuses while an op is PENDING/RUNNING/
+  // WAITING_PAYMENT, and this run's op may not have existed when the settle's
+  // fence read ran). Re-checking here — strictly after the op above is visible
+  // to that fence — closes the interleaving: whichever of the two commits
+  // second now sees the other. Abandon per the #1765 loud-skip pattern: no
+  // invoice, no email, ids at warn, operation closed CANCELLED with the reason.
+  const freshProvenance = await prisma.payment.findUnique({
+    where: { id: booking.payment.id },
+    select: { manuallyMarkedPaidAt: true },
+  });
+  if (freshProvenance?.manuallyMarkedPaidAt) {
+    const lateSkipReason =
+      "Booking was manually marked paid (cash / off-Xero) while this invoice mint was preparing — no Xero invoice is expected, so none was created and nothing was emailed (#2262).";
+    logger.warn(
+      {
+        bookingId,
+        paymentId: booking.payment.id,
+        manuallyMarkedPaidAt: freshProvenance.manuallyMarkedPaidAt,
+        syncOperationId: operationId,
+      },
+      lateSkipReason
+    );
+    await completeXeroSyncOperation(operationId!, {
+      status: "CANCELLED",
+      responsePayload: { skipped: true, reason: lateSkipReason },
+    });
+    return null;
   }
 
   try {

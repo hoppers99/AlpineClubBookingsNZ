@@ -982,10 +982,41 @@ export async function retryXeroSyncOperation(
   if (operation.entityType === "INVOICE" && operation.operationType === "CREATE") {
     if (operation.localModel === "Payment") {
       const bookingId = await getPaymentBookingId(operation.localId!);
-      await xero.createXeroInvoiceForBooking(bookingId, {
+      // #2262 H3 — CLAIM FIRST. Without this the retry minted inline while the
+      // row sat FAILED throughout, invisible to the manual mark-paid
+      // settle-time fence (whose in-flight set is PENDING/RUNNING/
+      // WAITING_PAYMENT): a settle could commit mid-retry and the retry's
+      // create then fired with shouldEmailInvoice flipped TRUE by the settle's
+      // source change — Xero emailing an invoice for cash already collected.
+      // The status-fenced claim makes the retry visible to that fence for its
+      // whole execution, serialises concurrent retries (count !== 1 -> 409),
+      // and passing syncOperationId through makes completion/abandon reporting
+      // land on THIS row (accurate outbox/ops-panel state instead of a
+      // permanently-FAILED row behind a false success message).
+      const claimed = await prisma.xeroSyncOperation.updateMany({
+        where: { id: operation.id, status: { in: ["FAILED", "PARTIAL"] } },
+        data: { status: "RUNNING", startedAt: new Date() },
+      });
+      if (claimed.count !== 1) {
+        throw new XeroOperationRetryError(
+          "This Xero operation was already claimed by another retry.",
+          409
+        );
+      }
+      const invoiceId = await xero.createXeroInvoiceForBooking(bookingId, {
         createdByMemberId,
         repairExistingLink: true,
+        syncOperationId: operation.id,
       });
+      if (invoiceId === null) {
+        // The handler abandoned the mint (manual mark-paid provenance re-check)
+        // and already closed the operation CANCELLED with the reason. Report
+        // honestly — this retry created nothing and never will.
+        return {
+          message:
+            "No invoice was created: this booking's payment was manually marked paid (cash / off-Xero), so no Xero invoice is expected. The operation was closed.",
+        };
+      }
       return { message: "Retried Xero booking invoice creation." };
     }
 

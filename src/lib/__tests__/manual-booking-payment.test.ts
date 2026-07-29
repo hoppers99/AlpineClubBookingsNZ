@@ -543,6 +543,27 @@ describe("#2262 guard 2 — Xero refusals", () => {
     expect(mocks.paymentUpdateMany).not.toHaveBeenCalled();
   });
 
+  it("pins the settle-time in-flight predicate: the op-status set is exactly PENDING/RUNNING/WAITING_PAYMENT (level 2 of the mint fence)", async () => {
+    // H3 relies on this set: the operator retry CLAIMS its FAILED/PARTIAL row
+    // to RUNNING before minting, precisely so this fence sees it. Narrowing
+    // this set (or widening it silently) would re-open the settle-vs-mint race,
+    // so the exact predicate is pinned.
+    await settle();
+
+    expect(mocks.xeroSyncOperationFindFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          direction: "OUTBOUND",
+          entityType: "INVOICE",
+          operationType: "CREATE",
+          localModel: "Payment",
+          localId: "payment-1",
+          status: { in: ["PENDING", "RUNNING", "WAITING_PAYMENT"] },
+        }),
+      })
+    );
+  });
+
   it("refuses a booking settled as part of a group booking", async () => {
     mocks.bookingFindUnique.mockImplementation(async (args: { select?: unknown }) =>
       args.select ? { lodgeId: "lodge-1" } : bookingRow({ organiserSettled: true })

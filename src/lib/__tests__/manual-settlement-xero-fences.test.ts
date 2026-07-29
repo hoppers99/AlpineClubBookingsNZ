@@ -22,23 +22,31 @@ import { BookingStatus, PaymentSource } from "@prisma/client";
 
 const mocks = vi.hoisted(() => ({
   bookingFindUnique: vi.fn(),
+  paymentFindUnique: vi.fn(),
+  seasonFindFirst: vi.fn(),
   xeroObjectLinkFindFirst: vi.fn(),
   xeroSyncOperationFindFirst: vi.fn(),
+  xeroSyncOperationUpdate: vi.fn(),
   startXeroSyncOperation: vi.fn(),
   completeXeroSyncOperation: vi.fn(),
   upsertXeroObjectLink: vi.fn(),
   getAuthenticatedXeroClient: vi.fn(),
+  callXeroApi: vi.fn(),
+  findOrCreateXeroContact: vi.fn(),
   warn: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     booking: { findUnique: (...a: unknown[]) => mocks.bookingFindUnique(...a) },
+    payment: { findUnique: (...a: unknown[]) => mocks.paymentFindUnique(...a) },
+    season: { findFirst: (...a: unknown[]) => mocks.seasonFindFirst(...a) },
     xeroObjectLink: {
       findFirst: (...a: unknown[]) => mocks.xeroObjectLinkFindFirst(...a),
     },
     xeroSyncOperation: {
       findFirst: (...a: unknown[]) => mocks.xeroSyncOperationFindFirst(...a),
+      update: (...a: unknown[]) => mocks.xeroSyncOperationUpdate(...a),
     },
   },
 }));
@@ -171,5 +179,145 @@ describe("level 3 — the createXeroInvoiceForBooking handler re-check", () => {
       }),
     );
     expect(mocks.warn).toHaveBeenCalled();
+  });
+
+  it("H3 — re-asserts provenance AFTER the operation exists: a settle that committed during the contact/mapping reads still abandons the mint", async () => {
+    vi.resetModules();
+    vi.clearAllMocks();
+
+    vi.doMock("@/lib/xero-sync", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("@/lib/xero-sync")>()),
+      startXeroSyncOperation: mocks.startXeroSyncOperation,
+      completeXeroSyncOperation: mocks.completeXeroSyncOperation,
+      upsertXeroObjectLink: mocks.upsertXeroObjectLink,
+    }));
+    vi.doMock("@/lib/xero-api-client", () => ({
+      getAuthenticatedXeroClient: mocks.getAuthenticatedXeroClient,
+      callXeroApi: mocks.callXeroApi,
+    }));
+    vi.doMock("@/lib/xero-contacts", () => ({
+      findOrCreateXeroContact: mocks.findOrCreateXeroContact,
+      retryXeroWriteWithContactRepair: vi.fn(),
+    }));
+    vi.doMock("@/lib/xero-mappings", () => ({
+      getResolvedAccountMapping: vi
+        .fn()
+        .mockResolvedValue({ code: "200", itemCode: null, codeExplicitlyConfigured: false }),
+      getAccountMapping: vi.fn().mockResolvedValue("606"),
+      getHutFeeItemCodeMap: vi.fn().mockResolvedValue({}),
+      isHutFeeResolverConfigured: vi.fn().mockReturnValue(false),
+      resolveHutFeeItemCode: vi.fn().mockReturnValue(null),
+    }));
+
+    // The TOP-of-function snapshot carries NO provenance: the manual settle
+    // commits only after this read, while the mint is deep in its contact and
+    // account-mapping round-trips.
+    mocks.bookingFindUnique.mockResolvedValue({
+      id: "booking-1",
+      memberId: "member-1",
+      status: BookingStatus.PAYMENT_PENDING,
+      checkIn: new Date("2026-08-01"),
+      checkOut: new Date("2026-08-03"),
+      createdAt: new Date("2026-07-01"),
+      promoAdjustmentCents: 0,
+      guests: [],
+      member: { email: "ada@example.org" },
+      promoRedemption: null,
+      payment: {
+        id: "payment-1",
+        xeroInvoiceId: null,
+        xeroInvoiceNumber: null,
+        source: PaymentSource.INTERNET_BANKING,
+        manuallyMarkedPaidAt: null,
+      },
+    });
+    mocks.getAuthenticatedXeroClient.mockResolvedValue({
+      xero: { accountingApi: {} },
+      tenantId: "tenant-1",
+    });
+    mocks.findOrCreateXeroContact.mockResolvedValue("contact-1");
+    mocks.seasonFindFirst.mockResolvedValue(null);
+    mocks.xeroSyncOperationUpdate.mockResolvedValue({});
+    // The FRESH re-read — strictly after the operation exists and is therefore
+    // visible to the settle-time fence — sees the settle's provenance.
+    mocks.paymentFindUnique.mockResolvedValue({
+      manuallyMarkedPaidAt: new Date("2026-07-29T00:00:00Z"),
+    });
+
+    const { createXeroInvoiceForBooking } = await import(
+      "@/lib/xero-booking-invoices"
+    );
+
+    const result = await createXeroInvoiceForBooking("booking-1", {
+      syncOperationId: "op-retry-claimed",
+    });
+
+    expect(result).toBeNull();
+    // Nothing reached Xero: no create call, no email.
+    expect(mocks.callXeroApi).not.toHaveBeenCalled();
+    expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
+      "op-retry-claimed",
+      expect.objectContaining({
+        status: "CANCELLED",
+        responsePayload: expect.objectContaining({ skipped: true }),
+      }),
+    );
+    expect(mocks.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bookingId: "booking-1",
+        paymentId: "payment-1",
+        syncOperationId: "op-retry-claimed",
+      }),
+      expect.stringContaining("manually marked paid"),
+    );
+  });
+
+  it("H3 — a claimed operation whose invoice already exists is closed SUCCEEDED, never stranded RUNNING", async () => {
+    vi.resetModules();
+    vi.clearAllMocks();
+
+    vi.doMock("@/lib/xero-sync", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("@/lib/xero-sync")>()),
+      startXeroSyncOperation: mocks.startXeroSyncOperation,
+      completeXeroSyncOperation: mocks.completeXeroSyncOperation,
+      upsertXeroObjectLink: mocks.upsertXeroObjectLink,
+    }));
+
+    mocks.bookingFindUnique.mockResolvedValue({
+      id: "booking-1",
+      memberId: "member-1",
+      status: BookingStatus.PAID,
+      guests: [],
+      member: { email: "ada@example.org" },
+      promoRedemption: null,
+      payment: {
+        id: "payment-1",
+        xeroInvoiceId: "inv-already",
+        xeroInvoiceNumber: "INV-1",
+        source: PaymentSource.STRIPE,
+        status: "SUCCEEDED",
+        amountCents: 10000,
+        refundedAmountCents: 0,
+        creditAppliedCents: 0,
+        manuallyMarkedPaidAt: null,
+      },
+    });
+
+    const { createXeroInvoiceForBooking } = await import(
+      "@/lib/xero-booking-invoices"
+    );
+
+    const result = await createXeroInvoiceForBooking("booking-1", {
+      syncOperationId: "op-retry-claimed",
+    });
+
+    expect(result).toBe("inv-already");
+    expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
+      "op-retry-claimed",
+      expect.objectContaining({
+        status: "SUCCEEDED",
+        xeroObjectId: "inv-already",
+      }),
+    );
   });
 });
