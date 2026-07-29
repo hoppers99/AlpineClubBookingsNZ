@@ -46,6 +46,15 @@ import {
  * if one of those nights was taken in the meantime, the server refuses the whole
  * thing with a fresh report instead of writing a set the admin never approved.
  *
+ * GUEST_NOT_BOOKED nights get one more gate (#2251 residual R2). Those nights
+ * are not a clash — they mean the range or the guest is wrong — so proceeding
+ * past them must be a read-and-confirmed choice rather than a button sitting
+ * next to a warning. When the report contains any, the second action asks first,
+ * naming both counts ("M nights fall outside this guest's stay and will NOT be
+ * assigned. Assign the other N nights anyway?"). Nothing else changes: the free
+ * set already excluded those nights, so this adds consent, not behaviour. With
+ * no such nights in the report there is no extra step.
+ *
  * Lives in src/components/admin (not the board's _components) because #2252
  * drives the same dialog from inside a booking — one component, two surfaces.
  */
@@ -189,6 +198,10 @@ export function BedRangeAssignDialog({
   const [toDate, setToDate] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [refusal, setRefusal] = useState<BedRangeAssignResult | null>(null);
+  // The GUEST_NOT_BOOKED consent gate (#2251 residual R2): armed only by the
+  // admin clicking the second action, and cleared whenever the report it belongs
+  // to is replaced or dropped.
+  const [confirmingSkip, setConfirmingSkip] = useState(false);
 
   // Re-seed from the target each time the dialog opens, so reopening from a
   // different guest or bed never inherits the previous attempt's state.
@@ -198,6 +211,7 @@ export function BedRangeAssignDialog({
     setFromDate(target.fromDate);
     setToDate(target.toDate);
     setRefusal(null);
+    setConfirmingSkip(false);
     setSubmitting(false);
   }, [open, target]);
 
@@ -227,6 +241,13 @@ export function BedRangeAssignDialog({
   }, [refusal]);
 
   if (!target) return null;
+
+  // A report and the consent gate armed from it live and die together: editing
+  // the bed or the dates makes both stale evidence.
+  function dropRefusal() {
+    setRefusal(null);
+    setConfirmingSkip(false);
+  }
 
   /**
    * `chosenNights` is the second action: the exact nights this dialog is
@@ -269,7 +290,10 @@ export function BedRangeAssignDialog({
       // A refused attempt is not an error to swallow: the server answers 400/409
       // and carries the report that tells the admin exactly what blocked it.
       if (body?.result && !body.result.applied) {
+        // A FRESH report: the consent gate must be re-armed against it, never
+        // inherited from the report it replaces.
         setRefusal(body.result);
+        setConfirmingSkip(false);
         return;
       }
 
@@ -291,6 +315,13 @@ export function BedRangeAssignDialog({
   // sends, so the button's number and what gets written are the same thing.
   const offeredNights = refusal?.freeNights ?? [];
   const freeNightCount = offeredNights.length;
+  // Nights the guest is not booked on are the one refusal category that means
+  // the REQUEST is wrong rather than the bed being busy, so proceeding past them
+  // is gated on an explicit confirmation (#2251 residual R2).
+  const notBookedCount =
+    refusalsByCategory.get("GUEST_NOT_BOOKED")?.length ?? 0;
+  const needsSkipConsent = notBookedCount > 0;
+  const freeNightsLabel = `${freeNightCount} free night${freeNightCount === 1 ? "" : "s"}`;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -332,7 +363,7 @@ export function BedRangeAssignDialog({
                 // The report describes the attempt that produced it. Editing the
                 // bed or the dates makes it stale evidence, so drop it rather
                 // than leave the admin reading a refusal for a different range.
-                setRefusal(null);
+                dropRefusal();
               }}
               disabled={!canEdit}
             >
@@ -364,7 +395,7 @@ export function BedRangeAssignDialog({
                 disabled={!canEdit}
                 onChange={(event) => {
                   setFromDate(event.target.value);
-                  setRefusal(null);
+                  dropRefusal();
                 }}
               />
             </div>
@@ -377,7 +408,7 @@ export function BedRangeAssignDialog({
                 disabled={!canEdit}
                 onChange={(event) => {
                   setToDate(event.target.value);
-                  setRefusal(null);
+                  dropRefusal();
                 }}
               />
             </div>
@@ -488,6 +519,26 @@ export function BedRangeAssignDialog({
                   </div>
                 );
               })}
+
+              {/*
+                The consent step (#2251 residual R2). It appears only after the
+                admin asks for the free nights AND the report contains nights the
+                guest is not booked on — the category that means the request is
+                wrong rather than the bed being busy. It names both counts, so
+                going on is a read-and-confirmed choice.
+              */}
+              {confirmingSkip && needsSkipConsent && freeNightCount > 0 ? (
+                <Alert
+                  variant="warning"
+                  data-testid="range-skip-confirmation"
+                  title={`${notBookedCount} night${notBookedCount === 1 ? "" : "s"} ${notBookedCount === 1 ? "falls" : "fall"} outside this guest's stay and will NOT be assigned`}
+                >
+                  Assign the other {freeNightCount} night
+                  {freeNightCount === 1 ? "" : "s"} anyway? If the dates are
+                  wrong, change them above instead — nothing has been written
+                  yet.
+                </Alert>
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -503,16 +554,50 @@ export function BedRangeAssignDialog({
           </Button>
           <div className="flex flex-wrap gap-2">
             {refusal && freeNightCount > 0 ? (
-              <Button
-                type="button"
-                variant="secondary"
-                disabled={!canEdit || submitting}
-                title={canEdit === false ? ADMIN_VIEW_ONLY_ACTION_REASON : undefined}
-                onClick={() => void submit(offeredNights)}
-              >
-                Assign the {freeNightCount} free night
-                {freeNightCount === 1 ? "" : "s"}
-              </Button>
+              needsSkipConsent && !confirmingSkip ? (
+                // Arms the consent step rather than writing: the ellipsis says a
+                // further step follows, and the count is still the exact set the
+                // report offered.
+                <Button
+                  type="button"
+                  variant="secondary"
+                  disabled={!canEdit || submitting}
+                  title={
+                    canEdit === false ? ADMIN_VIEW_ONLY_ACTION_REASON : undefined
+                  }
+                  onClick={() => setConfirmingSkip(true)}
+                >
+                  Assign the {freeNightsLabel}…
+                </Button>
+              ) : (
+                <>
+                  {confirmingSkip ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={submitting}
+                      onClick={() => setConfirmingSkip(false)}
+                    >
+                      Go back
+                    </Button>
+                  ) : null}
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    disabled={!canEdit || submitting}
+                    title={
+                      canEdit === false
+                        ? ADMIN_VIEW_ONLY_ACTION_REASON
+                        : undefined
+                    }
+                    onClick={() => void submit(offeredNights)}
+                  >
+                    {confirmingSkip
+                      ? `Yes, assign the ${freeNightCount} night${freeNightCount === 1 ? "" : "s"}`
+                      : `Assign the ${freeNightsLabel}`}
+                  </Button>
+                </>
+              )
             ) : null}
             <Button
               type="button"

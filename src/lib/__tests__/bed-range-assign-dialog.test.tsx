@@ -220,9 +220,20 @@ describe("BedRangeAssignDialog", () => {
     expect(hold).toHaveTextContent("This booking holds the whole lodge");
 
     // The second action is explicit, states the exact count, and is the only
-    // way a partial result can happen.
+    // way a partial result can happen. This report contains a GUEST_NOT_BOOKED
+    // night, so it asks before writing (#2251 residual R2).
+    fireEvent.click(
+      screen.getByRole("button", { name: /^Assign the 2 free nights…$/ }),
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const confirmation = screen.getByTestId("range-skip-confirmation");
+    expect(confirmation).toHaveTextContent(
+      "1 night falls outside this guest's stay and will NOT be assigned",
+    );
+    expect(confirmation).toHaveTextContent("Assign the other 2 nights anyway?");
+
     const freeNightsButton = screen.getByRole("button", {
-      name: "Assign the 2 free nights",
+      name: "Yes, assign the 2 nights",
     });
 
     fetchMock.mockResolvedValueOnce({
@@ -261,6 +272,143 @@ describe("BedRangeAssignDialog", () => {
       to: "2026-06-06",
       nights: ["2026-06-01", "2026-06-05"],
     });
+  });
+
+  /*
+   * #2251 residual R2: GUEST_NOT_BOOKED is the one refusal category that means
+   * the REQUEST is wrong rather than the bed being busy, so proceeding past it is
+   * gated on an explicit confirmation naming both counts. A clash-only report has
+   * no such gate — the free nights are simply the ones that are free.
+   */
+  it("writes the free nights with no extra step when a clash is the only blocker", async () => {
+    fetchMock.mockResolvedValueOnce(
+      refusalResponse(409, {
+        applied: false,
+        partialByConsent: false,
+        bookingId: "booking-1",
+        bookingGuestId: "guest-1",
+        guestName: "Range Guest",
+        bedId: "bed-1",
+        bedName: "Bed One",
+        roomName: "Room One",
+        fromDate: "2026-06-01",
+        toDate: "2026-06-06",
+        requestedNights: [
+          "2026-06-01",
+          "2026-06-02",
+          "2026-06-03",
+          "2026-06-04",
+          "2026-06-05",
+        ],
+        freeNights: ["2026-06-01", "2026-06-02", "2026-06-04", "2026-06-05"],
+        writtenNights: [],
+        refusals: [{ stayDate: "2026-06-03", category: "BED_TAKEN" }],
+      }),
+    );
+    const { onAssigned } = renderDialog();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Assign 5 nights$/ }));
+    await screen.findByTestId("range-refusal-report");
+
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        result: {
+          applied: true,
+          partialByConsent: true,
+          bookingId: "booking-1",
+          bookingGuestId: "guest-1",
+          guestName: "Range Guest",
+          bedId: "bed-1",
+          bedName: "Bed One",
+          roomName: "Room One",
+          fromDate: "2026-06-01",
+          toDate: "2026-06-06",
+          requestedNights: [],
+          freeNights: [],
+          writtenNights: [
+            "2026-06-01",
+            "2026-06-02",
+            "2026-06-04",
+            "2026-06-05",
+          ],
+          refusals: [],
+        },
+      }),
+    });
+    // One click, straight to the write: no confirmation step is inserted.
+    fireEvent.click(
+      screen.getByRole("button", { name: "Assign the 4 free nights" }),
+    );
+
+    await waitFor(() => expect(onAssigned).toHaveBeenCalledTimes(1));
+    expect(
+      screen.queryByTestId("range-skip-confirmation"),
+    ).not.toBeInTheDocument();
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).nights).toEqual([
+      "2026-06-01",
+      "2026-06-02",
+      "2026-06-04",
+      "2026-06-05",
+    ]);
+  });
+
+  it("asks before skipping nights outside the stay, and can be backed out of", async () => {
+    fetchMock.mockResolvedValueOnce(
+      refusalResponse(400, {
+        applied: false,
+        partialByConsent: false,
+        bookingId: "booking-1",
+        bookingGuestId: "guest-1",
+        guestName: "Range Guest",
+        bedId: "bed-1",
+        bedName: "Bed One",
+        roomName: "Room One",
+        fromDate: "2026-06-01",
+        toDate: "2026-06-06",
+        requestedNights: [
+          "2026-06-01",
+          "2026-06-02",
+          "2026-06-03",
+          "2026-06-04",
+          "2026-06-05",
+        ],
+        freeNights: ["2026-06-01", "2026-06-02", "2026-06-03"],
+        writtenNights: [],
+        refusals: [
+          { stayDate: "2026-06-04", category: "GUEST_NOT_BOOKED" },
+          { stayDate: "2026-06-05", category: "GUEST_NOT_BOOKED" },
+        ],
+      }),
+    );
+    const { onAssigned } = renderDialog();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Assign 5 nights$/ }));
+    await screen.findByTestId("range-refusal-report");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /^Assign the 3 free nights…$/ }),
+    );
+    const confirmation = screen.getByTestId("range-skip-confirmation");
+    expect(confirmation).toHaveTextContent(
+      "2 nights fall outside this guest's stay and will NOT be assigned",
+    );
+    expect(confirmation).toHaveTextContent("Assign the other 3 nights anyway?");
+    // Nothing is sent by arming the gate.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(onAssigned).not.toHaveBeenCalled();
+
+    // Consent is reversible: the report stays, the gate closes, nothing is sent.
+    fireEvent.click(screen.getByRole("button", { name: "Go back" }));
+    expect(
+      screen.queryByTestId("range-skip-confirmation"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("range-refusal-report")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(
+      screen.queryByRole("button", { name: "Yes, assign the 3 nights" }),
+    ).not.toBeInTheDocument();
   });
 
   it("offers no free-nights action when every night is blocked", async () => {
