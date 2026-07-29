@@ -44,7 +44,28 @@ export function remapImageRefs(
   );
 }
 
-type MediaMapEntry = { path: string; filename: string; contentType: string };
+type MediaMapEntry = {
+  path: string;
+  filename: string;
+  contentType: string;
+  /**
+   * MediaImage.kind (#2322). Optional: bundles exported before club logos had
+   * their own kind carry no value, and those images are content-picker images,
+   * so CONTENT is the correct default. Any unrecognised value also falls back to
+   * CONTENT — an import must never mint a kind this app does not know.
+   */
+  kind?: string;
+};
+
+/** MediaImage kinds a bundle is allowed to recreate. MEMBER_PHOTO is private
+ * data and never travels in a config bundle. */
+const IMPORTABLE_MEDIA_KINDS = new Set(["CONTENT", "LOGO"]);
+
+function mediaKindFrom(value: string | undefined): "CONTENT" | "LOGO" {
+  return value && IMPORTABLE_MEDIA_KINDS.has(value)
+    ? (value as "CONTENT" | "LOGO")
+    : "CONTENT";
+}
 
 type ParsedMediaMap =
   | { ok: true; entries: Array<[string, MediaMapEntry]> }
@@ -94,6 +115,67 @@ function parseMediaMap(mapBytes: Uint8Array): ParsedMediaMap {
 }
 
 /**
+ * The MediaImage ids a bundle actually carries bytes for. Used by category
+ * planners that reference an image by id outside page HTML (#2322: the club
+ * theme's logoUrl) so they can warn when the bundle's reference has no bytes
+ * behind it. Returns an empty set for a missing or malformed map — the planner
+ * treats "not carried" as the safe reading, and a malformed map is reported as
+ * an error by planBundleMedia itself.
+ */
+export function bundleMediaIds(files: Map<string, Uint8Array>): Set<string> {
+  const mapBytes = files.get(MEDIA_MAP_FILE);
+  if (!mapBytes) return new Set();
+  const parsed = parseMediaMap(mapBytes);
+  if (!parsed.ok) return new Set();
+  return new Set(parsed.entries.map(([oldId]) => oldId));
+}
+
+/**
+ * Resolve, at PLAN time, what a bundle image id will become at apply time —
+ * mirroring `recreateBundleMedia`'s reuse rule byte for byte so the dry-run and
+ * the write cannot disagree (#2322, ADR-002 plan/apply parity).
+ *
+ *  - `carried: false`   — the bundle has no usable bytes for this id, so apply
+ *                         will drop the reference.
+ *  - `existingId: <id>` — a byte-identical row of the same kind already exists
+ *                         and will be reused; apply writes exactly this id.
+ *  - `existingId: null` — a fresh row will be minted, so the resulting id is
+ *                         unknowable until apply runs.
+ */
+export async function planBundleMediaTarget(
+  db: ReadDb,
+  files: Map<string, Uint8Array>,
+  oldId: string,
+): Promise<{ carried: boolean; existingId: string | null }> {
+  const mapBytes = files.get(MEDIA_MAP_FILE);
+  if (!mapBytes) return { carried: false, existingId: null };
+  const parsed = parseMediaMap(mapBytes);
+  if (!parsed.ok) return { carried: false, existingId: null };
+
+  const entry = parsed.entries.find(([id]) => id === oldId)?.[1];
+  if (!entry) return { carried: false, existingId: null };
+
+  const bytes = files.get(entry.path);
+  if (!bytes) return { carried: false, existingId: null };
+  const buffer = Buffer.from(bytes);
+  if (buffer.length > MAX_MEDIA_IMAGE_BYTES) {
+    return { carried: false, existingId: null };
+  }
+  if (!detectImageContentType(buffer)) return { carried: false, existingId: null };
+
+  const candidates = await db.mediaImage.findMany({
+    where: {
+      filename: sanitiseMediaImageFilename(entry.filename),
+      byteSize: buffer.length,
+      kind: mediaKindFrom(entry.kind),
+    },
+    select: { id: true, data: true },
+  });
+  const existing = candidates.find((c) => Buffer.from(c.data).equals(buffer));
+  return { carried: true, existingId: existing?.id ?? null };
+}
+
+/**
  * Validate + classify the bundle's media for the dry-run: map shape, per-image
  * size cap (the same MAX_MEDIA_IMAGE_BYTES every upload path enforces), and
  * image-type sniffing are ERRORS that block apply; each accepted image is
@@ -137,7 +219,14 @@ export async function planBundleMedia(
     }
     const filename = sanitiseMediaImageFilename(meta.filename);
     const candidates = await db.mediaImage.findMany({
-      where: { filename, byteSize: buffer.length },
+      // Kind-scoped identically to the apply-side reuse lookup (#2322): without
+      // this the dry-run could match a LOGO onto an existing CONTENT row and
+      // report "unchanged" where apply goes on to create.
+      where: {
+        filename,
+        byteSize: buffer.length,
+        kind: mediaKindFrom(meta.kind),
+      },
       select: { id: true, data: true },
     });
     const existing = candidates.find((c) => Buffer.from(c.data).equals(buffer));
@@ -179,7 +268,15 @@ export async function recreateBundleMedia(
     const filename = sanitiseMediaImageFilename(meta.filename);
 
     const candidates = await tx.mediaImage.findMany({
-      where: { filename, byteSize: buffer.length },
+      where: {
+        filename,
+        byteSize: buffer.length,
+        // Reuse only within the same kind (#2322): matching a LOGO onto an
+        // existing CONTENT row (or the reverse) would hand the theme a blob
+        // whose lifecycle it does not own, or expose a picker image to the
+        // logo's delete-on-replace.
+        kind: mediaKindFrom(meta.kind),
+      },
       select: { id: true, data: true },
     });
     const existing = candidates.find((c) => Buffer.from(c.data).equals(buffer));
@@ -198,6 +295,7 @@ export async function recreateBundleMedia(
         width: dims?.width ?? null,
         height: dims?.height ?? null,
         uploadedByMemberId: actorMemberId,
+        kind: mediaKindFrom(meta.kind),
       },
       select: { id: true },
     });
