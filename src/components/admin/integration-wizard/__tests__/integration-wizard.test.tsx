@@ -357,16 +357,16 @@ describe("IntegrationWizard view-only vouch (#2324)", () => {
     );
   }
 
-  it("mounts the banner in the loading branch as well as the loaded one", async () => {
-    const seen: { value?: unknown } = {};
-    const { unmount } = renderVouchWizard(seen, true);
-    // Loading: no step body yet, but the live region is already registered and
-    // already saying why — that is what the vouch is promising every step.
+  it("mounts the banner in the LOADING branch, before any step body exists", () => {
+    // No step body yet, but the live region is already registered and already
+    // saying why — that is what the vouch promises every step.
+    renderVouchWizard({}, true);
     expect(screen.getByTestId("admin-view-only-banner")).toBeTruthy();
     expect(screen.getByText(/you can look at this wizard/i)).toBeTruthy();
-    unmount();
+  });
 
-    renderVouchWizard(seen, false);
+  it("still mounts the banner once the step body is on screen", async () => {
+    renderVouchWizard({}, false);
     await waitFor(() => screen.getByText("Vouched action"));
     expect(screen.getByTestId("admin-view-only-banner")).toBeTruthy();
     expect(screen.getByText(/you can look at this wizard/i)).toBeTruthy();

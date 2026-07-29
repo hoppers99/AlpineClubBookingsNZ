@@ -744,6 +744,52 @@ function vouchDeclarer(
 }
 
 /**
+ * The function node behind the exported component `name` in `ast` — a
+ * `function` declaration, or an arrow/function expression assigned to a `const`.
+ * Used to bound a check to ONE component's body when a file holds several.
+ */
+function namedComponentFn(
+  ast: ts.SourceFile,
+  name: string,
+): ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression | null {
+  const found: (
+    | ts.FunctionDeclaration
+    | ts.ArrowFunction
+    | ts.FunctionExpression
+  )[] = [];
+  eachNode(ast, (node) => {
+    if (ts.isFunctionDeclaration(node) && node.name?.text === name) {
+      found.push(node);
+      return;
+    }
+    if (!ts.isVariableDeclaration(node) || !node.initializer) return;
+    if (!ts.isIdentifier(node.name) || node.name.text !== name) return;
+    const init = node.initializer;
+    if (ts.isArrowFunction(init) || ts.isFunctionExpression(init)) {
+      found.push(init);
+    }
+  });
+  return found[0] ?? null;
+}
+
+/** Identifiers bound by `fn`'s own destructured parameters. */
+function parameterBoundNames(fn: ts.Node): Set<string> {
+  const names = new Set<string>();
+  if (!ts.isFunctionLike(fn)) return names;
+  for (const param of fn.parameters) {
+    if (ts.isIdentifier(param.name)) {
+      names.add(param.name.text);
+      continue;
+    }
+    if (!ts.isObjectBindingPattern(param.name)) continue;
+    for (const element of param.name.elements) {
+      if (ts.isIdentifier(element.name)) names.add(element.name.text);
+    }
+  }
+  return names;
+}
+
+/**
  * Named imports in `ast`, as `localName -> resolved file`. Aliased and default
  * imports are deliberately excluded: see the "no unresolvable vouch" test,
  * which turns that blind spot into a failure rather than a silent pass.
@@ -1601,6 +1647,7 @@ describe("view-only section banner coverage (#2160)", () => {
     }
 
     let wizardVouchSites = 0;
+    const wizardVouched = new Set<string>(); // "file#Export"
     for (const f of astFiles) {
       const imports = namedImports(f.file, f.ast);
       const shellTags = jsxTags(f.ast, WIZARD_SHELL);
@@ -1680,7 +1727,77 @@ describe("view-only section banner coverage (#2160)", () => {
           );
           continue;
         }
+        wizardVouched.add(`${target}#${name}`);
         wizardVouchSites += 1;
+      }
+    }
+
+    /*
+      ---- the SCOPE check, which this channel can make mechanically ----------
+
+      #2168 cannot check scope: a vouching parent's banner and its child's
+      `canEdit` are two unrelated expressions in two files, and whether they name
+      the same permission area is a judgement. The wizard channel is different,
+      and it is the one real strengthening #2324 buys. The shell passes ONE
+      `canEdit` to both the banner and `helpers`, so a step control that takes
+      its `canEdit` from that same `helpers` object is covered by the banner BY
+      CONSTRUCTION — the two cannot disagree, because they are the same value.
+
+      So: inside a wizard-vouched component, a control that opts out via the
+      vouch must read `canEdit` from an identifier the component received as a
+      PARAMETER (in practice `helpers.canEdit`), not from an independent source.
+      That is exactly what stops the scope mismatch this issue's review flagged:
+      the Lodge Display module switch calls `useAdminAreaEditAccess("support")`
+      itself while the wizard's banner states `lodge`, so it cannot be vouched
+      for — and now it cannot be vouched for by ACCIDENT either, because a local
+      hook result is not a parameter.
+
+      This does not make the wizard channel judgement-free. Deciding a control
+      should NOT take the vouch is still a review call. What is now mechanical is
+      the other direction: a control that DOES take it provably shares the
+      banner's `canEdit`.
+    */
+    for (const key of wizardVouched) {
+      const [file, name] = key.split("#");
+      const target = astFiles.find((f) => f.file === file);
+      if (!target) continue;
+      const fn = namedComponentFn(target.ast, name);
+      if (!fn) {
+        offenders.push(
+          `${target.rel} exports no resolvable component \`${name}\` to scope ` +
+            `the vouch's canEdit check to`,
+        );
+        continue;
+      }
+      const bound = parameterBoundNames(fn);
+      for (const tag of jsxTags(target.ast, "ViewOnlyActionButton")) {
+        if (tag.getStart() < fn.getStart() || tag.getEnd() > fn.getEnd()) {
+          continue;
+        }
+        const describeReason = attr(tag, "describeReason");
+        if (
+          !describeReason ||
+          classifyDescribeReason(describeReason) !== "vouched"
+        ) {
+          continue;
+        }
+        const at = `${target.rel}:${target.ast.getLineAndCharacterOfPosition(tag.getStart(target.ast)).line + 1}`;
+        const canEdit = attr(tag, "canEdit");
+        const value = canEdit ? attrExpression(canEdit) : null;
+        const readsFromParam =
+          value !== null &&
+          ts.isPropertyAccessExpression(value) &&
+          value.name.text === "canEdit" &&
+          ts.isIdentifier(value.expression) &&
+          bound.has(value.expression.text);
+        if (!readsFromParam) {
+          offenders.push(
+            `${at} opts out under the shell's banner but takes canEdit from ` +
+              `\`${value ? value.getText(target.ast) : "nothing"}\` rather than ` +
+              `from a parameter of <${name}> — so nothing proves it is the same ` +
+              `permission area the banner states`,
+          );
+        }
       }
     }
 

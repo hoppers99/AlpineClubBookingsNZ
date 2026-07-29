@@ -996,13 +996,25 @@ unconditional banner in every branch the shell can return. A JSX spread at the
 render site fails, and the child must still resolve through a named, non-aliased
 import to a file that declares the prop with a `= false` default.
 
-Five controls take the vouch today: the Lodge Display wizard's restore-boards,
-save-lodge-details and pair-the-screen (all `lodge`-gated, which is what that
-wizard's banner states) and the backups wizard's turn-it-on and run-verification
-(both `support`). What the vouch does **not** cover is a control gated on a
-NARROWER permission than the banner names, and that is a review judgement no
-static rule can make — the same one that keeps `member-credit-card.tsx`
-un-vouched. Nine wizard controls keep their own reason for exactly that reason
+**Scope, for this channel only, is mechanical.** #2168 cannot check scope: a
+vouching parent's banner and its child's `canEdit` are two unrelated expressions
+in two files, and whether they name the same permission area is a judgement. The
+wizard channel is different, and this is the one real guarantee it buys. The
+shell passes **one** `canEdit` to both the banner and `helpers`, so a step
+control that reads `canEdit` from that same `helpers` object shares the banner's
+value *by construction* — the two cannot disagree, because they are the same
+value. The contract test enforces exactly that: inside a wizard-vouched
+component, a control that opts out via the vouch must take `canEdit` from an
+identifier the component received as a **parameter**, not from an independent
+source. A control that calls `useAdminAreaEditAccess(...)` itself therefore
+cannot be vouched for even by accident — which is precisely the mismatch this
+issue's review flagged.
+
+What stays a review call is the other direction: deciding a control should **not**
+take the vouch. Five controls take it today: the Lodge Display wizard's
+restore-boards, save-lodge-details and pair-the-screen (all reading the wizard's
+`lodge` access) and the backups wizard's turn-it-on and run-verification (both
+`support`). Nine wizard controls keep their own reason for exactly that reason
 and now say which permission it is: the Xero, Stripe, Google and backups
 credential-ish writes additionally need **Full Admin** on top of the wizard's
 area, and the Lodge Display module switch is **support**-gated under a `lodge`
