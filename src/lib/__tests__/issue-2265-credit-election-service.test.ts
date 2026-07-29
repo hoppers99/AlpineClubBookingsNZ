@@ -24,6 +24,7 @@ vi.mock("@/lib/booking-payment-cleanup", () => ({
 import {
   consumeStoredCreditElection,
   settleFullyCreditCoveredBooking,
+  CreditCoveredSettlementConflictError,
 } from "@/lib/booking-credit-election";
 import { queueSupersededPrimaryIntentCancellations } from "@/lib/booking-payment-cleanup";
 
@@ -45,6 +46,7 @@ const BOOKING_ID = "booking-2265";
 function makeTx({
   ledger = [],
   booking,
+  raceBeforeClaim,
 }: {
   ledger?: LedgerRow[];
   booking: {
@@ -53,6 +55,12 @@ function makeTx({
     finalPriceCents: number;
     creditElectionCents: number | null;
   };
+  /**
+   * Runs once, between this consumer's post-lock read and its guarded claim, so
+   * a test can commit a competing transaction into exactly the window the claim
+   * exists to close.
+   */
+  raceBeforeClaim?: (row: Record<string, unknown>) => void;
 }) {
   const rows: LedgerRow[] = [...ledger];
   const bookingRow = {
@@ -62,6 +70,7 @@ function makeTx({
   };
   const bookingUpdates: Array<Record<string, unknown>> = [];
   const paymentUpserts: Array<Record<string, unknown>> = [];
+  let raced = false;
 
   const tx = {
     $executeRaw: vi.fn().mockResolvedValue(1),
@@ -72,6 +81,31 @@ function makeTx({
         Object.assign(bookingRow, data);
         return { ...bookingRow };
       }),
+      // Behaves like a guarded UPDATE ... WHERE: every key in `where` must
+      // match the row as it stands NOW, which is what makes the claim a real
+      // test of the race rather than a rename of the old unconditional update.
+      updateMany: vi.fn(
+        async ({
+          where,
+          data,
+        }: {
+          where: Record<string, unknown>;
+          data: Record<string, unknown>;
+        }) => {
+          if (!raced && raceBeforeClaim) {
+            raced = true;
+            raceBeforeClaim(bookingRow);
+          }
+          const matches = Object.entries(where).every(([key, value]) => {
+            if (key === "id") return value === BOOKING_ID;
+            return value === (bookingRow as Record<string, unknown>)[key];
+          });
+          if (!matches) return { count: 0 };
+          bookingUpdates.push(data);
+          Object.assign(bookingRow, data);
+          return { count: 1 };
+        },
+      ),
     },
     payment: {
       upsert: vi.fn(async (args: Record<string, unknown>) => {
@@ -156,9 +190,11 @@ describe("#2265 consumeStoredCreditElection", () => {
     });
 
     await expect(run(fixture)).resolves.toBeNull();
-    expect(fixture.tx.booking.update).not.toHaveBeenCalled();
+    expect(fixture.tx.booking.updateMany).not.toHaveBeenCalled();
     expect(fixture.tx.memberCredit.create).not.toHaveBeenCalled();
     expect(balance(fixture.rows)).toBe(20_000);
+    // No election, no lock: a booking that never made one costs one SELECT.
+    expect(fixture.tx.$executeRaw).not.toHaveBeenCalled();
   });
 
   it("refuses to consume credit while the booking is still a DRAFT", async () => {
@@ -270,9 +306,31 @@ describe("#2265 consumeStoredCreditElection", () => {
     expect(balance(fixture.rows)).toBe(16_000);
   });
 
-  it("reports both limits when the balance AND the price moved under the election", async () => {
+  it("names the price when the price is the tighter of two moved bounds", async () => {
+    // Both the balance (3,000) and the price (2,500) sit under the 8,650
+    // request, but only the price decided the answer. Telling the member their
+    // balance was short would be untrue — they still have 500 left over.
     const fixture = makeTx({
       ledger: [creditLot(3_000)],
+      booking: { finalPriceCents: 2_500, creditElectionCents: 8_650 },
+    });
+
+    const outcome = await run(fixture);
+
+    expect(outcome).toMatchObject({
+      appliedCents: 2_500,
+      shortfallCents: 6_150,
+      shortfallReason: "price",
+      fullyCovered: true,
+    });
+    expect(balance(fixture.rows)).toBe(500);
+  });
+
+  it("reports both limits only when the balance and the price bind equally", async () => {
+    // 2,500 of credit against a 2,500 price: naming either one alone would be
+    // arbitrary, so this is the one case that honestly reads "both".
+    const fixture = makeTx({
+      ledger: [creditLot(2_500)],
       booking: { finalPriceCents: 2_500, creditElectionCents: 8_650 },
     });
 
@@ -284,6 +342,7 @@ describe("#2265 consumeStoredCreditElection", () => {
       shortfallReason: "balance_and_price",
       fullyCovered: true,
     });
+    expect(balance(fixture.rows)).toBe(0);
   });
 
   it("applies nothing, without throwing, when the balance is gone entirely", async () => {
@@ -350,6 +409,59 @@ describe("#2265 consumeStoredCreditElection", () => {
     expect(appliedTotal(fixture.rows)).toBe(10_000);
   });
 
+  it("takes the ledger lock before it writes the booking row", async () => {
+    // Lock order matters: every other credit writer in the house takes the
+    // per-member ledger lock before touching the booking, so this one must too
+    // or it inverts the order and can deadlock against them.
+    const fixture = makeTx({
+      ledger: [creditLot(20_000)],
+      booking: { finalPriceCents: 10_000, creditElectionCents: 5_000 },
+    });
+
+    await run(fixture);
+
+    expect(fixture.tx.$executeRaw).toHaveBeenCalled();
+    const lockOrder = fixture.tx.$executeRaw.mock.invocationCallOrder[0];
+    const claimOrder = fixture.tx.booking.updateMany.mock.invocationCallOrder[0];
+    expect(lockOrder).toBeLessThan(claimOrder);
+  });
+
+  it("lets exactly one of two racing consumers debit the credit", async () => {
+    // The window the guarded claim exists to close: this consumer read the
+    // election, and a competing pay attempt committed its own consumption
+    // before this one could claim it. The loser must do NOTHING — no ledger
+    // row, and no outcome object, because its caller would act on one (a second
+    // confirmation email, a second Xero invoice, a second MEMBER_PAID event).
+    const fixture = makeTx({
+      ledger: [creditLot(20_000)],
+      booking: { finalPriceCents: 10_000, creditElectionCents: 5_000 },
+      raceBeforeClaim: (row) => {
+        row.creditElectionCents = null;
+      },
+    });
+
+    await expect(run(fixture)).resolves.toBeNull();
+    expect(fixture.tx.memberCredit.create).not.toHaveBeenCalled();
+    expect(balance(fixture.rows)).toBe(20_000);
+    expect(appliedTotal(fixture.rows)).toBe(0);
+  });
+
+  it("claims nothing when a cancel lands between the read and the claim", async () => {
+    const fixture = makeTx({
+      ledger: [creditLot(20_000)],
+      booking: { finalPriceCents: 10_000, creditElectionCents: 5_000 },
+      raceBeforeClaim: (row) => {
+        row.status = BookingStatus.CANCELLED;
+      },
+    });
+
+    await expect(run(fixture)).resolves.toBeNull();
+    expect(fixture.tx.memberCredit.create).not.toHaveBeenCalled();
+    expect(balance(fixture.rows)).toBe(20_000);
+    // The election survives the lost race; the booking still owes it.
+    expect(fixture.bookingRow.creditElectionCents).toBe(5_000);
+  });
+
   it("flags a booking the election covers in full", async () => {
     const fixture = makeTx({
       ledger: [creditLot(20_000)],
@@ -409,5 +521,48 @@ describe("#2265 settleFullyCreditCoveredBooking", () => {
         newFinalPriceCents: 0,
       }),
     );
+  });
+
+  it("clears the card pointers but keeps the saved card the guest charge needs", async () => {
+    const fixture = makeTx({
+      booking: { finalPriceCents: 10_000, creditElectionCents: null },
+    });
+
+    await settleFullyCreditCoveredBooking(fixture.tx as never, {
+      bookingId: BOOKING_ID,
+      appliedCreditCents: 10_000,
+    });
+
+    const upsert = fixture.paymentUpserts[0] as {
+      update: Record<string, unknown>;
+    };
+    expect(upsert.update.stripePaymentIntentId).toBeNull();
+    expect(upsert.update.additionalPaymentIntentId).toBeNull();
+    // A split parent's saved card is the fallback the deferred non-member guest
+    // charge uses, so this settlement must not strip it.
+    expect(upsert.update).not.toHaveProperty("stripePaymentMethodId");
+  });
+
+  it("refuses to resurrect a booking a cancel took out of PAYMENT_PENDING", async () => {
+    const fixture = makeTx({
+      booking: {
+        status: BookingStatus.CANCELLED,
+        finalPriceCents: 10_000,
+        creditElectionCents: null,
+      },
+    });
+
+    await expect(
+      settleFullyCreditCoveredBooking(fixture.tx as never, {
+        bookingId: BOOKING_ID,
+        appliedCreditCents: 10_000,
+      }),
+    ).rejects.toBeInstanceOf(CreditCoveredSettlementConflictError);
+
+    // Loud, and empty-handed: the caller's transaction rolls back, so no
+    // Payment row and no cancellation queue entry are left behind.
+    expect(fixture.bookingRow.status).toBe(BookingStatus.CANCELLED);
+    expect(fixture.tx.payment.upsert).not.toHaveBeenCalled();
+    expect(queueSupersededPrimaryIntentCancellations).not.toHaveBeenCalled();
   });
 });

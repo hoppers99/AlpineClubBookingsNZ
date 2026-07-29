@@ -66,7 +66,7 @@ const mocks = vi.hoisted(() => ({
 
 const tx = {
   $executeRaw: vi.fn().mockResolvedValue(1),
-  booking: { findUnique: vi.fn(), update: vi.fn() },
+  booking: { findUnique: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
   payment: { upsert: vi.fn().mockResolvedValue({ id: "payment-2265" }) },
   memberCredit: {
     aggregate: vi.fn(aggregateLedger),
@@ -229,6 +229,27 @@ function arrangeDraft(booking: ReturnType<typeof makeDraft>, balanceCents: numbe
       return { ...live };
     },
   );
+  // Guarded claims: every key in `where` must match the row as it stands now,
+  // so a test that moves the booking under the route sees count 0 the way
+  // Postgres would.
+  tx.booking.updateMany.mockImplementation(
+    async ({
+      where,
+      data,
+    }: {
+      where: Record<string, unknown>;
+      data: Record<string, unknown>;
+    }) => {
+      const matches = Object.entries(where).every(([key, value]) =>
+        key === "id"
+          ? value === BOOKING_ID
+          : value === (live as Record<string, unknown>)[key],
+      );
+      if (!matches) return { count: 0 };
+      Object.assign(live, data);
+      return { count: 1 };
+    },
+  );
   mockPrisma.$transaction.mockImplementation(
     async (fn: (client: typeof tx) => Promise<unknown>) => fn(tx),
   );
@@ -389,16 +410,93 @@ describe("#2265 the pay step honours the election made when the draft was saved"
     expect(mockStripeCreatePaymentIntent).toHaveBeenCalledWith(
       expect.objectContaining({ amountCents: 7_500 }),
     );
-    // No capacity re-check: the booking already holds its beds.
-    expect(mocks.checkCapacityForGuestRanges).not.toHaveBeenCalled();
+    // This arm can settle the booking at $0, so it claims capacity like every
+    // other settle path rather than settling on trust.
+    expect(mocks.checkCapacityForGuestRanges).toHaveBeenCalled();
   });
 
-  it("never consumes credit for a draft that is abandoned rather than paid", async () => {
-    // Nothing runs the pay path, which is the entire safety property: an
-    // expired or deleted draft leaves the balance exactly as it was.
-    arrangeDraft(makeDraft(8_000), 20_000);
+  it("refuses a released booking whose beds are gone, without spending the election", async () => {
+    const live = arrangeDraft(
+      { ...makeDraft(2_500), status: "PAYMENT_PENDING" },
+      20_000,
+    );
+    mocks.checkCapacityForGuestRanges.mockResolvedValue({
+      available: false,
+      nightDetails: [],
+    });
 
+    const res = await createPaymentIntentRoute(payRequest());
+
+    expect(res.status).toBe(409);
+    expect(mockStripeCreatePaymentIntent).not.toHaveBeenCalled();
+    // The election is untouched, so the member can pay once beds free up.
+    expect(live.creditElectionCents).toBe(2_500);
     expect(appliedToBooking()).toBe(0);
     expect(memberBalance()).toBe(20_000);
+  });
+
+  it("settles an over-capacity booking that carries a persisted override", async () => {
+    const live = arrangeDraft(
+      {
+        ...makeDraft(PRICE_CENTS),
+        status: "PAYMENT_PENDING",
+        capacityOverriddenAt: new Date("2026-07-01"),
+      } as ReturnType<typeof makeDraft>,
+      20_000,
+    );
+    mocks.checkCapacityForGuestRanges.mockResolvedValue({
+      available: false,
+      nightDetails: [],
+    });
+
+    const res = await createPaymentIntentRoute(payRequest());
+    const data = await res.json();
+
+    // #1771: an admin deliberately admitted this booking above the ceiling, so
+    // a payment-time re-check must settle it, not refuse it.
+    expect(res.status).toBe(200);
+    expect(data.alreadyPaid).toBe(true);
+    expect(live.status).toBe("PAID");
+    expect(appliedToBooking()).toBe(PRICE_CENTS);
+  });
+
+  it("settles a draft repriced to nothing instead of stranding it unpayable", async () => {
+    // The price can move between the member rendering the pay step and clicking
+    // it. The transition used to commit first and only then hit the "nothing to
+    // charge" guard, which 400s — leaving a booking that had left DRAFT and
+    // could never be paid.
+    const live = arrangeDraft(
+      { ...makeDraft(null), finalPriceCents: 0 },
+      20_000,
+    );
+
+    const res = await createPaymentIntentRoute(payRequest());
+    const data = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(data.alreadyPaid).toBe(true);
+    expect(data.status).toBe("PAID");
+    expect(live.status).toBe("PAID");
+    expect(mockStripeCreatePaymentIntent).not.toHaveBeenCalled();
+    // Nothing was owed, so nothing was taken from the member's balance.
+    expect(memberBalance()).toBe(20_000);
+  });
+
+  it("bails rather than resurrect a draft a cancel took while it was paying", async () => {
+    const live = arrangeDraft(makeDraft(3_000), 20_000);
+    // The transaction's post-lock re-read sees the cancel that landed first.
+    tx.booking.findUnique.mockImplementation(async () => ({
+      ...live,
+      status: "CANCELLED",
+      guests: [{ id: "g1" }],
+    }));
+
+    const res = await createPaymentIntentRoute(payRequest());
+
+    expect(res.status).toBe(409);
+    expect(live.status).toBe("DRAFT");
+    expect(appliedToBooking()).toBe(0);
+    expect(memberBalance()).toBe(20_000);
+    expect(mockStripeCreatePaymentIntent).not.toHaveBeenCalled();
   });
 });

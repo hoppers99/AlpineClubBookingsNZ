@@ -95,7 +95,7 @@ vi.mock("@/lib/logger", () => ({
   default: { error: vi.fn(), info: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
-import { createDraftBooking } from "@/lib/booking-create";
+import { createConfirmedBooking, createDraftBooking } from "@/lib/booking-create";
 
 const GUESTS = [
   {
@@ -166,5 +166,80 @@ describe("#2265 createDraftBooking remembers the credit election", () => {
     // The create payload stays byte-identical to the pre-#2265 shape for a
     // member who never touched the credit control.
     expect(createdRow()).not.toHaveProperty("creditElectionCents");
+  });
+});
+
+/**
+ * The review rail is the other way a booking can be held before it is real: a
+ * party with no adult supervision is created in AWAITING_REVIEW and waits for
+ * an admin. It correctly consumes no credit while the admin is deciding — but
+ * it used to DISCARD what the member asked for too, so an approved booking
+ * arrived at the pay step with no election at all.
+ */
+describe("#2265 a booking held for admin review keeps the election", () => {
+  const CHILD_ONLY_GUESTS = [
+    {
+      firstName: "Tama",
+      lastName: "Ngata",
+      ageTier: "CHILD" as const,
+      isMember: true,
+      memberId: "child-1",
+    },
+  ];
+
+  function reviewInput(overrides: Record<string, unknown> = {}) {
+    return {
+      effectiveMemberId: "member-1",
+      isOnBehalf: false,
+      sessionUserId: "member-1",
+      checkIn: new Date("2026-08-14"),
+      checkOut: new Date("2026-08-16"),
+      guests: CHILD_ONLY_GUESTS,
+      memberReviewJustification: "Their grandmother is staying next door.",
+      status: "PAYMENT_PENDING" as const,
+      shouldBePending: false,
+      holdDays: 0,
+      ...overrides,
+    };
+  }
+
+  it("stores the election it is not allowed to spend yet", async () => {
+    await createConfirmedBooking(
+      reviewInput({ applyCreditCents: 8_650 }) as never,
+    );
+
+    const row = createdRow();
+    expect(row.status).toBe("AWAITING_REVIEW");
+    // Remembered, not spent: no ledger row moves while the admin decides.
+    expect(row.creditElectionCents).toBe(8_650);
+    expect(mocks.applyCreditToBooking).not.toHaveBeenCalled();
+  });
+
+  it("omits the column when a review-held booking made no election", async () => {
+    await createConfirmedBooking(reviewInput() as never);
+
+    expect(createdRow()).not.toHaveProperty("creditElectionCents");
+  });
+
+  it("still applies credit immediately when the booking is not held", async () => {
+    // The guard is scoped to the review rail; an ordinary confirmed booking
+    // consumes its credit at create time exactly as before.
+    await createConfirmedBooking(
+      {
+        ...reviewInput({ applyCreditCents: 4_000 }),
+        guests: GUESTS,
+        memberReviewJustification: undefined,
+      } as never,
+    );
+
+    const row = createdRow();
+    expect(row.status).toBe("PAYMENT_PENDING");
+    expect(row).not.toHaveProperty("creditElectionCents");
+    expect(mocks.applyCreditToBooking).toHaveBeenCalledWith(
+      "member-1",
+      4_000,
+      expect.any(String),
+      expect.anything(),
+    );
   });
 });

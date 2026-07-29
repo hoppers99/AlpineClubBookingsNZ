@@ -41,6 +41,12 @@ const mockTx = {
   // delegates off the transaction handle. Defaults set in beforeEach.
   seasonalMembershipAssignment: { findMany: vi.fn() },
   membershipType: { findMany: vi.fn() },
+  // #2265 — the pay transaction derives the booking's applied credit from the
+  // ledger on the transaction handle before deciding whether anything is left
+  // to charge. These draft fixtures carry no credit.
+  memberCredit: {
+    aggregate: vi.fn().mockResolvedValue({ _sum: { amountCents: 0 } }),
+  },
 };
 
 vi.mock("@/lib/prisma", () => ({
@@ -380,6 +386,24 @@ describe("Issue 7: Draft Booking Creation", () => {
     );
   });
 
+  it("rejects an absurd credit election as a field error, not a money-path failure", async () => {
+    // #2265 — the real limits on applyCreditCents are the member's balance and
+    // the booking price, enforced downstream. Without an upper bound at the
+    // schema, a nonsense value sailed past validation and only failed deep in
+    // the money path, as an opaque error rather than a named field problem.
+    mockAuth.mockResolvedValue(memberSession());
+
+    const res = await createBooking(
+      makeBookingBody({ draft: true, applyCreditCents: 999_999_999_999 }),
+    );
+
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(JSON.stringify(data)).toContain("applyCreditCents");
+    // Nothing was created: the request never reached the booking service.
+    expect(mockTx.booking.create).not.toHaveBeenCalled();
+  });
+
   it("creates draft bookings inside the advisory-lock transaction", async () => {
     mockAuth.mockResolvedValue(memberSession());
 
@@ -667,6 +691,9 @@ describe("Issue 7: create-payment-intent with DRAFT booking", () => {
         guests: guestRanges,
       });
       mockTx.booking.update.mockResolvedValue({});
+      // #2265 — the DRAFT -> PAYMENT_PENDING transition is a status-guarded
+      // claim now, so the transaction reads a row count back.
+      mockTx.booking.updateMany.mockResolvedValue({ count: 1 });
       return fn(mockTx as unknown as typeof mockTx);
     });
 
@@ -681,9 +708,11 @@ describe("Issue 7: create-payment-intent with DRAFT booking", () => {
     const data = await res.json();
     expect(data.clientSecret).toBe("secret_test");
 
-    // Verify DRAFT -> PAYMENT_PENDING transition was called
-    expect(mockTx.booking.update).toHaveBeenCalledWith(
+    // Verify DRAFT -> PAYMENT_PENDING transition was claimed, guarded on the
+    // booking still being a DRAFT (#2265).
+    expect(mockTx.booking.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
+        where: expect.objectContaining({ id: "draft-1", status: "DRAFT" }),
         data: expect.objectContaining({ status: "PAYMENT_PENDING" }),
       })
     );
