@@ -91,9 +91,9 @@ deeper reference for what each category contains and the import safety model.
   defaults, member-fields, bed-allocation, booking-request, IB payments, club
   identity (name/short name/hut-leader label), email message settings, group
   discount, membership nomination/lockout/cancellation, login/security policy,
-  public-content visibility, and subscription-billing policy). Applying the
-  bundle refreshes the DB-first club-identity cache so imported identity takes
-  effect immediately.
+  public-content visibility, subscription-billing policy, and member-guest
+  policy). Applying the bundle refreshes the DB-first club-identity cache so
+  imported identity takes effect immediately.
 
   **Field-level allowlisting is audited in both directions (#2178).** Each
   singleton exports only the columns in its `fields` allowlist; every other
@@ -111,6 +111,16 @@ deeper reference for what each category contains and the import safety model.
   render these affordances off the flag alone, so an imported `true` on an
   unconfigured target would surface a broken sign-in path — travelling them
   would first need a credential-presence render gate).
+  The same shape of call, for the same reason, excludes the two member-guest
+  search toggles `MemberGuestSettings.openMemberSearchEnabled` /
+  `openMemberSearchIncludesMinors` (#2306, owner decision D-18): they are a club
+  **privacy posture**, not a capability — the first decides whether the club's
+  membership name list becomes browsable to anyone who can start a booking, and
+  the second whether minors appear in that list. An import must never widen a
+  target club's member privacy without the target's own admin choosing it, so a
+  fresh import keeps whatever the target already had (off, for a new install).
+  The rest of that singleton — `approvalRequired` and `pendingHoldExpiryDays` —
+  is ordinary portable policy and travels.
   `MembershipLockoutSettings.useFeeScheduleItemCodes` (#2109) is
   classified should-travel and now exports like the rest of that singleton.
 
