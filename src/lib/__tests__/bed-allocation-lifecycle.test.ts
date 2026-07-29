@@ -231,6 +231,11 @@ describe("bed allocation lifecycle", () => {
       {
         id: "booking-1",
         createdAt: new Date("2026-06-01T00:00:00.000Z"),
+        // The same spy answers the planner load AND the write-time re-check
+        // (#2285 review), so the row must carry the re-check's fields too.
+        status: BookingStatus.PAID,
+        deletedAt: null,
+        wholeLodgeHold: false,
         guests: [
           {
             id: "guest-1",
@@ -351,6 +356,10 @@ describe("bed allocation lifecycle", () => {
       {
         id: bookingRecord.id,
         createdAt: new Date("2026-06-01T00:00:00.000Z"),
+        // Also answers the write-time re-check (#2285 review).
+        status: bookingRecord.status,
+        deletedAt: null,
+        wholeLodgeHold: false,
         guests: bookingRecord.guests,
       },
     ]);
@@ -2247,6 +2256,25 @@ describe("prune orphan auto-promote (#1750)", () => {
     bedType: "DOUBLE",
   };
 
+  /**
+   * The sweep's promotion is BATCHED since the #2285 review: one `findMany`
+   * over every vacated bed-night plus one `updateMany`, instead of a
+   * findFirst/update round-trip per night (the sweep runs under the caller's
+   * capacity lock on the hold-toggle and school-approval paths). The mock
+   * `bedAllocation.findMany` therefore has to answer TWO different queries —
+   * the doomed-primary capture (`isSecondOccupant: false`) and the survivor
+   * lookup (`isSecondOccupant: true`) — so route by the WHERE the real client
+   * would honour.
+   */
+  function routeSweepFindMany(
+    db: any,
+    opts: { doomed: Array<{ bedId: string; stayDate: Date }>; survivors: unknown[] },
+  ) {
+    db.bedAllocation.findMany.mockImplementation(async ({ where }: any) =>
+      where?.isSecondOccupant === true ? opts.survivors : opts.doomed,
+    );
+  }
+
   function cancelledPrimaryBooking() {
     return {
       id: "booking-1",
@@ -2270,17 +2298,12 @@ describe("prune orphan auto-promote (#1750)", () => {
     const db = makeDb();
     db.booking.findUnique.mockResolvedValue(cancelledPrimaryBooking());
     // Capture-before: the cancelled booking's primary sat on bed-1 on 07-02.
-    db.bedAllocation.findMany.mockResolvedValue([
-      { bedId: "bed-1", stayDate: parseDateOnly("2026-07-02") },
-    ]);
-    db.bedAllocation.deleteMany.mockResolvedValue({ count: 2 });
     // The surviving partner (booking-2) still holds the second-occupant slot.
-    db.bedAllocation.findFirst.mockResolvedValue(survivingPartner);
-    db.bedAllocation.update.mockImplementation(({ where, data }: any) => ({
-      ...survivingPartner,
-      ...where,
-      ...data,
-    }));
+    routeSweepFindMany(db, {
+      doomed: [{ bedId: "bed-1", stayDate: parseDateOnly("2026-07-02") }],
+      survivors: [survivingPartner],
+    });
+    db.bedAllocation.deleteMany.mockResolvedValue({ count: 2 });
 
     const result = await reconcileBedAllocationsForBooking({
       bookingId: "booking-1",
@@ -2294,18 +2317,23 @@ describe("prune orphan auto-promote (#1750)", () => {
       where: { bookingId: "booking-1", isSecondOccupant: false },
       select: { bedId: true, stayDate: true },
     });
-    // Survivor lookup pinned to the vacated bed-night.
-    expect(db.bedAllocation.findFirst).toHaveBeenCalledWith({
+    // Survivor lookup: ONE batched query over every vacated bed-night, gated on
+    // isSecondOccupant alone (never bedType, #1749).
+    expect(db.bedAllocation.findMany).toHaveBeenCalledWith({
       where: {
-        bedId: "bed-1",
-        stayDate: parseDateOnly("2026-07-02"),
         isSecondOccupant: true,
+        OR: [{ bedId: "bed-1", stayDate: parseDateOnly("2026-07-02") }],
       },
     });
-    expect(db.bedAllocation.update).toHaveBeenCalledWith({
-      where: { id: "alloc-partner" },
+    // ONE batched flip, id-scoped and re-asserting isSecondOccupant so a row
+    // concurrently removed or already promoted is an idempotent no-op.
+    expect(db.bedAllocation.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: ["alloc-partner"] }, isSecondOccupant: true },
       data: { isSecondOccupant: false },
     });
+    // The per-night findFirst/update round-trip is gone.
+    expect(db.bedAllocation.findFirst).not.toHaveBeenCalled();
+    expect(db.bedAllocation.update).not.toHaveBeenCalled();
     // The capture MUST run BEFORE the delete — a deleteMany returns only a count,
     // so capturing after it would find nothing and silently disable the whole
     // prune promotion against a real DB (branch A).
@@ -2340,6 +2368,10 @@ describe("prune orphan auto-promote (#1750)", () => {
       db: db as any,
     });
 
+    // No doomed primary captured, so the batched survivor lookup never runs and
+    // nothing is flipped.
+    expect(db.bedAllocation.findMany).toHaveBeenCalledTimes(1);
+    expect(db.bedAllocation.updateMany).not.toHaveBeenCalled();
     expect(db.bedAllocation.findFirst).not.toHaveBeenCalled();
     expect(db.bedAllocation.update).not.toHaveBeenCalled();
     expect(db.auditLog.create).not.toHaveBeenCalled();
@@ -2367,16 +2399,11 @@ describe("prune orphan auto-promote (#1750)", () => {
         },
       ],
     });
-    db.bedAllocation.findMany.mockResolvedValue([
-      { bedId: "bed-1", stayDate: parseDateOnly("2026-07-02") },
-    ]);
+    routeSweepFindMany(db, {
+      doomed: [{ bedId: "bed-1", stayDate: parseDateOnly("2026-07-02") }],
+      survivors: [survivingPartner],
+    });
     db.bedAllocation.deleteMany.mockResolvedValue({ count: 1 });
-    db.bedAllocation.findFirst.mockResolvedValue(survivingPartner);
-    db.bedAllocation.update.mockImplementation(({ where, data }: any) => ({
-      ...survivingPartner,
-      ...where,
-      ...data,
-    }));
 
     const result = await reconcileBedAllocationsForBooking({
       bookingId: "booking-1",
@@ -2394,8 +2421,8 @@ describe("prune orphan auto-promote (#1750)", () => {
         select: { bedId: true, stayDate: true },
       }),
     );
-    expect(db.bedAllocation.update).toHaveBeenCalledWith({
-      where: { id: "alloc-partner" },
+    expect(db.bedAllocation.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: ["alloc-partner"] }, isSecondOccupant: true },
       data: { isSecondOccupant: false },
     });
     // Capture-before-delete ordering holds on the stale-guest-night path too
@@ -2413,28 +2440,19 @@ describe("prune orphan auto-promote (#1750)", () => {
     // dead-end the bed-night behind the orphan guard, the exact #1749 failure.
     const db = makeDb();
     db.booking.findUnique.mockResolvedValue(cancelledPrimaryBooking());
-    db.bedAllocation.findMany.mockResolvedValue([
-      { bedId: "bed-1", stayDate: parseDateOnly("2026-07-02") },
-    ]);
-    db.bedAllocation.deleteMany.mockResolvedValue({ count: 2 });
-    db.bedAllocation.findFirst.mockResolvedValue({
-      ...survivingPartner,
-      bedType: "SINGLE",
+    routeSweepFindMany(db, {
+      doomed: [{ bedId: "bed-1", stayDate: parseDateOnly("2026-07-02") }],
+      survivors: [{ ...survivingPartner, bedType: "SINGLE" }],
     });
-    db.bedAllocation.update.mockImplementation(({ where, data }: any) => ({
-      ...survivingPartner,
-      bedType: "SINGLE",
-      ...where,
-      ...data,
-    }));
+    db.bedAllocation.deleteMany.mockResolvedValue({ count: 2 });
 
     const result = await reconcileBedAllocationsForBooking({
       bookingId: "booking-1",
       db: db as any,
     });
 
-    expect(db.bedAllocation.update).toHaveBeenCalledWith({
-      where: { id: "alloc-partner" },
+    expect(db.bedAllocation.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: ["alloc-partner"] }, isSecondOccupant: true },
       data: { isSecondOccupant: false },
     });
     expect(result.promotedCount).toBe(1);
@@ -2443,16 +2461,11 @@ describe("prune orphan auto-promote (#1750)", () => {
   it("runs the prune promotion on the caller's client without opening a nested transaction", async () => {
     const db = makeDb();
     db.booking.findUnique.mockResolvedValue(cancelledPrimaryBooking());
-    db.bedAllocation.findMany.mockResolvedValue([
-      { bedId: "bed-1", stayDate: parseDateOnly("2026-07-02") },
-    ]);
+    routeSweepFindMany(db, {
+      doomed: [{ bedId: "bed-1", stayDate: parseDateOnly("2026-07-02") }],
+      survivors: [survivingPartner],
+    });
     db.bedAllocation.deleteMany.mockResolvedValue({ count: 2 });
-    db.bedAllocation.findFirst.mockResolvedValue(survivingPartner);
-    db.bedAllocation.update.mockImplementation(({ where, data }: any) => ({
-      ...survivingPartner,
-      ...where,
-      ...data,
-    }));
 
     const result = await reconcileBedAllocationsForBooking({
       bookingId: "booking-1",
@@ -2462,8 +2475,84 @@ describe("prune orphan auto-promote (#1750)", () => {
     // The capture/delete/flip all ran on the injected client; the prune never
     // opens its own transaction (reconcile is already inside the caller's).
     expect(db.$transaction).not.toHaveBeenCalled();
-    expect(db.bedAllocation.update).toHaveBeenCalledTimes(1);
+    expect(db.bedAllocation.updateMany).toHaveBeenCalledTimes(1);
     expect(result.promotedCount).toBe(1);
+  });
+
+  it("batches the survivor lookup and the flip across many vacated bed-nights (#2285 review)", async () => {
+    // A whole-booking sweep vacates guests × nights bed-nights and runs under
+    // the caller's capacity lock on the hold-toggle path, so the promotion must
+    // cost ONE findMany + ONE updateMany — not two round-trips per night. The
+    // duplicate bed-night proves the dedup still holds, and the non-partner row
+    // proves the JS re-check still refuses to fabricate a promotion from a mock
+    // whose findMany ignores the WHERE.
+    const db = makeDb();
+    db.booking.findUnique.mockResolvedValue(cancelledPrimaryBooking());
+    const nights = [
+      { bedId: "bed-1", stayDate: parseDateOnly("2026-07-01") },
+      { bedId: "bed-2", stayDate: parseDateOnly("2026-07-01") },
+      { bedId: "bed-1", stayDate: parseDateOnly("2026-07-02") },
+      // Duplicate of the first: must not be looked up or flipped twice.
+      { bedId: "bed-1", stayDate: parseDateOnly("2026-07-01") },
+    ];
+    routeSweepFindMany(db, {
+      doomed: nights,
+      survivors: [
+        {
+          ...survivingPartner,
+          id: "alloc-partner-a",
+          bedId: "bed-1",
+          stayDate: parseDateOnly("2026-07-01"),
+        },
+        {
+          ...survivingPartner,
+          id: "alloc-partner-b",
+          bedId: "bed-2",
+          stayDate: parseDateOnly("2026-07-01"),
+        },
+        // A row the WHERE would never have returned (already primary): the JS
+        // re-check drops it rather than "promoting" an existing primary.
+        {
+          ...survivingPartner,
+          id: "alloc-primary",
+          bedId: "bed-1",
+          stayDate: parseDateOnly("2026-07-02"),
+          isSecondOccupant: false,
+        },
+      ],
+    });
+    db.bedAllocation.deleteMany.mockResolvedValue({ count: 4 });
+
+    const result = await reconcileBedAllocationsForBooking({
+      bookingId: "booking-1",
+      db: db as any,
+    });
+
+    // Exactly two findMany calls: the doomed-primary capture and ONE batched
+    // survivor lookup carrying every deduped bed-night.
+    expect(db.bedAllocation.findMany).toHaveBeenCalledTimes(2);
+    expect(db.bedAllocation.findMany).toHaveBeenCalledWith({
+      where: {
+        isSecondOccupant: true,
+        OR: [
+          { bedId: "bed-1", stayDate: parseDateOnly("2026-07-01") },
+          { bedId: "bed-2", stayDate: parseDateOnly("2026-07-01") },
+          { bedId: "bed-1", stayDate: parseDateOnly("2026-07-02") },
+        ],
+      },
+    });
+    // ONE flip covering both genuine partners; the already-primary row is not in it.
+    expect(db.bedAllocation.updateMany).toHaveBeenCalledTimes(1);
+    expect(db.bedAllocation.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: { in: ["alloc-partner-a", "alloc-partner-b"] },
+        isSecondOccupant: true,
+      },
+      data: { isSecondOccupant: false },
+    });
+    expect(result.promotedCount).toBe(2);
+    // Both promotions are still audited individually against their own booking.
+    expect(db.auditLog.create).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -2885,6 +2974,163 @@ describe("exclusive whole-lodge hold (ADR-001, #2285)", () => {
           stayDate: HOLD_CHECK_IN,
           source: "AUTO",
         }),
+      ],
+      skipDuplicates: true,
+    });
+    expect(result.createdCount).toBe(2);
+  });
+
+  // -------------------------------------------------------------------------
+  // Drift and races (#2285 review). Three reads see the booking's held/status
+  // state at three different moments — `findUnique` at the top of reconcile,
+  // the planner's `findMany` load, and the write-time re-check — and a hold
+  // SET or a cancel can commit between any two of them (reconcile is called
+  // post-commit and unlocked from several lifecycle callers). Each guard is
+  // pinned separately, because each is individually revertible while the
+  // others keep the suite green.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Answer the three booking reads independently. The planner load is the only
+   * one selecting `guests`; the write-time re-check selects the flag trio and
+   * nothing else, so the two are told apart by their `select`.
+   */
+  function driftScenarioDb(states: {
+    reconcileRead: boolean;
+    plannerRead: boolean;
+    writeTimeRead: { wholeLodgeHold?: boolean; status?: BookingStatus; deletedAt?: Date | null };
+  }) {
+    const db = holdScenarioDb(states.reconcileRead);
+    const plannerRows = [
+      {
+        id: "booking-held",
+        createdAt: new Date("2026-06-01T00:00:00.000Z"),
+        requestedRoomId: null,
+        checkIn: HOLD_CHECK_IN,
+        checkOut: HOLD_CHECK_OUT,
+        status: BookingStatus.PAID,
+        originBookingRequest: null,
+        heldForBookingRequest: null,
+        adminCapacityHoldAt: null,
+        wholeLodgeHold: states.plannerRead,
+        guests: [holdGuest("guest-1"), holdGuest("guest-2")],
+      },
+    ];
+    const writeTimeRows = [
+      {
+        id: "booking-held",
+        status: states.writeTimeRead.status ?? BookingStatus.PAID,
+        deletedAt: states.writeTimeRead.deletedAt ?? null,
+        wholeLodgeHold: states.writeTimeRead.wholeLodgeHold ?? false,
+      },
+    ];
+    db.booking.findMany.mockImplementation(async ({ select }: any) =>
+      select?.guests ? plannerRows : writeTimeRows,
+    );
+    return db;
+  }
+
+  it("deep guard: the planner load reporting the booking HELD stops the write even when the reconcile read said otherwise", async () => {
+    // Reverting `&& !booking.wholeLodgeHold` in the planner-bookings filter
+    // leaves the rest of the suite green, because reconcile's own short-circuit
+    // normally means the planner never sees a held booking. This is the case
+    // that only the deep guard catches: the hold committed between the two
+    // reads, so the planner's load is the first to see it.
+    const db = driftScenarioDb({
+      reconcileRead: false,
+      plannerRead: true,
+      writeTimeRead: { wholeLodgeHold: false },
+    });
+
+    const result = await reconcileBedAllocationsForBooking({
+      bookingId: "booking-held",
+      db: db as any,
+    });
+
+    expect(db.bedAllocation.createMany).not.toHaveBeenCalled();
+    expect(result.createdCount).toBe(0);
+    // It really is the deep guard: the planner ran its loads and then dropped
+    // the booking, so the write-time re-check was never even reached.
+    expect(db.lodgeRoom.findMany).toHaveBeenCalled();
+    expect(db.booking.findMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("write-time re-check: a hold SET landing after the plan is built writes nothing", async () => {
+    // The exact F1 race: both earlier reads saw an ordinary booking, the
+    // planner produced a full plan, and the exclusive-hold toggle committed
+    // (pruning the rows and freeing the unique keys, so `skipDuplicates` cannot
+    // help) before the createMany.
+    const db = driftScenarioDb({
+      reconcileRead: false,
+      plannerRead: false,
+      writeTimeRead: { wholeLodgeHold: true },
+    });
+
+    const result = await reconcileBedAllocationsForBooking({
+      bookingId: "booking-held",
+      db: db as any,
+    });
+
+    // The plan WAS built (the planner ran its loads) but not written.
+    expect(db.lodgeRoom.findMany).toHaveBeenCalled();
+    expect(db.booking.findMany).toHaveBeenCalledTimes(2);
+    expect(db.bedAllocation.createMany).not.toHaveBeenCalled();
+    expect(result.createdCount).toBe(0);
+  });
+
+  it("write-time re-check: a concurrent cancel landing after the plan is built writes nothing (CLEAR-vs-cancel)", async () => {
+    // F3: the clear-direction re-plan races a cancel, which serialises on the
+    // DISJOINT club-wide key and so is not excluded by the hold toggle's
+    // per-lodge lock. The re-check covers status and deletedAt as well as the
+    // hold flag, so the re-plan cannot resurrect rows for a cancelled booking.
+    const db = driftScenarioDb({
+      reconcileRead: false,
+      plannerRead: false,
+      writeTimeRead: { status: BookingStatus.CANCELLED },
+    });
+
+    const result = await reconcileBedAllocationsForBooking({
+      bookingId: "booking-held",
+      db: db as any,
+    });
+
+    expect(db.bedAllocation.createMany).not.toHaveBeenCalled();
+    expect(result.createdCount).toBe(0);
+  });
+
+  it("write-time re-check: a concurrent soft delete landing after the plan is built writes nothing", async () => {
+    const db = driftScenarioDb({
+      reconcileRead: false,
+      plannerRead: false,
+      writeTimeRead: { deletedAt: new Date("2026-06-30T00:00:00.000Z") },
+    });
+
+    const result = await reconcileBedAllocationsForBooking({
+      bookingId: "booking-held",
+      db: db as any,
+    });
+
+    expect(db.bedAllocation.createMany).not.toHaveBeenCalled();
+    expect(result.createdCount).toBe(0);
+  });
+
+  it("write-time re-check: an unchanged booking still writes the whole plan (the guard is not a blanket refusal)", async () => {
+    const db = driftScenarioDb({
+      reconcileRead: false,
+      plannerRead: false,
+      writeTimeRead: { wholeLodgeHold: false },
+    });
+    db.bedAllocation.createMany.mockResolvedValue({ count: 2 });
+
+    const result = await reconcileBedAllocationsForBooking({
+      bookingId: "booking-held",
+      db: db as any,
+    });
+
+    expect(db.bedAllocation.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({ bookingGuestId: "guest-1" }),
+        expect.objectContaining({ bookingGuestId: "guest-2" }),
       ],
       skipDuplicates: true,
     });

@@ -60,7 +60,15 @@ All notable public reference-release changes should be recorded here.
   bed assignments immediately, and removing the hold re-plans the group's beds
   right away, so the booking comes back as an ordinary one in a coherent
   state. Approving a school's request for sole occupancy cleans up the
-  converted booking's bed assignments the same way. A dedicated test now keeps
+  converted booking's bed assignments the same way. Because that clean-up
+  deletes real work, the admin screens now say so before and after: the
+  confirmation box for setting a hold warns up front that the booking's
+  existing bed assignments — including ones placed by hand or already approved
+  — will be removed, the box for clearing one explains that beds are re-planned
+  automatically (and that other bookings' provisional placements may move), and
+  the confirmation message afterwards reports how many assignments were removed
+  or re-planned. The removed assignments are written into the audit log in full,
+  so a hold set by mistake can be undone by hand. A dedicated test now keeps
   the board and the automatic allocator in agreement so they cannot drift
   apart again.
 

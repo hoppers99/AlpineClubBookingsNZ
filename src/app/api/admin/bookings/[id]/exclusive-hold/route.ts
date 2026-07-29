@@ -12,7 +12,11 @@ import {
   bookingHoldsCapacity,
   capacityHoldingBookingFilter,
 } from "@/lib/booking-status";
-import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
+import {
+  MAX_AUDITED_PRUNED_ALLOCATIONS,
+  reconcileBedAllocationsForBooking,
+} from "@/lib/bed-allocation-lifecycle";
+import { formatDateOnly } from "@/lib/date-only";
 import logger from "@/lib/logger";
 import { z } from "zod";
 
@@ -218,6 +222,29 @@ export async function POST(
       //   guests' missing bed-nights exactly like any other lifecycle change.
       // DB-only work (the same in-transaction pattern as force-confirm /
       // booking-cancel); no external provider is called here.
+      //
+      // Recoverability (#2285 review): the SET prune destroys rows an officer
+      // may have placed by hand or approved, and a deleted row leaves no trace
+      // of WHAT it was. Read the booking's rows first, on this same tx, and
+      // record them compactly in the audit metadata below so the placement can
+      // be reconstructed by hand if the hold turns out to have been a mistake.
+      // Read-only and SET-only (a CLEAR destroys nothing).
+      const prunedAllocations = hold
+        ? await tx.bedAllocation.findMany({
+            where: { bookingId: booking.id },
+            select: {
+              bookingGuestId: true,
+              roomId: true,
+              bedId: true,
+              stayDate: true,
+              source: true,
+              approvedAt: true,
+            },
+            orderBy: [{ stayDate: "asc" }, { bedId: "asc" }],
+            take: MAX_AUDITED_PRUNED_ALLOCATIONS + 1,
+          })
+        : [];
+
       const allocationReconcile = await reconcileBedAllocationsForBooking({
         bookingId: booking.id,
         db: tx,
@@ -296,6 +323,26 @@ export async function POST(
               deletedCount: allocationReconcile.deletedCount,
               createdCount: allocationReconcile.createdCount,
               promotedCount: allocationReconcile.promotedCount,
+              // #2285 review: what the SET prune destroyed, compactly, so a
+              // mistaken hold can be undone by hand. Only present when rows
+              // were actually removed.
+              ...(hold && allocationReconcile.deletedCount > 0
+                ? {
+                    removedAllocations: prunedAllocations
+                      .slice(0, MAX_AUDITED_PRUNED_ALLOCATIONS)
+                      .map((row) => ({
+                        bookingGuestId: row.bookingGuestId,
+                        roomId: row.roomId,
+                        bedId: row.bedId,
+                        stayDate: formatDateOnly(row.stayDate),
+                        source: row.source,
+                        approvedAt: row.approvedAt?.toISOString() ?? null,
+                      })),
+                    removedAllocationsTruncated:
+                      prunedAllocations.length >
+                      MAX_AUDITED_PRUNED_ALLOCATIONS,
+                  }
+                : {}),
             },
             ...(hold
               ? {
@@ -332,6 +379,15 @@ export async function POST(
         wholeLodgeHold: hold,
         wholeLodgeHoldAt: hold ? heldAt : null,
         conflicts,
+        // #2285 review: the toggle silently rewrote the booking's bed
+        // assignments and told the officer nothing. Return the counts so the
+        // UI can say what it did.
+        bedAllocationReconcile: {
+          enabled: allocationReconcile.enabled,
+          deletedCount: allocationReconcile.deletedCount,
+          createdCount: allocationReconcile.createdCount,
+          promotedCount: allocationReconcile.promotedCount,
+        },
       };
     });
 
@@ -349,6 +405,11 @@ export async function POST(
       // Overlapping capacity-holding bookings the officer should resolve
       // (issue #119); empty on clear or when the held nights are clear.
       conflicts: result.conflicts,
+      // What the toggle did to the booking's bed assignments (#2285): rows
+      // removed on SET, rows re-planned on CLEAR, partners promoted either way.
+      // `enabled: false` means the bed-allocation module is off and nothing was
+      // touched. Surfaced in the admin toast so the change is never silent.
+      bedAllocationReconcile: result.bedAllocationReconcile,
     });
   } catch (err) {
     logger.error({ err, bookingId }, "Failed to update exclusive whole-lodge hold");

@@ -18,6 +18,11 @@ const mocks = vi.hoisted(() => {
     auditLog: {
       create: vi.fn(),
     },
+    // #2285 review: the SET reads the booking's allocation rows BEFORE the
+    // prune so the audit can record what was destroyed.
+    bedAllocation: {
+      findMany: vi.fn(),
+    },
   };
 
   return {
@@ -73,6 +78,7 @@ vi.mock("@/lib/logger", () => ({
 // bed-allocation-lifecycle.test.ts and held-booking-allocation-agreement.test.ts.
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
   reconcileBedAllocationsForBooking: mocks.reconcileBedAllocations,
+  MAX_AUDITED_PRUNED_ALLOCATIONS: 50,
 }));
 
 import { POST } from "@/app/api/admin/bookings/[id]/exclusive-hold/route";
@@ -137,6 +143,7 @@ beforeEach(() => {
     createdCount: 0,
     promotedCount: 0,
   });
+  mocks.tx.bedAllocation.findMany.mockResolvedValue([]);
 });
 
 describe("POST /api/admin/bookings/[id]/exclusive-hold", () => {
@@ -711,6 +718,185 @@ describe("POST /api/admin/bookings/[id]/exclusive-hold", () => {
       ).toBe(409);
 
       expect(mocks.reconcileBedAllocations).not.toHaveBeenCalled();
+      // Nor does any refusal read the rows for the audit list (#2285 review).
+      expect(mocks.tx.bedAllocation.findMany).not.toHaveBeenCalled();
+    });
+
+    // -----------------------------------------------------------------------
+    // #2285 review: the toggle used to rewrite the booking's bed assignments
+    // and tell nobody. Two fixes are pinned here — the counts come back in the
+    // JSON so the admin toast can report them, and the SET audit records WHAT
+    // it destroyed so an approved/manual placement can be rebuilt by hand.
+    // -----------------------------------------------------------------------
+    it("returns the reconcile counts in the response body on SET and on CLEAR", async () => {
+      mocks.reconcileBedAllocations.mockResolvedValue({
+        enabled: true,
+        deletedCount: 12,
+        createdCount: 0,
+        promotedCount: 2,
+      });
+
+      const setBody = await (
+        await POST(holdRequest({ hold: true }), routeParams())
+      ).json();
+      expect(setBody.bedAllocationReconcile).toEqual({
+        enabled: true,
+        deletedCount: 12,
+        createdCount: 0,
+        promotedCount: 2,
+      });
+
+      mocks.tx.booking.findUnique.mockResolvedValue(
+        booking({ wholeLodgeHold: true }),
+      );
+      mocks.reconcileBedAllocations.mockResolvedValue({
+        enabled: true,
+        deletedCount: 0,
+        createdCount: 9,
+        promotedCount: 0,
+      });
+
+      const clearBody = await (
+        await POST(holdRequest({ hold: false }), routeParams())
+      ).json();
+      expect(clearBody.bedAllocationReconcile).toMatchObject({
+        enabled: true,
+        createdCount: 9,
+      });
+    });
+
+    it("SET records the destroyed allocation rows in the audit metadata, read BEFORE the prune", async () => {
+      mocks.tx.bedAllocation.findMany.mockResolvedValue([
+        {
+          bookingGuestId: "guest-1",
+          roomId: "room-a",
+          bedId: "bed-a1",
+          stayDate: new Date("2026-09-01T00:00:00.000Z"),
+          source: "MANUAL",
+          approvedAt: new Date("2026-08-20T04:05:06.000Z"),
+        },
+        {
+          bookingGuestId: "guest-2",
+          roomId: "room-a",
+          bedId: "bed-a2",
+          stayDate: new Date("2026-09-02T00:00:00.000Z"),
+          source: "AUTO",
+          approvedAt: null,
+        },
+      ]);
+      mocks.reconcileBedAllocations.mockResolvedValue({
+        enabled: true,
+        deletedCount: 2,
+        createdCount: 0,
+        promotedCount: 0,
+      });
+
+      const response = await POST(holdRequest({ hold: true }), routeParams());
+      expect(response.status).toBe(200);
+
+      // Read on the SAME tx and BEFORE the reconcile — after it the rows are
+      // gone and the list would be empty.
+      expect(mocks.tx.bedAllocation.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { bookingId: "booking-1" } }),
+      );
+      expect(
+        mocks.tx.bedAllocation.findMany.mock.invocationCallOrder[0],
+      ).toBeLessThan(mocks.reconcileBedAllocations.mock.invocationCallOrder[0]);
+
+      const audit = mocks.tx.auditLog.create.mock.calls[0][0].data;
+      expect(audit.metadata.bedAllocationReconcile).toMatchObject({
+        deletedCount: 2,
+        removedAllocationsTruncated: false,
+        removedAllocations: [
+          {
+            bookingGuestId: "guest-1",
+            roomId: "room-a",
+            bedId: "bed-a1",
+            stayDate: "2026-09-01",
+            source: "MANUAL",
+            approvedAt: "2026-08-20T04:05:06.000Z",
+          },
+          {
+            bookingGuestId: "guest-2",
+            roomId: "room-a",
+            bedId: "bed-a2",
+            stayDate: "2026-09-02",
+            source: "AUTO",
+            approvedAt: null,
+          },
+        ],
+      });
+    });
+
+    it("omits the removed-rows list when the SET destroyed nothing, and never reads it on CLEAR", async () => {
+      // Nothing deleted: no list (and no noise in the audit metadata).
+      const setResponse = await POST(holdRequest({ hold: true }), routeParams());
+      expect(setResponse.status).toBe(200);
+      let audit = mocks.tx.auditLog.create.mock.calls[0][0].data;
+      expect(audit.metadata.bedAllocationReconcile).not.toHaveProperty(
+        "removedAllocations",
+      );
+
+      // CLEAR destroys nothing by definition, so the pre-read never runs.
+      vi.clearAllMocks();
+      mocks.transaction.mockImplementation(async (fn) => fn(mocks.tx));
+      mocks.tx.booking.findUnique.mockResolvedValue(
+        booking({ wholeLodgeHold: true }),
+      );
+      mocks.tx.booking.updateMany.mockResolvedValue({ count: 1 });
+      mocks.tx.auditLog.create.mockResolvedValue({});
+      mocks.findOverlappingCapacityHoldingBookings.mockResolvedValue([]);
+      mocks.findOverlappingOverriddenNonHoldingBookings.mockResolvedValue([]);
+      mocks.reconcileBedAllocations.mockResolvedValue({
+        enabled: true,
+        deletedCount: 0,
+        createdCount: 4,
+        promotedCount: 0,
+      });
+
+      const clearResponse = await POST(
+        holdRequest({ hold: false }),
+        routeParams(),
+      );
+      expect(clearResponse.status).toBe(200);
+      expect(mocks.tx.bedAllocation.findMany).not.toHaveBeenCalled();
+      audit = mocks.tx.auditLog.create.mock.calls[0][0].data;
+      expect(audit.metadata.bedAllocationReconcile).not.toHaveProperty(
+        "removedAllocations",
+      );
+    });
+
+    it("caps and flags the removed-rows list so one audit row cannot grow without limit", async () => {
+      // The route reads cap + 1 rows; more than the cap means the list is
+      // truncated and the flag must say so (the exact count still comes from
+      // the reconcile result, so nothing is lost).
+      mocks.tx.bedAllocation.findMany.mockResolvedValue(
+        Array.from({ length: 51 }, (_, index) => ({
+          bookingGuestId: `guest-${index}`,
+          roomId: "room-a",
+          bedId: `bed-${index}`,
+          stayDate: new Date("2026-09-01T00:00:00.000Z"),
+          source: "AUTO",
+          approvedAt: null,
+        })),
+      );
+      mocks.reconcileBedAllocations.mockResolvedValue({
+        enabled: true,
+        deletedCount: 640,
+        createdCount: 0,
+        promotedCount: 0,
+      });
+
+      await POST(holdRequest({ hold: true }), routeParams());
+
+      const audit = mocks.tx.auditLog.create.mock.calls[0][0].data;
+      expect(
+        audit.metadata.bedAllocationReconcile.removedAllocations,
+      ).toHaveLength(50);
+      expect(
+        audit.metadata.bedAllocationReconcile.removedAllocationsTruncated,
+      ).toBe(true);
+      expect(audit.metadata.bedAllocationReconcile.deletedCount).toBe(640);
     });
   });
 });
