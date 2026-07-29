@@ -1060,15 +1060,22 @@ export default function AdminBedAllocationPage() {
   // carries an "Assigned" / "Refused" label.
   // #2286: index the payload's custodian holds by bed-night so each cell can
   // decide in O(1) whether it is a held band rather than a drop target.
+  const custodianHoldList = useMemo(
+    // Absent on an old-colour payload during a deploy drain (see the banner
+    // below), so never dereferenced without this fallback.
+    () => payload?.custodianHolds ?? [],
+    [payload],
+  );
+
   const custodianHoldByBedAndDate = useMemo(() => {
     const map = new Map<string, DashboardCustodianHold>();
-    for (const hold of payload?.custodianHolds ?? []) {
+    for (const hold of custodianHoldList) {
       for (const night of hold.nights) {
         map.set(`${hold.bedId}:${night}`, hold);
       }
     }
     return map;
-  }, [payload]);
+  }, [custodianHoldList]);
 
   const rangeTint = useMemo(() => {
     if (!rangeOutcome) return undefined;
@@ -1352,7 +1359,13 @@ export default function AdminBedAllocationPage() {
             </Alert>
           ) : null}
 
-          {payload.custodianHolds.length > 0 ? (
+          {/* Read through the indexed map, not `payload.custodianHolds`
+              directly: during a deploy drain a new-colour browser bundle can be
+              served a payload from the old colour, which has no custodianHolds
+              at all. Crashing the entire allocation board in that window would
+              be far worse than the drain exposure the feature already accepts,
+              so every client read of this field tolerates its absence. */}
+          {custodianHoldList.length > 0 ? (
             <Alert
               variant="info"
               title="Bed held for a custodian — not available to allocate"
@@ -1369,7 +1382,7 @@ export default function AdminBedAllocationPage() {
                 page.
               </p>
               <ul className="space-y-1">
-                {payload.custodianHolds.map((hold) => (
+                {custodianHoldList.map((hold) => (
                   <li key={hold.assignmentId}>
                     <span className="font-medium">{hold.memberName}</span> ·{" "}
                     {hold.roomName} · {hold.bedName} · {hold.startDate} →{" "}
