@@ -97,8 +97,8 @@ function yearEndFallbackMonth(): number | null {
 let orgReadGeneration = 0;
 
 /**
- * One live year-end read. Never throws: a failure degrades to the last cached
- * month (or null), exactly as the previous inline body did.
+ * One live year-end read. Never throws: a failure degrades to the best month
+ * already held (see {@link yearEndFallbackMonth}), or null.
  *
  * Note what this deliberately does NOT do: negative-cache the VALUE, unlike
  * the connected-org summary below. This month feeds membership financial-year
