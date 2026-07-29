@@ -34,8 +34,10 @@ interface MemberFamilyTreeCardProps {
 }
 
 /**
- * Read-only family tree at the top of the Family card (#2253). Renders the
- * server-derived tree as plain nested lists — no tree-rendering library — with
+ * Read-only family tree in the member page's Family section (#2253) — under
+ * the family-group chips, above the billing family and parent link cards, per
+ * `page.tsx`. Renders the server-derived tree as plain nested lists — no
+ * tree-rendering library — with
  * CSS rails carrying the line language from the sign-off mockup: solid rail =
  * recorded parent link, dashed rail = second-parent link, double rule =
  * confirmed partner, dashed outline = derived-not-stored relationship.
