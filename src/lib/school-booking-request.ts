@@ -47,6 +47,8 @@ import {
   assertMappableOwnerContact,
   BOOKING_REQUEST_VERIFICATION_TTL_MS,
   BookingRequestError,
+  buildMemberWholeLodgePlaceholderGuests,
+  isMemberWholeLodgeRequest,
   linkedGuestMemberMap,
   parseBookingRequestGuests,
   reassignHeldBookingGuests,
@@ -69,6 +71,7 @@ import {
 } from "@/lib/capacity";
 import {
   sendAdminSchoolManualInvoiceEmail,
+  sendBookingConfirmedEmail,
   sendBookingRequestVerificationEmail,
   sendHutLeaderAssignmentEmail,
 } from "@/lib/email";
@@ -1355,6 +1358,581 @@ export async function approveSchoolBookingRequest(input: {
     priceCents: totalPriceCents,
     invoiceMode,
     teacherCount: conversion.teacherAssignments.length,
+    exclusiveHoldConflicts,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Member whole-lodge approval (#2263, epic #2245)
+// ---------------------------------------------------------------------------
+
+/**
+ * Admin override of the approved headcount, and the manual price, for a member
+ * whole-lodge request (#2263). Validated in the approve route exactly like the
+ * school `childCounts` override.
+ */
+export const memberWholeLodgeApprovalSchema = z.object({
+  /**
+   * The headcount the officer is actually pricing and booking, after talking to
+   * the member. Omitted keeps the submitted approximate number.
+   */
+  pricedHeadcount: z.number().int().min(1).max(500).optional(),
+  /**
+   * Manual total price in integer cents. MANDATORY fallback when no active
+   * season covers the requested dates â€” without it the season-rate branch has
+   * nothing to price from and the approval 409s (the member-request path has no
+   * quote/price op to fall back on, so this field is the only way through).
+   * Split across the guest rows by splitPriceAcrossGuests.
+   */
+  priceOverrideCents: z.number().int().min(0).max(100_000_000).optional(),
+});
+
+export type MemberWholeLodgeApprovalOverride = z.infer<
+  typeof memberWholeLodgeApprovalSchema
+>;
+
+type ApproveMemberWholeLodgeRequestOutcome =
+  | {
+      type: "approved";
+      requestId: string;
+      bookingId: string;
+      memberId: string;
+      priceCents: number;
+      guestCount: number;
+      /**
+       * Existing capacity-holding bookings overlapping the approved booking's
+       * nights, computed post-commit. ADMIN-ONLY (ADR-001 decision 6): this
+       * never reaches a member surface, and the approval never refuses or
+       * displaces on account of it (decision 1) â€” the officer resolves it.
+       */
+      exclusiveHoldConflicts: HoldConflictBooking[];
+    }
+  | { type: "capacityExceeded"; fullNights: string[] };
+
+/**
+ * Approve a signed-in member's whole-lodge request (#2263), converting it into a
+ * CONFIRMED booking that holds the whole lodge.
+ *
+ * This lives beside `approveSchoolBookingRequest` on purpose (binding owner
+ * decision): the hold-vs-capacity-lock ordering, the `exclusiveHoldData`
+ * stamping, the idempotency claim, the ADR-001 bed-allocation prune (#2285) and
+ * the post-commit conflict surfacing exist in ONE place, so a correction to any
+ * of them cannot land on the school path and miss this one.
+ *
+ * School parity, deliberately:
+ *   - the booking is created **CONFIRMED**, which is capacity-holding in its own
+ *     right (CAPACITY_HOLDING_BOOKING_STATUSES) â€” no dependence on the PENDING
+ *     `originBookingRequest` clause;
+ *   - `paymentSource: INTERNET_BANKING` with a PENDING Payment row, so the
+ *     finance surfaces see the receivable;
+ *   - `hasNonMembers: true`, because the placeholder guests are rated
+ *     NON_MEMBER (owner decision OD-A: conservative revenue default; guests
+ *     re-rate per-guest through the ordinary booking-modification path as real
+ *     names and member links are edited in).
+ *
+ * School DIVERGENCE, deliberately:
+ *   - the booking is owned by the REQUESTING LOGIN MEMBER. No non-login member
+ *     is minted, no teachers, no PINs, no school Xero contact, and there is no
+ *     owner-substitution path to run (the owner is a live account, not a
+ *     materialised contact).
+ *   - NO `PaymentLink` row and NO tokenised payment-link email. That flow is the
+ *     GENERAL *non-login* approval path; a member pays through the member
+ *     booking surfaces they are already signed in to.
+ *   - NO `nonMemberHoldUntil`. The hold clock belongs to the PENDING
+ *     non-member path (it is what the bump cron reads); a CONFIRMED booking has
+ *     already been admitted, exactly as a school booking has. Stamping a hold
+ *     deadline onto a CONFIRMED booking that holds the WHOLE LODGE would arm a
+ *     bump clock against the one booking that must not be bumped.
+ */
+export async function approveMemberWholeLodgeRequest(input: {
+  requestId: string;
+  adminMemberId: string;
+  override?: MemberWholeLodgeApprovalOverride;
+}): Promise<ApproveMemberWholeLodgeRequestOutcome> {
+  const initialRequest = await prisma.bookingRequest.findUnique({
+    where: { id: input.requestId },
+  });
+  if (!initialRequest) {
+    throw new BookingRequestError("Booking request not found", 404);
+  }
+  let request = initialRequest;
+  if (!isMemberWholeLodgeRequest(request)) {
+    throw new BookingRequestError(
+      "This is not a member whole-lodge booking request",
+      400
+    );
+  }
+  if (
+    request.status !== BookingRequestStatus.VERIFIED &&
+    request.status !== BookingRequestStatus.PRICED
+  ) {
+    throw new BookingRequestError(
+      "Only open member whole-lodge requests can be approved",
+      409
+    );
+  }
+  // A member request never enters the quote lifecycle (the service-layer
+  // rejections in booking-request-quotes.ts refuse quote/send/hold on it), so it
+  // can never carry a held booking. Refuse rather than silently take a
+  // held-conversion branch this path does not implement.
+  if (request.heldBookingId) {
+    throw new BookingRequestError(
+      "This request unexpectedly holds beds; release the hold before approving",
+      409
+    );
+  }
+  const requesterMemberId = request.requestedByMemberId!;
+
+  const approvalLodgeId = request.lodgeId ?? null;
+
+  // The officer-confirmed headcount drives pricing, capacity and the guest rows.
+  // Omitted keeps the member's submitted approximate number.
+  const submittedGuests = parseBookingRequestGuests(request.guests);
+  const headcount = input.override?.pricedHeadcount ?? submittedGuests.length;
+  if (headcount < 1) {
+    throw new BookingRequestError("At least one guest is required", 422);
+  }
+  const lodgeCapacity = approvalLodgeId
+    ? await getLodgeCapacity(approvalLodgeId)
+    : await getDefaultLodgeCapacity();
+  if (headcount > lodgeCapacity) {
+    throw new BookingRequestError(
+      `A whole-lodge booking cannot exceed the lodge capacity of ${lodgeCapacity} guests`,
+      422
+    );
+  }
+  const guests =
+    headcount === submittedGuests.length
+      ? submittedGuests
+      : buildMemberWholeLodgePlaceholderGuests(headcount);
+
+  // Owner decision OD-A: the placeholder guests are unnamed and unlinked, so
+  // they price at NON-MEMBER rates â€” the same engine, rate class and group
+  // discount the school path uses. `priceSchoolGuests` returns null when no
+  // active season covers the dates.
+  const price = await priceSchoolGuests({
+    checkIn: request.checkIn,
+    checkOut: request.checkOut,
+    guests,
+    lodgeId: approvalLodgeId,
+  });
+
+  const priceOverrideCents = input.override?.priceOverrideCents;
+  let totalPriceCents: number;
+  let guestPriceCents: number[];
+  if (priceOverrideCents != null) {
+    // Officer's manual total wins, split in integer cents with the remainder on
+    // the first guest (splitPriceAcrossGuests) â€” no bespoke arithmetic.
+    totalPriceCents = priceOverrideCents;
+    guestPriceCents = splitPriceAcrossGuests(totalPriceCents, guests.length);
+  } else if (price && price.guests.length === guests.length) {
+    totalPriceCents = price.totalPriceCents;
+    guestPriceCents = price.guests.map((guest) => guest.priceCents);
+  } else if (price) {
+    totalPriceCents = price.totalPriceCents;
+    guestPriceCents = splitPriceAcrossGuests(totalPriceCents, guests.length);
+  } else {
+    throw new BookingRequestError(
+      "Cannot price this whole-lodge booking: no active season covers the requested dates. Set a price before approving.",
+      409
+    );
+  }
+
+  const reviewedAt = new Date();
+  // ADR-001 decision 1: the hold is stamped regardless of any existing
+  // overlapping bookings â€” never an empty-lodge precondition. Stamped by the
+  // approving admin, because granting exclusivity is the ADMIN's capacity
+  // action; the member request only recorded the ASK.
+  const exclusiveHoldData = {
+    wholeLodgeHold: true,
+    wholeLodgeHoldAt: reviewedAt,
+    wholeLodgeHoldByMemberId: input.adminMemberId,
+  };
+
+  let capacityFullNights: string[] | null = null;
+  let conversion: {
+    bookingId: string;
+    lodgeId: string;
+    memberId: string;
+    alreadyConverted: boolean;
+  };
+
+  try {
+    conversion = await prisma.$transaction(async (tx) => {
+      // Fresh create only (no held booking is reachable here, guarded above), so
+      // the per-lodge capacity lock alone is the right scope â€” exactly as the
+      // school fresh-create branch does. Taking the global lifecycle lock too
+      // would needlessly serialise unrelated lodges.
+      const bookingLodgeId = request.lodgeId ?? (await getDefaultLodgeId(tx));
+      await acquireLodgeCapacityLock(tx, bookingLodgeId);
+
+      const lockedRequest = await tx.bookingRequest.findUnique({
+        where: { id: request.id },
+      });
+      if (!lockedRequest) {
+        throw new BookingRequestError("Booking request not found", 404);
+      }
+
+      // Idempotency (#1232 double-charge guard) BEFORE the stale-snapshot fence,
+      // so a legitimate double approval replays the committed conversion instead
+      // of 409ing on the version the first approval bumped.
+      const committedConversion = await claimAlreadyConvertedBookingRequest(
+        tx,
+        request.id
+      );
+      if (committedConversion) {
+        return {
+          bookingId: committedConversion.convertedBookingId,
+          lodgeId: bookingLodgeId,
+          memberId: committedConversion.convertedMemberId,
+          alreadyConverted: true as const,
+        };
+      }
+
+      // Optimistic version fence (#1923): any edit landing after the pre-lock
+      // read invalidates this approval's snapshot. Fences on the integer
+      // version, never on updatedAt (millisecond-collidable).
+      if (
+        lockedRequest.version !== request.version ||
+        (lockedRequest.heldBookingId ?? null) !== null
+      ) {
+        throw new BookingRequestError(
+          "This booking request changed while it was being approved; review it and try again",
+          409
+        );
+      }
+      request = lockedRequest;
+
+      if (
+        !isMemberWholeLodgeRequest(request) ||
+        (request.status !== BookingRequestStatus.VERIFIED &&
+          request.status !== BookingRequestStatus.PRICED)
+      ) {
+        throw new BookingRequestError(
+          "This booking request has already been processed",
+          409
+        );
+      }
+
+      // Status-claim so two admins cannot approve concurrently.
+      const claimed = await tx.bookingRequest.updateMany({
+        where: {
+          id: request.id,
+          version: request.version,
+          status: {
+            in: [BookingRequestStatus.VERIFIED, BookingRequestStatus.PRICED],
+          },
+        },
+        data: {
+          status: BookingRequestStatus.APPROVED,
+          reviewedByMemberId: input.adminMemberId,
+          reviewedAt,
+          version: { increment: 1 },
+        },
+      });
+      if (claimed.count === 0) {
+        throw new BookingRequestError(
+          "This booking request has already been processed",
+          409
+        );
+      }
+
+      // The booking's OWN admission is capacity-checked, school parity. ADR-001
+      // decision 1 governs only what happens to OTHER bookings on the held
+      // nights (nothing â€” they are surfaced, never displaced); it does not
+      // license admitting this booking over capacity.
+      const capacity = await checkCapacityForGuestRanges(
+        bookingLodgeId,
+        request.checkIn,
+        request.checkOut,
+        guests.map(() => ({
+          stayStart: request.checkIn,
+          stayEnd: request.checkOut,
+        })),
+        undefined,
+        tx
+      );
+      if (!capacity.available) {
+        capacityFullNights = getCapacityFullNights(capacity.nightDetails);
+        throw new Error("CAPACITY_EXCEEDED_SENTINEL");
+      }
+
+      // The owner is the requesting LOGIN member. No member row is created and
+      // none is re-validated: unlike the school/public paths there is no
+      // materialised non-login contact whose state could have drifted.
+      const owner = await tx.member.findUnique({
+        where: { id: requesterMemberId },
+        select: { id: true, active: true },
+      });
+      if (!owner || !owner.active) {
+        throw new BookingRequestError(
+          "The member who made this request no longer has an active account",
+          409
+        );
+      }
+
+      const guestCreates = await buildApprovalGuestCreates(tx, {
+        guests,
+        // A member whole-lodge request carries no admin guest links â€” the guests
+        // are unnamed placeholders, which is what makes them NON_MEMBER-rated
+        // (OD-A).
+        linkedMembers: new Map<number, string>(),
+        guestPriceCents,
+        checkIn: request.checkIn,
+        checkOut: request.checkOut,
+        adminMemberId: input.adminMemberId,
+        heldBookingId: null,
+      });
+
+      const booking = await tx.booking.create({
+        data: {
+          memberId: owner.id,
+          lodgeId: bookingLodgeId,
+          checkIn: request.checkIn,
+          checkOut: request.checkOut,
+          // CONFIRMED holds capacity in its own right (school parity).
+          status: BookingStatus.CONFIRMED,
+          totalPriceCents,
+          finalPriceCents: totalPriceCents,
+          // OD-A: the placeholder guests are NON_MEMBER-rated, so the booking
+          // genuinely carries non-members. No nonMemberHoldUntil â€” see the
+          // function docstring.
+          hasNonMembers: true,
+          notes: request.message,
+          createdById: input.adminMemberId,
+          ...exclusiveHoldData,
+          guests: { create: guestCreates },
+        },
+        select: { id: true },
+      });
+
+      // ADR-001 bed-allocation short-circuit (#2285): a booking granted an
+      // exclusive hold must own NO per-bed rows. A fresh create owns none yet,
+      // so this is an idempotent no-op here â€” it is run anyway, and audited on
+      // the same terms as the school path, so the invariant is enforced by the
+      // same call on every approval route rather than by an assumption about
+      // which branch created the booking.
+      const prunedAllocations = await tx.bedAllocation.findMany({
+        where: { bookingId: booking.id },
+        select: {
+          bookingGuestId: true,
+          roomId: true,
+          bedId: true,
+          stayDate: true,
+          source: true,
+          approvedAt: true,
+        },
+        orderBy: [{ stayDate: "asc" }, { bedId: "asc" }],
+        take: MAX_AUDITED_PRUNED_ALLOCATIONS + 1,
+      });
+      const reconcile = await reconcileBedAllocationsForBooking({
+        bookingId: booking.id,
+        db: tx,
+      });
+      if (reconcile.deletedCount > 0) {
+        await createAuditLog(
+          {
+            action: "BED_ALLOCATION_HELD_BOOKING_PRUNED",
+            memberId: input.adminMemberId,
+            actorMemberId: input.adminMemberId,
+            subjectMemberId: owner.id,
+            targetId: booking.id,
+            entityType: "Booking",
+            entityId: booking.id,
+            category: "lodge",
+            severity: "important",
+            outcome: "success",
+            summary:
+              "Bed assignments removed because the approved member whole-lodge request granted an exclusive whole-lodge hold",
+            details:
+              "Approving this member's whole-lodge request granted sole occupancy of the lodge, so the converted booking owns no per-bed assignments (ADR-001). The assignments it carried were removed and are listed here so the placement can be reconstructed if the hold is later cleared.",
+            metadata: {
+              issue: 2263,
+              requestId: request.id,
+              bookingId: booking.id,
+              deletedCount: reconcile.deletedCount,
+              promotedCount: reconcile.promotedCount,
+              removedAllocations: prunedAllocations
+                .slice(0, MAX_AUDITED_PRUNED_ALLOCATIONS)
+                .map((row) => ({
+                  bookingGuestId: row.bookingGuestId,
+                  roomId: row.roomId,
+                  bedId: row.bedId,
+                  stayDate: formatDateOnly(row.stayDate),
+                  source: row.source,
+                  approvedAt: row.approvedAt?.toISOString() ?? null,
+                })),
+              removedAllocationsTruncated:
+                prunedAllocations.length > MAX_AUDITED_PRUNED_ALLOCATIONS,
+            },
+          },
+          tx,
+        );
+      }
+
+      // Receivable for the finance surfaces. Pay-on-account via the existing
+      // INTERNET_BANKING source; NO PaymentLink row is created, so no tokenised
+      // payment page exists for this booking.
+      await tx.payment.create({
+        data: {
+          bookingId: booking.id,
+          amountCents: totalPriceCents,
+          status: PaymentStatus.PENDING,
+          source: PaymentSource.INTERNET_BANKING,
+          reference: buildInternetBankingPaymentReference(booking.id),
+        },
+      });
+
+      await tx.bookingRequest.update({
+        where: { id: request.id },
+        data: {
+          status: BookingRequestStatus.CONVERTED,
+          convertedBookingId: booking.id,
+          convertedMemberId: owner.id,
+          version: { increment: 1 },
+          // Keep the request snapshot consistent with what was actually booked
+          // when the officer varied the headcount.
+          ...(headcount === submittedGuests.length
+            ? {}
+            : { guests: guests as unknown as Prisma.InputJsonValue }),
+        },
+      });
+
+      return {
+        bookingId: booking.id,
+        lodgeId: bookingLodgeId,
+        memberId: owner.id,
+        alreadyConverted: false as const,
+      };
+    });
+  } catch (err) {
+    if (
+      err instanceof Error &&
+      err.message === "CAPACITY_EXCEEDED_SENTINEL" &&
+      capacityFullNights
+    ) {
+      return { type: "capacityExceeded", fullNights: capacityFullNights };
+    }
+    throw err;
+  }
+
+  // Every post-commit side effect is guarded on !alreadyConverted so a replayed
+  // approve never re-emails the member and never re-audits a conversion (#1232).
+  let exclusiveHoldConflicts: HoldConflictBooking[] = [];
+  if (!conversion.alreadyConverted) {
+    logAudit({
+      action: "booking_request.member_whole_lodge_approved",
+      memberId: input.adminMemberId,
+      actorMemberId: input.adminMemberId,
+      subjectMemberId: conversion.memberId,
+      targetId: request.id,
+      entityType: "BookingRequest",
+      entityId: request.id,
+      category: "booking",
+      outcome: "success",
+      summary:
+        "Member whole-lodge request approved and confirmed with an exclusive hold",
+      metadata: {
+        requestId: request.id,
+        bookingId: conversion.bookingId,
+        memberId: conversion.memberId,
+        priceCents: totalPriceCents,
+        priceSource: priceOverrideCents != null ? "admin_override" : "season_rates",
+        guestCount: guests.length,
+        submittedGuestCount: submittedGuests.length,
+        checkIn: request.checkIn.toISOString(),
+        checkOut: request.checkOut.toISOString(),
+        exclusivityRequested: true,
+        wholeLodgeHold: true,
+      },
+    });
+
+    // Conflict surfacing (ADR-001 decision 1, issue #119): read-only, ADMIN-ONLY,
+    // computed AFTER the commit and outside the advisory lock. It never refuses
+    // or displaces, and a failure here must not undo a committed approval.
+    try {
+      exclusiveHoldConflicts = await findOverlappingCapacityHoldingBookings(
+        prisma,
+        {
+          lodgeId: conversion.lodgeId,
+          checkIn: request.checkIn,
+          checkOut: request.checkOut,
+          excludeBookingId: conversion.bookingId,
+        },
+      );
+    } catch (err) {
+      logger.error(
+        { err, bookingId: conversion.bookingId },
+        "Failed to compute exclusive-hold conflicts for an approved member whole-lodge request",
+      );
+    }
+
+    logAudit({
+      action: "booking.exclusiveHold.set",
+      memberId: input.adminMemberId,
+      actorMemberId: input.adminMemberId,
+      subjectMemberId: conversion.memberId,
+      targetId: conversion.bookingId,
+      entityType: "Booking",
+      entityId: conversion.bookingId,
+      category: "booking",
+      severity: "important",
+      outcome: "success",
+      summary:
+        "Exclusive whole-lodge hold set from an approved member whole-lodge request",
+      metadata: {
+        bookingId: conversion.bookingId,
+        requestId: request.id,
+        source: "member_request_approval",
+        setByMemberId: input.adminMemberId,
+        overlappingConflictCount: exclusiveHoldConflicts.length,
+        overlappingConflictBookingIds: exclusiveHoldConflicts.map((c) => c.id),
+      },
+    });
+
+    // Member-facing confirmation. Deliberately the ordinary booking-confirmed
+    // message: it carries dates, guest count and total and NOTHING about
+    // occupancy, exclusivity or the conflicts above â€” a member is never told the
+    // lodge is exclusively held (ADR-001 decision 6). It is booking-scoped, so
+    // the per-booking "No emails" switch can withhold it (#2258).
+    sendBookingConfirmedEmail(
+      { bookingId: conversion.bookingId },
+      request.contactEmail,
+      request.contactFirstName,
+      request.checkIn,
+      request.checkOut,
+      guests.length,
+      totalPriceCents,
+      { lodgeId: conversion.lodgeId },
+    ).catch((err) =>
+      logger.error(
+        { err, bookingId: conversion.bookingId },
+        "Failed to send booking confirmation for an approved member whole-lodge request",
+      )
+    );
+  } else {
+    logAudit({
+      action: "booking_request.member_whole_lodge_approve_idempotent_replay",
+      memberId: input.adminMemberId,
+      actorMemberId: input.adminMemberId,
+      targetId: request.id,
+      entityType: "BookingRequest",
+      entityId: request.id,
+      category: "booking",
+      outcome: "success",
+      summary:
+        "Member whole-lodge request approve replayed idempotently; no second conversion",
+      metadata: { bookingId: conversion.bookingId, requestId: request.id },
+    });
+  }
+
+  return {
+    type: "approved",
+    requestId: request.id,
+    bookingId: conversion.bookingId,
+    memberId: conversion.memberId,
+    priceCents: totalPriceCents,
+    guestCount: guests.length,
     exclusiveHoldConflicts,
   };
 }
