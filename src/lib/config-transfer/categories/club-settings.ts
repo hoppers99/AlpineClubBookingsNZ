@@ -8,6 +8,8 @@ import {
   DEFAULT_GROUP_DISCOUNT_SETTING,
   DEFAULT_INTERNET_BANKING_PAYMENT_SETTINGS,
   DEFAULT_MEMBER_GUEST_SETTINGS,
+  MEMBER_GUEST_PENDING_HOLD_EXPIRY_DAYS_MAX,
+  MEMBER_GUEST_PENDING_HOLD_EXPIRY_DAYS_MIN,
   DEFAULT_MEMBERSHIP_CANCELLATION_SETTINGS,
   DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS,
   DEFAULT_MEMBERSHIP_NOMINATION_SETTINGS,
@@ -331,11 +333,16 @@ export const SINGLETONS: SingletonSpec[] = [
     fields: ["approvalRequired", "pendingHoldExpiryDays"],
     // Both are non-null (@default); a present null fails the dry-run (#2200).
     // The pendingHoldExpiryDays bounds are the 1..60 the owner confirmed on
-    // #2305 (30 Jul, confirm-by-objection), mirroring quoteResponseTtlDays; the
-    // admin route that enforces them ships with the behaviour in MG2 (#2307).
+    // #2305 (30 Jul, confirm-by-objection), mirroring quoteResponseTtlDays.
+    // Taken from the shared constants rather than written as literals, so the
+    // importer's bounds and MG2's admin-route validator cannot drift apart.
     constraints: {
       approvalRequired: { required: true },
-      pendingHoldExpiryDays: { required: true, min: 1, max: 60 },
+      pendingHoldExpiryDays: {
+        required: true,
+        min: MEMBER_GUEST_PENDING_HOLD_EXPIRY_DAYS_MIN,
+        max: MEMBER_GUEST_PENDING_HOLD_EXPIRY_DAYS_MAX,
+      },
     },
     excluded: {
       // OWNER JUDGEMENT (#2306, D-18), the same class of call as the

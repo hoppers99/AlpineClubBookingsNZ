@@ -83,6 +83,17 @@ export const DEFAULT_MEMBER_GUEST_SETTINGS = {
   openMemberSearchIncludesMinors: false,
 } as const;
 
+/**
+ * Inclusive bounds for `pendingHoldExpiryDays`, mirroring `quoteResponseTtlDays`.
+ *
+ * Declared in this dependency-free leaf, not in `src/lib/member-guest-settings.ts`,
+ * so the config-transfer spec can reference the same two numbers its validator
+ * enforces without pulling the Prisma client into the category module. MG2's
+ * admin route reads them too.
+ */
+export const MEMBER_GUEST_PENDING_HOLD_EXPIRY_DAYS_MIN = 1;
+export const MEMBER_GUEST_PENDING_HOLD_EXPIRY_DAYS_MAX = 60;
+
 /** `InternetBankingPaymentSettings` — read by `loadInternetBankingPaymentSettings`. */
 export const DEFAULT_INTERNET_BANKING_PAYMENT_SETTINGS = {
   holdBedSlots: false,

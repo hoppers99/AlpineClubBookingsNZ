@@ -35,9 +35,10 @@ export type MemberGuestSettingsValues = {
   openMemberSearchIncludesMinors: boolean;
 };
 
-/** Inclusive bounds for `pendingHoldExpiryDays`, mirroring quoteResponseTtlDays. */
-export const MEMBER_GUEST_PENDING_HOLD_EXPIRY_DAYS_MIN = 1;
-export const MEMBER_GUEST_PENDING_HOLD_EXPIRY_DAYS_MAX = 60;
+// The inclusive bounds for pendingHoldExpiryDays live with the defaults in
+// src/config/club-settings-defaults.ts (MEMBER_GUEST_PENDING_HOLD_EXPIRY_DAYS_MIN
+// / _MAX) so the config-transfer spec and MG2's admin route can enforce the same
+// two numbers without importing this Prisma-backed module.
 
 // The admin-payload shape (settings + updatedAt + updatedByMemberId) is
 // deliberately NOT built here: it belongs with the admin GET that returns it,
