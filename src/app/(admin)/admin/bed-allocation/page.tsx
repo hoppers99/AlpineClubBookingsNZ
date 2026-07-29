@@ -850,6 +850,18 @@ export default function AdminBedAllocationPage() {
     });
   }
 
+  // Prefill the range dialog with the GUEST's own stay, not the booking's
+  // envelope: a guest who joins late or leaves early would otherwise be handed
+  // nights they are not booked on, which the server correctly refuses (#2251).
+  // stayEnd is the exclusive checkout date, matching the dialog's Date Out.
+  function guestStayWindow(bookingId: string, bookingGuestId: string) {
+    const guest = payload?.bookings
+      .find((booking) => booking.id === bookingId)
+      ?.guests?.find((item) => item.id === bookingGuestId);
+    if (!guest) return null;
+    return { fromDate: guest.stayStart, toDate: guest.stayEnd };
+  }
+
   function stepWindowByMonths(months: number) {
     const stepped = stepBoardWindowByMonths(fromDate, toDate, months);
     setFromDate(stepped.fromDate);
@@ -862,18 +874,16 @@ export default function AdminBedAllocationPage() {
   // board window.
   function openRangeForGuest(group: BucketGuestGroup) {
     if (!canEditBookings) return;
-    const booking = payload?.bookings.find(
-      (item) => item.id === group.bookingId,
-    );
+    const stay = guestStayWindow(group.bookingId, group.bookingGuestId);
     setRangeTarget({
       bookingGuestId: group.bookingGuestId,
       bookingId: group.bookingId,
       guestName: group.guestName,
       memberName: group.memberName,
       bedId: selectedBeds[group.bookingGuestId] || undefined,
-      fromDate: booking?.checkIn ?? group.stayDates[0] ?? fromDate,
+      fromDate: stay?.fromDate ?? group.stayDates[0] ?? fromDate,
       toDate:
-        booking?.checkOut ??
+        stay?.toDate ??
         formatDateOnly(
           addDaysDateOnly(
             parseDateOnly(group.stayDates[group.stayDates.length - 1]),
@@ -891,15 +901,19 @@ export default function AdminBedAllocationPage() {
     const booking = payload?.bookings.find(
       (item) => item.id === allocation.bookingId,
     );
+    const stay = guestStayWindow(
+      allocation.bookingId,
+      allocation.bookingGuestId,
+    );
     setRangeTarget({
       bookingGuestId: allocation.bookingGuestId,
       bookingId: allocation.bookingId,
       guestName: allocation.guestName,
       memberName: booking?.memberName,
       bedId: allocation.bedId,
-      fromDate: booking?.checkIn ?? allocation.stayDate,
+      fromDate: stay?.fromDate ?? allocation.stayDate,
       toDate:
-        booking?.checkOut ??
+        stay?.toDate ??
         formatDateOnly(addDaysDateOnly(parseDateOnly(allocation.stayDate), 1)),
     });
     setRangeDialogOpen(true);
