@@ -60,7 +60,7 @@ import {
   boardWindowError,
   fitBoardWindow,
   stepBoardWindowByMonths,
-} from "./_components/board-window";
+} from "@/lib/bed-allocation-board-window";
 import { BucketBoard } from "./_components/bucket-board";
 import { RoomTable } from "./_components/room-table";
 import {

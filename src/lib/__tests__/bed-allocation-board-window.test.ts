@@ -5,7 +5,7 @@ import {
   boardWindowError,
   fitBoardWindow,
   stepBoardWindowByMonths,
-} from "@/app/(admin)/admin/bed-allocation/_components/board-window";
+} from "@/lib/bed-allocation-board-window";
 import { addMonthsDateOnly, formatDateOnly, parseDateOnly } from "@/lib/date-only";
 
 /*

@@ -19,6 +19,7 @@ import { BookingEditor, type BookingEditorData } from "@/components/booking-edit
 import { AdditionalPaymentCard } from "@/components/additional-payment-card";
 import { ConfirmDraftButton } from "@/components/confirm-draft-button";
 import { AdminBookingToolsCard } from "@/components/admin/admin-booking-tools-card";
+import { BookingBedAllocationPanel } from "@/components/admin/booking-bed-allocation-panel";
 import { BookingWithheldEmailsBanner } from "@/components/admin/booking-withheld-emails-banner";
 import { getWithheldBookingEmailSummary } from "@/lib/booking-email-suppression";
 import { bookingHasLiveWaitlistOffer } from "@/lib/booking-no-emails-service";
@@ -67,6 +68,7 @@ import {
   isPaymentOwedBookingStatus,
 } from "@/lib/booking-status";
 import { isBookingBedAllocationLocked } from "@/lib/admin-bed-allocation";
+import { formatDateOnly } from "@/lib/date-only";
 import { getBookingProviderMismatches } from "@/lib/booking-provider-mismatches";
 import { loadEmailMessageSettingsForLodge } from "@/lib/email-message-settings";
 import { loadPublicBookingMessages } from "@/lib/booking-message-settings";
@@ -121,6 +123,10 @@ const BOOKING_SECTIONS: SectionNavItem[] = [
   { id: "group", label: "Group Booking" },
   { id: "arrival", label: "Arrival Time" },
   { id: "room-request", label: "Room Request" },
+  // Admin-only (#2252): the card renders behind canSeeAdminTools + the
+  // bedAllocation module flag, and SectionNav prunes anchors whose target id is
+  // absent, so a member never sees this entry.
+  { id: "bed-allocation", label: "Bed Allocation" },
   { id: "directions", label: "Getting There" },
   { id: "payment", label: "Payment" },
   { id: "cancellation", label: "Cancellation" },
@@ -1068,6 +1074,30 @@ export default async function BookingDetailPage({
           isWaitlisted={noEmailsState.isWaitlisted}
           total={withheldEmails.total}
           groups={withheldEmailGroups}
+        />
+      )}
+
+      {/* In-booking bed allocation (#2252). Admin-only by construction — the
+          same gate as the tools card above, so a member (including the booking
+          owner) never receives the component, let alone the data. The
+          server-side module flag matches the routes' own gate, which 404s when
+          bed allocation is off. A booking that cannot hold beds (cancelled,
+          deleted, held) keeps the card and says so honestly, per the owner's
+          29 Jul decision — it is never silently hidden. */}
+      {canSeeAdminTools && modules.bedAllocation && (
+        <BookingBedAllocationPanel
+          bookingId={booking.id}
+          lodgeId={booking.lodgeId}
+          memberName={`${booking.member.firstName} ${booking.member.lastName}`}
+          checkIn={formatDateOnly(booking.checkIn)}
+          checkOut={formatDateOnly(booking.checkOut)}
+          wholeLodgeHold={booking.wholeLodgeHold}
+          bookingStatus={booking.status}
+          isDeleted={isDeleted}
+          guests={booking.guests.map((guest) => ({
+            id: guest.id,
+            name: `${guest.firstName} ${guest.lastName}`,
+          }))}
         />
       )}
 

@@ -745,19 +745,27 @@ describe("view-only section banner coverage (#2160)", () => {
           270  +1  #2259 adds the per-booking "No emails" switch.
           271  +1  #2247 adds "Restore built-in boards" to the display Templates
                page — a static opt-out under that page's existing banner.
+          274  +3  #2252 adds the in-booking Bed allocation panel
+               (`booking-bed-allocation-panel.tsx`): Assign, Remove and the
+               booking-level Confirm, all static opt-outs under the panel's own
+               banner (+1 banner component). Its remove-confirmation dialog
+               keeps its own reason — a dialog is a separate accessibility
+               container the card's banner does not reach — and is a plain
+               Button rather than a ViewOnlyActionButton, matching the shared
+               range dialog (#2251), so it adds no call site and no exception.
       */
       // #2259 adds the per-booking "No emails"
       // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into
       // the Admin tools card's layout — the same shape as the capacity- and
       // exclusive-hold controls beside it, so it keeps its own per-button
       // reason rather than opting out under a banner it cannot prove renders.
-      callSites: 271,
-      optOuts: 237,
-      staticOptOuts: 216,
+      callSites: 274,
+      optOuts: 240,
+      staticOptOuts: 219,
       vouchedOptOuts: 21,
       exceptions: 34,
       exceptionFiles: 17,
-      bannerComponents: 78,
+      bannerComponents: 79,
     });
 
     /*
