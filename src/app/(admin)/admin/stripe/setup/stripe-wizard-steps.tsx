@@ -198,7 +198,7 @@ export function CredentialsStep({
         </div>
       ) : null}
 
-      {!canWrite ? (
+      {canWrite === false ? (
         <div className="flex items-start gap-2 rounded-md border border-border bg-muted p-3 text-sm text-muted-foreground">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
           <span>
@@ -227,7 +227,7 @@ export function CredentialsStep({
           }
           value={secretKey}
           onChange={(e) => setSecretKey(e.target.value)}
-          disabled={!canWrite || saving}
+          disabled={canWrite !== true || saving}
         />
       </div>
 
@@ -250,7 +250,7 @@ export function CredentialsStep({
           }
           value={publishableKey}
           onChange={(e) => setPublishableKey(e.target.value)}
-          disabled={!canWrite || saving}
+          disabled={canWrite !== true || saving}
         />
       </div>
 
@@ -427,7 +427,7 @@ export function WebhookStep({
         description="Paste this into the Stripe webhook endpoint URL field."
       />
 
-      {!canWrite ? (
+      {canWrite === false ? (
         <div className="flex items-start gap-2 rounded-md border border-border bg-muted p-3 text-sm text-muted-foreground">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
           <span>
@@ -457,7 +457,7 @@ export function WebhookStep({
           }
           value={webhookSecret}
           onChange={(e) => setWebhookSecret(e.target.value)}
-          disabled={!canWrite || saving}
+          disabled={canWrite !== true || saving}
         />
       </div>
 

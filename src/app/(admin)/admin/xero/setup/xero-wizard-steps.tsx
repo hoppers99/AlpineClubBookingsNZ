@@ -181,7 +181,7 @@ export function CredentialsStep({
 
       <LegacyEnvWarning vars={context.legacyEnvVars} />
 
-      {!canWrite ? (
+      {canWrite === false ? (
         <div className="flex items-start gap-2 rounded-md border border-border bg-muted p-3 text-sm text-muted-foreground">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
           <span>
@@ -216,7 +216,7 @@ export function CredentialsStep({
           }
           value={clientId}
           onChange={(e) => setClientId(e.target.value)}
-          disabled={!canWrite || saving}
+          disabled={canWrite !== true || saving}
         />
       </div>
 
@@ -245,7 +245,7 @@ export function CredentialsStep({
           }
           value={clientSecret}
           onChange={(e) => setClientSecret(e.target.value)}
-          disabled={!canWrite || saving}
+          disabled={canWrite !== true || saving}
         />
       </div>
 

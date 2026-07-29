@@ -226,7 +226,7 @@ export function WebhooksStep({
             description="In Xero (My Apps → your app → Webhooks), paste this as the delivery URL, then subscribe to the Invoices and Contacts events."
           />
 
-          {!canWrite ? (
+          {canWrite === false ? (
             <div className="flex items-start gap-2 rounded-md border border-border bg-muted p-3 text-sm text-muted-foreground">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
               <span>
@@ -258,7 +258,7 @@ export function WebhooksStep({
               }
               value={webhookKey}
               onChange={(e) => setWebhookKey(e.target.value)}
-              disabled={!canWrite || saving || verifying}
+              disabled={canWrite !== true || saving || verifying}
             />
             <p className="text-xs text-muted-foreground">
               Xero shows this key when you save the webhook. It is encrypted at

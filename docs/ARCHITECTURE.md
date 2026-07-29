@@ -1009,6 +1009,18 @@ area, and the Lodge Display module switch is **support**-gated under a `lodge`
 banner. Before #2324 eight of those nine were plain disabled `Button`s carrying
 no per-control explanation at all.
 
+Those nine also state the narrower reason **visibly**, in their step's own prose,
+and that is not redundant with the per-control reason: a disabled button's
+`title` never fires (`disabled:pointer-events-none`) and its `aria-describedby`
+line is not visible, so the two serve different readers. What the visible half
+must not do is guess. The Xero, Stripe and Google Full-Admin flag is derived from
+the session rather than from the wizard's own fetch, and reading an unresolved
+session as "not a Full Admin" made those notices appear and then vanish for an
+actual Full Admin; it is now tri-state (`boolean | undefined`) like every other
+edit-access signal (#2065), so the notice renders only on a resolved `false`.
+The backups equivalent (`canManageDestination`) comes from the server fetch the
+shell already waits on, so it was never able to flash.
+
 Two things were deliberately left alone. `xero/_components/connection-status-panel.tsx`'s
 connect / reconnect / disconnect buttons ARE finance-gated, matching the Xero
 wizard's banner, but the panel is a GRANDCHILD (the Connect step renders it) and

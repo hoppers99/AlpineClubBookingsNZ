@@ -203,7 +203,7 @@ export function CredentialsStep({
         </Alert>
       ) : null}
 
-      {!canWrite ? (
+      {canWrite === false ? (
         <Alert variant="warning">
           Only a <strong>Full Admin</strong> can enter or replace Google
           credentials. You can view the status here.
@@ -229,7 +229,7 @@ export function CredentialsStep({
           }
           value={clientId}
           onChange={(e) => setClientId(e.target.value)}
-          disabled={!canWrite || saving}
+          disabled={canWrite !== true || saving}
         />
       </div>
 
@@ -252,7 +252,7 @@ export function CredentialsStep({
           }
           value={clientSecret}
           onChange={(e) => setClientSecret(e.target.value)}
-          disabled={!canWrite || saving}
+          disabled={canWrite !== true || saving}
         />
       </div>
 
@@ -306,7 +306,7 @@ export function VerifyStep({
     context.credentials.client_id.set &&
     context.credentials.client_secret.set &&
     !context.needsReentry;
-  const canVerify = context.isFullAdmin && verifyReady;
+  const canVerify = context.isFullAdmin === true && verifyReady;
 
   async function startVerify() {
     setStarting(true);
@@ -385,7 +385,7 @@ export function VerifyStep({
         </Alert>
       )}
 
-      {!context.isFullAdmin ? (
+      {context.isFullAdmin === false ? (
         <Alert variant="warning">
           Only a <strong>Full Admin</strong> can run verification.
         </Alert>
