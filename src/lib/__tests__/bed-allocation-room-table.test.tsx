@@ -67,6 +67,7 @@ describe("RoomTable active drag lane rendering", () => {
         bedOptions={[]}
         onReassignBed={vi.fn()}
         onRemove={vi.fn()}
+        onAssignRange={vi.fn()}
         pendingAllocationIds={new Set()}
         highlightedBookingId=""
         activeDragDates={new Set(["2026-07-02"])}
@@ -140,6 +141,7 @@ describe("RoomTable active drag lane rendering", () => {
         bedOptions={[]}
         onReassignBed={vi.fn()}
         onRemove={vi.fn()}
+        onAssignRange={vi.fn()}
         pendingAllocationIds={new Set()}
         highlightedBookingId="booking-focused"
       />,
@@ -163,6 +165,7 @@ describe("RoomTable bed-type icon (#1675)", () => {
         bedOptions={[]}
         onReassignBed={vi.fn()}
         onRemove={vi.fn()}
+        onAssignRange={vi.fn()}
         pendingAllocationIds={new Set()}
         highlightedBookingId=""
       />,
@@ -290,6 +293,7 @@ describe("RoomTable double-bed sharing (#1701)", () => {
         bedOptions={[]}
         onReassignBed={vi.fn()}
         onRemove={vi.fn()}
+        onAssignRange={vi.fn()}
         pendingAllocationIds={new Set()}
         highlightedBookingId=""
       />,

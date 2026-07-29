@@ -65,6 +65,7 @@ function renderBucket(
       selectedBeds={{ "guest-1": "bed-1" }}
       onSelectBed={vi.fn()}
       onAllocate={vi.fn()}
+      onAssignRange={vi.fn()}
       pendingGuestIds={new Set()}
       highlightedBookingId={highlightedBookingId}
       canEdit={canEdit}

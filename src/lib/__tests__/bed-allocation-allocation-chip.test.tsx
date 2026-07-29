@@ -175,6 +175,7 @@ function renderChip({
       bedOptionGroups={groups}
       onReassignBed={onReassignBed}
       onRemove={onRemove}
+      onAssignRange={vi.fn()}
       pending={false}
       canEdit={canEdit}
     />,

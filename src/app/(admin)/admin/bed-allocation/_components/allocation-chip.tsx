@@ -33,6 +33,9 @@ interface AllocationChipProps {
   bedOptionGroups?: BedOptionGroup[];
   onReassignBed: (bedId: string) => void;
   onRemove: () => void;
+  // #2251 entry point 2: open the range dialog prefilled with this placement's
+  // guest and bed, to extend it across the rest of the stay.
+  onAssignRange: () => void;
   pending: boolean;
   // Tri-state (#2065): `undefined` while the client session resolves; the
   // `!canEdit` idiom treats that as disabled, so no truthy default here.
@@ -45,6 +48,7 @@ export function AllocationChip({
   bedOptionGroups = [],
   onReassignBed,
   onRemove,
+  onAssignRange,
   pending,
   canEdit,
 }: AllocationChipProps) {
@@ -230,6 +234,13 @@ export function AllocationChip({
               </DropdownMenuSubContent>
             </DropdownMenuSub>
           ))}
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            onSelect={onAssignRange}
+            aria-label={`Assign a range of nights for ${allocation.guestName}`}
+          >
+            Assign range…
+          </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem onSelect={onRemove} className="text-destructive">
             Remove allocation

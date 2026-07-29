@@ -94,6 +94,7 @@ describe("GuestChip bed select", () => {
         selectedBedId=""
         onSelectBed={vi.fn()}
         onAllocate={vi.fn()}
+        onAssignRange={vi.fn()}
         pending={false}
         canEdit={true}
       />,
@@ -114,6 +115,7 @@ describe("GuestChip bed select", () => {
         selectedBedId="bed-1"
         onSelectBed={vi.fn()}
         onAllocate={vi.fn()}
+        onAssignRange={vi.fn()}
         pending={false}
         canEdit={true}
       />,
@@ -131,6 +133,7 @@ describe("GuestChip bed select", () => {
         selectedBedId=""
         onSelectBed={vi.fn()}
         onAllocate={vi.fn()}
+        onAssignRange={vi.fn()}
         pending={false}
         canEdit={true}
       />,
@@ -165,6 +168,7 @@ describe("GuestChip bed select", () => {
         selectedBedId=""
         onSelectBed={vi.fn()}
         onAllocate={vi.fn()}
+        onAssignRange={vi.fn()}
         pending={false}
         canEdit={true}
         highlighted

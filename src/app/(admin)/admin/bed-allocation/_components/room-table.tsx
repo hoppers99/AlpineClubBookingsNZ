@@ -47,6 +47,10 @@ interface RoomTableProps {
   bedOptionGroups?: BedOptionGroup[];
   onReassignBed: (allocation: DashboardAllocation, bedId: string) => void;
   onRemove: (allocation: DashboardAllocation) => void;
+  onAssignRange: (allocation: DashboardAllocation) => void;
+  // #2251 decision 3: green/red tinting of the nights the last range operation
+  // wrote and refused, on the bed it targeted, until the admin dismisses it.
+  rangeTint?: { bedId: string; written: Set<string>; refused: Set<string> };
   pendingAllocationIds: Set<string>;
   highlightedBookingId: string;
   activeDragDates?: Set<string>;
@@ -65,6 +69,8 @@ export function RoomTable({
   bedOptionGroups = [],
   onReassignBed,
   onRemove,
+  onAssignRange,
+  rangeTint,
   pendingAllocationIds,
   highlightedBookingId,
   activeDragDates = new Set(),
@@ -169,6 +175,16 @@ export function RoomTable({
                     bedOptionGroups={bedOptionGroups}
                     onReassignBed={onReassignBed}
                     onRemove={onRemove}
+                    onAssignRange={onAssignRange}
+                    rangeTone={
+                      rangeTint && rangeTint.bedId === bed.id
+                        ? rangeTint.written.has(night)
+                          ? "written"
+                          : rangeTint.refused.has(night)
+                            ? "refused"
+                            : undefined
+                        : undefined
+                    }
                     pendingAllocationIds={pendingAllocationIds}
                     highlightedBookingId={highlightedBookingId}
                     activeDragLane={activeDragDates.has(night)}
