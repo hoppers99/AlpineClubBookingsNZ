@@ -3,10 +3,14 @@
 import { useState } from "react";
 import Link from "next/link";
 import { AlertTriangle, CheckCircle2, Loader2 } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { WizardStepHelpers } from "@/components/admin/integration-wizard";
+import {
+  ViewOnlyActionButton,
+  type AncestorViewOnlyBannerProps,
+} from "@/components/admin/view-only-action";
+import { ADMIN_FULL_ADMIN_ONLY_ACTION_REASON } from "@/hooks/use-admin-area-edit-access";
 import {
   MIN_BACKUP_RETENTION_DAYS,
   MAX_BACKUP_RETENTION_DAYS,
@@ -256,13 +260,18 @@ export function CredentialsStep({
       <SuccessAlert message={success} />
 
       <div className="flex items-center gap-3">
-        <Button
+        {/* KEEPS its own reason (#2324). The wizard banner states `support`;
+            writing the S3 credentials additionally needs Full Admin, so a
+            support-edit admin without it sees no banner and a dead button. */}
+        <ViewOnlyActionButton
           type="button"
+          canEdit={canWrite}
+          readOnlyReason={ADMIN_FULL_ADMIN_ONLY_ACTION_REASON}
           onClick={() => void handleSave()}
-          disabled={!canWrite || !dirty || saving}
+          disabled={!dirty || saving}
         >
           {saving ? "Saving…" : bothSet ? "Replace credentials" : "Save credentials"}
-        </Button>
+        </ViewOnlyActionButton>
         {bothSet ? (
           <span className="inline-flex items-center gap-1 text-sm text-success-11">
             <CheckCircle2 className="h-4 w-4" aria-hidden />
@@ -358,13 +367,17 @@ export function DestinationStep({
       <SuccessAlert message={success} />
 
       <div className="flex items-center gap-3">
-        <Button
+        {/* KEEPS its own reason (#2324) — Full Admin, not the banner's
+            `support` scope. Same reasoning as the credentials step above. */}
+        <ViewOnlyActionButton
           type="button"
+          canEdit={canWrite}
+          readOnlyReason={ADMIN_FULL_ADMIN_ONLY_ACTION_REASON}
           onClick={() => void handleSave()}
-          disabled={!canWrite || !bucket.trim() || !dirty || saving}
+          disabled={!bucket.trim() || !dirty || saving}
         >
           {saving ? "Saving…" : "Save destination"}
-        </Button>
+        </ViewOnlyActionButton>
         {context.bucket ? (
           <span className="inline-flex items-center gap-1 text-sm text-success-11">
             <CheckCircle2 className="h-4 w-4" aria-hidden />
@@ -380,10 +393,11 @@ export function DestinationStep({
 export function OperationalStep({
   context,
   helpers,
+  ancestorRendersViewOnlyBanner = false,
 }: {
   context: BackupWizardContext;
   helpers: WizardStepHelpers;
-}) {
+} & AncestorViewOnlyBannerProps) {
   const [enabled, setEnabled] = useState(context.enabled);
   const [retentionDays, setRetentionDays] = useState(context.retentionDays);
   const [saving, setSaving] = useState(false);
@@ -468,13 +482,18 @@ export function OperationalStep({
       <SuccessAlert message={success} />
 
       <div className="flex items-center gap-3">
-        <Button
+        {/* Gated on the wizard's OWN scope (`support`), which is exactly what
+            the shell's banner states — so this one drops its per-button reason
+            and leans on the shell's vouch (#2324). */}
+        <ViewOnlyActionButton
           type="button"
+          canEdit={helpers.canEdit}
+          describeReason={!ancestorRendersViewOnlyBanner}
           onClick={() => void handleSave()}
-          disabled={!canWrite || !dirty || !validRetention || saving}
+          disabled={!dirty || !validRetention || saving}
         >
           {saving ? "Saving…" : "Save"}
-        </Button>
+        </ViewOnlyActionButton>
         {context.enabled ? (
           <span className="inline-flex items-center gap-1 text-sm text-success-11">
             <CheckCircle2 className="h-4 w-4" aria-hidden />
@@ -500,10 +519,11 @@ export function OperationalStep({
 export function VerificationStep({
   context,
   helpers,
+  ancestorRendersViewOnlyBanner = false,
 }: {
   context: BackupWizardContext;
   helpers: WizardStepHelpers;
-}) {
+} & AncestorViewOnlyBannerProps) {
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState("");
 
@@ -564,23 +584,22 @@ export function VerificationStep({
         </p>
       </div>
 
-      {!canRun ? (
-        <div className="flex items-start gap-2 rounded-md border border-border bg-muted p-3 text-sm text-muted-foreground">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-          <span>
-            Running a backup needs support edit access. You can view the result
-            here.
-          </span>
-        </div>
-      ) : null}
-
+      {/* The "you need support edit access" sentence that used to sit here has
+          gone (#2324): the shell's view-only banner states exactly that, for
+          exactly this scope, once at the top of the wizard. Saying it again
+          beside the button was the same statement twice — and it was keyed off
+          `!canRun`, which is also true while the session is still resolving, so
+          it flashed at admins who CAN run a backup. */}
       <ErrorAlert message={error} />
 
       <div className="flex flex-wrap items-center gap-3">
-        <Button
+        {/* `support`-gated, the wizard's own scope — vouched (#2324). */}
+        <ViewOnlyActionButton
           type="button"
+          canEdit={helpers.canEdit}
+          describeReason={!ancestorRendersViewOnlyBanner}
           onClick={() => void runVerification()}
-          disabled={!canRun || blocked}
+          disabled={blocked}
         >
           {context.running || starting ? (
             <>
@@ -590,7 +609,7 @@ export function VerificationStep({
           ) : (
             "Run verification backup"
           )}
-        </Button>
+        </ViewOnlyActionButton>
         {canRun && !context.running && blockedReason ? (
           <span className="text-sm text-warning-11">{blockedReason}</span>
         ) : null}

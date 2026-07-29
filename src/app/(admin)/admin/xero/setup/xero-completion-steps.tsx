@@ -14,6 +14,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { CopyField } from "@/components/admin/integration-wizard";
 import type { WizardStepHelpers } from "@/components/admin/integration-wizard";
+import { ViewOnlyActionButton } from "@/components/admin/view-only-action";
+import { ADMIN_FULL_ADMIN_ONLY_ACTION_REASON } from "@/hooks/use-admin-area-edit-access";
 import { useClubIdentity } from "@/components/club-identity-provider";
 import { MappingsPanel } from "../_components/mappings-panel";
 import { SetupPanels } from "../_components/setup-panels";
@@ -296,14 +298,20 @@ export function WebhooksStep({
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
-            <Button
+            {/* KEEPS its own reason (#2324): Full Admin, not the banner's
+                `finance` scope. The Verify button beside it is not
+                permission-gated at all — it needs a key to be stored, not a
+                permission — so it stays a plain Button. */}
+            <ViewOnlyActionButton
               type="button"
               variant="outline"
+              canEdit={canWrite}
+              readOnlyReason={ADMIN_FULL_ADMIN_ONLY_ACTION_REASON}
               onClick={() => void saveKey()}
-              disabled={!canWrite || !webhookKey.trim() || saving || verifying}
+              disabled={!webhookKey.trim() || saving || verifying}
             >
               {saving ? "Saving…" : keySet ? "Replace key" : "Save key"}
-            </Button>
+            </ViewOnlyActionButton>
             <Button
               type="button"
               onClick={() => void verify()}

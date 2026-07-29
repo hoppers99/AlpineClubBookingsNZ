@@ -11,6 +11,8 @@ import { Label } from "@/components/ui/label";
 import { signIn } from "next-auth/react";
 import { CopyField } from "@/components/admin/integration-wizard";
 import type { WizardStepHelpers } from "@/components/admin/integration-wizard";
+import { ViewOnlyActionButton } from "@/components/admin/view-only-action";
+import { ADMIN_FULL_ADMIN_ONLY_ACTION_REASON } from "@/hooks/use-admin-area-edit-access";
 import type {
   GoogleCredentialKey,
   GoogleWizardContext,
@@ -258,13 +260,17 @@ export function CredentialsStep({
       {success ? <Alert variant="success">{success}</Alert> : null}
 
       <div className="flex items-center gap-3">
-        <Button
+        {/* KEEPS its own reason (#2324): Full Admin, not the banner's
+            `finance` scope. Before #2324 this was a plain disabled Button. */}
+        <ViewOnlyActionButton
           type="button"
+          canEdit={canWrite}
+          readOnlyReason={ADMIN_FULL_ADMIN_ONLY_ACTION_REASON}
           onClick={() => void handleSave()}
-          disabled={!canWrite || !dirty || saving}
+          disabled={!dirty || saving}
         >
           {saving ? "Saving…" : bothSet ? "Replace credentials" : "Save credentials"}
-        </Button>
+        </ViewOnlyActionButton>
         {bothSet ? (
           <span className="text-sm text-success">Both credentials stored</span>
         ) : null}
@@ -293,11 +299,14 @@ export function VerifyStep({
   const verifyFailed =
     searchParams?.get("googleVerifyError") === "1" && !context.verified;
 
-  const canVerify =
-    context.isFullAdmin &&
+  // Split (#2324) into the PERMISSION half and the READINESS half, so the
+  // button can say which one is stopping it. `canVerify` stays as the combined
+  // flag the copy below reads.
+  const verifyReady =
     context.credentials.client_id.set &&
     context.credentials.client_secret.set &&
     !context.needsReentry;
+  const canVerify = context.isFullAdmin && verifyReady;
 
   async function startVerify() {
     setStarting(true);
@@ -385,17 +394,20 @@ export function VerifyStep({
       {error ? <Alert variant="error">{error}</Alert> : null}
 
       <div className="flex flex-wrap items-center gap-3">
-        <Button
+        {/* KEEPS its own reason (#2324): Full Admin, not `finance`. */}
+        <ViewOnlyActionButton
           type="button"
+          canEdit={context.isFullAdmin}
+          readOnlyReason={ADMIN_FULL_ADMIN_ONLY_ACTION_REASON}
           onClick={() => void startVerify()}
-          disabled={!canVerify || starting}
+          disabled={!verifyReady || starting}
         >
           {starting
             ? "Starting…"
             : context.verified
               ? "Verify again"
               : "Verify with Google"}
-        </Button>
+        </ViewOnlyActionButton>
         <Button
           type="button"
           variant="outline"
