@@ -102,6 +102,8 @@ const capacityMocks = vi.hoisted(() => ({
   bookingFindMany: vi.fn(),
   clubModuleSettingsFindUnique: vi.fn(),
   lodgeBedCount: vi.fn(),
+  // #2286: custodian bed holds. Defaults to none.
+  hutLeaderAssignmentFindMany: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -109,6 +111,12 @@ vi.mock("@/lib/prisma", () => ({
     booking: { findMany: capacityMocks.bookingFindMany },
     clubModuleSettings: { findUnique: capacityMocks.clubModuleSettingsFindUnique },
     lodgeBed: { count: capacityMocks.lodgeBedCount },
+    // #2286: the capacity engines read bed-holding hut-leader assignments
+    // (custodian occupancy). No holds by default, so every case below reads
+    // exactly as it did before that feature existed.
+    hutLeaderAssignment: {
+      findMany: capacityMocks.hutLeaderAssignmentFindMany,
+    },
   },
 }));
 
@@ -137,6 +145,8 @@ function expectsRequestConvertedPendingHold(where?: Record<string, unknown>) {
 describe("capacity queries apply capacityHoldingBookingFilter (issue #1254)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // #2286: no custodian bed holds in these cases.
+    capacityMocks.hutLeaderAssignmentFindMany.mockResolvedValue([]);
     capacityMocks.bookingFindMany.mockResolvedValue([]);
     capacityMocks.clubModuleSettingsFindUnique.mockResolvedValue(null);
     capacityMocks.lodgeBedCount.mockResolvedValue(0);

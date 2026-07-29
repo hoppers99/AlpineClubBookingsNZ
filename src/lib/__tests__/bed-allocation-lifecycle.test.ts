@@ -38,6 +38,12 @@ function makeDb(overrides: Record<string, unknown> = {}) {
     lodgeRoom: {
       findMany: vi.fn().mockResolvedValue([]),
     },
+    // #2286: the auto-fill planner is fed custodian bed holds as blocking,
+    // never-evictable unknown occupants. None in these cases, so every
+    // assertion below reads exactly as it did before that feature.
+    hutLeaderAssignment: {
+      findMany: vi.fn().mockResolvedValue([]),
+    },
     // #1387 displacement audit trail.
     auditLog: {
       create: vi.fn().mockResolvedValue({}),
@@ -55,6 +61,11 @@ function makeDb(overrides: Record<string, unknown> = {}) {
   // stranded, so it is inert.
   if (typeof db.bedAllocation?.findFirst !== "function") {
     db.bedAllocation.findFirst = vi.fn().mockResolvedValue(null);
+  }
+  // #2286: guarantee the custodian-hold seam even when a test replaces the
+  // delegate map wholesale via `overrides`.
+  if (typeof db.hutLeaderAssignment?.findMany !== "function") {
+    db.hutLeaderAssignment = { findMany: vi.fn().mockResolvedValue([]) };
   }
   return db;
 }

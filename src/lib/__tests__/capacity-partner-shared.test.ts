@@ -67,6 +67,11 @@ function fakeDb(options: FakeDbOptions = {}) {
     booking: {
       findMany: vi.fn().mockResolvedValue(bookings),
     },
+    // #2286: custodian bed holds are base occupancy here too. None in these
+    // cases, so the partner-shared arithmetic reads exactly as before.
+    hutLeaderAssignment: {
+      findMany: vi.fn().mockResolvedValue([]),
+    },
     bookingGuest: {
       findMany: vi.fn().mockResolvedValue(partnerGuestRows),
     },

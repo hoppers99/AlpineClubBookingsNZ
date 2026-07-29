@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { LodgeSelect, useLodgeOptions } from "@/components/lodge-select";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import {
   DndContext,
@@ -1362,9 +1363,9 @@ export default function AdminBedAllocationPage() {
                   : "These beds are"}{" "}
                 held for a custodian with no booking, so no guest can be placed
                 on them for those nights. Change the dates or the bed on the{" "}
-                <a className="underline" href="/admin/hut-leaders">
+                <Link className="underline" href="/admin/hut-leaders">
                   Hut Leaders
-                </a>{" "}
+                </Link>{" "}
                 page.
               </p>
               <ul className="space-y-1">

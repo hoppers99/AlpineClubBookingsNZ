@@ -1,6 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@/lib/prisma", () => ({ prisma: {} }));
+vi.mock("@/lib/prisma", () => ({
+  prisma: {
+    // #2286: assignBedRange resolves the bed's lodge OUTSIDE its transaction so
+    // the per-lodge advisory lock can be the first statement inside it.
+    lodgeBed: {
+      findUnique: vi.fn().mockResolvedValue({ room: { lodgeId: "lodge-1" } }),
+    },
+  },
+}));
 vi.mock("@/lib/lodge-capacity", () => ({
   getLodgeCapacityStatus: vi.fn(),
   getLodgePartnerSharedCapacityStatus: vi.fn(),
@@ -173,6 +181,12 @@ function buildDb(input: {
       createMany,
       updateMany,
     },
+    // #2286: the range path classifies custodian-held nights as their own
+    // CUSTODIAN_HOLD refusal category. No holds in these cases, so every
+    // refusal below is still the category the test names.
+    hutLeaderAssignment: { findMany: vi.fn().mockResolvedValue([]) },
+    // #2286: the range transaction takes the per-lodge advisory lock first.
+    $executeRaw: vi.fn().mockResolvedValue(1),
     auditLog: { create: auditCreate },
   };
 

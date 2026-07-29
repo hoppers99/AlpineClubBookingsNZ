@@ -59,7 +59,6 @@ import {
   findAnyCustodianHoldsForBeds,
   findCustodianBedHolds,
   findFutureCustodianHoldsForBed,
-  type CustodianBedHold,
 } from "@/lib/custodian-occupancy";
 import { prisma } from "@/lib/prisma";
 
