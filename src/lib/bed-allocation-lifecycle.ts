@@ -16,6 +16,10 @@ import {
   getTodayDateOnly,
 } from "@/lib/date-only";
 import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
+import {
+  custodianOccupiedBedNightsForPlanner,
+  findCustodianBedHolds,
+} from "@/lib/custodian-occupancy";
 import { lodgeNullTolerantScope } from "@/lib/lodges";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
@@ -755,6 +759,22 @@ async function autoAllocateMissingBedNights({
     })),
   })) satisfies BedAllocationRoom[];
 
+  // Custodian bed holds (#2286): a bed held for a season by a hut-leader
+  // assignment has no Booking and no BedAllocation row, so it is invisible to
+  // `existingAllocations` above. Feed it to the planner as #1768 "unknown
+  // occupant" rows — blocking, NEVER evictable (so a displacement can never
+  // move a booking onto it either) and conservative for room mix.
+  const custodianHolds = await findCustodianBedHolds({
+    lodgeId,
+    from: envelope.checkIn,
+    toExclusive: envelope.checkOut,
+    db,
+  });
+  const envelopeNights = eachDateOnlyInRange(
+    envelope.checkIn,
+    envelope.checkOut,
+  );
+
   const plan = buildFirstFitBedAllocationPlan({
     enabled: true,
     // #1387: capacity-holding bookings get first claim; a blocking provisional
@@ -763,39 +783,42 @@ async function autoAllocateMissingBedNights({
     prioritizeCapacityHolding: true,
     rooms: plannerRooms,
     bookings: plannerBookings,
-    occupiedBedNights: existingAllocations.map((allocation) => ({
-      bedId: allocation.bedId,
-      bookingId: allocation.bookingId,
-      bookingGuestId: allocation.bookingGuestId,
-      roomId: allocation.roomId,
-      stayDate: allocation.stayDate,
-      ageTier: allocation.bookingGuest.ageTier,
-      approvedAt: allocation.approvedAt,
-      // #1677: newest provisional bookings are evicted first when a held
-      // booking needs a whole room.
-      bookingCreatedAt: allocation.booking?.createdAt ?? null,
-      // #1677: a stay extending past the loaded envelope is only partially
-      // visible, so a whole-stay move is impossible — treat it as
-      // non-displaceable (mirrors the holdsCapacity-undefined default).
-      stayExtendsBeyondWindow: Boolean(
-        allocation.booking &&
-          ((allocation.booking.checkIn &&
-            allocation.booking.checkIn < envelope.checkIn) ||
-            (allocation.booking.checkOut &&
-              allocation.booking.checkOut > envelope.checkOut)),
-      ),
-      holdsCapacity: allocation.booking
-        ? bookingHoldsCapacity({
-            status: allocation.booking.status,
-            isRequestConverted: Boolean(
-              allocation.booking.originBookingRequest,
-            ),
-            hasAdminCapacityHold: Boolean(
-              allocation.booking.adminCapacityHoldAt,
-            ),
-          })
-        : false,
-    })),
+    occupiedBedNights: [
+      ...custodianOccupiedBedNightsForPlanner(custodianHolds, envelopeNights),
+      ...existingAllocations.map((allocation) => ({
+        bedId: allocation.bedId,
+        bookingId: allocation.bookingId,
+        bookingGuestId: allocation.bookingGuestId,
+        roomId: allocation.roomId,
+        stayDate: allocation.stayDate,
+        ageTier: allocation.bookingGuest.ageTier,
+        approvedAt: allocation.approvedAt,
+        // #1677: newest provisional bookings are evicted first when a held
+        // booking needs a whole room.
+        bookingCreatedAt: allocation.booking?.createdAt ?? null,
+        // #1677: a stay extending past the loaded envelope is only partially
+        // visible, so a whole-stay move is impossible — treat it as
+        // non-displaceable (mirrors the holdsCapacity-undefined default).
+        stayExtendsBeyondWindow: Boolean(
+          allocation.booking &&
+            ((allocation.booking.checkIn &&
+              allocation.booking.checkIn < envelope.checkIn) ||
+              (allocation.booking.checkOut &&
+                allocation.booking.checkOut > envelope.checkOut)),
+        ),
+        holdsCapacity: allocation.booking
+          ? bookingHoldsCapacity({
+              status: allocation.booking.status,
+              isRequestConverted: Boolean(
+                allocation.booking.originBookingRequest,
+              ),
+              hasAdminCapacityHold: Boolean(
+                allocation.booking.adminCapacityHoldAt,
+              ),
+            })
+          : false,
+      })),
+    ],
   });
 
   if (plan.allocations.length === 0) {
