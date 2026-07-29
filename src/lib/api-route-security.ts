@@ -269,6 +269,33 @@ export type MixedMethodApiRouteMetadata = {
  * boundary and lets the boundary test enforce per-method guards (issue #812).
  */
 export const mixedMethodApiRoutes = {
+  // #2263 — recorded here for the RATIONALE, not because the file mixes
+  // boundaries. Both member whole-lodge routes are single-method and wholly
+  // member-boundary; the reason string is the documented home for a route whose
+  // response shape is deliberately uniform, and writing it down here keeps the
+  // per-method guard enforced (every exported method must be documented and must
+  // carry a session guard). They are POINTEDLY ABSENT from
+  // `explicitPublicApiRoutes`: listing them there would EXEMPT them from the
+  // boundary test's guard check (api-route-boundaries.test.ts returns early for
+  // public-registered routes), which is the opposite of what is wanted.
+  "src/app/api/booking-requests/whole-lodge/route.ts": {
+    methods: {
+      POST: {
+        boundary: "member",
+        reason:
+          "Signed-in member submits a whole-lodge (sole-occupancy) booking request (#2263, epic #2245). requireActiveSession; the owning member comes from the session and a memberId in the body is never read. Creates only a VERIFIED BookingRequest with exclusivityRequested=true — never a Booking, never a hold, no capacity is reserved. Rate limited per-IP and per-member (5/hr each, no cheaper than the public school door) with a 2-open-request cap enforced in the service. Its success body is a module-level FROZEN constant, byte-identical for every schema-valid submission and echoing nothing the member sent, and the handler issues NO availability, occupancy, season or pricing query at all — so neither the bytes nor the timing can tell a member whether the lodge is free, full, or already exclusively held for another group (ADR-001 decision 6 / D11).",
+      },
+    },
+  },
+  "src/app/api/booking-requests/whole-lodge/[id]/withdraw/route.ts": {
+    methods: {
+      POST: {
+        boundary: "member",
+        reason:
+          "Signed-in member withdraws their OWN pending whole-lodge request (#2263, D3). requireActiveSession; ownership is part of the status-guarded claim (the WHERE names requestedByMemberId), so there is no read-then-write window and another member's request id behaves exactly like a non-existent one. Refuses (409) any request that holds capacity, because this path has no hold-release machinery and cancelling such a row would strand an AWAITING_REVIEW hold forever. Rate limited per-IP and per-member; the success body is a frozen constant.",
+      },
+    },
+  },
   "src/app/api/members/[id]/photo/route.ts": {
     methods: {
       GET: {

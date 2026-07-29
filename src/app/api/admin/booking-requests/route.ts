@@ -56,6 +56,9 @@ export async function GET(req: NextRequest) {
         request.pricedByMemberId,
         request.reviewedByMemberId,
         request.convertedMemberId,
+        // #2263: the member who submitted a whole-lodge request, so the queue
+        // can name them on the "Member" badge row.
+        request.requestedByMemberId,
       ])
     )
   ).filter((id): id is string => Boolean(id));
@@ -107,6 +110,9 @@ export async function GET(req: NextRequest) {
       : null,
     reviewedByMemberName: request.reviewedByMemberId
       ? reviewerNames.get(request.reviewedByMemberId) ?? null
+      : null,
+    requestedByMemberName: request.requestedByMemberId
+      ? reviewerNames.get(request.requestedByMemberId) ?? null
       : null,
     latestQuote: latestQuoteByRequestId.has(request.id)
       ? {
