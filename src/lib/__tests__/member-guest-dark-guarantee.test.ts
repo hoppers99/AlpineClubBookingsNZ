@@ -42,6 +42,7 @@ import {
 } from "@/config/modules";
 import { DEFAULT_MEMBER_GUEST_SETTINGS } from "@/config/club-settings-defaults";
 import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
+import { buildClubModuleSettingsPayload } from "@/lib/module-settings";
 
 // Test helper: reads a fixed repo file under process.cwd(); the path is
 // test-controlled, not user input.
@@ -640,7 +641,40 @@ describe("the module flag itself gates nothing yet", () => {
     const definition = MODULE_DEFINITIONS.memberGuests;
     expect(definition.key).toBe("memberGuests");
     expect(definition.label.length).toBeGreaterThan(0);
+    // The DESCRIPTION has to say it too, not just the dependency note: it is the
+    // first line on the card, above the badge and the note.
+    expect(definition.description).toMatch(/^Not available yet — /);
     expect(definition.dependencies.join(" ")).toMatch(/not available yet/i);
+  });
+
+  it("never reports itself ready, even switched on (D-17)", () => {
+    // The stub module is the one place an admin can SEE this feature, so it must
+    // not look live. Without this, switching it on produced the ordinary
+    // "... is enabled." message and a green badge over a feature that cannot
+    // run — which is what made the CHANGELOG and CONFIGURATION sentences about
+    // the switch saying so "plainly" not quite true as written.
+    const statusFor = (memberGuests: boolean) => {
+      const module = buildClubModuleSettingsPayload({ memberGuests }).modules.find(
+        (entry) => entry.key === "memberGuests",
+      );
+      expect(module, "memberGuests missing from the module payload").toBeDefined();
+      return module!;
+    };
+
+    expect(statusFor(false).readiness.status).toBe("admin_disabled");
+
+    const on = statusFor(true);
+    expect(on.adminEnabled).toBe(true);
+    expect(on.readiness.status).toBe("not_available_yet");
+    expect(on.readiness.message).toMatch(/not available in this version/i);
+    expect(on.readiness.status).not.toBe("ready");
+
+    // ...and the branch is one module wide, not a blanket over the registry: an
+    // ordinary credential-free module switched on is still "ready".
+    const notices = buildClubModuleSettingsPayload({ memberNotices: true }).modules.find(
+      (entry) => entry.key === "memberNotices",
+    );
+    expect(notices!.readiness.status).toBe("ready");
   });
 });
 

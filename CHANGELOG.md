@@ -12,9 +12,11 @@ All notable public reference-release changes should be recorded here.
   "Add another member as a guest" switch on Admin > Modules, and the settings
   row that will hold the club's policy — and **deliberately changes nothing you
   can see or do**. Adding somebody outside your own family group is still
-  declined exactly as before, whether the new module switch is on or off, and
-  the switch's own description on the Modules page says plainly that the
-  feature arrives in a later update. That is on purpose: the consent request
+  declined exactly as before, whether the new module switch is on or off — and
+  the switch says so itself. Its description on **Admin → Modules** opens with
+  "Not available yet", and switching it on shows a **Not available yet** badge
+  instead of the usual green **Enabled** one, so nobody is left thinking a live
+  feature just came on. That is on purpose: the consent request
   emails, the approval screen, and the timer that releases a held bed when
   nobody answers all arrive together in the next change, so there is never a
   version where turning the switch on could hold beds for approvals that

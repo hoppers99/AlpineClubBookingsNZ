@@ -278,8 +278,13 @@ export const MODULE_DEFINITIONS: Record<ModuleKey, ModuleDefinition> = {
   memberGuests: {
     key: "memberGuests",
     label: "Add another member as a guest",
+    // The "Not available yet" prefix is load-bearing, not decoration (D-17).
+    // The description is the FIRST thing on the Modules card, above the
+    // readiness badge, so an admin reads it before anything else — and
+    // readinessMessage() in module-settings.ts refuses to report this module
+    // "ready" even when it is switched on, for the same reason.
     description:
-      "Lets a member add another club member — outside their own family group — as a guest on their booking, with the other member's consent.",
+      "Not available yet — this switch does nothing in this version. Lets a member add another club member, outside their own family group, as a guest on their booking with that member's consent.",
     dependencies: [
       "Not available yet: this switch does nothing in this version. Adding a member outside your own family group is still declined whether it is on or off. The feature, its consent emails, and its settings arrive in a later update.",
     ],
