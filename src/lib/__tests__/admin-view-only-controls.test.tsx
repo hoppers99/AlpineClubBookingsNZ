@@ -1727,6 +1727,11 @@ describe("AdminDisplayTemplatesPage view-only gating (#1940, lodge)", () => {
       "/api/admin/display/templates": { templates: [TEMPLATE] },
       "/api/admin/display/layouts": { layouts: [] },
       "/api/admin/lodges": { lodges: [] },
+      // The token assistant's useDisplayLodgeConfig fetch (#2248). Stubbed
+      // deliberately: without this the suite's unstubbed-fetch tripwire fires
+      // but is silently absorbed by the hook's own catch — this keeps the
+      // fetch an explicit, answered request rather than a tolerated error.
+      "/api/admin/display/lodge-config": { lodgeName: "Test Lodge", displayConfig: {} },
     });
   });
   afterEach(() => {

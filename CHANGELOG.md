@@ -4,6 +4,30 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Writing a Lodge TV footer or CSS override no longer means remembering the
+  tokens (#2248).** Every field where a board's HTML or CSS is typed by hand —
+  the Visual builder's **Footer HTML**, **CSS overrides** and a zone's **HTML
+  block**, and the CSS and footer fields on the advanced **Templates** page —
+  now carries a small **Insert token** button on its label row. It opens a
+  searchable picker listing only what that field actually accepts: on an HTML
+  field, the standard tokens (`{{lodge-name}}`, `{{display-date}}`) and the
+  preview lodge's saved `{{config:…}}` keys, each row showing the value
+  currently saved on that lodge — so you pick "the Wi-Fi one" rather than
+  remembering a slug — plus a free-text path that turns anything you type into
+  `{{config:<your-key>}}`; on a CSS field, the board's own
+  `var(--display-…)` palette and the club theme colours, inserted ready to
+  use. The token lands exactly where your cursor was, replacing any selected
+  text — never tacked onto the end — and focus returns to the field with the
+  inserted token selected, so you can keep typing or type over it. A key with
+  no value saved yet can still be inserted: the picker warns, before you press
+  Enter, that the wall will show a visible `⟨config:key?⟩` placeholder until
+  the value is filled in on the lodge's display settings, and a key that
+  breaks the naming rules is refused with the rules (and a fixed-up
+  suggestion) instead of silently inserting something the screen would never
+  match. The whole picker is keyboard operable, the existing explanatory text
+  under each field stays put, and one shared component drives all five
+  fields so their behaviour cannot drift apart.
+
 - **The lobby display's built-in boards can be restored on a club that never
   got them, and the three words the screen uses are finally defined (#2247).**
   A club whose database was created before the lobby display existed had none
