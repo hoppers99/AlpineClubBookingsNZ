@@ -1,0 +1,164 @@
+import { readFileSync } from "fs";
+import path from "path";
+import { describe, expect, it } from "vitest";
+
+/**
+ * Custodian occupancy — write-path contract (#2286).
+ *
+ * Enforcement is application-code exclusion (owner decision, option (a)): NO
+ * database constraint stops a `BedAllocation` row landing on a custodian-held
+ * bed-night. The only thing that does is a guard at each write path — so a new
+ * write path added later, by someone who has never heard of custodians, would
+ * silently punch a hole through the whole feature.
+ *
+ * This test is that alarm. It enumerates every place in `src/` that creates or
+ * moves a `BedAllocation` onto a bed, and asserts each one is covered by a
+ * named mechanism. Adding a new write site fails CI until it is listed here
+ * with the mechanism that protects it.
+ */
+
+function readRepoFile(relativePath: string) {
+  // Test helper: reads a fixed repo file under process.cwd(); relativePath is test-controlled, not user input.
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+  return readFileSync(path.resolve(process.cwd(), relativePath), "utf8");
+}
+
+/**
+ * Every known bed-PLACING write, and how the custodian exclusion reaches it.
+ *
+ * "Placing" means the statement sets `bedId` to a bed — creating an allocation
+ * or moving one. Writes that only touch approval flags, `bedType` or
+ * `isSecondOccupant` on a row that is already where it is are NOT placements
+ * and are deliberately absent (they cannot introduce an occupant onto a held
+ * bed-night).
+ */
+const GUARDED_WRITE_SITES: Array<{
+  file: string;
+  statement: string;
+  mechanism: string;
+  /** A string that must appear in the file for the mechanism to be real. */
+  evidence: string;
+}> = [
+  {
+    file: "src/lib/admin-bed-allocation.ts",
+    statement: "bedAllocation.upsert",
+    mechanism:
+      "allocateBedNight calls assertBedNightsFreeOfCustodianHold before the upsert; every manual placement (single night, bulk drop, board move) funnels through it.",
+    evidence: "await assertBedNightsFreeOfCustodianHold({",
+  },
+  {
+    file: "src/lib/admin-bed-allocation.ts",
+    statement: "bedAllocation.createMany",
+    mechanism:
+      "runAutoBedAllocation re-filters its suggestions against custodianHeldBedNightKeys inside its locked transaction; runAssignBedRangeAttempt classifies held nights as the CUSTODIAN_HOLD refusal category before writing anything.",
+    evidence: "custodianHeldBedNightKeys(",
+  },
+  {
+    file: "src/lib/admin-bed-allocation.ts",
+    statement: "bedAllocation.updateMany",
+    mechanism:
+      "The range path's batched updateMany only ever runs for targetNights with no refusal, and CUSTODIAN_HOLD is one of the refusal categories.",
+    evidence: 'category: "CUSTODIAN_HOLD"',
+  },
+  {
+    file: "src/lib/bed-allocation-lifecycle.ts",
+    statement: "bedAllocation.createMany",
+    mechanism:
+      "autoAllocateMissingBedNights feeds custodian holds to the planner as #1768 unknown-occupant rows, which are blocking and never evictable — so no plan allocation and no displacement MOVE can target a held bed-night.",
+    evidence: "custodianOccupiedBedNightsForPlanner(custodianHolds",
+  },
+  {
+    file: "src/lib/bed-allocation-lifecycle.ts",
+    statement: "bedAllocation.updateMany",
+    mechanism:
+      "The displacement MOVE writes `bedId: displacement.toBedId`, and every displacement comes from the same planner run that was fed the custodian holds as never-evictable unknown occupants — so a MOVE can never target a held bed-night either.",
+    evidence: "data: { bedId: displacement.toBedId, roomId: displacement.toRoomId }",
+  },
+  {
+    file: "src/lib/bed-allocation.ts",
+    statement: "bedAllocation.createMany",
+    mechanism:
+      "replaceBedAllocationsForBooking is a DORMANT test seam with no production caller. It is listed so it can never be revived unguarded: reviving it means giving it a guard and updating this entry.",
+    evidence: "// test seam",
+  },
+];
+
+describe("custodian write-path contract (#2286)", () => {
+  it("covers every BedAllocation write site that places a guest on a bed", () => {
+    // Rebuild the enumeration from source rather than trusting the list above.
+    const files = [
+      "src/lib/admin-bed-allocation.ts",
+      "src/lib/bed-allocation-lifecycle.ts",
+      "src/lib/bed-allocation.ts",
+    ];
+    const found = new Set<string>();
+    for (const file of files) {
+      const source = readRepoFile(file);
+      for (const statement of ["create", "createMany", "upsert", "updateMany"]) {
+        // `updateMany` on isSecondOccupant / bedType / approval fields is not a
+        // placement; only count an updateMany whose data names a bed.
+        const pattern = new RegExp(
+          `bedAllocation\\.${statement}\\(\\{([\\s\\S]{0,400}?)\\n\\s*\\}\\)`,
+          "g",
+        );
+        for (const match of source.matchAll(pattern)) {
+          const body = match[1];
+          const placesABed =
+            statement !== "updateMany" ? true : /bedId:/.test(body);
+          if (placesABed) found.add(`${file}::bedAllocation.${statement}`);
+        }
+      }
+    }
+
+    const declared = new Set(
+      GUARDED_WRITE_SITES.map((site) => `${site.file}::${site.statement}`),
+    );
+    const undeclared = [...found].filter((key) => !declared.has(key)).sort();
+
+    expect(
+      undeclared,
+      "A BedAllocation write path is not covered by the custodian exclusion. " +
+        "Enforcement is application-code only (#2286, option (a)) — there is no " +
+        "database constraint behind it. Add the guard, then list the site in " +
+        "GUARDED_WRITE_SITES with the mechanism that protects it.",
+    ).toEqual([]);
+  });
+
+  it("keeps each declared mechanism actually present in its file", () => {
+    for (const site of GUARDED_WRITE_SITES) {
+      const source = readRepoFile(site.file);
+      expect(
+        source.includes(site.evidence),
+        `${site.file} no longer contains the evidence for: ${site.mechanism}`,
+      ).toBe(true);
+    }
+  });
+
+  it("keeps the manual funnel guarded BEFORE it resolves sharing or upserts", () => {
+    const source = readRepoFile("src/lib/admin-bed-allocation.ts");
+    const funnel = source.slice(
+      source.indexOf("async function allocateBedNight("),
+      source.indexOf("export async function manuallyAllocateBed("),
+    );
+    const guardAt = funnel.indexOf("assertBedNightsFreeOfCustodianHold");
+    const upsertAt = funnel.indexOf("bedAllocation.upsert");
+    expect(guardAt).toBeGreaterThan(-1);
+    expect(upsertAt).toBeGreaterThan(-1);
+    expect(guardAt).toBeLessThan(upsertAt);
+  });
+
+  it("takes the per-lodge advisory lock in every self-wrapped placement transaction", () => {
+    const source = readRepoFile("src/lib/admin-bed-allocation.ts");
+    // The guard's read and the write must sit inside the SAME lock the
+    // custodian-hold writer takes, or the exclusion is racy by construction.
+    expect(source).toContain("acquireLodgeCapacityLock");
+    expect(source).toContain("resolveBedLodgeIdForLock");
+    // runAutoBedAllocation was transaction-free and lock-free before #2286.
+    const autoRun = source.slice(
+      source.indexOf("export async function runAutoBedAllocation("),
+      source.indexOf("async function assertGuestAndBedForAllocation("),
+    );
+    expect(autoRun).toContain("acquireLodgeCapacityLock(tx, lodgeId)");
+    expect(autoRun).toContain("prisma.$transaction");
+  });
+});

@@ -1902,13 +1902,16 @@ export async function getBedAllocationDashboard(input: {
   // planner as #1768 "unknown occupant" rows — blocking, never evictable, and
   // conservative for room mix — so no suggestion can ever target a held
   // bed-night. `toExclusive` is the day AFTER the board's inclusive last night.
-  const rangeFrom = parseDateOnly(input.range.fromDate);
-  const rangeToExclusive = addDaysDateOnly(parseDateOnly(input.range.toDate), 1);
-  const rangeNights = eachDateOnlyInRange(rangeFrom, rangeToExclusive);
+  // The board's range is HALF-OPEN — `toDate` is the date-out column, not the
+  // last night (parseBedAllocationDateRange derives its night count with
+  // eachDateOnlyInRange(from, to)). The custodian API takes the same shape, so
+  // `to` passes straight through as the exclusive end; adding a day here would
+  // hold a bed on a night the board never renders.
+  const rangeNights = eachDateOnlyInRange(input.range.from, input.range.to);
   const custodianBedHolds = await findCustodianBedHolds({
     lodgeId: input.lodgeId,
-    from: rangeFrom,
-    toExclusive: rangeToExclusive,
+    from: input.range.from,
+    toExclusive: input.range.to,
     db,
   });
   const custodianHolds: DashboardCustodianHold[] = custodianBedHolds.map(
