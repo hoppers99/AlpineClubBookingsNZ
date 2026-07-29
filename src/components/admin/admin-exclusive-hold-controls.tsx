@@ -177,8 +177,8 @@ export function AdminExclusiveHoldControls({
     // #2285: lead with the destruction. Setting the hold deletes every bed
     // assignment this booking owns — including ones placed by hand and ones an
     // admin approved — because a held group takes the whole lodge and is never
-    // placed on individual beds. The old copy said only "the booking itself is
-    // unchanged"-style reassurance and never mentioned the beds at all.
+    // placed on individual beds. The old copy described only the capacity
+    // effect and never mentioned the beds at all.
     const confirmed = await confirm({
       title: "Set the exclusive whole-lodge hold?",
       description:
