@@ -1,7 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { CircleHelp, LoaderCircle, RotateCcw, Save } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  CircleHelp,
+  Eye,
+  LoaderCircle,
+  RotateCcw,
+  Save,
+} from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -19,13 +27,20 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   emptyWhakapapaCurlData,
   emptyWhakapapaSectionVisibility,
+  emptyWhakapapaSourceConfig,
+  WHAKAPAPA_DEFAULT_SELECTORS,
+  WHAKAPAPA_SELECTOR_KEYS,
   type WhakapapaCurlData,
   type WhakapapaSectionVisibility,
+  type WhakapapaSelectorKey,
+  type WhakapapaSourceConfig,
 } from "@/lib/whakapapa-report";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import {
@@ -43,11 +58,34 @@ const VISIBILITY_SECTIONS: {
   { key: "facilities", label: "Facilities" },
   { key: "foodAndDrink", label: "Food & Drink" },
   { key: "conditions", label: "Mountain Conditions" },
+  { key: "trails", label: "Trails" },
 ];
+
+const SELECTOR_LABELS: Record<WhakapapaSelectorKey, string> = {
+  roadAreaTitle: "Road: area title",
+  roadStatus: "Road: open/closed badge",
+  roadWheelRequirements: "Road: wheel requirements",
+  roadContent: "Road: road content",
+  sectionWrapper: "Group: section wrapper",
+  sectionHeading: "Group: section heading",
+  sectionItems: "Group: items container",
+  item: "Item: row",
+  itemName: "Item: name",
+  itemStatus: "Item: status badge",
+  conditionRow: "Conditions: location row",
+  conditionTitle: "Conditions: location name",
+  conditionTemperature: "Conditions: temperature",
+  trailsHeadingId: "Trails: heading id",
+  trailArea: "Trails: sub-area",
+  trailAreaName: "Trails: sub-area name",
+  trailDifficultyIcon: "Trails: difficulty icon",
+  trailSubInfo: "Trails: groomed/size text",
+};
 
 type AdminMountainConditionsRecord = {
   source: string;
   payload: WhakapapaCurlData;
+  config: WhakapapaSourceConfig;
   fetchedAt: string;
   frozenUntil: string | null;
   updatedAt: string;
@@ -58,6 +96,21 @@ type ApiResponse = {
   message?: string;
   error?: string;
 };
+
+type PreviewResponse = {
+  preview?: WhakapapaCurlData;
+  message?: string;
+  error?: string;
+};
+
+function configToForm(config: WhakapapaSourceConfig | undefined) {
+  const base = config ?? emptyWhakapapaSourceConfig();
+  const overrides = {} as Record<WhakapapaSelectorKey, string>;
+  for (const key of WHAKAPAPA_SELECTOR_KEYS) {
+    overrides[key] = base.selectorOverrides[key] ?? "";
+  }
+  return { sourceUrl: base.sourceUrl, overrides };
+}
 
 function formatDateTime(value: string | null | undefined) {
   if (!value) {
@@ -89,6 +142,16 @@ export function MountainConditionsPanel() {
   const [visibility, setVisibility] = useState<WhakapapaSectionVisibility>(
     emptyWhakapapaSectionVisibility(),
   );
+  const [sourceUrl, setSourceUrl] = useState(
+    emptyWhakapapaSourceConfig().sourceUrl,
+  );
+  const [selectorOverrides, setSelectorOverrides] = useState<
+    Record<WhakapapaSelectorKey, string>
+  >(() => configToForm(undefined).overrides);
+  const [savingConfig, setSavingConfig] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
+  const [showSelectors, setShowSelectors] = useState(false);
+  const [previewJson, setPreviewJson] = useState<string | null>(null);
   const [error, setError] = useState<string>("");
   // Sampled whenever the record is (re)loaded so the frozen check below can
   // stay pure during render (Date.now() must not run mid-render).
@@ -111,11 +174,17 @@ export function MountainConditionsPanel() {
       setVisibility(
         nextRecord?.payload.visibility ?? emptyWhakapapaSectionVisibility(),
       );
+      const form = configToForm(nextRecord?.config);
+      setSourceUrl(form.sourceUrl);
+      setSelectorOverrides(form.overrides);
     } catch (loadError) {
       setRecord(null);
       setRecordSyncedAt(Date.now());
       setRawJson(prettyJson(emptyWhakapapaCurlData()));
       setVisibility(emptyWhakapapaSectionVisibility());
+      const form = configToForm(undefined);
+      setSourceUrl(form.sourceUrl);
+      setSelectorOverrides(form.overrides);
       setError(
         loadError instanceof Error
           ? loadError.message
@@ -230,6 +299,80 @@ export function MountainConditionsPanel() {
       toast.error("Section visibility save failed");
     } finally {
       setSavingVisibility(false);
+    }
+  }
+
+  function buildConfigPayload(): WhakapapaSourceConfig {
+    const overrides: Partial<Record<WhakapapaSelectorKey, string>> = {};
+    for (const key of WHAKAPAPA_SELECTOR_KEYS) {
+      const value = selectorOverrides[key]?.trim();
+      if (value) {
+        overrides[key] = value;
+      }
+    }
+    return { sourceUrl: sourceUrl.trim(), selectorOverrides: overrides };
+  }
+
+  async function saveConfig() {
+    setSavingConfig(true);
+    setError("");
+    setForbidden(false);
+    try {
+      const response = await fetch("/api/admin/mountain-conditions", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config: buildConfigPayload() }),
+      });
+      const body = (await response.json()) as ApiResponse;
+      if (!response.ok) {
+        if (response.status === 403) setForbidden(true);
+        throw new Error(body.error || "Failed to save source configuration");
+      }
+
+      setRecord(body.record);
+      setRecordSyncedAt(Date.now());
+      const form = configToForm(body.record?.config);
+      setSourceUrl(form.sourceUrl);
+      setSelectorOverrides(form.overrides);
+      toast.success(body.message || "Source configuration saved");
+    } catch (configError) {
+      setError(
+        configError instanceof Error
+          ? configError.message
+          : "Failed to save source configuration",
+      );
+      toast.error("Source configuration save failed");
+    } finally {
+      setSavingConfig(false);
+    }
+  }
+
+  async function previewConfig() {
+    setPreviewing(true);
+    setError("");
+    setForbidden(false);
+    setPreviewJson(null);
+    try {
+      const response = await fetch("/api/admin/mountain-conditions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ preview: true, config: buildConfigPayload() }),
+      });
+      const body = (await response.json()) as PreviewResponse;
+      if (!response.ok) {
+        if (response.status === 403) setForbidden(true);
+        throw new Error(body.error || "Preview failed");
+      }
+
+      setPreviewJson(body.preview ? prettyJson(body.preview) : "");
+      toast.success(body.message || "Preview generated");
+    } catch (previewError) {
+      setError(
+        previewError instanceof Error ? previewError.message : "Preview failed",
+      );
+      toast.error("Preview failed");
+    } finally {
+      setPreviewing(false);
     }
   }
 
@@ -410,6 +553,125 @@ export function MountainConditionsPanel() {
         </CardContent>
       </Card>
 
+      <Card className="mt-4">
+        <CardHeader>
+          <CardTitle>Source &amp; selectors</CardTitle>
+          <CardDescription>
+            The report URL the site scrapes, plus optional selector overrides for
+            when the upstream page structure changes. Leave a selector blank to
+            use the built-in default. Use <b>Preview</b> to test before saving —
+            nothing is stored until you click <b>Save configuration</b>.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="whakapapa-source-url">Report URL</Label>
+            <Input
+              id="whakapapa-source-url"
+              type="url"
+              inputMode="url"
+              value={sourceUrl}
+              onChange={(event) => setSourceUrl(event.target.value)}
+              placeholder={emptyWhakapapaSourceConfig().sourceUrl}
+              readOnly={!canEdit}
+              spellCheck={false}
+            />
+            <p className="text-xs text-muted-foreground">
+              Must be an https URL on whakapapa.com or snow.nz.
+            </p>
+          </div>
+
+          <div>
+            <button
+              type="button"
+              onClick={() => setShowSelectors((open) => !open)}
+              className="flex items-center gap-1 text-sm font-medium text-foreground"
+              aria-expanded={showSelectors}
+            >
+              {showSelectors ? (
+                <ChevronDown className="h-4 w-4" />
+              ) : (
+                <ChevronRight className="h-4 w-4" />
+              )}
+              Advanced: element selectors
+            </button>
+            {showSelectors ? (
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                {WHAKAPAPA_SELECTOR_KEYS.map((key) => (
+                  <div key={key} className="space-y-1">
+                    <Label
+                      htmlFor={`selector-${key}`}
+                      className="text-xs text-muted-foreground"
+                    >
+                      {SELECTOR_LABELS[key]}
+                    </Label>
+                    <Input
+                      id={`selector-${key}`}
+                      value={selectorOverrides[key] ?? ""}
+                      onChange={(event) =>
+                        setSelectorOverrides((current) => ({
+                          ...current,
+                          [key]: event.target.value,
+                        }))
+                      }
+                      placeholder={WHAKAPAPA_DEFAULT_SELECTORS[key]}
+                      readOnly={!canEdit}
+                      spellCheck={false}
+                      className="font-mono text-xs"
+                    />
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+
+          {previewJson !== null ? (
+            <div className="space-y-2">
+              <Label htmlFor="whakapapa-preview">Preview result</Label>
+              <Textarea
+                id="whakapapa-preview"
+                value={previewJson || "No data parsed with these settings."}
+                readOnly
+                className="min-h-[240px] font-mono text-xs"
+                spellCheck={false}
+              />
+            </div>
+          ) : null}
+
+          <div className="flex flex-wrap justify-end gap-2">
+            <ViewOnlyActionButton
+              canEdit={canEdit}
+              describeReason={false}
+              type="button"
+              variant="outline"
+              onClick={previewConfig}
+              disabled={previewing || savingConfig}
+            >
+              {previewing ? (
+                <LoaderCircle className="h-4 w-4 animate-spin" />
+              ) : (
+                <Eye className="h-4 w-4" />
+              )}
+              {previewing ? "Previewing..." : "Preview"}
+            </ViewOnlyActionButton>
+            <ViewOnlyActionButton
+              canEdit={canEdit}
+              describeReason={false}
+              type="button"
+              onClick={saveConfig}
+              disabled={savingConfig || previewing}
+            >
+              {savingConfig ? (
+                <LoaderCircle className="h-4 w-4 animate-spin" />
+              ) : (
+                <Save className="h-4 w-4" />
+              )}
+              {savingConfig ? "Saving..." : "Save configuration"}
+            </ViewOnlyActionButton>
+          </div>
+        </CardContent>
+      </Card>
+
       <Dialog open={helpOpen} onOpenChange={setHelpOpen}>
         <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-3xl">
           <DialogHeader>
@@ -447,6 +709,18 @@ export function MountainConditionsPanel() {
               controls which articles appear on the public widget. Unticked
               sections are hidden from visitors, and the choices are preserved
               across automatic and manual upstream refreshes.
+            </p>
+            <p>
+              <i>
+                <b>Source &amp; selectors</b>
+              </i>{" "}
+              sets the report URL the site scrapes (locked to whakapapa.com /
+              snow.nz) and, under <b>Advanced</b>, optional selector overrides
+              for when the upstream page structure changes. Blank selectors use
+              the built-in defaults, which already ignore the rotating style-name
+              suffixes. <b>Preview</b> tests the current URL and selectors
+              without saving; <b>Save configuration</b> stores them separately
+              from the cached data, so an upstream refresh never wipes them.
             </p>
           </div>
         </DialogContent>

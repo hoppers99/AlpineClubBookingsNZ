@@ -3203,6 +3203,9 @@ model WhakapapaReportCache {
   id          String    @id @default(cuid())
   source      String    @unique
   payload     Json
+  // Source URL + selector overrides. Kept separate from `payload` so an
+  // upstream refresh (which replaces `payload`) never wipes the admin config.
+  config      Json?
   fetchedAt   DateTime  @default(now())
   frozenUntil DateTime?
   createdAt   DateTime  @default(now())

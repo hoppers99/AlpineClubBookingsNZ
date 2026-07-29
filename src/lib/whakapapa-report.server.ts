@@ -1,13 +1,24 @@
 import { JSDOM } from "jsdom";
 import {
   emptyWhakapapaCurlData,
+  validateWhakapapaSourceUrl,
+  WHAKAPAPA_DEFAULT_SELECTORS,
+  WHAKAPAPA_DEFAULT_SOURCE_URL,
   type WhakapapaCondition,
   type WhakapapaCurlData,
   type WhakapapaFacilityItem,
   type WhakapapaRoadStatus,
+  type WhakapapaSelectorConfig,
+  type WhakapapaTrail,
+  type WhakapapaTrailArea,
 } from "@/lib/whakapapa-report";
 
-const WHAKAPAPA_REPORT_URL = "https://www.whakapapa.com/report";
+export interface WhakapapaFetchOptions {
+  /** Report URL to scrape. Falls back to the default (and is re-validated). */
+  sourceUrl?: string;
+  /** Resolved selector map. Falls back to the built-in hash-agnostic defaults. */
+  selectors?: WhakapapaSelectorConfig;
+}
 
 function normalizeText(value: string | null | undefined): string {
   return (value ?? "").replace(/\s+/g, " ").trim();
@@ -17,12 +28,23 @@ function normalizeLabel(value: string): string {
   return value.replace(/:\s*$/, "").trim().toLowerCase();
 }
 
-function parseFacilityItems(section: ParentNode): WhakapapaFacilityItem[] {
-  return Array.from(section.querySelectorAll("div.item_3CiH98"))
+function resolveSourceUrl(candidate: string | undefined): string {
+  const validated = validateWhakapapaSourceUrl(candidate);
+  // Defence in depth: the admin save path already rejects out-of-allowlist
+  // URLs, but if a bad value ever reaches here we fall back to the safe default
+  // rather than fetch an attacker-controlled host.
+  return validated.ok ? validated.url : WHAKAPAPA_DEFAULT_SOURCE_URL;
+}
+
+function parseFacilityItems(
+  section: ParentNode,
+  selectors: WhakapapaSelectorConfig,
+): WhakapapaFacilityItem[] {
+  return Array.from(section.querySelectorAll(selectors.item))
     .map((node) => ({
-      name: normalizeText(node.querySelector("div.name_3CiH98")?.textContent),
+      name: normalizeText(node.querySelector(selectors.itemName)?.textContent),
       status: normalizeText(
-        node.querySelector("div.status_3CiH98")?.textContent,
+        node.querySelector(selectors.itemStatus)?.textContent,
       ),
     }))
     .filter((item) => item.name.length > 0 || item.status.length > 0);
@@ -63,8 +85,114 @@ function findMetricValue(container: ParentNode, title: string): string {
   return "";
 }
 
-export async function fetchWhakapapaCurlData(): Promise<WhakapapaCurlData> {
-  const upstream = await fetch(WHAKAPAPA_REPORT_URL, {
+const TRAIL_DIFFICULTY_BY_GRADE: Record<string, string> = {
+  green: "Beginner",
+  blue: "Intermediate",
+  red: "Intermediate",
+  black: "Advanced",
+  doubleblack: "Expert",
+  expert: "Expert",
+};
+
+function parseTrailDifficulty(iconEl: Element | null): string {
+  if (!iconEl) {
+    return "";
+  }
+  // Difficulty is drawn as a coloured SVG grade marker whose shape carries an
+  // id/colour (e.g. <circle id="green">). Read that grade rather than any
+  // hashed class so it survives an upstream rebuild.
+  const shape = iconEl.querySelector("[id]");
+  const grade = normalizeText(shape?.id).toLowerCase().replace(/[\s-]+/g, "");
+  if (grade && TRAIL_DIFFICULTY_BY_GRADE[grade]) {
+    return TRAIL_DIFFICULTY_BY_GRADE[grade];
+  }
+  return grade ? grade.charAt(0).toUpperCase() + grade.slice(1) : "";
+}
+
+function parseTrailSubInfo(raw: string): { groomed: boolean; size: string } {
+  const parts = raw
+    .split(/\s*-\s*/)
+    .map(normalizeText)
+    .filter((part) => part.length > 0);
+
+  let groomed = false;
+  const sizeParts: string[] = [];
+  for (const part of parts) {
+    const lower = part.toLowerCase();
+    if (lower === "groomed") {
+      groomed = true;
+    } else if (lower === "ungroomed") {
+      groomed = false;
+    } else {
+      // Anything that is not the groomed flag (e.g. a park size) becomes size.
+      sizeParts.push(part);
+    }
+  }
+
+  return { groomed, size: sizeParts.join(" - ") };
+}
+
+function parseTrailItem(
+  el: Element,
+  selectors: WhakapapaSelectorConfig,
+): WhakapapaTrail {
+  const subInfo = parseTrailSubInfo(
+    normalizeText(el.querySelector(selectors.trailSubInfo)?.textContent),
+  );
+
+  return {
+    name: normalizeText(el.querySelector(selectors.itemName)?.textContent),
+    status: normalizeText(el.querySelector(selectors.itemStatus)?.textContent),
+    groomed: subInfo.groomed,
+    difficulty: parseTrailDifficulty(
+      el.querySelector(selectors.trailDifficultyIcon),
+    ),
+    size: subInfo.size,
+  };
+}
+
+function parseTrailAreas(
+  document: Document,
+  selectors: WhakapapaSelectorConfig,
+): WhakapapaTrailArea[] {
+  const heading = document.getElementById(selectors.trailsHeadingId);
+  const wrapper =
+    heading?.closest(selectors.sectionWrapper) ??
+    heading?.parentElement ??
+    null;
+  if (!wrapper) {
+    return [];
+  }
+
+  const areaEls = Array.from(wrapper.querySelectorAll(selectors.trailArea));
+  // If the collapsable sub-area structure changes, fall back to treating the
+  // whole trails wrapper as one unnamed area so trails still surface.
+  const areaSources: ParentNode[] = areaEls.length > 0 ? areaEls : [wrapper];
+
+  const areas: WhakapapaTrailArea[] = [];
+  for (const areaEl of areaSources) {
+    const areaName = normalizeText(
+      (areaEl as Element).querySelector(selectors.trailAreaName)?.textContent,
+    );
+    const trails = Array.from(areaEl.querySelectorAll(selectors.item))
+      .map((el) => parseTrailItem(el, selectors))
+      .filter((trail) => trail.name.length > 0);
+
+    if (trails.length > 0) {
+      areas.push({ name: areaName, trails });
+    }
+  }
+
+  return areas;
+}
+
+export async function fetchWhakapapaCurlData(
+  options: WhakapapaFetchOptions = {},
+): Promise<WhakapapaCurlData> {
+  const sourceUrl = resolveSourceUrl(options.sourceUrl);
+  const selectors = options.selectors ?? WHAKAPAPA_DEFAULT_SELECTORS;
+
+  const upstream = await fetch(sourceUrl, {
     method: "GET",
     headers: {
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -85,19 +213,16 @@ export async function fetchWhakapapaCurlData(): Promise<WhakapapaCurlData> {
 
   const roadStatus: WhakapapaRoadStatus = {
     name: normalizeText(
-      document
-        .querySelector("div.areaTitle_3oPk4X")
-        ?.textContent?.split(":")[0],
+      document.querySelector(selectors.roadAreaTitle)?.textContent?.split(":")[0],
     ),
     status: normalizeText(
-      document.querySelector("span.open_3oPk4X, span.closed_3oPk4X")
-        ?.textContent,
+      document.querySelector(selectors.roadStatus)?.textContent,
     ),
     wheelRequirements: normalizeText(
-      document.querySelector("div.wheelRequirements_3oPk4X")?.textContent,
+      document.querySelector(selectors.roadWheelRequirements)?.textContent,
     ),
     roadContent: normalizeText(
-      document.querySelector("div.roadContent_3oPk4X")?.textContent,
+      document.querySelector(selectors.roadContent)?.textContent,
     ),
   };
 
@@ -106,41 +231,49 @@ export async function fetchWhakapapaCurlData(): Promise<WhakapapaCurlData> {
   const lifts: WhakapapaFacilityItem[] = [];
 
   // The report groups status items into Facilities, Food & Drink, and Lifts.
-  // Each group is a `wrapper_2hnOFJ` section with a titled heading and an
-  // `items_2hnOFJ` list. Route items by the heading id, falling back to the
-  // heading text so a markup id change does not silently drop a group.
-  const sectionWrappers = Array.from(
-    document.querySelectorAll("div.wrapper_2hnOFJ"),
+  // Anchor on each group's titled heading (stable id, falling back to heading
+  // text) then read the sibling items container from the enclosing wrapper.
+  // Iterating headings (not wrappers) keeps a single hit per group even when
+  // the hash-agnostic wrapper selector matches nested wrappers.
+  const headings = Array.from(
+    document.querySelectorAll(selectors.sectionHeading),
   );
-  for (const wrapper of sectionWrappers) {
-    const heading = wrapper.querySelector(".title_2hnOFJ");
-    const headingId = heading?.id ?? "";
-    const headingLabel = normalizeLabel(normalizeText(heading?.textContent));
-    const itemsContainer = wrapper.querySelector("div.items_2hnOFJ");
+  for (const heading of headings) {
+    const headingId = heading.id ?? "";
+    const headingLabel = normalizeLabel(normalizeText(heading.textContent));
+
+    let bucket: WhakapapaFacilityItem[] | null = null;
+    if (headingId === "facilities" || headingLabel === "facilities") {
+      bucket = facilities;
+    } else if (headingId === "food-drink" || headingLabel === "food & drink") {
+      bucket = foodAndDrink;
+    } else if (headingId === "lifts" || headingLabel === "lifts") {
+      bucket = lifts;
+    }
+    if (!bucket) {
+      continue;
+    }
+
+    const wrapper =
+      heading.closest(selectors.sectionWrapper) ?? heading.parentElement;
+    const itemsContainer = wrapper?.querySelector(selectors.sectionItems);
     if (!itemsContainer) {
       continue;
     }
 
-    const items = parseFacilityItems(itemsContainer);
-    if (headingId === "facilities" || headingLabel === "facilities") {
-      facilities.push(...items);
-    } else if (headingId === "food-drink" || headingLabel === "food & drink") {
-      foodAndDrink.push(...items);
-    } else if (headingId === "lifts" || headingLabel === "lifts") {
-      lifts.push(...items);
-    }
+    bucket.push(...parseFacilityItems(itemsContainer, selectors));
   }
 
   const conditionNodes = Array.from(
-    document.querySelectorAll("div.locationRow_1pp0Bo"),
+    document.querySelectorAll(selectors.conditionRow),
   );
   const conditions: WhakapapaCondition[] = conditionNodes
     .map((node) => ({
       name: normalizeText(
-        node.querySelector("div.locationTitle_1pp0Bo")?.textContent,
+        node.querySelector(selectors.conditionTitle)?.textContent,
       ),
       temperature: normalizeText(
-        node.querySelector("div.temperature_1pp0Bo")?.textContent,
+        node.querySelector(selectors.conditionTemperature)?.textContent,
       ),
       wind: findMetricValue(node, "Wind"),
       snowBase: findMetricValue(node, "Snow Base"),
@@ -149,6 +282,8 @@ export async function fetchWhakapapaCurlData(): Promise<WhakapapaCurlData> {
     }))
     .filter((item) => item.name.length > 0);
 
+  const trails = parseTrailAreas(document, selectors);
+
   const curlData = emptyWhakapapaCurlData();
   curlData.updated = new Date().toISOString();
   curlData.roadStatus = roadStatus;
@@ -156,6 +291,7 @@ export async function fetchWhakapapaCurlData(): Promise<WhakapapaCurlData> {
   curlData.foodAndDrink = foodAndDrink;
   curlData.lifts = lifts;
   curlData.conditions = conditions;
+  curlData.trails = trails;
 
   return curlData;
 }

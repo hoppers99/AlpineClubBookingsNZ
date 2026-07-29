@@ -5,6 +5,7 @@ import {
   emptyWhakapapaSectionVisibility,
   type WhakapapaCurlData,
   type WhakapapaFacilityItem,
+  type WhakapapaTrailArea,
 } from "@/lib/whakapapa-report";
 
 type ApiResponse = WhakapapaCurlData & { error?: string; stale?: boolean };
@@ -91,6 +92,60 @@ function FacilityGroup({
   );
 }
 
+function TrailsGroup({ areas }: { areas: WhakapapaTrailArea[] }) {
+  return (
+    <article
+      id="whakapapa-trails"
+      className="mt-3 rounded-md border border-border bg-card p-2"
+    >
+      <h3 className="text-sm font-semibold text-foreground">Trails</h3>
+      {areas.length > 0 ? (
+        <div className="mt-2 space-y-3">
+          {areas.map((area) => (
+            <div key={area.name || "trails-area"}>
+              {area.name ? (
+                <h4 className="text-xs font-semibold text-muted-foreground">
+                  {area.name}
+                </h4>
+              ) : null}
+              <div className="mt-1 flex flex-wrap gap-2">
+                {area.trails.map((trail) => (
+                  <div
+                    key={`${area.name}-${trail.name}`}
+                    className="flex flex-col gap-1 rounded-md border border-border bg-card p-2"
+                  >
+                    <span className="text-xs font-medium text-foreground">
+                      {trail.name || "Unknown"}
+                    </span>
+                    <div className="flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
+                      {trail.difficulty ? <span>{trail.difficulty}</span> : null}
+                      {trail.difficulty && (trail.groomed || trail.size) ? (
+                        <span aria-hidden>·</span>
+                      ) : null}
+                      <span>{trail.groomed ? "Groomed" : "Ungroomed"}</span>
+                      {trail.size ? (
+                        <>
+                          <span aria-hidden>·</span>
+                          <span>{trail.size}</span>
+                        </>
+                      ) : null}
+                    </div>
+                    <StatusCell status={trail.status} />
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="mt-2 text-xs text-muted-foreground">
+          No trail data available.
+        </p>
+      )}
+    </article>
+  );
+}
+
 const EMPTY_DATA: WhakapapaCurlData = {
   updated: "",
   roadStatus: {
@@ -103,6 +158,7 @@ const EMPTY_DATA: WhakapapaCurlData = {
   foodAndDrink: [],
   lifts: [],
   conditions: [],
+  trails: [],
   visibility: emptyWhakapapaSectionVisibility(),
 };
 
@@ -138,6 +194,7 @@ export function SkifieldWhakapapaWidget() {
           foodAndDrink: payload.foodAndDrink ?? [],
           lifts: payload.lifts ?? [],
           conditions: payload.conditions ?? [],
+          trails: payload.trails ?? [],
           visibility: payload.visibility ?? emptyWhakapapaSectionVisibility(),
         });
 
@@ -282,6 +339,8 @@ export function SkifieldWhakapapaWidget() {
             emptyLabel="No facility data available."
           />
         ) : null}
+
+        {data.visibility.trails ? <TrailsGroup areas={data.trails} /> : null}
       </div>
 
       {data.visibility.conditions ? (

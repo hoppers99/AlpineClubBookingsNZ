@@ -730,9 +730,12 @@ describe("view-only section banner coverage (#2160)", () => {
       // banner-bearing admin surfaces (the notices list page and the notice
       // editor), each with static opt-out ViewOnlyActionButtons covered by an
       // AdminViewOnlySectionBanner in the same file.
-      callSites: 269,
-      optOuts: 236,
-      staticOptOuts: 215,
+      // +2: the Mountain Conditions "Source & selectors" panel adds Preview and
+      // Save configuration ViewOnlyActionButtons — static opt-outs covered by
+      // the panel's existing AdminViewOnlySectionBanner (no new banner file).
+      callSites: 271,
+      optOuts: 238,
+      staticOptOuts: 217,
       vouchedOptOuts: 21,
       exceptions: 33,
       exceptionFiles: 16,

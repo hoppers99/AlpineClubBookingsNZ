@@ -33,6 +33,7 @@ describe("coerceWhakapapaSectionVisibility", () => {
       facilities: true,
       foodAndDrink: true,
       conditions: false,
+      trails: true,
     });
   });
 
@@ -51,6 +52,7 @@ describe("coerceWhakapapaSectionVisibility", () => {
       facilities: true,
       foodAndDrink: false,
       conditions: true,
+      trails: true,
     });
   });
 });
@@ -123,6 +125,7 @@ describe("coerceWhakapapaCurlData", () => {
       facilities: false,
       foodAndDrink: true,
       conditions: true,
+      trails: true,
     });
   });
 
