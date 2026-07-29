@@ -93,6 +93,10 @@ interface AssignmentFormProps {
   // Optional lodge picker (multi-lodge, ADR-002): renders in step 1 above the
   // date inputs. It renders nothing while fewer than two lodges exist.
   lodgeSelector?: ReactNode;
+  // Optional custodian bed picker (#2286): renders under step 2, so the bed is
+  // chosen after the person and before the confirm. The form stays purely
+  // presentational — the parent owns the selection and sends it with the POST.
+  bedPicker?: ReactNode;
 }
 
 export function AssignmentForm({
@@ -116,6 +120,7 @@ export function AssignmentForm({
   canEdit,
   renderViewOnlyBanner = true,
   lodgeSelector,
+  bedPicker,
 }: AssignmentFormProps) {
   const label = hutLeaderLabel.toLowerCase();
   const datesSelected = Boolean(
@@ -334,6 +339,12 @@ export function AssignmentForm({
             </>
           )}
         </div>
+
+        {/* Optional custodian bed hold (#2286) — only meaningful once both the
+            nights and the person are settled, so it sits between steps 2 and 3. */}
+        {bedPicker && datesSelected && target ? (
+          <div className="border-t border-border pt-4">{bedPicker}</div>
+        ) : null}
 
         {/* Step 3 — visual confirm (sticky above the submit button) */}
         {summary && (

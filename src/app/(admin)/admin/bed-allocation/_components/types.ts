@@ -104,10 +104,32 @@ export interface DashboardExclusiveHold {
   nights: string[];
 }
 
+// A custodian bed hold overlapping the board's range (#2286): a bed held for a
+// season by a hut-leader assignment, with no booking anywhere. Rendered as a
+// hatched non-allocatable band rather than a chip — nobody is booked in.
+export interface DashboardCustodianHold {
+  assignmentId: string;
+  memberName: string;
+  bedId: string;
+  bedName: string;
+  roomId: string;
+  roomName: string;
+  startDate: string;
+  endDate: string;
+  nights: string[];
+}
+
 interface DashboardWarning {
   id: string;
   // ROOM_SWITCH (#1677) is stay-level: the booking's rooms change mid-stay.
-  type: "BOOKING_SPLIT" | "MINOR_WITHOUT_BOOKING_ADULT" | "ROOM_SWITCH";
+  // CUSTODIAN_BED_CONFLICT (#2286) means an allocation row is sitting on a
+  // custodian-held bed-night — unreachable through the guarded app paths, so it
+  // always wants an admin's eyes.
+  type:
+    | "BOOKING_SPLIT"
+    | "MINOR_WITHOUT_BOOKING_ADULT"
+    | "ROOM_SWITCH"
+    | "CUSTODIAN_BED_CONFLICT";
   bookingId: string;
   bookingGuestId?: string;
   stayDate: string;
@@ -129,6 +151,10 @@ export interface DashboardPayload {
   // Exclusive whole-lodge holds overlapping the range (#120): their guests are
   // absent from unallocatedGuestNights — shown as a banner instead.
   exclusiveHolds: DashboardExclusiveHold[];
+  // Custodian bed holds overlapping the range (#2286): the board draws a
+  // hatched, non-droppable band across those bed-nights. The server refuses any
+  // drop regardless, so this is presentation, not the enforcement.
+  custodianHolds: DashboardCustodianHold[];
   suggestedAllocations: Array<{
     bookingId: string;
     bookingGuestId: string;
@@ -208,5 +234,7 @@ export type DropData =
 
 export interface BulkAllocationConflict {
   stayDate: string;
-  reason: "BED_TAKEN";
+  // CUSTODIAN_HOLD (#2286): the bed is held for a custodian on that night. Kept
+  // distinct from BED_TAKEN because the admin's fix is a different page.
+  reason: "BED_TAKEN" | "CUSTODIAN_HOLD";
 }

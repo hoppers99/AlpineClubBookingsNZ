@@ -226,6 +226,23 @@ function InfoFooter({ state }: DisplayModuleProps) {
   const note = state.config["footer-note"];
   return (
     <div className="display-info-footer">
+      {/*
+        Custodian in residence (#2286). The role word is the FIXED string
+        "Custodian" for every club — the owner's 29 Jul decision, deliberately
+        overriding the per-club `hutLeaderLabel` used everywhere else in the
+        admin surface. Do not swap this for the configurable label.
+
+        `label` null means the person must not be named (counts-only
+        granularity, or a minor-age custodian at any granularity): the slot
+        still appears, because the fact that someone is on site is the useful
+        part, but it shows the role alone.
+      */}
+      {state.custodian && (
+        <span className="display-footer-item">
+          <span className="display-footer-icon">🛎</span>
+          Custodian {state.custodian.label && <b>{state.custodian.label}</b>}
+        </span>
+      )}
       {wifiCode && (
         <span className="display-footer-item">
           <span className="display-footer-icon">📶</span>

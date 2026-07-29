@@ -765,7 +765,8 @@ async function autoAllocateMissingBedNights({
   // occupant" rows — blocking, NEVER evictable (so a displacement can never
   // move a booking onto it either) and conservative for room mix.
   const custodianHolds = await findCustodianBedHolds({
-    lodgeId,
+    // Club-wide when the reconcile is unscoped, matching every other load here.
+    lodgeId: lodgeId ?? undefined,
     from: envelope.checkIn,
     toExclusive: envelope.checkOut,
     db,

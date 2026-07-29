@@ -250,7 +250,7 @@ export async function custodianHeldNightsForBed(input: {
   excludeAssignmentId?: string;
 }): Promise<string[]> {
   if (input.stayDates.length === 0) return [];
-  const keys = input.stayDates.map(formatDateOnlyForTimeZone).sort();
+  const keys = input.stayDates.map((date) => formatDateOnlyForTimeZone(date)).sort();
   const from = normalizeDateOnlyForTimeZone(input.stayDates[0]);
   let latest = from;
   for (const date of input.stayDates) {

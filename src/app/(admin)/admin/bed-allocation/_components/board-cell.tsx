@@ -1,15 +1,26 @@
 "use client";
 
 import { useDroppable } from "@dnd-kit/core";
-import { CheckCircle2, Focus, XCircle } from "lucide-react";
+import { BellRing, CheckCircle2, Focus, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { AllocationChip } from "./allocation-chip";
 import {
   type BedOption,
   type BedOptionGroup,
   type DashboardAllocation,
+  type DashboardCustodianHold,
   cellDroppableId,
 } from "./types";
+
+// Custodian band (#2286), owner decision 29 Jul: a hatched NEUTRAL pattern plus
+// a labelled pill — deliberately distinct from the whole-lodge-hold banner, and
+// never colour-alone. The hatching is drawn with a repeating-linear-gradient in
+// `currentColor` at low opacity so it inherits the theme's muted foreground and
+// works in light and dark without a second palette entry.
+const CUSTODIAN_BAND_STYLE: React.CSSProperties = {
+  backgroundImage:
+    "repeating-linear-gradient(135deg, currentColor 0, currentColor 1px, transparent 1px, transparent 7px)",
+};
 
 export const BED_ALLOCATION_COLUMN_WIDTH_REM = 11;
 export const BED_ALLOCATION_COLUMN_WIDTH_CLASS =
@@ -40,6 +51,10 @@ interface BoardCellProps {
   // written nights tint green, refused nights red, until dismissed. Redundantly
   // labelled so it is never colour-only.
   rangeTone?: "written" | "refused";
+  // #2286: set when a custodian holds THIS bed on THIS night. The cell becomes
+  // a non-droppable hatched band; the server refuses any drop regardless, so
+  // this is the visible half of an enforcement that does not depend on it.
+  custodianHold?: DashboardCustodianHold;
   pendingAllocationIds: Set<string>;
   highlightedBookingId: string;
   activeDragLane?: boolean;
@@ -59,6 +74,7 @@ export function BoardCell({
   onRemove,
   onAssignRange,
   rangeTone,
+  custodianHold,
   pendingAllocationIds,
   highlightedBookingId,
   activeDragLane,
@@ -67,12 +83,67 @@ export function BoardCell({
   const { setNodeRef, isOver } = useDroppable({
     id: cellDroppableId(bedId, stayDate),
     data: { type: "cell", bedId, roomId, stayDate },
-    disabled: !canEdit,
+    // #2286: a custodian-held bed-night is not a drop target at all, so the
+    // drag never even highlights it. The server 409s the write in any case —
+    // this only spares the admin a pointless refusal.
+    disabled: !canEdit || Boolean(custodianHold),
   });
 
   const highlighted = allocations.some(
     (allocation) => allocation.bookingId === highlightedBookingId,
   );
+
+  // #2286: a custodian-held night renders the band INSTEAD of a drop zone.
+  // Allocations, if any exist here at all, still render on top — a row on a
+  // held bed-night is exactly the CUSTODIAN_BED_CONFLICT warning's subject and
+  // must stay visible and removable, not be hidden by the band.
+  if (custodianHold) {
+    const tooltip = `Held for custodian ${custodianHold.memberName}, ${custodianHold.startDate} to ${custodianHold.endDate}`;
+    return (
+      <td
+        ref={setNodeRef}
+        data-stay-date={stayDate}
+        data-custodian-hold="true"
+        title={tooltip}
+        className={cn(
+          BED_ALLOCATION_COLUMN_WIDTH_CLASS,
+          "overflow-hidden border p-1 align-top text-muted-foreground",
+        )}
+      >
+        <div
+          className="flex h-12 flex-col items-center justify-center rounded-md border border-dashed"
+          style={CUSTODIAN_BAND_STYLE}
+        >
+          {/* The pill carries the meaning. The hatching is a second,
+              redundant signal — never the only one (owner decision 29 Jul). */}
+          <span className="inline-flex items-center gap-1 rounded-full bg-background px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide">
+            <BellRing aria-hidden className="h-3 w-3" />
+            Custodian
+          </span>
+          <span className="sr-only">{tooltip}</span>
+        </div>
+        {allocations.length > 0 ? (
+          <div className="mt-1 flex flex-col gap-1">
+            {allocations.map((allocation) => (
+              <AllocationChip
+                key={allocation.id}
+                allocation={allocation}
+                bedOptions={bedOptions}
+                bedOptionGroups={bedOptionGroups}
+                onReassignBed={(targetBedId) =>
+                  onReassignBed(allocation, targetBedId)
+                }
+                onRemove={() => onRemove(allocation)}
+                onAssignRange={() => onAssignRange(allocation)}
+                pending={pendingAllocationIds.has(allocation.id)}
+                canEdit={canEdit}
+              />
+            ))}
+          </div>
+        ) : null}
+      </td>
+    );
+  }
 
   return (
     <td

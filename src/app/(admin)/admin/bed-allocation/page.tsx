@@ -69,6 +69,7 @@ import {
   type BucketGuestGroup,
   type BulkAllocationConflict,
   type DashboardAllocation,
+  type DashboardCustodianHold,
   type DashboardGuestNight,
   type DashboardPayload,
   type DragData,
@@ -76,6 +77,33 @@ import {
 } from "./_components/types";
 import { deriveActiveDragDates } from "./_components/active-drag-dates";
 import { useSyncedScroll } from "./_components/use-synced-scroll";
+
+// #2286: a bulk drop can now be refused for two different reasons on different
+// nights, and they need different fixes — "someone else is in that bed" (clear
+// it on this board) vs "a custodian holds that bed" (edit the assignment on the
+// Hut Leaders page). Merging them into one "just taken" sentence would send the
+// admin to the wrong place, so each reason gets its own clause.
+function describeBulkConflicts(
+  guestName: string,
+  conflicts: BulkAllocationConflict[],
+): string {
+  const nightsFor = (reason: BulkAllocationConflict["reason"]) =>
+    conflicts
+      .filter((conflict) => conflict.reason === reason)
+      .map((conflict) => conflict.stayDate);
+  const taken = nightsFor("BED_TAKEN");
+  const custodian = nightsFor("CUSTODIAN_HOLD");
+  const clauses: string[] = [];
+  if (taken.length > 0) {
+    clauses.push(`that bed was just taken for ${taken.join(", ")}`);
+  }
+  if (custodian.length > 0) {
+    clauses.push(
+      `that bed is held for a custodian on ${custodian.join(", ")} (change it on the Hut Leaders page)`,
+    );
+  }
+  return `${guestName}: ${clauses.join("; ")} — refreshing the board`;
+}
 
 function todayDateOnly() {
   return formatDateOnly(getTodayDateOnly());
@@ -631,11 +659,7 @@ export default function AdminBedAllocationPage() {
         };
 
         if (data.conflicts.length > 0) {
-          toast.warning(
-            `${group.guestName}: that bed was just taken for ${data.conflicts
-              .map((conflict) => conflict.stayDate)
-              .join(", ")} — refreshing the board`,
-          );
+          toast.warning(describeBulkConflicts(group.guestName, data.conflicts));
         } else {
           toast.success("Allocation saved");
         }
@@ -779,9 +803,7 @@ export default function AdminBedAllocationPage() {
 
             if (data.conflicts.length > 0) {
               toast.warning(
-                `${allocation.guestName}: that bed was just taken for ${data.conflicts
-                  .map((conflict) => conflict.stayDate)
-                  .join(", ")}, refreshing the board`,
+                describeBulkConflicts(allocation.guestName, data.conflicts),
               );
             } else {
               toast.success("Visible guest nights moved");
@@ -1035,6 +1057,18 @@ export default function AdminBedAllocationPage() {
   // until the admin dismisses it, so gaps left by a partial assign are visible
   // rather than something to hunt for. Not colour-only — each tinted cell also
   // carries an "Assigned" / "Refused" label.
+  // #2286: index the payload's custodian holds by bed-night so each cell can
+  // decide in O(1) whether it is a held band rather than a drop target.
+  const custodianHoldByBedAndDate = useMemo(() => {
+    const map = new Map<string, DashboardCustodianHold>();
+    for (const hold of payload?.custodianHolds ?? []) {
+      for (const night of hold.nights) {
+        map.set(`${hold.bedId}:${night}`, hold);
+      }
+    }
+    return map;
+  }, [payload]);
+
   const rangeTint = useMemo(() => {
     if (!rangeOutcome) return undefined;
     return {
@@ -1317,6 +1351,34 @@ export default function AdminBedAllocationPage() {
             </Alert>
           ) : null}
 
+          {payload.custodianHolds.length > 0 ? (
+            <Alert
+              variant="info"
+              title="Bed held for a custodian — not available to allocate"
+            >
+              <p className="mb-1">
+                {payload.custodianHolds.length === 1
+                  ? "This bed is"
+                  : "These beds are"}{" "}
+                held for a custodian with no booking, so no guest can be placed
+                on them for those nights. Change the dates or the bed on the{" "}
+                <a className="underline" href="/admin/hut-leaders">
+                  Hut Leaders
+                </a>{" "}
+                page.
+              </p>
+              <ul className="space-y-1">
+                {payload.custodianHolds.map((hold) => (
+                  <li key={hold.assignmentId}>
+                    <span className="font-medium">{hold.memberName}</span> ·{" "}
+                    {hold.roomName} · {hold.bedName} · {hold.startDate} →{" "}
+                    {hold.endDate}
+                  </li>
+                ))}
+              </ul>
+            </Alert>
+          ) : null}
+
           <Card>
             <CardHeader>
               <CardTitle className="text-base">
@@ -1435,6 +1497,7 @@ export default function AdminBedAllocationPage() {
                   onRemove={(allocation) => void removeAllocation(allocation)}
                   onAssignRange={openRangeForAllocation}
                   rangeTint={rangeTint}
+                  custodianHoldByBedAndDate={custodianHoldByBedAndDate}
                   pendingAllocationIds={pendingAllocationIds}
                   highlightedBookingId={highlightedBookingId}
                   activeDragDates={activeDragDates}

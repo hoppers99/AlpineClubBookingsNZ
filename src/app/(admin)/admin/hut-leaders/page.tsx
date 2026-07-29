@@ -40,6 +40,7 @@ import {
   type AssignmentTarget,
   type EligibleMember,
 } from "./_components/assignment-form";
+import { CustodianBedPicker } from "./_components/custodian-bed-picker";
 
 interface HutLeaderAssignment {
   id: string;
@@ -51,6 +52,10 @@ interface HutLeaderAssignment {
   createdAt: string;
   lodgeId: string | null;
   lodgeName: string | null;
+  // #2286: the bed this assignment holds, or null for a role-only assignment.
+  bedId: string | null;
+  bedName: string | null;
+  bedRoomName: string | null;
 }
 
 interface UnassignedDate {
@@ -107,6 +112,19 @@ export default function HutLeadersPage() {
 
   const [selection, setSelection] = useState({ startDate: "", endDate: "" });
   const [target, setTarget] = useState<AssignmentTarget | null>(null);
+  // #2286: the optional custodian bed hold. null = "No bed — role only", the
+  // default and the pre-#2286 behaviour.
+  const [selectedBedId, setSelectedBedId] = useState<string | null>(null);
+  // Set when the server answered CUSTODIAN_OVER_CAPACITY_CONFIRM_REQUIRED: the
+  // hold is legitimate but tips the lodge past its ceiling on these nights, so
+  // the admin re-confirms rather than discovering it later (#1668 precedent).
+  const [overCapacityNights, setOverCapacityNights] = useState<
+    Array<{ date: string; occupiedBeds: number; capacity: number }> | null
+  >(null);
+  // Server-side privacy note: a minor custodian is never named on the lodge TV.
+  const [minorCustodianNote, setMinorCustodianNote] = useState<string | null>(
+    null,
+  );
   const [error, setError] = useState<{ message: string; memberId: string | null } | null>(null);
   // Lodge context for new assignments; LodgeSelect renders nothing (and
   // reports the sole lodge) while fewer than two lodges exist (ADR-002).
@@ -258,7 +276,7 @@ export default function HutLeadersPage() {
     setError(null);
   }
 
-  async function handleConfirm() {
+  async function handleConfirm(confirmOverCapacity = false) {
     if (!target || !selection.startDate || !selection.endDate) return;
     setError(null);
     setCreating(true);
@@ -271,6 +289,10 @@ export default function HutLeadersPage() {
           startDate: selection.startDate,
           endDate: selection.endDate,
           ...(lodgeId ? { lodgeId } : {}),
+          // #2286: omitted entirely for a role-only assignment, so the request
+          // is byte-for-byte what it was before this feature.
+          ...(selectedBedId ? { bedId: selectedBedId } : {}),
+          ...(confirmOverCapacity ? { confirmOverCapacity: true } : {}),
         }),
       });
       if (!res.ok) {
@@ -282,14 +304,24 @@ export default function HutLeadersPage() {
           return;
         }
         const data = await res.json();
+        // #2286 warn-and-confirm: not a failure, a question. Keep the form
+        // exactly as it is and show the nights so the admin decides.
+        if (data.code === "CUSTODIAN_OVER_CAPACITY_CONFIRM_REQUIRED") {
+          setOverCapacityNights(data.nightDetails ?? []);
+          return;
+        }
         setError({
           message: data.error || "Failed to create",
           memberId: target.memberId,
         });
         return;
       }
+      const created = await res.json();
+      setMinorCustodianNote(created.minorCustodianWarning ?? null);
       setSelection({ startDate: "", endDate: "" });
       setTarget(null);
+      setSelectedBedId(null);
+      setOverCapacityNights(null);
       fetchAssignments();
       fetchUnassignedDates();
       refreshOverlay(visibleMonthKey);
@@ -546,7 +578,7 @@ export default function HutLeadersPage() {
         summary={summary}
         creating={creating}
         error={error}
-        onConfirm={handleConfirm}
+        onConfirm={() => void handleConfirm()}
         canEdit={canEdit}
         // #2160: the page banner above already states view-only access for this
         // whole surface, including the assignments table below, so the form must
@@ -561,7 +593,74 @@ export default function HutLeadersPage() {
             loading={lodgesLoading}
           />
         }
+        bedPicker={
+          <CustodianBedPicker
+            lodgeId={lodgeId}
+            startDate={selection.startDate}
+            endDate={selection.endDate}
+            value={selectedBedId}
+            onChange={(bedId) => {
+              setSelectedBedId(bedId);
+              // A changed bed invalidates any pending over-capacity answer.
+              setOverCapacityNights(null);
+            }}
+            canEdit={canEdit}
+          />
+        }
       />
+
+      {overCapacityNights && overCapacityNights.length > 0 && (
+        <Card className="border-warning/20 bg-warning-muted">
+          <CardContent className="space-y-3 p-4">
+            <p className="text-sm font-medium text-warning">
+              Holding that bed puts the lodge over capacity
+            </p>
+            <ul className="space-y-1 text-sm text-foreground">
+              {overCapacityNights.map((night) => (
+                <li key={night.date}>
+                  {night.date}: {night.occupiedBeds} people for {night.capacity}{" "}
+                  bed{night.capacity === 1 ? "" : "s"}
+                </li>
+              ))}
+            </ul>
+            <p className="text-xs text-muted-foreground">
+              The custodian genuinely sleeps in the lodge, so this can be
+              correct — confirm only if you know those nights work.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                onClick={() => void handleConfirm(true)}
+                disabled={creating}
+              >
+                {creating ? "Assigning..." : "Confirm anyway"}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setOverCapacityNights(null)}
+              >
+                Cancel
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {minorCustodianNote && (
+        <Card className="border-info/20 bg-info-muted">
+          <CardContent className="flex items-center justify-between gap-3 p-4">
+            <p className="text-sm text-info">{minorCustodianNote}</p>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setMinorCustodianNote(null)}
+            >
+              Dismiss
+            </Button>
+          </CardContent>
+        </Card>
+      )}
 
       {pinMessage && (
         <Card className="border-info/20 bg-info-muted">
@@ -603,6 +702,8 @@ export default function HutLeadersPage() {
               {showLodgeColumn && <TableHead>Lodge</TableHead>}
               <TableHead>Start</TableHead>
               <TableHead>End</TableHead>
+              {/* #2286: which bed (if any) this assignment holds. */}
+              <TableHead>Bed held</TableHead>
               <TableHead>Status</TableHead>
               <TableHead className="text-right">Actions</TableHead>
             </TableRow>
@@ -625,6 +726,18 @@ export default function HutLeadersPage() {
                   {showLodgeColumn && <TableCell>{a.lodgeName ?? "—"}</TableCell>}
                   <TableCell>{a.startDate}</TableCell>
                   <TableCell>{a.endDate}</TableCell>
+                  <TableCell>
+                    {a.bedName ? (
+                      <span className="text-sm">
+                        {a.bedRoomName ? `${a.bedRoomName} · ` : ""}
+                        {a.bedName}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">
+                        Role only
+                      </span>
+                    )}
+                  </TableCell>
                   <TableCell>
                     {isActive ? (
                       <Badge className="border-success/20 bg-success-muted text-success">Active</Badge>

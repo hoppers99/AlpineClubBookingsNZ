@@ -101,6 +101,22 @@ export interface DisplayState {
    * function of the payload. Limited to DISPLAY_RELEVANT_MODULE_KEYS — the
    * whole club flag map is never shipped to a public wall. */
   capabilities: Record<string, boolean>;
+  /**
+   * The custodian in residence today (#2286), or null when there is none.
+   *
+   * ONLY a bed-holding hut-leader assignment produces this slot: a role-only
+   * assignment is not an occupancy and does not appear. The custodian is not a
+   * BookingGuest, so their exclusion from the occupancy counts, the booking
+   * rows and the chore roster is structural — there is nothing to filter.
+   *
+   * `label` is null whenever the person must not be individually named: under
+   * COUNTS_ONLY granularity, and ALWAYS for a minor-age custodian regardless of
+   * granularity (the file-level contract: minors are never individually named
+   * at any level). The template then renders the role word alone.
+   *
+   * No phone, no dates, no member id — the slot carries a name or nothing.
+   */
+  custodian: { label: string | null } | null;
 }
 
 function isMinor(ageTier: AgeTier): boolean {
@@ -571,6 +587,38 @@ export async function buildDisplayState(
   // back to config.
   const clubIdentity = await getCachedClubIdentity();
 
+  // Custodian in residence (#2286). Scoped to this lodge and to the window's
+  // CURRENT day — the wall answers "who is here now", not "who will be here on
+  // Thursday". `bedId: not null` is the whole gate: a role-only assignment is
+  // not an occupancy and never renders a slot.
+  const custodianAssignment = await prisma.hutLeaderAssignment.findFirst({
+    where: {
+      bedId: { not: null },
+      startDate: { lte: startDate },
+      endDate: { gte: startDate },
+      ...lodgeNullTolerantScope(lodgeId),
+    },
+    select: {
+      member: { select: { firstName: true, lastName: true, ageTier: true } },
+    },
+    orderBy: [{ startDate: "asc" }, { id: "asc" }],
+  });
+  const custodian = custodianAssignment
+    ? {
+        // A minor is never individually named at ANY granularity (the contract
+        // at the top of this file). Nothing structurally stops a minor-age
+        // member being made custodian, so the guard lives here rather than
+        // relying on the admin surface — the wall falls back to the role word.
+        label: isMinor(custodianAssignment.member.ageTier)
+          ? null
+          : reduceName(
+              custodianAssignment.member.firstName,
+              custodianAssignment.member.lastName,
+              granularity,
+            ),
+      }
+    : null;
+
   return {
     lodge: { name: lodge.name },
     club: { name: clubIdentity.name, logoDataUrl: theme?.logoDataUrl ?? null },
@@ -593,5 +641,6 @@ export async function buildDisplayState(
         : null,
     config: sanitiseDisplayConfig(lodge.displayConfig),
     capabilities,
+    custodian,
   };
 }
