@@ -14,7 +14,13 @@ All notable public reference-release changes should be recorded here.
   lodge will see it, fill in the handful of values the board prints — Wi-Fi name
   and password, checkout time, door code, and the on-screen notice — then pair
   the screen by typing the six characters it shows. The wizard creates the
-  screen record, binds the board you picked and arms the pairing in one press.
+  screen record, binds the board you picked and arms the pairing in one press —
+  and then waits with you: while it is waiting for the TV to claim the code, and
+  again while it is waiting for the screen to fetch its first board, it re-reads
+  your screens every few seconds and ticks itself over, with a **Check again**
+  button for when you would rather not wait. One screen record is created no
+  matter how many times a code is mistyped, and if the board could not be
+  assigned it says so instead of promising a board the screen is not showing.
   The order is deliberate: you finish the authoring first and hang the TV last.
   Every step checks the real state of your club rather than what you typed, so
   you can leave, come back, or re-run the whole thing after replacing a TV
