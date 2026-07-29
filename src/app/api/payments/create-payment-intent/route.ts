@@ -7,7 +7,7 @@ import { CreatePaymentIntentSchema } from "@/types/payments";
 import { auth } from "@/lib/auth";
 import { requireActiveSessionUser } from "@/lib/session-guards";
 import logger from "@/lib/logger";
-import { BookingStatus, PaymentSource } from "@prisma/client";
+import { BookingEventType, BookingStatus, PaymentSource } from "@prisma/client";
 import { PaymentStatus, PaymentTransactionKind } from "@prisma/client";
 import { canCreateImmediatePaymentIntent } from "@/lib/booking-payment-flow";
 import {
@@ -20,10 +20,20 @@ import {
 } from "@/lib/capacity";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 import { parseJsonRequestBody } from "@/lib/api-json";
-import { queueSupersededPrimaryIntentCancellations } from "@/lib/booking-payment-cleanup";
+import {
+  queueSupersededPrimaryIntentCancellations,
+  type SupersededPrimaryPaymentIntent,
+} from "@/lib/booking-payment-cleanup";
+import { drainSupersededPrimaryIntents } from "@/lib/booking-modification-settlement";
 import { queueXeroInvoiceForPaidBooking } from "@/lib/xero-booking-invoice-queue";
 import { hasAdminAccess } from "@/lib/access-roles";
 import { deriveBookingAppliedCreditCents } from "@/lib/member-credit";
+import {
+  consumeStoredCreditElection,
+  settleFullyCreditCoveredBooking,
+} from "@/lib/booking-credit-election";
+import { recordBookingEvent } from "@/lib/booking-events";
+import { sendBookingConfirmedEmail } from "@/lib/email";
 import { getProvisionalNonMemberChildSummary } from "@/lib/booking-split-summary";
 
 class PaymentIntentCapacityError extends Error {
@@ -127,6 +137,186 @@ export async function POST(request: NextRequest) {
         },
         { status: 400 }
       );
+    }
+
+    // This is the point at which a draft becomes a real, capacity-holding,
+    // payable booking — so it is also the point at which the member's stored
+    // credit election is honoured (#2265) and, if that election covers the
+    // whole price, the point at which the booking settles at $0.
+    //
+    // Both halves run in ONE transaction, in the lodge-lock-then-credit-lock
+    // order booking-create established, so no window exists in which the
+    // booking has advanced but its credit has not (or the reverse). The
+    // election is cleared inside that same transaction, so a retry or a
+    // double-submit can never apply it twice.
+    //
+    // The PAYMENT_PENDING arm of the condition is not redundant: a draft that
+    // tripped the no-adult rule is created in AWAITING_REVIEW and is released
+    // to PAYMENT_PENDING by an admin approval, never passing through DRAFT
+    // here. Its election is consumed on this, its first pay attempt.
+    const draftTransition =
+      booking.status === "DRAFT" ||
+      (booking.status === "PAYMENT_PENDING" &&
+        booking.creditElectionCents != null)
+        ? await prisma.$transaction(async (tx) => {
+            let previousRange: { checkIn: Date; checkOut: Date } | null = null;
+
+            // For DRAFT bookings: preflight capacity and transition to
+            // PAYMENT_PENDING before charging. Payment success performs the
+            // final capacity claim.
+            if (booking.status === "DRAFT") {
+              // The booking's lodge cannot change, so reading it for lock-key
+              // selection before acquiring the lock is safe.
+              const bookingLodgeId =
+                booking.lodgeId ?? (await getDefaultLodgeId(tx));
+              await acquireLodgeCapacityLock(tx, bookingLodgeId);
+
+              // Re-fetch within transaction to ensure we have latest state
+              const freshBooking = await tx.booking.findUnique({
+                where: { id: bookingId },
+                include: { guests: { include: { nights: true } } }, // per-night sets (issue #713)
+              });
+
+              if (!freshBooking || freshBooking.status !== BookingStatus.DRAFT) {
+                throw new Error("Booking is no longer a draft");
+              }
+
+              const capacity = await checkCapacityForGuestRanges(
+                bookingLodgeId,
+                freshBooking.checkIn,
+                freshBooking.checkOut,
+                freshBooking.guests,
+                bookingId,
+                tx
+              );
+
+              // DRAFT-scoped exemption (#1771): this re-check runs only while the
+              // booking is DRAFT, and a DRAFT can never carry a persisted capacity
+              // override (#1767 blocks save-as-draft over capacity), so
+              // bookingHasCapacityOverride would always be false here — honouring it
+              // would be dead code. See docs/CAPACITY_MODEL.md.
+              if (!capacity.available) {
+                throw new PaymentIntentCapacityError();
+              }
+
+              // Transition DRAFT -> PAYMENT_PENDING
+              await tx.booking.update({
+                where: { id: bookingId },
+                data: {
+                  status: BookingStatus.PAYMENT_PENDING,
+                  draftExpiresAt: null,
+                },
+              });
+              previousRange = {
+                checkIn: freshBooking.checkIn,
+                checkOut: freshBooking.checkOut,
+              };
+            }
+
+            // #2265 — honour the election the member made when they saved the
+            // draft. Clamps to the live balance and the outstanding price, and
+            // reports any shortfall rather than quietly applying less.
+            const creditElection = await consumeStoredCreditElection(tx, {
+              bookingId,
+            });
+
+            // A fully credit-covered booking owes no card payment, and Stripe
+            // rejects a zero-amount intent, so settle it here through the same
+            // zero-dollar shape booking-create and the modification engine use
+            // rather than dead-ending at the effective-price guard below.
+            let superseded: SupersededPrimaryPaymentIntent[] = [];
+            if (creditElection?.fullyCovered) {
+              const totalAppliedCents = await deriveBookingAppliedCreditCents(
+                bookingId,
+                tx,
+              );
+              const settled = await settleFullyCreditCoveredBooking(tx, {
+                bookingId,
+                appliedCreditCents: totalAppliedCents,
+              });
+              superseded = settled.supersededPrimaryPaymentIntents;
+            }
+
+            // Reconcile once, against the final status, so a booking that went
+            // straight from DRAFT to PAID is allocated exactly once.
+            if (previousRange) {
+              await reconcileBedAllocationsForBooking({
+                bookingId,
+                db: tx,
+                previousRange,
+              });
+            }
+
+            return { creditElection, superseded };
+          })
+        : null;
+
+    // The admin alert for review-flagged bookings is sent once at
+    // creation time. Re-alerting here would double up.
+
+    const creditElection = draftTransition?.creditElection ?? null;
+
+    if (creditElection?.fullyCovered) {
+      // Post-commit side effects for the $0 settlement, mirroring the
+      // fully-credit-covered branch of booking-create: the durable lifecycle
+      // event, the member's confirmation email, and the Xero invoice. Each is
+      // best-effort and must never fail the (already committed) settlement.
+      await recordBookingEvent({
+        bookingId: booking.id,
+        type: BookingEventType.MEMBER_PAID,
+        actorMemberId: session.user.id,
+        amountCents: 0,
+      }).catch((err) =>
+        logger.error(
+          { err, bookingId: booking.id },
+          "Failed to record MEMBER_PAID event for credit-covered booking",
+        ),
+      );
+
+      const promoRedemption = await prisma.promoRedemption.findUnique({
+        where: { bookingId: booking.id },
+        include: { promoCode: true },
+      });
+      sendBookingConfirmedEmail(
+        { bookingId: booking.id },
+        booking.member.email,
+        booking.member.firstName,
+        booking.checkIn,
+        booking.checkOut,
+        booking.guests.length,
+        booking.finalPriceCents,
+        {
+          lodgeId: booking.lodgeId,
+          ...(promoRedemption?.promoCode
+            ? {
+                discountCents: booking.discountCents,
+                promoAdjustmentCents: booking.promoAdjustmentCents,
+                promoCode: promoRedemption.promoCode.code,
+              }
+            : {}),
+        },
+      ).catch((err) =>
+        logger.error(
+          { err, bookingId: booking.id },
+          "Failed to send confirmation email for credit-covered booking",
+        ),
+      );
+
+      await queueXeroInvoiceForPaidBooking({
+        bookingId: booking.id,
+        createdByMemberId: session.user.id,
+      });
+
+      await drainSupersededPrimaryIntents({
+        bookingId: booking.id,
+        supersededPrimaryPaymentIntents: draftTransition?.superseded ?? [],
+      });
+
+      return NextResponse.json({
+        alreadyPaid: true,
+        status: BookingStatus.PAID,
+        creditElection,
+      });
     }
 
     // #1641 — the member may have applied account credit at booking-create (the
@@ -281,65 +471,11 @@ export async function POST(request: NextRequest) {
           // arithmetic.
           chargedAmountCents: existingIntent.amount,
           ...splitPaymentMeta,
+          // #2265 — null unless this request consumed a stored election. #2266
+          // renders it so a clamped election is never applied in silence.
+          creditElection,
         });
       }
-    }
-
-    // For DRAFT bookings: preflight capacity and transition to PAYMENT_PENDING before charging.
-    // Payment success performs the final capacity claim.
-    if (booking.status === "DRAFT") {
-      await prisma.$transaction(async (tx) => {
-        // The booking's lodge cannot change, so reading it for lock-key
-        // selection before acquiring the lock is safe.
-        const bookingLodgeId =
-          booking.lodgeId ?? (await getDefaultLodgeId(tx));
-        await acquireLodgeCapacityLock(tx, bookingLodgeId);
-
-        // Re-fetch within transaction to ensure we have latest state
-        const freshBooking = await tx.booking.findUnique({
-          where: { id: bookingId },
-          include: { guests: { include: { nights: true } } }, // per-night sets (issue #713)
-        });
-
-        if (!freshBooking || freshBooking.status !== BookingStatus.DRAFT) {
-          throw new Error("Booking is no longer a draft");
-        }
-
-        const capacity = await checkCapacityForGuestRanges(
-          bookingLodgeId,
-          freshBooking.checkIn,
-          freshBooking.checkOut,
-          freshBooking.guests,
-          bookingId,
-          tx
-        );
-
-        // DRAFT-scoped exemption (#1771): this re-check runs only while the
-        // booking is DRAFT, and a DRAFT can never carry a persisted capacity
-        // override (#1767 blocks save-as-draft over capacity), so
-        // bookingHasCapacityOverride would always be false here — honouring it
-        // would be dead code. See docs/CAPACITY_MODEL.md.
-        if (!capacity.available) {
-          throw new PaymentIntentCapacityError();
-        }
-
-        // Transition DRAFT -> PAYMENT_PENDING
-        await tx.booking.update({
-          where: { id: bookingId },
-          data: { status: BookingStatus.PAYMENT_PENDING, draftExpiresAt: null },
-        });
-        await reconcileBedAllocationsForBooking({
-          bookingId,
-          db: tx,
-          previousRange: {
-            checkIn: freshBooking.checkIn,
-            checkOut: freshBooking.checkOut,
-          },
-        });
-      });
-
-      // The admin alert for review-flagged bookings is sent once at
-      // creation time. Re-alerting here would double up.
     }
 
     // Find or create Stripe customer
@@ -413,6 +549,11 @@ export async function POST(request: NextRequest) {
       // story instead of the full party total.
       chargedAmountCents: effectivePriceCents,
       ...splitPaymentMeta,
+      // #2265 — the outcome of the stored credit election consumed above (null
+      // when the booking carried none). The member asked for this credit when
+      // they saved the draft, so the pay step must be able to say what actually
+      // happened to it, including a clamp forced by a changed balance or price.
+      creditElection,
     });
   } catch (error) {
     logger.error({ err: error }, "Error creating payment intent");
