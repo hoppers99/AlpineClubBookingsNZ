@@ -447,7 +447,17 @@ Future reviews and issues should cite this file when proposing changes.
   (#1750) — the surviving partner is **auto-promoted** to primary on the vacated
   bed-night atomically with the removal on transactional paths, each with its own audit entry
   (`BED_ALLOCATION_PARTNER_PROMOTED`) because the partner may belong to a
-  different booking (sharing eligibility is member-level). Promotion is gated on
+  different booking (sharing eligibility is member-level). The one exception is
+  **range assignment** (#2251), which can vacate up to 366 bed-nights in a single
+  transaction: it records **one batched
+  `BED_ALLOCATION_PARTNERS_PROMOTED`** entry instead, targeted at the booking
+  whose range assignment caused the promotions and listing each promotion
+  (`{allocationId, bookingId, bookingGuestId, bedId, stayDate}`) up to
+  `MAX_AUDITED_RANGE_PARTNER_PROMOTIONS` (50, the audit sanitiser's array limit),
+  with the exact `promotedCount` and a `promotionsTruncated` flag alongside — so
+  the promoted partner's own booking is still named per promotion, and the audit
+  rows written inside that transaction stay bounded independently of the range
+  length. Promotion is gated on
   `isSecondOccupant` alone, never the denormalized `bedType` of the removed row or
   the survivor: an AUTO-allocated row on a real DOUBLE carries the SINGLE default,
   so trusting that type would strand the partner it needs to promote. The
@@ -621,7 +631,14 @@ Future reviews and issues should cite this file when proposing changes.
   and records nothing, because nothing happened. That entry records shape, not
   people: night counts and runs per category plus the involved booking ids, with
   the occupying guests' names carried only in the API response to the admin who
-  asked. The 31-night `MAX_BED_ALLOCATION_RANGE_NIGHTS` bounds
+  asked. The only other row the transaction may write is the single batched
+  `BED_ALLOCATION_PARTNERS_PROMOTED` entry when the move stranded partners on
+  shared doubles (see the sharing invariant above), so **both the statement count
+  and the audit-row count are fixed whatever the night count**. Proceeding past
+  `GUEST_NOT_BOOKED` nights additionally requires an explicit on-screen
+  confirmation naming how many nights fall outside the guest's stay and how many
+  will be written, so a partial result is never one click from a warning. The
+  31-night `MAX_BED_ALLOCATION_RANGE_NIGHTS` bounds
   the board's READ window, not this write: lodge capacity is the active bed
   count and never reads `BedAllocation` rows, and no capacity or advisory lock
   is taken on any allocation write path. The separate write bound

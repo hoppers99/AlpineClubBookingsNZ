@@ -23,12 +23,19 @@ All notable public reference-release changes should be recorded here.
   booking itself holds the whole lodge, which needs no individual beds. Only
   then, and only if you click the second button, does it write just the free
   nights — it says how many before you commit, and writes exactly those, refusing
-  again with a fresh list if one of them has been taken in the meantime. Either
+  again with a fresh list if one of them has been taken in the meantime. If any
+  night was refused because the guest is not booked on it, that button asks you to
+  confirm first: it names how many nights fall outside the stay and will not be
+  assigned, and how many will, and waits for a **Yes**. That refusal usually means
+  a typo in the dates, so going past it is something you read and agree to rather
+  than a click next to a warning. Either
   way the operation leaves a **single** audit entry against the booking recording
   the range you asked for, what was written and what was refused, so "who put
   this guest in bed 4 for the winter?" has one answer rather than fragments. The
   entry records dates and counts rather than other members' names, which stay on
-  your screen. Assigning a range
+  your screen. If moving the guest left a partner alone on a shared double, all of
+  those promotions are recorded together in one further entry rather than one
+  entry per night. Assigning a range
   confirms those beds immediately, which locks the member out of changing their
   requested room; the dialog says so before you commit. Afterwards the board
   tints the nights it wrote green and the nights it refused red so any gaps are

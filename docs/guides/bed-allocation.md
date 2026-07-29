@@ -103,7 +103,14 @@ year in one go).
    is refused again with a fresh list rather than quietly writing fewer. That is
    the only way a range lands partly done, and it is a deliberate choice, never
    a default.
-6. Afterwards the board tints the nights it wrote green (**Assigned**) and the
+6. If any night was refused as **Guest is not booked that night**, that button
+   asks you to confirm first: it names how many nights fall outside this guest's
+   stay and will *not* be assigned, and how many will, and waits for you to say
+   **Yes, assign the N nights**. **Go back** returns to the list, and changing
+   the dates clears it — nothing is written until you confirm. Those nights are
+   the one refusal that usually means a typo, so skipping them is a choice you
+   read and make, not a button next to a warning.
+7. Afterwards the board tints the nights it wrote green (**Assigned**) and the
    nights it refused red (**Refused**) on that bed, with a summary you can
    dismiss when you have finished checking the gaps.
 
@@ -111,7 +118,9 @@ Every range assignment — whether it succeeded, was refused, or wrote only the
 nights you chose — records a **single** entry in the audit log against the
 booking, covering the range you asked for, what was written, and what was
 refused. It records the counts and the dates, not other members' names: those
-appear on screen for you, and are not filed away.
+appear on screen for you, and are not filed away. If moving the guest left a
+partner alone on a shared double, one further entry records every partner
+promoted by that action together, rather than one entry per partner.
 
 ## Settings reference
 
@@ -153,7 +162,7 @@ you place them yourself.
 | A focused booking is "not on the board" | The deep-linked booking is outside the date range or was cancelled | Adjust Date In / Date Out to bring it into view |
 | "The board window is out of range" | You typed more than 31 nights, or a Date Out before Date In | Narrow the dates, or use ‹ › to step a month at a time |
 | "Showing part of this stay" | You followed a link for a booking longer than the board window | Step forward with › to see the rest of the stay |
-| A range assign says "Nothing was written" | At least one night is blocked — bed taken, guest not booked, or a whole-lodge hold | Read the three lists; fix the range, or use **Assign the N free nights** to take just the free ones |
+| A range assign says "Nothing was written" | At least one night is blocked — bed taken, guest not booked, or a whole-lodge hold | Read the three lists; fix the range, or use **Assign the N free nights** to take just the free ones (if any night is outside the guest's stay, you are asked to confirm that first) |
 | A range assign is refused on every night | This booking has an exclusive whole-lodge hold | Held bookings take the whole lodge and get no individual beds — remove the hold first if that is wrong |
 | "That took too long to save" | The range was large enough for the save to time out; nothing was written | Split it into shorter ranges and assign them one after the other |
 | The member says they can no longer change their requested room | A range assign approved their beds | That is expected: confirming beds locks the room request. Removing every approved allocation re-opens it |
