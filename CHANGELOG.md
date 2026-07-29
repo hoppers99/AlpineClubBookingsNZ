@@ -4,6 +4,41 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **A custodian can now be given a bed for the season without booking it
+  (#2286).** Clubs that keep someone on site all winter had no honest way to
+  record it: the custodian had to be given a real booking, usually with a
+  100%-off promo code, which put them on the chore roster, counted them in the
+  utilisation reports, and left a phantom stay in their booking history. A hut
+  leader assignment can now simply **hold one bed** instead.
+
+  Pick the nights and the person as usual, then choose their bed in the new
+  **Hold a bed (optional)** step. From that moment the bed is out of the
+  bookable pool and off the allocation board for every covered night, with no
+  booking anywhere. The default is still **No bed — role only**, which behaves
+  exactly as assignments always have and changes no capacity at all — including
+  every assignment the nightly auto-assign job creates.
+
+  Members simply see one fewer bed on the availability calendar for those
+  nights, with no custodian label anywhere: who is in the building is not a
+  member-facing fact. Staff see a hatched **Custodian** band across that bed's
+  cells on the allocation board, which is not a drop target and which the server
+  refuses regardless, and the lodge screen shows a **Custodian** line in its
+  footer while the assignment is running. A custodian who is a minor is never
+  named on that screen, at any name-display setting.
+
+  The bed is genuinely reserved rather than merely labelled: no guest can be
+  placed on it by hand, by the range assign, by the auto-allocator or by the
+  lifecycle; and the bed or its room cannot be deactivated or deleted while the
+  hold exists. If the bed already has guests on it, or another custodian holds
+  it, you are told exactly which nights are in the way rather than having anyone
+  quietly moved. If the hold tips the lodge past its capacity you are asked to
+  confirm — which is often the right answer, because the custodian really is
+  sleeping there. Ending or shortening the assignment frees the bed
+  immediately. The hold covers the night of the end date itself, so an
+  assignment whose dates came from the automatic job (which ends on a guest's
+  departure day) should have its end date trimmed by a day first — the form and
+  the guide both say so.
+
 - **A guest can now be put in one bed for a whole long stay in a single action,
   and the board can be browsed a month at a time (#2251).** The bed-allocation
   board shows 31 nights at once, and until now that was also as far as you could
