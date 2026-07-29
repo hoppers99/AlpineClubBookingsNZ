@@ -617,13 +617,18 @@ function sampleValue(token: string): string {
   // #2267: mirror what sendBookingConfirmedEmail composes — each row carries
   // its own trailing newline so the default body's
   // "{{promoSummary}}Total Paid: …" previews as a contiguous block.
+  //
+  // The promo money samples deliberately reconcile against the generic
+  // "$123.45" that every *total* token falls through to below: $153.45 subtotal
+  // minus a $30.00 promo is $123.45 paid. A preview whose own arithmetic does
+  // not add up teaches an admin to distrust the preview.
   if (token === "promoSummary") {
-    return "Subtotal: $150.00\nPromo adjustment (PROMO2026): -$30.00\n";
+    return "Subtotal: $153.45\nPromo adjustment (PROMO2026): -$30.00\n";
   }
   if (token === "promoAdjustment") return "-$30.00";
   if (token === "promoCode") return "PROMO2026";
   if (token === "discount") return "$30.00";
-  if (token === "subtotal") return "$150.00";
+  if (token === "subtotal") return "$153.45";
   if (token.endsWith("Email") || token === "email") return "member@example.org";
   if (token.endsWith("Url") || token.endsWith("URL")) {
     return "https://bookings.example.org/admin";

@@ -302,6 +302,37 @@ describe("booking-confirmed promo summary (#2267)", () => {
     ).toBe(true);
   });
 
+  it("previews one coherent set of money samples that actually reconcile", () => {
+    const definition = getEmailTemplateDefinition("booking-confirmed");
+    if (!definition) throw new Error("missing booking-confirmed");
+    const sample = definition.sampleData;
+
+    const dollars = (value: string) => {
+      const match = value.match(/-?\$[\d,]+\.\d{2}/);
+      if (!match) throw new Error(`no money value in ${JSON.stringify(value)}`);
+      return Math.round(Number(match[0].replace(/[$,]/g, "")) * 100);
+    };
+
+    // Subtotal + signed adjustment = the total the sample body prints.
+    expect(dollars(sample.subtotal) + dollars(sample.promoAdjustment)).toBe(
+      dollars(sample.totalPaid),
+    );
+    // The pre-composed block quotes the same two numbers, not a second set.
+    const [subtotalRow, adjustmentRow] = sample.promoSummary.trim().split("\n");
+    expect(subtotalRow).toBe(`Subtotal: ${sample.subtotal}`);
+    expect(adjustmentRow).toBe(
+      `Promo adjustment (${sample.promoCode}): ${sample.promoAdjustment}`,
+    );
+    // The legacy discount token is the same movement without its sign.
+    expect(dollars(sample.discount)).toBe(-dollars(sample.promoAdjustment));
+
+    // And the preview an admin actually reads shows that arithmetic.
+    const rendered = renderTemplateString(definition.defaultBody, sample);
+    expect(rendered).toContain(
+      "Subtotal: $153.45\nPromo adjustment (PROMO2026): -$30.00\nTotal Paid: $123.45",
+    );
+  });
+
   it("keeps the split provisionalGuestsNote token in the default body (CONFIGURATION.md mandate)", () => {
     const definition = getEmailTemplateDefinition("booking-confirmed");
     if (!definition) throw new Error("missing booking-confirmed");
