@@ -24,6 +24,64 @@ All notable public reference-release changes should be recorded here.
   connection is not made worse and a just-fixed one is picked up straight
   away.
 
+- **Writing a Lodge TV footer or CSS override no longer means remembering the
+  tokens (#2248).** Every field where a board's HTML or CSS is typed by hand —
+  the Visual builder's **Footer HTML**, **CSS overrides** and a zone's **HTML
+  block**, and the CSS and footer fields on the advanced **Templates** page —
+  now carries a small **Insert token** button on its label row. It opens a
+  searchable picker listing only what that field actually accepts: on an HTML
+  field, the standard tokens (`{{lodge-name}}`, `{{display-date}}`) and the
+  preview lodge's saved `{{config:…}}` keys, each row showing the value
+  currently saved on that lodge — so you pick "the Wi-Fi one" rather than
+  remembering a slug — plus a free-text path that turns anything you type into
+  `{{config:<your-key>}}`; on a CSS field, the board's own
+  `var(--display-…)` palette and the club theme colours, inserted ready to
+  use. The token lands exactly where your cursor was, replacing any selected
+  text — never tacked onto the end — and focus returns to the field with the
+  inserted token selected, so you can keep typing or type over it. A key with
+  no value saved yet can still be inserted: the picker warns, before you press
+  Enter, that the wall will show a visible `⟨config:key?⟩` placeholder until
+  the value is filled in on the lodge's display settings, and a key that
+  breaks the naming rules is refused with the rules (and a fixed-up
+  suggestion) instead of silently inserting something the screen would never
+  match. The whole picker is keyboard operable, the existing explanatory text
+  under each field stays put, and one shared component drives all five
+  fields so their behaviour cannot drift apart.
+
+- **The lobby display's built-in boards can be restored on a club that never
+  got them, and the three words the screen uses are finally defined (#2247).**
+  A club whose database was created before the lobby display existed had none
+  of the seven boards that ship with the app: they are only ever created when
+  the database is first seeded, and upgrading does not re-do that. The Templates
+  gallery simply sat empty and said nothing. It now says which of the three
+  things is actually true — the **Lobby TV display** module is switched off,
+  your admin role cannot see display templates, or the boards were never
+  created — and where the boards are missing, **Restore built-in boards**
+  creates all seven in one press. Pressing it again is safe, and if the
+  database fails part-way the whole restore is rolled back rather than leaving
+  half a library. It asks first, because it is a genuine restore: every
+  built-in goes back to the design that ships with the app, so a change made to
+  a built-in in place is undone — including one that arrived in an imported
+  configuration bundle. Layouts and templates saved under your own names are
+  never touched, though a board of yours built on a built-in layout will follow
+  that layout's restored shape; screens keep showing whatever they already
+  show; and who pressed it, with the seven names it rewrote, is written to the
+  audit log. It is deliberately a button rather than something the upgrade does
+  by itself — running it automatically would quietly undo a club's edits to a
+  built-in every release.
+  Relatedly, the seven built-in names are now **reserved**: saving a layout or
+  template of your own under one is refused, with a message saying why. They
+  were never protected on a club that had no built-ins yet, which is exactly
+  the club this feature is for — so a board could be built under one of those
+  names and then be silently overwritten by the very restore that promises not
+  to touch your work.
+  The same screens used three words for two things and explained none of them.
+  A **Layout** is the shape of a board, a **Template** is that shape filled in
+  and is what you point a screen at, and a **board** is what the screen actually
+  shows: a Template on its Layout, for the lodge that screen belongs to. Those
+  three sentences now appear, in the same words, on the Lobby Display hub cards,
+  on the Reference page, on the Visual builder, and in the operator guide.
+
 - **Families can now be recorded across four generations, not two (#2255).**
   A member who already had dependants could not be recorded as anyone's child,
   so a grandparent, parent and child could not all be linked in one line — the

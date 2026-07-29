@@ -5,6 +5,7 @@ import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import { logAudit } from "@/lib/audit";
 import { validateLayoutForSave } from "@/lib/lodge-display/authoring-validation";
+import { isBuiltInDisplayLayoutKey } from "@/lib/lodge-display/built-in-seeds";
 
 // Admin lobby-display LAYOUT management (fork issue #78, LTV-032, ADR-003 §1):
 // list and create authored Layouts (an HTML body with `{{area:key}}`
@@ -41,6 +42,21 @@ const bodyField = z.object({
   // keep it loose here so its rich errors surface with a `layout` path.
   areas: z.array(z.unknown()),
 });
+
+// The seven built-in KEYS are ordinary slugs (`everyday-board`, `welcome-kiosk`,
+// …) — only the seeded ROW ID carries the `builtin-` prefix. So on a database
+// that was never seeded, nothing stopped an admin authoring their own layout
+// under one of those keys; "Restore built-in boards" (#2247) would then upsert
+// BY KEY straight over their content, while its dialog promises that custom
+// layouts are untouched. Reserving the keys on create is what makes that
+// promise true. The PUT path already 409s on a built-in (see [id]/route.ts).
+function builtInKeyReserved(key: string): string {
+  return (
+    `"${key}" is reserved for a built-in board. Restoring the built-in ` +
+    `boards overwrites whatever is saved under a reserved key, so a layout ` +
+    `of your own must use a different key.`
+  );
+}
 
 export async function GET() {
   const guard = await requireAdmin({
@@ -83,6 +99,14 @@ export async function POST(req: NextRequest) {
     body = bodyField.parse(await req.json());
   } catch {
     return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+  }
+
+  // Reserved-key gate BEFORE anything is validated or written (#2247).
+  if (isBuiltInDisplayLayoutKey(body.key)) {
+    return NextResponse.json(
+      { error: builtInKeyReserved(body.key) },
+      { status: 409 }
+    );
   }
 
   // Structural gate BEFORE persistence — the contract refuses a layout whose
