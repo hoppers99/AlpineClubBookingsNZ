@@ -44,9 +44,12 @@ import {
  * applied amount, the shortfall and its reason, and the pay route returns them
  * to the client.
  *
- * The election is single-consumption: it is cleared to NULL in the same
- * transaction that writes the credit ledger row, so a retry, a double-submit or
- * a second pay attempt can never apply it twice.
+ * The election is single-consumption, and that is enforced by a guarded CLAIM,
+ * not by a read-then-write: the column is moved from the exact amount that was
+ * read to NULL with `updateMany`, inside the same transaction that writes the
+ * credit ledger row. A concurrent consumer, a retry, a double-submit or a
+ * second pay attempt therefore either wins the claim and applies the credit
+ * exactly once, or loses it and does nothing at all.
  */
 export type StoredCreditElectionOutcome = {
   /** What the member asked to apply, in integer cents, as stored on the draft. */
@@ -56,10 +59,14 @@ export type StoredCreditElectionOutcome = {
   /** `requestedCents - appliedCents`; greater than zero means reality moved. */
   shortfallCents: number;
   /**
-   * Why the shortfall happened. `"none"` when the full election was applied.
-   * `"balance"` when the member no longer holds that much credit, `"price"`
-   * when the booking is no longer worth that much, `"balance_and_price"` when
-   * both bit.
+   * Which bound actually decided the applied amount. `"none"` when the full
+   * election was applied. `"balance"` when the member's live balance is what
+   * capped it, `"price"` when the booking's uncovered price is what capped it,
+   * and `"balance_and_price"` only when the two are EQUAL and both below the
+   * request — the one case where naming a single culprit would be arbitrary. A
+   * bound that sits under the request but above the other bound did not decide
+   * anything and is not reported, so the member is never told their balance was
+   * short when the price was the real cap.
    */
   shortfallReason: "none" | "balance" | "price" | "balance_and_price";
   /** The member's credit balance at the moment of application, integer cents. */
@@ -79,20 +86,48 @@ export type StoredCreditElectionOutcome = {
  * `PAYMENT_PENDING` — a booking still in `DRAFT` or `AWAITING_REVIEW` must not
  * have its credit consumed, which is the whole point of storing the election
  * rather than applying it. Returns `null` when there is nothing to do (no
- * election stored, or the booking is not in a state that may consume one), in
- * which case not a single row is read or written beyond the booking lookup.
+ * election stored, the booking is not in a state that may consume one, or a
+ * concurrent consumer won the claim first), in which case not a single row is
+ * written.
  *
- * Takes the member-credit ledger lock before reading the balance, so the
- * balance this clamps against cannot move under it. Credit is applied through
- * the ordinary `applyCreditToBooking` path — the same ledger row shape, the
- * same validation, the same `deriveBookingAppliedCreditCents` arithmetic — so
- * the invariant `amountCents + creditAppliedCents = finalPriceCents` on the
- * Payment mirror continues to hold and no bespoke money arithmetic exists here.
+ * Lock order. The per-member credit-ledger lock is taken FIRST, before any
+ * Booking row is written, because that is the order every other credit writer
+ * in the house uses (`member-credit.ts` documents the lock; the modification
+ * clamp, the Internet Banking switch and the cancellation restores all take it
+ * before touching the booking). The caller is expected to already hold the
+ * global booking lock(1) and, where it claims capacity, the per-lodge lock, so
+ * the composed order stays global -> lodge -> member.
+ *
+ * Concurrency. Everything the decision depends on is read AFTER the lock, and
+ * the election is then taken with a guarded claim — `updateMany` matching the
+ * booking id, `PAYMENT_PENDING`, and the exact amount that was read. Two
+ * requests racing on the same booking cannot both see a claim succeed, so the
+ * credit can never be debited twice and the loser reports "nothing to do"
+ * rather than a phantom outcome its caller would act on (a second confirmation
+ * email, a second Xero invoice, a second MEMBER_PAID event).
+ *
+ * Credit is applied through the ordinary `applyCreditToBooking` path — the same
+ * ledger row shape, the same validation, the same
+ * `deriveBookingAppliedCreditCents` arithmetic — so the invariant
+ * `amountCents + creditAppliedCents = finalPriceCents` on the Payment mirror
+ * continues to hold and no bespoke money arithmetic exists here.
  */
 export async function consumeStoredCreditElection(
   tx: Prisma.TransactionClient,
   { bookingId }: { bookingId: string },
 ): Promise<StoredCreditElectionOutcome | null> {
+  // Pre-lock read: the lock key (memberId) plus the cheap "is there anything to
+  // do at all" test, so a booking with no election costs one SELECT and takes
+  // no lock. Every decision below consumes the POST-lock re-read instead.
+  const lockTarget = await tx.booking.findUnique({
+    where: { id: bookingId },
+    select: { memberId: true, creditElectionCents: true },
+  });
+
+  if (!lockTarget || lockTarget.creditElectionCents == null) return null;
+
+  await lockMemberCreditLedger(lockTarget.memberId, tx);
+
   const booking = await tx.booking.findUnique({
     where: { id: bookingId },
     select: {
@@ -110,16 +145,22 @@ export async function consumeStoredCreditElection(
 
   const requestedCents = booking.creditElectionCents;
 
-  // Single consumption: clear the election in the SAME transaction as the
-  // ledger write below, so a re-drive of this transaction (retry, double
-  // submit, a second pay attempt) either applies the credit exactly once or
-  // not at all — never twice.
-  await tx.booking.update({
-    where: { id: bookingId },
+  // Guarded claim (#2265). Matching on the status AND the exact amount read
+  // means the election is taken atomically: whoever's UPDATE lands first sets
+  // the column to NULL and every other racer matches zero rows. A lost claim is
+  // NOT an error — a concurrent pay attempt already applied the credit, or a
+  // concurrent cancel moved the booking out of PAYMENT_PENDING — so return
+  // "nothing to do" and let the caller carry on against the live ledger.
+  const claimed = await tx.booking.updateMany({
+    where: {
+      id: bookingId,
+      status: BookingStatus.PAYMENT_PENDING,
+      creditElectionCents: requestedCents,
+    },
     data: { creditElectionCents: null },
   });
 
-  await lockMemberCreditLedger(booking.memberId, tx);
+  if (claimed.count === 0) return null;
 
   const availableBalanceCents = await getMemberCreditBalance(booking.memberId, tx);
   // Credit may already have been applied to this booking by another path (an
@@ -131,8 +172,19 @@ export async function consumeStoredCreditElection(
     booking.finalPriceCents - alreadyAppliedCents,
   );
 
-  const limitedByBalance = requestedCents > availableBalanceCents;
-  const limitedByPrice = requestedCents > outstandingPriceCents;
+  // Which bound ACTUALLY bound? A bound only counts when it is below the
+  // request (so it bit at all) AND is no higher than the other bound (so it is
+  // the one that decided the answer). Both flags are true only when the two
+  // bounds are equal and both below the request — the honest reading of
+  // "balance and price". Reporting `balance_and_price` merely because both
+  // happened to sit under the request told a member whose price had dropped
+  // that their balance was short when it was not.
+  const limitedByBalance =
+    availableBalanceCents < requestedCents &&
+    availableBalanceCents <= outstandingPriceCents;
+  const limitedByPrice =
+    outstandingPriceCents < requestedCents &&
+    outstandingPriceCents <= availableBalanceCents;
   const clampedRequestCents = Math.max(
     0,
     Math.min(requestedCents, availableBalanceCents, outstandingPriceCents),
@@ -180,6 +232,22 @@ export async function consumeStoredCreditElection(
 }
 
 /**
+ * Thrown when the $0 settlement's status-guarded claim matches no row: the
+ * booking left `PAYMENT_PENDING` (a concurrent cancel, most likely) while this
+ * transaction was assembling its settlement. Loud on purpose — the caller's
+ * transaction must roll back, taking the credit application with it, rather
+ * than resurrect a cancelled booking as PAID.
+ */
+export class CreditCoveredSettlementConflictError extends Error {
+  constructor(bookingId: string) {
+    super(
+      `Booking ${bookingId} left PAYMENT_PENDING during the credit-covered settlement`,
+    );
+    this.name = "CreditCoveredSettlementConflictError";
+  }
+}
+
+/**
  * Settle a booking whose account credit now covers its whole price, so it owes
  * no card payment.
  *
@@ -188,8 +256,13 @@ export async function consumeStoredCreditElection(
  * branch): status PAID, one $0 SUCCEEDED Payment mirroring the applied credit
  * so `amountCents + creditAppliedCents = finalPriceCents` holds, and every
  * stale primary Stripe intent queued for cancellation. Must run inside the
- * caller's transaction; the caller performs the post-commit side effects
- * (member email, Xero invoice, booking event, provider intent cancellations).
+ * caller's transaction, which must already hold the global booking lock(1) and
+ * the booking's per-lodge capacity lock; the caller performs the post-commit
+ * side effects (member email, Xero invoice, booking event, provider intent
+ * cancellations).
+ *
+ * The PAID write is a status-guarded claim, so a booking that a concurrent
+ * cancel moved out of `PAYMENT_PENDING` can never be clobbered back to PAID.
  */
 export async function settleFullyCreditCoveredBooking(
   tx: Prisma.TransactionClient,
@@ -198,6 +271,17 @@ export async function settleFullyCreditCoveredBooking(
     appliedCreditCents,
   }: { bookingId: string; appliedCreditCents: number },
 ): Promise<{ supersededPrimaryPaymentIntents: SupersededPrimaryPaymentIntent[] }> {
+  // Status-guarded claim FIRST, so nothing else in this settlement is written
+  // for a booking that is no longer payable.
+  const claimed = await tx.booking.updateMany({
+    where: { id: bookingId, status: BookingStatus.PAYMENT_PENDING },
+    data: { status: BookingStatus.PAID },
+  });
+
+  if (claimed.count === 0) {
+    throw new CreditCoveredSettlementConflictError(bookingId);
+  }
+
   const payment = await tx.payment.upsert({
     where: { bookingId },
     create: {
@@ -210,12 +294,27 @@ export async function settleFullyCreditCoveredBooking(
       amountCents: 0,
       creditAppliedCents: appliedCreditCents,
       status: PaymentStatus.SUCCEEDED,
+      // Nothing is owed by card, so no card pointer on this Payment can still
+      // be live. Clearing them is the same shape the repriced-to-zero
+      // settlement uses (booking-modify-settlement.ts), and it is not
+      // hypothetical here: an admin payment link or a saved-card charge can
+      // mint a primary intent against a PAYMENT_PENDING booking that still
+      // carries an unconsumed election, and that booking can then settle at $0
+      // when the member's balance grows. The queue below cancels the intents
+      // with the provider; this stops the Payment row pointing at them.
+      //
+      // `stripePaymentMethodId` is DELIBERATELY kept (unlike the
+      // booking-modify-settlement sibling): a split parent's saved card is the
+      // fallback the deferred non-member guest charge uses
+      // (cron-confirm-pending.ts, payment-link.ts both read
+      // `parentBooking.payment.stripePaymentMethodId`), so clearing it here
+      // would strip the card the child booking is charged on later. Nothing
+      // about this booking's own settlement needs it gone.
+      stripePaymentIntentId: null,
+      additionalPaymentIntentId: null,
+      additionalAmountCents: 0,
+      additionalPaymentStatus: null,
     },
-  });
-
-  await tx.booking.update({
-    where: { id: bookingId },
-    data: { status: BookingStatus.PAID },
   });
 
   // A zero effective price supersedes every positive pending primary intent —
