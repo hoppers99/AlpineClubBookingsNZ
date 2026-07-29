@@ -24,13 +24,16 @@ All notable public reference-release changes should be recorded here.
   Full Admin never sees the banner at all. Turning the Lobby TV display module
   on keeps its own reason for the same reason — it needs system-settings access,
   not lodge access. Nothing about who can do what changed; only what a dead
-  button tells you. Two flickers went with it: the "you need support edit access"
-  sentence beside the backups verification button was saying exactly what the
-  banner above it already said, and it appeared for a moment even for admins who
-  *can* run a backup; and the "Only a Full Admin can…" notices in the Xero,
-  Stripe and Google steps appeared and then vanished for actual Full Admins,
-  because the page read "still working out who you are" as "not a Full Admin".
-  Both are gone — those steps now wait until they know. The published
+  button tells you. Three flickering sentences went with it. Two were in the
+  Backups wizard — "your admin role can view these settings but cannot change
+  them" beside the nightly-backups switch, and "you need support edit access"
+  beside the verification button. Both were saying exactly what the banner above
+  them already said, and both appeared for a moment even for admins who *can*
+  change those settings, because they were keyed off "not allowed yet" rather
+  than "not allowed". The third was the "Only a Full Admin can…" notice in the
+  Xero, Stripe and Google steps, which appeared and then vanished for actual Full
+  Admins, because the page read "still working out who you are" as "not a Full
+  Admin". All three are gone or now wait until they know. The published
   banner-coverage figures were re-measured with it: **285**
   gated admin controls, **242** of them covered by a banner (216 in their own
   file, 26 by a verified vouching parent — 5 of those through the wizard frame),

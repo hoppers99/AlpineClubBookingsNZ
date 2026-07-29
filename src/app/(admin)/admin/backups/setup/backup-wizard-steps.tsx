@@ -439,15 +439,13 @@ export function OperationalStep({
         </p>
       </div>
 
-      {!canWrite ? (
-        <div className="flex items-start gap-2 rounded-md border border-border bg-muted p-3 text-sm text-muted-foreground">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-          <span>
-            Your admin role can view these settings but cannot change them.
-            Support edit access is required.
-          </span>
-        </div>
-      ) : null}
+      {/* The "your role can view but not change these settings" sentence that
+          used to sit here has gone (#2324), for the same two reasons as the one
+          on the verification step below: the shell's view-only banner states
+          exactly that, for exactly this scope (`support`), once at the top of
+          the wizard — and this copy was keyed off `!canWrite`, which is also
+          true while the session is still resolving, so it flashed at admins who
+          CAN change these settings. */}
 
       <div className="flex items-center gap-3">
         <input
