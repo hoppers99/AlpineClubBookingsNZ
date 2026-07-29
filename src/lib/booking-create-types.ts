@@ -79,7 +79,7 @@ interface BaseInput {
    * branch simply never passed the field, the type system had nothing to say
    * about it, and a member's credit election was silently discarded every time
    * they saved a draft. Both services now accept it, and
-   * `booking-create-money-field-parity.test.ts` pins that both call sites keep
+   * `issue-2265-booking-create-money-parity.test.ts` pins that both call sites keep
    * passing it.
    *
    * The two services consume it differently, and that difference is the whole

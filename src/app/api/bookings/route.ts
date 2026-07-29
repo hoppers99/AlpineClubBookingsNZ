@@ -559,7 +559,7 @@ export async function POST(request: NextRequest) {
         // credit; it stores the election on the booking and the pay path
         // applies it when the booking reaches PAYMENT_PENDING. Keep this key
         // in step with the createConfirmedBooking call below —
-        // booking-create-money-field-parity.test.ts fails if the two argument
+        // issue-2265-booking-create-money-parity.test.ts fails if the two argument
         // objects diverge on a money-bearing field again.
         applyCreditCents: parsed.data.applyCreditCents,
         groupDiscount,
