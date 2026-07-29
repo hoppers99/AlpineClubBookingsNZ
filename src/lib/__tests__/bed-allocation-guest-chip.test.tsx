@@ -2,7 +2,7 @@
 
 import "@testing-library/jest-dom/vitest";
 import type { ReactNode } from "react";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { getBookingAccent } from "@/app/(admin)/admin/bed-allocation/_components/booking-accent";
 import { GuestChip } from "@/app/(admin)/admin/bed-allocation/_components/guest-chip";
@@ -181,3 +181,51 @@ describe("GuestChip bed select", () => {
     expect(label.parentElement?.querySelector("svg")).toBeTruthy();
   });
 });
+
+// #2251 entry point 1: every guest awaiting a bed can be assigned a range of any
+// length, independently of whether a bed is picked in the row's select.
+describe("GuestChip range assignment entry point", () => {
+  it("offers Assign range… and reports the click", () => {
+    const onAssignRange = vi.fn();
+    render(
+      <GuestChip
+        group={group}
+        bedOptions={beds}
+        bedOptionGroups={bedOptionGroups}
+        selectedBedId=""
+        onSelectBed={vi.fn()}
+        onAllocate={vi.fn()}
+        onAssignRange={onAssignRange}
+        pending={false}
+        canEdit={true}
+      />,
+    );
+
+    const button = screen.getByRole("button", { name: "Assign range…" });
+    // Unlike Allocate, it does not need a bed chosen first — the dialog asks.
+    expect(button).not.toBeDisabled();
+    fireEvent.click(button);
+    expect(onAssignRange).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables Assign range… for a view-only admin", () => {
+    render(
+      <GuestChip
+        group={group}
+        bedOptions={beds}
+        bedOptionGroups={bedOptionGroups}
+        selectedBedId="bed-1"
+        onSelectBed={vi.fn()}
+        onAllocate={vi.fn()}
+        onAssignRange={vi.fn()}
+        pending={false}
+        canEdit={false}
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: "Assign range…" }),
+    ).toBeDisabled();
+  });
+});
+
