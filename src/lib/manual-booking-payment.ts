@@ -12,6 +12,7 @@ import {
   reverseManualBookingPayment,
 } from "@/lib/payment-reconciliation";
 import { applyLocalRefundAllocation } from "@/lib/payment-transactions";
+import { getProvisionalNonMemberChildSummary } from "@/lib/booking-split-summary";
 import { prisma } from "@/lib/prisma";
 
 /**
@@ -139,6 +140,7 @@ export async function applyManualBookingPayment(
         where: { id: input.bookingId },
         select: {
           lodgeId: true,
+          memberId: true,
           checkIn: true,
           checkOut: true,
           finalPriceCents: true,
@@ -165,6 +167,14 @@ export async function applyManualBookingPayment(
       receipt = "not_delivered";
     } else {
       try {
+        // Split-booking parent (#738/#1942), parity with every comparable
+        // settle-time send (invoice-paid-effects et al.): describe the
+        // provisional non-member child so the confirmation explains the
+        // separate later charge. Read-only; null on non-split bookings.
+        const provisionalGuests = await getProvisionalNonMemberChildSummary({
+          id: input.bookingId,
+          memberId: recipient.memberId,
+        });
         // The SAME message the Xero-inbound settle sends, so a cash-settled
         // member reads exactly what a bank-transfer-settled member reads.
         const outcome = await sendBookingConfirmedEmail(
@@ -177,6 +187,7 @@ export async function applyManualBookingPayment(
           recipient.finalPriceCents,
           {
             lodgeId: recipient.lodgeId,
+            ...(provisionalGuests ? { provisionalGuests } : {}),
             ...(recipient.promoRedemption?.promoCode
               ? {
                   discountCents: recipient.discountCents,
