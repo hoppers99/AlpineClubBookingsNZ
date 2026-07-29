@@ -165,12 +165,14 @@ export default function PayByLinkPage() {
         throw new Error(data.error || "Unable to send a new link right now.");
       }
       if (data.emailed === false) {
-        // The link was re-issued but the email was suppressed (this address
-        // previously bounced or complained), so nothing will arrive (#1885).
-        // Never claim an email is on the way.
+        // The link was re-issued but nothing was delivered — either the address
+        // previously bounced or complained (#1885), or the club has this booking
+        // set to receive no email (#2258). Never claim an email is on the way,
+        // and never say WHICH: the wording stays neutral so it is honest in both
+        // cases and never reveals the per-booking switch to the member.
         setRefreshState("idle");
         setRefreshError(
-          `We weren't able to send email to this address. Please contact ${club.lodgeName} and we'll help you complete payment.`
+          `We weren't able to email the link. Please contact ${club.lodgeName} and we'll help you complete payment.`
         );
         return;
       }

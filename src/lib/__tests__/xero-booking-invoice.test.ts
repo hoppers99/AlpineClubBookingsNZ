@@ -19,6 +19,11 @@ const mocks = vi.hoisted(() => {
     booking: {
       findUnique: vi.fn(),
     },
+    // #2258: the withheld-send audit row written when the booking's
+    // "No emails" switch stops Xero emailing the invoice.
+    emailLog: {
+      create: vi.fn().mockResolvedValue({ id: "emaillog_1" }),
+    },
     season: {
       findFirst: vi.fn(),
     },
@@ -447,6 +452,135 @@ describe("createXeroInvoiceForBooking", () => {
           paymentSkipped: true,
           paymentSkipReason: "Zero-total invoice does not require Xero payment recording.",
           invoiceEmailSkipped: true,
+        }),
+      })
+    );
+  });
+
+  it("does NOT let Xero email the invoice when the booking has No emails on, and records the withhold (#2258)", async () => {
+    mocks.prisma.booking.findUnique.mockResolvedValue({
+      id: "booking_1",
+      memberId: "mem_1",
+      member: { id: "mem_1", email: "member@example.test" },
+      // The switch. The invoice itself is still raised in Xero — only the
+      // emailing is withheld.
+      noEmails: true,
+      checkIn: "2026-07-31T00:00:00.000Z",
+      checkOut: "2026-08-02T00:00:00.000Z",
+      createdAt: "2026-05-15T10:30:00.000Z",
+      discountCents: 0,
+      promoAdjustmentCents: 0,
+      guests: [
+        {
+          firstName: "Jordan",
+          lastName: "Hartley-Smith",
+          ageTier: "ADULT",
+          isMember: true,
+          priceCents: 10000,
+        },
+      ],
+      payment: {
+        id: "pay_1",
+        status: "PENDING",
+        amountCents: 10000,
+        stripePaymentIntentId: null,
+        xeroInvoiceId: null,
+        xeroInvoiceNumber: null,
+        source: "INTERNET_BANKING",
+      },
+    });
+
+    await expect(createXeroInvoiceForBooking("booking_1")).resolves.toBe("inv_1");
+
+    expect(
+      mocks.xeroClientInstance.accountingApi.emailInvoice
+    ).not.toHaveBeenCalled();
+    expect(mocks.prisma.emailLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        bookingId: "booking_1",
+        templateName: "xero-booking-invoice-email",
+        status: "SKIPPED_NO_EMAILS",
+        to: "member@example.test",
+        htmlBody: null,
+      }),
+      select: { id: true },
+    });
+    // The invoice was still created and linked — only the email is withheld.
+    expect(
+      mocks.xeroClientInstance.accountingApi.createInvoices
+    ).toHaveBeenCalled();
+    // A DELIBERATE withhold is a complete, intended outcome: no error, and the
+    // flag distinguishes it from the ordinary "this source raises no emailed
+    // invoice" skip.
+    expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
+      "op_1",
+      expect.objectContaining({
+        status: "SUCCEEDED",
+        responsePayload: expect.objectContaining({
+          invoiceEmailError: null,
+          invoiceEmailWithheldByNoEmails: true,
+        }),
+      })
+    );
+  });
+
+  // The corrected contract (#2258 review finding): an unreadable switch is a
+  // FAULT, not a deliberate withhold. Filing it as SKIPPED_NO_EMAILS would put a
+  // false "the admin asked for silence" line on a booking whose switch is OFF
+  // (#2259's banner), and reporting the sync operation SUCCEEDED would strand an
+  // unpaid internet-banking invoice the member was never told about, with no
+  // re-drive path — the exact #1705 harm.
+  it("reports an unreadable switch as a FAULT: PARTIAL sync op, no withheld row, no email (#2258)", async () => {
+    const bookingRow = {
+      id: "booking_1",
+      memberId: "mem_1",
+      member: { id: "mem_1", email: "member@example.test" },
+      checkIn: "2026-07-31T00:00:00.000Z",
+      checkOut: "2026-08-02T00:00:00.000Z",
+      createdAt: "2026-05-15T10:30:00.000Z",
+      discountCents: 0,
+      promoAdjustmentCents: 0,
+      guests: [
+        {
+          firstName: "Jordan",
+          lastName: "Hartley-Smith",
+          ageTier: "ADULT",
+          isMember: true,
+          priceCents: 10000,
+        },
+      ],
+      payment: {
+        id: "pay_1",
+        status: "PENDING",
+        amountCents: 10000,
+        stripePaymentIntentId: null,
+        xeroInvoiceId: null,
+        xeroInvoiceNumber: null,
+        source: "INTERNET_BANKING",
+      },
+    };
+    // First read (the invoice build) succeeds; the pre-email re-read throws.
+    mocks.prisma.booking.findUnique
+      .mockResolvedValueOnce(bookingRow)
+      .mockRejectedValueOnce(new Error("connection reset"));
+
+    await expect(createXeroInvoiceForBooking("booking_1")).resolves.toBe("inv_1");
+
+    expect(
+      mocks.xeroClientInstance.accountingApi.emailInvoice
+    ).not.toHaveBeenCalled();
+    // NOT filed as a deliberate withhold.
+    expect(mocks.prisma.emailLog.create).not.toHaveBeenCalled();
+    // Visible and re-drivable: the operation completes PARTIAL with a populated
+    // invoiceEmailError, exactly as a failed emailInvoice call would.
+    expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
+      "op_1",
+      expect.objectContaining({
+        status: "PARTIAL",
+        responsePayload: expect.objectContaining({
+          invoiceEmailError: expect.any(Error),
+          invoiceEmailSkipped: true,
+          invoiceEmailWithheldByNoEmails: false,
         }),
       })
     );

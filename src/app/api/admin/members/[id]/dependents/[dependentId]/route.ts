@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
-import { getParentEmailSourceId } from "@/lib/member-parent-links";
+import { resolveInheritedEmailSourceId } from "@/lib/member-parent-links";
 import logger from "@/lib/logger";
 
 class UnlinkDependentError extends Error {
@@ -28,7 +28,10 @@ export async function DELETE(
     const result = await prisma.$transaction(async (tx) => {
       const parent = await tx.member.findUnique({
         where: { id: parentId },
-        select: { id: true, inheritEmailFromId: true },
+        // The parent's own email source is no longer read: provenance is
+        // decided by the dependant's `inheritParentEmail` flag, not by matching
+        // the stored pointer against this parent's one-hop source.
+        select: { id: true },
       });
       if (!parent) {
         throw new UnlinkDependentError("Parent member not found", 404);
@@ -48,12 +51,10 @@ export async function DELETE(
           secondaryParentId: true,
           inheritParentEmail: true,
           inheritEmailFromId: true,
-          parent: {
-            select: { id: true, inheritEmailFromId: true },
-          },
-          secondaryParent: {
-            select: { id: true, inheritEmailFromId: true },
-          },
+          // Only the id is used — the transitive resolver reads the rest of the
+          // chain itself, from the transaction's own view.
+          parent: { select: { id: true } },
+          secondaryParent: { select: { id: true } },
         },
       });
       if (!dependent) {
@@ -68,18 +69,35 @@ export async function DELETE(
         );
       }
 
-      const parentEmailSourceIds = [parent.id, parent.inheritEmailFromId].filter(
-        (sourceId): sourceId is string => Boolean(sourceId)
-      );
+      // PROVENANCE, not identity (#2255). This used to ask "does the stored
+      // pointer name this parent, or this parent's own source?" — a ONE-HOP
+      // test. Since the write side resolves transitively, a derived pointer now
+      // routinely names an ancestor two or more hops up (link a child under a
+      // grandparent whose address is a placeholder and the stored source is the
+      // GREAT-grandparent). That pointer failed the one-hop test, so unlinking
+      // left the member with no parent link at all and a permanent inheritance
+      // from someone they are no longer connected to — while the response and
+      // the audit entry both said `clearedEmailInheritance: false`, as if that
+      // were the correct outcome.
+      //
+      // `inheritParentEmail` is the provenance flag: every pointer this system
+      // derives from a parent link sets it true, and a manually-chosen source
+      // sets it false. So a DERIVED pointer is re-resolved on unlink whatever
+      // it names, and a MANUAL one is left alone — the distinction the manual
+      // case in dependent-unlink.test.ts pins.
       const shouldClearEmailInheritance =
-        dependent.inheritParentEmail &&
-        dependent.inheritEmailFromId !== null &&
-        parentEmailSourceIds.includes(dependent.inheritEmailFromId);
+        dependent.inheritParentEmail && dependent.inheritEmailFromId !== null;
       const remainingParent = isPrimaryParent
         ? dependent.secondaryParent
         : dependent.parent;
+      // Re-resolve through the same transitive resolver the link route uses, so
+      // a dependant who falls back onto a middle-generation parent with no
+      // mailbox of their own lands on that parent's nearest reachable ancestor
+      // rather than on nothing. A one-hop read here would silently clear it.
       const nextEmailSourceId = shouldClearEmailInheritance
-        ? getParentEmailSourceId(remainingParent)
+        ? remainingParent
+          ? (await resolveInheritedEmailSourceId(tx, remainingParent.id)).sourceId
+          : null
         : dependent.inheritEmailFromId;
 
       const updateData = {

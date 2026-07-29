@@ -5,6 +5,7 @@ import { Trash2, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AgeTierBadge } from "@/components/admin/family-groups/age-tier-badge";
@@ -61,6 +62,8 @@ export function FamilyGroupEditor({
   const [requests, setRequests] = useState<FamilyGroupRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [formName, setFormName] = useState("");
+  // #2257 — the example lives UNDER the field, not inside it as grey pseudo-content.
+  const groupNameHint = useFieldHint();
   const [selectedMembers, setSelectedMembers] = useState<MemberOption[]>([]);
   const [memberSearch, setMemberSearch] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -415,10 +418,13 @@ export function FamilyGroupEditor({
               id={`family-group-name-${groupId}`}
               value={formName}
               onChange={(event) => setFormName(event.target.value)}
-              placeholder='e.g., "Smith Family"'
               required
               disabled={canEdit !== true}
+              {...groupNameHint.fieldProps}
             />
+            <FieldHint {...groupNameHint.hintProps}>
+              Example: Smith Family
+            </FieldHint>
           </div>
 
           <div>

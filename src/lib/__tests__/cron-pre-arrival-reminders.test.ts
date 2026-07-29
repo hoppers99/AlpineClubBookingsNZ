@@ -93,6 +93,7 @@ describe("sendPreArrivalReminders", () => {
       data: { preArrivalReminderSentAt: new Date("2026-06-10T12:00:00.000Z") },
     });
     expect(mockSendPreArrivalReminderEmail).toHaveBeenCalledWith({
+      bookingId: "booking-1",
       email: "member@example.org",
       firstName: "Alice",
       checkIn: candidate.checkIn,

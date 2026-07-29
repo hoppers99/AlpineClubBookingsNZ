@@ -10,6 +10,7 @@ import {
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 import { recordBookingEvent } from "@/lib/booking-events";
 import { bookingHasCapacityOverride } from "@/lib/booking-status";
+import { recordWithheldBookingEmail } from "@/lib/booking-email-suppression";
 import logger from "@/lib/logger";
 import {
   mintSplitGuestPaymentLinkIfAbsent,
@@ -46,6 +47,9 @@ import { getNonMemberHoldDays } from "./cancellation";
 import { processWaitlistForDates } from "./waitlist";
 
 /** How long to extend the hold for request-origin bookings (no saved card) at hold expiry. */
+/** Registry template the split-guest pay-link email ships as (#1967). */
+const SPLIT_GUEST_PAYMENT_LINK_TEMPLATE = "split-guest-payment-link";
+
 const REQUEST_HOLD_EXTENSION_MS = 2 * 24 * 60 * 60 * 1000;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -179,6 +183,14 @@ type HoldResolution =
       // already existed — the member was emailed on a prior run, so the
       // caller sends no member email; the admin alert fires either way.
       mintedLink: MintedSplitGuestPaymentLink | null;
+      // #2258: the booking's "No emails" switch withheld the link email, so
+      // nothing was minted at all. The hold extension and the admin alert still
+      // run — an operator must still learn the guest portion is unpaid — but no
+      // PaymentLink row is created and no member email is attempted.
+      emailWithheld: boolean;
+      // When the current "No emails" episode began, so the withheld record is
+      // written once per episode rather than once ever (#2258).
+      noEmailsAt: Date | null;
     }
   | {
       // A genuine split child with no saved card whose PARENT is not settled
@@ -312,6 +324,7 @@ async function queueXeroInvoice(bookingId: string, logMessage: string) {
 async function sendConfirmationEmail(booking: PendingBooking) {
   try {
     await sendBookingConfirmedEmail(
+      { bookingId: booking.id },
       booking.member.email,
       booking.member.firstName,
       booking.checkIn,
@@ -332,6 +345,7 @@ async function sendBumpedEmail(booking: PendingBooking, flagged: boolean) {
   try {
     if (flagged) {
       await sendBookingGuestsCancelledEmail(
+        { bookingId: booking.id },
         booking.member.email,
         booking.member.firstName,
         booking.checkIn,
@@ -340,6 +354,7 @@ async function sendBumpedEmail(booking: PendingBooking, flagged: boolean) {
       );
     } else {
       await sendBookingBumpedEmail(
+        { bookingId: booking.id },
         booking.member.email,
         booking.member.firstName,
         booking.checkIn,
@@ -725,6 +740,27 @@ async function resolveHoldWindowUnderLock(
           };
         }
 
+        // #2258: decide BEFORE minting. Minting first and discovering the
+        // withhold at send time would revoke-and-re-mint on every run —
+        // unbounded PaymentLink/EmailLog churn whose repeats bury the withholds
+        // an operator actually needs to see in the booking's withheld list. A
+        // withhold is not a delivery failure to retry: nothing changes until an
+        // admin clears the switch.
+        const emailGate = await tx.booking.findUnique({
+          where: { id: booking.id },
+          select: { noEmails: true, noEmailsAt: true },
+        });
+        if (emailGate?.noEmails) {
+          return {
+            type: "split_child_payment_link",
+            booking,
+            extendedHoldUntil,
+            mintedLink: null,
+            emailWithheld: true,
+            noEmailsAt: emailGate.noEmailsAt,
+          };
+        }
+
         // Mint only when no active (unexpired) link exists; a pre-existing
         // active link means a prior run already emailed the member.
         const mintedLink = await mintSplitGuestPaymentLinkIfAbsent(tx, {
@@ -737,6 +773,8 @@ async function resolveHoldWindowUnderLock(
           booking,
           extendedHoldUntil,
           mintedLink,
+          emailWithheld: false,
+          noEmailsAt: null,
         };
       }
 
@@ -1105,6 +1143,7 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
 
         try {
           await sendBookingRequestPaymentExpiredEmail({
+            bookingContext: { bookingId: resolution.booking.id },
             email: resolution.booking.member.email,
             firstName: resolution.booking.member.firstName,
             checkIn: resolution.booking.checkIn,
@@ -1167,6 +1206,7 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
 
         try {
           await sendSplitGuestPortionCancelledEmail({
+            bookingId: resolution.booking.id,
             email: resolution.booking.member.email,
             firstName: resolution.booking.member.firstName,
             checkIn: resolution.booking.checkIn,
@@ -1222,14 +1262,41 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
         // re-mint's newer link survives) — the next extension run then
         // re-mints and re-sends instead of stalling forever behind a stale
         // active-link sentinel.
-        if (resolution.mintedLink) {
+        if (resolution.emailWithheld) {
+          // #2258: nothing minted, nothing sent. Record the withhold ONCE per
+          // booking (this cron re-drives every run, and a per-run row would
+          // flood the booking's withheld list), then fall through to the admin
+          // alert below so an operator still learns the portion is unpaid.
+          await recordWithheldBookingEmail({
+            bookingId: resolution.booking.id,
+            templateName: SPLIT_GUEST_PAYMENT_LINK_TEMPLATE,
+            subject: "Pay for your guests to confirm their place",
+            to: resolution.booking.member.email,
+            detail:
+              'Withheld: this booking has the "No emails" switch turned on. No payment link was created.',
+            once: true,
+            // Scope the once-check to THIS episode, so a re-enable records afresh.
+            sinceAt: resolution.noEmailsAt,
+          }).catch((err) =>
+            logger.error(
+              { err, bookingId: resolution.booking.id, job: "confirmPendingBookings" },
+              "Failed to record the withheld split guest payment link email"
+            )
+          );
+          logger.warn(
+            { bookingId: resolution.booking.id, job: "confirmPendingBookings" },
+            'Skipped minting a split guest payment link: the booking has "No emails" turned on'
+          );
+        } else if (resolution.mintedLink) {
           const { token, paymentLinkId } = resolution.mintedLink;
           const expiresAt = endOfDateOnlyForTimeZone(
             formatDateOnly(resolution.booking.checkIn)
           );
           let delivered = false;
+          let withheld = false;
           try {
             const emailOutcome = await sendSplitGuestPaymentLinkEmail({
+              bookingContext: { bookingId: resolution.booking.id },
               email: resolution.booking.member.email,
               firstName: resolution.booking.member.firstName,
               token,
@@ -1242,6 +1309,15 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
               lodgeId: resolution.booking.lodgeId ?? null,
             });
             delivered = emailOutcome.status === "sent";
+            // #2258: the switch can be flipped between the pre-mint gate and
+            // this send. The unreachable token is still revoked below, but a
+            // DELIBERATE withhold must not be reported as a retryable delivery
+            // failure — nothing changes until an admin clears the switch. A
+            // fail-closed withhold (the setting could not be READ) is the
+            // opposite: a transient fault, so it keeps retry semantics.
+            withheld =
+              emailOutcome.status === "withheld_for_booking" &&
+              emailOutcome.reason === "booking_no_emails";
             if (!delivered) {
               logger.warn(
                 {
@@ -1249,7 +1325,9 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
                   emailStatus: emailOutcome.status,
                   job: "confirmPendingBookings",
                 },
-                "Split-booking guest payment link email not delivered (suppressed recipient); revoking the link so the next settlement run re-mints"
+                withheld
+                  ? "Split-booking guest payment link email withheld by the booking's email gate; revoking the link"
+                  : "Split-booking guest payment link email not delivered (suppressed recipient); revoking the link so the next settlement run re-mints"
               );
             }
           } catch (emailErr) {

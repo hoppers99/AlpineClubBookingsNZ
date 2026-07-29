@@ -15,6 +15,8 @@ function bookingRecord(overrides: Record<string, unknown> = {}) {
     status: "PAID",
     deletedAt: null,
     waitlistOfferedAt: null,
+    // #2258: switch off by default in fixtures.
+    noEmails: false,
     member: { email: "member@example.org" },
     payment: {
       id: "payment-1",

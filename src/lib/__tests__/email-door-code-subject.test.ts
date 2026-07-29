@@ -20,6 +20,11 @@ const { mockPrisma, mockTransporter, mockLogger } = vi.hoisted(() => {
     sendMail: vi.fn().mockResolvedValue({ messageId: "msg-door-code-test" }),
   };
   const mockPrisma = {
+    // #2258: the mailer reads the booking's "No emails" switch before every
+    // booking-scoped send; off means unchanged behaviour.
+    booking: {
+      findUnique: vi.fn().mockResolvedValue({ noEmails: false }),
+    },
     emailLog: {
       create: vi.fn().mockResolvedValue({ id: "log-door-code-test" }),
       update: vi.fn().mockResolvedValue({}),
@@ -125,6 +130,7 @@ describe("sensitive values never reach email subjects, EmailLog, or app logs", (
     );
 
     await sendBookingConfirmedEmail(
+      { bookingId: "bk_test" },
       "member@example.com",
       "Ada",
       new Date("2026-07-10T00:00:00.000Z"),
@@ -159,6 +165,7 @@ describe("sensitive values never reach email subjects, EmailLog, or app logs", (
     );
 
     await sendPreArrivalReminderEmail({
+      bookingId: "bk_test",
       email: "member@example.com",
       firstName: "Ada",
       checkIn: new Date("2026-07-10T00:00:00.000Z"),
@@ -188,6 +195,7 @@ describe("sensitive values never reach email subjects, EmailLog, or app logs", (
     );
 
     await sendBookingConfirmedEmail(
+      { bookingId: "bk_test" },
       "member@example.com",
       "Ada",
       new Date("2026-07-10T00:00:00.000Z"),
@@ -212,6 +220,7 @@ describe("sensitive values never reach email subjects, EmailLog, or app logs", (
     );
 
     await sendChoreRosterEmail(
+      { bookingId: "bk_test" },
       "member@example.com",
       "Ada",
       "2026-07-10",
@@ -239,6 +248,7 @@ describe("sensitive values never reach email subjects, EmailLog, or app logs", (
     );
 
     await sendBookingRequestQuoteEmail({
+      bookingContext: "none",
       email: "guest@example.com",
       firstName: "Ada",
       token: LIVE_QUOTE_TOKEN,
@@ -292,6 +302,7 @@ describe("sensitive values never reach email subjects, EmailLog, or app logs", (
 
   it("keeps the default subject clean when no override exists", async () => {
     await sendBookingConfirmedEmail(
+      { bookingId: "bk_test" },
       "member@example.com",
       "Ada",
       new Date("2026-07-10T00:00:00.000Z"),

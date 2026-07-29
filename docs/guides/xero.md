@@ -45,6 +45,17 @@ idempotent — retrying the same work never double-charges.
    detection, and finance syncs until you reconnect (your data inside Xero is not
    changed).
 
+3. **Go to Xero** (top right of the page) opens Xero in a new tab so you can
+   chase up whatever you just spotted. It sits in the page header, so it is
+   there whichever sections you have expanded. When
+   the club's Xero organisation is known, the link takes you straight into *that*
+   organisation's dashboard — useful if your Xero login covers several
+   organisations. If the app cannot read the organisation, or Xero is not
+   connected here, the button still works: it becomes a plain Xero sign-in
+   (labelled **Log in to Xero**) and Xero decides which organisation you land in.
+   It is never disabled, because opening Xero is exactly what you want when the
+   connection here is broken.
+
 ### Run syncs and work the queues
 
 1. **Contact Sync** runs a broad link pass (**Sync Contacts from Xero**) or a

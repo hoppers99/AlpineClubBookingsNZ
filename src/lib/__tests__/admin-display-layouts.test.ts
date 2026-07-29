@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Prisma } from "@prisma/client";
+import { BUILT_IN_DISPLAY_LAYOUT_KEYS } from "@/lib/lodge-display/built-in-seeds";
 
 // Issue #78 (LTV-032): admin lobby-display LAYOUT CRUD — admin guard on every
 // method, save-contract validation on create/update (structural errors surface
@@ -120,6 +121,26 @@ describe("GET/POST /api/admin/display/layouts", () => {
     expect(body.layout).toEqual(CREATED_ROW);
     expect(body.warnings).toEqual([]);
     expect(mockPrisma.displayLayout.create).toHaveBeenCalledTimes(1);
+  });
+
+  // #2247: the seven built-in KEYS are ordinary slugs — only the seeded ROW ID
+  // carries the `builtin-` prefix — so on a never-seeded database (exactly the
+  // population "Restore built-in boards" serves) an admin could author their
+  // own layout under one, and the restore would upsert BY KEY straight over it
+  // while promising custom layouts are untouched. The keys are reserved on
+  // create; PUT already 409s on a built-in.
+  it("refuses a reserved built-in key on create, without persisting", async () => {
+    const { POST } = await import("@/app/api/admin/display/layouts/route");
+    for (const key of BUILT_IN_DISPLAY_LAYOUT_KEYS) {
+      const res = await POST(
+        await jsonRequest("http://localhost/x", "POST", { ...VALID_BODY, key })
+      );
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toContain(key);
+      expect(body.error).toMatch(/reserved/i);
+    }
+    expect(mockPrisma.displayLayout.create).not.toHaveBeenCalled();
   });
 
   it("surfaces a structural error with the contract's path + message, without persisting", async () => {

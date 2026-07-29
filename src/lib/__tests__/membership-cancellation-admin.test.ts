@@ -6,6 +6,10 @@ const mocks = vi.hoisted(() => {
       update: vi.fn(),
       updateMany: vi.fn(),
       findUnique: vi.fn(),
+      // #2255: the approval reads who it is about to detach — dependants and
+      // email inheritors — before the link sweep nulls those columns, so the
+      // admin can be told. Defaults to "nobody", which most fixtures want.
+      findMany: vi.fn(async (_args?: unknown): Promise<unknown[]> => []),
       count: vi.fn(),
     },
     familyGroupMember: {
@@ -182,6 +186,10 @@ describe("membership cancellation admin review", () => {
       accessRoles: [],
     });
     mocks.tx.member.count.mockResolvedValue(0);
+    // #2255: re-seeded per test because `vi.clearAllMocks()` clears calls but
+    // NOT implementations, so a fixture that stubs the detached-links reads
+    // would otherwise leak into every test that follows it.
+    mocks.tx.member.findMany.mockImplementation(async () => []);
     mocks.tx.membershipCancellationRequestParticipant.findMany.mockResolvedValue([
       { status: "CANCELLED" },
     ]);
@@ -258,6 +266,135 @@ describe("membership cancellation admin review", () => {
         rejoinProcessText: "Contact the club secretary before rejoining.",
       }),
     );
+  });
+
+  /**
+   * #2255 (D9). Approving a cancellation clears ONE level of family links: the
+   * member's own parent links, and every link pointing at them. With chains of
+   * up to four generations the member being cancelled is often a MIDDLE
+   * generation, so that sweep silently detaches their own dependants from the
+   * family and leaves anyone inheriting their address with no mailbox.
+   *
+   * The decided outcome is "detached and DECLARED": grandchildren are NOT
+   * re-parented onto the grandparent, because who is responsible for a member
+   * is a real-world fact and promoting it because someone left the club would
+   * record a relationship nobody asserted — but the admin is told exactly who
+   * was affected, in the response and in the audit trail.
+   */
+  describe("orphaned family links (#2255)", () => {
+    function detaching(
+      dependants: Array<{ id: string; firstName: string; lastName: string; email: string }>,
+      inheritors: Array<{ id: string; firstName: string; lastName: string; email: string }> = [],
+    ) {
+      mocks.tx.member.findMany.mockImplementation(async ({ where }: any) =>
+        where?.inheritEmailFromId ? inheritors : dependants,
+      );
+    }
+
+    it("names the dependants whose parent link was cleared", async () => {
+      detaching([
+        { id: "grandchild-1", firstName: "Ana", lastName: "Smith", email: "ana@example.org" },
+        { id: "grandchild-2", firstName: "Ben", lastName: "Smith", email: "ben@example.org" },
+      ]);
+
+      const result = await reviewMembershipCancellationParticipant({
+        requestId: "request-1",
+        participantId: "participant-1",
+        action: "approve",
+        adminMemberId: "admin-1",
+      });
+
+      expect(result.orphanedLinks.dependants).toEqual([
+        { id: "grandchild-1", name: "Ana Smith", email: "ana@example.org" },
+        { id: "grandchild-2", name: "Ben Smith", email: "ben@example.org" },
+      ]);
+    });
+
+    it("names the members left without an inherited mailbox", async () => {
+      detaching(
+        [],
+        [{ id: "kid-1", firstName: "Cai", lastName: "Smith", email: "cai@example.org" }],
+      );
+
+      const result = await reviewMembershipCancellationParticipant({
+        requestId: "request-1",
+        participantId: "participant-1",
+        action: "approve",
+        adminMemberId: "admin-1",
+      });
+
+      expect(result.orphanedLinks.emailInheritors).toEqual([
+        { id: "kid-1", name: "Cai Smith", email: "cai@example.org" },
+      ]);
+    });
+
+    it("does NOT re-parent the detached dependants onto a grandparent", async () => {
+      detaching([
+        { id: "grandchild-1", firstName: "Ana", lastName: "Smith", email: "ana@example.org" },
+      ]);
+
+      await reviewMembershipCancellationParticipant({
+        requestId: "request-1",
+        participantId: "participant-1",
+        action: "approve",
+        adminMemberId: "admin-1",
+      });
+
+      // Every write to the dependants' parent columns clears them; none sets a
+      // new parent. Promoting a grandparent into the parent slot would change
+      // who is legally responsible for a child, silently, as a side effect of
+      // someone else's cancellation.
+      const parentColumnWrites = mocks.tx.member.updateMany.mock.calls
+        .map((call: unknown[]) => (call[0] as { data?: Record<string, unknown> })?.data ?? {})
+        .filter(
+          (data: any) =>
+            "parentMemberId" in data || "secondaryParentId" in data,
+        );
+      expect(parentColumnWrites.length).toBeGreaterThan(0);
+      for (const data of parentColumnWrites) {
+        expect(Object.values(data)).toEqual([null]);
+      }
+    });
+
+    it("records the detached members in the audit trail as well as the response", async () => {
+      detaching(
+        [{ id: "grandchild-1", firstName: "Ana", lastName: "Smith", email: "ana@example.org" }],
+        [{ id: "kid-1", firstName: "Cai", lastName: "Smith", email: "cai@example.org" }],
+      );
+
+      await reviewMembershipCancellationParticipant({
+        requestId: "request-1",
+        participantId: "participant-1",
+        action: "approve",
+        adminMemberId: "admin-1",
+      });
+
+      expect(mocks.createAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "membership_cancellation.participant_cancelled",
+          metadata: expect.objectContaining({
+            detachedDependantIds: ["grandchild-1"],
+            detachedEmailInheritorIds: ["kid-1"],
+          }),
+        }),
+        mocks.tx,
+      );
+    });
+
+    it("reports empty lists rather than omitting them when nothing was linked", async () => {
+      // A caller must not have to distinguish "no key" from "nothing detached".
+      const result = await reviewMembershipCancellationParticipant({
+        requestId: "request-1",
+        participantId: "participant-1",
+        action: "approve",
+        adminMemberId: "admin-1",
+      });
+
+      expect(result.orphanedLinks).toEqual({
+        dependants: [],
+        emailInheritors: [],
+      });
+    });
   });
 
   it("blocks approval when future bookings remain", async () => {

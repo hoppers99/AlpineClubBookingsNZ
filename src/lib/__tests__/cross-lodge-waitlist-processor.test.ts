@@ -154,6 +154,30 @@ describe("processWaitlistForDates cross-lodge pass", () => {
     expect(update.data.waitlistOfferedPriceCents).toBeNull();
   });
 
+  // #2258: a suppressed booking must never enter candidacy. If it did, the
+  // offer transaction would stamp waitlistOfferExpiresAt and start the offer
+  // clock, the offer email would then be withheld, and the entry would hold a
+  // bed for the whole window with the member never told — then lapse.
+  it("excludes bookings with the No emails switch from waitlist candidacy", async () => {
+    const own = candidate({
+      id: "entry-b",
+      lodgeId: "lodge-b",
+      createdAt: "2026-07-02T10:00:00Z",
+    });
+    currentTx = makeTx([own]);
+    mocks.getWaitlistCrossLodgeOrder.mockResolvedValue("OWN_LODGE_FIRST");
+    mocks.checkCapacityForGuestRanges.mockResolvedValue({ available: true });
+
+    await processWaitlistForDates({
+      checkIn: CHECK_IN,
+      checkOut: CHECK_OUT,
+      lodgeId: "lodge-b",
+    });
+
+    const where = currentTx.booking.findMany.mock.calls[0][0].where;
+    expect(where.noEmails).toBe(false);
+  });
+
   it("MERGED lets an older cross-lodge opt-in take the freed spot, recording lodge and price", async () => {
     const crossCandidate = candidate({
       id: "entry-a",
@@ -187,9 +211,9 @@ describe("processWaitlistForDates cross-lodge pass", () => {
     // reprice param), speaks with the offered lodge's identity, and names
     // the cross-lodge offer.
     const emailArgs = mocks.sendWaitlistOfferEmail.mock.calls[0];
-    expect(emailArgs[7]).toBe(34000);
-    expect(emailArgs[8]).toBe("lodge-b");
-    expect(emailArgs[9]).toEqual({ lodgeName: "River Lodge" });
+    expect(emailArgs[8]).toBe(34000);
+    expect(emailArgs[9]).toBe("lodge-b");
+    expect(emailArgs[10]).toEqual({ lodgeName: "River Lodge" });
   });
 
   it("skips a cross-lodge candidate who is no longer eligible for the freed lodge", async () => {

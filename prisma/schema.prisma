@@ -651,6 +651,7 @@ model Member {
   bookingsAdminCapacityHeld                  Booking[]                                  @relation("BookingsAdminCapacityHeld")
   bookingsCapacityOverridden                 Booking[]                                  @relation("BookingsCapacityOverridden")
   bookingsWholeLodgeHeld                     Booking[]                                  @relation("BookingsWholeLodgeHeld")
+  bookingsNoEmailsSet                        Booking[]                                  @relation("BookingsNoEmailsSet")
   approvedBedAllocations                     BedAllocation[]                            @relation("BedAllocationApprover")
   refundRequests                             RefundRequest[]
   issueReports                               IssueReport[]
@@ -1670,6 +1671,23 @@ model Booking {
   wholeLodgeHold               Boolean            @default(false)
   wholeLodgeHoldAt             DateTime?
   wholeLodgeHoldByMemberId     String?
+  // Per-booking "No emails" switch (#2258, owner decision D10): while true the
+  // mailer WITHHOLDS every member-facing message that belongs to this booking —
+  // confirmation, modification, payment, reminders, arrival info, cancellation,
+  // waitlist, chore roster, and the Xero-sent invoice email. Keyed strictly on
+  // the booking, never on the recipient address: an address-keyed switch would
+  // also swallow two-factor codes, password resets, magic links and
+  // email-change notices, which is account lockout rather than a preference.
+  // Admin-audience alerts are NEVER withheld (see email-message-registry
+  // audience + isBookingSuppressibleTemplate). Every withheld send is recorded
+  // as an EmailLog row with status SKIPPED_NO_EMAILS and this booking's id, so
+  // the booking page can list exactly what was held back (#2259).
+  // Audit columns mirror wholeLodgeHold / wholeLodgeHoldAt /
+  // wholeLodgeHoldByMemberId above; enabling requires an explicit admin
+  // acknowledgement at the API boundary.
+  noEmails                     Boolean            @default(false)
+  noEmailsAt                   DateTime?
+  noEmailsByMemberId           String?
   createdAt                 DateTime           @default(now())
   updatedAt                 DateTime           @updatedAt
 
@@ -1683,6 +1701,7 @@ model Booking {
   adminCapacityHoldBy         Member?                         @relation("BookingsAdminCapacityHeld", fields: [adminCapacityHoldByMemberId], references: [id], onDelete: SetNull)
   capacityOverriddenBy        Member?                         @relation("BookingsCapacityOverridden", fields: [capacityOverriddenByMemberId], references: [id], onDelete: SetNull)
   wholeLodgeHoldBy            Member?                         @relation("BookingsWholeLodgeHeld", fields: [wholeLodgeHoldByMemberId], references: [id], onDelete: SetNull)
+  noEmailsBy                  Member?                         @relation("BookingsNoEmailsSet", fields: [noEmailsByMemberId], references: [id], onDelete: SetNull)
   requestedRoom               LodgeRoom?                      @relation("BookingRequestedRoom", fields: [requestedRoomId], references: [id], onDelete: SetNull)
   parentBooking               Booking?                        @relation("BookingGroup", fields: [parentBookingId], references: [id], onDelete: SetNull, onUpdate: Cascade)
   linkedBookings              Booking[]                       @relation("BookingGroup")
@@ -1732,6 +1751,7 @@ model Booking {
   @@index([adminCapacityHoldByMemberId])
   @@index([capacityOverriddenByMemberId])
   @@index([wholeLodgeHoldByMemberId])
+  @@index([noEmailsByMemberId])
   @@index([requestedRoomId])
   @@index([parentBookingId])
   @@index([lodgeId])
@@ -4016,11 +4036,18 @@ model BookingChangeRequest {
 // Email Delivery Tracking (N-10)
 // ---------------------------------------------------------------------------
 
+// NOTE: a value added here must also be registered in PostgreSQL with
+// `ALTER TYPE "EmailLogStatus" ADD VALUE` in a migration.
 enum EmailLogStatus {
   QUEUED
   SENT
   FAILED
   BOUNCED
+  // #2258: deliberately withheld because the booking this message belongs to
+  // carries the per-booking "No emails" switch. A terminal, non-retryable
+  // outcome — distinct from BOUNCED (an undeliverable address, an operator
+  // problem) and from FAILED (a transport error the retry cron replays).
+  SKIPPED_NO_EMAILS
 }
 
 enum EmailSuppressionReason {
@@ -4040,6 +4067,13 @@ model EmailLog {
   lastAttemptAt DateTime       @default(now())
   sentAt        DateTime?
   messageId     String?
+  // Booking this message belongs to (#2258), or null for account/security,
+  // membership, family and admin mail that is not booking-scoped. Deliberately
+  // a PLAIN indexed column with NO foreign key: EmailLog is a high-volume log
+  // table (a validating FK would scan it, and would put a constraint on the hot
+  // Booking table), and a withheld-email audit row must survive the hard
+  // booking delete in booking-delete.ts rather than being nulled out.
+  bookingId     String?
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
 
@@ -4048,6 +4082,7 @@ model EmailLog {
   @@index([createdAt])
   @@index([status, attempts])
   @@index([templateName, status, createdAt])
+  @@index([bookingId, createdAt])
 }
 
 model EmailSuppression {

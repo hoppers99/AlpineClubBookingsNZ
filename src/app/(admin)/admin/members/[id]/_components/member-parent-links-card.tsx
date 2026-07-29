@@ -39,6 +39,18 @@ export function MemberParentLinksCard({
 }: MemberParentLinksCardProps) {
   const router = useRouter()
   const parentLinkCount = member.parentLinks?.length ?? 0
+  // #2255: the notification mailbox can now sit further up the family chain than
+  // the direct parent — a middle generation with no address of their own passes
+  // the resolution up to the nearest ancestor who has one. The per-parent badge
+  // below only fires for a DIRECT parent, so where the source is neither parent
+  // the card states outright where club email actually goes; otherwise a member
+  // would show "inherits email" with nothing on screen saying from whom.
+  const notificationSource = member.inheritEmailFrom
+  const notificationSourceIsDirectParent = (member.parentLinks ?? []).some(
+    (parent) =>
+      notificationSource?.id === parent.id ||
+      notificationSource?.id === parent.inheritEmailFromId,
+  )
 
   return (
     <Card className={className}>
@@ -49,18 +61,18 @@ export function MemberParentLinksCard({
             Archived
           </Badge>
         ) : parentLinkCount < 2 ? (
+          // #2255: having dependants no longer bars a member from being linked
+          // under a parent — families run to four generations, so a member can
+          // be someone's child and someone's parent at once. The button stays
+          // enabled and the server decides, because whether THIS link fits
+          // depends on the chain above the parent the admin picks, which is not
+          // knowable from this member's row alone.
           <ViewOnlyActionButton
             canEdit={canEdit}
             describeReason={!ancestorRendersViewOnlyBanner}
             variant="outline"
             size="sm"
             onClick={onOpenParentLinkDialog}
-            disabled={member.dependents.length > 0}
-            title={
-              member.dependents.length > 0
-                ? "Members with dependants cannot be linked under another parent."
-                : undefined
-            }
           >
             <Link2 className="h-4 w-4 mr-1" />
             {parentLinkCount === 0 ? "Add Parent" : "Add Second Parent"}
@@ -71,7 +83,7 @@ export function MemberParentLinksCard({
           </Badge>
         )}
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-3">
         {parentLinkCount > 0 ? (
           <div className="space-y-3">
             {member.parentLinks.map((parent) => (
@@ -140,15 +152,22 @@ export function MemberParentLinksCard({
             ))}
           </div>
         ) : (
-          <div className="space-y-2">
-            <p className="text-sm text-muted-foreground">No parent member linked.</p>
-            {member.dependents.length > 0 && (
-              <p className="text-xs text-muted-foreground">
-                This member already has dependants, so they cannot be linked under another parent.
-              </p>
-            )}
-          </div>
+          <p className="text-sm text-muted-foreground">No parent member linked.</p>
         )}
+        {notificationSource && !notificationSourceIsDirectParent && (
+          <p className="text-xs text-muted-foreground">
+            Club email for this member goes to {notificationSource.firstName}{" "}
+            {notificationSource.lastName} ({notificationSource.email}), further up
+            the family than the parent linked here.
+          </p>
+        )}
+        <p className="text-xs text-muted-foreground">
+          Family links can run up to four generations — great-grandparent,
+          grandparent, parent, child — with at most two parents each. A member
+          who has dependants of their own can still be linked under a parent, as
+          long as the whole chain stays within four generations; a link that
+          would make it longer is refused.
+        </p>
       </CardContent>
     </Card>
   )

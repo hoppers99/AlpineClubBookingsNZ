@@ -164,6 +164,7 @@ describe("sendEmail logging safeguards", () => {
     const { sendEmail } = await import("../email");
 
     await sendEmail({
+      bookingContext: "none",
       to: "admin@example.com",
       subject: "Email delivery permanently failed",
       html: "<p>Alert body</p>",

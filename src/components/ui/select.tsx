@@ -16,10 +16,20 @@ const SelectTrigger = React.forwardRef<
   React.ElementRef<typeof SelectPrimitive.Trigger>,
   React.ComponentPropsWithoutRef<typeof SelectPrimitive.Trigger>
 >(({ className, children, ...props }, ref) => (
+  /*
+    #2257 — the trigger used to carry the muted `::placeholder` utility, copied
+    across from Input. It was INERT: the trigger is a <button>, and `::placeholder`
+    only exists on <input>/<textarea>. Nothing styled the placeholder, so
+    `<SelectValue placeholder="Select item..." />` rendered in the ordinary
+    foreground ink — indistinguishable from a value the operator had chosen,
+    which is the very thing Andy reported. The dead utility is replaced with the
+    one that actually applies: Radix stamps `data-placeholder` on the trigger
+    while no value is selected.
+  */
   <SelectPrimitive.Trigger
     ref={ref}
     className={cn(
-      "flex h-9 w-full items-center justify-between whitespace-nowrap rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1",
+      "flex h-9 w-full items-center justify-between whitespace-nowrap rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm ring-offset-background data-[placeholder]:italic data-[placeholder]:text-placeholder-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1",
       className
     )}
     {...props}

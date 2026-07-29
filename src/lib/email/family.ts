@@ -32,6 +32,8 @@ export async function sendFamilyGroupInvitationEmail(
     to: email,
     subject: `${inviterName} invited you to join ${groupName} — ${CLUB_BOOKINGS_NAME}`,
     html: familyGroupInvitationTemplate(inviterName, groupName, profileUrl),
+    // Family-group membership mail is not about any booking (#2258).
+    bookingContext: "none",
     templateName: "family-group-invitation",
     templateData: { inviterName, groupName, profileUrl },
   });
@@ -46,6 +48,8 @@ export async function sendFamilyGroupInviteAcceptedEmail(
     to: email,
     subject: `${inviteeName} has joined ${groupName} — ${CLUB_BOOKINGS_NAME}`,
     html: familyGroupInviteAcceptedTemplate(inviteeName, groupName),
+    // Family-group membership mail is not about any booking (#2258).
+    bookingContext: "none",
     templateName: "family-group-invite-accepted",
     templateData: { inviteeName, groupName },
   });
@@ -61,6 +65,8 @@ export async function sendChildRequestSubmittedEmail(
     to: email,
     subject: `Infant/Child/Youth request submitted — ${CLUB_BOOKINGS_NAME}`,
     html: childRequestSubmittedTemplate(parentName, childName, groupName),
+    // Family-group membership mail is not about any booking (#2258).
+    bookingContext: "none",
     templateName: "child-request-submitted",
     templateData: { parentName, childName, groupName },
   });
@@ -76,6 +82,8 @@ export async function sendChildRequestApprovedEmail(
     to: email,
     subject: `${childName} has been added to ${groupName} — ${CLUB_BOOKINGS_NAME}`,
     html: childRequestApprovedTemplate(parentName, childName, groupName),
+    // Family-group membership mail is not about any booking (#2258).
+    bookingContext: "none",
     templateName: "child-request-approved",
     templateData: { parentName, childName, groupName },
   });
@@ -91,6 +99,8 @@ export async function sendChildRequestRejectedEmail(
     to: email,
     subject: `Infant/Child/Youth request update — ${CLUB_BOOKINGS_NAME}`,
     html: childRequestRejectedTemplate(parentName, childName, reason),
+    // Family-group membership mail is not about any booking (#2258).
+    bookingContext: "none",
     templateName: "child-request-rejected",
     templateData: { parentName, childName, reason: reason ?? "" },
   });
@@ -106,6 +116,8 @@ export async function sendJoinRequestConfirmationEmail(
     to: email,
     subject: `Join request submitted — ${CLUB_BOOKINGS_NAME}`,
     html: joinRequestConfirmationTemplate(requesterName, groupName),
+    // Family-group membership mail is not about any booking (#2258).
+    bookingContext: "none",
     templateName: "join-request-confirmation",
     templateData: { requesterName, groupName },
   });
@@ -122,6 +134,8 @@ export async function sendGroupCreateRequestConfirmationEmail(
     to: email,
     subject: `Family group request submitted — ${CLUB_BOOKINGS_NAME}`,
     html: groupCreateRequestConfirmationTemplate(requesterName, groupName),
+    // Family-group membership mail is not about any booking (#2258).
+    bookingContext: "none",
     templateName: "family-group-create-request-confirmation",
     templateData: { requesterName, groupName },
   });
@@ -136,6 +150,8 @@ export async function sendGroupCreateApprovedEmail(
     to: email,
     subject: `Your family group ${groupName} has been created — ${CLUB_BOOKINGS_NAME}`,
     html: groupCreateApprovedTemplate(requesterName, groupName),
+    // Family-group membership mail is not about any booking (#2258).
+    bookingContext: "none",
     templateName: "family-group-create-approved",
     templateData: { requesterName, groupName },
   });
@@ -151,6 +167,8 @@ export async function sendGroupCreateRejectedEmail(
     to: email,
     subject: `Family group request update — ${CLUB_BOOKINGS_NAME}`,
     html: groupCreateRejectedTemplate(requesterName, groupName, reason),
+    // Family-group membership mail is not about any booking (#2258).
+    bookingContext: "none",
     templateName: "family-group-create-rejected",
     templateData: { requesterName, groupName, reason: reason ?? "" },
   });
@@ -177,6 +195,8 @@ export async function sendPartnerInviteEmail(params: {
       claimUrl,
       expiresAt: params.expiresAt,
     }),
+    // Family-group membership mail is not about any booking (#2258).
+    bookingContext: "none",
     templateName: "partner-invite",
     templateData: {
       inviterName: params.inviterName,
@@ -197,6 +217,8 @@ export async function sendPartnerInviteClaimedEmail(
     to: email,
     subject: `You've joined ${groupName} — ${CLUB_BOOKINGS_NAME}`,
     html: partnerInviteClaimedTemplate(firstName, groupName),
+    // Family-group membership mail is not about any booking (#2258).
+    bookingContext: "none",
     templateName: "partner-invite-claimed",
     templateData: { firstName, groupName },
   });
@@ -215,6 +237,8 @@ export async function sendPartnerLinkRequestEmail(
     to: email,
     subject: `${requesterName} asked to record you as their partner — ${CLUB_BOOKINGS_NAME}`,
     html: partnerLinkRequestTemplate(requesterName, profileUrl),
+    // Family-group membership mail is not about any booking (#2258).
+    bookingContext: "none",
     templateName: "partner-link-request",
     templateData: { requesterName, profileUrl },
   });
@@ -228,6 +252,8 @@ export async function sendPartnerLinkConfirmedEmail(
     to: email,
     subject: `Your partner relationship with ${partnerName} has been recorded — ${CLUB_BOOKINGS_NAME}`,
     html: partnerLinkConfirmedTemplate(partnerName),
+    // Family-group membership mail is not about any booking (#2258).
+    bookingContext: "none",
     templateName: "partner-link-confirmed",
     templateData: { partnerName },
   });
@@ -241,6 +267,8 @@ export async function sendPartnerLinkRemovedEmail(
     to: email,
     subject: `Your partner relationship with ${partnerName} has been removed — ${CLUB_BOOKINGS_NAME}`,
     html: partnerLinkRemovedTemplate(partnerName),
+    // Family-group membership mail is not about any booking (#2258).
+    bookingContext: "none",
     templateName: "partner-link-removed",
     templateData: { partnerName },
   });

@@ -30,6 +30,10 @@ export async function sendPasswordResetEmail(email: string, token: string) {
     to: email,
     subject: `Reset your ${CLUB_NAME} password`,
     html: passwordResetTemplate(resetUrl),
+    // Account/security mail is never booking-scoped, and must NEVER be
+    // suppressible by a booking flag (#2258): withholding a two-factor code,
+    // password reset, magic link or email-change notice is account lockout.
+    bookingContext: "none",
     templateName: "password-reset",
     templateData: { token, resetUrl },
   });
@@ -43,6 +47,10 @@ export async function sendMagicLinkEmail(email: string, token: string) {
     to: email,
     subject: `Your ${CLUB_NAME} sign-in link`,
     html: magicLinkLoginTemplate(loginUrl),
+    // Account/security mail is never booking-scoped, and must NEVER be
+    // suppressible by a booking flag (#2258): withholding a two-factor code,
+    // password reset, magic link or email-change notice is account lockout.
+    bookingContext: "none",
     templateName: "magic-link-login",
     templateData: { token, loginUrl },
   });
@@ -60,6 +68,10 @@ export async function sendAdminPasswordResetEmail(
     to: email,
     subject: `Reset your ${CLUB_NAME} password`,
     html: adminPasswordResetTemplate(resetUrl, expiryLabel),
+    // Account/security mail is never booking-scoped, and must NEVER be
+    // suppressible by a booking flag (#2258): withholding a two-factor code,
+    // password reset, magic link or email-change notice is account lockout.
+    bookingContext: "none",
     templateName: "admin-password-reset",
     templateData: { token, resetUrl, expiryLabel },
   });
@@ -77,6 +89,10 @@ export async function sendMemberSetupInviteEmail(
     to: email,
     subject: `Set up your ${CLUB_NAME} account (${MEMBER_SETUP_INVITE_TTL_DAYS}-day link)`,
     html: memberSetupInviteTemplate(firstName, resetUrl),
+    // Account/security mail is never booking-scoped, and must NEVER be
+    // suppressible by a booking flag (#2258): withholding a two-factor code,
+    // password reset, magic link or email-change notice is account lockout.
+    bookingContext: "none",
     templateName: "member-setup-invite",
     templateData: {
       firstName,
@@ -97,6 +113,10 @@ export async function sendTwoFactorCodeEmail(params: {
     to: params.email,
     subject: `Your ${CLUB_NAME} two-factor code`,
     html: twoFactorCodeTemplate(params),
+    // Account/security mail is never booking-scoped, and must NEVER be
+    // suppressible by a booking flag (#2258): withholding a two-factor code,
+    // password reset, magic link or email-change notice is account lockout.
+    bookingContext: "none",
     templateName: "two-factor-code",
     templateData: {
       firstName: params.firstName,
@@ -119,6 +139,10 @@ export async function sendVerificationEmail(
     to: email,
     subject: `Verify your email — ${CLUB_BOOKINGS_NAME}`,
     html: emailVerificationTemplate(firstName, verifyUrl, expiresAt),
+    // Account/security mail is never booking-scoped, and must NEVER be
+    // suppressible by a booking flag (#2258): withholding a two-factor code,
+    // password reset, magic link or email-change notice is account lockout.
+    bookingContext: "none",
     templateName: "email-verification",
     templateData: {
       firstName,
@@ -141,6 +165,10 @@ export async function sendEmailChangeVerification(
     to: newEmail,
     subject: `Confirm your new email — ${CLUB_BOOKINGS_NAME}`,
     html: emailChangeVerificationTemplate(newEmail, verifyUrl, expiresAt),
+    // Account/security mail is never booking-scoped, and must NEVER be
+    // suppressible by a booking flag (#2258): withholding a two-factor code,
+    // password reset, magic link or email-change notice is account lockout.
+    bookingContext: "none",
     templateName: "email-change-verification",
     templateData: {
       newEmail,
@@ -159,6 +187,10 @@ export async function sendEmailChangeNotification(
     to: oldEmail,
     subject: `Email change requested — ${CLUB_BOOKINGS_NAME}`,
     html: emailChangeNotificationTemplate(newEmail),
+    // Account/security mail is never booking-scoped, and must NEVER be
+    // suppressible by a booking flag (#2258): withholding a two-factor code,
+    // password reset, magic link or email-change notice is account lockout.
+    bookingContext: "none",
     templateName: "email-change-notification",
     templateData: { newEmail },
   });
@@ -173,6 +205,10 @@ export async function sendAccountDeletionApprovedEmail(
     to: email,
     subject: "Your Account Deletion Request Has Been Processed",
     html: accountDeletionApprovedTemplate(firstName),
+    // Account/security mail is never booking-scoped, and must NEVER be
+    // suppressible by a booking flag (#2258): withholding a two-factor code,
+    // password reset, magic link or email-change notice is account lockout.
+    bookingContext: "none",
     templateName: "account-deletion-approved",
     templateData: { firstName },
   });
@@ -188,6 +224,10 @@ export async function sendAccountDeletionRejectedEmail(
     to: email,
     subject: "Update on Your Account Deletion Request",
     html: accountDeletionRejectedTemplate(firstName, adminNote),
+    // Account/security mail is never booking-scoped, and must NEVER be
+    // suppressible by a booking flag (#2258): withholding a two-factor code,
+    // password reset, magic link or email-change notice is account lockout.
+    bookingContext: "none",
     templateName: "account-deletion-rejected",
     templateData: { firstName, adminNote },
   });

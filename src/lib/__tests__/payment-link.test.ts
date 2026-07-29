@@ -16,6 +16,11 @@ vi.mock("@/lib/prisma", () => ({
     booking: {
       findUnique: vi.fn(),
     },
+    // #2258: the withheld-send audit row (written at most once per booking).
+    emailLog: {
+      findFirst: vi.fn().mockResolvedValue(null),
+      create: vi.fn().mockResolvedValue({ id: "emaillog-1" }),
+    },
     bookingEvent: {
       findMany: vi.fn().mockResolvedValue([]),
     },
@@ -775,6 +780,8 @@ describe("issueSplitGuestPaymentLink (#1967)", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(prisma.emailLog.findFirst).mockResolvedValue(null);
+    vi.mocked(prisma.emailLog.create).mockResolvedValue({ id: "emaillog-1" } as never);
     // The helper mints under the shared booking advisory lock: invoke the
     // transaction callback with a tx exposing only what it touches.
     mockedTransaction.mockImplementation(async (arg: unknown) => {
@@ -867,6 +874,44 @@ describe("issueSplitGuestPaymentLink (#1967)", () => {
     expect(mockedPaymentLinkFindFirst).not.toHaveBeenCalled();
     expect(mockedPaymentLinkCreate).not.toHaveBeenCalled();
     expect(sendSplitGuestPaymentLinkEmail).not.toHaveBeenCalled();
+  });
+
+  // #2258 review finding: discovering the withhold only at SEND time meant the
+  // link was minted, the send withheld, and the link revoked — every single run.
+  it("mints nothing at all when the booking has No emails on, and records the withhold once", async () => {
+    mockedBookingFindUnique.mockResolvedValue(
+      splitChild({ noEmails: true }) as never
+    );
+
+    const result = await issueSplitGuestPaymentLink("child-1");
+
+    expect(result).toEqual({ outcome: "withheld" });
+    // The whole point: no mint, so no revoke, so no churn.
+    expect(mockedPaymentLinkCreate).not.toHaveBeenCalled();
+    expect(mockedPaymentLinkFindFirst).not.toHaveBeenCalled();
+    expect(sendSplitGuestPaymentLinkEmail).not.toHaveBeenCalled();
+    // Recorded idempotently, so repeat attempts do not flood the withheld list.
+    expect(vi.mocked(prisma.emailLog.findFirst)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          bookingId: "child-1",
+          templateName: "split-guest-payment-link",
+        }),
+      })
+    );
+  });
+
+  it("writes no second withheld row when one already exists", async () => {
+    mockedBookingFindUnique.mockResolvedValue(
+      splitChild({ noEmails: true }) as never
+    );
+    vi.mocked(prisma.emailLog.findFirst).mockResolvedValue({
+      id: "log-existing",
+    } as never);
+
+    await issueSplitGuestPaymentLink("child-1");
+
+    expect(vi.mocked(prisma.emailLog.create)).not.toHaveBeenCalled();
   });
 
   it("mints a link and emails the member's guest portion on the first request", async () => {

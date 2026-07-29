@@ -72,6 +72,8 @@ export async function sendQuoteExpiryReminders(): Promise<{
     try {
       const options = parseBookingRequestQuoteOptions(quote.options);
       await sendBookingRequestQuoteEmail({
+        // A quote reminder is sent before any booking exists (#2258).
+        bookingContext: "none",
         email: request.contactEmail,
         firstName: request.contactFirstName,
         lodgeId: request.lodgeId ?? null,

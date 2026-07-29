@@ -824,15 +824,30 @@ describe("PUT /api/bookings/[id]/modify", () => {
     });
 
     expect(response.status).toBe(409);
-    await expect(response.json()).resolves.toMatchObject({
-      code: "BOOKING_MEMBER_NIGHT_CONFLICT",
-      conflicts: [
-        expect.objectContaining({
-          memberId: "guest-member-1",
-          bookingId: "existing-booking",
-        }),
-      ],
-    });
+    const body = (await response.json()) as {
+      code: string;
+      conflicts: Record<string, unknown>[];
+    };
+    expect(body.code).toBe("BOOKING_MEMBER_NIGHT_CONFLICT");
+    // #2250 at the route boundary: the actor owns bk1 and is neither the
+    // clashing guest nor an admin, so the 409 names nothing about the OTHER
+    // booking — not its id, owner, status, stay dates, or guest row. All they
+    // get is who in their own party clashes and on which of their own nights.
+    expect(body.conflicts).toEqual([
+      {
+        memberId: "guest-member-1",
+        memberName: "Bob Jones",
+        conflictingNights: expect.any(Array),
+        isOwnBooking: false,
+        canOpenBooking: false,
+        canSelfRemove: false,
+        isSelfGuest: false,
+      },
+    ]);
+    const serialised = JSON.stringify(body);
+    expect(serialised).not.toContain("existing-booking");
+    expect(serialised).not.toContain("existing-guest");
+    expect(serialised).not.toContain("Other Owner");
     expect(tx.bookingGuest.create).not.toHaveBeenCalled();
   }, 10_000);
 

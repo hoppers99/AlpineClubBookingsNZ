@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
@@ -51,8 +52,15 @@ interface FamilyMemberStatus {
     firstName: string;
     lastName: string;
     parentLinkType: "PRIMARY" | "SECONDARY";
+    /** The parent's own already-flattened source, when they inherit too. */
+    inheritEmailFromId?: string | null;
   }>;
   notificationEmailFromId?: string | null;
+  /**
+   * #2255: the name behind `notificationEmailFromId` when it is somebody other
+   * than a listed parent. Null when a parent marker already covers it.
+   */
+  notificationEmailFromName?: string | null;
 }
 
 interface PendingFamilyRequest {
@@ -134,6 +142,9 @@ export function FamilyGroupSection({ familyGroups, canManage = false }: FamilyGr
   const [showJoinForm, setShowJoinForm] = useState(false);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [createGroupName, setCreateGroupName] = useState("");
+  // #2257 — the suggested group name lives UNDER the field, not inside it: a
+  // grey "Smith Family" in the box reads as a name the form has already taken.
+  const createGroupNameHint = useFieldHint();
   const [createPartnerEmail, setCreatePartnerEmail] = useState("");
   const [createDeclarePartner, setCreateDeclarePartner] = useState(false);
   const [createChildren, setCreateChildren] = useState<CreateChildRow[]>([]);
@@ -605,10 +616,24 @@ export function FamilyGroupSection({ familyGroups, canManage = false }: FamilyGr
                                 <p className="text-xs text-muted-foreground">
                                   Parents: {status.parentLinks.map((parent) => {
                                     const label = `${parent.firstName} ${parent.lastName}`.trim();
-                                    return parent.id === status.notificationEmailFromId
+                                    return parent.id === status.notificationEmailFromId ||
+                                      parent.inheritEmailFromId === status.notificationEmailFromId
                                       ? `${label} (notifications)`
                                       : label;
                                   }).join(", ")}
+                                </p>
+                              )}
+                              {/* #2255: the marker above only fires for a LISTED parent.
+                                  Family links now run to four generations and the
+                                  notification address is resolved by walking up past any
+                                  generation without one, so the mailbox is often a
+                                  grandparent who is not in that list — and this is the
+                                  family whose consent is at stake, so it is said plainly
+                                  rather than left to be inferred from a missing marker. */}
+                              {status?.notificationEmailFromName && (
+                                <p className="text-xs text-muted-foreground">
+                                  Club email for {member.firstName} goes to{" "}
+                                  {status.notificationEmailFromName}.
                                 </p>
                               )}
                             </div>
@@ -968,12 +993,14 @@ export function FamilyGroupSection({ familyGroups, canManage = false }: FamilyGr
                   value={createGroupName}
                   onChange={(e) => setCreateGroupName(e.target.value)}
                   maxLength={100}
-                  placeholder={
-                    familyStatuses[0]?.lastName
-                      ? `${familyStatuses[0].lastName} Family`
-                      : "e.g. Smith Family"
-                  }
+                  {...createGroupNameHint.fieldProps}
                 />
+                <FieldHint {...createGroupNameHint.hintProps}>
+                  Example:{" "}
+                  {familyStatuses[0]?.lastName
+                    ? `${familyStatuses[0].lastName} Family`
+                    : "Smith Family"}
+                </FieldHint>
               </div>
               <div>
                 <Label htmlFor="create-partner-email">Partner&apos;s email address (optional)</Label>

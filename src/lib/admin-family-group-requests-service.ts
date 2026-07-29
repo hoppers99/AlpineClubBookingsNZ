@@ -15,8 +15,16 @@ import {
 import { getSeasonYear } from "@/lib/utils";
 import {
   buildParentLinks,
-  resolveParentNotificationSourceId,
+  matchParentLinkIdForNotification,
+  NO_INHERITABLE_EMAIL_SOURCE_MESSAGE,
+  resolveInheritedEmailSourceId,
 } from "@/lib/member-parent-links";
+import {
+  checkParentLinkDepthAndCycle,
+  describeParentSideDepth,
+  exceedsFamilyLinkGenerationLimit,
+  FAMILY_LINK_GENERATION_LIMIT_ERROR,
+} from "@/lib/member-family-link-depth";
 import { validateInheritEmailSource } from "@/lib/member-email-inheritance";
 import {
   sendChildRequestApprovedEmail,
@@ -318,8 +326,9 @@ async function validateLinkedMemberForRequest(params: {
       inheritEmailFromId: true,
       parent: { select: { id: true, inheritEmailFromId: true } },
       secondaryParent: { select: { id: true, inheritEmailFromId: true } },
-      dependents: { select: { id: true }, take: 1 },
-      secondaryDependents: { select: { id: true }, take: 1 },
+      // #2255: the `dependents` / `secondaryDependents` probes are gone with the
+      // rule they armed. Depth and cycles are decided by the bounded walks in
+      // member-family-link-depth.ts, inside the approval transaction.
     },
   });
 
@@ -441,8 +450,8 @@ export async function reviewAdminFamilyGroupRequest(params: {
       canLogin: false;
       role: "USER";
       parentMemberId: string;
-      inheritParentEmail: true;
-      inheritEmailFromId: string;
+      inheritParentEmail: boolean;
+      inheritEmailFromId: string | null;
       passwordHash: string;
       emailVerified: true;
       phoneCountryCode: string | null;
@@ -479,8 +488,6 @@ export async function reviewAdminFamilyGroupRequest(params: {
       inheritEmailFromId: string | null;
       parent: { id: string; inheritEmailFromId: string | null } | null;
       secondaryParent: { id: string; inheritEmailFromId: string | null } | null;
-      dependents: Array<{ id: string }>;
-      secondaryDependents: Array<{ id: string }>;
     } | null = null;
 
     if (request.type === "CHILD_REQUEST") {
@@ -552,11 +559,41 @@ export async function reviewAdminFamilyGroupRequest(params: {
           );
         }
 
-        const inheritEmailFromId =
-          request.requester.inheritEmailFromId || request.requesterId;
-        const validation = await validateInheritEmailSource({ inheritEmailFromId });
-        if (!validation.ok) {
-          return jsonResult({ error: validation.error }, { status: validation.status });
+        // #2255: same transitive resolution as every other link path — the
+        // requester may be a middle generation with no mailbox of their own.
+        //
+        // The OPT-OUT is honoured here too. This branch used to resolve
+        // inheritance unconditionally, which was harmless while resolution
+        // could not fail; once a chain with no reachable mailbox became a hard
+        // 422, "approve without inheriting" — which the operator guide promises
+        // and the link-existing branch has always supported — stopped being
+        // reachable on the create branch, and an admin with a placeholder-only
+        // family had no way through at all. Same wire contract as the sibling
+        // branch: `inheritEmailFromId: ""` means "use the child's own email"
+        // (the request-review UI's `<option value="">`), and an ABSENT field
+        // still means "inherit", so no client changes and no rolling-deploy
+        // break.
+        const optedOutOfInheritance =
+          Object.prototype.hasOwnProperty.call(data, "inheritEmailFromId") &&
+          !data.inheritEmailFromId?.trim();
+
+        let inheritEmailFromId: string | null = null;
+        if (!optedOutOfInheritance) {
+          inheritEmailFromId = (
+            await resolveInheritedEmailSourceId(prisma, request.requesterId)
+          ).sourceId;
+          if (!inheritEmailFromId) {
+            return jsonResult(
+              { error: NO_INHERITABLE_EMAIL_SOURCE_MESSAGE },
+              { status: 422 }
+            );
+          }
+          const validation = await validateInheritEmailSource({
+            inheritEmailFromId,
+          });
+          if (!validation.ok) {
+            return jsonResult({ error: validation.error }, { status: validation.status });
+          }
         }
 
         childMemberCreateData = {
@@ -569,7 +606,7 @@ export async function reviewAdminFamilyGroupRequest(params: {
           canLogin: false,
           role: "USER",
           parentMemberId: request.requesterId,
-          inheritParentEmail: true,
+          inheritParentEmail: !optedOutOfInheritance,
           inheritEmailFromId,
           passwordHash: await hash(randomBytes(32).toString("hex"), 13),
           emailVerified: true,
@@ -695,6 +732,23 @@ export async function reviewAdminFamilyGroupRequest(params: {
         }
 
         if (childMemberCreateData) {
+          // #2255: creating the child under the requester is a parent-link
+          // write, so it takes the cap too. A member that does not exist yet has
+          // no dependants, so only the requester's own ancestor chain can breach
+          // it — but it can, and this path never saw the old guard at all.
+          const parentSide = await describeParentSideDepth(
+            tx,
+            childMemberCreateData.parentMemberId,
+          );
+          if (
+            exceedsFamilyLinkGenerationLimit({
+              parentAncestorGenerations: parentSide.ancestorGenerations,
+              childDescendantGenerations: 0,
+            })
+          ) {
+            throw new ReviewRequestError(FAMILY_LINK_GENERATION_LIMIT_ERROR);
+          }
+
           const created = await tx.member.create({
             data: childMemberCreateData,
             select: { id: true },
@@ -718,13 +772,6 @@ export async function reviewAdminFamilyGroupRequest(params: {
           ) {
             throw new ReviewRequestError("Child requests can only be approved for active adult requesters.");
           }
-          if (
-            (childMemberForParentLink.dependents?.length ?? 0) > 0 ||
-            (childMemberForParentLink.secondaryDependents?.length ?? 0) > 0
-          ) {
-            throw new ReviewRequestError("Selected child member already has dependants.");
-          }
-
           const requesterAlreadyLinked =
             childMemberForParentLink.parentMemberId === request.requesterId ||
             childMemberForParentLink.secondaryParentId === request.requesterId;
@@ -737,6 +784,25 @@ export async function reviewAdminFamilyGroupRequest(params: {
             childMemberForParentLink.secondaryParentId
           ) {
             throw new ReviewRequestError("Selected child member already has two parents linked.");
+          }
+
+          // #2255 (D9): the old "Selected child member already has dependants."
+          // refusal was doing two jobs at once — it capped the chain AND, as a
+          // side effect, made a cycle impossible, because a requester who was
+          // already a descendant of this child could only be reached through the
+          // child's own dependants. Relaxing the cap removes that cover, so BOTH
+          // jobs are now stated outright, against the transaction's own view.
+          // Skipped when the link already exists: this branch then only rewrites
+          // email inheritance, and re-judging an existing link would block that
+          // on data that predates the cap rather than on anything being created.
+          if (!requesterAlreadyLinked) {
+            const linkVerdict = await checkParentLinkDepthAndCycle(tx, {
+              parentId: request.requesterId,
+              childId: childMemberForParentLink.id,
+            });
+            if (linkVerdict) {
+              throw new ReviewRequestError(linkVerdict.error);
+            }
           }
 
           const parentLinksAfterSave = [
@@ -755,12 +821,24 @@ export async function reviewAdminFamilyGroupRequest(params: {
             Object.prototype.hasOwnProperty.call(data, "inheritEmailFromId")
               ? data.inheritEmailFromId?.trim() || null
               : request.requesterId;
-          const resolvedInheritEmailFromId = resolveParentNotificationSourceId(
+          const selectedNotificationParentId = matchParentLinkIdForNotification(
             parentLinksAfterSave,
             explicitInheritEmailFromId
           );
-          if (resolvedInheritEmailFromId === undefined && explicitInheritEmailFromId) {
+          if (selectedNotificationParentId === undefined) {
             throw new ReviewRequestError("Notification email recipient must be one of the linked parents.");
+          }
+          // #2255: resolve transitively from the chosen parent, storing the
+          // terminal mailbox. `null` here is the deliberate "use the child's own
+          // email" option (an empty `inheritEmailFromId`, see the schema note);
+          // a chosen parent with no reachable mailbox anywhere above them is a
+          // refusal, not a silent fallback to the same thing.
+          const resolvedInheritEmailFromId = selectedNotificationParentId
+            ? (await resolveInheritedEmailSourceId(tx, selectedNotificationParentId))
+                .sourceId
+            : null;
+          if (selectedNotificationParentId && !resolvedInheritEmailFromId) {
+            throw new ReviewRequestError(NO_INHERITABLE_EMAIL_SOURCE_MESSAGE);
           }
           if (resolvedInheritEmailFromId) {
             const validation = await validateInheritEmailSource(

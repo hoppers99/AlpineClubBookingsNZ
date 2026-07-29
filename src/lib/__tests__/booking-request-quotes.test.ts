@@ -208,8 +208,11 @@ function memberNightConflictError() {
       guestId: "existing-guest",
       conflictingNights: ["2026-08-01"],
       isOwnBooking: false,
+      // The admin guard passes actorRole "ADMIN", so the row is entitled and
+      // carries the booking half above (#2250).
       canOpenBooking: true,
       canSelfRemove: false,
+      isSelfGuest: false,
     },
   ]);
 }

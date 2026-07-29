@@ -3,6 +3,10 @@
 import { useEffect, useId, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import {
+  FieldHint,
+  describedByFieldHint,
+} from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
@@ -18,11 +22,31 @@ type Settings = {
   facebookUrl: string | null;
 };
 
-const fields: Array<[keyof Settings, string, string]> = [
-  ["name", "Club name", "e.g. Alpine Sports Club"],
-  ["shortName", "Short name", "Optional — defaults to the club name"],
-  ["hutLeaderLabel", "Hut-leader label", 'Optional — defaults to "Hut Leader"'],
-  ["facebookUrl", "Facebook URL", "Optional — https://www.facebook.com/yourclub"],
+/*
+  #2257 — `[key, label, placeholder, hint]`. The EXAMPLE that used to sit in the
+  club-name placeholder now renders as helper text under the field: grey example
+  text inside a control reads as a value the form already holds. The other three
+  entries are genuine instructions ("Optional — defaults to …"), not examples, so
+  their wording and position are untouched here; the repo-wide placeholder sweep
+  is #2264.
+*/
+const fields: Array<
+  [keyof Settings, string, placeholder: string | null, hint: string | null]
+> = [
+  ["name", "Club name", null, "Example: Alpine Sports Club"],
+  ["shortName", "Short name", "Optional — defaults to the club name", null],
+  [
+    "hutLeaderLabel",
+    "Hut-leader label",
+    'Optional — defaults to "Hut Leader"',
+    null,
+  ],
+  [
+    "facebookUrl",
+    "Facebook URL",
+    "Optional — https://www.facebook.com/yourclub",
+    null,
+  ],
 ];
 
 export function ClubIdentityPanel() {
@@ -126,21 +150,32 @@ export function ClubIdentityPanel() {
         within a few seconds.
       </p>
       <div className="grid gap-4 sm:grid-cols-2">
-        {fields.map(([key, label, placeholder]) => (
-          <div key={key} className="space-y-1.5">
-            <Label htmlFor={`club-identity-${key}`}>{label}</Label>
-            <Input
-              id={`club-identity-${key}`}
-              value={settings[key] ?? ""}
-              placeholder={placeholder}
-              disabled={!canEdit}
-              aria-describedby={!canEdit ? viewOnlyReasonId : undefined}
-              onChange={(event) =>
-                setSettings({ ...settings, [key]: event.target.value })
-              }
-            />
-          </div>
-        ))}
+        {fields.map(([key, label, placeholder, hint]) => {
+          // These rows come from a `.map()`, so a hook cannot be called per row
+          // (#2257) — the hint id is derived from the stable field key instead.
+          // A view-only admin ALSO has the "you can look but not change this"
+          // reason pointed at the control, so both ids are listed, reason first.
+          const hintId = `club-identity-hint-${key}`;
+          const viewOnlyId = !canEdit ? viewOnlyReasonId : undefined;
+          return (
+            <div key={key} className="space-y-1.5">
+              <Label htmlFor={`club-identity-${key}`}>{label}</Label>
+              <Input
+                id={`club-identity-${key}`}
+                value={settings[key] ?? ""}
+                placeholder={placeholder ?? undefined}
+                disabled={!canEdit}
+                aria-describedby={
+                  hint ? describedByFieldHint(hintId, viewOnlyId) : viewOnlyId
+                }
+                onChange={(event) =>
+                  setSettings({ ...settings, [key]: event.target.value })
+                }
+              />
+              {hint ? <FieldHint id={hintId}>{hint}</FieldHint> : null}
+            </div>
+          );
+        })}
       </div>
       <ViewOnlyActionButton canEdit={canEdit} describeReason={false} disabled={saving} onClick={save}>
         {saving ? "Saving…" : "Save club identity"}

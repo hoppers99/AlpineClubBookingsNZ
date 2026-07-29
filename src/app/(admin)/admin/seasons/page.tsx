@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from "react"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
@@ -43,6 +44,8 @@ export default function SeasonsPage() {
 
   // Form state (window fields only)
   const [name, setName] = useState("")
+  // #2257 — the example lives UNDER the field, not inside it as grey pseudo-content.
+  const nameHint = useFieldHint()
   const [type, setType] = useState<"WINTER" | "SUMMER">("WINTER")
   const [startDate, setStartDate] = useState("")
   const [endDate, setEndDate] = useState("")
@@ -208,7 +211,8 @@ export default function SeasonsPage() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="name">Season Name</Label>
-                  <Input id="name" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Winter 2026" required />
+                  <Input id="name" value={name} onChange={(e) => setName(e.target.value)} required {...nameHint.fieldProps} />
+                  <FieldHint {...nameHint.hintProps}>Example: Winter 2026</FieldHint>
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="type">Type</Label>

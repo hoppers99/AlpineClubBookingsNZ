@@ -232,8 +232,10 @@ pages, and a feature-gated display cluster; the guides document the reality:
   use), deferring the full builder walk-through to the `lobby-display/` feature
   hub rather than duplicating it. Because the committed `admin-display` capture
   predates the builder card (and `admin-display-templates` predates the #2047
-  pack), both need re-capture at batch-3 finalisation once the stack is rebuilt
-  from a `main` carrying #2047 + #2048 (see the harness comment).
+  pack, the #2247 **Restore built-in boards** control beside *New template*, and
+  the #2247 hub-card definitions of Layout/Template/board), both need re-capture
+  at batch-3 finalisation once the stack is rebuilt from a `main` carrying
+  #2047 + #2247 + #2248 (see the harness comment).
 - **Display template pack correction (#2047).** At capture time the stack's
   template gallery showed the original three built-ins (**Everyday board**,
   **Whole lodge**, **Singles house**); the #2047 pack (**Room by room**, **Nights

@@ -913,6 +913,17 @@ The admin waitlist view decorates active `WAITLIST_OFFERED` rows with the latest
 `waitlist-offer` EmailLog status. Failed, exhausted, bounced, or missing delivery
 records are surfaced beside the offer with a link to email-deliverability
 recovery, so state changes are not hidden behind best-effort email delivery.
+A booking carrying the per-booking "No emails" switch (#2258) is excluded from
+waitlist candidacy, so no NEW offer is made to a member who would not be told.
+The exclusion is not retroactive: a switch turned on while an offer is already
+live does not retract it, and the offer commits before its email is sent, so a
+flip in between leaves a live offer with a withheld send. An entry in
+`WAITLIST_OFFERED` whose offer is still unexpired therefore reports
+`suppressed_live_offer` with `needsOperatorAction: true` (a held bed the member
+was never told about); one whose offer has already lapsed reports the benign
+`suppressed`. A silenced entry still in `WAITLISTED` has no EmailLog row at all
+and is marked on the board from the flag; it keeps its queue place and still
+counts toward other members' positions.
 
 ## Bed Allocation Lifecycle
 
@@ -923,7 +934,26 @@ booking confirmed/paid -> auto allocation proposal
 admin manually adjusts -> MANUAL allocation
 admin approves -> approved allocation metadata set
 booking modified/cancelled/completed/deleted -> allocation reconciliation
+exclusive whole-lodge hold SET -> allocation reconciliation (pure prune)
+exclusive whole-lodge hold CLEARED -> allocation reconciliation (re-plan)
 ```
+
+The exclusive whole-lodge hold is a first-class reconciliation trigger on BOTH
+directions (ADR-001, #2285). A held booking implicitly occupies every bed, so it
+owns **no** `BedAllocation` rows: reconciliation short-circuits on the
+`wholeLodgeHold` flag (not the status — a held booking sits in an ordinary
+bed-allocatable status), which makes the SET a whole-booking prune that creates
+nothing, and makes any later reconcile of a still-held booking a no-op that also
+self-heals rows an older lifecycle wrongly created. Clearing the hold makes the
+booking ordinary again, so the same reconcile re-plans its guests through the
+auto-allocator — beds may come back different, and other bookings' provisional
+placements may be moved or unallocated by that re-plan. Both directions run
+inside the exclusive-hold route's transaction, under the per-lodge capacity
+lock, so the flag and the rows can never commit apart; a school approval that
+grants exclusivity prunes the same way after stamping the hold. Every write path
+additionally re-reads the bookings it is about to write rows for immediately
+before the write, so a hold (or cancel, or soft delete) landing between planning
+and writing cannot be undone by a re-insert.
 
 Auto-allocation plans booking-first and whole-stay-first (issue #1677). Per
 booking (capacity-holding first on the lifecycle path, then createdAt/id), the
@@ -1198,15 +1228,26 @@ member creates group -> memberless FamilyGroup + PENDING GROUP_CREATE (+ bundled
 create-group names an unregistered partner email -> single-use PartnerInviteToken minted + emailed (see Partner Invite Token Lifecycle) instead of an invitedMemberId
 create-group marks the named partner as a declared partner (#1742) -> registered partner gets a PENDING MemberPartnerLink request; unregistered partner's token carries createPartnerLink (see Partner Link Lifecycle)
 dependent inherits email or has explicit email inheritance source
+parent link requested -> ancestors(parent) + 1 + descendants(child) <= 3 links -> linked | 422 (four-generation cap) | 422 (would close a family loop)
+dependent inherits email -> walk up from the chosen parent to the nearest adult, non-archived, real-address ancestor -> store that terminal source | 422 (nobody reachable)
 family removal/cancellation/delete -> relationship cleanup while preserving history
+cancellation approved for a middle generation -> its dependants' links cleared, NOT re-parented -> detached members named in the response and the audit log
 ```
 
 A `CHILD_REQUEST` whose family group still has zero memberships (a bundled
 group-creation child) cannot be approved until the `GROUP_CREATE` request for
 that group is approved first (422 guard).
 
+Family links run to at most **four generations** (great-grandparent →
+grandparent → parent → child) and two parents per member, checked symmetrically
+at link time so the verdict does not depend on the order links were created in.
+See `docs/DOMAIN_INVARIANTS.md` → parent/dependant links for the rule, the
+writers that enforce it, and the transitive-but-flat email inheritance that goes
+with it.
+
 To verify: non-login adult confirmation, dependent age-up behavior, inherited
-email changes, and Xero contact synchronization.
+email changes, the four-generation cap and its cycle guard at depth, and Xero
+contact synchronization.
 
 ## Email Retry Lifecycle
 

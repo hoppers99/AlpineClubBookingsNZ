@@ -19,6 +19,9 @@ import { BookingEditor, type BookingEditorData } from "@/components/booking-edit
 import { AdditionalPaymentCard } from "@/components/additional-payment-card";
 import { ConfirmDraftButton } from "@/components/confirm-draft-button";
 import { AdminBookingToolsCard } from "@/components/admin/admin-booking-tools-card";
+import { BookingWithheldEmailsBanner } from "@/components/admin/booking-withheld-emails-banner";
+import { getWithheldBookingEmailSummary } from "@/lib/booking-email-suppression";
+import { bookingHasLiveWaitlistOffer } from "@/lib/booking-no-emails-service";
 import { ScrollToHash } from "@/components/scroll-to-hash";
 import { SectionNav, type SectionNavItem } from "@/components/section-nav";
 import { ArrivalTimeEditor } from "@/components/arrival-time-editor";
@@ -72,6 +75,9 @@ import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import { resolveInternalReturnPath } from "@/lib/internal-return-path";
 import { OPENABLE_ORGANISER_STATUSES } from "@/lib/group-booking";
 import { hasAdminAccess } from "@/lib/access-roles";
+import { SelfRemoveFromBookingCard } from "@/components/self-remove-from-booking-card";
+import { resolveBookingSelfRemovalCard } from "@/lib/booking-guest-self-removal";
+import { isQuotePricedBooking } from "@/lib/booking-modify-validation";
 import {
   bookingManagementAuthorizationRole,
   hasAdminAreaAccess,
@@ -150,6 +156,9 @@ export default async function BookingDetailPage({
       adminCapacityHoldBy: { select: { firstName: true, lastName: true } },
       // Exclusive whole-lodge hold (#121): who set it, for the admin tools card.
       wholeLodgeHoldBy: { select: { firstName: true, lastName: true } },
+      // "No emails" switch (#2258/#2259): who turned it on, named on the
+      // admin-only control. The scalar columns come with the `include` above.
+      noEmailsBy: { select: { firstName: true, lastName: true } },
       // Request-converted PENDING holds capacity (#1254); the admin hold
       // controls need the natural-holding answer to hide Release correctly.
       originBookingRequest: { select: { id: true } },
@@ -316,6 +325,37 @@ export default async function BookingDetailPage({
   // admin) must not be addressed with owner second-person copy ("your place /
   // your stay") — issue #1289. Linked guests keep the member framing.
   const nonOwnerAdminViewer = !isBookingOwner && canViewAsAdmin;
+  // Issue #2250: a member put on somebody else's booking must be able to take
+  // themselves off it from the booking itself, not only from the wizard's
+  // night-conflict card while attempting a clashing booking of their own.
+  // Eligibility is the shared server-side rule (evaluateGuestSelfRemoval), the
+  // same one that produces `canSelfRemove` on a night conflict and whose status
+  // gate the removal service enforces — never re-derived in the browser.
+  // The gate itself lives in `resolveBookingSelfRemovalCard` so it is unit
+  // testable: rendering this card for an owner, a full admin, a non-participant,
+  // or a soft-deleted booking must fail a test, not just review.
+  const selfRemovalInput = {
+    actorMemberId: session.user.id,
+    isBookingOwner,
+    isAdminViewer: isAdmin,
+    bookingDeletedAt: booking.deletedAt,
+    bookingOwnerMemberId: booking.memberId,
+    bookingStatus: booking.status,
+    bookingCheckIn: booking.checkIn,
+    guests: booking.guests,
+  };
+  const selfRemovalCandidate = resolveBookingSelfRemovalCard(selfRemovalInput);
+  // The removal service also refuses a quote-priced booking
+  // (assertBookingNotQuotePriced), and unlike its settled-payment election that
+  // refusal is one indexed lookup — so predict it here rather than offering a
+  // control the server would reject. Only run when the action would otherwise
+  // be offered, so an ordinary booking view adds no query.
+  const selfRemovalCard = selfRemovalCandidate?.canSelfRemove
+    ? resolveBookingSelfRemovalCard({
+        ...selfRemovalInput,
+        isQuotePriced: await isQuotePricedBooking(prisma, booking.id),
+      })
+    : selfRemovalCandidate;
 
   const bookingAuditLogs = await prisma.auditLog.findMany({
     where: {
@@ -580,6 +620,22 @@ export default async function BookingDetailPage({
     // trip; see resolveModifyReviewUpdate).
     requiresAdminReview: booking.requiresAdminReview,
     adminReviewStatus: booking.adminReviewStatus,
+    /*
+      #2259: consumed only by the edit panel's admin-only notify dialog. Gated
+      on the SAME predicate the panel gates its read on, and gated HERE rather
+      than only in the panel, because this object is serialised into the RSC
+      payload of a client component.
+
+      A conditional SPREAD, not a conditional value. React Flight serialises the
+      KEY as well as the value, so `noEmails: undefined` ships `"noEmails":
+      "$undefined"` and `noEmails: false` ships `"noEmails":false` — either way a
+      member reading the wire learns the switch exists, even though they never
+      learn its state. The spread omits the key entirely, so the payload of a
+      member's booking is byte-for-byte what it was before this feature.
+    */
+    ...(viewerAuthorizationRole === "ADMIN"
+      ? { noEmails: booking.noEmails }
+      : {}),
     editPolicy: {
       // This is the member (non-override) policy, so mode is never
       // "admin-override" here; the ternary only narrows the widened union.
@@ -828,6 +884,49 @@ export default async function BookingDetailPage({
     ? await getBookingProviderMismatches(booking.id)
     : [];
 
+  /*
+    #2259 (owner decision D10) — the "No emails" switch and the persistent
+    record of what it has actually withheld.
+
+    Read ONLY behind `canSeeAdminTools`, exactly like the exclusive-hold
+    conflicts above, and for the same reason stated more strongly: a member must
+    never learn this switch exists. Not the control, not the banner, not a
+    count, not a field on anything rendered to them. Computing the list outside
+    the gate would put withheld subjects one careless prop away from a member's
+    screen, so the query does not run for them at all.
+
+    The withheld rows are audit records, not a static sentence: the admin has to
+    know WHICH messages the member never received in order to relay them — and
+    that list includes the invoice emails Xero would have sent on our behalf,
+    which are inside the same guarantee.
+  */
+  const withheldEmails = canSeeAdminTools
+    ? await getWithheldBookingEmailSummary(booking.id)
+    : { total: 0, groups: [] };
+  const withheldEmailGroups = withheldEmails.groups.map((group) => ({
+    templateName: group.templateName,
+    label: group.label,
+    count: group.count,
+    subject: group.subject,
+    latestAt: group.latestAt.toISOString(),
+    remedy: group.remedy,
+  }));
+  const noEmailsState = canSeeAdminTools
+    ? {
+        noEmails: booking.noEmails,
+        noEmailsAt: booking.noEmailsAt?.toISOString() ?? null,
+        setByName: booking.noEmailsBy
+          ? `${booking.noEmailsBy.firstName} ${booking.noEmailsBy.lastName}`
+          : null,
+        // Same predicate the setter evaluates, so the dialog's warning and the
+        // route's response flag cannot disagree about what "live" means.
+        hasLiveWaitlistOffer: bookingHasLiveWaitlistOffer(booking),
+        // A silenced WAITLISTED entry is skipped for offers entirely, so that
+        // consequence produces no withheld row and has to be stated up front.
+        isWaitlisted: booking.status === "WAITLISTED",
+      }
+    : null;
+
   // Admin conflict surfacing (ADR-001 decision 1, issue #119): when this
   // booking exclusively holds the whole lodge, list the existing
   // capacity-holding bookings overlapping its nights so the officer can resolve
@@ -955,6 +1054,20 @@ export default async function BookingDetailPage({
             }),
             conflicts: exclusiveHoldConflicts,
           }}
+          noEmails={isDeleted ? undefined : (noEmailsState ?? undefined)}
+        />
+      )}
+
+      {/* #2259 (owner decision D10): the persistent warning listing what the
+          "No emails" switch has actually withheld, and the admin's standing
+          obligation to relay it. Inside the same admin gate as the tools card
+          above — never rendered, and never even computed, for a member. */}
+      {canSeeAdminTools && noEmailsState && (
+        <BookingWithheldEmailsBanner
+          noEmails={noEmailsState.noEmails}
+          isWaitlisted={noEmailsState.isWaitlisted}
+          total={withheldEmails.total}
+          groups={withheldEmailGroups}
         />
       )}
 
@@ -1072,6 +1185,22 @@ export default async function BookingDetailPage({
           canAdminOverride={canAdminOverride}
         />
       </section>
+
+      {/* #2250: the member's own way off somebody else's booking. Only ever
+          rendered for a linked guest viewer (never the owner, never an admin —
+          they change the guest list through the booking edit flow above), and
+          the action itself is hidden, with the reason stated, whenever the
+          shared server-side rule says the removal service would refuse. No
+          BOOKING_SECTIONS anchor: this is a short action card, not a section. */}
+      {selfRemovalCard ? (
+        <SelfRemoveFromBookingCard
+          bookingId={booking.id}
+          guestId={selfRemovalCard.guestId}
+          ownerFirstName={booking.member.firstName}
+          canSelfRemove={selfRemovalCard.canSelfRemove}
+          blockedReason={selfRemovalCard.blockedReason}
+        />
+      ) : null}
 
       {/* #1975: "Your non-member guests" — the parent card surfaces each genuine
           split child inline (status, differing dates, amount, link), so the
@@ -1526,6 +1655,14 @@ export default async function BookingDetailPage({
           // honour the choice — viewerAuthorizationRole is the same
           // booking-management role the route resolves for its 403 gate.
           canChooseMemberEmail={viewerAuthorizationRole === "ADMIN"}
+          // #2259: with the switch on there is no email choice to honour, so
+          // the dialog states that instead of asking. Spread rather than a
+          // conditional value, so a member's payload carries no `noEmails` KEY
+          // at all — React Flight serialises the key too, and `noEmails:false`
+          // would still tell a member the switch exists.
+          {...(viewerAuthorizationRole === "ADMIN"
+            ? { noEmails: booking.noEmails }
+            : {})}
         />
       )}
 

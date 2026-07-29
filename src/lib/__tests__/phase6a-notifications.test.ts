@@ -42,6 +42,9 @@ const { mockPrisma, mockTransporter, mockLogger } = vi.hoisted(() => {
     },
     booking: {
       findMany: vi.fn().mockResolvedValue([]),
+      // #2258: the mailer reads the booking's "No emails" switch before every
+      // booking-scoped send. A null booking is the documented
+      // "nothing to suppress" case, so behaviour here is unchanged.
       findUnique: vi.fn().mockResolvedValue(null),
       update: vi.fn().mockResolvedValue({}),
       updateMany: vi.fn().mockResolvedValue({ count: 1 }),
@@ -94,6 +97,7 @@ describe("N-10: EmailLog tracking", () => {
     const { sendEmail } = await import("../email");
 
     await sendEmail({
+      bookingContext: "none",
       to: "test@example.com",
       subject: "Test",
       html: "<p>Test</p>",
@@ -120,6 +124,7 @@ describe("N-10: EmailLog tracking", () => {
     const { sendEmail } = await import("../email");
 
     await sendEmail({
+      bookingContext: "none",
       to: "test@example.com",
       subject: "Reset your password",
       html: '<a href="https://example.org/reset-password?token=live-secret">Reset</a>',
@@ -152,6 +157,7 @@ describe("N-10: EmailLog tracking", () => {
         const { sendEmail } = await import("../email");
 
         await sendEmail({
+          bookingContext: "none",
           to: "test@example.com",
           subject: "Complete your action",
           html,
@@ -180,6 +186,7 @@ describe("N-10: EmailLog tracking", () => {
     const { sendEmail } = await import("../email");
 
     await sendEmail({
+      bookingContext: "none",
       to: "private-committee@example.com",
       subject: "Website Contact",
       html: "<p>Contact message</p>",
@@ -216,6 +223,7 @@ describe("N-10: EmailLog tracking", () => {
     const { sendEmail } = await import("../email");
 
     await sendEmail({
+      bookingContext: "none",
       to: "test@example.com",
       subject: "Reset your password",
       html: '<a href="https://example.org/reset-password?token=live-secret">Reset</a>',
@@ -243,6 +251,7 @@ describe("N-10: EmailLog tracking", () => {
     const { sendEmail } = await import("../email");
 
     await sendEmail({
+      bookingContext: "none",
       to: "test@example.com",
       subject: "Test",
       html: "<p>Test</p>",
@@ -275,6 +284,7 @@ describe("N-10: EmailLog tracking", () => {
 
     await expect(
       sendEmail({
+        bookingContext: "none",
         to: "test@example.com",
         subject: "Test",
         html: "<p>Test</p>",
@@ -301,6 +311,7 @@ describe("N-10: EmailLog tracking", () => {
 
     await expect(
       sendEmail({
+        bookingContext: "none",
         to: "test@example.com",
         subject: "Test",
         html: "<p>Test</p>",
@@ -339,6 +350,7 @@ describe("N-10: EmailLog tracking", () => {
     const { sendEmail } = await import("../email");
 
     await sendEmail({
+      bookingContext: "none",
       to: "Test@Example.com",
       subject: "Test",
       html: "<p>Test</p>",
@@ -413,6 +425,7 @@ describe("N-10: EmailLog tracking", () => {
 
     await expect(
       sendEmail({
+        bookingContext: "none",
         to: "test@example.com",
         subject: "Test",
         html: "<p>Test</p>",
@@ -441,6 +454,7 @@ describe("N-10: EmailLog tracking", () => {
 
     // Should not throw even though logging failed
     await sendEmail({
+      bookingContext: "none",
       to: "test@example.com",
       subject: "Test",
       html: "<p>Test</p>",
@@ -459,6 +473,7 @@ describe("N-10: EmailLog tracking", () => {
     const { sendEmail } = await import("../email");
 
     await sendEmail({
+      bookingContext: "none",
       to: "test@example.com",
       subject: "Test",
       html: "<p>Test</p>",
@@ -480,6 +495,7 @@ describe("N-10: EmailLog tracking", () => {
     const { sendBookingPendingEmail } = await import("../email");
 
     await sendBookingPendingEmail(
+      { bookingId: "bk_test" },
       "member@example.com",
       "Casey",
       new Date("2026-07-15"),

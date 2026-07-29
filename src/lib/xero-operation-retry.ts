@@ -384,6 +384,36 @@ function readStoredInvoiceTotalCents(
     : null;
 }
 
+/**
+ * Whether a PARTIAL invoice-create operation is a PAYMENT problem at all.
+ *
+ * The repair handler for a PARTIAL invoice create is `createXeroPaymentForInvoice`
+ * — it records a payment against the invoice. That is right when the payment
+ * write is what failed, and dangerous otherwise: an invoice can also be marked
+ * PARTIAL because only its EMAIL failed, and every such case is an
+ * INTERNET_BANKING booking whose Xero payment is deliberately skipped because
+ * the member has not paid yet. Repairing one of those records a bank payment
+ * against an unpaid invoice and falsely settles it (#2258 review finding; the
+ * hazard predates the switch but the fail-closed email gate routes more traffic
+ * into it).
+ *
+ * Positive evidence only. A payload with a real `paymentError`, or one whose
+ * shape we do not recognise, keeps the pre-existing behaviour; the repair is
+ * refused only when the payload positively says the payment was skipped or that
+ * the fault was the invoice email.
+ */
+function partialInvoiceOperationHasPaymentFault(
+  operation: Pick<RetryableOperation, "responsePayload">
+): boolean {
+  const payload = asRecord(operation.responsePayload);
+  if (!payload) return true;
+  if (payload.paymentError != null) return true;
+  if (payload.paymentSkipped === true) return false;
+  if (payload.invoiceEmailError != null) return false;
+  if (payload.invoiceEmailWithheldByNoEmails === true) return false;
+  return true;
+}
+
 function parsePartialInvoiceRepairInput(
   operation: Pick<RetryableOperation, "localModel" | "localId" | "xeroObjectId" | "requestPayload" | "responsePayload">
 ): { invoiceId: string; amountCents: number; linkRole: string; idempotencyKey: string; reference: string } | null {
@@ -592,6 +622,13 @@ export function getXeroOperationRetryMeta(operation: RetryableOperation): XeroOp
 
   if (operation.status === "PARTIAL") {
     if (operation.entityType === "INVOICE" && operation.operationType === "CREATE") {
+      if (!partialInvoiceOperationHasPaymentFault(operation)) {
+        return {
+          supported: false,
+          reason:
+            "This invoice is partial because it was not emailed, not because its payment failed. Recording a payment here would falsely settle an unpaid invoice — send the invoice from Xero instead.",
+        };
+      }
       return parsePartialInvoiceRepairInput(operation)
         ? { supported: true, reason: null }
         : { supported: false, reason: "Stored invoice payload is incomplete for payment repair." };
@@ -813,7 +850,9 @@ export async function retryXeroSyncOperation(
   const createdByMemberId = options?.createdByMemberId ?? undefined;
 
   if (operation.status === "PARTIAL") {
-    const partialInvoiceRepair = parsePartialInvoiceRepairInput(operation);
+    const partialInvoiceRepair = partialInvoiceOperationHasPaymentFault(operation)
+      ? parsePartialInvoiceRepairInput(operation)
+      : null;
     if (
       operation.entityType === "INVOICE" &&
       operation.operationType === "CREATE" &&

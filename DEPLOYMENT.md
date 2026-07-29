@@ -31,7 +31,7 @@ Each app container's Prisma pool size is the `connection_limit` in its
 and advisory-lock waiters hold their connection while blocked — so an
 undersized web pool lets a single-lodge booking burst exhaust it and stall
 unrelated requests. The defaults are sized for ~100 concurrent users against
-Postgres `max_connections=30`:
+Postgres `max_connections=40`:
 
 | Service | Role | `connection_limit` |
 | --- | --- | --- |
@@ -39,22 +39,50 @@ Postgres `max_connections=30`:
 | `app` | cron leader + warm fallback web | 5 |
 | `migrate` | deploy-window migrations | 2 |
 
-Postgres keeps 3 superuser-reserved slots, leaving **27 usable**. The worst
-case is a blue/green handover (both web slots briefly live) that overlaps a
-migration:
+The worst case is a blue/green handover (both web slots briefly live) that
+overlaps a migration:
 
 ```
 app_blue(10) + app_green(10) + app(5) = 25 steady
-                                 + migrate(2) = 27  <=  27 usable
+                                 + migrate(2) = 27
 ```
 
-Steady state (one active web slot + cron leader) is far lower. If a fork needs
-more web headroom, **raise Postgres `max_connections` to 40 and its `mem_limit`
-to ~768m** (in the `postgres` service) rather than squeezing these per-pool
-ceilings past the 27-usable budget — over-committing `connection_limit` beyond
-`max_connections` surfaces as `FATAL: sorry, too many clients` under load. Keep
-the arithmetic (sum of all live pools ≤ usable connections) whenever you change
-a pool size or the replica count.
+That leaves the pools **13 slots** under the 40 ceiling — but those slots are
+**not** a protected admin reservation. The app connects as role `tac`, which the
+`postgres` image creates as a **superuser** (`POSTGRES_USER`), so
+`superuser_reserved_connections` (the 3 slots Postgres nominally holds back) does
+**not** fence the app's own pools off: once the pools reach the ceiling, even a
+superuser `psql` is refused. The headroom is therefore best-effort room for the
+**non-pool** consumers you must budget alongside the pools:
+
+- the nightly `pg_dump` backup (its own backend, outside every pool)
+- the deploy-window shadow/drift database and admin `psql`, on the same server
+- the `pg_isready` health probe (every 5s)
+- any operator `psql`
+
+So the real invariant is **sum(pools) + non-pool consumers ≤ `max_connections`**,
+not just the pools; steady state (one active web slot + cron leader) is far lower.
+
+`max_connections` was raised from 30 to 40 (and the `postgres` `mem_limit` from
+512m to 768m) after production transiently hit `FATAL: sorry, too many clients`:
+at 30 the deploy-window pools (27) sat one slot under the ceiling, so a single
+overlapping backup, shadow DB, probe, or operator `psql` overflowed it — and
+because the app role is a superuser (above), Postgres then refused *all* new
+logins, the nominally-reserved slots included, locking operators out exactly when
+they needed to diagnose. 40 restores real headroom for those consumers. The 768m
+`mem_limit` covers the extra backends plus their `work_mem` (~256m more per host —
+negligible above ~1 GiB free).
+
+A true protected admin slot would need a dedicated **`NOSUPERUSER`** application
+role (so `superuser_reserved_connections` can hold slots back from it). This is a
+**consciously accepted limitation**: because the pools are hard-capped at 27 well
+under the 40 ceiling, the ~13-slot margin covers the non-pool consumers in
+practice, so the simpler single-superuser model is retained. Revisit the
+`NOSUPERUSER` split only if a future change makes the margin tight (a new pooled
+consumer, a much larger replica count, or enabling the audit-archive client via
+`AUDIT_ARCHIVE_DATABASE_URL`, which opens its own pool). A constrained-VPS fork
+may lower both values, but keep the invariant above whenever you change a pool
+size, `max_connections`, or the replica count.
 
 ## Prerequisites
 
@@ -262,6 +290,21 @@ configured drain window expires. Rate-limit counters are not shared between the
 old and new slots, so public abuse controls can be temporarily split across both
 runtimes during that drain. Do not run multiple publicly routed app replicas
 long-term unless the in-memory limiter is replaced with a shared store.
+
+**A `Caddyfile` change does not ship with an app deploy.** The blue/green runner
+rebuilds and cuts over the app slots; it does not reload Caddy. After pulling a
+release whose diff touches `Caddyfile` or `Caddyfile.staging` — request-body
+caps, security headers, routing — reload Caddy explicitly on the host, and check
+the config first so a typo cannot take the site down:
+
+```bash
+docker compose exec caddy caddy validate --config /etc/caddy/Caddyfile
+docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
+```
+
+`reload` is a graceful, zero-downtime config swap; it keeps existing
+connections and the TLS certificate cache. If `validate` fails, fix the file
+before reloading — the running config stays in place until a reload succeeds.
 
 The app trusts proxy-derived client IP headers only under that Caddy boundary.
 `getClientIp()` uses the rightmost `X-Forwarded-For` value, which is the peer

@@ -19,6 +19,24 @@ export interface AdminHubSection {
   title: string;
   description: string;
   icon: LucideIcon;
+  /**
+   * Opt in to a HARD document load for this card (a plain `<a>` instead of
+   * `next/link`), for the rare destination whose route-scoped
+   * Content-Security-Policy relaxation must actually be applied (#2246).
+   *
+   * CSP is a property of the DOCUMENT, taken from the response headers at parse
+   * time. An App Router `<Link>` is a SOFT navigation — no new document — so the
+   * destination keeps whatever CSP the entry document was served with, and its
+   * own per-route relaxation never takes effect. `/admin/display/builder` needs
+   * `frame-src 'self'` for its Live preview; arriving there by `<Link>` from
+   * another admin page left the hub's stricter `frame-src` in force and the
+   * preview showed "Content blocked".
+   *
+   * Deliberately opt-in per section rather than applied to every hub card: a
+   * full document load is slower, and no other hub destination depends on a
+   * route-scoped header.
+   */
+  hardNavigate?: boolean;
 }
 
 function getVisibleAdminHubSections(
@@ -74,19 +92,36 @@ export function AdminHubPage({
 
       {visibleSections.length > 0 ? (
         <div className="grid gap-4 sm:grid-cols-2">
-          {visibleSections.map(({ href, title, description, icon: Icon }) => (
-            <Link key={href} href={href} className="group block">
-              <Card className="h-full transition-colors hover:border-brand-gold/70">
-                <CardHeader>
-                  <div className="flex items-center gap-2">
-                    <Icon className="h-5 w-5 shrink-0 text-foreground" />
-                    <CardTitle>{title}</CardTitle>
-                  </div>
-                  <CardDescription>{description}</CardDescription>
-                </CardHeader>
-              </Card>
-            </Link>
-          ))}
+          {visibleSections.map(
+            ({ href, title, description, icon: Icon, hardNavigate }) => {
+              const card = (
+                <Card className="h-full transition-colors hover:border-brand-gold/70">
+                  <CardHeader>
+                    <div className="flex items-center gap-2">
+                      <Icon className="h-5 w-5 shrink-0 text-foreground" />
+                      <CardTitle>{title}</CardTitle>
+                    </div>
+                    <CardDescription>{description}</CardDescription>
+                  </CardHeader>
+                </Card>
+              );
+
+              // A plain anchor is still a real link: same role, same keyboard
+              // activation, same middle-click/ctrl-click/"open in new tab"
+              // behaviour. The only difference is that the browser loads a new
+              // document, which is exactly what `hardNavigate` asks for (see the
+              // field's doc comment).
+              return hardNavigate ? (
+                <a key={href} href={href} className="group block">
+                  {card}
+                </a>
+              ) : (
+                <Link key={href} href={href} className="group block">
+                  {card}
+                </Link>
+              );
+            },
+          )}
         </div>
       ) : (
         <div className="rounded-md border bg-muted px-4 py-3 text-sm text-muted-foreground">

@@ -10,11 +10,21 @@ import {
   wouldRemoveLastFullAdmin,
 } from "@/lib/admin-account-guards";
 import { requireAdmin } from "@/lib/session-guards";
+import {
+  DEPENDENT_LINK_CANDIDATE_SELECT,
+  DEPENDENT_LINK_INELIGIBILITY_ERRORS,
+  dependentLinkBlockers,
+} from "@/lib/dependent-link-eligibility";
 import { prisma } from "@/lib/prisma";
 import { validateInheritEmailSource } from "@/lib/member-email-inheritance";
 import {
-  getParentEmailSourceId,
-  resolveParentNotificationSourceId,
+  describeChildSideDepth,
+  describeParentSideDepth,
+} from "@/lib/member-family-link-depth";
+import {
+  matchParentLinkIdForNotification,
+  NO_INHERITABLE_EMAIL_SOURCE_MESSAGE,
+  resolveInheritedEmailSourceId,
 } from "@/lib/member-parent-links";
 import logger from "@/lib/logger";
 
@@ -36,40 +46,6 @@ class LinkDependentError extends Error {
 }
 
 type TransactionClient = Prisma.TransactionClient;
-
-async function hasAncestorMember(
-  tx: TransactionClient,
-  parentMemberIds: Array<string | null>,
-  possibleAncestorId: string
-) {
-  const seen = new Set<string>();
-  const stack = parentMemberIds.filter((id): id is string => Boolean(id));
-
-  while (stack.length > 0) {
-    const currentParentId = stack.pop()!;
-    if (currentParentId === possibleAncestorId) {
-      return true;
-    }
-
-    if (seen.has(currentParentId)) {
-      continue;
-    }
-    seen.add(currentParentId);
-
-    const parent = await tx.member.findUnique({
-      where: { id: currentParentId },
-      select: { parentMemberId: true, secondaryParentId: true },
-    });
-    if (parent?.parentMemberId) {
-      stack.push(parent.parentMemberId);
-    }
-    if (parent?.secondaryParentId) {
-      stack.push(parent.secondaryParentId);
-    }
-  }
-
-  return false;
-}
 
 async function validateDisableLoginDoesNotOrphanSharedEmail(
   tx: TransactionClient,
@@ -144,8 +120,9 @@ export async function POST(
           ageTier: true,
           active: true,
           archivedAt: true,
-          parentMemberId: true,
-          secondaryParentId: true,
+          // The parent's own parent columns are NOT selected: the ancestry and
+          // depth answers come from describeParentSideDepth below, which reads
+          // them itself, and a second copy here would invite a stale one.
           inheritEmailFromId: true,
           familyGroupMemberships: {
             select: { familyGroupId: true },
@@ -166,13 +143,15 @@ export async function POST(
       const target = await tx.member.findUnique({
         where: { id: data.memberId },
         select: {
-          id: true,
+          // #2254: the eligibility predicate's own columns come from the shared
+          // select, so trimming one here cannot silently disarm a guard below.
+          // Its graph-shaped guards (cycle + generation cap) take the walk
+          // results below as a required argument, for the same reason.
+          ...DEPENDENT_LINK_CANDIDATE_SELECT,
           firstName: true,
           lastName: true,
           email: true,
           ageTier: true,
-          parentMemberId: true,
-          secondaryParentId: true,
           inheritEmailFromId: true,
           parent: {
             select: { id: true, inheritEmailFromId: true },
@@ -186,47 +165,36 @@ export async function POST(
           role: true,
           financeAccessLevel: true,
           accessRoles: { select: MEMBER_ACCESS_ROLE_SELECT },
-          archivedAt: true,
-          dependents: {
-            select: { id: true },
-            take: 1,
-          },
-          secondaryDependents: {
-            select: { id: true },
-            take: 1,
-          },
         },
       });
 
       if (!target) {
         throw new LinkDependentError("Member to link not found", 404);
       }
-      if (target.archivedAt) {
-        throw new LinkDependentError("Archived members cannot be linked into family groups", 422);
-      }
-      if (target.id === parent.id) {
-        throw new LinkDependentError("A member cannot be their own dependant", 422);
-      }
-      if (
-        target.parentMemberId === parent.id ||
-        target.secondaryParentId === parent.id
-      ) {
-        throw new LinkDependentError("This member is already linked to that parent", 422);
-      }
-      if (target.parentMemberId && target.secondaryParentId) {
-        throw new LinkDependentError("This member already has two parents linked", 422);
-      }
-      if (
-        await hasAncestorMember(
-          tx,
-          [parent.parentMemberId, parent.secondaryParentId],
-          target.id
-        )
-      ) {
-        throw new LinkDependentError("Cannot link a parent or ancestor as a dependant", 422);
-      }
-      if ((target.dependents?.length ?? 0) > 0 || (target.secondaryDependents?.length ?? 0) > 0) {
-        throw new LinkDependentError("This member already has dependants and cannot be linked under another member", 422);
+      // #2254: the row-level guards below and the admin candidate SEARCH
+      // (`dependentLinkEligibleFor`) are now one predicate — see
+      // src/lib/dependent-link-eligibility.ts — so the search can never offer a
+      // candidate this route rejects, nor hide one it would accept.
+      //
+      // #2255: the two graph-shaped guards (is the candidate an ancestor of the
+      // parent, and would the merged chain exceed four generations) are computed
+      // here, inside the transaction, so they read this write's own view. Both
+      // walks are level-bounded and cycle-safe; see member-family-link-depth.ts.
+      const [parentSide, childSide] = await Promise.all([
+        describeParentSideDepth(tx, parent.id),
+        describeChildSideDepth(tx, target.id),
+      ]);
+      const blockers = dependentLinkBlockers(parent.id, target, {
+        parentAncestorIds: parentSide.ancestorIds,
+        parentAncestorGenerations: parentSide.ancestorGenerations,
+        candidateDescendantGenerations: childSide.descendantGenerations,
+      });
+
+      if (blockers[0]) {
+        throw new LinkDependentError(
+          DEPENDENT_LINK_INELIGIBILITY_ERRORS[blockers[0]],
+          422
+        );
       }
 
       if (data.disableLogin) {
@@ -261,27 +229,43 @@ export async function POST(
         ...(target.secondaryParent ? [target.secondaryParent] : []),
         parent,
       ];
-      const resolvedExplicitInheritEmailFromId =
-        explicitInheritEmailFromId !== undefined
-          ? resolveParentNotificationSourceId(
-              parentLinksAfterSave,
-              explicitInheritEmailFromId
-            )
-          : undefined;
-
-      if (resolvedExplicitInheritEmailFromId === undefined && explicitInheritEmailFromId) {
-        throw new LinkDependentError(
-          "Notification email recipient must be one of this member's linked parents",
-          422
+      // #2255: the notification mailbox is resolved by walking UP from the
+      // chosen parent to the nearest ancestor who can actually receive mail,
+      // and the TERMINAL result is what gets stored — inheritance stays flat at
+      // any depth, so every reader keeps its single `inheritEmailFrom` join.
+      //
+      // Three distinct states, and the difference matters: `undefined` means
+      // "leave the member's existing inheritance alone", `null` means "the admin
+      // asked for the member's own email", and an id means "store this mailbox".
+      let inheritEmailFromId: string | null | undefined;
+      if (explicitInheritEmailFromId !== undefined) {
+        const selectedParentId = matchParentLinkIdForNotification(
+          parentLinksAfterSave,
+          explicitInheritEmailFromId
         );
+        if (selectedParentId === undefined) {
+          throw new LinkDependentError(
+            "Notification email recipient must be one of this member's linked parents",
+            422
+          );
+        }
+        inheritEmailFromId = selectedParentId
+          ? (await resolveInheritedEmailSourceId(tx, selectedParentId)).sourceId
+          : null;
+        if (selectedParentId && !inheritEmailFromId) {
+          throw new LinkDependentError(
+            NO_INHERITABLE_EMAIL_SOURCE_MESSAGE,
+            422
+          );
+        }
+      } else if (data.inheritEmail) {
+        inheritEmailFromId = (
+          await resolveInheritedEmailSourceId(tx, parent.id)
+        ).sourceId;
+        if (!inheritEmailFromId) {
+          throw new LinkDependentError(NO_INHERITABLE_EMAIL_SOURCE_MESSAGE, 422);
+        }
       }
-
-      const inheritEmailFromId =
-        resolvedExplicitInheritEmailFromId !== undefined
-          ? resolvedExplicitInheritEmailFromId
-          : data.inheritEmail
-            ? getParentEmailSourceId(parent)
-            : undefined;
 
       if (inheritEmailFromId !== undefined) {
         if (inheritEmailFromId) {
@@ -302,21 +286,6 @@ export async function POST(
           updateData.inheritParentEmail = false;
           updateData.inheritEmailFrom = { disconnect: true };
         }
-      } else if (data.inheritEmail) {
-        const fallbackInheritEmailFromId = getParentEmailSourceId(parent);
-        const validation = await validateInheritEmailSource(
-          {
-            memberId: target.id,
-            inheritEmailFromId: fallbackInheritEmailFromId!,
-          },
-          tx
-        );
-        if (!validation.ok) {
-          throw new LinkDependentError(validation.error, validation.status);
-        }
-
-        updateData.inheritParentEmail = true;
-        updateData.inheritEmailFrom = { connect: { id: fallbackInheritEmailFromId! } };
       }
 
       if (data.disableLogin) {

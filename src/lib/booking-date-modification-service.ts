@@ -1081,6 +1081,7 @@ async function dispatchDatePostTransactionSideEffects({
     : null;
   if (member) {
     sendBookingModifiedEmail({
+      bookingId: result.booking.id,
       email: member.email,
       firstName: member.firstName,
       modificationType: "DATE_CHANGE",
@@ -1522,6 +1523,7 @@ export async function adminShiftBookingDates({
   // dialog whether to send the change email; the choice is audited above.
   if (notifyMember) {
     sendBookingModifiedEmail({
+      bookingId: result.booking.id,
       email: result.memberEmail,
       firstName: result.memberFirstName,
       modificationType: "DATE_CHANGE",

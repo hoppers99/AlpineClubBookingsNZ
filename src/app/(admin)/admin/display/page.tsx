@@ -4,11 +4,23 @@ import {
   type AdminHubSection,
 } from "@/components/admin-hub-page";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
+import {
+  DISPLAY_GLOSSARY_LEAD,
+  DISPLAY_TERM_BOARD,
+  DISPLAY_TERM_LAYOUT,
+  DISPLAY_TERM_TEMPLATE,
+} from "@/lib/lodge-display/display-terminology";
 
 // Lobby Display hub (fork issue #109): one sidebar entry opens this landing
 // page of cards instead of the old four-item sidebar group. Mirrors the
 // "Site Appearance & Content" hub (/admin/appearance) — the Devices management
 // page now lives at /admin/display/devices; the other cards keep their routes.
+//
+// #2247: the cards now OPEN with the definition of the word each one is about.
+// The admin used three words — Layout, Template, board — for two database rows
+// and defined none of them, and the hub is the first place an operator meets
+// all three. The definitions come from `display-terminology.ts` so the hub, the
+// Reference page and `docs/guides/display.md` cannot drift apart.
 const sections: AdminHubSection[] = [
   {
     href: "/admin/display/devices",
@@ -20,22 +32,24 @@ const sections: AdminHubSection[] = [
   {
     href: "/admin/display/builder",
     title: "Visual builder",
-    description:
-      "Compose a board by picking a shape and dropping modules into zones — no HTML. Writes a valid layout + template for you.",
+    description: `${DISPLAY_TERM_BOARD.oneLiner} Compose one by picking a shape and dropping modules into zones — no HTML. Writes a valid Layout + Template for you.`,
     icon: LayoutTemplate,
+    // The builder's Live preview needs the route-scoped `frame-src 'self'`
+    // relaxation from `src/lib/csp.ts`, and CSP only changes on a hard document
+    // load — a soft `<Link>` navigation would carry this hub's stricter policy
+    // into the builder and the preview would show "Content blocked" (#2246).
+    hardNavigate: true,
   },
   {
     href: "/admin/display/layouts",
     title: "Layouts (Advanced)",
-    description:
-      "Advanced mode: author the structural skeleton by hand — named areas, an HTML body, and a default CSS block.",
+    description: `${DISPLAY_TERM_LAYOUT.oneLiner} Advanced mode: author one by hand.`,
     icon: LayoutTemplate,
   },
   {
     href: "/admin/display/templates",
     title: "Templates",
-    description:
-      "Fill a layout's areas with content or embedded modules, then bind the template to a display.",
+    description: `${DISPLAY_TERM_TEMPLATE.oneLiner} Author one here, or restore the built-in boards.`,
     icon: LayoutTemplate,
   },
   {
@@ -53,7 +67,7 @@ export default async function DisplayHubPage() {
   return (
     <AdminHubPage
       title="Lobby Display"
-      description="Manage paired lobby screens and author the layouts, templates, and reference that drive them."
+      description={`Pair the screens in your lodges and author what they show. ${DISPLAY_GLOSSARY_LEAD}`}
       sections={sections}
       features={features}
     />

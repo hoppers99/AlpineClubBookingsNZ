@@ -26,6 +26,11 @@ import {
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 import {
+  EMPTY_ORPHANED_FAMILY_LINKS,
+  readFamilyLinkOrphans,
+  type OrphanedFamilyLinks,
+} from "@/lib/member-family-link-orphans";
+import {
   cleanText,
   memberDisplayName,
   serializeDate,
@@ -833,12 +838,21 @@ type ArchivedMemberLinkCleanupCounts = {
   nulledChildren: number;
   nulledSecondaryParents: number;
   nulledInheritance: number;
+  /** #2255: the same detached members the cancellation flow declares. */
+  orphanedLinks: OrphanedFamilyLinks;
 };
 
 async function cleanupArchivedMemberLinks(
   tx: Prisma.TransactionClient,
   memberId: string,
 ): Promise<ArchivedMemberLinkCleanupCounts> {
+  // #2255: read who this sweep is about to detach BEFORE nulling the columns —
+  // afterwards there is no record of the links at all. Archive runs the
+  // identical sweep to cancellation approval, and at four generations its blast
+  // radius reaches grandchildren the same way, so it gets the same declaration
+  // rather than only a row count in the audit metadata.
+  const orphanedLinks = await readFamilyLinkOrphans(tx, memberId);
+
   const familyGroupMembers = await tx.familyGroupMember.deleteMany({
     where: { memberId },
   });
@@ -866,6 +880,7 @@ async function cleanupArchivedMemberLinks(
     nulledChildren: children.count,
     nulledSecondaryParents: secondaryParents.count,
     nulledInheritance: inheritance.count,
+    orphanedLinks,
   };
 }
 
@@ -1057,6 +1072,9 @@ export async function reviewMemberDeleteRequest({
 }: LifecycleReviewInput) {
   const note = cleanText(reviewNote);
   const request = await loadDeleteRequestById(requestId);
+  // #2255: filled inside the transaction, read after it — the links it
+  // describes are gone by the time it commits.
+  let orphanedByHardDelete: OrphanedFamilyLinks = EMPTY_ORPHANED_FAMILY_LINKS;
 
   if (request.status !== MemberLifecycleActionRequestStatus.REQUESTED) {
     throw new MemberLifecycleActionError(
@@ -1152,7 +1170,12 @@ export async function reviewMemberDeleteRequest({
       );
     }
 
-    return { request: serializeMemberLifecycleActionRequest(rejected) };
+    // Uniform shape on both branches: a caller must never have to check
+    // whether the key exists before reading it. A rejection detaches nothing.
+    return {
+      request: serializeMemberLifecycleActionRequest(rejected),
+      orphanedLinks: EMPTY_ORPHANED_FAMILY_LINKS,
+    };
   }
 
   const approved = await prisma.$transaction(async (tx) => {
@@ -1239,7 +1262,28 @@ export async function reviewMemberDeleteRequest({
       photoImageId: memberBeforeDelete.photoImageId,
     });
 
+    // #2255: the FOURTH removal path, and the only one that relied on the
+    // database to do the detaching. `onDelete: SetNull` nulls the dependants'
+    // parent columns and their `inheritEmailFromId` as the row goes, so the
+    // links really are cleared — but silently, with no declaration, and it
+    // leaves `inheritParentEmail: true` standing beside a NULL pointer. That
+    // combination reads as "inherits from nobody", which no writer produces and
+    // no reader expects. Captured before the delete (afterwards there is
+    // nothing left to read) and the stranded flag cleared after it.
+    const orphanedByDelete = await readFamilyLinkOrphans(tx, request.memberId);
+    orphanedByHardDelete = orphanedByDelete;
+
     await tx.member.delete({ where: { id: request.memberId } });
+
+    if (orphanedByDelete.emailInheritors.length > 0) {
+      await tx.member.updateMany({
+        where: {
+          id: { in: orphanedByDelete.emailInheritors.map((row) => row.id) },
+          inheritEmailFromId: null,
+        },
+        data: { inheritParentEmail: false },
+      });
+    }
 
     await createAuditLog(
       {
@@ -1260,6 +1304,12 @@ export async function reviewMemberDeleteRequest({
           requestReason: request.reason,
           snapshotStored: true,
           memberPhotoBlobsDeleted: photoReconcile.deleted,
+          // #2255: named, not just counted — the same declaration the other
+          // three removal paths make.
+          detachedDependantIds: orphanedByDelete.dependants.map((row) => row.id),
+          detachedEmailInheritorIds: orphanedByDelete.emailInheritors.map(
+            (row) => row.id,
+          ),
         },
         ipAddress,
       },
@@ -1284,7 +1334,12 @@ export async function reviewMemberDeleteRequest({
     );
   }
 
-  return { request: serializeMemberLifecycleActionRequest(approved) };
+  return {
+    request: serializeMemberLifecycleActionRequest(approved),
+    // Always present (empty arrays when nothing was linked), matching the
+    // cancellation and archive contracts.
+    orphanedLinks: orphanedByHardDelete,
+  };
 }
 
 // test seam
@@ -1407,6 +1462,10 @@ export async function reviewMemberArchiveRequest({
     return { request: serializeMemberLifecycleActionRequest(rejected) };
   }
 
+  // #2255: filled inside the transaction, read after it. Declared out here
+  // because the links it describes no longer exist once the sweep commits.
+  let orphanedByArchive: OrphanedFamilyLinks = EMPTY_ORPHANED_FAMILY_LINKS;
+
   const approved = await prisma.$transaction(async (tx) => {
     // See reviewMemberDeleteRequest for the advisory-lock rationale.
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`member-lifecycle:${request.memberId}`}))`;
@@ -1468,6 +1527,8 @@ export async function reviewMemberArchiveRequest({
       tx,
       request.memberId,
     );
+    const { orphanedLinks: _orphanedLinks, ...countsOnly } = linkCleanupCounts;
+    orphanedByArchive = linkCleanupCounts.orphanedLinks;
 
     // Claim the archive transition atomically. If another approve
     // transaction for the same member committed first (despite the
@@ -1513,7 +1574,16 @@ export async function reviewMemberArchiveRequest({
         metadata: {
           action: MemberLifecycleAction.ARCHIVE,
           requestReason: request.reason,
-          ...linkCleanupCounts,
+          ...countsOnly,
+          // #2255: named, not just counted — a count tells the admin something
+          // happened, not who to go and look at.
+          detachedDependantIds: linkCleanupCounts.orphanedLinks.dependants.map(
+            (member) => member.id,
+          ),
+          detachedEmailInheritorIds:
+            linkCleanupCounts.orphanedLinks.emailInheritors.map(
+              (member) => member.id,
+            ),
           ...notifyAuditFields,
         },
         ipAddress,
@@ -1540,7 +1610,12 @@ export async function reviewMemberArchiveRequest({
     );
   }
 
-  return { request: serializeMemberLifecycleActionRequest(approved) };
+  return {
+    request: serializeMemberLifecycleActionRequest(approved),
+    // Always present (empty arrays when nothing was linked), so a caller cannot
+    // mistake "no key" for "nothing detached" — same contract as cancellation.
+    orphanedLinks: orphanedByArchive,
+  };
 }
 
 export async function reviewMemberLifecycleActionRequest(

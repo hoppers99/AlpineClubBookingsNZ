@@ -1401,12 +1401,19 @@ describe("POST /api/bookings/[id]/guests", () => {
     const body = await res.json();
 
     expect(res.status).toBe(409);
+    // #2250: the caller here is an ADMIN acting on behalf, so this row IS
+    // entitled — the disclosure scoping must not strip detail an admin
+    // resolving the clash needs. (The member-actor case, where none of it
+    // crosses the wire, is asserted in batch-modify-payment.test.ts.)
     expect(body).toMatchObject({
       code: "BOOKING_MEMBER_NIGHT_CONFLICT",
       conflicts: [
         expect.objectContaining({
           memberId: "guest-member-1",
+          canOpenBooking: true,
           bookingId: "existing-booking",
+          bookingOwnerName: "Other Owner",
+          guestId: "existing-guest",
         }),
       ],
     });

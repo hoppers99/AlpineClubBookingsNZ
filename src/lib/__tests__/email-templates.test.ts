@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import {
   passwordResetTemplate,
   bookingConfirmedTemplate,
@@ -6,6 +6,8 @@ import {
   bookingBumpedTemplate,
   bookingCancelledTemplate,
   choreRosterTemplate,
+  formatChoreRosterDate,
+  setupIntentFailedTemplate,
   hutLeaderAssignmentTemplate,
   adminDailyDigestTemplate,
   adminPendingDeadlineTemplate,
@@ -442,6 +444,62 @@ describe("email-templates", () => {
     it("includes heater/fire safety reminder", () => {
       const html = choreRosterTemplate("Test", "2026-07-15", []);
       expect(html).toContain("heaters and fire");
+    });
+
+    it("keeps the deliberate long-weekday roster date (#2256)", () => {
+      // De-duplicating this formatter with src/lib/email/chores.ts must not
+      // change what the roster email says.
+      expect(formatChoreRosterDate("2026-07-15")).toBe("Wednesday, 15 July 2026");
+      expect(choreRosterTemplate("Bob", "2026-07-15", [])).toContain(
+        "Wednesday, 15 July 2026",
+      );
+    });
+  });
+
+  describe("setupIntentFailedTemplate (#2256)", () => {
+    const RUNTIME_TZ = process.env.TZ;
+    afterEach(() => {
+      if (RUNTIME_TZ === undefined) delete process.env.TZ;
+      else process.env.TZ = RUNTIME_TZ;
+    });
+
+    it("renders a @db.Date stay as that same NZ calendar day", () => {
+      // Production shape: Booking.checkIn/checkOut are `@db.Date`, so Prisma
+      // hands the template UTC-midnight Dates. The old
+      // `toLocaleDateString("en-NZ")` had no timeZone, so it rendered these in
+      // the sending process's own zone: correct on an NZ- or UTC-clocked
+      // worker, but a day EARLY on anything west of UTC (a US-hosted worker
+      // reads 2026-04-16T00:00Z as the evening of 15 April). The format was
+      // wrong everywhere — "16/04/2026" rather than the house "16 Apr 2026".
+      const html = setupIntentFailedTemplate({
+        firstName: "Ada",
+        checkIn: new Date("2026-04-16T00:00:00.000Z"),
+        checkOut: new Date("2026-04-18T00:00:00.000Z"),
+      });
+
+      expect(html).toContain("16 Apr 2026 – 18 Apr 2026");
+      expect(html).not.toContain("16/04/2026");
+
+      // Same dates, worker in a zone behind UTC: the calendar day must not move.
+      process.env.TZ = "America/New_York";
+      expect(
+        setupIntentFailedTemplate({
+          firstName: "Ada",
+          checkIn: new Date("2026-04-16T00:00:00.000Z"),
+          checkOut: new Date("2026-04-18T00:00:00.000Z"),
+        }),
+      ).toContain("16 Apr 2026 – 18 Apr 2026");
+    });
+
+    it("renders a mid-day instant on the NZ side of the date line", () => {
+      // 2026-04-15T23:30Z is already 16 April in New Zealand.
+      const html = setupIntentFailedTemplate({
+        firstName: "Ada",
+        checkIn: new Date("2026-04-15T23:30:00.000Z"),
+        checkOut: new Date("2026-04-17T23:30:00.000Z"),
+      });
+
+      expect(html).toContain("16 Apr 2026 – 18 Apr 2026");
     });
   });
 

@@ -8,6 +8,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
@@ -102,6 +103,8 @@ function PeriodForm({
   onCancel: () => void
   onError: (message: string) => void
 }) {
+  // #2257 — the example lives UNDER the field, not inside it as grey pseudo-content.
+  const nameHint = useFieldHint()
   const section = useSectionEditState<PeriodDraft>({
     initial,
     save: onSubmit,
@@ -143,8 +146,11 @@ function PeriodForm({
               id="pName"
               value={draft.name}
               onChange={(e) => section.setDraft({ name: e.target.value })}
-              placeholder="e.g. School Holidays Jul 2026"
+              {...nameHint.fieldProps}
             />
+            <FieldHint {...nameHint.hintProps}>
+              Example: School Holidays Jul 2026
+            </FieldHint>
           </div>
           <div className="space-y-2">
             <Label htmlFor="pHold">Non-member hold days</Label>

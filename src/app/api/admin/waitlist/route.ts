@@ -120,6 +120,11 @@ export async function GET(request: NextRequest) {
     // will land PAID (and email the member). A no-adult booking that is already
     // APPROVED force-confirms to PAID despite requiresAdminReview still being set.
     adminReviewStatus: b.adminReviewStatus,
+    // #2258: a silenced WAITLISTED entry never gets an offer, and no send is
+    // attempted so there is no EmailLog row to infer it from. The board needs
+    // the flag itself, or such an entry looks like an ordinary one that is
+    // simply waiting its turn.
+    noEmails: b.noEmails,
     finalPriceCents: b.finalPriceCents,
     createdAt: b.createdAt.toISOString(),
     offerEmailDelivery: offerEmailDeliveries.get(b.id) ?? null,

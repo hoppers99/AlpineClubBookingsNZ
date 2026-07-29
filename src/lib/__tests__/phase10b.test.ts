@@ -17,6 +17,7 @@ vi.mock("@/lib/prisma", () => ({
       count: vi.fn(),
       findUnique: vi.fn(),
       update: vi.fn(),
+      updateMany: vi.fn(),
       findMany: vi.fn(),
     },
     booking: {
@@ -486,6 +487,11 @@ describe("F-COMP-04: Admin - approve/reject deletion request", () => {
       .mockResolvedValueOnce([{ id: "bk1" }] as any);
 
     mockedPrisma.member.update.mockResolvedValue({} as any);
+    // #2255: anonymisation reads who it is about to detach, then sweeps their
+    // inheritance pointers so club email stops being aimed at the
+    // @deleted.invalid address this route writes.
+    mockedPrisma.member.findMany.mockResolvedValue([] as any);
+    mockedPrisma.member.updateMany.mockResolvedValue({ count: 0 } as any);
     mockedPrisma.bookingGuest.updateMany.mockResolvedValue({ count: 0 } as any);
     mockedPrisma.familyGroupMember.deleteMany.mockResolvedValue({ count: 0 } as any);
     mockedPrisma.deletionRequest.update.mockResolvedValue({} as any);

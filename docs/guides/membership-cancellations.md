@@ -47,6 +47,23 @@ allocated Xero credit note.
 3. Click **Approve** or **Reject**. A dialog asks whether to email the member —
    the request is processed either way and your choice is recorded in the audit
    log.
+4. After an approval, an amber notice may appear listing **family links that
+   were cleared**. Cancelling a member removes their parent links and any link
+   pointing at them, so if the cancelled member sat in the middle of a family —
+   someone's child *and* someone's parent — their own dependants are now left
+   with no parent link recorded. They are deliberately not moved up to a
+   grandparent: who is responsible for a member is a real-world fact, not
+   something the system should decide for you. Link them under another parent if
+   that is right for the family. The same notice lists anyone who was receiving
+   club email at the cancelled member's address. Their email now goes to their
+   own recorded address — which is often a COPY of the cancelled member's, and
+   may be a placeholder that receives nothing, so check it. Both lists are also written
+   to the audit log, so nothing is lost if you navigate away.
+
+The same amber notice appears after approving an **archive** — archiving runs the
+identical family-link sweep — and approving an **account deletion request** does
+the same clean-up, additionally stopping club email being sent to the anonymised
+address.
 
 ### Approve or reject an archive
 

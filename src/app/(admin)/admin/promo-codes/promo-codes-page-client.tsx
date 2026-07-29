@@ -9,6 +9,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
@@ -150,6 +151,15 @@ export function PromoCodesPageClient({
   // When set, the page swaps the list for the per-code redemptions report.
   const [redemptionsPromo, setRedemptionsPromo] =
     useState<RedemptionsPromoSummary | null>(null);
+
+  // #2257 — every example that used to sit in a placeholder now renders as
+  // helper text under its field, properly associated with it.
+  const codeHint = useFieldHint();
+  const descriptionHint = useFieldHint();
+  const percentOffHint = useFieldHint();
+  const freeNightsPerIndividualHint = useFieldHint();
+  const xeroItemCodeHint = useFieldHint();
+  const xeroAccountCodeHint = useFieldHint();
 
   const [code, setCode] = useState("");
   const [description, setDescription] = useState("");
@@ -893,9 +903,10 @@ export function PromoCodesPageClient({
                     id="code"
                     value={code}
                     onChange={(e) => setCode(e.target.value.toUpperCase())}
-                    placeholder="e.g. WINTER20"
                     required
+                    {...codeHint.fieldProps}
                   />
+                  <FieldHint {...codeHint.hintProps}>Example: WINTER20</FieldHint>
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="description">Description</Label>
@@ -903,8 +914,11 @@ export function PromoCodesPageClient({
                     id="description"
                     value={description}
                     onChange={(e) => setDescription(e.target.value)}
-                    placeholder="e.g. Winter 2026 early bird discount"
+                    {...descriptionHint.fieldProps}
                   />
+                  <FieldHint {...descriptionHint.hintProps}>
+                    Example: Winter 2026 early bird discount
+                  </FieldHint>
                 </div>
               </div>
 
@@ -936,12 +950,12 @@ export function PromoCodesPageClient({
                       max="100"
                       value={percentOff}
                       onChange={(e) => setPercentOff(e.target.value)}
-                      placeholder="e.g. 20"
                       required
+                      {...percentOffHint.fieldProps}
                     />
-                    <p className="text-xs text-muted-foreground">
-                      Applied to each eligible guest&apos;s stay total.
-                    </p>
+                    <FieldHint {...percentOffHint.hintProps}>
+                      Applied to each eligible guest&apos;s stay total. Example: 20
+                    </FieldHint>
                   </div>
                 )}
 
@@ -982,12 +996,12 @@ export function PromoCodesPageClient({
                         min="1"
                         value={freeNightsPerIndividual}
                         onChange={(e) => setFreeNightsPerIndividual(e.target.value)}
-                        placeholder="e.g. 2"
                         required
+                        {...freeNightsPerIndividualHint.fieldProps}
                       />
-                      <p className="text-xs text-muted-foreground">
-                        Each eligible guest receives up to this many free nights on a single booking.
-                      </p>
+                      <FieldHint {...freeNightsPerIndividualHint.hintProps}>
+                        Each eligible guest receives up to this many free nights on a single booking. Example: 2
+                      </FieldHint>
                     </div>
                     <div className="space-y-2">
                       <Label htmlFor="lifetimeFreeNightsCap">
@@ -1288,9 +1302,17 @@ export function PromoCodesPageClient({
                         type="text"
                         value={xeroItemCode}
                         onChange={(e) => setXeroItemCode(e.target.value)}
-                        placeholder="e.g. PROMO-DISC"
                         maxLength={30}
+                        {...xeroItemCodeHint.fieldProps}
                       />
+                    )}
+                    {/* #2257 — the example belongs to the MANUAL-entry branch
+                        only: when Xero data loaded, the code is chosen from a
+                        Select and there is nothing to type. */}
+                    {xeroDataLoaded && xeroItems.length > 0 ? null : (
+                      <FieldHint {...xeroItemCodeHint.hintProps}>
+                        Example: PROMO-DISC
+                      </FieldHint>
                     )}
                     <p className="text-xs text-muted-foreground">
                       If set, the discount line posts to this Xero item. The item&apos;s mapped account in Xero takes priority over the account code below.
@@ -1327,9 +1349,15 @@ export function PromoCodesPageClient({
                         type="text"
                         value={xeroAccountCode}
                         onChange={(e) => setXeroAccountCode(e.target.value)}
-                        placeholder="e.g. 201"
                         maxLength={10}
+                        {...xeroAccountCodeHint.fieldProps}
                       />
+                    )}
+                    {/* #2257 — manual-entry branch only; see the item-code note. */}
+                    {xeroDataLoaded && xeroAccounts.length > 0 ? null : (
+                      <FieldHint {...xeroAccountCodeHint.hintProps}>
+                        Example: 201
+                      </FieldHint>
                     )}
                     <p className="text-xs text-muted-foreground">
                       Used when no item code is set, or to override the item&apos;s default account.

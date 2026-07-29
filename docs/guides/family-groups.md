@@ -23,6 +23,9 @@ page — see [Family billing](#family-billing) below.
   need to approve or reject it.
 - You invited an unregistered partner by email and want to check or revoke that
   invitation.
+- You want to see how a whole family connects: each member's detail page draws a
+  read-only **family tree** from the recorded parent and partner links — see
+  [Members](members.md#the-member-detail-page).
 
 ## Step-by-step
 
@@ -43,9 +46,16 @@ page — see [Family billing](#family-billing) below.
 ### Create or edit a group
 
 1. Click **New Group**, set a **Group Name**, and add at least one member with the
-   member search (primary, active members). Click **Create Group**.
+   member search (primary, active members). Click **Create Group**. The form
+   appears below the search bar and the two queue cards (pending changes and
+   outstanding partner invitations) rather than next to the button, so the page
+   scrolls down to it for you.
 2. Use the edit icon on a group row to open the full editor, or the trash icon to
-   **Delete** it (members are unlinked, not deleted).
+   **Delete** it (members are unlinked, not deleted). The editor opens in that
+   same place — above the group list — so the page scrolls to it, and the row
+   you are editing is highlighted and badged **Editing** until you close or
+   save. When you opened the editor from this page, closing or saving puts the
+   keyboard cursor back on the button you started from.
 
 ### Family billing
 
@@ -78,6 +88,9 @@ Whether families are billed together is not set here — it is the club-level
 | --- | --- | --- |
 | The request queue is read-only ("… can view family group requests but cannot approve or reject them") | Your admin role has membership view but not edit | Ask a full admin for membership edit access |
 | I can't approve a child/adult request | No member record is linked | Choose the member record to link, or create a new non-login member |
+| "Family links are limited to 4 generations…" | Approving would make the family chain longer than great-grandparent → grandparent → parent → child | Link the member under a nearer relative, or unlink a generation that no longer needs recording |
+| "Cannot link a parent or ancestor as a dependant" | The chosen member is already further up this family, so the link would loop back on itself | Check who is already recorded as whose parent on the member detail pages |
+| "No parent or ancestor in this family has a real email address to inherit" | Nobody up the chain has a real (non-placeholder) address, so club email would go nowhere | Record an email address for the requester first, or choose **Use child's own email** to approve without inheriting |
 | A revoke fails | The invitation was just claimed or already revoked | Refresh; it may have been accepted |
 | A family isn't being invoiced | It has no active billing member (in billing-member mode) | Set its billing member on the member's detail Family card or the [Fees](fees.md) family-billing panel |
 

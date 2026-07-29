@@ -7,6 +7,11 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ExternalLink, UserMinus } from "lucide-react";
 import { buildProfilePathWithReturnTo } from "@/lib/internal-return-path";
+import {
+  describeBookingMemberNightConflictBooking,
+  describeBookingMemberNightConflictNextStep,
+  describeBookingMemberNightConflictNights,
+} from "@/lib/booking-member-night-conflict-messages";
 import { useHelpWidgetHint } from "@/components/help-widget/help-widget-context";
 import { DatesStep } from "./_components/dates-step";
 import { GuestsStep } from "./_components/guests-step";
@@ -97,8 +102,6 @@ export default function BookPage() {
     handleSaveAsDraft,
     getGuestProfileBlockMessage,
     getGuestProfileActionLabel,
-    formatConflictNights,
-    formatConflictStatus,
     nights,
     availableCreditCents,
     appliedCreditCents,
@@ -220,19 +223,45 @@ export default function BookPage() {
             <div className="mt-3 space-y-3">
               {memberNightConflicts.map((conflict) => (
                 <div
-                  key={`${conflict.bookingId}-${conflict.guestId}`}
+                  // #2250: an unentitled row carries no booking or guest id, so
+                  // the key falls back to what every row always has.
+                  key={
+                    conflict.guestId ??
+                    `${conflict.memberId}-${conflict.conflictingNights[0]}`
+                  }
                   className="rounded-md border border-danger-6 bg-card p-3"
                 >
                   <p className="font-medium text-danger-11">
                     {conflict.memberName}
                   </p>
+                  {/* #2250: which nights, and — only for a viewer the server
+                      marked canOpenBooking — whose booking it is. A member
+                      adding a guest who turns out to be on a stranger's
+                      booking learns the nights are taken, not whose booking
+                      took them. */}
                   <p className="mt-1">
-                    Already booked on {formatConflictNights(conflict.conflictingNights)} in a{" "}
-                    {formatConflictStatus(conflict.bookingStatus)} booking owned by{" "}
-                    {conflict.bookingOwnerName}.
+                    {[
+                      describeBookingMemberNightConflictNights(conflict),
+                      describeBookingMemberNightConflictBooking(conflict),
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
+                  </p>
+                  {/* #2250: the next step is always stated, not only when no
+                      button is available — a member who has never seen "Remove
+                      me from this booking" needs telling what it does, so it
+                      sits ABOVE the buttons it describes. This is the booking
+                      wizard, the one surface whose reader is actually choosing
+                      the dates, so it is also the one place allowed to offer
+                      "choose different dates" (the admin booking-request routes
+                      return the same 409 and cannot). */}
+                  <p className="mt-2 text-danger-11">
+                    {describeBookingMemberNightConflictNextStep(conflict, {
+                      canChooseDifferentDates: true,
+                    })}
                   </p>
                   <div className="mt-3 flex flex-wrap gap-2">
-                    {conflict.canOpenBooking && (
+                    {conflict.canOpenBooking && conflict.bookingId && (
                       <Button
                         asChild
                         size="sm"
@@ -261,11 +290,6 @@ export default function BookPage() {
                       </Button>
                     )}
                   </div>
-                  {!conflict.canOpenBooking && !conflict.canSelfRemove && (
-                    <p className="mt-2 text-danger-11">
-                      Ask the booking owner or an admin to update that booking before continuing.
-                    </p>
-                  )}
                 </div>
               ))}
             </div>

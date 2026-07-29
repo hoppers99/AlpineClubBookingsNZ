@@ -153,6 +153,9 @@ export async function POST(request: Request) {
           to: recipient.email,
           subject,
           html,
+          // Ad-hoc admin broadcast, addressed to members rather than to a
+          // booking (#2258).
+          bookingContext: "none",
           templateName: "bulk-communication",
           templateData: {
             adminEnteredSubject: subject,

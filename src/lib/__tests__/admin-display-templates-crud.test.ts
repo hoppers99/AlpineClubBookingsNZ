@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Prisma } from "@prisma/client";
+import { BUILT_IN_DISPLAY_TEMPLATE_KEYS } from "@/lib/lodge-display/built-in-seeds";
 
 // Issue #79 (LTV-033): admin lobby-display TEMPLATE CRUD — admin guard on every
 // method, save-contract validation on create/update (structural errors surface
@@ -118,6 +119,26 @@ describe("GET/POST /api/admin/display/templates", () => {
       layout: { id: "layout-1", name: "Everyday board" },
       deviceCount: 2,
     });
+  });
+
+  // #2247: the seven built-in KEYS are ordinary slugs — only the seeded ROW ID
+  // carries the `builtin-` prefix — so on a never-seeded database (exactly the
+  // population "Restore built-in boards" serves) an admin could author their
+  // own template under one, and the restore would upsert BY KEY straight over
+  // it while promising custom templates are untouched. The keys are reserved on
+  // create; PUT already 409s on a built-in.
+  it("refuses a reserved built-in key on create, without persisting", async () => {
+    const { POST } = await import("@/app/api/admin/display/templates/route");
+    for (const key of BUILT_IN_DISPLAY_TEMPLATE_KEYS) {
+      const res = await POST(
+        await jsonRequest("http://localhost/x", "POST", { ...VALID_BODY, key })
+      );
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toContain(key);
+      expect(body.error).toMatch(/reserved/i);
+    }
+    expect(mockPrisma.displayTemplate.create).not.toHaveBeenCalled();
   });
 
   it("creates a valid template (201) and passes warnings through", async () => {

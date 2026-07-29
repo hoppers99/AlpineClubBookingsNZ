@@ -47,6 +47,12 @@ is integer cents (shown as dollars); dates are NZ date-only lodge nights.
    the member about this confirmation?** dialog appears — choose **Confirm and
    email member** or **Confirm without emailing**. Your choice is recorded in
    the audit log.
+
+   If the booking has **No emails** turned on
+   ([Bookings](bookings.md#turn-off-all-emails-for-one-booking)), there is no
+   choice to make — the confirmation is withheld either way — so the dialog
+   says emails are off and offers only **Force-confirm booking**. The withheld
+   confirmation is then listed on the booking itself for you to relay.
 3. If the booking would exceed capacity, the overbook dialog lists the affected
    dates. Click **Confirm Anyway (Overbook)** to proceed — this writes a
    critical audit record you can open from the confirmation.
@@ -65,6 +71,27 @@ The waitlist is a work queue, not a settings page. Its controls:
 Status chips include **Waitlisted** and **Waitlist Offered**; a warning line
 appears when the booking still needs admin review. Offer-email badges show
 whether the offer email was sent, queued, retrying, or undeliverable.
+
+### Entries with "No emails" turned on
+
+A booking with **No emails** switched on
+([Bookings](bookings.md#turn-off-all-emails-for-one-booking)) behaves
+differently on this board, and the badges say which case you are looking at:
+
+- **"Position #N — silenced, will not be offered"** (or **"Silenced — will not
+  be offered while emails are off"** when it has no position yet) — the entry is
+  skipped when beds are handed out, so no offer is made at all. It keeps its
+  place in the queue and does not hold up the members behind it; the position
+  numbers everyone else sees are unchanged.
+- **"Offer email withheld (No emails)"** — an offer email was withheld, and that
+  offer has since lapsed. Nothing needs doing.
+- **"Offer live but emails are off — member not told"** — the entry is holding a
+  bed on an offer that is still running, and the member will get no expiry
+  warning and no confirmation if they accept. This one needs an officer: the
+  member was emailed the offer before the switch went on, so they **can** still
+  accept it. Do not reassign the bed — contact them.
+
+Force-confirming any of these skips the email choice, as described above.
 
 ## Troubleshooting
 

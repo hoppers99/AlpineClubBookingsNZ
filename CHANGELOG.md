@@ -4,6 +4,476 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **A member's admin page now draws the whole family as a read-only tree
+  (#2253).** In the Family section — under the family-group chips, above the
+  billing family and parent link cards — the page works out how everyone
+  connects from the links the club has already recorded (parents, second
+  parents, confirmed partners) and follows them across households, so
+  grandparents, siblings, half-siblings, cousins, and a dependant's other
+  parent all appear, each drawn once. It reaches three generations above and
+  below the member being viewed (four counting the member's own), the same
+  limit parent links themselves are capped at. Relationships that are not
+  stored anywhere are marked **Derived** with a dashed outline, so a worked-out
+  sibling is never mistaken for a recorded claim — and half-siblings are
+  separated from full siblings by *which* parents are shared, not how many,
+  with the tree saying plainly when that verdict comes from a missing record
+  rather than a different parentage. Where a child's club email goes to someone
+  further up the family than their own parent, the tree says so in words and
+  names the person — unless the mailbox belongs to a member outside the family
+  altogether, which it reports without naming anyone. Archived relatives stay
+  in the tree, badged, with their contact details left off, rather than
+  silently vanishing and making a grandparent look unrelated. Where a family is
+  too tall or simply too large to draw in full, the tree says which, instead of
+  quietly ending. Nothing in the tree can be edited: it is a picture of the
+  Parent Links, Partner, and Dependents cards below it, and changing those
+  changes the tree.
+
+- **Exclusive whole-lodge bookings no longer collect hidden bed assignments
+  (#2285).** A booking with an exclusive whole-lodge hold takes the entire
+  lodge, so nobody in the group is assigned an individual bed — the
+  bed-allocation board has always treated it that way, showing a single
+  "exclusive hold" banner instead of per-bed chips. But behind the scenes the
+  automatic allocator kept assigning real beds to the group anyway, every time
+  the booking was touched. Those assignments were invisible on the board (so
+  an admin could neither see nor correct them) and could clash with or
+  reshuffle other bookings' beds once the hold was removed. Now the automatic
+  allocator follows the same rule as the board: a held booking gets no bed
+  assignments, and any it already carries are cleaned up the next time
+  anything about the booking changes — no manual tidy-up needed for bookings
+  affected in the past. Setting a hold now also clears the booking's existing
+  bed assignments immediately, and removing the hold re-plans the group's beds
+  right away, so the booking comes back as an ordinary one in a coherent
+  state. Approving a school's request for sole occupancy cleans up the
+  converted booking's bed assignments the same way. Because that clean-up
+  deletes real work, the admin screens now say so before and after: the
+  confirmation box for setting a hold warns up front that the booking's
+  existing bed assignments — including ones placed by hand or already approved
+  — will be removed, the box for clearing one explains that beds are re-planned
+  automatically (and that other bookings' provisional placements may move), and
+  the confirmation message afterwards reports how many assignments were removed
+  or re-planned. The removed assignments are written into the audit log in full,
+  so a hold set by mistake can be undone by hand. A dedicated test now keeps
+  the board and the automatic allocator in agreement so they cannot drift
+  apart again.
+
+- **Every hand-written "open in Xero" link on the admin screens now lands in
+  the club's own Xero organisation (#2283).** Twenty-one links across ten admin
+  screens — member records and the members table, payments, subscriptions, and
+  the Xero Sync panels — were plain Xero web addresses that did not say *which*
+  organisation they meant. For an admin whose Xero login can see more than one
+  organisation (an accountant, or a treasurer for two clubs), Xero answers such
+  an address with whichever organisation they last had open, so a link could
+  quietly open **another organisation's books**. All of these links are now
+  built the same way as the Xero Sync page's "Go to Xero" button: for an admin
+  with finance access, when the club's Xero connection is healthy they carry
+  the organisation's short code and Xero switches to the right organisation
+  before showing the page; otherwise they fall back to the plain address — the
+  link always works, it is just less precise. Links that Xero sync itself
+  recorded earlier (the ones shown against a record's Xero activity, the sync
+  operations and inbound event lists, and suggested or duplicate contacts) are
+  **not** covered yet and still open in the last-used organisation; deciding
+  how those should work is tracked as #2314. A new automated check stops future
+  code from reintroducing an unqualified hand-written Xero link. Behind the
+  scenes, the read of the organisation's financial year-end month (used to
+  default the membership year) no longer retries against a rate-limited Xero
+  connection: it degrades immediately, reuses the year-end month already known
+  from the connection summary instead of silently falling back to March, waits
+  a few seconds before trying Xero again so a struggling connection is not made
+  worse, and an admin re-checking the connection still gets a live read
+  straight away.
+
+- **Writing a Lodge TV footer or CSS override no longer means remembering the
+  tokens (#2248).** Every field where a board's HTML or CSS is typed by hand —
+  the Visual builder's **Footer HTML**, **CSS overrides** and a zone's **HTML
+  block**, and the CSS and footer fields on the advanced **Templates** page —
+  now carries a small **Insert token** button on its label row. It opens a
+  searchable picker listing only what that field actually accepts: on an HTML
+  field, the standard tokens (`{{lodge-name}}`, `{{display-date}}`) and the
+  preview lodge's saved `{{config:…}}` keys, each row showing the value
+  currently saved on that lodge — so you pick "the Wi-Fi one" rather than
+  remembering a slug — plus a free-text path that turns anything you type into
+  `{{config:<your-key>}}`; on a CSS field, the board's own
+  `var(--display-…)` palette and the club theme colours, inserted ready to
+  use. The token lands exactly where your cursor was, replacing any selected
+  text — never tacked onto the end — and focus returns to the field with the
+  inserted token selected, so you can keep typing or type over it. A key with
+  no value saved yet can still be inserted: the picker warns, before you press
+  Enter, that the wall will show a visible `⟨config:key?⟩` placeholder until
+  the value is filled in on the lodge's display settings, and a key that
+  breaks the naming rules is refused with the rules (and a fixed-up
+  suggestion) instead of silently inserting something the screen would never
+  match. The whole picker is keyboard operable, the existing explanatory text
+  under each field stays put, and one shared component drives all five
+  fields so their behaviour cannot drift apart.
+
+- **The lobby display's built-in boards can be restored on a club that never
+  got them, and the three words the screen uses are finally defined (#2247).**
+  A club whose database was created before the lobby display existed had none
+  of the seven boards that ship with the app: they are only ever created when
+  the database is first seeded, and upgrading does not re-do that. The Templates
+  gallery simply sat empty and said nothing. It now says which of the three
+  things is actually true — the **Lobby TV display** module is switched off,
+  your admin role cannot see display templates, or the boards were never
+  created — and where the boards are missing, **Restore built-in boards**
+  creates all seven in one press. Pressing it again is safe, and if the
+  database fails part-way the whole restore is rolled back rather than leaving
+  half a library. It asks first, because it is a genuine restore: every
+  built-in goes back to the design that ships with the app, so a change made to
+  a built-in in place is undone — including one that arrived in an imported
+  configuration bundle. Layouts and templates saved under your own names are
+  never touched, though a board of yours built on a built-in layout will follow
+  that layout's restored shape; screens keep showing whatever they already
+  show; and who pressed it, with the seven names it rewrote, is written to the
+  audit log. It is deliberately a button rather than something the upgrade does
+  by itself — running it automatically would quietly undo a club's edits to a
+  built-in every release.
+  Relatedly, the seven built-in names are now **reserved**: saving a layout or
+  template of your own under one is refused, with a message saying why. They
+  were never protected on a club that had no built-ins yet, which is exactly
+  the club this feature is for — so a board could be built under one of those
+  names and then be silently overwritten by the very restore that promises not
+  to touch your work.
+  The same screens used three words for two things and explained none of them.
+  A **Layout** is the shape of a board, a **Template** is that shape filled in
+  and is what you point a screen at, and a **board** is what the screen actually
+  shows: a Template on its Layout, for the lodge that screen belongs to. Those
+  three sentences now appear, in the same words, on the Lobby Display hub cards,
+  on the Reference page, on the Visual builder, and in the operator guide.
+
+- **Families can now be recorded across four generations, not two (#2255).**
+  A member who already had dependants could not be recorded as anyone's child,
+  so a grandparent, parent and child could not all be linked in one line — the
+  club had to leave a real relationship unrecorded. Parent links now run up to
+  **four generations** (great-grandparent, grandparent, parent, child), still
+  with at most two parents each. The limit is checked when a link is made, from
+  both ends at once, so it no longer depends on the order the links happened to
+  be created in — which is worth saying plainly, because the old "two
+  generations" rule did depend on it: it refused to attach a member who had
+  dependants, but never looked at the parent's own parents, so a longer chain
+  could be built downwards one person at a time and nothing stopped it. Every
+  place that creates a parent link now enforces the limit, including admin
+  member-create, family-group child requests, membership-application approval,
+  and **merging two duplicate member records** — four paths the old rule never
+  covered at all. (Merging is the surprising one: it never creates a link, but
+  joining two records joins their families, which could produce a six-generation
+  chain or link a family back on itself. Such a merge is now refused, and asks
+  you to unlink first.) A link that would make the chain longer, or that would
+  loop a family back on itself, is refused with an explanation naming the limit.
+  **Where club email goes** follows the family further too: if a dependent
+  inherits their parent's email address and that parent has no real address of
+  their own, the club now uses the nearest person above them who does, instead
+  of leaving that generation's children unreachable. Both the member's admin
+  page and the family's own profile page say whose address is being used when it
+  comes from beyond the direct parent, since that is the family whose consent is
+  at stake. When a young member reaches adult age and gets their own login,
+  their children's notifications now follow them instead of staying with the
+  grandparent. **Removing a member** — cancelling, archiving, approving an
+  account deletion, or hard-deleting the record — now tells you what it
+  detached: their own dependants are
+  left without a parent link (they are deliberately not moved up to a
+  grandparent, because who is responsible for a member is not something to
+  change automatically), and both they and anyone who was receiving email at the
+  removed member's address are listed on screen and in the audit log. Approving
+  a deletion also stops club email being sent to the anonymised address, which
+  it previously kept attempting forever. Who is **billed** is unchanged by the
+  link rules themselves: parent links record responsibility and grant no fee
+  coverage, which comes from family groups and membership types as before. There
+  is one indirect route worth knowing about, though — approvals that add someone
+  to a family GROUP still change that group's composition, and group composition
+  is a fee-model input, so an approval that was previously refused can now
+  compose a group the fee rules classify as a Family.
+- **Recording a membership payment by hand now asks whether to tell the member
+  — and can actually tell them (#2260).** When a treasurer marks a member's
+  subscription paid for a cash, cheque or internet-banking payment, the club
+  had no way to send that member any acknowledgement: the action wrote the
+  status and emailed nobody, ever. It now offers the club's usual choice.
+  "Mark paid and email member" sends a short receipt — the season, the amount
+  (only where the club has a recorded fee amount for that season), and the date
+  it was recorded. "Mark paid without emailing" records the identical payment
+  and tells nobody. The subscription is marked paid either way, and which way
+  the treasurer chose is written to the audit log, so a later "did we tell
+  them?" has an answer. Because a manual payment is cash the system never saw,
+  the receipt never invents a figure: it shows an amount only where the club has
+  one recorded for that member alone, and leaves it out otherwise. A family
+  membership fee is deliberately left out — that figure is the whole family's
+  bill, and telling one member it was recorded against them (with "nothing
+  further to pay") while their relatives still owe theirs would be worse than
+  saying nothing. It mentions no invoice, no payment link and no Xero
+  reference, because manual mark-paid only exists where there is no invoice.
+  The message the treasurer gets back says what actually happened rather than
+  what was asked for: a receipt "is being emailed" only if it really was handed
+  over for sending, and there is a plain "the receipt could not be sent" when
+  the member's address cannot receive it. The payment stays recorded either
+  way — a failed email never quietly undoes it.
+  Reversing a manual payment never emails the member — there is no
+  "your payment was un-recorded" notice worth sending.
+  The confirmation itself is now a proper dialog with a note box, replacing the
+  three bare browser pop-ups this action used to rely on (including the one
+  where cancelling the note prompt silently abandoned the whole action).
+
+- **"No emails" is now something an officer can actually switch on, and the
+  booking says what it cost (#2259).** The mechanism landed in #2258; this is
+  the part an officer touches. The switch sits in the **Admin tools** card on a
+  booking, and turning it on opens a dialog that states the consequence in plain
+  words — no emails at all for this booking, including cancellation notices and
+  payment reminders, and you are responsible for telling the member yourself —
+  with a button that says exactly that. It is deliberately not a tick-box you
+  can skim past, and nothing is saved until it is answered. If the booking is
+  holding a live waitlist offer, the dialog says so before you confirm: that
+  offer was emailed before the switch went on, so the member **can still accept
+  it** and the bed must not be reassigned — what they lose is the expiry
+  warning and the confirmation if they accept, so an officer has to follow it
+  up. If the booking is still waitlisted with no offer yet, the dialog says
+  that instead: while emails are off it is passed over when beds are handed
+  out, keeps its place in the queue, and holds nobody else up.
+  Once it is on, the booking carries a standing warning listing what was
+  actually withheld — each kind of message by name, how many of it, its
+  subject, and when the most recent one would have gone out — including the
+  invoice email Xero would have sent. Grouping by kind is deliberate: a week of
+  chore-roster emails for a large party is dozens of near-identical records,
+  and listed flat they would bury the one cancellation that matters. Two kinds
+  carry a link rather than information and each says what to do about it: the
+  split-guest payment link was never generated, so clearing the switch is
+  enough and it re-sends itself; the chore roster replaced the guest's working
+  link before the email was withheld, so that guest currently has nothing that
+  works and an officer has to re-send the roster by hand. The banner also
+  points at the email-failure queue, since it
+  lists only what was withheld deliberately and not what failed for other
+  reasons. It keeps showing after the switch is turned back off, in amber
+  rather than red: turning emails back on re-sends nothing, so a member who
+  was never told about a cancellation is still never told.
+  Every admin action on that booking that would normally ask "email the member
+  about this?" now stops asking. With the switch on the message is withheld
+  whichever button is pressed, so the question was misleading — it invited an
+  officer to choose "and email member" and walk away believing the member had
+  been told. Confirming pending guests, editing, cancelling, approving or
+  declining a review, force-confirming from the waitlist, and deciding a refund
+  appeal all now say plainly that emails are off and carry on without sending.
+  The chore-roster send is unchanged, because it goes out per night across many
+  bookings at once; a silenced booking's own roster email is still withheld
+  individually.
+  A member sees no sign of any of this — not the switch, not the warning, and
+  no value in the page's data that varies with it. The page they are served
+  carries no trace of the setting at all, not even an empty one.
+
+- **A booking can now be put on "No emails", and the system withholds
+  everything about it (#2258).** Sometimes the club needs a booking to be quiet
+  — a member who has asked not to be contacted, a booking being sorted out by
+  phone, a test or duplicate an officer is cleaning up. Turning "No emails" on
+  for a booking stops every message the system would send about that stay:
+  confirmations, changes, payment notices, reminders, arrival information,
+  cancellations, waitlist offers, chore rosters, and even the invoice email Xero
+  sends on the club's behalf (the invoice itself is still raised in Xero — only
+  the emailing stops, so an officer can still send it by hand). Turning it on
+  requires an explicit acknowledgement that the member will not be told, and who
+  turned it on and when is recorded.
+  Three things it deliberately does NOT do. It never touches sign-in security
+  mail — two-factor codes, password resets, sign-in links and email-change
+  notices always go through, because the switch is tied to the booking and never
+  to a person's email address; silencing those would lock a member out of their
+  own account. It never silences the club's own admin alerts, so an officer is
+  still told when a payment fails. And it never guesses: if the system cannot
+  read the setting for any reason it withholds the message rather than risk
+  sending one that was meant to be held back, and tries again later.
+  Everything withheld is recorded against the booking, so the booking page can
+  show a standing warning listing exactly what was not sent. A booking on "No
+  emails" is also skipped when waitlist places are handed out, so it is not
+  offered a bed it would never hear about, and the waitlist board shows such an
+  entry as deliberately silenced rather than as a failed email. Turning the
+  switch on does not withdraw an offer the member has already been made — the
+  waitlist board flags that booking for attention until someone sorts it out.
+  Turning the switch back off restores normal mail from that point on; it does
+  not re-send anything that was withheld.
+- **Example text in admin forms no longer looks like an answer somebody already
+  typed (#2257).** Fields such as Season Name, Promo Code, Chore Name, Group
+  Name and Banner Message used to show their example inside the box in grey —
+  "e.g. Winter 2026" — which reads as a value the form has already accepted.
+  Those examples now sit as a short line of helper text UNDER the field
+  ("Example: Winter 2026"). That means the example stays visible while you type
+  and after the field is filled in, instead of disappearing at the first
+  keystroke, and it can now sit alongside a validation error or a "you can view
+  this but not change it" note rather than competing with them — where a field
+  has more than one of those, the error or the view-only note is announced
+  first. Placeholders still shown in fields built on the shared input, textarea,
+  search and drop-down components — instructions like "First name", format
+  samples such as "member@example.com" or "0.00" — are now drawn in italics so
+  they read as prompts rather than as content. A handful of admin fields use
+  raw browser inputs and keep the browser's default placeholder look for now;
+  they are part of the #2264 sweep. Drop-down buttons that said "Select item…" were the worst offender:
+  they were drawn in ordinary text colour, identical to a real selection, and
+  are now styled as placeholders too. Reviewing the remaining placeholders
+  across the rest of the app is tracked separately (#2264).
+
+- **Dates no longer change shape (or day) depending on whose computer is
+  looking at them, and the family-group "Edit" button visibly does something
+  (#2256).** A handful of screens printed dates using whatever the *viewer's*
+  own computer was set to instead of the club's settings. On a machine set to
+  United States English, "16 Apr 2026" came out as "4/16/2026"; on a machine in
+  a time zone behind New Zealand it could come out as the day *before* the real
+  one. The affected places were the family-group request queue (the "Requested"
+  stamps and every date of birth on a review card), the family-groups list
+  (partner-invite expiry dates and the "Created" column), the induction records
+  (sign-off and completion dates, on screen and on the printed sheet), and the
+  Xero settings page's "cache last refreshed / expires" line. The
+  card-setup-failed email had the same problem in a quieter form — it named the
+  right country but not the right time zone, so the stay dates it quoted
+  depended on where the sending server happened to be. All of these now use the
+  club's own date settings, so everyone sees the same date, written the same
+  way, wherever they are. Chore-roster emails are deliberately unchanged: they
+  keep their long "Wednesday, 15 July 2026" wording.
+- **Family groups: pressing the edit (pencil) icon on a group — or New
+  Group — used to look like it had done nothing (#2256).** Both forms open in
+  the same place: below the search bar and the two queue cards, and *above* the
+  list of groups. So if you scrolled down to a group and clicked edit, the
+  editor opened off the top of the screen; and with a busy queue, New Group
+  opened the form well below the button you had just pressed. Either way
+  nothing you could see changed. The page now scrolls to the form and puts the
+  keyboard cursor in it every time it is opened — including when you re-open
+  the same group you were just editing, which previously did nothing at all.
+  The group you are editing is highlighted in the list and badged "Editing"
+  until you save or close, and closing puts the keyboard cursor back on the
+  button you started from. Nothing about who may edit a group has changed.
+- **"Add Dependant → Link Existing" now finds the members it was hiding, and
+  says why when it still finds nobody (#2254).** Searching for an existing
+  member to link as a dependant reported "No eligible members found" for almost
+  everybody: the search silently dropped every member who had no parent recorded
+  — the overwhelming majority of valid candidates — so admins could not link an
+  existing member at all without first giving them an unrelated parent. The
+  search now returns those members. When a search genuinely has no one to offer,
+  the dialog no longer stops at a bare "not found": it lists the members whose
+  names matched and the reason each cannot be linked ("already has two parents
+  recorded", "is archived", "is already linked to this member"), and only says
+  "No members matched your search" when nobody matched at all. The search and
+  the save step are now driven by one shared rule, so the dialog can no longer
+  offer a member that saving then refuses, nor hide one that saving would have
+  accepted. Who may be linked was unchanged by this fix — at most two parents, no
+  linking someone who already has dependants of their own, no archived members —
+  and inactive members remain linkable, badged "Inactive", as before. (The
+  "already has dependants" part of that was then replaced in the same release by
+  the four-generation limit above, which also added a "would make the family
+  chain more than 4 generations deep" reason to the same list.)
+- **Fixed: after switching the connected Xero organisation, the club's financial
+  year and period-lock checks could keep using the PREVIOUS organisation's
+  settings (#2261).** The app remembers a few things it reads from Xero — the
+  organisation's financial year-end month, its name, and its accounting lock
+  dates — so it does not re-ask Xero on every page load. Connecting or
+  disconnecting Xero already cleared that memory. What it did not handle was a
+  read that was *already underway* at that moment: it finished a fraction of a
+  second later and quietly re-filled the memory it had just been cleared from,
+  with the old organisation's answers.
+  The financial year-end month is the one that costs money. It decides which
+  membership season a date falls in, how a part-year subscription is charged,
+  and which window membership invoices are searched over. Refilled with the
+  wrong month it would have stayed wrong for up to 12 hours: a $200 annual fee
+  worked out on a mid-May decision date comes to roughly $183 under a June
+  year-end but roughly $33 under a March one — the same member, the same date,
+  five times the difference. The accounting lock dates matter for the same
+  reason in the other direction: they are what stops a backdated booking being
+  invoiced into a period the accountant has already closed, and stale ones could
+  let such a booking through. Both now refuse to save an answer that arrived
+  from an organisation the club is no longer connected to, so the next read goes
+  back to Xero and gets the right one. Nothing changes for clubs that have not
+  switched Xero organisations; there is no configuration to update.
+
+- **A "Go to Xero" button in the Xero Sync page header (#2261).**
+  When an admin spots a problem on **Admin → Finance → Xero Sync** they can now
+  jump straight into Xero from the page header instead of hunting for a Xero
+  tab. It sits in the header rather than inside a section, so it is there
+  whether or not the Health Snapshot is expanded. Where the club's Xero
+  organisation can be identified the link opens *that* organisation's
+  dashboard — which
+  matters for a login that covers several Xero organisations. Where it cannot,
+  or Xero is not connected here, the button becomes a plain **Log in to Xero**
+  sign-in link rather than disappearing or greying out, since opening Xero is
+  exactly what is wanted when the connection is broken. The organisation
+  identifier Xero URLs need comes from the existing organisation lookup, which
+  is cached on the server: the first page load after a restart, after 12 hours,
+  or after connecting/disconnecting Xero costs one extra Xero API call, and
+  every load after that costs none. While that lookup is failing it is retried
+  at most once a minute rather than on every page load, and the button says
+  only "Opens Xero in a new tab" until the lookup settles — it never blames a
+  failed read for a link that is still loading.
+- **A member put on somebody else's booking can now take their own place off it
+  from the booking itself, and the "already booked on those nights" message
+  finally says what to do (#2250).** The self-removal action already existed, but
+  the only way to reach it was to start making a clashing booking of your own and
+  find the button on the wizard's conflict card — so most members never knew it
+  was there. The booking page now shows a short card to a member who is a guest
+  on someone else's booking: it says whose booking it is, offers "Remove me from
+  this booking" behind a confirmation, and — when the removal is not allowed —
+  hides the action and states the reason instead (the stay has started, the
+  booking is no longer in a changeable state, you are the only person on it, or
+  the club priced the booking as a quote).
+  Eligibility is decided by one shared server-side rule, the same one the removal
+  service enforces, so a member is never shown a control the server would refuse.
+  The clash message itself was rewritten to name the nights, address the member
+  directly when the clash is their own place, and state the next step they can
+  actually take: an admin approving a booking request no longer reads advice to
+  "choose different dates", which only the person picking the dates can act on.
+  Nothing about who may remove whom has changed — only the owner, an admin, or
+  the person themselves can take a place off a booking, and the owner is emailed
+  and their total updated exactly as before.
+
+- **The "already booked on those nights" refusal no longer tells you about a
+  booking you are not part of (#2250).** A member can legitimately have a family
+  member who is a guest on a stranger's booking. Asking for a price on clashing
+  dates used to return that stranger's full name, the whole span of their stay,
+  and the booking's id — none of which the member could see anywhere else in the
+  app, and none of which was ever shown on screen. The refusal now carries only
+  who in your own party is already booked and which of your chosen nights clash.
+  Where you ARE entitled to the detail — it is your own booking, you are the
+  person double-booked, or you are an admin resolving the clash — nothing
+  changes, so the admin booking-request linking warning still shows the owner and
+  their dates as before.
+
+- **The Lodge TV Visual builder's Live preview works again (#2246).** Clicking
+  **Live preview** in the builder showed a "Content blocked" error instead of the
+  board. The builder embeds a sandboxed frame of the display page, but the
+  app's own content-security policy granted that permission only to the separate
+  full-screen preview page, so the browser blocked the builder's frame. The
+  permission now covers both preview surfaces, matched on the exact page address
+  so no other admin page gains it. Because a page's security policy is fixed the
+  moment the browser loads it, the two in-app links into the builder (the
+  **Visual builder** card on the Lobby Display page, and the "visual builder"
+  link on the Layouts page) now load the page fresh rather than switching to it
+  in place — otherwise the builder inherited the previous page's policy and the
+  preview stayed blocked. The same "load the page fresh" requirement applies to
+  every page that has its own security policy, so the automated check that
+  guards it is now driven from the list of such pages: adding a page to that
+  list fails the build until its links load the page fresh too, instead of the
+  page quietly not getting the policy it asked for.
+- **The reverse proxy no longer contradicts the app about which pages may be
+  framed (#2246).** The web server in front of the app told browsers "never
+  frame any page", overriding the app's own "the display board may be framed by
+  our admin preview". The previews worked anyway only because browsers are
+  required to prefer the app's newer-style policy when the two disagree — so the
+  feature depended on a browser tie-break rather than on the site actually
+  saying what it meant. The web server now says the same thing the app does: the
+  display board may be framed by this site, and **every** other address —
+  including the legacy finance dashboard and uploaded images, which the app
+  itself does not cover — is still guaranteed unframeable at the edge.
+  **Operators: this one needs a manual step.** The change is in `Caddyfile` and
+  `Caddyfile.staging`, which are *not* applied by an app deploy. After taking
+  this release, reload Caddy on the host — `docker compose exec caddy caddy
+  validate --config /etc/caddy/Caddyfile` then `... caddy reload --config
+  /etc/caddy/Caddyfile` (a graceful, zero-downtime swap). See `DEPLOYMENT.md`.
+  Until you do, nothing breaks — the previews keep working on the browser
+  tie-break exactly as they do today.
+- **Postgres connection ceiling raised from 30 to 40 to stop intermittent
+  `FATAL: sorry, too many clients` when a deploy or backup overlaps normal
+  load.** At `max_connections=30` the app's connection pools already summed to 27
+  during a blue/green deploy window (two web slots + the cron leader + the
+  migration step), leaving almost no room for the other things that open their
+  own database connections — the nightly `pg_dump` backup, the deploy-time shadow
+  database, the health probe, and operator `psql` sessions. When those
+  overlapped, Postgres refused new connections and could lock operators out of
+  the database. The ceiling is now 40 (the database container's `mem_limit` is
+  raised 512m→768m to match); the per-container pool sizes are unchanged. This is
+  a shared default, so every deployment gains the extra headroom, and it takes
+  effect the next time the database container is recreated (any deploy).
+  Operators of very small hosts can lower both values together — see
+  `DEPLOYMENT.md` "Connection pool sizing".
+
 - **Image and configuration uploads can no longer be used to exhaust server
   memory (#2235).** Every upload form (member photos, the website image library,
   the Image Manager, and configuration-bundle import/preview/reseal) now reads

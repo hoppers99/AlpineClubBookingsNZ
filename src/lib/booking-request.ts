@@ -442,6 +442,8 @@ export async function createBookingRequest(input: CreateBookingRequestInput) {
 
   try {
     await sendBookingRequestVerificationEmail({
+      // A public request has no booking until it is approved (#2258).
+      bookingContext: "none",
       email: contactEmail,
       firstName: contactFirstName,
       token,
@@ -707,6 +709,9 @@ export async function declineBookingRequest(input: {
   if (input.notifyMember !== false) {
     try {
       await sendBookingRequestDeclinedEmail({
+        // Every DECLINABLE_BOOKING_REQUEST_STATUS precedes approval, so no
+        // booking has been created for this request (#2258).
+        bookingContext: "none",
         email: request.contactEmail,
         firstName: request.contactFirstName,
         checkIn: request.checkIn,
@@ -1459,6 +1464,7 @@ export async function approveBookingRequest(input: {
 
     try {
       await sendBookingRequestApprovedEmail({
+        bookingContext: { bookingId: conversion.bookingId },
         email: request.contactEmail,
         firstName: request.contactFirstName,
         token: paymentToken,

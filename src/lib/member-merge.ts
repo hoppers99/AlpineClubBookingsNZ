@@ -6,6 +6,12 @@ import {
 } from "@/lib/admin-account-guards";
 import { hasAdminAccess } from "@/lib/access-roles";
 import { buildStructuredAuditLogCreateArgs } from "@/lib/audit";
+import {
+  describeChildSideDepth,
+  describeParentSideDepth,
+  MAX_FAMILY_LINK_GENERATIONS,
+  MAX_PARENT_LINK_CHAIN_LENGTH,
+} from "@/lib/member-family-link-depth";
 import { deleteOwnedMemberPhotoBlobs } from "@/lib/member-photo";
 import { memberDisplayName } from "@/lib/member-serialization";
 import { prisma } from "@/lib/prisma";
@@ -94,7 +100,7 @@ function spec(
 }
 
 /**
- * The authoritative classification of all 76 Member FK-owning relations. The
+ * The authoritative classification of all 77 Member FK-owning relations. The
  * DMMF/schema completeness test (member-merge-dmmf.test.ts) fails CI if the
  * schema grows a Member relation that is missing here (or if a key here no
  * longer exists in the schema), so a new relation cannot silently escape merge
@@ -166,6 +172,10 @@ export const MEMBER_MERGE_RELATION_SPECS: readonly MemberMergeRelationSpec[] = [
   spec("Booking", "adminCapacityHoldBy", "adminCapacityHoldByMemberId", "move"),
   spec("Booking", "capacityOverriddenBy", "capacityOverriddenByMemberId", "move"),
   spec("Booking", "wholeLodgeHoldBy", "wholeLodgeHoldByMemberId", "move"),
+  // #2258: who turned the per-booking "No emails" switch on. An actor
+  // back-reference exactly like the three hold columns above, so it moves
+  // with the surviving member and the audit trail stays readable.
+  spec("Booking", "noEmailsBy", "noEmailsByMemberId", "move"),
   spec("BookingGuest", "member", "memberId", "move"),
   spec("GroupBooking", "organiserMember", "organiserMemberId", "move"),
   spec("GroupBookingJoin", "joinerMember", "joinerMemberId", "resolve", {
@@ -887,7 +897,95 @@ export async function evaluateMemberMergeGuards(params: {
     });
   }
 
+  blockers.push(...(await evaluateFamilyLinkGraphBlockers(db, masterId, loserId)));
+
   return blockers;
+}
+
+/**
+ * #2255: merge is a parent-link WRITER, and until now an ungated one.
+ *
+ * It never creates a link by hand, which is exactly why it slipped past the
+ * per-link guards: `applyMoves` re-points every inbound `parentMemberId` /
+ * `secondaryParentId` from the loser onto the master, and the master keeps its
+ * own outbound links. Collapsing two nodes into one therefore JOINS their
+ * family chains, and two things the link-time cap forbids become reachable:
+ *
+ *  - DEPTH. Master four generations deep with nobody below, loser heading three
+ *    generations of its own — neither breaches the cap alone, and the merged
+ *    node spans six generations.
+ *  - CYCLES. If master and loser are already related by parentage in either
+ *    direction, the merged node becomes its own ancestor. `nullSelfRelationCycles`
+ *    does not catch this: it only nulls MASTER columns whose value equals the
+ *    loser id, so a loop closed through a third member (master → X, X → loser;
+ *    merge loser into master and X's parent becomes master, which X is already
+ *    the child of) survives it intact.
+ *
+ * Refusing is the right answer rather than repairing: which link to drop is a
+ * statement about who is responsible for whom, and that is the admin's to make.
+ *
+ * The post-merge shape is simulated from the two members' own chains rather
+ * than by re-implementing the mover, so the check cannot drift out of step with
+ * it by being subtly more permissive. On the DESCENDANT side that simulation is
+ * exact — inbound links move, so the merged node really does carry the deeper
+ * of the two subtrees. On the ANCESTOR side it deliberately OVER-counts: the
+ * loser's own parent columns die with the hard-deleted row, so the merged node
+ * actually keeps only the MASTER's ancestors, and taking the max of the two can
+ * refuse a merge that would in fact have fitted. That is the direction to err
+ * in — it fails closed, and the refusal is actionable (unlink one of them
+ * first), whereas an under-count would silently create the fifth generation the
+ * whole cap exists to prevent.
+ */
+async function evaluateFamilyLinkGraphBlockers(
+  db: MergeDbClient,
+  masterId: string,
+  loserId: string,
+): Promise<MergeBlocker[]> {
+  const [masterUp, masterDown, loserUp, loserDown] = await Promise.all([
+    describeParentSideDepth(db, masterId),
+    describeChildSideDepth(db, masterId),
+    describeParentSideDepth(db, loserId),
+    describeChildSideDepth(db, loserId),
+  ]);
+
+  const relatedByParentage =
+    masterUp.ancestorIds.includes(loserId) ||
+    masterDown.descendantIds.includes(loserId) ||
+    loserUp.ancestorIds.includes(masterId) ||
+    loserDown.descendantIds.includes(masterId);
+
+  if (relatedByParentage) {
+    return [
+      {
+        code: "family_link_cycle",
+        label:
+          "These two members are already recorded as relatives of each other (one is the other's parent, grandparent, or descendant). Merging them would link the family back on itself. Remove the parent link between them first.",
+      },
+    ];
+  }
+
+  // The merged node carries the deeper of the two chains on each side.
+  const mergedAncestorGenerations = Math.max(
+    masterUp.ancestorGenerations,
+    loserUp.ancestorGenerations,
+  );
+  const mergedDescendantGenerations = Math.max(
+    masterDown.descendantGenerations,
+    loserDown.descendantGenerations,
+  );
+  if (
+    mergedAncestorGenerations + mergedDescendantGenerations >
+    MAX_PARENT_LINK_CHAIN_LENGTH
+  ) {
+    return [
+      {
+        code: "family_link_depth",
+        label: `Merging these members would make one family chain longer than ${MAX_FAMILY_LINK_GENERATIONS} generations. Unlink one of them from their family first, then merge.`,
+      },
+    ];
+  }
+
+  return [];
 }
 
 const MEANINGFUL_SUBSCRIPTION_OR: Prisma.MemberSubscriptionWhereInput["OR"] = [

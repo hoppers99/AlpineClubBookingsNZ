@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { AGE_TIER_VALUES, ageTierEnum } from "@/lib/age-tier-schema";
 import { genderEnum, titleEnum } from "@/lib/member-enums-schema";
-import type { AgeTier } from "@prisma/client";
+import type { AgeTier, Prisma } from "@prisma/client";
 import { hash } from "bcryptjs";
 import { randomBytes } from "crypto";
 import { prisma } from "@/lib/prisma";
@@ -26,8 +26,29 @@ import logger from "@/lib/logger";
 import { isPrismaUniqueConstraintError } from "@/lib/prisma-errors";
 import { getXeroApiErrorInfo } from "@/lib/xero-api-errors";
 import { copyStreetAddressToPostal } from "@/lib/member-address";
+import { PLACEHOLDER_CONTACT_EMAIL_DOMAINS } from "@/lib/placeholder-contact-email";
 import { validateInheritEmailSource } from "@/lib/member-email-inheritance";
-import { buildParentLinks } from "@/lib/member-parent-links";
+import {
+  buildParentLinks,
+  NO_INHERITABLE_EMAIL_SOURCE_MESSAGE,
+  resolveInheritedEmailSourceId,
+} from "@/lib/member-parent-links";
+import {
+  allowedParentAncestorGenerations,
+  ancestorDepthWithinWhere,
+  describeChildSideDepth,
+  describeParentSideDepth,
+  exceedsFamilyLinkGenerationLimit,
+  FAMILY_LINK_GENERATION_LIMIT_ERROR,
+  type ParentSideDepth,
+} from "@/lib/member-family-link-depth";
+import {
+  DEPENDENT_LINK_CANDIDATE_SELECT,
+  DEPENDENT_LINK_INELIGIBILITY_EXPLANATIONS,
+  dependentLinkBlockers,
+  dependentLinkCandidateWhere,
+  type DependentLinkIneligibleMatch,
+} from "@/lib/dependent-link-eligibility";
 import { isXeroLiveMemberGroupLookupsEnabled } from "@/lib/xero-feature-flags";
 import { getMemberSetupInviteExpiryDate } from "@/lib/member-setup-invite";
 import { ensureDefaultSeasonSubscriptionForNewMember } from "@/lib/member-subscription-defaults";
@@ -158,6 +179,13 @@ const SUBSCRIPTION_STATUS_FILTERS = [
   "OVERDUE",
   "NOT_INVOICED",
 ] as const;
+/**
+ * How many excluded matches the dependant-link search explains when it finds no
+ * eligible candidate (#2254). Enough to name the person the admin was looking
+ * for, small enough that the extra query stays trivial.
+ */
+const DEPENDENT_LINK_INELIGIBLE_EXPLANATION_LIMIT = 5;
+
 const MEMBER_LIFECYCLE_STATUS_FILTERS = [
   "active",
   "inactive",
@@ -352,38 +380,68 @@ export async function listAdminMembers(
   const where: Record<string, unknown> = {};
   const andConditions: Record<string, unknown>[] = [];
 
-  // Text search
-  if (trimmedQuery) {
-    const queryTerms = trimmedQuery.split(/\s+/).filter(Boolean);
-    andConditions.push({
-      OR: [
-        { id: { startsWith: trimmedQuery } },
-        { firstName: { contains: trimmedQuery, mode: "insensitive" } },
-        { lastName: { contains: trimmedQuery, mode: "insensitive" } },
-        { email: { contains: trimmedQuery, mode: "insensitive" } },
-        ...(queryTerms.length > 1
-          ? [
-              {
-                AND: queryTerms.map((term) => ({
-                  OR: [
-                    { firstName: { contains: term, mode: "insensitive" } },
-                    { lastName: { contains: term, mode: "insensitive" } },
-                    { email: { contains: term, mode: "insensitive" } },
-                  ],
-                })),
-              },
-            ]
-          : []),
-      ],
-    });
+  // Text search. Held in a variable as well as pushed, because the
+  // dependant-link diagnostic query below re-uses exactly this condition to
+  // explain WHY a search that matched people returned no eligible candidates.
+  const queryTerms = trimmedQuery?.split(/\s+/).filter(Boolean) ?? [];
+  // Annotated rather than inferred: the diagnostic query below passes this
+  // straight to Prisma as a `where`, and an inferred literal widens
+  // `mode: "insensitive"` to `string`, which is not `Prisma.QueryMode`.
+  const textSearchCondition: Prisma.MemberWhereInput | null = trimmedQuery
+    ? {
+        OR: [
+          { id: { startsWith: trimmedQuery } },
+          { firstName: { contains: trimmedQuery, mode: "insensitive" } },
+          { lastName: { contains: trimmedQuery, mode: "insensitive" } },
+          { email: { contains: trimmedQuery, mode: "insensitive" } },
+          ...(queryTerms.length > 1
+            ? [
+                {
+                  // Annotated because a spread inside a conditional does not
+                  // carry the outer contextual type into the callback.
+                  AND: queryTerms.map(
+                    (term): Prisma.MemberWhereInput => ({
+                      OR: [
+                        { firstName: { contains: term, mode: "insensitive" } },
+                        { lastName: { contains: term, mode: "insensitive" } },
+                        { email: { contains: term, mode: "insensitive" } },
+                      ],
+                    }),
+                  ),
+                },
+              ]
+            : []),
+        ],
+      }
+    : null;
+  if (textSearchCondition) {
+    andConditions.push(textSearchCondition);
   }
 
   if (inheritEmailEligible) {
+    // #2255 (D9): the two parent-column clauses are gone. They mirrored
+    // `validateInheritEmailSource`'s old "must point to a primary adult member"
+    // rule, which the four-generation model retires — the nearest ancestor with
+    // a real mailbox is routinely a MIDDLE generation, an adult who is both
+    // someone's child and someone's parent. Keeping them here would have left
+    // the picker unable to offer the very source the write route now accepts.
+    // The guarantees that matter are unchanged and still mirrored exactly: the
+    // source is an ADULT, it is TERMINAL (does not itself inherit), and — added
+    // with the check that made it load-bearing — it has a REAL address. Without
+    // the last clause the picker offers walk-in placeholder contacts that
+    // `validateInheritEmailSource` now 422s on, which is the same
+    // search-offers-what-the-write-refuses drift #2254 existed to close.
     andConditions.push(
       { ageTier: "ADULT" },
-      { parentMemberId: null },
-      { secondaryParentId: null },
       { inheritEmailFromId: null },
+      // Both club-internal `.invalid` domains, because both are what
+      // `isPlaceholderContactEmail` — and therefore the write route — rejects.
+      // Listing one would re-open the drift in the other direction.
+      ...PLACEHOLDER_CONTACT_EMAIL_DOMAINS.map(
+        (domain): Prisma.MemberWhereInput => ({
+          NOT: { email: { endsWith: `@${domain}`, mode: "insensitive" } },
+        }),
+      ),
     );
   }
 
@@ -391,14 +449,26 @@ export async function listAdminMembers(
     andConditions.push({ id: { not: excludeId } });
   }
 
+  // Dependant-link candidates (#2254): the SQL half of the shared eligibility
+  // predicate, so this search and the write route
+  // (POST /api/admin/members/[id]/dependents/link) cannot drift apart again.
+  // See src/lib/dependent-link-eligibility.ts for the NULL-semantics and
+  // active/archived reasoning.
+  //
+  // #2255: the depth cap and the ancestor exclusion both depend on the PARENT's
+  // own chain, so that one walk happens here and is reused by the diagnostic
+  // pass below rather than being recomputed per candidate.
+  let dependentLinkParentSide: ParentSideDepth | null = null;
   if (dependentLinkEligibleFor) {
+    dependentLinkParentSide = await describeParentSideDepth(
+      prisma,
+      dependentLinkEligibleFor,
+    );
     andConditions.push(
-      { id: { not: dependentLinkEligibleFor } },
-      { parentMemberId: { not: dependentLinkEligibleFor } },
-      { secondaryParentId: { not: dependentLinkEligibleFor } },
-      { OR: [{ parentMemberId: null }, { secondaryParentId: null }] },
-      { dependents: { none: {} } },
-      { secondaryDependents: { none: {} } },
+      ...dependentLinkCandidateWhere(dependentLinkEligibleFor, {
+        parentAncestorIds: dependentLinkParentSide.ancestorIds,
+        parentAncestorGenerations: dependentLinkParentSide.ancestorGenerations,
+      }),
     );
   }
 
@@ -407,13 +477,24 @@ export async function listAdminMembers(
       where: { id: parentLinkEligibleFor },
       select: { parentMemberId: true, secondaryParentId: true },
     });
+    // #2255: the mirror-image constraint. Here the SEARCHED-FOR member becomes
+    // the parent, so it is the member's own dependant chain that eats into the
+    // cap, and the candidate's ANCESTOR chain that must fit in what is left.
+    // The member's descendants are excluded outright: with the old
+    // "no dependants" clause gone they are no longer incidentally filtered, and
+    // offering one would be offering a cycle the write route then refuses.
+    const childSide = await describeChildSideDepth(prisma, parentLinkEligibleFor);
     const excludedParentIds = [
       parentLinkEligibleFor,
       target?.parentMemberId,
       target?.secondaryParentId,
+      ...childSide.descendantIds,
     ].filter((memberId): memberId is string => Boolean(memberId));
     andConditions.push(
       { id: { notIn: excludedParentIds } },
+      ancestorDepthWithinWhere(
+        allowedParentAncestorGenerations(childSide.descendantGenerations),
+      ),
       { active: true },
       { ageTier: "ADULT" },
     );
@@ -769,6 +850,78 @@ export async function listAdminMembers(
     prisma.member.count({ where }),
   ]);
 
+  // #2254: a dependant-link search that finds nobody eligible used to render a
+  // bare "No eligible members found.", which told the admin nothing — and hid a
+  // real bug for as long as it shipped. When the eligible set is empty, re-run
+  // the SAME text search with the eligibility conditions (and the default
+  // archived exclusion) lifted, and label each match with the first reason it
+  // was excluded. Bounded to a handful of rows, and only ever runs on the
+  // otherwise-empty result, so the normal search still costs two queries.
+  let dependentLinkIneligible: DependentLinkIneligibleMatch[] | undefined;
+  // Distinct from "the list is empty": the dialog may only say "No members
+  // matched your search" when the text search really did match nobody. Sent
+  // only when that is what happened.
+  let dependentLinkSearchMatchedNobody: true | undefined;
+
+  if (
+    dependentLinkEligibleFor &&
+    dependentLinkParentSide &&
+    textSearchCondition &&
+    total === 0
+  ) {
+    const parentSide = dependentLinkParentSide;
+    const textMatches = await prisma.member.findMany({
+      where: textSearchCondition,
+      orderBy,
+      take: DEPENDENT_LINK_INELIGIBLE_EXPLANATION_LIMIT,
+      select: {
+        ...DEPENDENT_LINK_CANDIDATE_SELECT,
+        firstName: true,
+        lastName: true,
+        email: true,
+      },
+    });
+
+    // #2255: depth is per-candidate, so each explained row needs its own
+    // downward walk. Bounded to DEPENDENT_LINK_INELIGIBLE_EXPLANATION_LIMIT
+    // rows on an already-empty result, which is the only path that reaches here.
+    const candidateDepths = await Promise.all(
+      textMatches.map((candidate) => describeChildSideDepth(prisma, candidate.id)),
+    );
+
+    const explained = textMatches.flatMap((candidate, index) => {
+      const [reason] = dependentLinkBlockers(
+        dependentLinkEligibleFor,
+        candidate,
+        {
+          parentAncestorIds: parentSide.ancestorIds,
+          parentAncestorGenerations: parentSide.ancestorGenerations,
+          candidateDescendantGenerations:
+            candidateDepths[index].descendantGenerations,
+        },
+      );
+      if (!reason) return [];
+      return [
+        {
+          id: candidate.id,
+          firstName: candidate.firstName,
+          lastName: candidate.lastName,
+          email: candidate.email,
+          reason,
+          explanation: DEPENDENT_LINK_INELIGIBILITY_EXPLANATIONS[reason],
+        },
+      ];
+    });
+
+    // Never an empty array. `where` here is the text search alone; if a future
+    // filter or a second caller ever made the two queries disagree, a match
+    // could clear every blocker and be dropped by the flatMap, leaving a
+    // present-but-empty key the dialog would read as "nobody matched".
+    dependentLinkIneligible = explained.length > 0 ? explained : undefined;
+    dependentLinkSearchMatchedNobody =
+      textMatches.length === 0 ? true : undefined;
+  }
+
   let xeroContactGroups: Record<
     string,
     Array<{ id: string; name: string }>
@@ -877,6 +1030,12 @@ export async function listAdminMembers(
     page,
     pageSize,
     totalPages: Math.ceil(total / pageSize),
+    // Only present for a dependant-link search that came back empty; omitted
+    // from every other members-list response.
+    ...(dependentLinkIneligible ? { dependentLinkIneligible } : {}),
+    ...(dependentLinkSearchMatchedNobody
+      ? { dependentLinkSearchMatchedNobody }
+      : {}),
   });
 }
 
@@ -982,13 +1141,60 @@ export async function createAdminMember(
         { status: 422 },
       );
     }
+
+    // #2255: admin member-create is a parent-link WRITER too, and it was never
+    // covered by the old "target already has dependants" guard because the
+    // target does not exist yet. A brand-new member has no dependants, so only
+    // the parent's own chain can breach the cap — but it can, and unchecked this
+    // is the easiest way to create a fifth generation.
+    //
+    // READ COMMITTED CAVEAT, stated rather than hidden: this whole function
+    // validates on the base client and only opens its transaction at the write,
+    // so the walk and the insert see different snapshots. A concurrent link that
+    // deepens the parent's chain between the two could let a fifth generation
+    // through. The window is milliseconds and the outcome is a too-deep chain
+    // rather than lost data or money, so it is accepted here rather than
+    // restructuring an unrelated function; the routes that write links
+    // interactively (the admin link route, the family-group reviewer, and
+    // nomination approval) all walk inside their own transaction and have no
+    // such window.
+    const parentSide = await describeParentSideDepth(
+      prisma,
+      parentMember.id,
+    );
+    if (
+      exceedsFamilyLinkGenerationLimit({
+        parentAncestorGenerations: parentSide.ancestorGenerations,
+        childDescendantGenerations: 0,
+      })
+    ) {
+      return jsonResult(
+        { error: FAMILY_LINK_GENERATION_LIMIT_ERROR },
+        { status: 422 },
+      );
+    }
   }
 
-  const resolvedInheritEmailFromId =
-    requestedInheritEmailFromId ||
-    (data.inheritParentEmail && parentMember
-      ? parentMember.inheritEmailFromId || parentMember.id
-      : null);
+  // #2255: `parentMember.inheritEmailFromId || parentMember.id` was a ONE-HOP
+  // read, so creating a dependant under a parent whose only address is a
+  // placeholder resolved to that placeholder and 422'd — while the link route,
+  // given the same parent, walks up and succeeds. Two routes, same family, two
+  // answers. Both now use the transitive resolver, and a chain with no reachable
+  // mailbox is refused with the shared message rather than a misleading one.
+  let resolvedInheritEmailFromId = requestedInheritEmailFromId;
+  if (!resolvedInheritEmailFromId && data.inheritParentEmail && parentMember) {
+    const resolution = await resolveInheritedEmailSourceId(
+      prisma,
+      parentMember.id,
+    );
+    if (!resolution.sourceId) {
+      return jsonResult(
+        { error: NO_INHERITABLE_EMAIL_SOURCE_MESSAGE },
+        { status: 422 },
+      );
+    }
+    resolvedInheritEmailFromId = resolution.sourceId;
+  }
 
   if (resolvedInheritEmailFromId) {
     const validation = await validateInheritEmailSource({

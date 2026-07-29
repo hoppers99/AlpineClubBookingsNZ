@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
@@ -91,6 +92,10 @@ export default function ChoresPage() {
   const [frequencyDays, setFrequencyDays] = useState<number | null>(null)
   const [frequencyDaysOfWeek, setFrequencyDaysOfWeek] = useState<number[]>([])
   const [active, setActive] = useState(true)
+
+  // #2257 — examples live UNDER the field, not inside it as grey pseudo-content.
+  const nameHint = useFieldHint()
+  const conditionalNoteHint = useFieldHint()
 
   const fetchChores = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -317,9 +322,12 @@ export default function ChoresPage() {
                     id="name"
                     value={name}
                     onChange={(e) => setName(e.target.value)}
-                    placeholder="e.g. Breakfast dishes"
                     required
+                    {...nameHint.fieldProps}
                   />
+                  <FieldHint {...nameHint.hintProps}>
+                    Example: Breakfast dishes
+                  </FieldHint>
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="sortOrder">Sort Order</Label>
@@ -396,8 +404,11 @@ export default function ChoresPage() {
                     id="conditionalNote"
                     value={conditionalNote}
                     onChange={(e) => setConditionalNote(e.target.value)}
-                    placeholder="e.g. Only required for full lodge"
+                    {...conditionalNoteHint.fieldProps}
                   />
+                  <FieldHint {...conditionalNoteHint.hintProps}>
+                    Example: Only required for full lodge
+                  </FieldHint>
                 </div>
               </div>
 

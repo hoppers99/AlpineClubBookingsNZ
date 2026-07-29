@@ -53,7 +53,16 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
+import { useXeroStatus } from "@/hooks/use-xero-status";
+import { useXeroOrgShortCode } from "@/hooks/use-xero-org-short-code";
+import { buildXeroInvoiceUrl } from "@/lib/xero-links";
+import { useConfirm } from "@/components/confirm-dialog";
 import { SubscriptionBillingPanel } from "./_components/subscription-billing-panel";
+import {
+  ManualPaymentDialog,
+  type ManualPaymentSubmission,
+  type ManualPaymentTarget,
+} from "./_components/manual-payment-dialog";
 
 function getSeasonYear(date: Date): number {
   return date.getMonth() >= 3 ? date.getFullYear() : date.getFullYear() - 1;
@@ -176,6 +185,14 @@ export default function SubscriptionsPage() {
   const searchParams = useSearchParams();
   const ageTierOptions = useAgeTierOptions();
   const canEditFinance = useAdminAreaEditAccess("finance");
+  // Org short code for the Xero invoice deep links (#2283). One mount per
+  // page; served from the server-side 12h org cache, and null degrades the
+  // links to the generic Xero URL rather than hiding them.
+  const { connected: xeroConnected } = useXeroStatus();
+  const { shortCode: xeroOrgShortCode } = useXeroOrgShortCode(
+    xeroConnected === true,
+  );
+  const { confirm, confirmDialog } = useConfirm();
   const [seasonYear, setSeasonYear] = useState(() => parseSeasonYearParam(searchParams.get("seasonYear")));
   const [status, setStatus] = useState(searchParams.get("status") || "all");
   const [ageTier, setAgeTier] = useState<AgeTier | "all">(
@@ -196,11 +213,23 @@ export default function SubscriptionsPage() {
   const [xeroContactGroupsLoaded, setXeroContactGroupsLoaded] = useState(true);
 
   async function handleSync(mode: MembershipSyncMode) {
-    const label =
+    // #2260: the last browser confirm() on this page. Plain confirmation with
+    // no email choice, so the shared useConfirm helper is the right idiom here.
+    const confirmed = await confirm(
       mode === "incremental"
-        ? "Run the incremental Xero subscription refresh for this season?"
-        : "Run the repair backfill for linked members still showing Not Invoiced? This checks a broader stale-member set and may take longer.";
-    if (!confirm(label)) return;
+        ? {
+            title: "Run the incremental Xero refresh?",
+            description: `This re-reads paid status from Xero for linked members in the ${seasonYear} season.`,
+            confirmLabel: "Run refresh",
+          }
+        : {
+            title: "Run the repair backfill?",
+            description:
+              "This checks a broader stale-member set for linked members still showing Not Invoiced, and may take longer.",
+            confirmLabel: "Run repair",
+          },
+    );
+    if (!confirmed) return;
     setSyncing(mode);
     setSyncMessage(null);
     try {
@@ -231,33 +260,50 @@ export default function SubscriptionsPage() {
   // Manual mark-paid / mark-unpaid (E14 #1944). Finance-edit only — the whole
   // action column is hidden for finance-view users (E1 gating pattern). The
   // endpoint never calls Xero; it only writes local status + provenance.
+  //
+  // #2260: confirmation (and the note, and the "email the member or not"
+  // choice on the paid path) now happens in ManualPaymentDialog instead of the
+  // browser's confirm()/prompt().
   const [manualWorkingId, setManualWorkingId] = useState<string | null>(null);
-  async function handleManualPayment(sub: Subscription, direction: "paid" | "unpaid") {
+  const [manualTarget, setManualTarget] = useState<ManualPaymentTarget | null>(
+    null,
+  );
+
+  function openManualPayment(sub: Subscription, direction: "paid" | "unpaid") {
     // Synthetic NOT_REQUIRED rows have no real subscription row to write to.
     if (sub.id.startsWith("not-required:")) return;
-    const who = `${sub.member.firstName} ${sub.member.lastName}`.trim();
-    let note: string | null = null;
-    if (direction === "paid") {
-      if (!confirm(`Mark ${who}'s ${sub.seasonYear} subscription as paid (manual)? This records a payment made outside Xero and does not create an invoice.`)) {
-        return;
-      }
-      // Cancelling the note prompt aborts the whole action (F6) — null means
-      // "Cancel", the empty string means "OK with no note". Truncate client-side
-      // to the API cap so a long note never surfaces as a generic 400.
-      const rawNote = window.prompt("Optional note (e.g. cash, cheque #123). Leave blank to skip.");
-      if (rawNote === null) return;
-      note = rawNote.trim().slice(0, 500) || null;
-    } else if (!confirm(`Reverse the manual payment for ${who}? The subscription returns to its unpaid state.`)) {
-      return;
-    }
-    setManualWorkingId(sub.id);
+    setManualTarget({
+      subscriptionId: sub.id,
+      memberName: `${sub.member.firstName} ${sub.member.lastName}`.trim(),
+      seasonYear: sub.seasonYear,
+      direction,
+    });
+  }
+
+  async function submitManualPayment(submission: ManualPaymentSubmission) {
+    const target = manualTarget;
+    if (!target) return;
+    setManualTarget(null);
+    setManualWorkingId(target.subscriptionId);
     setSyncMessage(null);
     try {
-      const res = await fetch(`/api/admin/subscriptions/${sub.id}/manual-payment`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ direction, note, confirmed: true }),
-      });
+      const res = await fetch(
+        `/api/admin/subscriptions/${target.subscriptionId}/manual-payment`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            direction: target.direction,
+            note: submission.note,
+            confirmed: true,
+            // The API requires the choice on "paid" and rejects it on
+            // "unpaid", so send exactly what the dialog collected.
+            ...(submission.notifyMember === undefined
+              ? {}
+              : { notifyMember: submission.notifyMember }),
+          }),
+        },
+      );
       const json = await res.json();
       if (res.ok) {
         setSyncMessage({ type: "success", text: json.message || "Subscription updated." });
@@ -389,6 +435,7 @@ export default function SubscriptionsPage() {
 
   return (
     <div className="space-y-6">
+      {confirmDialog}
       <AdminPageHeader
         title="Subscriptions"
         description="Track member subscription status by season"
@@ -618,7 +665,9 @@ export default function SubscriptionsPage() {
                 <TableCell>
                   {sub.xeroInvoiceId ? (
                     <a
-                      href={`https://go.xero.com/AccountsReceivable/View.aspx?InvoiceID=${sub.xeroInvoiceId}`}
+                      href={buildXeroInvoiceUrl(sub.xeroInvoiceId, {
+                        shortCode: xeroOrgShortCode,
+                      })}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="inline-flex items-center gap-1 rounded-sm text-xs text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -638,7 +687,7 @@ export default function SubscriptionsPage() {
                         variant="outline"
                         size="sm"
                         disabled={manualWorkingId === sub.id}
-                        onClick={() => handleManualPayment(sub, "unpaid")}
+                        onClick={() => openManualPayment(sub, "unpaid")}
                       >
                         <Undo2 className="h-4 w-4 mr-1" />
                         Mark as unpaid
@@ -653,7 +702,7 @@ export default function SubscriptionsPage() {
                         variant="outline"
                         size="sm"
                         disabled={manualWorkingId === sub.id}
-                        onClick={() => handleManualPayment(sub, "paid")}
+                        onClick={() => openManualPayment(sub, "paid")}
                       >
                         <CheckCircle2 className="h-4 w-4 mr-1" />
                         Mark as paid (manual)
@@ -668,6 +717,13 @@ export default function SubscriptionsPage() {
           )}
         </TableBody>
       </AdminDataTable>
+
+      <ManualPaymentDialog
+        target={manualTarget}
+        submitting={manualWorkingId !== null}
+        onCancel={() => setManualTarget(null)}
+        onSubmit={submitManualPayment}
+      />
 
       <Pagination
         as="div"

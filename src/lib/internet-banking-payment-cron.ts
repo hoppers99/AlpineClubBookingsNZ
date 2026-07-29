@@ -344,6 +344,7 @@ export async function releaseExpiredInternetBankingHolds(
     }
 
     sendBookingCancelledEmail(
+      { bookingId: payment.booking.id },
       payment.booking.member.email,
       payment.booking.member.firstName,
       payment.booking.checkIn,

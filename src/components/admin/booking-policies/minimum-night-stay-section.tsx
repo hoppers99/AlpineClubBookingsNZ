@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useCallback } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
@@ -89,6 +90,8 @@ function MinStayForm({
   onCancel: () => void
   onError: (message: string) => void
 }) {
+  // #2257 — the example lives UNDER the field, not inside it as grey pseudo-content.
+  const nameHint = useFieldHint()
   const section = useSectionEditState<MinStayDraft>({
     initial,
     save: onSubmit,
@@ -139,8 +142,11 @@ function MinStayForm({
               id="msName"
               value={draft.name}
               onChange={(e) => section.setDraft({ name: e.target.value })}
-              placeholder="e.g. Winter Saturday Minimum Stay"
+              {...nameHint.fieldProps}
             />
+            <FieldHint {...nameHint.hintProps}>
+              Example: Winter Saturday Minimum Stay
+            </FieldHint>
           </div>
           <div className="space-y-2">
             <Label htmlFor="msMinNights">Minimum Nights</Label>

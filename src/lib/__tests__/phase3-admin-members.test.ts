@@ -134,6 +134,8 @@ vi.mock("bcryptjs", () => ({ hash: vi.fn().mockResolvedValue("hashed") }));
 import { prisma } from "@/lib/prisma";
 import { auth } from "@/lib/auth";
 import { createAuditLog, logAudit } from "@/lib/audit";
+import { dependentLinkCandidateWhere } from "@/lib/dependent-link-eligibility";
+import { ancestorDepthWithinWhere } from "@/lib/member-family-link-depth";
 import { sendMemberSetupInviteEmail } from "@/lib/email";
 import { GET as getMembers, POST as createMember } from "@/app/api/admin/members/route";
 import { GET as exportMembers } from "@/app/api/admin/members/export/route";
@@ -521,17 +523,61 @@ describe("Phase 3: Admin Member Management", () => {
       expect(call.where?.AND).toEqual(
         expect.arrayContaining([
           { ageTier: "ADULT" },
-          { parentMemberId: null },
-          { secondaryParentId: null },
           { inheritEmailFromId: null },
           { id: { not: "child-1" } },
         ])
       );
+      // #2255 (D9): the "source must have no parents of their own" clauses are
+      // deliberately gone. Under four generations the nearest ancestor with a
+      // real mailbox is routinely a MIDDLE generation, and the write route
+      // (validateInheritEmailSource) accepts exactly that — so a picker that
+      // still hid them would refuse to offer the only valid choice.
+      expect(call.where?.AND).not.toEqual(
+        expect.arrayContaining([{ parentMemberId: null }])
+      );
+      expect(call.where?.AND).not.toEqual(
+        expect.arrayContaining([{ secondaryParentId: null }])
+      );
+
+      // #2255: and the clauses that REPLACED them are pinned exactly, not with
+      // `arrayContaining`. They exist for one reason — the write route now 422s
+      // on a placeholder address, so a picker that still offered walk-in and
+      // deletion-anonymised contacts would re-open the very search-offers-what-
+      // the-write-refuses drift #2254 closed. With `arrayContaining` alone both
+      // could be deleted and this test would stay green.
+      const placeholderExclusions = (call.where?.AND as unknown[]).filter(
+        (clause) => JSON.stringify(clause).includes("endsWith"),
+      );
+      expect(placeholderExclusions).toEqual([
+        {
+          NOT: {
+            email: { endsWith: "@no-email.invalid", mode: "insensitive" },
+          },
+        },
+        {
+          NOT: {
+            email: { endsWith: "@deleted.invalid", mode: "insensitive" },
+          },
+        },
+      ]);
     });
 
     it("filters to active adult parent-link candidates and excludes the current member", async () => {
       mockedAuth.mockResolvedValue(adminSession);
-      vi.mocked(prisma.member.findMany).mockResolvedValue([]);
+      // #2255: this search now walks DOWN from the member first, to price up how
+      // much of the four-generation budget their own dependants already use and
+      // to exclude their descendants (a descendant offered as a parent is a
+      // cycle). Routed by query shape so the assertion below stays on the search.
+      const searchCalls: Array<Record<string, any>> = [];
+      vi.mocked(prisma.member.findMany).mockImplementation((async (
+        args: any,
+      ) => {
+        if (args?.where?.OR?.some?.((clause: any) => clause.parentMemberId?.in)) {
+          return [];
+        }
+        searchCalls.push(args);
+        return [] as never;
+      }) as never);
       mockSessionAndMemberListCounts(0);
 
       await getMembers(
@@ -540,12 +586,14 @@ describe("Phase 3: Admin Member Management", () => {
         )
       );
 
-      const call = vi.mocked(prisma.member.findMany).mock.calls[0][0]!;
-      expect(call.where?.AND).toEqual(
+      expect(searchCalls[0].where?.AND).toEqual(
         expect.arrayContaining([
           { id: { notIn: ["child-1"] } },
           { active: true },
           { ageTier: "ADULT" },
+          // A member with no dependants of their own leaves room for a
+          // candidate parent who is themselves someone's grandchild.
+          ancestorDepthWithinWhere(2),
         ])
       );
     });
@@ -866,6 +914,269 @@ describe("Phase 3: Admin Member Management", () => {
       });
     });
 
+  });
+
+  // ── Dependant-link candidate search (#2254) ──
+
+  describe("dependentLinkEligibleFor - dependant-link candidates", () => {
+    /**
+     * #2255: the service now issues family-link GRAPH queries either side of the
+     * candidate search — one walk up from the parent (for the depth budget and
+     * the ancestor exclusion) and one walk down per explained candidate. Routing
+     * the mock by query SHAPE rather than by call order keeps these tests about
+     * the search, and stops a walk being added or removed from silently
+     * re-pointing every `mock.calls[n]` assertion at the wrong query.
+     */
+    function mockMemberSearchQueries({
+      candidates = [],
+      textMatches = [],
+      descendantsOf = {},
+    }: {
+      candidates?: unknown[];
+      textMatches?: unknown[];
+      descendantsOf?: Record<string, string[]>;
+    }) {
+      const searchCalls: Array<Record<string, any>> = [];
+      vi.mocked(prisma.member.findMany).mockImplementation((async (
+        args: any,
+      ) => {
+        const where = args?.where ?? {};
+        // Walk UP: "these ids". The parent has no ancestors in these fixtures.
+        if (where.id?.in) return [];
+        // Walk DOWN: "children of these ids".
+        if (where.OR?.some?.((clause: any) => clause.parentMemberId?.in)) {
+          const parentIds: string[] = where.OR.flatMap((clause: any) => [
+            ...(clause.parentMemberId?.in ?? []),
+            ...(clause.secondaryParentId?.in ?? []),
+          ]);
+          return parentIds.flatMap((id) =>
+            (descendantsOf[id] ?? []).map((childId) => ({ id: childId })),
+          );
+        }
+        searchCalls.push(args);
+        // First non-graph query is the candidate search; the second is the
+        // diagnostic re-run with the eligibility filter lifted.
+        return (searchCalls.length === 1 ? candidates : textMatches) as never;
+      }) as never);
+      return { searchCalls };
+    }
+
+    it("uses the shared, NULL-safe eligibility predicate", async () => {
+      mockedAuth.mockResolvedValue(adminSession);
+      const { searchCalls } = mockMemberSearchQueries({});
+      mockSessionAndMemberListCounts(0);
+
+      await getMembers(
+        new NextRequest(
+          "http://localhost/api/admin/members?q=smith&dependentLinkEligibleFor=parent-1",
+        ),
+      );
+
+      const call = searchCalls[0];
+      // The service must push the shared predicate verbatim. `{ not: id }` on
+      // the nullable parent columns compiled to a bare `<> $1`, which drops
+      // every NULL row — that is the #2254 bug. The generated SQL itself is
+      // pinned in dependent-link-eligibility.test.ts.
+      expect(call.where?.AND).toEqual(
+        expect.arrayContaining(
+          dependentLinkCandidateWhere("parent-1", {
+            parentAncestorIds: [],
+            parentAncestorGenerations: 0,
+          }),
+        ),
+      );
+      expect(call.where?.AND).not.toEqual(
+        expect.arrayContaining([{ parentMemberId: { not: "parent-1" } }]),
+      );
+      expect(call.where?.AND).not.toEqual(
+        expect.arrayContaining([{ secondaryParentId: { not: "parent-1" } }]),
+      );
+    });
+
+    it("does not filter on active — the write route accepts inactive targets", async () => {
+      mockedAuth.mockResolvedValue(adminSession);
+      const { searchCalls } = mockMemberSearchQueries({});
+      mockSessionAndMemberListCounts(0);
+
+      await getMembers(
+        new NextRequest(
+          "http://localhost/api/admin/members?q=smith&dependentLinkEligibleFor=parent-1",
+        ),
+      );
+
+      expect(searchCalls[0].where?.AND).not.toEqual(
+        expect.arrayContaining([{ active: true }]),
+      );
+    });
+
+    it("explains each excluded match when nothing is eligible", async () => {
+      mockedAuth.mockResolvedValue(adminSession);
+      const { searchCalls } = mockMemberSearchQueries({
+        candidates: [],
+        textMatches: [
+          {
+            id: "m-two-parents",
+            firstName: "Jane",
+            lastName: "Smith",
+            email: "jane@example.com",
+            archivedAt: null,
+            parentMemberId: "mum-1",
+            secondaryParentId: "dad-1",
+          },
+          {
+            id: "m-too-deep",
+            firstName: "Bob",
+            lastName: "Smith",
+            email: "bob@example.com",
+            archivedAt: null,
+            parentMemberId: null,
+            secondaryParentId: null,
+          },
+          {
+            id: "m-archived",
+            firstName: "Old",
+            lastName: "Smith",
+            email: "old@example.com",
+            archivedAt: new Date("2026-01-01"),
+            parentMemberId: null,
+            secondaryParentId: null,
+          },
+        ],
+        // #2255: Bob heads three generations of his own, so linking him under
+        // a root parent would make five. That is now the reason the dialog
+        // shows, in place of the retired "has dependants of their own".
+        descendantsOf: {
+          "m-too-deep": ["kid-1"],
+          "kid-1": ["grandkid-1"],
+          "grandkid-1": ["greatgrandkid-1"],
+        },
+      });
+      mockSessionAndMemberListCounts(0);
+
+      const res = await getMembers(
+        new NextRequest(
+          "http://localhost/api/admin/members?q=smith&dependentLinkEligibleFor=parent-1",
+        ),
+      );
+      const body = await res.json();
+
+      expect(body.dependentLinkIneligible).toEqual([
+        {
+          id: "m-two-parents",
+          firstName: "Jane",
+          lastName: "Smith",
+          email: "jane@example.com",
+          reason: "TWO_PARENTS",
+          explanation: "already has two parents recorded",
+        },
+        {
+          id: "m-too-deep",
+          firstName: "Bob",
+          lastName: "Smith",
+          email: "bob@example.com",
+          reason: "EXCEEDS_GENERATION_LIMIT",
+          explanation: "would make the family chain more than 4 generations deep",
+        },
+        {
+          id: "m-archived",
+          firstName: "Old",
+          lastName: "Smith",
+          email: "old@example.com",
+          reason: "ARCHIVED",
+          explanation: "is archived",
+        },
+      ]);
+      // Members DID match the text search, so the dialog must not claim
+      // otherwise.
+      expect(body).not.toHaveProperty("dependentLinkSearchMatchedNobody");
+      // The diagnostic query re-uses the text search but drops the eligibility
+      // filter, so it can see the members the candidate query excluded.
+      expect(searchCalls[1].where).not.toHaveProperty("AND");
+    });
+
+    it("says nobody matched only when the text search really matched nobody", async () => {
+      mockedAuth.mockResolvedValue(adminSession);
+      // The diagnostic finds nothing either: the name simply is not in the
+      // database.
+      mockMemberSearchQueries({ candidates: [], textMatches: [] });
+      mockSessionAndMemberListCounts(0);
+
+      const res = await getMembers(
+        new NextRequest(
+          "http://localhost/api/admin/members?q=nobody&dependentLinkEligibleFor=parent-1",
+        ),
+      );
+      const body = await res.json();
+
+      expect(body.dependentLinkSearchMatchedNobody).toBe(true);
+      expect(body).not.toHaveProperty("dependentLinkIneligible");
+    });
+
+    it("omits the ineligible list rather than sending an empty one", async () => {
+      mockedAuth.mockResolvedValue(adminSession);
+      mockMemberSearchQueries({
+        candidates: [],
+        // A text match with no blockers at all. Unreachable today — the two
+        // queries differ only by the eligibility filter — but if that ever
+        // stopped holding, an empty array would read to the dialog as "nobody
+        // matched your search", which is exactly wrong.
+        textMatches: [
+          {
+            id: "m-eligible",
+            firstName: "Ada",
+            lastName: "Smith",
+            email: "ada@example.com",
+            archivedAt: null,
+            parentMemberId: null,
+            secondaryParentId: null,
+          },
+        ],
+      });
+      mockSessionAndMemberListCounts(0);
+
+      const res = await getMembers(
+        new NextRequest(
+          "http://localhost/api/admin/members?q=smith&dependentLinkEligibleFor=parent-1",
+        ),
+      );
+      const body = await res.json();
+
+      expect(body).not.toHaveProperty("dependentLinkIneligible");
+      expect(body).not.toHaveProperty("dependentLinkSearchMatchedNobody");
+    });
+
+    it("stays silent when the search found eligible candidates", async () => {
+      mockedAuth.mockResolvedValue(adminSession);
+      const { searchCalls } = mockMemberSearchQueries({});
+      mockSessionAndMemberListCounts(3);
+
+      const res = await getMembers(
+        new NextRequest(
+          "http://localhost/api/admin/members?q=smith&dependentLinkEligibleFor=parent-1",
+        ),
+      );
+      const body = await res.json();
+
+      expect(body).not.toHaveProperty("dependentLinkIneligible");
+      // Exactly one SEARCH query: the diagnostic re-run never happens. (The
+      // parent's family-link walk is a separate query shape and is not counted
+      // here — it runs whether or not anything is eligible.)
+      expect(searchCalls).toHaveLength(1);
+    });
+
+    it("is absent from an ordinary members-list response", async () => {
+      mockedAuth.mockResolvedValue(adminSession);
+      vi.mocked(prisma.member.findMany).mockResolvedValue([]);
+      mockSessionAndMemberListCounts(0);
+
+      const res = await getMembers(
+        new NextRequest("http://localhost/api/admin/members?q=smith"),
+      );
+      const body = await res.json();
+
+      expect(body).not.toHaveProperty("dependentLinkIneligible");
+      expect(vi.mocked(prisma.member.findMany)).toHaveBeenCalledTimes(1);
+    });
   });
 
   // ── A3: CSV Export ──

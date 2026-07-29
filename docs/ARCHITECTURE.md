@@ -567,6 +567,68 @@ already paints via its own `--display-*` CSS custom properties in
 `src/app/display/display.css` (a non-Tailwind, already-principled CSS-var surface)
 and carries **zero** raw colour utilities, so P3 left it untouched.
 
+### Form field hints and placeholder ink (#2257)
+
+**An example value belongs UNDER a field, not inside it.** Grey example text in
+a control reads as a value the form already holds, and it disappears the moment
+the operator starts typing — exactly when the example is still wanted. Every
+`placeholder` that carried an example of a name or value the operator invents
+was moved to helper text rendered by
+`FieldHint` (`src/components/ui/field-hint.tsx`), with one consistent phrasing:
+`Example: <value>` (prefixed with the field name — `Version example: 2026.1` —
+in the one place where the layout forces the hint away from its field). What
+remains in a `placeholder` is everything else: instructions ("First name",
+"Search name or email", "Optional — defaults to the club name") and format
+samples ("member@example.com", "0.00"). Two example-bearing placeholders
+survive on screens excluded from this pass (the display Templates page's HTML
+sample, and the page-content panel's "Width (px, e.g. 300)") — they belong to
+the #2248 rewrite and the #2264 sweep respectively. Those are unchanged in wording here and are
+#2264's problem, which is why the italic restyle matters — it covers the ones
+this issue does not move.
+
+`FieldHint` exists because the visually-obvious half of that move is the easy
+half. A `<p>` sitting below an input is invisible to a screen reader focused on
+that input, so the primitive owns the association: `useFieldHint()` returns
+`hintProps` (the generated id) and `fieldProps` (the matching
+`aria-describedby`), which can only be spread as a pair. `aria-describedby` is a
+LIST — a validation error, a view-only reason (#2160) and a hint can all describe
+one field — so ids passed to `useFieldHint(...)` are announced BEFORE the hint;
+"this is wrong" must be heard ahead of "here is an example". Rows rendered inside
+a `.map()` cannot call a hook per row and pass a deterministic id to
+`describedByFieldHint()` instead. `id` is required on `FieldHint`, which removes
+the "hint with no id to point at" state — it cannot prove association, because
+the type system cannot see across from the hint to the input. The one remaining
+failure mode, a caller that spreads `hintProps` and forgets `fieldProps`, is
+caught by a count contract in `field-hint.test.tsx`: `useFieldHint(`,
+`.fieldProps` and `.hintProps` must occur the same number of times across
+`src/`.
+
+**Placeholder ink is its own token.** `--placeholder-foreground` is declared in
+every scope that restates `--muted-foreground` — a `var()`-bearing custom
+property is substituted on the element that DECLARES it and then inherits as
+that fixed value, so a single `:root` entry would freeze the base palette inside
+`.app-theme-scope` / `.website-theme` / `.dark`. Its value deliberately TRACKS
+`--muted-foreground` rather than going lighter: placeholder text is text, WCAG
+1.4.3 applies to it, and every `--muted-foreground` here already sits on the
+4.5:1 floor (`deriveAppMutedForeground` steps back until it just clears). The
+"not content" signal is carried by **italics** instead, which costs no contrast
+and survives colour-blindness and forced-colours modes. The token remains the
+seam a fork retunes without touching the muted labels and captions
+`--muted-foreground` also paints.
+
+Placeholder styling is hand-copied across five files, so
+`src/components/ui/__tests__/placeholder-styling-contract.test.ts` pins them.
+Note the `SelectTrigger` case: it is a Radix `<button>`, `::placeholder` exists
+only on `<input>`/`<textarea>`, and the `placeholder:` utility copied there was
+therefore **inert** — `<SelectValue placeholder="…" />` rendered in full
+foreground ink, indistinguishable from a chosen value. It now styles through
+`data-[placeholder]:`, which is the attribute Radix actually stamps.
+
+The repo-wide sweep of the remaining placeholders (including the raw
+`<input>`/`<textarea>` elements that bypass the styled primitives) is
+**#2264**; the display screens are rewritten by **#2248** and adopt
+`FieldHint` there.
+
 ## Module Boundaries
 
 This application is intentionally still a single Next.js monolith. The
@@ -732,13 +794,16 @@ for the duration of the round trip. That banner shape started in the five
 Booking Policies sections (#2142) and is now the **default across the admin
 tree** (#2160, extended by #2168) — not a claim that nothing is left. Measured
 on the current tree by `view-only-banner-contract.test.ts`, which asserts these
-figures rather than trusting a hand count: **76 components render a banner, and
-232 of the 264 `ViewOnlyActionButton` call sites opt out** of the per-button
-reason. Those 232 split by WHICH rule covers them: **211** pass the literal
+figures rather than trusting a hand count: **78 components render a banner, and
+237 of the 271 `ViewOnlyActionButton` call sites opt out** of the per-button
+reason. (Earlier revisions of this page published 76/232/264/211 — those were
+upstream-historical and had drifted; the numbers here are the ones the contract
+test currently pins, which is the only authority.) Those 237 split by WHICH rule
+covers them: **216** pass the literal
 `describeReason={false}` and are covered by a banner in the same file, and **21**
 pass `describeReason={!ancestorRendersViewOnlyBanner}` and are covered by a
 verified vouching parent (see *Vouching for a child's coverage* below). The
-remaining **32 controls across 15 files deliberately keep the per-button
+remaining **34 controls across 17 files deliberately keep the per-button
 default** (`describeReason` left at `true`), in three shapes:
 
 - **Controls inside a dialog, sheet, popover, or dropdown menu.** These live in
@@ -752,10 +817,12 @@ default** (`describeReason` left at `true`), in three shapes:
   the booking capacity/exclusive hold controls, the family-group login-holder
   and request-review sub-sections, and the non-member contact form). Nothing
   local proves an ancestor renders a banner above them, so the reason stays on
-  the control. (19 controls across 10 files.) Read that bucket as the
+  the control. (21 controls across 12 files — the newest is the per-booking
+  "No emails" switch, #2259, dropped into the Admin tools card's layout beside
+  the capacity and exclusive holds.) Read that bucket as the
   REMAINDER — everything that is neither a member detail card nor one of the
-  four dialog-only files — rather than as a claim that all 19 are leaves. Eight
-  of the ten files are (16 controls); the other two, `page-content-panel.tsx`
+  four dialog-only files — rather than as a claim that all 21 are leaves. Ten
+  of the twelve files are (18 controls); the other two, `page-content-panel.tsx`
   and `site-banners-panel.tsx`, are full banner-bearing panels whose last 3
   controls sit inside their own edit/create `Dialog`, so those 3 are really the
   first shape occurring inside a file that also has the third. Nothing is
@@ -1838,6 +1905,14 @@ Editable subjects reject secret-bearing tokens (including nomination, quote
 response, and optional chore links), and the render path strips bearer-link
 aliases from legacy stored overrides before SMTP, `EmailLog`, or application
 logging receives the subject.
+Every send carries a REQUIRED, typed `bookingContext` (`{ bookingId } | "none"`)
+so the mailer knows which booking a message belongs to; that is the choke point
+for the per-booking "No emails" switch (`Booking.noEmails`, #2258), which
+withholds every member-facing message for a booking, records each withhold as an
+`EmailLog` row with status `SKIPPED_NO_EMAILS`, never touches admin-audience or
+account/security mail, and fails closed if the switch cannot be read. The retry
+cron and the two Xero-sent invoice emails re-check the same switch because they
+bypass `sendEmail`. See `docs/DOMAIN_INVARIANTS.md` for the full contract.
 If an admin/system alert cannot be delivered to any opted-in admin recipient
 because every send is suppressed or fails, the app records a critical
 communication audit event and surfaces it in Admin Email Deliverability.

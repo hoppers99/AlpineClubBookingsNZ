@@ -89,6 +89,11 @@ function makeTarget(overrides: Partial<MappingTargetRecord> = {}): MappingTarget
     archivedAt: null,
     canLogin: false,
     parentMemberId: null,
+    // #2255: read by the nomination approval so it can refuse writing the
+    // applicant into BOTH parent slots of a member they are already the second
+    // parent of. Required, not optional, so a fixture cannot omit it and leave
+    // that guard reading `undefined`.
+    secondaryParentId: null,
     inheritParentEmail: false,
     inheritEmailFromId: null,
     phoneCountryCode: null,

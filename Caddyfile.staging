@@ -4,8 +4,34 @@
 	request_body {
 		max_size 100MB
 	}
+	# X-Frame-Options is PATH-SCOPED; mirrors the production Caddyfile (#2246),
+	# where the reasoning is written out in full. In short: `src/lib/csp.ts` sets
+	# SAMEORIGIN on /display so the admin's own sandboxed preview surfaces can
+	# frame it, and a blanket edge DENY replaced that value. `path_regexp` is
+	# case-sensitive, so it mirrors the app's exact `pathname === "/display"`
+	# comparison; `/?` mirrors that file's trailing-slash normalisation. Caddy
+	# matches on the cleaned, percent-decoded path but forwards the raw URI, so a
+	# few encoded/double-slash variants (//display, /display//, /%64isplay,
+	# /dis%70lay, /display%2F) relax at the edge while the app still denies —
+	# harmless, because the app's own `frame-ancestors 'none'` still governs and
+	# SAMEORIGIN never permits more than same-origin framing. Deliberately NOT
+	# the set-if-absent `?X-Frame-Options` form.
+	#
+	# BOTH X-Frame-Options directives below are needed; do not delete either.
+	# The `>` prefix is a deferred set, so the edge value overwrites the app's
+	# rather than being appended alongside it as a second, conflicting header —
+	# but that rewrite is unwound when a handler returns an error, so the
+	# eager unscoped DENY in the shared block is what keeps 502/413/5xx
+	# responses (which carry no CSP either) guaranteed-denied. Every other path,
+	# including /images/* below, therefore keeps a guaranteed DENY.
+	# Guarded by src/lib/__tests__/edge-frame-options-static.test.ts.
+	@display path_regexp ^/display/?$
+	@not_display not path_regexp ^/display/?$
+	header @display >X-Frame-Options "SAMEORIGIN"
+	header @not_display >X-Frame-Options "DENY"
 	header {
 		X-Content-Type-Options "nosniff"
+		# The eager guaranteed floor for error responses — see the note above.
 		X-Frame-Options "DENY"
 		# Disabled: the legacy XSS auditor is removed from modern browsers and
 		# enabling it could introduce information leaks in older ones. CSP is the control.
@@ -15,6 +41,13 @@
 		Strict-Transport-Security "max-age=63072000; includeSubDomains"
 		# CSP is emitted by Next proxy so script nonces are generated per request.
 		# style-src intentionally keeps 'unsafe-inline' there while Tailwind/Radix runtime styles are audited.
+		# Defensive baseline: only applied if Next omits the header (e.g. middleware regression).
+		# Caddy's `?` prefix means "set if not already present" so it never intersects with Next's policy.
+		# Because it is set-if-absent it is a no-op in the normal case: its only
+		# effect is on failure, where a bare `default-src 'self'` breaks every
+		# nonce'd script and so makes a proxy/middleware regression LOUD on
+		# staging instead of silent. That is what staging is for.
+		?Content-Security-Policy "default-src 'self'"
 	}
 
 	# Rewrite legacy /images/* requests to the runtime-serving API route.

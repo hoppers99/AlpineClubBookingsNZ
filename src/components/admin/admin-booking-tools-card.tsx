@@ -5,6 +5,7 @@ import {
   AdminExclusiveHoldControls,
   type ExclusiveHoldConflict,
 } from "@/components/admin/admin-exclusive-hold-controls";
+import { BookingNoEmailsControls } from "@/components/admin/booking-no-emails-controls";
 import { ConfirmPendingGuestsButton } from "@/components/admin/confirm-pending-guests-button";
 import { CopyBookingButton } from "@/components/admin/copy-booking-button";
 import type { BookingProviderMismatch } from "@/lib/booking-provider-mismatches";
@@ -35,6 +36,7 @@ export function AdminBookingToolsCard({
   features,
   capacityHold,
   exclusiveHold,
+  noEmails,
 }: {
   bookingId: string;
   memberId: string;
@@ -70,6 +72,19 @@ export function AdminBookingToolsCard({
     holdsCapacity: boolean;
     /** Overlapping bookings to resolve when the hold is set (issue #119). */
     conflicts?: ExclusiveHoldConflict[];
+  };
+  /**
+   * Per-booking "No emails" switch (#2258/#2259). Admin-only by construction:
+   * this whole card renders behind the page's admin-tools gate, so a member
+   * never receives the state, let alone the control. Omitted for a deleted
+   * booking, which sends nothing anyway.
+   */
+  noEmails?: {
+    noEmails: boolean;
+    noEmailsAt: string | null;
+    setByName: string | null;
+    hasLiveWaitlistOffer: boolean;
+    isWaitlisted: boolean;
   };
 }) {
   const returnTo = `/bookings/${bookingId}`;
@@ -127,6 +142,21 @@ export function AdminBookingToolsCard({
               conflicts={exclusiveHold.conflicts}
             />
           )}
+          {/* #2259 (owner decision D10): the per-booking "No emails" switch,
+              with its acknowledgement dialog. It sits with the other
+              admin-only booking switches rather than in a section of its own —
+              the persistent warning about what it has actually withheld is the
+              banner the page renders above this card. */}
+          {!isDeleted && noEmails && (
+            <BookingNoEmailsControls
+              bookingId={bookingId}
+              noEmails={noEmails.noEmails}
+              noEmailsAt={noEmails.noEmailsAt}
+              setByName={noEmails.setByName}
+              hasLiveWaitlistOffer={noEmails.hasLiveWaitlistOffer}
+              isWaitlisted={noEmails.isWaitlisted}
+            />
+          )}
           {!isDeleted && (
             <CopyBookingButton
               bookingId={bookingId}
@@ -176,6 +206,9 @@ export function AdminBookingToolsCard({
           bookingId={bookingId}
           hasSavedPaymentMethod={hasSavedPaymentMethod}
           finalPriceCents={finalPriceCents}
+          // #2259 honesty rule: with the switch on there is no email choice to
+          // offer, so the dialog states that instead of asking.
+          noEmails={noEmails?.noEmails ?? false}
         />
       )}
     </>

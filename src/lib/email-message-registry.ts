@@ -279,6 +279,12 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
   "induction-sign-off-request": ["inductionUrl"],
   "school-attendee-confirmation": ["token"],
   "group-booking-join-verification": ["token"],
+  // #2260: who it is for and which season it covers are the load-bearing
+  // content of a manual-payment receipt. The amount is deliberately NOT
+  // required — it is omitted whenever the club has no recorded fee amount for
+  // the season, so requiring it would force an override to promise a figure the
+  // send cannot always supply.
+  "membership-payment-recorded": ["firstName", "seasonYear"],
 };
 
 const TEMPLATE_TRIGGER_METADATA: Partial<
@@ -519,6 +525,12 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
       "Reaped organiser-pays place was never retried, so the joiner's pending booking was cancelled (#1094)",
     frequency: "One email per cancelled joiner booking",
   },
+  "membership-payment-recorded": {
+    triggerSummary:
+      "An admin manually marked a member's subscription paid (cash, cheque or internet banking, with no Xero invoice) and chose to notify the member",
+    frequency:
+      "Once per manual mark-paid where the admin picks 'Mark paid and email member'; never on a reversal to unpaid",
+  },
 };
 
 function titleCaseTemplateKey(key: string): string {
@@ -572,12 +584,16 @@ function sampleValue(token: string): string {
   }
   if (token.toLowerCase().includes("count")) return "2";
   if (token.toLowerCase().includes("date") || token.endsWith("At")) {
-    return "1 July 2026";
+    // Matches what the senders actually produce: formatNZDate renders the
+    // medium NZ style ("1 Jul 2026"), so an admin previewing an override sees
+    // the shape their members will read, not a longer one it never emits.
+    return "1 Jul 2026";
   }
   if (token === "s") return "s";
   if (token === "token") return "sample-token";
   if (token === "recipientName") return "Sam Parent";
   if (token === "lodgeName") return "Example Mountain Club Lodge";
+  if (token === "seasonYear") return "2026";
   if (token === "targetAgeTier") return "ADULT";
   if (token === "targetAgeTierLabel") return "Adult (18+)";
   if (token === "targetAgeTierMinAge") return "18";
@@ -772,6 +788,9 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "localUrl",
   "s",
   "schoolName",
+  // #2260: the membership season a manual subscription payment was recorded
+  // against (the club's Apr–Mar season year).
+  "seasonYear",
   "severityLabel",
   "signerName",
   "signerRoleLabel",

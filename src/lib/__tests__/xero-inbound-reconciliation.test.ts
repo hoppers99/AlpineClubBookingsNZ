@@ -1149,6 +1149,7 @@ describe("processStoredXeroInboundEvents", () => {
       }),
     });
     expect(sendBookingConfirmedEmail).toHaveBeenCalledWith(
+      { bookingId: "booking_ib_1" },
       "member@example.com",
       "Alice",
       new Date("2026-07-10"),
@@ -1300,6 +1301,7 @@ describe("processStoredXeroInboundEvents", () => {
     });
 
     expect(sendBookingConfirmedEmail).toHaveBeenCalledWith(
+      { bookingId: "booking_ib_1" },
       "member@example.com",
       "Alice",
       new Date("2026-07-10"),
@@ -1850,6 +1852,7 @@ describe("processStoredXeroInboundEvents", () => {
       },
     });
     expect(sendBookingCancelledEmail).toHaveBeenCalledWith(
+      { bookingId: "booking_ib_pl" },
       "member@example.com",
       "Alice",
       expect.any(Date),
@@ -1923,6 +1926,7 @@ describe("processStoredXeroInboundEvents", () => {
       expect.objectContaining({ type: "CREDITED", amountCents: 6172 })
     );
     expect(sendBookingCancelledEmail).toHaveBeenCalledWith(
+      { bookingId: "booking_ib_cap" },
       "member@example.com",
       "Alice",
       expect.any(Date),
@@ -2196,6 +2200,7 @@ describe("processStoredXeroInboundEvents", () => {
       })
     );
     expect(sendBookingCancelledEmail).toHaveBeenCalledWith(
+      { bookingId: "booking_ib_cancelled" },
       "member@example.com",
       "Alice",
       expect.any(Date),
@@ -2342,6 +2347,7 @@ describe("processStoredXeroInboundEvents", () => {
       })
     );
     expect(sendBookingCancelledEmail).toHaveBeenCalledWith(
+      { bookingId: "booking_ib_cancelled" },
       "member@example.com",
       "Alice",
       expect.any(Date),

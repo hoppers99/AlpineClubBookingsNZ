@@ -45,6 +45,10 @@ import {
   getTodayDateOnly,
   normalizeDateOnlyForTimeZone,
 } from "@/lib/date-only";
+// #2250 — the status half of the self-removal rule now lives in one module so
+// the booking page's affordance and the night-conflict card cannot drift from
+// this authoritative gate. The gate itself is unchanged.
+import { SELF_REMOVABLE_GUEST_BOOKING_STATUSES } from "@/lib/booking-guest-self-removal";
 
 export class BookingGuestRemovalError extends Error {
   constructor(
@@ -85,17 +89,6 @@ export type RemoveBookingGuestResult = {
   // blocked minors-only review state, so the route should alert admins.
   minorsOnlyReviewNewlyFlagged: boolean;
 };
-
-const SELF_REMOVABLE_GUEST_BOOKING_STATUSES = new Set<string>([
-  BookingStatus.DRAFT,
-  BookingStatus.PENDING,
-  BookingStatus.PAYMENT_PENDING,
-  BookingStatus.CONFIRMED,
-  BookingStatus.PAID,
-  BookingStatus.WAITLISTED,
-  BookingStatus.WAITLIST_OFFERED,
-  BookingStatus.AWAITING_REVIEW,
-]);
 
 type PromoRedemptionWithTargets = {
   promoCode: {

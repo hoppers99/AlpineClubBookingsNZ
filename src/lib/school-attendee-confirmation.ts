@@ -102,6 +102,7 @@ export async function sendSchoolAttendeeConfirmationPrompts(
 
     try {
       await sendSchoolAttendeeConfirmationEmail({
+        bookingContext: { bookingId: booking.id },
         email: request.contactEmail,
         firstName: request.contactFirstName,
         schoolName: request.schoolName,
@@ -499,6 +500,7 @@ export async function resendSchoolAttendeeConfirmation({
   });
 
   await sendSchoolAttendeeConfirmationEmail({
+    bookingContext: { bookingId: booking.id },
     email: request.contactEmail,
     firstName: request.contactFirstName,
     schoolName: request.schoolName,

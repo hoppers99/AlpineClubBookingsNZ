@@ -620,16 +620,29 @@ export function emailChangeNotificationTemplate(newEmail: string): string {
   `);
 }
 
+/**
+ * Chore-roster date: the deliberate long-weekday form ("Thursday, 16 April
+ * 2026") the roster emails have always used, NOT the house `formatNZDate`
+ * medium form. `date` is a lodge-night date-only string; parsing it with the
+ * `T00:00:00` suffix pins it to local midnight, which round-trips back to the
+ * same calendar date when formatted without a `timeZone` override. Do not
+ * change the format — subject line and body must stay identical, which is why
+ * this lives here and is shared with `src/lib/email/chores.ts` (#2256).
+ */
+export function formatChoreRosterDate(date: string): string {
+  return new Date(date + "T00:00:00").toLocaleDateString(
+    "en-NZ",
+    { weekday: "long", year: "numeric", month: "long", day: "numeric" }
+  );
+}
+
 export function choreRosterTemplate(
   guestName: string,
   date: string,
   chores: Array<{ name: string; description: string | null }>,
   choreLink?: string
 ): string {
-  const formattedDate = new Date(date + "T00:00:00").toLocaleDateString(
-    "en-NZ",
-    { weekday: "long", year: "numeric", month: "long", day: "numeric" }
-  );
+  const formattedDate = formatChoreRosterDate(date);
 
   const choreRows = chores.map((c) => ({
     label: escapeHtml(c.name),
@@ -2525,7 +2538,11 @@ export function setupIntentFailedTemplate(data: {
   checkIn: Date;
   checkOut: Date;
 }): string {
-  const dates = `${data.checkIn.toLocaleDateString("en-NZ")} – ${data.checkOut.toLocaleDateString("en-NZ")}`;
+  // #2256: these had the right locale but no `timeZone`, so they rendered in
+  // whatever zone the sending process happened to run in — a 2026-04-15T23:30Z
+  // check-in reads as 15 April from a UTC worker and 16 April in New Zealand.
+  // formatNZDate pins both the zone and the house "16 Apr 2026" format.
+  const dates = `${formatNZDate(data.checkIn)} – ${formatNZDate(data.checkOut)}`;
   return layout(`
     ${heading("Card Setup Failed")}
     ${paragraph("Hi " + escapeHtml(data.firstName) + ",")}
@@ -3165,5 +3182,41 @@ export function schoolAttendeeConfirmationTemplate(data: {
     ${button("Confirm Attendees", data.confirmUrl)}
     ${muted("Need to change how many people are coming, or their age groups? Contact the club instead — headcount changes go through a revised quote.")}
     ${supportContactSentence("If you have any questions, contact the club at ")}
+  `);
+}
+
+/**
+ * #2260 — member-facing receipt for a membership subscription payment an admin
+ * recorded by hand (cash, cheque, internet banking), sent only when the admin
+ * chooses to email on mark-paid. Manual mark-paid only exists for subscriptions
+ * with NO Xero invoice, so this deliberately mentions no invoice, no payment
+ * link and no Xero reference — there is nothing left for the member to do.
+ *
+ * `amountCents` is null whenever no amount can be attributed to this one
+ * member's subscription — no active charge coverage, a no-invoice fee, or a
+ * charge that covers a whole family — in which case the amount line is omitted
+ * rather than guessed: a manual payment is cash the app never saw, and a
+ * family total printed as one member's receipt would be a false one.
+ */
+export function membershipPaymentRecordedTemplate(data: {
+  firstName: string;
+  seasonYear: number;
+  amountCents: number | null;
+  recordedAt: Date;
+}): string {
+  return layout(`
+    ${heading("Membership Payment Recorded")}
+    ${paragraph(
+      `Hi ${escapeHtml(data.firstName)}, thank you — ${escapeHtml(CLUB_NAME)} has recorded your membership subscription payment for the ${escapeHtml(String(data.seasonYear))} season.`,
+    )}
+    ${infoTable([
+      { label: "Season", value: escapeHtml(String(data.seasonYear)) },
+      ...(data.amountCents !== null
+        ? [{ label: "Amount recorded", value: formatCents(data.amountCents) }]
+        : []),
+      { label: "Date recorded", value: formatNZDate(data.recordedAt) },
+    ])}
+    ${paragraph("Your membership is now marked paid for the season, so there is nothing further for you to pay.")}
+    ${supportContactSentence("If anything looks wrong, contact the club at ")}
   `);
 }

@@ -21,6 +21,11 @@ import logger from "@/lib/logger";
 import { getStayNights } from "./pricing";
 import { buildXeroInvoiceUrl } from "@/lib/xero-links";
 import {
+  recordWithheldBookingEmail,
+  resolveBookingEmailGate,
+  XERO_BOOKING_INVOICE_EMAIL_TEMPLATE,
+} from "@/lib/booking-email-suppression";
+import {
   buildXeroIdempotencyKey,
   completeXeroSyncOperation,
   failXeroSyncOperation,
@@ -348,6 +353,9 @@ export async function createXeroInvoiceForBooking(
       guests: { include: { nights: true } },
       payment: true,
       promoRedemption: { include: { promoCode: true } },
+      // #2258: recipient for the withheld-send audit row when the booking's
+      // "No emails" switch stops Xero emailing the invoice.
+      member: { select: { email: true } },
     },
   });
 
@@ -647,7 +655,75 @@ export async function createXeroInvoiceForBooking(
     const shouldEmailInvoice =
       booking.payment.source === PaymentSource.INTERNET_BANKING;
 
-    if (shouldEmailInvoice) {
+    // #2258 (owner decision D10): the per-booking "No emails" switch withholds
+    // EVERYTHING for the booking, including the invoice email XERO sends on our
+    // behalf. Only the EMAILING is skipped — the invoice itself is already
+    // raised in Xero and is untouched, so an admin can still send it from Xero.
+    // (Clearing the switch and re-driving this workflow does NOT resend it: the
+    // emailInvoice call carries a per-invoice idempotency key, so a re-drive is
+    // a no-op. Xero is the place to resend from.) The switch is re-read here
+    // rather than taken from the booking snapshot loaded at the top of this
+    // function, because invoice creation involves several provider round-trips
+    // and an admin can flip the switch in between.
+    //
+    // The two non-send decisions are kept STRICTLY apart, because conflating
+    // them is money-adjacent (#1705): a deliberate `withhold` is a terminal,
+    // intended outcome, while `unknown` means the switch could not be READ. Both
+    // fail closed and send nothing, but an `unknown` is a FAULT — it must not be
+    // filed as "the admin asked for silence" (that would put a false line in the
+    // booking's withheld list for a booking whose switch is OFF, #2259) and it
+    // must not let the sync operation report SUCCEEDED. It therefore populates
+    // invoiceEmailError, exactly as a failed emailInvoice call would, so the
+    // operation completes PARTIAL and stays VISIBLE to an operator.
+    //
+    // Visible, not automatically recoverable: re-driving this workflow will not
+    // resend, because the function short-circuits at the top on
+    // payment.xeroInvoiceId (persisted later in this same run) and never
+    // reaches the email block, and the emailInvoice idempotency key would
+    // no-op anyway. The truthful remediation is to send the invoice from Xero
+    // by hand. The operations panel's payment repair must NOT be used on an
+    // email-only PARTIAL — it records a payment against an unpaid
+    // Internet Banking invoice — and is refused for exactly that case
+    // (partialInvoiceOperationHasPaymentFault in xero-operation-retry.ts).
+    const invoiceEmailGate = shouldEmailInvoice
+      ? await resolveBookingEmailGate(
+          { bookingId },
+          XERO_BOOKING_INVOICE_EMAIL_TEMPLATE,
+        )
+      : null;
+    const invoiceEmailWithheld = invoiceEmailGate?.decision === "withhold";
+    const invoiceEmailGateUnreadable = invoiceEmailGate?.decision === "unknown";
+
+    if (invoiceEmailWithheld) {
+      await recordWithheldBookingEmail({
+        bookingId,
+        templateName: XERO_BOOKING_INVOICE_EMAIL_TEMPLATE,
+        subject: `Xero invoice ${
+          createdInvoice.invoiceNumber ?? createdInvoice.invoiceID ?? "(unnumbered)"
+        } for your Internet Banking booking payment`,
+        to: booking.member.email,
+        detail:
+          'Withheld: this booking has the "No emails" switch turned on. The invoice exists in Xero but was not emailed.',
+      });
+      logger.warn(
+        { bookingId, invoiceId: createdInvoice.invoiceID },
+        'Skipped the Xero invoice email for a booking with "No emails" turned on',
+      );
+    }
+
+    if (invoiceEmailGateUnreadable) {
+      // NOT a withhold: no SKIPPED_NO_EMAILS row is written, because the switch
+      // may well be off and the member is simply owed their invoice email.
+      invoiceEmailError = new Error(
+        `Could not read the "No emails" switch for booking ${bookingId}; the Xero invoice email was not sent`,
+      );
+      logger.error(
+        { bookingId, invoiceId: createdInvoice.invoiceID },
+        "Did not email the Xero invoice because the booking's \"No emails\" switch could not be read; the sync operation is marked PARTIAL so the unsent invoice email stays visible",
+      );
+    }
+
+    if (shouldEmailInvoice && !invoiceEmailWithheld && !invoiceEmailGateUnreadable) {
       const invoiceEmailIdempotencyKey = buildXeroIdempotencyKey(
         "booking",
         bookingId,
@@ -723,7 +799,12 @@ export async function createXeroInvoiceForBooking(
         paymentSkipReason: paymentSkipped ? paymentSkipReason : null,
         invoiceEmail: invoiceEmailResponseBody,
         invoiceEmailError,
-        invoiceEmailSkipped: !shouldEmailInvoice,
+        invoiceEmailSkipped:
+          !shouldEmailInvoice || invoiceEmailWithheld || invoiceEmailGateUnreadable,
+        // #2258: a DELIBERATE withhold only. An unreadable switch is a fault and
+        // is reported through invoiceEmailError above (status PARTIAL), never
+        // here — the two must stay distinguishable to an operator.
+        invoiceEmailWithheldByNoEmails: invoiceEmailWithheld,
       },
       xeroObjectType: "INVOICE",
       xeroObjectId: createdInvoice.invoiceID,

@@ -173,6 +173,7 @@ export async function POST(
             memberId: booking.memberId,
           });
           await sendBookingConfirmedEmail(
+            { bookingId: booking.id },
             booking.member.email,
             booking.member.firstName,
             booking.checkIn,

@@ -748,6 +748,7 @@ describe("confirm-payment route: booking confirmation email (issue #772)", () =>
     expect(res.status).toBe(200);
     expect(mocks.sendBookingConfirmedEmail).toHaveBeenCalledTimes(1);
     expect(mocks.sendBookingConfirmedEmail).toHaveBeenCalledWith(
+      { bookingId: "booking-1" },
       "member@example.com",
       "Test",
       expect.any(Date),

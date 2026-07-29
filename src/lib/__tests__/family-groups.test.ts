@@ -1312,10 +1312,28 @@ describe("Admin Family Group Join Requests", () => {
             findUnique: vi.fn().mockResolvedValue({
               id: "parent-1",
               ageTier: "ADULT",
+              email: "parent@test.com",
+              archivedAt: null,
               parentMemberId: null,
               secondaryParentId: null,
               inheritEmailFromId: null,
             }),
+            // #2255: the approval now walks the family chain (depth cap +
+            // cycle guard) and resolves the notification mailbox by walking
+            // up from the requester. Both read `member.findMany`.
+            findMany: vi.fn().mockImplementation(async ({ where }: any) =>
+              where?.id?.in
+                ? where.id.in.map((id: string) => ({
+                    id,
+                    email: `${id}@test.com`,
+                    ageTier: "ADULT",
+                    archivedAt: null,
+                    inheritEmailFromId: null,
+                    parentMemberId: null,
+                    secondaryParentId: null,
+                  }))
+                : []
+            ),
             update: txMemberUpdate,
           },
           familyGroupMember: { upsert: txUpsert },
@@ -1363,6 +1381,154 @@ describe("Admin Family Group Join Requests", () => {
           linkedMemberId: "child-1",
         }),
       });
+    });
+
+    /**
+     * #2255 (M10). The family-group reviewer is one of the writers that never
+     * saw the previous rule, and nothing exercised its new gate: every fixture
+     * in this file stubs the family-link walk to "no ancestors", so deleting
+     * the guard left the suite green. These two build a requester who is
+     * already three parent-links deep, on each of the reviewer's branches.
+     */
+    function deepRequesterTx(extra: Record<string, unknown> = {}) {
+      // gggp -> ggp -> gp -> parent-1
+      const parentsById: Record<string, string | null> = {
+        "parent-1": "gp",
+        gp: "ggp",
+        ggp: "gggp",
+        gggp: null,
+      };
+      const findMany = vi.fn(async ({ where }: any) => {
+        if (where?.id?.in) {
+          return where.id.in.map((id: string) => ({
+            id,
+            email: `${id}@test.com`,
+            ageTier: "ADULT",
+            archivedAt: null,
+            inheritEmailFromId: null,
+            parentMemberId: parentsById[id] ?? null,
+            secondaryParentId: null,
+          }));
+        }
+        // Walking DOWN from the child: no dependants of its own.
+        return [];
+      });
+      mockedPrisma.member.findMany.mockImplementation(findMany as never);
+      mockedPrisma.$transaction.mockImplementation(async (callback: (tx: any) => Promise<unknown>) =>
+        callback({
+          $executeRaw: vi.fn().mockResolvedValue(undefined),
+          member: { findMany, ...extra },
+          familyGroupMember: { upsert: vi.fn() },
+          familyGroupJoinRequest: { update: vi.fn() },
+        })
+      );
+    }
+
+    it("refuses linking a child under a requester who already fills the cap", async () => {
+      mockedAuth.mockResolvedValue(adminSession);
+      mockedPrisma.familyGroupJoinRequest.findUnique.mockResolvedValue({
+        id: "req-child-1",
+        familyGroupId: "fg1",
+        requesterId: "parent-1",
+        status: "PENDING",
+        type: "CHILD_REQUEST",
+        childFirstName: "Sam",
+        childLastName: "Smith",
+        requester: { id: "parent-1", firstName: "Alice", lastName: "Smith", email: "alice@test.com", active: true, ageTier: "ADULT", inheritEmailFromId: null },
+        familyGroup: { id: "fg1", name: "Smith Family" },
+      } as any);
+      mockedPrisma.member.findUnique.mockResolvedValue({
+        id: "child-1",
+        active: true,
+        ageTier: "INFANT",
+        parentMemberId: null,
+        secondaryParentId: null,
+        inheritEmailFromId: null,
+        parent: null,
+        secondaryParent: null,
+      } as any);
+      const txMemberUpdate = vi.fn();
+      deepRequesterTx({ update: txMemberUpdate });
+
+      const { PUT } = await import("@/app/api/admin/family-groups/requests/route");
+      const res = await PUT(
+        makeReq("/api/admin/family-groups/requests", "PUT", {
+          requestId: "req-child-1",
+          action: "approve",
+          linkedMemberId: "child-1",
+        })
+      );
+
+      expect(res.status).toBe(422);
+      expect((await res.json()).error).toMatch(/4 generations/i);
+      expect(txMemberUpdate).not.toHaveBeenCalled();
+    });
+
+    it("refuses CREATING a child under a requester who already fills the cap", async () => {
+      mockedAuth.mockResolvedValue(adminSession);
+      mockedPrisma.familyGroupJoinRequest.findUnique.mockResolvedValue({
+        id: "req-child-create",
+        familyGroupId: "fg1",
+        requesterId: "parent-1",
+        status: "PENDING",
+        type: "CHILD_REQUEST",
+        childFirstName: "Sam",
+        childLastName: "Smith",
+        childDateOfBirth: new Date("2018-03-15T00:00:00.000Z"),
+        requester: {
+          id: "parent-1",
+          firstName: "Alice",
+          lastName: "Smith",
+          email: "Alice@Test.com",
+          active: true,
+          ageTier: "ADULT",
+          archivedAt: null,
+          inheritEmailFromId: null,
+          phoneCountryCode: null,
+          phoneAreaCode: null,
+          phoneNumber: null,
+          streetAddressLine1: null,
+          streetAddressLine2: null,
+          streetCity: null,
+          streetRegion: null,
+          streetPostalCode: null,
+          streetCountry: null,
+          postalAddressLine1: null,
+          postalAddressLine2: null,
+          postalCity: null,
+          postalRegion: null,
+          postalPostalCode: null,
+          postalCountry: null,
+        },
+        familyGroup: { id: "fg1", name: "Smith Family" },
+      } as any);
+      mockedPrisma.familyGroupMember.count.mockResolvedValue(1);
+      // The create branch resolves and VALIDATES the child's mailbox before the
+      // transaction opens, so the source has to read back as usable — otherwise
+      // the approval fails on the email rule and never reaches the depth gate
+      // this test is about.
+      mockedPrisma.member.findUnique.mockResolvedValue({
+        id: "parent-1",
+        ageTier: "ADULT",
+        email: "alice@test.com",
+        archivedAt: null,
+        inheritEmailFromId: null,
+      } as any);
+      const txMemberCreate = vi.fn();
+      deepRequesterTx({ create: txMemberCreate });
+
+      const { PUT } = await import("@/app/api/admin/family-groups/requests/route");
+      const res = await PUT(
+        makeReq("/api/admin/family-groups/requests", "PUT", {
+          requestId: "req-child-create",
+          action: "approve",
+          createNewMember: true,
+        })
+      );
+
+      expect(res.status).toBe(422);
+      expect((await res.json()).error).toMatch(/4 generations/i);
+      expect(txMemberCreate).not.toHaveBeenCalled();
     });
 
     it("creates an eligible non-login dependant from a child request", async () => {
@@ -1413,6 +1579,26 @@ describe("Admin Family Group Join Requests", () => {
         inheritEmailFromId: null,
       } as any);
 
+      // #2255: before building the create payload the service resolves the
+      // child's notification mailbox by walking up from the requester, on the
+      // base client. Alice is an active adult with a real address, so the walk
+      // stops on her — the same answer the one-hop rule gave.
+      mockedPrisma.member.findMany.mockImplementation((async ({ where }: any) =>
+        where?.id?.in?.includes("parent-1")
+          ? [
+              {
+                id: "parent-1",
+                email: "Alice@Test.com",
+                ageTier: "ADULT",
+                archivedAt: null,
+                inheritEmailFromId: null,
+                parentMemberId: null,
+                secondaryParentId: null,
+              },
+            ]
+          : []) as never
+      );
+
       const txMemberCreate = vi.fn().mockResolvedValue({ id: "child-created" });
       const txUpsert = vi.fn();
       const txUpdate = vi.fn();
@@ -1421,7 +1607,12 @@ describe("Admin Family Group Join Requests", () => {
           // #1936 member-lifecycle advisory lock ($executeRaw) — no
           // pre-existing member on the create path, but the call site exists.
           $executeRaw: vi.fn().mockResolvedValue(undefined),
-          member: { create: txMemberCreate },
+          member: {
+            create: txMemberCreate,
+            // #2255: the create branch checks the requester's own ancestry
+            // against the four-generation cap before inserting the child.
+            findMany: vi.fn().mockResolvedValue([]),
+          },
           familyGroupMember: { upsert: txUpsert },
           familyGroupJoinRequest: { update: txUpdate },
         })
@@ -1733,10 +1924,26 @@ describe("Admin Family Group Join Requests", () => {
               findUnique: vi.fn().mockResolvedValue({
                 id: "parent-1",
                 ageTier: "ADULT",
+                email: "parent@test.com",
+                archivedAt: null,
                 parentMemberId: null,
                 secondaryParentId: null,
                 inheritEmailFromId: null,
               }),
+              // #2255: family-chain walks (see the sibling fixture above).
+              findMany: vi.fn().mockImplementation(async ({ where }: any) =>
+                where?.id?.in
+                  ? where.id.in.map((id: string) => ({
+                      id,
+                      email: `${id}@test.com`,
+                      ageTier: "ADULT",
+                      archivedAt: null,
+                      inheritEmailFromId: null,
+                      parentMemberId: null,
+                      secondaryParentId: null,
+                    }))
+                  : []
+              ),
               update: vi.fn(),
             },
             familyGroupMember: { upsert: vi.fn() },

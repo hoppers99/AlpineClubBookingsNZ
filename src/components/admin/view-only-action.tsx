@@ -57,9 +57,9 @@ interface ViewOnlyActionButtonProps extends ButtonProps {
    *
    * Since #2160 the DEFAULT is no longer the usual case — it is the fallback.
    * Most admin sections render an {@link AdminViewOnlySectionBanner} and pass
-   * `describeReason={false}` here (211 of 264 call sites), and since #2168 a
+   * `describeReason={false}` here (216 of 271 call sites), and since #2168 a
    * further 21 pass `describeReason={!ancestorRendersViewOnlyBanner}` because a
-   * VOUCHING PARENT renders the banner instead — 232 opt-outs in total.
+   * VOUCHING PARENT renders the banner instead — 237 opt-outs in total.
    * `view-only-banner-contract.test.ts` asserts every one of those figures, so
    * they are measured rather than counted by hand. The default survives in
    * three shapes:
@@ -69,10 +69,11 @@ interface ViewOnlyActionButtonProps extends ButtonProps {
    *    a banner in the page body does not reach it;
    *  - in a leaf component with no section of its own, dropped by a parent into
    *    someone else's layout (the member detail header toolbar, the booking
-   *    capacity/exclusive hold controls, the non-member contact form), where
+   *    capacity/exclusive hold controls, the #2259 per-booking "No emails"
+   *    switch, the non-member contact form), where
    *    nothing local proves an ancestor renders a banner. (`docs/ARCHITECTURE.md`
-   *    counts 19 controls here, but that bucket is the arithmetic remainder,
-   *    not a pure shape: 3 of the 19 are the FIRST shape — dialog contents
+   *    counts 21 controls here, but that bucket is the arithmetic remainder,
+   *    not a pure shape: 3 of the 21 are the FIRST shape — dialog contents
    *    inside `page-content-panel.tsx` and `site-banners-panel.tsx`, which are
    *    themselves banner-bearing panels); and
    *  - in `member-credit-card.tsx` (4 controls), the one member detail card

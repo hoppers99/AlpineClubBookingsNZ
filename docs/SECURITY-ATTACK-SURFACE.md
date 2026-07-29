@@ -106,13 +106,13 @@ the row, not open work. Open findings now live in labelled GitHub issues
 | `/api/lodge-instructions` | Authenticated active member who is an admin or holds a current/upcoming hut-leader assignment (`canReadLodgeInstructions`). | Signed-in hut leader or admin. | Per-lodge operational documents (OPEN/CLOSE/DAY_TO_DAY), which may carry door codes and emergency access details. | None. | Active-session guard plus the reader gate. A requested `?lodgeId=` is constrained to the caller's own hut-leader assignment lodges (the assignment lodge set); an out-of-set lodge is `403`. Admins may request any lodge. Without this, the reader gate had no lodge dimension, so a lodge A hut leader could read lodge B's documents. | Logger on errors. | Reader-only surface; the admin editor lives under `/api/admin/lodge-instructions`. Assignment-scoped read keeps operational access details scoped to the lodge the leader actually runs. |
 | `/display`, `/api/display/state`, `/api/display/heartbeat` | Unauthenticated public lobby-TV surface. A paired device carries a long-lived, hashed display token in an httpOnly cookie; `checkDisplayAuth()` (`src/lib/lodge-display-auth.ts`) resolves `tokenHash` → device → lodge and nothing else — it never maps to a `Member` and shares no code path with `checkLodgeAuth`, so a display token cannot inherit a kiosk capability. `lobbyDisplay` module-gated at the proxy (404 when off). | Anonymous lobby TV / paired display device; a full-admin session may also preview through the state route. | Privacy-reduced `DisplayState` from `buildDisplayState()` (`src/lib/lodge-display-state.ts`): names reduced to the configured granularity, minors never individually named, no money or member-id fields; an adult member phone appears only under the two-sided opt-in gate (`canServeMemberPhoneOnLodgeSurface`, both flags default off). | None. | `rateLimiters.api` (100/min/IP) on state and heartbeat; `buildDisplayState` is the single privacy-enforcement point (templates render as pure functions of its payload and cannot reach past it); window clamped server-side (default 3, max 7 days); revoked or inactive-lodge tokens are rejected without stamping `lastSeenAt`; every payload path sets `Cache-Control: no-store` (#176) so the privacy-reduced feed — which can include guest names and opted-in phone numbers — is never held in a shared/browser cache; scoped CSP on `/display` — `img-src 'self' data:`, `frame-ancestors 'self'`, `X-Frame-Options: SAMEORIGIN` (`src/lib/csp.ts`). | Only the device `lastSeenAt` stamp on a genuine device poll; no per-request audit. | Unattended public screen in a physical lobby. The display token is deliberately the weakest-privileged credential in the system (ADR-001); exposure is bounded to one lodge's already-privacy-reduced wall feed. |
 | `/api/display/pair`, `/api/admin/display/devices/**` (including `[id]/pairing` bind and `[id]/revoke`) | Pairing `start`/`claim` are anonymous but bound to an HMAC-signed httpOnly pairing blob (`{code, exp}` signed with the auth secret); device create/list, code bind, and revoke require the shared `requireAdmin()` guard. | Anonymous display device (start/claim) and admin (create/bind/revoke). | `LodgeDisplayDevice` rows — name, lodge FK, `pairingCode`+expiry, and `tokenHash` (hash only; the raw token is returned once to the device and never re-read). | None. | `rateLimiters.displayPairing` (10/15min, auth-sensitive) on start and admin bind; `rateLimiters.displayClaim` (30/min) on the claim poll; a 6-character code from a 31-symbol unambiguous alphabet; the anonymous side persists nothing (start only signs a blob); claim must present the server-signed blob for that browser, so a shoulder-surfed code alone is useless; a matched claim issues the token, stores only its hash, and clears the pairing fields (single-use); revoke sets `revokedAt`, rejecting the token on its next request. | `LODGE_DISPLAY_DEVICE_REVOKED` audit on revoke; logger otherwise. | Shared-device physical control and the long-lived token are the standing operational trust assumptions (ADR-001); revocation is the containment lever. |
-| `/api/admin/display/**` (`layouts/**`, `templates/**`, `lodge-config`, `devices/**`, `reference/conditions`) | Admin session via the shared `requireAdmin()` guard on every method. | Admin. | Authored `DisplayLayout`/`DisplayTemplate` HTML/CSS, slot content, footer HTML, CSS overrides, and device bindings. | None. | Threat is admin-authored HTML/CSS rendered on an unattended public wall. The shared save contract (`validateTemplateForSave`/`validateLayoutForSave`, `src/lib/lodge-display/authoring-validation.ts`) rejects structurally-broken content before it can persist; a serve-time allow-list sanitiser with CSS scoping and value-token escaping neutralises unsafe markup/CSS at render; because value-token resolution runs AFTER the sanitiser, a resolved token value that opens an authored `href`/`src` is additionally scheme-validated (#176) so a config value like `javascript:`/`data:` collapses to an inert `#` rather than surviving into a live URL; nonce-based CSP (`script-src 'self' 'nonce-…'`, no inline script); previews run in a `sandbox="allow-scripts"` opaque-origin iframe. | `DISPLAY_TEMPLATE_CREATED`/`DISPLAY_LAYOUT_CREATED` and equivalent update audit entries; logger on failures. | Authored content is admin-trusted but rendered unattended, so the sanitiser plus nonce CSP are the standing mitigations. The ADR-003 `img-src https:` image-beacon exfiltration residual is now CLOSED on display routes: `/display` and `/admin/display/preview` reduce `img-src` to `'self' data:` (#161, `src/lib/csp.ts`). |
+| `/api/admin/display/**` (`layouts/**`, `templates/**`, `lodge-config`, `devices/**`, `reference/conditions`) | Admin session via the shared `requireAdmin()` guard on every method. | Admin. | Authored `DisplayLayout`/`DisplayTemplate` HTML/CSS, slot content, footer HTML, CSS overrides, and device bindings. | None. | Threat is admin-authored HTML/CSS rendered on an unattended public wall. The shared save contract (`validateTemplateForSave`/`validateLayoutForSave`, `src/lib/lodge-display/authoring-validation.ts`) rejects structurally-broken content before it can persist; a serve-time allow-list sanitiser with CSS scoping and value-token escaping neutralises unsafe markup/CSS at render; because value-token resolution runs AFTER the sanitiser, a resolved token value that opens an authored `href`/`src` is additionally scheme-validated (#176) so a config value like `javascript:`/`data:` collapses to an inert `#` rather than surviving into a live URL; nonce-based CSP (`script-src 'self' 'nonce-…'`, no inline script); previews run in a `sandbox="allow-scripts"` opaque-origin iframe — never `allow-same-origin`, pinned by tests on both preview surfaces (the preview host and the Visual builder's Live preview, #2246). | `DISPLAY_TEMPLATE_CREATED`/`DISPLAY_LAYOUT_CREATED` and equivalent update audit entries; logger on failures. | Authored content is admin-trusted but rendered unattended, so the sanitiser plus nonce CSP are the standing mitigations. The ADR-003 `img-src https:` image-beacon exfiltration residual is now CLOSED on display routes: `/display` and `/admin/display/preview` reduce `img-src` to `'self' data:` (#161, `src/lib/csp.ts`). That tightened set and the `frame-src 'self'` set are separate exact-match allowlists (#2246): the Visual builder `/admin/display/builder` is in the `frame-src` set only, because it embeds the `/display` iframe but is itself a full admin page rather than a sandboxed display document. A scoped relaxation only applies on a hard document load, so the builder is entered by a plain `<a>`/`window.open(…, "_self")` and never by a soft `<Link>` — see "Per-Route CSP Relaxation And Soft Navigation" below for that rule, its guard test, and the accepted forward-leak residual. |
 | `/api/admin/display/preview-grant`, `/api/admin/display/preview`, and the state route's `?previewGrant` path | The shared `requireAdmin()` guard mints the grant; the grant itself is an HMAC-signed, 5-minute, domain-separated, stateless capability. | Admin (mint); a sandboxed opaque-origin preview iframe (consume). | A signed payload naming exactly one template + lodge (plus an optional simulated date); on redemption, the same privacy-reduced preview state. | None. | A distinct HMAC domain-separation prefix (`lodge-display-preview-grant:`) means a pairing blob can never be replayed as a grant or vice versa; the expiry lives inside the signed payload (cannot be extended by tampering); a signed `windowStart` in the grant is authoritative — an unsigned `?previewDate` on the sandbox-rewritable iframe URL cannot shift the served window beyond it (#176); single-purpose — only the state route's preview path honours it, never the heartbeat or any admin route; it is not a display token and never stamps `lastSeenAt`; it renders through the same privacy serialiser; the permissive `Access-Control-Allow-Origin: *` is safe because the opaque-origin fetch sends no cookies and the body is already the public wall feed. | None beyond logger. | A leaked grant can at worst re-render a five-minute, privacy-reduced board for its named lodge/template. |
 | `/api/admin/setup/**`, `/api/admin/modules`, `/api/admin/health`, `/api/admin/runtime-status` | Admin session. `runtime-status` now uses the shared `requireAdmin()` guard. | Admin. | Setup progress, provider readiness, module settings, health detail, runtime status. | Provider test route can check Stripe/email/Xero config when admin triggers it; health checks DB/Xero/SMTP/Stripe readiness. | Admin role plus active-account guard via `requireAdmin()`. | Audit logs for setup/progress/module changes; logger for provider/health errors. | Resolved under #613 (closed): `admin/runtime-status` uses `requireAdmin()`. Provider-test/setup guard standardisation is the remaining hardening item. |
 | `/api/admin/members/**`, including dependents, family, lifecycle, setup invites, password resets, import/export, credits, Xero link/push/unlink | Admin session via the shared `requireAdmin()` guard (per-method test-enforced, #1132). | Admin. | Member PII, passwords/action tokens, family/dependent links, credits, lifecycle/archive/delete state, Xero contact links, import/export payloads. | Email sends, Xero contact/group sync, password setup/reset email. CSV setup invites are limited to imported rows that can log in. | Shared `requireAdmin()` guard on every method; import has rate limit; some credit/lifecycle routes import rate-limit helpers. Access-role writes are Full-Admin-only (#1012). Deactivating, de-logging, or archiving an account is guarded (#1604, extended #1622): the last active Full Admin can never be removed, and only a Full Admin may deactivate/de-login/archive a privileged-role account — enforced on member edit, bulk update, lifecycle archive, and dependent linking with `disableLogin` (`POST /api/admin/members/[id]/dependents/link`) via `src/lib/admin-account-guards.ts`. | Extensive audit log for member, credit, lifecycle, and Xero actions; logger for failures. | Highest PII/IDOR blast radius. #613 should migrate to shared admin guard; #614 should guard missing admin checks; #617 should review lifecycle integrity. |
 | `/api/admin/member-applications/**`, `/api/admin/membership-cancellation-requests/**`, `/api/admin/members/[id]/membership-cancellation`, `/api/admin/membership-cancellation-settings`, `/api/admin/deletion-requests/**` | Admin session via the shared `requireAdmin()` guard (per-method test-enforced, #1132). | Admin. | Applications, cancellation requests/participants/settings, deletion request state, member lifecycle action requests. | Email sends; cancellation approval can affect Xero contact groups/archive through services. | Admin role plus active guard; participant resend/approval routes import rate-limit helpers. Approving a membership cancellation or a deletion request applies the #1604 admin-account guards (extended by #1622): only a Full Admin may de-login/anonymise a privileged-role account, and the last active Full Admin cannot be removed. The family-group login-holder transfer (`POST /api/admin/family-groups/[id]/login-holder`) carries the same two guards, evaluating the last-admin end state on its post-write count so the incoming holder's login grant is included. | Audit log and logger. | Sensitive lifecycle and account deletion operations. #617 should review durable state transitions and external writes outside long transactions. |
 | `/api/admin/bookings/**`, `/api/admin/booking-change-requests/**`, `/api/admin/booking-reviews`, `/api/admin/waitlist` | Admin session via the shared `requireAdmin()` guard (per-method test-enforced, #1132). | Admin. | Booking list/search/detail, operational payment/Xero/bed/change filters, review/force-confirm state, change requests, waitlist. | Email sends; Xero invoice/outbox; capacity/booking services. | Admin role plus active guard; route/service validation. | Audit logs for booking approvals/force-confirm/change-request decisions; logger. | Financial and reservation integrity surface. #613/#614 should standardize guard markers; #617 should review invariants. |
-| `/api/admin/bookings/[id]/exclusive-hold` | Admin session via the shared `requireAdmin()` guard (mirrors the sibling capacity-hold route). | Admin. | `Booking.wholeLodgeHold` plus its who/when audit fields; on set, the ids of overlapping capacity-holding bookings surfaced for officer resolution. | None. | The flag write and the conflict read run inside the per-lodge capacity lock (`acquireLodgeCapacityLock`, #154) — the same key every admission takes — so setting a hold cannot race an in-flight admission; no bed-arithmetic capacity engine runs here (exclusive-booking ADR-001 decision 1); set and clear are idempotency-guarded (409 on a redundant set or clear); Zod body validation. | `booking.exclusiveHold.set`/`booking.exclusiveHold.cleared` audit entries (important severity) recording the overlapping conflict ids. | Privacy property is member-facing indistinguishability (exclusive-booking ADR-001 decision 6): held nights present to members and the public exactly as a genuinely full lodge — same "no space" messaging, waitlist, and emails — and the exclusive nature is visible only on admin surfaces, never surfaced to members. |
+| `/api/admin/bookings/[id]/exclusive-hold` | Admin session via the shared `requireAdmin()` guard (mirrors the sibling capacity-hold route). | Admin. | `Booking.wholeLodgeHold` plus its who/when audit fields; on set, the ids of overlapping capacity-holding bookings surfaced for officer resolution. **Also `BedAllocation` rows (#2285):** setting the hold DELETES every per-bed row this booking owns (manually placed and admin-approved rows included) and clearing it re-plans them through the auto-allocator, which can in turn move or unallocate OTHER bookings' provisional rows; each such displacement and each `#1750` partner promotion writes its own extra audit row. | None. | The flag write, the conflict read and the allocation reconcile all run inside the per-lodge capacity lock (`acquireLodgeCapacityLock`, #154) — the same key every admission takes — so setting a hold cannot race an in-flight admission and the flag can never commit apart from its allocation rows; the reconcile runs strictly after the compare-and-set write, so a lost claim (409) changes nothing. No capacity **admission** decision is made here and the availability engine (`checkCapacityForGuestRanges`) is never consulted (exclusive-booking ADR-001 decision 1) — the hold is never refused for want of space — but the bed-allocation planner IS run on the clear direction, so "no arithmetic at all" is not accurate: it is bed *placement*, not bed *admission*. Set and clear are idempotency-guarded (409 on a redundant set or clear); Zod body validation. | `booking.exclusiveHold.set`/`booking.exclusiveHold.cleared` audit entries (important severity) recording the overlapping conflict ids, the reconcile counts, and — on set — a capped list of the removed allocation rows so a mistaken hold can be undone by hand (#2285); plus `bed_allocation.provisional_displaced` and `BED_ALLOCATION_PARTNER_PROMOTED` rows from the reconcile itself. | Privacy property is member-facing indistinguishability (exclusive-booking ADR-001 decision 6): held nights present to members and the public exactly as a genuinely full lodge — same "no space" messaging, waitlist, and emails — and the exclusive nature is visible only on admin surfaces, never surfaced to members. |
 | `/api/admin/bed-allocation/**` | Admin session plus bed-allocation module capability. | Admin. | Lodge rooms, lodge beds, per-night guest allocations, allocation approvals, booking highlight/date-range filters. | None directly. | `requireBedAllocationAdmin()`, module-state gate, Zod/body validation through bed-allocation route helpers, service-level allocation uniqueness constraints. | Audit logs for room/bed/allocation/settings mutations and approval runs; logger on failures. | Reservation and shared-room integrity surface. Keep allocation writes synchronized with booking lifecycle and preserve per-guest date-only semantics. |
 | `/api/admin/booking-policies/**`, `/api/admin/seasons/**`, `/api/admin/age-tier-settings`, `/api/admin/promo-codes/**` | Admin session via the shared `requireAdmin()` guard (per-method test-enforced, #1132). | Admin. | Booking policy settings, seasons/rates, age-tier settings, promo codes, Xero item/account mappings for promos. | Xero mapping reads/writes where promo/account mappings are touched. | Admin role plus active guard; Zod validation in several routes. | Audit logs for policy/rate/promo changes. | Money values must remain integer cents. #617 should review pricing/promo abuse and concurrent updates. |
 | `/api/admin/payments/**`, `/api/admin/refund-requests/**`, `/api/admin/credit-approvals` | Admin session via the shared `requireAdmin()` guard (per-method test-enforced, #1132). | Admin. | Payments, refund requests, member credits, booking/payment reconciliation state. | Stripe refunds/charges as needed, Xero invoice/credit-note work, email notifications. | Admin role plus active guard; service-level validation. | Audit log, logger, email logs. | High money-movement risk. #617 should review cents-only invariants, idempotency, and external call placement. |
@@ -833,6 +833,127 @@ Accepted residual risk:
   connection-holding attacks is the proxy/platform's job (request/idle timeouts,
   per-IP connection limits), not this in-app byte cap. Revisit if a deployment
   fronts the Node process without such a timeout.
+
+## Per-Route CSP Relaxation And Soft Navigation - 2026-07-26
+
+`src/lib/csp.ts` scopes two relaxations to named exact paths (`frame-src 'self'`
+for the two admin pages that embed the sandboxed `/display` iframe; the tightened
+`img-src 'self' data:` for the routes that render authored display markup, #161),
+plus `frame-ancestors 'self'` / `X-Frame-Options: SAMEORIGIN` on `/display`
+itself. Reviewing #2246 surfaced a property of route-scoped headers that applies
+to **any** scoped policy this app adds in future, not just these (#2279):
+
+- **A scoped CSP only takes effect on a hard document load.** The policy is a
+  property of the *document*, parsed from its response headers and fixed for that
+  document's lifetime. A Next.js App Router `<Link>` (or `router.push`) is a
+  **soft** navigation — same document, new React tree — so the destination runs
+  under the **entry** document's policy. With one root layout, every
+  `/admin/*` → `/admin/*` `<Link>` is soft. A route that depends on a scoped
+  relaxation must therefore be *entered* by a hard navigation, or the relaxation
+  is silently inert. This is what made the builder's Live preview show "Content
+  blocked" even after the allowlist was correct: both in-app links to
+  `/admin/display/builder` were `<Link>`s. They are now a plain `<a href>` (hub
+  card via the `hardNavigate` opt-in in `src/components/admin-hub-page.tsx`, and
+  the Layouts page), joining the Templates page's existing
+  `window.open(url, "_self")`.
+- **Every relaxed route was audited, and the guard now enforces the rule for
+  future ones.** The other two relaxed paths were checked rather than assumed:
+  `/admin/display/preview` is only ever entered by `window.open(…, "_blank")`
+  from the Templates page, and `/display` only by a real frame navigation (the
+  `<iframe src>` in both preview surfaces), a `target="_blank"` anchor on the
+  Devices page, or a TV browser opening the URL. All are hard loads; neither has
+  a `<Link>`, a `router.push`, or a server `redirect()` pointing at it. The
+  static guard `src/lib/__tests__/display-builder-csp-static.test.ts` is driven
+  from `FRAME_SRC_SELF_PATHS` and `TIGHT_IMG_SRC_PATHS` themselves, so adding a
+  path to a relaxation fails until that path's entry points are hard
+  navigations. It requires a relaxed `href` to sit on a plain `<a>` (any
+  component wrapper fails, not just `<Link>`), forbids `router.push`/`replace`
+  at a relaxed path, and requires any hub/nav descriptor pointing at one to carry
+  `hardNavigate: true` — the variable-`href` case a literal scan cannot see.
+- **Accepted residual — a relaxation leaks forward, never backward.** The same
+  mechanism means an admin who hard-loads *any* relaxed route and then
+  soft-navigates on to other admin pages carries that relaxation into those
+  documents until the next hard load. Impact is low: it permits only
+  *same-origin* framing on an authenticated admin page, adds no third-party
+  origin, and the global `X-Frame-Options: DENY` / `frame-ancestors 'none'`
+  still prevent those pages being framed by anyone. It is recorded here because
+  it is inherent to soft navigation and cannot be closed by the allowlist —
+  closing it would need a hard load on the way out too. The *tightened* `img-src`
+  cannot leak this way in a harmful direction: it is strictly narrower than the
+  global policy, and `/display` is only ever entered as a fresh document (a TV
+  browser, or an iframe/new tab from the admin), never by a soft navigation.
+- **Why the builder is excluded from the tightened `img-src`.** The builder keeps
+  the normal admin `img-src ... https:` because it is admin chrome (avatars,
+  uploaded imagery), and it never renders authored display markup in its own
+  document — the draft is rendered only inside the opaque-origin `/display`
+  frame, which carries the tightened policy itself. That invariant is now pinned
+  by the same static guard file: the builder component must contain no
+  `dangerouslySetInnerHTML`, `srcDoc`, `innerHTML` or injected `<style>`. A
+  future in-canvas WYSIWYG preview would otherwise reinstate the #161
+  image-beacon exfiltration channel with nothing failing.
+- **A trailing slash is folded before the exact match.** `src/lib/csp.ts` strips
+  one trailing slash from a path longer than `/` before comparing. Next
+  308-redirects `/admin/display/builder/` to the canonical form, but the proxy
+  runs *before* that redirect, so without this the redirect response — and
+  anything that ever reached the route without being redirected — carried the
+  unrelaxed policy. Only the input is normalised; the comparison stays exact
+  equality, so `/…/builder/extra`, `/…/builder-foo`, `//admin/display/builder`
+  and a doubled trailing slash all still fail closed. The one normalisation
+  feeds every allowlist, so they cannot diverge on a trailing slash.
+- **The edge no longer overrides the app's `X-Frame-Options`.** `Caddyfile` and
+  `Caddyfile.staging` used to set `X-Frame-Options "DENY"` unconditionally,
+  replacing the `SAMEORIGIN` the app deliberately sets on `/display`. Both
+  preview surfaces therefore worked only because CSP2 requires browsers to
+  ignore `X-Frame-Options` when `frame-ancestors` is present — a browser
+  precedence rule, not the header the app intends to send. The edge header is
+  now path-scoped to the same single path (`path_regexp ^/display/?$`, which is
+  case-sensitive and so mirrors the app's exact comparison; Caddy's `path`
+  matcher is case-*in*sensitive and would have relaxed `/DISPLAY`). Every other
+  path keeps a **guaranteed** `DENY` set at the edge, including
+  `/finance-legacy*` (a reverse-proxied third-party upstream) and `/images/*`,
+  neither of which the app's own middleware covers. Caddy's set-if-absent
+  `?X-Frame-Options` form was considered and rejected in review: it would
+  downgrade a guaranteed edge control into an advisory one on every route, so
+  any upstream emitting a permissive value would win.
+  - **Two directives, both load-bearing — do not de-duplicate them.** The scoped
+    pair uses the deferred `>` prefix so the edge value *overwrites* the app's
+    rather than being appended as a second, conflicting header (measured against
+    `caddy:2` with a permissive upstream, a plain set left both `DENY` and
+    `ALLOWALL` on one response). But that deferred rewrite lives in a
+    `ResponseWriter` wrapper which is unwound when a handler returns an **error**,
+    so Caddy's error chain writes the response without it: a 502 when an upstream
+    is down (including `/finance-legacy*`), the 413 from the `request_body` cap,
+    any 5xx. Those responses never reach Next either, so they carry no CSP and no
+    `frame-ancestors` fallback. An **eager** unscoped `X-Frame-Options "DENY"`
+    therefore stays in the shared `header { }` block as the floor; the deferred
+    pair overwrites it on every normal proxied response. Measured against
+    `caddy:2`, exactly one `X-Frame-Options` per response: `/display` →
+    `SAMEORIGIN`; `/other`, `/DISPLAY`, `/images/*` → `DENY`; 502, 413 and 500 →
+    `DENY`.
+  - **The edge matcher is not byte-identical to the app's comparison, and cannot
+    be.** Caddy matches on the *cleaned, percent-decoded* path but forwards the
+    *raw* URI, so the app compares a different string. Measured divergences where
+    the edge relaxes to `SAMEORIGIN` while the app still sends `DENY`:
+    `//display`, `/display//`, `/%64isplay`, `/dis%70lay`, `/display%2F`.
+    Accepted: those responses still carry the app's own `frame-ancestors 'none'`,
+    which browsers honour over `X-Frame-Options`, and `SAMEORIGIN` never permits
+    more than same-origin framing. The dangerous inverse — the app relaxing where
+    the edge denies, which would break the preview — is impossible, because both
+    paths the app relaxes sit inside the edge's match set.
+
+  `src/lib/__tests__/edge-frame-options-static.test.ts`
+  pins all of this, including the eager floor and that the edge relaxes exactly
+  the path the app relaxes. **Operators: a Caddyfile change only takes effect
+  after Caddy is reloaded on the host — it does not ship with the app deploy.**
+- **Staging gained production's defensive CSP baseline.** `Caddyfile.staging` now
+  carries the same `?Content-Security-Policy "default-src 'self'"` the production
+  `Caddyfile` has. Because `?` is set-if-absent it is a no-op whenever the Next
+  proxy emits its own policy, so it never intersects with the real CSP; its only
+  effect is on failure. There it is deliberately loud — a bare `default-src
+  'self'` breaks every nonce'd script — so a proxy/middleware regression fails
+  visibly on staging instead of silently shipping an unprotected page to
+  production. Measured against `caddy:2`: with an upstream emitting a CSP the
+  header is untouched; with an upstream emitting none the baseline appears.
 
 ## Follow-Up Mapping
 

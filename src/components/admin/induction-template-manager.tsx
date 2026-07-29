@@ -13,6 +13,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -106,6 +107,8 @@ export function InductionTemplateManager() {
   const [saving, setSaving] = useState(false);
   const [newName, setNewName] = useState("Lodge Induction Checklist");
   const [newVersion, setNewVersion] = useState("");
+  // #2257 — the example lives UNDER the field, not inside it as grey pseudo-content.
+  const versionHint = useFieldHint();
   const [newKind, setNewKind] = useState<InductionKind>("NEW_MEMBER");
   const [activeTemplate, setActiveTemplate] = useState<ActiveTemplate | null>(null);
   const [showActiveTemplate, setShowActiveTemplate] = useState(false);
@@ -502,6 +505,12 @@ export function InductionTemplateManager() {
 
         <div className="space-y-2 rounded-md border bg-muted p-3">
           <p className="text-sm font-medium">Create a new version</p>
+          {/* #2257 — `items-end` bottom-aligns every cell, so a hint rendered
+              INSIDE the Version cell would become that cell's bottom edge and
+              lift its input clear of the select, the name input and the
+              buttons. `basis-full` puts the hint on its own wrapped flex line:
+              cross-axis alignment is per line, so the control line keeps its
+              baseline and the hint hangs below the row. */}
           <div className="flex flex-wrap items-end gap-2">
             <div className="space-y-1">
               <Label htmlFor="new-kind" className="text-xs">
@@ -542,8 +551,8 @@ export function InductionTemplateManager() {
                 value={newVersion}
                 disabled={!canEdit}
                 onChange={(e) => setNewVersion(e.target.value)}
-                placeholder="e.g. 2026.1"
                 className="w-32"
+                {...versionHint.fieldProps}
               />
             </div>
             <ViewOnlyActionButton
@@ -568,6 +577,9 @@ export function InductionTemplateManager() {
             >
               Create blank
             </ViewOnlyActionButton>
+            <FieldHint {...versionHint.hintProps} className="basis-full">
+              Version example: 2026.1
+            </FieldHint>
           </div>
         </div>
 

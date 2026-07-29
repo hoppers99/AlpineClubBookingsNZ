@@ -22,6 +22,11 @@ import {
   loadMembershipCancellationBlockersByMemberId,
   type MembershipCancellationBlocker,
 } from "@/lib/membership-cancellation-blockers";
+import {
+  EMPTY_ORPHANED_FAMILY_LINKS,
+  readFamilyLinkOrphans,
+  type OrphanedFamilyLinks,
+} from "@/lib/member-family-link-orphans";
 import { loadMembershipCancellationSettings } from "@/lib/membership-cancellation-settings";
 import {
   cleanText,
@@ -516,6 +521,11 @@ export async function reviewMembershipCancellationParticipant({
   const notifyAuditFields =
     notifyMember === false ? { notifyMember: false } : {};
 
+  // #2255: filled inside the transaction, read after it. Declared out here
+  // because the family links it describes no longer exist by the time the
+  // transaction commits — this is the only record of what the sweep detached.
+  let orphanedByCancellation: OrphanedFamilyLinks = EMPTY_ORPHANED_FAMILY_LINKS;
+
   const now = new Date();
   await prisma.$transaction(async (tx) => {
     if (action === "approve") {
@@ -551,6 +561,22 @@ export async function reviewMembershipCancellationParticipant({
           409,
         );
       }
+
+      // #2255 (D9): cancelling a member clears ONE level of links — their own
+      // parent links, and every link pointing AT them. With chains of up to four
+      // generations, the member being cancelled is often a MIDDLE generation, so
+      // that sweep detaches their dependants from the family without touching
+      // the grandparent above. Grandchildren are deliberately NOT re-parented
+      // onto the grandparent: who is responsible for a child is a real-world
+      // fact, and silently promoting it because someone left the club would
+      // record a relationship nobody asserted. The defined outcome is instead
+      // "detached and DECLARED" — captured here, before the sweep, and returned
+      // to the caller so the admin sees exactly who was left without a parent
+      // link or without a notification mailbox.
+      orphanedByCancellation = await readFamilyLinkOrphans(
+        tx,
+        participant.memberId,
+      );
 
       await tx.member.update({
         where: { id: participant.memberId },
@@ -618,6 +644,13 @@ export async function reviewMembershipCancellationParticipant({
           metadata: {
             participantId: participant.id,
             xeroCancellationDeferred: true,
+            // #2255: the detached members are named in the audit as well as in
+            // the response, so the record survives the admin closing the page.
+            detachedDependantIds: orphanedByCancellation.dependants.map(
+              (member) => member.id,
+            ),
+            detachedEmailInheritorIds:
+              orphanedByCancellation.emailInheritors.map((member) => member.id),
             ...notifyAuditFields,
           },
           ipAddress,
@@ -714,5 +747,8 @@ export async function reviewMembershipCancellationParticipant({
 
   return {
     request: serializeRequest(updatedRequest, blockersByMemberId),
+    // #2255: always present (empty arrays on reject, or when nothing was
+    // linked), so a caller cannot mistake "no key" for "nothing detached".
+    orphanedLinks: orphanedByCancellation,
   };
 }

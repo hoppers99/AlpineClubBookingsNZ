@@ -80,6 +80,7 @@ export async function sendPreArrivalReminders(): Promise<PreArrivalReminderResul
 
     try {
       await sendPreArrivalReminderEmail({
+        bookingId: booking.id,
         email: booking.member.email,
         firstName: booking.member.firstName,
         checkIn: booking.checkIn,

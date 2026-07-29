@@ -8,17 +8,20 @@ import { buildPathWithSearch } from "@/lib/internal-return-path"
 import {
   ConnectionStatusPanel,
   ContactSyncPanel,
+  GoToXeroButton,
   HealthAndDiagnosticsPanels,
   InboundEventsPanel,
   MembershipSyncPanel,
   OperationsPanel,
   SyncResultsPanel,
   UsagePanel,
+  xeroLinkState,
 } from "./_components/panels"
 import { Message } from "./_components/message"
 import { WebhookAmberBadge } from "./_components/webhook-amber-badge"
 import { SECTION_DEFAULTS, type SectionKey, type SyncResult } from "./_components/types"
 import { useXeroConnection } from "./_hooks/use-xero-connection"
+import { useXeroOrgShortCode } from "@/hooks/use-xero-org-short-code"
 
 export default function XeroPage() {
   const club = useClubIdentity()
@@ -46,6 +49,12 @@ export default function XeroPage() {
   const [usageRefreshToken, setUsageRefreshToken] = useState(0)
 
   const connected = status?.connected === true
+  // Org short code for the "Go to Xero" deep links. Only read once connected,
+  // and served from the server-side org cache, so a cold cache costs at most
+  // one live getOrganisations call per server process per 12 hours (a minute
+  // while that read is failing) and every later page load costs none (#2261).
+  const { shortCode: orgShortCode, loading: orgShortCodeLoading } =
+    useXeroOrgShortCode(connected)
   const refreshDiagnostics = () => setDiagnosticsRefreshToken((value) => value + 1)
   const refreshOperations = () => setOperationsRefreshToken((value) => value + 1)
   const publishMessage = (message: string) => {
@@ -71,7 +80,14 @@ export default function XeroPage() {
 
   return (
     <div className="max-w-6xl p-6">
-      <h1 className="mb-2 text-2xl font-bold">Xero Sync</h1>
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-2xl font-bold">Xero Sync</h1>
+        <GoToXeroButton
+          state={xeroLinkState(status)}
+          shortCode={orgShortCode}
+          shortCodeLoading={orgShortCodeLoading}
+        />
+      </div>
       <p className="mb-2 text-muted-foreground">
         Monitor the Xero connection, run contact and membership syncs, and review operations and usage.
       </p>
@@ -98,6 +114,7 @@ export default function XeroPage() {
         <>
           <HealthAndDiagnosticsPanels
             connected={connected}
+            shortCode={orgShortCode}
             currentXeroPath={currentXeroPath}
             healthOpen={sectionOpen.health}
             contactGroupMismatchesOpen={sectionOpen.contactGroupMismatches}
@@ -147,7 +164,7 @@ export default function XeroPage() {
             onRefreshDiagnostics={refreshDiagnostics}
             refreshToken={diagnosticsRefreshToken}
           />
-          <SyncResultsPanel syncResult={syncResult} currentXeroPath={currentXeroPath} />
+          <SyncResultsPanel syncResult={syncResult} shortCode={orgShortCode} currentXeroPath={currentXeroPath} />
           <UsagePanel connected={connected} open={sectionOpen.usage} onToggle={setSectionState} refreshToken={usageRefreshToken} />
         </>
       )}

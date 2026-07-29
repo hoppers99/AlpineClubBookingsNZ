@@ -280,6 +280,17 @@ export async function processWaitlistForDates(freedDates: {
           status: BookingStatus.WAITLISTED,
           checkIn: { lt: freedDates.checkOut },
           checkOut: { gt: freedDates.checkIn },
+          // #2258: a waitlist entry with the "No emails" switch on is NOT a
+          // candidate. Making an offer stamps waitlistOfferExpiresAt inside this
+          // transaction and starts the offer clock; the offer email goes out
+          // un-awaited after commit. If that email were withheld, the entry
+          // would hold a bed for the whole offer window with the member never
+          // told, then lapse via expireStaleOffers() — and the admin board would
+          // render it as a missing/undeliverable offer email, indistinguishable
+          // from a bounce. Excluding the entry means the clock never starts: the
+          // place goes to the next candidate and the suppressed entry keeps its
+          // WAITLISTED position for when the switch is cleared.
+          noEmails: false,
         },
         include: {
           guests: { include: { nights: true } }, // per-night sets (issue #713)
@@ -470,6 +481,7 @@ export async function processWaitlistForDates(freedDates: {
   // Send emails after transaction commits
   if (offerDetails) {
     sendWaitlistOfferEmail(
+      { bookingId: offerDetails.bookingId },
       offerDetails.email,
       offerDetails.firstName,
       offerDetails.checkIn,
@@ -811,6 +823,7 @@ export async function expireStaleOffers(): Promise<{
 
   for (const offer of staleOffers) {
     sendWaitlistOfferExpiredEmail(
+      { bookingId: offer.id },
       offer.member.email,
       offer.member.firstName,
       offer.checkIn,

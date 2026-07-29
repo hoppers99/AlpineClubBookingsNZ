@@ -36,6 +36,10 @@ export async function GET(req: NextRequest) {
             checkOut: true,
             finalPriceCents: true,
             status: true,
+            // #2259: the review queue's notify prompt must not offer an email
+            // choice the mailer will not honour. Admin-only route, so the field
+            // never reaches a member.
+            noEmails: true,
             creditsFromCancellation: {
               select: {
                 amountCents: true,

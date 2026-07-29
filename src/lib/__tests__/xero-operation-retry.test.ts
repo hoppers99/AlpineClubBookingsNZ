@@ -1267,6 +1267,74 @@ describe("retryXeroSyncOperation", () => {
     });
   });
 
+  // #2258 round-2, money-adjacent: an invoice can be PARTIAL because only its
+  // EMAIL failed, and every such case is an INTERNET_BANKING booking whose Xero
+  // payment is deliberately skipped because the member has not paid. Repairing
+  // one records a bank payment against an unpaid invoice and falsely settles it.
+  it("refuses the payment repair when the PARTIAL was email-only, not a payment fault", async () => {
+    const emailOnlyPartial = makeOperation({
+      status: "PARTIAL",
+      xeroObjectId: "inv_123",
+      responsePayload: {
+        invoice: { invoices: [{ total: 45.67 }] },
+        paymentError: null,
+        paymentSkipped: true,
+        invoiceEmailError: { message: "emailInvoice failed" },
+      },
+    });
+    mocks.findUniqueOperation.mockResolvedValue(emailOnlyPartial);
+
+    // Not offered in the panel...
+    const meta = getXeroOperationRetryMeta(emailOnlyPartial);
+    expect(meta.supported).toBe(false);
+    expect(meta.reason).toContain("falsely settle");
+
+    // ...and not performed if invoked anyway.
+    await expect(
+      retryXeroSyncOperation("op_123", { createdByMemberId: "admin_1" })
+    ).rejects.toThrow();
+    expect(mocks.createXeroPaymentForInvoice).not.toHaveBeenCalled();
+  });
+
+  it("refuses it for a withheld-by-No-emails PARTIAL too", async () => {
+    const withheldPartial = makeOperation({
+      status: "PARTIAL",
+      xeroObjectId: "inv_123",
+      responsePayload: {
+        invoice: { invoices: [{ total: 45.67 }] },
+        paymentError: null,
+        invoiceEmailWithheldByNoEmails: true,
+      },
+    });
+    mocks.findUniqueOperation.mockResolvedValue(withheldPartial);
+
+    expect(getXeroOperationRetryMeta(withheldPartial).supported).toBe(false);
+    await expect(
+      retryXeroSyncOperation("op_123", { createdByMemberId: "admin_1" })
+    ).rejects.toThrow();
+    expect(mocks.createXeroPaymentForInvoice).not.toHaveBeenCalled();
+  });
+
+  it("still repairs a genuine payment fault, and a legacy payload of unknown shape", async () => {
+    mocks.findUniqueOperation.mockResolvedValue(
+      makeOperation({
+        status: "PARTIAL",
+        xeroObjectId: "inv_123",
+        responsePayload: {
+          invoice: { invoices: [{ total: 45.67 }] },
+          paymentError: { message: "Xero rejected the payment" },
+        },
+      })
+    );
+
+    await expect(
+      retryXeroSyncOperation("op_123", { createdByMemberId: "admin_1" })
+    ).resolves.toEqual({
+      message: "Repaired Xero booking invoice payment recording.",
+    });
+    expect(mocks.createXeroPaymentForInvoice).toHaveBeenCalled();
+  });
+
   it("repairs partial supplementary invoice payment recording", async () => {
     mocks.findUniqueOperation.mockResolvedValue(
       makeOperation({

@@ -36,6 +36,12 @@ Open **Profile** and find the **Family Group** section.
   children, or youth. **Login-capable adults** confirm their own inclusion;
   **dependents** (infants/children/youth) do not have their own login and are
   managed by the group's adults.
+- The club can record who a member's parents are — up to two parents each, and
+  up to **four generations** in one line (great-grandparent, grandparent,
+  parent, child). Being someone's parent no longer stops you being recorded as
+  someone else's child, so a three-generation family can be recorded as it
+  really is. If a dependent has no email address of their own, club email for
+  them goes to the nearest person above them in the family who does have one.
 
 While a create-group request is pending, the Join/Create buttons are replaced by
 "Your family group request is awaiting admin review", showing the requested group

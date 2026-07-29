@@ -480,7 +480,7 @@ describe("POST /api/admin/bookings/[id]/force-confirm", () => {
       expect(response.status).toBe(200);
 
       expect(mocks.sendBookingConfirmedEmail).toHaveBeenCalledTimes(1);
-      const options = mocks.sendBookingConfirmedEmail.mock.calls[0][6];
+      const options = mocks.sendBookingConfirmedEmail.mock.calls[0][7];
       expect(options).toMatchObject({
         provisionalGuests: { guestCount: 3, holdUntil },
       });

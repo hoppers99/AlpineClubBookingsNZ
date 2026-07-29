@@ -15,6 +15,7 @@ import {
   isBuiltInDisplayLayoutKey,
   isBuiltInDisplayTemplateKey,
 } from "@/lib/lodge-display/built-in-seeds";
+import { DISPLAY_TERM_BOARD } from "@/lib/lodge-display/display-terminology";
 import DisplayBuilder from "./display-builder";
 
 // Visual builder surface (ADR-004 §1/§4). A NEW board is composed from a blank
@@ -142,9 +143,12 @@ export default function DisplayBuilderPage() {
         <BackLink href="/admin/display" label="Lobby Display" />
         <h1 className="mt-2 text-2xl font-bold">Visual builder</h1>
         <p className="text-muted-foreground text-sm">
-          Compose a board by picking a shape and dropping modules into zones. No
-          HTML required — the builder writes a valid layout and template for you.
-          For full control, use{" "}
+          {/* #2247: "board" is the operator-facing word for what a screen
+              shows, so say what it is the first time this page uses it. The
+              definition is the one on the hub and the Reference page. */}
+          {DISPLAY_TERM_BOARD.oneLiner} Compose one by picking a shape and
+          dropping modules into zones. No HTML required — the builder writes a
+          valid Layout and Template for you. For full control, use{" "}
           <Link className="underline" href="/admin/display/layouts">
             Advanced mode
           </Link>

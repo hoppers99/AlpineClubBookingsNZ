@@ -1,4 +1,5 @@
 import { CHIP_TONE_CLASSES } from "@/lib/chip-tones";
+import { formatNZDate } from "@/lib/nzst-date";
 
 export interface MemberOption {
   id: string;
@@ -131,9 +132,19 @@ export function normalizeFamilyEmail(email: string) {
   return email.trim().toLowerCase();
 }
 
+// #2256: this used to call bare `toLocaleDateString()` — no locale, no time
+// zone — so every family-group date (request "Requested" stamps, dates of
+// birth, group "Created") rendered in whatever the *viewer's browser* was set
+// to: "4/16/2026" for a US-locale admin, "16.04.2026" for a German one, and a
+// day early for anyone whose machine sat behind New Zealand. It now renders the
+// club's calendar date in the app's standard "16 Apr 2026" form for everyone.
 export function formatFamilyGroupDate(value: string | null | undefined) {
   if (!value) return "Not provided";
-  return new Date(value).toLocaleDateString();
+  const parsed = new Date(value);
+  // Intl throws RangeError on an invalid Date; a malformed API value must not
+  // take down the whole request-review card.
+  if (Number.isNaN(parsed.getTime())) return "Not provided";
+  return formatNZDate(parsed);
 }
 
 export function getMemberName(member: Pick<MemberOption, "firstName" | "lastName">) {
