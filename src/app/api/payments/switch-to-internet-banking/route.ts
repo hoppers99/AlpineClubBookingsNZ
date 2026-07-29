@@ -36,6 +36,21 @@ import { isXeroConnected } from "@/lib/xero";
 import logger from "@/lib/logger";
 import { hasAdminAccess } from "@/lib/access-roles";
 import { lockMemberCreditLedger } from "@/lib/member-credit";
+import { consumeStoredCreditElection } from "@/lib/booking-credit-election";
+
+/**
+ * The member's account credit leaves nothing for the invoice to ask for, so
+ * there is no Internet Banking payment to make. Thrown INSIDE the transaction
+ * on purpose: the rollback puts any election this request consumed straight
+ * back on the booking, so the member can settle it at $0 on the card pay step
+ * instead with their election untouched.
+ */
+class CreditCoversWholeBookingError extends Error {
+  constructor() {
+    super("Account credit covers this booking in full");
+    this.name = "CreditCoversWholeBookingError";
+  }
+}
 
 /**
  * Switch an existing card (Stripe) PAYMENT_PENDING booking to Internet Banking.
@@ -177,125 +192,166 @@ export async function POST(request: NextRequest) {
   // allocation op enqueued below (Option A: member pays effective).
   const holdBedSlots = internetBankingSettings.holdBedSlots;
   const holdUntil = buildInternetBankingHoldUntil(internetBankingSettings);
-  const paymentResult = await prisma.$transaction(async (tx) => {
-    // #1881 two-tier protocol. Switching to Internet Banking with holdBedSlots
-    // flips the booking to CONFIRMED (a capacity-holding status) — a net-new
-    // capacity claim and a money-side-effect (the IB payment). It must take
-    // BOTH locks (global lock(1) first, then the per-lodge capacity lock) and
-    // re-read the booking UNDER the locks: the pre-transaction `booking`
-    // snapshot was read with no lock at all, so before this the capacity check
-    // and status flip consumed a stale snapshot and did not mutually exclude a
-    // concurrent cancel (lock(1)) or per-lodge creator.
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
-    const bookingLodgeId = booking.lodgeId ?? (await getDefaultLodgeId(tx));
-    await acquireLodgeCapacityLock(tx, bookingLodgeId);
+  let paymentResult;
+  try {
+    paymentResult = await prisma.$transaction(async (tx) => {
+      // #1881 two-tier protocol. Switching to Internet Banking with holdBedSlots
+      // flips the booking to CONFIRMED (a capacity-holding status) — a net-new
+      // capacity claim and a money-side-effect (the IB payment). It must take
+      // BOTH locks (global lock(1) first, then the per-lodge capacity lock) and
+      // re-read the booking UNDER the locks: the pre-transaction `booking`
+      // snapshot was read with no lock at all, so before this the capacity check
+      // and status flip consumed a stale snapshot and did not mutually exclude a
+      // concurrent cancel (lock(1)) or per-lodge creator.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+      const bookingLodgeId = booking.lodgeId ?? (await getDefaultLodgeId(tx));
+      await acquireLodgeCapacityLock(tx, bookingLodgeId);
 
-    // Re-read under the locks; every status/capacity decision below consumes
-    // ONLY this post-lock snapshot. A concurrent cancel/modify that committed
-    // during the lock wait is only visible here.
-    const locked = await tx.booking.findUnique({
-      where: { id: booking.id },
-      include: { guests: { include: { nights: true } } },
-    });
-    if (!locked || locked.status !== BookingStatus.PAYMENT_PENDING) {
-      return { type: "notSwitchable" as const };
-    }
-
-    // Credit writers serialize on a per-member key, not lock(1). Compose all
-    // three tiers in the global -> lodge -> member order before aggregating so
-    // this read cannot race an applied-credit writer.
-    await lockMemberCreditLedger(locked.memberId, tx);
-
-    // Recompute the payment mirror under the full lock set so a pre-lock
-    // price/credit pair cannot be persisted after either side changes.
-    const appliedCreditAgg = await tx.memberCredit.aggregate({
-      where: { appliedToBookingId: locked.id, type: CreditType.BOOKING_APPLIED },
-      _sum: { amountCents: true },
-    });
-    const creditAppliedCents = Math.max(
-      0,
-      -(appliedCreditAgg._sum.amountCents ?? 0),
-    );
-    const amountCents = Math.max(0, locked.finalPriceCents - creditAppliedCents);
-
-    if (holdBedSlots) {
-      const capacity = await checkCapacityForGuestRanges(
-        bookingLodgeId,
-        locked.checkIn,
-        locked.checkOut,
-        locked.guests,
-        locked.id,
-        tx,
-      );
-      if (!capacity.available && bookingHasCapacityOverride(locked)) {
-        // Persisted capacity override (#1771): admitted above the ceiling by an
-        // admin, so switching to Internet Banking must not report
-        // capacityExceeded — fall through and hold the slots as requested.
-        logger.info(
-          { bookingId: booking.id },
-          "Switching an over-capacity booking with a persisted capacity override (#1771) to Internet Banking; skipping the capacity block"
-        );
-      }
-      if (!capacity.available && !bookingHasCapacityOverride(locked)) {
-        return { type: "capacityExceeded" as const };
-      }
-    }
-
-    const payment = await tx.payment.upsert({
-      where: { bookingId: booking.id },
-      create: {
-        bookingId: booking.id,
-        amountCents,
-        creditAppliedCents,
-        source: PaymentSource.INTERNET_BANKING,
-        reference,
-        status: PaymentStatus.PENDING,
-        internetBankingHoldSlots: holdBedSlots,
-        internetBankingHoldUntil: holdUntil,
-        internetBankingHoldReleasedAt: null,
-      },
-      update: {
-        amountCents,
-        creditAppliedCents,
-        source: PaymentSource.INTERNET_BANKING,
-        reference,
-        status: PaymentStatus.PENDING,
-        stripePaymentIntentId: null,
-        internetBankingHoldSlots: holdBedSlots,
-        internetBankingHoldUntil: holdUntil,
-        internetBankingHoldReleasedAt: null,
-      },
-    });
-
-    if (holdBedSlots) {
-      // Status-guarded claim (#1881): only a still-PAYMENT_PENDING booking may
-      // be claimed CONFIRMED. Under the locks count 0 cannot happen (the
-      // re-read gated on it), but the guard means a concurrent cancel that
-      // slipped the lock can never be clobbered back to CONFIRMED.
-      const claimed = await tx.booking.updateMany({
-        where: { id: booking.id, status: BookingStatus.PAYMENT_PENDING },
-        data: { status: BookingStatus.CONFIRMED },
+      // Re-read under the locks; every status/capacity decision below consumes
+      // ONLY this post-lock snapshot. A concurrent cancel/modify that committed
+      // during the lock wait is only visible here.
+      const locked = await tx.booking.findUnique({
+        where: { id: booking.id },
+        include: { guests: { include: { nights: true } } },
       });
-      if (claimed.count === 0) {
+      if (!locked || locked.status !== BookingStatus.PAYMENT_PENDING) {
         return { type: "notSwitchable" as const };
       }
-      await reconcileBedAllocationsForBooking({
-        bookingId: booking.id,
-        db: tx,
+
+      // Credit writers serialize on a per-member key, not lock(1). Compose all
+      // three tiers in the global -> lodge -> member order before aggregating so
+      // this read cannot race an applied-credit writer.
+      await lockMemberCreditLedger(locked.memberId, tx);
+
+      if (holdBedSlots) {
+        const capacity = await checkCapacityForGuestRanges(
+          bookingLodgeId,
+          locked.checkIn,
+          locked.checkOut,
+          locked.guests,
+          locked.id,
+          tx,
+        );
+        if (!capacity.available && bookingHasCapacityOverride(locked)) {
+          // Persisted capacity override (#1771): admitted above the ceiling by an
+          // admin, so switching to Internet Banking must not report
+          // capacityExceeded — fall through and hold the slots as requested.
+          logger.info(
+            { bookingId: booking.id },
+            "Switching an over-capacity booking with a persisted capacity override (#1771) to Internet Banking; skipping the capacity block"
+          );
+        }
+        if (!capacity.available && !bookingHasCapacityOverride(locked)) {
+          return { type: "capacityExceeded" as const };
+        }
+      }
+
+      // #2265 — an admin-released AWAITING_REVIEW booking can still be carrying
+      // the member's stored credit election when they choose Internet Banking.
+      // Consume it HERE, under the locks this transaction already holds and
+      // before the invoice amount is computed, so the Xero invoice is raised for
+      // what the member actually owes rather than the pre-credit price. Without
+      // this the switch bypassed the election entirely: the member was invoiced
+      // the full amount and their credit stayed stranded on a booking that could
+      // never consume it (the card pay path is the only other consumer, and this
+      // booking has left it). Deliberately after the capacity decision above —
+      // a refused switch must leave the election intact.
+      const creditElection = await consumeStoredCreditElection(tx, {
+        bookingId: locked.id,
       });
-    }
 
-    await recordInternetBankingPaymentTransaction({
-      paymentId: payment.id,
-      amountCents,
-      status: PaymentStatus.PENDING,
-      reference,
-      reason: "internet_banking_switch_at_pay",
-      store: tx,
+      // Recompute the payment mirror under the full lock set so a pre-lock
+      // price/credit pair cannot be persisted after either side changes. The
+      // aggregate is read AFTER the consumption above, so it already includes the
+      // election's ledger row.
+      const appliedCreditAgg = await tx.memberCredit.aggregate({
+        where: { appliedToBookingId: locked.id, type: CreditType.BOOKING_APPLIED },
+        _sum: { amountCents: true },
+      });
+      const creditAppliedCents = Math.max(
+        0,
+        -(appliedCreditAgg._sum.amountCents ?? 0),
+      );
+      const amountCents = Math.max(0, locked.finalPriceCents - creditAppliedCents);
+
+      // Nothing left to invoice. Raising a $0 Internet Banking invoice and asking
+      // the member to bank-transfer nothing is not a payment path, and settling
+      // the booking to PAID here would duplicate the card route's $0 settlement
+      // in a route that is about invoices. Bail: the rollback restores the
+      // election, and the member completes the booking on the pay step, which
+      // settles a fully covered booking at $0 (#2265).
+      if (amountCents === 0) {
+        throw new CreditCoversWholeBookingError();
+      }
+
+      const payment = await tx.payment.upsert({
+        where: { bookingId: booking.id },
+        create: {
+          bookingId: booking.id,
+          amountCents,
+          creditAppliedCents,
+          source: PaymentSource.INTERNET_BANKING,
+          reference,
+          status: PaymentStatus.PENDING,
+          internetBankingHoldSlots: holdBedSlots,
+          internetBankingHoldUntil: holdUntil,
+          internetBankingHoldReleasedAt: null,
+        },
+        update: {
+          amountCents,
+          creditAppliedCents,
+          source: PaymentSource.INTERNET_BANKING,
+          reference,
+          status: PaymentStatus.PENDING,
+          stripePaymentIntentId: null,
+          internetBankingHoldSlots: holdBedSlots,
+          internetBankingHoldUntil: holdUntil,
+          internetBankingHoldReleasedAt: null,
+        },
+      });
+
+      if (holdBedSlots) {
+        // Status-guarded claim (#1881): only a still-PAYMENT_PENDING booking may
+        // be claimed CONFIRMED. Under the locks count 0 cannot happen (the
+        // re-read gated on it), but the guard means a concurrent cancel that
+        // slipped the lock can never be clobbered back to CONFIRMED.
+        const claimed = await tx.booking.updateMany({
+          where: { id: booking.id, status: BookingStatus.PAYMENT_PENDING },
+          data: { status: BookingStatus.CONFIRMED },
+        });
+        if (claimed.count === 0) {
+          return { type: "notSwitchable" as const };
+        }
+        await reconcileBedAllocationsForBooking({
+          bookingId: booking.id,
+          db: tx,
+        });
+      }
+
+      await recordInternetBankingPaymentTransaction({
+        paymentId: payment.id,
+        amountCents,
+        status: PaymentStatus.PENDING,
+        reference,
+        reason: "internet_banking_switch_at_pay",
+        store: tx,
+      });
+
+      return { type: "updated" as const, payment, creditElection };
     });
-
-    return { type: "updated" as const, payment };
-  });
+  } catch (err) {
+    if (err instanceof CreditCoversWholeBookingError) {
+      return NextResponse.json(
+        {
+          error:
+            "Your account credit covers this booking in full, so there is nothing to pay by Internet Banking. Complete it from the booking page.",
+          code: "CREDIT_COVERS_BOOKING",
+        },
+        { status: 409 },
+      );
+    }
+    throw err;
+  }
 
   if (paymentResult.type === "capacityExceeded") {
     return NextResponse.json(
@@ -345,5 +401,9 @@ export async function POST(request: NextRequest) {
     reference,
     holdBedSlots,
     holdUntil,
+    // #2265 — the same payload the card pay step returns, so a clamped election
+    // is reported here too rather than applied in silence. Null when this
+    // booking carried no outstanding election.
+    creditElection: paymentResult.creditElection,
   });
 }
