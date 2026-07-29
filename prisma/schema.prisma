@@ -1815,6 +1815,48 @@ model BookingGuest {
   // forever. Deliberately a bare column (no FK): the snapshot must survive
   // even if a custom type is later deleted.
   rateMembershipTypeId String?
+  // Member-guest consent (epic #2305, decision D-7). The approval state of a
+  // MEMBER added as somebody else's guest lives here, on the guest row itself,
+  // not in a side table.
+  //
+  // NULL consentStatus = "no consent was ever needed": a family-scope add
+  // (D-6) or any pre-feature legacy row. NULL is NOT the same value as
+  // CONFIRMED and the two must stay distinguishable forever — MG2/MG4 read the
+  // difference to decide whether a consent record exists at all.
+  //
+  // The full sub-state discriminator table (which columns are set in each
+  // reachable combination) is the single source of truth in
+  // MEMBER_GUEST_CONSENT_SUB_STATES (src/lib/member-guest-consent.ts), mirrored
+  // in docs/DOMAIN_INVARIANTS.md and pinned by a test. In summary:
+  //   family / legacy      -> every column NULL
+  //   awaiting the target  -> PENDING   + requestedAt + expiresAt
+  //   target approved      -> CONFIRMED + requestedAt + respondedAt + respondedBy = the target
+  //   delegate approved    -> CONFIRMED + requestedAt + respondedAt + respondedBy != the target
+  //   notify-only auto-ok  -> CONFIRMED + requestedAt NULL, respondedAt NULL, respondedBy NULL
+  //   admin / copy / pipeline -> CONFIRMED + requestedAt NULL, respondedAt set, respondedBy = the admin
+  //   declined / expired   -> DECLINED / EXPIRED, with respondedAt (DECLINED) or expiresAt (EXPIRED)
+  //
+  // In THIS release every one of these columns is inert: no code path writes a
+  // non-null consentStatus, because cross-family adds are still refused
+  // (MEMBER_GUEST_WIDENING_ENABLED === false in src/lib/member-guest-consent.ts).
+  // The widening, the approval surface, and the expiry sweep all land together
+  // in MG2 (#2307).
+  consentStatus              MemberGuestConsentStatus?
+  consentRequestedAt         DateTime?
+  consentRespondedAt         DateTime?
+  // WHO approved, audited distinctly from WHO was asked (D-5/D-10): a target
+  // without a login can be approved by a delegate, and an admin-assigned or
+  // copied row records the admin. May equal the target (self-approval) or
+  // differ (delegate/admin); nothing constrains it here — MG2's delegate
+  // predicate does. Deliberately a bare column (no FK): an FK here would put a
+  // validating constraint on BookingGuest, a HOT_TABLE_SQL_REGEX table, plus a
+  // Member lock. Same reasoning as rateMembershipTypeId above.
+  consentRespondedByMemberId String?
+  // When a PENDING hold lapses. Set from MemberGuestSettings.pendingHoldExpiryDays
+  // at request time by MG2; read by MG2's expiry sweep via the raw-SQL partial
+  // index BookingGuest_pendingConsent_expiresAt_idx (prisma/partial-unique-indexes.tsv
+  // — Prisma cannot express a predicated index).
+  consentExpiresAt           DateTime?
   arrivedAt  DateTime?
   departedAt DateTime?
   createdAt  DateTime  @default(now())
@@ -1837,6 +1879,18 @@ model BookingGuest {
   @@index([bookingId, stayStart, stayEnd])
   @@index([stayStart, stayEnd])
   @@index([memberId])
+}
+
+// Consent state of a MEMBER added as another member's guest ("+ Add Member
+// Guest", epic #2305, D-7). Provisioned here in MG1 (#2306) but UNREACHABLE
+// until MG2 (#2307): no code path in this release writes a non-null
+// BookingGuest.consentStatus, so every label below is registered-but-unused.
+// See docs/STATE_MACHINES.md for the transitions MG2 implements.
+enum MemberGuestConsentStatus {
+  PENDING
+  CONFIRMED
+  DECLINED
+  EXPIRED
 }
 
 // Per-night stay record for a booking guest (issue #713). One row per night
@@ -2145,6 +2199,56 @@ model BookingRequestSettings {
   updatedByMemberId                String?
   createdAt                        DateTime @default(now())
   updatedAt                        DateTime @updatedAt
+
+  @@index([updatedByMemberId])
+}
+
+// Member-guest policy singleton ("+ Add Member Guest", epic #2305). How the
+// module BEHAVES when it is on is policy, not a capability boolean, so it lives
+// here rather than as more columns on ClubModuleSettings — the same split
+// BookingRequestSettings uses, whose shape (including the FK-less
+// updatedByMemberId audit column) this model copies exactly.
+//
+// The row is created LAZILY on first read/write (see loadMemberGuestSettings in
+// src/lib/member-guest-settings.ts). The migration deliberately seeds NO row:
+// the blue/green validator hard-blocks session-clock DML in migration INSERT
+// payloads, and a synthesised-on-miss read needs no row anyway.
+//
+// Every field here is INERT in this release: nothing reads any of them at
+// runtime yet. MG2 (#2307) ships the admin settings card + route that writes
+// them and the behaviour that reads them (D-17).
+model MemberGuestSettings {
+  id                             String   @id @default("default")
+
+  // D-3: approval-required is the shipped default — a member added as somebody
+  // else's guest must say yes first. Notify-only is an explicit admin opt-down.
+  approvalRequired               Boolean  @default(true)
+
+  // D-4: a PENDING cross-family guest HOLDS the bed for this many days, after
+  // which MG2's sweep expires them off the booking. 7 days by default (owner,
+  // 30 Jul, confirm-by-objection): long enough for a target to see the email
+  // over a weekend, short enough that a silent non-responder releases the bed
+  // well before most stays. Bounds 1..60, mirroring quoteResponseTtlDays.
+  pendingHoldExpiryDays          Int      @default(7)
+
+  // MG3-D-b (owner, 30 Jul). DEFAULT OFF: with this off, a booker can only
+  // resolve another member by typing their exact email address. Turning it on
+  // makes the club's member name list browsable to anyone who can start a
+  // booking. Provisioned here so MG3 needs no migration of its own; the
+  // type-ahead itself is MG3's. NEVER travels in config transfer (D-18).
+  openMemberSearchEnabled        Boolean  @default(false)
+
+  // MG3-D-b sub-setting (owner, 30 Jul). DEFAULT false = minors are EXCLUDED
+  // from the open type-ahead even when openMemberSearchEnabled is on. Named
+  // positively but shipped off; "off" means excluded. Load-bearing because D-9
+  // (as ticked) makes any active member — minors included — resolvable by a
+  // shared household email address. NEVER travels in config transfer (D-18).
+  openMemberSearchIncludesMinors Boolean  @default(false)
+
+  // Bare column, no FK — same as BookingRequestSettings.updatedByMemberId.
+  updatedByMemberId              String?
+  createdAt                      DateTime @default(now())
+  updatedAt                      DateTime @updatedAt
 
   @@index([updatedByMemberId])
 }
@@ -3534,6 +3638,12 @@ model ClubModuleSettings {
   // add as a defaulted column because every read narrows to
   // CLUB_MODULE_SETTINGS_COLUMN_SELECT.
   memberNotices           Boolean  @default(true)
+  // "+ Add Member Guest" (epic #2305, D-2). Default OFF: an existing club sees
+  // zero change until an admin turns it on. Safe to add as a defaulted column
+  // because every read narrows to CLUB_MODULE_SETTINGS_COLUMN_SELECT. In this
+  // release the flag is inert — turning it ON changes no outcome anywhere (see
+  // MEMBER_GUEST_WIDENING_ENABLED); the behaviour arrives in MG2 (#2307).
+  memberGuests            Boolean  @default(false)
   updatedByMemberId       String?
   createdAt               DateTime @default(now())
   updatedAt               DateTime @default(now()) @updatedAt
