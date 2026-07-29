@@ -292,6 +292,41 @@ const NOTICE = "AdminViewOnlyNotice";
    `member-credit-card.tsx` un-vouched, and it is not statically decidable.
  * ------------------------------------------------------------------------ */
 
+/*
+  The published census, in ONE place.
+
+  Four documents and one JSDoc block quote these numbers as fact, and they have
+  drifted twice — once by being counted from raw text (a `describeReason={false}`
+  inside a comment counted as a call site), and once by a doc being updated while
+  a sibling doc was not. The census test below measures them; the
+  "figures the docs publish" test below that reads the four documents and fails
+  when any of them no longer states the measured value. So a rollout change
+  cannot land with the prose out of step: both tests fail, and the fix is always
+  to re-measure and update every place together — never to loosen an assertion.
+*/
+const FIGURES = {
+  /** Every `<ViewOnlyActionButton>` render site in the admin tree. */
+  callSites: 285,
+  /** Those that hand their explanation to a banner, by either rule. */
+  optOuts: 242,
+  /** `describeReason={false}` — needs a banner in the SAME file. */
+  staticOptOuts: 216,
+  /** `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch. */
+  vouchedOptOuts: 26,
+  /** …of the vouched: proved at a parent's own JSX render site (#2168). */
+  renderSiteVouchedOptOuts: 21,
+  /** …of the vouched: proved through the wizard shell's channel (#2324). */
+  shellVouchedOptOuts: 5,
+  /** Controls that KEEP the per-button reason, and the files holding them. */
+  exceptions: 43,
+  exceptionFiles: 23,
+  /** The remainder bucket: neither a member detail card nor dialog-only. */
+  leafControls: 30,
+  leafFiles: 18,
+  /** Components that render an `AdminViewOnlySectionBanner`. */
+  bannerComponents: 78,
+} as const;
+
 const WIZARD_SHELL = "IntegrationWizard";
 const WIZARD_HELPERS_TYPE = "WizardStepHelpers";
 const WIZARD_SHELL_REL =
@@ -1110,14 +1145,22 @@ describe("view-only section banner coverage (#2160)", () => {
       // the Admin tools card's layout — the same shape as the capacity- and
       // exclusive-hold controls beside it, so it keeps its own per-button
       // reason rather than opting out under a banner it cannot prove renders.
-      callSites: 285,
-      optOuts: 242,
-      staticOptOuts: 216,
-      vouchedOptOuts: 26,
-      exceptions: 43,
-      exceptionFiles: 23,
-      bannerComponents: 78,
+      callSites: FIGURES.callSites,
+      optOuts: FIGURES.optOuts,
+      staticOptOuts: FIGURES.staticOptOuts,
+      vouchedOptOuts: FIGURES.vouchedOptOuts,
+      exceptions: FIGURES.exceptions,
+      exceptionFiles: FIGURES.exceptionFiles,
+      bannerComponents: FIGURES.bannerComponents,
     });
+
+    // The vouched total splits by RULE, and the docs publish that split. Keeping
+    // it arithmetic here means only one of the two halves has to be measured
+    // (the #2324 test measures the shell's).
+    expect(
+      FIGURES.renderSiteVouchedOptOuts + FIGURES.shellVouchedOptOuts,
+      `The published vouched split must add up to ${FIGURES.vouchedOptOuts}.`,
+    ).toBe(FIGURES.vouchedOptOuts);
 
     /*
       …and the three shapes those exceptions fall into, because the docs break
@@ -1184,8 +1227,90 @@ describe("view-only section banner coverage (#2160)", () => {
       // this one (+8 controls / +5 files) — see the delta chain above. Every
       // wizard control left here is a SCOPE exception, not an indirection one:
       // its gate is narrower than the banner its shell renders.
-      leaves: { controls: 30, files: 18 },
+      leaves: { controls: FIGURES.leafControls, files: FIGURES.leafFiles },
     });
+  });
+
+  it("matches the figures the docs publish, word for word", () => {
+    /*
+      The census above measures the tree. This one reads the PROSE.
+
+      Both halves are needed, and the gap between them is where the drift has
+      actually happened: the numbers moved, the census was updated, and one of the
+      four documents was not. That leaves a reader trusting a figure no test
+      disagrees with. Here every document that quotes a figure has to still quote
+      the measured one.
+
+      Matching is on whitespace-collapsed, markup-stripped text, so re-wrapping a
+      paragraph or bolding a number is free; changing a number is not. The
+      `ViewOnlyActionButton` JSDoc is checked too — it publishes the same split in
+      the same words, and it is the one a developer reads first.
+
+      When this fails, the fix is to re-measure and update every listed place
+      together. Never to delete a phrase from this list to make it pass.
+    */
+    const f = FIGURES;
+    const published: Record<string, string[]> = {
+      "AGENTS.md": [
+        `${f.optOuts} of ${f.callSites} ViewOnlyActionButton call sites now opt out`,
+        `${f.staticOptOuts} covered by a banner in the SAME file`,
+        `${f.vouchedOptOuts} by a verified vouching parent (${f.renderSiteVouchedOptOuts} at a JSX render site, ${f.shellVouchedOptOuts} through the guided-setup shell)`,
+        `and ${f.exceptions} keep the per-button reason`,
+      ],
+      "docs/ARCHITECTURE.md": [
+        `${f.bannerComponents} components render a banner, and ${f.optOuts} of the ${f.callSites} ViewOnlyActionButton call sites opt out`,
+        `${f.staticOptOuts} pass the literal describeReason={false}`,
+        `and ${f.vouchedOptOuts} pass describeReason={!${VOUCH_PROP}}`,
+        `${f.renderSiteVouchedOptOuts} by a parent's own JSX render site (#2168), ${f.shellVouchedOptOuts} by the guided-setup shell (#2324)`,
+        `${f.exceptions} controls across ${f.exceptionFiles} files deliberately keep the per-button default`,
+        `(${f.leafControls} controls across ${f.leafFiles} files.)`,
+      ],
+      "docs/STYLE_GUIDE.md": [
+        // The style guide publishes the exception TOTAL only, on purpose.
+        `${f.exceptions} controls still carry their own per-button reason`,
+      ],
+      "CHANGELOG.md": [
+        `${f.callSites} gated admin controls, ${f.optOuts} of them covered by a banner (${f.staticOptOuts} in their own file, ${f.vouchedOptOuts} by a verified vouching parent — ${f.shellVouchedOptOuts} of those through the wizard frame)`,
+        `and ${f.exceptions} across ${f.exceptionFiles} files deliberately keeping their own reason`,
+      ],
+      "src/components/admin/view-only-action.tsx": [
+        `pass describeReason={false} here (${f.staticOptOuts} of ${f.callSites} call sites)`,
+        `a further ${f.vouchedOptOuts} pass describeReason={!${VOUCH_PROP}}`,
+        `${f.renderSiteVouchedOptOuts} vouched at a JSX render site (#2168) and ${f.shellVouchedOptOuts}`,
+        `${f.optOuts} opt-outs in total`,
+        `counts ${f.leafControls} controls here`,
+      ],
+    };
+
+    // Collapse the formatting a prose edit is free to change: line wrapping,
+    // markdown emphasis, inline code fences, and JSDoc's leading ` * `.
+    const flatten = (text: string) =>
+      text
+        .replace(/^\s*\*\s?/gm, " ")
+        .replace(/[*`]/g, "")
+        .replace(/\s+/g, " ");
+
+    const offenders: string[] = [];
+    for (const [rel, phrases] of Object.entries(published)) {
+      const file = join(process.cwd(), ...rel.split("/"));
+      // A moved document must fail here, not throw ENOENT and not pass silently.
+      if (!existsSync(file)) {
+        offenders.push(`${rel} not found — it publishes these figures`);
+        continue;
+      }
+      const flat = flatten(readFileSync(file, "utf8"));
+      for (const phrase of phrases) {
+        if (!flat.includes(phrase)) offenders.push(`${rel}: "${phrase}"`);
+      }
+    }
+
+    expect(
+      offenders,
+      `These documents no longer state the figures the census above measures. ` +
+        `A rollout change moves the numbers; re-measure and update AGENTS.md, ` +
+        `docs/ARCHITECTURE.md, docs/STYLE_GUIDE.md, CHANGELOG.md and the ` +
+        `ViewOnlyActionButton JSDoc together.`,
+    ).toEqual([]);
   });
 
   it("never strips a control's reason without a banner covering it", () => {
@@ -1941,6 +2066,7 @@ describe("view-only section banner coverage (#2160)", () => {
       the other direction: a control that DOES take it provably shares the
       banner's `canEdit`.
     */
+    let shellVouchedControls = 0;
     for (const key of wizardVouched) {
       const [file, name] = key.split("#");
       const target = astFiles.find((f) => f.file === file);
@@ -1965,6 +2091,10 @@ describe("view-only section banner coverage (#2160)", () => {
         ) {
           continue;
         }
+        // Counted here rather than at the render site: the docs publish the
+        // number of CONTROLS the shell channel covers, and one step body can
+        // hold several. (Today each holds one, which is why the two coincide.)
+        shellVouchedControls += 1;
         const at = `${target.rel}:${target.ast.getLineAndCharacterOfPosition(tag.getStart(target.ast)).line + 1}`;
         const canEdit = attr(tag, "canEdit");
         const value = canEdit ? attrExpression(canEdit) : null;
@@ -2000,6 +2130,15 @@ describe("view-only section banner coverage (#2160)", () => {
       `No step forwards ${VOUCH_PROP} from the shell, so the channel is dead ` +
         `plumbing and every wizard step control is back to its own reason.`,
     ).toBeGreaterThan(0);
+
+    // The docs publish the vouched total split by RULE (#2168 render site vs
+    // this shell channel), so the shell's half is measured rather than asserted
+    // in prose. The census test checks the two halves add up to the total.
+    expect(
+      shellVouchedControls,
+      `The docs publish ${FIGURES.shellVouchedOptOuts} opt-outs covered through ` +
+        `the wizard shell's channel. Re-measure and update them together.`,
+    ).toBe(FIGURES.shellVouchedOptOuts);
   });
 
   it("never lets the vouch prop reach a component this test cannot resolve (#2168)", () => {

@@ -299,14 +299,14 @@ export function VerifyStep({
   const verifyFailed =
     searchParams?.get("googleVerifyError") === "1" && !context.verified;
 
-  // Split (#2324) into the PERMISSION half and the READINESS half, so the
-  // button can say which one is stopping it. `canVerify` stays as the combined
-  // flag the copy below reads.
+  // READINESS only (#2324) — the PERMISSION half now lives on the button, which
+  // takes `canEdit={context.isFullAdmin}` and disables itself unless that is
+  // `true`. Splitting them changes no behaviour; it is what lets the button say
+  // WHICH of the two is stopping it (a missing credential, or Full Admin).
   const verifyReady =
     context.credentials.client_id.set &&
     context.credentials.client_secret.set &&
     !context.needsReentry;
-  const canVerify = context.isFullAdmin === true && verifyReady;
 
   async function startVerify() {
     setStarting(true);

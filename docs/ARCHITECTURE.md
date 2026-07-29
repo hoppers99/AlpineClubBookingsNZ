@@ -792,7 +792,8 @@ one commit, and because a scope change is itself a load it unmounts the
 `PolicyScopeSelect` the admin just operated, dropping keyboard focus to `<body>`
 for the duration of the round trip. That banner shape started in the five
 Booking Policies sections (#2142) and is now the **default across the admin
-tree** (#2160, extended by #2168) — not a claim that nothing is left. Measured
+tree** (#2160, extended by #2168 and #2324) — not a claim that nothing is left.
+Measured
 on the current tree by `view-only-banner-contract.test.ts`, which asserts these
 figures rather than trusting a hand count: **78 components render a banner, and
 242 of the 285 `ViewOnlyActionButton` call sites opt out** of the per-button
@@ -819,22 +820,24 @@ default** (`describeReason` left at `true`), in three shapes:
   the booking capacity/exclusive hold controls, the family-group login-holder
   and request-review sub-sections, and the non-member contact form). Nothing
   local proves an ancestor renders a banner above them, so the reason stays on
-  the control. (30 controls across 18 files.) The newest nine are the
-  integration setup wizards' credential-ish writes (#2324) — Xero credentials
-  and webhook key, Stripe keys and signing secret, Google credentials and
-  verify, the backups credentials and destination, and the Lodge Display
-  wizard's module switch. Those are **scope** exceptions, not indirection ones:
-  each is gated on a permission NARROWER than the banner its shell renders
-  (Full Admin on top of the wizard's area; `support` under a `lodge` banner for
-  the module switch), so an admin who has the wizard's area but not that
-  narrower one meets no banner at all. Before them, the per-booking "No emails"
-  switch (#2259), dropped into the Admin tools card's layout beside the capacity
-  and exclusive holds. Read that
+  the control. (30 controls across 18 files.) Nine of those 30 sit inside a
+  setup wizard and are **scope** exceptions rather than indirection ones: each is
+  gated on a permission NARROWER than the banner its shell renders, so an admin
+  who has the wizard's area but not that narrower one meets no banner at all.
+  Eight are new to this bucket with #2324, and are the four provider wizards'
+  credential-ish writes — Xero credentials and webhook key, Stripe keys and
+  signing secret, Google credentials and verify, the backups credentials and
+  destination — all of which additionally need Full Admin. The ninth, the Lodge
+  Display wizard's `support`-gated module switch under a `lodge` banner, has been
+  an exception since #2249 and stays one for the same reason; #2324 moved its
+  three lodge-gated siblings out of this bucket and into the vouched one. Before
+  those, the per-booking "No emails" switch (#2259), dropped into the Admin tools
+  card's layout beside the capacity and exclusive holds. Read that
   bucket as the
   REMAINDER — everything that is neither a member detail card nor one of the
-  four dialog-only files — rather than as a claim that all 30 are leaves.
-  Sixteen of the eighteen files are (27 controls); the other two,
-  `page-content-panel.tsx`
+  four dialog-only files — rather than as a claim that all 30 are leaves. Ten of
+  the eighteen files are (18 controls); six are the wizard step files just
+  described (9 controls); and the last two, `page-content-panel.tsx`
   and `site-banners-panel.tsx`, are full banner-bearing panels whose last 3
   controls sit inside their own edit/create `Dialog`, so those 3 are really the
   first shape occurring inside a file that also has the third. Nothing is
@@ -1003,12 +1006,28 @@ wizard channel is different, and this is the one real guarantee it buys. The
 shell passes **one** `canEdit` to both the banner and `helpers`, so a step
 control that reads `canEdit` from that same `helpers` object shares the banner's
 value *by construction* — the two cannot disagree, because they are the same
-value. The contract test enforces exactly that: inside a wizard-vouched
-component, a control that opts out via the vouch must take `canEdit` from an
-identifier the component received as a **parameter**, not from an independent
-source. A control that calls `useAdminAreaEditAccess(...)` itself therefore
-cannot be vouched for even by accident — which is precisely the mismatch this
-issue's review flagged.
+value. The contract test enforces exactly that, in two halves that only mean
+something together:
+
+- inside a wizard-vouched component, a control that opts out via the vouch must
+  read `canEdit` off an identifier the component received as a parameter whose
+  DECLARED type is `WizardStepHelpers` — not from an independent source, and not
+  merely off "some parameter" (which would accept a second, independently derived
+  access flag with a different scope, the very defect this catches); and
+- **only the shell may construct a `WizardStepHelpers` at all.** Outside
+  `integration-wizard.tsx`, an object property named
+  `ancestorRendersViewOnlyBanner` and an object literal annotated
+  `WizardStepHelpers` (`: T`, `as T`, `satisfies T`) both fail the test. Without
+  this, a provider config could mint its own helpers object with the vouch set to
+  `true` and hand it to a step body — satisfying every other check while no
+  banner rendered anywhere. Step unit tests are outside the scan, deliberately:
+  they must build a helpers object to render a step at all, and they cannot make
+  a production step opt out (the step's own `= false` default is what covers
+  that).
+
+A control that calls `useAdminAreaEditAccess(...)` itself therefore cannot be
+vouched for even by accident — it is neither a parameter nor typed as the
+helpers — which is precisely the mismatch this issue's review flagged.
 
 What stays a review call is the other direction: deciding a control should **not**
 take the vouch. Five controls take it today: the Lodge Display wizard's
@@ -1033,6 +1052,19 @@ actual Full Admin; it is now tri-state (`boolean | undefined`) like every other
 edit-access signal (#2065), so the notice renders only on a resolved `false`.
 The backups equivalent (`canManageDestination`) comes from the server fetch the
 shell already waits on, so it was never able to flash.
+
+The mirror-image edit went with it: **a step must not repeat what the banner
+already says**, and two sentences in the backups steps did. "You need support
+edit access" beside the verification button and "your admin role can view these
+settings but cannot change them" beside the nightly-backups switch both stated
+the wizard's own `support` scope — exactly what the banner above them states,
+once, in the reading order. Both were also keyed off `!canEdit` rather than
+`canEdit === false`, so both appeared for a moment even for an admin who *can*
+change those settings. Both are deleted; the vouched buttons under them now lean
+on the banner. That is the general rule from #2160's `AdminViewOnlyNotice`
+guidance applied to a wizard step: keep a second sentence only when it names a
+DIFFERENT permission from the banner's (which is exactly what the nine
+exceptions above do).
 
 Two things were deliberately left alone. `xero/_components/connection-status-panel.tsx`'s
 connect / reconnect / disconnect buttons ARE finance-gated, matching the Xero

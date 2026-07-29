@@ -326,6 +326,11 @@ describe("IntegrationWizard view-only vouch (#2324)", () => {
           seen.value = helpers.ancestorRendersViewOnlyBanner;
           return (
             <div>
+              {/* TEST-ONLY shape. A real step body takes the vouch as a prop
+                  defaulting to false and writes `describeReason={!prop}`; the
+                  contract test rejects reading it straight off `helpers` like
+                  this (test files are outside its scan). Inlined here so this
+                  case depends on nothing but the shell. */}
               <ViewOnlyActionButton
                 canEdit={helpers.canEdit}
                 describeReason={!helpers.ancestorRendersViewOnlyBanner}

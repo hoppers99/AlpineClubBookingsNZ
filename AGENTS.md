@@ -202,13 +202,12 @@ before changing Next.js APIs or conventions.
   dropping keyboard focus to `<body>` mid-interaction. Started in the five
   Booking Policies sections (#2142) and rolled across most of the admin tree
   (#2160, extended by #2168 and #2324): 242 of 285 `ViewOnlyActionButton` call
-  sites now
-  opt out — 216 covered by a banner in the SAME file, 26 by a verified vouching
-  parent (21 at a JSX render site, 5 through the guided-setup shell) — and 43
-  keep the per-button reason: dialog/popover contents, leaf
-  toolbars, `member-credit-card.tsx`, whose finance scope differs from the
-  member detail page banner's membership scope, and the setup wizards' writes
-  that need Full Admin on top of the wizard's own area. The banner is stated once per
+  sites now opt out — 216 covered by a banner in the SAME file, 26 by a verified
+  vouching parent (21 at a JSX render site, 5 through the guided-setup shell) —
+  and 43 keep the per-button reason: dialog/popover contents, leaf toolbars,
+  `member-credit-card.tsx`, whose finance scope differs from the member detail
+  page banner's membership scope, and the setup wizards' writes that need Full
+  Admin on top of the wizard's own area. The banner is stated once per
   SECTION, and never twice over the same controls: a banner-bearing component
   may not render another banner-bearing component, so when a covering parent
   renders such a child, the child takes `renderViewOnlyBanner={false}` at the
