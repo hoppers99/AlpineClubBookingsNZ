@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   MAX_RANGE_NIGHTS,
+  boardNights,
   boardWindowError,
   fitBoardWindow,
   stepBoardWindowByMonths,
@@ -38,6 +39,27 @@ describe("boardWindowError", () => {
     expect(boardWindowError("not-a-date", "2026-06-08")).toBe(
       "Enter a valid Date In and Date Out.",
     );
+  });
+});
+
+describe("boardNights", () => {
+  it("returns one column per night of an accepted window", () => {
+    expect(boardNights("2026-06-01", "2026-06-04")).toEqual([
+      "2026-06-01",
+      "2026-06-02",
+      "2026-06-03",
+    ]);
+  });
+
+  it("renders NO columns for a window the board refuses", () => {
+    // Every window boardWindowError() rejects must produce an empty column set,
+    // or the board lays out a column per night of whatever was typed while the
+    // error Alert claims the window is out of range.
+    expect(boardWindowError("2026-06-01", "3026-06-01")).not.toBeNull();
+    expect(boardNights("2026-06-01", "3026-06-01")).toEqual([]);
+    expect(boardNights("2026-06-01", "2026-09-01")).toEqual([]);
+    expect(boardNights("2026-06-08", "2026-06-01")).toEqual([]);
+    expect(boardNights("not-a-date", "2026-06-08")).toEqual([]);
   });
 });
 
@@ -122,5 +144,18 @@ describe("addMonthsDateOnly", () => {
     expect(
       formatDateOnly(addMonthsDateOnly(parseDateOnly("2026-05-31"), 1)),
     ).toBe("2026-06-30");
+  });
+
+  // Date.UTC maps years 0-99 onto 1900-1999, so building the target month with
+  // it silently teleported a year-47 date to 1947. Nothing in the lodge domain
+  // books year 47, but a date helper that rewrites the century for some inputs
+  // is a trap for whatever calls it next.
+  it("keeps a year below 100 in its own century", () => {
+    expect(
+      formatDateOnly(addMonthsDateOnly(parseDateOnly("0047-01-31"), 1)),
+    ).toBe("0047-02-28");
+    expect(
+      formatDateOnly(addMonthsDateOnly(parseDateOnly("0099-12-01"), 1)),
+    ).toBe("0100-01-01");
   });
 });

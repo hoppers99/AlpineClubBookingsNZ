@@ -1,6 +1,7 @@
 import {
   addDaysDateOnly,
   addMonthsDateOnly,
+  countNightsDateOnly,
   eachDateOnlyInRange,
   formatDateOnly,
   isDateOnlyString,
@@ -29,14 +30,29 @@ export function boardWindowError(from: string, to: string): string | null {
   if (parseDateOnly(to) <= parseDateOnly(from)) {
     return "Date Out must be after Date In.";
   }
-  const nights = eachDateOnlyInRange(
-    parseDateOnly(from),
-    parseDateOnly(to),
-  ).length;
+  // Counted arithmetically, never enumerated: a mistyped year-3000 date-out is
+  // refused without building a column per night first.
+  const nights = countNightsDateOnly(parseDateOnly(from), parseDateOnly(to));
   if (nights > MAX_RANGE_NIGHTS) {
     return `The board shows at most ${MAX_RANGE_NIGHTS} nights; that window is ${nights}. Narrow Date In / Date Out, or step a month at a time with the arrows.`;
   }
   return null;
+}
+
+/**
+ * The night columns the board renders for a window — EMPTY whenever
+ * `boardWindowError` refuses that window.
+ *
+ * A refused window has no columns at all. Enumerating it anyway would build one
+ * column per night of whatever was typed (a year, a century) and hand the board
+ * a table it must lay out, underneath an Alert saying the window is invalid.
+ * The refusal is the whole answer.
+ */
+export function boardNights(from: string, to: string): string[] {
+  if (boardWindowError(from, to)) return [];
+  return eachDateOnlyInRange(parseDateOnly(from), parseDateOnly(to)).map(
+    formatDateOnly,
+  );
 }
 
 export function fitBoardWindow(

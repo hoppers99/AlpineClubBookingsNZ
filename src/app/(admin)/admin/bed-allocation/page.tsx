@@ -40,7 +40,6 @@ import { Label } from "@/components/ui/label";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import {
   addDaysDateOnly,
-  eachDateOnlyInRange,
   formatDateOnly,
   getTodayDateOnly,
   isDateOnlyString,
@@ -57,6 +56,7 @@ import {
 } from "./_components/allocation-move";
 import {
   MAX_RANGE_NIGHTS,
+  boardNights,
   boardWindowError,
   fitBoardWindow,
   stepBoardWindowByMonths,
@@ -310,13 +310,11 @@ export default function AdminBedAllocationPage() {
     [fromDate, toDate],
   );
 
-  const nights = useMemo(() => {
-    if (!isDateOnlyString(fromDate) || !isDateOnlyString(toDate)) return [];
-    if (parseDateOnly(toDate) <= parseDateOnly(fromDate)) return [];
-    return eachDateOnlyInRange(parseDateOnly(fromDate), parseDateOnly(toDate)).map(
-      formatDateOnly,
-    );
-  }, [fromDate, toDate]);
+  // A refused window has NO columns. Enumerating it anyway would build a column
+  // per night for whatever the admin typed — a year, a century — and the board
+  // would try to render them all while the Alert above explains that the window
+  // is invalid. The error is the only thing shown for an out-of-range window.
+  const nights = useMemo(() => boardNights(fromDate, toDate), [fromDate, toDate]);
 
   const bedOptionGroups = useMemo<BedOptionGroup[]>(() => {
     return [...(payload?.rooms ?? [])]
@@ -1282,7 +1280,11 @@ export default function AdminBedAllocationPage() {
         </div>
       ) : null}
 
-      {payload ? (
+      {/* The fetch is withheld while the window is out of range, but a payload
+          from the PREVIOUS good window survives in state. Rendering the board
+          against a refused window would show stale rows under a header the
+          admin no longer asked for, so the Alert above stands alone. */}
+      {payload && !windowError ? (
         <DndContext
           sensors={sensors}
           collisionDetection={closestCenter}
