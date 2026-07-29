@@ -4,6 +4,26 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Every admin "open in Xero" link now lands in the club's own Xero
+  organisation (#2283).** Twenty-one links across ten admin screens — member
+  records and the members table, payments, subscriptions, and the Xero Sync
+  panels — were plain Xero web addresses that did not say *which* organisation
+  they meant. For an admin whose Xero login can see more than one organisation
+  (an accountant, or a treasurer for two clubs), Xero answers such an address
+  with whichever organisation they last had open, so a link could quietly open
+  **another organisation's books**. All of these links are now built the same
+  way as the Xero Sync page's "Go to Xero" button: when the club's Xero
+  connection is healthy they carry the organisation's short code and Xero
+  switches to the right organisation before showing the page, and when it is
+  not they fall back to the plain address — the link always works, it is just
+  less precise while Xero is unreachable. A new automated check stops future
+  code from reintroducing an unqualified Xero link. Behind the scenes, the
+  read of the organisation's financial year-end month (used to default the
+  membership year) no longer retries against a rate-limited Xero connection —
+  it degrades immediately and tries afresh on the next call, so a struggling
+  connection is not made worse and a just-fixed one is picked up straight
+  away.
+
 - **Families can now be recorded across four generations, not two (#2255).**
   A member who already had dependants could not be recorded as anyone's child,
   so a grandparent, parent and child could not all be linked in one line — the
