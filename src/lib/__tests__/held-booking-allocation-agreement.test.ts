@@ -42,7 +42,9 @@ vi.mock("@/lib/lodge-capacity", () => ({
 
 import {
   getBedAllocationDashboard,
+  isBookingBedAllocationLocked,
   parseBedAllocationDateRange,
+  runAutoBedAllocation,
 } from "@/lib/admin-bed-allocation";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 import { parseDateOnly } from "@/lib/date-only";
@@ -236,5 +238,209 @@ describe("held bookings get no allocations — board and lifecycle agree (ADR-00
       }),
     );
     expect(result.createdCount).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Write-time re-check on the BOARD planner (#2285 review).
+//
+// `runAutoBedAllocation` reads the dashboard and then `createMany`s under NO
+// lock at all, so an exclusive hold set in between would be silently undone:
+// the hold's prune frees the unique keys, so `skipDuplicates` cannot stop the
+// re-insert. Both planners now re-read the payload's bookings immediately
+// before the write and drop rows for any booking that has become
+// unallocatable.
+// ---------------------------------------------------------------------------
+describe("Run Auto Allocation re-checks the bookings it is about to write (#2285 review)", () => {
+  /**
+   * Board db whose booking reads drift: the dashboard load (the only read
+   * selecting `guests`) sees an ordinary booking, while the write-time re-check
+   * sees whatever `writeTime` says.
+   */
+  function driftingBoardDb(writeTime: {
+    status?: string;
+    deletedAt?: Date | null;
+    wholeLodgeHold?: boolean;
+  }) {
+    const db: any = boardDb(false);
+    const dashboardRows = [boardBooking(false)];
+    const writeTimeRows = [
+      {
+        id: BOOKING_ID,
+        status: writeTime.status ?? "CONFIRMED",
+        deletedAt: writeTime.deletedAt ?? null,
+        wholeLodgeHold: writeTime.wholeLodgeHold ?? false,
+      },
+    ];
+    db.booking.findMany = vi.fn(async ({ select }: any) =>
+      select?.guests ? dashboardRows : writeTimeRows,
+    );
+    db.bedAllocation.createMany = vi.fn().mockResolvedValue({ count: 2 });
+    return db;
+  }
+
+  it("writes nothing when an exclusive hold lands between the dashboard read and the write", async () => {
+    const db = driftingBoardDb({ wholeLodgeHold: true });
+
+    const result = await runAutoBedAllocation({ range: RANGE, db });
+
+    expect(db.bedAllocation.createMany).not.toHaveBeenCalled();
+    expect(result.count).toBe(0);
+  });
+
+  it("writes nothing when a cancel lands between the dashboard read and the write", async () => {
+    const db = driftingBoardDb({ status: "CANCELLED" });
+
+    const result = await runAutoBedAllocation({ range: RANGE, db });
+
+    expect(db.bedAllocation.createMany).not.toHaveBeenCalled();
+    expect(result.count).toBe(0);
+  });
+
+  it("control: an unchanged booking is still written in full", async () => {
+    const db = driftingBoardDb({});
+
+    const result = await runAutoBedAllocation({ range: RANGE, db });
+
+    expect(db.bedAllocation.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({ bookingId: BOOKING_ID, source: "AUTO" }),
+        expect.objectContaining({ bookingId: BOOKING_ID, source: "AUTO" }),
+      ],
+      skipDuplicates: true,
+    });
+    expect(result.count).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Requested-room lock semantics across the hold toggle (#2285 review, F6).
+//
+// A member may set/clear their requested room until the lodge confirms beds;
+// the lock signal (#776) is "this booking has at least one APPROVED
+// BedAllocation row" (`isBookingBedAllocationLocked`). Setting an exclusive
+// hold prunes every row the booking owns, approved ones included, so the lock
+// falls OFF and the member's room editor re-opens — and after the hold is
+// cleared, the AUTO re-plan creates unapproved rows, so it STAYS off until an
+// admin approves again.
+//
+// That is the intended, coherent state and is deliberately NOT changed: with no
+// allocated beds there is nothing for the lock to protect, and a lock left on
+// over zero rows would strand the member's requested room behind a confirmation
+// that no longer exists. This test pins the semantics so a future change has to
+// be a deliberate decision rather than an accident; the audit list the prune
+// records (`booking.exclusiveHold.set` metadata) is the recovery path for the
+// approvals it destroys.
+// ---------------------------------------------------------------------------
+describe("requested-room lock is OFF after a hold set and after a hold clear (#2285 review)", () => {
+  /** A tiny BedAllocation store shared by the reconcile mock and the lock read. */
+  function lockScenarioDb(rows: Array<{ id: string; approvedAt: Date | null }>) {
+    let store = [...rows];
+    const db: any = {
+      clubModuleSettings: {
+        findUnique: vi.fn().mockResolvedValue({ bedAllocation: true }),
+      },
+      booking: {
+        findUnique: vi.fn(),
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+      bedAllocation: {
+        deleteMany: vi.fn(async () => {
+          const count = store.length;
+          store = [];
+          return { count };
+        }),
+        findMany: vi.fn().mockResolvedValue([]),
+        createMany: vi.fn(async ({ data }: any) => {
+          // The planner never stamps approvedAt — AUTO rows are drafts.
+          for (const row of data) {
+            store.push({ id: `auto-${store.length}`, approvedAt: row.approvedAt ?? null });
+          }
+          return { count: data.length };
+        }),
+        updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+        // The #776 lock read: "any approved row for this booking?"
+        findFirst: vi.fn(async () => store.find((row) => row.approvedAt !== null) ?? null),
+      },
+      bedAllocationSettings: {
+        findUnique: vi.fn().mockResolvedValue({ autoAllocationEnabled: true }),
+      },
+      lodgeRoom: { findMany: vi.fn().mockResolvedValue([ROOM]) },
+      auditLog: { create: vi.fn().mockResolvedValue({}) },
+    };
+    db.$transaction = vi.fn((cb: (client: unknown) => unknown) => cb(db));
+    return db;
+  }
+
+  const heldBooking = {
+    id: BOOKING_ID,
+    status: BookingStatus.CONFIRMED,
+    deletedAt: null,
+    checkIn: CHECK_IN,
+    checkOut: CHECK_OUT,
+    lodgeId: null,
+    wholeLodgeHold: true,
+    guests: [scenarioGuest("guest-1"), scenarioGuest("guest-2")],
+  };
+
+  it("SET: the prune removes the approved rows, so the lock falls off", async () => {
+    // The booking has an APPROVED row, so the member's room editor is locked.
+    const db = lockScenarioDb([
+      { id: "approved-1", approvedAt: new Date("2026-06-15T00:00:00.000Z") },
+    ]);
+    expect(await isBookingBedAllocationLocked({ bookingId: BOOKING_ID, db })).toBe(
+      true,
+    );
+
+    db.booking.findUnique.mockResolvedValue(heldBooking);
+    await reconcileBedAllocationsForBooking({ bookingId: BOOKING_ID, db });
+
+    expect(await isBookingBedAllocationLocked({ bookingId: BOOKING_ID, db })).toBe(
+      false,
+    );
+  });
+
+  it("CLEAR: the AUTO re-plan creates only unapproved rows, so the lock stays off until re-approval", async () => {
+    const db = lockScenarioDb([]);
+    db.booking.findUnique.mockResolvedValue({
+      ...heldBooking,
+      wholeLodgeHold: false,
+    });
+    db.booking.findMany.mockImplementation(async ({ select }: any) =>
+      select?.guests
+        ? [
+            {
+              id: BOOKING_ID,
+              createdAt: new Date("2026-06-01T00:00:00.000Z"),
+              requestedRoomId: null,
+              checkIn: CHECK_IN,
+              checkOut: CHECK_OUT,
+              status: BookingStatus.CONFIRMED,
+              originBookingRequest: null,
+              heldForBookingRequest: null,
+              adminCapacityHoldAt: null,
+              wholeLodgeHold: false,
+              guests: [scenarioGuest("guest-1"), scenarioGuest("guest-2")],
+            },
+          ]
+        : [
+            {
+              id: BOOKING_ID,
+              status: BookingStatus.CONFIRMED,
+              deletedAt: null,
+              wholeLodgeHold: false,
+            },
+          ],
+    );
+
+    const result = await reconcileBedAllocationsForBooking({
+      bookingId: BOOKING_ID,
+      db,
+    });
+
+    expect(result.createdCount).toBe(2);
+    expect(await isBookingBedAllocationLocked({ bookingId: BOOKING_ID, db })).toBe(
+      false,
+    );
   });
 });
