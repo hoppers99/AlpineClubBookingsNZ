@@ -200,7 +200,7 @@ rejected on save, because a member charged a promo price would otherwise read a
 total with no reason for it. The rule is satisfied three ways, so it never
 invalidates an override a club already saved: keep `{{promoSummary}}`, or show
 the adjustment yourself with `{{promoAdjustment}}` (the signed value) or the
-older `{{discount}}` — the shape the pre-2267 default body shipped
+older `{{discount}}` — the shape the previous default body shipped
 (`Subtotal: {{subtotal}}` above `Discount ({{promoCode}}): -{{discount}}`), so
 every override saved from that default keeps validating and re-saving. A
 `{{subtotal}}` line on its own does **not** satisfy it: a subtotal with no
