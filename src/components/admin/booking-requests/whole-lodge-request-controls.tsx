@@ -1,0 +1,284 @@
+"use client";
+
+import { useState } from "react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { formatNZDate } from "@/lib/nzst-date";
+
+/*
+  #2263 — the admin-side additions for whole-lodge requests, kept as small
+  standalone pieces mounted inside the shared booking-requests panel rather than
+  woven into its 1600 lines. The queue stays ONE queue (owner decision D4:
+  exclusivity display gets built once, badges tell the two apart), and the
+  composition boundary stays clean enough that a future separate queue is cheap.
+
+  EVERYTHING IN THIS FILE IS ADMIN-ONLY. The availability strip below is the
+  single largest concentration of occupancy data in the feature — how full each
+  night is, which nights are already exclusively held, and which bookings clash.
+  A member is never shown any of it: to them a held night and a full night are
+  the same words (ADR-001 decision 6). It is fetched from an /api/admin route
+  behind requireAdmin and rendered only here.
+*/
+
+type ConflictBooking = {
+  id: string;
+  memberName: string;
+  checkIn: string;
+  checkOut: string;
+  guestCount: number;
+  status: string;
+  overridden?: boolean;
+};
+
+type HoldConflictsResponse = {
+  lodgeCapacity: number;
+  nights: Array<{
+    date: string;
+    availableBeds: number;
+    occupiedBeds: number;
+    wholeLodgeHeld: boolean;
+  }>;
+  conflicts: ConflictBooking[];
+};
+
+/**
+ * The two queue badges. "Member" marks a request that came from a signed-in
+ * account (rather than the public or school front-doors); "Whole lodge
+ * requested" marks the exclusivity ask — and deliberately renders for SCHOOL
+ * rows too, closing a display gap that predates this feature: the school door
+ * could always ask for exclusivity, and the queue never said so.
+ */
+export function WholeLodgeRequestBadges({
+  memberOrigin,
+  exclusivityRequested,
+  requesterName,
+}: {
+  memberOrigin: boolean;
+  exclusivityRequested: boolean;
+  requesterName?: string | null;
+}) {
+  return (
+    <>
+      {memberOrigin ? (
+        <Badge
+          variant="outline"
+          className="border-cat1-6 bg-cat1-3 text-cat1-11"
+          title={
+            requesterName
+              ? `Submitted by ${requesterName} from their member account`
+              : "Submitted from a member account"
+          }
+        >
+          Member
+        </Badge>
+      ) : null}
+      {exclusivityRequested ? (
+        <Badge
+          variant="outline"
+          className="border-cat2-6 bg-cat2-3 text-cat2-11"
+          title="The requester asked for sole occupancy of the lodge"
+        >
+          Whole lodge requested
+        </Badge>
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * Collapsed-by-default availability + conflict preview for a whole-lodge
+ * request. Advisory only: ADR-001 decision 1 grants the hold regardless of what
+ * is already on those nights, and the officer resolves any overlap by hand. This
+ * exists so the officer sees the clash BEFORE pressing Approve rather than in
+ * the callout after it.
+ */
+export function WholeLodgeAvailabilityStrip({
+  requestId,
+}: {
+  requestId: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [data, setData] = useState<HoldConflictsResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function toggle() {
+    const next = !open;
+    setOpen(next);
+    if (!next || data || loading) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await fetch(
+        `/api/admin/booking-requests/${requestId}/hold-conflicts`,
+      );
+      if (!response.ok) throw new Error("Could not load availability");
+      setData((await response.json()) as HoldConflictsResponse);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load availability");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="rounded-md border border-border p-3">
+      <Button
+        type="button"
+        size="sm"
+        variant="ghost"
+        onClick={() => void toggle()}
+        aria-expanded={open}
+      >
+        {open ? "Hide" : "Show"} availability for these nights
+      </Button>
+
+      {open ? (
+        <div className="mt-3 space-y-3 text-sm">
+          {loading ? <p className="text-muted-foreground">Loading…</p> : null}
+          {error ? (
+            <p role="alert" className="text-danger">
+              {error}
+            </p>
+          ) : null}
+
+          {data ? (
+            <>
+              <div className="flex flex-wrap gap-2">
+                {data.nights.map((night) => (
+                  <span
+                    key={night.date}
+                    className={
+                      night.wholeLodgeHeld
+                        ? "rounded-md border border-cat2-6 bg-cat2-3 px-2 py-1 text-xs text-cat2-11"
+                        : night.availableBeds === 0
+                          ? "rounded-md border border-warning-6 bg-warning-3 px-2 py-1 text-xs text-warning-11"
+                          : "rounded-md border border-border bg-muted px-2 py-1 text-xs text-muted-foreground"
+                    }
+                  >
+                    {formatNZDate(new Date(`${night.date}T00:00:00`))} ·{" "}
+                    {night.wholeLodgeHeld
+                      ? "held"
+                      : `${night.occupiedBeds}/${data.lodgeCapacity} beds`}
+                  </span>
+                ))}
+              </div>
+
+              {data.conflicts.length > 0 ? (
+                <div
+                  role="status"
+                  className="rounded-md border border-warning-6 bg-warning-3 p-3 text-xs text-warning-11"
+                >
+                  <p className="font-medium">
+                    {data.conflicts.length === 1
+                      ? "1 booking already overlaps these nights"
+                      : `${data.conflicts.length} bookings already overlap these nights`}
+                  </p>
+                  <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                    {data.conflicts.map((conflict) => (
+                      <li key={conflict.id}>
+                        {conflict.memberName} ·{" "}
+                        {formatNZDate(new Date(`${conflict.checkIn}T00:00:00`))}–
+                        {formatNZDate(new Date(`${conflict.checkOut}T00:00:00`))} ·{" "}
+                        {conflict.guestCount}{" "}
+                        {conflict.guestCount === 1 ? "guest" : "guests"} ·{" "}
+                        {conflict.status}
+                        {conflict.overridden
+                          ? " (overridden, not yet holding — it will settle onto these nights later)"
+                          : ""}
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="mt-1">
+                    Approving still grants the whole-lodge hold — it never
+                    displaces an existing booking. Sort these out with the people
+                    involved.
+                  </p>
+                </div>
+              ) : (
+                <p className="text-muted-foreground">
+                  Nothing else is booked on these nights.
+                </p>
+              )}
+            </>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * The two approval inputs for a member whole-lodge request.
+ *
+ * `pricedHeadcount` is the number the officer actually books and prices after
+ * talking to the member — the member's own figure is explicitly an estimate.
+ *
+ * `priceOverrideCents` is the MANDATORY fallback when no active season covers
+ * the requested dates. The member-request path has no quote or officer-price op
+ * to fall back on (both are refused at the service layer), so without this field
+ * an out-of-season whole-lodge request would be a dead end: the approval would
+ * 409 with "set a price before approving" and there would be nowhere to set one.
+ */
+export function MemberWholeLodgeApprovalFields({
+  requestId,
+  submittedHeadcount,
+  headcount,
+  onHeadcountChange,
+  priceDollars,
+  onPriceChange,
+  disabled,
+}: {
+  requestId: string;
+  submittedHeadcount: number;
+  headcount: string;
+  onHeadcountChange: (value: string) => void;
+  priceDollars: string;
+  onPriceChange: (value: string) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="grid gap-3 rounded-md border border-border p-3 sm:grid-cols-2">
+      <div className="space-y-1">
+        <Label htmlFor={`whole-lodge-headcount-${requestId}`}>
+          Headcount to book and price
+        </Label>
+        <Input
+          id={`whole-lodge-headcount-${requestId}`}
+          type="number"
+          min="1"
+          className="w-32"
+          value={headcount}
+          disabled={disabled}
+          onChange={(event) => onHeadcountChange(event.target.value)}
+        />
+        <p className="text-xs text-muted-foreground">
+          The member estimated {submittedHeadcount}. Confirm the real number with
+          them before approving — this is what gets charged.
+        </p>
+      </div>
+
+      <div className="space-y-1">
+        <Label htmlFor={`whole-lodge-price-${requestId}`}>
+          Total price override (optional)
+        </Label>
+        <Input
+          id={`whole-lodge-price-${requestId}`}
+          type="number"
+          min="0"
+          step="0.01"
+          className="w-40"
+          value={priceDollars}
+          disabled={disabled}
+          onChange={(event) => onPriceChange(event.target.value)}
+        />
+        <p className="text-xs text-muted-foreground">
+          Leave blank to price at the season rates. Required when no season
+          covers these dates — there is no separate pricing step on this path.
+        </p>
+      </div>
+    </div>
+  );
+}
