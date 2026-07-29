@@ -321,10 +321,10 @@ function isAllocatableBookingStatus(status: string): boolean {
  *
  * So immediately before the write, re-read the live held/status/deleted state of
  * every booking in the payload in ONE query and drop the rows of any booking
- * that is no longer allocatable — whole-lodge-held (ADR-001, the F1 race),
- * soft-deleted, or moved to a non-allocatable status by a concurrent cancel
- * (the F3 CLEAR-vs-cancel race, which reaches here through the clear-direction
- * re-plan). A booking id the re-read does not return at all is also dropped: it
+ * that is no longer allocatable — whole-lodge-held (ADR-001), soft-deleted, or
+ * moved to a non-allocatable status by a concurrent cancel, which reaches here
+ * through the hold's clear-direction re-plan and serialises on the DISJOINT
+ * club-wide key. A booking id the re-read does not return at all is dropped: it
  * no longer exists, so its rows would fail the FK anyway.
  *
  * Structural row type, so both writers can pass their own payload shape.
