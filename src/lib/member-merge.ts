@@ -185,6 +185,15 @@ export const MEMBER_MERGE_RELATION_SPECS: readonly MemberMergeRelationSpec[] = [
   spec("BedAllocation", "approvedBy", "approvedByMemberId", "move"),
   spec("BookingChangeRequest", "requestedBy", "requestedByMemberId", "move"),
   spec("BookingChangeRequest", "reviewedBy", "reviewedByMemberId", "move"),
+  // #2263: who submitted an authenticated whole-lodge booking request. A
+  // nullable SetNull attribution column with no member unique constraint —
+  // the same shape as BookingChangeRequest.requestedByMemberId above — so it
+  // `move`s: the loser's requests re-point to the surviving member, who then
+  // owns them in "My requests" and may withdraw them.
+  spec("BookingRequest", "requestedByMember", "requestedByMemberId", "move", {
+    note:
+      "#2263 member whole-lodge requests; a merge can transiently push the master past the 2-open-request cap — the cap is a creation-time guard, not an invariant, so this is accepted (documented in docs/STATE_MACHINES.md)",
+  }),
 
   // --- Promos ---
   spec("PromoRedemption", "member", "memberId", "move"),
