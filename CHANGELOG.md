@@ -4,8 +4,8 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
-- **Every admin "open in Xero" link now lands in the club's own Xero
-  organisation (#2283).** Twenty-one links across ten admin screens — member
+- **Every "open in Xero" link in the admin area now lands in the club's own
+  Xero organisation (#2283).** Twenty-one links across ten admin screens — member
   records and the members table, payments, subscriptions, and the Xero Sync
   panels — were plain Xero web addresses that did not say *which* organisation
   they meant. For an admin whose Xero login can see more than one organisation
