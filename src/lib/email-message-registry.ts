@@ -640,12 +640,25 @@ function sampleValue(token: string): string {
   if (token === "promoSummary") {
     return "Subtotal: $153.45\nPromo adjustment (PROMO2026): -$30.00\n";
   }
-  // #2267: the booking-modified change block, in the shape the send composes
-  // for a stay whose dates moved but whose price and party did not — the same
-  // "$123.45" total the per-piece {{oldTotal}}/{{newTotal}} samples show.
-  if (token === "changeSummary") {
-    return "Previous Dates: 1 Jul 2026 – 3 Jul 2026\nNew Dates: 8 Jul 2026 – 10 Jul 2026\nGuests: 2\nTotal: $123.45\n";
+  // #2267: one coherent booking-modified sample — a 2-guest stay whose dates
+  // moved from 1–3 Jul to 8–10 Jul and whose price rose from $123.45 to
+  // $150.00 with no change fee, leaving $26.55 to pay. Every token below tells
+  // that same story, including the per-piece ones a legacy override uses, so
+  // an admin's preview reconciles instead of mixing three unrelated amounts.
+  if (token === "modificationTypeLabel") return "Dates Changed";
+  if (token === "paymentNote") {
+    return "An additional payment of $26.55 is required.";
   }
+  if (token === "changeSummary") {
+    return "Previous Dates: 1 Jul 2026 – 3 Jul 2026\nNew Dates: 8 Jul 2026 – 10 Jul 2026\nGuests: 2\nPrevious Total: $123.45\nNew Total: $150.00\n";
+  }
+  if (token === "oldCheckIn") return "1 Jul 2026";
+  if (token === "oldCheckOut") return "3 Jul 2026";
+  if (token === "newCheckIn") return "8 Jul 2026";
+  if (token === "newCheckOut") return "10 Jul 2026";
+  if (token === "oldTotal") return "$123.45";
+  if (token === "newTotal") return "$150.00";
+  if (token === "changeFee") return "$0.00";
   if (token === "promoAdjustment") return "-$30.00";
   if (token === "promoCode") return "PROMO2026";
   if (token === "discount") return "$30.00";

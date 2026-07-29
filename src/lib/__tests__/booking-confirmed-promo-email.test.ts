@@ -611,6 +611,30 @@ describe("booking-modified default body (#2267)", () => {
     expectCleanBody(rendered);
   });
 
+  it("previews one coherent modification: every sample tells the same story", () => {
+    const definition = getEmailTemplateDefinition("booking-modified");
+    if (!definition) throw new Error("missing booking-modified");
+    const sample = definition.sampleData;
+
+    // The pre-composed block quotes the same dates, party and totals as the
+    // per-piece tokens a legacy override uses.
+    expect(sample.changeSummary).toContain(
+      `Previous Dates: ${sample.oldCheckIn} – ${sample.oldCheckOut}`,
+    );
+    expect(sample.changeSummary).toContain(
+      `New Dates: ${sample.newCheckIn} – ${sample.newCheckOut}`,
+    );
+    expect(sample.changeSummary).toContain(`Guests: ${sample.newGuestCount}`);
+    expect(sample.changeSummary).toContain(`Previous Total: ${sample.oldTotal}`);
+    expect(sample.changeSummary).toContain(`New Total: ${sample.newTotal}`);
+    // And the payment note is the difference between those two totals.
+    expect(sample.paymentNote).toContain("$26.55");
+
+    const rendered = renderTemplateString(definition.defaultBody, sample);
+    expect(rendered).not.toMatch(/\{\{[^{}]+\}\}/);
+    expectCleanBody(rendered);
+  });
+
   it("keeps the per-piece tokens the old body used allowed for existing overrides", () => {
     const definition = getEmailTemplateDefinition("booking-modified");
     if (!definition) throw new Error("missing booking-modified");
