@@ -74,6 +74,16 @@ export interface CustodianBedHold {
 const MINOR_AGE_TIERS = new Set(["INFANT", "CHILD", "YOUTH"]);
 
 /**
+ * Is this age tier a minor? Exported because the custodian slot on the lobby
+ * TV must never individually name a minor at ANY granularity (the display
+ * contract in lodge-display-state.ts), and the hut-leaders API warns the admin
+ * at assignment time rather than letting them assume a name will appear.
+ */
+export function isMinorAgeTier(ageTier: string | null | undefined): boolean {
+  return ageTier ? MINOR_AGE_TIERS.has(ageTier) : false;
+}
+
+/**
  * Does a hold cover any night of `[from, toExclusive)`?
  *
  * The hold's own range is inclusive-inclusive, so it overlaps a half-open
@@ -160,7 +170,7 @@ export async function findCustodianBedHolds(input: {
       memberId: row.memberId,
       memberName:
         `${row.member.firstName ?? ""} ${row.member.lastName ?? ""}`.trim(),
-      memberIsMinor: MINOR_AGE_TIERS.has(row.member.ageTier),
+      memberIsMinor: isMinorAgeTier(row.member.ageTier),
       lodgeId: row.lodgeId,
       bedId: row.bedId,
       bedName: row.bed.name,
