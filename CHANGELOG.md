@@ -4,6 +4,32 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Setting up a lodge TV is now one guided path instead of five cards and a
+  guess (#2249).** **Admin → Lobby Display** leads with a **Guided setup** card
+  whenever your club has no boards or no working screen, and it opens a six-step
+  wizard that takes you from "the Lobby TV display module is off" to a TV in the
+  lodge showing the right board: turn the module on, make sure the built-in
+  boards exist (running the same **Restore built-in boards** action, with the
+  same warning about what it overwrites), pick the board and preview it as the
+  lodge will see it, fill in the handful of values the board prints — Wi-Fi name
+  and password, checkout time, door code, and the on-screen notice — then pair
+  the screen by typing the six characters it shows. The wizard creates the
+  screen record, binds the board you picked and arms the pairing in one press.
+  The order is deliberate: you finish the authoring first and hang the TV last.
+  Every step checks the real state of your club rather than what you typed, so
+  you can leave, come back, or re-run the whole thing after replacing a TV
+  without undoing anything — and the final step only ticks once the screen has
+  actually fetched its board, which is the only real proof the whole path works
+  rather than just the admin half of it. Two things are said out loud rather
+  than left as surprises: where you got to is saved for the **whole club**, not
+  for you personally, so another admin resumes from the same step; and turning
+  the module on needs system-settings access, so an admin with lodge access only
+  is told who to ask instead of being handed a button that would be refused. The
+  wizard is the one Lobby Display page that stays open while the module is off —
+  everything else there still 404s until it is on — and once your screens are
+  live it steps back from the gold lead card to an ordinary card in the hub, and
+  stays named in the **Help** panel on every Lobby Display page.
+
 - **Writing a Lodge TV footer or CSS override no longer means remembering the
   tokens (#2248).** Every field where a board's HTML or CSS is typed by hand —
   the Visual builder's **Footer HTML**, **CSS overrides** and a zone's **HTML
