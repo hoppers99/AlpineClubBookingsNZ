@@ -3219,6 +3219,15 @@ export async function deleteBedAllocation(input: {
  * BedAllocation row for the booking — `approveBedAllocations` stamps
  * `approvedAt`/`approvedByMemberId` when an admin explicitly confirms beds.
  * Unapproved (auto-suggested or pending manual) allocations do not lock it.
+ *
+ * The lock is NOT one-way (#2252). Two existing paths can take the booking's
+ * last approved row away again and re-open the member's editor:
+ *   - a board move re-drafts the row it updates (the upsert update branch
+ *     clears `approvedAt`/`approvedByMemberId`);
+ *   - `deleteBedAllocation` removes it outright.
+ * Neither is a dedicated "un-approve" action — they are documented side
+ * effects — but the in-booking panel warns before removing the last approved
+ * row, because the member silently regaining the editor is a real consequence.
  */
 export async function isBookingBedAllocationLocked(input: {
   bookingId: string;
@@ -3239,6 +3248,16 @@ export async function approveBedAllocations(input: {
   approvedByMemberId: string;
   allocationIds?: string[];
   range?: BedAllocationDateRange;
+  /*
+   * One booking's draft rows (#2252) — a FIRST-CLASS third selector, sufficient
+   * on its own. The in-booking panel's Confirm has neither of the other two
+   * available to it safely: `allocationIds` caps at 250 and a long stay can
+   * exceed that, and the `from`/`to` form approves EVERY pending allocation of
+   * EVERY booking in the window, so confirming one booking from its own page
+   * would silently confirm other people's drafts. When combined with either of
+   * the others it only ever NARROWS the set.
+   */
+  bookingId?: string;
   // Range approval follows the board's lodge scope so approving one lodge's
   // board never approves another lodge's pending allocations.
   lodgeId?: string;
@@ -3248,6 +3267,10 @@ export async function approveBedAllocations(input: {
   const where: Prisma.BedAllocationWhereInput = {
     approvedAt: null,
   };
+
+  if (input.bookingId) {
+    where.bookingId = input.bookingId;
+  }
 
   if (input.allocationIds?.length) {
     where.id = { in: input.allocationIds };
@@ -3259,9 +3282,11 @@ export async function approveBedAllocations(input: {
     if (input.lodgeId) {
       where.room = lodgeNullTolerantScope(input.lodgeId);
     }
-  } else {
+  } else if (!input.bookingId) {
+    // Fires only when NONE of the three selectors is given: an unselected
+    // approve would otherwise stamp every pending allocation in the database.
     throw new BedAllocationAdminError(
-      "Select allocations or provide a date range to approve.",
+      "Select allocations, a booking, or a date range to approve.",
       400,
     );
   }
