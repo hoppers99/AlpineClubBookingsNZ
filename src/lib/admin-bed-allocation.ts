@@ -2875,7 +2875,10 @@ async function recordRangeAssignAudit(
         summary: `${result.promotedPartners.length} second occupant${result.promotedPartners.length === 1 ? "" : "s"} auto-promoted to primary after a range assignment moved the shared double's primary to another bed`,
         metadata: {
           issue: 1750,
-          bookingGuestId: result.bookingGuestId,
+          // The guest whose range assignment vacated the bed-nights, named
+          // distinctly from each promoted partner's own bookingGuestId below:
+          // they are different people on possibly different bookings.
+          movedBookingGuestId: result.bookingGuestId,
           movedToBedId: result.bedId,
           promotedCount: result.promotedPartners.length,
           promotions: result.promotedPartners
