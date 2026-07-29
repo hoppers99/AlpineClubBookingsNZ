@@ -71,6 +71,13 @@ export function toMyWholeLodgeRequestStatus(
     case BookingRequestStatus.QUOTE_SENT:
     case BookingRequestStatus.QUERY_PENDING:
     case BookingRequestStatus.MODIFICATION_REQUESTED:
+    // ACCEPTED is the quote-lifecycle state a requester reaches by accepting a
+    // quote. A member whole-lodge request can never get there — the quote ops
+    // are refused for it at the service layer — but it is classified anyway,
+    // and as "pending": acceptance is not the club's decision, and the officer
+    // still has to approve. Mapping it to "approved" would tell a member their
+    // whole-lodge stay was confirmed when no booking exists.
+    case BookingRequestStatus.ACCEPTED:
       return "pending";
     // APPROVED is the moment before the booking row commits; CONVERTED is after.
     // Both read as "approved" — the member is not shown the seam.

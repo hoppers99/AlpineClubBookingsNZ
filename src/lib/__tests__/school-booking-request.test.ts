@@ -54,6 +54,10 @@ vi.mock("@/lib/email", () => ({
   sendBookingRequestVerificationEmail: vi.fn().mockResolvedValue(undefined),
   sendHutLeaderAssignmentEmail: vi.fn().mockResolvedValue(undefined),
   sendAdminSchoolManualInvoiceEmail: vi.fn().mockResolvedValue(undefined),
+  // #2263: the member whole-lodge approval sends the ordinary booking
+  // confirmation. Stub it under the partial mock or the approve path calls
+  // undefined → throw (mock-safety, see #1417).
+  sendBookingConfirmedEmail: vi.fn().mockResolvedValue(undefined),
   // #1377: the school approve path now fires an owner-substitution admin alert
   // on the substitute path. Stub it under the partial mock or the real approve
   // path calls undefined → throw (mock-safety, see #1417).
@@ -137,6 +141,7 @@ import {
   sendHutLeaderAssignmentEmail,
   sendAdminSchoolManualInvoiceEmail,
   sendAdminOwnerSubstitutionAlert,
+  sendBookingConfirmedEmail,
 } from "@/lib/email";
 import {
   acquireLodgeCapacityLock,
@@ -145,7 +150,7 @@ import {
 } from "@/lib/capacity";
 import { createAuditLog, logAudit } from "@/lib/audit";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
-import { getLodgeCapacity } from "@/lib/lodge-capacity";
+import { getDefaultLodgeCapacity, getLodgeCapacity } from "@/lib/lodge-capacity";
 import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
 import {
   enqueueXeroBookingInvoiceOperation,
@@ -157,6 +162,7 @@ import {
   BookingMemberNightConflictError,
 } from "@/lib/booking-member-night-conflicts";
 import {
+  approveMemberWholeLodgeRequest,
   approveSchoolBookingRequest,
   createSchoolBookingRequest,
   generateSchoolGuests,
@@ -1558,5 +1564,499 @@ describe("approveSchoolBookingRequest", () => {
     expect(prisma.member.create).not.toHaveBeenCalled();
     expect(prisma.booking.create).not.toHaveBeenCalled();
     expect(mockedEnqueueInvoice).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Member whole-lodge approval (#2263, epic #2245)
+// ---------------------------------------------------------------------------
+
+function memberWholeLodgeRequest(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: "req-member",
+    // A member request is type GENERAL — the discriminator is the member id,
+    // NOT the type. Everything downstream has to key on the right column.
+    type: BookingRequestType.GENERAL,
+    status: BookingRequestStatus.VERIFIED,
+    exclusivityRequested: true,
+    requestedByMemberId: "member-9",
+    schoolName: null,
+    teachers: null,
+    contactFirstName: "Ada",
+    contactLastName: "Lovelace",
+    contactEmail: "ada@example.com",
+    contactPhone: null,
+    checkIn: CHECK_IN,
+    checkOut: CHECK_OUT,
+    guests: [
+      { firstName: "Guest", lastName: "1", ageTier: "ADULT" },
+      { firstName: "Guest", lastName: "2", ageTier: "ADULT" },
+      { firstName: "Guest", lastName: "3", ageTier: "ADULT" },
+    ],
+    message: "Club alpine skills course",
+    indicativePriceCents: null,
+    priceCents: null,
+    lodgeId: null,
+    heldBookingId: null,
+    convertedBookingId: null,
+    convertedMemberId: null,
+    linkedGuestMembers: null,
+    createdAt: new Date("2026-06-01T00:00:00.000Z"),
+    updatedAt: new Date("2026-06-01T00:00:00.000Z"),
+    version: 0,
+    ...overrides,
+  };
+}
+
+describe("approveMemberWholeLodgeRequest (#2263)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedTransaction.mockImplementation(
+      async (fn: (tx: typeof prisma) => Promise<unknown>) => fn(prisma)
+    );
+    mockedFindUnique.mockResolvedValue(memberWholeLodgeRequest() as never);
+    mockedUpdateMany.mockResolvedValue({ count: 1 } as never);
+    mockedCheckCapacity.mockResolvedValue({
+      available: true,
+      minAvailable: 30,
+      nightDetails: [],
+    } as never);
+    mockedSeasonFindMany.mockResolvedValue(seasonWithRates() as never);
+    mockedGroupDiscount.mockResolvedValue(null as never);
+    vi.mocked(prisma.lodge.findFirst).mockResolvedValue({ id: "lodge-1" } as never);
+    // The owner is the requesting LOGIN member — looked up, never created.
+    vi.mocked(prisma.member.findUnique).mockResolvedValue({
+      id: "member-9",
+      active: true,
+    } as never);
+    vi.mocked(prisma.booking.create).mockResolvedValue({ id: "booking-wl" } as never);
+    vi.mocked(prisma.payment.create).mockResolvedValue({} as never);
+    vi.mocked(prisma.bookingRequest.update).mockResolvedValue({} as never);
+    mockedAssertNoConflicts.mockResolvedValue(undefined as never);
+    vi.mocked(findOverlappingCapacityHoldingBookings).mockResolvedValue([] as never);
+  });
+
+  it("creates a CONFIRMED booking owned by the requesting member, holding the whole lodge", async () => {
+    const result = await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+    });
+
+    expect(result.type).toBe("approved");
+
+    const data = vi.mocked(prisma.booking.create).mock.calls[0][0].data as Record<
+      string,
+      unknown
+    >;
+    // CONFIRMED is capacity-holding in its own right, so the hold does not
+    // depend on the PENDING originBookingRequest clause (school parity).
+    expect(data.status).toBe(BookingStatus.CONFIRMED);
+    // The owner is the member's OWN login account. No non-login member is
+    // minted — doing so would split a real person's booking history in two.
+    expect(data.memberId).toBe("member-9");
+    expect(prisma.member.create).not.toHaveBeenCalled();
+    // ADR-001: granting exclusivity is the ADMIN's capacity action, stamped
+    // with the approving admin, not the requester.
+    expect(data.wholeLodgeHold).toBe(true);
+    expect(data.wholeLodgeHoldByMemberId).toBe("admin-1");
+    expect(data.wholeLodgeHoldAt).toBeInstanceOf(Date);
+  });
+
+  it("prices the placeholder guests at NON-MEMBER rates and marks the booking hasNonMembers (OD-A)", async () => {
+    await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+    });
+
+    const data = vi.mocked(prisma.booking.create).mock.calls[0][0].data as Record<
+      string,
+      unknown
+    >;
+    // Owner decision OD-A: unnamed, unlinked placeholder guests are the
+    // conservative revenue default — 3 ADULTs x 2 nights x $50 non-member.
+    expect(data.totalPriceCents).toBe(30000);
+    expect(data.finalPriceCents).toBe(30000);
+    expect(data.hasNonMembers).toBe(true);
+  });
+
+  it("stamps NO nonMemberHoldUntil on the confirmed whole-lodge booking", async () => {
+    await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+    });
+
+    const data = vi.mocked(prisma.booking.create).mock.calls[0][0].data as Record<
+      string,
+      unknown
+    >;
+    /*
+      The hold clock belongs to the PENDING non-member path — it is what the
+      confirm-pending bump cron reads. Stamping a deadline onto a CONFIRMED
+      booking that holds the WHOLE LODGE would arm a bump clock against the one
+      booking that must never be bumped, and would be the first regression to
+      appear if that cron's PENDING guard were ever relaxed. School parity: a
+      school booking is hasNonMembers with no hold clock either.
+    */
+    expect(data).not.toHaveProperty("nonMemberHoldUntil");
+  });
+
+  it("creates a PENDING internet-banking payment and NO payment link or token email", async () => {
+    await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+    });
+
+    const payment = vi.mocked(prisma.payment.create).mock.calls[0][0].data as Record<
+      string,
+      unknown
+    >;
+    expect(payment.status).toBe(PaymentStatus.PENDING);
+    expect(payment.source).toBe(PaymentSource.INTERNET_BANKING);
+    expect(payment.amountCents).toBe(30000);
+
+    // The tokenised payment-link flow is the GENERAL NON-LOGIN approval path.
+    // Emailing a signed-in member an anonymous payment token would be handing
+    // out a bearer credential to somebody who already has an account.
+    expect(prisma.paymentLink).toBeUndefined();
+  });
+
+  it("prices from the admin override when one is given, split in integer cents", async () => {
+    await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+      override: { priceOverrideCents: 100_001 },
+    });
+
+    const data = vi.mocked(prisma.booking.create).mock.calls[0][0].data as {
+      totalPriceCents: number;
+      guests: { create: Array<{ priceCents: number }> };
+    };
+    expect(data.totalPriceCents).toBe(100_001);
+    // splitPriceAcrossGuests puts the remainder on the first guest so the rows
+    // sum EXACTLY to the total — no cent is invented or lost.
+    const perGuest = data.guests.create.map((guest) => guest.priceCents);
+    expect(perGuest.reduce((sum, cents) => sum + cents, 0)).toBe(100_001);
+    expect(perGuest).toEqual([33335, 33333, 33333]);
+  });
+
+  it("books and prices the officer-confirmed headcount, not the member's estimate", async () => {
+    await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+      override: { pricedHeadcount: 5 },
+    });
+
+    const data = vi.mocked(prisma.booking.create).mock.calls[0][0].data as {
+      totalPriceCents: number;
+      guests: { create: unknown[] };
+    };
+    expect(data.guests.create).toHaveLength(5);
+    expect(data.totalPriceCents).toBe(50000);
+
+    // The request snapshot is rewritten to match what was actually booked, so
+    // the queue and the booking cannot disagree about the party size.
+    const requestUpdate = vi.mocked(prisma.bookingRequest.update).mock.calls[0][0]
+      .data as Record<string, unknown>;
+    expect(requestUpdate.status).toBe(BookingRequestStatus.CONVERTED);
+    expect((requestUpdate.guests as unknown[]).length).toBe(5);
+  });
+
+  it("refuses a headcount above the lodge capacity before any write", async () => {
+    vi.mocked(getLodgeCapacity).mockResolvedValue(4 as never);
+    vi.mocked(getDefaultLodgeCapacity).mockResolvedValue(4 as never);
+
+    await expect(
+      approveMemberWholeLodgeRequest({
+        requestId: "req-member",
+        adminMemberId: "admin-1",
+        override: { pricedHeadcount: 5 },
+      })
+    ).rejects.toMatchObject({ status: 422 });
+
+    expect(prisma.booking.create).not.toHaveBeenCalled();
+  });
+
+  it("409s with the set-a-price message when no season covers the dates and no override is given", async () => {
+    mockedSeasonFindMany.mockResolvedValue([] as never);
+
+    await expect(
+      approveMemberWholeLodgeRequest({
+        requestId: "req-member",
+        adminMemberId: "admin-1",
+      })
+    ).rejects.toMatchObject({ status: 409 });
+
+    expect(prisma.booking.create).not.toHaveBeenCalled();
+  });
+
+  it("approves out-of-season dates when the officer supplies the price override", async () => {
+    // The mandatory fallback: there is no quote or officer-price op on this
+    // path (both are service-refused), so without the override an out-of-season
+    // whole-lodge request would be a dead end.
+    mockedSeasonFindMany.mockResolvedValue([] as never);
+
+    const result = await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+      override: { priceOverrideCents: 75000 },
+    });
+
+    expect(result).toMatchObject({ type: "approved", priceCents: 75000 });
+  });
+
+  it("returns capacityExceeded rather than admitting the booking over capacity", async () => {
+    mockedCheckCapacity.mockResolvedValue({
+      available: false,
+      minAvailable: -2,
+      nightDetails: [
+        { date: new Date("2026-08-01T00:00:00.000Z"), availableBeds: -2 },
+      ],
+    } as never);
+
+    const result = await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+    });
+
+    // ADR-001 decision 1 governs what happens to OTHER bookings on the held
+    // nights (nothing). It does not license admitting THIS one over capacity.
+    expect(result).toEqual({
+      type: "capacityExceeded",
+      fullNights: ["2026-08-01"],
+    });
+  });
+
+  it("takes the per-lodge capacity lock before creating the booking", async () => {
+    await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+    });
+
+    expect(mockedAcquireLodgeLock).toHaveBeenCalled();
+    expect(mockedAcquireLodgeLock.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(prisma.booking.create).mock.invocationCallOrder[0]
+    );
+  });
+
+  it("runs the ADR-001 bed-allocation reconcile so a held booking can own no per-bed rows (#2285 parity)", async () => {
+    await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+    });
+
+    expect(reconcileBedAllocationsForBooking).toHaveBeenCalledWith(
+      expect.objectContaining({ bookingId: "booking-wl" })
+    );
+  });
+
+  it("audits the prune with its removed allocations when the reconcile actually deleted rows", async () => {
+    vi.mocked(prisma.bedAllocation.findMany).mockResolvedValue([
+      {
+        bookingGuestId: "guest-1",
+        roomId: "room-1",
+        bedId: "bed-1",
+        stayDate: new Date("2026-08-01T00:00:00.000Z"),
+        source: "ADMIN",
+        approvedAt: null,
+      },
+    ] as never);
+    vi.mocked(reconcileBedAllocationsForBooking).mockResolvedValue({
+      enabled: true,
+      deletedCount: 1,
+      createdCount: 0,
+      promotedCount: 0,
+    } as never);
+
+    await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+    });
+
+    expect(createAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "BED_ALLOCATION_HELD_BOOKING_PRUNED",
+        metadata: expect.objectContaining({ issue: 2263, deletedCount: 1 }),
+      }),
+      expect.anything()
+    );
+  });
+
+  it("surfaces overlapping bookings to the ADMIN caller after the commit, and never refuses", async () => {
+    vi.mocked(findOverlappingCapacityHoldingBookings).mockResolvedValue([
+      {
+        id: "booking-other",
+        memberName: "Someone Else",
+        checkIn: "2026-08-01",
+        checkOut: "2026-08-02",
+        guestCount: 2,
+        status: "CONFIRMED",
+      },
+    ] as never);
+
+    const result = await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+    });
+
+    // Informational, never a refusal (decision 1): the approval still succeeded.
+    expect(result).toMatchObject({ type: "approved" });
+    expect(
+      result.type === "approved" ? result.exclusiveHoldConflicts : []
+    ).toHaveLength(1);
+
+    // Computed AFTER the commit, outside the advisory lock.
+    expect(
+      vi.mocked(findOverlappingCapacityHoldingBookings).mock
+        .invocationCallOrder[0]
+    ).toBeGreaterThan(
+      vi.mocked(prisma.booking.create).mock.invocationCallOrder[0]
+    );
+
+    expect(mockedLogAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "booking.exclusiveHold.set",
+        metadata: expect.objectContaining({
+          source: "member_request_approval",
+          overlappingConflictCount: 1,
+        }),
+      })
+    );
+  });
+
+  it("emails the member a plain booking confirmation carrying nothing about occupancy", async () => {
+    vi.mocked(findOverlappingCapacityHoldingBookings).mockResolvedValue([
+      {
+        id: "booking-other",
+        memberName: "Someone Else",
+        checkIn: "2026-08-01",
+        checkOut: "2026-08-02",
+        guestCount: 2,
+        status: "CONFIRMED",
+      },
+    ] as never);
+
+    await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+    });
+
+    expect(sendBookingConfirmedEmail).toHaveBeenCalled();
+    const args = vi.mocked(sendBookingConfirmedEmail).mock.calls[0];
+    // Booking-scoped, so the per-booking "No emails" switch can withhold it.
+    expect(args[0]).toEqual({ bookingId: "booking-wl" });
+    // A member is never told the lodge is exclusively held, and never told
+    // whose booking overlaps (ADR-001 decision 6). Nothing in the serialised
+    // arguments may mention either.
+    const serialised = JSON.stringify(args);
+    expect(serialised).not.toContain("booking-other");
+    expect(serialised).not.toContain("Someone Else");
+    expect(serialised.toLowerCase()).not.toContain("exclusiv");
+    expect(serialised.toLowerCase()).not.toContain("wholelodge");
+  });
+
+  it("replays idempotently: a second approve returns the first booking and re-emails nobody", async () => {
+    mockedFindUnique
+      .mockResolvedValueOnce(memberWholeLodgeRequest() as never)
+      // The locked re-read inside the transaction already shows the conversion.
+      .mockResolvedValueOnce(
+        memberWholeLodgeRequest({
+          status: BookingRequestStatus.CONVERTED,
+          convertedBookingId: "booking-wl",
+          convertedMemberId: "member-9",
+        }) as never
+      )
+      // claimAlreadyConvertedBookingRequest's own read.
+      .mockResolvedValueOnce({
+        convertedBookingId: "booking-wl",
+        convertedMemberId: "member-9",
+        status: BookingRequestStatus.CONVERTED,
+      } as never);
+
+    const result = await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+    });
+
+    expect(result).toMatchObject({ type: "approved", bookingId: "booking-wl" });
+    // No second booking, no second payment, and above all no second email.
+    expect(prisma.booking.create).not.toHaveBeenCalled();
+    expect(prisma.payment.create).not.toHaveBeenCalled();
+    expect(sendBookingConfirmedEmail).not.toHaveBeenCalled();
+    expect(mockedLogAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "booking_request.member_whole_lodge_approve_idempotent_replay",
+      })
+    );
+  });
+
+  it("refuses a request that is not member-origin", async () => {
+    mockedFindUnique.mockResolvedValue(
+      memberWholeLodgeRequest({ requestedByMemberId: null }) as never
+    );
+
+    await expect(
+      approveMemberWholeLodgeRequest({
+        requestId: "req-member",
+        adminMemberId: "admin-1",
+      })
+    ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("refuses a member request that somehow holds beds rather than silently taking an unimplemented branch", async () => {
+    mockedFindUnique.mockResolvedValue(
+      memberWholeLodgeRequest({ heldBookingId: "booking-held" }) as never
+    );
+
+    await expect(
+      approveMemberWholeLodgeRequest({
+        requestId: "req-member",
+        adminMemberId: "admin-1",
+      })
+    ).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("refuses to book for a member whose account is no longer active", async () => {
+    vi.mocked(prisma.member.findUnique).mockResolvedValue({
+      id: "member-9",
+      active: false,
+    } as never);
+
+    await expect(
+      approveMemberWholeLodgeRequest({
+        requestId: "req-member",
+        adminMemberId: "admin-1",
+      })
+    ).rejects.toMatchObject({ status: 409 });
+
+    expect(prisma.booking.create).not.toHaveBeenCalled();
+  });
+
+  it("409s a stale approval whose snapshot changed under it", async () => {
+    mockedFindUnique
+      .mockResolvedValueOnce(memberWholeLodgeRequest({ version: 0 }) as never)
+      .mockResolvedValueOnce(memberWholeLodgeRequest({ version: 1 }) as never)
+      .mockResolvedValueOnce(null as never);
+
+    await expect(
+      approveMemberWholeLodgeRequest({
+        requestId: "req-member",
+        adminMemberId: "admin-1",
+      })
+    ).rejects.toMatchObject({ status: 409 });
+
+    expect(prisma.booking.create).not.toHaveBeenCalled();
+  });
+
+  it("409s when a concurrent admin already claimed the request", async () => {
+    mockedUpdateMany.mockResolvedValue({ count: 0 } as never);
+
+    await expect(
+      approveMemberWholeLodgeRequest({
+        requestId: "req-member",
+        adminMemberId: "admin-1",
+      })
+    ).rejects.toMatchObject({ status: 409 });
+
+    expect(prisma.booking.create).not.toHaveBeenCalled();
   });
 });
