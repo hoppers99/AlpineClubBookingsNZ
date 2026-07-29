@@ -20,6 +20,7 @@ function node(overrides: Partial<FamilyTreeNode> & { id: string }): FamilyTreeNo
     relationship: {
       label: "Parent",
       derived: false,
+      qualifier: null,
       description: `${overrides.id} relationship sentence.`,
     },
     linkToDisplayParent: null,
@@ -61,6 +62,7 @@ describe("MemberFamilyTreeCard", () => {
           relationship: {
             label: "Parent",
             derived: false,
+            qualifier: null,
             description: "Sarah Whitcombe is Tom Whitcombe's recorded parent.",
           },
           emailRecipientCount: 2,
@@ -73,6 +75,7 @@ describe("MemberFamilyTreeCard", () => {
               relationship: {
                 label: "This member",
                 derived: false,
+                qualifier: null,
                 description: "Tom Whitcombe — the member you are viewing.",
               },
               notificationEmail: {
@@ -80,6 +83,7 @@ describe("MemberFamilyTreeCard", () => {
                 sourceName: "Sarah Whitcombe",
                 sourceRelationship: null,
                 beyondDirectParent: false,
+                inTree: true,
               },
               partner: { id: "kate", name: "Kate Rangi", attachedHere: true },
               attachedPartner: node({
@@ -88,6 +92,7 @@ describe("MemberFamilyTreeCard", () => {
                 relationship: {
                   label: "Partner",
                   derived: false,
+                  qualifier: null,
                   description: "Kate Rangi is Tom Whitcombe's confirmed partner.",
                 },
                 familyGroups: [{ id: "g2", name: "Rangi whānau", billing: false }],
@@ -103,6 +108,7 @@ describe("MemberFamilyTreeCard", () => {
                   relationship: {
                     label: "Dependant",
                     derived: false,
+                    qualifier: null,
                     description:
                       "Ella Whitcombe-Rangi is a recorded dependant of Tom Whitcombe.",
                   },
@@ -112,6 +118,7 @@ describe("MemberFamilyTreeCard", () => {
                     sourceName: "Sarah Whitcombe",
                     sourceRelationship: "grandparent",
                     beyondDirectParent: true,
+                    inTree: true,
                   },
                   familyGroups: [
                     { id: "g1", name: "Whitcombe family", billing: true },
@@ -127,6 +134,7 @@ describe("MemberFamilyTreeCard", () => {
           relationship: {
             label: "Sibling",
             derived: true,
+            qualifier: null,
             description:
               "Ruth Whitcombe is Tom Whitcombe's sibling — worked out from the recorded parent links, not stored.",
           },
@@ -135,6 +143,7 @@ describe("MemberFamilyTreeCard", () => {
       memberCount: 5,
       generationSpan: 3,
       truncated: false,
+      truncatedReason: null,
       hasDerivedRelationships: true,
     };
     mockTreeFetch(tree);
@@ -193,7 +202,127 @@ describe("MemberFamilyTreeCard", () => {
 
     // Read-only: the card offers no buttons at all.
     expect(screen.queryAllByRole("button")).toHaveLength(0);
+
+    // Indentation makes a deep family wider than a phone, and the card sits
+    // inside overflow-hidden ancestors — so the list scrolls in its own
+    // focusable, NAMED region rather than being clipped unreachably.
+    const scroller = screen.getByRole("region", { name: "Family tree Read-only" });
+    expect(scroller).toHaveAttribute("tabindex", "0");
+    expect(scroller.className).toContain("overflow-x-auto");
+    expect(scroller).toContainElement(screen.getByText("Sarah Whitcombe"));
   });
+
+  it("discloses an incomplete parent record beside a half-sibling label", async () => {
+    const tree: MemberFamilyTree = {
+      root: { id: "me", name: "Tom Whitcombe" },
+      roots: [
+        node({
+          id: "ruth",
+          name: "Ruth Ngata",
+          relationship: {
+            label: "Half-sibling",
+            derived: true,
+            qualifier: "one parent not recorded for Ruth Ngata",
+            description:
+              "Ruth Ngata is Tom Whitcombe's half-sibling — worked out from the recorded parent links, not stored. Shares parent Sarah Whitcombe. One parent not recorded for Ruth Ngata.",
+          },
+          children: [node({ id: "me", name: "Tom Whitcombe", isRoot: true })],
+        }),
+      ],
+      memberCount: 2,
+      generationSpan: 1,
+      truncated: false,
+      truncatedReason: null,
+      hasDerivedRelationships: true,
+    };
+    mockTreeFetch(tree);
+
+    render(
+      <MemberFamilyTreeCard memberId="me" currentMemberPath="/admin/members/me" />,
+    );
+    await waitFor(() =>
+      expect(screen.getByText("Ruth Ngata")).toBeInTheDocument(),
+    );
+
+    // Visible, not sr-only: "Half-sibling" is socially loaded and the reason
+    // has to reach the person reading the screen.
+    expect(
+      screen.getByText(
+        /Half-sibling · one parent not recorded for Ruth Ngata/,
+      ),
+    ).toBeVisible();
+  });
+
+  it("never names an email-inheritance source from outside the tree", async () => {
+    const tree: MemberFamilyTree = {
+      root: { id: "kid", name: "Ella Rangi" },
+      roots: [
+        node({
+          id: "kid",
+          name: "Ella Rangi",
+          isRoot: true,
+          notificationEmail: {
+            sourceId: null,
+            sourceName: null,
+            sourceRelationship: null,
+            beyondDirectParent: true,
+            inTree: false,
+          },
+        }),
+      ],
+      memberCount: 2,
+      generationSpan: 1,
+      truncated: false,
+      truncatedReason: null,
+      hasDerivedRelationships: false,
+    };
+    mockTreeFetch(tree);
+
+    render(
+      <MemberFamilyTreeCard memberId="kid" currentMemberPath="/admin/members/kid" />,
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByText("Club email goes to a member outside this family tree"),
+      ).toBeInTheDocument(),
+    );
+    // Nobody is named, and nothing links out to them.
+    expect(screen.queryByText(/Club email goes to [A-Z]/)).not.toBeInTheDocument();
+    expect(screen.getAllByRole("link")).toHaveLength(1); // the member's own name
+  });
+
+  it.each([
+    ["generations" as const, /more than three generations above or below/],
+    ["size" as const, /this family is larger than the tree can show/],
+    ["both" as const, /outside the generation limit or beyond the size/],
+  ])(
+    "words the truncation notice for a %s cap rather than always blaming generations",
+    async (truncatedReason, expected) => {
+      const tree: MemberFamilyTree = {
+        root: { id: "me", name: "Me" },
+        roots: [
+          node({
+            id: "me",
+            name: "Me",
+            isRoot: true,
+            children: [node({ id: "kid", name: "Kid" })],
+          }),
+        ],
+        memberCount: 150,
+        generationSpan: 4,
+        truncated: true,
+        truncatedReason,
+        hasDerivedRelationships: false,
+      };
+      mockTreeFetch(tree);
+
+      render(
+        <MemberFamilyTreeCard memberId="me" currentMemberPath="/admin/members/me" />,
+      );
+      await waitFor(() => expect(screen.getByText("Kid")).toBeInTheDocument());
+      expect(screen.getByText(expected)).toBeInTheDocument();
+    },
+  );
 
   it("suppresses archived members' contact details and shows the archived badge", async () => {
     const tree: MemberFamilyTree = {
@@ -208,6 +337,7 @@ describe("MemberFamilyTreeCard", () => {
           relationship: {
             label: "Grandparent",
             derived: true,
+            qualifier: null,
             description:
               "Gran Archived is Me's grandparent — worked out from the recorded parent links, not stored. Archived member — contact details hidden.",
           },
@@ -217,6 +347,7 @@ describe("MemberFamilyTreeCard", () => {
       memberCount: 2,
       generationSpan: 2,
       truncated: false,
+      truncatedReason: null,
       hasDerivedRelationships: true,
     };
     mockTreeFetch(tree);
@@ -243,6 +374,7 @@ describe("MemberFamilyTreeCard", () => {
       memberCount: 1,
       generationSpan: 1,
       truncated: false,
+      truncatedReason: null,
       hasDerivedRelationships: false,
     };
     mockTreeFetch(tree);

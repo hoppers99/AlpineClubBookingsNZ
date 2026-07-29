@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useId, useState } from "react"
 import Link from "next/link"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -10,6 +10,22 @@ import type {
   FamilyTreeNode,
   MemberFamilyTree,
 } from "@/lib/member-family-tree"
+
+/**
+ * Word the truncation notice for the bound that actually fired. Blaming the
+ * generation cap for a family that was cut off by its SIZE would send an admin
+ * hunting for a great-great-grandparent that is not the problem.
+ */
+function truncationNotice(reason: MemberFamilyTree["truncatedReason"]): string {
+  switch (reason) {
+    case "generations":
+      return "some connected members are more than three generations above or below this member and are not shown"
+    case "size":
+      return "this family is larger than the tree can show, so some connected members are not shown"
+    default:
+      return "some connected members are outside the generation limit or beyond the size this tree can show, and are not shown"
+  }
+}
 
 interface MemberFamilyTreeCardProps {
   memberId: string
@@ -27,6 +43,14 @@ interface MemberFamilyTreeCardProps {
  *
  * The tree is a VIEW of the Parent Links, Dependents and Partner cards below
  * it — it offers no actions of its own, and nothing here can be edited.
+ *
+ * Mobile treatment: nesting is drawn with indentation, so a deep family is
+ * WIDER than a phone and the card sits inside `overflow-hidden` ancestors (the
+ * Family accordion item) that would otherwise clip the far side away with no
+ * way to reach it. The list therefore scrolls inside its own focusable, named
+ * `region` — the same pattern the #1819 contract pins for the hut-fees rate
+ * table and the admin data table (WCAG 2.1.1, axe `scrollable-region-focusable`:
+ * Chrome auto-focuses scrollers, Safari and Firefox do not).
  */
 export function MemberFamilyTreeCard({
   memberId,
@@ -36,6 +60,7 @@ export function MemberFamilyTreeCard({
   const [tree, setTree] = useState<MemberFamilyTree | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
+  const headingId = useId()
 
   useEffect(() => {
     let cancelled = false
@@ -69,7 +94,10 @@ export function MemberFamilyTreeCard({
     <Card className={className}>
       <CardHeader className="flex flex-col gap-2 space-y-0 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <CardTitle className="flex flex-wrap items-center gap-2 text-base font-medium">
+          <CardTitle
+            id={headingId}
+            className="flex flex-wrap items-center gap-2 text-base font-medium"
+          >
             Family tree
             <Badge variant="secondary" className="border-border bg-muted text-foreground">
               Read-only
@@ -80,7 +108,7 @@ export function MemberFamilyTreeCard({
               {tree.generationSpan}{" "}
               {tree.generationSpan === 1 ? "generation" : "generations"} ·{" "}
               {tree.memberCount} {tree.memberCount === 1 ? "member" : "members"}
-              {tree.truncated ? " · some connected members are beyond the 4-generation cap and are not shown" : ""}
+              {tree.truncated ? ` · ${truncationNotice(tree.truncatedReason)}` : ""}
             </p>
           )}
         </div>
@@ -103,15 +131,28 @@ export function MemberFamilyTreeCard({
               {tree.hasDerivedRelationships &&
                 " Relationships marked Derived are not stored anywhere — they follow from the recorded links, so they cannot be edited or disputed."}
             </p>
-            <ul className="space-y-3">
-              {tree.roots.map((node) => (
-                <FamilyTreeNodeItem
-                  key={node.id}
-                  node={node}
-                  currentMemberPath={currentMemberPath}
-                />
-              ))}
-            </ul>
+            {/*
+              Focusable, named scroll region — see the component docstring. A
+              bare `overflow-x-auto` div here would trip axe
+              `scrollable-region-focusable` and strand keyboard-only admins on
+              whatever a deep family pushes off the right edge.
+            */}
+            <div
+              className="max-w-full overflow-x-auto"
+              role="region"
+              tabIndex={0}
+              aria-labelledby={headingId}
+            >
+              <ul className="space-y-3">
+                {tree.roots.map((node) => (
+                  <FamilyTreeNodeItem
+                    key={node.id}
+                    node={node}
+                    currentMemberPath={currentMemberPath}
+                  />
+                ))}
+              </ul>
+            </div>
           </div>
         )}
       </CardContent>
@@ -207,17 +248,25 @@ function FamilyTreeNodeCard({
 
   return (
     <div
-      className={`rounded-md border p-2 ${
+      className={`min-w-0 rounded-md border p-2 ${
         node.relationship.derived ? "border-dashed" : "border-border"
       } ${node.isRoot ? "ring-2 ring-info" : ""}`}
     >
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-xs text-muted-foreground">
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <span className="break-words text-xs text-muted-foreground">
           {node.relationship.label}
+          {/*
+            The label alone can overstate the data — "Half-sibling" is the
+            derivation's answer whenever the recorded parent sets differ, and
+            with optional second-parent records that routinely means one side's
+            record is simply incomplete. Say so where it is read, not only to a
+            screen reader.
+          */}
+          {node.relationship.qualifier ? ` · ${node.relationship.qualifier}` : ""}
         </span>
         <Link
           href={buildHrefWithReturnTo(`/admin/members/${node.id}`, currentMemberPath)}
-          className="text-sm font-medium text-foreground underline-offset-2 hover:underline"
+          className="break-words text-sm font-medium text-foreground underline-offset-2 hover:underline"
         >
           {node.name}
         </Link>
@@ -274,15 +323,28 @@ function FamilyTreeNodeCard({
         ))}
       </div>
       {node.notificationEmail && node.notificationEmail.beyondDirectParent && (
-        <p className="mt-1 text-xs text-warning">
-          Club email goes to {node.notificationEmail.sourceName}
-          {node.notificationEmail.sourceRelationship
-            ? ` · ${node.notificationEmail.sourceRelationship}`
-            : ""}
+        <p className="mt-1 break-words text-xs text-warning">
+          {/*
+            The mailbox holder is named only when they are part of this tree.
+            An inheritance source can be any member club-wide (#2255), and
+            printing an unconnected member's name on a family card would assert
+            a family connection nothing records — so say the fact, name nobody,
+            and link nothing.
+          */}
+          {node.notificationEmail.inTree && node.notificationEmail.sourceName ? (
+            <>
+              Club email goes to {node.notificationEmail.sourceName}
+              {node.notificationEmail.sourceRelationship
+                ? ` · ${node.notificationEmail.sourceRelationship}`
+                : ""}
+            </>
+          ) : (
+            "Club email goes to a member outside this family tree"
+          )}
         </p>
       )}
       {detailParts.length > 0 && (
-        <p className="mt-1 text-xs text-muted-foreground">
+        <p className="mt-1 break-words text-xs text-muted-foreground">
           {detailParts.join(" · ")}
         </p>
       )}
