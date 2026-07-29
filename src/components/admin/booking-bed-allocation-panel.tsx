@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { BedDouble, ChevronLeft, ChevronRight, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
@@ -135,6 +135,29 @@ export interface BookingBedAllocationPanelProps {
   wholeLodgeHold: boolean;
   bookingStatus: string;
   isDeleted: boolean;
+  /*
+   * Whether this booking's STATUS may own bed allocations at all — the server's
+   * answer, from BED_ALLOCATABLE_BOOKING_STATUSES (#2252 review).
+   *
+   * This must be a passed fact, never inferred from the booking's absence from
+   * the window payload: `loadBookingRecords` only returns bookings with at
+   * least one guest night inside the window, so a perfectly allocatable booking
+   * is absent whenever this PAGE's nights fall in a guest-stay gap, or the
+   * booking has no guests at all. Inferring "cannot hold beds" from that told
+   * the officer something false and hid the rows they came for.
+   *
+   * The constant lives in a module that imports prisma, so the page computes
+   * this server-side rather than the panel importing it.
+   */
+  canHoldBeds: boolean;
+  /*
+   * How many of this booking's bed nights are already approved, counted across
+   * the WHOLE booking rather than the page on screen (#2252 review). The
+   * "removing these re-opens the member's room request" warning is a
+   * booking-wide claim, and on a paged stay the window read cannot see the
+   * confirmed nights on the other pages.
+   */
+  approvedBedNightCount: number;
   /** Already loaded by the page, so the rows have names before the fetch lands. */
   guests: Array<{ id: string; name: string }>;
 }
@@ -151,6 +174,8 @@ interface PlacedRun {
   draftCount: number;
   approvedCount: number;
   hasAutoSuggestion: boolean;
+  /** Nights of this run that came from an AUTO suggestion, not a hand placement. */
+  autoCount: number;
 }
 
 interface GuestRow {
@@ -182,6 +207,16 @@ function nightWord(count: number) {
   return count === 1 ? "night" : "nights";
 }
 
+// Date-only lodge nights are ISO `YYYY-MM-DD`, so a lexicographic compare IS a
+// chronological one. No Date objects, no timezone to get wrong.
+function laterDate(left: string, right: string) {
+  return left > right ? left : right;
+}
+
+function earlierDate(left: string, right: string) {
+  return left < right ? left : right;
+}
+
 export function BookingBedAllocationPanel({
   bookingId,
   lodgeId,
@@ -191,6 +226,8 @@ export function BookingBedAllocationPanel({
   wholeLodgeHold,
   bookingStatus,
   isDeleted,
+  canHoldBeds,
+  approvedBedNightCount,
   guests,
 }: BookingBedAllocationPanelProps) {
   // Same permission the board's write controls use: every affordance here is a
@@ -198,9 +235,19 @@ export function BookingBedAllocationPanel({
   // that would 403.
   const canEdit = useAdminAreaEditAccess("bookings");
 
+  /*
+   * Server truth, not an inference (#2252 review). A deleted booking holds no
+   * beds; a booking in a status outside BED_ALLOCATABLE_BOOKING_STATUSES is
+   * never allocated any. Both are known before a single byte is fetched, which
+   * is why the read below is skipped entirely in that state — and why the
+   * owner-mandated honest note can no longer be suppressed by a stale
+   * `wholeLodgeHold` flag on a cancelled booking.
+   */
+  const notAllocatable = isDeleted || !canHoldBeds;
+
   const [pageIndex, setPageIndex] = useState(0);
   const [payload, setPayload] = useState<PanelPayload | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!notAllocatable);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [assignTarget, setAssignTarget] = useState<BedRangeAssignTarget | null>(
@@ -208,6 +255,16 @@ export function BookingBedAllocationPanel({
   );
   const [assignOpen, setAssignOpen] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<RemoveTarget | null>(null);
+  /*
+   * Bed nights this panel's own Confirm has approved since the server rendered
+   * `approvedBedNightCount` (#2252 review). Confirm is booking-wide, so it can
+   * approve nights on pages this window never read — which would otherwise
+   * leave the booking-wide total stale LOW and let the "last confirmed nights"
+   * warning fire when it is no longer true. Only Confirm is tracked: a removal
+   * can only make the total stale HIGH, which suppresses the warning rather
+   * than inventing one.
+   */
+  const [approvedSinceRender, setApprovedSinceRender] = useState(0);
 
   // The stay is paged in <=31-night windows because the dashboard read refuses
   // anything longer, and bookings have no maximum length. The page is always
@@ -220,7 +277,21 @@ export function BookingBedAllocationPanel({
   const fromDate = stayWindow?.fromDate ?? checkIn;
   const toDate = stayWindow?.toDate ?? checkOut;
 
+  /*
+   * Stale-response guard (#2252 review). Two reads can be in flight at once —
+   * step the page and press Refresh, or step twice quickly — and without
+   * sequencing the SLOWER one wins, painting one window's rows under another
+   * window's label. That is the same defect class #2251 has just fixed on the
+   * board. A monotonic id is captured before the await and re-checked before
+   * every state write; a superseded response is dropped in full, including its
+   * error and its loading flag.
+   */
+  const requestSeq = useRef(0);
+
   const load = useCallback(async () => {
+    const seq = requestSeq.current + 1;
+    requestSeq.current = seq;
+    const isCurrent = () => requestSeq.current === seq;
     setLoading(true);
     try {
       const params = new URLSearchParams({
@@ -233,25 +304,35 @@ export function BookingBedAllocationPanel({
         `/api/admin/bed-allocation?${params.toString()}`,
       );
       if (!response.ok) {
-        setPayload(null);
-        setLoadError(
-          await readApiError(response, "Failed to load bed allocation"),
+        const message = await readApiError(
+          response,
+          "Failed to load bed allocation",
         );
+        if (!isCurrent()) return;
+        setPayload(null);
+        setLoadError(message);
         return;
       }
-      setPayload((await response.json()) as PanelPayload);
+      const body = (await response.json()) as PanelPayload;
+      if (!isCurrent()) return;
+      setPayload(body);
       setLoadError(null);
     } catch {
+      if (!isCurrent()) return;
       setPayload(null);
       setLoadError("Failed to load bed allocation");
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
   }, [bookingId, fromDate, toDate, lodgeId]);
 
   useEffect(() => {
+    // A booking that cannot hold beds has nothing to read: the honest note is
+    // server truth, so fetching a window to confirm it would be a pointless
+    // round trip and a spinner in front of the answer.
+    if (notAllocatable) return;
     void load();
-  }, [load]);
+  }, [load, notAllocatable]);
 
   /*
    * The `bookingId` query parameter does NOT server-filter the dashboard
@@ -373,6 +454,7 @@ export function BookingBedAllocationPanel({
           draftCount: items.filter((item) => !item.approvedAt).length,
           approvedCount: items.filter((item) => item.approvedAt).length,
           hasAutoSuggestion: items.some((item) => item.source === "AUTO"),
+          autoCount: items.filter((item) => item.source === "AUTO").length,
         });
       }
     }
@@ -395,11 +477,24 @@ export function BookingBedAllocationPanel({
   const unplacedCount = guestNights.length;
   const paged = (stayWindow?.pageCount ?? 1) > 1;
 
-  // Absent from the dashboard payload AND not held: the booking cannot carry
-  // bed allocations at all. The owner's decision is that the panel stays and
-  // says so, rather than vanishing and leaving the officer to wonder.
-  const held = Boolean(hold) || wholeLodgeHold;
-  const notAllocatable = Boolean(payload) && !bookingRow && !held;
+  /*
+   * The three states, each derived from what actually establishes it (#2252
+   * review) rather than from one shared "absent from the payload" inference:
+   *
+   *   - notAllocatable — server truth (above): deleted, or a status that never
+   *     owns beds. Checked FIRST, so a cancelled booking still carrying a stale
+   *     `wholeLodgeHold` flag gets the owner-mandated honest note instead of
+   *     reading as an active hold with nothing to do.
+   *   - held — ADR-001: this booking takes the whole lodge, so it needs no
+   *     individual beds. Only meaningful on a booking that could hold beds.
+   *   - absentFromWindow — allocatable, not held, but this PAGE's nights carry
+   *     no guest night of the booking, so the window read omits it. That is a
+   *     statement about the page, not about the booking, and the rows and
+   *     Confirm stay reachable (page through to the booking's real nights).
+   */
+  const held = !notAllocatable && (Boolean(hold) || wholeLodgeHold);
+  const absentFromWindow =
+    !notAllocatable && !held && Boolean(payload) && !bookingRow;
 
   const boardHref = buildHrefWithReturnTo(
     `/admin/bed-allocation?${new URLSearchParams({
@@ -417,11 +512,21 @@ export function BookingBedAllocationPanel({
       bookingId,
       guestName: row.name,
       memberName,
-      // The GUEST's own stay, never the booking's wider envelope: a guest who
-      // joins late would otherwise be offered nights they are not booked for,
-      // which the range endpoint refuses as GUEST_NOT_BOOKED.
-      fromDate: row.stayStart ?? checkIn,
-      toDate: row.stayEnd ?? checkOut,
+      /*
+       * The GUEST's own stay, never the booking's wider envelope: a guest who
+       * joins late would otherwise be offered nights they are not booked for,
+       * which the range endpoint refuses as GUEST_NOT_BOOKED.
+       *
+       * Clamped to the page on screen, and falling back to the PAGE window
+       * rather than the booking envelope when the guest's stay is unknown
+       * (#2252 review). The payload only carries stays for guests with a night
+       * inside the window, so the fallback fires exactly on a long, paged stay
+       * — where the envelope is both the wrong nights and longer than the
+       * MAX_RANGE_NIGHTS the range endpoint will accept, so the dialog would
+       * open pre-loaded with a request that cannot be written.
+       */
+      fromDate: laterDate(row.stayStart ?? fromDate, fromDate),
+      toDate: earlierDate(row.stayEnd ?? toDate, toDate),
     });
     setAssignOpen(true);
   }
@@ -440,9 +545,19 @@ export function BookingBedAllocationPanel({
       const response = await fetch("/api/admin/bed-allocation/approve", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        // The booking selector and NOTHING else. A `from`/`to` approval would
-        // confirm every other booking's drafts in the same window (#2252).
-        body: JSON.stringify({ bookingId }),
+        /*
+         * The booking selector, plus the SAME lodge scope the panel read with
+         * — and never `from`/`to`, which would confirm every other booking's
+         * drafts in the same window (#2252).
+         *
+         * The lodge scope closes a write-wider-than-read gap the review found
+         * (#2252 review): the panel's GET is lodge-scoped, so an anomalous row
+         * of this booking sitting in ANOTHER lodge's room is invisible here.
+         * Without `lodgeId` the approve would silently stamp it too, confirming
+         * a bed nobody was shown. Scoped, Confirm can only ever approve what
+         * the officer could see.
+         */
+        body: JSON.stringify({ bookingId, ...(lodgeId ? { lodgeId } : {}) }),
       });
       if (!response.ok) {
         toast.error(await readApiError(response, "Failed to confirm beds"));
@@ -450,6 +565,9 @@ export function BookingBedAllocationPanel({
       }
       const body = (await response.json()) as { approvedCount?: number };
       const count = body.approvedCount ?? 0;
+      // Keep the booking-wide approved total honest for the removal warning,
+      // including the nights this window cannot see.
+      if (count > 0) setApprovedSinceRender((total) => total + count);
       toast.success(
         count > 0
           ? `Confirmed ${count} bed ${nightWord(count)} for this booking`
@@ -519,13 +637,30 @@ export function BookingBedAllocationPanel({
     </AdminViewOnlySectionBanner>
   );
 
-  // Removing the booking's last approved night legitimately re-opens the
-  // member's room-request editor (#776). The lock is not one-way, and the
-  // officer is told which case they are in rather than being left to find out.
+  /*
+   * Removing the booking's last approved night legitimately re-opens the
+   * member's room-request editor (#776). The lock is not one-way, and the
+   * officer is told which case they are in rather than being left to find out.
+   *
+   * The claim is booking-wide, so it cannot be decided from the page's own
+   * `approvedCount` alone (#2252 review): on a paged stay, confirmed nights on
+   * another page would make the warning simply false. The booking-wide total
+   * comes from the server, and only ever SUPPRESSES the warning — so the one
+   * way it can drift (this panel's own Confirm approving nights off-page since
+   * the page rendered) is corrected by adding what Confirm actually reported,
+   * and drift in the other direction (rows removed elsewhere) can only omit a
+   * warning, never invent one.
+   */
+  const bookingApprovedCount = approvedBedNightCount + approvedSinceRender;
+  const approvedElsewhereOnBooking = Math.max(
+    bookingApprovedCount - approvedCount,
+    0,
+  );
   const removingLastApproved =
     removeTarget !== null &&
     removeTarget.run.approvedCount > 0 &&
-    removeTarget.run.approvedCount >= approvedCount;
+    removeTarget.run.approvedCount >= approvedCount &&
+    approvedElsewhereOnBooking === 0;
 
   return (
     <Card id="bed-allocation" className="scroll-mt-20">
@@ -533,10 +668,18 @@ export function BookingBedAllocationPanel({
         <CardTitle className="flex flex-wrap items-center gap-2 text-base">
           <BedDouble className="h-4 w-4" aria-hidden />
           Bed allocation
+          {/* Both counts are this PAGE's, so on a paged stay the badge carries
+              the same "(this page)" qualifier the rows and Confirm already use
+              (#2252 review) — a stay whose other pages are still in draft must
+              not read as flatly "Confirmed". */}
           {approvedCount > 0 ? (
-            <Badge variant="success">Confirmed</Badge>
+            <Badge variant="success">
+              {paged ? "Confirmed (this page)" : "Confirmed"}
+            </Badge>
           ) : draftCount > 0 ? (
-            <Badge variant="warning">Draft</Badge>
+            <Badge variant="warning">
+              {paged ? "Draft (this page)" : "Draft"}
+            </Badge>
           ) : null}
         </CardTitle>
       </CardHeader>
@@ -552,7 +695,10 @@ export function BookingBedAllocationPanel({
               : `${checkIn} → ${checkOut}`}
           </p>
           <div className="flex flex-wrap items-center gap-2">
-            {paged ? (
+            {/* No window read happens for a booking that cannot hold beds, so
+                paging and Refresh would drive nothing. The board link stays —
+                it is still the way to see the nights around this booking. */}
+            {paged && !notAllocatable ? (
               <>
                 <Button
                   type="button"
@@ -580,16 +726,18 @@ export function BookingBedAllocationPanel({
                 </Button>
               </>
             ) : null}
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={loading}
-              onClick={() => void load()}
-            >
-              <RefreshCw className="mr-2 h-4 w-4" aria-hidden />
-              Refresh
-            </Button>
+            {!notAllocatable ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={loading}
+                onClick={() => void load()}
+              >
+                <RefreshCw className="mr-2 h-4 w-4" aria-hidden />
+                Refresh
+              </Button>
+            ) : null}
             <Link href={boardHref}>
               <Button type="button" variant="outline" size="sm">
                 Open on the board
@@ -598,7 +746,7 @@ export function BookingBedAllocationPanel({
           </div>
         </div>
 
-        {paged ? (
+        {paged && !notAllocatable ? (
           <p className="text-xs text-muted-foreground">
             This stay is longer than the {MAX_RANGE_NIGHTS}-night window the
             allocation read allows, so it is shown a page at a time. Nothing is
@@ -615,13 +763,33 @@ export function BookingBedAllocationPanel({
 
         {loadError ? <Alert variant="error">{loadError}</Alert> : null}
 
-        {!loading && !loadError && notAllocatable ? (
+        {/* Server truth, so it needs no fetch to settle behind it (#2252
+            review). A deleted or non-allocatable booking says so immediately,
+            and — crucially — says so even when it still carries a stale
+            `wholeLodgeHold` flag, which used to swallow this note entirely. */}
+        {notAllocatable ? (
           <Alert variant="info" title="This booking cannot hold beds">
             <p data-testid="bed-not-allocatable">
               {isDeleted
                 ? "This booking is deleted, so it holds no beds and cannot be allocated."
                 : `A ${bookingStatus.toLowerCase().replace(/_/g, " ")} booking is not allocated beds, so there is nothing to place or confirm here.`}{" "}
               Any beds it once held were released.
+            </p>
+          </Alert>
+        ) : null}
+
+        {/* Allocatable, unheld, and simply not on THIS page — a statement about
+            the window, never about the booking (#2252 review). The rows and
+            Confirm below stay reachable: on a paged stay the booking's nights
+            are on another page, and Confirm is booking-wide regardless. */}
+        {!loading && !loadError && absentFromWindow ? (
+          <Alert variant="info" title="No nights of this booking on this page">
+            <p data-testid="bed-absent-this-window">
+              No guest of this booking is booked on any night of this page, so
+              there are no stays to place here.{" "}
+              {paged
+                ? "Step through the pages to reach the nights its guests are on."
+                : "This booking can hold beds — check its guests and their stay dates."}
             </p>
           </Alert>
         ) : null}
@@ -713,8 +881,15 @@ export function BookingBedAllocationPanel({
                         ) : (
                           <Badge variant="success">Confirmed</Badge>
                         )}
+                        {/* "in part" for the same reason the Draft badge
+                            carries it (#2252 review): a run that is half
+                            hand-placed and half machine-suggested must not read
+                            as wholly suggested. */}
                         {run.hasAutoSuggestion ? (
-                          <Badge variant="outline">Suggested</Badge>
+                          <Badge variant="outline">
+                            Suggested
+                            {run.autoCount < run.nightCount ? " in part" : ""}
+                          </Badge>
                         ) : null}
                         <ViewOnlyActionButton
                           canEdit={canEdit}
