@@ -22,6 +22,7 @@ import type {
   BumpEventSnapshot,
 } from "@/lib/booking-events";
 import { isDuplicateCaptureRefundEvent } from "@/lib/duplicate-capture-refund-event";
+import { isManualSettlementReversalEvent } from "@/lib/manual-settlement-reversal-event";
 
 export type BookingNarrativeState =
   | "payable"
@@ -207,7 +208,16 @@ function buildCancelledNarrative(
     };
   }
 
-  const cancelEvent = events.find((e) => e.type === BookingEventType.CANCELLED);
+  // #2262 — a manual mark-paid REVERSAL is stored as a CANCELLED event (there
+  // is no neutral event type for "the settlement was un-recorded"), but the
+  // booking is not cancelled by it. Excluding it here means a booking that was
+  // reversed and LATER genuinely cancelled shows the member the REAL
+  // cancellation's date, not the reversal's.
+  const cancelEvent = events.find(
+    (e) =>
+      e.type === BookingEventType.CANCELLED &&
+      !isManualSettlementReversalEvent(e)
+  );
 
   // A provisional booking whose dates filled up before its guests were
   // confirmed is released (status BUMPED, or CANCELLED carrying a BUMPED event)
