@@ -183,13 +183,13 @@ function appliedToBooking() {
         row.type === CreditType.BOOKING_APPLIED &&
         row.appliedToBookingId === BOOKING_ID,
     )
-    .reduce((sum, row) => sum + row.amountCents, 0);
+    .reduce((sum, row) => sum + row.amountCents, 0) || 0;
 }
 
 function memberBalance() {
   return ledger
     .filter((row) => row.memberId === MEMBER_ID)
-    .reduce((sum, row) => sum + row.amountCents, 0);
+    .reduce((sum, row) => sum + row.amountCents, 0) || 0;
 }
 
 function payRequest() {

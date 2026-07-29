@@ -203,12 +203,12 @@ export async function settleFullyCreditCoveredBooking(
     create: {
       bookingId,
       amountCents: 0,
-      creditAppliedCents,
+      creditAppliedCents: appliedCreditCents,
       status: PaymentStatus.SUCCEEDED,
     },
     update: {
       amountCents: 0,
-      creditAppliedCents,
+      creditAppliedCents: appliedCreditCents,
       status: PaymentStatus.SUCCEEDED,
     },
   });

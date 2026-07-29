@@ -136,7 +136,7 @@ function appliedTotal(rows: LedgerRow[]) {
         row.type === CreditType.BOOKING_APPLIED &&
         row.appliedToBookingId === BOOKING_ID,
     )
-    .reduce((sum, row) => sum + row.amountCents, 0);
+    .reduce((sum, row) => sum + row.amountCents, 0) || 0;
 }
 
 /** What the member has left to spend. */
