@@ -28,7 +28,11 @@ export default async function DisplaySetupPage() {
 
   return (
     <div className="max-w-5xl p-6">
-      <BackLink href="/admin/display" label="Lobby Display" />
+      {/* prefetch off: this page stays reachable while `lobbyDisplay` is OFF,
+          and the hub it points back at does not — a default prefetch would fire
+          a background request that 404s in the very state step 1 exists to fix
+          (#2249). The link itself still works; it just is not warmed. */}
+      <BackLink href="/admin/display" label="Lobby Display" prefetch={false} />
       <h1 className="mt-2 mb-2 text-2xl font-bold">Lodge Display setup</h1>
       <p className="mb-6 text-muted-foreground">
         Six steps from nothing to a TV in the lodge showing the right board:

@@ -189,9 +189,16 @@ function matchesPrefix(pathname: string, prefix: string): boolean {
  * Strip ONE trailing slash from a path longer than "/" before an exemption is
  * compared. This gate runs BEFORE Next's canonicalising 308, so `/x/setup/`
  * would otherwise miss its own exemption and 404. The comparison itself stays
- * exact equality, so `/admin/display/setup/extra`, `/admin/display/setupfoo`
- * and `//admin/display/setup` all still fail closed (same reasoning as
- * `normalisePathname` in `src/lib/csp.ts`).
+ * exact equality, so a near-miss like `/admin/display/setup/extra` or
+ * `/admin/display/setupfoo` keeps the module flag and fails closed (same
+ * reasoning as `normalisePathname` in `src/lib/csp.ts`).
+ *
+ * A doubled leading slash (`//admin/display/setup`) is a different case, and
+ * NOT a fail-closed one: it does not start with `/admin/display`, so it matches
+ * no rule here at all and this map requires nothing of it. That is harmless
+ * because it also routes to nothing — Next normalises the duplicate slash
+ * before a page is resolved — but it is worth stating truthfully rather than
+ * claiming a gate that is not being applied.
  */
 function normaliseForExemption(pathname: string): string {
   return pathname.length > 1 && pathname.endsWith("/")

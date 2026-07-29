@@ -12,6 +12,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { prisma } from "@/lib/prisma";
+import logger from "@/lib/logger";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import {
   DISPLAY_WIZARD_HREF,
@@ -142,7 +143,15 @@ async function loadDisplaySetupProgress() {
       }),
     ]);
     return { templateCount, pairedDeviceCount };
-  } catch {
+  } catch (err) {
+    // Fail soft, but never silently: the fallback deliberately reads as
+    // "already set up", so without this line a database problem would remove
+    // the guided-setup card from a club that needs it and leave no trace of why
+    // (#2249 review L5). Mirrors `loadEffectiveModuleFlags` beside it.
+    logger.warn(
+      { err },
+      "Failed to read Lobby Display setup progress; hiding the guided-setup lead card",
+    );
     return { templateCount: 1, pairedDeviceCount: 1 };
   }
 }
