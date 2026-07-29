@@ -2993,12 +2993,15 @@ async function runAssignBedRangeAttempt(input: {
 
   // Batched by (already exists?, is second occupant?): at most two updateMany +
   // two createMany however long the range is — the whole reason a 366-night
-  // assign can be atomic at all. The real bound for ONE attempt is: ~9 fixed
-  // statements (guest + bed + optional own-hold member + occupant scan + up to
-  // two partner-eligibility lookups + existing-row scan + the writes above + the
-  // batched promotion + the audit row), PLUS one audit row per partner actually
-  // promoted — which only happens when this move strands a partner on a shared
-  // double. Nothing else in this transaction may grow with the night count.
+  // assign can be atomic at all. The real bound for ONE attempt is AT MOST 13
+  // statements, whatever the night count: guest + bed (2), the occupant scan
+  // (1), up to two partner-eligibility lookups (2), the existing-row scan (1),
+  // up to two updateMany + two createMany (4), the batched promotion's findMany
+  // + updateMany (2), and the audit row (1). PLUS one audit row per partner
+  // actually promoted — which only happens when this move strands a partner on a
+  // shared double. (The own-hold member lookup is on the mutually exclusive
+  // refusal path, which runs 4 statements and writes nothing.) Nothing else in
+  // this transaction may grow with the night count.
   for (const isSecondOccupant of [false, true]) {
     const nights = targetNights.filter(
       (stayDate) => secondOccupantNights.has(stayDate) === isSecondOccupant,
