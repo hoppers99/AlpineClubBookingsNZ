@@ -3,11 +3,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 /*
  * POST /api/admin/bed-allocation/allocations/range (#2251).
  *
- * The real route handler, the real requireBedAllocationAdmin guard and the real
- * audit call shape run; assignBedRange is mocked at the lib seam so each of the
- * route's own contracts can be driven directly: ONE audit entry either way,
- * targetId = booking id (so the booking page's audit deep link finds it), and
- * 400-vs-409 on a refusal.
+ * The real route handler and the real requireBedAllocationAdmin guard run;
+ * assignBedRange is mocked at the lib seam so the route's own contracts can be
+ * driven directly: strict input validation, 400-vs-409 on a refusal, the
+ * explicit night list passed straight through, and Prisma write-conflict codes
+ * mapped to something an admin can act on rather than a generic 500.
+ *
+ * The single BED_ALLOCATION_RANGE_SET audit entry is deliberately NOT this
+ * route's job any more (#2251 review A4): it is written inside assignBedRange's
+ * own transaction, and is covered in admin-bed-allocation-range.test.ts.
  */
 const {
   mockRequireAdmin,
@@ -45,10 +49,12 @@ vi.mock("@/lib/lodge-capacity", () => ({
   getLodgePartnerSharedCapacityStatus: vi.fn(),
 }));
 
+import { Prisma } from "@prisma/client";
+
 function buildResult(
   overrides: Partial<{
     applied: boolean;
-    freeNightsOnly: boolean;
+    partialByConsent: boolean;
     writtenNights: string[];
     freeNights: string[];
     refusals: Array<Record<string, unknown>>;
@@ -56,7 +62,7 @@ function buildResult(
 ) {
   return {
     applied: overrides.applied ?? true,
-    freeNightsOnly: overrides.freeNightsOnly ?? false,
+    partialByConsent: overrides.partialByConsent ?? false,
     bookingId: "booking-1",
     bookingGuestId: "guest-1",
     guestName: "Range Guest",
@@ -117,7 +123,7 @@ describe("POST /api/admin/bed-allocation/allocations/range", () => {
     mockCreateAuditLog.mockResolvedValue(undefined);
   });
 
-  it("writes ONE audit entry against the booking id on success", async () => {
+  it("answers with the written range on success and audits nothing itself", async () => {
     mockAssignBedRange.mockResolvedValue(buildResult());
 
     const response = await post(validBody);
@@ -126,25 +132,15 @@ describe("POST /api/admin/bed-allocation/allocations/range", () => {
       result: { applied: true, writtenNights: ["2026-06-01", "2026-06-02", "2026-06-03"] },
     });
 
-    expect(mockCreateAuditLog).toHaveBeenCalledTimes(1);
-    const entry = mockCreateAuditLog.mock.calls[0][0];
-    expect(entry.action).toBe("BED_ALLOCATION_RANGE_SET");
-    // The booking page's audit deep link matches targetId, never metadata.
-    expect(entry.targetId).toBe("booking-1");
-    expect(entry.outcome).toBe("success");
-    expect(entry.metadata).toMatchObject({
-      requestedFrom: "2026-06-01",
-      requestedTo: "2026-06-04",
-      requestedNightCount: 3,
-      writtenNightCount: 3,
-      refusedNightCount: 0,
-      autoApproved: true,
-      freeNightsOnly: false,
-      writtenNightRuns: ["2026-06-01 → 2026-06-03"],
-    });
+    expect(mockAssignBedRange).toHaveBeenCalledWith(
+      expect.objectContaining({ approvedByMemberId: "admin-1" }),
+    );
+    // The audit row belongs to the lib's transaction, so rows and record commit
+    // together. A second entry written here would double-count the operation.
+    expect(mockCreateAuditLog).not.toHaveBeenCalled();
   });
 
-  it("still writes ONE audit entry, as a failure, when the range is refused", async () => {
+  it("answers 409 with the same refusal report when the range is blocked", async () => {
     mockAssignBedRange.mockResolvedValue(
       buildResult({
         applied: false,
@@ -172,16 +168,9 @@ describe("POST /api/admin/bed-allocation/allocations/range", () => {
     expect(body.result.applied).toBe(false);
     expect(body.result.refusals).toHaveLength(1);
     expect(body.result.freeNights).toEqual(["2026-06-01", "2026-06-02"]);
-
-    expect(mockCreateAuditLog).toHaveBeenCalledTimes(1);
-    const entry = mockCreateAuditLog.mock.calls[0][0];
-    expect(entry.outcome).toBe("failure");
-    expect(entry.targetId).toBe("booking-1");
-    expect(entry.metadata.refusedNightCountsByCategory).toEqual({
-      EXCLUSIVE_HOLD: 0,
-      GUEST_NOT_BOOKED: 0,
-      BED_TAKEN: 1,
-    });
+    // The occupying guest is named to the admin who asked — this is the only
+    // place those names appear; the audit row records counts and ids only.
+    expect(body.result.refusals[0].occupiedBy.guestName).toBe("Other Guest");
   });
 
   it("answers 400 when a night is refused because the guest is not booked", async () => {
@@ -202,41 +191,80 @@ describe("POST /api/admin/bed-allocation/allocations/range", () => {
     expect(body.result.refusals[0].category).toBe("GUEST_NOT_BOOKED");
   });
 
-  it("passes the admin's explicit free-nights opt-in through", async () => {
+  it("passes the admin's explicit night list through untouched", async () => {
     mockAssignBedRange.mockResolvedValue(
       buildResult({
-        freeNightsOnly: true,
+        partialByConsent: true,
         writtenNights: ["2026-06-01", "2026-06-02"],
         refusals: [{ stayDate: "2026-06-03", category: "BED_TAKEN" }],
       }),
     );
 
-    const response = await post({ ...validBody, freeNightsOnly: true });
+    const response = await post({
+      ...validBody,
+      nights: ["2026-06-01", "2026-06-02"],
+    });
     expect(response.status).toBe(200);
     expect(mockAssignBedRange).toHaveBeenCalledWith(
       expect.objectContaining({
-        freeNightsOnly: true,
+        nights: ["2026-06-01", "2026-06-02"],
         approvedByMemberId: "admin-1",
       }),
     );
-    // One entry, for one deliberate action, carrying both halves.
-    expect(mockCreateAuditLog).toHaveBeenCalledTimes(1);
-    expect(mockCreateAuditLog.mock.calls[0][0].metadata).toMatchObject({
-      freeNightsOnly: true,
-      writtenNightCount: 2,
-      refusedNightCount: 1,
-    });
   });
 
-  it("rejects unknown keys and malformed JSON without touching the lib", async () => {
+  it("rejects unknown keys, malformed JSON and non-date ranges without touching the lib", async () => {
     const strict = await post({ ...validBody, lodgeId: "lodge-1" });
     expect(strict.status).toBe(400);
 
     const malformed = await post("{not json");
     expect(malformed.status).toBe(400);
 
+    // A shape check, not just "non-empty": "9999999-01-01" used to reach the lib.
+    const badDate = await post({ ...validBody, to: "9999999-01-01" });
+    expect(badDate.status).toBe(400);
+
+    // Same for the explicit night list, which is bounded to the assign cap.
+    const badNight = await post({ ...validBody, nights: ["not-a-date"] });
+    expect(badNight.status).toBe(400);
+
+    const emptyNights = await post({ ...validBody, nights: [] });
+    expect(emptyNights.status).toBe(400);
+
     expect(mockAssignBedRange).not.toHaveBeenCalled();
-    expect(mockCreateAuditLog).not.toHaveBeenCalled();
+  });
+
+  /*
+   * Prisma codes that mean "nothing was written, something collided" must not
+   * fall through to a generic 500 — the admin can act on both of these (#2251
+   * review A3).
+   */
+  it("maps a write conflict (P2034) to a 409 that says nothing was written", async () => {
+    mockAssignBedRange.mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError("write conflict", {
+        code: "P2034",
+        clientVersion: "test",
+      }),
+    );
+
+    const response = await post(validBody);
+    expect(response.status).toBe(409);
+    const body = await response.json();
+    expect(body.error).toContain("Nothing was written");
+  });
+
+  it("maps a transaction timeout (P2028) to a 503 that says to try a shorter range", async () => {
+    mockAssignBedRange.mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError("transaction timed out", {
+        code: "P2028",
+        clientVersion: "test",
+      }),
+    );
+
+    const response = await post(validBody);
+    expect(response.status).toBe(503);
+    const body = await response.json();
+    expect(body.error).toContain("shorter date range");
   });
 
   it("404s when the bed allocation module is off", async () => {

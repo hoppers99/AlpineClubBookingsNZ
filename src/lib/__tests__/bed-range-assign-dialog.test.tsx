@@ -115,7 +115,7 @@ describe("BedRangeAssignDialog", () => {
       json: async () => ({
         result: {
           applied: true,
-          freeNightsOnly: false,
+          partialByConsent: false,
           bookingId: "booking-1",
           bookingGuestId: "guest-1",
           guestName: "Range Guest",
@@ -151,7 +151,7 @@ describe("BedRangeAssignDialog", () => {
     fetchMock.mockResolvedValueOnce(
       refusalResponse(400, {
         applied: false,
-        freeNightsOnly: false,
+        partialByConsent: false,
         bookingId: "booking-1",
         bookingGuestId: "guest-1",
         guestName: "Range Guest",
@@ -185,9 +185,9 @@ describe("BedRangeAssignDialog", () => {
             stayDate: "2026-06-04",
             category: "EXCLUSIVE_HOLD",
             hold: {
-              bookingId: "booking-hold",
-              memberName: "Hold Member",
-              ownBooking: false,
+              bookingId: "booking-1",
+              memberName: "Own Member",
+              ownBooking: true,
             },
           },
         ],
@@ -217,7 +217,7 @@ describe("BedRangeAssignDialog", () => {
 
     const hold = screen.getByTestId("refusal-category-EXCLUSIVE_HOLD");
     expect(hold).toHaveTextContent("Whole-lodge hold");
-    expect(hold).toHaveTextContent("Hold Member");
+    expect(hold).toHaveTextContent("This booking holds the whole lodge");
 
     // The second action is explicit, states the exact count, and is the only
     // way a partial result can happen.
@@ -231,7 +231,7 @@ describe("BedRangeAssignDialog", () => {
       json: async () => ({
         result: {
           applied: true,
-          freeNightsOnly: true,
+          partialByConsent: true,
           bookingId: "booking-1",
           bookingGuestId: "guest-1",
           guestName: "Range Guest",
@@ -250,8 +250,16 @@ describe("BedRangeAssignDialog", () => {
     fireEvent.click(freeNightsButton);
 
     await waitFor(() => expect(onAssigned).toHaveBeenCalledTimes(1));
-    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toMatchObject({
-      freeNightsOnly: true,
+    // The second action sends the EXACT nights the report showed as free, not a
+    // flag for the server to re-derive from (#2251 review A6/B5): what the admin
+    // saw is what gets written, and a night taken in the meantime refuses the
+    // whole thing instead of silently dropping out.
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
+      bookingGuestId: "guest-1",
+      bedId: "bed-1",
+      from: "2026-06-01",
+      to: "2026-06-06",
+      nights: ["2026-06-01", "2026-06-05"],
     });
   });
 
@@ -259,7 +267,7 @@ describe("BedRangeAssignDialog", () => {
     fetchMock.mockResolvedValue(
       refusalResponse(409, {
         applied: false,
-        freeNightsOnly: false,
+        partialByConsent: false,
         bookingId: "booking-1",
         bookingGuestId: "guest-1",
         guestName: "Range Guest",
@@ -295,16 +303,17 @@ describe("BedRangeAssignDialog", () => {
     expect(
       screen.queryByRole("button", { name: /free night/ }),
     ).not.toBeInTheDocument();
+    // The only hold this endpoint refuses on is the guest's OWN booking's.
     expect(
-      screen.getByText(/This booking holds the whole lodge/),
-    ).toBeInTheDocument();
+      screen.getByTestId("refusal-category-EXCLUSIVE_HOLD"),
+    ).toHaveTextContent("This booking holds the whole lodge");
   });
 
   it("drops a refusal report once the range is edited, so stale evidence is never read", async () => {
     fetchMock.mockResolvedValue(
       refusalResponse(409, {
         applied: false,
-        freeNightsOnly: false,
+        partialByConsent: false,
         bookingId: "booking-1",
         bookingGuestId: "guest-1",
         guestName: "Range Guest",
@@ -346,6 +355,23 @@ describe("BedRangeAssignDialog", () => {
     expect(screen.getByText(/covers at most 366 nights/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Assign/ })).toBeDisabled();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does not build a night list for a range it has already refused", () => {
+    renderDialog();
+
+    // A slipped keystroke in a year field. Counting this arithmetically is the
+    // difference between an instant error and building a Date per night for the
+    // next thousand years.
+    fireEvent.change(screen.getByLabelText("Date Out (checkout)"), {
+      target: { value: "3026-06-01" },
+    });
+
+    expect(screen.getByText(/covers at most 366 nights/)).toBeInTheDocument();
+    expect(screen.getByTestId("range-summary")).toHaveTextContent(
+      "No nights selected yet.",
+    );
+    expect(screen.getByRole("button", { name: /^Assign$/ })).toBeDisabled();
   });
 });
 

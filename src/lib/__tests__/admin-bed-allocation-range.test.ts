@@ -1,11 +1,19 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/prisma", () => ({ prisma: {} }));
 vi.mock("@/lib/lodge-capacity", () => ({
   getLodgeCapacityStatus: vi.fn(),
   getLodgePartnerSharedCapacityStatus: vi.fn(),
 }));
+// Wrapped, not replaced: the real implementations run, but the range path's
+// promise never to ENUMERATE a range it is about to refuse can be asserted.
+vi.mock("@/lib/date-only", async () => {
+  const actual =
+    await vi.importActual<typeof import("@/lib/date-only")>("@/lib/date-only");
+  return { ...actual, eachDateOnlyInRange: vi.fn(actual.eachDateOnlyInRange) };
+});
 
+import { Prisma } from "@prisma/client";
 import {
   BedAllocationAdminError,
   MAX_BED_ALLOCATION_ASSIGN_RANGE_NIGHTS,
@@ -13,13 +21,14 @@ import {
   manuallyAllocateBed,
   summariseNightRuns,
 } from "@/lib/admin-bed-allocation";
-import { formatDateOnly, parseDateOnly } from "@/lib/date-only";
+import { eachDateOnlyInRange, formatDateOnly, parseDateOnly } from "@/lib/date-only";
+import { prisma } from "@/lib/prisma";
 
 /*
  * Range assignment (#2251). The board's own 31-night window is irrelevant here:
  * these exercise the WRITE path, which is atomic across a range of any length,
- * refuses in three distinct categories, and only ever writes a subset when the
- * caller explicitly opted in (freeNightsOnly).
+ * refuses in three distinct categories, records itself inside its own
+ * transaction, and only ever writes a subset the admin explicitly listed.
  */
 
 function buildGuest(
@@ -28,6 +37,7 @@ function buildGuest(
     bookingId: string;
     stayStart: string;
     stayEnd: string;
+    nights: string[];
     memberId: string | null;
     bookingStatus: string;
     wholeLodgeHold: boolean;
@@ -41,6 +51,12 @@ function buildGuest(
     lastName: "Guest",
     stayStart: parseDateOnly(overrides.stayStart ?? "2026-06-01"),
     stayEnd: parseDateOnly(overrides.stayEnd ?? "2026-06-06"),
+    // #713: a non-contiguous stay carries an explicit night set that is NOT the
+    // whole stayStart..stayEnd envelope. Absent here means "no night rows", the
+    // pre-#713 shape.
+    nights: (overrides.nights ?? []).map((stayDate) => ({
+      stayDate: parseDateOnly(stayDate),
+    })),
     memberId: overrides.memberId ?? null,
     booking: {
       id: overrides.bookingId ?? "booking-1",
@@ -110,16 +126,19 @@ function buildDb(input: {
     stayDate: Date;
     isSecondOccupant: boolean;
   }>;
-  holds?: Array<{ id: string; checkIn: string; checkOut: string }>;
   ownBookingMemberName?: string;
 }) {
   const createMany = vi.fn().mockResolvedValue({ count: 0 });
   const updateMany = vi.fn().mockResolvedValue({ count: 0 });
-  // findMany is used for both the occupant scan (has a bedId filter) and the
-  // guest's own existing rows (filtered by bookingGuestId).
+  const auditCreate = vi.fn().mockResolvedValue({ id: "audit-1" });
+  const bookingFindMany = vi.fn().mockResolvedValue([]);
+  // findMany is used for the occupant scan (has a bedId filter), the guest's own
+  // existing rows (filtered by bookingGuestId), and the batched partner
+  // promotion (filtered by isSecondOccupant).
   const bedAllocationFindMany = vi.fn(
     async (args: { where: Record<string, unknown> }) => {
       if ("bedId" in args.where) return input.occupants ?? [];
+      if ("isSecondOccupant" in args.where) return [];
       return input.existingRows ?? [];
     },
   );
@@ -138,18 +157,7 @@ function buildDb(input: {
         .mockResolvedValue(input.bed === undefined ? buildBed() : input.bed),
     },
     booking: {
-      findMany: vi.fn().mockResolvedValue(
-        (input.holds ?? []).map((hold) => ({
-          id: hold.id,
-          checkIn: parseDateOnly(hold.checkIn),
-          checkOut: parseDateOnly(hold.checkOut),
-          member: {
-            firstName: "Hold",
-            lastName: "Member",
-            email: "hold@example.com",
-          },
-        })),
-      ),
+      findMany: bookingFindMany,
       findUnique: vi.fn().mockResolvedValue({
         member: {
           firstName: input.ownBookingMemberName ?? "Own",
@@ -165,10 +173,19 @@ function buildDb(input: {
       createMany,
       updateMany,
     },
+    auditLog: { create: auditCreate },
   };
 
-  return { db, createMany, updateMany };
+  return { db, createMany, updateMany, auditCreate, bookingFindMany };
 }
+
+function auditEntry(auditCreate: ReturnType<typeof vi.fn>, index = 0) {
+  return auditCreate.mock.calls[index][0].data as Record<string, unknown>;
+}
+
+beforeEach(() => {
+  vi.mocked(eachDateOnlyInRange).mockClear();
+});
 
 describe("assignBedRange", () => {
   it("writes every night of a long range in one pass, auto-approved", async () => {
@@ -288,46 +305,45 @@ describe("assignBedRange", () => {
     ]);
   });
 
-  it("reports another booking's whole-lodge hold as its own category (ADR-001)", async () => {
-    const { db } = buildDb({
-      holds: [{ id: "booking-hold", checkIn: "2026-06-03", checkOut: "2026-06-05" }],
+  // #713: stayStart..stayEnd is only an ENVELOPE. A guest booked 1-5 and 8-10
+  // is not booked on the 6th or 7th, and the lifecycle prunes any row placed
+  // there — so the range path must refuse those nights rather than write rows
+  // that quietly vanish at the next reconcile.
+  it("refuses the gap nights of a non-contiguous stay", async () => {
+    const { db, createMany } = buildDb({
+      guest: buildGuest({
+        stayStart: "2026-06-01",
+        stayEnd: "2026-06-11",
+        nights: [
+          "2026-06-01",
+          "2026-06-02",
+          "2026-06-03",
+          "2026-06-04",
+          "2026-06-05",
+          "2026-06-08",
+          "2026-06-09",
+          "2026-06-10",
+        ],
+      }),
     });
 
     const result = await assignBedRange({
       bookingGuestId: "guest-1",
       bedId: "bed-1",
       from: "2026-06-01",
-      to: "2026-06-06",
+      to: "2026-06-11",
       approvedByMemberId: "admin-1",
       db: db as never,
     });
 
     expect(result.applied).toBe(false);
+    expect(createMany).not.toHaveBeenCalled();
     expect(result.refusals).toEqual([
-      {
-        stayDate: "2026-06-03",
-        category: "EXCLUSIVE_HOLD",
-        hold: {
-          bookingId: "booking-hold",
-          memberName: "Hold Member",
-          ownBooking: false,
-        },
-      },
-      {
-        stayDate: "2026-06-04",
-        category: "EXCLUSIVE_HOLD",
-        hold: {
-          bookingId: "booking-hold",
-          memberName: "Hold Member",
-          ownBooking: false,
-        },
-      },
+      { stayDate: "2026-06-06", category: "GUEST_NOT_BOOKED" },
+      { stayDate: "2026-06-07", category: "GUEST_NOT_BOOKED" },
     ]);
-    expect(result.freeNights).toEqual([
-      "2026-06-01",
-      "2026-06-02",
-      "2026-06-05",
-    ]);
+    expect(result.freeNights).not.toContain("2026-06-06");
+    expect(result.freeNights).not.toContain("2026-06-07");
   });
 
   it("refuses every night when the guest's OWN booking holds the whole lodge", async () => {
@@ -358,7 +374,95 @@ describe("assignBedRange", () => {
     expect(result.freeNights).toEqual([]);
   });
 
-  it("writes only the free nights when the admin explicitly opts in, and still reports the refusals", async () => {
+  /*
+   * ADR-001's bed-allocation short-circuit is scoped to the HELD booking's own
+   * guests. The planner, the auto-allocator and the single-night/bulk manual
+   * paths all still place an ORDINARY booking on a bed across someone else's
+   * hold, and the hold-set flow surfaces such bookings as conflicts rather than
+   * refusing them. This endpoint must not be the only place in the domain where
+   * that is a hard block (#2251 review) — the board's overlapsExclusiveHold
+   * badge remains how another booking's hold is surfaced.
+   */
+  it("does not refuse, or even look for, ANOTHER booking's overlapping hold", async () => {
+    const { db, createMany, bookingFindMany } = buildDb({});
+
+    const result = await assignBedRange({
+      bookingGuestId: "guest-1",
+      bedId: "bed-1",
+      from: "2026-06-01",
+      to: "2026-06-06",
+      approvedByMemberId: "admin-1",
+      db: db as never,
+    });
+
+    expect(result.applied).toBe(true);
+    expect(result.refusals).toEqual([]);
+    expect(createMany).toHaveBeenCalledTimes(1);
+    // No overlapping-hold scan is issued at all.
+    expect(bookingFindMany).not.toHaveBeenCalled();
+  });
+
+  // One category per night, resolved in a fixed precedence so the report can
+  // never be ambiguous: a held booking's night says EXCLUSIVE_HOLD even when
+  // the guest is also not booked and the bed is also taken.
+  it("resolves one category per night: EXCLUSIVE_HOLD > GUEST_NOT_BOOKED > BED_TAKEN", async () => {
+    const held = buildDb({
+      guest: buildGuest({
+        wholeLodgeHold: true,
+        stayStart: "2026-06-01",
+        stayEnd: "2026-06-03",
+      }),
+      occupants: [occupant("2026-06-01"), occupant("2026-06-04")],
+    });
+
+    const heldResult = await assignBedRange({
+      bookingGuestId: "guest-1",
+      bedId: "bed-1",
+      from: "2026-06-01",
+      to: "2026-06-06",
+      approvedByMemberId: "admin-1",
+      db: held.db as never,
+    });
+
+    expect(
+      heldResult.refusals.map((refusal) => refusal.category),
+    ).toEqual([
+      "EXCLUSIVE_HOLD",
+      "EXCLUSIVE_HOLD",
+      "EXCLUSIVE_HOLD",
+      "EXCLUSIVE_HOLD",
+      "EXCLUSIVE_HOLD",
+    ]);
+
+    // Without a hold, a night that is BOTH unbooked and taken reports as the bad
+    // request, because that is the mistake worth telling the admin about.
+    const ordinary = buildDb({
+      guest: buildGuest({ stayStart: "2026-06-01", stayEnd: "2026-06-03" }),
+      occupants: [occupant("2026-06-02"), occupant("2026-06-04")],
+    });
+
+    const ordinaryResult = await assignBedRange({
+      bookingGuestId: "guest-1",
+      bedId: "bed-1",
+      from: "2026-06-01",
+      to: "2026-06-06",
+      approvedByMemberId: "admin-1",
+      db: ordinary.db as never,
+    });
+
+    expect(ordinaryResult.refusals).toEqual([
+      {
+        stayDate: "2026-06-02",
+        category: "BED_TAKEN",
+        occupiedBy: expect.objectContaining({ bookingId: "booking-other" }),
+      },
+      { stayDate: "2026-06-03", category: "GUEST_NOT_BOOKED" },
+      { stayDate: "2026-06-04", category: "GUEST_NOT_BOOKED" },
+      { stayDate: "2026-06-05", category: "GUEST_NOT_BOOKED" },
+    ]);
+  });
+
+  it("writes exactly the nights the admin listed, and still reports the refusals", async () => {
     const { db, createMany } = buildDb({
       occupants: [occupant("2026-06-03")],
     });
@@ -369,12 +473,12 @@ describe("assignBedRange", () => {
       from: "2026-06-01",
       to: "2026-06-06",
       approvedByMemberId: "admin-1",
-      freeNightsOnly: true,
+      nights: ["2026-06-01", "2026-06-02", "2026-06-04", "2026-06-05"],
       db: db as never,
     });
 
     expect(result.applied).toBe(true);
-    expect(result.freeNightsOnly).toBe(true);
+    expect(result.partialByConsent).toBe(true);
     expect(result.writtenNights).toEqual([
       "2026-06-01",
       "2026-06-02",
@@ -385,6 +489,77 @@ describe("assignBedRange", () => {
     expect(result.refusals).toHaveLength(1);
     expect(createMany).toHaveBeenCalledTimes(1);
     expect(createMany.mock.calls[0][0].data).toHaveLength(4);
+  });
+
+  /*
+   * The consent contract (#2251 review A6/B5). The admin approved a specific
+   * list of nights; between the report and the click the world can move. The
+   * server must not quietly write a smaller set, and must not write a night the
+   * admin never saw — it refuses with a fresh report instead.
+   */
+  it("refuses the listed nights outright, writing nothing, when one has since been taken", async () => {
+    const { db, createMany, updateMany } = buildDb({
+      occupants: [occupant("2026-06-02")],
+    });
+
+    const result = await assignBedRange({
+      bookingGuestId: "guest-1",
+      bedId: "bed-1",
+      from: "2026-06-01",
+      to: "2026-06-06",
+      approvedByMemberId: "admin-1",
+      // The admin was shown 06-02 as free; it is not any more.
+      nights: ["2026-06-01", "2026-06-02"],
+      db: db as never,
+    });
+
+    expect(result.applied).toBe(false);
+    expect(result.writtenNights).toEqual([]);
+    expect(createMany).not.toHaveBeenCalled();
+    expect(updateMany).not.toHaveBeenCalled();
+    // A FRESH report over the whole range, not the stale one they clicked from.
+    expect(result.refusals).toEqual([
+      {
+        stayDate: "2026-06-02",
+        category: "BED_TAKEN",
+        occupiedBy: expect.objectContaining({ bookingId: "booking-other" }),
+      },
+    ]);
+  });
+
+  it("never writes a night outside the list, even when the rest of the range is free", async () => {
+    const { db, createMany } = buildDb({});
+
+    const result = await assignBedRange({
+      bookingGuestId: "guest-1",
+      bedId: "bed-1",
+      from: "2026-06-01",
+      to: "2026-06-06",
+      approvedByMemberId: "admin-1",
+      nights: ["2026-06-02"],
+      db: db as never,
+    });
+
+    expect(result.applied).toBe(true);
+    expect(result.writtenNights).toEqual(["2026-06-02"]);
+    expect(createMany.mock.calls[0][0].data).toHaveLength(1);
+  });
+
+  it("rejects a listed night that is not inside the requested range", async () => {
+    const { db, createMany } = buildDb({});
+
+    await expect(
+      assignBedRange({
+        bookingGuestId: "guest-1",
+        bedId: "bed-1",
+        from: "2026-06-01",
+        to: "2026-06-06",
+        approvedByMemberId: "admin-1",
+        nights: ["2026-06-02", "2026-07-14"],
+        db: db as never,
+      }),
+    ).rejects.toThrow("not all inside the requested range");
+    expect(createMany).not.toHaveBeenCalled();
   });
 
   it("moves the guest off an old bed and promotes the partner stranded there", async () => {
@@ -398,14 +573,32 @@ describe("assignBedRange", () => {
         },
       ],
     });
-    db.bedAllocation.findFirst = vi.fn().mockResolvedValue({
-      id: "partner-1",
-      isSecondOccupant: true,
-      bedId: "bed-old",
-    });
-    db.bedAllocation.update = vi
-      .fn()
-      .mockResolvedValue({ id: "partner-1", isSecondOccupant: false });
+    // The batched promoter: ONE findMany over every vacated bed-night, then one
+    // updateMany — never a lookup per night.
+    db.bedAllocation.findMany = vi.fn(
+      async (args: { where: Record<string, unknown> }) => {
+        if ("bedId" in args.where) return [];
+        if ("isSecondOccupant" in args.where) {
+          return [
+            {
+              id: "partner-1",
+              isSecondOccupant: true,
+              bedId: "bed-old",
+              bookingId: "booking-other",
+              stayDate: parseDateOnly("2026-06-02"),
+            },
+          ];
+        }
+        return [
+          {
+            id: "allocation-1",
+            bedId: "bed-old",
+            stayDate: parseDateOnly("2026-06-02"),
+            isSecondOccupant: false,
+          },
+        ];
+      },
+    ) as never;
 
     const result = await assignBedRange({
       bookingGuestId: "guest-1",
@@ -418,12 +611,17 @@ describe("assignBedRange", () => {
 
     expect(result.applied).toBe(true);
     // One night already existed (moved via updateMany), four are new.
-    expect(updateMany).toHaveBeenCalledTimes(1);
     expect(updateMany.mock.calls[0][0].where.id.in).toEqual(["allocation-1"]);
     expect(createMany.mock.calls[0][0].data).toHaveLength(4);
     expect(result.promotedPartners).toEqual([
-      { id: "partner-1", isSecondOccupant: false },
+      expect.objectContaining({ id: "partner-1", isSecondOccupant: false }),
     ]);
+    // The promotion flip is one updateMany, alongside the write batch.
+    expect(
+      updateMany.mock.calls.some(
+        (call) => call[0].data?.isSecondOccupant === false && !call[0].data?.bedId,
+      ),
+    ).toBe(true);
   });
 
   it("refuses a range over the assignment cap rather than truncating it", async () => {
@@ -444,6 +642,35 @@ describe("assignBedRange", () => {
       `A range assignment covers at most ${MAX_BED_ALLOCATION_ASSIGN_RANGE_NIGHTS} nights`,
     );
     expect(createMany).not.toHaveBeenCalled();
+  });
+
+  /*
+   * An absurd span must be refused ARITHMETICALLY (#2251 review C2). Building
+   * the night list first to discover it is too long means ~2.9 million Date
+   * objects per request — a denial of service any admin can trigger with a
+   * slipped keystroke in a date field.
+   */
+  it("refuses an absurd span WITHOUT enumerating it, and before touching the database", async () => {
+    const { db } = buildDb({});
+
+    await expect(
+      assignBedRange({
+        bookingGuestId: "guest-1",
+        bedId: "bed-1",
+        from: "2026-01-01",
+        to: "9999-12-31",
+        approvedByMemberId: "admin-1",
+        db: db as never,
+      }),
+    ).rejects.toThrow(
+      `A range assignment covers at most ${MAX_BED_ALLOCATION_ASSIGN_RANGE_NIGHTS} nights`,
+    );
+
+    expect(eachDateOnlyInRange).not.toHaveBeenCalled();
+    // Validation happens before the guest/bed lookups, so no connection is held
+    // while a nonsense range is being refused.
+    expect(db.bookingGuest.findUnique).not.toHaveBeenCalled();
+    expect(db.lodgeBed.findUnique).not.toHaveBeenCalled();
   });
 
   it("rejects a range whose date out is not after its date in", async () => {
@@ -470,15 +697,20 @@ describe("assignBedRange", () => {
         occupant("2026-06-02", { memberId: "member-a" }),
       ],
     });
-    // mayShareDoubleBed's seams: both adults, with a confirmed partner link.
+    // Partner eligibility is asked ONCE for every distinct occupant, batched, so
+    // the statement count does not grow with the range length.
+    const memberFindMany = vi.fn().mockResolvedValue([
+      { id: "member-a", ageTier: "ADULT", active: true },
+      { id: "member-b", ageTier: "ADULT", active: true },
+    ]);
+    const linkFindMany = vi
+      .fn()
+      .mockResolvedValue([{ memberAId: "member-a", memberBId: "member-b" }]);
     (db as unknown as Record<string, unknown>).member = {
-      findMany: vi.fn().mockResolvedValue([
-        { id: "member-a", ageTier: "ADULT", active: true },
-        { id: "member-b", ageTier: "ADULT", active: true },
-      ]),
+      findMany: memberFindMany,
     };
     (db as unknown as Record<string, unknown>).memberPartnerLink = {
-      findUnique: vi.fn().mockResolvedValue({ status: "CONFIRMED" }),
+      findMany: linkFindMany,
     };
 
     const result = await assignBedRange({
@@ -492,6 +724,8 @@ describe("assignBedRange", () => {
 
     expect(result.applied).toBe(true);
     expect(result.refusals).toEqual([]);
+    expect(memberFindMany).toHaveBeenCalledTimes(1);
+    expect(linkFindMany).toHaveBeenCalledTimes(1);
     // Two batches: the shared nights as second occupant, the rest as primary.
     const written = createMany.mock.calls.flatMap(
       (call) =>
@@ -503,6 +737,165 @@ describe("assignBedRange", () => {
       .sort();
     expect(shared).toEqual(["2026-06-01", "2026-06-02"]);
     expect(written).toHaveLength(5);
+  });
+});
+
+/*
+ * The audit row is written on the SAME client as the allocation rows (#2251
+ * review A4/C5): a committed range can never surface as an unrecorded 500, and a
+ * rolled-back one can never leave a record claiming it happened.
+ */
+describe("assignBedRange audit record", () => {
+  it("records ONE entry against the booking, on the same client as the writes", async () => {
+    const { db, auditCreate } = buildDb({});
+
+    await assignBedRange({
+      bookingGuestId: "guest-1",
+      bedId: "bed-1",
+      from: "2026-06-01",
+      to: "2026-06-06",
+      approvedByMemberId: "admin-1",
+      db: db as never,
+    });
+
+    expect(auditCreate).toHaveBeenCalledTimes(1);
+    const entry = auditEntry(auditCreate);
+    expect(entry.action).toBe("BED_ALLOCATION_RANGE_SET");
+    // The booking page's audit deep link matches targetId, never metadata.
+    expect(entry.targetId).toBe("booking-1");
+    expect(entry.outcome).toBe("success");
+    expect(entry.metadata).toMatchObject({
+      requestedNightCount: 5,
+      writtenNightCount: 5,
+      writtenNightRuns: ["2026-06-01 → 2026-06-05"],
+      refusedNightCount: 0,
+      autoApproved: true,
+      partialByConsent: false,
+    });
+  });
+
+  it("records the refusal too, as a failure, with counts and runs but NO names", async () => {
+    const { db, auditCreate } = buildDb({
+      occupants: [occupant("2026-06-02"), occupant("2026-06-03")],
+    });
+
+    await assignBedRange({
+      bookingGuestId: "guest-1",
+      bedId: "bed-1",
+      from: "2026-06-01",
+      to: "2026-06-06",
+      approvedByMemberId: "admin-1",
+      db: db as never,
+    });
+
+    expect(auditCreate).toHaveBeenCalledTimes(1);
+    const entry = auditEntry(auditCreate);
+    expect(entry.outcome).toBe("failure");
+    const metadata = entry.metadata as Record<string, unknown>;
+    expect(metadata).toMatchObject({
+      refusedNightCount: 2,
+      refusedNightCountsByCategory: {
+        EXCLUSIVE_HOLD: 0,
+        GUEST_NOT_BOOKED: 0,
+        BED_TAKEN: 2,
+      },
+      refusedNightRunsByCategory: {
+        EXCLUSIVE_HOLD: [],
+        GUEST_NOT_BOOKED: [],
+        BED_TAKEN: ["2026-06-02 → 2026-06-03"],
+      },
+      involvedBookingIds: ["booking-other"],
+    });
+    // Data minimisation (#2251 review C6): up to 366 refusals could otherwise
+    // file a roster of unrelated members' names into an admin audit row. The
+    // names travel in the API response to the admin who asked, not into storage.
+    const serialised = JSON.stringify(metadata);
+    expect(serialised).not.toContain("Other Guest");
+    expect(serialised).not.toContain("Other Member");
+    expect(serialised).not.toContain("Range Guest");
+  });
+});
+
+/*
+ * A lost write race must not surface as a 500. Both codes mean "nothing was
+ * written, the database made us stop": retry once against fresh state, then
+ * answer with a plain-English 409 (#2251 review A3).
+ */
+describe("assignBedRange write-conflict handling", () => {
+  const prismaMock = prisma as unknown as Record<string, unknown>;
+
+  function knownError(code: string) {
+    return new Prisma.PrismaClientKnownRequestError("conflict", {
+      code,
+      clientVersion: "test",
+    });
+  }
+
+  // The module-level prisma stub is shared; each case installs its own
+  // $transaction and clears it again so no other test sees one.
+  beforeEach(() => {
+    delete prismaMock.$transaction;
+  });
+
+  it.each(["P2002", "P2034"])(
+    "retries a %s once, then refuses with a 409 rather than a 500",
+    async (code) => {
+      const transaction = vi.fn().mockRejectedValue(knownError(code));
+      prismaMock.$transaction = transaction;
+
+      const error = await assignBedRange({
+        bookingGuestId: "guest-1",
+        bedId: "bed-1",
+        from: "2026-06-01",
+        to: "2026-06-06",
+        approvedByMemberId: "admin-1",
+      }).catch((thrown: unknown) => thrown);
+
+      expect(transaction).toHaveBeenCalledTimes(2);
+      expect(error).toBeInstanceOf(BedAllocationAdminError);
+      expect((error as BedAllocationAdminError).status).toBe(409);
+      expect((error as BedAllocationAdminError).message).toContain(
+        "Nothing was written",
+      );
+    },
+  );
+
+  it("returns the retry's result when the second attempt succeeds", async () => {
+    const { db } = buildDb({});
+    const transaction = vi
+      .fn()
+      .mockRejectedValueOnce(knownError("P2034"))
+      .mockImplementationOnce(
+        async (run: (tx: unknown) => Promise<unknown>) => run(db),
+      );
+    prismaMock.$transaction = transaction;
+
+    const result = await assignBedRange({
+      bookingGuestId: "guest-1",
+      bedId: "bed-1",
+      from: "2026-06-01",
+      to: "2026-06-06",
+      approvedByMemberId: "admin-1",
+    });
+
+    expect(transaction).toHaveBeenCalledTimes(2);
+    expect(result.applied).toBe(true);
+  });
+
+  it("does not retry an error that is not a write conflict", async () => {
+    const transaction = vi.fn().mockRejectedValue(knownError("P2025"));
+    prismaMock.$transaction = transaction;
+
+    await expect(
+      assignBedRange({
+        bookingGuestId: "guest-1",
+        bedId: "bed-1",
+        from: "2026-06-01",
+        to: "2026-06-06",
+        approvedByMemberId: "admin-1",
+      }),
+    ).rejects.toMatchObject({ code: "P2025" });
+    expect(transaction).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -518,6 +911,25 @@ describe("whole-lodge holds at the manual write chokepoint", () => {
         db: db as never,
       }),
     ).rejects.toThrow("holds the whole lodge");
+  });
+
+  it("refuses a single-night manual allocation on a gap night (#713)", async () => {
+    const { db } = buildDb({
+      guest: buildGuest({
+        stayStart: "2026-06-01",
+        stayEnd: "2026-06-11",
+        nights: ["2026-06-01", "2026-06-02", "2026-06-09", "2026-06-10"],
+      }),
+    });
+
+    await expect(
+      manuallyAllocateBed({
+        bookingGuestId: "guest-1",
+        bedId: "bed-1",
+        stayDate: "2026-06-05",
+        db: db as never,
+      }),
+    ).rejects.toThrow("not staying on the selected date");
   });
 });
 
