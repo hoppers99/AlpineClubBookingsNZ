@@ -572,6 +572,87 @@ Future reviews and issues should cite this file when proposing changes.
 
 ## Payment And Settlement
 
+- **Manual mark-paid provenance for BOOKING payments (cash / off-Xero bank
+  transfer), B5 #2262.** A booking's payment can be settled outside both Stripe
+  and Xero by an audited finance:edit action, recorded on the existing `Payment`
+  row by `manuallyMarkedPaidAt` / `manuallyMarkedPaidByMemberId` /
+  `manualPaymentNote` / `manuallyMarkedPaidPreviousStatus`. Deliberately NO new
+  `PaymentSource` member: the row settles as an ordinary `INTERNET_BANKING`
+  payment, so every two-way branch in the codebase (refund-method coercion,
+  refund planning, the reconciler) lands correctly, and the provenance columns
+  carry the manual-ness. The provenance predicate everywhere is
+  `manuallyMarkedPaidAt IS NOT NULL` **alone** — never conjoined with "carries
+  no Xero id", because two stampers outside the cash-settle loop
+  (`syncLinkedPaymentInvoiceMetadata` and the zero-cash arm of
+  `invoice-paid-effects`) can legitimately stamp a Xero id onto a manual row and
+  that must not launder its provenance.
+  - It is a SIBLING ENTRY POINT into the one settlement body in
+    `payment-reconciliation.ts`, not a second settlement path: it executes the
+    same lock ordering, the same post-lock re-read, the same
+    `checkCapacityForGuestRanges` with its #1771 persisted-override carve-out,
+    the same status-fenced PAID claim, the same bed reconciliation and the same
+    durable `MEMBER_PAID` / `NON_MEMBER_CONFIRMED` event. It composes a THIRD
+    lock tier (global → per-lodge → MEMBER-CREDIT) and derives the settlement
+    amount itself: no client-supplied amount is ever accepted, and the mirror
+    `amountCents + creditAppliedCents = finalPriceCents` is asserted explicitly.
+  - It NEVER calls Xero and NEVER creates or voids an invoice. Marking paid is
+    refused (409) when the payment carries a Xero invoice id, a refund credit
+    note, a Xero id on any of its transactions, an active `PRIMARY_INVOICE`
+    object link, a completed CREATE-INVOICE outbox operation, **or one still in
+    flight**, and when the booking participates in a group settlement
+    (`organiserSettled`). Every condition that can be expressed as a WHERE is
+    re-asserted inside the fenced `payment.updateMany`, so an invoice minted
+    between read and write yields count 0 → 409, never a double-apply.
+  - A capacity failure REFUSES and records nothing (owner decision, 28 Jul).
+    The Stripe path's cancel-and-refund is not mirrored: no in-system money fact
+    exists yet, so refusal leaves zero debt, and the invariant holds identically
+    because the same check runs at the same point under the same locks.
+  - Every outbound invoice-mint surface is fenced on THREE levels: at the
+    `enqueueXeroBookingInvoiceOperation` choke point (which every enqueuer funnels
+    through), at settle time (mark-paid refuses while a CREATE-INVOICE operation
+    is PENDING/RUNNING/WAITING_PAYMENT), and in the handler
+    `createXeroInvoiceForBooking`, which re-reads provenance at execution time and
+    abandons an operation queued microseconds before the settle committed. Without
+    all three a manual settlement would have a real awaiting-payment invoice raised
+    AND EMAILED to the member for money already collected in cash. The
+    missing-invoices sweep, the force-sync affordance and the repair classifier
+    additionally treat a manual settlement as "no Xero objects expected".
+  - RECIPROCAL fence: an inbound Xero PAID landing on a manually settled booking
+    raises a counter in the inbound result, an error log, a durable admin-only
+    `BookingEvent` (once per payment+invoice) and a cooldown-throttled admin
+    alert — never a quiet `alreadyPaid`. It fires across PAID, CANCELLED (or the
+    inbound path would mint member credit for cash an OPEN hand-back task
+    already owes back) and COMPLETED, and it runs BEFORE the settle loop's
+    transaction update so a Xero invoice id is never stamped onto the manual
+    settlement's rows.
+  - Duplicate-capture visibility: the #1992 distinctness predicate matches ANY
+    settled PRIMARY transaction, not only a Stripe one, so a stray capture on a
+    cash-settled (or Xero-inbound-settled) booking is auto-refunded instead of
+    silently kept.
+  - CANCELLATION yields a durable `ManualRefundTask`, created atomically with the
+    CANCELLED claim — never a Stripe refund plan, never a Xero credit note, never
+    minted member credit, and never a "your refund is on its way to your card"
+    email. The refund allocation is written only when the task is COMPLETED, so
+    the ledger never claims money was returned before it was; the refund-appeal
+    queue refuses to approve a manual-provenance payment. The policy math uses
+    the bank-transfer/credit tier (owner decision, 28 Jul), so preview and
+    execution agree.
+  - REVERSAL (finance:edit) is permitted only while nothing has happened that it
+    could not undo: booking PAID, provenance present, no refund, no
+    `PaymentRefund` rows, no settled Stripe transaction, no OPEN
+    `ManualRefundTask`, and no Xero link or queued mint acquired since. It
+    restores `manuallyMarkedPaidPreviousStatus` (a stored `DRAFT` deliberately
+    restores as `PAYMENT_PENDING`, because the PAID claim cleared
+    `draftExpiresAt` and a restored DRAFT would be an expiry-less draft
+    forever), clears the provenance, marks the manual transaction FAILED rather
+    than deleting it, clears a restored CONFIRMED internet-banking hold deadline
+    (or the expiry cron would auto-cancel the booking minutes later), and
+    TERMINALLY CLOSES every non-terminal `CANCEL_PAYMENT_INTENT` /
+    `REFUND_SUPERSEDED_PAYMENT` operation the settle minted — those operations
+    must not outlive the settlement they were minted to protect, or a later
+    legitimate capture would be refunded as if superseded.
+  - Both directions are audited with the acting admin and the previous status;
+    marking paid also records the #2260 email decision BOTH ways.
 - Stripe and Internet Banking/Xero settlement paths must remain distinct.
 - Stripe paths own PaymentIntents, SetupIntents, Stripe refunds, Stripe
   webhooks, and durable PaymentRecoveryOperation rows.

@@ -4,6 +4,30 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **A booking paid in cash — or by a bank transfer that never reached Xero —
+  can now be recorded as paid, properly (#2262).** Open the booking, and under
+  **Admin tools** you will find **Cash / off-Xero payment**: it shows the exact
+  amount owing after any account credit, takes a note for the club's records,
+  and asks whether the member should get the usual booking confirmation. The
+  booking then becomes Paid and claims its beds exactly as a card payment does —
+  it runs through the same locking, the same capacity check and the same ledger
+  writes, so a bed can never be admitted into a full lodge on the strength of a
+  manual click. Nothing is sent to Xero: no invoice is created, and none is
+  emailed to the member for money the club already holds. It is refused, with
+  the reason shown, when the booking already has a Xero invoice or has one
+  queued (record the payment against that invoice in Xero instead), when it was
+  settled as part of a group booking, when there is nothing owing, when the
+  booking no longer fits the lodge, or when the amount changed while your screen
+  was open. Recorded it against the wrong booking? **Reverse manual payment**
+  puts it back to unpaid without cancelling it, while nothing has happened since
+  that could not be undone. And if Xero later reports that booking's invoice as
+  paid anyway, the club now gets an alert saying the two records disagree,
+  instead of the second payment vanishing silently. Cancelling a cash-settled
+  booking raises a **Refunds to pay back by hand** task on the Payments page
+  rather than pretending a card refund happened: the member is told the club
+  will arrange their refund, and the ledger records it at the moment an admin
+  marks it paid back. Recording, reversing and closing all need finance edit
+  access and are written to the audit log with your name.
 - **Writing a Lodge TV footer or CSS override no longer means remembering the
   tokens (#2248).** Every field where a board's HTML or CSS is typed by hand —
   the Visual builder's **Footer HTML**, **CSS overrides** and a zone's **HTML

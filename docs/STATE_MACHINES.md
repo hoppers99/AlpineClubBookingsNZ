@@ -737,6 +737,68 @@ surface show nothing new. The rest of the audit trail (recovery-operation row,
 `PaymentRefund` ledger entries, error log, and the dedicated #2007 admin alert)
 is unchanged.
 
+### Manual mark-paid (cash / off-Xero bank transfer), B5 #2262
+
+A finance:edit admin action that settles a booking's payment for money the app
+never saw. It is a SIBLING ENTRY POINT into the one settlement body, so the
+booking-side transition is the ordinary settlement one:
+
+```text
+Booking: PAYMENT_PENDING | CONFIRMED | PENDING | DRAFT -> PAID
+Payment: PENDING/PROCESSING -> SUCCEEDED, source coerced to INTERNET_BANKING,
+  provenance columns written (manuallyMarkedPaidAt / By / note /
+  manuallyMarkedPaidPreviousStatus)
+PaymentTransaction: an INTERNET_BANKING PRIMARY row with NO Stripe intent id,
+  reason "manual_mark_paid", -> SUCCEEDED
+```
+
+Refused (409, nothing written) when the booking is already PAID, is not in a
+payable status, participates in a group settlement, has ANY Xero invoice
+evidence including a queued mint, owes nothing, no longer fits the lodge, or
+when the amount owing moved since the admin's dialog rendered.
+
+Reversal (`direction: "unpaid"`), permitted only while nothing has happened
+that it could not undo:
+
+```text
+Booking: PAID -> manuallyMarkedPaidPreviousStatus
+  …except a stored DRAFT, which restores as PAYMENT_PENDING (the PAID claim
+  cleared draftExpiresAt, so a restored DRAFT would never expire)
+Payment: SUCCEEDED -> PENDING, provenance cleared, source left as-is; a
+  restored CONFIRMED internet-banking hold deadline is CLEARED
+PaymentTransaction (the manual PRIMARY row): SUCCEEDED -> FAILED,
+  reason "manual_mark_paid_reversed" — history, never deleted, and never
+  resurrected by a later re-mark (the mint predicate skips FAILED rows)
+PaymentRecoveryOperation (CANCEL_PAYMENT_INTENT / REFUND_SUPERSEDED_PAYMENT on
+  this payment): PENDING|PROCESSING -> FAILED with a NULL nextRetryAt, i.e.
+  terminally closed, so an operation minted to protect the settlement cannot
+  outlive it and refund a later legitimate capture
+```
+
+Both directions record an `AuditLog` naming the acting admin, and the reversal
+records a durable `BookingEvent` — a `CANCELLED` event carrying the
+`manual_mark_paid_reversed` discriminator
+(`src/lib/manual-settlement-reversal-event.ts`), which the shared narrative
+EXCLUDES so a later genuine cancellation is not misdated by it. The reciprocal
+inbound fence records its conflict the same way, under the
+`manual_settlement_xero_conflict` discriminator.
+
+### Manual refund task lifecycle (#2262)
+
+```text
+OPEN -> COMPLETED   (finance:edit; writes the local refund allocation and a
+                     REFUNDED BookingEvent — the ONLY moment the ledger says
+                     the money went back)
+OPEN -> DISMISSED   (finance:edit; requires a note; moves no money)
+```
+
+Created atomically with the CANCELLED claim when a cash-settled booking is
+cancelled with a non-zero policy refund. A zero-refund outcome creates no task.
+The transition is a status-fenced conditional update, so a double click can
+never double-apply the allocation, and the row is never processed by any cron —
+it deliberately is not a `PaymentRecoveryOperation`, whose dispatcher's final
+arm would execute it as a Stripe refund.
+
 To verify: whether Internet Banking uses the same `PaymentStatus` transitions
 or Xero invoice state as the effective settlement state.
 

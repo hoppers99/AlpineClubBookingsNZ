@@ -80,10 +80,14 @@ interface CancelBookingResult {
   success: boolean;
   refundAmountCents: number;
   refundPercentage: number;
-  refundMethod: "card" | "credit";
+  // B5 (#2262): "manual" — the booking was settled in cash / by an off-Xero
+  // bank transfer, so no card refund was planned and no account credit was
+  // minted; a durable hand-back task was raised instead and its id is returned.
+  refundMethod: "card" | "credit" | "manual";
   creditAmountCents?: number;
   creditRestoredCents?: number;
   stripeRefundId?: string;
+  manualRefundTaskId?: string;
   message: string;
 }
 
