@@ -1,6 +1,7 @@
 import { prisma } from "./prisma";
 import { sendAdminCapacityWarningAlert } from "./email";
 import { getOccupiedBedsForNight } from "./capacity";
+import { buildLodgeCustodianNightCounter } from "./custodian-occupancy";
 import { getLodgeCapacity } from "./lodge-capacity";
 import { lodgeNullTolerantScope } from "@/lib/lodges";
 import { getTodayDateOnly } from "./date-only";
@@ -59,6 +60,18 @@ export async function checkCapacityWarnings(): Promise<{ alertedDays: number }> 
       include: { guests: true },
     });
 
+    // Custodian occupancy (#2286) IS included here: this cron's whole job is
+    // to warn when a lodge is nearly full, and a bed held for a season by a
+    // custodian is genuinely unavailable. Excluding it would under-fire the
+    // warning by the custodian count every night, all season. (The reports
+    // route deliberately goes the other way — see its own note.)
+    const custodianCount = await buildLodgeCustodianNightCounter({
+      lodgeId: lodge.id,
+      from: todayNZ,
+      toExclusive: endDate,
+      nights,
+    });
+
     const highOccupancyDays: Array<{
       date: Date;
       occupiedBeds: number;
@@ -66,7 +79,9 @@ export async function checkCapacityWarnings(): Promise<{ alertedDays: number }> 
     }> = [];
 
     for (const night of nights) {
-      const occupiedBeds = getOccupiedBedsForNight(night, overlappingBookings);
+      const occupiedBeds =
+        getOccupiedBedsForNight(night, overlappingBookings) +
+        custodianCount(night);
 
       const availableBeds = lodgeCapacity - occupiedBeds;
       if (availableBeds <= WARN_THRESHOLD_BEDS) {
