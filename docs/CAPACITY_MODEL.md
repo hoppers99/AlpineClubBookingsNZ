@@ -347,6 +347,22 @@ prune after stamping the hold on the converted booking. The board/lifecycle
 agreement is tested in
 `src/lib/__tests__/held-booking-allocation-agreement.test.ts`.
 
+Accepted consequence (ADR-001 amendment, #2285): because a held booking owns no
+rows and neither planner synthesises its nights as blocking occupancy, a held
+group's beds are **not** modelled as occupied when other bookings are planned —
+an overlapping booking the officer chose to keep (decision 1 never refuses one)
+can be auto-placed onto beds the held group is physically using. Overlaps stay
+officer-resolved, surfaced when the hold is set (#119/#177).
+
+Setting a hold also drops the booking out of the requested-room lock (#776):
+that lock is "this booking has at least one APPROVED `BedAllocation` row", and
+the prune removes the approved rows along with the rest, so a member's requested
+room becomes editable again. That is the intended state — with no allocated beds
+there is nothing for the lock to protect — and it persists after the hold is
+cleared until an admin approves the re-planned beds. The removed rows (including
+which were approved) are listed in the hold's audit entry so the placement can be
+rebuilt by hand.
+
 ### Persisted capacity override (#1771)
 
 Every over-capacity admission above **persists** the decision on the booking:

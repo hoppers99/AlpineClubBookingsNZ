@@ -2,6 +2,9 @@
 
 **Status:** Accepted / Implemented (shape owner-approved 2026-07-13;
 implemented on `feature/lobby-display-v2` via #117–#122, merged 2026-07-14).
+Amended by the **#2285 follow-up (2026-07-29)**: the bed-allocation
+short-circuit below is now enforced by the lifecycle writer as well as the
+board, and its accepted consequence for cross-booking planning is recorded.
 
 **Risk:** Critical (booking capacity + availability). Requires high/xhigh-effort
 implementation, adversarial capacity tests, and owner review before merge.
@@ -188,7 +191,7 @@ per-bed allocation needed" board banner). The admin bookings list's per-booking
 bed-state also reports a held booking as `complete`. No `BedAllocation` rows are
 generated or demanded for held bookings.
 
-- **#2285 follow-up — the lifecycle half now enforces the rule too.** As
+- **#2285 follow-up (2026-07-29) — the lifecycle half now enforces the rule too.** As
   originally built, only the board honoured this short-circuit; the lifecycle
   auto-allocator (`reconcileBedAllocationsForBooking` /
   `autoAllocateMissingBedNights`, `src/lib/bed-allocation-lifecycle.ts`) had no
@@ -207,6 +210,25 @@ generated or demanded for held bookings.
   across the guest swap, #1254 — wrong once whole-lodge-held). The two paths
   are locked in agreement by
   `src/lib/__tests__/held-booking-allocation-agreement.test.ts`.
+
+- **Accepted consequence of the short-circuit (#2285 follow-up, 2026-07-29):
+  a held booking's nights are NOT modelled as occupied for OTHER bookings'
+  planning.** This ADR says a held group implicitly occupies every bed, but that
+  occupancy is expressed only through the capacity rule (which blocks new
+  admissions) — never as `BedAllocation` rows, and neither planner synthesises
+  it as blocking occupancy. Before #2285 the rows the lifecycle wrongly created
+  for held bookings gave the planners an accidental, undocumented occupancy
+  signal; removing them removed that signal too. Two effects follow and are
+  accepted: an overlapping booking admitted by an officer (decision 1 never
+  refuses, so overlaps exist by design) can be auto-placed onto beds the held
+  group is physically using, and the cross-booking age-mix invariant (#1768,
+  "Bed Allocation Lifecycle" in `docs/STATE_MACHINES.md`) cannot see the held
+  group's minors, so it cannot protect against mixing them with another
+  booking's adults. Both remain **officer-resolved**, consistent with decisions
+  1 and the conflict-surfacing work in #119/#177: the officer is shown every
+  overlapping booking when the hold is set and resolves it manually. Modelling
+  held nights as blocking occupancy in both planners is tracked as a separate
+  `needs-decision` follow-up rather than assumed here.
 
 ## Post-implementation decisions (owner, 2026-07-14)
 
