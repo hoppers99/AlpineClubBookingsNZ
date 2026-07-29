@@ -12,7 +12,13 @@ import type { ReactElement, ReactNode } from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("@/lib/prisma", () => ({
-  prisma: { booking: { findMany: vi.fn() } },
+  prisma: {
+    booking: { findMany: vi.fn() },
+    // #2263: the page also reads the viewer's own whole-lodge requests for the
+    // "My requests" section. Defaulted to empty so these nesting cases keep
+    // asserting only what they are about; the section is hidden when empty.
+    bookingRequest: { findMany: vi.fn(async () => []) },
+  },
 }));
 
 vi.mock("@/lib/auth", () => ({ auth: vi.fn() }));

@@ -77,6 +77,17 @@ vi.mock("@/lib/booking-request", () => {
 
   return {
     BookingRequestError,
+    // #2263: the quote/hold/price service guards ask whether the target row
+    // came through the authenticated member whole-lodge door. Every fixture in
+    // this suite is a public or SCHOOL request, so the real predicate's answer
+    // is reproduced here rather than stubbed to a constant — a fixture that
+    // later sets both columns must start failing the guard, not slip past it.
+    isMemberWholeLodgeRequest: (request: {
+      requestedByMemberId?: string | null;
+      exclusivityRequested?: boolean;
+    }) =>
+      request.requestedByMemberId != null &&
+      Boolean(request.exclusivityRequested),
     parseBookingRequestGuests: (raw: unknown) => raw,
     parseBookingRequestLinkedGuestMembers: (raw: unknown) => raw ?? [],
     linkedGuestMemberMap: (raw: unknown) =>

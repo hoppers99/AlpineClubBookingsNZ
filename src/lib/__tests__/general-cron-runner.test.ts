@@ -104,6 +104,9 @@ describe("general cron runner", () => {
     expect(result.bookingRequestPurge).toEqual({
       declinedPurged: 1,
       neverVerifiedPurged: 2,
+      // #2263 / OD-B: member-withdrawn (CANCELLED) requests purge on the same
+      // 90-day clock, so the cycle result carries their count too.
+      memberWithdrawnPurged: 0,
     });
     expect(result.quoteExpiryReminders).toEqual({
       remindedCount: 1,

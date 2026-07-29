@@ -136,8 +136,12 @@ export default async function MyBookingsPage() {
         <MyBookingsList bookings={items} />
       )}
 
-      {/* Hidden entirely when the member has no requests (D3). */}
-      <MyWholeLodgeRequests requests={wholeLodgeRequests} />
+      {/* Hidden entirely when the member has no requests (D3). Decided HERE
+          rather than inside the component so the client bundle for it is not
+          even mounted for the ordinary member who has never used the feature. */}
+      {wholeLodgeRequests.length > 0 ? (
+        <MyWholeLodgeRequests requests={wholeLodgeRequests} />
+      ) : null}
     </div>
   );
 }
