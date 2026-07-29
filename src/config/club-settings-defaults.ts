@@ -61,6 +61,28 @@ export const DEFAULT_BOOKING_REQUEST_SETTINGS = {
   attendeeConfirmationReminderDays: 3,
 } as const;
 
+/**
+ * `MemberGuestSettings` — the "+ Add Member Guest" policy singleton (#2306,
+ * epic #2305), read by `loadMemberGuestSettings`. These match the schema column
+ * defaults, which a test asserts against `prisma/schema.prisma`.
+ *
+ * `approvalRequired` true is owner decision D-3; `pendingHoldExpiryDays` 7
+ * (bounds 1..60) is the 30 Jul confirm-by-objection default. Both TRAVEL in
+ * config transfer (D-18).
+ *
+ * The two `openMemberSearch*` values are declared here so the singleton has one
+ * source of truth for "what the app reads on a miss", but they deliberately do
+ * NOT travel — see the `excluded` block on the `member-guest-settings` spec in
+ * `config-transfer/categories/club-settings.ts`. Both are inert in this release:
+ * nothing reads them until MG3.
+ */
+export const DEFAULT_MEMBER_GUEST_SETTINGS = {
+  approvalRequired: true,
+  pendingHoldExpiryDays: 7,
+  openMemberSearchEnabled: false,
+  openMemberSearchIncludesMinors: false,
+} as const;
+
 /** `InternetBankingPaymentSettings` — read by `loadInternetBankingPaymentSettings`. */
 export const DEFAULT_INTERNET_BANKING_PAYMENT_SETTINGS = {
   holdBedSlots: false,
