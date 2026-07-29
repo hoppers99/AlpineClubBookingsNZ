@@ -18,7 +18,12 @@ All notable public reference-release changes should be recorded here.
   the pay step reports what was applied and why it fell short rather than
   quietly using less. A booking your credit covers in full is now simply
   completed and confirmed at no charge instead of getting stuck at a payment
-  page it could never pass.
+  page it could never pass — as is a draft that was repriced to nothing while
+  you were looking at it. Choosing to pay by internet banking works the same
+  way: your credit is applied first and the invoice asks only for the
+  difference. And if the club held your booking for review before it could be
+  paid, your choice now survives the wait instead of being dropped while an
+  administrator decided.
 
 - **Writing a Lodge TV footer or CSS override no longer means remembering the
   tokens (#2248).** Every field where a board's HTML or CSS is typed by hand —

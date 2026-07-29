@@ -25,11 +25,18 @@ the election clamped to the live balance and the price, and clears the column â€
 all in one transaction, so the transition and the money move together and a
 retry cannot spend the election twice. When the election covers the whole price
 the same transaction continues straight to `PAID` with a $0 SUCCEEDED payment
-rather than minting a card intent. A draft created in `AWAITING_REVIEW` keeps
-its election through review and spends it on the
-`AWAITING_REVIEW -> PAYMENT_PENDING` release instead. `confirm-draft` only ever
-settles a $0 booking, where credit has nothing to pay, so it clears the election
-without consuming any.
+rather than minting a card intent â€” as does a draft that was repriced to $0
+while the member was looking at the pay step. Any booking held in
+`AWAITING_REVIEW` keeps its election through review and spends it on the
+`AWAITING_REVIEW -> PAYMENT_PENDING` release instead; that release path claims
+capacity before it settles, honouring a persisted capacity override (#1771),
+and refuses with a 409 (election intact, nothing charged) when the beds are
+gone. `confirm-draft` only ever settles a $0 booking, where credit has nothing
+to pay, so it clears the election without consuming any. Switching to Internet
+Banking consumes the election too, so the Xero invoice is raised for what the
+member actually owes; when credit covers the whole price there is nothing to
+invoice, so the switch is refused and the booking is settled at $0 on the pay
+step instead.
 
 Waitlist confirmation and expiry serialize on the offered booking's lodge lock.
 Confirmation re-reads `WAITLIST_OFFERED` and the deadline after acquiring the

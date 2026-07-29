@@ -583,9 +583,23 @@ Future reviews and issues should cite this file when proposing changes.
   single-consumption — the pay path clears it to NULL in the same transaction
   that writes the `BOOKING_APPLIED` ledger row — and it is NEVER a record of
   credit already applied: the authoritative applied total is always the
-  MemberCredit ledger (`deriveBookingAppliedCreditCents`). A draft created
-  directly in `AWAITING_REVIEW` keeps its election until an admin releases it to
-  `PAYMENT_PENDING`, matching booking-create's `blockForReview` rule.
+  MemberCredit ledger (`deriveBookingAppliedCreditCents`). ANY booking held for
+  admin review keeps its election until an admin releases it to
+  `PAYMENT_PENDING` — a saved draft that landed in `AWAITING_REVIEW` and a
+  booking the confirmed-create path parked there via `blockForReview` alike.
+  Holding for review suppresses the SPEND, never the member's request.
+- The election is consumed by a guarded CLAIM, not a read-then-write (#2265):
+  the column is moved from the exact amount that was read to NULL with an
+  `updateMany` matching the booking id, `PAYMENT_PENDING` and that amount, in
+  the same transaction as the ledger write. Two concurrent consumers therefore
+  cannot both debit the member; the loser applies nothing and reports nothing,
+  because a phantom outcome would produce a second confirmation email, a second
+  Xero invoice and a second `MEMBER_PAID` event. There are exactly two
+  consumers — the card pay step and the Internet Banking switch — and both take
+  the per-member credit-ledger lock before the claim and refuse (leaving the
+  election intact) before consuming when capacity is gone. An
+  organiser-settled booking can never consume one, so group settlement clears
+  the column instead.
 - A stored credit election is CLAMPED at confirmation, never refused, and never
   applied short in silence (#2265). Between the election and the confirmation
   the balance may have been spent elsewhere and the booking may have been
@@ -597,12 +611,23 @@ Future reviews and issues should cite this file when proposing changes.
   the applied amount, the shortfall and its cause are returned by the pay route
   so the shortfall is always surfaced. `calculateBookingCreditApplication` keeps
   its throw-on-over-request contract at booking-create, where the wizard
-  validated the balance in the same request and an over-request is a bug.
-- An election that covers the whole price settles the booking at $0 rather than
-  dead-ending at the card-intent effective-price guard (#2265): status `PAID`
-  plus one $0 `SUCCEEDED` Payment mirroring the applied credit, the same
-  zero-dollar shape booking-create and the modification engine use, keeping
-  `amountCents + creditAppliedCents = finalPriceCents`.
+  validated the balance in the same request and an over-request is a bug. The
+  reported reason names the bound that ACTUALLY bound — the lower of the two —
+  and reads `balance_and_price` only when the balance and the uncovered price
+  are equal and both below the request; a bound that sits under the request but
+  above the other decided nothing and is not reported.
+- A booking with nothing left to pay settles at $0 inside the pay transaction
+  rather than dead-ending at the card-intent effective-price guard (#2265):
+  status `PAID` plus one $0 `SUCCEEDED` Payment mirroring the applied credit,
+  the same zero-dollar shape booking-create and the modification engine use,
+  keeping `amountCents + creditAppliedCents = finalPriceCents`. This covers a
+  fully-covering election, a booking already covered by credit applied
+  elsewhere, and a draft repriced to $0 between the member rendering the pay
+  step and clicking it — the last of which previously committed
+  `DRAFT -> PAYMENT_PENDING` and only then refused, stranding a booking that
+  had left `DRAFT` and could never be paid. The settlement clears the Payment's
+  card-intent pointers but keeps `stripePaymentMethodId`, which a split
+  parent's deferred non-member guest charge falls back to.
 - Stripe and Internet Banking/Xero settlement paths must remain distinct.
 - Stripe paths own PaymentIntents, SetupIntents, Stripe refunds, Stripe
   webhooks, and durable PaymentRecoveryOperation rows.
