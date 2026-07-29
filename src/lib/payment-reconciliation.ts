@@ -393,6 +393,7 @@ async function prepareManualSettlement(
       xeroInvoiceId: true,
       xeroRefundCreditNoteId: true,
       manuallyMarkedPaidAt: true,
+      refundedAmountCents: true,
     },
   });
 
@@ -400,6 +401,18 @@ async function prepareManualSettlement(
     if (payment.manuallyMarkedPaidAt) {
       throw new ManualBookingPaymentError(
         "This booking's payment is already recorded as a manual settlement.",
+        409
+      );
+    }
+    // L7 (#2262): a manually settled payment carries NO prior refund history.
+    // Money already handed back through the ledger cannot be reconciled with a
+    // cash settlement recorded over the top of it — the reversal's fences and
+    // the settle's own mirror both assume refundedAmountCents starts at 0 —
+    // so the settle refuses rather than recording an irreconcilable row. The
+    // fenced write below re-asserts this as a WHERE condition.
+    if (payment.refundedAmountCents !== 0) {
+      throw new ManualBookingPaymentError(
+        "This booking's payment already carries refund history — it cannot be recorded as a manual settlement. Cancel and rebook, or resolve the refund first.",
         409
       );
     }
@@ -1033,6 +1046,22 @@ async function settleBookingPaymentInTransaction(
           xeroInvoiceId: null,
           xeroRefundCreditNoteId: null,
           manuallyMarkedPaidAt: null,
+          // M6 (#2262): the settled-FROM statuses, matching STATE_MACHINES.md.
+          // PENDING/PROCESSING are the ordinary unsettled shapes; FAILED is a
+          // legitimate settle-from too (a declined/expired card attempt is
+          // exactly the case an admin remedies with cash at the lodge).
+          // SUCCEEDED / (PARTIALLY_)REFUNDED can never be flipped here: an
+          // already-settled or refund-bearing payment must refuse, not be
+          // clobbered to a manual SUCCEEDED at a new amount.
+          status: {
+            in: [
+              PaymentStatus.PENDING,
+              PaymentStatus.PROCESSING,
+              PaymentStatus.FAILED,
+            ],
+          },
+          // L7: no refund history (re-asserting the read-time refusal).
+          refundedAmountCents: 0,
           transactions: { none: { xeroInvoiceId: { not: null } } },
           booking: { organiserSettled: false },
         },

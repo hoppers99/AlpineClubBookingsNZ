@@ -647,10 +647,19 @@ Future reviews and issues should cite this file when proposing changes.
     forever), clears the provenance, marks the manual transaction FAILED rather
     than deleting it, clears a restored CONFIRMED internet-banking hold deadline
     (or the expiry cron would auto-cancel the booking minutes later), and
-    TERMINALLY CLOSES every non-terminal `CANCEL_PAYMENT_INTENT` /
-    `REFUND_SUPERSEDED_PAYMENT` operation the settle minted — those operations
+    DELETES every still-PENDING/PROCESSING `CANCEL_PAYMENT_INTENT` /
+    `REFUND_SUPERSEDED_PAYMENT` operation on the payment — those operations
     must not outlive the settlement they were minted to protect, or a later
-    legitimate capture would be refunded as if superseded.
+    legitimate capture would be refunded as if superseded. Deletion, not a
+    terminal status flip: the webhook-side liveness predicates key on
+    `status != SUCCEEDED`, so only a deleted row is invisible to all of them.
+    The scope is safe because that set IS the settle's own hygiene: the
+    settle's enqueue upserts on the shared cancel idempotency key (adopting any
+    pre-existing cancel op), and a member-owed superseded refund can never be
+    reached — the handoff that creates one marks its transaction SUCCEEDED
+    first, and the reversal refuses on any settled Stripe transaction before
+    the disarm. The deleted rows' full content is preserved in the reversal's
+    `AuditLog` metadata.
   - Both directions are audited with the acting admin and the previous status;
     marking paid also records the #2260 email decision BOTH ways.
 - Stripe and Internet Banking/Xero settlement paths must remain distinct.

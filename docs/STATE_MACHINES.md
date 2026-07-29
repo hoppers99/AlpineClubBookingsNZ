@@ -745,17 +745,22 @@ booking-side transition is the ordinary settlement one:
 
 ```text
 Booking: PAYMENT_PENDING | CONFIRMED | PENDING | DRAFT -> PAID
-Payment: PENDING/PROCESSING -> SUCCEEDED, source coerced to INTERNET_BANKING,
-  provenance columns written (manuallyMarkedPaidAt / By / note /
-  manuallyMarkedPaidPreviousStatus)
+Payment: PENDING/PROCESSING/FAILED -> SUCCEEDED, source coerced to
+  INTERNET_BANKING, provenance columns written (manuallyMarkedPaidAt / By /
+  note / manuallyMarkedPaidPreviousStatus). FAILED is a legitimate settle-from
+  status — a declined/expired card attempt is exactly the case an admin
+  remedies with cash — and the fenced write carries this status set as a WHERE
+  condition, so an already-SUCCEEDED or refund-bearing payment can never be
+  clobbered to a manual settlement.
 PaymentTransaction: an INTERNET_BANKING PRIMARY row with NO Stripe intent id,
   reason "manual_mark_paid", -> SUCCEEDED
 ```
 
 Refused (409, nothing written) when the booking is already PAID, is not in a
 payable status, participates in a group settlement, has ANY Xero invoice
-evidence including a queued mint, owes nothing, no longer fits the lodge, or
-when the amount owing moved since the admin's dialog rendered.
+evidence including a queued mint, carries any refund history
+(`refundedAmountCents > 0`), owes nothing, no longer fits the lodge, or when
+the amount owing moved since the admin's dialog rendered.
 
 Reversal (`direction: "unpaid"`), permitted only while nothing has happened
 that it could not undo:
@@ -769,10 +774,15 @@ Payment: SUCCEEDED -> PENDING, provenance cleared, source left as-is; a
 PaymentTransaction (the manual PRIMARY row): SUCCEEDED -> FAILED,
   reason "manual_mark_paid_reversed" — history, never deleted, and never
   resurrected by a later re-mark (the mint predicate skips FAILED rows)
-PaymentRecoveryOperation (CANCEL_PAYMENT_INTENT / REFUND_SUPERSEDED_PAYMENT on
-  this payment): PENDING|PROCESSING -> FAILED with a NULL nextRetryAt, i.e.
-  terminally closed, so an operation minted to protect the settlement cannot
-  outlive it and refund a later legitimate capture
+PaymentRecoveryOperation (every CANCEL_PAYMENT_INTENT /
+  REFUND_SUPERSEDED_PAYMENT on this payment still PENDING|PROCESSING):
+  DELETED, inside the reversal's transaction — not flipped to a terminal
+  status, because every webhook-side liveness predicate keys on
+  `status != SUCCEEDED` and a FAILED "closed" row would still hand a
+  post-reversal capture to the superseded-refund machinery. The deleted rows'
+  full content is preserved on the reversal's AuditLog entry, and a member-owed
+  superseded refund can never be reached: its settled transaction 409s the
+  reversal first.
 ```
 
 Both directions record an `AuditLog` naming the acting admin, and the reversal
@@ -796,8 +806,10 @@ Created atomically with the CANCELLED claim when a cash-settled booking is
 cancelled with a non-zero policy refund. A zero-refund outcome creates no task.
 The transition is a status-fenced conditional update, so a double click can
 never double-apply the allocation, and the row is never processed by any cron —
-it deliberately is not a `PaymentRecoveryOperation`, whose dispatcher's final
-arm would execute it as a Stripe refund.
+it deliberately is not a `PaymentRecoveryOperation`. (That dispatcher's final
+arm used to execute ANY unknown enum member as a superseded-payment Stripe
+refund; since #2262 it rejects an unhandled type with an explicit throw, but a
+task a cron must never execute still does not belong in a cron-executed table.)
 
 To verify: whether Internet Banking uses the same `PaymentStatus` transitions
 or Xero invoice state as the effective settlement state.

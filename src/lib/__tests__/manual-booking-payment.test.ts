@@ -214,6 +214,7 @@ function paymentRow(overrides: Record<string, unknown> = {}) {
     xeroInvoiceId: null,
     xeroRefundCreditNoteId: null,
     manuallyMarkedPaidAt: null,
+    refundedAmountCents: 0,
     ...overrides,
   };
 }
@@ -413,7 +414,7 @@ describe("#2262 guard 1 — the manual settlement runs the ONE settlement body",
     await expect(settle()).rejects.toMatchObject({ status: 409 });
   });
 
-  it("the fenced write re-asserts EVERY expressible refusal condition, including the transaction-stamped drift shape and organiserSettled", async () => {
+  it("the fenced write re-asserts EVERY expressible refusal condition, including the settled-from statuses, refund history, the transaction-stamped drift shape and organiserSettled", async () => {
     await settle();
 
     expect(mocks.paymentUpdateMany).toHaveBeenCalledWith(
@@ -423,11 +424,36 @@ describe("#2262 guard 1 — the manual settlement runs the ONE settlement body",
           xeroInvoiceId: null,
           xeroRefundCreditNoteId: null,
           manuallyMarkedPaidAt: null,
+          // M6: only the documented settled-from statuses can flip to
+          // SUCCEEDED. FAILED is deliberately included — a declined card
+          // attempt is exactly what cash at the lodge remedies — while
+          // SUCCEEDED / (PARTIALLY_)REFUNDED can never be clobbered.
+          status: {
+            in: [
+              PaymentStatus.PENDING,
+              PaymentStatus.PROCESSING,
+              PaymentStatus.FAILED,
+            ],
+          },
+          // L7: no refund history.
+          refundedAmountCents: 0,
           transactions: { none: { xeroInvoiceId: { not: null } } },
           booking: { organiserSettled: false },
         },
       })
     );
+  });
+
+  it("L7 — refuses at read time when the payment already carries refund history", async () => {
+    mocks.paymentFindUnique.mockResolvedValue(
+      paymentRow({ refundedAmountCents: 2500 })
+    );
+
+    await expect(settle()).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringMatching(/refund history/),
+    });
+    expect(mocks.paymentUpdateMany).not.toHaveBeenCalled();
   });
 });
 
