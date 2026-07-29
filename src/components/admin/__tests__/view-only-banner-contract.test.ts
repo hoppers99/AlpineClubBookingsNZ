@@ -772,18 +772,104 @@ function namedComponentFn(
   return found[0] ?? null;
 }
 
-/** Identifiers bound by `fn`'s own destructured parameters. */
-function parameterBoundNames(fn: ts.Node): Set<string> {
+/**
+ * The members of a type NAMED in `ast` — a local `interface` (including what it
+ * `extends`) or a local `type` alias.
+ *
+ * Resolution is deliberately syntactic and one file deep. This suite is not a
+ * type checker, and it does not need to be: every wizard step declares its own
+ * props type in its own file (`StepProps` in `display-wizard-steps.tsx`, inline
+ * type literals elsewhere). A props type moved to another module would resolve
+ * to nothing here, which fails the check that uses this rather than passing it.
+ */
+function typeMembersByName(
+  ast: ts.SourceFile,
+  name: string,
+  seen: Set<string>,
+): ts.TypeElement[] {
+  if (seen.has(name)) return []; // `interface A extends B`, `B extends A`
+  seen.add(name);
+  const members: ts.TypeElement[] = [];
+  eachNode(ast, (node) => {
+    if (ts.isInterfaceDeclaration(node) && node.name.text === name) {
+      members.push(...node.members);
+      for (const clause of node.heritageClauses ?? []) {
+        for (const base of clause.types) {
+          if (!ts.isIdentifier(base.expression)) continue;
+          members.push(
+            ...typeMembersByName(ast, base.expression.text, seen),
+          );
+        }
+      }
+      return;
+    }
+    if (ts.isTypeAliasDeclaration(node) && node.name.text === name) {
+      members.push(...declaredTypeMembers(ast, node.type, seen));
+    }
+  });
+  return members;
+}
+
+/**
+ * The members of a type NODE as written, flattening the two composite forms the
+ * wizard step props use: an intersection (`StepProps & { … }`,
+ * `{ … } & AncestorViewOnlyBannerProps`) and a reference to a local declaration.
+ */
+function declaredTypeMembers(
+  ast: ts.SourceFile,
+  type: ts.TypeNode | undefined,
+  seen: Set<string> = new Set(),
+): ts.TypeElement[] {
+  if (!type) return [];
+  if (ts.isTypeLiteralNode(type)) return [...type.members];
+  if (ts.isIntersectionTypeNode(type)) {
+    return type.types.flatMap((t) => declaredTypeMembers(ast, t, seen));
+  }
+  if (ts.isParenthesizedTypeNode(type)) {
+    return declaredTypeMembers(ast, type.type, seen);
+  }
+  if (ts.isTypeReferenceNode(type)) {
+    return typeMembersByName(ast, type.typeName.getText(ast), seen);
+  }
+  return [];
+}
+
+/**
+ * Identifiers `fn` receives as a parameter whose DECLARED type is
+ * `WizardStepHelpers` — either the whole parameter (`(ctx, helpers:
+ * WizardStepHelpers) => …`) or a destructured member of it (the house shape:
+ * `({ context, helpers }: { context: Ctx; helpers: WizardStepHelpers })`).
+ *
+ * Requiring the TYPE, not merely "is a parameter", is what makes the scope
+ * guarantee below mean what the docs claim. Only the shell may construct a
+ * `WizardStepHelpers` (asserted in the #2324 test), and the shell passes ONE
+ * `canEdit` to both its banner and that object — so `helpers.canEdit` inside a
+ * step provably IS the value the banner states. A parameter of some other type
+ * proves nothing of the sort.
+ */
+function helpersParameterNames(ast: ts.SourceFile, fn: ts.Node): Set<string> {
   const names = new Set<string>();
   if (!ts.isFunctionLike(fn)) return names;
+  const isHelpersType = (type: ts.TypeNode | undefined) =>
+    type !== undefined &&
+    ts.isTypeReferenceNode(type) &&
+    type.typeName.getText(ast) === WIZARD_HELPERS_TYPE;
+
   for (const param of fn.parameters) {
     if (ts.isIdentifier(param.name)) {
-      names.add(param.name.text);
+      if (isHelpersType(param.type)) names.add(param.name.text);
       continue;
     }
     if (!ts.isObjectBindingPattern(param.name)) continue;
+    const members = declaredTypeMembers(ast, param.type);
     for (const element of param.name.elements) {
-      if (ts.isIdentifier(element.name)) names.add(element.name.text);
+      if (!ts.isIdentifier(element.name)) continue;
+      const property = (element.propertyName ?? element.name).getText(ast);
+      const member = members.find(
+        (m): m is ts.PropertySignature =>
+          ts.isPropertySignature(m) && m.name.getText(ast) === property,
+      );
+      if (member && isHelpersType(member.type)) names.add(element.name.text);
     }
   }
   return names;
@@ -1654,6 +1740,84 @@ describe("view-only section banner coverage (#2160)", () => {
         `sentence, and every vouched step control is left with nothing.`,
     ).toBe(false);
 
+    /*
+      ---- and ONLY the shell may CONSTRUCT the vouch ------------------------
+
+      Everything above proves the shell's vouch is honest. It does not stop
+      another file minting its own, and that is a real hole rather than a
+      theoretical one, in two shapes:
+
+        - DECOY HELPERS. A provider config writes
+          `const helpers: WizardStepHelpers = { …, ancestorRendersViewOnlyBanner:
+          true }` and calls a step body's render with it. Every check in the
+          steps' half below passes — the value IS read from a `render`
+          callback's own parameter — while nothing renders a banner at all.
+        - DECOY STEP CONFIG. The same object literal shape used to satisfy the
+          `id`/`isVerified` test for a `render` that the shell never receives.
+
+      Both need the flag, or a `WizardStepHelpers`, to be built somewhere other
+      than the shell. So that is what is forbidden. Outside
+      `integration-wizard.tsx`, in the admin tree, neither may appear:
+
+        - a PROPERTY ASSIGNMENT named `ancestorRendersViewOnlyBanner`. The
+          sanctioned forward is a JSX ATTRIBUTE (a `JsxAttribute` node), and the
+          declaration in `view-only-action.tsx` / `types.ts` is a
+          `PropertySignature`, so neither is touched by this;
+        - an object literal ANNOTATED as `WizardStepHelpers`, in each of the
+          three spellings that annotate one: `const x: WizardStepHelpers = {…}`,
+          `{…} as WizardStepHelpers`, `{…} satisfies WizardStepHelpers`.
+
+      Test files are outside this scan by construction (`walk` skips `__tests__`
+      and `*.test.tsx`) and that is deliberate, not a gap: a step-body unit test
+      MUST build a helpers object to render the step at all. What it cannot do is
+      make a PRODUCTION step opt out — the step's own `= false` default, checked
+      above, is what covers that.
+    */
+    for (const f of astFiles) {
+      if (f.rel === WIZARD_SHELL_REL) continue;
+      const at = (node: ts.Node) =>
+        `${f.rel}:${f.ast.getLineAndCharacterOfPosition(node.getStart(f.ast)).line + 1}`;
+
+      eachNode(f.ast, (node) => {
+        if (
+          ts.isPropertyAssignment(node) &&
+          node.name.getText(f.ast) === VOUCH_PROP
+        ) {
+          offenders.push(
+            `${at(node)} sets \`${VOUCH_PROP}\` as an object property — only ` +
+              `${WIZARD_SHELL_REL} may construct the vouch, because only it ` +
+              `renders the banner the vouch promises`,
+          );
+        }
+        if (!ts.isObjectLiteralExpression(node)) return;
+        const parent: ts.Node | undefined = node.parent;
+        let annotation: ts.TypeNode | undefined;
+        if (
+          parent &&
+          ts.isVariableDeclaration(parent) &&
+          parent.initializer === node
+        ) {
+          annotation = parent.type;
+        } else if (
+          parent &&
+          (ts.isAsExpression(parent) || ts.isSatisfiesExpression(parent)) &&
+          parent.expression === node
+        ) {
+          annotation = parent.type;
+        }
+        if (
+          annotation &&
+          ts.isTypeReferenceNode(annotation) &&
+          annotation.typeName.getText(f.ast) === WIZARD_HELPERS_TYPE
+        ) {
+          offenders.push(
+            `${at(node)} builds a \`${WIZARD_HELPERS_TYPE}\` object — a ` +
+              `fabricated helpers object carries a vouch nothing has proved`,
+          );
+        }
+      });
+    }
+
     // ---- the steps' half --------------------------------------------------
     let wizardVouchSites = 0;
     const wizardVouched = new Set<string>(); // "file#Export"
@@ -1753,13 +1917,24 @@ describe("view-only section banner coverage (#2160)", () => {
       CONSTRUCTION — the two cannot disagree, because they are the same value.
 
       So: inside a wizard-vouched component, a control that opts out via the
-      vouch must read `canEdit` from an identifier the component received as a
-      PARAMETER (in practice `helpers.canEdit`), not from an independent source.
-      That is exactly what stops the scope mismatch this issue's review flagged:
-      the Lodge Display module switch calls `useAdminAreaEditAccess("support")`
-      itself while the wizard's banner states `lodge`, so it cannot be vouched
-      for — and now it cannot be vouched for by ACCIDENT either, because a local
-      hook result is not a parameter.
+      vouch must read `canEdit` off an identifier the component received as a
+      parameter DECLARED `WizardStepHelpers` (in practice `helpers.canEdit`), not
+      from an independent source.
+
+      The declared TYPE is what makes "the same value" a proof rather than a
+      likelihood. "Is a parameter" alone would accept `canEdit` read off any prop
+      a caller happened to pass — including a second, independently-derived
+      access flag with a different scope, which is precisely the defect this
+      check exists to catch. With the type required, and with only the shell
+      allowed to CONSTRUCT a `WizardStepHelpers` (asserted above), the object
+      behind that identifier can only have come from the shell, and the shell
+      built its `canEdit` and its banner's `canEdit` from one value.
+
+      It also keeps the live scope mismatch out by more than luck: the Lodge
+      Display module switch calls `useAdminAreaEditAccess("support")` itself
+      while the wizard's banner states `lodge`, so it cannot be vouched for — and
+      cannot be vouched for by ACCIDENT either, because a local hook result is
+      neither a parameter nor typed as the helpers.
 
       This does not make the wizard channel judgement-free. Deciding a control
       should NOT take the vouch is still a review call. What is now mechanical is
@@ -1778,7 +1953,7 @@ describe("view-only section banner coverage (#2160)", () => {
         );
         continue;
       }
-      const bound = parameterBoundNames(fn);
+      const helpersParams = helpersParameterNames(target.ast, fn);
       for (const tag of jsxTags(target.ast, "ViewOnlyActionButton")) {
         if (tag.getStart() < fn.getStart() || tag.getEnd() > fn.getEnd()) {
           continue;
@@ -1793,18 +1968,18 @@ describe("view-only section banner coverage (#2160)", () => {
         const at = `${target.rel}:${target.ast.getLineAndCharacterOfPosition(tag.getStart(target.ast)).line + 1}`;
         const canEdit = attr(tag, "canEdit");
         const value = canEdit ? attrExpression(canEdit) : null;
-        const readsFromParam =
+        const readsFromHelpers =
           value !== null &&
           ts.isPropertyAccessExpression(value) &&
           value.name.text === "canEdit" &&
           ts.isIdentifier(value.expression) &&
-          bound.has(value.expression.text);
-        if (!readsFromParam) {
+          helpersParams.has(value.expression.text);
+        if (!readsFromHelpers) {
           offenders.push(
             `${at} opts out under the shell's banner but takes canEdit from ` +
               `\`${value ? value.getText(target.ast) : "nothing"}\` rather than ` +
-              `from a parameter of <${name}> — so nothing proves it is the same ` +
-              `permission area the banner states`,
+              `off a <${name}> parameter declared \`${WIZARD_HELPERS_TYPE}\` — ` +
+              `so nothing proves it is the same permission area the banner states`,
           );
         }
       }
