@@ -275,9 +275,13 @@ async function recordManualSettlementConflict({
     bookingStatus,
   };
 
-  // Dedupe on the snapshot's invoice id so a replay of the same invoice event
-  // does not stack identical history rows, while a DIFFERENT invoice reporting
-  // paid against the same payment does record its own conflict.
+  // BEST-EFFORT once per (payment, invoice): this is a read-then-create with
+  // no unique key, so two concurrent replays of the same invoice event can
+  // both pass the read and record twice. That duplicate is harmless — the
+  // event is an admin-only history marker, the alert below has its own
+  // cross-instance cooldown, and no money state keys off the event — so a
+  // unique constraint is deliberately not added. A DIFFERENT invoice reporting
+  // paid against the same payment still records its own conflict.
   const alreadyRecorded = await prisma.bookingEvent
     .findFirst({
       where: {

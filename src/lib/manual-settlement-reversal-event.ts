@@ -28,8 +28,12 @@ export const MANUAL_SETTLEMENT_REVERSAL_EVENT_KIND =
   "manual_mark_paid_reversed" as const;
 
 /**
- * Honest, member-neutral copy stored on the event's `reason`. Rendered on the
- * admin booking-history timeline; never enters the member/guest narrative.
+ * Honest, member-neutral copy stored on the event's `reason`. There is no
+ * admin timeline that renders BookingEvent reasons today — the reversal's
+ * operator-visible trail is its `AuditLog` entry
+ * (`booking-payment.manual-payment.mark-unpaid`) — so this string exists as
+ * durable, self-describing history on the event row itself. It never enters
+ * the member/guest narrative (see `isManualSettlementMarkerEvent`).
  */
 export const MANUAL_SETTLEMENT_REVERSAL_EVENT_REASON =
   "Manually recorded payment reversed — the booking is unpaid again and was not cancelled.";

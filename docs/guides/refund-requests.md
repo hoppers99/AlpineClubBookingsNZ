@@ -47,6 +47,16 @@ a refund is capped at the remaining refundable amount on the payment.
    **Approve refund** / **Reject appeal**. The money still moves exactly as it
    would have; the withheld outcome email is listed on the booking for you to
    relay.
+
+   **Manually settled (cash / off-Xero) payments cannot be approved here.** If
+   the booking's payment was recorded with **Record manual payment** on the
+   booking page, approving its appeal is refused (a 409 with the reason) —
+   there is no card money to refund, so approving would silently refund $0
+   while telling the member money is coming. The refund is handed back by hand
+   instead: cancelling such a booking raises a **manual refund task** in the
+   queue on **Admin → Finance → Payments** (`/admin/payments`); complete the
+   task there once the club has actually paid the member back (or dismiss it,
+   with a note, if the member declined or it was settled another way).
 3. The settlement shows how much went **to card** versus **as credit**, including
    any restored prior credit.
 
