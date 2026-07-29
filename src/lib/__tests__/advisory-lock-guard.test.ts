@@ -35,6 +35,13 @@ const GLOBAL_BOOKING_MONEY_LOCK_INVENTORY: Record<string, number> = {
   // resurrection while the lodge lock serialises the capacity claim.
   "src/app/api/admin/bookings/[id]/confirm-pending-guests/route.ts": 2,
   "src/app/api/bookings/[id]/waitlist-confirm/route.ts": 1,
+  // #2265: the create-payment-intent pay transaction is a three-tier writer —
+  // it flips a booking's status, claims capacity, and moves account credit. It
+  // composes global lifecycle lock(1) FIRST, then the canonical per-lodge
+  // capacity lock, then the per-member credit-ledger lock, matching
+  // markBookingPaymentSucceeded. Before this it held no global lock at all, so
+  // its status writes did not exclude a concurrent cancel.
+  "src/app/api/payments/create-payment-intent/route.ts": 1,
   "src/app/api/payments/switch-to-internet-banking/route.ts": 1,
   "src/lib/booking-batch-modification-service.ts": 1,
   // #1881 residual: the fifth site protects the linked provisional-child

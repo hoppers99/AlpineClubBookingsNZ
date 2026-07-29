@@ -325,12 +325,20 @@ export async function POST(request: NextRequest) {
             }
 
             // Reconcile once, against the final status, so a booking that went
-            // straight from DRAFT to PAID is allocated exactly once.
-            if (previousRange) {
+            // straight from DRAFT to PAID is allocated exactly once. The
+            // released-review arm reconciles too when it settles: it moved
+            // PAYMENT_PENDING -> PAID, and every other path that claims PAID
+            // reconciles on that claim (markBookingPaymentSucceeded does it
+            // immediately after its own guarded claim). An arm that changed no
+            // status has nothing to reconcile.
+            if (previousRange || settledAtZero) {
               await reconcileBedAllocationsForBooking({
                 bookingId,
                 db: tx,
-                previousRange,
+                previousRange: previousRange ?? {
+                  checkIn: freshBooking.checkIn,
+                  checkOut: freshBooking.checkOut,
+                },
               });
             }
 

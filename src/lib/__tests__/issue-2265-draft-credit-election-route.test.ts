@@ -458,6 +458,11 @@ describe("#2265 the pay step honours the election made when the draft was saved"
     expect(data.alreadyPaid).toBe(true);
     expect(live.status).toBe("PAID");
     expect(appliedToBooking()).toBe(PRICE_CENTS);
+    // PAYMENT_PENDING -> PAID is a status claim like any other, so the beds are
+    // reconciled against the final status, as markBookingPaymentSucceeded does.
+    expect(mocks.reconcileBedAllocationsForBooking).toHaveBeenCalledWith(
+      expect.objectContaining({ bookingId: BOOKING_ID }),
+    );
   });
 
   it("settles a draft repriced to nothing instead of stranding it unpayable", async () => {
