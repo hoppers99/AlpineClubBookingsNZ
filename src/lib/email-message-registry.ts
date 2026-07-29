@@ -66,6 +66,11 @@ const ADMIN_SYSTEM_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
   // plumbing: sendToAdmins, adminBookingRequest gating, NOT delivery-locked.
   "admin-booking-request-hold-cancelled",
   "admin-school-manual-invoice",
+  // #2263: the same money-critical alert for an approved MEMBER whole-lodge
+  // request converted while the Xero module is off. Its own registry entry
+  // rather than a variant of the school one — the wording names a member, not a
+  // school — and delivery-locked on the same grounds (see below).
+  "admin-whole-lodge-manual-invoice",
   // #1967/#1994: split non-member guest portion unpaid at hold expiry (no card
   // on file). Ships via sendToAdmins, so it classifies as an admin alert.
   // Deliberately NOT in LOCKED_DELIVERY_TEMPLATE_NAMES — it is an operational
@@ -90,6 +95,10 @@ const ADMIN_SYSTEM_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
 const LOCKED_DELIVERY_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
   "admin-email-failure",
   "admin-school-manual-invoice",
+  // #2263: same money risk, same lock — disabling it would let an approved
+  // member whole-lodge booking go un-invoiced while the member has been told an
+  // invoice is coming.
+  "admin-whole-lodge-manual-invoice",
 ]);
 
 const CONTENT_ONLY_DEFAULT_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
@@ -493,6 +502,12 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
   "admin-school-manual-invoice": {
     triggerSummary:
       "Approved school booking-request converted while the Xero module is off, so no invoice was raised",
+    frequency:
+      "Once per conversion, to admins opted into public booking-request alerts",
+  },
+  "admin-whole-lodge-manual-invoice": {
+    triggerSummary:
+      "Approved member whole-lodge request converted while the Xero module is off, so no invoice was raised for the confirmed booking",
     frequency:
       "Once per conversion, to admins opted into public booking-request alerts",
   },

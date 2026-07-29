@@ -26,6 +26,49 @@
  */
 import { BookingRequestStatus } from "@prisma/client";
 
+/**
+ * The non-terminal statuses that count against the open-request cap and that a
+ * member may withdraw from (owner decision D3, #2263). Deliberately the same
+ * list for both, so the cap can never count a row the member has no way to
+ * clear.
+ *
+ * `NEW` is absent because a member request never enters there (it is created
+ * already `VERIFIED` — the requester is signed in, so there is nothing to
+ * verify); the quote-lifecycle states are present only because the shared
+ * pipeline can technically reach them, and the service-layer rejections in
+ * booking-request-quotes.ts keep a member-origin row out of all of them.
+ *
+ * It lives in THIS module, not in booking-request.ts, for one reason: the
+ * withdraw affordance (`canWithdraw` below) must be derived from the very list
+ * the service's WHERE clause uses, and this module is dependency-free (no
+ * prisma, no email) so both the DTO and the service can read it. Deriving the
+ * button from a *restatement* of the rule is what let `NEW`/`ACCEPTED` render a
+ * Withdraw button the API then answered with a 409.
+ */
+export const MEMBER_WHOLE_LODGE_OPEN_STATUSES = [
+  BookingRequestStatus.VERIFIED,
+  BookingRequestStatus.PRICED,
+  BookingRequestStatus.QUOTED,
+  BookingRequestStatus.QUOTE_SENT,
+  BookingRequestStatus.QUERY_PENDING,
+  BookingRequestStatus.MODIFICATION_REQUESTED,
+] as const;
+
+const MEMBER_WHOLE_LODGE_OPEN_STATUS_SET = new Set<BookingRequestStatus>(
+  MEMBER_WHOLE_LODGE_OPEN_STATUSES,
+);
+
+/**
+ * Exactly the rows the withdraw service will accept: the same status list its
+ * guarded claim names. Not "status reads as pending" — `NEW` and `ACCEPTED` both
+ * map to the word "pending" for the member and are NOT withdrawable.
+ */
+export function isMemberWholeLodgeRequestOpen(
+  status: BookingRequestStatus,
+): boolean {
+  return MEMBER_WHOLE_LODGE_OPEN_STATUS_SET.has(status);
+}
+
 /** The four words a member may see. Nothing else is ever rendered. */
 export type MyWholeLodgeRequestStatus =
   | "pending"
@@ -38,7 +81,13 @@ export type MyWholeLodgeRequestItem = {
   /** YYYY-MM-DD (NZ date-only lodge nights). */
   checkIn: string;
   checkOut: string;
-  /** The approximate headcount the member themselves submitted. */
+  /**
+   * The party size on the request row. That is the approximate number the member
+   * submitted right up until an officer approves it — the approval writes the
+   * headcount it actually priced and booked back onto the row (which may be the
+   * officer's override), so on an approved request this is the BOOKED number,
+   * not the original guess.
+   */
   headcount: number;
   status: MyWholeLodgeRequestStatus;
   /** ISO timestamp of submission, for ordering and the "sent on" line. */
@@ -122,10 +171,13 @@ export function toMyWholeLodgeRequestItem(request: {
     // Only an actually-converted request has a booking to open. An APPROVED row
     // whose conversion has not committed reads as approved with no link yet.
     bookingId: status === "approved" ? request.convertedBookingId : null,
-    // Mirrors the service guard exactly (booking-request.ts): pending, and not
-    // holding capacity. Offering a button the API would refuse is worse than
-    // offering none.
-    canWithdraw: status === "pending" && request.heldBookingId === null,
+    // DERIVED from the very list the service's guarded claim names, plus the
+    // `heldBookingId: null` half of that claim. Offering a button the API
+    // answers with a 409 is worse than offering none, so this is not allowed to
+    // be a restatement of the rule.
+    canWithdraw:
+      isMemberWholeLodgeRequestOpen(request.status) &&
+      request.heldBookingId === null,
   };
 }
 

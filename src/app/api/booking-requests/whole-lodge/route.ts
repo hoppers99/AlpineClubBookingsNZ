@@ -5,7 +5,6 @@ import {
   BookingRequestError,
   createMemberWholeLodgeRequest,
 } from "@/lib/booking-request";
-import { getDefaultLodgeCapacity, getLodgeCapacity } from "@/lib/lodge-capacity";
 import {
   applyRateLimit,
   checkRateLimit,
@@ -38,8 +37,9 @@ import logger from "@/lib/logger";
  *   2. The handler NEVER queries availability, occupancy, seasons or pricing.
  *      There is no branch to time, because there is no branch. Uniform work is a
  *      property of the code, not of a padding delay someone can tune away.
- *      (The only capacity value read is the lodge's CONFIGURED capacity, a
- *      property of the building — the same bound the school door applies.)
+ *      (The only capacity value read anywhere on this path — in the service, not
+ *      here — is the lodge's CONFIGURED capacity, a property of the building,
+ *      the same bound the school door applies.)
  *   3. Every rejection that IS observable (401 / 429 / 400 / 422 / 409) is
  *      derived from the member's own session, their own request history, or the
  *      shape of their own payload — never from the state of the calendar.
@@ -143,17 +143,11 @@ export async function POST(request: NextRequest) {
     // occupancy — it tells the member nothing about who is staying.
     const lodgeId = await assertRequestedLodgeActive(parsed.data.lodgeId);
 
-    const lodgeCapacity = lodgeId
-      ? await getLodgeCapacity(lodgeId)
-      : await getDefaultLodgeCapacity();
-    if (headcount > lodgeCapacity) {
-      return NextResponse.json(
-        {
-          error: `A whole-lodge request cannot exceed the lodge capacity of ${lodgeCapacity} guests`,
-        },
-        { status: 400 }
-      );
-    }
+    // The headcount-vs-CONFIGURED-capacity bound is NOT duplicated here. It used
+    // to be, and the two copies disagreed on the status code (400 here, 422 in
+    // the service) — so the same rejection looked like two different failures
+    // depending on which layer happened to catch it. The service owns it, throws
+    // 422, and no other caller can skip it.
 
     // 4 + 5. The open-request cap (a 409 derived from this member's own request
     //        history, never from the calendar) and the write both live in the

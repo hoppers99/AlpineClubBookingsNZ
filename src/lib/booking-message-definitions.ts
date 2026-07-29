@@ -4,6 +4,9 @@ export const BOOKING_MESSAGE_KEYS = [
   "booking.payment.internetBanking.unavailable",
   "booking.detail.paymentRequired.description",
   "booking.detail.internetBanking.pending",
+  // #2263: the same card's wording for a club with the Xero module off, where
+  // "your Xero invoice has been emailed" is untrue.
+  "booking.detail.internetBanking.pendingNoXero",
   "booking.detail.switchToInternetBanking",
   "paymentLink.internetBanking.description",
   "cancellation.refundAppeal.description",
@@ -97,6 +100,21 @@ export const BOOKING_MESSAGE_DEFINITIONS: readonly BookingMessageDefinition[] = 
     description: "Shown for pending Internet Banking bookings awaiting Xero reconciliation.",
     defaultBody:
       "Your Xero invoice has been emailed. Use reference {{paymentReference}} when paying by internet banking. Your booking will be confirmed once the payment is reconciled.",
+    tokens: ALL_TOKENS,
+  },
+  {
+    // #2263: the same card, for a club running WITHOUT the Xero module. The
+    // default sentence above promises "Your Xero invoice has been emailed",
+    // which is simply false when nothing raises invoices — and a member
+    // whole-lodge approval creates exactly this shape (CONFIRMED booking,
+    // PENDING Internet Banking payment) whether the module is on or off.
+    key: "booking.detail.internetBanking.pendingNoXero",
+    section: "Booking Detail",
+    label: "Internet Banking pending (no Xero)",
+    description:
+      "Shown instead of the Xero wording for pending Internet Banking bookings when the Xero module is off.",
+    defaultBody:
+      "Use reference {{paymentReference}} when paying by internet banking. The club will send you an invoice and will record the payment once it arrives.",
     tokens: ALL_TOKENS,
   },
   {

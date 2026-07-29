@@ -65,6 +65,10 @@ import {
   lodgeNullTolerantScope,
   lodgeOrderBy,
 } from "@/lib/lodges";
+// ONE definition of the open-status list, shared with the member DTO so the
+// Withdraw affordance is derived from the same list this file's WHERE clauses
+// name rather than restating it (#2263 review finding M3).
+import { MEMBER_WHOLE_LODGE_OPEN_STATUSES } from "@/lib/member-whole-lodge-requests";
 import { prisma } from "@/lib/prisma";
 import { bookableAgeTierEnum } from "@/lib/age-tier-schema";
 import { nameField } from "@/lib/zod-helpers";
@@ -506,26 +510,6 @@ const MEMBER_WHOLE_LODGE_GUEST_NAME_PREFIX = "Guest";
 export const MEMBER_WHOLE_LODGE_OPEN_REQUEST_CAP = 2;
 
 /**
- * The non-terminal statuses that count against the open-request cap and that a
- * member may withdraw from. Deliberately the same list for both, so the cap can
- * never count a row the member has no way to clear.
- *
- * `NEW` is absent because a member request never enters there (it is created
- * already `VERIFIED` — the requester is signed in, so there is nothing to
- * verify); the quote-lifecycle states are present only because the shared
- * pipeline can technically reach them, and the service-layer rejections in
- * booking-request-quotes.ts keep a member-origin row out of all of them.
- */
-export const MEMBER_WHOLE_LODGE_OPEN_STATUSES = [
-  BookingRequestStatus.VERIFIED,
-  BookingRequestStatus.PRICED,
-  BookingRequestStatus.QUOTED,
-  BookingRequestStatus.QUOTE_SENT,
-  BookingRequestStatus.QUERY_PENDING,
-  BookingRequestStatus.MODIFICATION_REQUESTED,
-] as const;
-
-/**
  * True when this row came through the authenticated member whole-lodge door
  * (#2263) rather than the public or school front-doors. The single discriminator
  * the whole feature keys on: it decides the admin badge, the direct-approve
@@ -659,6 +643,26 @@ export async function createMemberWholeLodgeRequest(input: {
   // past by more than the usual single-request window.
   const openRequests = await countOpenMemberWholeLodgeRequests(input.memberId);
   if (openRequests >= MEMBER_WHOLE_LODGE_OPEN_REQUEST_CAP) {
+    // Audit the REFUSAL, not just the success. A member hammering this door is
+    // the cheapest signal that something is wrong (a broken client, or someone
+    // probing), and an audit trail that records only successes cannot show it.
+    // Carries no availability data — the cap is account state.
+    logAudit({
+      action: "booking_request.member_whole_lodge_refused",
+      memberId: member.id,
+      actorMemberId: member.id,
+      subjectMemberId: member.id,
+      entityType: "BookingRequest",
+      category: "booking",
+      outcome: "failure",
+      summary:
+        "Member whole-lodge request refused: the open-request cap was already reached",
+      metadata: {
+        reason: "open_request_cap",
+        openRequests,
+        cap: MEMBER_WHOLE_LODGE_OPEN_REQUEST_CAP,
+      },
+    });
     throw new BookingRequestError(
       `You already have ${MEMBER_WHOLE_LODGE_OPEN_REQUEST_CAP} whole-lodge requests waiting for a decision. Withdraw one before sending another.`,
       409
@@ -798,6 +802,25 @@ export async function withdrawMemberWholeLodgeRequest(input: {
   });
 
   if (!claimed) {
+    // Audit the refusal. The guarded claim deliberately cannot distinguish "not
+    // yours", "already decided" and "does not exist" — that indistinguishability
+    // IS the authorisation property — so the audit records the same three-way
+    // ambiguity rather than resolving it with a second read. Repeated failures
+    // against ids a member does not own are exactly what this row makes visible.
+    logAudit({
+      action: "booking_request.member_whole_lodge_withdraw_refused",
+      memberId: input.memberId,
+      actorMemberId: input.memberId,
+      subjectMemberId: input.memberId,
+      targetId: input.requestId,
+      entityType: "BookingRequest",
+      entityId: input.requestId,
+      category: "booking",
+      outcome: "failure",
+      summary:
+        "Member whole-lodge withdraw refused: the guarded claim matched nothing (not theirs, already decided, holding capacity, or no such request)",
+      metadata: { requestId: input.requestId, reason: "claim_matched_nothing" },
+    });
     throw new BookingRequestError(
       "This request can no longer be withdrawn. It may already have been decided — check My requests for its current state.",
       409

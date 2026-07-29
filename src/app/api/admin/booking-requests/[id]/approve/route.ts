@@ -115,6 +115,10 @@ export async function POST(
         memberId: result.memberId,
         priceCents: result.priceCents,
         guestCount: result.guestCount,
+        // Whether the receivable went to Xero or to admins to invoice by hand,
+        // so the officer's toast can say which (school parity). Null on an
+        // idempotent replay — this call raised nothing.
+        invoiceMode: result.invoiceMode,
         // ADMIN-ONLY (ADR-001 decision 6): overlapping capacity-holding bookings
         // the officer must resolve by hand. This reaches the admin caller and
         // nothing else — no member surface reads this response.

@@ -71,6 +71,7 @@ import {
 } from "@/lib/capacity";
 import {
   sendAdminSchoolManualInvoiceEmail,
+  sendAdminWholeLodgeManualInvoiceEmail,
   sendBookingConfirmedEmail,
   sendBookingRequestVerificationEmail,
   sendHutLeaderAssignmentEmail,
@@ -92,6 +93,7 @@ import { getSeasonYear } from "@/lib/utils";
 import { getDefaultLodgeId, lodgeNullTolerantScope } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 import {
+  enqueueXeroAppliedCreditAllocationOperation,
   enqueueXeroBookingInvoiceOperation,
   kickQueuedXeroOutboxOperationsIfConnected,
 } from "@/lib/xero-operation-outbox";
@@ -1397,8 +1399,22 @@ type ApproveMemberWholeLodgeRequestOutcome =
       requestId: string;
       bookingId: string;
       memberId: string;
+      /**
+       * The booking's committed total. On a fresh conversion this is what was
+       * just booked; on an idempotent REPLAY it is re-read from the committed
+       * booking row, never echoed from this call's recomputed figures — a second
+       * approve with a different headcount/override must not report numbers that
+       * were never written (#2263 review finding M4).
+       */
       priceCents: number;
       guestCount: number;
+      /**
+       * Whether the receivable was invoiced through Xero or handed to admins to
+       * invoice by hand. School parity, and the officer's toast says which.
+       * Null on the idempotent replay path: the first approve raised it and this
+       * call raised nothing, so claiming either mode would be a fabrication.
+       */
+      invoiceMode: "xero" | "manual" | null;
       /**
        * Existing capacity-holding bookings overlapping the approved booking's
        * nights, computed post-commit. ADMIN-ONLY (ADR-001 decision 6): this
@@ -1424,7 +1440,12 @@ type ApproveMemberWholeLodgeRequestOutcome =
  *     right (CAPACITY_HOLDING_BOOKING_STATUSES) — no dependence on the PENDING
  *     `originBookingRequest` clause;
  *   - `paymentSource: INTERNET_BANKING` with a PENDING Payment row, so the
- *     finance surfaces see the receivable;
+ *     finance surfaces see the receivable, and — like every sibling path that
+ *     creates one — that receivable is INVOICED post-commit: the Xero invoice
+ *     operation plus the #1620 applied-credit allocation when the module is on,
+ *     the delivery-locked manual-invoice admin alert when it is off. An unpaid
+ *     confirmed booking that nobody was ever asked to invoice is money the club
+ *     silently never collects;
  *   - `hasNonMembers: true`, because the placeholder guests are rated
  *     NON_MEMBER (owner decision OD-A: conservative revenue default; guests
  *     re-rate per-guest through the ordinary booking-modification path as real
@@ -1437,7 +1458,9 @@ type ApproveMemberWholeLodgeRequestOutcome =
  *     materialised contact).
  *   - NO `PaymentLink` row and NO tokenised payment-link email. That flow is the
  *     GENERAL *non-login* approval path; a member pays through the member
- *     booking surfaces they are already signed in to.
+ *     booking surfaces they are already signed in to. The confirmation email
+ *     therefore has to carry the internet-banking reference itself, and it says
+ *     the amount is OWING — never "Total Paid" — because nothing has been paid.
  *   - NO `nonMemberHoldUntil`. The hold clock belongs to the PENDING
  *     non-member path (it is what the bump cron reads); a CONFIRMED booking has
  *     already been admitted, exactly as a school booking has. Stamping a hold
@@ -1554,6 +1577,15 @@ export async function approveMemberWholeLodgeRequest(input: {
     bookingId: string;
     lodgeId: string;
     memberId: string;
+    /** The reference the member must quote on their internet-banking payment. */
+    paymentReference: string;
+    /**
+     * What the committed booking actually says. On the replay path these are
+     * re-read from the row rather than taken from this call's recomputation, so
+     * a second approve can never report figures that were never written (M4).
+     */
+    committedPriceCents: number;
+    committedGuestCount: number;
     alreadyConverted: boolean;
   };
 
@@ -1581,10 +1613,29 @@ export async function approveMemberWholeLodgeRequest(input: {
         request.id
       );
       if (committedConversion) {
+        // M4: report what the FIRST approval committed, not what this call just
+        // recomputed. A replay carrying a different pricedHeadcount or
+        // priceOverrideCents would otherwise hand the officer a total and a
+        // guest count that exist nowhere in the database.
+        const committedBooking = await tx.booking.findUnique({
+          where: { id: committedConversion.convertedBookingId },
+          select: {
+            finalPriceCents: true,
+            payment: { select: { reference: true } },
+            _count: { select: { guests: true } },
+          },
+        });
         return {
           bookingId: committedConversion.convertedBookingId,
           lodgeId: bookingLodgeId,
           memberId: committedConversion.convertedMemberId,
+          paymentReference:
+            committedBooking?.payment?.reference ??
+            buildInternetBankingPaymentReference(
+              committedConversion.convertedBookingId,
+            ),
+          committedPriceCents: committedBooking?.finalPriceCents ?? 0,
+          committedGuestCount: committedBooking?._count.guests ?? 0,
           alreadyConverted: true as const,
         };
       }
@@ -1772,14 +1823,17 @@ export async function approveMemberWholeLodgeRequest(input: {
 
       // Receivable for the finance surfaces. Pay-on-account via the existing
       // INTERNET_BANKING source; NO PaymentLink row is created, so no tokenised
-      // payment page exists for this booking.
+      // payment page exists for this booking. The reference is surfaced to the
+      // member in their confirmation email (post-commit), so it must be captured
+      // here rather than recomputed from an assumption about its shape.
+      const paymentReference = buildInternetBankingPaymentReference(booking.id);
       await tx.payment.create({
         data: {
           bookingId: booking.id,
           amountCents: totalPriceCents,
           status: PaymentStatus.PENDING,
           source: PaymentSource.INTERNET_BANKING,
-          reference: buildInternetBankingPaymentReference(booking.id),
+          reference: paymentReference,
         },
       });
 
@@ -1802,6 +1856,9 @@ export async function approveMemberWholeLodgeRequest(input: {
         bookingId: booking.id,
         lodgeId: bookingLodgeId,
         memberId: owner.id,
+        paymentReference,
+        committedPriceCents: totalPriceCents,
+        committedGuestCount: guests.length,
         alreadyConverted: false as const,
       };
     });
@@ -1817,8 +1874,10 @@ export async function approveMemberWholeLodgeRequest(input: {
   }
 
   // Every post-commit side effect is guarded on !alreadyConverted so a replayed
-  // approve never re-emails the member and never re-audits a conversion (#1232).
+  // approve never re-emails the member, never re-raises the money-critical
+  // invoice, and never re-audits a conversion (#1232).
   let exclusiveHoldConflicts: HoldConflictBooking[] = [];
+  let invoiceMode: "xero" | "manual" | null = null;
   if (!conversion.alreadyConverted) {
     logAudit({
       action: "booking_request.member_whole_lodge_approved",
@@ -1890,20 +1949,93 @@ export async function approveMemberWholeLodgeRequest(input: {
       },
     });
 
+    // Invoice the receivable, exactly as the school path and every other
+    // INTERNET_BANKING creator does. Without this the PENDING Payment row above
+    // is a receivable nobody was ever asked to collect: no Xero invoice, no
+    // admin nudge, and a member who has been told an invoice is coming.
+    if (await isEffectiveModuleEnabled("xeroIntegration")) {
+      invoiceMode = "xero";
+      try {
+        const queuedInvoice = await enqueueXeroBookingInvoiceOperation(
+          conversion.bookingId,
+          { createdByMemberId: input.adminMemberId },
+        );
+        // #1620 floating-credit parity with the Internet Banking create path
+        // (booking-create.ts): allocate the member's existing credit notes
+        // against this invoice so they pay the credit-reduced amount. Enqueued
+        // AFTER the invoice op (older createdAt is processed first) and it skips
+        // itself when no credit was applied. The owner here is a real member who
+        // may well be carrying account credit — the school path's non-login
+        // contact never is, which is why the school block omits it.
+        const queuedAllocation =
+          await enqueueXeroAppliedCreditAllocationOperation(
+            conversion.bookingId,
+            { createdByMemberId: input.adminMemberId },
+          );
+        if (queuedInvoice.queueOperationId || queuedAllocation.queueOperationId) {
+          await kickQueuedXeroOutboxOperationsIfConnected({ limit: 2 });
+        }
+      } catch (err) {
+        logger.error(
+          { err, bookingId: conversion.bookingId },
+          "Failed to queue the Xero invoice for an approved member whole-lodge booking",
+        );
+      }
+    } else {
+      invoiceMode = "manual";
+      sendAdminWholeLodgeManualInvoiceEmail({
+        memberName: `${request.contactFirstName} ${request.contactLastName}`.trim(),
+        contactEmail: request.contactEmail,
+        checkIn: request.checkIn,
+        checkOut: request.checkOut,
+        guestCount: guests.length,
+        totalCents: totalPriceCents,
+        paymentReference: conversion.paymentReference,
+      }).catch((err) =>
+        logger.error(
+          { err, bookingId: conversion.bookingId },
+          "Failed to send the manual-invoice admin notification for an approved member whole-lodge booking",
+        )
+      );
+    }
+
     // Member-facing confirmation. Deliberately the ordinary booking-confirmed
     // message: it carries dates, guest count and total and NOTHING about
     // occupancy, exclusivity or the conflicts above — a member is never told the
     // lodge is exclusively held (ADR-001 decision 6). It is booking-scoped, so
     // the per-booking "No emails" switch can withhold it (#2258).
+    //
+    // `paymentDue` is what makes it TRUE: this booking is CONFIRMED but nothing
+    // has been paid, so the message must not say "Total Paid" or "Payment has
+    // been processed successfully". It states the amount owing and the
+    // internet-banking reference (there is no PaymentLink to send them to), and
+    // it only claims an invoice was emailed when one actually was.
+    //
+    // Sent to the OWNER's live account email, not the request-time snapshot: the
+    // booking belongs to a live account whose address may have changed since the
+    // request was submitted, and the request snapshot is a historical record.
+    // Falls back to the snapshot only if the lookup fails.
+    const ownerContact = await prisma.member
+      .findUnique({
+        where: { id: conversion.memberId },
+        select: { email: true, firstName: true },
+      })
+      .catch(() => null);
     sendBookingConfirmedEmail(
       { bookingId: conversion.bookingId },
-      request.contactEmail,
-      request.contactFirstName,
+      ownerContact?.email ?? request.contactEmail,
+      ownerContact?.firstName ?? request.contactFirstName,
       request.checkIn,
       request.checkOut,
       guests.length,
       totalPriceCents,
-      { lodgeId: conversion.lodgeId },
+      {
+        lodgeId: conversion.lodgeId,
+        paymentDue: {
+          reference: conversion.paymentReference,
+          invoiceEmailed: invoiceMode === "xero",
+        },
+      },
     ).catch((err) =>
       logger.error(
         { err, bookingId: conversion.bookingId },
@@ -1931,8 +2063,12 @@ export async function approveMemberWholeLodgeRequest(input: {
     requestId: request.id,
     bookingId: conversion.bookingId,
     memberId: conversion.memberId,
-    priceCents: totalPriceCents,
-    guestCount: guests.length,
+    // M4: the COMMITTED figures. Identical to totalPriceCents/guests.length on a
+    // fresh conversion; re-read from the booking row on a replay, so the officer
+    // is never shown a total this call computed but never wrote.
+    priceCents: conversion.committedPriceCents,
+    guestCount: conversion.committedGuestCount,
+    invoiceMode,
     exclusiveHoldConflicts,
   };
 }

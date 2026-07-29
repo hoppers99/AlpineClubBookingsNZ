@@ -901,17 +901,26 @@ export function PublicBookingRequestsPanel({
         const conflicts = Array.isArray(data.exclusiveHoldConflicts)
           ? data.exclusiveHoldConflicts
           : [];
+        // What actually happened to the money, stated plainly (school parity).
+        // The booking is CONFIRMED but unpaid, so the officer needs to know
+        // whether an invoice went out or whether they have to raise it.
+        const invoiceSentence =
+          data.invoiceMode === "xero"
+            ? " The Xero invoice has been raised and the member has been emailed the amount owing and their payment reference."
+            : data.invoiceMode === "manual"
+              ? " The Xero module is off, so admins have been emailed to invoice the member manually — the member has been told an invoice is coming."
+              : " This approval was an idempotent replay, so no new invoice or email was raised.";
         if (conflicts.length > 0) {
           toast.warning(
             `Whole-lodge booking confirmed and the lodge is now held for this group. ${
               conflicts.length === 1
                 ? "1 existing booking overlaps"
                 : `${conflicts.length} existing bookings overlap`
-            } these nights — they were NOT cancelled. Sort them out with the people involved.`,
+            } these nights — they were NOT cancelled. Sort them out with the people involved.${invoiceSentence}`,
           );
         } else {
           toast.success(
-            "Whole-lodge booking confirmed. The lodge is now held for this group and the member has been emailed their confirmation.",
+            `Whole-lodge booking confirmed. The lodge is now held for this group.${invoiceSentence}`,
           );
         }
       } else if (data.type === "SCHOOL") {

@@ -32,7 +32,7 @@ export const EMAIL_AUDIT_DEFAULTS = {
   },
   "booking-confirmed": {
     "defaultSubject": "Booking Confirmed - {{CLUB_LODGE_NAME}}",
-    "defaultBody": "Booking Confirmed\n\nHi {{firstName}}, your lodge booking has been confirmed!\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nGuests: {{guestCount}}\nSubtotal: {{subtotal}}                  [only when discountCents > 0]\nDiscount ({{promoCode}}): -{{discount}} [only when promoCode exists]\nDiscount: -{{discount}}                 [only when discount exists without promoCode]\nTotal Paid: {{totalPaid}}\n\nPayment has been processed successfully.\n\n{{provisionalGuestsNote}} [only when non-member guests are held provisionally as a split linked booking]\n\nHow to get to the lodge\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\nDoor code: {{doorCode}} [only when a door code is set]\n\nYou can view your booking details and manage your stay from your account.\n\nView Booking: {{BASE_URL}}/bookings"
+    "defaultBody": "Booking Confirmed\n\nHi {{firstName}}, your lodge booking has been confirmed!\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nGuests: {{guestCount}}\nSubtotal: {{subtotal}}                  [only when discountCents > 0]\nDiscount ({{promoCode}}): -{{discount}} [only when promoCode exists]\nDiscount: -{{discount}}                 [only when discount exists without promoCode]\nTotal Paid: {{totalPaid}}               [only when the booking is already paid]\nTotal Due: {{totalDue}}                 [only when the booking is confirmed but payment is still owing]\n\nPayment has been processed successfully. [only when the booking is already paid]\n\n{{paymentDueNote}} [only when payment is still owing - states the amount owing and the internet-banking reference {{paymentReference}}]\n\n{{provisionalGuestsNote}} [only when non-member guests are held provisionally as a split linked booking]\n\nHow to get to the lodge\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\nDoor code: {{doorCode}} [only when a door code is set]\n\nYou can view your booking details and manage your stay from your account.\n\nView Booking: {{BASE_URL}}/bookings"
   },
   "booking-pending": {
     "defaultSubject": "Booking Pending - {{CLUB_LODGE_NAME}}",
@@ -385,6 +385,10 @@ export const EMAIL_AUDIT_DEFAULTS = {
   "admin-school-manual-invoice": {
     "defaultSubject": "School booking needs a manual invoice: {{schoolName}}",
     "defaultBody": "School Booking Needs a Manual Invoice\n\nA school group booking has been approved and confirmed. The Xero module is currently off, so no invoice was raised automatically. Please invoice the school manually and record payment through the usual paths.\n\nSchool: {{schoolName}}\nContact email: {{contactEmail}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nGuests: {{guestCount}}\nAmount: {{amount}}\n\nView Booking Requests: {{reviewUrl}}"
+  },
+  "admin-whole-lodge-manual-invoice": {
+    "defaultSubject": "Whole-lodge booking needs a manual invoice: {{memberName}}",
+    "defaultBody": "Whole-Lodge Booking Needs a Manual Invoice\n\nA member's whole-lodge request has been approved and the booking is confirmed with the whole lodge held for their group. The Xero module is currently off, so no invoice was raised automatically. Please invoice the member manually and record the payment through the usual paths.\n\nMember: {{memberName}}\nContact email: {{contactEmail}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nGuests: {{guestCount}}\nAmount: {{amount}}\nPayment reference: {{paymentReference}}\n\nThe member has been told the booking is confirmed, that this amount is still owing, and that the club will send them an invoice - so please send one.\n\nView Booking Requests: {{reviewUrl}}"
   },
   "group-booking-join-verification": {
     "defaultSubject": "Confirm your group booking spot — {{CLUB_NAME}}",

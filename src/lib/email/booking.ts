@@ -53,6 +53,16 @@ export async function sendBookingConfirmedEmail(
       guestCount: number;
       holdUntil: Date;
     };
+    // #2263: the booking is CONFIRMED but the money is NOT in — the member
+    // whole-lodge approval books a PENDING Internet Banking receivable. Pass
+    // this and the message states the amount OWING plus the internet-banking
+    // reference instead of claiming payment was processed. `invoiceEmailed`
+    // must be TRUE only when an invoice really was raised (Xero module on);
+    // otherwise the copy promises the club will send one by hand.
+    paymentDue?: {
+      reference: string;
+      invoiceEmailed: boolean;
+    };
   },
 ) {
   const settings = await loadEmailMessageSettingsForLodge(options?.lodgeId);
@@ -76,6 +86,16 @@ export async function sendBookingConfirmedEmail(
           provisionalGuests.holdUntil,
         )}, we'll automatically take that guest portion from your saved payment method and your guests are confirmed. If we can't take payment, we'll contact you to arrange it. If the lodge fills with member bookings first, that portion is not charged and those guests are bumped.`
       : "";
+  // #2263: the composed unpaid-confirmation sentence, byte-identical to the one
+  // the FILE template renders, so an operator override keeps parity (the same
+  // convention provisionalGuestsNote follows). Empty when the booking is paid.
+  const paymentDue = options?.paymentDue;
+  const paymentDueNote = paymentDue
+    ? `This booking is confirmed, but payment of ${formatMoneyCents(totalCents)} is still owing. Please pay by internet banking quoting reference ${paymentDue.reference}.` +
+      (paymentDue.invoiceEmailed
+        ? " An invoice has been emailed to you separately."
+        : " The club will send you an invoice for it.")
+    : "";
   await sendEmail({
     to: email,
     subject: `Booking Confirmed - ${EMAIL_DEFAULT_LODGE_NAME}`,
@@ -113,8 +133,13 @@ export async function sendBookingConfirmedEmail(
         promoAdjustmentCents !== 0
           ? `${promoAdjustmentPrefix}${formatMoneyCents(Math.abs(promoAdjustmentCents))}`
           : "",
-      totalPaid: formatMoneyCents(totalCents),
+      // Exactly one of these carries a figure: an unpaid confirmation must not
+      // render a "Total Paid" line at all (#2263).
+      totalPaid: paymentDue ? "" : formatMoneyCents(totalCents),
+      totalDue: paymentDue ? formatMoneyCents(totalCents) : "",
       total: formatMoneyCents(totalCents),
+      paymentDueNote,
+      paymentReference: paymentDue?.reference ?? "",
       doorCode: settings.doorCode ?? "",
     },
     lodgeId: options?.lodgeId,
