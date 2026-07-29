@@ -189,14 +189,25 @@ export interface ResolvedLinkedBookingMembers {
  * boundary is computed OUTSIDE the `skipAuthorization` branch, unconditionally,
  * on every path.
  *
- * Four of the seven call sites pass `skipAuthorization` (the admin flows:
- * booking copy, the modify planner, and the admin actor on the guests route).
- * If the boundary were computed only where authorization is enforced, those
- * four would have no boundary value to persist the day MG2 goes live — and the
- * cheapest way to make the code compile would be to write `consentStatus = null`
- * for them, i.e. to mint consent-free cross-family guest rows through the admin
- * paths, permanently and silently. Computing it here costs those four paths two
- * small `FamilyGroupMember` reads and removes that whole failure mode.
+ * SIX of the seven call-site files can pass `skipAuthorization: true`, not four
+ * — three of them do it through a runtime flag rather than a literal, which is
+ * how the earlier count missed them:
+ *   * `admin-booking-copy.ts` hard-codes `true`;
+ *   * `booking-modify-plan.ts` passes `role === "ADMIN"`;
+ *   * `api/bookings/[id]/guests/route.ts` and
+ *     `api/bookings/[id]/modify-quote/route.ts` pass `isAdmin`;
+ *   * `api/bookings/route.ts` and `api/bookings/quote/route.ts` pass
+ *     `isAuthorizedOnBehalf` (an admin or booking officer acting for a member).
+ * Only `group-booking.ts` can never skip: it passes no options at all, which is
+ * owner decision MG1-D-a.
+ *
+ * If the boundary were computed only where authorization is enforced, none of
+ * those six would have a boundary value to persist the day MG2 goes live — and
+ * the cheapest way to make the code compile would be to give them a null
+ * consent status, i.e. to mint consent-free cross-family guest rows through
+ * every admin and on-behalf path, permanently and silently. Computing it here
+ * costs those paths two small `FamilyGroupMember` reads and removes that whole
+ * failure mode.
  *
  * It also cannot be verified from behaviour: in this release the outcome is
  * identical either way, by design. So it is asserted directly — see

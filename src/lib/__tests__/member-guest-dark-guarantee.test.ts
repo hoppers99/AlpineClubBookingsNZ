@@ -153,32 +153,119 @@ function moduleClient(memberGuests: boolean) {
 }
 
 /**
- * The seven live call sites, with the `skipAuthorization` each one passes.
- * Kept as data so the matrix below is one parameterised run rather than seven
- * copy-pasted pairs — and pinned against the real source files by the
- * "call-site survey" block, so this table cannot quietly go stale.
+ * The seven files that call the helper, and the `skipAuthorization` values each
+ * one can actually pass.
+ *
+ * THE CENSUS IS LOAD-BEARING, not bookkeeping: it is what tells MG2 how many
+ * paths need a consent decision. The first version of this table hard-coded
+ * `false` for the three routes that pass a DYNAMIC flag, which made the count
+ * read "four of seven skip" when the true answer is SIX of seven — and, worse,
+ * meant the matrix below never ran those three in their skipping mode at all.
+ * So a file whose flag is dynamic declares BOTH modes and is run twice, and
+ * "declares each call site's real authorization modes" below reads the modes
+ * back off the real source.
  */
 const CALL_SITES = [
-  { name: "api/bookings/route.ts", file: "src/app/api/bookings/route.ts", skipAuthorization: false },
-  { name: "api/bookings/quote/route.ts", file: "src/app/api/bookings/quote/route.ts", skipAuthorization: false },
-  { name: "api/bookings/[id]/guests/route.ts (member actor)", file: "src/app/api/bookings/[id]/guests/route.ts", skipAuthorization: false },
-  { name: "api/bookings/[id]/guests/route.ts (admin actor)", file: "src/app/api/bookings/[id]/guests/route.ts", skipAuthorization: true },
-  { name: "api/bookings/[id]/modify-quote/route.ts", file: "src/app/api/bookings/[id]/modify-quote/route.ts", skipAuthorization: false },
-  { name: "booking-modify-plan.ts (admin)", file: "src/lib/booking-modify-plan.ts", skipAuthorization: true },
-  { name: "admin-booking-copy.ts", file: "src/lib/admin-booking-copy.ts", skipAuthorization: true },
-  { name: "group-booking.ts (join)", file: "src/lib/group-booking.ts", skipAuthorization: false },
+  {
+    name: "api/bookings/route.ts",
+    file: "src/app/api/bookings/route.ts",
+    /** `skipAuthorization: isAuthorizedOnBehalf` — admin/officer on-behalf. */
+    skipAuthorizationModes: [false, true],
+  },
+  {
+    name: "api/bookings/quote/route.ts",
+    file: "src/app/api/bookings/quote/route.ts",
+    /** `skipAuthorization: isAuthorizedOnBehalf`. */
+    skipAuthorizationModes: [false, true],
+  },
+  {
+    name: "api/bookings/[id]/guests/route.ts",
+    file: "src/app/api/bookings/[id]/guests/route.ts",
+    /** `skipAuthorization: isAdmin`. */
+    skipAuthorizationModes: [false, true],
+  },
+  {
+    name: "api/bookings/[id]/modify-quote/route.ts",
+    file: "src/app/api/bookings/[id]/modify-quote/route.ts",
+    /** `skipAuthorization: isAdmin`. */
+    skipAuthorizationModes: [false, true],
+  },
+  {
+    name: "booking-modify-plan.ts",
+    file: "src/lib/booking-modify-plan.ts",
+    /** `skipAuthorization: role === "ADMIN"`. */
+    skipAuthorizationModes: [false, true],
+  },
+  {
+    name: "admin-booking-copy.ts",
+    file: "src/lib/admin-booking-copy.ts",
+    /** Hard-coded `true`: there is no non-admin booking copy. */
+    skipAuthorizationModes: [true],
+  },
+  {
+    name: "group-booking.ts (join)",
+    file: "src/lib/group-booking.ts",
+    /** Passes NO options — owner decision MG1-D-a keeps the join family-scoped. */
+    skipAuthorizationModes: [false],
+  },
 ] as const;
 
-/** The seven files that call the helper (the guests route appears once). */
-const CALL_SITE_FILES = [
-  "src/app/api/bookings/route.ts",
-  "src/app/api/bookings/quote/route.ts",
-  "src/app/api/bookings/[id]/guests/route.ts",
-  "src/app/api/bookings/[id]/modify-quote/route.ts",
-  "src/lib/booking-modify-plan.ts",
-  "src/lib/admin-booking-copy.ts",
-  "src/lib/group-booking.ts",
-];
+/** How many of the seven can reach the `skipAuthorization` branch. */
+const CALL_SITES_THAT_CAN_SKIP = 6;
+
+/** The seven files that call the helper. */
+const CALL_SITE_FILES = CALL_SITES.map((site) => site.file);
+
+/**
+ * One matrix run per (file, authorization mode) pair — twelve in all, so every
+ * dynamic site is genuinely exercised in its skipping mode too.
+ */
+const CALL_SITE_RUNS = CALL_SITES.flatMap((site) =>
+  site.skipAuthorizationModes.map((skipAuthorization) => ({
+    name: `${site.name} [skipAuthorization=${skipAuthorization}]`,
+    skipAuthorization,
+  })),
+);
+
+// ---------------------------------------------------------------------------
+// The consent-column sweep vocabulary
+// ---------------------------------------------------------------------------
+/** The five consent columns MG1 provisions on `BookingGuest`. */
+const CONSENT_COLUMNS = [
+  "consentStatus",
+  "consentRequestedAt",
+  "consentRespondedAt",
+  "consentRespondedByMemberId",
+  "consentExpiresAt",
+] as const;
+
+const CONSENT_COLUMN_ALTERNATION = CONSENT_COLUMNS.join("|");
+
+/** Any mention at all, quoted or not — the blunt "who is even naming this" pass. */
+const CONSENT_COLUMN_MENTION = new RegExp(`\\b(?:${CONSENT_COLUMN_ALTERNATION})\\b`);
+
+/**
+ * A VALUE being given to a consent column, in any of the forms a writer could
+ * use: `consentStatus: x`, `row.consentStatus = x`, `row["consentStatus"] = x`,
+ * and the raw-SQL `SET "consentStatus" = x`. The `=(?!=)` tail means `=== null`
+ * and `!== null` comparisons — and bare destructuring — are not matches.
+ */
+const CONSENT_COLUMN_WRITE = new RegExp(
+  `\\b(?:${CONSENT_COLUMN_ALTERNATION})\\b["']?\\s*\\]?\\s*(?::|=(?!=))`,
+);
+
+/**
+ * The only production files allowed to NAME a consent column in this release.
+ * Each is a declaration or a comment, never a writer:
+ *   * member-guest-consent.ts — the model (its type and its all-null constant);
+ *   * booking-guests.ts       — the structural-rule comment on the boundary;
+ *   * member-merge.ts         — the FK-less-member-id-scalar audit list.
+ */
+const CONSENT_COLUMN_ALLOWLIST = new Set([
+  "src/lib/member-guest-consent.ts",
+  "src/lib/booking-guests.ts",
+  "src/lib/member-merge.ts",
+]);
 
 /** Run a resolve and describe the outcome as plain, comparable data. */
 async function outcomeOf(
@@ -226,7 +313,7 @@ describe("dark guarantee: turning the memberGuests module on changes nothing", (
     await expect(isEffectiveModuleEnabled("memberGuests", moduleClient(true))).resolves.toBe(true);
   });
 
-  describe.each(CALL_SITES)("$name", ({ skipAuthorization }) => {
+  describe.each(CALL_SITE_RUNS)("$name", ({ skipAuthorization }) => {
     it.each([
       { label: "the booker themselves", ids: [BOOKER] },
       { label: "a family-group co-member", ids: [SIBLING] },
@@ -361,20 +448,56 @@ describe("the family boundary is computed on every path, including the admin one
 // Structural pins — read from the real source, not from behaviour
 // ---------------------------------------------------------------------------
 describe("call-site survey", () => {
-  it("still has exactly seven files calling resolveLinkedBookingMembers", () => {
-    // The original #2245 survey said six. There are seven. If an eighth
-    // appears, MG2's widening has one more path to consider and this fails
-    // until someone looks at it.
-    for (const file of CALL_SITE_FILES) {
-      expect(readRepoFile(file)).toContain("resolveLinkedBookingMembers(");
+  /** Every production file under src/ that names the given helper as a call. */
+  function callersOf(helper: string): string[] {
+    return productionFilesUnder("src")
+      // booking-guests.ts is where both helpers are DEFINED.
+      .filter((file) => file !== "src/lib/booking-guests.ts")
+      .filter((file) => readRepoFile(file).includes(`${helper}(`))
+      .sort();
+  }
+
+  it("still has exactly seven files calling resolveLinkedBookingMembers, six of which can skip authorization", () => {
+    // SET EQUALITY, not "each declared file still contains the call". The old
+    // form only proved the seven known files had not stopped calling it: a
+    // planted EIGHTH caller passed it untouched, which is exactly the case MG2
+    // needs to hear about. (The original #2245 survey said six; it was seven.)
+    expect(callersOf("resolveLinkedBookingMembers")).toEqual([...CALL_SITE_FILES].sort());
+    expect(new Set(CALL_SITE_FILES).size).toBe(CALL_SITE_FILES.length);
+    expect(
+      CALL_SITES.filter((site) => site.skipAuthorizationModes.includes(true)),
+    ).toHaveLength(CALL_SITES_THAT_CAN_SKIP);
+  });
+
+  it("declares each call site's real authorization modes", () => {
+    // Read the modes back off the source, so the table cannot claim a route is
+    // member-only when it passes a runtime admin flag — the exact error the
+    // "four of seven" count came from.
+    for (const site of CALL_SITES) {
+      const source = readRepoFile(site.file);
+      const at = source.indexOf("await resolveLinkedBookingMembers(");
+      expect(at, `${site.file}: no awaited resolveLinkedBookingMembers call`).toBeGreaterThan(-1);
+      const call = source.slice(at, source.indexOf(");", at));
+
+      if (/skipAuthorization:\s*true\b/.test(call)) {
+        // A literal true: the site can ONLY skip.
+        expect([...site.skipAuthorizationModes], site.name).toEqual([true]);
+      } else if (/skipAuthorization/.test(call)) {
+        // A runtime flag: BOTH modes are reachable, so both must be exercised.
+        expect([...site.skipAuthorizationModes].sort(), site.name).toEqual([false, true]);
+      } else {
+        // No option at all: authorization is always enforced.
+        expect([...site.skipAuthorizationModes], site.name).toEqual([false]);
+      }
     }
-    expect(new Set(CALL_SITES.map((c) => c.file)).size).toBe(CALL_SITE_FILES.length);
   });
 
   it("changes no call site in this release", () => {
     // MG1 deliberately leaves every caller on the map-only wrapper: the
-    // boundary-returning variant is MG2's to adopt. This also keeps MG1 off
-    // api/bookings/route.ts, which is shared with the in-flight #2265 lane.
+    // boundary-returning variant is MG2's to adopt. Also a set-equality sweep,
+    // so a NEW file adopting it early is caught, not just one of the seven.
+    // This also keeps MG1 off api/bookings/route.ts, shared with #2265.
+    expect(callersOf("resolveLinkedBookingMembersWithBoundary")).toEqual([]);
     for (const file of CALL_SITE_FILES) {
       expect(readRepoFile(file)).not.toContain("resolveLinkedBookingMembersWithBoundary");
     }
@@ -418,15 +541,56 @@ describe("nothing in this release can write a non-null consentStatus", () => {
     });
   });
 
-  it("has no production code that assigns any consent column", () => {
-    // The strongest available form of "dark": not "no test saw it happen", but
-    // "no source line does it". Scanned over src/, excluding tests and the
-    // consent model's own type/table declarations.
-    const offenders = sourceFilesUnder("src")
-      .filter((file) => !file.includes("__tests__"))
-      .filter((file) => !file.endsWith("member-guest-consent.ts"))
-      .filter((file) => /consent(Status|RequestedAt|RespondedAt|RespondedByMemberId|ExpiresAt)\s*:/.test(readRepoFile(file)));
+  it("has no production file outside the allowlist that even names a consent column", () => {
+    // Layer one of two. The previous single sweep looked for `consentX\s*:`,
+    // which saw an object-literal property and nothing else: planted mutants
+    // writing `guest.consentStatus = "PENDING"`, `data["consentStatus"] = x`,
+    // and a raw-SQL `SET "consentStatus" = 'PENDING'` all passed it. This layer
+    // is deliberately blunt instead — a BARE-WORD match on the column names —
+    // so any new file that so much as mentions one has to be classified here.
+    const offenders = productionFilesUnder("src")
+      .filter((file) => !CONSENT_COLUMN_ALLOWLIST.has(file))
+      .filter((file) => CONSENT_COLUMN_MENTION.test(readRepoFile(file)));
     expect(offenders).toEqual([]);
+  });
+
+  it("has no production line anywhere that gives a consent column a value", () => {
+    // Layer two: even the three allowlisted files may not WRITE one. The
+    // pattern catches the property form, a bare assignment, a computed or
+    // quoted key, and the raw-SQL form, while `=== null` / `!== null`
+    // comparisons and destructuring are not matches. member-guest-consent.ts
+    // is the one file that legitimately contains write-shaped lines, and it is
+    // checked below rather than skipped.
+    const offenders = productionFilesUnder("src")
+      .filter((file) => file !== "src/lib/member-guest-consent.ts")
+      .filter((file) => CONSENT_COLUMN_WRITE.test(readRepoFile(file)));
+    expect(offenders).toEqual([]);
+  });
+
+  it("writes nothing but null even inside the consent model itself", () => {
+    // Not "skip the model's own file" — that is where a writer would hide. The
+    // five type-declaration lines are identified as such, and every OTHER
+    // value-position occurrence in the file must be `null`, i.e. must be part
+    // of CONSENT_FREE_GUEST_COLUMNS.
+    const source = readRepoFile("src/lib/member-guest-consent.ts");
+    const declarationAt = source.indexOf("export interface MemberGuestConsentColumns {");
+    expect(declarationAt).toBeGreaterThan(-1);
+    const declarationEnd = source.indexOf("}", declarationAt);
+    const declaration = source.slice(declarationAt, declarationEnd);
+    const rest = source.slice(0, declarationAt) + source.slice(declarationEnd);
+
+    // The declaration names all five columns, each of them nullable.
+    for (const column of CONSENT_COLUMNS) {
+      expect(declaration, column).toMatch(new RegExp(`${column}:[^;]*\\| null;`));
+    }
+
+    const writes = [
+      ...rest.matchAll(new RegExp(`${CONSENT_COLUMN_WRITE.source}\\s*([^,;\\n]*)`, "g")),
+    ];
+    expect(writes).toHaveLength(CONSENT_COLUMNS.length);
+    for (const write of writes) {
+      expect(write[1].trim(), write[0]).toBe("null");
+    }
   });
 });
 
@@ -496,4 +660,9 @@ function sourceFilesUnder(dir: string): string[] {
   };
   walk(dir);
   return out;
+}
+
+/** The same walk, without the test files — what "production code" means here. */
+function productionFilesUnder(dir: string): string[] {
+  return sourceFilesUnder(dir).filter((file) => !file.includes("__tests__"));
 }
