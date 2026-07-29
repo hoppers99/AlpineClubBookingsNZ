@@ -176,6 +176,15 @@ function buildCancelledPostPaymentNarrative(
       retainedAmountCents > 0
         ? `${formatCents(settledAmountCents)} was ${verb} on ${settledOn} and ${formatCents(retainedAmountCents)} was retained`
         : `${formatCents(settledAmountCents)} was ${verb} on ${settledOn}`;
+  } else if (snapshot?.refundMethod === "manual" && settledAmountCents > 0) {
+    // B5 (#2262): a cash / off-Xero settlement is handed back by a person, so
+    // there is no settlement event YET — one is written when the club marks the
+    // hand-back complete. Saying "no refund was due" here would be a lie about
+    // the member's money.
+    settlementClause =
+      retainedAmountCents > 0
+        ? `${formatCents(settledAmountCents)} is being refunded to you by the club directly (you paid in cash or by bank transfer, so there is no card payment to reverse) and ${formatCents(retainedAmountCents)} was retained`
+        : `${formatCents(settledAmountCents)} is being refunded to you by the club directly — you paid in cash or by bank transfer, so there is no card payment to reverse`;
   } else {
     settlementClause = `no refund was due and the full ${formatCents(retainedAmountCents)} was retained`;
   }

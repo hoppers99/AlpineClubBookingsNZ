@@ -26,6 +26,7 @@ const ZERO_COUNTS: AdminPendingCounts = {
   familyRequests: 0,
   memberApplications: 0,
   refundAppeals: 0,
+  manualRefundTasks: 0,
   creditApprovals: 0,
   bookingReviews: 0,
   bookingChangeRequests: 0,

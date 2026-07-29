@@ -432,11 +432,22 @@ export function bookingCancelledTemplate(
   checkIn: Date,
   checkOut: Date,
   refundCents: number,
-  refundMethod: "card" | "credit" = "card",
+  // B5 (#2262): "manual" is a cash / off-Xero settlement being handed back by a
+  // person. It must NEVER read as "on its way to your card" (no card was
+  // charged) nor as account credit (none was minted — a hand-back task was
+  // raised instead), so it gets its own honest copy.
+  refundMethod: "card" | "credit" | "manual" = "card",
   creditRestoredCents: number = 0
 ): string {
   let refundInfo: string;
-  if (refundCents > 0 && refundMethod === "credit") {
+  if (refundCents > 0 && refundMethod === "manual") {
+    refundInfo = alertBox(
+      "You paid for this booking in cash or by bank transfer, so there is no card payment to reverse. The club will arrange your refund of " +
+        formatCents(refundCents) +
+        " directly and will be in touch.",
+      "info"
+    );
+  } else if (refundCents > 0 && refundMethod === "credit") {
     refundInfo = alertBox(
       "A credit of " + formatCents(refundCents) + " has been added to your account for future bookings.",
       "success"

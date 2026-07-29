@@ -23,6 +23,12 @@ interface CancelPreview {
   creditRestoredCents: number;
   totalPaidCents: number;
   hasPayment: boolean;
+  /**
+   * B5 (#2262): this booking was settled in cash / by an off-Xero bank transfer,
+   * so there is no card payment to reverse and no account credit is minted —
+   * the club hands the refund back directly. The figures are unchanged.
+   */
+  manualRefund?: boolean;
 }
 
 function formatDollars(cents: number): string {
@@ -288,7 +294,18 @@ export function CancelBookingButton({
             {/* Refund method selection — only meaningful when a card/bank slice
                 can be refunded. A credit-only cancel (#1164) has no card slice,
                 so the radios are hidden and only the restored-credit row shows. */}
-            {hasCardRefund && (
+            {preview.manualRefund && hasCardRefund && (
+              <p className="text-sm text-muted-foreground">
+                This booking was paid in cash or by bank transfer, so there is no
+                card payment to reverse and no account credit is added. The club
+                will arrange{" "}
+                <span className="font-medium text-success-11">
+                  {formatDollars(preview.creditRefundAmountCents)}
+                </span>{" "}
+                back to {onBehalfOfMember ? "the member" : "you"} directly.
+              </p>
+            )}
+            {!preview.manualRefund && hasCardRefund && (
               <div className="space-y-2">
                 <p className="font-medium text-muted-foreground">Choose refund method:</p>
                 <label className="flex items-start gap-2 cursor-pointer">
