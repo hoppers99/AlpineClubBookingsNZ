@@ -43,6 +43,37 @@ export interface WizardStepHelpers {
    * inline control instead. Load-bearing for C3 (skippable webhook step).
    */
   skip: () => void;
+  /**
+   * The shell's VOUCH that it renders an `AdminViewOnlySectionBanner` above this
+   * step body — in every branch, loading included (#2324).
+   *
+   * A step's own gated controls may therefore drop their per-button view-only
+   * reason, in exactly the #2168 shape: take the flag as a
+   * `ancestorRendersViewOnlyBanner = false` prop and write
+   * `describeReason={!ancestorRendersViewOnlyBanner}`. No new `describeReason`
+   * spelling is introduced; what is new is the CHANNEL the vouch travels down,
+   * because the shell calls `render(context, helpers)` from another file and so
+   * has no JSX render site at which it could pass the prop itself.
+   *
+   * The type is the LITERAL `true`, and required. The shell can therefore never
+   * hand a step `false` (a step under this shell is always covered), and a
+   * provider config cannot fabricate the flag from anything weaker — passing it
+   * on is `ancestorRendersViewOnlyBanner={helpers.ancestorRendersViewOnlyBanner}`,
+   * which the compiler proves is `true`.
+   *
+   * Scope caveat, and it is the same one that keeps `member-credit-card.tsx`
+   * un-vouched (#2168): the banner states ONE permission area — whatever the
+   * provider passed as the wizard's `canEdit`. A control inside a step that is
+   * gated on a DIFFERENT area must NOT use this flag; it keeps its own reason,
+   * because the banner is not describing it and would be absent entirely for an
+   * admin who can edit the wizard's area but not that control's.
+   *
+   * Enforced by `src/components/admin/__tests__/view-only-banner-contract.test.ts`,
+   * which honours this vouch only for step-body files reached through a
+   * `WizardStepConfig.render`, and only while the shell provably sets the flag
+   * and renders the banner in every branch.
+   */
+  ancestorRendersViewOnlyBanner: true;
 }
 
 /**
