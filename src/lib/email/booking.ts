@@ -13,6 +13,8 @@ import {
   splitGuestPortionCancelledTemplate,
   promoAdjustmentSummaryRows,
   resolvePromoAdjustmentCents,
+  bookingModificationTypeLabel,
+  bookingModificationSummaryRows,
 } from "../email-templates";
 import { CLUB_NAME } from "@/config/club-identity";
 import { EMAIL_DEFAULT_LODGE_NAME } from "@/lib/email-message-settings";
@@ -501,6 +503,14 @@ export async function sendBookingModifiedEmail(params: {
   lodgeId?: string | null;
 }) {
   const accountCreditAmountCents = params.accountCreditAmountCents ?? 0;
+  // #2267: pre-composed {{changeSummary}} block for the admin-editable body,
+  // built from the same rows as the HTML template — only what actually changed
+  // is shown as a Previous/New pair, and a change fee only when one was
+  // charged. Each row carries its own trailing newline (the {{promoSummary}}
+  // precedent) so the default body can place it as a single block.
+  const changeSummary = bookingModificationSummaryRows(params)
+    .map((row) => `${row.label}: ${row.value}\n`)
+    .join("");
   const xeroInvoicePaymentContext = params.xeroInvoiceNumber
     ? ` Xero invoice ${params.xeroInvoiceNumber} will be used for payment.`
     : " A Xero invoice and payment reference will be used for payment.";
@@ -526,7 +536,16 @@ export async function sendBookingModifiedEmail(params: {
     templateName: "booking-modified",
     templateData: {
       firstName: params.firstName,
-      modificationTypeLabel: params.modificationType,
+      // #2267: the same wording the HTML path shows — not the raw enum word an
+      // override-using club used to email members.
+      modificationTypeLabel: bookingModificationTypeLabel(
+        params.modificationType,
+      ),
+      changeSummary,
+      // Legacy per-piece change tokens, still supplied so an override saved
+      // before {{changeSummary}} existed keeps rendering (#2267). They cannot
+      // express "only show what changed", which is why the default body no
+      // longer builds its rows out of them.
       oldCheckIn: formatNZDate(params.oldCheckIn),
       oldCheckOut: formatNZDate(params.oldCheckOut),
       newCheckIn: formatNZDate(params.newCheckIn),

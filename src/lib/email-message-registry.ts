@@ -136,10 +136,25 @@ const EXTRA_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>> =
     "subtotal",
   ],
   // #2267: since the ragged "[only when …]" lines were removed, the default
-  // body leans on the pre-composed {{paymentNote}} for the additional-payment
-  // story; these per-piece tokens stay allowed (and supplied) for overrides.
+  // body leans on the pre-composed {{changeSummary}} (which rows changed) and
+  // {{paymentNote}} (the additional-payment story). Every per-piece token the
+  // old body built its rows from stays allowed — and supplied — so an override
+  // saved before this change keeps rendering and re-saving. The pre-composed
+  // tokens are listed too, so a later default-body rewrite cannot silently
+  // withdraw permission to use them in an override.
   "booking-modified": [
     "additionalPaymentMethod",
+    "changeFee",
+    "changeSummary",
+    "newCheckIn",
+    "newCheckOut",
+    "newGuestCount",
+    "newTotal",
+    "oldCheckIn",
+    "oldCheckOut",
+    "oldGuestCount",
+    "oldTotal",
+    "paymentNote",
     "paymentReference",
     "xeroInvoiceNumber",
   ],
@@ -625,6 +640,12 @@ function sampleValue(token: string): string {
   if (token === "promoSummary") {
     return "Subtotal: $153.45\nPromo adjustment (PROMO2026): -$30.00\n";
   }
+  // #2267: the booking-modified change block, in the shape the send composes
+  // for a stay whose dates moved but whose price and party did not — the same
+  // "$123.45" total the per-piece {{oldTotal}}/{{newTotal}} samples show.
+  if (token === "changeSummary") {
+    return "Previous Dates: 1 Jul 2026 – 3 Jul 2026\nNew Dates: 8 Jul 2026 – 10 Jul 2026\nGuests: 2\nTotal: $123.45\n";
+  }
   if (token === "promoAdjustment") return "-$30.00";
   if (token === "promoCode") return "PROMO2026";
   if (token === "discount") return "$30.00";
@@ -728,6 +749,9 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "bookingReference",
   "bumpedMemberName",
   "changeFee",
+  // #2267: pre-composed block of the booking-modification rows that actually
+  // changed (Previous/New pairs only where something moved).
+  "changeSummary",
   "checkIn",
   "checkOut",
   "childName",

@@ -52,7 +52,7 @@ export const EMAIL_AUDIT_DEFAULTS = {
   },
   "booking-modified": {
     "defaultSubject": "Booking Modified - {{CLUB_LODGE_NAME}}",
-    "defaultBody": "Booking Modified\n\nHi {{firstName}}, your booking has been updated.\n\n{{modificationTypeLabel}}\n\nPrevious Dates: {{oldCheckIn}} – {{oldCheckOut}}\nNew Dates: {{newCheckIn}} – {{newCheckOut}}\nPrevious Guests: {{oldGuestCount}}\nNew Guests: {{newGuestCount}}\nPrevious Total: {{oldTotal}}\nNew Total: {{newTotal}}\nChange Fee: {{changeFee}}\n\n{{paymentNote}}\n\nYou can view your updated booking details from your account.\n\nView Booking: {{BASE_URL}}/bookings"
+    "defaultBody": "Booking Modified\n\nHi {{firstName}}, your booking has been updated.\n\n{{modificationTypeLabel}}\n\n{{changeSummary}}\n{{paymentNote}}\n\nYou can view your updated booking details from your account.\n\nView Booking: {{BASE_URL}}/bookings"
   },
   "checkin-reminder": {
     "defaultSubject": "Check-in Reminder - {{CLUB_LODGE_NAME}}",

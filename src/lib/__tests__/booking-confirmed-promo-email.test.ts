@@ -30,6 +30,7 @@ vi.mock("@/lib/email-message-settings", () => ({
 }));
 
 import { getEmailTemplateDefinition } from "@/lib/email-message-registry";
+import { plainTextEmailTemplate } from "@/lib/email-templates";
 import {
   renderTemplateString,
   validateEmailTemplateContent,
@@ -64,17 +65,46 @@ function renderDefaultBody(
 }
 
 // The assertion that would have caught the original bug: no rendered line may
-// trail off after a minus sign or a colon (the blank "Discount: -" line), and
-// bracket authoring notes must never reach a member inbox as body text.
-function expectCleanLines(rendered: string) {
-  expect(rendered).not.toContain("[only when");
-  expect(rendered).not.toContain("[when");
-  for (const line of rendered.split("\n")) {
+// trail off after a sign, a dash or a colon (the blank "Discount: -" line, the
+// dangling "Door code:" line), and bracket authoring notes must never reach a
+// member inbox as body text. The en dash is in the class because the date rows
+// are written with one.
+function expectCleanLines(text: string, label: string) {
+  expect(text).not.toContain("[only when");
+  expect(text).not.toContain("[when");
+  for (const line of text.split("\n")) {
     const trimmed = line.trimEnd();
-    expect(trimmed, `dangling line: ${JSON.stringify(line)}`).not.toMatch(
-      /[-:]$/,
+    expect(trimmed, `dangling ${label} line: ${JSON.stringify(line)}`).not.toMatch(
+      /[-+:–]$/,
     );
   }
+}
+
+// The delivered email is not the rendered string: prepareEmailMessage feeds a
+// stored override through plainTextEmailTemplate, which trims and drops blank
+// blocks. Reading the text back out of that HTML is what proves a member never
+// sees a dangling label — the rendered-string check alone can be satisfied by
+// text the layout would still render badly.
+function htmlToText(html: string): string {
+  return html
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]*>/g, "\n")
+    .replace(/&ndash;/g, "–")
+    .replace(/&bull;/g, "•")
+    .replace(/&#39;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, "&")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
+// Both halves of the override render path: the substituted body text, and the
+// HTML a member actually receives.
+function expectCleanBody(rendered: string) {
+  expectCleanLines(rendered, "rendered");
+  expectCleanLines(htmlToText(plainTextEmailTemplate(rendered)), "delivered");
 }
 
 async function captureConfirmedTemplateData(
@@ -134,7 +164,7 @@ describe("booking-confirmed promo summary (#2267)", () => {
     // The old discount-only wording could not express a surcharge — it must
     // not reappear anywhere in the rendered body.
     expect(rendered).not.toContain("Discount");
-    expectCleanLines(rendered);
+    expectCleanBody(rendered);
 
     // Drift guard: the hand-built HTML path tells the identical money story.
     expect(html).toContain("Subtotal");
@@ -158,7 +188,7 @@ describe("booking-confirmed promo summary (#2267)", () => {
         "Promo adjustment (SPRING10): -$30.00\n" +
         "Total Paid: $270.00",
     );
-    expectCleanLines(rendered);
+    expectCleanBody(rendered);
 
     expect(html).toContain("Promo adjustment (SPRING10)");
     expect(html).toContain("-$30.00");
@@ -175,7 +205,7 @@ describe("booking-confirmed promo summary (#2267)", () => {
     expect(rendered).toContain("Guests: 2\nTotal Paid: $300.00");
     expect(rendered).not.toContain("Subtotal");
     expect(rendered).not.toContain("Promo adjustment");
-    expectCleanLines(rendered);
+    expectCleanBody(rendered);
 
     expect(html).not.toContain("Subtotal");
     expect(html).not.toContain("Promo adjustment");
@@ -189,7 +219,7 @@ describe("booking-confirmed promo summary (#2267)", () => {
     expect(templateData.doorCodeNote).toBe("Door code: 1234");
     const rendered = renderDefaultBody("booking-confirmed", templateData);
     expect(rendered).toContain("Door code: 1234");
-    expectCleanLines(rendered);
+    expectCleanBody(rendered);
   });
 
   it("renders no door-code line at all for a club that records no door code", async () => {
@@ -204,7 +234,7 @@ describe("booking-confirmed promo summary (#2267)", () => {
     expect(templateData.doorCodeNote).toBe("");
     const rendered = renderDefaultBody("booking-confirmed", templateData);
     expect(rendered).not.toContain("Door code");
-    expectCleanLines(rendered);
+    expectCleanBody(rendered);
   });
 
   it("keeps an existing override that writes its own Door code line valid and re-savable", () => {
@@ -383,13 +413,18 @@ describe("booking-modified default body (#2267)", () => {
     vi.clearAllMocks();
   });
 
-  async function captureModifiedTemplateData(overrides: {
+  async function captureModified(overrides: {
+    modificationType?: string;
     newFinalPriceCents: number;
+    newCheckIn?: Date;
+    newCheckOut?: Date;
+    newGuestCount?: number;
+    changeFeeCents?: number;
     additionalAmountCents?: number;
     additionalPaymentMethod?: "STRIPE" | "INTERNET_BANKING";
     paymentReference?: string | null;
     xeroInvoiceNumber?: string | null;
-  }): Promise<EmailTemplateData> {
+  }): Promise<{ templateData: EmailTemplateData; html: string }> {
     const { sendBookingModifiedEmail } = await import("../email/booking");
     await sendBookingModifiedEmail({
       bookingId: "bk_test",
@@ -410,11 +445,141 @@ describe("booking-modified default body (#2267)", () => {
     });
     const call = sendEmailMock.mock.calls[0][0];
     expect(call.templateName).toBe("booking-modified");
-    return call.templateData;
+    return { templateData: call.templateData, html: call.html };
   }
 
-  it("renders every money line unconditionally with no authoring notes or ragged lines", async () => {
-    const templateData = await captureModifiedTemplateData({
+  // Same fixture, both paths: the rows an admin's editable body renders must be
+  // exactly the rows the built-in HTML email shows — no more, no less. The
+  // expected rows are hand-written here (not derived from the shared helper),
+  // so a change to that helper has to be a deliberate change to these
+  // expectations.
+  const changeRowCases: Array<{
+    name: string;
+    send: Parameters<typeof captureModified>[0];
+    expectedRows: string[];
+    absentLabels: string[];
+  }> = [
+    {
+      name: "dates moved, party and price unchanged",
+      send: { newFinalPriceCents: 30000 },
+      expectedRows: [
+        "Previous Dates: 15 Aug 2026 – 18 Aug 2026",
+        "New Dates: 16 Aug 2026 – 19 Aug 2026",
+        "Guests: 2",
+        "Total: $300.00",
+      ],
+      absentLabels: [
+        "Previous Guests",
+        "New Guests",
+        "Previous Total",
+        "New Total",
+        "Change Fee",
+      ],
+    },
+    {
+      name: "price changed and a change fee was charged",
+      send: { newFinalPriceCents: 37000, changeFeeCents: 2500 },
+      expectedRows: [
+        "Previous Total: $300.00",
+        "New Total: $370.00",
+        "Change Fee: $25.00",
+      ],
+      absentLabels: ["Previous Guests", "New Guests"],
+    },
+    {
+      name: "guests only: same dates, same price, no fee",
+      send: {
+        modificationType: "GUEST_ADD",
+        newCheckIn: new Date("2026-08-15"),
+        newCheckOut: new Date("2026-08-18"),
+        newGuestCount: 3,
+        newFinalPriceCents: 30000,
+      },
+      expectedRows: [
+        "Dates: 15 Aug 2026 – 18 Aug 2026",
+        "Previous Guests: 2",
+        "New Guests: 3",
+        "Total: $300.00",
+      ],
+      absentLabels: [
+        "Previous Dates",
+        "New Dates",
+        "Previous Total",
+        "New Total",
+        "Change Fee",
+      ],
+    },
+    {
+      name: "batch edit that moved dates, party and price together",
+      send: {
+        modificationType: "BATCH_MODIFY",
+        newGuestCount: 4,
+        newFinalPriceCents: 45000,
+      },
+      expectedRows: [
+        "Previous Dates: 15 Aug 2026 – 18 Aug 2026",
+        "New Dates: 16 Aug 2026 – 19 Aug 2026",
+        "Previous Guests: 2",
+        "New Guests: 4",
+        "Previous Total: $300.00",
+        "New Total: $450.00",
+      ],
+      absentLabels: ["Change Fee", "Dates", "Guests", "Total"],
+    },
+  ];
+
+  it.each(changeRowCases)(
+    "shows the same change rows on both paths — $name",
+    async ({ send, expectedRows, absentLabels }) => {
+      const { templateData, html } = await captureModified(send);
+      const rendered = renderDefaultBody("booking-modified", templateData);
+
+      for (const row of expectedRows) {
+        // The admin-editable body renders the row as a plain "Label: value"
+        // line…
+        expect(rendered, row).toContain(row);
+        // …and the built-in HTML email shows the identical label and value in
+        // its info table.
+        const [label, value] = row.split(/: (.+)/);
+        expect(html, row).toContain(`>${label}</td>`);
+        expect(html, row).toContain(`>${value}</td>`);
+      }
+      for (const label of absentLabels) {
+        // Line-anchored: "Dates" must be absent as its own row label without
+        // tripping on the "Previous Dates" row that is legitimately there.
+        expect(rendered, label).not.toMatch(
+          new RegExp(`^${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}:`, "m"),
+        );
+        expect(html, label).not.toContain(`>${label}</td>`);
+      }
+      expectCleanBody(rendered);
+    },
+  );
+
+  it("names the modification in words on both paths, including a batch edit", async () => {
+    const dateChange = await captureModified({ newFinalPriceCents: 30000 });
+    expect(dateChange.templateData.modificationTypeLabel).toBe("Dates Changed");
+    expect(
+      renderDefaultBody("booking-modified", dateChange.templateData),
+    ).toContain("Dates Changed");
+    expect(dateChange.html).toContain("Dates Changed");
+
+    vi.clearAllMocks();
+    // BATCH_MODIFY had no wording on either path, so members were emailed the
+    // raw enum word.
+    const batch = await captureModified({
+      modificationType: "BATCH_MODIFY",
+      newFinalPriceCents: 30000,
+    });
+    expect(batch.templateData.modificationTypeLabel).toBe("Booking Modified");
+    expect(renderDefaultBody("booking-modified", batch.templateData)).not.toContain(
+      "BATCH_MODIFY",
+    );
+    expect(batch.html).not.toContain("BATCH_MODIFY");
+  });
+
+  it("carries the additional-payment story through the pre-composed note", async () => {
+    const { templateData } = await captureModified({
       newFinalPriceCents: 37000,
       additionalAmountCents: 7000,
       additionalPaymentMethod: "INTERNET_BANKING",
@@ -423,44 +588,55 @@ describe("booking-modified default body (#2267)", () => {
     });
 
     const rendered = renderDefaultBody("booking-modified", templateData);
-
-    expect(rendered).toContain("Previous Total: $300.00");
-    expect(rendered).toContain("New Total: $370.00");
-    expect(rendered).toContain("Change Fee: $0.00");
-    // The additional-payment story arrives through the pre-composed
-    // {{paymentNote}}, which already carries the Xero invoice and reference.
     expect(rendered).toContain(
       "An additional Internet Banking payment of $70.00 is required.",
     );
     expect(rendered).toContain("Xero invoice INV-100");
     expect(rendered).toContain("Payment reference: ABC123.");
-    expectCleanLines(rendered);
+    expectCleanBody(rendered);
   });
 
   it("renders cleanly when no payment movement occurred (empty paymentNote)", async () => {
-    const templateData = await captureModifiedTemplateData({
+    const { templateData } = await captureModified({
       newFinalPriceCents: 30000,
     });
 
     expect(templateData.paymentNote).toBe("");
     const rendered = renderDefaultBody("booking-modified", templateData);
-
-    expect(rendered).toContain("Previous Total: $300.00");
-    expect(rendered).toContain("New Total: $300.00");
-    expectCleanLines(rendered);
+    expectCleanBody(rendered);
   });
 
-  it("keeps the per-piece additional-payment tokens allowed for existing overrides", () => {
+  it("keeps the per-piece tokens the old body used allowed for existing overrides", () => {
     const definition = getEmailTemplateDefinition("booking-modified");
     if (!definition) throw new Error("missing booking-modified");
     expect(definition.allowedTokens).toEqual(
       expect.arrayContaining([
         "additionalPaymentMethod",
+        "changeFee",
+        "changeSummary",
+        "newCheckIn",
+        "newCheckOut",
+        "newGuestCount",
+        "newTotal",
+        "oldCheckIn",
+        "oldCheckOut",
+        "oldGuestCount",
+        "oldTotal",
+        "paymentNote",
         "paymentReference",
         "xeroInvoiceNumber",
-        "paymentNote",
       ]),
     );
+
+    // The pre-#2267 override shape — hand-built Previous/New rows — still
+    // validates and still renders from the data the send supplies.
+    const legacy = validateEmailTemplateContent({
+      templateName: "booking-modified",
+      subject: "Booking Modified",
+      bodyText:
+        "Hi {{firstName}}\n\nPrevious Dates: {{oldCheckIn}} – {{oldCheckOut}}\nNew Dates: {{newCheckIn}} – {{newCheckOut}}\nPrevious Total: {{oldTotal}}\nNew Total: {{newTotal}}\nChange Fee: {{changeFee}}\n\n{{paymentNote}}",
+    });
+    expect(legacy.valid).toBe(true);
   });
 });
 
