@@ -4,6 +4,22 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Choosing to use your account credit and then saving the booking as a draft
+  no longer throws that choice away (#2265).** Ticking "use my credit" in the
+  booking wizard and pressing **Save as draft** used to discard the amount you
+  chose without a word, and you were never asked again — when you came back to
+  pay, the full price was charged and your credit sat untouched. Your choice is
+  now remembered on the draft and applied the moment you go to pay, so the card
+  is charged only the remainder. Nothing is taken from your balance while the
+  booking is still a draft: if you abandon it, delete it, or let it expire, your
+  credit is exactly where you left it. If your balance has changed in the
+  meantime — you spent some of it on another booking, or you edited the draft to
+  a cheaper stay — as much as is still available and still owed is applied, and
+  the pay step reports what was applied and why it fell short rather than
+  quietly using less. A booking your credit covers in full is now simply
+  completed and confirmed at no charge instead of getting stuck at a payment
+  page it could never pass.
+
 - **Writing a Lodge TV footer or CSS override no longer means remembering the
   tokens (#2248).** Every field where a board's HTML or CSS is typed by hand —
   the Visual builder's **Footer HTML**, **CSS overrides** and a zone's **HTML

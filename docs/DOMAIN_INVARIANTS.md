@@ -572,6 +572,37 @@ Future reviews and issues should cite this file when proposing changes.
 
 ## Payment And Settlement
 
+- Account credit is consumed only by a booking that is actually reaching
+  `PAYMENT_PENDING`, never by one that is still provisional. A booking saved as
+  a draft therefore stores the member's ELECTION on
+  `Booking.creditElectionCents` (nullable integer cents, #2265) and consumes
+  nothing: NULL means no election is outstanding, `0` means the member
+  explicitly chose to use none, and a positive value is what they asked to
+  apply. A draft that is abandoned, deleted or expires leaves the balance
+  untouched, so no release path exists or is needed. The election is
+  single-consumption — the pay path clears it to NULL in the same transaction
+  that writes the `BOOKING_APPLIED` ledger row — and it is NEVER a record of
+  credit already applied: the authoritative applied total is always the
+  MemberCredit ledger (`deriveBookingAppliedCreditCents`). A draft created
+  directly in `AWAITING_REVIEW` keeps its election until an admin releases it to
+  `PAYMENT_PENDING`, matching booking-create's `blockForReview` rule.
+- A stored credit election is CLAMPED at confirmation, never refused, and never
+  applied short in silence (#2265). Between the election and the confirmation
+  the balance may have been spent elsewhere and the booking may have been
+  repriced, so the amount applied is
+  `min(election, live balance, price not already covered by credit)` — the same
+  posture `clampAppliedCreditToBookingPrice` (#1887) takes when a modification
+  reprices a booking below its applied credit, and for the same reason: throwing
+  would leave the member unable to pay their own booking. The requested amount,
+  the applied amount, the shortfall and its cause are returned by the pay route
+  so the shortfall is always surfaced. `calculateBookingCreditApplication` keeps
+  its throw-on-over-request contract at booking-create, where the wizard
+  validated the balance in the same request and an over-request is a bug.
+- An election that covers the whole price settles the booking at $0 rather than
+  dead-ending at the card-intent effective-price guard (#2265): status `PAID`
+  plus one $0 `SUCCEEDED` Payment mirroring the applied credit, the same
+  zero-dollar shape booking-create and the modification engine use, keeping
+  `amountCents + creditAppliedCents = finalPriceCents`.
 - Stripe and Internet Banking/Xero settlement paths must remain distinct.
 - Stripe paths own PaymentIntents, SetupIntents, Stripe refunds, Stripe
   webhooks, and durable PaymentRecoveryOperation rows.

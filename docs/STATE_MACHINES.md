@@ -17,6 +17,20 @@ WAITLISTED -> WAITLIST_OFFERED -> CONFIRMED/PAID or WAITLISTED/CANCELLED
 AWAITING_REVIEW -> PENDING (quote accepted, #1254) or CONFIRMED/PAID or CANCELLED
 ```
 
+`DRAFT -> PAYMENT_PENDING` is also where a stored account-credit election is
+spent (#2265). A draft carries the member's election on
+`Booking.creditElectionCents` and consumes no credit while it may still be
+abandoned; the pay path (`create-payment-intent`) advances the status, applies
+the election clamped to the live balance and the price, and clears the column —
+all in one transaction, so the transition and the money move together and a
+retry cannot spend the election twice. When the election covers the whole price
+the same transaction continues straight to `PAID` with a $0 SUCCEEDED payment
+rather than minting a card intent. A draft created in `AWAITING_REVIEW` keeps
+its election through review and spends it on the
+`AWAITING_REVIEW -> PAYMENT_PENDING` release instead. `confirm-draft` only ever
+settles a $0 booking, where credit has nothing to pay, so it clears the election
+without consuming any.
+
 Waitlist confirmation and expiry serialize on the offered booking's lodge lock.
 Confirmation re-reads `WAITLIST_OFFERED` and the deadline after acquiring the
 lock and uses a status/deadline-guarded claim, so an expiry that wins first
