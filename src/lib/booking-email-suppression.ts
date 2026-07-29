@@ -98,8 +98,12 @@ export const ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES: ReadonlySet<string> =
     "group-settlement-expired",
     "group-join-released",
     "group-join-cancelled",
-    // Admin refund-appeal outcome, sent to the member about their booking
-    "refund-request-resolved",
+    // Admin refund-appeal outcome, sent to the member about their booking.
+    // #2321 split one combined template into one per outcome; BOTH stay
+    // booking-scoped, so the per-booking "No emails" switch still withholds
+    // them and the retry cron still refuses to replay a NULL-bookingId row.
+    "refund-request-approved",
+    "refund-request-declined",
   ]);
 
 /**

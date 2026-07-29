@@ -81,6 +81,21 @@ Two consequences worth knowing:
   printed verbatim to the member. Older built-in wording carried such notes;
   they were all removed in v0.13, and the build now refuses any that come back.
 
+For the same reason, **each template covers exactly one outcome.** Where a
+message could go two ways there are two templates to edit, not one with a
+condition inside it — `Refund Request Approved` and `Refund Request Declined`,
+`Booking Review Approved` and `Booking Review Rejected`, and so on. Edit both if
+you want both reworded; editing only one leaves the other on its built-in text.
+
+> **Upgrade note (v0.13).** The single *Refund Request Resolved* template was
+> split into **Refund Request Approved** and **Refund Request Declined**. If you
+> had customised the old one, its wording said "approved" and was also being
+> sent to members whose appeal was **declined**. Your old customisation is not
+> carried over — both new templates start from the corrected built-in wording,
+> and the leftover row is reported at the top of this page as a stale override
+> needing cleanup. Re-apply your wording to whichever of the two you want to
+> change.
+
 ## Settings reference
 
 Shared email variables (top card):

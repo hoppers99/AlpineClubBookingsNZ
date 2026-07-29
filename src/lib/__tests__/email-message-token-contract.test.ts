@@ -16,7 +16,14 @@ import {
   findUnapprovedSuppliedTokens,
   type EmailTemplateDefaults,
 } from "@/lib/email-message-token-contract";
-import { validateEmailTemplateContent } from "@/lib/email-message-renderer";
+import {
+  renderTemplateString,
+  validateEmailTemplateContent,
+} from "@/lib/email-message-renderer";
+import {
+  ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES,
+  isBookingSuppressibleTemplate,
+} from "@/lib/booking-email-suppression";
 
 // #2268 — the guard these replace was circular. The old check ran
 // validateEmailTemplateContent over every default body, but the per-template
@@ -268,5 +275,115 @@ describe("#2268 — the swept defaults still validate and still re-save", () => 
     // Registered and admin-editable, but with no send site anywhere in src/ —
     // an admin could carefully word an email that was never sent (#2268).
     expect(getEmailTemplateDefinition("credit-applied-to-booking")).toBeUndefined();
+  });
+});
+
+// #2321 — refund-request-resolved was ONE registered template serving BOTH
+// outcomes, with a default body that said "approved" and a sentence reading
+// "A refund of {{amount}} will be processed" that the declined send fed an
+// empty string. The HTML path always branched correctly, so only a club that
+// had saved an override was affected — but that club told declined members
+// their appeal had been approved. It is now one template per outcome, and the
+// declined template has no {{amount}} on its surface at all.
+describe("#2321 refund-appeal outcome templates", () => {
+  // Affirmative approval wording only — "was not approved at this time" is the
+  // declined template's own correct copy, so a bare "approved" would be a
+  // false positive.
+  const APPROVAL_WORDING = [
+    "has been approved",
+    "Appeal Approved",
+    "A refund of",
+    "will be processed",
+    "original payment method",
+  ];
+
+  it("registers one template per outcome and retires the combined one", () => {
+    expect(getEmailTemplateDefinition("refund-request-approved")).toBeDefined();
+    expect(getEmailTemplateDefinition("refund-request-declined")).toBeDefined();
+    expect(getEmailTemplateDefinition("refund-request-resolved")).toBeUndefined();
+  });
+
+  it("never lets approval wording reach a declined member", () => {
+    const declined = getEmailTemplateDefinition("refund-request-declined");
+    if (!declined) throw new Error("missing refund-request-declined");
+
+    // Rendered end to end, both with an admin note and without one.
+    for (const adminNotesLine of ["Notes: Outside the refund window.\n\n", ""]) {
+      const rendered = renderTemplateString(declined.defaultBody, {
+        ...declined.sampleData,
+        adminNotesLine,
+      });
+      const subject = renderTemplateString(
+        declined.defaultSubject,
+        declined.sampleData,
+      );
+
+      for (const phrase of APPROVAL_WORDING) {
+        expect(rendered, `declined body contains "${phrase}"`).not.toContain(
+          phrase,
+        );
+        expect(subject, `declined subject contains "${phrase}"`).not.toContain(
+          phrase,
+        );
+      }
+      expect(rendered).toContain("was not approved at this time");
+      // The empty-amount sentence that started this: no money figure, and no
+      // line that trails off, on either shape.
+      expect(rendered).not.toMatch(/\$/);
+      for (const line of rendered.split("\n")) {
+        expect(line.trimEnd()).not.toMatch(/[-:–—]$/);
+      }
+    }
+  });
+
+  it("gives the declined template no {{amount}} surface to reach for", () => {
+    const declined = getEmailTemplateDefinition("refund-request-declined");
+    if (!declined) throw new Error("missing refund-request-declined");
+
+    // Not allowed, so an override that writes {{amount}} is refused at SAVE
+    // time rather than rendering "A refund of  will be processed".
+    expect(declined.allowedTokens).not.toContain("amount");
+    const validation = validateEmailTemplateContent({
+      templateName: "refund-request-declined",
+      subject: "Refund Appeal Update",
+      bodyText: "Hi {{firstName}}, a refund of {{amount}} is on its way.",
+    });
+    expect(validation.valid).toBe(false);
+    expect(validation.disallowedTokens).toContain("amount");
+  });
+
+  it("still renders the approved outcome with its money figure", () => {
+    const approved = getEmailTemplateDefinition("refund-request-approved");
+    if (!approved) throw new Error("missing refund-request-approved");
+
+    expect(approved.allowedTokens).toContain("amount");
+    const rendered = renderTemplateString(
+      approved.defaultBody,
+      approved.sampleData,
+    );
+    expect(rendered).toContain("has been approved");
+    expect(rendered).toContain("A refund of $123.45");
+    for (const line of rendered.split("\n")) {
+      expect(line.trimEnd()).not.toMatch(/[-:–—]$/);
+    }
+  });
+
+  it("keeps both outcomes member-audience and withholdable by the booking switch", () => {
+    // Fail-closed: both are member-facing mail about a booking, so the
+    // per-booking "No emails" switch must still be able to withhold them and
+    // the retry cron must still refuse to replay a NULL-bookingId row.
+    for (const key of [
+      "refund-request-approved",
+      "refund-request-declined",
+    ] as const) {
+      const definition = getEmailTemplateDefinition(key);
+      if (!definition) throw new Error(`missing ${key}`);
+      expect(definition.audience).toBe("member");
+      expect(isBookingSuppressibleTemplate(key)).toBe(true);
+      expect(ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES.has(key)).toBe(true);
+    }
+    expect(
+      ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES.has("refund-request-resolved"),
+    ).toBe(false);
   });
 });

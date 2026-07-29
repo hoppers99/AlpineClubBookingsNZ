@@ -290,9 +290,13 @@ export const EMAIL_AUDIT_DEFAULTS = {
     "defaultSubject": "Booking Change Request: {{memberName}}",
     "defaultBody": "Booking Change Request Submitted\n\n{{memberName}} has requested an admin-reviewed booking change for a locked same-day or past-night period.\n\nMember: {{memberName}}\nEmail: {{memberEmail}}\nBooking: {{bookingId}}\nCurrent check-in: {{checkIn}}\nCurrent check-out: {{checkOut}}\nRequested change: {{requestedSummary}}\n\n{{reasonNote}}Review Request: {{reviewUrl}}"
   },
-  "refund-request-resolved": {
+  "refund-request-approved": {
     "defaultSubject": "Refund Appeal Approved — {{CLUB_BOOKINGS_NAME}}",
     "defaultBody": "Refund Appeal Approved\n\nHi {{firstName}},\n\nYour refund appeal for your booking ({{checkIn}} - {{checkOut}}) has been approved. A refund of {{amount}} will be processed to your original payment method.\n\n{{adminNotesLine}}If you have questions, contact the club at {{SUPPORT_EMAIL}}."
+  },
+  "refund-request-declined": {
+    "defaultSubject": "Refund Appeal Update — {{CLUB_BOOKINGS_NAME}}",
+    "defaultBody": "Refund Appeal Update\n\nHi {{firstName}},\n\nYour refund appeal for your booking ({{checkIn}} - {{checkOut}}) was not approved at this time.\n\n{{adminNotesLine}}If you have questions, contact the club at {{SUPPORT_EMAIL}}."
   },
   "admin-issue-report": {
     "defaultSubject": "Issue Report: {{memberName}}",

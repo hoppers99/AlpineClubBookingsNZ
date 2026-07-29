@@ -40,6 +40,24 @@ All notable public reference-release changes should be recorded here.
   example — and two of them immediately found further tokens the system supplied
   but the editor rejected, now fixed.
 
+- **A declined refund appeal can no longer be told it was approved (#2321).**
+  One email template covered both outcomes of a refund appeal. Its built-in
+  wording said the appeal "has been approved" and named the refund amount, and
+  the code that sends a *declined* decision reached for the same template with
+  no amount to put in it. Clubs on the built-in wording were fine — the designed
+  email chose the right words each time — but a club that had customised the
+  template sent members whose appeal was turned down a message headed "Refund
+  Appeal Approved", containing the sentence "A refund of  will be processed to
+  your original payment method". There are now two separate templates, **Refund
+  Request Approved** and **Refund Request Declined**, each saying one thing and
+  editable on its own. The declined one has no refund-amount field at all, so
+  the figure cannot be printed there even by mistake — an override that tries is
+  refused when it is saved. Both remain covered by a booking's "No emails"
+  switch. If you had customised the old combined template, that customisation is
+  not carried across: both new templates start from the corrected wording, and
+  the leftover is flagged on the Email Messages page as a stale override to
+  clean up, so re-apply your wording to whichever one you want changed.
+
 - **The booking-confirmed email now explains a promo that raises the price,
   instead of a blank Discount line and an unexplained total (#2267).** A member
   who booked with an exclusive-use flat-rate promo received a payment

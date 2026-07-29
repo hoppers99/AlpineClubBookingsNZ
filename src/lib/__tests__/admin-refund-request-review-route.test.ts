@@ -17,7 +17,8 @@ const mocks = vi.hoisted(() => ({
   enqueueXeroRefundCreditNoteOperation: vi.fn(),
   kickQueuedXeroOutboxOperationsIfConnected: vi.fn(),
   sendEmail: vi.fn(),
-  refundRequestResolvedTemplate: vi.fn(),
+  refundRequestApprovedTemplate: vi.fn(),
+  refundRequestDeclinedTemplate: vi.fn(),
   createAuditLog: vi.fn(),
 }));
 
@@ -64,7 +65,10 @@ vi.mock("@/lib/email", () => ({
 }));
 
 vi.mock("@/lib/email-templates", () => ({
-  refundRequestResolvedTemplate: mocks.refundRequestResolvedTemplate,
+  // #2321: one function per outcome — no boolean can route approval wording to
+  // a declined member.
+  refundRequestApprovedTemplate: mocks.refundRequestApprovedTemplate,
+  refundRequestDeclinedTemplate: mocks.refundRequestDeclinedTemplate,
 }));
 
 vi.mock("@/lib/logger", () => ({
@@ -124,7 +128,8 @@ describe("PUT /api/admin/refund-requests/[id]", () => {
       skipped: 0,
     });
     mocks.sendEmail.mockResolvedValue(undefined);
-    mocks.refundRequestResolvedTemplate.mockReturnValue("<p>approved</p>");
+    mocks.refundRequestApprovedTemplate.mockReturnValue("<p>approved</p>");
+    mocks.refundRequestDeclinedTemplate.mockReturnValue("<p>declined</p>");
     mocks.refundRequestUpdateMany.mockResolvedValue({ count: 1 });
     mocks.paymentFindUnique.mockResolvedValue({
       amountCents: 10000,

@@ -227,6 +227,22 @@ behind each (`{{doorCode}}`, `{{reason}}`, `{{adminNote}}` …) stays valid for
 overrides written before the change, so nothing an operator already saved stops
 rendering or stops being re-savable.
 
+A related rule follows from the same limitation: **one registered template
+serves exactly one outcome.** A body that has to say either "your appeal was
+approved" or "your appeal was declined" cannot choose between them, so the two
+are separate registered templates with separate defaults, separate overrides and
+separate token surfaces — `refund-request-approved` and `refund-request-declined`
+(split in v0.13 from a single `refund-request-resolved`), alongside the existing
+`booking-review-approved` / `booking-review-rejected` and
+`membership-cancellation-approved` / `membership-cancellation-rejected` pairs.
+The declined refund template deliberately has **no `{{amount}}` token at all**:
+there is no refund to state, so the token is not supplied and not allowed, and an
+override that reaches for it is refused when it is saved rather than rendering
+"A refund of  will be processed". An installation that had customised the old
+combined template keeps that row in the database, where it is reported in Admin →
+Email Messages as a stale override needing cleanup; both new templates start from
+their built-in wording, so no declined member can inherit approval copy.
+
 `[only when …]`-style guidance must **never** appear in a default body or in an
 override. The template engine does not understand it; the admin editor pre-fills
 its textarea from the default body and stores whatever it is given verbatim, so

@@ -55,8 +55,9 @@ interface RefundRequestData {
     finalPriceCents: number
     status: string
     // #2259: the per-booking "No emails" switch. A refund outcome email
-    // (`refund-request-resolved`) is booking-scoped, so the mailer withholds it
-    // while the switch is on — the notify prompt stops offering the choice.
+    // (`refund-request-approved` / `refund-request-declined`) is booking-scoped,
+    // so the mailer withholds it while the switch is on — the notify prompt
+    // stops offering the choice.
     noEmails: boolean
     creditsFromCancellation: Array<{
       amountCents: number

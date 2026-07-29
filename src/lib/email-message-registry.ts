@@ -216,7 +216,8 @@ export const EXTRA_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, strin
     "localId",
     "latestErrorMessage",
   ],
-  "refund-request-resolved": ["status", "adminNotes"],
+  "refund-request-approved": ["adminNotes"],
+  "refund-request-declined": ["adminNotes"],
   "age-up-invitation": ["resetUrl", "targetAgeTier", "targetAgeTierMinAge"],
   "age-up-parent-email-handoff": ["targetAgeTier", "targetAgeTierMinAge"],
   "booking-request-verification": ["verifyUrl"],
@@ -358,6 +359,18 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
   "admin-booking-change-request": {
     triggerSummary: "Locked booking change request submitted",
     frequency: "Per member/admin request submission",
+  },
+  // #2321: split from the combined refund-request-resolved template so a
+  // declined member can never receive approval wording.
+  "refund-request-approved": {
+    triggerSummary:
+      "An admin approved a member's refund appeal (and chose to notify them)",
+    frequency: "Per approved refund appeal",
+  },
+  "refund-request-declined": {
+    triggerSummary:
+      "An admin declined a member's refund appeal (and chose to notify them)",
+    frequency: "Per declined refund appeal",
   },
   "admin-duplicate-capture-refund": {
     triggerSummary:
