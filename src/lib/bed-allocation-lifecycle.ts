@@ -114,6 +114,58 @@ export async function promoteOrphanedSecondOccupants(
   return promoted;
 }
 
+/**
+ * The batched form of `promoteOrphanedSecondOccupants` — same rule, two
+ * statements instead of two per bed-night (#2251).
+ *
+ * The per-night helper above runs a `findFirst` + `update` for EVERY vacated
+ * bed-night. That is fine for a board delete or a one-night move, but a range
+ * assignment can vacate hundreds of bed-nights inside a single transaction, and
+ * a statement count that grows with the range is exactly what stops such a
+ * transaction being safe to hold open. This does one `findMany` over all the
+ * bed-nights and one `updateMany` over the ids it found.
+ *
+ * The gate is identical and deliberately still `isSecondOccupant` alone, never
+ * denormalized `bedType` (#1749) — see the per-night helper for why. Returns the
+ * promoted rows (with the flag already flipped in the returned objects, since
+ * `updateMany` returns only a count) so the caller can audit them; a promoted
+ * partner may belong to a DIFFERENT booking than the row that was removed.
+ */
+export async function promoteOrphanedSecondOccupantsBatch(
+  db: BedAllocationLifecycleDb,
+  bedNights: OrphanedBedNight[],
+): Promise<BedAllocation[]> {
+  const seen = new Set<string>();
+  const distinct: OrphanedBedNight[] = [];
+  for (const { bedId, stayDate } of bedNights) {
+    // Dedup: the same (bedId, stayDate) must never be flipped twice.
+    const key = `${bedId}:${formatDateOnly(stayDate)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    distinct.push({ bedId, stayDate });
+  }
+  if (distinct.length === 0) return [];
+
+  const partners = await db.bedAllocation.findMany({
+    where: {
+      isSecondOccupant: true,
+      OR: distinct.map(({ bedId, stayDate }) => ({ bedId, stayDate })),
+    },
+  });
+  // The WHERE clause is the real gate; the JS re-check keeps a test mock whose
+  // findMany ignores the WHERE from fabricating promotions, exactly as the
+  // per-night helper's re-check does.
+  const orphans = partners.filter((partner) => partner.isSecondOccupant);
+  if (orphans.length === 0) return [];
+
+  await db.bedAllocation.updateMany({
+    where: { id: { in: orphans.map((partner) => partner.id) } },
+    data: { isSecondOccupant: false },
+  });
+
+  return orphans.map((partner) => ({ ...partner, isSecondOccupant: false }));
+}
+
 async function recordPartnerPromotionAudit(
   db: BedAllocationLifecycleDb,
   promoted: BedAllocation,
