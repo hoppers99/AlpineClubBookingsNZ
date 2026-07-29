@@ -887,6 +887,21 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
           expectedArrivalTime: expectedArrivalTime || null,
           requestedRoomId: requestedRoomId || null,
           cancelIfGuestsBumped: effectiveCancelIfGuestsBumped,
+          // Stored credit election (#2265) on the review rail. A booking held
+          // for admin review consumes no credit — `blockForReview` forces the
+          // applied amount to 0 above, because a member's balance must not be
+          // tied up while an admin is still deciding. Discarding what they
+          // asked for is a different thing entirely, and that is what used to
+          // happen: the member ticked "use my credit", the booking was parked
+          // in AWAITING_REVIEW, and the election was gone by the time the admin
+          // released it. Remember it here instead, exactly as a saved draft
+          // does, so the release -> pay path consumes it like any other
+          // PAYMENT_PENDING booking. Omitted entirely (column defaults to NULL)
+          // when the member made no election, so the create payload is
+          // unchanged for every other booking.
+          ...(review.blockForReview && applyCreditCents != null
+            ? { creditElectionCents: applyCreditCents }
+            : {}),
           createdById: isOnBehalf ? sessionUserId : null,
           // Persisted capacity override (#1771): stamp the admitting admin when
           // this create deliberately overbooked (pre-create branch). Omitted
