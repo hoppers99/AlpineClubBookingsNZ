@@ -214,16 +214,15 @@ export function validateEmailTemplateContent({
     });
   }
 
+  const signPrefixedByField = {
+    subject: findSignPrefixedTokens(subject),
+    bodyText: findSignPrefixedTokens(bodyText),
+  };
   const signPrefixedTokens = Array.from(
-    new Set([
-      ...findSignPrefixedTokens(subject),
-      ...findSignPrefixedTokens(bodyText),
-    ]),
+    new Set([...signPrefixedByField.subject, ...signPrefixedByField.bodyText]),
   );
   for (const field of ["subject", "bodyText"] as const) {
-    const fieldTokens = findSignPrefixedTokens(
-      field === "subject" ? subject : bodyText,
-    );
+    const fieldTokens = signPrefixedByField[field];
     if (fieldTokens.length > 0) {
       issues.push({
         code: "sign_prefixed_token",
