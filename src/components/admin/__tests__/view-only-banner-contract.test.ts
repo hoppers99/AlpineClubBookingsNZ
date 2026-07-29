@@ -833,6 +833,26 @@ describe("view-only section banner coverage (#2160)", () => {
   // whether one node renders under another, which only the AST answers.
   const astFiles = parseAdminFiles();
 
+  /*
+    Derived views, computed ONCE for the whole suite. Each is a pure function of
+    `astFiles` with nothing per-test about it, and three of the tests below used
+    to rebuild all three independently — a full AST walk per admin file, plus an
+    `existsSync` per import specifier, every time. On a cold run that pushed a
+    single test past vitest's 5s default timeout (7.1s measured), which is a
+    flake with no defect behind it. Hoisting is both the fix and faster overall.
+  */
+  const vouchChildren = new Map<string, Set<string>>(); // file -> export names
+  for (const f of astFiles) {
+    const names = vouchChildExports(f.ast);
+    if (names.length > 0) vouchChildren.set(f.file, new Set(names));
+  }
+  const importsByFile = new Map<string, Map<string, string>>(
+    astFiles.map((f) => [f.file, namedImports(f.file, f.ast)]),
+  );
+  const bannersByFile = new Map<string, ts.Node[]>(
+    astFiles.map((f) => [f.file, bannerRenderSites(f.ast)]),
+  );
+
   it("finds the admin surfaces it is meant to police", () => {
     // Guards against the glob silently matching nothing after a tree move,
     // which would make every assertion below vacuously pass.
@@ -913,7 +933,7 @@ describe("view-only section banner coverage (#2160)", () => {
       exceptions: sum(exceptions),
       exceptionFiles: exceptions.length,
       bannerComponents: astFiles.filter(
-        (f) => bannerRenderSites(f.ast).length > 0,
+        (f) => (bannersByFile.get(f.file) ?? []).length > 0,
       ).length,
     }).toEqual({
       /*
@@ -1326,19 +1346,14 @@ describe("view-only section banner coverage (#2160)", () => {
           TS2322 before this suite ever runs. It is a precision note, not a
           hole.
     */
-    const vouchChildren = new Map<string, Set<string>>(); // file -> exports
-    for (const f of astFiles) {
-      const names = vouchChildExports(f.ast);
-      if (names.length > 0) vouchChildren.set(f.file, new Set(names));
-    }
     expect(vouchChildren.size, "no vouched children found").toBeGreaterThan(0);
 
     const offenders: string[] = [];
     const vouchedSomewhere = new Set<string>();
 
     for (const parent of astFiles) {
-      const imports = namedImports(parent.file, parent.ast);
-      const banners = bannerRenderSites(parent.ast);
+      const imports = importsByFile.get(parent.file) ?? new Map<string, string>();
+      const banners = bannersByFile.get(parent.file) ?? [];
 
       for (const tag of jsxTags(parent.ast)) {
         const name = tagName(tag);
@@ -1589,7 +1604,7 @@ describe("view-only section banner coverage (#2160)", () => {
     ).toBe(true);
 
     // …and the banner really is there, unconditionally, in every branch.
-    const shellBanners = bannerRenderSites(shell.ast);
+    const shellBanners = bannersByFile.get(shell.file) ?? [];
     const shellComponents = new Set(
       shellBanners
         .map((site) => enclosingFunction(site))
@@ -1640,16 +1655,10 @@ describe("view-only section banner coverage (#2160)", () => {
     ).toBe(false);
 
     // ---- the steps' half --------------------------------------------------
-    const vouchChildren = new Map<string, Set<string>>();
-    for (const f of astFiles) {
-      const names = vouchChildExports(f.ast);
-      if (names.length > 0) vouchChildren.set(f.file, new Set(names));
-    }
-
     let wizardVouchSites = 0;
     const wizardVouched = new Set<string>(); // "file#Export"
     for (const f of astFiles) {
-      const imports = namedImports(f.file, f.ast);
+      const imports = importsByFile.get(f.file) ?? new Map<string, string>();
       const shellTags = jsxTags(f.ast, WIZARD_SHELL);
 
       for (const tag of jsxTags(f.ast)) {
@@ -1831,15 +1840,9 @@ describe("view-only section banner coverage (#2160)", () => {
       on must resolve to a known vouched child. A refactor to any unresolvable
       import form fails here instead of quietly leaving the vouch unverified.
     */
-    const vouchChildren = new Map<string, Set<string>>();
-    for (const f of astFiles) {
-      const names = vouchChildExports(f.ast);
-      if (names.length > 0) vouchChildren.set(f.file, new Set(names));
-    }
-
     const offenders: string[] = [];
     for (const f of astFiles) {
-      const imports = namedImports(f.file, f.ast);
+      const imports = importsByFile.get(f.file) ?? new Map<string, string>();
       for (const tag of jsxTags(f.ast)) {
         if (!attr(tag, VOUCH_PROP)) continue;
         const name = tagName(tag);
