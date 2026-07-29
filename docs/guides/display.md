@@ -89,6 +89,20 @@ compose one. The authoring model behind the split is
    and the deeper authoring model, see the
    [Lobby Display feature hub](../lobby-display/README.md) — this guide keeps to the
    hub-level orientation rather than duplicating it.
+2. Where you do type by hand — the builder's **Footer HTML** and **CSS
+   overrides** fields, and a zone's **HTML block** — an **Insert token** button
+   sits on the field's label row. It opens a searchable picker that inserts the
+   right token **at the cursor** (replacing any selected text): on an HTML field
+   the standard tokens (`{{lodge-name}}`, `{{display-date}}`) and the preview
+   lodge's saved `{{config:…}}` keys, each row showing the value currently
+   saved on that lodge, plus free-text entry that turns anything you type into
+   `{{config:<your-key>}}`; on a CSS field the `var(--display-…)` and club
+   brand tokens the **Reference** page lists. A key with no saved value can
+   still be inserted — the picker warns that the wall will show a visible
+   `⟨config:key?⟩` placeholder until the value is saved under
+   **Admin → Lodges → [a lodge] → display**. The picker follows the **Preview
+   lodge** selector and is fully keyboard operable (arrow keys, Enter to
+   insert, Esc to close).
 
 ### 4. Author the structure by hand (Layouts — advanced)
 
@@ -137,7 +151,11 @@ compose one. The authoring model behind the split is
    choose the **Layout** it fills (locked once created), add optional **CSS
    overrides**, and a **Footer HTML**. Content and footers use `{{config:key}}`
    tokens (per-lodge values) and `{{module:name}}` embeds; external URLs,
-   `@import`, and scripts are stripped on save.
+   `@import`, and scripts are stripped on save. The CSS and footer fields carry
+   the same **Insert token** picker as the Visual builder (§3): it offers the
+   preview lodge's saved config keys and the theme's `var(--…)` tokens, and
+   inserts at the cursor. A template stays lodge-agnostic — the picker only
+   helps you type; it never binds the template to a lodge.
 5. Bind the finished template to a screen on the **Devices** page — a template
    renders against whichever lodge its display is bound to.
 
@@ -171,9 +189,9 @@ compose one. The authoring model behind the split is
 | Page / card | What it controls | Notes / constraints |
 | --- | --- | --- |
 | Devices | Pairs and revokes lobby screens per lodge, assigns a template, sets refresh interval | Read-only screens; individually revocable; pairing uses a six-character code |
-| Visual builder | Composes a board with no HTML: pick a shape, drop modules into zones, live preview; saves a valid layout + template | The recommended authoring path for most operators; deeper walk-through in the [feature hub](../lobby-display/README.md) |
+| Visual builder | Composes a board with no HTML: pick a shape, drop modules into zones, live preview; saves a valid layout + template | The recommended authoring path for most operators; deeper walk-through in the [feature hub](../lobby-display/README.md). The Footer HTML / CSS overrides / zone HTML fields carry the **Insert token** picker |
 | Layouts (Advanced) | The structural skeleton: body HTML with `{{area:key}}`, default CSS, named areas | Advanced hand-authoring; built-in layouts cover the common boards |
-| Templates | Fills a layout's areas with content/modules, CSS overrides, and footer | Advanced hand-authoring; Key fixed after creation; layout locked after creation; external URLs/`@import`/scripts stripped on save |
+| Templates | Fills a layout's areas with content/modules, CSS overrides, and footer | Advanced hand-authoring; Key fixed after creation; layout locked after creation; external URLs/`@import`/scripts stripped on save; the CSS/footer fields carry the **Insert token** picker |
 | Reference | Read-only vocabulary: modules, area conditions (live status), CSS tokens | Changes nothing; for authoring reference only |
 | Preview | Renders a template in a sandboxed frame against a chosen lodge | Isolated from the admin session; opened from a template's Preview |
 | Per-lodge display values | Guest-name granularity, committee notice, `{{config:key}}` values | Edited on each lodge (**Admin → Lodges → [a lodge] → display**), not on this hub |
