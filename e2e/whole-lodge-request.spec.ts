@@ -110,7 +110,13 @@ async function listMemberOriginRequests(admin: APIRequestContext) {
   const response = await admin.get(
     "/api/admin/booking-requests?status=ALL&pageSize=100",
   );
-  expect(response.ok(), await response.text()).toBe(true);
+  // Status IN the message: a bare "expected true, received false" cannot tell a
+  // 401 from a 400 from a 500, and this call is the spec's only window onto the
+  // admin queue.
+  expect(
+    response.ok(),
+    `GET /api/admin/booking-requests returned ${response.status()}: ${await response.text()}`,
+  ).toBe(true);
   const body = (await response.json()) as {
     data: Array<{
       id: string;
@@ -159,6 +165,18 @@ test.beforeAll(async ({ browser }) => {
   adminContext = await browser.newContext({
     storageState: storageStatePath(E2E_ADMIN.email),
   });
+  // Load an admin page ONCE before any `adminContext.request` call. Every other
+  // spec in this suite reaches admin APIs from a context that has already
+  // navigated (or via `page.request`), and this file's first CI run 401'd on an
+  // admin API from a context whose session had never been materialised by a
+  // navigation. It doubles as the cheapest possible assertion that the officer
+  // can reach the queue at all.
+  const adminWarmup = await adminContext.newPage();
+  await adminWarmup.goto("/admin/booking-requests");
+  await expect(
+    adminWarmup.getByRole("heading", { name: /booking requests/i }).first(),
+  ).toBeVisible();
+  await adminWarmup.close();
 
   aliceContext = await browser.newContext({
     storageState: storageStatePath(personas.booker.email),
@@ -174,22 +192,54 @@ test.beforeAll(async ({ browser }) => {
   await loginPersona(nadiaPage, NOMINATOR_TWO.email);
   await nadiaPage.close();
 
-  // Retry hygiene: decline anything a previous attempt left open so the
-  // 2-open-request cap starts from zero for all three members. Declining (not
-  // withdrawing) needs no member session and releases nothing — a member-origin
-  // row never holds capacity.
-  for (const row of await listMemberOriginRequests(adminContext.request)) {
+});
+
+/**
+ * Retry hygiene: decline anything a previous attempt left open so the
+ * 2-open-request cap starts from zero for all three members. Declining (not
+ * withdrawing) needs no member session and releases nothing — a member-origin
+ * row never holds capacity.
+ *
+ * Deliberately BEST-EFFORT and deliberately NOT in `beforeAll`. A throw in a
+ * `beforeAll` skips every test in the file, which is exactly how the first
+ * version of this spec came to report seven "passing" tests that had never run.
+ * Housekeeping for a retry must never be able to do that: on the first attempt
+ * of a fresh database there is nothing to clean, so a failure here is
+ * information, not a reason to abandon the run.
+ */
+async function clearLeftoverOpenRequests(admin: APIRequestContext) {
+  const response = await admin.get(
+    "/api/admin/booking-requests?status=ALL&pageSize=100",
+  );
+  if (!response.ok()) {
+    console.warn(
+      `[#2263] leftover-request cleanup skipped: the admin queue returned ${response.status()}. ` +
+        "A first attempt needs no cleanup; a retry may hit the open-request cap.",
+    );
+    return;
+  }
+  const body = (await response.json()) as {
+    data: Array<{
+      id: string;
+      status: string;
+      requestedByMemberId: string | null;
+      exclusivityRequested: boolean;
+    }>;
+  };
+  for (const row of body.data) {
+    if (!row.requestedByMemberId || !row.exclusivityRequested) continue;
     if (!OPEN_STATUSES.has(row.status)) continue;
-    const declined = await adminContext.request.post(
+    const declined = await admin.post(
       `/api/admin/booking-requests/${row.id}/decline`,
       { data: { reason: null } },
     );
-    expect(
-      declined.ok(),
-      `could not clear a leftover open request from a previous attempt: ${await declined.text()}`,
-    ).toBe(true);
+    if (!declined.ok()) {
+      console.warn(
+        `[#2263] could not decline leftover request ${row.id}: ${declined.status()}`,
+      );
+    }
   }
-});
+}
 
 test.afterAll(async () => {
   await adminContext?.close();
@@ -230,6 +280,8 @@ let approvedBookingId: string | null = null;
 
 test("the acknowledgement is byte-identical whether the lodge is clear, full, or exclusively held", async () => {
   test.setTimeout(180_000);
+
+  await clearLeftoverOpenRequests(adminContext.request);
 
   // --- World C setup: make HELD_WINDOW exclusively held ---------------------
   // A member books the window as an ordinary stay, then an admin sets the
