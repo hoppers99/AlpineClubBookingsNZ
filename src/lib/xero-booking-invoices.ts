@@ -344,7 +344,7 @@ async function settleCardAppliedCreditAllocation(
 export async function createXeroInvoiceForBooking(
   bookingId: string,
   options?: CreateXeroBookingInvoiceOptions
-): Promise<string> {
+): Promise<string | null> {
   const booking = await prisma.booking.findUnique({
     where: { id: bookingId },
     include: {
@@ -381,6 +381,41 @@ export async function createXeroInvoiceForBooking(
       options?.createdByMemberId
     );
     return booking.payment.xeroInvoiceId;
+  }
+
+  // B5 (#2262) HIGH #2, level 3 — the residual-race backstop.
+  //
+  // The choke point (enqueueXeroBookingInvoiceOperation) refuses to queue a
+  // mint for a manually settled booking, and mark-paid refuses under lock(1)
+  // while a CREATE-INVOICE operation is PENDING/RUNNING. Neither closes the
+  // hairline window where an operation is enqueued microseconds BEFORE the
+  // settle commits: that operation is still PENDING and the cron will run it
+  // minutes later. This re-check, at execution time against a fresh read, is
+  // what makes "a manual mark-paid can never race a mint" literally true.
+  //
+  // Abandon LOUDLY (#1765 loud-skip pattern): no invoice is created, no email
+  // is sent, the ids are logged at warn, and the sync operation is closed with
+  // a NON-SUCCEEDED terminal status carrying a populated reason, so it is
+  // visible to an operator and never silently replayed.
+  if (booking.payment.manuallyMarkedPaidAt) {
+    const skipReason =
+      "Booking was manually marked paid (cash / off-Xero) after this invoice operation was queued — no Xero invoice is expected, so none was created and nothing was emailed (#2262).";
+    logger.warn(
+      {
+        bookingId,
+        paymentId: booking.payment.id,
+        manuallyMarkedPaidAt: booking.payment.manuallyMarkedPaidAt,
+        syncOperationId: options?.syncOperationId ?? null,
+      },
+      skipReason
+    );
+    if (options?.syncOperationId) {
+      await completeXeroSyncOperation(options.syncOperationId, {
+        status: "CANCELLED",
+        responsePayload: { skipped: true, reason: skipReason },
+      });
+    }
+    return null;
   }
 
   const { xero, tenantId } = await getAuthenticatedXeroClient();

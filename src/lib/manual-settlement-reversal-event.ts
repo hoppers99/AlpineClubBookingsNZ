@@ -81,3 +81,52 @@ export function isManualSettlementReversalEvent(event: {
     asManualSettlementReversalSnapshot(event.snapshot) !== null
   );
 }
+
+/**
+ * Snapshot discriminator marking a CANCELLED event as the #2262 reciprocal
+ * fence firing: an inbound Xero PAID landed on a manually settled booking and
+ * the pipeline deliberately wrote nothing. Same reasoning as the reversal — a
+ * durable, never-pruned admin marker with no neutral event type to carry it.
+ */
+export const MANUAL_SETTLEMENT_CONFLICT_EVENT_KIND =
+  "manual_settlement_xero_conflict" as const;
+
+export const MANUAL_SETTLEMENT_CONFLICT_EVENT_REASON =
+  "Xero reported this booking's invoice paid after a cash settlement was recorded — reconcile by hand. The booking was not cancelled.";
+
+export interface ManualSettlementConflictEventSnapshot {
+  kind: typeof MANUAL_SETTLEMENT_CONFLICT_EVENT_KIND;
+  invoiceId: string | null;
+  invoiceNumber: string | null;
+  bookingStatus: string;
+}
+
+export function asManualSettlementConflictSnapshot(
+  value: unknown
+): ManualSettlementConflictEventSnapshot | null {
+  if (
+    value &&
+    typeof value === "object" &&
+    (value as { kind?: unknown }).kind === MANUAL_SETTLEMENT_CONFLICT_EVENT_KIND
+  ) {
+    return value as ManualSettlementConflictEventSnapshot;
+  }
+  return null;
+}
+
+/**
+ * True when a durable CANCELLED event is one of the two #2262 admin-only
+ * markers (a manual mark-paid reversal, or the reciprocal-fence conflict).
+ * NEITHER cancels the booking, so every consumer that pattern-matches CANCELLED
+ * events must exclude them.
+ */
+export function isManualSettlementMarkerEvent(event: {
+  type: BookingEventType;
+  snapshot: unknown;
+}): boolean {
+  return (
+    event.type === BookingEventType.CANCELLED &&
+    (asManualSettlementReversalSnapshot(event.snapshot) !== null ||
+      asManualSettlementConflictSnapshot(event.snapshot) !== null)
+  );
+}

@@ -22,7 +22,7 @@ import type {
   BumpEventSnapshot,
 } from "@/lib/booking-events";
 import { isDuplicateCaptureRefundEvent } from "@/lib/duplicate-capture-refund-event";
-import { isManualSettlementReversalEvent } from "@/lib/manual-settlement-reversal-event";
+import { isManualSettlementMarkerEvent } from "@/lib/manual-settlement-reversal-event";
 
 export type BookingNarrativeState =
   | "payable"
@@ -208,15 +208,15 @@ function buildCancelledNarrative(
     };
   }
 
-  // #2262 — a manual mark-paid REVERSAL is stored as a CANCELLED event (there
-  // is no neutral event type for "the settlement was un-recorded"), but the
-  // booking is not cancelled by it. Excluding it here means a booking that was
-  // reversed and LATER genuinely cancelled shows the member the REAL
-  // cancellation's date, not the reversal's.
+  // #2262 — the two manual-settlement admin markers (a mark-paid REVERSAL, and
+  // the reciprocal fence firing on an inbound Xero PAID) are stored as CANCELLED
+  // events, because there is no neutral event type for "the settlement was
+  // un-recorded" / "these two records disagree". NEITHER cancels the booking.
+  // Excluding them here means a booking that hits one and is LATER genuinely
+  // cancelled shows the member the REAL cancellation's date, not the marker's.
   const cancelEvent = events.find(
     (e) =>
-      e.type === BookingEventType.CANCELLED &&
-      !isManualSettlementReversalEvent(e)
+      e.type === BookingEventType.CANCELLED && !isManualSettlementMarkerEvent(e)
   );
 
   // A provisional booking whose dates filled up before its guests were

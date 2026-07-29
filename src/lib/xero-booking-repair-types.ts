@@ -19,6 +19,12 @@ export const XERO_BOOKING_REPAIR_FINDING_CODES = [
   "XERO_LINK_MISMATCH",
   "XERO_AMOUNT_MISMATCH",
   "MANUAL_REVIEW_REQUIRED",
+  // B5 (#2262): informational, never actionable. A cash / off-Xero settlement
+  // is PAID with no Xero objects BY DESIGN, so it must not classify as the
+  // MISSING_PRIMARY_INVOICE critical finding with its QUEUE_PRIMARY_INVOICE
+  // action — that action would mint (and email) an awaiting-payment invoice for
+  // money the club already holds.
+  "MANUALLY_SETTLED_NO_XERO_EXPECTED",
 ] as const;
 
 export type XeroBookingRepairFindingCode =
@@ -175,6 +181,10 @@ export const bookingRepairSelect = Prisma.validator<Prisma.BookingSelect>()({
       additionalPaymentStatus: true,
       xeroRefundCreditNoteId: true,
       creditAppliedCents: true,
+      // B5 (#2262): manual settlement provenance, so the classifier can tell a
+      // cash / off-Xero settlement (no Xero objects expected) apart from a
+      // genuinely missing invoice.
+      manuallyMarkedPaidAt: true,
       transactions: {
         orderBy: {
           createdAt: "asc",

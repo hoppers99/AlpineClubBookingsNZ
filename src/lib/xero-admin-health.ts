@@ -141,6 +141,12 @@ export async function getMissingXeroInvoiceBookings(options?: {
     where: {
       status: "PAID",
       payment: { isNot: null },
+      // B5 (#2262): a manually settled booking (cash / off-Xero bank transfer)
+      // is PAID with no invoice BY DESIGN, so it is not "missing" one. Listing
+      // it here would invite an admin to mint an awaiting-payment invoice — and
+      // email it to the member — for money the club already holds. Admin UX
+      // only: the enforcement point is the enqueue choke fence.
+      NOT: { payment: { manuallyMarkedPaidAt: { not: null } } },
     },
     select: {
       id: true,
