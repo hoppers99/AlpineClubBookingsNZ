@@ -352,7 +352,8 @@ rows and neither planner synthesises its nights as blocking occupancy, a held
 group's beds are **not** modelled as occupied when other bookings are planned —
 an overlapping booking the officer chose to keep (decision 1 never refuses one)
 can be auto-placed onto beds the held group is physically using. Overlaps stay
-officer-resolved, surfaced when the hold is set (#119/#177).
+officer-resolved, surfaced when the hold is set (#119/#177); whether to model
+held nights as blocking occupancy instead is the open decision #2317.
 
 Setting a hold also drops the booking out of the requested-room lock (#776):
 that lock is "this booking has at least one APPROVED `BedAllocation` row", and

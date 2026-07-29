@@ -591,7 +591,7 @@ Future reviews and issues should cite this file when proposing changes.
   its minors as present, so an officer-kept overlapping booking can be
   auto-placed onto those beds and the cross-booking age-mix invariant (#1768)
   cannot account for the held group. Overlaps remain officer-resolved
-  (#119/#177).
+  (#119/#177); changing this is the open decision #2317.
 - **The requested-room lock follows the approved rows, not the hold (#776,
   #2285):** setting an exclusive hold prunes the booking's approved allocations,
   so `isBookingBedAllocationLocked` goes false and the member's requested-room

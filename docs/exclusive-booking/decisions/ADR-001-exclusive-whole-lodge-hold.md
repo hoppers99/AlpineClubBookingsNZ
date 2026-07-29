@@ -227,8 +227,8 @@ generated or demanded for held bookings.
   booking's adults. Both remain **officer-resolved**, consistent with decisions
   1 and the conflict-surfacing work in #119/#177: the officer is shown every
   overlapping booking when the hold is set and resolves it manually. Modelling
-  held nights as blocking occupancy in both planners is tracked as a separate
-  `needs-decision` follow-up rather than assumed here.
+  held nights as blocking occupancy in both planners is tracked as the separate
+  `needs-decision` follow-up #2317 rather than assumed here.
 
 ## Post-implementation decisions (owner, 2026-07-14)
 
