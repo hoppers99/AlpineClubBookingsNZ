@@ -69,6 +69,19 @@ export interface EmailTemplateValidationResult {
 const SIGN_CARRYING_TOKEN_PATTERN =
   /[-+]\s*\{\{\s*(promoAdjustment|promoSummary)\s*\}\}/g;
 
+// #2267: plain-English copy for the required tokens whose requirement can be
+// satisfied more than one way (see REQUIRED_TOKEN_ALTERNATIVES). Naming a token
+// and stopping leaves an admin guessing whether their own hand-written wording
+// counts, so the message says what the email must show the member and which
+// tokens do that. Keyed by token name — a token name means the same thing in
+// every template that supplies it.
+const REQUIRED_TOKEN_GUIDANCE: Record<string, string> = {
+  promoSummary:
+    "this email must show members how a promo code changed their price — keep {{promoSummary}}, or show the adjustment yourself with {{promoAdjustment}} or {{discount}} (a {{subtotal}} line on its own is not an explanation)",
+  doorCodeNote:
+    "this email must tell members how to get into the lodge — keep {{doorCodeNote}}, or write your own label around the bare {{doorCode}} value",
+};
+
 function findSignPrefixedTokens(value: string): string[] {
   return Array.from(
     new Set(Array.from(value.matchAll(SIGN_CARRYING_TOKEN_PATTERN), (m) => m[1])),
@@ -207,9 +220,15 @@ export function validateEmailTemplateContent({
         )
       : [];
   if (missingRequiredTokens.length > 0) {
+    const guidance = missingRequiredTokens
+      .map((token) => REQUIRED_TOKEN_GUIDANCE[token])
+      .filter((entry): entry is string => Boolean(entry));
     issues.push({
       code: "missing_required_token",
-      message: "Required template tokens are missing from the body",
+      message:
+        guidance.length > 0
+          ? `Required template tokens are missing from the body: ${guidance.join("; ")}`
+          : "Required template tokens are missing from the body",
       tokens: missingRequiredTokens,
     });
   }
