@@ -15,6 +15,9 @@ export interface EmailTemplateDefinition {
   defaultBody: string;
   allowedTokens: string[];
   requiredTokens: string[];
+  // #2267: per required token, the other tokens an override may use instead
+  // and still satisfy the requirement (see REQUIRED_TOKEN_ALTERNATIVES).
+  requiredTokenAlternatives: Record<string, string[]>;
   sampleData: Record<string, string>;
   triggerSummary: string;
   frequency: string;
@@ -114,15 +117,21 @@ const EXTRA_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>> =
   "admin-capacity-warning": ["lodgeName"],
   // Split-booking parent (#738): a pre-composed sentence describing the
   // provisional non-member portion; empty for a non-split confirmation.
-  // #2267: the legacy per-piece promo tokens left the default body when it
-  // moved to the pre-composed {{promoSummary}} block, but the send still
-  // supplies them, so an existing saved override that references them stays
-  // valid and re-savable. {{promoAdjustment}} is the signed value
-  // ("-$12.00" / "+$1,370.00"); {{discount}} can only express a price cut.
+  // #2267: the legacy per-piece promo and door-code tokens left the default
+  // body when it moved to the pre-composed {{promoSummary}} and
+  // {{doorCodeNote}} blocks, but the send still supplies them, so an existing
+  // saved override that references them stays valid and re-savable.
+  // {{promoAdjustment}} is the signed value ("-$12.00" / "+$1,370.00");
+  // {{discount}} can only express a price cut. The pre-composed tokens are
+  // listed here too (belt and braces): they are allowed for an override even
+  // if a later default-body rewrite stops using one of them.
   "booking-confirmed": [
     "discount",
+    "doorCode",
+    "doorCodeNote",
     "promoAdjustment",
     "promoCode",
+    "promoSummary",
     "provisionalGuestsNote",
     "subtotal",
   ],
@@ -193,8 +202,20 @@ const EXTRA_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>> =
   "booking-request-quote": ["respondUrl"],
 };
 
+// #2267: tokens an override may use INSTEAD of a required token and still
+// satisfy the requirement. The requirement is "this information must stay in
+// the body", not "this exact token" — the booking-confirmed body now carries
+// the pre-composed {{doorCodeNote}} line (which renders nothing when the club
+// has no door code), but an override saved before that change writes its own
+// "Door code: {{doorCode}}" line and must keep validating and re-saving.
+const REQUIRED_TOKEN_ALTERNATIVES: Partial<
+  Record<EmailAuditTemplateName, Record<string, string[]>>
+> = {
+  "booking-confirmed": { doorCodeNote: ["doorCode"] },
+};
+
 const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>> = {
-  "booking-confirmed": ["CLUB_LODGE_TRAVEL_NOTE", "doorCode"],
+  "booking-confirmed": ["CLUB_LODGE_TRAVEL_NOTE", "doorCodeNote"],
   "pre-arrival-reminder": ["CLUB_LODGE_TRAVEL_NOTE", "doorCode"],
   "password-reset": ["token"],
   "admin-password-reset": ["token"],
@@ -588,6 +609,10 @@ function sampleValue(token: string): string {
   }
   if (token === "LODGE_CAPACITY") return String(FALLBACK_LODGE_CAPACITY);
   if (token === "doorCode") return "1234";
+  // #2267: the whole pre-composed line, exactly as the send builds it, so the
+  // preview shows what a member reads (and shows nothing extra when a club has
+  // no door code — the live send renders this token empty).
+  if (token === "doorCodeNote") return "Door code: 1234";
   if (token === "expectedArrivalTime") return "16:30";
   // #2267: mirror what sendBookingConfirmedEmail composes — each row carries
   // its own trailing newline so the default body's
@@ -636,6 +661,8 @@ export const EMAIL_TEMPLATE_DEFINITIONS: EmailTemplateDefinition[] = (
     ...GLOBAL_EMAIL_TEMPLATE_TOKENS,
     ...extractTokensFromDefaults(defaults.defaultSubject, defaults.defaultBody),
     ...(EXTRA_TEMPLATE_TOKENS[key] ?? []),
+    // An accepted alternative to a required token is by definition allowed.
+    ...Object.values(REQUIRED_TOKEN_ALTERNATIVES[key] ?? {}).flat(),
   ]);
   const metadata = TEMPLATE_TRIGGER_METADATA[key] ?? {
     triggerSummary: "Audited application email",
@@ -650,6 +677,7 @@ export const EMAIL_TEMPLATE_DEFINITIONS: EmailTemplateDefinition[] = (
     defaultBody: defaults.defaultBody,
     allowedTokens,
     requiredTokens: REQUIRED_TEMPLATE_TOKENS[key] ?? [],
+    requiredTokenAlternatives: REQUIRED_TOKEN_ALTERNATIVES[key] ?? {},
     sampleData: Object.fromEntries(
       allowedTokens.map((token) => [token, sampleValue(token)]),
     ),
@@ -714,6 +742,9 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "details",
   "discount",
   "doorCode",
+  // #2267: pre-composed "Door code: 1234" line; empty when the lodge has no
+  // door code recorded, so the body never carries a dangling label.
+  "doorCodeNote",
   "email",
   "endDate",
   "entityType",
@@ -862,6 +893,9 @@ const SENSITIVE_EMAIL_SUBJECT_TOKENS = [
   "confirmUrl",
   "confirmationUrl",
   "doorCode",
+  // #2267: carries the door code itself, so it is subject-forbidden exactly
+  // like the bare value.
+  "doorCodeNote",
   "loginUrl",
   "payUrl",
   "pin",

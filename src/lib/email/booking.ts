@@ -78,6 +78,15 @@ export async function sendBookingConfirmedEmail(
   )
     .map((row) => `${row.label}: ${row.value}\n`)
     .join("");
+  // #2267: pre-composed {{doorCodeNote}} line, mirroring what the HTML
+  // arrival-instructions section does — the whole "Door code: 1234" line, or
+  // nothing at all for a lodge with no code recorded. The default body used to
+  // hardcode the "Door code: " label around the bare {{doorCode}} value, which
+  // left a dangling "Door code:" line in every confirmation a club without a
+  // door code sent.
+  const doorCodeNote = settings.doorCode?.trim()
+    ? `Door code: ${settings.doorCode.trim()}`
+    : "";
   const provisionalGuests = options?.provisionalGuests;
   // Composed sentence for the {{provisionalGuestsNote}} token — the same story
   // the FILE template renders, so an operator override keeps parity. Empty when
@@ -137,6 +146,9 @@ export async function sendBookingConfirmedEmail(
           : "",
       totalPaid: formatMoneyCents(totalCents),
       total: formatMoneyCents(totalCents),
+      doorCodeNote,
+      // Legacy bare value, still supplied so an existing override that writes
+      // its own "Door code: {{doorCode}}" line keeps rendering (#2267).
       doorCode: settings.doorCode ?? "",
     },
     lodgeId: options?.lodgeId,

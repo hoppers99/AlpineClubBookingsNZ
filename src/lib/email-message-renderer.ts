@@ -172,11 +172,22 @@ export function validateEmailTemplateContent({
   // must be present in the body itself — a token in the subject does not
   // satisfy the requirement. An empty body override falls back to the default
   // body, which already carries the required tokens, so it is not checked.
+  // A required token may also be satisfied by a registered alternative that
+  // carries the same information (#2267): the booking-confirmed body now uses
+  // the pre-composed {{doorCodeNote}}, but an override saved earlier writes
+  // its own "Door code: {{doorCode}}" line and must stay valid and re-savable.
   const requiredTokenSet = new Set(definition?.requiredTokens ?? []);
+  const requiredTokenAlternatives = definition?.requiredTokenAlternatives ?? {};
   const bodyTokenSet = new Set(bodyTokens);
   const missingRequiredTokens =
     bodyText.trim().length > 0
-      ? Array.from(requiredTokenSet).filter((token) => !bodyTokenSet.has(token))
+      ? Array.from(requiredTokenSet).filter(
+          (token) =>
+            !bodyTokenSet.has(token) &&
+            !(requiredTokenAlternatives[token] ?? []).some((alternative) =>
+              bodyTokenSet.has(alternative),
+            ),
+        )
       : [];
   if (missingRequiredTokens.length > 0) {
     issues.push({

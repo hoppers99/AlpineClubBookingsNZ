@@ -8,8 +8,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // shapes, and pin the flat body to the hand-built HTML template so the two
 // money stories can never drift apart again (the 31651e00 failure mode).
 
-const { sendEmailMock } = vi.hoisted(() => ({
+const { sendEmailMock, loadLodgeSettingsMock } = vi.hoisted(() => ({
   sendEmailMock: vi.fn().mockResolvedValue({ status: "sent" }),
+  loadLodgeSettingsMock: vi.fn(),
 }));
 
 vi.mock("@/lib/email/core", () => ({
@@ -21,10 +22,7 @@ vi.mock("@/lib/email-message-settings", () => ({
   // Search key the email `<title>` bakes (C6 #1985); required alongside
   // EMAIL_DEFAULT_LODGE_NAME whenever this module is mocked and a template renders.
   EMAIL_DEFAULT_FROM_NAME: "Example Club - Online Booking System",
-  loadEmailMessageSettingsForLodge: vi.fn().mockResolvedValue({
-    lodgeTravelNote: "Take the Bruce Road.",
-    doorCode: "1234",
-  }),
+  loadEmailMessageSettingsForLodge: loadLodgeSettingsMock,
   loadEmailMessageSettings: vi.fn(),
   applyEmailMessageSettingsToHtml: vi.fn((html: string) => html),
   applyEmailMessageSettingsToSubject: vi.fn((subject: string) => subject),
@@ -44,6 +42,14 @@ const GLOBAL_DATA: EmailTemplateData = {
   BASE_URL: "https://bookings.example.org",
   CLUB_LODGE_TRAVEL_NOTE: "Take the Bruce Road.",
 };
+
+// Most clubs have a door code; the doorCode-unset cells below override it.
+beforeEach(() => {
+  loadLodgeSettingsMock.mockResolvedValue({
+    lodgeTravelNote: "Take the Bruce Road.",
+    doorCode: "1234",
+  });
+});
 
 function renderDefaultBody(
   templateName: string,
@@ -76,8 +82,16 @@ async function captureConfirmedTemplateData(
   options?: {
     promoAdjustmentCents?: number;
     promoCode?: string;
+    // Lodge door code for this send; null models a club that records none.
+    doorCode?: string | null;
   },
 ): Promise<{ templateData: EmailTemplateData; html: string }> {
+  if (options && "doorCode" in options) {
+    loadLodgeSettingsMock.mockResolvedValue({
+      lodgeTravelNote: "Take the Bruce Road.",
+      doorCode: options.doorCode,
+    });
+  }
   const { sendBookingConfirmedEmail } = await import("../email/booking");
   await sendBookingConfirmedEmail(
     { bookingId: "bk_test" },
@@ -85,7 +99,7 @@ async function captureConfirmedTemplateData(
     "Sam",
     new Date("2026-08-15"),
     new Date("2026-08-16"),
-    options ? 1 : 2,
+    options?.promoAdjustmentCents ? 1 : 2,
     totalCents,
     options,
   );
@@ -165,6 +179,78 @@ describe("booking-confirmed promo summary (#2267)", () => {
 
     expect(html).not.toContain("Subtotal");
     expect(html).not.toContain("Promo adjustment");
+  });
+
+  it("renders the whole door-code line when the lodge has a code", async () => {
+    const { templateData } = await captureConfirmedTemplateData(30000, {
+      doorCode: "1234",
+    });
+
+    expect(templateData.doorCodeNote).toBe("Door code: 1234");
+    const rendered = renderDefaultBody("booking-confirmed", templateData);
+    expect(rendered).toContain("Door code: 1234");
+    expectCleanLines(rendered);
+  });
+
+  it("renders no door-code line at all for a club that records no door code", async () => {
+    const { templateData } = await captureConfirmedTemplateData(30000, {
+      doorCode: null,
+    });
+
+    // The bare value is still supplied (empty) for legacy overrides, but the
+    // pre-composed line collapses to nothing, so the default body cannot emit
+    // the dangling "Door code:" line it used to.
+    expect(templateData.doorCode).toBe("");
+    expect(templateData.doorCodeNote).toBe("");
+    const rendered = renderDefaultBody("booking-confirmed", templateData);
+    expect(rendered).not.toContain("Door code");
+    expectCleanLines(rendered);
+  });
+
+  it("keeps an existing override that writes its own Door code line valid and re-savable", () => {
+    // The pre-#2267 override shape: the label is written by hand around the
+    // bare {{doorCode}} value. It must still satisfy the required-token rule,
+    // or an operator could no longer re-save their own saved body.
+    const legacy = validateEmailTemplateContent({
+      templateName: "booking-confirmed",
+      subject: "Booking Confirmed",
+      bodyText:
+        "Hi {{firstName}}, you're confirmed.\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\nDoor code: {{doorCode}}",
+    });
+    expect(legacy.missingRequiredTokens).toEqual([]);
+    expect(legacy.valid).toBe(true);
+
+    // The new pre-composed token satisfies it directly.
+    const composed = validateEmailTemplateContent({
+      templateName: "booking-confirmed",
+      subject: "Booking Confirmed",
+      bodyText:
+        "Hi {{firstName}}, you're confirmed.\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\n{{doorCodeNote}}",
+    });
+    expect(composed.valid).toBe(true);
+
+    // Dropping the door code entirely is still rejected.
+    const missing = validateEmailTemplateContent({
+      templateName: "booking-confirmed",
+      subject: "Booking Confirmed",
+      bodyText: "Hi {{firstName}}, you're confirmed.\n\n{{CLUB_LODGE_TRAVEL_NOTE}}",
+    });
+    expect(missing.valid).toBe(false);
+    expect(missing.missingRequiredTokens).toContain("doorCodeNote");
+  });
+
+  it("never lets the composed door-code line into a subject line", () => {
+    const definition = getEmailTemplateDefinition("booking-confirmed");
+    if (!definition) throw new Error("missing booking-confirmed");
+    // The composed line carries the code itself, so it is subject-forbidden
+    // exactly like the bare {{doorCode}} value.
+    const result = validateEmailTemplateContent({
+      templateName: "booking-confirmed",
+      subject: "Booking Confirmed {{doorCodeNote}}",
+      bodyText: definition.defaultBody,
+    });
+    expect(result.valid).toBe(false);
+    expect(result.sensitiveSubjectTokens).toContain("doorCodeNote");
   });
 
   it("keeps the split provisionalGuestsNote token in the default body (CONFIGURATION.md mandate)", () => {
