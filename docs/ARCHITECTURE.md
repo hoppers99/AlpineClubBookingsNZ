@@ -1014,8 +1014,9 @@ What stays a review call is the other direction: deciding a control should **not
 take the vouch. Five controls take it today: the Lodge Display wizard's
 restore-boards, save-lodge-details and pair-the-screen (all reading the wizard's
 `lodge` access) and the backups wizard's turn-it-on and run-verification (both
-`support`). Nine wizard controls keep their own reason for exactly that reason
-and now say which permission it is: the Xero, Stripe, Google and backups
+`support`). Nine keep their own reason because their gate is NARROWER than the
+area their wizard's banner names, and they now say which permission that is: the
+Xero, Stripe, Google and backups
 credential-ish writes additionally need **Full Admin** on top of the wizard's
 area, and the Lodge Display module switch is **support**-gated under a `lodge`
 banner. Before #2324 eight of those nine were plain disabled `Button`s carrying
