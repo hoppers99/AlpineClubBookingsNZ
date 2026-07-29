@@ -1434,10 +1434,20 @@ export function PublicBookingRequestsPanel({
 
                       {/* #2263: the member's party is unnamed placeholders by
                           design (no guest names are collected), so there is
-                          nobody to link here. Names and member links are edited
-                          onto the booking itself after approval, through the
-                          ordinary guest-edit path — which re-rates each guest as
-                          it goes (owner decision OD-A). */}
+                          nobody to link here.
+
+                          After approval, an officer works on the BOOKING. A
+                          placeholder can be renamed through the ordinary
+                          guest-edit path, but renaming does not change the rate:
+                          member linkage cannot be edited onto an existing guest
+                          row at all (booking-modify-plan.ts refuses any update
+                          touching a member guest, so a rename can never quietly
+                          transfer who a booking is for). To put a real member on
+                          the booking at their own rate the officer REMOVES the
+                          placeholder and ADDS the member as a new guest, which
+                          re-prices and settles through BookingModification
+                          (owner decision OD-A, as corrected in ADR-001's dated
+                          entry). */}
                       {memberWholeLodge ? null : (
                       <div className="space-y-2">
                         <p className="text-sm font-medium">Linked member guests</p>

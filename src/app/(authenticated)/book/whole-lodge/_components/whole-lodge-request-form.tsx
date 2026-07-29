@@ -243,7 +243,9 @@ export function WholeLodgeRequestForm() {
             <Button type="submit" disabled={submitting}>
               {submitting ? "Sending..." : "Send request"}
             </Button>
-            <Button asChild variant="outline" type="button">
+            {/* No `type` here: asChild renders the Link's anchor, and `type` on
+                an <a> means a MIME type hint, not a button behaviour. */}
+            <Button asChild variant="outline">
               <Link href="/book">Cancel</Link>
             </Button>
           </div>

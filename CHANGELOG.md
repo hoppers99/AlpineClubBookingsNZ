@@ -30,13 +30,24 @@ All notable public reference-release changes should be recorded here.
   did before. Each one can be expanded to show, officer-side only, how full each
   requested night already is, which nights are already held, and exactly which
   bookings overlap. Set the headcount you are really pricing (and a total price
-  if no season rate covers those dates), then approve: the booking is confirmed,
-  invoiced by internet banking, and the whole lodge is held for those nights.
-  Approving never cancels anything that is already booked — anything that
-  overlaps is listed for you to sort out with the people involved, as it always
-  has been. Declining is one click through the usual "email them or not?" prompt;
-  any note you write is kept in the audit log for the club's own record and is
-  never shown to the member, who receives the same fixed wording either way.
+  if no season rate covers those dates), then approve: the booking is confirmed
+  and the whole lodge is held for those nights. Approving never cancels anything
+  that is already booked — anything that overlaps is listed for you to sort out
+  with the people involved, as it always has been. Declining is one click through
+  the usual "email them or not?" prompt; any note you write is kept in the audit
+  log for the club's own record and is never shown to the member, who receives
+  the same fixed wording either way.
+
+  The money is handled the same way a school booking's is. Approving raises the
+  invoice: if your club uses the Xero integration the invoice goes out
+  automatically (with any account credit the member is holding allocated against
+  it), and if it does not, the club's administrators are emailed to invoice the
+  member by hand — including the exact payment reference the member was given, so
+  the two match. Either way the member's confirmation email is honest about it:
+  it says the booking is confirmed, states the amount still **owing**, and gives
+  them the internet-banking reference to pay against. It does not tell them a
+  payment has been processed, because none has. The booking page says the same
+  thing, and only mentions an emailed invoice when one was really sent.
 - **A member's admin page now draws the whole family as a read-only tree
   (#2253).** In the Family section — under the family-group chips, above the
   billing family and parent link cards — the page works out how everyone

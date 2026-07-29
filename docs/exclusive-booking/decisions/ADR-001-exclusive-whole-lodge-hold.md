@@ -284,9 +284,29 @@ Recorded as the children landed, to keep the design of record accurate:
       says so.
     - **Placeholder rate class (owner decision OD-A).** The member's party is
       unnamed placeholder guests, which price at NON-MEMBER rates at approval
-      (`hasNonMembers: true`) as the conservative revenue default; guests
-      re-rate per-guest through the ordinary booking-modification path as real
-      names and member links are edited onto the converted booking. No
+      (`hasNonMembers: true`) as the conservative revenue default.
+
+      **How a placeholder becomes a member-rated guest: REMOVE AND RE-ADD.**
+      OD-A was ticked on the understanding that guests "re-rate per-guest as
+      names and links are edited in". Review found that no in-place path exists:
+      the guest-edit engine (`buildBookingModifyPlan`, `src/lib/booking-modify-plan.ts`)
+      accepts `guestUpdates` for NAMES ONLY and refuses outright when the guest
+      `isMember` or carries a `memberId` — member linkage cannot be changed on an
+      existing guest row at all, by design (renaming must never be able to
+      quietly transfer who a booking is for). So an officer converts a
+      placeholder by **removing it and adding the real member as a new guest**
+      (`removeGuestIds` + `addGuests` in the same batch modification), which
+      prices the added guest at their own rate and settles the difference through
+      the ordinary `BookingModification` refund/re-charge path. Renaming a
+      placeholder alone does NOT re-rate it, and that is correct — a rename does
+      not change who the person is for rate purposes.
+
+      A first-class "link placeholder → member with in-place re-rate" is a
+      separate, owner-scoped piece of work (it widens the money surface of the
+      modify engine and deliberately reverses that refusal); it is filed as its
+      own `needs-decision` issue (#2337).
+
+      No
       `nonMemberHoldUntil` is stamped: the hold clock belongs to the PENDING
       non-member path, and arming a bump clock against a CONFIRMED booking that
       holds the whole lodge would point it at the one booking that must never

@@ -611,9 +611,26 @@ VERIFIED -> APPROVED -> CONVERTED  (officer approves with a priced headcount; a
                                 CONFIRMED booking is created, owned by the
                                 requesting login member, with wholeLodgeHold
                                 stamped by the approving admin)
+PRICED   -> APPROVED -> CONVERTED  (same transition, defensive: see the note
+                                below — nothing sanctioned puts a member-origin
+                                row in PRICED, and the approval accepts it
+                                anyway rather than dead-ending a row that
+                                somehow got there)
 VERIFIED -> DECLINED           (officer declines; the note is audit-log-only)
 VERIFIED -> CANCELLED          (the MEMBER withdraws it)
 ```
+
+**Why `PRICED` appears above when the prose below says these rows never reach it.**
+Both are true and the difference matters. Nothing sanctioned can price a
+member-origin row: `priceBookingRequest` throws `409` for it and the admin queue
+offers no price control. But `approveMemberWholeLodgeRequest`'s status guard, and
+its `updateMany` claim, both accept `{ VERIFIED, PRICED }`. That is deliberate
+tolerance rather than an admission that the state is reachable: if a future change
+(or a hand-run database fix) leaves such a row in `PRICED`, the officer can still
+approve it instead of meeting a `409` on a row with no other way forward. The
+guard is a wider door than the pipeline can currently reach — the narrow
+statement "these rows never reach `PRICED`" describes what the code PRODUCES, and
+this diagram line describes what the approval ACCEPTS.
 
 **The quote lifecycle is refused, at the service layer.** `createBookingRequestQuote`,
 `sendBookingRequestQuote`, `holdBookingRequestSlots` and `priceBookingRequest` each
