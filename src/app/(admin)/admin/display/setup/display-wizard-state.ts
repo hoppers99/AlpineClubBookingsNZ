@@ -54,7 +54,20 @@ export interface DisplayWizardLodge {
 export interface DisplayWizardLodgeConfig {
   lodgeId: string;
   lodgeName: string;
+  /** The text values — everything the quick-set can faithfully show and re-post. */
   displayConfig: Record<string, string>;
+  /**
+   * Keys saved on this lodge whose value is NOT text. `displayConfig` is a JSON
+   * column, so a hand-edited (or imported) row can hold a number, a list or an
+   * object; the lodge-config route accepts string values ONLY, and it replaces
+   * the whole object on every write.
+   *
+   * That combination means such a value cannot survive a save from this step —
+   * re-posting it verbatim is refused with a 400, and omitting it deletes it.
+   * The keys are carried here so the step can SAY that before the operator
+   * saves, rather than dropping them quietly (#2249 review L7).
+   */
+  unrepresentableConfigKeys: string[];
   displayNotice: string | null;
 }
 
@@ -91,14 +104,51 @@ export function isLiveDevice(device: DisplayWizardDevice): boolean {
   return device.paired && !device.revoked;
 }
 
-/** Live devices for the lodge being set up (all lodges when none is chosen). */
+/**
+ * True once the reads have settled but no lodge could be resolved — the lodges
+ * list failed, or the club has no active lodge.
+ *
+ * This is a BLOCKING state for steps 3–6, not a wildcard. An unresolved lodge
+ * used to widen every device query to "any lodge", which meant another lodge's
+ * screen could tick this lodge's steps off and the pairing step could adopt a
+ * device belonging to somewhere else entirely. Reading nothing is the honest
+ * answer: the operator is told to reload rather than shown someone else's TV.
+ */
+export function isLodgeUnresolved(context: DisplayWizardContext): boolean {
+  return context.loaded && context.lodgeId === null;
+}
+
+/**
+ * Live devices for the lodge being set up. EMPTY while no lodge is resolved —
+ * see {@link isLodgeUnresolved}; the steps render a blocking notice in that
+ * state rather than verifying against another lodge's screens.
+ */
 export function liveDevicesForLodge(
   context: DisplayWizardContext,
 ): DisplayWizardDevice[] {
+  if (context.lodgeId === null) return [];
   return context.devices.filter(
-    (device) =>
-      isLiveDevice(device) &&
-      (context.lodgeId === null || device.lodgeId === context.lodgeId),
+    (device) => isLiveDevice(device) && device.lodgeId === context.lodgeId,
+  );
+}
+
+/**
+ * The screen record for THIS lodge that is awaiting pairing, if any. The wizard
+ * creates one and re-arms it, so a mistyped code does not litter the club with
+ * half-created screens. Null while no lodge is resolved, for the same reason
+ * {@link liveDevicesForLodge} is empty there.
+ */
+export function pendingDeviceForLodge(
+  context: DisplayWizardContext,
+): DisplayWizardDevice | null {
+  if (context.lodgeId === null) return null;
+  return (
+    context.devices.find(
+      (device) =>
+        !device.paired &&
+        !device.revoked &&
+        device.lodgeId === context.lodgeId,
+    ) ?? null
   );
 }
 

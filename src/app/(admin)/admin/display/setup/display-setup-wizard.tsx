@@ -124,6 +124,10 @@ export function DisplaySetupWizard({
             context={ctx}
             helpers={helpers}
             chosenTemplateId={chosenTemplateId}
+            // The pick is component state, so a resume or a reload loses it.
+            // The pairing step therefore has to be able to (re-)make it, rather
+            // than pairing onto the club default in silence (#2249 review M3).
+            onChoose={setChosenTemplateId}
           />
         ),
       },

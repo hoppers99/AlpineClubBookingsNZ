@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Check, ExternalLink } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -24,7 +24,9 @@ import {
 import {
   DISPLAY_WIZARD_SHARED_CURSOR_NOTE,
   boundTemplateId,
+  isLodgeUnresolved,
   liveDevicesForLodge,
+  pendingDeviceForLodge,
   savedConfigKeys,
   type DisplayWizardContext,
   type DisplayWizardTemplate,
@@ -99,6 +101,113 @@ function Notice({
   return (
     <div className={`rounded-md border p-3 text-sm ${className}`}>
       {children}
+    </div>
+  );
+}
+
+/**
+ * The blocking state for steps 3–6 when no lodge could be resolved.
+ *
+ * The wizard used to fall back to "any lodge" here, which quietly let another
+ * lodge's screen satisfy this lodge's gates and let the pairing step adopt a
+ * device belonging somewhere else. Reading nothing and saying so is the honest
+ * answer (#2249 review M4).
+ */
+function LodgeUnresolvedNotice() {
+  return (
+    <Notice tone="warning">
+      <p className="font-medium">Your lodges could not be read.</p>
+      <p className="mt-1">
+        This step will not read or change any screen until it knows which lodge
+        it is setting up — a screen at another lodge is not this lodge&apos;s
+        screen. Reload the page; if it keeps happening, check that your club has
+        an active lodge on <strong>Admin → Lodges</strong>.
+      </p>
+    </Notice>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Waiting for the screen (steps 5 and 6)
+// ---------------------------------------------------------------------------
+
+/**
+ * Steps 5 and 6 verify on facts only the TV can write: the screen claims its
+ * own token on its own ~4-second poll, and stamps `lastSeenAt` the first time it
+ * fetches state. Nothing in this page re-reads server truth by itself, so
+ * without this the operator sat on a step that could never tick until they
+ * reloaded — while the copy promised it would tick over on its own (#2249
+ * review H1).
+ *
+ * BOUNDED on purpose: a fixed budget of polls (about two minutes) rather than a
+ * timer running for the whole 15-minute pairing window. When the budget runs
+ * out the step stops polling and says so, next to a "Check again" button. The
+ * budget resets whenever the wait restarts — a fresh code armed, or the
+ * operator asking — and the interval is cleared on unmount.
+ */
+export const WIZARD_WAIT_POLL_MS = 6_000;
+export const WIZARD_WAIT_POLL_BUDGET = 20;
+
+function useWaitForScreen(waiting: boolean, refresh: () => void) {
+  const [attempts, setAttempts] = useState(0);
+  // The budget is counted in a ref as well as in state: the ref is what the
+  // tick itself checks, so the interval stops at the budget even if a re-render
+  // has not landed between two ticks. State alone would let a busy tab overrun.
+  const attemptsRef = useRef(0);
+  // The shell hands a fresh `refresh` identity on most renders; keeping it in a
+  // ref means the interval is created once per wait rather than restarted (and
+  // its clock reset) on every re-render.
+  const refreshRef = useRef(refresh);
+  useEffect(() => {
+    refreshRef.current = refresh;
+  }, [refresh]);
+
+  useEffect(() => {
+    if (!waiting) {
+      attemptsRef.current = 0;
+      setAttempts(0);
+    }
+  }, [waiting]);
+
+  const polling = waiting && attempts < WIZARD_WAIT_POLL_BUDGET;
+  useEffect(() => {
+    if (!polling) return;
+    const timer = setInterval(() => {
+      if (attemptsRef.current >= WIZARD_WAIT_POLL_BUDGET) return;
+      attemptsRef.current += 1;
+      setAttempts(attemptsRef.current);
+      refreshRef.current();
+    }, WIZARD_WAIT_POLL_MS);
+    return () => clearInterval(timer);
+  }, [polling]);
+
+  const checkAgain = useCallback(() => {
+    attemptsRef.current = 0;
+    setAttempts(0);
+    refreshRef.current();
+  }, []);
+
+  return { polling, exhausted: waiting && !polling, checkAgain };
+}
+
+/** The explicit "I am not waiting any longer" affordance beside the poll. */
+function CheckAgainButton({
+  polling,
+  onCheckAgain,
+}: {
+  polling: boolean;
+  onCheckAgain: () => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <Button type="button" variant="outline" size="sm" onClick={onCheckAgain}>
+        Check again
+      </Button>
+      <span className="text-xs text-muted-foreground">
+        {polling
+          ? "This page is re-reading your screens every few seconds while you wait."
+          : "Automatic re-reading has stopped for now — press Check again to restart it."}
+      </span>
     </div>
   );
 }
@@ -204,6 +313,18 @@ export function ModuleStep({ context, helpers }: StepProps) {
               page, and the rest of this wizard cannot read or change anything
               until the module is on.
             </p>
+            {context.moduleBlockedReads ? (
+              // The display API 404s its whole tree while the module is off, so
+              // the later steps genuinely have nothing to show. Saying which of
+              // the two it is ("blocked" rather than "empty") stops a first-time
+              // operator reading step 2 as "this club has no boards" (#2249
+              // review L8).
+              <p className="mt-1" data-testid="module-blocked-reads">
+                That is also why the later steps look empty: your boards, screens
+                and lodge details are being refused for now, not missing. They
+                appear as soon as the module is on.
+              </p>
+            ) : null}
           </Notice>
           {canEditModules === false ? (
             <p className="text-sm text-muted-foreground">
@@ -356,6 +477,8 @@ export function BoardStep({
       heading="Pick the board for the TV"
       intro={`${DISPLAY_TERM_BOARD.oneLiner} Start with a built-in — you can switch or customise later without re-pairing.`}
     >
+      {isLodgeUnresolved(context) ? <LodgeUnresolvedNotice /> : null}
+
       {context.lodges.length > 1 ? (
         <div className="max-w-sm space-y-1">
           <Label htmlFor="wizard-lodge">Setting up the screen for</Label>
@@ -599,7 +722,9 @@ export function ConfigStep({ context, helpers }: StepProps) {
       heading="Fill in the details the boards show"
       intro="Boards print these values through {{config:…}} tokens. A value that is missing shows as a visible placeholder on the wall, so it is worth doing before the TV goes up."
     >
-      {!saved ? (
+      {isLodgeUnresolved(context) ? (
+        <LodgeUnresolvedNotice />
+      ) : !saved ? (
         <Notice tone="warning">
           The lodge&apos;s display settings could not be read, so there is
           nothing to fill in here yet. Finish step 1 (the module gates this
@@ -656,6 +781,27 @@ export function ConfigStep({ context, helpers }: StepProps) {
             </p>
           ) : null}
 
+          {/* The one case where "kept exactly as they are" would be a lie: a
+              value in the JSON column that is not text. The save route accepts
+              text only and replaces the whole object, so such a value cannot
+              survive this form either way — say so before the operator presses
+              Save, rather than dropping it quietly (#2249 review L7). */}
+          {saved.unrepresentableConfigKeys.length > 0 ? (
+            <Notice tone="warning">
+              <p className="font-medium" data-testid="unrepresentable-config">
+                {saved.unrepresentableConfigKeys.length} saved value
+                {saved.unrepresentableConfigKeys.length === 1 ? " is" : "s are"}{" "}
+                not text ({saved.unrepresentableConfigKeys.join(", ")}).
+              </p>
+              <p className="mt-1" data-testid="unrepresentable-config-effect">
+                Boards can only print text, and this form can only save text, so
+                saving here would <strong>remove</strong> those values. If you
+                need them, copy them somewhere first, or fix them on the
+                lodge&apos;s full display settings — and skip this step.
+              </p>
+            </Notice>
+          ) : null}
+
           <div className="flex flex-wrap items-center gap-3">
             <ViewOnlyActionButton
               canEdit={helpers.canEdit}
@@ -686,39 +832,93 @@ export function PairStep({
   context,
   helpers,
   chosenTemplateId,
-}: StepProps & { chosenTemplateId: string | null }) {
+  onChoose,
+}: StepProps & {
+  chosenTemplateId: string | null;
+  /** Set (or change) the board the screen will be bound to at pairing. */
+  onChoose: (templateId: string) => void;
+}) {
   const [deviceName, setDeviceName] = useState("");
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [bindWarning, setBindWarning] = useState<string | null>(null);
+  const [armedLocally, setArmedLocally] = useState(false);
+  const [forceNewDevice, setForceNewDevice] = useState(false);
   const [displayUrl, setDisplayUrl] = useState("");
+
+  // The screen record THIS step created, kept across renders. Without it every
+  // retry after a failed pairing POSTed another device, because the context list
+  // has not refreshed yet and the local `pending` lookup was per-render: a
+  // mistyped code three times left three half-created screens (#2249 review M1).
+  const createdDeviceIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     setDisplayUrl(`${window.location.origin}/display`);
   }, []);
 
   const live = liveDevicesForLodge(context);
+  const lodgeUnresolved = isLodgeUnresolved(context);
   const lodgeName =
     context.lodgeConfig?.lodgeName ??
     context.lodges.find((lodge) => lodge.id === context.lodgeId)?.name ??
     "this lodge";
   const chosen =
     context.templates.find((t) => t.id === chosenTemplateId) ?? null;
+  const bound = boundTemplateId(context);
 
   // The device for this lodge that is awaiting pairing, if any: the wizard
-  // creates ONE and reuses it, so a mistyped code does not litter the club with
-  // half-created screens.
-  const pending = context.devices.find(
-    (device) =>
-      !device.paired &&
-      !device.revoked &&
-      (context.lodgeId === null || device.lodgeId === context.lodgeId),
+  // creates ONE and re-arms it, so a mistyped code does not litter the club with
+  // half-created screens. Never adopts a device at another lodge — an unresolved
+  // lodge yields null rather than "anyone's screen" (#2249 review M4).
+  const pendingForLodge = pendingDeviceForLodge(context);
+  const pending = forceNewDevice ? null : pendingForLodge;
+
+  // Re-reading server truth while the code is armed is what makes this step tick
+  // over on its own: the TV claims its token on its own ~4-second poll, and
+  // nothing else in this page would notice (#2249 review H1).
+  const armedFromServer = pending?.pairingArmedUntil != null;
+  const waiting =
+    !lodgeUnresolved && live.length === 0 && (armedFromServer || armedLocally);
+  const { polling, exhausted, checkAgain } = useWaitForScreen(
+    waiting,
+    helpers.refresh,
   );
+
+  // A resume (or a reload) loses the pick made on step 3 — it is component
+  // state, by design, because nothing server-side records a chosen board before
+  // it is bound. Rather than quietly pairing onto the club default and then
+  // reporting "Screen live", the pick is offered again here; and when the club
+  // has exactly one board there is nothing to choose, so it is seeded (#2249
+  // review M3).
+  const needsBoardPick =
+    !lodgeUnresolved &&
+    chosenTemplateId === null &&
+    bound === null &&
+    context.templates.length > 0;
+  const onlyTemplateId =
+    context.templates.length === 1 ? context.templates[0].id : null;
+  useEffect(() => {
+    if (needsBoardPick && onlyTemplateId) onChoose(onlyTemplateId);
+  }, [needsBoardPick, onlyTemplateId, onChoose]);
+
+  // Re-using a pending device that is already bound to a DIFFERENT board would
+  // silently repurpose it. Disclose it, and offer the other choice (#2249
+  // review M2).
+  const overwriting =
+    pending &&
+    pending.templateId !== null &&
+    chosenTemplateId !== null &&
+    pending.templateId !== chosenTemplateId
+      ? { from: pending.templateName ?? "another board", to: chosen?.name }
+      : null;
 
   async function pair() {
     setBusy(true);
     setMessage(null);
-    let deviceId = pending?.id ?? null;
+    setBindWarning(null);
+    let deviceId = pending?.id ?? createdDeviceIdRef.current ?? null;
+    let createdNow = false;
 
     if (!deviceId) {
       const created = await fetch("/api/admin/display/devices", {
@@ -744,6 +944,10 @@ export function PairStep({
       }
       const body = (await created.json()) as { device?: { id: string } };
       deviceId = body.device?.id ?? null;
+      createdNow = deviceId !== null;
+      // Remember it BEFORE anything else can fail, so a retry re-arms this row.
+      createdDeviceIdRef.current = deviceId;
+      if (forceNewDevice) setForceNewDevice(false);
     }
 
     if (!deviceId) {
@@ -754,12 +958,35 @@ export function PairStep({
 
     // Bind the chosen board BEFORE arming pairing, so the screen shows the right
     // board the moment it claims its token rather than flashing the club default.
+    // The response is checked: a silent failure here used to leave the step
+    // promising a board the screen was never bound to (#2249 review M2).
+    let bindFailed = false;
     if (chosenTemplateId) {
-      await fetch(`/api/admin/display/devices/${deviceId}`, {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ templateId: chosenTemplateId }),
-      }).catch(() => null);
+      const bindResponse = await fetch(
+        `/api/admin/display/devices/${deviceId}`,
+        {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ templateId: chosenTemplateId }),
+        },
+      ).catch(() => null);
+      if (!bindResponse?.ok) {
+        bindFailed = true;
+        const body = (await bindResponse?.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        setBindWarning(
+          bindResponse?.status === 403
+            ? `${ADMIN_FORBIDDEN_SAVE_REASON} The screen was not set to show ${
+                chosen?.name ?? "the board you picked"
+              }.`
+            : `${
+                body?.error ?? "The board could not be assigned to this screen."
+              } Pairing carried on, so the screen will come up on ${
+                pending?.templateName ?? "the club default board"
+              } — set the board on the Devices page.`,
+        );
+      }
     }
 
     const armed = await fetch(
@@ -771,6 +998,11 @@ export function PairStep({
       },
     ).catch(() => null);
     setBusy(false);
+
+    // Whatever happens next, the list must catch up: a device created moments
+    // ago has to appear as THE pending screen so a retry re-arms it rather than
+    // creating another one.
+    if (createdNow || bindFailed) helpers.refresh();
 
     if (armed?.status === 403) {
       setMessage(ADMIN_FORBIDDEN_SAVE_REASON);
@@ -794,8 +1026,9 @@ export function PairStep({
     }
 
     setCode("");
+    setArmedLocally(true);
     setMessage(
-      "Code accepted. The screen claims its own token on its next poll — this page ticks over within about a minute.",
+      "Code accepted. The screen claims its own token on its next check, about four seconds away — leave this page open and it ticks over by itself.",
     );
     helpers.refresh();
   }
@@ -805,99 +1038,209 @@ export function PairStep({
       heading="Pair the lodge TV"
       intro="Pairing survives reboots — you do this once per screen, until you revoke it."
     >
-      <ol className="space-y-4 text-sm">
-        <li className="space-y-2">
-          <p className="font-medium">
-            1. On the TV (or any browser on the screen device), open this
-            address:
-          </p>
-          <CopyField
-            label="Display URL"
-            value={displayUrl}
-            emptyHint="Loading the address…"
-          />
-        </li>
-        <li className="space-y-2">
-          <p className="font-medium">
-            2. The screen shows a six-character pairing code. Type it here:
-          </p>
-          <div className="flex flex-wrap items-end gap-3">
-            <div className="space-y-1">
-              <Label htmlFor="pair-code">Code on the TV</Label>
-              <Input
-                id="pair-code"
-                value={code}
-                maxLength={16}
-                autoComplete="off"
-                className="w-40 font-mono uppercase"
-                disabled={helpers.canEdit !== true}
-                onChange={(event) => setCode(event.target.value)}
+      {lodgeUnresolved ? (
+        <LodgeUnresolvedNotice />
+      ) : (
+        <>
+          <ol className="space-y-4 text-sm">
+            <li className="space-y-2">
+              <p className="font-medium">
+                1. On the TV (or any browser on the screen device), open this
+                address:
+              </p>
+              <CopyField
+                label="Display URL"
+                value={displayUrl}
+                emptyHint="Loading the address…"
               />
-            </div>
-            {!pending ? (
-              <div className="space-y-1">
-                <Label htmlFor="pair-name">Name this screen</Label>
-                <Input
-                  id="pair-name"
-                  value={deviceName}
-                  placeholder={`Lobby TV — ${lodgeName}`}
-                  disabled={helpers.canEdit !== true}
-                  onChange={(event) => setDeviceName(event.target.value)}
+            </li>
+            <li className="space-y-2">
+              <p className="font-medium">
+                2. The screen shows a six-character pairing code. Type it here:
+              </p>
+              <div className="flex flex-wrap items-end gap-3">
+                <div className="space-y-1">
+                  <Label htmlFor="pair-code">Code on the TV</Label>
+                  <Input
+                    id="pair-code"
+                    value={code}
+                    maxLength={16}
+                    autoComplete="off"
+                    className="w-40 font-mono uppercase"
+                    disabled={helpers.canEdit !== true}
+                    onChange={(event) => setCode(event.target.value)}
+                  />
+                </div>
+                {!pending ? (
+                  <div className="space-y-1">
+                    <Label htmlFor="pair-name">Name this screen</Label>
+                    <Input
+                      id="pair-name"
+                      value={deviceName}
+                      placeholder={`Lobby TV — ${lodgeName}`}
+                      disabled={helpers.canEdit !== true}
+                      onChange={(event) => setDeviceName(event.target.value)}
+                    />
+                  </div>
+                ) : null}
+                <ViewOnlyActionButton
+                  canEdit={helpers.canEdit}
+                  disabled={busy || code.trim() === ""}
+                  onClick={() => void pair()}
+                >
+                  {busy ? "Pairing…" : "Pair this screen"}
+                </ViewOnlyActionButton>
+              </div>
+
+              {needsBoardPick ? (
+                <div className="max-w-sm space-y-1">
+                  <Label htmlFor="pair-template">
+                    Board this screen will show
+                  </Label>
+                  <select
+                    id="pair-template"
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                    value=""
+                    disabled={helpers.canEdit !== true}
+                    onChange={(event) => {
+                      if (event.target.value) onChoose(event.target.value);
+                    }}
+                  >
+                    <option value="">Choose a board…</option>
+                    {context.templates.map((template) => (
+                      <option key={template.id} value={template.id}>
+                        {template.name}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-muted-foreground">
+                    The choice made on <strong>Pick the board</strong> is not
+                    saved anywhere until a screen is paired to it, so it is asked
+                    for again here after a reload. Leave it unchosen and the
+                    screen comes up on the club default board.
+                  </p>
+                </div>
+              ) : null}
+
+              <p className="text-xs text-muted-foreground">
+                {pending
+                  ? `Pairing “${pending.name}”, already created for ${lodgeName}.`
+                  : `A screen record is created for ${lodgeName} the first time you press Pair.`}
+                {/* Silent while a bind has just failed: the warning below says
+                    what the screen will actually show, and repeating the promise
+                    here would contradict it (#2249 review M2). */}
+                {bindWarning
+                  ? ""
+                  : chosen
+                    ? ` It will be set to show ${chosen.name}.`
+                    : " It will show the club default board until you assign one."}
+              </p>
+
+              {overwriting ? (
+                <Notice tone="warning">
+                  <p className="font-medium">
+                    “{pending?.name}” is already set to show{" "}
+                    {overwriting.from}.
+                  </p>
+                  <p className="mt-1">
+                    Pairing here re-uses that screen record and changes it to{" "}
+                    <strong>{overwriting.to}</strong>. If it is a different TV,
+                    create a second screen instead — nothing is changed until you
+                    press Pair.
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="mt-2"
+                    onClick={() => setForceNewDevice(true)}
+                  >
+                    Create a new screen instead
+                  </Button>
+                </Notice>
+              ) : null}
+
+              {forceNewDevice && pendingForLodge ? (
+                <p className="text-xs text-muted-foreground">
+                  A new screen record will be created;{" "}
+                  “{pendingForLodge.name}” is left exactly as it is.{" "}
+                  <button
+                    type="button"
+                    className="font-medium underline underline-offset-4"
+                    onClick={() => setForceNewDevice(false)}
+                  >
+                    Use that screen after all
+                  </button>
+                  .
+                </p>
+              ) : null}
+            </li>
+          </ol>
+
+          {bindWarning ? <Notice tone="warning">{bindWarning}</Notice> : null}
+          {message ? <Notice tone="info">{message}</Notice> : null}
+
+          {waiting ? (
+            <Notice tone="info">
+              <p className="font-medium" data-testid="pairing-armed">
+                <Badge variant="outline" className="mr-2">
+                  Pairing armed
+                </Badge>
+                Waiting for the screen to claim it
+                {pending?.pairingArmedUntil
+                  ? ` — the code stops working at ${new Date(
+                      pending.pairingArmedUntil,
+                    ).toLocaleTimeString("en-NZ")}`
+                  : ""}
+                .
+              </p>
+              <p className="mt-1">
+                {exhausted
+                  ? "Nothing has claimed the code yet. Check the TV is still on the display page, then check again — if the code on screen has changed, enter the new one."
+                  : "The TV checks every few seconds, so this normally takes moments."}
+              </p>
+              <div className="mt-2">
+                <CheckAgainButton
+                  polling={polling}
+                  onCheckAgain={checkAgain}
                 />
               </div>
-            ) : null}
-            <ViewOnlyActionButton
-              canEdit={helpers.canEdit}
-              disabled={busy || code.trim() === ""}
-              onClick={() => void pair()}
+            </Notice>
+          ) : null}
+
+          {live.length > 0 ? (
+            <Notice tone="success">
+              <p className="font-medium">
+                <Check className="mr-1 inline h-4 w-4" aria-hidden />
+                {live.length} screen{live.length === 1 ? " is" : "s are"} paired
+                for {lodgeName}.
+              </p>
+              <ul className="mt-1 space-y-0.5">
+                {live.map((device) => (
+                  <li key={device.id}>
+                    {device.name} — showing{" "}
+                    {device.templateName ?? "the club default board"}
+                    {device.lastSeenAt
+                      ? `, last seen ${new Date(device.lastSeenAt).toLocaleString("en-NZ")}`
+                      : ", not seen yet"}
+                  </li>
+                ))}
+              </ul>
+            </Notice>
+          ) : null}
+
+          <p className="text-sm text-muted-foreground">
+            Managing several screens, or need to revoke one?{" "}
+            <Link
+              href="/admin/display/devices"
+              className="font-medium underline underline-offset-4"
             >
-              {busy ? "Pairing…" : "Pair this screen"}
-            </ViewOnlyActionButton>
-          </div>
-          <p className="text-xs text-muted-foreground">
-            {pending
-              ? `Pairing “${pending.name}”, already created for ${lodgeName}.`
-              : `A screen record is created for ${lodgeName} the first time you press Pair.`}
-            {chosen
-              ? ` It will be set to show ${chosen.name}.`
-              : " It will show the club default board until you assign one."}
+              Open the Devices page
+            </Link>
+            .
           </p>
-        </li>
-      </ol>
-
-      {message ? <Notice tone="info">{message}</Notice> : null}
-
-      {live.length > 0 ? (
-        <Notice tone="success">
-          <p className="font-medium">
-            <Check className="mr-1 inline h-4 w-4" aria-hidden />
-            {live.length} screen{live.length === 1 ? " is" : "s are"} paired for{" "}
-            {lodgeName}.
-          </p>
-          <ul className="mt-1 space-y-0.5">
-            {live.map((device) => (
-              <li key={device.id}>
-                {device.name} — showing{" "}
-                {device.templateName ?? "the club default board"}
-                {device.lastSeenAt
-                  ? `, last seen ${new Date(device.lastSeenAt).toLocaleString("en-NZ")}`
-                  : ", not seen yet"}
-              </li>
-            ))}
-          </ul>
-        </Notice>
-      ) : null}
-
-      <p className="text-sm text-muted-foreground">
-        Managing several screens, or need to revoke one?{" "}
-        <Link
-          href="/admin/display/devices"
-          className="font-medium underline underline-offset-4"
-        >
-          Open the Devices page
-        </Link>
-        .
-      </p>
+        </>
+      )}
     </StepShell>
   );
 }
@@ -906,16 +1249,28 @@ export function PairStep({
 // Step 6 — done
 // ---------------------------------------------------------------------------
 
-export function DoneStep({ context }: StepProps) {
+export function DoneStep({ context, helpers }: StepProps) {
   const live = liveDevicesForLodge(context);
   const seen = live.filter((device) => device.lastSeenAt !== null);
+  const lodgeUnresolved = isLodgeUnresolved(context);
+
+  // The last thing the wizard waits for is written by the TV, not by this page:
+  // `lastSeenAt` is stamped when the screen first fetches its board. Poll while
+  // that has not happened, so the step ticks over on its own as the copy says
+  // (#2249 review H1).
+  const { polling, exhausted, checkAgain } = useWaitForScreen(
+    !lodgeUnresolved && seen.length === 0,
+    helpers.refresh,
+  );
 
   return (
     <StepShell
       heading="Done — and how to check it stays done"
       intro="This step ticks when a paired screen has actually fetched its board with its own token. That is the only proof the whole path works, rather than just the admin half of it."
     >
-      {seen.length > 0 ? (
+      {lodgeUnresolved ? (
+        <LodgeUnresolvedNotice />
+      ) : seen.length > 0 ? (
         <Notice tone="success">
           <p className="font-medium">
             <Check className="mr-1 inline h-4 w-4" aria-hidden />
@@ -936,13 +1291,26 @@ export function DoneStep({ context }: StepProps) {
         </Notice>
       ) : live.length > 0 ? (
         <Notice tone="warning">
-          The screen is paired but has not fetched anything yet. Screens poll
-          roughly every minute — leave the TV on the display page and this ticks
-          itself over. If it never does, the screen has no route to this server.
+          <p>
+            The screen is paired but has not fetched anything yet. Leave the TV
+            on the display page:{" "}
+            {polling
+              ? "this page is re-reading your screens every few seconds and ticks itself over when the screen checks in."
+              : "press Check again to look now."}{" "}
+            {exhausted
+              ? "Nothing has checked in for a couple of minutes, so the screen may have no route to this server."
+              : "Screens fetch on their own refresh interval, so this usually takes under a minute."}
+          </p>
+          <div className="mt-2">
+            <CheckAgainButton polling={polling} onCheckAgain={checkAgain} />
+          </div>
         </Notice>
       ) : (
         <Notice tone="warning">
-          No screen is paired yet — go back a step and pair one.
+          <p>No screen is paired yet — go back a step and pair one.</p>
+          <div className="mt-2">
+            <CheckAgainButton polling={polling} onCheckAgain={checkAgain} />
+          </div>
         </Notice>
       )}
 
@@ -972,16 +1340,21 @@ export function DoneStep({ context }: StepProps) {
             </a>{" "}
             — change what a board shows, or make a new one.
           </li>
-          <li>
-            <Link
-              href={`/admin/lodges/${context.lodgeConfig?.lodgeId ?? ""}/display`}
-              className="underline underline-offset-4"
-            >
-              Lodge display settings
-            </Link>{" "}
-            — the full set of values the boards print, plus the name-privacy
-            setting.
-          </li>
+          {/* Only when the lodge is known: the href degraded to
+              /admin/lodges//display — a dead link — whenever the config read had
+              failed (#2249 review L6). */}
+          {context.lodgeConfig ? (
+            <li>
+              <Link
+                href={`/admin/lodges/${context.lodgeConfig.lodgeId}/display`}
+                className="underline underline-offset-4"
+              >
+                Lodge display settings
+              </Link>{" "}
+              — the full set of values the boards print, plus the name-privacy
+              setting.
+            </li>
+          ) : null}
         </ul>
       </div>
 

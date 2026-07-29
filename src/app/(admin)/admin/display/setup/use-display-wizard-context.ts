@@ -36,17 +36,33 @@ interface RawLodge {
   active?: boolean;
 }
 
-function toConfigRecord(value: unknown): Record<string, string> {
-  if (!value || typeof value !== "object") return {};
-  const out: Record<string, string> = {};
-  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
-    // The lodge-config route only ever accepts string values, but the column is
-    // JSON, so a hand-edited row could hold anything. Non-strings are dropped
-    // rather than coerced — the quick-set must never rewrite a value it cannot
-    // faithfully show.
-    if (typeof raw === "string") out[key] = raw;
+/**
+ * Split the saved `displayConfig` into the text values the quick-set can edit
+ * and the keys it cannot represent.
+ *
+ * The column is JSON, so a hand-edited or imported row can hold a number, a
+ * list or an object. The lodge-config route accepts string values ONLY (it 400s
+ * anything else) and replaces the whole object on every write, so a
+ * non-text value cannot survive a save from this step whichever way it is
+ * handled: re-posting it verbatim is refused, and leaving it out deletes it.
+ *
+ * They are therefore neither coerced nor silently dropped — they are counted
+ * and named, so the step can warn before the operator saves (#2249 review L7).
+ */
+function splitConfigRecord(value: unknown): {
+  text: Record<string, string>;
+  unrepresentableKeys: string[];
+} {
+  if (!value || typeof value !== "object") {
+    return { text: {}, unrepresentableKeys: [] };
   }
-  return out;
+  const text: Record<string, string> = {};
+  const unrepresentableKeys: string[] = [];
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof raw === "string") text[key] = raw;
+    else unrepresentableKeys.push(key);
+  }
+  return { text, unrepresentableKeys: unrepresentableKeys.sort() };
 }
 
 export interface DisplayWizardContextResult {
@@ -136,10 +152,12 @@ export function useDisplayWizardContext(
       setLodgeConfig(null);
       return;
     }
+    const config = splitConfigRecord(body.displayConfig);
     setLodgeConfig({
       lodgeId: body.lodgeId,
       lodgeName: body.lodgeName ?? "",
-      displayConfig: toConfigRecord(body.displayConfig),
+      displayConfig: config.text,
+      unrepresentableConfigKeys: config.unrepresentableKeys,
       displayNotice: body.displayNotice ?? null,
     });
   }, []);
