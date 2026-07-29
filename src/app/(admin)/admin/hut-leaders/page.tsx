@@ -316,8 +316,10 @@ export default function HutLeadersPage() {
         });
         return;
       }
-      const created = await res.json();
-      setMinorCustodianNote(created.minorCustodianWarning ?? null);
+      // The minor-custodian privacy note is advisory: a body that cannot be
+      // parsed must not turn a successful assignment into an error.
+      const created = await res.json().catch(() => null);
+      setMinorCustodianNote(created?.minorCustodianWarning ?? null);
       setSelection({ startDate: "", endDate: "" });
       setTarget(null);
       setSelectedBedId(null);

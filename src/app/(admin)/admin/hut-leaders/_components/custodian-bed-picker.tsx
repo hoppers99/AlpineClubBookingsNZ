@@ -84,9 +84,12 @@ export function CustodianBedPicker({
           setRooms(null);
           return;
         }
-        const data = (await res.json()) as { rooms: RoomGroup[] };
+        const data = (await res.json()) as { rooms?: RoomGroup[] };
         setUnavailable(false);
-        setRooms(data.rooms);
+        // Never trust the shape: this picker renders inside the assignment form,
+        // so a malformed or unexpected response must degrade to "no beds
+        // offered" rather than take the whole Hut Leaders page down.
+        setRooms(Array.isArray(data?.rooms) ? data.rooms : []);
       })
       .catch(() => {
         if (!cancelled) setRooms(null);
@@ -149,7 +152,7 @@ export function CustodianBedPicker({
       {loading ? (
         <p className="text-xs text-muted-foreground">Checking beds…</p>
       ) : null}
-      {rooms !== null && rooms.length === 0 ? (
+      {rooms !== null && rooms.length === 0 && !loading ? (
         <p className="text-xs text-muted-foreground">
           This lodge has no active beds set up, so there is nothing to hold.
         </p>
