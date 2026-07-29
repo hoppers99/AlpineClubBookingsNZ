@@ -68,6 +68,15 @@ permission area.
    image, and stored once, so the public pages link to it instead of carrying
    a copy of the file. Upload a PNG, JPEG, WebP, or GIF up to 2MB — a large,
    high-resolution original is fine and is shrunk for you.
+
+   ![The Logo step before a logo is chosen: Choose logo and Remove logo buttons above a note listing the accepted formats, the 2MB limit, and the shrink-to-fit behaviour](../images/admin/admin-site-style-logo.png)
+
+   After the upload lands, the preview shows the stored image exactly as the
+   public site will serve it, and a note reminds you the logo still saves with
+   the rest of the theme:
+
+   ![The Logo step after an upload: the resized logo rendering in the live preview, with the "Logo uploaded. Save to apply it to the site." confirmation](../images/admin/admin-site-style-logo-uploaded.png)
+
 4. On **Review**, confirm and save. The public site becomes visible once the
    style is saved.
 
