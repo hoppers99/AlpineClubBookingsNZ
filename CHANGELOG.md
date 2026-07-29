@@ -5,21 +5,28 @@ All notable public reference-release changes should be recorded here.
 ## Unreleased
 
 - **A member's admin page now draws the whole family as a read-only tree
-  (#2253).** At the top of the Family section, the page works out how everyone
-  connects from the links the club has already recorded — parents, second
-  parents, confirmed partners — and follows them across households, so
+  (#2253).** In the Family section — under the family-group chips, above the
+  billing family and parent link cards — the page works out how everyone
+  connects from the links the club has already recorded (parents, second
+  parents, confirmed partners) and follows them across households, so
   grandparents, siblings, half-siblings, cousins, and a dependant's other
-  parent all appear, each drawn once, capped at four generations above and
-  below the member being viewed. Relationships that are not stored anywhere
-  are marked **Derived** with a dashed outline, so a worked-out sibling is
-  never mistaken for a recorded claim — and half-siblings are separated from
-  full siblings by *which* parents are shared, not how many. Where a child's
-  club email goes to someone further up the family than their own parent, the
-  tree says so in words and names the person. Archived relatives stay in the
-  tree, badged, with their contact details hidden, rather than silently
-  vanishing and making a grandparent look unrelated. Nothing in the tree can
-  be edited: it is a picture of the Parent Links, Partner, and Dependents
-  cards below it, and changing those changes the tree.
+  parent all appear, each drawn once. It reaches three generations above and
+  below the member being viewed (four counting the member's own), the same
+  limit parent links themselves are capped at. Relationships that are not
+  stored anywhere are marked **Derived** with a dashed outline, so a worked-out
+  sibling is never mistaken for a recorded claim — and half-siblings are
+  separated from full siblings by *which* parents are shared, not how many,
+  with the tree saying plainly when that verdict comes from a missing record
+  rather than a different parentage. Where a child's club email goes to someone
+  further up the family than their own parent, the tree says so in words and
+  names the person — unless the mailbox belongs to a member outside the family
+  altogether, which it reports without naming anyone. Archived relatives stay
+  in the tree, badged, with their contact details left off, rather than
+  silently vanishing and making a grandparent look unrelated. Where a family is
+  too tall or simply too large to draw in full, the tree says which, instead of
+  quietly ending. Nothing in the tree can be edited: it is a picture of the
+  Parent Links, Partner, and Dependents cards below it, and changing those
+  changes the tree.
 
 - **Writing a Lodge TV footer or CSS override no longer means remembering the
   tokens (#2248).** Every field where a board's HTML or CSS is typed by hand —
