@@ -968,6 +968,67 @@ Future reviews and issues should cite this file when proposing changes.
   already-CANCELLED plan child whose `refundedAmountCents` is still zero,
   via a conditional update. Alerts fire on retry exhaustion only.
 
+## Member-Guest Consent
+
+A MEMBER added as somebody else's guest may need that member's agreement first
+("+ Add Member Guest", epic #2305, decision D-7). The state lives in five
+columns on `BookingGuest` — `consentStatus`, `consentRequestedAt`,
+`consentRespondedAt`, `consentRespondedByMemberId`, `consentExpiresAt` — not in
+a side table.
+
+**In the MG1 release (#2306) every one of these columns is inert.** Cross-family
+adds are still refused, `MEMBER_GUEST_WIDENING_ENABLED` is `false`, and
+therefore no code path writes a non-null `consentStatus` in any module state for
+any actor. The invariants below are the contract MG2 (#2307) onwards must hold.
+
+- **`NULL` is not `CONFIRMED`.** A null `consentStatus` means *no consent was
+  ever needed* — a family-scope add (D-6) or a row written before the feature
+  existed. `CONFIRMED` means *somebody said yes*. Conflating them is
+  irreversible: once a family row is stamped `CONFIRMED`, nothing downstream can
+  recover the fact that nobody was ever asked. A family-scope add must never
+  write anything but nulls.
+- **A consent that was never solicited is recorded as such.** `consentRequestedAt`
+  is the discriminator: it is set only when the club actually asked. Notify-only
+  auto-confirms and admin/copy/pipeline rows are `CONFIRMED` with a null
+  `consentRequestedAt`, and are still *not* written as all-nulls, because the
+  guest genuinely is cross-family and that must stay visible.
+- **Who answered is audited separately from who was asked.**
+  `consentRespondedByMemberId` may equal the guest (self-approval), differ from
+  them (a delegate approving for a target with no login, D-5/D-10), or name the
+  acting admin (an admin assignment or a booking copy). MG4's admin-assigner
+  audit rides this column; no extra column exists or is needed.
+- **A `PENDING` row holds the bed** (D-4) until `consentExpiresAt`, which is set
+  from `MemberGuestSettings.pendingHoldExpiryDays` (default 7, bounds 1–60). A
+  `PENDING` row without an expiry would be an unbounded capacity hold and is not
+  a legal shape.
+- **Consent is not transitive across bookings.** A copied booking's guest never
+  inherits the source row's approval: the copy is re-stamped as an admin
+  assignment against the copying admin. Neither may it silently become
+  consent-free.
+- **A merged-away member's guest rows keep their consent.** `BookingGuest.member`
+  is classified `move` in `src/lib/member-merge.ts`, so merging A into B
+  re-points A's guest rows — consent columns included — onto B.
+  `consentRespondedByMemberId` is an FK-less snapshot and keeps the id of
+  whoever actually answered at the time, even after that member is merged away.
+
+The eight legal column shapes, and only those eight, are:
+
+| Sub-state | `consentStatus` | `requestedAt` | `respondedAt` | `respondedByMemberId` | `expiresAt` |
+| --- | --- | --- | --- | --- | --- |
+| `FAMILY_OR_LEGACY` | `NULL` | null | null | null | null |
+| `AWAITING_TARGET` | `PENDING` | set | null | null | set |
+| `TARGET_APPROVED` | `CONFIRMED` | set | set | the guest themselves | any |
+| `DELEGATE_APPROVED` | `CONFIRMED` | set | set | someone other than the guest | any |
+| `NOTIFY_ONLY_AUTO_CONFIRMED` | `CONFIRMED` | null | null | null | null |
+| `ADMIN_ASSIGNED` | `CONFIRMED` | null | set | the acting admin | null |
+| `DECLINED` | `DECLINED` | set | set | any | any |
+| `EXPIRED` | `EXPIRED` | set | null | null | set |
+
+This table is the same data as `MEMBER_GUEST_CONSENT_SUB_STATES` in
+`src/lib/member-guest-consent.ts`, whose `classifyMemberGuestConsent` returns
+`null` for any other combination; both are pinned by
+`src/lib/__tests__/member-guest-consent.test.ts`.
+
 ## Booking Modifications
 
 Booking changes must not orphan or desynchronize:

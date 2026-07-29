@@ -39,6 +39,9 @@ export type MemberGuestSettingsValues = {
 export const MEMBER_GUEST_PENDING_HOLD_EXPIRY_DAYS_MIN = 1;
 export const MEMBER_GUEST_PENDING_HOLD_EXPIRY_DAYS_MAX = 60;
 
+// The admin-payload shape (settings + updatedAt + updatedByMemberId) is
+// deliberately NOT built here: it belongs with the admin GET that returns it,
+// which ships in MG2 (#2307) with the settings card (D-17).
 type MemberGuestSettingsRecord = Pick<
   MemberGuestSettings,
   keyof MemberGuestSettingsValues | "updatedAt" | "updatedByMemberId"
@@ -59,22 +62,6 @@ export function normalizeMemberGuestSettings(
     openMemberSearchIncludesMinors:
       record?.openMemberSearchIncludesMinors ??
       DEFAULT_MEMBER_GUEST_SETTINGS.openMemberSearchIncludesMinors,
-  };
-}
-
-export interface MemberGuestSettingsPayload {
-  settings: MemberGuestSettingsValues;
-  updatedAt: string | null;
-  updatedByMemberId: string | null;
-}
-
-export function buildMemberGuestSettingsPayload(
-  record?: Partial<MemberGuestSettingsRecord> | null,
-): MemberGuestSettingsPayload {
-  return {
-    settings: normalizeMemberGuestSettings(record),
-    updatedAt: record?.updatedAt?.toISOString() ?? null,
-    updatedByMemberId: record?.updatedByMemberId ?? null,
   };
 }
 

@@ -50,6 +50,10 @@ const SINGLETON_DELEGATES = [
   "loginSecuritySetting",
   "publicContentSettings",
   "membershipSubscriptionBillingSettings",
+  // #2306 — the member-guest policy singleton (epic #2305). Only
+  // approvalRequired + pendingHoldExpiryDays travel; the two open-search
+  // privacy toggles are excluded by owner decision D-18.
+  "memberGuestSettings",
 ];
 
 /** Build a stub DB whose singleton delegates return the given rows (else null). */
@@ -75,7 +79,7 @@ const MODULES = {
   // Every travelling module flag is a non-null Boolean; the #2200 dry-run
   // `constraints.required` audit rejects a projected null, so the fixture must
   // carry all of them (a real DB row always does).
-  lobbyDisplay: false, aiAssistant: false,
+  lobbyDisplay: false, aiAssistant: false, memberGuests: false,
 };
 const EMAIL = {
   clubName: "Grads", bookingsName: "Bookings", lodgeName: "Lodge",

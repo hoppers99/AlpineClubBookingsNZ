@@ -1,0 +1,499 @@
+// "+ Add Member Guest" (epic #2305) MG1 (#2306) — THE DARK GUARANTEE.
+//
+// MG1 lands the data model, the module switch, the policy singleton, and the
+// consent-boundary plumbing, and changes NOTHING an actor can observe. This
+// file is the proof of that, and it is the file to break first when MG2 (#2307)
+// deliberately turns the feature on — every assertion here is written so that
+// flipping MEMBER_GUEST_WIDENING_ENABLED fails it loudly rather than silently.
+//
+// The guarantee, stated exactly:
+//
+//   With MG1 merged, no request through any of the seven
+//   resolveLinkedBookingMembers call sites, in any module state, with any actor
+//   (member or admin), can create, read, update, or observe a BookingGuest row
+//   whose consentStatus is non-null.
+//
+// Note what is NOT enough on its own: "the tests pass". In this release the
+// module flag is not read by the booking path at all, so a behavioural
+// ON-vs-OFF comparison would pass even if the plumbing were missing entirely.
+// So the behavioural matrix below is paired with structural assertions read
+// from the real source files — the call-site survey, the position of the
+// boundary computation, and the fact that nothing reads the two privacy
+// toggles.
+import { readFileSync, readdirSync } from "node:fs";
+import path from "node:path";
+
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import {
+  BookingGuestValidationError,
+  computeMemberGuestBoundary,
+  resolveLinkedBookingMembers,
+  resolveLinkedBookingMembersWithBoundary,
+} from "@/lib/booking-guests";
+import {
+  CONSENT_FREE_GUEST_COLUMNS,
+  MEMBER_GUEST_WIDENING_ENABLED,
+} from "@/lib/member-guest-consent";
+import {
+  DEFAULT_MODULE_SETTINGS,
+  MODULE_DEFINITIONS,
+  MODULE_KEYS,
+} from "@/config/modules";
+import { DEFAULT_MEMBER_GUEST_SETTINGS } from "@/config/club-settings-defaults";
+import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
+
+// Test helper: reads a fixed repo file under process.cwd(); the path is
+// test-controlled, not user input.
+function readRepoFile(relativePath: string): string {
+  return readFileSync(path.resolve(process.cwd(), relativePath), "utf8");
+}
+
+// ---------------------------------------------------------------------------
+// Fixture world
+// ---------------------------------------------------------------------------
+// BOOKER and SIBLING share family group "fg-1". OUTSIDER is an ordinary active
+// member in no shared group — the exact person this epic exists to let in, and
+// the person MG1 must still refuse. INACTIVE is beyond the boundary AND
+// inactive, so it can never resolve for two independent reasons.
+const BOOKER = "m-booker";
+const SIBLING = "m-sibling";
+const OUTSIDER = "m-outsider";
+const INACTIVE = "m-inactive";
+
+const FAMILY_LINKS: Record<string, string[]> = {
+  [BOOKER]: ["fg-1"],
+  [SIBLING]: ["fg-1"],
+  [OUTSIDER]: ["fg-2"],
+  [INACTIVE]: [],
+};
+
+const MEMBERS: Record<string, { ageTier: string; active: boolean; canLogin: boolean }> = {
+  [BOOKER]: { ageTier: "ADULT", active: true, canLogin: true },
+  [SIBLING]: { ageTier: "ADULT", active: true, canLogin: true },
+  [OUTSIDER]: { ageTier: "ADULT", active: true, canLogin: true },
+  [INACTIVE]: { ageTier: "ADULT", active: false, canLogin: true },
+};
+
+type FindManyArgs = { where?: Record<string, unknown>; select?: Record<string, unknown> };
+
+/**
+ * A stand-in for the two Prisma delegates resolveLinkedBookingMembers touches.
+ * Deliberately hand-written rather than mocked per call: the family-group
+ * queries are the thing under test, so the fake has to answer them the way the
+ * database would, not the way a recorded mock happened to be primed.
+ */
+function makeDb() {
+  const familyGroupMemberFindMany = vi.fn(async (args: FindManyArgs) => {
+    const where = (args.where ?? {}) as {
+      memberId?: string;
+      familyGroupId?: { in: string[] };
+    };
+    if (where.memberId) {
+      return (FAMILY_LINKS[where.memberId] ?? []).map((familyGroupId) => ({
+        familyGroupId,
+      }));
+    }
+    const groupIds = where.familyGroupId?.in ?? [];
+    const rows: Array<{ memberId: string }> = [];
+    for (const [memberId, groups] of Object.entries(FAMILY_LINKS)) {
+      if (groups.some((g) => groupIds.includes(g))) rows.push({ memberId });
+    }
+    return rows;
+  });
+
+  const memberFindMany = vi.fn(async (args: FindManyArgs) => {
+    const where = (args.where ?? {}) as {
+      id?: { in: string[] };
+      active?: boolean;
+    };
+    const ids = where.id?.in ?? [];
+    return ids
+      .filter((id) => MEMBERS[id] && (where.active !== true || MEMBERS[id].active))
+      .map((id) => ({
+        id,
+        ageTier: MEMBERS[id].ageTier,
+        active: MEMBERS[id].active,
+        canLogin: MEMBERS[id].canLogin,
+        firstName: "Test",
+        lastName: id,
+        accessRoles: [],
+      }));
+  });
+
+  return {
+    familyGroupMember: { findMany: familyGroupMemberFindMany },
+    member: { findMany: memberFindMany },
+  };
+}
+
+type FakeDb = ReturnType<typeof makeDb>;
+type LookupDb = Parameters<typeof resolveLinkedBookingMembers>[0];
+
+function asLookupDb(db: FakeDb): LookupDb {
+  return db as unknown as LookupDb;
+}
+
+/**
+ * A ClubModuleSettings client stub for isEffectiveModuleEnabled, so each case
+ * can prove the module really IS in the state it claims while the booking
+ * outcome stays put.
+ */
+function moduleClient(memberGuests: boolean) {
+  return {
+    clubModuleSettings: {
+      findUnique: async () => ({
+        ...DEFAULT_MODULE_SETTINGS,
+        memberGuests,
+        updatedAt: new Date(0),
+        updatedByMemberId: null,
+      }),
+    },
+  };
+}
+
+/**
+ * The seven live call sites, with the `skipAuthorization` each one passes.
+ * Kept as data so the matrix below is one parameterised run rather than seven
+ * copy-pasted pairs — and pinned against the real source files by the
+ * "call-site survey" block, so this table cannot quietly go stale.
+ */
+const CALL_SITES = [
+  { name: "api/bookings/route.ts", file: "src/app/api/bookings/route.ts", skipAuthorization: false },
+  { name: "api/bookings/quote/route.ts", file: "src/app/api/bookings/quote/route.ts", skipAuthorization: false },
+  { name: "api/bookings/[id]/guests/route.ts (member actor)", file: "src/app/api/bookings/[id]/guests/route.ts", skipAuthorization: false },
+  { name: "api/bookings/[id]/guests/route.ts (admin actor)", file: "src/app/api/bookings/[id]/guests/route.ts", skipAuthorization: true },
+  { name: "api/bookings/[id]/modify-quote/route.ts", file: "src/app/api/bookings/[id]/modify-quote/route.ts", skipAuthorization: false },
+  { name: "booking-modify-plan.ts (admin)", file: "src/lib/booking-modify-plan.ts", skipAuthorization: true },
+  { name: "admin-booking-copy.ts", file: "src/lib/admin-booking-copy.ts", skipAuthorization: true },
+  { name: "group-booking.ts (join)", file: "src/lib/group-booking.ts", skipAuthorization: false },
+] as const;
+
+/** The seven files that call the helper (the guests route appears once). */
+const CALL_SITE_FILES = [
+  "src/app/api/bookings/route.ts",
+  "src/app/api/bookings/quote/route.ts",
+  "src/app/api/bookings/[id]/guests/route.ts",
+  "src/app/api/bookings/[id]/modify-quote/route.ts",
+  "src/lib/booking-modify-plan.ts",
+  "src/lib/admin-booking-copy.ts",
+  "src/lib/group-booking.ts",
+];
+
+/** Run a resolve and describe the outcome as plain, comparable data. */
+async function outcomeOf(
+  db: FakeDb,
+  memberIds: string[],
+  skipAuthorization: boolean,
+): Promise<
+  | { kind: "resolved"; ids: string[] }
+  | { kind: "refused"; message: string; status: number; className: string }
+> {
+  try {
+    const members = await resolveLinkedBookingMembers(
+      asLookupDb(db),
+      BOOKER,
+      memberIds,
+      { skipAuthorization },
+    );
+    return { kind: "resolved", ids: [...members.keys()].sort() };
+  } catch (error) {
+    if (error instanceof BookingGuestValidationError) {
+      return {
+        kind: "refused",
+        message: error.message,
+        status: error.status,
+        className: error.constructor.name,
+      };
+    }
+    throw error;
+  }
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
+
+// ---------------------------------------------------------------------------
+// A.1 / A.2 — module ON is byte-for-byte module OFF, at every call site
+// ---------------------------------------------------------------------------
+describe("dark guarantee: turning the memberGuests module on changes nothing", () => {
+  it("ships OFF by default, and the stub really does flip it", async () => {
+    // The premise of every case below. If this fails, the matrix is comparing
+    // "off" with "off" and proves nothing.
+    expect(DEFAULT_MODULE_SETTINGS.memberGuests).toBe(false);
+    await expect(isEffectiveModuleEnabled("memberGuests", moduleClient(false))).resolves.toBe(false);
+    await expect(isEffectiveModuleEnabled("memberGuests", moduleClient(true))).resolves.toBe(true);
+  });
+
+  describe.each(CALL_SITES)("$name", ({ skipAuthorization }) => {
+    it.each([
+      { label: "the booker themselves", ids: [BOOKER] },
+      { label: "a family-group co-member", ids: [SIBLING] },
+      { label: "a member beyond the family boundary", ids: [OUTSIDER] },
+      { label: "a mixed family + beyond-family party", ids: [SIBLING, OUTSIDER] },
+      { label: "an inactive member beyond the boundary", ids: [INACTIVE] },
+      { label: "no member guests at all", ids: [] },
+    ])("resolves $label identically with the module off and on", async ({ ids }) => {
+      // The module state is genuinely different across the two runs...
+      await expect(isEffectiveModuleEnabled("memberGuests", moduleClient(false))).resolves.toBe(false);
+      const off = await outcomeOf(makeDb(), ids, skipAuthorization);
+
+      await expect(isEffectiveModuleEnabled("memberGuests", moduleClient(true))).resolves.toBe(true);
+      const on = await outcomeOf(makeDb(), ids, skipAuthorization);
+
+      // ...and the booking outcome is not.
+      expect(on).toEqual(off);
+    });
+  });
+
+  it("still refuses a beyond-family add with the exact pre-existing error, module ON", async () => {
+    // A.2. The message and the status code are the load-bearing part: a new
+    // message or a new status would make module-on observable and would
+    // pre-empt D-8, which reserves the design of the neutral cross-family
+    // refusal surface for MG2.
+    await expect(isEffectiveModuleEnabled("memberGuests", moduleClient(true))).resolves.toBe(true);
+
+    const outcome = await outcomeOf(makeDb(), [OUTSIDER], false);
+    expect(outcome).toEqual({
+      kind: "refused",
+      message: "Invalid guest member reference",
+      status: 403,
+      className: "BookingGuestValidationError",
+    });
+  });
+
+  it("refuses the whole party when one member is beyond the boundary", async () => {
+    // No partial success: a mixed party is all-or-nothing, as today.
+    const outcome = await outcomeOf(makeDb(), [SIBLING, OUTSIDER], false);
+    expect(outcome).toMatchObject({ kind: "refused", status: 403 });
+  });
+
+  it("never resolves an inactive member, in either module state or either authorization mode", async () => {
+    // A.5. Inactive-ness is enforced after the boundary, so an admin path that
+    // skips authorization must still be refused here.
+    for (const skipAuthorization of [false, true]) {
+      const outcome = await outcomeOf(makeDb(), [INACTIVE], skipAuthorization);
+      expect(outcome).toMatchObject({ kind: "refused" });
+    }
+  });
+
+  it("keeps the group-booking join family-scoped (MG1-D-a)", async () => {
+    // group-booking.ts passes NO options, so authorization is enforced: a
+    // joiner can still only bring their own family. Owner decision MG1-D-a
+    // keeps it that way in v1 even once the rest of the feature is live.
+    const source = readRepoFile("src/lib/group-booking.ts");
+    const call = source.slice(source.indexOf("resolveLinkedBookingMembers("));
+    expect(call.slice(0, call.indexOf(");"))).not.toContain("skipAuthorization");
+
+    const outcome = await outcomeOf(makeDb(), [OUTSIDER], false);
+    expect(outcome).toMatchObject({ kind: "refused", status: 403 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A.4 — the boundary is computed on the skipAuthorization path
+// ---------------------------------------------------------------------------
+describe("the family boundary is computed on every path, including the admin ones", () => {
+  it("classifies a beyond-family member correctly with skipAuthorization set", async () => {
+    // THE assertion of this PR. It cannot be inferred from behaviour: in this
+    // release the outcome is identical whether or not the boundary was ever
+    // computed. So the computed value is read directly. If the computation is
+    // moved inside the `if (!options?.skipAuthorization)` branch, this fails.
+    const { members, boundary } = await resolveLinkedBookingMembersWithBoundary(
+      asLookupDb(makeDb()),
+      BOOKER,
+      [SIBLING, OUTSIDER],
+      { skipAuthorization: true },
+    );
+
+    expect([...members.keys()].sort()).toEqual([OUTSIDER, SIBLING].sort());
+    expect(boundary.scopeByMemberId.get(SIBLING)).toBe("FAMILY");
+    expect(boundary.scopeByMemberId.get(OUTSIDER)).toBe("BEYOND_FAMILY");
+    expect(boundary.beyondFamilyMemberIds).toEqual([OUTSIDER]);
+  });
+
+  it("actually queries the family groups on the skipAuthorization path", async () => {
+    // Belt and braces for the same rule, from the other side: the family-group
+    // reads must happen even where nothing is enforced.
+    const db = makeDb();
+    await resolveLinkedBookingMembersWithBoundary(asLookupDb(db), BOOKER, [OUTSIDER], {
+      skipAuthorization: true,
+    });
+    expect(db.familyGroupMember.findMany).toHaveBeenCalled();
+  });
+
+  it("classifies the booker themselves as inside the boundary", async () => {
+    const boundary = await computeMemberGuestBoundary(asLookupDb(makeDb()), BOOKER, [BOOKER]);
+    expect(boundary.scopeByMemberId.get(BOOKER)).toBe("FAMILY");
+    expect(boundary.beyondFamilyMemberIds).toEqual([]);
+  });
+
+  it("treats a booker with no family group as a boundary of one", async () => {
+    const boundary = await computeMemberGuestBoundary(asLookupDb(makeDb()), INACTIVE, [
+      INACTIVE,
+      SIBLING,
+    ]);
+    expect(boundary.scopeByMemberId.get(INACTIVE)).toBe("FAMILY");
+    expect(boundary.scopeByMemberId.get(SIBLING)).toBe("BEYOND_FAMILY");
+  });
+
+  it("adds no query to the authorized path (the boundary IS the allow-set)", async () => {
+    // The boundary reuses getAllowedGuestMemberIds rather than introducing a
+    // second definition of "family", so the ordinary member path costs exactly
+    // what it did before: two FamilyGroupMember reads, not four.
+    const db = makeDb();
+    await resolveLinkedBookingMembers(asLookupDb(db), BOOKER, [SIBLING], {
+      skipAuthorization: false,
+    });
+    expect(db.familyGroupMember.findMany).toHaveBeenCalledTimes(2);
+  });
+
+  it("does no work at all for a party with no member guests", async () => {
+    const db = makeDb();
+    const members = await resolveLinkedBookingMembers(asLookupDb(db), BOOKER, [null, "", undefined]);
+    expect(members.size).toBe(0);
+    expect(db.familyGroupMember.findMany).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Structural pins — read from the real source, not from behaviour
+// ---------------------------------------------------------------------------
+describe("call-site survey", () => {
+  it("still has exactly seven files calling resolveLinkedBookingMembers", () => {
+    // The original #2245 survey said six. There are seven. If an eighth
+    // appears, MG2's widening has one more path to consider and this fails
+    // until someone looks at it.
+    for (const file of CALL_SITE_FILES) {
+      expect(readRepoFile(file)).toContain("resolveLinkedBookingMembers(");
+    }
+    expect(new Set(CALL_SITES.map((c) => c.file)).size).toBe(CALL_SITE_FILES.length);
+  });
+
+  it("changes no call site in this release", () => {
+    // MG1 deliberately leaves every caller on the map-only wrapper: the
+    // boundary-returning variant is MG2's to adopt. This also keeps MG1 off
+    // api/bookings/route.ts, which is shared with the in-flight #2265 lane.
+    for (const file of CALL_SITE_FILES) {
+      expect(readRepoFile(file)).not.toContain("resolveLinkedBookingMembersWithBoundary");
+    }
+  });
+});
+
+describe("the boundary computation sits outside the authorization branch", () => {
+  it("computes the boundary before the skipAuthorization check", () => {
+    // The mutation this guards (E.23): move the computeMemberGuestBoundary call
+    // inside `if (!options?.skipAuthorization)`. The behavioural test above
+    // catches it too; this one says WHY in the failure message.
+    const source = readRepoFile("src/lib/booking-guests.ts");
+    const body = source.slice(
+      source.indexOf("export async function resolveLinkedBookingMembersWithBoundary"),
+    );
+    const boundaryAt = body.indexOf("await computeMemberGuestBoundary(");
+    const branchAt = body.indexOf("if (!options?.skipAuthorization)");
+    expect(boundaryAt).toBeGreaterThan(-1);
+    expect(branchAt).toBeGreaterThan(-1);
+    expect(boundaryAt).toBeLessThan(branchAt);
+  });
+});
+
+describe("nothing in this release can write a non-null consentStatus", () => {
+  it("keeps the widening predicate off", () => {
+    // E.22's target. MG2 flips this; when it does, the ON/OFF matrix and the
+    // beyond-family refusal above all fail, which is the intended alarm.
+    expect(MEMBER_GUEST_WIDENING_ENABLED).toBe(false);
+  });
+
+  it("declares the only consent shape a guest row can carry today", () => {
+    // A.3. Family adds are consent-FREE, not consent-GIVEN: null must never be
+    // written as CONFIRMED, or MG2/MG4 lose the ability to tell "nobody had to
+    // be asked" from "somebody said yes".
+    expect(CONSENT_FREE_GUEST_COLUMNS).toEqual({
+      consentStatus: null,
+      consentRequestedAt: null,
+      consentRespondedAt: null,
+      consentRespondedByMemberId: null,
+      consentExpiresAt: null,
+    });
+  });
+
+  it("has no production code that assigns any consent column", () => {
+    // The strongest available form of "dark": not "no test saw it happen", but
+    // "no source line does it". Scanned over src/, excluding tests and the
+    // consent model's own type/table declarations.
+    const offenders = sourceFilesUnder("src")
+      .filter((file) => !file.includes("__tests__"))
+      .filter((file) => !file.endsWith("member-guest-consent.ts"))
+      .filter((file) => /consent(Status|RequestedAt|RespondedAt|RespondedByMemberId|ExpiresAt)\s*:/.test(readRepoFile(file)));
+    expect(offenders).toEqual([]);
+  });
+});
+
+describe("the two open-search privacy toggles are inert and off", () => {
+  it("ships both off", () => {
+    // E.25's target, twice over: the shared defaults constant AND the schema
+    // column default, because config transfer reads one and a fresh install
+    // gets the other.
+    expect(DEFAULT_MEMBER_GUEST_SETTINGS.openMemberSearchEnabled).toBe(false);
+    expect(DEFAULT_MEMBER_GUEST_SETTINGS.openMemberSearchIncludesMinors).toBe(false);
+
+    const schema = readRepoFile("prisma/schema.prisma");
+    expect(schema).toMatch(/openMemberSearchEnabled\s+Boolean\s+@default\(false\)/);
+    expect(schema).toMatch(/openMemberSearchIncludesMinors\s+Boolean\s+@default\(false\)/);
+  });
+
+  it("is read by no production code at all", () => {
+    // D.20. Until MG3 ships the type-ahead, the ONLY files allowed to name
+    // these columns are the schema, the shared defaults, the loader that fills
+    // them in, and the config-transfer spec that refuses to export them.
+    const allowed = new Set([
+      "src/config/club-settings-defaults.ts",
+      "src/lib/member-guest-settings.ts",
+      "src/lib/config-transfer/categories/club-settings.ts",
+    ]);
+    const readers = sourceFilesUnder("src")
+      .filter((file) => !file.includes("__tests__"))
+      .filter((file) => !allowed.has(file.replace(/\\/g, "/")))
+      .filter((file) => /openMemberSearch/.test(readRepoFile(file)));
+    expect(readers).toEqual([]);
+  });
+});
+
+describe("the module flag itself gates nothing yet", () => {
+  it("is a real module key with no reader in the booking path", () => {
+    expect(MODULE_KEYS).toContain("memberGuests");
+    // Deliberate: the refusal is gated on MEMBER_GUEST_WIDENING_ENABLED, never
+    // on the module. If a `memberGuests` module check appears in a booking
+    // path, module-on becomes observable and the whole matrix above is void.
+    const readers = sourceFilesUnder("src")
+      .filter((file) => !file.includes("__tests__"))
+      .filter((file) => /isEffectiveModuleEnabled\(\s*["']memberGuests["']/.test(readRepoFile(file)));
+    expect(readers).toEqual([]);
+  });
+
+  it("tells an admin plainly that the switch does nothing yet (D-17)", () => {
+    const definition = MODULE_DEFINITIONS.memberGuests;
+    expect(definition.key).toBe("memberGuests");
+    expect(definition.label.length).toBeGreaterThan(0);
+    expect(definition.dependencies.join(" ")).toMatch(/not available yet/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Local file walker (kept at the bottom; it is plumbing, not the point)
+// ---------------------------------------------------------------------------
+function sourceFilesUnder(dir: string): string[] {
+  const out: string[] = [];
+  const walk = (current: string) => {
+    for (const entry of readdirSync(path.resolve(process.cwd(), current), {
+      withFileTypes: true,
+    })) {
+      const next = `${current}/${entry.name}`;
+      if (entry.isDirectory()) walk(next);
+      else if (/\.tsx?$/.test(entry.name)) out.push(next);
+    }
+  };
+  walk(dir);
+  return out;
+}
