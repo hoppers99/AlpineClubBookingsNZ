@@ -376,6 +376,22 @@ export function EmailMessageSettingsPanel() {
                 required: currentTemplate.requiredTokens.includes(token),
               }))}
             />
+            {/* #2268: the guidance that used to live inside the default bodies
+                as "[only when ...]" notes — which the engine could not act on,
+                so it printed them to members. Stated once, here, where an
+                operator actually sees it. */}
+            <p className="text-muted-foreground text-xs">
+              Tokens are substituted as-is — there is no &quot;only if&quot;.
+              A value that does not apply to a particular send renders as
+              nothing, so writing your own label in front of it (for example
+              <code className="mx-1">Door code: {"{{doorCode}}"}</code>) leaves
+              a bare label on every email where it is missing. Tokens ending in
+              <code className="mx-1">Note</code> or
+              <code className="mx-1">Line</code> already contain the whole line,
+              label included: put one on a line of its own and it disappears
+              cleanly when there is nothing to say. Never write notes to
+              yourself into the body — they are sent to the recipient verbatim.
+            </p>
           </div>
         ) : null}
 
