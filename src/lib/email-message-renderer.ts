@@ -38,6 +38,7 @@ interface EmailTemplateValidationIssue {
     | "unknown_token"
     | "disallowed_token"
     | "missing_required_token"
+    | "sign_prefixed_token"
     | "sensitive_subject_token"
     | "subject_line_break"
     | "raw_html"
@@ -54,18 +55,25 @@ export interface EmailTemplateValidationResult {
   unknownTokens: string[];
   disallowedTokens: string[];
   missingRequiredTokens: string[];
+  signPrefixedTokens: string[];
   sensitiveSubjectTokens: string[];
   unsafeLinks: string[];
 }
 
-// #2268: a required token that moved to a pre-composed line still accepts the
-// raw token it replaced. `{{doorCodeNote}}` is the whole "Door code: 1234"
-// line (or nothing at all, for a lodge with no code), but an override an admin
-// saved before #2268 writes the bare `{{doorCode}}` — it must keep validating,
-// keep rendering, and keep being re-savable.
-const REQUIRED_TOKEN_ALTERNATIVES: Record<string, readonly string[]> = {
-  doorCodeNote: ["doorCode"],
-};
+// #2267: these tokens render their own sign — "-$30.00" for a discount,
+// "+$1,370.00" for a promo that raises the price — and render nothing at all
+// when no promo applied. Typing a minus in front of one ("Discount:
+// -{{promoAdjustment}}") re-creates the exact incident #2267 fixed: a member
+// reading "Discount: -+$1,370.00" on a surcharge, or a bare "Discount: -" on a
+// booking with no promo. The editor rejects it at save time instead.
+const SIGN_CARRYING_TOKEN_PATTERN =
+  /[-+]\s*\{\{\s*(promoAdjustment|promoSummary)\s*\}\}/g;
+
+function findSignPrefixedTokens(value: string): string[] {
+  return Array.from(
+    new Set(Array.from(value.matchAll(SIGN_CARRYING_TOKEN_PATTERN), (m) => m[1])),
+  );
+}
 
 function extractTemplateTokens(value: string): string[] {
   return Array.from(value.matchAll(/\{\{([^{}]+)\}\}/g))
@@ -181,17 +189,19 @@ export function validateEmailTemplateContent({
   // must be present in the body itself — a token in the subject does not
   // satisfy the requirement. An empty body override falls back to the default
   // body, which already carries the required tokens, so it is not checked.
+  // A required token may also be satisfied by a registered alternative that
+  // carries the same information (#2267): the booking-confirmed body now uses
+  // the pre-composed {{doorCodeNote}}, but an override saved earlier writes
+  // its own "Door code: {{doorCode}}" line and must stay valid and re-savable.
   const requiredTokenSet = new Set(definition?.requiredTokens ?? []);
+  const requiredTokenAlternatives = definition?.requiredTokenAlternatives ?? {};
   const bodyTokenSet = new Set(bodyTokens);
   const missingRequiredTokens =
     bodyText.trim().length > 0
       ? Array.from(requiredTokenSet).filter(
           (token) =>
             !bodyTokenSet.has(token) &&
-            // #2268: a required token that became a pre-composed line is also
-            // satisfied by the raw token it replaced, so an override saved
-            // before the change keeps validating and keeps re-saving.
-            !(REQUIRED_TOKEN_ALTERNATIVES[token] ?? []).some((alternative) =>
+            !(requiredTokenAlternatives[token] ?? []).some((alternative) =>
               bodyTokenSet.has(alternative),
             ),
         )
@@ -202,6 +212,26 @@ export function validateEmailTemplateContent({
       message: "Required template tokens are missing from the body",
       tokens: missingRequiredTokens,
     });
+  }
+
+  const signPrefixedByField = {
+    subject: findSignPrefixedTokens(subject),
+    bodyText: findSignPrefixedTokens(bodyText),
+  };
+  const signPrefixedTokens = Array.from(
+    new Set([...signPrefixedByField.subject, ...signPrefixedByField.bodyText]),
+  );
+  for (const field of ["subject", "bodyText"] as const) {
+    const fieldTokens = signPrefixedByField[field];
+    if (fieldTokens.length > 0) {
+      issues.push({
+        code: "sign_prefixed_token",
+        field,
+        message:
+          "Remove the plus or minus you typed in front of this token. It already includes its own sign — a discount reads -$30.00 and a promo that raises the price reads +$1,370.00 — and it renders nothing at all when no promo applied, so a sign of your own would leave a stray + or - in the email",
+        tokens: fieldTokens,
+      });
+    }
   }
 
   // Subjects are persisted in EmailLog and travel in clear mail headers, so
@@ -251,6 +281,7 @@ export function validateEmailTemplateContent({
     unknownTokens,
     disallowedTokens,
     missingRequiredTokens,
+    signPrefixedTokens,
     sensitiveSubjectTokens,
     unsafeLinks,
   };

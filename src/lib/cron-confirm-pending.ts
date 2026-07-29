@@ -43,6 +43,7 @@ import {
   sendSplitGuestPaymentLinkEmail,
   sendSplitGuestPortionCancelledEmail,
 } from "./email";
+import { bookingPromoEmailOptions } from "./booking-promo-email-options";
 import { getNonMemberHoldDays } from "./cancellation";
 import { processWaitlistForDates } from "./waitlist";
 
@@ -290,19 +291,6 @@ function savedPaymentMethodForBooking(
   return null;
 }
 
-function promoEmailOptions(booking: PendingBooking) {
-  return {
-    lodgeId: booking.lodgeId,
-    ...(booking.promoRedemption?.promoCode
-      ? {
-          discountCents: booking.discountCents,
-          promoAdjustmentCents: booking.promoAdjustmentCents,
-          promoCode: booking.promoRedemption.promoCode.code,
-        }
-      : {}),
-  };
-}
-
 async function queueXeroInvoice(bookingId: string, logMessage: string) {
   try {
     const queuedInvoice = await enqueueXeroBookingInvoiceOperation(bookingId);
@@ -331,7 +319,7 @@ async function sendConfirmationEmail(booking: PendingBooking) {
       booking.checkOut,
       booking.guests.length,
       booking.finalPriceCents,
-      promoEmailOptions(booking)
+      bookingPromoEmailOptions(booking)
     );
   } catch (emailErr) {
     logger.error(

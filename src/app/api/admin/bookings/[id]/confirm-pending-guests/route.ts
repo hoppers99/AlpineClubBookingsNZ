@@ -26,6 +26,7 @@ import {
   sendAdminPaymentFailureAlert,
   sendBookingConfirmedEmail,
 } from "@/lib/email";
+import { bookingPromoEmailOptions } from "@/lib/booking-promo-email-options";
 import { createStructuredAuditLog, getAuditRequestContext } from "@/lib/audit";
 import logger from "@/lib/logger";
 
@@ -115,16 +116,7 @@ export async function POST(
     checkIn: booking.checkIn,
     checkOut: booking.checkOut,
   };
-  const promoEmailOptions = {
-    lodgeId: booking.lodgeId,
-    ...(booking.promoRedemption?.promoCode
-      ? {
-          discountCents: booking.discountCents,
-          promoAdjustmentCents: booking.promoAdjustmentCents,
-          promoCode: booking.promoRedemption.promoCode.code,
-        }
-      : {}),
-  };
+  const promoEmailOptions = bookingPromoEmailOptions(booking);
   const hasSavedPaymentMethod = Boolean(
     booking.payment?.stripePaymentMethodId && booking.payment?.stripeCustomerId
   );

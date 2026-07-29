@@ -20,6 +20,9 @@ export interface EmailTemplateDefinition {
   defaultBody: string;
   allowedTokens: string[];
   requiredTokens: string[];
+  // #2267: per required token, the other tokens an override may use instead
+  // and still satisfy the requirement (see REQUIRED_TOKEN_ALTERNATIVES).
+  requiredTokenAlternatives: Record<string, string[]>;
   sampleData: Record<string, string>;
   triggerSummary: string;
   frequency: string;
@@ -144,23 +147,44 @@ export const EXTRA_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, strin
   "membership-payment-recorded": ["amount"],
   // Split-booking parent (#738): a pre-composed sentence describing the
   // provisional non-member portion; empty for a non-split confirmation.
-  // #2267: the legacy per-piece promo tokens left the default body when it
-  // moved to the pre-composed {{promoSummary}} block, but the send still
-  // supplies them, so an existing saved override that references them stays
-  // valid and re-savable. {{promoAdjustment}} is the signed value
-  // ("-$12.00" / "+$1,370.00"); {{discount}} can only express a price cut.
+  // #2267: the legacy per-piece promo and door-code tokens left the default
+  // body when it moved to the pre-composed {{promoSummary}} and
+  // {{doorCodeNote}} blocks, but the send still supplies them, so an existing
+  // saved override that references them stays valid and re-savable.
+  // {{promoAdjustment}} is the signed value ("-$12.00" / "+$1,370.00");
+  // {{discount}} can only express a price cut. The pre-composed tokens are
+  // listed here too (belt and braces): they are allowed for an override even
+  // if a later default-body rewrite stops using one of them.
   "booking-confirmed": [
     "discount",
+    "doorCode",
+    "doorCodeNote",
     "promoAdjustment",
     "promoCode",
+    "promoSummary",
     "provisionalGuestsNote",
     "subtotal",
   ],
   // #2267: since the ragged "[only when …]" lines were removed, the default
-  // body leans on the pre-composed {{paymentNote}} for the additional-payment
-  // story; these per-piece tokens stay allowed (and supplied) for overrides.
+  // body leans on the pre-composed {{changeSummary}} (which rows changed) and
+  // {{paymentNote}} (the additional-payment story). Every per-piece token the
+  // old body built its rows from stays allowed — and supplied — so an override
+  // saved before this change keeps rendering and re-saving. The pre-composed
+  // tokens are listed too, so a later default-body rewrite cannot silently
+  // withdraw permission to use them in an override.
   "booking-modified": [
     "additionalPaymentMethod",
+    "changeFee",
+    "changeSummary",
+    "newCheckIn",
+    "newCheckOut",
+    "newGuestCount",
+    "newTotal",
+    "oldCheckIn",
+    "oldCheckOut",
+    "oldGuestCount",
+    "oldTotal",
+    "paymentNote",
     "paymentReference",
     "xeroInvoiceNumber",
   ],
@@ -229,12 +253,27 @@ export const EXTRA_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, strin
   "booking-request-quote": ["respondUrl"],
 };
 
+// #2267: tokens an override may use INSTEAD of a required token and still
+// satisfy the requirement. The requirement is "this information must stay in
+// the body", not "this exact token" — the booking-confirmed body now carries
+// the pre-composed {{doorCodeNote}} line (which renders nothing when the club
+// has no door code), but an override saved before that change writes its own
+// "Door code: {{doorCode}}" line and must keep validating and re-saving.
+const REQUIRED_TOKEN_ALTERNATIVES: Partial<
+  Record<EmailAuditTemplateName, Record<string, string[]>>
+> = {
+  "booking-confirmed": { doorCodeNote: ["doorCode"] },
+  // #2268: the same swap on the pre-arrival reminder.
+  "pre-arrival-reminder": { doorCodeNote: ["doorCode"] },
+};
+
 const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>> = {
-  "booking-confirmed": ["CLUB_LODGE_TRAVEL_NOTE", "doorCode"],
-  // #2268: the door-code line is now pre-composed by the sender, so the
-  // default body carries {{doorCodeNote}} instead of a bare "Door code:"
-  // heading that printed even for a lodge with no code. An override written
-  // before #2268 still satisfies this through REQUIRED_TOKEN_ALTERNATIVES.
+  "booking-confirmed": ["CLUB_LODGE_TRAVEL_NOTE", "doorCodeNote"],
+  // #2268: pre-arrival-reminder gets the same treatment #2267 gave
+  // booking-confirmed — the door-code line is composed by the sender, so the
+  // body carries {{doorCodeNote}} instead of a bare "Door code:" heading that
+  // printed even for a lodge with no code. An override written before the
+  // change still satisfies this through REQUIRED_TOKEN_ALTERNATIVES.
   "pre-arrival-reminder": ["CLUB_LODGE_TRAVEL_NOTE", "doorCodeNote"],
   "password-reset": ["token"],
   "admin-password-reset": ["token"],
@@ -642,12 +681,15 @@ export function sampleValue(token: string): string {
   }
   if (token === "LODGE_CAPACITY") return String(FALLBACK_LODGE_CAPACITY);
   if (token === "doorCode") return "1234";
+  // #2267: the whole pre-composed line, exactly as the send builds it, so the
+  // preview shows what a member reads (and shows nothing extra when a club has
+  // no door code — the live send renders this token empty).
+  if (token === "doorCodeNote") return "Door code: 1234";
   if (token === "expectedArrivalTime") return "16:30";
   // #2268 pre-composed line tokens. Each preview mirrors exactly what its
-  // sender composes -- including the trailing blank line -- so the admin
-  // editor's preview shows the shape a member will read, and a value that is
-  // absent previews as nothing at all rather than as a dangling label.
-  if (token === "doorCodeNote") return "Door code: 1234\n\n";
+  // sender composes, so the admin editor shows the shape a member will read
+  // and a value that is absent previews as nothing at all rather than as a
+  // dangling label. ({{doorCodeNote}} is previewed above, with #2267.)
   if (token === "expectedArrivalNote") return "Expected arrival: 16:30\n";
   // Shared by checkin-reminder and chore-roster. The chore-roster body
   // already writes its own lead-in line, so the preview is the chore lines
@@ -705,13 +747,37 @@ export function sampleValue(token: string): string {
   // #2267: mirror what sendBookingConfirmedEmail composes — each row carries
   // its own trailing newline so the default body's
   // "{{promoSummary}}Total Paid: …" previews as a contiguous block.
+  //
+  // The promo money samples deliberately reconcile against the generic
+  // "$123.45" that every *total* token falls through to below: $153.45 subtotal
+  // minus a $30.00 promo is $123.45 paid. A preview whose own arithmetic does
+  // not add up teaches an admin to distrust the preview.
   if (token === "promoSummary") {
-    return "Subtotal: $150.00\nPromo adjustment (PROMO2026): -$30.00\n";
+    return "Subtotal: $153.45\nPromo adjustment (PROMO2026): -$30.00\n";
   }
+  // #2267: one coherent booking-modified sample — a 2-guest stay whose dates
+  // moved from 1–3 Jul to 8–10 Jul and whose price rose from $123.45 to
+  // $150.00 with no change fee, leaving $26.55 to pay. Every token below tells
+  // that same story, including the per-piece ones a legacy override uses, so
+  // an admin's preview reconciles instead of mixing three unrelated amounts.
+  if (token === "modificationTypeLabel") return "Dates Changed";
+  if (token === "paymentNote") {
+    return "An additional payment of $26.55 is required.";
+  }
+  if (token === "changeSummary") {
+    return "Previous Dates: 1 Jul 2026 – 3 Jul 2026\nNew Dates: 8 Jul 2026 – 10 Jul 2026\nGuests: 2\nPrevious Total: $123.45\nNew Total: $150.00\n";
+  }
+  if (token === "oldCheckIn") return "1 Jul 2026";
+  if (token === "oldCheckOut") return "3 Jul 2026";
+  if (token === "newCheckIn") return "8 Jul 2026";
+  if (token === "newCheckOut") return "10 Jul 2026";
+  if (token === "oldTotal") return "$123.45";
+  if (token === "newTotal") return "$150.00";
+  if (token === "changeFee") return "$0.00";
   if (token === "promoAdjustment") return "-$30.00";
   if (token === "promoCode") return "PROMO2026";
   if (token === "discount") return "$30.00";
-  if (token === "subtotal") return "$150.00";
+  if (token === "subtotal") return "$153.45";
   if (token.endsWith("Email") || token === "email") return "member@example.org";
   if (token.endsWith("Url") || token.endsWith("URL")) {
     return "https://bookings.example.org/admin";
@@ -749,6 +815,8 @@ export const EMAIL_TEMPLATE_DEFINITIONS: EmailTemplateDefinition[] = (
     ...GLOBAL_EMAIL_TEMPLATE_TOKENS,
     ...extractTokensFromDefaults(defaults.defaultSubject, defaults.defaultBody),
     ...(EXTRA_TEMPLATE_TOKENS[key] ?? []),
+    // An accepted alternative to a required token is by definition allowed.
+    ...Object.values(REQUIRED_TOKEN_ALTERNATIVES[key] ?? {}).flat(),
   ]);
   const metadata = TEMPLATE_TRIGGER_METADATA[key] ?? {
     triggerSummary: "Audited application email",
@@ -763,6 +831,7 @@ export const EMAIL_TEMPLATE_DEFINITIONS: EmailTemplateDefinition[] = (
     defaultBody: defaults.defaultBody,
     allowedTokens,
     requiredTokens: REQUIRED_TEMPLATE_TOKENS[key] ?? [],
+    requiredTokenAlternatives: REQUIRED_TOKEN_ALTERNATIVES[key] ?? {},
     sampleData: Object.fromEntries(
       allowedTokens.map((token) => [token, sampleValue(token)]),
     ),
@@ -816,6 +885,9 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "bookingReferenceNote",
   "bumpedMemberName",
   "changeFee",
+  // #2267: pre-composed block of the booking-modification rows that actually
+  // changed (Previous/New pairs only where something moved).
+  "changeSummary",
   "checkIn",
   "checkOut",
   "childName",
@@ -838,6 +910,8 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "details",
   "discount",
   "doorCode",
+  // #2267: pre-composed "Door code: 1234" line; empty when the lodge has no
+  // door code recorded, so the body never carries a dangling label.
   "doorCodeNote",
   "email",
   "endDate",
@@ -1006,6 +1080,9 @@ const SENSITIVE_EMAIL_SUBJECT_TOKENS = [
   "confirmUrl",
   "confirmationUrl",
   "doorCode",
+  // #2267: carries the door code itself, so it is subject-forbidden exactly
+  // like the bare value.
+  "doorCodeNote",
   "loginUrl",
   "payUrl",
   "pin",

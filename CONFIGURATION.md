@@ -199,7 +199,23 @@ older per-piece tokens (`{{subtotal}}`, `{{discount}}`, `{{promoCode}}`,
 `{{promoAdjustment}}`) remain valid for existing overrides, but only
 `{{promoSummary}}` handles all promo shapes cleanly — `{{discount}}` is empty
 for a price-raising promo, and `{{promoAdjustment}}` carries its own `+`/`-`
-sign, so never write a manual minus in front of it.
+sign, so never write a manual minus in front of it. The editor enforces that
+last point: a body or subject that types `+` or `-` immediately before
+`{{promoSummary}}` or `{{promoAdjustment}}` is rejected on save with an
+explanation.
+
+Two other pre-composed tokens follow the same pattern. The booking-confirmed
+body's `{{doorCodeNote}}` renders the whole `Door code: 1234` line, and nothing
+at all for a lodge with no door code recorded — an override may instead write
+its own label around the bare `{{doorCode}}` value, and either form satisfies
+the "the door code must stay in the body" rule. The booking-modified body's
+`{{changeSummary}}` renders only the rows that actually changed
+(`Previous`/`New` pairs where something moved, a single `Dates:` / `Guests:` /
+`Total:` line where it did not, and a `Change Fee:` line only when a fee was
+charged), so an override that keeps it always matches the built-in HTML email.
+The per-piece `{{oldCheckIn}}`, `{{newTotal}}`, `{{changeFee}}` and siblings
+stay available for existing overrides, but they cannot express "only show what
+changed" — a body built from them lists every row on every modification.
 
 Both of those are instances of one rule that governs **every** admin-editable
 email body: **there is no conditional syntax.** `renderTemplateString` is a flat

@@ -32,7 +32,7 @@ export const EMAIL_AUDIT_DEFAULTS = {
   },
   "booking-confirmed": {
     "defaultSubject": "Booking Confirmed - {{CLUB_LODGE_NAME}}",
-    "defaultBody": "Booking Confirmed\n\nHi {{firstName}}, your lodge booking has been confirmed!\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nGuests: {{guestCount}}\n{{promoSummary}}Total Paid: {{totalPaid}}\n\nPayment has been processed successfully.\n\n{{provisionalGuestsNote}}\n\nHow to get to the lodge\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\nDoor code: {{doorCode}}\n\nYou can view your booking details and manage your stay from your account.\n\nView Booking: {{BASE_URL}}/bookings"
+    "defaultBody": "Booking Confirmed\n\nHi {{firstName}}, your lodge booking has been confirmed!\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nGuests: {{guestCount}}\n{{promoSummary}}Total Paid: {{totalPaid}}\n\nPayment has been processed successfully.\n\n{{provisionalGuestsNote}}\n\nHow to get to the lodge\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\n{{doorCodeNote}}\n\nYou can view your booking details and manage your stay from your account.\n\nView Booking: {{BASE_URL}}/bookings"
   },
   "booking-pending": {
     "defaultSubject": "Booking Pending - {{CLUB_LODGE_NAME}}",
@@ -52,7 +52,7 @@ export const EMAIL_AUDIT_DEFAULTS = {
   },
   "booking-modified": {
     "defaultSubject": "Booking Modified - {{CLUB_LODGE_NAME}}",
-    "defaultBody": "Booking Modified\n\nHi {{firstName}}, your booking has been updated.\n\n{{modificationTypeLabel}}\n\nPrevious Dates: {{oldCheckIn}} – {{oldCheckOut}}\nNew Dates: {{newCheckIn}} – {{newCheckOut}}\nPrevious Guests: {{oldGuestCount}}\nNew Guests: {{newGuestCount}}\nPrevious Total: {{oldTotal}}\nNew Total: {{newTotal}}\nChange Fee: {{changeFee}}\n\n{{paymentNote}}\n\nYou can view your updated booking details from your account.\n\nView Booking: {{BASE_URL}}/bookings"
+    "defaultBody": "Booking Modified\n\nHi {{firstName}}, your booking has been updated.\n\n{{modificationTypeLabel}}\n\n{{changeSummary}}\n{{paymentNote}}\n\nYou can view your updated booking details from your account.\n\nView Booking: {{BASE_URL}}/bookings"
   },
   "checkin-reminder": {
     "defaultSubject": "Check-in Reminder - {{CLUB_LODGE_NAME}}",
@@ -60,7 +60,7 @@ export const EMAIL_AUDIT_DEFAULTS = {
   },
   "pre-arrival-reminder": {
     "defaultSubject": "Pre-arrival Information - {{CLUB_LODGE_NAME}}",
-    "defaultBody": "Upcoming Lodge Stay\n\nHi {{firstName}}, your lodge stay is coming up.\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nGuests: {{guestCount}}\n{{expectedArrivalNote}}\nHow to get to the lodge\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\n{{doorCodeNote}}View Booking: {{BASE_URL}}/bookings"
+    "defaultBody": "Upcoming Lodge Stay\n\nHi {{firstName}}, your lodge stay is coming up.\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nGuests: {{guestCount}}\n{{expectedArrivalNote}}\nHow to get to the lodge\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\n{{doorCodeNote}}\n\nView Booking: {{BASE_URL}}/bookings"
   },
   "chore-roster": {
     "defaultSubject": "Your chore roster for {{formattedDate}} - {{CLUB_LODGE_NAME}}",
