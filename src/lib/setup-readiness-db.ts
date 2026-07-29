@@ -65,6 +65,7 @@ export async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot>
         analytics: true,
         lobbyDisplay: true,
         aiAssistant: true,
+        memberGuests: true,
       },
     }),
     prisma.ageTierSetting.count(),

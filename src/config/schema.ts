@@ -148,6 +148,7 @@ export const featureFlagsSchema = z
     analytics: z.boolean(),
     lobbyDisplay: z.boolean(),
     aiAssistant: z.boolean(),
+    memberGuests: z.boolean(),
   })
   .strict();
 

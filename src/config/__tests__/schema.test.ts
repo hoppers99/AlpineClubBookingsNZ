@@ -238,6 +238,7 @@ describe("featureFlagsSchema", () => {
         analytics: false,
         lobbyDisplay: false,
         aiAssistant: false,
+        memberGuests: false,
       }),
     ).toBeDefined();
   });
