@@ -4,6 +4,23 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **A member's admin page now draws the whole family as a read-only tree
+  (#2253).** At the top of the Family section, the page works out how everyone
+  connects from the links the club has already recorded — parents, second
+  parents, confirmed partners — and follows them across households, so
+  grandparents, siblings, half-siblings, cousins, and a dependant's other
+  parent all appear, each drawn once, capped at four generations above and
+  below the member being viewed. Relationships that are not stored anywhere
+  are marked **Derived** with a dashed outline, so a worked-out sibling is
+  never mistaken for a recorded claim — and half-siblings are separated from
+  full siblings by *which* parents are shared, not how many. Where a child's
+  club email goes to someone further up the family than their own parent, the
+  tree says so in words and names the person. Archived relatives stay in the
+  tree, badged, with their contact details hidden, rather than silently
+  vanishing and making a grandparent look unrelated. Nothing in the tree can
+  be edited: it is a picture of the Parent Links, Partner, and Dependents
+  cards below it, and changing those changes the tree.
+
 - **The lobby display's built-in boards can be restored on a club that never
   got them, and the three words the screen uses are finally defined (#2247).**
   A club whose database was created before the lobby display existed had none
