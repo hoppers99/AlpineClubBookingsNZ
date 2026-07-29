@@ -6,6 +6,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { BackLink } from "@/components/admin/back-link";
+import {
+  DisplayTokenTextarea,
+  useDisplayLodgeConfig,
+} from "@/components/admin/display-token-textarea";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import {
   ADMIN_FORBIDDEN_SAVE_REASON,
@@ -23,6 +27,14 @@ import {
   type OptionDraft,
   type SlotDraft,
 } from "./template-slots";
+import {
+  DisplayTemplatesEmptyState,
+  shouldOfferBuiltInRestore,
+  templatesLoadStateForStatus,
+  useRestoreBuiltInBoards,
+  type TemplatesLoadState,
+} from "./restore-built-ins";
+import { DISPLAY_TERM_TEMPLATE } from "@/lib/lodge-display/display-terminology";
 
 // Lobby display TEMPLATE authoring (fork issue #79, LTV-033, ADR-003 §1). A
 // Template is built on a Layout: it fills each declared slot with content or an
@@ -102,6 +114,8 @@ export default function AdminDisplayTemplatesPage() {
   const [lodges, setLodges] = useState<LodgeOption[]>([]);
   const [previewLodgeId, setPreviewLodgeId] = useState("");
   const [loading, setLoading] = useState(true);
+  // Why the gallery is empty, when it is (#2247) — see restore-built-ins.tsx.
+  const [loadState, setLoadState] = useState<TemplatesLoadState>("loading");
   const [draft, setDraft] = useState<TemplateDraft>(emptyDraft);
   const [message, setMessage] = useState<string | null>(null);
   const [errors, setErrors] = useState<ValidationIssue[]>([]);
@@ -117,8 +131,14 @@ export default function AdminDisplayTemplatesPage() {
   const modules = useMemo(() => listDisplayModules(), []);
   const cssTokens = useMemo(() => listDisplayCssTokens(), []);
 
+  // The preview lodge's live {{config:…}} keys for the token assistant (#2248,
+  // decision 2: the picker follows the existing preview-lodge selector — it
+  // only helps you type; a template stays lodge-agnostic).
+  const previewLodgeConfig = useDisplayLodgeConfig(previewLodgeId);
+
   // A built-in template is code-managed scaffolding: `ensureBuiltInDisplays`
-  // refreshes it from code on every re-seed/upgrade (owner decision A, #111), so
+  // refreshes it from code on every re-seed — the database seed, or the
+  // Restore built-in boards action (owner decision A, #111; #2247) — so
   // an in-place edit does not survive. Detected by the reserved KEY (the seed
   // matches on key). Only an EXISTING row can be a built-in. Drives the
   // persistent notice + the not-upgrade-safe save confirm (#156).
@@ -126,36 +146,74 @@ export default function AdminDisplayTemplatesPage() {
     draft.id !== null && isBuiltInDisplayTemplateKey(draft.key);
 
   const refresh = useCallback(async () => {
-    const [templatesRes, layoutsRes, lodgesRes] = await Promise.all([
-      fetch("/api/admin/display/templates"),
-      fetch("/api/admin/display/layouts"),
-      // Same source the Devices page uses: the admin lodges list. When more
-      // than one active lodge exists the preview lodge selector appears (a
-      // template is lodge-agnostic, so its preview lodge must be chosen).
-      fetch("/api/admin/lodges").catch(() => null),
-    ]);
-    if (templatesRes.ok) {
-      const body = (await templatesRes.json()) as { templates: TemplateListItem[] };
-      setTemplates(body.templates ?? []);
+    // NOTHING in here may leave the page on "Loading…" — that permanent blank
+    // screen is the bug this issue exists to remove (#2247), so the exit is
+    // guaranteed in `finally` rather than by every path remembering to reach
+    // the last line. Two failure shapes have to be survived, not just one:
+    // the fetch REJECTING (transport), and a response that is fine by status
+    // but whose BODY will not parse — a proxy error page served as 200, a
+    // truncated payload. Both are caught, and both land the gallery in a state
+    // that explains itself instead of spinning.
+    try {
+      const [templatesRes, layoutsRes, lodgesRes] = await Promise.all([
+        fetch("/api/admin/display/templates").catch(() => null),
+        fetch("/api/admin/display/layouts").catch(() => null),
+        // Same source the Devices page uses: the admin lodges list. When more
+        // than one active lodge exists the preview lodge selector appears (a
+        // template is lodge-agnostic, so its preview lodge must be chosen).
+        fetch("/api/admin/lodges").catch(() => null),
+      ]);
+      // No response at all → status 0, which maps to the "unreachable" state.
+      setLoadState(templatesLoadStateForStatus(templatesRes?.status ?? 0));
+
+      if (templatesRes?.ok) {
+        const body = (await templatesRes.json().catch(() => null)) as {
+          templates?: TemplateListItem[];
+        } | null;
+        // A 200 whose body is not JSON is a broken response, not an empty
+        // gallery: saying "no templates yet — restore the built-ins" there
+        // would be a confident lie. It reads as the unexplained failure it is.
+        if (body === null) setLoadState("error");
+        else setTemplates(body.templates ?? []);
+      }
+      if (layoutsRes?.ok) {
+        const body = (await layoutsRes.json().catch(() => null)) as {
+          layouts?: LayoutOption[];
+        } | null;
+        setLayouts(body?.layouts ?? []);
+      }
+      if (lodgesRes?.ok) {
+        const body = (await lodgesRes.json().catch(() => null)) as {
+          lodges?: Array<{ id: string; name: string; active?: boolean }>;
+        } | null;
+        const active = (body?.lodges ?? []).filter(
+          (lodge) => lodge.active !== false
+        );
+        setLodges(active.map((lodge) => ({ id: lodge.id, name: lodge.name })));
+        setPreviewLodgeId((current) => current || active[0]?.id || "");
+      }
+    } finally {
+      setLoading(false);
     }
-    if (layoutsRes.ok) {
-      const body = (await layoutsRes.json()) as { layouts: LayoutOption[] };
-      setLayouts(body.layouts ?? []);
-    }
-    if (lodgesRes?.ok) {
-      const body = (await lodgesRes.json()) as {
-        lodges?: Array<{ id: string; name: string; active?: boolean }>;
-      };
-      const active = (body.lodges ?? []).filter((lodge) => lodge.active !== false);
-      setLodges(active.map((lodge) => ({ id: lodge.id, name: lodge.name })));
-      setPreviewLodgeId((current) => current || active[0]?.id || "");
-    }
-    setLoading(false);
   }, []);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // "Restore built-in boards" (#2247): re-seeds the code-managed `builtin-*`
+  // layouts/templates for an install whose database predates the display
+  // feature (nothing but the seed ever creates them). Convergent, so the hook
+  // confirms the overwrite first.
+  const restoreBuiltIns = useRestoreBuiltInBoards({
+    onResult: useCallback(
+      (text: string, restored: boolean) => {
+        setMessage(text);
+        if (restored) void refresh();
+      },
+      [refresh]
+    ),
+  });
 
   function startNew() {
     setDraft(emptyDraft());
@@ -166,7 +224,7 @@ export default function AdminDisplayTemplatesPage() {
 
   // Fork the opened built-in into a NEW custom template (id cleared → a create),
   // carrying its layout binding, slots, CSS, and footer but a fresh key/name so
-  // the admin customises the copy instead of the upgrade-clobbered original
+  // the admin customises the copy instead of the re-seed-clobbered original
   // (#156, design.md §3/§8). The built-in itself is untouched until the copy is
   // saved; with the id cleared the layout binding becomes editable again.
   function duplicateTemplate() {
@@ -309,10 +367,10 @@ export default function AdminDisplayTemplatesPage() {
         window.confirm(
           `"${draft.name || draft.key}" is a built-in template and is ` +
             "read-only — in-place edits can't be saved (they would be " +
-            "overwritten the next time the built-in designs are re-seeded or " +
-            "the app is upgraded). Duplicate it to a new custom template to " +
-            "keep your changes?\n\nOK duplicates it now; Cancel leaves the " +
-            "built-in open."
+            "overwritten the next time the database is seeded or someone " +
+            "presses Restore built-in boards). Duplicate it to a new custom " +
+            "template to keep your changes?\n\nOK duplicates it now; Cancel " +
+            "leaves the built-in open."
         )
       ) {
         duplicateTemplate();
@@ -439,7 +497,7 @@ export default function AdminDisplayTemplatesPage() {
     <AdminViewOnlySectionBanner canEdit={canEdit} className="mb-6">
       Your admin role can view the lobby display templates but cannot change
       them. Lodge edit access is required to author, edit, or delete a
-      template. Preview stays available.
+      template, or to restore the built-in boards. Preview stays available.
     </AdminViewOnlySectionBanner>
   );
 
@@ -451,9 +509,9 @@ export default function AdminDisplayTemplatesPage() {
         <BackLink href="/admin/display" label="Lobby Display" />
         <h1 className="mt-2 text-2xl font-bold">Display Templates</h1>
         <p className="text-muted-foreground">
-          A Template fills a <strong>Layout</strong>&apos;s slots with content or
-          embedded modules, layers CSS overrides on the layout default, and
-          carries the footer. Bind a Template to a display on the{" "}
+          {/* The shared definition (#2247) — same words as the hub card, the
+              Reference page and the operator guide. */}
+          {DISPLAY_TERM_TEMPLATE.oneLiner} Bind one to a display on the{" "}
           <strong>Devices</strong> page.
         </p>
         <p className="text-muted-foreground mt-1 text-sm">
@@ -463,7 +521,16 @@ export default function AdminDisplayTemplatesPage() {
         </p>
       </div>
 
-      {message && <p className="text-sm font-medium">{message}</p>}
+      {/*
+        Permanently-mounted polite live region (#2247), the house idiom: the
+        outcome of a save, a delete, or a built-in restore is announced rather
+        than only appearing. A region injected already-populated is silently
+        dropped by some screen-reader/browser pairings, so the wrapper is
+        mounted unconditionally and only its content is gated.
+      */}
+      <div role="status" aria-live="polite">
+        {message && <p className="text-sm font-medium">{message}</p>}
+      </div>
 
       <Card>
         <CardHeader>
@@ -472,9 +539,7 @@ export default function AdminDisplayTemplatesPage() {
         <CardContent>
           {loading && <p className="text-muted-foreground text-sm">Loading…</p>}
           {!loading && templates.length === 0 && (
-            <p className="text-muted-foreground text-sm">
-              No templates yet. Author one below.
-            </p>
+            <DisplayTemplatesEmptyState state={loadState} canEdit={canEdit} />
           )}
           <div className="space-y-3">
             {templates.map((item) => (
@@ -505,7 +570,7 @@ export default function AdminDisplayTemplatesPage() {
                     <select
                       className={selectClass}
                       aria-label="Preview lodge"
-                      title="Lodge to preview this template against"
+                      title="Lodge to preview this template against — the Insert token picker lists this lodge's saved config keys"
                       value={previewLodgeId}
                       onChange={(event) => setPreviewLodgeId(event.target.value)}
                     >
@@ -546,10 +611,36 @@ export default function AdminDisplayTemplatesPage() {
               </div>
             ))}
           </div>
-          <div className="mt-4">
+          <div className="mt-4 flex flex-wrap items-center gap-2">
             <Button variant="outline" onClick={startNew}>
               New template
             </Button>
+            {restoreBuiltIns.confirmDialog}
+            {/*
+              Offered only where it could actually work: with the module off,
+              the session expired, the guard refusing, or the server
+              unreachable, the POST fails by construction and the empty state
+              already says what to do instead (#2247).
+
+              NOT disabled while running — Radix restores focus to the trigger
+              as the dialog closes, and a trigger disabled in that same turn
+              drops focus to <body>. The label carries the busy state and the
+              hook drops a re-entrant press.
+            */}
+            {shouldOfferBuiltInRestore(loadState) && (
+              <ViewOnlyActionButton
+                canEdit={canEdit}
+                describeReason={false}
+                variant="outline"
+                aria-busy={restoreBuiltIns.running}
+                title="Create (or re-create) the built-in layouts and templates that ship with the app"
+                onClick={() => void restoreBuiltIns.run()}
+              >
+                {restoreBuiltIns.running
+                  ? "Restoring…"
+                  : "Restore built-in boards"}
+              </ViewOnlyActionButton>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -569,9 +660,10 @@ export default function AdminDisplayTemplatesPage() {
               <p className="font-medium">This is a built-in template.</p>
               <p>
                 In-place edits to a built-in are{" "}
-                <strong>overwritten</strong> the next time the built-in designs
-                are re-seeded or the app is upgraded. To keep your changes,
-                duplicate this template and customise the copy instead.
+                <strong>overwritten</strong> the next time the database is
+                seeded or someone presses <strong>Restore built-in boards</strong>.
+                To keep your changes, duplicate this template and customise the
+                copy instead.
               </p>
               <ViewOnlyActionButton
                 canEdit={canEdit}
@@ -840,20 +932,19 @@ export default function AdminDisplayTemplatesPage() {
           )}
 
           <div className="space-y-1">
-            <Label htmlFor="template-css">CSS overrides</Label>
-            <textarea
+            {/* Token assistant on the label row (#2248); the static token
+                sentence below stays — the picker is additive (decision 4). */}
+            <DisplayTokenTextarea
               id="template-css"
-              className={`${textareaClass} min-h-24`}
-              spellCheck={false}
+              label="CSS overrides"
+              mode="css"
+              value={draft.cssOverrides}
+              onValueChange={(next) =>
+                setDraft((current) => ({ ...current, cssOverrides: next }))
+              }
               disabled={!canEdit}
               placeholder={".board { color: var(--brand-gold); }"}
-              value={draft.cssOverrides}
-              onChange={(event) =>
-                setDraft((current) => ({
-                  ...current,
-                  cssOverrides: event.target.value,
-                }))
-              }
+              textareaClassName="min-h-24"
             />
             <p className="text-muted-foreground text-xs">
               Layered after the layout default. Theme tokens you can reach for:{" "}
@@ -871,20 +962,20 @@ export default function AdminDisplayTemplatesPage() {
           </div>
 
           <div className="space-y-1">
-            <Label htmlFor="template-footer">Footer HTML</Label>
-            <textarea
+            {/* Token assistant on the label row (#2248); the static token
+                sentence below stays — the picker is additive (decision 4). */}
+            <DisplayTokenTextarea
               id="template-footer"
-              className={`${textareaClass} min-h-20`}
-              spellCheck={false}
+              label="Footer HTML"
+              mode="html"
+              value={draft.footerHtml}
+              onValueChange={(next) =>
+                setDraft((current) => ({ ...current, footerHtml: next }))
+              }
               disabled={!canEdit}
               placeholder={"Wi-Fi: {{config:wifi-code}} · {{lodge-name}}"}
-              value={draft.footerHtml}
-              onChange={(event) =>
-                setDraft((current) => ({
-                  ...current,
-                  footerHtml: event.target.value,
-                }))
-              }
+              textareaClassName="min-h-20"
+              configSource={previewLodgeConfig}
             />
             <p className="text-muted-foreground text-xs">
               The page footer. HTML with the same tokens, or a{" "}

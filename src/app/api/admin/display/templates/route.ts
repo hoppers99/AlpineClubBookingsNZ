@@ -5,6 +5,7 @@ import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import { logAudit } from "@/lib/audit";
 import { validateTemplateForSave } from "@/lib/lodge-display/authoring-validation";
+import { isBuiltInDisplayTemplateKey } from "@/lib/lodge-display/built-in-seeds";
 
 // Admin lobby-display TEMPLATE management (fork issue #79, LTV-033, ADR-003 §1).
 // A Template is built on a Layout: it fills each declared slot with content or
@@ -47,6 +48,21 @@ const bodyField = z.object({
   footerHtml: z.string().max(100_000),
 });
 
+// The seven built-in KEYS are ordinary slugs (`everyday-board`, `welcome-kiosk`,
+// …) — only the seeded ROW ID carries the `builtin-` prefix. So on a database
+// that was never seeded, nothing stopped an admin authoring their own template
+// under one of those keys; "Restore built-in boards" (#2247) would then upsert
+// BY KEY straight over their content, while its dialog promises that custom
+// templates are untouched. Reserving the keys on create is what makes that
+// promise true. The PUT path already 409s on a built-in (see [id]/route.ts).
+function builtInKeyReserved(key: string): string {
+  return (
+    `"${key}" is reserved for a built-in board. Restoring the built-in ` +
+    `boards overwrites whatever is saved under a reserved key, so a template ` +
+    `of your own must use a different key.`
+  );
+}
+
 export async function GET() {
   const guard = await requireAdmin({
     permission: { area: "lodge", level: "view" },
@@ -88,6 +104,14 @@ export async function POST(req: NextRequest) {
     body = bodyField.parse(await req.json());
   } catch {
     return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+  }
+
+  // Reserved-key gate BEFORE anything is loaded or written (#2247).
+  if (isBuiltInDisplayTemplateKey(body.key)) {
+    return NextResponse.json(
+      { error: builtInKeyReserved(body.key) },
+      { status: 409 }
+    );
   }
 
   // The save contract validates slotContent against the bound layout's areas, so

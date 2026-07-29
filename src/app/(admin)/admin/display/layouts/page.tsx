@@ -15,6 +15,7 @@ import {
 import { listDisplayConditions } from "@/lib/lodge-display/conditions";
 import { listDisplayCssTokens } from "@/lib/lodge-display/css-tokens";
 import { isBuiltInDisplayLayoutKey } from "@/lib/lodge-display/built-in-seeds";
+import { DISPLAY_TERM_LAYOUT } from "@/lib/lodge-display/display-terminology";
 
 // Lobby display LAYOUT authoring (fork issue #78, LTV-032, ADR-003 §1). An
 // admin authors the structural template: an HTML body with `{{area:key}}`
@@ -222,7 +223,8 @@ export default function AdminDisplayLayoutsPage() {
   const cssTokens = useMemo(() => listDisplayCssTokens(), []);
 
   // A built-in layout is code-managed scaffolding: `ensureBuiltInDisplays`
-  // refreshes it from code on every re-seed/upgrade (owner decision A, #111), so
+  // refreshes it from code on every re-seed — the database seed, or the
+  // Restore built-in boards action (owner decision A, #111; #2247) — so
   // an in-place edit does not survive. Detected by the reserved KEY (the seed
   // matches on key). Only an EXISTING row can be a built-in — a new draft never
   // is. Drives the persistent notice + the not-upgrade-safe save confirm (#156).
@@ -251,7 +253,7 @@ export default function AdminDisplayLayoutsPage() {
 
   // Fork the opened built-in into a NEW custom layout (id cleared → a create),
   // carrying its body/CSS/areas but a fresh key/name so the admin customises the
-  // copy instead of the upgrade-clobbered original (#156, design.md §3/§8). The
+  // copy instead of the re-seed-clobbered original (#156, design.md §3/§8). The
   // built-in itself is untouched until the admin saves the copy.
   function duplicateLayout() {
     setErrors([]);
@@ -329,10 +331,10 @@ export default function AdminDisplayLayoutsPage() {
         window.confirm(
           `"${draft.name || draft.key}" is a built-in layout and is ` +
             "read-only — in-place edits can't be saved (they would be " +
-            "overwritten the next time the built-in designs are re-seeded or " +
-            "the app is upgraded). Duplicate it to a new custom layout to keep " +
-            "your changes?\n\nOK duplicates it now; Cancel leaves the built-in " +
-            "open."
+            "overwritten the next time the database is seeded or when Restore " +
+            "built-in boards is pressed on the Templates page). Duplicate it " +
+            "to a new custom layout to keep your changes?\n\nOK duplicates it " +
+            "now; Cancel leaves the built-in open."
         )
       ) {
         duplicateLayout();
@@ -482,14 +484,15 @@ export default function AdminDisplayLayoutsPage() {
           for full control over the HTML body, CSS, and areas.
         </p>
         <p className="text-muted-foreground mt-1">
-          Author the structural skeleton of a lobby display: an HTML body with{" "}
+          {/* The shared definition (#2247) — same words as the hub card, the
+              Reference page and the operator guide — then ONLY what is specific
+              to this page. The two sentences that used to follow restated the
+              definition in different words, which is the drift the shared
+              constant exists to prevent. */}
+          {DISPLAY_TERM_LAYOUT.oneLiner} Here that means an HTML body with{" "}
           <code className="bg-muted rounded px-1">{"{{area:key}}"}</code>{" "}
           placeholders, a default CSS block, and the named areas each Template
           will fill.
-        </p>
-        <p className="text-muted-foreground mt-1 text-sm">
-          A finished layout is chosen and filled in by a <strong>Template</strong>.
-          Layouts define the shape; Templates supply the content.
         </p>
         <p className="text-muted-foreground mt-1 text-sm">
           Layouts are previewed through a Template: build a Template on this
@@ -576,9 +579,11 @@ export default function AdminDisplayLayoutsPage() {
               <p className="font-medium">This is a built-in layout.</p>
               <p>
                 In-place edits to a built-in are{" "}
-                <strong>overwritten</strong> the next time the built-in designs
-                are re-seeded or the app is upgraded. To keep your changes,
-                duplicate this layout and customise the copy instead.
+                <strong>overwritten</strong> the next time the database is
+                seeded, or when{" "}
+                <strong>Restore built-in boards</strong> is pressed on the
+                Templates page. To keep your changes, duplicate this layout and
+                customise the copy instead.
               </p>
               <ViewOnlyActionButton
                 canEdit={canEdit}

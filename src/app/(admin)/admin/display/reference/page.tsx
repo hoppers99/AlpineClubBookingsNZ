@@ -21,6 +21,7 @@ import {
   BUILT_IN_DISPLAY_LAYOUTS,
   BUILT_IN_DISPLAY_TEMPLATES,
 } from "@/lib/lodge-display/built-in-seeds";
+import { DISPLAY_GLOSSARY } from "@/lib/lodge-display/display-terminology";
 
 // LTV-034 (#80) — read-only Modules / Conditions / CSS-tokens reference (ADR-003
 // §3, "Navigation & terminology"). Everything on this page is presentation over
@@ -263,6 +264,42 @@ function TemplateGallery({
   );
 }
 
+/**
+ * "Layout vs Template" — the vocabulary card (#2247).
+ *
+ * The admin uses three words for two database rows and defined none of them
+ * anywhere an operator would look. The definitions are ADR-003 §1 restated in
+ * operator language, held once in `display-terminology.ts` and rendered here,
+ * on the hub cards, and quoted in `docs/guides/display.md`, so the three
+ * surfaces cannot drift apart again.
+ */
+function LayoutTemplateBoardExplainer() {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Layout vs Template</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <dl className="space-y-3">
+          {DISPLAY_GLOSSARY.map((entry) => (
+            <div key={entry.term}>
+              <dt className="font-medium">{entry.term}</dt>
+              <dd className="text-muted-foreground text-sm">{entry.oneLiner}</dd>
+            </div>
+          ))}
+        </dl>
+        <p className="text-muted-foreground text-sm">
+          Only Layouts and Templates are stored — a board is the two of them on a
+          screen, which is why the Visual builder saves a Layout and a Template
+          together when you compose one. A Template is bound to a screen on the{" "}
+          <strong>Devices</strong> page; it renders against whichever lodge that
+          screen belongs to.
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function AdminDisplayReferencePage() {
   const modules = listDisplayModules();
   const conditions = listDisplayConditions();
@@ -341,6 +378,9 @@ export default function AdminDisplayReferencePage() {
           Read-only — nothing here changes any setting.
         </p>
       </div>
+
+      {/* Layout vs Template vs board (#2247) -------------------------------- */}
+      <LayoutTemplateBoardExplainer />
 
       {/* Template gallery (issue #2047) ------------------------------------ */}
       <TemplateGallery moduleLabelByName={moduleLabelByName} />

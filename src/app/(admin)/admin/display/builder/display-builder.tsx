@@ -33,6 +33,12 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  DISPLAY_TOKEN_POPOVER_ATTR,
+  DisplayTokenTextarea,
+  useDisplayLodgeConfig,
+  type DisplayConfigSource,
+} from "@/components/admin/display-token-textarea";
 import { listDisplayConditions } from "@/lib/lodge-display/conditions";
 import { listPaletteDisplayModules } from "@/lib/lodge-display/module-registry";
 import {
@@ -143,6 +149,10 @@ export default function DisplayBuilder(props: DisplayBuilderProps) {
   const [previewLodgeId, setPreviewLodgeId] = useState(props.lodges[0]?.id ?? "");
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
   const [previewing, setPreviewing] = useState(false);
+
+  // The preview lodge's live {{config:…}} keys for the token assistant (#2248,
+  // decision 2: the picker follows the existing preview-lodge selector).
+  const previewLodgeConfig = useDisplayLodgeConfig(previewLodgeId);
 
   const canEdit = props.canEdit && !props.isBuiltIn;
 
@@ -556,30 +566,32 @@ export default function DisplayBuilder(props: DisplayBuilderProps) {
           </Card>
         </div>
 
-        {/* Footer + overrides (Template side, advanced-lite) */}
+        {/* Footer + overrides (Template side, advanced-lite). Both carry the
+            token assistant (#2248) on their label rows. */}
         <div className="grid gap-4 md:grid-cols-2">
           <div className="space-y-1">
-            <Label htmlFor="builder-footer">Footer HTML (optional)</Label>
-            <textarea
+            <DisplayTokenTextarea
               id="builder-footer"
-              className="border-input bg-background min-h-20 w-full rounded-md border p-3 font-mono text-xs"
-              spellCheck={false}
+              label="Footer HTML (optional)"
+              mode="html"
+              value={footerHtml}
+              onValueChange={setFooterHtml}
               disabled={!canEdit}
               placeholder={"Wi-Fi: {{config:wifi-code}} · {{lodge-name}}"}
-              value={footerHtml}
-              onChange={(e) => setFooterHtml(e.target.value)}
+              textareaClassName="min-h-20"
+              configSource={previewLodgeConfig}
             />
           </div>
           <div className="space-y-1">
-            <Label htmlFor="builder-css">CSS overrides (optional)</Label>
-            <textarea
+            <DisplayTokenTextarea
               id="builder-css"
-              className="border-input bg-background min-h-20 w-full rounded-md border p-3 font-mono text-xs"
-              spellCheck={false}
+              label="CSS overrides (optional)"
+              mode="css"
+              value={cssOverrides}
+              onValueChange={setCssOverrides}
               disabled={!canEdit}
               placeholder={".dlb-zone { gap: 2vmin; }"}
-              value={cssOverrides}
-              onChange={(e) => setCssOverrides(e.target.value)}
+              textareaClassName="min-h-20"
             />
           </div>
         </div>
@@ -621,6 +633,7 @@ export default function DisplayBuilder(props: DisplayBuilderProps) {
             <select
               className="border-input bg-background h-9 rounded-md border px-3 text-sm"
               aria-label="Preview lodge"
+              title="Lodge to preview against — the Insert token picker lists this lodge's saved config keys"
               value={previewLodgeId}
               onChange={(e) => setPreviewLodgeId(e.target.value)}
             >
@@ -677,6 +690,7 @@ export default function DisplayBuilder(props: DisplayBuilderProps) {
           canEdit={canEdit}
           conditions={conditions}
           modules={modules}
+          configSource={previewLodgeConfig}
           onClose={() => setOpenZone(null)}
           setModel={setModel}
         />
@@ -882,6 +896,8 @@ interface ZoneDrawerProps {
   canEdit: boolean | undefined;
   conditions: ReturnType<typeof listDisplayConditions>;
   modules: ReturnType<typeof listPaletteDisplayModules>;
+  /** Preview lodge config for the HTML block's token assistant (#2248). */
+  configSource: DisplayConfigSource;
   onClose: () => void;
   setModel: React.Dispatch<React.SetStateAction<BuilderModel>>;
 }
@@ -891,7 +907,22 @@ function ZoneDrawer(props: ZoneDrawerProps) {
   const selectClass = "border-input bg-background h-9 w-full rounded-md border px-3 text-sm";
   return (
     <Sheet open onOpenChange={(open) => (!open ? props.onClose() : undefined)}>
-      <SheetContent className="w-full overflow-y-auto sm:max-w-md">
+      <SheetContent
+        className="w-full overflow-y-auto sm:max-w-md"
+        // Escape inside an OPEN token picker closes the picker only, never the
+        // drawer — Radix's document-level capture listener would otherwise
+        // dismiss the Sheet before the picker's own handler runs (#2248). The
+        // marker sits on the assistant's root wrapper (trigger + popover) only
+        // while the picker is open, so this also covers Escape pressed with
+        // focus on the trigger button, and never blocks a normal drawer
+        // dismiss when the picker is closed.
+        onEscapeKeyDown={(event) => {
+          const target = event.target as HTMLElement | null;
+          if (target?.closest?.(`[${DISPLAY_TOKEN_POPOVER_ATTR}]`)) {
+            event.preventDefault();
+          }
+        }}
+      >
         <SheetHeader>
           <SheetTitle>Zone: {zone.key}</SheetTitle>
           <SheetDescription>Set what this zone shows and when.</SheetDescription>
@@ -958,6 +989,7 @@ function ZoneDrawer(props: ZoneDrawerProps) {
               content={zone.content}
               canEdit={canEdit}
               modules={modules}
+              configSource={props.configSource}
               onSetModule={(m) => setModel((c) => setZoneModule(c, zoneIndex, m))}
               onSetHtml={(html) => setModel((c) => setZoneContent(c, zoneIndex, { type: "html", html }))}
               onSetEmpty={() => setModel((c) => setZoneContent(c, zoneIndex, { type: "empty" }))}
@@ -1082,6 +1114,8 @@ function ContentEditor(props: {
   content: BuilderContent;
   canEdit: boolean | undefined;
   modules: ReturnType<typeof listPaletteDisplayModules>;
+  /** Preview lodge config for the HTML block's token assistant (#2248). */
+  configSource: DisplayConfigSource;
   onSetModule: (m: DisplayModuleName) => void;
   onSetHtml: (html: string) => void;
   onSetEmpty: () => void;
@@ -1133,14 +1167,19 @@ function ContentEditor(props: {
       )}
 
       {content.type === "html" && (
-        <textarea
-          className="border-input bg-background min-h-24 w-full rounded-md border p-3 font-mono text-xs"
-          spellCheck={false}
-          disabled={!canEdit}
-          placeholder={"<p>{{lodge-name}}</p>"}
-          value={content.html}
-          onChange={(e) => props.onSetHtml(e.target.value)}
-        />
+        <div className="space-y-1">
+          <DisplayTokenTextarea
+            id="zone-content-html"
+            label="HTML"
+            mode="html"
+            value={content.html}
+            onValueChange={props.onSetHtml}
+            disabled={!canEdit}
+            placeholder={"<p>{{lodge-name}}</p>"}
+            textareaClassName="min-h-24"
+            configSource={props.configSource}
+          />
+        </div>
       )}
     </div>
   );
