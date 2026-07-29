@@ -24,6 +24,13 @@ All notable public reference-release changes should be recorded here.
   difference. And if the club held your booking for review before it could be
   paid, your choice now survives the wait instead of being dropped while an
   administrator decided.
+  In the rare case where a booking gets paid in full before the credit can be
+  applied — an invoice that had already gone out at the full price, for instance —
+  your credit is left untouched on your account and the booking's History now says
+  so in plain English, with the club told at the same time so they can refund the
+  difference if you would rather have it back. And a public payment link no longer
+  charges the full price on a booking with a saved credit choice: it asks you to
+  pay from your own bookings page instead, where the credit is applied.
 
 - **A member's admin page now draws the whole family as a read-only tree
   (#2253).** In the Family section — under the family-group chips, above the

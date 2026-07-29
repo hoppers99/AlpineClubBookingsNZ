@@ -185,6 +185,24 @@ election intact. Every provider call (the Stripe intent, the confirmation
 email, the Xero invoice queue, the superseded-intent drain) stays outside the
 transaction.
 
+The settlements CLEAR the election with the same guarded-claim discipline
+(#2319). `clearStaleCreditElection` moves the column from the exact amount read
+to NULL and reports whether the claim landed, so a settle running alongside a
+consumer never clobbers it: either the consumer already applied the credit (the
+claim matches nothing and the settle reports "nothing stale", which matters
+because a phantom clear would tell the member their credit went unapplied when it
+had just been applied) or the consumer has yet to run and is untouched. The three
+clearing writers all hold lock(1), which both consumers also take, so the guard
+is belt and braces rather than the primary defence — but the property no longer
+depends on that lock still being there. The writers are
+`markBookingPaymentSucceeded`'s `PAID` claim, the Internet Banking inbound
+reconcile's `PAID` and late-capacity-failure `CANCELLED` flips, and the
+repriced-to-$0 auto-pay in both modification services. Each clear's reporting —
+the audit row and the operator alert — runs POST-commit, outside the transaction,
+because it sends email; the public payment link's refusal for an election-bearing
+booking is signalled out of its transaction by a private error for exactly the
+same reason.
+
 Never-captured cancellation and Internet-Banking hold expiry acquire global
 booking lock(1) first and the per-member credit-ledger lock second. While
 holding both, they query for any non-complete applied-credit deallocation

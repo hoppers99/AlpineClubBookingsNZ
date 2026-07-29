@@ -85,6 +85,13 @@ applied first and the invoice asks only for the difference. If your credit
 covers the whole thing there is no invoice to send, so finish the booking on the
 pay step instead and it settles for $0.
 
+Very occasionally a booking gets paid in full before the credit can be applied —
+an invoice that had already gone out at the full price, say. If that happens
+your credit is **not** used and stays on your account down to the cent, and your
+booking's History shows a line saying so ("Saved account credit was not
+applied"). The club is told at the same time, so if you would rather have the
+difference back than keep the credit for next time, just ask.
+
 ## Split charges for non-member guests
 
 When a **Members First** hold splits a mixed party (your members are booked now,
