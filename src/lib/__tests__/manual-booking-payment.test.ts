@@ -42,6 +42,7 @@ const mocks = vi.hoisted(() => ({
   paymentRecoveryOperationFindMany: vi.fn(),
   paymentRecoveryOperationFindFirst: vi.fn(),
   paymentRecoveryOperationUpdateMany: vi.fn(),
+  paymentRecoveryOperationDeleteMany: vi.fn(),
   manualRefundTaskFindFirst: vi.fn(),
   xeroObjectLinkFindFirst: vi.fn(),
   xeroSyncOperationFindFirst: vi.fn(),
@@ -169,6 +170,8 @@ const tx = {
       mocks.paymentRecoveryOperationFindFirst(...args),
     updateMany: (...args: unknown[]) =>
       mocks.paymentRecoveryOperationUpdateMany(...args),
+    deleteMany: (...args: unknown[]) =>
+      mocks.paymentRecoveryOperationDeleteMany(...args),
   },
   manualRefundTask: {
     findFirst: (...args: unknown[]) => mocks.manualRefundTaskFindFirst(...args),
@@ -245,6 +248,7 @@ beforeEach(() => {
   mocks.paymentTransactionFindMany.mockResolvedValue([]);
   mocks.paymentRecoveryOperationFindMany.mockResolvedValue([]);
   mocks.paymentRecoveryOperationUpdateMany.mockResolvedValue({ count: 0 });
+  mocks.paymentRecoveryOperationDeleteMany.mockResolvedValue({ count: 0 });
   mocks.manualRefundTaskFindFirst.mockResolvedValue(null);
   mocks.paymentRefundCount.mockResolvedValue(0);
   mocks.reconcileBedAllocationsForBooking.mockResolvedValue(undefined);
@@ -645,16 +649,32 @@ describe("#2262 — the reversal (direction unpaid)", () => {
     });
   }
 
-  it("HIGH #1 — terminally closes every pending CANCEL_PAYMENT_INTENT / REFUND_SUPERSEDED_PAYMENT operation inside its own transaction", async () => {
+  it("HIGH #1 — DELETES every pending CANCEL_PAYMENT_INTENT / REFUND_SUPERSEDED_PAYMENT operation inside its own transaction, behind the status fence", async () => {
     primeReversal();
     mocks.paymentRecoveryOperationFindMany.mockResolvedValue([
-      { id: "op-cancel", paymentIntentId: "pi_live" },
+      {
+        id: "op-cancel",
+        type: PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT,
+        status: PaymentRecoveryOperationStatus.PENDING,
+        paymentIntentId: "pi_live",
+        paymentTransactionId: "txn-live",
+        amountCents: 10000,
+        idempotencyKey: "payment_recovery_cancel_txn-live_pi_live",
+        attempts: 0,
+        createdAt: new Date("2026-07-20T00:00:00Z"),
+      },
     ]);
-    mocks.paymentRecoveryOperationUpdateMany.mockResolvedValue({ count: 1 });
+    mocks.paymentRecoveryOperationDeleteMany.mockResolvedValue({ count: 1 });
 
     const result = await reverse();
 
-    expect(mocks.paymentRecoveryOperationUpdateMany).toHaveBeenCalledWith({
+    // A DELETE, never a status flip: the webhook-side liveness predicates
+    // (queueSupersededPaymentIntentRefundRecovery, listLiveSupersededIntentIds,
+    // findLiveSupersededIntentOperation) all key on `status != SUCCEEDED`, so a
+    // FAILED "closed" row would still hand a post-reversal capture to the
+    // superseded-refund machinery and poison the duplicate-guard notIn
+    // exclusion forever. Only deletion makes every predicate coherent.
+    expect(mocks.paymentRecoveryOperationDeleteMany).toHaveBeenCalledWith({
       where: {
         paymentId: "payment-1",
         type: {
@@ -670,15 +690,78 @@ describe("#2262 — the reversal (direction unpaid)", () => {
           ],
         },
       },
-      data: expect.objectContaining({
-        status: PaymentRecoveryOperationStatus.FAILED,
-        // The queue selects PENDING/FAILED rows with nextRetryAt <= now, so a
-        // NULL nextRetryAt is what makes the closure terminal.
-        nextRetryAt: null,
-        lastError: expect.stringContaining("manual_mark_paid_reversed"),
-      }),
     });
+    expect(mocks.paymentRecoveryOperationUpdateMany).not.toHaveBeenCalled();
     expect(result.closedRecoveryOperationIds).toEqual(["op-cancel"]);
+    // The deleted rows' full content lives on in the AuditLog metadata.
+    expect(mocks.createAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          closedRecoveryOperationIds: ["op-cancel"],
+          closedRecoveryOperations: [
+            expect.objectContaining({
+              id: "op-cancel",
+              type: PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT,
+              paymentIntentId: "pi_live",
+              idempotencyKey: "payment_recovery_cancel_txn-live_pi_live",
+            }),
+          ],
+        }),
+      }),
+      tx
+    );
+  });
+
+  it("M3 — a member-owed superseded-refund operation SURVIVES: its settled transaction 409s the reversal before the disarm is reached", async () => {
+    // The handoff that creates a REFUND_SUPERSEDED_PAYMENT op marks its
+    // transaction SUCCEEDED first, so any payment carrying such an op also
+    // carries a settled Stripe transaction — which this fence refuses on.
+    // The disarm can therefore never delete money the machinery owes back.
+    primeReversal();
+    mocks.paymentTransactionFindFirst.mockImplementation(
+      async (args: { where: { source?: unknown } }) =>
+        args.where.source === PaymentSource.STRIPE
+          ? { id: "txn-superseded-late-capture" }
+          : null
+    );
+    mocks.paymentRecoveryOperationFindMany.mockResolvedValue([
+      {
+        id: "op-refund",
+        type: PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT,
+        status: PaymentRecoveryOperationStatus.PENDING,
+        paymentIntentId: "pi_superseded",
+        paymentTransactionId: "txn-superseded-late-capture",
+        amountCents: 10000,
+        idempotencyKey: "payment_recovery_refund_txn_pi",
+        attempts: 0,
+        createdAt: new Date("2026-07-20T00:00:00Z"),
+      },
+    ]);
+
+    await expect(reverse()).rejects.toMatchObject({ status: 409 });
+    expect(mocks.paymentRecoveryOperationDeleteMany).not.toHaveBeenCalled();
+  });
+
+  it("M2 — after a reversal's delete, a re-mark re-arms the cancel op through the enqueue upsert's CREATE arm", async () => {
+    // The reversal DELETED the settle's cancel op, so the re-mark's enqueue
+    // upsert finds no row on the idempotency key and its create arm fires
+    // fresh (PENDING, nextRetryAt now) — the durable cancel hygiene survives
+    // mark -> reverse -> re-mark. Pinned against the real
+    // enqueuePaymentIntentCancellationRecovery in payment-recovery.test.ts;
+    // here we pin that the settle path calls it for every live intent even
+    // when a previous settle-and-reverse cycle already happened.
+    mocks.paymentTransactionFindMany.mockResolvedValue([
+      { id: "txn-live", stripePaymentIntentId: "pi_live", amountCents: 10000 },
+    ]);
+    // Reversed-then-re-marked mint shape: the FAILED row blocks the update arm.
+    mocks.paymentTransactionUpdateMany.mockResolvedValue({ count: 0 });
+
+    const result = await settle();
+
+    expect(mocks.enqueuePaymentIntentCancellationRecovery).toHaveBeenCalledWith(
+      expect.objectContaining({ paymentIntentId: "pi_live", store: tx })
+    );
+    expect(result.outstandingIntentIds).toEqual(["pi_live"]);
   });
 
   it("is idempotent: a replayed reversal closes nothing and 409s on its own fenced write", async () => {

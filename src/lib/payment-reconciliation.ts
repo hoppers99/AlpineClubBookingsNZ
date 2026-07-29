@@ -1622,11 +1622,14 @@ const MANUAL_REVERSAL_REFUSAL =
  * member's stale /pay tab captures X and legitimately settles the booking ->
  * the cron processes the now-stale cancel op would REFUND THE REAL SETTLEMENT,
  * leaving a PAID booking at zero net cash. Those operations must not outlive
- * the settlement they were minted to protect, so the reversal terminally closes
- * every non-terminal one inside its own transaction.
+ * the settlement they were minted to protect, so the reversal DELETES every
+ * non-terminal one inside its own transaction (deletion, not a terminal
+ * status flip: every webhook-side liveness predicate keys on
+ * `status != SUCCEEDED`, so only a deleted row is invisible to all of them —
+ * see the disarm comment in the body).
  *
- * The disarm is idempotent by construction: it is a conditional status
- * transition, so a replayed reversal closes zero rows — and the reversal's own
+ * The disarm is idempotent by construction: it is a status-fenced conditional
+ * delete, so a replayed reversal deletes zero rows — and the reversal's own
  * fenced payment write has already 409'd by then. It can never close an
  * operation the reversal itself depends on: the reversal enqueues no recovery
  * work of its own and runs strictly after the settle whose operations it closes.
@@ -1716,7 +1719,31 @@ export async function reverseManualBookingPayment({
     await assertNoXeroInvoiceEvidence(tx, payment);
 
     // HIGH #1 — disarm, inside this transaction, before anything else is
-    // written. Read the ids first purely so the audit trail can name them.
+    // written. The disarmed operations are DELETED, not flipped to a terminal
+    // status: every webhook-side liveness predicate keys on
+    // `status != SUCCEEDED` (queueSupersededPaymentIntentRefundRecovery,
+    // listLiveSupersededIntentIds, findLiveSupersededIntentOperation), so a
+    // FAILED "closed" row would still read as LIVE to all of them — a
+    // post-reversal capture from a stale /pay tab would be handed to the
+    // superseded-refund machinery (member charged, silently refunded, booking
+    // never settles) and the intent id would sit in the duplicate-guard's
+    // `notIn` exclusion forever. Deletion makes every one of those predicates
+    // coherent at once, and it re-arms a later re-mark cleanly: the settle's
+    // enqueue upsert finds no row and its CREATE arm fires with a fresh
+    // PENDING status and nextRetryAt.
+    //
+    // Scope: every non-terminal CANCEL_PAYMENT_INTENT / REFUND_SUPERSEDED_
+    // PAYMENT operation on this payment. That is exactly the set the settle
+    // minted or adopted: the settle's own enqueue upserts on the shared
+    // `payment_recovery_cancel_<txn>_<pi>` key, so a pre-existing cancel op
+    // for a still-live intent IS the settle's op; and a member-owed
+    // REFUND_SUPERSEDED_PAYMENT op can never be reached here, because the
+    // handoff that creates one marks its transaction SUCCEEDED first and this
+    // reversal already 409'd above on any settled Stripe transaction.
+    //
+    // The rows' full content is read first and preserved in the AuditLog
+    // metadata and the reversal's BookingEvent snapshot (ids), so the audit
+    // trail — not the queue — is where the closed operations live on.
     const doomedOperations = await tx.paymentRecoveryOperation.findMany({
       where: {
         paymentId: payment.id,
@@ -1728,13 +1755,25 @@ export async function reverseManualBookingPayment({
           ],
         },
       },
-      select: { id: true, paymentIntentId: true },
+      select: {
+        id: true,
+        type: true,
+        status: true,
+        paymentIntentId: true,
+        paymentTransactionId: true,
+        amountCents: true,
+        idempotencyKey: true,
+        attempts: true,
+        createdAt: true,
+      },
     });
-    // Terminal by the queue's own definition: the recovery cron selects
-    // PENDING/FAILED rows with `nextRetryAt <= now`, so FAILED with a NULL
-    // nextRetryAt is exactly the shape the cron uses for an exhausted
-    // operation and is never picked up again.
-    await tx.paymentRecoveryOperation.updateMany({
+    // Status-fenced WRITE, idempotent by construction: a replayed reversal
+    // deletes zero rows (and its own fenced payment write 409s). A worker that
+    // already claimed one of these PROCESSING can no longer complete or hand
+    // it off — its re-claim and its fenced completion both match nothing once
+    // the row is gone (see handoffSucceededSupersededIntentToRefund /
+    // completePaymentRecoveryOperation in payment-recovery.ts).
+    await tx.paymentRecoveryOperation.deleteMany({
       where: {
         paymentId: payment.id,
         type: { in: [...SUPERSEDED_INTENT_OPERATION_TYPES] },
@@ -1744,13 +1783,6 @@ export async function reverseManualBookingPayment({
             PaymentRecoveryOperationStatus.PROCESSING,
           ],
         },
-      },
-      data: {
-        status: PaymentRecoveryOperationStatus.FAILED,
-        nextRetryAt: null,
-        processingStartedAt: null,
-        lastError:
-          "Closed by manual_mark_paid_reversed (#2262): the manual settlement this operation was minted to protect was reversed.",
       },
     });
 
@@ -1841,6 +1873,19 @@ export async function reverseManualBookingPayment({
     const closedRecoveryOperationIds = doomedOperations.map(
       (operation) => operation.id
     );
+    // The deleted rows' content, preserved verbatim on the audit trail (the
+    // queue row is gone by design — see the disarm above).
+    const closedRecoveryOperations = doomedOperations.map((operation) => ({
+      id: operation.id,
+      type: operation.type,
+      status: operation.status,
+      paymentIntentId: operation.paymentIntentId,
+      paymentTransactionId: operation.paymentTransactionId,
+      amountCents: operation.amountCents,
+      idempotencyKey: operation.idempotencyKey,
+      attempts: operation.attempts,
+      createdAt: operation.createdAt.toISOString(),
+    }));
 
     await createAuditLog(
       {
@@ -1864,6 +1909,7 @@ export async function reverseManualBookingPayment({
           restoredStatus,
           reversedAmountCents: payment.amountCents,
           closedRecoveryOperationIds,
+          closedRecoveryOperations,
           clearedInternetBankingHold: clearInternetBankingHold,
           // #2260: a reversal never emails the member. Recorded under its own
           // key so a raw metadata render cannot be misread as an admin having

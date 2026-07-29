@@ -41,7 +41,10 @@ export interface ManualSettlementReversalEventSnapshot {
   storedPreviousStatus: string;
   /** The status the booking was actually restored to. */
   restoredStatus: string;
-  /** Recovery operations this reversal terminally closed (HIGH #1). */
+  /**
+   * Recovery operations this reversal DELETED (HIGH #1). The rows are gone by
+   * design — their full content is preserved on the reversal's AuditLog entry.
+   */
   closedRecoveryOperationIds: string[];
   /** Whether a restored CONFIRMED internet-banking hold deadline was cleared. */
   clearedInternetBankingHold: boolean;
