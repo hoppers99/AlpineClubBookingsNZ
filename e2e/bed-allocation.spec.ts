@@ -212,6 +212,17 @@ test("an admin confirms this booking's beds from the booking page, and the membe
     await expect(
       memberPage.getByRole("heading", { name: "Bed allocation" }),
     ).toHaveCount(0);
+    // …and not even the section-rail link (#2252 review). The rail used to be
+    // built from every candidate anchor and pruned in an effect after mount, so
+    // the member's server-rendered HTML really did carry a "Bed Allocation"
+    // link for a moment. It is now filtered out server-side, so it is absent
+    // from the very first paint — asserted on the rail's own <nav>, which is
+    // where a pruned-after-hydration entry would still have flashed.
+    await expect(
+      memberPage
+        .getByRole("navigation", { name: "On this page" })
+        .getByRole("link", { name: "Bed Allocation" }),
+    ).toHaveCount(0);
     await memberPage.close();
   } finally {
     await memberContext.close();

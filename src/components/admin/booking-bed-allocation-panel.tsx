@@ -673,11 +673,11 @@ export function BookingBedAllocationPanel({
               (#2252 review) — a stay whose other pages are still in draft must
               not read as flatly "Confirmed". */}
           {approvedCount > 0 ? (
-            <Badge variant="success">
+            <Badge variant="success" data-testid="bed-card-status-badge">
               {paged ? "Confirmed (this page)" : "Confirmed"}
             </Badge>
           ) : draftCount > 0 ? (
-            <Badge variant="warning">
+            <Badge variant="warning" data-testid="bed-card-status-badge">
               {paged ? "Draft (this page)" : "Draft"}
             </Badge>
           ) : null}

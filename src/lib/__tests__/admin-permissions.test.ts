@@ -355,6 +355,15 @@ describe("booking detail write-surface gates (issue #1313 + option A2)", () => {
 // card outside it.
 // ---------------------------------------------------------------------------
 describe("in-booking bed allocation panel visibility (#2252)", () => {
+  const bookingPageSource = () =>
+    fs.readFileSync(
+      path.join(
+        process.cwd(),
+        "src/app/(authenticated)/bookings/[id]/page.tsx",
+      ),
+      "utf8",
+    );
+
   const canSeePanel = (accessRoles: AppAccessRole[]) => {
     const subject = { accessRoles };
     return (
@@ -385,22 +394,74 @@ describe("in-booking bed allocation panel visibility (#2252)", () => {
   });
 
   it("renders the panel only behind canSeeAdminTools AND the bedAllocation module flag", () => {
-    const source = fs.readFileSync(
-      path.join(
-        process.cwd(),
-        "src/app/(authenticated)/bookings/[id]/page.tsx",
-      ),
-      "utf8",
-    );
+    const source = bookingPageSource();
 
-    // The gate and the render site must be the same expression: the routes 404
-    // when the module is off, and the member-invisibility half is this gate.
+    // ONE named gate, defined as exactly that conjunction: the routes 404 when
+    // the module is off, and the member-invisibility half is this gate.
     expect(source).toMatch(
-      /\{canSeeAdminTools && modules\.bedAllocation && \(\s*<BookingBedAllocationPanel/,
+      /const showBedAllocationPanel =\s*canSeeAdminTools && modules\.bedAllocation;/,
+    );
+    // The render site is that gate and nothing looser…
+    expect(source).toMatch(
+      /\{showBedAllocationPanel && \(\s*<BookingBedAllocationPanel/,
     );
     // …and there is exactly one render site, so a second, ungated copy cannot
     // creep in below the first.
     expect(source.match(/<BookingBedAllocationPanel/g)).toHaveLength(1);
+  });
+
+  it("builds the section rail without the admin-only entry rather than pruning it after mount", () => {
+    // #2252 review: SectionNav prunes absent anchors in an EFFECT, so a member's
+    // server-rendered rail really did contain a "Bed Allocation" link until
+    // hydration removed it. The page knows both halves of the gate server-side,
+    // so the entry is filtered out before it is ever sent.
+    const source = bookingPageSource();
+
+    expect(source).toMatch(
+      /sections=\{BOOKING_SECTIONS\.filter\(\s*\(section\) =>\s*section\.id !== "bed-allocation" \|\| showBedAllocationPanel,\s*\)\}/,
+    );
+  });
+
+  it("renders the bed allocation card in the position BOOKING_SECTIONS declares for it", () => {
+    /*
+     * #2252 review: the card was rendering above every other anchored section
+     * while BOOKING_SECTIONS listed it sixth. SectionNav is presentation-only —
+     * it prunes candidates but never reorders — so a rail order that disagrees
+     * with the render order is simply a lie to the reader.
+     *
+     * This pins the general rule, not just the one anchor: every id declared in
+     * BOOKING_SECTIONS must appear in the page's markup in the declared order.
+     */
+    const source = bookingPageSource();
+
+    const declared = Array.from(
+      source
+        .slice(
+          source.indexOf("const BOOKING_SECTIONS"),
+          source.indexOf("export default async function BookingDetailPage"),
+        )
+        .matchAll(/\{ id: "([^"]+)", label:/g),
+    ).map((match) => match[1]);
+    expect(declared.length).toBeGreaterThan(5);
+    expect(declared).toContain("bed-allocation");
+
+    // Where each declared anchor is actually rendered. `id="details"` etc. are
+    // the section/card anchors; the panel owns its own id inside the component,
+    // so its render site is located by the component tag.
+    const renderedAt = declared.map((id) => {
+      const index =
+        id === "bed-allocation"
+          ? source.indexOf("<BookingBedAllocationPanel")
+          : source.indexOf(`id="${id}"`);
+      expect(index, `${id} is rendered somewhere`).toBeGreaterThan(-1);
+      return { id, index };
+    });
+
+    expect(renderedAt.map((entry) => entry.id)).toEqual(
+      [...renderedAt].sort((left, right) => left.index - right.index).map(
+        (entry) => entry.id,
+      ),
+    );
   });
 
   it("keys the panel's write controls off the same permission its APIs demand", () => {

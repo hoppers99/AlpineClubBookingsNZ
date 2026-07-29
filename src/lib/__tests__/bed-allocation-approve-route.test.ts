@@ -92,6 +92,18 @@ describe("POST /api/admin/bed-allocation/approve", () => {
     expect(call.allocationIds).toBeUndefined();
   });
 
+  it("carries the panel's lodge scope through to the booking selector", async () => {
+    // #2252 review: the panel's read is lodge-scoped, so its write must be too
+    // — otherwise Confirm could stamp an off-lodge row the card never showed.
+    const response = await post({ bookingId: "booking-1", lodgeId: "lodge-1" });
+
+    expect(response.status).toBe(200);
+    expect(mockApproveBedAllocations.mock.calls[0][0]).toMatchObject({
+      bookingId: "booking-1",
+      lodgeId: "lodge-1",
+    });
+  });
+
   it("audits a booking-scoped approval against the booking, so the booking's audit deep link finds it", async () => {
     await post({ bookingId: "booking-1" });
 

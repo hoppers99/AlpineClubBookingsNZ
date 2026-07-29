@@ -167,6 +167,8 @@ function renderPanel(overrides: Record<string, unknown> = {}) {
       wholeLodgeHold={false}
       bookingStatus="CONFIRMED"
       isDeleted={false}
+      canHoldBeds
+      approvedBedNightCount={0}
       guests={[{ id: "guest-1", name: "Ada Guest" }]}
       {...overrides}
     />,
@@ -175,7 +177,10 @@ function renderPanel(overrides: Record<string, unknown> = {}) {
 
 describe("BookingBedAllocationPanel", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    // reset, not clear: `clearAllMocks` leaves queued `mockImplementationOnce`
+    // entries in place, so an unconsumed one-shot response from a test that
+    // interleaves reads would be served to the NEXT test's first fetch.
+    vi.resetAllMocks();
     editAccess.mockReturnValue(true);
     fetchMock.mockResolvedValue(jsonResponse(payload()));
     vi.stubGlobal("fetch", fetchMock);
@@ -243,11 +248,39 @@ describe("BookingBedAllocationPanel", () => {
       (call) => String(call[0]) === "/api/admin/bed-allocation/approve",
     );
     const body = JSON.parse(String(approveCall?.[1]?.body));
-    expect(body).toEqual({ bookingId: "booking-1" });
+    // The booking selector, plus the same lodge scope the panel READ with, so
+    // the write cannot reach a row the officer was never shown (#2252 review).
+    expect(body).toEqual({ bookingId: "booking-1", lodgeId: "lodge-1" });
     // A window approval would stamp every other booking's drafts in the range.
     expect(body.from).toBeUndefined();
     expect(body.to).toBeUndefined();
     expect(body.allocationIds).toBeUndefined();
+  });
+
+  it("keeps the approval club-wide when the booking has no lodge", async () => {
+    // Null lodgeId is the pre-backfill tolerance the board keeps too: scoping to
+    // a lodge the booking does not have would approve nothing at all.
+    renderPanel({ lodgeId: null });
+
+    const confirm = await screen.findByRole("button", {
+      name: "Confirm draft beds",
+    });
+    fetchMock.mockResolvedValueOnce(jsonResponse({ approvedCount: 2 }));
+    fireEvent.click(confirm);
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(
+          (call) => String(call[0]) === "/api/admin/bed-allocation/approve",
+        ),
+      ).toBe(true);
+    });
+    const approveCall = fetchMock.mock.calls.find(
+      (call) => String(call[0]) === "/api/admin/bed-allocation/approve",
+    );
+    expect(JSON.parse(String(approveCall?.[1]?.body))).toEqual({
+      bookingId: "booking-1",
+    });
   });
 
   it("says plainly that confirming does not place the nights nobody is on a bed for", async () => {
@@ -339,6 +372,53 @@ describe("BookingBedAllocationPanel", () => {
   });
 
   it("keeps the panel and says why for a booking that cannot hold beds", async () => {
+    renderPanel({ bookingStatus: "CANCELLED", canHoldBeds: false });
+
+    expect(await screen.findByTestId("bed-not-allocatable")).toHaveTextContent(
+      "cancelled booking is not allocated beds",
+    );
+    expect(screen.queryByRole("button", { name: "Assign…" })).toBeNull();
+    // Server truth needs no window read to establish it: no fetch is issued at
+    // all, so the honest note is not sat behind a spinner.
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  /*
+   * The three honest-state symptoms the review found (#2252). All three came
+   * from one shared inference — "absent from the window payload means this
+   * booking cannot hold beds" — which is false for two entirely different
+   * reasons and silently swallowed a third case.
+   */
+  it("still gives a cancelled booking the honest note when it carries a stale whole-lodge hold", async () => {
+    // Symptom (a): `wholeLodgeHold` is not cleared when a booking is cancelled
+    // or soft-deleted, and the hold branch used to win — so the booking read as
+    // an active hold with "nothing to assign or confirm while the hold stands",
+    // suppressing the note the owner explicitly asked for.
+    renderPanel({
+      bookingStatus: "CANCELLED",
+      canHoldBeds: false,
+      wholeLodgeHold: true,
+    });
+
+    expect(await screen.findByTestId("bed-not-allocatable")).toHaveTextContent(
+      "cancelled booking is not allocated beds",
+    );
+    expect(screen.queryByTestId("bed-exclusive-hold")).not.toBeInTheDocument();
+  });
+
+  it("gives a deleted booking the honest note ahead of any stale hold flag", async () => {
+    renderPanel({ isDeleted: true, wholeLodgeHold: true });
+
+    expect(await screen.findByTestId("bed-not-allocatable")).toHaveTextContent(
+      "This booking is deleted",
+    );
+    expect(screen.queryByTestId("bed-exclusive-hold")).not.toBeInTheDocument();
+  });
+
+  it("says the page has none of this booking's nights, rather than that it cannot hold beds", async () => {
+    // Symptom (b): the window read only returns bookings with a guest night
+    // inside the window, so a guest-stay gap — or a booking with no guests —
+    // omits a perfectly allocatable booking. That is a fact about the PAGE.
     fetchMock.mockResolvedValue(
       jsonResponse(
         payload({
@@ -348,12 +428,47 @@ describe("BookingBedAllocationPanel", () => {
         }),
       ),
     );
-    renderPanel({ bookingStatus: "CANCELLED" });
+    renderPanel();
 
-    expect(await screen.findByTestId("bed-not-allocatable")).toHaveTextContent(
-      "cancelled booking is not allocated beds",
+    expect(await screen.findByTestId("bed-absent-this-window")).toHaveTextContent(
+      "No guest of this booking is booked on any night of this page",
     );
-    expect(screen.queryByRole("button", { name: "Assign…" })).toBeNull();
+    // It does NOT claim the booking cannot hold beds…
+    expect(screen.queryByTestId("bed-not-allocatable")).not.toBeInTheDocument();
+    // …and the rows and Confirm stay reachable rather than everything vanishing.
+    expect(screen.getByTestId("bed-guest-rows")).toBeInTheDocument();
+    expect(screen.getByText("Ada Guest")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Confirm draft beds" }),
+    ).toBeInTheDocument();
+  });
+
+  it("prefills Assign from the page on screen when the guest's own stay is unknown", async () => {
+    // Symptom (c): with the booking absent from the payload the guest has no
+    // stay to prefill from, and the old envelope fallback offered the WHOLE
+    // 61-night booking — nights the guest may not be booked for, and more than
+    // the range endpoint will ever accept.
+    fetchMock.mockResolvedValue(
+      jsonResponse(
+        payload({
+          bookings: [],
+          allocations: [],
+          unallocatedGuestNights: [],
+        }),
+      ),
+    );
+    renderPanel({ checkIn: "2026-06-01", checkOut: "2026-08-01" });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Assign…" }));
+
+    await screen.findByRole("dialog");
+    // The first page's own window (31 nights), not 2026-06-01 → 2026-08-01.
+    expect(
+      (screen.getByLabelText("Date In (first night)") as HTMLInputElement).value,
+    ).toBe("2026-06-01");
+    expect(
+      (screen.getByLabelText("Date Out (checkout)") as HTMLInputElement).value,
+    ).toBe("2026-07-02");
   });
 
   it("pages a stay longer than one read window and labels every page", async () => {
@@ -410,6 +525,244 @@ describe("BookingBedAllocationPanel", () => {
     expect(
       screen.getByRole("button", { name: "Confirm draft beds" }),
     ).toBeDisabled();
+  });
+
+  it("does not claim the lock re-opens when the booking's other pages hold confirmed nights", async () => {
+    /*
+     * The paged variant of the warning (#2252 review). This page holds the only
+     * confirmed run it can SEE, so a page-scoped decision fires the warning —
+     * but the booking has four approved nights in total, so removing these two
+     * re-opens nothing. The count comes from the server precisely because a
+     * 31-night window cannot see the rest of a longer stay.
+     */
+    fetchMock.mockResolvedValue(
+      jsonResponse(
+        payload({
+          allocations: [
+            allocation({
+              id: "alloc-1",
+              stayDate: "2026-06-01",
+              approvedAt: "2026-05-01T00:00:00.000Z",
+            }),
+            allocation({
+              id: "alloc-2",
+              stayDate: "2026-06-02",
+              approvedAt: "2026-05-01T00:00:00.000Z",
+            }),
+          ],
+          unallocatedGuestNights: [],
+        }),
+      ),
+    );
+    renderPanel({
+      checkIn: "2026-06-01",
+      checkOut: "2026-08-01",
+      approvedBedNightCount: 4,
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Remove" }));
+
+    await screen.findByRole("dialog");
+    expect(
+      screen.queryByTestId("bed-remove-reopens-lock"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("still warns on a paged stay when these really are the booking's last confirmed nights", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(
+        payload({
+          allocations: [
+            allocation({
+              id: "alloc-1",
+              stayDate: "2026-06-01",
+              approvedAt: "2026-05-01T00:00:00.000Z",
+            }),
+          ],
+          unallocatedGuestNights: [],
+        }),
+      ),
+    );
+    renderPanel({
+      checkIn: "2026-06-01",
+      checkOut: "2026-08-01",
+      approvedBedNightCount: 1,
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Remove" }));
+
+    expect(
+      await screen.findByTestId("bed-remove-reopens-lock"),
+    ).toHaveTextContent("re-opens the member's room request");
+  });
+
+  it("drops a superseded window read rather than painting its rows under the current one", async () => {
+    /*
+     * Stale-response guard (#2252 review). The guard covers every `load()`
+     * caller — the effect, Refresh, paging, and the trailing reload each write
+     * path fires — so this drives it the way it can genuinely happen without a
+     * disabled control in the way: a read is in flight when the props the read
+     * is keyed on change, and the FIRST read settles last.
+     */
+    // A holder, not a `let`: TS narrows a closure-assigned local to its
+    // initializer type, because it cannot prove the callback ever ran.
+    const gate = { release: () => {} };
+    const firstPayload = payload({
+      allocations: [allocation({ id: "alloc-old", stayDate: "2026-06-01" })],
+      unallocatedGuestNights: [],
+    });
+    const secondPayload = payload({
+      allocations: [
+        allocation({
+          id: "alloc-new",
+          bedId: "bed-2",
+          bedName: "Bed Two",
+          stayDate: "2026-06-02",
+        }),
+      ],
+      unallocatedGuestNights: [],
+    });
+
+    fetchMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          gate.release = () => resolve(jsonResponse(firstPayload));
+        }),
+    );
+    fetchMock.mockImplementationOnce(async () => jsonResponse(secondPayload));
+
+    const { rerender } = renderPanel();
+
+    // A second read starts while the first is still outstanding.
+    rerender(
+      <BookingBedAllocationPanel
+        bookingId="booking-1"
+        lodgeId="lodge-2"
+        memberName="Ada Member"
+        checkIn="2026-06-01"
+        checkOut="2026-06-04"
+        wholeLodgeHold={false}
+        bookingStatus="CONFIRMED"
+        isDeleted={false}
+        canHoldBeds
+        approvedBedNightCount={0}
+        guests={[{ id: "guest-1", name: "Ada Guest" }]}
+      />,
+    );
+
+    await screen.findByText("Room One / Bed Two");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    // Now let the SUPERSEDED read land. It must be discarded in full.
+    gate.release();
+
+    await waitFor(() => {
+      expect(screen.getByText("Room One / Bed Two")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Room One / Bed One")).not.toBeInTheDocument();
+  });
+
+  it("keeps a superseded read's error off the window it no longer describes", async () => {
+    const gate = { release: () => {} };
+    fetchMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          gate.release = () =>
+            resolve(jsonResponse({ error: "Window out of range" }, false, 400));
+        }),
+    );
+    fetchMock.mockImplementationOnce(async () =>
+      jsonResponse(payload({ unallocatedGuestNights: [] })),
+    );
+
+    const { rerender } = renderPanel();
+
+    rerender(
+      <BookingBedAllocationPanel
+        bookingId="booking-1"
+        lodgeId="lodge-2"
+        memberName="Ada Member"
+        checkIn="2026-06-01"
+        checkOut="2026-06-04"
+        wholeLodgeHold={false}
+        bookingStatus="CONFIRMED"
+        isDeleted={false}
+        canHoldBeds
+        approvedBedNightCount={0}
+        guests={[{ id: "guest-1", name: "Ada Guest" }]}
+      />,
+    );
+
+    await screen.findByText("Ada Guest");
+    gate.release();
+
+    await waitFor(() => {
+      expect(screen.queryByText("Window out of range")).not.toBeInTheDocument();
+    });
+    // …and the superseded read cannot blank the rows it no longer describes.
+    expect(screen.getByText("Ada Guest")).toBeInTheDocument();
+  });
+
+  it("qualifies the card badge with the page when the stay is paged", async () => {
+    // The badge counts only what this page read, so on a paged stay it must not
+    // read as a flat verdict on the whole booking (#2252 review).
+    fetchMock.mockResolvedValue(
+      jsonResponse(
+        payload({
+          allocations: [
+            allocation({ id: "alloc-1", approvedAt: "2026-05-01T00:00:00.000Z" }),
+          ],
+          unallocatedGuestNights: [],
+        }),
+      ),
+    );
+    renderPanel({ checkIn: "2026-06-01", checkOut: "2026-08-01" });
+
+    expect(
+      await screen.findByTestId("bed-card-status-badge"),
+    ).toHaveTextContent("Confirmed (this page)");
+  });
+
+  it("leaves the badge unqualified when one page is the whole stay", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(
+        payload({
+          allocations: [
+            allocation({ id: "alloc-1", approvedAt: "2026-05-01T00:00:00.000Z" }),
+          ],
+          unallocatedGuestNights: [],
+        }),
+      ),
+    );
+    renderPanel();
+
+    // One page IS the whole stay, so the badge is a verdict on the booking and
+    // needs no qualifier. (The per-run badge says "Confirmed" too, hence the
+    // testid: the assertion is about the CARD's badge.)
+    const badge = await screen.findByTestId("bed-card-status-badge");
+    expect(badge).toHaveTextContent("Confirmed");
+    expect(badge.textContent).not.toContain("this page");
+  });
+
+  it("marks a part-suggested run as suggested in part, not wholly suggested", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(
+        payload({
+          allocations: [
+            allocation({ id: "alloc-1", stayDate: "2026-06-01", source: "AUTO" }),
+            allocation({
+              id: "alloc-2",
+              stayDate: "2026-06-02",
+              source: "MANUAL",
+            }),
+          ],
+          unallocatedGuestNights: [],
+        }),
+      ),
+    );
+    renderPanel();
+
+    expect(await screen.findByText("Suggested in part")).toBeInTheDocument();
   });
 
   it("reports how many nights actually went when a removal stops part way", async () => {

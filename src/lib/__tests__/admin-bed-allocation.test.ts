@@ -37,6 +37,7 @@ import {
   deleteBedAllocation,
   deleteBedAllocationRoom,
   approveBedAllocations,
+  countApprovedBedAllocationNights,
   isBookingBedAllocationLocked,
   getBedAllocationDashboard,
   getRoomsAndBedsConfiguration,
@@ -47,6 +48,7 @@ import {
   updateBedAllocationBed,
 } from "@/lib/admin-bed-allocation";
 import { getLodgePartnerSharedCapacityStatus } from "@/lib/lodge-capacity";
+import { lodgeNullTolerantScope } from "@/lib/lodges";
 import { parseDateOnly } from "@/lib/date-only";
 import { prisma } from "@/lib/prisma";
 
@@ -2866,6 +2868,88 @@ describe("approveBedAllocations — booking selector (#2252)", () => {
     expect(updateMany.mock.calls[0][0].where).toEqual({
       approvedAt: null,
       bookingId: "booking-1",
+    });
+  });
+
+  /*
+   * #2252 review: the write scope must not be wider than the read scope.
+   *
+   * The in-booking panel's GET is lodge-scoped (ADR-003), so a row of this
+   * booking sitting in ANOTHER lodge's room — an anomaly, but reachable via a
+   * booking that changed lodge or a pre-backfill row — never appears on the
+   * card. Without the lodge predicate the approve stamped it anyway, so the
+   * officer confirmed a bed they were never shown.
+   */
+  it("scopes a booking approval to the lodge the panel read, so an off-lodge anomaly row is not swept in", async () => {
+    const updateMany = vi.fn().mockResolvedValue({ count: 2 });
+    const db = { bedAllocation: { updateMany } };
+
+    await approveBedAllocations({
+      approvedByMemberId: "admin-1",
+      bookingId: "booking-1",
+      lodgeId: "lodge-1",
+      db: db as never,
+    });
+
+    const where = updateMany.mock.calls[0][0].where;
+    expect(where.bookingId).toBe("booking-1");
+    // The same null-tolerant room scope the board's range approval uses.
+    expect(where.room).toEqual(lodgeNullTolerantScope("lodge-1"));
+    // Still not a window approval.
+    expect(where.stayDate).toBeUndefined();
+  });
+
+  it("keeps a booking approval club-wide when no lodge is given", async () => {
+    const updateMany = vi.fn().mockResolvedValue({ count: 2 });
+    const db = { bedAllocation: { updateMany } };
+
+    await approveBedAllocations({
+      approvedByMemberId: "admin-1",
+      bookingId: "booking-1",
+      db: db as never,
+    });
+
+    // Pre-backfill tolerance: a booking with no lodge must still be approvable.
+    expect(updateMany.mock.calls[0][0].where.room).toBeUndefined();
+  });
+
+  it("leaves the board's own allocationIds approval byte-unchanged", async () => {
+    const updateMany = vi.fn().mockResolvedValue({ count: 2 });
+    const db = { bedAllocation: { updateMany } };
+
+    // The board sends ids (and may send a lodge) but never a bookingId, so the
+    // new lodge predicate must not appear on its path.
+    await approveBedAllocations({
+      approvedByMemberId: "admin-1",
+      allocationIds: ["alloc-1"],
+      lodgeId: "lodge-1",
+      db: db as never,
+    });
+
+    expect(updateMany.mock.calls[0][0].where).toEqual({
+      approvedAt: null,
+      id: { in: ["alloc-1"] },
+    });
+  });
+});
+
+describe("countApprovedBedAllocationNights (#2252 review)", () => {
+  it("counts a booking's approved bed nights across the whole booking, not a window", async () => {
+    const count = vi.fn().mockResolvedValue(7);
+    const db = { bedAllocation: { count } };
+
+    await expect(
+      countApprovedBedAllocationNights({
+        bookingId: "booking-1",
+        db: db as never,
+      }),
+    ).resolves.toBe(7);
+
+    // No date predicate: the panel's 31-night page cannot see the approved
+    // nights on a longer stay's other pages, which is the whole point.
+    expect(count.mock.calls[0][0].where).toEqual({
+      bookingId: "booking-1",
+      approvedAt: { not: null },
     });
   });
 });
