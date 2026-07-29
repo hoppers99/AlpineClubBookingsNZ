@@ -166,12 +166,14 @@ describe("booking-confirmed promo summary (#2267)", () => {
     expect(rendered).not.toContain("Discount");
     expectCleanBody(rendered);
 
-    // Drift guard: the hand-built HTML path tells the identical money story.
-    expect(html).toContain("Subtotal");
-    expect(html).toContain("$30.00");
-    expect(html).toContain("Promo adjustment (FULL_LODGE_RATE_2025)");
-    expect(html).toContain("+$1,370.00");
-    expect(html).toContain("$1,400.00");
+    // Drift guard: the hand-built HTML path shows the identical rows — same
+    // labels, same values, in its own info table.
+    expect(html).toContain(">Subtotal</td>");
+    expect(html).toContain(">$30.00</td>");
+    expect(html).toContain(">Promo adjustment (FULL_LODGE_RATE_2025)</td>");
+    expect(html).toContain(">+$1,370.00</td>");
+    expect(html).toContain(">Total Paid</td>");
+    expect(html).toContain(">$1,400.00</td>");
   });
 
   it("renders a discount promo with a negative adjustment", async () => {
@@ -190,8 +192,11 @@ describe("booking-confirmed promo summary (#2267)", () => {
     );
     expectCleanBody(rendered);
 
-    expect(html).toContain("Promo adjustment (SPRING10)");
-    expect(html).toContain("-$30.00");
+    expect(html).toContain(">Subtotal</td>");
+    expect(html).toContain(">$300.00</td>");
+    expect(html).toContain(">Promo adjustment (SPRING10)</td>");
+    expect(html).toContain(">-$30.00</td>");
+    expect(html).toContain(">$270.00</td>");
   });
 
   it("renders no promo lines at all — not ragged, not empty — without a promo", async () => {
