@@ -1688,6 +1688,29 @@ model Booking {
   noEmails                     Boolean            @default(false)
   noEmailsAt                   DateTime?
   noEmailsByMemberId           String?
+  // Stored account-credit election (#2265, epic #2245 E1). The member may tick
+  // "use my credit" in the wizard and then Save as draft; credit is NOT consumed
+  // while the booking is a draft (a draft may be abandoned or expire, and tying
+  // up a balance against a booking that never happens is the exact behaviour the
+  // owner rejected), so the amount they asked for is REMEMBERED here instead and
+  // applied through the ordinary credit-application path the moment the booking
+  // reaches PAYMENT_PENDING. Money in integer cents.
+  //
+  // Nullable with no default so three states stay distinguishable: NULL = no
+  // election is outstanding (never made, or already consumed), 0 = the member
+  // explicitly chose to use none, > 0 = the amount they asked to apply. The
+  // column is single-consumption: the pay path clears it back to NULL in the
+  // same transaction that writes the credit ledger row, so it can never be
+  // applied twice. It is NOT a record of credit already applied — the
+  // authoritative applied total is always the MemberCredit ledger
+  // (deriveBookingAppliedCreditCents).
+  //
+  // Reality can move between the election and the confirmation (the balance may
+  // be spent elsewhere, the booking may be repriced by an edit), so the amount
+  // is CLAMPED to what is actually available and owed at confirmation time and
+  // the shortfall is surfaced in the pay-step response — never silently
+  // swallowed. See consumeStoredCreditElection in booking-credit-election.ts.
+  creditElectionCents          Int?
   createdAt                 DateTime           @default(now())
   updatedAt                 DateTime           @updatedAt
 

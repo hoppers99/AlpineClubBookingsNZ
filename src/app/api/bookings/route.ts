@@ -553,6 +553,15 @@ export async function POST(request: NextRequest) {
         expectedArrivalTime,
         requestedRoomId,
         cancelIfGuestsBumped,
+        // #2265 — the draft branch used to omit this field entirely, so a
+        // member who ticked "use my credit" and then saved a draft had their
+        // election silently discarded. The draft service does NOT consume the
+        // credit; it stores the election on the booking and the pay path
+        // applies it when the booking reaches PAYMENT_PENDING. Keep this key
+        // in step with the createConfirmedBooking call below —
+        // booking-create-money-field-parity.test.ts fails if the two argument
+        // objects diverge on a money-bearing field again.
+        applyCreditCents: parsed.data.applyCreditCents,
         groupDiscount,
         memberReviewJustification,
         lodgeId: parsed.data.lodgeId,

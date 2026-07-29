@@ -227,6 +227,7 @@ export async function createDraftBooking(input: DraftBookingInput): Promise<Book
     expectedArrivalTime,
     requestedRoomId,
     cancelIfGuestsBumped,
+    applyCreditCents,
     groupDiscount,
     memberReviewJustification,
     lodgeId,
@@ -356,6 +357,24 @@ export async function createDraftBooking(input: DraftBookingInput): Promise<Book
         expectedArrivalTime: expectedArrivalTime || null,
         requestedRoomId: requestedRoomId || null,
         cancelIfGuestsBumped: cancelIfGuestsBumped ?? false,
+        // Stored credit election (#2265). A draft consumes NO credit: the
+        // member's balance stays free until the booking is real, so all that is
+        // written here is the amount they asked for. The pay path clamps it to
+        // the live balance and price and applies it through the ordinary
+        // credit-application path once the booking reaches PAYMENT_PENDING.
+        // Omitted entirely (column defaults to NULL) when the member made no
+        // election, which is the "nothing outstanding" state every pre-#2265
+        // row is already in — so the create payload stays byte-identical for a
+        // member who never touched the credit control.
+        //
+        // A draft that lands directly in AWAITING_REVIEW keeps its election
+        // too: approval releases it to PAYMENT_PENDING and the pay path
+        // consumes it there exactly as it would for a plain draft. Credit must
+        // not be consumed while an admin is still deciding — the same rule
+        // createConfirmedBooking enforces via review.blockForReview.
+        ...(applyCreditCents != null
+          ? { creditElectionCents: applyCreditCents }
+          : {}),
         createdById: isOnBehalf ? sessionUserId : null,
         requiresAdminReview: review.requiresAdminReview,
         adminReviewReason: review.adminReviewReason,
