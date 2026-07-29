@@ -9,8 +9,10 @@ import {
   twoFactorCodeTemplate,
   accountDeletionApprovedTemplate,
   accountDeletionRejectedTemplate,
-  composeOptionalEmailLine,
 } from "../email-templates";
+import {
+  composeOptionalEmailLine,
+} from "../email-message-notes";
 import {
   CLUB_BOOKINGS_NAME,
   CLUB_NAME,

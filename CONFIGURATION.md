@@ -201,6 +201,43 @@ older per-piece tokens (`{{subtotal}}`, `{{discount}}`, `{{promoCode}}`,
 for a price-raising promo, and `{{promoAdjustment}}` carries its own `+`/`-`
 sign, so never write a manual minus in front of it.
 
+Both of those are instances of one rule that governs **every** admin-editable
+email body: **there is no conditional syntax.** `renderTemplateString` is a flat
+regex substitution — a token whose value does not apply to a particular send
+renders as an empty string, and nothing else happens. A body written as
+`Door code: {{doorCode}}` therefore prints a bare `Door code:` to every member
+staying at a lodge with no door code, and a body written as
+`Requested: {{requestedAmount}}` prints a bare `Requested:` on an appeal that
+named no figure.
+
+Anything optional is therefore supplied as a **pre-composed line**: the sender
+builds the whole line — label, value and its trailing blank line — or the empty
+string, and the default body carries only the token. `{{doorCodeNote}}`,
+`{{expectedArrivalNote}}`, `{{reasonNote}}`, `{{adminNoteLine}}`,
+`{{adminNotesLine}}`, `{{reviewNoteLine}}`, `{{committeeNote}}`,
+`{{rejoinProcessNote}}`, `{{reviewReasonNote}}`, `{{requestedAmountNote}}`,
+`{{amountRecordedNote}}`, `{{bookingReferenceNote}}`, `{{choreListNote}}`,
+`{{choreLinkNote}}`, `{{localRecordNote}}`, `{{latestErrorNote}}`,
+`{{xeroLinksNote}}`, `{{refundOutcomeNote}}`, `{{settlementActionNote}}` and
+`{{ownBookingNote}}` all behave this way, alongside the older
+`{{provisionalGuestsNote}}`, `{{paymentNote}}` and `{{promoSummary}}`. An
+operator overriding one of these bodies should place the token on a line of its
+own and **never** write a label of their own in front of it. The raw value
+behind each (`{{doorCode}}`, `{{reason}}`, `{{adminNote}}` …) stays valid for
+overrides written before the change, so nothing an operator already saved stops
+rendering or stops being re-savable.
+
+`[only when …]`-style guidance must **never** appear in a default body or in an
+override. The template engine does not understand it; the admin editor pre-fills
+its textarea from the default body and stores whatever it is given verbatim, so
+such a note is printed to the member the first time the template is saved. The
+build enforces this: `src/lib/email-message-token-contract.ts` fails the test
+suite on any square-bracketed text in a shipped default, on any default token
+that is not in `APPROVED_EMAIL_TEMPLATE_TOKENS`, on any supplied override token
+that is not approved (the state `{{promoAdjustment}}` was in), and on any
+default that would leave a dangling label when a declared-optional value renders
+empty.
+
 | Field                                              | Required | Description                                                                                                      |
 | -------------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------- |
 | `name`                                             | yes      | Full public club name.                                                                                           |

@@ -12,10 +12,12 @@ import {
   preArrivalReminderTemplate,
   splitGuestPortionCancelledTemplate,
   promoAdjustmentSummaryRows,
+} from "../email-templates";
+import {
   composeChoreLine,
   composeOptionalEmailLine,
   splitGuestPortionOwnBookingLine,
-} from "../email-templates";
+} from "../email-message-notes";
 import { CLUB_NAME } from "@/config/club-identity";
 import { EMAIL_DEFAULT_LODGE_NAME } from "@/lib/email-message-settings";
 import {

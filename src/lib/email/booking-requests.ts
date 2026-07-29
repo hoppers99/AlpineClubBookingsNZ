@@ -6,8 +6,10 @@ import {
   bookingRequestPaymentExpiredTemplate,
   schoolAttendeeConfirmationTemplate,
   splitGuestPaymentLinkTemplate,
-  composeOptionalEmailLine,
 } from "../email-templates";
+import {
+  composeOptionalEmailLine,
+} from "../email-message-notes";
 import { CLUB_NAME } from "@/config/club-identity";
 import {
   formatNZDate,

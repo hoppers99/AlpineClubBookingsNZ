@@ -5,10 +5,12 @@ import {
   adminXeroRepeatedFailureTemplate,
   adminXeroReconciliationReportTemplate,
   adminRefundRequestTemplate,
-  composeOptionalEmailLine,
-  duplicateCaptureRefundOutcomeParagraph,
   type XeroReconciliationReportEmail,
 } from "../email-templates";
+import {
+  composeOptionalEmailLine,
+  duplicateCaptureRefundOutcomeParagraph,
+} from "../email-message-notes";
 import { CLUB_BOOKINGS_NAME } from "@/config/club-identity";
 import { formatNZDate } from "../nzst-date";
 import { formatCents as formatMoneyCents } from "@/lib/utils";

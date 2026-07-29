@@ -8,13 +8,15 @@ import {
   groupCreateRequestConfirmationTemplate,
   groupCreateApprovedTemplate,
   groupCreateRejectedTemplate,
-  composeOptionalEmailLine,
   partnerInviteTemplate,
   partnerInviteClaimedTemplate,
   partnerLinkRequestTemplate,
   partnerLinkConfirmedTemplate,
   partnerLinkRemovedTemplate,
 } from "../email-templates";
+import {
+  composeOptionalEmailLine,
+} from "../email-message-notes";
 import { CLUB_BOOKINGS_NAME } from "@/config/club-identity";
 import { formatNZDateTime } from "../nzst-date";
 import { sendEmail } from "./core";

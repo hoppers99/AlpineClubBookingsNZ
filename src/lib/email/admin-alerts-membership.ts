@@ -7,8 +7,10 @@ import {
   adminMemberDeleteRequestedTemplate,
   adminMemberDeleteApprovedTemplate,
   adminMemberDeleteRejectedTemplate,
-  composeOptionalEmailLine,
 } from "../email-templates";
+import {
+  composeOptionalEmailLine,
+} from "../email-message-notes";
 import { sendEmail } from "./core";
 import {
   sendToAdmins,

@@ -55,6 +55,32 @@ permission area; a view-only support role can read but not save.
    **Save Template**. Use **Restore Default** to drop your override and return to
    the built-in wording.
 
+### There is no "only if" — write lines that always read correctly
+
+The body is plain text with token substitution and **nothing else**. There is no
+`if`, no conditional, no way to show a line only when a value exists. A token
+whose value is not applicable to a particular send simply renders as **nothing
+at all** — so a line you write as `Door code: {{doorCode}}` prints a bare
+`Door code:` to every member staying at a lodge that has no door code.
+
+That is why several tokens are **pre-composed whole lines** rather than bare
+values: `{{doorCodeNote}}`, `{{reasonNote}}`, `{{adminNoteLine}}`,
+`{{reviewNoteLine}}`, `{{committeeNote}}`, `{{amountRecordedNote}}`,
+`{{promoSummary}}`, `{{provisionalGuestsNote}}` and their siblings each render
+the **entire** line — label, value and the blank line after it — or nothing
+whatsoever. Put one of those tokens on its own, with no label of your own in
+front of it, and the email reads correctly whether or not the value exists.
+
+Two consequences worth knowing:
+
+- **Never write a label in front of a `…Note` / `…Line` token.** Writing
+  `Admin note: {{adminNoteLine}}` reintroduces the dangling label the token
+  exists to prevent.
+- **Never annotate a body with instructions to yourself.** Text such as
+  `[only when a door code is set]` is not understood by anything — it is
+  printed verbatim to the member. Older built-in wording carried such notes;
+  they were all removed in v0.13, and the build now refuses any that come back.
+
 ## Settings reference
 
 Shared email variables (top card):
@@ -73,6 +99,7 @@ Per-template editor:
 | Rule | Detail |
 | --- | --- |
 | Allowed tokens only | Only the chips shown for that template are accepted; unknown `{{tokens}}` are rejected |
+| No conditional syntax | Tokens are substituted, nothing more. A value that does not apply renders as nothing — use the pre-composed `…Note` / `…Line` chips for anything optional, and never write `[only when …]` guidance into a body |
 | Required tokens | The highlighted chip(s) must stay in the body — removing an essential bearer token (e.g. a `/pay/<token>` or sign-in link) is refused |
 | Subject safety | Sensitive token values (e.g. raw tokens) are never allowed in a subject line |
 | Override vs default | Saving stores an override; **Restore Default** deletes it and reverts to the built-in text |
@@ -86,6 +113,7 @@ Per-template editor:
 | Everything is read-only | Your role has support view, not edit | Ask a full admin for Support & System edit access |
 | Save is rejected | You removed a required token, used an unknown token, or put a sensitive token in the subject | Re-add the highlighted token; use only the listed chips; keep tokens out of the subject |
 | A token shows literally to members | It is misspelled or not allowed for that template | Use the exact chip from the **Tokens** list |
+| A line reads "Admin note:" with nothing after it | You wrote your own label in front of a value that was empty for that send | Use the matching pre-composed chip (`{{adminNoteLine}}`, `{{reasonNote}}`, `{{doorCodeNote}}` …) on its own line instead |
 | I want the original wording back | An override is in place | Click **Restore Default** for that template |
 | The change didn't reach a lodge-specific value | Lodge name/travel note/door code are per-lodge now | Set them in [Lodges](../multi-lodge/README.md), not here |
 

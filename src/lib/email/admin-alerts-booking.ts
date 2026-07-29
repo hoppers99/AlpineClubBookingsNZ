@@ -14,10 +14,12 @@ import {
   adminBookingRequestHoldCancelledTemplate,
   adminSplitSettlementUnpaidTemplate,
   adminSplitSettlementCancelledTemplate,
-  adminSplitSettlementUnpaidLeadParagraph,
-  adminSplitSettlementCancelledLeadParagraph,
-  composeOptionalEmailLine,
 } from "../email-templates";
+import {
+  adminSplitSettlementCancelledLeadParagraph,
+  adminSplitSettlementUnpaidLeadParagraph,
+  composeOptionalEmailLine,
+} from "../email-message-notes";
 import {
   formatNZDate,
   formatNZDateTime,

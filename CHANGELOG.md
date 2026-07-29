@@ -4,6 +4,42 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Emails no longer print the wording notes their authors left behind, or a
+  label with nothing after it (#2268).** Thirty-three built-in email templates
+  carried instructions to whoever might edit them — `[only when a door code is
+  set]`, `[only when reason exists]`, and a whole alternative paragraph on four
+  of them — written as ordinary body text. The email engine has no way to act on
+  such a note: it substitutes tokens and does nothing else. Because the admin
+  email editor pre-fills its box with that built-in wording and saves whatever it
+  is given, any club that had customised one of these templates was sending the
+  notes to members and admins verbatim. All of them are gone. Deleting them
+  alone would have swapped one defect for another — a lodge with no door code
+  would have received a bare `Door code:`, an appeal with no figure a bare
+  `Requested:` — so every optional line is now built in full by the code that
+  sends it, or left out entirely: twenty such lines across thirty-one templates,
+  each with its own token an operator can place in an override. Four templates
+  were stating something that was sometimes simply untrue, and those are the ones
+  that mattered most: an admin alert said a duplicate card charge had been
+  refunded in full even when the refund had failed and only a retry was queued;
+  another said a payment link had been emailed to a member when none had been
+  sent; a third said a member's own booking was settled and unaffected when it
+  was not; and members whose guests' provisional place was cancelled were told
+  "your own booking is unaffected and remains confirmed" even when it was not.
+  Each now tells the true story on both outcomes, built from the same code as the
+  designed HTML version so the two can never drift apart. Alongside that, a
+  refund-appeal alert that read `Paid: $$300.00` loses its doubled dollar sign,
+  two Xero diagnostic links that appeared as unclickable labels became real
+  links, a school-group reminder can no longer begin `'s stay at …` when no
+  school name is on file, and an "Account Credit Applied" template that was
+  editable but had never been wired to send anything is removed from the editor.
+  Every original token stays valid, so a club's existing customisations keep
+  rendering and keep saving. Finally, the check that was supposed to catch all of
+  this is replaced: it had been comparing each built-in template against a list
+  of allowed tokens built from that same template, so it could never fail. Five
+  real checks now run on every build, each proved against a deliberately broken
+  example — and two of them immediately found further tokens the system supplied
+  but the editor rejected, now fixed.
+
 - **The booking-confirmed email now explains a promo that raises the price,
   instead of a blank Discount line and an unexplained total (#2267).** A member
   who booked with an exclusive-use flat-rate promo received a payment

@@ -2,9 +2,11 @@ import {
   choreRosterTemplate,
   formatChoreRosterDate,
   hutLeaderAssignmentTemplate,
+} from "../email-templates";
+import {
   composeChoreLine,
   composeOptionalEmailLine,
-} from "../email-templates";
+} from "../email-message-notes";
 import {
   CLUB_HUT_LEADER_LABEL,
   CLUB_NAME,

@@ -21,27 +21,15 @@ import { SUPPORT_EMAIL } from "./email-sender";
 import { MEMBER_SETUP_INVITE_TTL_DAYS } from "./member-setup-invite";
 import { formatNZDate, formatNZDateTime } from "./nzst-date";
 import { emailPalette } from "./email-theme";
+// #2268: the optional/outcome-dependent line composers live in a leaf module
+// so the senders and the template registry can build the same copy without
+// pulling in this whole file.
 import {
   adminSplitSettlementCancelledLeadParagraph,
   adminSplitSettlementUnpaidLeadParagraph,
-  composeChoreLine,
-  composeOptionalEmailLine,
   duplicateCaptureRefundOutcomeParagraph,
   splitGuestPortionOwnBookingLine,
 } from "./email-message-notes";
-
-// #2268: the optional/outcome-dependent line composers live in a leaf module
-// (the template registry needs them for its editor previews without pulling
-// in this whole file). Re-exported here so every email module keeps one
-// import site for template copy.
-export {
-  adminSplitSettlementCancelledLeadParagraph,
-  adminSplitSettlementUnpaidLeadParagraph,
-  composeChoreLine,
-  composeOptionalEmailLine,
-  duplicateCaptureRefundOutcomeParagraph,
-  splitGuestPortionOwnBookingLine,
-};
 
 const BASE_URL = getAppBaseUrl();
 

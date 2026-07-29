@@ -11,8 +11,10 @@ import {
 import { sendEmail } from "@/lib/email";
 import {
   refundRequestResolvedTemplate,
-  composeOptionalEmailLine,
 } from "@/lib/email-templates";
+import {
+  composeOptionalEmailLine,
+} from "@/lib/email-message-notes";
 import logger from "@/lib/logger";
 import { getRemainingRefundableCents } from "@/lib/booking-payment-state";
 import {
