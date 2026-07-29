@@ -32,6 +32,9 @@ type FakeDbOptions = {
   }>;
   partnerLinkStatus?: string | null;
   membersActive?: boolean;
+  // #2286: bed-holding hut-leader assignments (custodian occupancy) covering
+  // the whole two-night window, given as a bed id per custodian.
+  custodianBedIds?: string[];
 };
 
 function fakeDb(options: FakeDbOptions = {}) {
@@ -43,6 +46,7 @@ function fakeDb(options: FakeDbOptions = {}) {
     partnerGuestRows = [],
     partnerLinkStatus = "CONFIRMED",
     membersActive = true,
+    custodianBedIds = [],
   } = options;
 
   return {
@@ -67,10 +71,27 @@ function fakeDb(options: FakeDbOptions = {}) {
     booking: {
       findMany: vi.fn().mockResolvedValue(bookings),
     },
-    // #2286: custodian bed holds are base occupancy here too. None in these
-    // cases, so the partner-shared arithmetic reads exactly as before.
+    // #2286: custodian bed holds are base occupancy here too.
     hutLeaderAssignment: {
-      findMany: vi.fn().mockResolvedValue([]),
+      findMany: vi.fn().mockResolvedValue(
+        custodianBedIds.map((bedId, index) => ({
+          id: `custodian-${index}`,
+          memberId: `custodian-member-${index}`,
+          lodgeId: LODGE,
+          bedId,
+          // Inclusive endDate: CHECK_OUT is the morning after the last night,
+          // so the last covered night is the day before it.
+          startDate: CHECK_IN,
+          endDate: new Date(CHECK_OUT.getTime() - 24 * 60 * 60 * 1000),
+          member: { firstName: "Sam", lastName: "Ranger", ageTier: "ADULT" },
+          bed: {
+            id: bedId,
+            name: bedId,
+            roomId: "room-1",
+            room: { id: "room-1", name: "Kea" },
+          },
+        })),
+      ),
     },
     bookingGuest: {
       findMany: vi.fn().mockResolvedValue(partnerGuestRows),
@@ -528,5 +549,98 @@ describe("checkCapacityForPartnerSharedAdmission", () => {
 
     expect(result.available).toBe(false);
     expect(result.reason).toMatch(/no shareable double beds/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Custodian occupancy (#2286)
+// ---------------------------------------------------------------------------
+describe("custodian bed holds and partner-shared admission (#2286)", () => {
+  it("counts the custodian in base occupancy, so the last base slot is gone", async () => {
+    // 3 beds, 0 doubles (no shared headroom at all), 2 guests already booked.
+    // Without a custodian one more ordinary guest fits; with one, none does.
+    const withoutCustodian = await checkCapacityForPartnerSharedAdmission(
+      LODGE,
+      CHECK_IN,
+      CHECK_OUT,
+      nightGuests(1),
+      [],
+      undefined,
+      fakeDb({ beds: 3, doubles: 0, bookings: [fullStayBooking(2)] }),
+    );
+    expect(withoutCustodian.available).toBe(true);
+
+    const withCustodian = await checkCapacityForPartnerSharedAdmission(
+      LODGE,
+      CHECK_IN,
+      CHECK_OUT,
+      nightGuests(1),
+      [],
+      undefined,
+      fakeDb({
+        beds: 3,
+        doubles: 0,
+        bookings: [fullStayBooking(2)],
+        custodianBedIds: ["bed-custodian"],
+      }),
+    );
+    expect(withCustodian.available).toBe(false);
+    expect(withCustodian.reason).toMatch(/fully booked/i);
+  });
+
+  it("counts a handover night's TWO custodians as two occupants, not one", async () => {
+    const result = await checkCapacityForPartnerSharedAdmission(
+      LODGE,
+      CHECK_IN,
+      CHECK_OUT,
+      nightGuests(1),
+      [],
+      undefined,
+      fakeDb({
+        beds: 3,
+        doubles: 0,
+        bookings: [fullStayBooking(1)],
+        custodianBedIds: ["bed-out", "bed-in"],
+      }),
+    );
+    // 1 booked + 2 custodians = 3 of 3 beds, so the proposed guest cannot fit.
+    expect(result.available).toBe(false);
+  });
+
+  it("PINS THE ACCEPTED OVERSHOOT: a custodian-held DOUBLE still counts toward partnerSharedHeadroom", async () => {
+    // The lodge has exactly one DOUBLE and the custodian is sleeping in it, so
+    // physically there is no shareable double left. `partnerSharedHeadroom` comes
+    // from the UNDATED getLodgePartnerSharedCapacityStatus, which cannot know
+    // that — so the sharer is still admitted.
+    //
+    // This is a DELIBERATE, documented imprecision (docs/CAPACITY_MODEL.md), not
+    // an oversight: it is admin-only, it cannot produce a bad PLACEMENT (a
+    // custodian bed has no primary allocation row to share, and the allocation
+    // guard refuses it outright), and it is analogous to the accepted #1668
+    // over-capacity override. This test exists so that closing the gap later is
+    // a deliberate decision rather than an accident.
+    const db = fakeDb({
+      beds: 4,
+      doubles: 1,
+      custodianBedIds: ["the-only-double"],
+    });
+
+    const status = await getLodgePartnerSharedCapacityStatus(LODGE, db);
+    expect(status.partnerSharedHeadroom).toBe(1);
+
+    const result = await checkCapacityForPartnerSharedAdmission(
+      LODGE,
+      CHECK_IN,
+      CHECK_OUT,
+      [{ stayStart: CHECK_IN, stayEnd: CHECK_OUT, memberId: PARTNER }],
+      [sharerFullStay],
+      undefined,
+      db,
+    );
+
+    // Admitted: base 4 - 1 custodian - 1 partner leaves room, and the shared
+    // slot the (held) double contributes is still counted as free.
+    expect(result.available).toBe(true);
+    expect(result.partnerSharedHeadroom).toBe(1);
   });
 });
