@@ -189,8 +189,6 @@ export const DISPLAY_WIZARD_STEP_IDS = [
   "done",
 ] as const;
 
-export type DisplayWizardStepId = (typeof DISPLAY_WIZARD_STEP_IDS)[number];
-
 /** The wizard id the cursor is persisted under (allowlisted on the route). */
 export const DISPLAY_WIZARD_ID = "display";
 
