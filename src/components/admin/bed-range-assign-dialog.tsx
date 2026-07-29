@@ -283,7 +283,10 @@ export function BedRangeAssignDialog({
         </DialogHeader>
 
         <div className="space-y-4">
-          <div className="rounded-md border bg-muted/40 p-3 text-sm">
+          {/* Opaque muted token, never an alpha of it: the app-shell theme
+              contract bans endpoint-crossing opacity variants on text
+              surfaces (and scans this file's source, comments included). */}
+          <div className="rounded-md border bg-muted p-3 text-sm">
             <div className="font-medium">{target.guestName}</div>
             {target.memberName ? (
               <div className="text-xs text-muted-foreground">
