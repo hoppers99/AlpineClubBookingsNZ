@@ -52,7 +52,10 @@ function aggregateLedger({ where }: { where: Record<string, unknown> }) {
 const mocks = vi.hoisted(() => ({
   queueSupersededPrimaryIntentCancellations: vi.fn().mockResolvedValue([]),
   upsertPaymentIntentTransaction: vi.fn(),
-  queueXeroInvoiceForPaidBooking: vi.fn(),
+  // Async in production, so the mock must resolve — the route attaches a
+  // .catch() to keep a queueing failure from 500-ing an already settled
+  // booking, and a mock returning undefined would hide that.
+  queueXeroInvoiceForPaidBooking: vi.fn().mockResolvedValue(undefined),
   recordBookingEvent: vi.fn().mockResolvedValue(undefined),
   sendBookingConfirmedEmail: vi.fn().mockResolvedValue(undefined),
   drainSupersededPrimaryIntents: vi.fn().mockResolvedValue(undefined),
