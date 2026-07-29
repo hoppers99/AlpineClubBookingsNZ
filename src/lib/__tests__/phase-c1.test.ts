@@ -200,7 +200,7 @@ describe("#26: Payments Page has clickable links", () => {
     // a multi-org Xero login in whichever organisation it last used). The
     // builder call is what this contract now pins — an inline URL here would
     // fail `xero-links-guard.test.ts`.
-    expect(content).toContain("buildXeroInvoiceUrl");
+    expect(content).toContain("href={buildXeroInvoiceUrl(");
     expect(content).toContain("xeroInvoiceNumber");
     // Should have Stripe dashboard link
     expect(content).toContain("dashboard.stripe.com");
@@ -349,7 +349,7 @@ describe("#32: Subscriptions Page has Xero invoice link", () => {
     // See the #26 case above: since #2283 the Xero invoice URL is built by
     // `buildXeroInvoiceUrl` rather than written inline, so that it carries the
     // club's organisation short code.
-    expect(content).toContain("buildXeroInvoiceUrl");
+    expect(content).toContain("href={buildXeroInvoiceUrl(");
     expect(content).toContain("xeroInvoiceNumber");
     expect(content).toContain("Age Group");
     expect(content).toContain("Xero Contact Group");
