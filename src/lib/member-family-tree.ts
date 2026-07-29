@@ -27,18 +27,39 @@ import { MAX_PARENT_LINK_CHAIN_LENGTH } from "@/lib/member-family-link-depth";
  *  3. A total size cap of {@link MAX_FAMILY_TREE_MEMBERS} members, so a
  *     pathological graph (or a partner-hop chain across many households)
  *     terminates even though partner hops are generation-free.
+ *  4. Bounds on the QUERIES themselves, not just on the tree they build. The
+ *     two open-ended reads per round (a frontier's children, a frontier's
+ *     partner links) take at most `MAX_FAMILY_TREE_MEMBERS + 1` rows, so a
+ *     member with hundreds of recorded dependants never materialises hundreds
+ *     of joined rows to keep a capped handful; and the number of BFS ROUNDS is
+ *     explicitly capped, so the number of SEQUENTIAL queries one request can
+ *     issue is bounded by the code rather than only by how the admission rules
+ *     happen to behave.
  *
- * Anything cut off by bound 2 or 3 sets `truncated`, which the card states
- * rather than silently pretending the family ends there.
+ * Anything cut off by bound 2, 3 or 4 sets `truncated`, which the card states
+ * rather than silently pretending the family ends there, and `truncatedReason`
+ * says WHICH kind of bound fired so the card can word it truthfully.
  *
  * PRIVACY. The tree reports names, relationship structure, badges, and — only
  * for non-archived members — the email address the admin member page already
- * shows. Archived members stay in the tree (dropping them would make a
- * grandparent look unrelated) but their contact details are suppressed
- * (decision 4). The email-inheritance line reports the STORED #2255 resolver
- * answer (`Member.inheritEmailFromId`, which the resolver keeps flat-terminal)
- * — it never re-derives its own answer, so the tree can never disagree with
- * what the club actually sends.
+ * shows. It exposes no field beyond what `membership:view` already exposes:
+ * `/api/admin/members` returns the same email at the same permission.
+ *
+ * Archived members stay in the tree (dropping them would make a grandparent
+ * look unrelated) and their contact details are left off the node. That is a
+ * PRESENTATION choice (decision 4) matching how the member page treats an
+ * archived member's contacts — not a privacy boundary, and it should not be
+ * relied on as one.
+ *
+ * The email-inheritance line is the one genuine gate here. It reports the
+ * STORED #2255 resolver answer (`Member.inheritEmailFromId`, which the resolver
+ * keeps flat-terminal) — it never re-derives its own answer, so the tree can
+ * never disagree with what the club actually sends — but it only NAMES the
+ * mailbox holder when that member is inside this tree. #2255 retired the
+ * family-link constraint on inheritance sources, so an admin can point a
+ * member's club email at any member club-wide; naming an unrelated member on
+ * this member's family card would assert a family connection the data does not
+ * record. An out-of-tree source is reported without id or name.
  */
 
 type FamilyTreeClient = Prisma.TransactionClient | typeof prisma;
@@ -49,6 +70,24 @@ type FamilyTreeClient = Prisma.TransactionClient | typeof prisma;
  * so the generation-free partner hops (bound 3 above) always terminate.
  */
 export const MAX_FAMILY_TREE_MEMBERS = 150;
+
+/**
+ * Hard ceiling on how many BFS rounds the walk may run — i.e. on how many
+ * SEQUENTIAL round-trips one request can issue (three queries per round).
+ *
+ * Today the size cap already implies this bound: a round either admits at least
+ * one new member or leaves the frontier empty and ends the walk, so the walk
+ * cannot outlive {@link MAX_FAMILY_TREE_MEMBERS} rounds. The cap is stated
+ * anyway, and enforced with its own `truncated` flag, so the query count stays
+ * bounded by something explicit rather than by an emergent property of the
+ * admission rules that a later change could quietly remove.
+ *
+ * It is deliberately NOT tightened below the member cap: partner hops are
+ * generation-free, so a genuine chain of households can legitimately need one
+ * round per member (the horizontal-chain test walks ~30 rounds for 31 people),
+ * and a tighter bound would truncate real families to save queries.
+ */
+const MAX_FAMILY_TREE_ROUNDS = MAX_FAMILY_TREE_MEMBERS;
 
 const FAMILY_TREE_MEMBER_SELECT = {
   id: true,
@@ -106,6 +145,14 @@ export type FamilyTreeRelationship = {
    * dashed "derived, not stored" treatment.
    */
   derived: boolean;
+  /**
+   * Short VISIBLE qualifier rendered beside the label when the label alone
+   * would overstate what the data records — e.g. "one parent not recorded for
+   * Ruby Ngata" beside "Half-sibling", where the two members share every parent
+   * one of them actually has and the label is an artefact of a missing record
+   * rather than a statement about the family.
+   */
+  qualifier: string | null;
   /** Full sr-only sentence for the node. */
   description: string;
 };
@@ -132,13 +179,23 @@ export type FamilyTreeNode = {
    * The stored #2255 resolver answer for this member, reported verbatim.
    * `beyondDirectParent` mirrors the mockup rule: badge-worthy only when the
    * mailbox is NOT one of the member's own recorded parents.
+   *
+   * The mailbox holder is IDENTIFIED only when they are in this tree
+   * (`inTree`). #2255 allows any member club-wide as an inheritance source, and
+   * naming an unconnected member on a family card would assert a family
+   * connection that is not recorded — so an out-of-tree source arrives as a
+   * name-free marker and the card says only that the email leaves the tree.
    */
   notificationEmail: {
-    sourceId: string;
-    sourceName: string;
+    /** Null when the mailbox holder is not in this tree. */
+    sourceId: string | null;
+    /** Null when the mailbox holder is not in this tree. */
+    sourceName: string | null;
     /** e.g. "grandparent" when the source is in the tree; null otherwise. */
     sourceRelationship: string | null;
     beyondDirectParent: boolean;
+    /** True when the mailbox holder is a member of this tree. */
+    inTree: boolean;
   } | null;
   /** The recorded parent NOT used as this node's position in the list. */
   secondParentInline: { id: string; name: string } | null;
@@ -150,6 +207,13 @@ export type FamilyTreeNode = {
   children: FamilyTreeNode[];
 };
 
+/**
+ * Which bound cut the walk short. `generations` = the vertical cap; `size` =
+ * the member cap, the per-round row cap, or the round cap (all "this family is
+ * bigger than the tree shows"); `both` = at least one of each.
+ */
+export type FamilyTreeTruncationReason = "generations" | "size" | "both";
+
 export type MemberFamilyTree = {
   root: { id: string; name: string };
   roots: FamilyTreeNode[];
@@ -158,6 +222,8 @@ export type MemberFamilyTree = {
   generationSpan: number;
   /** True when the vertical cap or the size cap cut reachable members off. */
   truncated: boolean;
+  /** Which bound fired, so the card words the notice truthfully. */
+  truncatedReason: FamilyTreeTruncationReason | null;
   /** True when at least one rendered relationship is derived-not-stored. */
   hasDerivedRelationships: boolean;
 };
@@ -175,6 +241,7 @@ type FamilyGraph = {
   /** memberId -> confirmed partner's memberId (both directions present). */
   partnerOf: Map<string, string>;
   truncated: boolean;
+  truncatedReason: FamilyTreeTruncationReason | null;
 };
 
 function displayName(member: { firstName: string; lastName: string }): string {
@@ -205,12 +272,25 @@ async function collectFamilyGraph(
   const nodes = new Map<string, GraphNode>();
   nodes.set(rootId, { record: rootRecord, generation: 0, index: 0 });
   const partnerOf = new Map<string, string>();
-  let truncated = false;
+  // Tracked separately so the card can say WHICH bound bit; both can fire on
+  // the same walk (a wide family that is also over-deep).
+  let truncatedByGenerations = false;
+  let truncatedBySize = false;
   let nextIndex = 1;
 
   let frontier: string[] = [rootId];
+  let rounds = 0;
 
   while (frontier.length > 0 && nodes.size < MAX_FAMILY_TREE_MEMBERS) {
+    if (rounds >= MAX_FAMILY_TREE_ROUNDS) {
+      // Belt-and-braces query bound (see MAX_FAMILY_TREE_ROUNDS): unreachable
+      // while a round must admit a member to continue, but it keeps the number
+      // of sequential queries a bounded property of THIS loop.
+      truncatedBySize = true;
+      break;
+    }
+    rounds += 1;
+
     // Candidate ids for this round, in a deterministic discovery order:
     // parents of each frontier member (primary before secondary), then
     // partners, then children (name-ordered by the query). First discovery
@@ -224,7 +304,7 @@ async function collectFamilyGraph(
         // Vertical cap (#2255 applied to the walk): a member more than
         // MAX_PARENT_LINK_CHAIN_LENGTH parent-links above or below the viewed
         // member is out of reach, and the card says so via `truncated`.
-        truncated = true;
+        truncatedByGenerations = true;
         return;
       }
       candidateGeneration.set(id, generation);
@@ -249,7 +329,12 @@ async function collectFamilyGraph(
       },
       select: { id: true, memberAId: true, memberBId: true },
       orderBy: { id: "asc" },
+      // Bound the READ, not just the tree built from it. The extra row is the
+      // "there was more" sentinel; the deterministic id ordering makes the
+      // rows we keep the same rows on every request.
+      take: MAX_FAMILY_TREE_MEMBERS + 1,
     })) as Array<{ id: string; memberAId: string; memberBId: string }>;
+    if (partnerLinks.length > MAX_FAMILY_TREE_MEMBERS) truncatedBySize = true;
 
     for (const link of partnerLinks) {
       // The service layer allows at most one CONFIRMED partner per member;
@@ -276,7 +361,12 @@ async function collectFamilyGraph(
       },
       select: FAMILY_TREE_MEMBER_SELECT,
       orderBy: [{ firstName: "asc" }, { lastName: "asc" }, { id: "asc" }],
+      // Same reason as the partner-link read: a member with 400 recorded
+      // dependants must not materialise 400 joined rows so the walk can admit
+      // a capped handful of them. Deterministic order, plus a sentinel row.
+      take: MAX_FAMILY_TREE_MEMBERS + 1,
     })) as FamilyTreeMemberRecord[];
+    if (childRows.length > MAX_FAMILY_TREE_MEMBERS) truncatedBySize = true;
 
     const recordById = new Map<string, FamilyTreeMemberRecord>();
     for (const child of childRows) {
@@ -295,7 +385,10 @@ async function collectFamilyGraph(
     }
 
     // Fetch the records the child query did not already return (parents and
-    // partners are known only by id so far).
+    // partners are known only by id so far). This read needs no `take` of its
+    // own: it is an `id IN (...)` over `candidateOrder`, which is itself
+    // bounded — at most two parents per frontier member plus the two capped
+    // reads above — so it can never fan out beyond a few hundred rows.
     const missingIds = candidateOrder.filter((id) => !recordById.has(id));
     if (missingIds.length > 0) {
       const rows = (await db.member.findMany({
@@ -308,7 +401,7 @@ async function collectFamilyGraph(
     const added: string[] = [];
     for (const id of candidateOrder) {
       if (nodes.size >= MAX_FAMILY_TREE_MEMBERS) {
-        truncated = true;
+        truncatedBySize = true;
         break;
       }
       const record = recordById.get(id);
@@ -327,7 +420,32 @@ async function collectFamilyGraph(
     frontier = added;
   }
 
-  return { rootId, nodes, partnerOf, truncated };
+  // The size cap can also bite WITHOUT the admission loop breaking: when a
+  // round's candidates land exactly on MAX_FAMILY_TREE_MEMBERS, every candidate
+  // is admitted, `added` is non-empty, and the outer `while` then exits on the
+  // size condition — leaving a frontier whose parents, partners and children
+  // were never asked for. Without this the tree would claim to be complete
+  // while an entire generation below it is missing.
+  if (frontier.length > 0 && nodes.size >= MAX_FAMILY_TREE_MEMBERS) {
+    truncatedBySize = true;
+  }
+
+  const truncatedReason: FamilyTreeTruncationReason | null =
+    truncatedByGenerations && truncatedBySize
+      ? "both"
+      : truncatedByGenerations
+        ? "generations"
+        : truncatedBySize
+          ? "size"
+          : null;
+
+  return {
+    rootId,
+    nodes,
+    partnerOf,
+    truncated: truncatedReason !== null,
+    truncatedReason,
+  };
 }
 
 /**
@@ -397,10 +515,27 @@ function setsEqual(a: Set<string>, b: Set<string>): boolean {
   return true;
 }
 
+/** True when every member of `a` is in `b` and `b` has at least one more. */
+function isProperSubset(a: Set<string>, b: Set<string>): boolean {
+  if (a.size >= b.size) return false;
+  for (const value of a) if (!b.has(value)) return false;
+  return true;
+}
+
 type BloodRelation = {
   label: string;
   /** Shared parents, for the sibling / half-sibling sr-only derivation. */
   sharedParentIds: string[];
+  /**
+   * Set when "Half-sibling" comes out of an INCOMPLETE record rather than a
+   * genuinely different parentage: one member's recorded parents are a proper
+   * subset of the other's, so the two share every parent the smaller record
+   * actually names. This is the likely real-data shape — one-sided parent
+   * records are common — and "Half-sibling" is a socially loaded thing to
+   * assert on it, so the id of the member with the incomplete record travels
+   * out to be disclosed on the node.
+   */
+  incompleteParentRecordFor: string | null;
 };
 
 /**
@@ -416,18 +551,28 @@ function bloodRelation(
   aId: string,
   bId: string,
 ): BloodRelation | null {
-  if (aId === bId) return { label: "Self", sharedParentIds: [] };
+  if (aId === bId) {
+    return { label: "Self", sharedParentIds: [], incompleteParentRecordFor: null };
+  }
   const aDepths = depthsById.get(aId);
   const bDepths = depthsById.get(bId);
   if (!aDepths || !bDepths) return null;
 
   const upToB = aDepths.get(bId);
   if (upToB !== undefined && upToB < ANCESTOR_LABELS.length) {
-    return { label: ANCESTOR_LABELS[upToB], sharedParentIds: [] };
+    return {
+      label: ANCESTOR_LABELS[upToB],
+      sharedParentIds: [],
+      incompleteParentRecordFor: null,
+    };
   }
   const downToB = bDepths.get(aId);
   if (downToB !== undefined && downToB < DESCENDANT_LABELS.length) {
-    return { label: DESCENDANT_LABELS[downToB], sharedParentIds: [] };
+    return {
+      label: DESCENDANT_LABELS[downToB],
+      sharedParentIds: [],
+      incompleteParentRecordFor: null,
+    };
   }
 
   // Closest common ancestor: minimise total distance, then the distance on the
@@ -451,12 +596,29 @@ function bloodRelation(
     const aParents = recordedParentIds(graph.nodes.get(aId)!.record);
     const bParents = recordedParentIds(graph.nodes.get(bId)!.record);
     const shared = [...aParents].filter((id) => bParents.has(id));
-    const label = setsEqual(aParents, bParents) ? "Sibling" : "Half-sibling";
-    return { label, sharedParentIds: shared };
+    const equal = setsEqual(aParents, bParents);
+    // The rule itself is owner-decided and stays exactly as decided: a
+    // different recorded parent SET is a half-sibling. What changes here is
+    // only honesty about WHY — a proper subset means the label is driven by a
+    // missing record on one side, not by a recorded second parentage.
+    let incompleteParentRecordFor: string | null = null;
+    if (!equal) {
+      if (isProperSubset(aParents, bParents)) incompleteParentRecordFor = aId;
+      else if (isProperSubset(bParents, aParents)) {
+        incompleteParentRecordFor = bId;
+      }
+    }
+    return {
+      label: equal ? "Sibling" : "Half-sibling",
+      sharedParentIds: shared,
+      incompleteParentRecordFor,
+    };
   }
 
   const label = COLLATERAL_LABELS[`${best.u},${best.d}`];
-  return label ? { label, sharedParentIds: [] } : null;
+  return label
+    ? { label, sharedParentIds: [], incompleteParentRecordFor: null }
+    : null;
 }
 
 type RelationshipKind =
@@ -472,6 +634,8 @@ type ResolvedRelationship = {
   kind: RelationshipKind;
   label: string;
   sharedParentIds: string[];
+  /** Visible caveat rendered beside the label; see FamilyTreeRelationship. */
+  qualifier: string | null;
 };
 
 /**
@@ -497,6 +661,7 @@ function resolveRelationships(
     kind: "self",
     label: "This member",
     sharedParentIds: [],
+    qualifier: null,
   });
 
   const rootParents = recordedParentIds(root.record);
@@ -511,6 +676,7 @@ function resolveRelationships(
         kind: "stored-parent",
         label: root.record.parentMemberId === id ? "Parent" : "Second parent",
         sharedParentIds: [],
+        qualifier: null,
       });
       continue;
     }
@@ -519,6 +685,7 @@ function resolveRelationships(
         kind: "stored-child",
         label: "Dependant",
         sharedParentIds: [],
+        qualifier: null,
       });
       continue;
     }
@@ -527,6 +694,7 @@ function resolveRelationships(
         kind: "stored-partner",
         label: "Partner",
         sharedParentIds: [],
+        qualifier: null,
       });
       continue;
     }
@@ -537,6 +705,7 @@ function resolveRelationships(
         kind: "blood",
         label: blood.label,
         sharedParentIds: blood.sharedParentIds,
+        qualifier: incompleteParentQualifier(graph, blood),
       });
     }
   }
@@ -555,6 +724,7 @@ function resolveRelationships(
           kind: "affinity",
           label: `Co-parent of ${other.record.firstName}`,
           sharedParentIds: [],
+          qualifier: null,
         };
       }
     }
@@ -567,6 +737,7 @@ function resolveRelationships(
         kind: "affinity",
         label: `${displayName(partner.record)}'s partner`,
         sharedParentIds: [],
+        qualifier: null,
       };
     }
 
@@ -585,6 +756,7 @@ function resolveRelationships(
           kind: "affinity",
           label: `${displayName(partner.record)}'s ${viaPartner.label.toLowerCase()}`,
           sharedParentIds: [],
+          qualifier: incompleteParentQualifier(graph, viaPartner),
         };
       }
     }
@@ -597,6 +769,7 @@ function resolveRelationships(
           kind: "affinity",
           label: `${displayName(other.record)}'s parent`,
           sharedParentIds: [],
+          qualifier: null,
         };
       }
       if (recordedParentIds(node.record).has(other.record.id)) {
@@ -604,6 +777,7 @@ function resolveRelationships(
           kind: "affinity",
           label: `${displayName(other.record)}'s child`,
           sharedParentIds: [],
+          qualifier: null,
         };
       }
     }
@@ -630,11 +804,30 @@ function resolveRelationships(
         kind: "unknown",
         label: "Extended family",
         sharedParentIds: [],
+        qualifier: null,
       });
     }
   }
 
   return resolved;
+}
+
+/**
+ * The VISIBLE caveat for a "Half-sibling" that comes out of a one-sided parent
+ * record. It names the member whose record is incomplete, because "one parent
+ * not recorded" is meaningless without knowing whose — and with optional
+ * second-parent records this is the likely real-data reading of the label, not
+ * an edge case.
+ */
+function incompleteParentQualifier(
+  graph: FamilyGraph,
+  blood: BloodRelation,
+): string | null {
+  const id = blood.incompleteParentRecordFor;
+  if (!id) return null;
+  const node = graph.nodes.get(id);
+  if (!node) return null;
+  return `one parent not recorded for ${displayName(node.record)}`;
 }
 
 function describeRelationship(
@@ -677,6 +870,9 @@ function describeRelationship(
   if (sharedNames.length > 0) {
     base += ` Shares ${sharedNames.length === 1 ? "parent" : "parents"} ${sharedNames.join(" and ")}.`;
   }
+  if (relationship.qualifier) {
+    base += ` ${relationship.qualifier.charAt(0).toUpperCase()}${relationship.qualifier.slice(1)}.`;
+  }
 
   return [base, ...extras].join(" ");
 }
@@ -695,12 +891,21 @@ function buildForest(graph: FamilyGraph): {
   rootIds: string[];
   displayParentOf: Map<string, { parentId: string; link: ParentLinkKind }>;
   attachedTo: Map<string, string>;
+  /**
+   * Members promoted to forest roots by the cycle break — i.e. members that DO
+   * have a recorded in-tree parent which the display deliberately ignores. The
+   * caller needs this: without it, "the recorded parent that is not this node's
+   * display parent" reads a promoted node's genuine PRIMARY parent as its
+   * "Second parent", which is a confident lie told on already-corrupt data.
+   */
+  cyclePromoted: Set<string>;
 } {
   const displayParentOf = new Map<
     string,
     { parentId: string; link: ParentLinkKind }
   >();
   const attachedTo = new Map<string, string>();
+  const cyclePromoted = new Set<string>();
   const ordered = [...graph.nodes.values()].sort((a, b) => a.index - b.index);
 
   for (const node of ordered) {
@@ -771,6 +976,9 @@ function buildForest(graph: FamilyGraph): {
     }
     const unreached = ordered.find((node) => !reachable.has(node.record.id));
     if (!unreached) break;
+    if (displayParentOf.has(unreached.record.id)) {
+      cyclePromoted.add(unreached.record.id);
+    }
     displayParentOf.delete(unreached.record.id);
     attachedTo.delete(unreached.record.id);
   }
@@ -784,15 +992,17 @@ function buildForest(graph: FamilyGraph): {
     return nodeA.index - nodeB.index;
   });
 
-  return { rootIds: roots, displayParentOf, attachedTo };
+  return { rootIds: roots, displayParentOf, attachedTo, cyclePromoted };
 }
 
 /**
  * The read-only family tree for one member, or null when the member does not
- * exist. Admin-only (decision 1): the caller gates on membership:view, the
- * same permission that already exposes every member's detail page — the tree
- * shows nothing an admin could not reach by clicking through those pages, and
- * suppresses archived members' contact details (decision 4).
+ * exist. Admin-only (decision 1): the caller gates on membership:view, and the
+ * tree returns no field beyond what `membership:view` already exposes — the
+ * same names, badges, family groups and email addresses that the member pages
+ * and `/api/admin/members` already return at that permission. What it changes
+ * is convenience and reach, not the field set: one call assembles a picture an
+ * admin previously assembled by navigating member pages one at a time.
  */
 export async function getMemberFamilyTree(
   db: FamilyTreeClient,
@@ -805,7 +1015,8 @@ export async function getMemberFamilyTree(
   const graph: FamilyGraph = collected;
 
   const relationships = resolveRelationships(graph);
-  const { rootIds, displayParentOf, attachedTo } = buildForest(graph);
+  const { rootIds, displayParentOf, attachedTo, cyclePromoted } =
+    buildForest(graph);
   const depthsById = new Map<string, Map<string, number>>();
   for (const id of graph.nodes.keys()) {
     depthsById.set(id, ancestorDepths(graph, id));
@@ -849,31 +1060,43 @@ export async function getMemberFamilyTree(
     let notificationEmail: FamilyTreeNode["notificationEmail"] = null;
     if (source && record.inheritEmailFromId) {
       const beyondDirectParent = !recordedParentIds(record).has(source.id);
+      // #2255 lets an admin point a member's club email at ANY member, so the
+      // mailbox holder is not necessarily part of this family at all. Identify
+      // them only when they are in this tree; otherwise the payload carries the
+      // fact without the person, and the card says the mail leaves the tree.
+      const inTree = graph.nodes.has(source.id);
       let sourceRelationship: string | null = null;
-      if (graph.nodes.has(source.id)) {
+      if (inTree) {
         const relation = bloodRelation(graph, depthsById, id, source.id);
         if (relation && relation.label !== "Self") {
           sourceRelationship = relation.label.toLowerCase();
         }
       }
       notificationEmail = {
-        sourceId: source.id,
-        sourceName: displayName(source),
+        sourceId: inTree ? source.id : null,
+        sourceName: inTree ? displayName(source) : null,
         sourceRelationship,
         beyondDirectParent,
+        inTree,
       };
     }
 
     // Second parent named inline (mockup): the recorded parent that is NOT the
     // node's position in the list, when that parent is in the tree.
+    // Suppressed entirely for a member the cycle break promoted to a root: it
+    // has NO display parent by construction, so "the recorded parent that is
+    // not the display parent" would name its genuine primary parent as its
+    // second parent — a confident falsehood layered on top of corrupt data.
     const displayParent = displayParentOf.get(id);
     let secondParentInline: FamilyTreeNode["secondParentInline"] = null;
-    const inlineParentId = [record.parentMemberId, record.secondaryParentId].find(
-      (candidate) =>
-        candidate &&
-        candidate !== displayParent?.parentId &&
-        graph.nodes.has(candidate),
-    );
+    const inlineParentId = cyclePromoted.has(id)
+      ? undefined
+      : [record.parentMemberId, record.secondaryParentId].find(
+          (candidate) =>
+            candidate &&
+            candidate !== displayParent?.parentId &&
+            graph.nodes.has(candidate),
+        );
     if (inlineParentId) {
       secondParentInline = {
         id: inlineParentId,
@@ -898,11 +1121,13 @@ export async function getMemberFamilyTree(
     }
     if (notificationEmail) {
       extras.push(
-        `Club email goes to ${notificationEmail.sourceName}${
-          notificationEmail.sourceRelationship
-            ? ` (${notificationEmail.sourceRelationship})`
-            : ""
-        }.`,
+        notificationEmail.inTree && notificationEmail.sourceName
+          ? `Club email goes to ${notificationEmail.sourceName}${
+              notificationEmail.sourceRelationship
+                ? ` (${notificationEmail.sourceRelationship})`
+                : ""
+            }.`
+          : "Club email goes to a member outside this family tree.",
       );
     }
 
@@ -930,6 +1155,7 @@ export async function getMemberFamilyTree(
           relationship.kind === "blood" ||
           relationship.kind === "affinity" ||
           relationship.kind === "unknown",
+        qualifier: relationship.qualifier,
         description: describeRelationship(graph, relationship, node, extras),
       },
       linkToDisplayParent,
@@ -984,6 +1210,7 @@ export async function getMemberFamilyTree(
     memberCount: graph.nodes.size,
     generationSpan: maxGeneration - minGeneration + 1,
     truncated: graph.truncated,
+    truncatedReason: graph.truncatedReason,
     hasDerivedRelationships: hasDerived,
   };
 }

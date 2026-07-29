@@ -15,6 +15,17 @@ import { MAX_PARENT_LINK_CHAIN_LENGTH } from "@/lib/member-family-link-depth";
  * visited set and the vertical/size caps, and a broken guard shows up first as
  * runaway querying — a budget overrun fails the test immediately instead of
  * hanging it.
+ *
+ * It also HONOURS `take` and records the `take` it was given, because bounding
+ * the tree is not the same as bounding the queries: a member with hundreds of
+ * dependants must not materialise hundreds of joined rows for the walk to keep
+ * a capped handful of them. A fake that ignored `take` would let that
+ * regression pass silently.
+ *
+ * Not covered here, deliberately: the round cap (`MAX_FAMILY_TREE_ROUNDS`).
+ * It is a backstop that the size cap already implies — a round either admits a
+ * member or ends the walk — so no seed can reach it without first tripping the
+ * size cap. It exists so the query count is bounded by something explicit.
  */
 
 type Row = {
@@ -50,6 +61,14 @@ function db(
 ) {
   const budget = options.queryBudget ?? 200;
   let queries = 0;
+  // Every `take` the traversal passed on its two open-ended reads, and the
+  // largest row count any single query was allowed to return.
+  const takes: Array<number | undefined> = [];
+  let maxRowsReturned = 0;
+  const record = <T,>(rows: T[]) => {
+    maxRowsReturned = Math.max(maxRowsReturned, rows.length);
+    return rows;
+  };
   const spend = () => {
     queries += 1;
     if (queries > budget) {
@@ -134,6 +153,7 @@ function db(
       },
       async findMany({
         where,
+        take,
       }: {
         where: {
           id?: { in: string[] };
@@ -142,14 +162,19 @@ function db(
             secondaryParentId?: { in: string[] };
           }>;
         };
+        take?: number;
       }) {
         spend();
         if (where.id?.in) {
-          return where.id.in
-            .map((id) => rows.get(id))
-            .filter((row): row is Row => Boolean(row))
-            .map(shape);
+          // The by-id backfill is bounded by its own `in` list, not by `take`.
+          return record(
+            where.id.in
+              .map((id) => rows.get(id))
+              .filter((row): row is Row => Boolean(row))
+              .map(shape),
+          );
         }
+        takes.push(take);
         const primaryIn = new Set(
           where.OR?.find((clause) => clause.parentMemberId)?.parentMemberId
             ?.in ?? [],
@@ -163,12 +188,14 @@ function db(
             (row.parentMemberId && primaryIn.has(row.parentMemberId)) ||
             (row.secondaryParentId && secondaryIn.has(row.secondaryParentId)),
         );
-        return sortRows(matches).map(shape);
+        const sorted = sortRows(matches).map(shape);
+        return record(take === undefined ? sorted : sorted.slice(0, take));
       },
     },
     memberPartnerLink: {
       async findMany({
         where,
+        take,
       }: {
         where: {
           status: string;
@@ -177,15 +204,17 @@ function db(
             memberBId?: { in: string[] };
           }>;
         };
+        take?: number;
       }) {
         spend();
+        takes.push(take);
         const aIn = new Set(
           where.OR.find((clause) => clause.memberAId)?.memberAId?.in ?? [],
         );
         const bIn = new Set(
           where.OR.find((clause) => clause.memberBId)?.memberBId?.in ?? [],
         );
-        return links
+        const matches = links
           .filter(
             (link) =>
               link.status === where.status &&
@@ -197,15 +226,24 @@ function db(
             memberAId: link.memberAId,
             memberBId: link.memberBId,
           }));
+        return record(take === undefined ? matches : matches.slice(0, take));
       },
     },
     get queryCount() {
       return queries;
     },
+    get openEndedTakes() {
+      return takes;
+    },
+    get maxRowsReturned() {
+      return maxRowsReturned;
+    },
   };
 
   return client as unknown as Parameters<typeof getMemberFamilyTree>[0] & {
     queryCount: number;
+    openEndedTakes: Array<number | undefined>;
+    maxRowsReturned: number;
   };
 }
 
@@ -402,6 +440,69 @@ describe("getMemberFamilyTree", () => {
     expect(ruby.relationship.label).toBe("Half-sibling");
     expect(ruby.relationship.derived).toBe(true);
     expect(ruby.relationship.description).toContain("Shares parent k.");
+    // ruby's recorded parents are a proper subset of me's, so the label is
+    // driven by a missing record — the node says whose (see below).
+    expect(ruby.relationship.qualifier).toBe(
+      "one parent not recorded for ruby",
+    );
+    expect(byId(tree, "sam").relationship.qualifier).toBeNull();
+  });
+
+  it("discloses whose record is incomplete behind a subset half-sibling, both ways", async () => {
+    // The rule itself is unchanged and owner-decided: a different recorded
+    // parent SET is a half-sibling. What is asserted here is the honesty
+    // qualifier for the LIKELY real-data shape — one side simply has no second
+    // parent recorded, so the two share every parent that side actually has,
+    // and "Half-sibling" would otherwise be read as a claim about the family.
+
+    // (a) the VIEWED member is the one with the incomplete record.
+    const viewerIncomplete = (await getMemberFamilyTree(
+      db([
+        { id: "mum" },
+        { id: "dad" },
+        { id: "me", parentMemberId: "mum" },
+        { id: "sam", parentMemberId: "mum", secondaryParentId: "dad" },
+      ]),
+      "me",
+    ))!;
+    const sam = byId(viewerIncomplete, "sam");
+    expect(sam.relationship.label).toBe("Half-sibling");
+    expect(sam.relationship.qualifier).toBe("one parent not recorded for me");
+    expect(sam.relationship.description).toContain(
+      "One parent not recorded for me.",
+    );
+
+    // (b) the OTHER member is the one with the incomplete record.
+    const otherIncomplete = (await getMemberFamilyTree(
+      db([
+        { id: "mum" },
+        { id: "dad" },
+        { id: "me", parentMemberId: "mum", secondaryParentId: "dad" },
+        { id: "sam", parentMemberId: "mum" },
+      ]),
+      "me",
+    ))!;
+    expect(byId(otherIncomplete, "sam").relationship).toMatchObject({
+      label: "Half-sibling",
+      qualifier: "one parent not recorded for sam",
+    });
+
+    // (c) genuinely different second parents on both sides — no missing
+    // record to disclose, so no qualifier softens the label.
+    const genuinelyHalf = (await getMemberFamilyTree(
+      db([
+        { id: "mum" },
+        { id: "dad" },
+        { id: "other" },
+        { id: "me", parentMemberId: "mum", secondaryParentId: "dad" },
+        { id: "sam", parentMemberId: "mum", secondaryParentId: "other" },
+      ]),
+      "me",
+    ))!;
+    expect(byId(genuinelyHalf, "sam").relationship).toMatchObject({
+      label: "Half-sibling",
+      qualifier: null,
+    });
   });
 
   it("derives cousins, aunts/uncles and nieces/nephews from shared ancestors", async () => {
@@ -482,6 +583,16 @@ describe("getMemberFamilyTree", () => {
     expect([...ids].sort()).toEqual(["a", "b"]);
     expect(ids).toHaveLength(2); // no duplicates: the display cycle is broken
     expect(client.queryCount).toBeLessThanOrEqual(30);
+
+    // `a` is promoted to a display root to break the loop, so it has no display
+    // parent — and its one recorded parent, `b`, must NOT then be announced as
+    // its "second parent". On data this corrupt the tree may show less; it may
+    // not state something confidently false.
+    expect(byId(tree, "a").secondParentInline).toBeNull();
+    expect(byId(tree, "a").relationship.description).not.toContain(
+      "Second parent",
+    );
+    expect(byId(tree, "b").secondParentInline).toBeNull();
   });
 
   it("terminates when a member is recorded as their own parent", async () => {
@@ -572,6 +683,93 @@ describe("getMemberFamilyTree", () => {
     const tree = (await getMemberFamilyTree(db(seeds), "me"))!;
     expect(tree.memberCount).toBeLessThanOrEqual(MAX_FAMILY_TREE_MEMBERS);
     expect(tree.truncated).toBe(true);
+    expect(tree.truncatedReason).toBe("size");
+  });
+
+  it("reports truncation when a round lands EXACTLY on the size cap", async () => {
+    // The boundary the size cap misses if it is only checked while admitting:
+    // one round's candidates fill the tree to exactly MAX_FAMILY_TREE_MEMBERS,
+    // so nothing is ever refused, but the frontier those candidates form is
+    // never explored — here that hides a whole generation of grandchildren.
+    const childCount = MAX_FAMILY_TREE_MEMBERS - 1;
+    const seeds: Seed[] = [{ id: "me" }];
+    for (let i = 0; i < childCount; i += 1) {
+      const kid = `kid${String(i).padStart(3, "0")}`;
+      seeds.push({ id: kid, parentMemberId: "me" });
+      seeds.push({ id: `grand${String(i).padStart(3, "0")}`, parentMemberId: kid });
+    }
+    const tree = (await getMemberFamilyTree(db(seeds), "me"))!;
+
+    expect(tree.memberCount).toBe(MAX_FAMILY_TREE_MEMBERS);
+    const ids = flatten(tree).map((node) => node.id);
+    expect(ids).not.toContain("grand000"); // the unexplored generation
+    expect(tree.truncated).toBe(true);
+    expect(tree.truncatedReason).toBe("size");
+  });
+
+  it("bounds the QUERIES as well as the tree, and says the family is bigger", async () => {
+    // 400 dependants: the walk keeps at most MAX_FAMILY_TREE_MEMBERS people, so
+    // it must not ASK the database for 400 rows-with-joins to throw most away.
+    const seeds: Seed[] = [{ id: "me" }];
+    for (let i = 0; i < 400; i += 1) {
+      seeds.push({ id: `kid${String(i).padStart(3, "0")}`, parentMemberId: "me" });
+    }
+    const client = db(seeds);
+    const tree = (await getMemberFamilyTree(client, "me"))!;
+
+    // Every open-ended read carries the row cap plus one sentinel row...
+    expect(client.openEndedTakes.length).toBeGreaterThan(0);
+    for (const take of client.openEndedTakes) {
+      expect(take).toBe(MAX_FAMILY_TREE_MEMBERS + 1);
+    }
+    // ...and no single query was ever allowed to return more than that.
+    expect(client.maxRowsReturned).toBeLessThanOrEqual(
+      MAX_FAMILY_TREE_MEMBERS + 1,
+    );
+    // Hitting the cap is reported, not silently rendered as a whole family.
+    expect(tree.truncated).toBe(true);
+    expect(tree.truncatedReason).toBe("size");
+  });
+
+  it("distinguishes a generation-capped family from a size-capped one", async () => {
+    const overDeep = (await getMemberFamilyTree(
+      db([
+        { id: "me", parentMemberId: "up1" },
+        { id: "up1", parentMemberId: "up2" },
+        { id: "up2", parentMemberId: "up3" },
+        { id: "up3", parentMemberId: "up4" },
+        { id: "up4" },
+      ]),
+      "me",
+    ))!;
+    expect(overDeep.truncatedReason).toBe("generations");
+
+    // Both bounds can bite on the same family; the notice must not pick one.
+    // The over-deep chain is walked first (parents lead each round), so the
+    // vertical cap fires before great-grandad's 200 other children fill the
+    // tree — a family that is at once too tall AND too wide.
+    const seeds: Seed[] = [
+      { id: "me", parentMemberId: "up1" },
+      { id: "up1", parentMemberId: "up2" },
+      { id: "up2", parentMemberId: "up3" },
+      { id: "up3", parentMemberId: "up4" },
+      { id: "up4" },
+    ];
+    for (let i = 0; i < MAX_FAMILY_TREE_MEMBERS + 50; i += 1) {
+      seeds.push({
+        id: `aunt${String(i).padStart(3, "0")}`,
+        parentMemberId: "up3",
+      });
+    }
+    const both = (await getMemberFamilyTree(db(seeds), "me"))!;
+    expect(both.truncatedReason).toBe("both");
+
+    const untruncated = (await getMemberFamilyTree(
+      db([{ id: "me", parentMemberId: "p" }, { id: "p" }]),
+      "me",
+    ))!;
+    expect(untruncated.truncated).toBe(false);
+    expect(untruncated.truncatedReason).toBeNull();
   });
 
   it("reports the STORED email-inheritance answer, never a re-derivation", async () => {
@@ -593,6 +791,7 @@ describe("getMemberFamilyTree", () => {
       sourceName: "gp",
       sourceRelationship: "grandparent",
       beyondDirectParent: true,
+      inTree: true,
     });
     expect(byId(tree, "gp").emailRecipientCount).toBe(1);
     expect(byId(tree, "p").notificationEmail).toBeNull();
@@ -609,7 +808,39 @@ describe("getMemberFamilyTree", () => {
     expect(byId(tree, "kid").notificationEmail).toMatchObject({
       sourceId: "p",
       beyondDirectParent: false,
+      inTree: true,
     });
+  });
+
+  it("never names an email-inheritance source from outside the tree", async () => {
+    // #2255 retired the family-link constraint on inheritance sources, so an
+    // admin can point a member's club email at ANY member. Naming that member
+    // here would assert a family connection the database does not record — and
+    // would leak an unrelated member's name onto this family's card.
+    const tree = (await getMemberFamilyTree(
+      db([
+        { id: "p" },
+        { id: "kid", parentMemberId: "p", inheritEmailFromId: "treasurer" },
+        // Connected to nobody in kid's family.
+        { id: "treasurer" },
+      ]),
+      "kid",
+    ))!;
+
+    const kid = byId(tree, "kid");
+    expect(flatten(tree).map((node) => node.id)).not.toContain("treasurer");
+    expect(kid.notificationEmail).toEqual({
+      sourceId: null,
+      sourceName: null,
+      sourceRelationship: null,
+      beyondDirectParent: true,
+      inTree: false,
+    });
+    // The sr-only sentence states the fact without identifying anyone.
+    expect(kid.relationship.description).toContain(
+      "Club email goes to a member outside this family tree.",
+    );
+    expect(kid.relationship.description).not.toContain("treasurer");
   });
 
   it("lists family groups per member and flags the billing family", async () => {
