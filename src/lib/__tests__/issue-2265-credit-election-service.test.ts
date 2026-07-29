@@ -22,6 +22,7 @@ vi.mock("@/lib/booking-payment-cleanup", () => ({
 }));
 
 import {
+  clearStaleCreditElection,
   consumeStoredCreditElection,
   settleFullyCreditCoveredBooking,
   CreditCoveredSettlementConflictError,
@@ -564,5 +565,119 @@ describe("#2265 settleFullyCreditCoveredBooking", () => {
     expect(fixture.bookingRow.status).toBe(BookingStatus.CANCELLED);
     expect(fixture.tx.payment.upsert).not.toHaveBeenCalled();
     expect(queueSupersededPrimaryIntentCancellations).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * #2319 — the CLEAR half of the column's lifecycle.
+ *
+ * `consumeStoredCreditElection` above is the honest answer while a booking is
+ * still unpaid: apply the credit and charge the remainder. Once the money has
+ * been taken at the full price there is nothing left to apply, and the only
+ * honest answer is to clear the request — a settled booking must never carry an
+ * election, because nothing will ever read it again and the row would advertise
+ * an outstanding choice forever. These pin that the clear moves the column and
+ * NOTHING else: no ledger row, no balance movement, no status write.
+ */
+describe("#2319 clearStaleCreditElection", () => {
+  it("clears the election and touches no money", async () => {
+    const fixture = makeTx({
+      ledger: [creditLot(20_000)],
+      booking: { finalPriceCents: 10_000, creditElectionCents: 8_000 },
+    });
+
+    await expect(
+      clearStaleCreditElection(fixture.tx as never, {
+        id: BOOKING_ID,
+        creditElectionCents: 8_000,
+      }),
+    ).resolves.toBe(8_000);
+
+    expect(fixture.bookingRow.creditElectionCents).toBeNull();
+    // The whole point: the member paid full price in cash, so their balance is
+    // still theirs down to the cent, and no BOOKING_APPLIED row exists.
+    expect(balance(fixture.rows)).toBe(20_000);
+    expect(appliedTotal(fixture.rows)).toBe(0);
+    expect(fixture.tx.memberCredit.create).not.toHaveBeenCalled();
+    // Only the column moved — the status is not this helper's business.
+    expect(fixture.bookingUpdates).toEqual([{ creditElectionCents: null }]);
+  });
+
+  it("does nothing, and writes nothing, when there is no election", async () => {
+    const fixture = makeTx({
+      ledger: [creditLot(20_000)],
+      booking: { finalPriceCents: 10_000, creditElectionCents: null },
+    });
+
+    await expect(
+      clearStaleCreditElection(fixture.tx as never, {
+        id: BOOKING_ID,
+        creditElectionCents: null,
+      }),
+    ).resolves.toBeNull();
+
+    // The overwhelming majority of settlements land here, so this arm must cost
+    // nothing at all: not even an UPDATE that matches zero rows.
+    expect(fixture.tx.booking.updateMany).not.toHaveBeenCalled();
+    expect(fixture.bookingUpdates).toEqual([]);
+  });
+
+  it("clears an explicit zero election, which is still a request on the row", async () => {
+    const fixture = makeTx({
+      booking: { finalPriceCents: 10_000, creditElectionCents: 0 },
+    });
+
+    // 0 means "the member explicitly chose to apply none", which is a live
+    // request, not the absence of one — NULL is the absence. It must be cleared
+    // like any other so the settled row reads NULL.
+    await expect(
+      clearStaleCreditElection(fixture.tx as never, {
+        id: BOOKING_ID,
+        creditElectionCents: 0,
+      }),
+    ).resolves.toBe(0);
+    expect(fixture.bookingRow.creditElectionCents).toBeNull();
+  });
+
+  it("reports nothing when a consumer won the election first", async () => {
+    const fixture = makeTx({
+      ledger: [creditLot(20_000)],
+      booking: { finalPriceCents: 10_000, creditElectionCents: 8_000 },
+      // A pay step consumes the election in the window between this settlement
+      // reading it and claiming it. The guarded claim must lose, and losing must
+      // be reported as "nothing was stale" — otherwise the caller would audit,
+      // alert and tell the member their credit went unapplied when it was in
+      // fact applied a moment earlier.
+      raceBeforeClaim: (row) => {
+        row.creditElectionCents = null;
+      },
+    });
+
+    await expect(
+      clearStaleCreditElection(fixture.tx as never, {
+        id: BOOKING_ID,
+        creditElectionCents: 8_000,
+      }),
+    ).resolves.toBeNull();
+    expect(fixture.bookingUpdates).toEqual([]);
+  });
+
+  it("does not clear an election a concurrent edit changed underneath it", async () => {
+    const fixture = makeTx({
+      booking: { finalPriceCents: 10_000, creditElectionCents: 8_000 },
+      // The claim matches on the EXACT amount read, so a re-elected different
+      // amount is left alone rather than silently discarded.
+      raceBeforeClaim: (row) => {
+        row.creditElectionCents = 3_000;
+      },
+    });
+
+    await expect(
+      clearStaleCreditElection(fixture.tx as never, {
+        id: BOOKING_ID,
+        creditElectionCents: 8_000,
+      }),
+    ).resolves.toBeNull();
+    expect(fixture.bookingRow.creditElectionCents).toBe(3_000);
   });
 });
