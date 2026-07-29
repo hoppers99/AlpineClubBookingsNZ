@@ -444,26 +444,35 @@ describe("migrations", () => {
     // type created by CREATE TYPE in that transaction is usable straight away.
     // So what matters is that this migration CREATEs the type (it is brand new)
     // rather than ALTERing an existing one, and that the CREATE precedes the use.
-    const sql = readRepoFile(MIGRATIONS[1]);
-    const statements = sql.split(/\r?\n/).filter((l) => !l.trim().startsWith("--"));
+    // Comments are stripped first: the header explains the ALTER TYPE contrast
+    // in prose, and an assertion that read the whole file would trip on it.
+    const statements = readRepoFile(MIGRATIONS[1])
+      .split(/\r?\n/)
+      .filter((line) => !line.trim().startsWith("--"));
 
-    expect(sql).toContain('CREATE TYPE "MemberGuestConsentStatus"');
-    expect(sql, "an ALTER TYPE ADD VALUE label could not be used in this transaction")
-      .not.toMatch(/ALTER TYPE/i);
-
-    // Exactly one statement names a label, and it is the index predicate.
-    const labelUses = statements.filter(
-      (line) => /'PENDING'/.test(line) && !/^CREATE TYPE/.test(line.trim()),
+    const createTypeAt = statements.findIndex((line) =>
+      line.trim().startsWith('CREATE TYPE "MemberGuestConsentStatus"'),
     );
+    expect(createTypeAt, "the enum type is not created here").toBeGreaterThan(-1);
+    expect(
+      statements.join("\n"),
+      "an ALTER TYPE ADD VALUE label could NOT be used in this transaction",
+    ).not.toMatch(/ALTER TYPE/i);
+
+    // Exactly one statement names a label, it is the index predicate, and the
+    // CREATE TYPE precedes it.
+    const labelUses = statements
+      .map((line, index) => ({ line, index }))
+      .filter(({ line }) => /'PENDING'/.test(line) && !line.trim().startsWith("CREATE TYPE"));
     expect(labelUses).toHaveLength(1);
-    expect(labelUses[0]).toContain(
+    expect(labelUses[0].line).toContain(
       'CREATE INDEX "BookingGuest_pendingConsent_expiresAt_idx"',
     );
-    expect(sql.indexOf("CREATE TYPE")).toBeLessThan(sql.indexOf(labelUses[0]));
+    expect(createTypeAt).toBeLessThan(labelUses[0].index);
 
-    // And no DML, so no row ever carries a label in this migration — which is
-    // what keeps the REVERSE blue/green direction safe (an old-colour client
-    // can never read a value it cannot deserialise).
+    // And no DML, so no ROW ever carries a label as a result of this migration —
+    // which is what keeps the REVERSE blue/green direction safe (an old-colour
+    // client can never read a value it cannot deserialise).
     expect(statements.join("\n")).not.toMatch(/\bINSERT\b|\bUPDATE\b/i);
   });
 
@@ -496,5 +505,23 @@ describe("migrations", () => {
     expect(hotPlan.length).toBeGreaterThan(1000);
     expect(hotPlan).toContain("HOT_TABLE_SQL_REGEX");
     expect(hotPlan).toContain("MEMBER_GUEST_WIDENING_ENABLED");
+
+    // Lock honesty. The plan used to say the index build "briefly takes a SHARE
+    // lock" and to offer CREATE INDEX CONCURRENTLY as the fix if BookingGuest
+    // grew — neither of which is true inside a Prisma migration, because the
+    // whole file runs in one transaction. Pin the corrected claims so an
+    // optimistic rewrite cannot creep back.
+    expect(hotPlan, "the plan must state the real lock held").toContain("ACCESS EXCLUSIVE");
+    expect(hotPlan, "the plan must say the whole file is one transaction").toMatch(
+      /ONE transaction/i,
+    );
+    expect(hotPlan, "an empty partial index still heap-scans").toMatch(
+      /scans the entire heap|heap-scans/i,
+    );
+    expect(hotPlan).not.toMatch(/briefly takes a SHARE lock/i);
+    expect(hotPlan).not.toMatch(/switch to CREATE INDEX CONCURRENTLY/i);
+    expect(hotPlan, "CONCURRENTLY is impossible in a Prisma migration").toMatch(
+      /forbids it inside a transaction block/i,
+    );
   });
 });

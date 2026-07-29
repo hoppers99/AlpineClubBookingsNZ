@@ -2215,7 +2215,8 @@ model BookingRequestSettings {
 // BookingRequestSettings uses, whose shape (including the FK-less
 // updatedByMemberId audit column) this model copies exactly.
 //
-// The row is created LAZILY on first read/write (see loadMemberGuestSettings in
+// The row is created LAZILY on the first WRITE — reading it materialises
+// nothing, it synthesises the defaults on a miss (see loadMemberGuestSettings in
 // src/lib/member-guest-settings.ts). The migration deliberately seeds NO row:
 // the blue/green validator hard-blocks session-clock DML in migration INSERT
 // payloads, and a synthesised-on-miss read needs no row anyway.
@@ -3647,8 +3648,12 @@ model ClubModuleSettings {
   // "+ Add Member Guest" (epic #2305, D-2). Default OFF: an existing club sees
   // zero change until an admin turns it on. Safe to add as a defaulted column
   // because every read narrows to CLUB_MODULE_SETTINGS_COLUMN_SELECT. In this
-  // release the flag is inert — turning it ON changes no outcome anywhere (see
-  // MEMBER_GUEST_WIDENING_ENABLED); the behaviour arrives in MG2 (#2307).
+  // release the flag is inert: no booking path reads it, so turning it ON
+  // changes no outcome at any of the seven resolveLinkedBookingMembers call
+  // sites (the refusal is gated on MEMBER_GUEST_WIDENING_ENABLED instead). The
+  // one thing it does change is the Modules card, which reports
+  // "Not available yet" rather than "Enabled" (D-17). The behaviour arrives in
+  // MG2 (#2307).
   memberGuests            Boolean  @default(false)
   updatedByMemberId       String?
   createdAt               DateTime @default(now())

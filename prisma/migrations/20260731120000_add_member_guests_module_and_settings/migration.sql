@@ -19,8 +19,10 @@
 -- the migrate -> cutover drain. No enum change, no DROP, no RENAME, no
 -- ALTER COLUMN TYPE / SET NOT NULL on existing data, no backfill DML, no
 -- session-clock DML, and no provider call. NO settings row is seeded: the
--- singleton is created lazily on first read/write and every read synthesises
--- the schema defaults on a miss.
+-- singleton is created lazily on the first WRITE, and every read synthesises
+-- the schema defaults on a miss without materialising anything (reading is not
+-- what creates the row — that distinction matters because several
+-- setup-readiness signals key on row existence).
 
 -- AlterTable
 ALTER TABLE "ClubModuleSettings" ADD COLUMN     "memberGuests" BOOLEAN NOT NULL DEFAULT false;
