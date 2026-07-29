@@ -28,6 +28,7 @@ import { toast } from "sonner";
 import { useScrollToFeedback } from "@/hooks/use-scroll-to-feedback";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import { useXeroStatus } from "@/hooks/use-xero-status";
+import { useXeroOrgShortCode } from "@/hooks/use-xero-org-short-code";
 import { Accordion } from "@/components/ui/accordion";
 import { subscriptionStatusLabel } from "@/lib/status-colors";
 import { MemberDetailHeader } from "./_components/member-detail-header";
@@ -381,6 +382,12 @@ export default function MemberDetailPage({
     openSection,
   } = useCollapsibleMemberSections();
   const { connected: xeroConnected } = useXeroStatus();
+  // Org short code for the page's "open in Xero" deep links (#2283). One
+  // mount per page; served from the server-side 12h org cache, and null
+  // degrades every link to the generic Xero URL rather than hiding it.
+  const { shortCode: xeroOrgShortCode } = useXeroOrgShortCode(
+    xeroConnected === true,
+  );
 
   const isAdultMember = member?.ageTier === "ADULT";
   const memberIsArchived = Boolean(member?.archivedAt);
@@ -592,6 +599,7 @@ export default function MemberDetailPage({
         memberIsArchived={memberIsArchived}
         pendingDeleteRequest={pendingDeleteRequest}
         xeroConnected={xeroConnected}
+        xeroOrgShortCode={xeroOrgShortCode}
         xeroPushing={xeroPushing}
         xeroUnlinking={xeroUnlinking}
         canEditMembership={canEditMembership}
@@ -778,6 +786,7 @@ export default function MemberDetailPage({
               </h3>
               <MemberSubscriptionHistoryTable
                 subscriptions={member.subscriptions}
+                xeroOrgShortCode={xeroOrgShortCode}
               />
             </div>
           </div>
@@ -814,7 +823,10 @@ export default function MemberDetailPage({
               promoCodes={member.promoCodes}
             />
             <div className="p-6">
-              <MemberXeroContactSummary member={member} />
+              <MemberXeroContactSummary
+                member={member}
+                xeroOrgShortCode={xeroOrgShortCode}
+              />
             </div>
           </div>
         </MemberGroupCard>
