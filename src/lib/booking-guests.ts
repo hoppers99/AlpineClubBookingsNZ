@@ -4,6 +4,11 @@ import {
   getMemberProfileCompleteness,
   type MemberProfileCompletenessResult,
 } from "@/lib/member-profile-completeness";
+import {
+  MEMBER_GUEST_WIDENING_ENABLED,
+  type MemberGuestBoundaryScope,
+  type MemberGuestBoundaryState,
+} from "@/lib/member-guest-consent";
 
 export type BookingGuestPricingInput = {
   ageTier: AgeTier;
@@ -136,27 +141,127 @@ function normalizeMemberIds(memberIds: Array<string | null | undefined>): string
   )];
 }
 
+/**
+ * Where each requested member sits relative to the booker's family boundary
+ * ("+ Add Member Guest", epic #2305, MG1 #2306).
+ *
+ * The boundary is EXACTLY the set `getAllowedGuestMemberIds` already computes —
+ * the booker plus every co-member of their family groups — so this introduces
+ * no second, drifting definition of "family" and adds no extra query on the
+ * authorized path: the caller computes it once and the authorization check
+ * below reuses the same result.
+ */
+export async function computeMemberGuestBoundary(
+  db: BookingGuestLookupDb,
+  bookingMemberId: string,
+  normalizedMemberIds: readonly string[],
+): Promise<MemberGuestBoundaryState> {
+  const allowedMemberIds = await getAllowedGuestMemberIds(db, bookingMemberId);
+  const scopeByMemberId = new Map<string, MemberGuestBoundaryScope>();
+  const beyondFamilyMemberIds: string[] = [];
+
+  for (const memberId of normalizedMemberIds) {
+    const scope: MemberGuestBoundaryScope = allowedMemberIds.has(memberId)
+      ? "FAMILY"
+      : "BEYOND_FAMILY";
+    scopeByMemberId.set(memberId, scope);
+    if (scope === "BEYOND_FAMILY") {
+      beyondFamilyMemberIds.push(memberId);
+    }
+  }
+
+  return { scopeByMemberId, beyondFamilyMemberIds };
+}
+
+export interface ResolvedLinkedBookingMembers {
+  members: Map<string, LinkedBookingMember>;
+  boundary: MemberGuestBoundaryState;
+}
+
+/**
+ * `resolveLinkedBookingMembers`, plus the family-boundary state it computed.
+ *
+ * MG2 (#2307) switches the seven call sites onto this variant so each one can
+ * persist the right `consentStatus` per guest. MG1 leaves every call site on the
+ * map-only wrapper below, so this release changes no call-site code at all.
+ *
+ * THE STRUCTURAL RULE OF MG1, and the thing to check first in review: the
+ * boundary is computed OUTSIDE the `skipAuthorization` branch, unconditionally,
+ * on every path.
+ *
+ * Four of the seven call sites pass `skipAuthorization` (the admin flows:
+ * booking copy, the modify planner, and the admin actor on the guests route).
+ * If the boundary were computed only where authorization is enforced, those
+ * four would have no boundary value to persist the day MG2 goes live — and the
+ * cheapest way to make the code compile would be to write `consentStatus = null`
+ * for them, i.e. to mint consent-free cross-family guest rows through the admin
+ * paths, permanently and silently. Computing it here costs those four paths two
+ * small `FamilyGroupMember` reads and removes that whole failure mode.
+ *
+ * It also cannot be verified from behaviour: in this release the outcome is
+ * identical either way, by design. So it is asserted directly — see
+ * `member-guest-dark-guarantee.test.ts`, which reads the returned boundary on a
+ * `skipAuthorization` call.
+ */
+export async function resolveLinkedBookingMembersWithBoundary(
+  db: BookingGuestLookupDb,
+  bookingMemberId: string,
+  memberIds: Array<string | null | undefined>,
+  options?: { skipAuthorization?: boolean }
+): Promise<ResolvedLinkedBookingMembers> {
+  const normalizedMemberIds = normalizeMemberIds(memberIds);
+
+  if (normalizedMemberIds.length === 0) {
+    return {
+      members: new Map(),
+      boundary: { scopeByMemberId: new Map(), beyondFamilyMemberIds: [] },
+    };
+  }
+
+  // Computed on EVERY path, admin included. Do not move this inside the
+  // authorization branch below — see the note above.
+  const boundary = await computeMemberGuestBoundary(
+    db,
+    bookingMemberId,
+    normalizedMemberIds,
+  );
+
+  if (!options?.skipAuthorization) {
+    // The refusal is gated on MEMBER_GUEST_WIDENING_ENABLED, not on the
+    // memberGuests module flag: an admin switching the module on in this
+    // release must change nothing, or they could strand capacity-holding
+    // PENDING rows that no released code can resolve or expire. The error is
+    // byte-for-byte the pre-existing one — same message, same 403 — so
+    // module-on is not observable here and D-8's neutral refusal surface is
+    // still MG2's to design.
+    if (!MEMBER_GUEST_WIDENING_ENABLED && boundary.beyondFamilyMemberIds.length > 0) {
+      throw new BookingGuestValidationError("Invalid guest member reference", 403);
+    }
+  }
+
+  const members = await resolveLinkedMemberRecords(db, normalizedMemberIds);
+  return { members, boundary };
+}
+
 export async function resolveLinkedBookingMembers(
   db: BookingGuestLookupDb,
   bookingMemberId: string,
   memberIds: Array<string | null | undefined>,
   options?: { skipAuthorization?: boolean }
 ): Promise<Map<string, LinkedBookingMember>> {
-  const normalizedMemberIds = normalizeMemberIds(memberIds);
+  const { members } = await resolveLinkedBookingMembersWithBoundary(
+    db,
+    bookingMemberId,
+    memberIds,
+    options,
+  );
+  return members;
+}
 
-  if (normalizedMemberIds.length === 0) {
-    return new Map();
-  }
-
-  if (!options?.skipAuthorization) {
-    const allowedMemberIds = await getAllowedGuestMemberIds(db, bookingMemberId);
-    for (const memberId of normalizedMemberIds) {
-      if (!allowedMemberIds.has(memberId)) {
-        throw new BookingGuestValidationError("Invalid guest member reference", 403);
-      }
-    }
-  }
-
+async function resolveLinkedMemberRecords(
+  db: BookingGuestLookupDb,
+  normalizedMemberIds: string[],
+): Promise<Map<string, LinkedBookingMember>> {
   const linkedMembers = await db.member.findMany({
     where: { id: { in: normalizedMemberIds }, active: true },
     select: {
