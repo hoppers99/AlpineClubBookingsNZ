@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/select";
 import { ADMIN_VIEW_ONLY_ACTION_REASON } from "@/hooks/use-admin-area-edit-access";
 import {
+  countNightsDateOnly,
   eachDateOnlyInRange,
   formatDateOnly,
   isDateOnlyString,
@@ -39,7 +40,11 @@ import {
  * There is deliberately NO preview step (owner decision, 26 Jul 2026). Assign
  * attempts the whole range atomically; if anything blocks it, NOTHING is written
  * and the server's refusal report is rendered here in its three categories. Only
- * then does a second, explicit "Assign the N free nights" action appear.
+ * then does a second, explicit "Assign the N free nights" action appear — and it
+ * sends the EXACT night list this dialog is showing, not a "free nights only"
+ * flag for the server to re-interpret. What the admin sees is what is written:
+ * if one of those nights was taken in the meantime, the server refuses the whole
+ * thing with a fresh report instead of writing a set the admin never approved.
  *
  * Lives in src/components/admin (not the board's _components) because #2252
  * drives the same dialog from inside a booking — one component, two surfaces.
@@ -72,7 +77,9 @@ export interface BedRangeRefusal {
 
 export interface BedRangeAssignResult {
   applied: boolean;
-  freeNightsOnly: boolean;
+  // The admin chose a subset of the range (the second action), rather than
+  // asking for all of it.
+  partialByConsent: boolean;
   bookingId: string;
   bookingGuestId: string;
   guestName: string;
@@ -114,6 +121,11 @@ interface BedRangeAssignDialogProps {
 // is caught before a pointless round trip — it never shortens the range.
 export const MAX_RANGE_ASSIGN_NIGHTS = 366;
 
+// DISPLAY order, most actionable first — deliberately NOT the server's
+// resolution precedence (EXCLUSIVE_HOLD > GUEST_NOT_BOOKED > BED_TAKEN, which
+// decides which single category a night gets). A clash is the thing an admin can
+// do something about, so it leads; a whole-lodge hold is structural and blocks
+// the entire range anyway, so it reads last.
 const CATEGORY_ORDER: BedRangeRefusalCategory[] = [
   "BED_TAKEN",
   "GUEST_NOT_BOOKED",
@@ -132,7 +144,7 @@ const CATEGORY_EXPLANATION: Record<BedRangeRefusalCategory, string> = {
   GUEST_NOT_BOOKED:
     "This is not a clash — it means the range or the guest is wrong. Check the dates before going further.",
   EXCLUSIVE_HOLD:
-    "These nights sit inside an exclusive whole-lodge hold, which takes the whole lodge and needs no per-bed allocation.",
+    "This booking holds the whole lodge for these nights, so its guests take the lodge and are not placed on individual beds.",
 };
 
 export function nightsBetween(fromDate: string, toDate: string): string[] {
@@ -155,7 +167,9 @@ export function rangeAssignError(
   if (parseDateOnly(toDate) <= parseDateOnly(fromDate)) {
     return "Date out must be after date in.";
   }
-  const nights = nightsBetween(fromDate, toDate).length;
+  // Counted arithmetically, never enumerated: a mistyped year must not build a
+  // Date per night before it can be refused (matching the server, #2251).
+  const nights = countNightsDateOnly(parseDateOnly(fromDate), parseDateOnly(toDate));
   if (nights > MAX_RANGE_ASSIGN_NIGHTS) {
     return `A range assignment covers at most ${MAX_RANGE_ASSIGN_NIGHTS} nights; that range is ${nights}. Split it into shorter ranges.`;
   }
@@ -187,13 +201,16 @@ export function BedRangeAssignDialog({
     setSubmitting(false);
   }, [open, target]);
 
-  const nights = useMemo(
-    () => nightsBetween(fromDate, toDate),
-    [fromDate, toDate],
-  );
   const validationError = useMemo(
     () => rangeAssignError(fromDate, toDate),
     [fromDate, toDate],
+  );
+  // A refused range has no night list: enumerating a mistyped "3026" to count it
+  // would build a Date per night while the error message is already on screen
+  // saying the range is impossible.
+  const nights = useMemo(
+    () => (validationError ? [] : nightsBetween(fromDate, toDate)),
+    [fromDate, toDate, validationError],
   );
 
   const refusalsByCategory = useMemo(() => {
@@ -211,7 +228,12 @@ export function BedRangeAssignDialog({
 
   if (!target) return null;
 
-  async function submit(freeNightsOnly: boolean) {
+  /**
+   * `chosenNights` is the second action: the exact nights this dialog is
+   * currently showing as free, sent back for the server to write as-is. Omit it
+   * for the ordinary all-or-nothing attempt over the whole range.
+   */
+  async function submit(chosenNights?: string[]) {
     if (!canEdit || !target) return;
     if (!bedId) {
       toast.error("Select a bed first");
@@ -234,7 +256,7 @@ export function BedRangeAssignDialog({
             bedId,
             from: fromDate,
             to: toDate,
-            ...(freeNightsOnly ? { freeNightsOnly: true } : {}),
+            ...(chosenNights ? { nights: chosenNights } : {}),
           }),
         },
       );
@@ -265,7 +287,10 @@ export function BedRangeAssignDialog({
     }
   }
 
-  const freeNightCount = refusal?.freeNights.length ?? 0;
+  // The nights the report says are free — the exact list the second action
+  // sends, so the button's number and what gets written are the same thing.
+  const offeredNights = refusal?.freeNights ?? [];
+  const freeNightCount = offeredNights.length;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -483,7 +508,7 @@ export function BedRangeAssignDialog({
                 variant="secondary"
                 disabled={!canEdit || submitting}
                 title={canEdit === false ? ADMIN_VIEW_ONLY_ACTION_REASON : undefined}
-                onClick={() => void submit(true)}
+                onClick={() => void submit(offeredNights)}
               >
                 Assign the {freeNightCount} free night
                 {freeNightCount === 1 ? "" : "s"}
@@ -495,7 +520,7 @@ export function BedRangeAssignDialog({
                 !canEdit || submitting || !bedId || Boolean(validationError)
               }
               title={canEdit === false ? ADMIN_VIEW_ONLY_ACTION_REASON : undefined}
-              onClick={() => void submit(false)}
+              onClick={() => void submit()}
             >
               {refusal ? "Try all nights again" : "Assign"}
               {nights.length > 0 && !refusal

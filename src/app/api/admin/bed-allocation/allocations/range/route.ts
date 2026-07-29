@@ -1,17 +1,18 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import {
+  MAX_BED_ALLOCATION_ASSIGN_RANGE_NIGHTS,
   assignBedRange,
-  summariseNightRuns,
-  type AssignBedRangeResult,
 } from "@/lib/admin-bed-allocation";
 import {
   bedAllocationErrorResponse,
   requireBedAllocationAdmin,
 } from "@/lib/admin-bed-allocation-routes";
 import { parseJsonRequestBody } from "@/lib/api-json";
-import { createAuditLog } from "@/lib/audit";
-import { formatDateOnly } from "@/lib/date-only";
+
+// Shape-checked here so a malformed range is refused by the schema, before the
+// lib is called at all (#2251 review C2): `.min(1)` accepted "9999999-01-01".
+const DATE_ONLY = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Expected YYYY-MM-DD");
 
 // requireAdmin() is enforced by requireBedAllocationAdmin().
 const rangeAllocationSchema = z
@@ -20,21 +21,23 @@ const rangeAllocationSchema = z
     bedId: z.string().min(1),
     // Date-only lodge nights: `from` is the first night, `to` the check-out
     // date (exclusive), matching every other bed-allocation endpoint.
-    from: z.string().min(1),
-    to: z.string().min(1),
-    // The admin's explicit SECOND action after a refusal (#2251). Never a
-    // default: the first attempt is always all-or-nothing.
-    freeNightsOnly: z.boolean().optional(),
+    from: DATE_ONLY,
+    to: DATE_ONLY,
+    /*
+     * The admin's explicit SECOND action after a refusal (#2251): the exact
+     * nights they were shown as free and chose to assign. Never a default — the
+     * first attempt is always all-or-nothing — and never a flag the server
+     * re-interprets: it assigns this set or refuses it with a fresh report, so
+     * a night freed by someone else between the report and the click cannot be
+     * written without the admin ever seeing it.
+     */
+    nights: z
+      .array(DATE_ONLY)
+      .min(1)
+      .max(MAX_BED_ALLOCATION_ASSIGN_RANGE_NIGHTS)
+      .optional(),
   })
   .strict();
-
-function countByCategory(result: AssignBedRangeResult) {
-  const counts = { EXCLUSIVE_HOLD: 0, GUEST_NOT_BOOKED: 0, BED_TAKEN: 0 };
-  for (const refusal of result.refusals) {
-    counts[refusal.category] += 1;
-  }
-  return counts;
-}
 
 export async function POST(request: Request) {
   const guard = await requireBedAllocationAdmin();
@@ -52,81 +55,23 @@ export async function POST(request: Request) {
       );
     }
 
+    /*
+     * The single BED_ALLOCATION_RANGE_SET audit entry — and any partner-promotion
+     * entries — are written by assignBedRange INSIDE its own transaction (#2251
+     * review A4), not here: rows and record must commit or roll back together,
+     * or a committed range can surface to the admin as an unrecorded 500.
+     */
     const result = await assignBedRange({
       ...body.data,
       approvedByMemberId: guard.session.user.id,
     });
 
-    /*
-     * ONE audit entry for the whole operation, whichever way it went (owner
-     * decision, 26 Jul 2026) — including the "assign the free nights" path,
-     * which is one deliberate action and should read as one. A refused attempt
-     * is recorded too, with outcome "failure": someone tried, and the trail
-     * should say so and say why.
-     *
-     * targetId is the BOOKING id so the booking page's "Audit log" deep link
-     * (?q=<bookingId>, which matches targetId and never metadata) surfaces range
-     * operations — required by #2252, which drives this same endpoint from
-     * inside a booking.
-     */
-    await createAuditLog({
-      action: "BED_ALLOCATION_RANGE_SET",
-      memberId: guard.session.user.id,
-      targetId: result.bookingId,
-      entityType: "BedAllocation",
-      category: "admin",
-      outcome: result.applied ? "success" : "failure",
-      summary: result.applied
-        ? `Bed assigned across ${result.writtenNights.length} night${result.writtenNights.length === 1 ? "" : "s"}${result.freeNightsOnly ? " (free nights only, admin opted in)" : ""}`
-        : "Range bed assignment refused — nothing written",
-      metadata: {
-        bookingGuestId: result.bookingGuestId,
-        guestName: result.guestName,
-        bedId: result.bedId,
-        bedName: result.bedName,
-        roomName: result.roomName,
-        requestedFrom: result.fromDate,
-        requestedTo: result.toDate,
-        requestedNightCount: result.requestedNights.length,
-        // Auto-approved (#2251 decision 4): these rows land approved, which is
-        // what locks the member's requested-room editing for this booking.
-        autoApproved: result.applied,
-        freeNightsOnly: result.freeNightsOnly,
-        writtenNightCount: result.writtenNights.length,
-        writtenNightRuns: summariseNightRuns(result.writtenNights),
-        refusedNightCount: result.refusals.length,
-        refusedNightCountsByCategory: countByCategory(result),
-        refusals: result.refusals,
-      },
-    });
-
-    // Moving a shared double's primary onto another bed auto-promotes the
-    // partner left on the OLD bed-night (#1750). The partner may belong to a
-    // different booking, so it gets its own audit entry against that booking —
-    // it is a separate state change, not part of the range operation's record.
-    for (const promotedPartner of result.promotedPartners) {
-      await createAuditLog({
-        action: "BED_ALLOCATION_PARTNER_PROMOTED",
-        memberId: guard.session.user.id,
-        targetId: promotedPartner.bookingId,
-        entityType: "BedAllocation",
-        entityId: promotedPartner.id,
-        category: "admin",
-        outcome: "success",
-        summary:
-          "Second occupant auto-promoted to primary after the shared double's primary was moved to another bed",
-        metadata: {
-          allocationId: promotedPartner.id,
-          bedId: promotedPartner.bedId,
-          bookingGuestId: result.bookingGuestId,
-          stayDate: formatDateOnly(promotedPartner.stayDate),
-        },
-      });
-    }
-
+    // The refusal report names the occupying guest and member so the admin can
+    // act on it. That detail stays HERE, in the answer to the admin who asked;
+    // the audit row records counts, night runs and booking ids only.
     const payload = {
       applied: result.applied,
-      freeNightsOnly: result.freeNightsOnly,
+      partialByConsent: result.partialByConsent,
       bookingId: result.bookingId,
       bookingGuestId: result.bookingGuestId,
       guestName: result.guestName,
