@@ -300,6 +300,40 @@ describe("BedRangeAssignDialog", () => {
     ).toBeInTheDocument();
   });
 
+  it("drops a refusal report once the range is edited, so stale evidence is never read", async () => {
+    fetchMock.mockResolvedValue(
+      refusalResponse(409, {
+        applied: false,
+        freeNightsOnly: false,
+        bookingId: "booking-1",
+        bookingGuestId: "guest-1",
+        guestName: "Range Guest",
+        bedId: "bed-1",
+        bedName: "Bed One",
+        roomName: "Room One",
+        fromDate: "2026-06-01",
+        toDate: "2026-06-06",
+        requestedNights: ["2026-06-01"],
+        freeNights: ["2026-06-01"],
+        writtenNights: [],
+        refusals: [{ stayDate: "2026-06-02", category: "BED_TAKEN" }],
+      }),
+    );
+    renderDialog();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Assign 5 nights$/ }));
+    await screen.findByTestId("range-refusal-report");
+
+    fireEvent.change(screen.getByLabelText("Date Out (checkout)"), {
+      target: { value: "2026-06-04" },
+    });
+
+    expect(screen.queryByTestId("range-refusal-report")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /free night/ }),
+    ).not.toBeInTheDocument();
+  });
+
   it("refuses an over-long range on the client rather than shortening it", () => {
     renderDialog();
 

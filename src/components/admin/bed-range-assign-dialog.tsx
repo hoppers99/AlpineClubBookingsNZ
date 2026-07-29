@@ -297,7 +297,17 @@ export function BedRangeAssignDialog({
 
           <div className="space-y-1">
             <Label htmlFor="bed-range-bed">Bed</Label>
-            <Select value={bedId} onValueChange={setBedId} disabled={!canEdit}>
+            <Select
+              value={bedId}
+              onValueChange={(value) => {
+                setBedId(value);
+                // The report describes the attempt that produced it. Editing the
+                // bed or the dates makes it stale evidence, so drop it rather
+                // than leave the admin reading a refusal for a different range.
+                setRefusal(null);
+              }}
+              disabled={!canEdit}
+            >
               <SelectTrigger id="bed-range-bed">
                 <SelectValue placeholder="Select bed" />
               </SelectTrigger>
@@ -324,7 +334,10 @@ export function BedRangeAssignDialog({
                 type="date"
                 value={fromDate}
                 disabled={!canEdit}
-                onChange={(event) => setFromDate(event.target.value)}
+                onChange={(event) => {
+                  setFromDate(event.target.value);
+                  setRefusal(null);
+                }}
               />
             </div>
             <div className="space-y-1">
@@ -334,7 +347,10 @@ export function BedRangeAssignDialog({
                 type="date"
                 value={toDate}
                 disabled={!canEdit}
-                onChange={(event) => setToDate(event.target.value)}
+                onChange={(event) => {
+                  setToDate(event.target.value);
+                  setRefusal(null);
+                }}
               />
             </div>
           </div>
