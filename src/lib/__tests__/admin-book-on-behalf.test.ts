@@ -18,7 +18,10 @@ vi.mock("@/lib/prisma", () => ({
     promoCode: { findUnique: vi.fn() },
     promoCodeAssignment: { findMany: vi.fn() },
     promoRedemption: { count: vi.fn(), aggregate: vi.fn() },
-    familyGroupMember: { findMany: vi.fn() },
+    // #2306: the admin (skipAuthorization) path now READS these rows to compute
+    // the member-guest family boundary, even though it still enforces nothing
+    // with them — so the mock has to answer with a real array.
+    familyGroupMember: { findMany: vi.fn().mockResolvedValue([]) },
     memberSubscription: { findFirst: vi.fn() },
     payment: { create: vi.fn() },
     groupDiscountSetting: { findUnique: vi.fn().mockResolvedValue(null) },
@@ -344,8 +347,14 @@ describe("Admin Book on Behalf", () => {
     const res = await POST(req);
     expect(res.status).toBe(201);
 
-    // familyGroupMember.findMany should NOT have been called since admin bypasses
-    expect(mockedPrisma.familyGroupMember.findMany).not.toHaveBeenCalled();
+    // The admin bypass is a bypass of the CHECK, not of the read (#2306): the
+    // family-group rows are still loaded so the member-guest boundary is
+    // computed on this path too, and the target being outside the admin's
+    // family is still allowed. The 201 above is the assertion that matters;
+    // this one pins that the boundary read genuinely happens here, which is
+    // what stops a later change from defaulting an admin-added cross-family
+    // guest to consent-free.
+    expect(mockedPrisma.familyGroupMember.findMany).toHaveBeenCalled();
   });
 
   it("creates an on-behalf draft for a legacy target member with unconfirmed profile details", async () => {
@@ -375,7 +384,9 @@ describe("Admin Book on Behalf", () => {
 
     expect(res.status).toBe(201);
     expect(body.code).not.toBe("GUEST_PROFILE_REQUIRED");
-    expect(mockedPrisma.familyGroupMember.findMany).not.toHaveBeenCalled();
+    // See the note above: since #2306 the admin path reads the family-group
+    // rows to compute the consent boundary; it still enforces nothing with them.
+    expect(mockedPrisma.familyGroupMember.findMany).toHaveBeenCalled();
   });
 
   it("creates an on-behalf waitlist booking for a legacy target member with unconfirmed profile details", async () => {
@@ -555,8 +566,11 @@ describe("Dual-hat self-booking and officer on-behalf (#1442)", () => {
     const createCall = (mockedPrisma.booking.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(createCall.data.memberId).toBe("target-m1");
     expect(createCall.data.createdById).toBe("officer1");
-    // Authorized on-behalf keeps the admin-path behavior: no family-group check.
-    expect(mockedPrisma.familyGroupMember.findMany).not.toHaveBeenCalled();
+    // Authorized on-behalf keeps the admin-path behaviour: the family-group rows
+    // are read (#2306, to compute the member-guest consent boundary) but no
+    // family-group CHECK is enforced — the officer's out-of-family target is
+    // accepted, which the assertions above already prove.
+    expect(mockedPrisma.familyGroupMember.findMany).toHaveBeenCalled();
   });
 
   it("blocks a Booking Officer from targeting themselves on-behalf", async () => {
@@ -818,7 +832,8 @@ describe("Quote API - forMemberId", () => {
     expect(res.status).toBe(200);
     expect(body.code).not.toBe("GUEST_PROFILE_REQUIRED");
     expect(mockedGetCredit).toHaveBeenCalledWith("target-m1");
-    expect(mockedPrisma.familyGroupMember.findMany).not.toHaveBeenCalled();
+    // Read, not enforced — see the note on the first on-behalf draft test (#2306).
+    expect(mockedPrisma.familyGroupMember.findMany).toHaveBeenCalled();
   });
 
   it("uses session user credit balance when no forMemberId", async () => {
