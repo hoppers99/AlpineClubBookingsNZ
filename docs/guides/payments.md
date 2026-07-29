@@ -77,9 +77,12 @@ against the Xero invoice in Xero is the right move in the first case.
 
 **Reversing it.** If you recorded it against the wrong booking, use **Reverse
 manual payment** on the same card. The booking goes back to unpaid — it is *not*
-cancelled — and the member is not emailed. This is only possible while nothing
-has happened since that a reversal could not undo: no refund, no card payment,
-no open refund task, and no Xero invoice.
+cancelled — and the member is not emailed. A booking restored to
+awaiting-payment stops holding its beds, so other bookings can take them, and
+recording the payment again later can be refused if the lodge has filled in the
+meantime. This is only possible while nothing has happened since that a
+reversal could not undo: no refund, no card payment, no open refund task, and
+no Xero invoice.
 
 ### Pay back a refund for a cash booking
 
