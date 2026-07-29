@@ -252,7 +252,7 @@ export const EMAIL_AUDIT_DEFAULTS = {
   },
   "admin-duplicate-capture-refund": {
     "defaultSubject": "Duplicate capture auto-refunded: {{memberName}}",
-    "defaultBody": "Duplicate Card Capture Auto-Refunded\n\n{{refundOutcomeNote}}\n\nMember: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nAmount refunded: {{amount}}\nDuplicate Stripe PI: {{paymentIntentId}}\nRecovery operation: {{operation}}\n\nThe booking's own settlement is untouched.\n\nView Payments: {{reviewUrl}}"
+    "defaultBody": "Duplicate Card Capture Auto-Refunded\n\n{{refundOutcomeNote}}\n\nMember: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nAmount refunded: {{amount}}\nDuplicate Stripe PI: {{paymentIntentId}}\nRecovery operation: {{operation}}\n\nView Payments: {{reviewUrl}}"
   },
   "admin-pending-deadline": {
     "defaultSubject": "{{count}} Pending Booking{{s}} Approaching Deadline",
@@ -276,7 +276,7 @@ export const EMAIL_AUDIT_DEFAULTS = {
   },
   "admin-xero-repeated-failure": {
     "defaultSubject": "Repeated Xero Failure: {{correlationKey}}",
-    "defaultBody": "Repeated Xero Failures\n\nThe same Xero sync correlation key has failed repeatedly and now needs operator attention.\n\nCorrelation Key: {{correlationKey}}\nFailures in Window: {{failureCount}} in the last {{windowHours}} hour(s)\nEntity: {{entityType}}\nOperation: {{operationType}}\n{{localRecordNote}}{{latestErrorNote}}Timestamp: {{timestamp}}\n\n{{xeroLinksNote}}\nOpen Xero Admin: {{BASE_URL}}/admin/xero"
+    "defaultBody": "Repeated Xero Failures\n\nThe same Xero sync correlation key has failed repeatedly and now needs operator attention.\n\nCorrelation Key: {{correlationKey}}\nFailures in Window: {{failureCount}} in the last {{windowHours}} hour(s)\nEntity: {{entityType}}\nOperation: {{operationType}}\n{{localRecordNote}}{{latestErrorNote}}Timestamp: {{timestamp}}\n\n{{xeroLinksNote}}Open Xero Admin: {{BASE_URL}}/admin/xero"
   },
   "admin-xero-reconciliation-report": {
     "defaultSubject": "Xero Reconciliation Report - {{issueTotalCount}} item{{s}}",

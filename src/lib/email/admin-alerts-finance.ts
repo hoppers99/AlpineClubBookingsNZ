@@ -161,13 +161,15 @@ export async function sendAdminXeroRepeatedFailureAlert(data: {
         data.latestErrorMessage,
         { trailing: "\n" },
       ),
-      xeroLinksNote:
+      xeroLinksNote: composeOptionalEmailLine(
+        null,
         composeOptionalEmailLine("Open local record", data.localUrl, {
           trailing: "\n",
         }) +
-        composeOptionalEmailLine("Open Xero object", data.xeroObjectUrl, {
-          trailing: "\n",
-        }),
+          composeOptionalEmailLine("Open Xero object", data.xeroObjectUrl, {
+            trailing: "\n",
+          }),
+      ),
       timestamp: data.timestamp.toISOString(),
     },
     preferenceKey: "adminXeroSyncError",

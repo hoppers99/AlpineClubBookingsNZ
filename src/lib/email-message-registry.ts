@@ -636,8 +636,11 @@ export function sampleValue(token: string): string {
   // absent previews as nothing at all rather than as a dangling label.
   if (token === "doorCodeNote") return "Door code: 1234\n\n";
   if (token === "expectedArrivalNote") return "Expected arrival: 16:30\n";
+  // Shared by checkin-reminder and chore-roster. The chore-roster body
+  // already writes its own lead-in line, so the preview is the chore lines
+  // alone; the check-in reminder's real value prefixes its own heading.
   if (token === "choreListNote") {
-    return "Your arrival day chores:\n\nWood run: Restock the woodshed\nDishes\n\n";
+    return "Wood run: Restock the woodshed\nDishes\n\n";
   }
   if (token === "choreLinkNote") {
     return (
