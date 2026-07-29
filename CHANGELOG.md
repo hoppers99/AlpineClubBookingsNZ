@@ -18,15 +18,26 @@ All notable public reference-release changes should be recorded here.
   nothing at all when no promo applied, so there is never a ragged or empty
   line. The flat body and the built-in HTML email now build that block from the
   same code, so their money stories cannot drift apart again, and a test matrix
-  (discount, surcharge, no promo) renders the shipped default body end-to-end
-  and fails on any line that trails off after a `-` or `:`. The
-  booking-modified default body loses its 13 bracket annotations the same way:
-  every money line now renders unconditionally (`Previous`/`New` totals, a
-  `$0.00` change fee when there is none) and the additional-payment story
-  arrives through the existing pre-composed `{{paymentNote}}`. Admins can now
-  also use `{{promoAdjustment}}` (the signed value) in overrides, and older
-  overrides that reference `{{subtotal}}`, `{{discount}}` or `{{promoCode}}`
-  keep rendering and re-saving exactly as before. Only clubs that saved an
+  (discount, surcharge, no promo, door code set and unset) renders the shipped
+  default body end-to-end — through the same layout a member receives — and
+  fails on any line that trails off after a `-`, `+`, `–` or `:`. The door code
+  travels the same way: the body carries a pre-composed `{{doorCodeNote}}`
+  line, so a club that records no door code no longer emails a bare
+  `Door code:`. The booking-modified default body loses its 13 bracket
+  annotations the same way: a pre-composed `{{changeSummary}}` block, built by
+  the same code as the built-in HTML email, lists only what actually changed —
+  `Previous`/`New` pairs where something moved, a single line where it did not,
+  and a change fee only when one was charged — and the additional-payment story
+  arrives through the existing pre-composed `{{paymentNote}}`. That email also
+  names the change in words on both paths (a batch edit used to reach members
+  as the raw word `BATCH_MODIFY`). Admins can now also use
+  `{{promoAdjustment}}` (the signed value) in overrides — and the editor now
+  refuses a body that types its own `+` or `-` in front of it, explaining that
+  the token already carries its sign — while older overrides that reference
+  `{{subtotal}}`, `{{discount}}`, `{{promoCode}}`, `{{doorCode}}` or the
+  per-piece `Previous`/`New` tokens keep rendering and re-saving exactly as
+  before. When a saved override is rejected, the editor now shows the specific
+  reasons instead of a bare "Invalid email template". Only clubs that saved an
   override of these templates ever saw the broken email; clubs on the defaults
   always got the correct built-in HTML version.
 
