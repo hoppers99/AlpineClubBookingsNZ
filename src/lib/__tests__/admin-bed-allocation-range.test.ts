@@ -880,7 +880,14 @@ describe("assignBedRange audit record", () => {
     // own booking is named inside the list, because it may be a different one.
     expect(entry.targetId).toBe("booking-1");
     expect(entry.outcome).toBe("success");
+    // The promoted partner's OWN booking must still be able to find this entry:
+    // the admin audit search reads details/targetId, never metadata.
+    expect(entry.details).toBe("Promoted partner bookings: booking-other");
     expect(entry.metadata).toMatchObject({
+      // Named distinctly from each promotion's own bookingGuestId: the guest who
+      // moved is not the partner who was promoted.
+      movedBookingGuestId: "guest-1",
+      movedToBedId: "bed-1",
       promotedCount: 1,
       promotionsTruncated: false,
       promotions: [
@@ -952,6 +959,12 @@ describe("assignBedRange audit record", () => {
     >;
     expect(metadata.promotedCount).toBe(60);
     expect(metadata.promotionsTruncated).toBe(true);
+    // The searchable details string is capped too, and says how many bookings it
+    // could not repeat rather than dropping them silently.
+    const details = auditEntry(auditCreate, 1).details as string;
+    expect(details).toContain("booking-partner-0");
+    expect(details).toContain("(+30 more in metadata.promotions)");
+    expect(details.length).toBeLessThanOrEqual(1000);
     const promotions = metadata.promotions as Record<string, unknown>[];
     // Capped at the audit sanitiser's array limit: listing more would not be
     // preserved and could cost the entries that DO fit.

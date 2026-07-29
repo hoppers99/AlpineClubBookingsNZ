@@ -2462,6 +2462,23 @@ export const MAX_BED_ALLOCATION_ASSIGN_RANGE_NIGHTS = 366;
  */
 export const MAX_AUDITED_RANGE_PARTNER_PROMOTIONS = 50;
 
+/**
+ * How many DISTINCT promoted-partner booking ids the batched entry repeats into
+ * its searchable `details` string (#2251 residual R4, review follow-up).
+ *
+ * The admin audit search matches `action, summary, details, requestId, entityId,
+ * targetId` and never metadata (`src/lib/audit-admin-query.ts`), and a booking
+ * page's audit link is `?q=<bookingId>`. One batched entry has only one
+ * `targetId` — the booking whose range assignment caused the promotions — so
+ * without this the promoted partner's OWN booking could no longer find the entry
+ * that explains why its guest became a primary. 30 × a 25-character cuid plus the
+ * prefix stays inside `sanitizeMetadataString`'s 1000-character budget
+ * (`src/lib/audit.ts`), so the string is never truncated mid-id; a longer list
+ * (many different bookings' partners stranded by one range) states the overflow
+ * and leaves the full set in `metadata.promotions`.
+ */
+const MAX_SEARCHABLE_PROMOTED_BOOKING_IDS = 30;
+
 export type BedRangeRefusalCategory =
   | "EXCLUSIVE_HOLD"
   | "GUEST_NOT_BOOKED"
@@ -2862,8 +2879,26 @@ async function recordRangeAssignAudit(
    * belong to a DIFFERENT booking, so each entry in the list carries its own
    * `bookingId`/`bookingGuestId` rather than the trail implying it was this
    * booking's row that moved.
+   *
+   * SEARCHABILITY (review finding on the batching): the admin audit search ORs
+   * over `action, summary, details, requestId, entityId, targetId` and never
+   * metadata (`audit-admin-query.ts`), and the booking page's audit link is
+   * `?q=<bookingId>`. One batched entry can only carry ONE `targetId`, so the
+   * promoted partner's own booking would stop being findable from its own
+   * booking page — exactly the property the range entry above relies on. The
+   * distinct promoted booking ids are therefore also written into `details`,
+   * which IS searched, capped so the string stays inside the audit layer's
+   * per-string budget with the overflow stated rather than silently dropped.
    */
   if (result.promotedPartners.length > 0) {
+    const promotedBookingIds = [
+      ...new Set(result.promotedPartners.map((row) => row.bookingId)),
+    ];
+    const searchableBookingIds = promotedBookingIds.slice(
+      0,
+      MAX_SEARCHABLE_PROMOTED_BOOKING_IDS,
+    );
+    const overflow = promotedBookingIds.length - searchableBookingIds.length;
     await createAuditLog(
       {
         action: "BED_ALLOCATION_PARTNERS_PROMOTED",
@@ -2873,6 +2908,7 @@ async function recordRangeAssignAudit(
         category: "admin",
         outcome: "success",
         summary: `${result.promotedPartners.length} second occupant${result.promotedPartners.length === 1 ? "" : "s"} auto-promoted to primary after a range assignment moved the shared double's primary to another bed`,
+        details: `Promoted partner bookings: ${searchableBookingIds.join(", ")}${overflow > 0 ? ` (+${overflow} more in metadata.promotions)` : ""}`,
         metadata: {
           issue: 1750,
           // The guest whose range assignment vacated the bed-nights, named
