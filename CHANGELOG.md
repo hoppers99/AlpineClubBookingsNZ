@@ -4,6 +4,32 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **The booking-confirmed email now explains a promo that raises the price,
+  instead of a blank Discount line and an unexplained total (#2267).** A member
+  who booked with an exclusive-use flat-rate promo received a payment
+  confirmation whose Discount line trailed off after a minus sign, whose
+  authoring notes (`[only when …]`) rendered as body text, and whose subtotal
+  and total differed by $1,370 with nothing in between to say why — nothing was
+  mischarged, but the one token that could explain a price-*raising* promo was
+  not usable in the admin-editable body. The editable booking-confirmed body
+  now uses a single pre-composed `{{promoSummary}}` token that renders the
+  whole story — `Subtotal:` plus a signed `Promo adjustment (CODE):` line,
+  `-$30.00` for a discount and `+$1,370.00` for a surcharge — and renders
+  nothing at all when no promo applied, so there is never a ragged or empty
+  line. The flat body and the built-in HTML email now build that block from the
+  same code, so their money stories cannot drift apart again, and a test matrix
+  (discount, surcharge, no promo) renders the shipped default body end-to-end
+  and fails on any line that trails off after a `-` or `:`. The
+  booking-modified default body loses its 13 bracket annotations the same way:
+  every money line now renders unconditionally (`Previous`/`New` totals, a
+  `$0.00` change fee when there is none) and the additional-payment story
+  arrives through the existing pre-composed `{{paymentNote}}`. Admins can now
+  also use `{{promoAdjustment}}` (the signed value) in overrides, and older
+  overrides that reference `{{subtotal}}`, `{{discount}}` or `{{promoCode}}`
+  keep rendering and re-saving exactly as before. Only clubs that saved an
+  override of these templates ever saw the broken email; clubs on the defaults
+  always got the correct built-in HTML version.
+
 - **The lobby display's built-in boards can be restored on a club that never
   got them, and the three words the screen uses are finally defined (#2247).**
   A club whose database was created before the lobby display existed had none
