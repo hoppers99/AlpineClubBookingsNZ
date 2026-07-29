@@ -1900,6 +1900,11 @@ async function assertGuestAndBedForAllocation(input: {
   bookingGuestId: string;
   bedId: string;
   db: BedAllocationDb;
+  // ADR-001 short-circuit (#120/#2285): a whole-lodge-held booking owns NO
+  // per-bed rows. Every manual write path refuses by default; the range path
+  // (#2251) passes true so it can report the hold as its own refusal category
+  // instead of a bare 409.
+  reportWholeLodgeHold?: boolean;
 }) {
   const [guest, bed] = await Promise.all([
     input.db.bookingGuest.findUnique({
@@ -1911,6 +1916,11 @@ async function assertGuestAndBedForAllocation(input: {
             status: true,
             deletedAt: true,
             lodgeId: true,
+            // ADR-001 (#120/#2285): a held booking implicitly occupies every
+            // bed, so it must never collect per-bed rows — the lifecycle now
+            // prunes any it finds, which would silently undo a manual
+            // placement. Refused here at the write chokepoint instead.
+            wholeLodgeHold: true,
           },
         },
       },
@@ -1929,6 +1939,16 @@ async function assertGuestAndBedForAllocation(input: {
   }
   if (guest.booking.deletedAt) {
     throw new BedAllocationAdminError("Cannot allocate deleted booking", 409);
+  }
+  // ADR-001 (#120), write half of #2285: the lifecycle prunes every per-bed row
+  // a held booking owns, so a manual placement here would be silently swept on
+  // the next reconcile. Refuse it at the write chokepoint. The range path
+  // (#2251) opts out of the throw to report it as its own category.
+  if (guest.booking.wholeLodgeHold && !input.reportWholeLodgeHold) {
+    throw new BedAllocationAdminError(
+      "This booking holds the whole lodge for its nights, so it needs no per-bed allocation.",
+      409,
+    );
   }
   if (
     !BED_ALLOCATABLE_BOOKING_STATUSES.includes(
@@ -2316,6 +2336,607 @@ export async function manuallyAllocateBedForNights(input: {
   }
 
   return { allocations, conflicts, skipped, promotedPartners };
+}
+
+/*
+ * Range assignment (#2251)
+ * ------------------------
+ * "Put this guest in this bed from X to Y" for a stay of ANY length, written
+ * all-or-nothing in one transaction with ONE audit entry (owner decision,
+ * 26 Jul 2026). There is deliberately NO dry-run/preview endpoint: the assign
+ * is attempted, and if any night is blocked NOTHING is written and the refusal
+ * itself carries the evidence. A second, explicit action (`freeNightsOnly`)
+ * re-attempts with only the free nights — a partial result is reachable only
+ * because a human chose it, never as a silent default.
+ *
+ * The three blocker categories are kept distinct (never merged into "skipped"):
+ *   - EXCLUSIVE_HOLD  — the night sits inside a whole-lodge hold (ADR-001): per-
+ *                       bed allocation is short-circuited entirely, so this is
+ *                       structural, not a clash. Reported first because it makes
+ *                       the whole question moot for that night.
+ *   - GUEST_NOT_BOOKED — a BAD REQUEST, not a conflict: the range or the guest is
+ *                       wrong. Never silently skipped, because skipping hides the
+ *                       mistake.
+ *   - BED_TAKEN       — a genuine clash; the occupying guest is named, and a
+ *                       provisional (non-capacity-holding) occupant still counts
+ *                       as a conflict so nothing is silently overwritten.
+ * One category per night, in that precedence order, so the report is unambiguous.
+ *
+ * Range assignments AUTO-APPROVE (owner decision, 28 Jul 2026): rows land with
+ * approvedAt/approvedByMemberId stamped rather than as drafts. That is what
+ * makes the FIRST range assign flip isBookingBedAllocationLocked for the
+ * booking, locking the member out of editing their requested room (#776) — the
+ * dialog says so before the admin commits. Single-night board placements are
+ * deliberately NOT auto-approved: draft-vs-approved remains the domain's
+ * suggestion-vs-confirmation distinction.
+ */
+
+// Independent of MAX_BED_ALLOCATION_RANGE_NIGHTS, which bounds the BOARD's read
+// window (parseBedAllocationDateRange) and the board's own bulk drop. Nothing in
+// the capacity or locking model bounds an allocation WRITE at 31 nights: lodge
+// capacity is `lodgeBed.count({ active: true })` and never reads BedAllocation
+// rows (lodge-capacity.ts), no capacity/advisory lock is taken on any allocation
+// write path, and the lifecycle auto-allocator already writes a booking's whole
+// (unbounded) stay in one createMany. This cap therefore exists only to keep one
+// transaction's size finite and its payload reviewable; it is REFUSED at, never
+// silently truncated to.
+export const MAX_BED_ALLOCATION_ASSIGN_RANGE_NIGHTS = 366;
+
+export type BedRangeRefusalCategory =
+  | "EXCLUSIVE_HOLD"
+  | "GUEST_NOT_BOOKED"
+  | "BED_TAKEN";
+
+export interface BedRangeRefusal {
+  stayDate: string;
+  category: BedRangeRefusalCategory;
+  // BED_TAKEN only. `holdsCapacity: false` is the "Provisional" badge — the
+  // occupant does not hold the night, but it is still a conflict (#2251
+  // decision 2: nothing is silently overwritten).
+  occupiedBy?: {
+    guestName: string;
+    memberName: string;
+    bookingId: string;
+    holdsCapacity: boolean;
+  };
+  // EXCLUSIVE_HOLD only. `ownBooking` marks the case where the guest's OWN
+  // booking holds the lodge, which blocks every night of the range.
+  hold?: {
+    bookingId: string;
+    memberName: string;
+    ownBooking: boolean;
+  };
+}
+
+export interface AssignBedRangeResult {
+  // False whenever nothing was written — either the atomic attempt was refused,
+  // or the free-nights re-attempt found nothing left to write.
+  applied: boolean;
+  freeNightsOnly: boolean;
+  bookingId: string;
+  bookingGuestId: string;
+  guestName: string;
+  bedId: string;
+  bedName: string;
+  roomName: string;
+  // Date-only lodge nights: `fromDate` is the first night, `toDate` the
+  // check-out date (exclusive), matching every other bed-allocation endpoint.
+  fromDate: string;
+  toDate: string;
+  requestedNights: string[];
+  freeNights: string[];
+  writtenNights: string[];
+  refusals: BedRangeRefusal[];
+  // #1750: partners stranded on a vacated bed-night by this operation. The
+  // route audits each one separately (they may belong to another booking).
+  promotedPartners: BedAllocation[];
+}
+
+// A long range's night list is bounded (366) but noisy in an audit record, so
+// contiguous nights collapse into readable runs: ["2026-06-01 → 2026-06-30",
+// "2026-07-02"]. The counts recorded alongside stay exact.
+export function summariseNightRuns(nights: string[]): string[] {
+  const sorted = [...new Set(nights)].sort();
+  const runs: string[] = [];
+  let runStart: string | null = null;
+  let runEnd: string | null = null;
+
+  const flush = () => {
+    if (!runStart || !runEnd) return;
+    runs.push(runStart === runEnd ? runStart : `${runStart} → ${runEnd}`);
+  };
+
+  for (const night of sorted) {
+    if (
+      runEnd &&
+      formatDateOnly(addDaysDateOnly(parseDateOnly(runEnd), 1)) === night
+    ) {
+      runEnd = night;
+      continue;
+    }
+    flush();
+    runStart = night;
+    runEnd = night;
+  }
+  flush();
+
+  return runs;
+}
+
+function parseBedAssignRange(input: { from: string; to: string }) {
+  if (!isDateOnlyString(input.from)) {
+    throw new BedAllocationAdminError("Invalid from date", 400);
+  }
+  if (!isDateOnlyString(input.to)) {
+    throw new BedAllocationAdminError("Invalid to date", 400);
+  }
+
+  const from = parseDateOnly(input.from);
+  const to = parseDateOnly(input.to);
+  if (to <= from) {
+    throw new BedAllocationAdminError("Date out must be after date in", 400);
+  }
+
+  const nights = eachDateOnlyInRange(from, to).map(formatDateOnly);
+  if (nights.length > MAX_BED_ALLOCATION_ASSIGN_RANGE_NIGHTS) {
+    // Refuse, never truncate (#2251 requirement 4): shortening the request
+    // silently would write a different assignment from the one the admin asked
+    // for and call it a success.
+    throw new BedAllocationAdminError(
+      `A range assignment covers at most ${MAX_BED_ALLOCATION_ASSIGN_RANGE_NIGHTS} nights; that range is ${nights.length}. Split it into shorter ranges.`,
+      400,
+    );
+  }
+
+  return { from, to, nights };
+}
+
+async function loadOverlappingWholeLodgeHolds(input: {
+  db: BedAllocationDb;
+  from: Date;
+  to: Date;
+  lodgeId: string | null;
+  excludeBookingId: string;
+}) {
+  return input.db.booking.findMany({
+    where: {
+      wholeLodgeHold: true,
+      deletedAt: null,
+      status: { in: [...BED_ALLOCATABLE_BOOKING_STATUSES] },
+      id: { not: input.excludeBookingId },
+      checkIn: { lt: input.to },
+      checkOut: { gt: input.from },
+      ...(input.lodgeId ? lodgeNullTolerantScope(input.lodgeId) : {}),
+    },
+    select: {
+      id: true,
+      checkIn: true,
+      checkOut: true,
+      member: { select: { firstName: true, lastName: true, email: true } },
+    },
+  });
+}
+
+async function classifyBedTakenNights(input: {
+  db: BedAllocationDb;
+  bed: { id: string; bedType: BedType };
+  guest: { id: string; memberId: string | null };
+  candidateNights: string[];
+}): Promise<{
+  refusals: BedRangeRefusal[];
+  secondOccupantNights: Set<string>;
+}> {
+  const refusals: BedRangeRefusal[] = [];
+  const secondOccupantNights = new Set<string>();
+  if (input.candidateNights.length === 0) {
+    return { refusals, secondOccupantNights };
+  }
+
+  const occupantRows = await input.db.bedAllocation.findMany({
+    where: {
+      bedId: input.bed.id,
+      stayDate: { in: input.candidateNights.map(parseDateOnly) },
+      bookingGuestId: { not: input.guest.id },
+    },
+    select: {
+      stayDate: true,
+      isSecondOccupant: true,
+      bookingGuest: {
+        select: {
+          memberId: true,
+          firstName: true,
+          lastName: true,
+          booking: {
+            select: {
+              id: true,
+              status: true,
+              originBookingRequest: { select: { id: true } },
+              adminCapacityHoldAt: true,
+              member: {
+                select: { firstName: true, lastName: true, email: true },
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  const byNight = new Map<string, typeof occupantRows>();
+  for (const row of occupantRows) {
+    const key = formatDateOnly(row.stayDate);
+    const existing = byNight.get(key);
+    if (existing) {
+      existing.push(row);
+    } else {
+      byNight.set(key, [row]);
+    }
+  }
+
+  // mayShareDoubleBed() is a DB lookup and the same member pair repeats across
+  // every night of a range, so memoise it per pair.
+  const shareCache = new Map<string, boolean>();
+  async function mayShare(primaryMemberId: string, guestMemberId: string) {
+    const key = `${primaryMemberId}:${guestMemberId}`;
+    const cached = shareCache.get(key);
+    if (cached !== undefined) return cached;
+    const eligible = await mayShareDoubleBed(
+      primaryMemberId,
+      guestMemberId,
+      input.db,
+    );
+    shareCache.set(key, eligible);
+    return eligible;
+  }
+
+  for (const stayDate of input.candidateNights) {
+    const occupants = byNight.get(stayDate);
+    if (!occupants || occupants.length === 0) continue;
+
+    const [primary] = occupants;
+    const describe = (): BedRangeRefusal => ({
+      stayDate,
+      category: "BED_TAKEN",
+      occupiedBy: {
+        guestName: guestName(primary.bookingGuest),
+        memberName: memberName(primary.bookingGuest.booking.member),
+        bookingId: primary.bookingGuest.booking.id,
+        holdsCapacity: bookingHoldsCapacity({
+          status: primary.bookingGuest.booking.status,
+          isRequestConverted: Boolean(
+            primary.bookingGuest.booking.originBookingRequest,
+          ),
+          hasAdminCapacityHold: Boolean(
+            primary.bookingGuest.booking.adminCapacityHoldAt,
+          ),
+        }),
+      },
+    });
+
+    // Mirrors resolveSecondOccupant()'s rules exactly, batched: only a DOUBLE
+    // holding exactly one PRIMARY occupant from a capacity-holding booking, both
+    // member-linked and confirmed partners, may be shared (#1701/#1744).
+    if (
+      input.bed.bedType !== "DOUBLE" ||
+      occupants.length >= 2 ||
+      occupants.some((row) => row.isSecondOccupant) ||
+      !isCapacityHoldingBookingStatus(primary.bookingGuest.booking.status) ||
+      !input.guest.memberId ||
+      !primary.bookingGuest.memberId
+    ) {
+      refusals.push(describe());
+      continue;
+    }
+
+    const eligible = await mayShare(
+      primary.bookingGuest.memberId,
+      input.guest.memberId,
+    );
+    if (!eligible) {
+      refusals.push(describe());
+      continue;
+    }
+    secondOccupantNights.add(stayDate);
+  }
+
+  return { refusals, secondOccupantNights };
+}
+
+async function runAssignBedRangeAttempt(input: {
+  bookingGuestId: string;
+  bedId: string;
+  from: string;
+  to: string;
+  approvedByMemberId: string;
+  freeNightsOnly: boolean;
+  db: BedAllocationDb;
+}): Promise<AssignBedRangeResult> {
+  const db = input.db;
+  const { guest, bed } = await assertGuestAndBedForAllocation({
+    bookingGuestId: input.bookingGuestId,
+    bedId: input.bedId,
+    db,
+    reportWholeLodgeHold: true,
+  });
+  const range = parseBedAssignRange({ from: input.from, to: input.to });
+
+  const base = {
+    freeNightsOnly: input.freeNightsOnly,
+    bookingId: guest.bookingId,
+    bookingGuestId: guest.id,
+    guestName: guestName(guest),
+    bedId: bed.id,
+    bedName: bed.name,
+    roomName: bed.room.name,
+    fromDate: formatDateOnly(range.from),
+    toDate: formatDateOnly(range.to),
+    requestedNights: range.nights,
+  };
+
+  const refusalByNight = new Map<string, BedRangeRefusal>();
+
+  // 1. EXCLUSIVE_HOLD — the guest's OWN booking holds the lodge (ADR-001): it
+  //    implicitly occupies every bed, so no night of the range is allocatable
+  //    and the free-nights action has nothing to offer either.
+  if (guest.booking.wholeLodgeHold) {
+    const ownBooking = await db.booking.findUnique({
+      where: { id: guest.bookingId },
+      select: {
+        member: { select: { firstName: true, lastName: true, email: true } },
+      },
+    });
+    for (const stayDate of range.nights) {
+      refusalByNight.set(stayDate, {
+        stayDate,
+        category: "EXCLUSIVE_HOLD",
+        hold: {
+          bookingId: guest.bookingId,
+          memberName: ownBooking
+            ? memberName(ownBooking.member)
+            : "Unknown member",
+          ownBooking: true,
+        },
+      });
+    }
+  } else {
+    // 2. EXCLUSIVE_HOLD — ANOTHER booking holds the whole lodge on that night.
+    const holds = await loadOverlappingWholeLodgeHolds({
+      db,
+      from: range.from,
+      to: range.to,
+      lodgeId: bed.room.lodgeId ?? guest.booking.lodgeId ?? null,
+      excludeBookingId: guest.bookingId,
+    });
+    const requestedNightSet = new Set(range.nights);
+    for (const hold of holds) {
+      for (const heldNight of eachDateOnlyInRange(hold.checkIn, hold.checkOut)) {
+        const stayDate = formatDateOnly(heldNight);
+        if (!requestedNightSet.has(stayDate)) continue;
+        if (refusalByNight.has(stayDate)) continue;
+        refusalByNight.set(stayDate, {
+          stayDate,
+          category: "EXCLUSIVE_HOLD",
+          hold: {
+            bookingId: hold.id,
+            memberName: memberName(hold.member),
+            ownBooking: false,
+          },
+        });
+      }
+    }
+  }
+
+  // 3. GUEST_NOT_BOOKED — a bad request, reported rather than skipped.
+  for (const stayDate of range.nights) {
+    if (refusalByNight.has(stayDate)) continue;
+    if (guestIsStayingOn(guest, parseDateOnly(stayDate))) continue;
+    refusalByNight.set(stayDate, { stayDate, category: "GUEST_NOT_BOOKED" });
+  }
+
+  // 4. BED_TAKEN — a genuine clash on the remaining nights.
+  const { refusals: bedTaken, secondOccupantNights } =
+    await classifyBedTakenNights({
+      db,
+      bed,
+      guest,
+      candidateNights: range.nights.filter(
+        (stayDate) => !refusalByNight.has(stayDate),
+      ),
+    });
+  for (const refusal of bedTaken) {
+    refusalByNight.set(refusal.stayDate, refusal);
+  }
+
+  const refusals = range.nights
+    .filter((stayDate) => refusalByNight.has(stayDate))
+    .map((stayDate) => refusalByNight.get(stayDate) as BedRangeRefusal);
+  const freeNights = range.nights.filter(
+    (stayDate) => !refusalByNight.has(stayDate),
+  );
+
+  // Atomic by default: any blocker refuses the WHOLE range and writes nothing.
+  // The refusal report is the evidence the admin acts on; `freeNightsOnly` is
+  // their explicit second action, not a fallback this code may take itself.
+  const targetNights = input.freeNightsOnly ? freeNights : range.nights;
+  if (refusals.length > 0 && !input.freeNightsOnly) {
+    return {
+      ...base,
+      applied: false,
+      freeNights,
+      writtenNights: [],
+      refusals,
+      promotedPartners: [],
+    };
+  }
+  if (targetNights.length === 0) {
+    return {
+      ...base,
+      applied: false,
+      freeNights,
+      writtenNights: [],
+      refusals,
+      promotedPartners: [],
+    };
+  }
+
+  const existingRows = await db.bedAllocation.findMany({
+    where: {
+      bookingGuestId: guest.id,
+      stayDate: { in: targetNights.map(parseDateOnly) },
+    },
+    select: { id: true, bedId: true, stayDate: true, isSecondOccupant: true },
+  });
+  const existingByNight = new Map(
+    existingRows.map((row) => [formatDateOnly(row.stayDate), row]),
+  );
+
+  // AUTO-APPROVE (#2251 decision 4): a range assignment is a deliberate
+  // confirmation, so it lands approved rather than draft.
+  const approvedAt = new Date();
+  const approval = {
+    approvedAt,
+    approvedByMemberId: input.approvedByMemberId,
+  };
+
+  // Batched by (already exists?, is second occupant?) so one transaction runs a
+  // fixed handful of statements whatever the range length — the whole reason a
+  // 366-night assign can be atomic at all.
+  for (const isSecondOccupant of [false, true]) {
+    const nights = targetNights.filter(
+      (stayDate) => secondOccupantNights.has(stayDate) === isSecondOccupant,
+    );
+    const updateIds = nights
+      .map((stayDate) => existingByNight.get(stayDate)?.id)
+      .filter((id): id is string => Boolean(id));
+    if (updateIds.length > 0) {
+      await db.bedAllocation.updateMany({
+        where: { id: { in: updateIds } },
+        data: {
+          roomId: bed.roomId,
+          bedId: bed.id,
+          source: "MANUAL",
+          isSecondOccupant,
+          bedType: bed.bedType,
+          ...approval,
+        },
+      });
+    }
+
+    const createNights = nights.filter(
+      (stayDate) => !existingByNight.has(stayDate),
+    );
+    if (createNights.length > 0) {
+      await db.bedAllocation.createMany({
+        data: createNights.map((stayDate) => ({
+          bookingId: guest.bookingId,
+          bookingGuestId: guest.id,
+          roomId: bed.roomId,
+          bedId: bed.id,
+          stayDate: parseDateOnly(stayDate),
+          source: "MANUAL" as const,
+          isSecondOccupant,
+          bedType: bed.bedType,
+          ...approval,
+        })),
+      });
+    }
+  }
+
+  // #1750: moving a PRIMARY off its old bed can strand a partner there. The
+  // rows above already vacated those bed-nights, so promote afterwards, exactly
+  // as the single-night path does.
+  const vacatedBedNights = targetNights.flatMap((stayDate) => {
+    const previous = existingByNight.get(stayDate);
+    if (!previous || previous.isSecondOccupant || previous.bedId === bed.id) {
+      return [];
+    }
+    return [{ bedId: previous.bedId, stayDate: previous.stayDate }];
+  });
+  const promotedPartners = await promoteOrphanedSecondOccupants(
+    db,
+    vacatedBedNights,
+  );
+
+  return {
+    ...base,
+    applied: true,
+    freeNights,
+    writtenNights: targetNights,
+    refusals,
+    promotedPartners,
+  };
+}
+
+/**
+ * Assign one guest to one bed across a range of any length, atomically.
+ *
+ * Returns a result rather than throwing when the range is BLOCKED: `applied`
+ * false with the per-night refusals. It throws BedAllocationAdminError only for
+ * genuinely malformed input (bad dates, unknown guest/bed, non-allocatable or
+ * deleted booking, over the range cap) and for a lost write race.
+ */
+export async function assignBedRange(input: {
+  bookingGuestId: string;
+  bedId: string;
+  from: string;
+  to: string;
+  approvedByMemberId: string;
+  freeNightsOnly?: boolean;
+  db?: BedAllocationDb;
+}): Promise<AssignBedRangeResult> {
+  const attemptInput = {
+    bookingGuestId: input.bookingGuestId,
+    bedId: input.bedId,
+    from: input.from,
+    to: input.to,
+    approvedByMemberId: input.approvedByMemberId,
+    freeNightsOnly: input.freeNightsOnly ?? false,
+  };
+
+  // A caller-supplied client is already transactional: run inline and let its
+  // owner handle a P2002 (we cannot retry inside an aborted transaction).
+  if (input.db) {
+    return runAssignBedRangeAttempt({ ...attemptInput, db: input.db });
+  }
+
+  // The scan and the writes share one transaction so the refusal report and the
+  // rows written from it describe the same instant. The default 5s interactive
+  // timeout is raised because a long range still runs a fixed ~8 statements —
+  // generous headroom, not a licence to grow the statement count with nights.
+  const runAttempt = () =>
+    prisma.$transaction(
+      (tx) => runAssignBedRangeAttempt({ ...attemptInput, db: tx }),
+      { timeout: 30_000, maxWait: 10_000 },
+    );
+
+  try {
+    return await runAttempt();
+  } catch (error) {
+    if (
+      !(error instanceof Prisma.PrismaClientKnownRequestError) ||
+      error.code !== "P2002"
+    ) {
+      throw error;
+    }
+    // Someone claimed a bed-night between this transaction's scan and its
+    // writes. Nothing was written (the transaction rolled back), so re-attempt
+    // once against fresh state: the second scan sees the new occupant and
+    // returns it as an ordinary BED_TAKEN refusal instead of an opaque error.
+    try {
+      return await runAttempt();
+    } catch (retryError) {
+      if (
+        retryError instanceof Prisma.PrismaClientKnownRequestError &&
+        retryError.code === "P2002"
+      ) {
+        throw new BedAllocationAdminError(
+          "Another admin claimed one of those bed-nights while this range was being assigned. Nothing was written — reload the board and try again.",
+          409,
+        );
+      }
+      throw retryError;
+    }
+  }
 }
 
 export async function deleteBedAllocation(input: {

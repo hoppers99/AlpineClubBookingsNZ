@@ -173,6 +173,28 @@ export function addDaysDateOnly(date: Date, days: number): Date {
   return result;
 }
 
+// Steps a date-only value by whole calendar months (#2251, the bed-allocation
+// board's month stepper). Pure UTC date-only arithmetic — no time zone
+// conversion, matching addDaysDateOnly. The day-of-month is clamped to the
+// target month's length so the result is always a real date: 31 Jan + 1 month
+// is 28 Feb (29 in a leap year), never an overflow into March. Clamping means
+// the operation is NOT reversible for such days (31 Jan → 28 Feb → 28 Jan);
+// callers that need to step back and forth should keep their own anchor.
+export function addMonthsDateOnly(date: Date, months: number): Date {
+  if (Number.isNaN(date.getTime())) return new Date(NaN);
+
+  const day = date.getUTCDate();
+  const target = new Date(
+    Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + months, 1),
+  );
+  // Day 0 of the following month is the last day of the target month.
+  const daysInTargetMonth = new Date(
+    Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0),
+  ).getUTCDate();
+  target.setUTCDate(Math.min(day, daysInTargetMonth));
+  return target;
+}
+
 export function eachDateOnlyInRange(startInclusive: Date, endExclusive: Date): Date[] {
   const dates: Date[] = [];
 

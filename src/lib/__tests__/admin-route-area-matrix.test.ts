@@ -113,6 +113,7 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   "/api/admin/bed-allocation/allocations": "bookings",
   "/api/admin/bed-allocation/allocations/[id]": "bookings",
   "/api/admin/bed-allocation/allocations/bulk": "bookings",
+  "/api/admin/bed-allocation/allocations/range": "bookings",
   "/api/admin/bed-allocation/approve": "bookings",
   "/api/admin/bed-allocation/auto-allocate": "bookings",
   "/api/admin/bed-allocation/beds": "bookings",
