@@ -636,7 +636,9 @@ Future reviews and issues should cite this file when proposing changes.
   shared doubles (see the sharing invariant above), so **both the statement count
   and the audit-row count are fixed whatever the night count**. Proceeding past
   `GUEST_NOT_BOOKED` nights additionally requires an explicit on-screen
-  confirmation naming how many nights fall outside the guest's stay and how many
+  confirmation naming how many nights are not part of the guest's booking (never
+  "outside the stay" — a GAP night of a non-contiguous stay is inside the span and
+  still refused, #713) and how many
   will be written, so a partial result is never one click from a warning. The
   31-night `MAX_BED_ALLOCATION_RANGE_NIGHTS` bounds
   the board's READ window, not this write: lodge capacity is the active bed

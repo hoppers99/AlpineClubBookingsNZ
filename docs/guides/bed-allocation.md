@@ -104,12 +104,12 @@ year in one go).
    the only way a range lands partly done, and it is a deliberate choice, never
    a default.
 6. If any night was refused as **Guest is not booked that night**, that button
-   asks you to confirm first: it names how many nights fall outside this guest's
-   stay and will *not* be assigned, and how many will, and waits for you to say
-   **Yes, assign the N nights**. **Go back** returns to the list, and changing
-   the dates clears it — nothing is written until you confirm. Those nights are
-   the one refusal that usually means a typo, so skipping them is a choice you
-   read and make, not a button next to a warning.
+   asks you to confirm first: it names how many nights are not part of this
+   guest's booking and will *not* be assigned, and how many will, and waits for
+   you to say **Yes, assign the N free nights**. **Go back** returns to the
+   list, and changing the dates clears it — nothing is written until you
+   confirm. Those nights are the one refusal that usually means a typo, so
+   skipping them is a choice you read and make, not a button next to a warning.
 7. Afterwards the board tints the nights it wrote green (**Assigned**) and the
    nights it refused red (**Refused**) on that bed, with a summary you can
    dismiss when you have finished checking the gaps.

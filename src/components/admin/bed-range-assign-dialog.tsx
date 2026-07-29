@@ -50,10 +50,13 @@ import {
  * are not a clash — they mean the range or the guest is wrong — so proceeding
  * past them must be a read-and-confirmed choice rather than a button sitting
  * next to a warning. When the report contains any, the second action asks first,
- * naming both counts ("M nights fall outside this guest's stay and will NOT be
- * assigned. Assign the other N nights anyway?"). Nothing else changes: the free
- * set already excluded those nights, so this adds consent, not behaviour. With
- * no such nights in the report there is no extra step.
+ * naming both counts ("M nights are not part of this guest's booking and will
+ * NOT be assigned. Assign the N free nights anyway?"). The wording deliberately
+ * does NOT say "outside this guest's stay": a GAP night of a non-contiguous stay
+ * (#713) sits INSIDE the stay span and is still refused, so "outside" would be
+ * false in the one sentence the admin is asked to read and accept. Nothing else
+ * changes: the free set already excluded those nights, so this adds consent, not
+ * behaviour. With no such nights in the report there is no extra step.
  *
  * Lives in src/components/admin (not the board's _components) because #2252
  * drives the same dialog from inside a booking — one component, two surfaces.
@@ -531,12 +534,10 @@ export function BedRangeAssignDialog({
                 <Alert
                   variant="warning"
                   data-testid="range-skip-confirmation"
-                  title={`${notBookedCount} night${notBookedCount === 1 ? "" : "s"} ${notBookedCount === 1 ? "falls" : "fall"} outside this guest's stay and will NOT be assigned`}
+                  title={`${notBookedCount} night${notBookedCount === 1 ? " is" : "s are"} not part of this guest's booking and will NOT be assigned`}
                 >
-                  Assign the other {freeNightCount} night
-                  {freeNightCount === 1 ? "" : "s"} anyway? If the dates are
-                  wrong, change them above instead — nothing has been written
-                  yet.
+                  Assign the {freeNightsLabel} anyway? If the dates are wrong,
+                  change them above instead — nothing has been written yet.
                 </Alert>
               ) : null}
             </div>
@@ -593,7 +594,7 @@ export function BedRangeAssignDialog({
                     onClick={() => void submit(offeredNights)}
                   >
                     {confirmingSkip
-                      ? `Yes, assign the ${freeNightCount} night${freeNightCount === 1 ? "" : "s"}`
+                      ? `Yes, assign the ${freeNightsLabel}`
                       : `Assign the ${freeNightsLabel}`}
                   </Button>
                 </>

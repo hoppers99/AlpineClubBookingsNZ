@@ -25,8 +25,8 @@ All notable public reference-release changes should be recorded here.
   nights — it says how many before you commit, and writes exactly those, refusing
   again with a fresh list if one of them has been taken in the meantime. If any
   night was refused because the guest is not booked on it, that button asks you to
-  confirm first: it names how many nights fall outside the stay and will not be
-  assigned, and how many will, and waits for a **Yes**. That refusal usually means
+  confirm first: it names how many nights are not part of the guest's booking and
+  will not be assigned, and how many will, and waits for a **Yes**. That refusal usually means
   a typo in the dates, so going past it is something you read and agree to rather
   than a click next to a warning. Either
   way the operation leaves a **single** audit entry against the booking recording
