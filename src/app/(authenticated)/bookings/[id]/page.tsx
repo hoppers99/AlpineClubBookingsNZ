@@ -67,7 +67,11 @@ import {
   bookingHoldsCapacity,
   isPaymentOwedBookingStatus,
 } from "@/lib/booking-status";
-import { isBookingBedAllocationLocked } from "@/lib/admin-bed-allocation";
+import {
+  countApprovedBedAllocationNights,
+  isBookingBedAllocationLocked,
+} from "@/lib/admin-bed-allocation";
+import { BED_ALLOCATABLE_BOOKING_STATUSES } from "@/lib/bed-allocation-lifecycle";
 import { formatDateOnly } from "@/lib/date-only";
 import { getBookingProviderMismatches } from "@/lib/booking-provider-mismatches";
 import { loadEmailMessageSettingsForLodge } from "@/lib/email-message-settings";
@@ -123,9 +127,15 @@ const BOOKING_SECTIONS: SectionNavItem[] = [
   { id: "group", label: "Group Booking" },
   { id: "arrival", label: "Arrival Time" },
   { id: "room-request", label: "Room Request" },
-  // Admin-only (#2252): the card renders behind canSeeAdminTools + the
-  // bedAllocation module flag, and SectionNav prunes anchors whose target id is
-  // absent, so a member never sees this entry.
+  /*
+   * Admin-only (#2252). Unlike every other candidate here, this one is NOT left
+   * to SectionNav's post-mount pruning: pruning happens after hydration, so a
+   * member's server-rendered rail really did contain a "Bed Allocation" link
+   * that then vanished (#2252 review). The page knows both halves of the gate
+   * server-side, so it filters this entry out before render — see
+   * `showBedAllocationPanel` below. Pruning stays as the backstop for the
+   * genuinely client-unknowable cases.
+   */
   { id: "bed-allocation", label: "Bed Allocation" },
   { id: "directions", label: "Getting There" },
   { id: "payment", label: "Payment" },
@@ -461,6 +471,37 @@ export default async function BookingDetailPage({
     showRequestedRoom && modules.bedAllocation
       ? await isBookingBedAllocationLocked({ bookingId: booking.id })
       : false;
+  /*
+   * In-booking bed allocation card (#2252). One named gate, used by BOTH the
+   * render site below and the section rail above it, so the rail can be built
+   * from the truth rather than pruned back to it after hydration (#2252
+   * review): a member's server-rendered HTML used to carry a "Bed Allocation"
+   * link that only disappeared once the client had mounted.
+   */
+  const showBedAllocationPanel = canSeeAdminTools && modules.bedAllocation;
+  /*
+   * Whether this booking's STATUS may own bed allocations at all. The panel must
+   * not infer this from the booking's absence from a window read — a booking
+   * with no guest night inside the page on screen is absent too, and calling
+   * that "cannot hold beds" was both false and hid the officer's rows (#2252
+   * review). BED_ALLOCATABLE_BOOKING_STATUSES lives in a prisma-importing
+   * module, so the answer is computed here and passed down.
+   */
+  const bookingCanHoldBeds = showBedAllocationPanel
+    ? (BED_ALLOCATABLE_BOOKING_STATUSES as readonly string[]).includes(
+        booking.status,
+      )
+    : false;
+  /*
+   * This booking's approved bed nights, counted across the WHOLE booking. The
+   * panel's "removing these re-opens the member's room request" warning is a
+   * booking-wide claim, and on a stay longer than the 31-night read window the
+   * panel's own page cannot see the confirmed nights on the other pages (#2252
+   * review). Only counted when the card actually renders.
+   */
+  const approvedBedNightCount = showBedAllocationPanel
+    ? await countApprovedBedAllocationNights({ bookingId: booking.id })
+    : 0;
   const requestedRoomEditableStatus =
     booking.status !== "CANCELLED" && booking.status !== "COMPLETED";
   const editPolicy = getBookingEditPolicy({
@@ -977,7 +1018,13 @@ export default async function BookingDetailPage({
 
   return (
     <div className="lg:flex lg:gap-8">
-      <SectionNav sections={BOOKING_SECTIONS} className="mb-6 lg:mb-0" />
+      <SectionNav
+        sections={BOOKING_SECTIONS.filter(
+          (section) =>
+            section.id !== "bed-allocation" || showBedAllocationPanel,
+        )}
+        className="mb-6 lg:mb-0"
+      />
       {/* data-testid scopes content-only queries away from the SectionNav rail,
           whose anchor labels (e.g. "Payment") would otherwise be matched by
           loose getByText(...).first() locators. */}
@@ -1074,30 +1121,6 @@ export default async function BookingDetailPage({
           isWaitlisted={noEmailsState.isWaitlisted}
           total={withheldEmails.total}
           groups={withheldEmailGroups}
-        />
-      )}
-
-      {/* In-booking bed allocation (#2252). Admin-only by construction — the
-          same gate as the tools card above, so a member (including the booking
-          owner) never receives the component, let alone the data. The
-          server-side module flag matches the routes' own gate, which 404s when
-          bed allocation is off. A booking that cannot hold beds (cancelled,
-          deleted, held) keeps the card and says so honestly, per the owner's
-          29 Jul decision — it is never silently hidden. */}
-      {canSeeAdminTools && modules.bedAllocation && (
-        <BookingBedAllocationPanel
-          bookingId={booking.id}
-          lodgeId={booking.lodgeId}
-          memberName={`${booking.member.firstName} ${booking.member.lastName}`}
-          checkIn={formatDateOnly(booking.checkIn)}
-          checkOut={formatDateOnly(booking.checkOut)}
-          wholeLodgeHold={booking.wholeLodgeHold}
-          bookingStatus={booking.status}
-          isDeleted={isDeleted}
-          guests={booking.guests.map((guest) => ({
-            id: guest.id,
-            name: `${guest.firstName} ${guest.lastName}`,
-          }))}
         />
       )}
 
@@ -1382,6 +1405,38 @@ export default async function BookingDetailPage({
             />
           </CardContent>
         </Card>
+      )}
+
+      {/* In-booking bed allocation (#2252). Admin-only by construction — the
+          same gate as the tools card above, so a member (including the booking
+          owner) never receives the component, let alone the data. The
+          server-side module flag matches the routes' own gate, which 404s when
+          bed allocation is off. A booking that cannot hold beds (cancelled,
+          deleted, held) keeps the card and says so honestly, per the owner's
+          29 Jul decision — it is never silently hidden.
+
+          Rendered HERE, immediately after the room request, because that is the
+          position BOOKING_SECTIONS declares for it (#2252 review): the rail is
+          presentation-only and never reorders content, so the card must sit
+          where its anchor says it does. It also reads well — the bed the lodge
+          allocated sits directly under the room the member asked for. */}
+      {showBedAllocationPanel && (
+        <BookingBedAllocationPanel
+          bookingId={booking.id}
+          lodgeId={booking.lodgeId}
+          memberName={`${booking.member.firstName} ${booking.member.lastName}`}
+          checkIn={formatDateOnly(booking.checkIn)}
+          checkOut={formatDateOnly(booking.checkOut)}
+          wholeLodgeHold={booking.wholeLodgeHold}
+          bookingStatus={booking.status}
+          isDeleted={isDeleted}
+          canHoldBeds={bookingCanHoldBeds}
+          approvedBedNightCount={approvedBedNightCount}
+          guests={booking.guests.map((guest) => ({
+            id: guest.id,
+            name: `${guest.firstName} ${guest.lastName}`,
+          }))}
+        />
       )}
 
       {memberArrivalInstructions ? (
