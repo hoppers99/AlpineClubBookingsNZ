@@ -56,10 +56,12 @@ export async function POST(request: Request) {
     }
 
     /*
-     * The single BED_ALLOCATION_RANGE_SET audit entry — and any partner-promotion
-     * entries — are written by assignBedRange INSIDE its own transaction (#2251
-     * review A4), not here: rows and record must commit or roll back together,
-     * or a committed range can surface to the admin as an unrecorded 500.
+     * The single BED_ALLOCATION_RANGE_SET audit entry — and the single batched
+     * BED_ALLOCATION_PARTNERS_PROMOTED entry, when the move stranded partners on
+     * shared doubles — are written by assignBedRange INSIDE its own transaction
+     * (#2251 review A4), not here: rows and record must commit or roll back
+     * together, or a committed range can surface to the admin as an unrecorded
+     * 500.
      */
     const result = await assignBedRange({
       ...body.data,
