@@ -305,7 +305,12 @@ import logger from "@/lib/logger";
 describe("processStoredXeroInboundEvents", () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    vi.mocked(sendBookingConfirmedEmail).mockResolvedValue(undefined);
+    // #2262: sendBookingConfirmedEmail now RETURNS its send outcome so the
+    // manual mark-paid path can report an honest receipt. This suite only cares
+    // that it was called, so a benign "sent" stub keeps the mock type-correct.
+    vi.mocked(sendBookingConfirmedEmail).mockResolvedValue({
+      status: "sent",
+    } as Awaited<ReturnType<typeof sendBookingConfirmedEmail>>);
     vi.mocked(sendBookingCancelledEmail).mockResolvedValue(undefined);
     vi.mocked(sendAdminPaymentFailureAlert).mockResolvedValue(undefined);
     mocks.checkCapacity.mockResolvedValue({ available: true });
