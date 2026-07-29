@@ -1,0 +1,24 @@
+-- Club logo stored as a served image URL instead of an inlined base64 data URI
+-- (#2322).
+--
+-- Blue/green EXPAND migration (see docs/BLUE_GREEN_MIGRATION_SAFETY.tsv):
+--  * adds ONE new nullable column to the ClubTheme singleton. Purely additive —
+--    the previously deployed (old-colour) client selects an explicit ClubTheme
+--    column set that does not name this column, so every old-colour READ and
+--    WRITE against the database keeps working unchanged during migrate ->
+--    cutover drain. The existing logoDataUrl column is left untouched, so an
+--    old-colour render still finds its logo. No column drop/alter, no RENAME,
+--    no backfill DML, no foreign key, no session-clock write, and no external
+--    provider call.
+--  * DB-layer compatibility only. The site-style HTTP contract does change:
+--    clubThemeUpdateSchema is `.strict()` and logoUrl is REQUIRED, so an admin
+--    still running the old wizard bundle gets a 400 on save until they reload.
+--    Deliberate — the alternative (defaulting the field to null) would let that
+--    stale save succeed and silently NULL a logo that had already been migrated
+--    to URL form. A failed save is recoverable; a wiped logo is not.
+--  * The inline-logo size budget is NOT part of that strictness. It is enforced
+--    in the PUT route against the stored row, and only for a CHANGED value, so a
+--    deployment already holding a large logoDataUrl keeps saving normally — the
+--    wizard round-trips the whole theme on every save, and a stateless cap would
+--    have locked such a club out of editing anything at all.
+ALTER TABLE "ClubTheme" ADD COLUMN     "logoUrl" TEXT;

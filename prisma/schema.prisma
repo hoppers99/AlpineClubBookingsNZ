@@ -3766,6 +3766,12 @@ model PageContent {
 enum MediaImageKind {
   CONTENT
   MEMBER_PHOTO
+  // #2322: club logos uploaded through the site-style wizard. Publicly served
+  // like CONTENT, but kept out of the content picker (which lists CONTENT only)
+  // and owned by the theme row — replacing or clearing the logo deletes exactly
+  // the prior LOGO blob. A CONTENT row is never deleted that way: page HTML may
+  // reference it.
+  LOGO
 }
 
 // Uploaded images for the page-content image picker, stored in the database
@@ -4847,6 +4853,12 @@ model ClubTheme {
   // (20260722140000_expand_club_theme_orphan_column_defaults) drained.
   headingFontKey ClubThemeFont @default(LEAGUE_SPARTAN)
   bodyFontKey    ClubThemeFont @default(INTER)
+  // #2322: the logo is stored as a served image URL (`/api/images/<MediaImage
+  // id>`, immutably cached) rather than inlined base64. `logoDataUrl` is kept
+  // for the deployments that already hold one — render precedence is
+  // logoUrl ?? logoDataUrl ?? text fallback, and saving a new logo clears the
+  // data-URI. Both nullable; neither is ever populated by default.
+  logoUrl        String?
   logoDataUrl    String?
   rawCss         String        @default("")
   completedAt    DateTime?
