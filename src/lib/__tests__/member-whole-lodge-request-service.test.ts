@@ -91,6 +91,7 @@ import {
   priceBookingRequest,
   withdrawMemberWholeLodgeRequest,
 } from "@/lib/booking-request";
+import { MEMBER_WHOLE_LODGE_OPEN_STATUSES } from "@/lib/member-whole-lodge-requests";
 
 const MEMBER = {
   id: "member-1",
@@ -204,6 +205,35 @@ describe("createMemberWholeLodgeRequest (#2263)", () => {
       ?.where as Record<string, unknown>;
     expect(where.requestedByMemberId).toBe(MEMBER.id);
     expect(where.exclusivityRequested).toBe(true);
+    // And the counted statuses are the SAME list the withdraw claim accepts, so
+    // the cap can never count a row the member has no way to clear.
+    expect(where.status).toEqual({
+      in: [...MEMBER_WHOLE_LODGE_OPEN_STATUSES],
+    });
+
+    // The refusal is audited with outcome "failure" — cheap detection of a
+    // member (or a broken client) hammering the door. It carries the cap and the
+    // count, both account state, and nothing about the calendar.
+    expect(logAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "booking_request.member_whole_lodge_refused",
+        outcome: "failure",
+        metadata: expect.objectContaining({
+          reason: "open_request_cap",
+          cap: MEMBER_WHOLE_LODGE_OPEN_REQUEST_CAP,
+        }),
+      }),
+    );
+    const refusalAudit = vi
+      .mocked(logAudit)
+      .mock.calls.find(
+        (call) =>
+          (call[0] as { action?: string }).action ===
+          "booking_request.member_whole_lodge_refused",
+      )![0];
+    const serialised = JSON.stringify(refusalAudit).toLowerCase();
+    expect(serialised).not.toContain("checkin");
+    expect(serialised).not.toContain("available");
   });
 
   it("audits the submission and alerts admins", async () => {
@@ -285,7 +315,7 @@ describe("withdrawMemberWholeLodgeRequest (#2263)", () => {
     expect(quoteArgs.data.status).toBe(BookingRequestQuoteStatus.SUPERSEDED);
   });
 
-  it("409s the loser of a withdraw-vs-decision race and touches no quote", async () => {
+  it("409s the loser of a withdraw-vs-decision race, touches no quote, and audits the refusal", async () => {
     const tx = armTransaction(0);
 
     await expect(
@@ -293,7 +323,111 @@ describe("withdrawMemberWholeLodgeRequest (#2263)", () => {
     ).rejects.toMatchObject({ status: 409 });
 
     expect(tx.bookingRequestQuote.updateMany).not.toHaveBeenCalled();
-    expect(logAudit).not.toHaveBeenCalled();
+    // No SUCCESS audit — the withdrawal did not happen.
+    expect(logAudit).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "booking_request.member_whole_lodge_withdrawn",
+      }),
+    );
+    // But the refusal IS audited. An audit trail recording only successes cannot
+    // show a member repeatedly aiming at ids they do not own, which is the
+    // cheapest signal that something is wrong.
+    expect(logAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "booking_request.member_whole_lodge_withdraw_refused",
+        outcome: "failure",
+        entityId: "req-1",
+      }),
+    );
+  });
+
+  // M2: the status half of the guarded claim, pinned. Reverting the clause must
+  // fail, and it must fail for the RIGHT reason — the exact set, not "some
+  // statuses".
+  it("claims ONLY the member-visible open statuses, so a decided row can never be clawed back", async () => {
+    const tx = armTransaction(1);
+
+    await withdrawMemberWholeLodgeRequest({
+      requestId: "req-1",
+      memberId: MEMBER.id,
+    });
+
+    const where = tx.bookingRequest.updateMany.mock.calls[0][0].where as {
+      status: { in: BookingRequestStatus[] };
+    };
+    // Derived from the ONE list the member DTO's withdraw affordance also reads,
+    // so the button and the API can never disagree (finding M3).
+    expect(where.status).toEqual({
+      in: [...MEMBER_WHOLE_LODGE_OPEN_STATUSES],
+    });
+    // Spelled out as well as compared, so deleting the constant and inlining a
+    // wrong list still fails: every terminal or post-decision status is absent.
+    for (const status of [
+      BookingRequestStatus.NEW,
+      BookingRequestStatus.ACCEPTED,
+      BookingRequestStatus.APPROVED,
+      BookingRequestStatus.CONVERTED,
+      BookingRequestStatus.DECLINED,
+      BookingRequestStatus.CANCELLED,
+    ]) {
+      expect(where.status.in).not.toContain(status);
+    }
+  });
+
+  it("tolerates a member left over the cap by a merge, and lets them clear it (L6)", async () => {
+    /*
+      MEMBER_MERGE_RELATION_SPECS classifies BookingRequest.requestedByMemberId
+      as `move`, so merging two members re-points the loser's whole-lodge
+      requests onto the master — who can end up holding THREE open requests
+      against a cap of two. That is accepted because the cap is a CREATION-TIME
+      GUARD, not an invariant: nothing reads it to decide whether an existing row
+      is valid. The two halves of that claim are asserted together here, because
+      each is worthless alone — if the over-cap state were unclearable the merge
+      would strand the master, and if creation still succeeded the cap would mean
+      nothing.
+    */
+    const overCap = MEMBER_WHOLE_LODGE_OPEN_REQUEST_CAP + 1;
+    vi.mocked(prisma.bookingRequest.count).mockResolvedValue(overCap as never);
+
+    // Half 1: no NEW request may be created while over the cap.
+    await expect(createMemberWholeLodgeRequest(INPUT)).rejects.toMatchObject({
+      status: 409,
+    });
+    expect(prisma.bookingRequest.create).not.toHaveBeenCalled();
+
+    // Half 2: the rows they already hold are untouched and still withdrawable,
+    // so the master can bring themselves back under the cap unaided. Withdraw
+    // does not consult the cap at all — its guard is owner + status + hold.
+    const tx = armTransaction(1);
+    await withdrawMemberWholeLodgeRequest({
+      requestId: "req-merged-in",
+      memberId: MEMBER.id,
+    });
+    const where = tx.bookingRequest.updateMany.mock.calls[0][0].where as Record<
+      string,
+      unknown
+    >;
+    expect(where.requestedByMemberId).toBe(MEMBER.id);
+    expect(where).not.toHaveProperty("cap");
+    expect(logAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "booking_request.member_whole_lodge_withdrawn",
+      }),
+    );
+  });
+
+  it("does not match an already-CONVERTED row: the claim's status set is what refuses it", async () => {
+    // Simulate the database's answer for a CONVERTED row — the WHERE matches
+    // nothing, so updateMany reports zero. A member cannot cancel a stay an
+    // officer already approved and booked out from under the club.
+    const tx = armTransaction(0);
+
+    await expect(
+      withdrawMemberWholeLodgeRequest({ requestId: "req-1", memberId: MEMBER.id }),
+    ).rejects.toMatchObject({ status: 409 });
+
+    // And critically: no unguarded fallback write ran afterwards.
+    expect(tx.bookingRequestQuote.updateMany).not.toHaveBeenCalled();
   });
 });
 

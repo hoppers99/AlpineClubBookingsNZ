@@ -822,6 +822,12 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "token",
   "total",
   "totalAlerts",
+  // #2263: the two halves of an UNPAID confirmation. `totalDue` replaces
+  // `totalPaid` (exactly one of the pair ever carries a figure), and
+  // `paymentDueNote` is the pre-composed sentence naming the amount owing and
+  // the internet-banking reference.
+  "totalDue",
+  "paymentDueNote",
   "totalPaid",
   "triggeringMemberName",
   "verifyUrl",

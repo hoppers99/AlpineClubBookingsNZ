@@ -1635,7 +1635,7 @@ export async function approveMemberWholeLodgeRequest(input: {
               committedConversion.convertedBookingId,
             ),
           committedPriceCents: committedBooking?.finalPriceCents ?? 0,
-          committedGuestCount: committedBooking?._count.guests ?? 0,
+          committedGuestCount: committedBooking?._count?.guests ?? 0,
           alreadyConverted: true as const,
         };
       }

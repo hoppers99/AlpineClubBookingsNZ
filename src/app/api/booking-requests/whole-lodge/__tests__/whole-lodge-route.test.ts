@@ -22,8 +22,6 @@ const h = vi.hoisted(() => ({
   assertRequestedLodgeActive: vi.fn(),
   applyRateLimit: vi.fn(),
   checkRateLimit: vi.fn(),
-  getLodgeCapacity: vi.fn(),
-  getDefaultLodgeCapacity: vi.fn(),
   // Defined inside vi.hoisted so the class exists before the hoisted vi.mock
   // factories below run.
   TestBookingRequestError: class TestBookingRequestError extends Error {
@@ -44,10 +42,6 @@ vi.mock("@/lib/booking-request", () => ({
   BookingRequestError: h.TestBookingRequestError,
   createMemberWholeLodgeRequest: h.createMemberWholeLodgeRequest,
   assertRequestedLodgeActive: h.assertRequestedLodgeActive,
-}));
-vi.mock("@/lib/lodge-capacity", () => ({
-  getLodgeCapacity: h.getLodgeCapacity,
-  getDefaultLodgeCapacity: h.getDefaultLodgeCapacity,
 }));
 vi.mock("@/lib/rate-limit", () => ({
   applyRateLimit: h.applyRateLimit,
@@ -87,8 +81,6 @@ beforeEach(() => {
   h.applyRateLimit.mockResolvedValue(null);
   h.checkRateLimit.mockResolvedValue({ success: true, limit: 5, resetAt: 0 });
   h.assertRequestedLodgeActive.mockResolvedValue(null);
-  h.getDefaultLodgeCapacity.mockResolvedValue(30);
-  h.getLodgeCapacity.mockResolvedValue(30);
   h.createMemberWholeLodgeRequest.mockResolvedValue({ id: "req-1" });
 });
 
@@ -202,6 +194,26 @@ describe("POST /api/booking-requests/whole-lodge (#2263)", () => {
 
     const response = await POST(request(VALID_BODY));
     expect(response.status).toBe(409);
+  });
+
+  it("lets the SERVICE own the headcount-vs-capacity bound, so the status is 422 not 400", async () => {
+    // The route used to duplicate this check and answer 400 while the service
+    // answered 422 for the identical refusal, so the same rejection looked like
+    // two different failures depending on which layer caught it. The route no
+    // longer reads lodge capacity at all — hence no @/lib/lodge-capacity mock in
+    // this file, which is itself the pin: adding the check back reintroduces the
+    // import and this suite fails on the missing mock.
+    h.createMemberWholeLodgeRequest.mockRejectedValue(
+      new TestBookingRequestError(
+        "A whole-lodge request cannot exceed the lodge capacity of 30 guests",
+        422,
+      ),
+    );
+
+    const response = await POST(request({ ...VALID_BODY, headcount: 31 }));
+    expect(response.status).toBe(422);
+    // It really did reach the service — the route did not short-circuit.
+    expect(h.createMemberWholeLodgeRequest).toHaveBeenCalled();
   });
 
   it("strips CRLF-bearing text at the schema, so nothing can be injected into the officer's copy", async () => {

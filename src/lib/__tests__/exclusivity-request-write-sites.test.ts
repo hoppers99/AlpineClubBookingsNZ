@@ -34,23 +34,66 @@ import { describe, expect, it } from "vitest";
 
 const SRC = join(process.cwd(), "src");
 
+/*
+  The scan roots. `src/` is the obvious one; `prisma/` and `scripts/` are here
+  because they are the two places that write to this database WITHOUT going
+  through a route or a service — a seed, a backfill, or a one-off operator script
+  could stamp `exclusivityRequested` on rows with no requester, no cap, no audit
+  and no attribution, and a src-only scan would never see it. Neither directory
+  is allowed a write site at all, so both simply must contribute nothing to the
+  found set.
+*/
+const SCAN_ROOTS = [SRC, join(process.cwd(), "prisma"), join(process.cwd(), "scripts")];
+
+type SanctionedSite = {
+  reason: string;
+  /**
+   * How many WRITE assignments this file is allowed. A count, not a boolean:
+   * "this file may write the flag" is a much weaker statement than "this file
+   * writes it in exactly N places", and a new write smuggled into an
+   * already-sanctioned file is precisely the change that would otherwise slip
+   * through a set-equality assertion.
+   */
+  writes: number;
+};
+
 /**
- * The only files allowed to WRITE `exclusivityRequested`, each with why. A file
- * listed here must still write it for an authenticated or email-verified
- * requester — the entry records the decision, it does not waive it.
+ * The only files allowed to WRITE `exclusivityRequested`, each with why and how
+ * many times. A file listed here must still write it for an authenticated or
+ * email-verified requester — the entry records the decision, it does not waive
+ * it.
  */
-const SANCTIONED_WRITE_SITES: Record<string, string> = {
+const SANCTIONED_WRITE_SITES: Record<string, SanctionedSite> = {
   // Door 1 — the school/group front-door (#121). Public, but email-verified,
   // rate limited, and it lands in the officer queue holding nothing.
-  "lib/school-booking-request.ts":
-    "SCHOOL front-door: persists the requester's exclusivity ask on submission, and re-states it in the approval audit metadata (#121, ADR-001).",
-  "app/api/booking-requests/school/route.ts":
-    "SCHOOL front-door route: validates the submitted flag and passes it to createSchoolBookingRequest.",
+  "lib/school-booking-request.ts": {
+    reason:
+      "SCHOOL front-door: persists the requester's exclusivity ask on submission, and re-states it in the approval audit metadata (#121, ADR-001); the member whole-lodge approval audits it too (#2263).",
+    writes: 4,
+  },
+  "app/api/booking-requests/school/route.ts": {
+    reason:
+      "SCHOOL front-door route: validates the submitted flag in its Zod schema and passes it to createSchoolBookingRequest.",
+    writes: 2,
+  },
   // Door 2 — the authenticated member door (#2263). Session-bound, capped at two
   // open requests, rate limited per-IP and per-member, always attributed.
-  "lib/booking-request.ts":
-    "MEMBER whole-lodge front-door: createMemberWholeLodgeRequest stamps exclusivityRequested together with requestedByMemberId, from the session only; the admin serialiser re-emits the stored value for the queue badge (#2263).",
+  "lib/booking-request.ts": {
+    reason:
+      "MEMBER whole-lodge front-door: createMemberWholeLodgeRequest stamps exclusivityRequested together with requestedByMemberId, from the session only; the admin serialiser re-emits the stored value for the queue badge (#2263).",
+    writes: 3,
+  },
 };
+
+/**
+ * Prisma delegates whose write payloads must never receive an opaque object
+ * spread inside a sanctioned file. The AST scan above can only see LITERAL
+ * property assignments, so `data: { ...body }` would carry
+ * `exclusivityRequested` straight through it — invisible to the write-site set
+ * and to anybody grepping for the field name.
+ */
+const GUARDED_WRITE_METHODS = new Set(["create", "update", "updateMany", "upsert"]);
+const GUARDED_PAYLOAD_KEYS = new Set(["data", "create", "update"]);
 
 /** Prisma clause keys whose object literals are READS, never writes. */
 const READ_CLAUSE_KEYS = new Set([
@@ -115,33 +158,162 @@ function isWriteAssignment(node: ts.PropertyAssignment): boolean {
   return true;
 }
 
-function hasWriteSite(file: string): boolean {
-  let found = false;
+function countWriteSites(file: string): number {
+  let found = 0;
   eachNode(parse(file), (node) => {
-    if (found) return;
     if (!ts.isPropertyAssignment(node)) return;
     if (!ts.isIdentifier(node.name)) return;
     if (node.name.text !== "exclusivityRequested") return;
-    if (isWriteAssignment(node)) found = true;
+    if (isWriteAssignment(node)) found += 1;
   });
   return found;
 }
 
-describe("whole-lodge exclusivity request write sites (#2263, ADR-001)", () => {
-  it("has exactly the sanctioned front-doors and no others", () => {
-    const found = listSourceFiles(SRC)
-      .filter(hasWriteSite)
-      .map((file) => relative(SRC, file).split(sep).join("/"))
-      .sort();
+/**
+ * Spread expressions a reader can audit at the call site: an inline object
+ * literal, or a conditional between them (`...(cond ? {} : { guests })`), which
+ * is the shape the approval paths use to vary one known key. What is REJECTED is
+ * an opaque spread — an identifier, a property access, a call result — because
+ * its keys are decided somewhere else, possibly by a request body.
+ */
+function isAuditableSpread(expression: ts.Expression): boolean {
+  if (ts.isParenthesizedExpression(expression)) {
+    return isAuditableSpread(expression.expression);
+  }
+  if (ts.isObjectLiteralExpression(expression)) return true;
+  if (ts.isConditionalExpression(expression)) {
+    return (
+      isAuditableSpread(expression.whenTrue) &&
+      isAuditableSpread(expression.whenFalse)
+    );
+  }
+  if (ts.isBinaryExpression(expression)) {
+    // `cond && { … }` / `x ?? { … }` — both branches must still be literals.
+    return (
+      isAuditableSpread(expression.left) || isAuditableSpread(expression.right)
+    );
+  }
+  return false;
+}
+
+/** Every opaque spread inside a `bookingRequest` write payload in this file. */
+function findOpaqueBookingRequestSpreads(file: string): string[] {
+  const source = readFileSync(file, "utf8");
+  const ast = parse(file);
+  const offences: string[] = [];
+
+  eachNode(ast, (node) => {
+    if (!ts.isCallExpression(node)) return;
+    if (!ts.isPropertyAccessExpression(node.expression)) return;
+    const method = node.expression.name.text;
+    if (!GUARDED_WRITE_METHODS.has(method)) return;
+    // `prisma.bookingRequest.create` / `tx.bookingRequest.update` / …
+    const delegate = node.expression.expression;
+    if (!ts.isPropertyAccessExpression(delegate)) return;
+    if (delegate.name.text !== "bookingRequest") return;
+
+    const [arg] = node.arguments;
+    if (!arg || !ts.isObjectLiteralExpression(arg)) return;
+
+    for (const property of arg.properties) {
+      if (!ts.isPropertyAssignment(property)) continue;
+      if (!ts.isIdentifier(property.name)) continue;
+      if (!GUARDED_PAYLOAD_KEYS.has(property.name.text)) continue;
+      if (!ts.isObjectLiteralExpression(property.initializer)) continue;
+      for (const entry of property.initializer.properties) {
+        if (!ts.isSpreadAssignment(entry)) continue;
+        if (isAuditableSpread(entry.expression)) continue;
+        const { line } = ast.getLineAndCharacterOfPosition(entry.getStart(ast));
+        offences.push(
+          `${relative(process.cwd(), file).split(sep).join("/")}:${line + 1} — ` +
+            `${source.slice(entry.getStart(ast), entry.getEnd()).trim()}`,
+        );
+      }
+    }
+  });
+
+  return offences;
+}
+
+/**
+ * Every scanned file with at least one write, keyed the way the map is.
+ * Memoised: parsing the whole tree costs ~12s, and three assertions ask the same
+ * question.
+ */
+let scanned: Record<string, number> | null = null;
+function scanWriteSites(): Record<string, number> {
+  if (scanned) return scanned;
+  const counts: Record<string, number> = {};
+  for (const root of SCAN_ROOTS) {
+    for (const file of listSourceFiles(root)) {
+      const writes = countWriteSites(file);
+      if (writes === 0) continue;
+      // src/ paths stay relative to src/ (the map's existing shape); prisma/ and
+      // scripts/ report their directory so an offender there is unmistakable.
+      const key =
+        root === SRC
+          ? relative(SRC, file).split(sep).join("/")
+          : relative(process.cwd(), file).split(sep).join("/");
+      counts[key] = writes;
+    }
+  }
+  scanned = counts;
+  return counts;
+}
+
+// The scan parses every .ts/.tsx file under src/, prisma/ and scripts/, which
+// takes well past the 5s default on a loaded box. Memoised above, so this budget
+// covers one pass.
+describe("whole-lodge exclusivity request write sites (#2263, ADR-001)", { timeout: 120_000 }, () => {
+  it("has exactly the sanctioned front-doors and no others, across src, prisma and scripts", () => {
+    const found = Object.keys(scanWriteSites()).sort();
 
     expect(
       found,
       "A file that WRITES exclusivityRequested is a front-door for asking the " +
         "club to sterilise every bed in the lodge. Only the authenticated " +
         "member door (#2263) and the email-verified school door (#121) are " +
-        "sanctioned. Add a new one to SANCTIONED_WRITE_SITES with its reason, " +
-        "or take the write out.",
+        "sanctioned — and a seed, backfill or operator script may never write " +
+        "it at all, because such a row would have no requester, no cap, no " +
+        "attribution and no audit. Add a new door to SANCTIONED_WRITE_SITES " +
+        "with its reason, or take the write out.",
     ).toEqual(Object.keys(SANCTIONED_WRITE_SITES).sort());
+  });
+
+  it("writes the flag in exactly the sanctioned number of places per file", () => {
+    const expected = Object.fromEntries(
+      Object.entries(SANCTIONED_WRITE_SITES).map(([file, site]) => [
+        file,
+        site.writes,
+      ]),
+    );
+
+    expect(
+      scanWriteSites(),
+      "An already-sanctioned file gained (or lost) an exclusivityRequested " +
+        "write. Set-equality alone would not have noticed. Update the `writes` " +
+        "count with the new site's reason in the same diff.",
+    ).toEqual(expected);
+  });
+
+  it("never spreads an opaque object into a BookingRequest write payload", () => {
+    /*
+      The AST scan above can only see literal `exclusivityRequested:` property
+      assignments. `data: { ...body }` or `data: { ...input }` defeats it
+      completely — the flag arrives from an object assembled elsewhere, so the
+      write-site set stays "correct" while an unauthenticated caller's payload
+      decides whether the club is asked to empty the lodge. Inline literals and
+      conditionals between them stay allowed: their keys are visible right there.
+    */
+    const offences = Object.keys(SANCTIONED_WRITE_SITES).flatMap((file) =>
+      findOpaqueBookingRequestSpreads(join(SRC, file)),
+    );
+
+    expect(
+      offences,
+      "Spread an inline object literal with named keys instead, so the field " +
+        "set of a BookingRequest write is readable at the call site.",
+    ).toEqual([]);
   });
 
   it("keeps the member door attributing every request it opens", () => {

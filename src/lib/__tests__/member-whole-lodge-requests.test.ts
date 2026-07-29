@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { BookingRequestStatus } from "@prisma/client";
 import {
+  MEMBER_WHOLE_LODGE_OPEN_STATUSES,
   toMyWholeLodgeRequestItem,
   toMyWholeLodgeRequestStatus,
   type MyWholeLodgeRequestStatus,
@@ -135,7 +136,7 @@ describe("member whole-lodge request DTO (#2263)", () => {
     ).toMatchObject({ status: "approved", bookingId: "booking-9" });
   });
 
-  it("offers withdraw only for a pending request that holds no capacity", () => {
+  it("offers withdraw only for a request the withdraw API will actually accept", () => {
     expect(toMyWholeLodgeRequestItem(BASE_ROW).canWithdraw).toBe(true);
 
     // Mirrors the service guard: a request holding beds must go through admin
@@ -146,16 +147,32 @@ describe("member whole-lodge request DTO (#2263)", () => {
         .canWithdraw,
     ).toBe(false);
 
-    for (const status of [
-      BookingRequestStatus.APPROVED,
-      BookingRequestStatus.CONVERTED,
-      BookingRequestStatus.DECLINED,
-      BookingRequestStatus.CANCELLED,
-    ]) {
+    // EXHAUSTIVE over the enum, driven off the one open-status list the
+    // service's guarded claim names. The affordance used to be derived from
+    // "the member-visible status reads as pending", which is a DIFFERENT
+    // predicate: NEW and ACCEPTED both read as "pending" and are both outside
+    // the claim's status set, so both rendered a Withdraw button that the API
+    // answered with a 409. This walk fails if that drift is ever reintroduced,
+    // for any status, in either direction.
+    for (const status of Object.values(BookingRequestStatus)) {
+      const expected = MEMBER_WHOLE_LODGE_OPEN_STATUSES.includes(
+        status as (typeof MEMBER_WHOLE_LODGE_OPEN_STATUSES)[number],
+      );
       expect(
         toMyWholeLodgeRequestItem({ ...BASE_ROW, status }).canWithdraw,
-        `${status} must not offer withdraw`,
-      ).toBe(false);
+        `${status}: canWithdraw must match whether the withdraw claim accepts it`,
+      ).toBe(expected);
+    }
+
+    // Named explicitly, because these two are the exact regression: they read as
+    // "pending" to the member and are NOT withdrawable.
+    for (const status of [
+      BookingRequestStatus.NEW,
+      BookingRequestStatus.ACCEPTED,
+    ]) {
+      const item = toMyWholeLodgeRequestItem({ ...BASE_ROW, status });
+      expect(item.status).toBe("pending");
+      expect(item.canWithdraw, `${status} must not offer withdraw`).toBe(false);
     }
   });
 
