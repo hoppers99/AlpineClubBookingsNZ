@@ -10,6 +10,18 @@ import {
 } from "@/lib/theme/app-tokens";
 
 export const CLUB_THEME_ID = "default";
+/**
+ * READ-PATH bound on the decoded logo data-URI, enforced by
+ * `isValidLogoDataUrl` / `sanitiseLogoDataUrl` / `normaliseThemeValues`.
+ *
+ * Do NOT lower this to shrink page payloads (#2322). It gates what already-
+ * stored rows are allowed to render, and deployments in the field hold logos
+ * close to the limit (the Tokoroa fork stores ~860 KB). Tightening the read
+ * path would silently null those logos the moment the deployment upgraded.
+ * The smaller budget lives on the WRITE path instead
+ * (`MAX_LOGO_DATA_URL_WRITE_BYTES` in `club-theme-update-schema.ts`), where it
+ * rejects new oversized uploads without touching rows that already exist.
+ */
 export const MAX_LOGO_DATA_URL_BYTES = 900_000;
 
 /**
@@ -108,6 +120,11 @@ export const CLUB_THEME_FONT_OPTIONS: Array<{
 export type ClubThemeValues = Record<ClubThemeColourKey, string> & {
   headingFontKey: ClubThemeFontKey;
   bodyFontKey: ClubThemeFontKey;
+  /**
+   * Served-image logo (#2322): a same-origin `/api/images/<id>` path. Takes
+   * precedence over `logoDataUrl` everywhere the logo renders.
+   */
+  logoUrl: string | null;
   logoDataUrl: string | null;
   rawCss: string;
 };
@@ -127,6 +144,7 @@ export const DEFAULT_CLUB_THEME_VALUES: ClubThemeValues = {
   brandSafety: "#b04d28",
   headingFontKey: "LEAGUE_SPARTAN",
   bodyFontKey: "INTER",
+  logoUrl: null,
   logoDataUrl: null,
   rawCss: "",
 };
@@ -134,6 +152,27 @@ export const DEFAULT_CLUB_THEME_VALUES: ClubThemeValues = {
 const HEX_COLOUR_PATTERN = /^#[0-9a-fA-F]{6}$/;
 const LOGO_DATA_URL_PATTERN =
   /^data:(image\/(?:png|jpeg|jpg|webp|gif));base64,([A-Za-z0-9+/]+={0,2})$/;
+/**
+ * The ONLY logo URL form accepted, anywhere (#2322). Anchored, same-origin, and
+ * limited to the id charset `extractImageIds` recognises, so the two stay
+ * consistent and a config-transfer bundle cannot smuggle in a form the export
+ * scanner would miss. No scheme, no `//host`, no traversal — the value is
+ * interpolated straight into an `<img src>`.
+ *
+ * Unlike `logoDataUrl` this is enforced on the READ path as well as the write
+ * path: the column is new, so no legacy row can be nulled by strictness.
+ *
+ * A hand-edited row or a crafted bundle bypasses the zod write schema, so every
+ * read path sanitises independently. There are three, and they are the complete
+ * set of ways a stored logo reaches a browser:
+ *   1. `normaliseThemeValues` — every website/admin render of the theme.
+ *   2. `buildDisplayState` (`lodge-display-state.ts`) — the kiosk, which reads
+ *      the columns directly rather than through `normaliseThemeValues`, and so
+ *      calls `sanitiseLogoUrl`/`sanitiseLogoDataUrl` itself.
+ *   3. `applySiteContent` (config-transfer import) — normalises before writing,
+ *      so a hostile bundle cannot seed a value the render paths would trust.
+ */
+const LOGO_URL_PATTERN = /^\/api\/images\/[A-Za-z0-9_-]+$/;
 
 /**
  * A user-entered theme seed is valid iff it is a 6-digit hex colour (#2187 D6:
@@ -189,7 +228,42 @@ export function deriveBrandShims(theme: ClubThemeValues): BrandShims {
   };
 }
 
-function logoDataUrlByteLength(value: string): number | null {
+export function isValidLogoUrl(value: string): boolean {
+  return LOGO_URL_PATTERN.test(value.trim());
+}
+
+/**
+ * The logo exclusivity rule (#2322): a served-image URL wins, and when one is
+ * set the inlined data URI is dropped. Storing both would leave megabytes of
+ * base64 on the row that nothing renders, and lets a stale client resurrect the
+ * inlined copy.
+ *
+ * Shared by the admin save path (`saveClubTheme`) and the config-transfer import
+ * so the two cannot drift.
+ */
+export function resolveLogoFields(input: {
+  logoUrl: string | null;
+  logoDataUrl: string | null;
+}): { logoUrl: string | null; logoDataUrl: string | null } {
+  return {
+    logoUrl: input.logoUrl,
+    logoDataUrl: input.logoUrl ? null : input.logoDataUrl,
+  };
+}
+
+/** The MediaImage id a logo URL points at, or null when it is not a logo URL. */
+export function logoImageIdFromUrl(value: string | null): string | null {
+  if (!value || !isValidLogoUrl(value)) return null;
+  return value.trim().slice("/api/images/".length);
+}
+
+/**
+ * Decoded byte length of a logo data URI, or null when the value is not a
+ * well-formed one. Exported so the write path can enforce its own (much
+ * smaller) budget without redefining what "decoded size" means — see
+ * `MAX_LOGO_DATA_URL_WRITE_BYTES`.
+ */
+export function logoDataUrlByteLength(value: string): number | null {
   const match = value.trim().match(LOGO_DATA_URL_PATTERN);
   if (!match) {
     return null;
@@ -251,8 +325,14 @@ function sanitiseThemeFont(value: unknown, fallback: ClubThemeFontKey) {
     : fallback;
 }
 
-function sanitiseLogoDataUrl(value: unknown): string | null {
+export function sanitiseLogoDataUrl(value: unknown): string | null {
   return typeof value === "string" && isValidLogoDataUrl(value)
+    ? value.trim()
+    : null;
+}
+
+export function sanitiseLogoUrl(value: unknown): string | null {
+  return typeof value === "string" && isValidLogoUrl(value)
     ? value.trim()
     : null;
 }
@@ -272,6 +352,7 @@ export function normaliseThemeValues(
       value?.bodyFontKey,
       DEFAULT_CLUB_THEME_VALUES.bodyFontKey,
     ),
+    logoUrl: sanitiseLogoUrl(value?.logoUrl),
     logoDataUrl: sanitiseLogoDataUrl(value?.logoDataUrl),
     rawCss:
       typeof value?.rawCss === "string" ? sanitiseRawCss(value.rawCss) : "",
