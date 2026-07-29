@@ -3,6 +3,7 @@ import { loginPersona, storageStatePath } from "./helpers/auth";
 import { personas } from "./helpers/personas";
 import {
   E2E_ADMIN,
+  LODGE_FILL_OWNER,
   WAITLIST_FULL_WINDOW,
   WAITLISTER,
 } from "./helpers/fixtures";
@@ -58,7 +59,10 @@ const REQUEST_BODY = {
 let adminContext: BrowserContext;
 let aliceContext: BrowserContext;
 let wandaContext: BrowserContext;
-let danaContext: BrowserContext;
+// A THIRD distinct member, not Bob/Evan: those two are deliberately seeded
+// un-enrolled in two-factor so the 2FA specs can drive real enrollment, and
+// logging them in here would consume that state.
+let thirdMemberContext: BrowserContext;
 
 test.beforeAll(async ({ browser }) => {
   // Up to two fresh logins, each possibly including first-time two-factor
@@ -79,17 +83,17 @@ test.beforeAll(async ({ browser }) => {
   await loginPersona(wandaPage, WAITLISTER.email);
   await wandaPage.close();
 
-  danaContext = await browser.newContext();
-  const danaPage = await danaContext.newPage();
-  await loginPersona(danaPage, personas.enrollee.email);
-  await danaPage.close();
+  thirdMemberContext = await browser.newContext();
+  const thirdPage = await thirdMemberContext.newPage();
+  await loginPersona(thirdPage, LODGE_FILL_OWNER.email);
+  await thirdPage.close();
 });
 
 test.afterAll(async () => {
   await adminContext?.close();
   await aliceContext?.close();
   await wandaContext?.close();
-  await danaContext?.close();
+  await thirdMemberContext?.close();
 });
 
 /** Submit one whole-lodge request and return the raw status + body BYTES. */
@@ -165,7 +169,7 @@ test("the acknowledgement is byte-identical whether the lodge is clear, full, or
   // --- The three submissions, one member each -------------------------------
   const clear = await submitWholeLodgeRequest(aliceContext, CLEAR_WINDOW);
   const full = await submitWholeLodgeRequest(wandaContext, WAITLIST_FULL_WINDOW);
-  const held = await submitWholeLodgeRequest(danaContext, HELD_WINDOW);
+  const held = await submitWholeLodgeRequest(thirdMemberContext, HELD_WINDOW);
 
   // All three must have SUCCEEDED. A 429 or 409 here would make the byte
   // comparison vacuous — three identical error bodies also compare equal.
@@ -354,9 +358,9 @@ test("a member cannot withdraw somebody else's request", async () => {
   );
   expect(someoneElses).toBeTruthy();
 
-  // Dana is signed in as a different member. The WHERE names the owner, so an
+  // This context is signed in as a different member. The WHERE names the owner, so an
   // id belonging to somebody else behaves exactly like one that does not exist.
-  const response = await danaContext.request.post(
+  const response = await thirdMemberContext.request.post(
     `/api/booking-requests/whole-lodge/${someoneElses!.id}/withdraw`,
   );
   expect([404, 409]).toContain(response.status());
